@@ -12,3 +12,9 @@ chat = ""                 # el chat de David
 token_env = "MOTOR_TELEGRAM_TOKEN"   # el token vive en secretos.env de cada máquina (decisión de David, 2026-10-20):
                                      # Mini = bot de OpenClaw, PC = bot de Hermes, Mac = bot de OpenClaw.
                                      # Solo envía: compartir el token con el gateway no le quita mensajes.
+
+# Opcional: fija qué versión del motor deben correr las máquinas. Si una corre otra, su daemon
+# sale con 75 y el supervisor lo relanza (la instalación pone antes el código fijado).
+# [motor]
+# version = "0.1.0"
+# sha = "3872500"        # prefijo del commit

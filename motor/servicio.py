@@ -15,9 +15,20 @@ import time
 from pathlib import Path
 
 from .plataforma.windows import tarea_xml
+from .version import espera_antes_de_relanzar
 
 
-def plist_launchd(usuario: str, python: str, home: str, raiz: str, etiqueta: str = "com.goncloud.motor") -> str:
+# El PATH con el que launchd lanza el servicio (y por tanto los agentes); `doctor --como-servicio` lo reutiliza.
+PATH_SERVICIO = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+
+
+def plist_launchd(
+    usuario: str,
+    python: str,
+    home: str,
+    raiz: str,
+    etiqueta: str = "com.goncloud.motor",
+) -> str:
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Va en /Library/LaunchDaemons/{etiqueta}.plist: arranca al prender, sin sesión iniciada. -->
@@ -28,7 +39,7 @@ def plist_launchd(usuario: str, python: str, home: str, raiz: str, etiqueta: str
   <key>ProgramArguments</key>
   <array><string>{python}</string><string>-m</string><string>motor</string><string>servicio</string><string>--home</string><string>{home}</string></array>
   <key>WorkingDirectory</key><string>{raiz}</string>
-  <key>EnvironmentVariables</key><dict><key>HOME</key><string>/Users/{usuario}</string><key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>HOME</key><string>/Users/{usuario}</string><key>PATH</key><string>{PATH_SERVICIO}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>{home}/servicio.log</string>
@@ -46,8 +57,18 @@ def instalable(maquina: str, usuario: str, python: str, home: str, raiz: str) ->
 
 def supervisor(home: Path, intervalo: float = 10.0) -> int:
     while True:
-        r = subprocess.run([sys.executable, "-m", "motor", "daemon", "--home", str(home),
-                            "--intervalo", str(intervalo)])
-        if r.returncode == 75:
-            continue          # actualización: relanza ya
-        time.sleep(5)         # murió: relanza en 5 s (nunca se rinde)
+        inicio = time.time()
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "motor",
+                "daemon",
+                "--home",
+                str(home),
+                "--intervalo",
+                str(intervalo),
+            ]
+        )
+        # 75 = "me actualicé, reiníciame": relanza ya (version.espera_antes_de_relanzar); si murió, en 5 s
+        time.sleep(espera_antes_de_relanzar(r.returncode, time.time() - inicio))

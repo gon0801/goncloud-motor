@@ -1,0 +1,7 @@
+error: unexpected argument '--prompt' found
+
+  tip: a similar argument exists: '--prompt-file'
+
+Usage: grok --prompt-file <PATH> [PROMPT]
+
+For more information, try '--help'.
