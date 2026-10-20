@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from .plataforma.windows import tarea_xml
+from .version import espera_antes_de_relanzar
 
 
 # El PATH con el que launchd lanza el servicio (y por tanto los agentes); `doctor --como-servicio` lo reutiliza.
@@ -56,6 +57,7 @@ def instalable(maquina: str, usuario: str, python: str, home: str, raiz: str) ->
 
 def supervisor(home: Path, intervalo: float = 10.0) -> int:
     while True:
+        inicio = time.time()
         r = subprocess.run(
             [
                 sys.executable,
@@ -68,6 +70,5 @@ def supervisor(home: Path, intervalo: float = 10.0) -> int:
                 str(intervalo),
             ]
         )
-        if r.returncode == 75:
-            continue  # actualización: relanza ya
-        time.sleep(5)  # murió: relanza en 5 s (nunca se rinde)
+        # 75 = "me actualicé, reiníciame": relanza ya (version.espera_antes_de_relanzar); si murió, en 5 s
+        time.sleep(espera_antes_de_relanzar(r.returncode, time.time() - inicio))

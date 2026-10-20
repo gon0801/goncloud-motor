@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from .github import para
 from .notify import Notifier
 from .plan import Plan, PlanError, modelos_desconocidos
 from .store import Store
+from .version import SALIDA_RELANZAR, info, pide_otra
 from .workspace import Workspace
 
 
@@ -69,6 +71,10 @@ class Daemon:
         conf = load_conf(self.maquina.conf)
         if conf.sha != self.cx.conf.sha:
             self.cx.conf, self.cx.policy = conf, m.Policy.from_conf(conf)
+
+    def pide_otra_version(self) -> str:
+        """Si la conf fija una versión o un commit distinto del que corre, la frase de la diferencia."""
+        return pide_otra(self.cx.conf.motor, info())
 
     def plans(self) -> list[Plan]:
         vistos: dict[str, Plan] = {}
@@ -260,6 +266,14 @@ class Daemon:
     def run(self, intervalo: float, hasta_terminar: bool, tope_s: float = 0) -> int:
         inicio = time.time()
         while True:
+            self.recargar_conf()
+            if otra := self.pide_otra_version():
+                print(
+                    f"motor: {otra}; salgo con 75 para que el supervisor me relance",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return SALIDA_RELANZAR
             if self.tick() and hasta_terminar:
                 return 0
             if tope_s and time.time() - inicio > tope_s:

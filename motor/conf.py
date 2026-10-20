@@ -50,6 +50,9 @@ class Conf:
     reglas_revisor: str
     tiempos: dict[str, float]
     avisos: dict[str, str]  # {"base_url", "chat", "token_env"}
+    motor: dict[str, str] = field(
+        default_factory=dict
+    )  # versión que la conf fija: {"version", "sha"}
 
     def escalera(self, papel: str) -> tuple[str, ...]:
         return self.carriles[self.papeles[papel]]
@@ -93,6 +96,12 @@ def load_conf(d: Path) -> Conf:
         else {}
     )
     errores = []
+    fijada = general.get("motor", {})
+    for k, v in fijada.items():
+        if k not in ("version", "sha") or not isinstance(v, str) or not v.strip():
+            errores.append(
+                f"general.toml [motor]: solo version y sha, como texto; vino {k} = {v!r}"
+            )
     for papel, carril in papeles.items():
         if carril not in carriles:
             errores.append(f"el papel {papel} apunta al carril {carril}, que no existe")
@@ -118,6 +127,11 @@ def load_conf(d: Path) -> Conf:
         else "",
         tiempos={k: float(v) for k, v in general.get("tiempos", {}).items()},
         avisos={k: str(v) for k, v in general.get("avisos", {}).items()},
+        motor={
+            k: v
+            for k, v in fijada.items()
+            if k in ("version", "sha") and isinstance(v, str)
+        },
     )
 
 

@@ -9,6 +9,7 @@
     motor doctor --home H [--json]                          qué puede correr aquí, sin modelo
     motor doctor --home H --como-servicio [--espera S]      cada ruta con un encargo de prueba, en el entorno del servicio
     motor instala --maquina mac|mini|pc --usuario U --home H --imprime
+    motor version [--json]                                   versión del paquete y SHA del código que corre
     motor daemon --home H [--intervalo S] [--hasta-terminar] [--tope S]
     motor servicio --home H                                  supervisor (lo lanza launchd / la tarea)
 
@@ -217,12 +218,21 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--hasta-terminar", action="store_true")
     s.add_argument("--tope", type=float, default=0)
     s.add_argument("--checks-cada", type=float)
+    s = sub.add_parser("version")
+    s.add_argument("--json", action="store_true")
     s = sub.add_parser("servicio")
     s.add_argument("--home", type=Path, required=True)
     s = sub.add_parser("conf")
     s.add_argument("accion", choices=["valida"])
     s.add_argument("dir", type=Path)
     a = ap.parse_args(argv)
+
+    if a.cmd == "version":
+        from .version import info
+
+        i = info()
+        print(json.dumps(i) if a.json else f"motor {i['version']} ({i['sha'][:12]})")
+        return 0
 
     if a.cmd == "conf":
         errores = conf_valida(a.dir)
