@@ -270,7 +270,13 @@ Escribe en `$MOTOR_RESULT`:
                 "detalle": "el proceso desapareció sin dejar resultado",
             }
         o = json.loads(oc.read_text())
-        c = m.classify(o["exit"], o["timed_out"], o["no_progress"], o["tail"])
+        c = m.classify(
+            o["exit"],
+            o["timed_out"],
+            o["no_progress"],
+            o["tail"],
+            self._proveedor(att.modelo),
+        )
         if c["kind"] in ("cuota", "rate_limit"):
             if c["kind"] == "cuota":
                 hasta = (

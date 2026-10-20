@@ -1,0 +1,1 @@
+missing meta credentials: run `muse login` or set META_API_KEY, or save credentials at /var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/tmp.Gzm84HDKGT/.config/muse/auth.json

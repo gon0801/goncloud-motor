@@ -12,10 +12,9 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-import re
 from dataclasses import dataclass, field
 
-from . import relevo
+from . import fallas, relevo
 from .conf import Conf
 from .plan import Block, Plan
 from .store import Event
@@ -724,54 +723,18 @@ def _sin_agente(
 
 # --------------------------------------------------------------------------- clasificación
 
-_QUOTA = re.compile(r"usage limit|quota|weekly limit|limit reached|plan limit", re.I)
-_RATE = re.compile(r"\b429\b|rate.?limit|too many requests", re.I)
-_RETRY_AFTER = re.compile(
-    r"retry.?after[\s:=]*(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds|m|min|minutes)?", re.I
-)
-_AUTH = re.compile(
-    r"\b401\b|login required|not logged in|authentication failed|unauthori[sz]ed|token expired|keychain is locked",
-    re.I,
-)
-_TRANSIENT = re.compile(
-    r"ECONNRESET|ETIMEDOUT|\b50[234]\b|overloaded|temporarily unavailable", re.I
-)
-_RESET = re.compile(
-    r"reset[s]?\s*(?:at|on)?\s*(\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z?)", re.I
-)
+retry_after_s = fallas.retry_after_s
 
 
-def retry_after_s(tail: str) -> float | None:
-    """Segundos que el proveedor pidió esperar ("retry after 30s"), o None si no dijo."""
-    m = _RETRY_AFTER.search(tail)
-    if not m:
-        return None
-    n, unidad = float(m.group(1)), (m.group(2) or "s").lower()
-    return n / 1000 if unidad == "ms" else n * 60 if unidad.startswith("m") else n
-
-
-def classify(exit_code: int, timed_out: bool, no_progress: bool, tail: str) -> dict:
+def classify(
+    exit_code: int, timed_out: bool, no_progress: bool, tail: str, proveedor: str = ""
+) -> dict:
+    """Qué le pasó a un intento. El tiempo agotado y la falta de avance salen del envoltorio; el resto
+    se lee de la salida con las reglas de ese proveedor (fallas.py)."""
     if timed_out:
         return {"kind": "tiempo", "detalle": "se pasó del tiempo máximo"}
     if no_progress:
         return {"kind": "sin_avance", "detalle": "no mostró avance; se detuvo"}
     if exit_code != 0:
-        if _QUOTA.search(tail):
-            m = _RESET.search(tail)
-            return {
-                "kind": "cuota",
-                "reset_at": m.group(1) if m else "",
-                "detalle": tail[-300:],
-            }
-        if _RATE.search(tail):
-            return {
-                "kind": "rate_limit",
-                "retry_after_s": retry_after_s(tail),
-                "detalle": tail[-300:],
-            }
-        if _AUTH.search(tail):
-            return {"kind": "auth", "detalle": tail[-300:]}
-        if _TRANSIENT.search(tail):
-            return {"kind": "transitorio", "detalle": tail[-300:]}
-        return {"kind": "falla", "detalle": tail[-300:]}
+        return fallas.clasifica(proveedor, tail)
     return {"kind": "terminado", "detalle": ""}
