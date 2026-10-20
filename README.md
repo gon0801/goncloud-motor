@@ -26,7 +26,7 @@ motor servicio --home ~/.motor                       # supervisor; lo arranca el
 
 ## Archivos de una máquina
 
-- `~/.motor/maquina.toml`: nombre, ruta de la conf, `path_extra`, `env`, `wsl`, `github` y, en la MacBook, `[no_dormir]`.
+- `~/.motor/maquina.toml`: nombre, ruta de la conf, `path_extra`, `env`, `wsl`, `github`, `tiene` (capacidades como `ssh-goncloud`, que los repos piden en `[deploy] requiere`) y, en la MacBook, `[no_dormir]`.
   Rechaza papeles, modelos, rutas y reglas, que viven en la conf compartida.
 - `~/.motor/secretos.env` con modo 600: `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`,
   `MOTOR_TELEGRAM_TOKEN`, etc.

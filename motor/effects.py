@@ -45,6 +45,7 @@ def _run(
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
+        check=False,
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -78,6 +79,23 @@ class Effects:
     def repo_conf(self, snap: m.Snapshot, repo: str) -> RepoConf:
         return RepoConf.parse(snap.repos.get(repo, {}).get("texto", ""))
 
+    def conf_base(self, repo: str) -> tuple[str, str]:
+        """(sha, texto) del `.motor.toml` de la rama principal del repo; si no tiene, uno mínimo."""
+        d = self.cx.ws.espejo(repo)
+        base = (
+            git("symbolic-ref", "--short", "refs/remotes/origin/HEAD", cwd=d)
+            .stdout.strip()
+            .removeprefix("origin/")
+            or "main"
+        )
+        sha, texto = self.cx.ws.leer_en_base(repo, base, ".motor.toml")
+        principal = RepoConf.parse(texto).principal if texto else base
+        if principal != base:
+            sha, texto = self.cx.ws.leer_en_base(repo, principal, ".motor.toml")
+        if not texto:
+            texto = f'[repo]\nprincipal = "{principal}"\n'
+        return sha, texto
+
     def pin_repos(self, plan: Plan) -> None:
         """Lee `.motor.toml` de la rama base de cada repo UNA vez y lo fija en el log."""
         for repo in dict.fromkeys(b.repo for b in plan.blocks):
@@ -86,19 +104,7 @@ class Effects:
                 for e in self.cx.store.events(plan.id)
             ):
                 continue
-            d = self.cx.ws.espejo(repo)
-            base = (
-                git("symbolic-ref", "--short", "refs/remotes/origin/HEAD", cwd=d)
-                .stdout.strip()
-                .removeprefix("origin/")
-                or "main"
-            )
-            sha, texto = self.cx.ws.leer_en_base(repo, base, ".motor.toml")
-            principal = RepoConf.parse(texto).principal if texto else base
-            if principal != base:
-                sha, texto = self.cx.ws.leer_en_base(repo, principal, ".motor.toml")
-            if not texto:
-                texto = f'[repo]\nprincipal = "{principal}"\n'
+            sha, texto = self.conf_base(repo)
             self.cx.store.append(
                 plan.id,
                 "",

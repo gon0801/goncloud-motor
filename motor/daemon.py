@@ -17,7 +17,13 @@ from pathlib import Path
 
 from . import machine as m
 from . import plataforma
-from .conf import load_conf, load_maquina
+from .conf import (
+    RepoConf,
+    load_conf,
+    load_maquina,
+    motivo_requiere,
+    requisitos_faltantes,
+)
 from .effects import Contexto, Effects
 from .github import para
 from .notify import Notifier
@@ -34,14 +40,29 @@ class Daemon:
         conf = load_conf(self.maquina.conf)
         av = conf.avisos
         self.cx = Contexto(
-            home=home, maquina=self.maquina, conf=conf, policy=m.Policy.from_conf(conf), store=self.store,
-            ws=Workspace(home, self.maquina.nombre), gh=para(self.maquina.github, dict(self.maquina.secretos)),
-            notifier=Notifier(home, av.get("base_url", "https://api.telegram.org"),
-                              dict(self.maquina.secretos).get(av.get("token_env", "MOTOR_TELEGRAM_TOKEN"), ""),
-                              av.get("chat", "")),
-            checks_cada_s=checks_cada_s if checks_cada_s is not None else conf.tiempos.get("checks_cada_s", 60.0))
+            home=home,
+            maquina=self.maquina,
+            conf=conf,
+            policy=m.Policy.from_conf(conf),
+            store=self.store,
+            ws=Workspace(home, self.maquina.nombre),
+            gh=para(self.maquina.github, dict(self.maquina.secretos)),
+            notifier=Notifier(
+                home,
+                av.get("base_url", "https://api.telegram.org"),
+                dict(self.maquina.secretos).get(
+                    av.get("token_env", "MOTOR_TELEGRAM_TOKEN"), ""
+                ),
+                av.get("chat", ""),
+            ),
+            checks_cada_s=checks_cada_s
+            if checks_cada_s is not None
+            else conf.tiempos.get("checks_cada_s", 60.0),
+        )
         self.fx = Effects(self.cx)
-        self._sin_dormir: bool | None = None    # None: aplicar en el primer tick (también tras un reinicio)
+        self._sin_dormir: bool | None = (
+            None  # None: aplicar en el primer tick (también tras un reinicio)
+        )
         self._sin_dormir_reintento = 0.0
 
     def recargar_conf(self) -> None:
@@ -70,9 +91,23 @@ class Daemon:
                     if malos := modelos_desconocidos(plan, self.cx.conf.rutas):
                         raise PlanError(malos)
                     for repo in dict.fromkeys(b.repo for b in plan.blocks):
-                        self.cx.ws.espejo(repo)   # antes de cargarlo: un repo que no existe rechaza el plan
-                    self.store.append(plan.id, "", "PlanLoaded", {"plan": msg["plan"], "por": msg.get("por", "")},
-                                      ukey=f"plan:{plan.id}")
+                        self.cx.ws.espejo(
+                            repo
+                        )  # antes de cargarlo: un repo que no existe rechaza el plan
+                        rc = RepoConf.parse(self.fx.conf_base(repo)[1])
+                        if faltan := requisitos_faltantes(
+                            rc.requiere, self.maquina.tiene
+                        ):
+                            raise PlanError(
+                                [motivo_requiere(self.maquina.nombre, repo, faltan)]
+                            )
+                    self.store.append(
+                        plan.id,
+                        "",
+                        "PlanLoaded",
+                        {"plan": msg["plan"], "por": msg.get("por", "")},
+                        ukey=f"plan:{plan.id}",
+                    )
                     self.fx.pin_repos(plan)
                     resultado = "tomado"
                 except (PlanError, RuntimeError, KeyError) as e:
@@ -80,22 +115,41 @@ class Daemon:
             elif tipo == "hecho":
                 resultado = self._hecho(plan_id, msg)
             elif tipo == "nota":
-                self.store.append(plan_id, msg["block"], "Note", {"texto": msg["texto"]}, ukey=f"nota:{cmd_id}")
+                self.store.append(
+                    plan_id,
+                    msg["block"],
+                    "Note",
+                    {"texto": msg["texto"]},
+                    ukey=f"nota:{cmd_id}",
+                )
                 resultado = "anotado"
             else:
                 resultado = f"rechazado: tipo desconocido {tipo}"
-            self.store.append(plan_id or "", "", "CommandReceived", {"cmd_id": cmd_id, "tipo": tipo, "resultado": resultado},
-                              ukey=f"cmd:{cmd_id}")
+            self.store.append(
+                plan_id or "",
+                "",
+                "CommandReceived",
+                {"cmd_id": cmd_id, "tipo": tipo, "resultado": resultado},
+                ukey=f"cmd:{cmd_id}",
+            )
             os.replace(f, hechos / f.name)
 
     def _hecho(self, plan_id: str, msg: dict) -> str:
         plan = next((p for p in self.plans() if p.id == plan_id), None)
         if plan is None or msg["block"] not in {b.id for b in plan.blocks}:
             return "rechazado: no conozco ese plan o ese paso"
-        if m.estado(m.fold(plan, self.store.events(plan.id)), msg["block"]) is not m.Estado.HUMANO:
+        if (
+            m.estado(m.fold(plan, self.store.events(plan.id)), msg["block"])
+            is not m.Estado.HUMANO
+        ):
             return "rechazado: ese paso todavía no te toca; te aviso cuando sí"
-        self.store.append(plan_id, msg["block"], "HumanDone", {"por": msg.get("por", "")},
-                          ukey=f"humano:{plan_id}:{msg['block']}")
+        self.store.append(
+            plan_id,
+            msg["block"],
+            "HumanDone",
+            {"por": msg.get("por", "")},
+            ukey=f"humano:{plan_id}:{msg['block']}",
+        )
         return "anotado"
 
     def ingest_attempts(self, plan: Plan) -> None:
@@ -107,11 +161,19 @@ class Daemon:
             out = self.fx.collect(plan, snap, bid, att)
             if out is None:
                 continue
-            self.store.append(plan.id, bid, "AttemptEnded", {"n": att.n, "role": att.role, "outcome": out},
-                              ukey=f"ended:{plan.id}:{bid}:{att.role}:{att.n}")
+            self.store.append(
+                plan.id,
+                bid,
+                "AttemptEnded",
+                {"n": att.n, "role": att.role, "outcome": out},
+                ukey=f"ended:{plan.id}:{bid}:{att.role}:{att.n}",
+            )
             if out["kind"] == "corte":
                 key = f"retome:{plataforma.boot_id()}"
-                if not any(e.kind == "NoticeQueued" and e.data["key"] == key for e in self.store.events(plan.id)):
+                if not any(
+                    e.kind == "NoticeQueued" and e.data["key"] == key
+                    for e in self.store.events(plan.id)
+                ):
                     self.fx.notify(plan, snap, m.Notify(key, "", "retome", ()))
 
     def tick(self, now: float | None = None) -> bool:
@@ -126,11 +188,13 @@ class Daemon:
             for a in m.decide(snap, self.cx.policy, now):
                 try:
                     self.execute(plan, snap, a)
-                except Exception as e:   # red caída, repo borrado, disco lleno: se reintenta el próximo tick
+                except Exception as e:  # noqa: BLE001  red caída, repo borrado, disco lleno: se reintenta el próximo tick
                     self._falla_efecto(plan, a, e, now)
                 snap = m.fold(plan, self.store.events(plan.id))
             hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
-            todo_hecho = todo_hecho and hecho and f"terminado:{plan.id}" in snap.plan_notices
+            todo_hecho = (
+                todo_hecho and hecho and f"terminado:{plan.id}" in snap.plan_notices
+            )
         self.ajusta_sueno(any(not self._terminado(p) for p in planes), now)
         self.cx.notifier.envia_pendientes()
         return todo_hecho and bool(planes)
@@ -144,9 +208,20 @@ class Daemon:
         Solo si `maquina.toml` trae [no_dormir] (la MacBook). Si el comando falla, reintenta en 10 min."""
         mq = self.maquina
         argv = mq.no_dormir_encender if hay_trabajo else mq.no_dormir_apagar
-        if not argv or self._sin_dormir == hay_trabajo or now < self._sin_dormir_reintento:
+        if (
+            not argv
+            or self._sin_dormir == hay_trabajo
+            or now < self._sin_dormir_reintento
+        ):
             return
-        r = subprocess.run(list(argv), capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+        r = subprocess.run(
+            list(argv),
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
         if r.returncode == 0:
             self._sin_dormir = hay_trabajo
         else:
@@ -155,16 +230,31 @@ class Daemon:
     def _falla_efecto(self, plan: Plan, a: m.Action, e: Exception, now: float) -> None:
         """Un efecto que revienta no tumba al motor. Se anota una vez por hora y el tick siguiente
         lo reintenta (los efectos son idempotentes); si sigue fallando, el aviso de 'atorado' llega solo."""
-        bloque = getattr(a, "block", "") or getattr(getattr(a, "ticket", None), "block", "")
+        bloque = getattr(a, "block", "") or getattr(
+            getattr(a, "ticket", None), "block", ""
+        )
         clave = f"falla:{plan.id}:{bloque}:{type(a).__name__}:{int(now // 3600)}"
-        self.store.append(plan.id, bloque, "EffectFailed", {"accion": type(a).__name__, "error": str(e)[-500:]},
-                          ukey=clave)
+        self.store.append(
+            plan.id,
+            bloque,
+            "EffectFailed",
+            {"accion": type(a).__name__, "error": str(e)[-500:]},
+            ukey=clave,
+        )
 
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:
-        f = {m.StartAttempt: self.fx.start_attempt, m.Verify: self.fx.verify, m.OpenPr: self.fx.open_pr,
-             m.MarkReady: self.fx.mark_ready, m.PollChecks: self.fx.poll_checks, m.Merge: self.fx.merge,
-             m.Deploy: self.fx.deploy, m.Prove: self.fx.prove, m.ProbeHuman: self.fx.probe_human,
-             m.Notify: self.fx.notify}[type(a)]
+        f = {
+            m.StartAttempt: self.fx.start_attempt,
+            m.Verify: self.fx.verify,
+            m.OpenPr: self.fx.open_pr,
+            m.MarkReady: self.fx.mark_ready,
+            m.PollChecks: self.fx.poll_checks,
+            m.Merge: self.fx.merge,
+            m.Deploy: self.fx.deploy,
+            m.Prove: self.fx.prove,
+            m.ProbeHuman: self.fx.probe_human,
+            m.Notify: self.fx.notify,
+        }[type(a)]
         f(plan, snap, a)
 
     def run(self, intervalo: float, hasta_terminar: bool, tope_s: float = 0) -> int:
