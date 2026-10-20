@@ -29,6 +29,7 @@ PLANTILLAS = {
                 "Ningún agente pudo resolverla; Claude la va a revisar y te cuenta.\n"
                 "Lo demás del plan sigue avanzando."),
     "retome": "Se fue la luz o se reinició la máquina; ya retomé solo donde me quedé.",
+    "avance": "{listas} de {total} partes listas.\n{ahora}\n{atoron}",
 }
 
 _HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
@@ -70,6 +71,8 @@ def render(template: str, campos: dict[str, str], maquina: str, titulo: str) -> 
         cuerpo = PLANTILLAS[template].format(**c)
         return lint_plain(f"En la {maquina} · {titulo}:\n{cuerpo}")
     except (AvisoInvalido, KeyError):
+        if template == "avance" and "listas" in c:   # el latido nunca se pierde por un título con jerga
+            return lint_plain(f"En la {maquina} · {titulo}:\n{c['listas']} de {c.get('total', '?')} partes listas. Sigo trabajando.")
         return lint_plain(f"En la {maquina}:\nAvancé en un plan; quien te lo dio te puede contar el detalle.")
 
 
