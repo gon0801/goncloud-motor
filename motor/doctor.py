@@ -98,7 +98,7 @@ def prueba_de_ruta(mq: Maquina, ruta: Ruta, espera_s: float = ESPERA_S) -> dict:
             }
         segundos = round(time.time() - inicio, 1)
         if p.returncode != 0:
-            c = fallas.clasifica(_proveedor(ruta), salida)
+            c = fallas.clasifica(_proveedor(ruta), "", salida)
             return {
                 "responde": False,
                 "segundos": segundos,
