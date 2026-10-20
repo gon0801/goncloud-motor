@@ -44,23 +44,33 @@ Marca = Literal["mac", "mini", "pc"]
 @dataclass(frozen=True)
 class Host:
     """~/.motor/host.toml: lo ÚNICO distinto por máquina. Nunca contiene reglas ni modelos."""
-    nombre: Marca                               # encabezado de los avisos ("Hermes:" / "OpenClaw:" / "Mac:")
-    home: Path                                  # ~/.motor
-    rutas_cli: dict[str, Path]                  # {"claude": "/Users/dn/.local/bin/claude", ...} (doctor las llena)
-    env_extra: tuple[tuple[str, str], ...]      # p. ej. NODE_EXTRA_CA_CERTS/SSL_CERT_FILE (Kaspersky en la PC)
-    por_wsl: frozenset[str]                     # adaptadores que corren con `wsl.exe --` (muse en la PC)
-    espejo: tuple[str, ...]                     # comando opcional que despierta a la sesión de la marca
+
+    nombre: Marca  # encabezado de los avisos ("Hermes:" / "OpenClaw:" / "Mac:")
+    home: Path  # ~/.motor
+    rutas_cli: dict[
+        str, Path
+    ]  # {"claude": "/Users/dn/.local/bin/claude", ...} (doctor las llena)
+    env_extra: tuple[
+        tuple[str, str], ...
+    ]  # p. ej. NODE_EXTRA_CA_CERTS/SSL_CERT_FILE (Kaspersky en la PC)
+    por_wsl: frozenset[str]  # adaptadores que corren con `wsl.exe --` (muse en la PC)
+    espejo: tuple[str, ...]  # comando opcional que despierta a la sesión de la marca
     telegram_chat: str
 
 
 @dataclass(frozen=True)
 class RepoConfig:
     """`.motor.toml` en la raíz del repo: lo específico de cada proyecto. Nada de esto vive en el motor."""
+
     principal: str
-    checks: tuple[str, ...]                     # nombres de checks que deben estar verdes sobre el SHA exacto
+    checks: tuple[
+        str, ...
+    ]  # nombres de checks que deben estar verdes sobre el SHA exacto
     merge: Literal["squash", "merge", "rebase"]
     draft_primero: bool
-    bots_del_sha: tuple[str, ...]               # logins de bots cuyo comentario sobre el SHA final se exige
+    bots_del_sha: tuple[
+        str, ...
+    ]  # logins de bots cuyo comentario sobre el SHA final se exige
     despliegue: "Receta | None"
     entorno_pruebas: tuple[tuple[str, str], ...]
 
@@ -99,12 +109,12 @@ HUMAN_KINDS = ("login", "2fa", "captcha", "pago")
 class Fila:
     id: str
     contenido: str
-    acepta: str                                 # comando que debe salir 0 en copia limpia del SHA
+    acepta: str  # comando que debe salir 0 en copia limpia del SHA
 
 
 @dataclass(frozen=True)
 class Humano:
-    kind: str                                   # uno de HUMAN_KINDS
+    kind: str  # uno de HUMAN_KINDS
     que_hacer: str
     sonda: str = ""
 
@@ -118,7 +128,7 @@ class Bloque:
     filas: tuple[Fila, ...]
     aviso: str
     prueba_real: str
-    release: bool                               # la receta viene de .motor.toml, no del plan
+    release: bool  # la receta viene de .motor.toml, no del plan
     humano: Humano | None
 
 
@@ -126,7 +136,7 @@ class Bloque:
 class Plan:
     id: str
     titulo: str
-    repo: str                                   # remoto git (nuevo respecto a taller)
+    repo: str  # remoto git (nuevo respecto a taller)
     bloques: tuple[Bloque, ...]
 
 
@@ -149,14 +159,15 @@ def plantilla() -> str:
 # nucleo/store.py — log append-only, único escritor
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class Event:
     id: int
     ts: float
     plan: str
     bloque: str
-    kind: str                                   # AttemptStarted|AttemptEnded|Verified|Reviewed|PrAbierto|Checks|Merged|
-                                                # Deployed|Proved|HumanDone|Note|Cooldown|Salud|NoticeQueued|PlanLoaded
+    kind: str  # AttemptStarted|AttemptEnded|Verified|Reviewed|PrAbierto|Checks|Merged|
+    # Deployed|Proved|HumanDone|Note|Cooldown|Salud|NoticeQueued|PlanLoaded
     data: dict
 
 
@@ -165,7 +176,9 @@ class Store:
         """SQLite WAL + triggers append-only + lock de archivo: un segundo daemon sale con error claro."""
         raise NotImplementedError
 
-    def append(self, plan: str, bloque: str, kind: str, data: dict, *, ukey: str | None = None) -> bool:
+    def append(
+        self, plan: str, bloque: str, kind: str, data: dict, *, ukey: str | None = None
+    ) -> bool:
         """Idempotente por ukey: el mismo hecho dos veces queda una sola vez."""
         raise NotImplementedError
 
@@ -177,32 +190,36 @@ class Store:
 # relevo/tipos.py — del router de Hermes, sin cambios de forma
 # =============================================================================
 
+
 class Falla(enum.StrEnum):
     AUTH = "auth"
-    CUOTA = "quota"                 # ventana gastada: bench 15 min o hasta la hora declarada
-    THROTTLE = "rate_limit"         # segundos; reintento en la misma ruta con backoff (20, 60), tope 120
+    CUOTA = "quota"  # ventana gastada: bench 15 min o hasta la hora declarada
+    THROTTLE = "rate_limit"  # segundos; reintento en la misma ruta con backoff (20, 60), tope 120
     MODELO_NO_DISPONIBLE = "model_unavailable"
     TRANSPORTE = "transport"
     PETICION_INVALIDA = "invalid_request"
-    TERMINAL_INVALIDO = "invalid_terminal"   # el proveedor contestó pero no en el contrato (result.json/veredicto)
+    TERMINAL_INVALIDO = "invalid_terminal"  # el proveedor contestó pero no en el contrato (result.json/veredicto)
     FALLA_TAREA = "task_failure"
-    SIN_AVANCE = "no_progress"      # de taller: ni log ni árbol cambian en N min
+    SIN_AVANCE = "no_progress"  # de taller: ni log ni árbol cambian en N min
     TIEMPO = "timeout"
-    PERDIDO = "lost"                # pid desapareció sin outcome.json (apagón)
-    MINTIO = "lied"                 # dijo SHA que no es la punta de su rama
-    SIN_CAMBIOS = "no_changes"      # volvió a entregar lo mismo que ya falló
+    PERDIDO = "lost"  # pid desapareció sin outcome.json (apagón)
+    MINTIO = "lied"  # dijo SHA que no es la punta de su rama
+    SIN_CAMBIOS = "no_changes"  # volvió a entregar lo mismo que ya falló
 
 
-AVANZAN: frozenset[Falla]                       # Hermes _ADVANCING_FAILURES + SIN_AVANCE, TIEMPO, PERDIDO, MINTIO, SIN_CAMBIOS
-BLOQUEAN_TRAS_MUTACION: frozenset[Falla]        # Hermes _BLOCK_AFTER_MUTATION
+AVANZAN: frozenset[
+    Falla
+]  # Hermes _ADVANCING_FAILURES + SIN_AVANCE, TIEMPO, PERDIDO, MINTIO, SIN_CAMBIOS
+BLOQUEAN_TRAS_MUTACION: frozenset[Falla]  # Hermes _BLOCK_AFTER_MUTATION
 
 
 @dataclass(frozen=True)
 class Ruta:
     """Una posición compilada de la tabla v6 (Hermes RouteSpec)."""
-    posicion: int                               # 0..3
-    etiqueta: str                               # "anthropic/claude-sonnet-5-5 (high)"
-    adaptador: str                              # "claude" | "codex" | "kimi" | "opencode_zai" | "grok" | "muse" | …
+
+    posicion: int  # 0..3
+    etiqueta: str  # "anthropic/claude-sonnet-5-5 (high)"
+    adaptador: str  # "claude" | "codex" | "kimi" | "opencode_zai" | "grok" | "muse" | …
     modelo: str
     esfuerzo: Literal["high", "xhigh", "max", "medium", "low"] | None
 
@@ -210,33 +227,38 @@ class Ruta:
 @dataclass(frozen=True)
 class Encargo:
     """Lo que un intento debe hacer. Sustituye InvocationRequest; sin pre_invoke (autorización poteto retirada)."""
+
     plan: str
     bloque: str
     papel: Literal["implementar", "revisar"]
     n: int
     worktree: Path
-    rama: str                                   # motor/<plan>/<bloque>; "" para revisar (copia detached)
-    sha_base: str                               # SHA del que parte (revisar: el SHA revisado)
-    brief: str                                  # texto completo; viaja por archivo privado, nunca por argv
+    rama: str  # motor/<plan>/<bloque>; "" para revisar (copia detached)
+    sha_base: str  # SHA del que parte (revisar: el SHA revisado)
+    brief: str  # texto completo; viaja por archivo privado, nunca por argv
     feedback: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class Lanzamiento:
     """Lo que `runwrap` ejecuta. Es lo que antes hacía `adapter.invoke` de forma sincrónica."""
+
     argv: tuple[str, ...]
     env: tuple[tuple[str, str], ...]
     prompt_por: Literal["archivo", "stdin"]
-    herramientas: tuple[str, ...]               # p. ej. --allowedTools de Claude; solo lectura para revisar
+    herramientas: tuple[
+        str, ...
+    ]  # p. ej. --allowedTools de Claude; solo lectura para revisar
 
 
 @dataclass(frozen=True)
 class Evidencia:
     """Salida redactada y acotada de un proceso (Hermes ProcessEvidence + taller outcome.json)."""
+
     exit: int
     stdout: str
     stderr: str
-    stream: str                                 # stdout entero redactado, solo para que el adaptador lo parsee
+    stream: str  # stdout entero redactado, solo para que el adaptador lo parsee
     timed_out: bool
     sin_avance: bool
     segundos: float
@@ -246,13 +268,14 @@ class Evidencia:
 @dataclass(frozen=True)
 class Resultado:
     """Hermes InvocationResult, normalizado y redactado en __post_init__."""
+
     ok: bool
     texto: str
     adaptador: str
     modelo: str
     falla: Falla | None = None
     retry_after_s: float | None = None
-    reset_at: str | None = None                 # ISO si el proveedor declaró cuándo vuelve la cuota
+    reset_at: str | None = None  # ISO si el proveedor declaró cuándo vuelve la cuota
     session_id: str = ""
     detalle: str = field(default="", repr=False, compare=False)
 
@@ -260,6 +283,7 @@ class Resultado:
 @dataclass(frozen=True)
 class Salud:
     """Hermes AdapterHealth: lista/no lista por cuenta, sin inferencia."""
+
     listo: bool
     adaptador: str
     falla: Falla | None = None
@@ -269,6 +293,7 @@ class Salud:
 # =============================================================================
 # relevo/catalogo.py — compila config/modelos.json
 # =============================================================================
+
 
 def carril_de(papel: str) -> str:
     """papeles.toml: implementar→codigo, revisar→planear(=revisar), …"""
@@ -289,59 +314,71 @@ def cargar_tabla() -> dict:
 # relevo/politica.py — EL corte: el bucle de router._run_owned hecho función pura
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class IntentoVisto:
     """Lo que la política necesita saber de cada intento anterior del bloque (viene de fold)."""
+
     posicion: int
     adaptador: str
     papel: str
     terminado: bool
     ok: bool
     falla: Falla | None
-    muto: bool                                  # tree_fingerprint al inicio != al final (Hermes)
+    muto: bool  # tree_fingerprint al inicio != al final (Hermes)
     retries_throttle: int
 
 
 @dataclass(frozen=True)
 class EstadoCuentas:
     """Vista de salud por adaptador, plegada del log (reemplaza subscription_health + cooldowns)."""
-    cooldown_hasta: dict[str, float]            # adaptador → epoch
-    cuarentena_desde: dict[str, float]          # adaptador → epoch (horizonte 1 h, Hermes _QUARANTINE_RETRY_SECONDS)
-    ocupados: dict[str, int]                    # adaptador → intentos vivos (max_parallel por adaptador)
+
+    cooldown_hasta: dict[str, float]  # adaptador → epoch
+    cuarentena_desde: dict[
+        str, float
+    ]  # adaptador → epoch (horizonte 1 h, Hermes _QUARANTINE_RETRY_SECONDS)
+    ocupados: dict[str, int]  # adaptador → intentos vivos (max_parallel por adaptador)
 
 
 @dataclass(frozen=True)
 class Elegida:
     ruta: Ruta
-    modo: Literal["start", "continue"]          # continue si un intento anterior mutó el árbol (Hermes)
+    modo: Literal[
+        "start", "continue"
+    ]  # continue si un intento anterior mutó el árbol (Hermes)
 
 
 @dataclass(frozen=True)
 class Espera:
-    hasta: float                                # todos en cooldown/ocupados; el reloj lo resuelve, no una pausa
+    hasta: float  # todos en cooldown/ocupados; el reloj lo resuelve, no una pausa
 
 
 @dataclass(frozen=True)
 class Agotado:
-    razon: str                                  # 4 posiciones agotadas o todas autoras → aviso "atorado" único
+    razon: str  # 4 posiciones agotadas o todas autoras → aviso "atorado" único
 
 
-def siguiente(carril: tuple[Ruta, ...], intentos: tuple[IntentoVisto, ...], cuentas: EstadoCuentas,
-              excluir: frozenset[str], ahora: float) -> Elegida | Espera | Agotado:
+def siguiente(
+    carril: tuple[Ruta, ...],
+    intentos: tuple[IntentoVisto, ...],
+    cuentas: EstadoCuentas,
+    excluir: frozenset[str],
+    ahora: float,
+) -> Elegida | Espera | Agotado:
     """Puro. TODO (pseudocódigo, portado de router._run_owned):
-      ultimo = intentos[-1] si hay
-      si ultimo.terminado y (ultimo.ok o falla ∉ AVANZAN o (falla ∈ BLOQUEAN_TRAS_MUTACION y ultimo.muto)):
-          -> Agotado("el último intento no permite avanzar") ; el nivel de arriba decide ARREGLAR con feedback
-      candidatas = rutas con posicion > ultimo.posicion (o >= si ultimo interrumpido/PERDIDO)
-      candidatas = [r for r in candidatas if r.adaptador ∉ excluir]            # revisores_para
-      para r en candidatas:
-          si cooldown_hasta[r.adaptador] > ahora y cuarentena no activa: seguir
-          si cuarentena activa (ahora - desde <= 3600): seguir
-          si ocupados[r.adaptador] >= max_parallel: seguir
-          si ultimo.falla == THROTTLE y ultimo.posicion == r.posicion y retries < 2: -> Elegida(r, modo)  # misma ruta
-          -> Elegida(r, "continue" si any(i.muto for i in intentos) else "start")
-      si todas en cooldown: -> Espera(min(cooldown_hasta))
-      -> Agotado(...)
+    ultimo = intentos[-1] si hay
+    si ultimo.terminado y (ultimo.ok o falla ∉ AVANZAN o (falla ∈ BLOQUEAN_TRAS_MUTACION y ultimo.muto)):
+        -> Agotado("el último intento no permite avanzar") ; el nivel de arriba decide ARREGLAR con feedback
+    candidatas = rutas con posicion > ultimo.posicion (o >= si ultimo interrumpido/PERDIDO)
+    candidatas = [r for r in candidatas if r.adaptador ∉ excluir]            # revisores_para
+    para r en candidatas:
+        si cooldown_hasta[r.adaptador] > ahora y cuarentena no activa: seguir
+        si cuarentena activa (ahora - desde <= 3600): seguir
+        si ocupados[r.adaptador] >= max_parallel: seguir
+        si ultimo.falla == THROTTLE y ultimo.posicion == r.posicion y retries < 2: -> Elegida(r, modo)  # misma ruta
+        -> Elegida(r, "continue" si any(i.muto for i in intentos) else "start")
+    si todas en cooldown: -> Espera(min(cooldown_hasta))
+    -> Agotado(...)
     """
     raise NotImplementedError
 
@@ -351,7 +388,9 @@ def bench_para(resultado: Resultado, ahora: float) -> float | None:
     raise NotImplementedError
 
 
-def revisores_para(carril_revisar: tuple[Ruta, ...], autores: frozenset[str]) -> tuple[Ruta, ...]:
+def revisores_para(
+    carril_revisar: tuple[Ruta, ...], autores: frozenset[str]
+) -> tuple[Ruta, ...]:
     """Orden de David: Claude primero; si no puede, cualquier posición cuyo adaptador NO implementó el bloque."""
     raise NotImplementedError
 
@@ -359,6 +398,7 @@ def revisores_para(carril_revisar: tuple[Ruta, ...], autores: frozenset[str]) ->
 # =============================================================================
 # relevo/adaptadores — contrato por proveedor (Hermes), ahora en dos mitades
 # =============================================================================
+
 
 class Adaptador(Protocol):
     nombre: str
@@ -387,14 +427,17 @@ def registro(host: Host) -> dict[str, Adaptador]:
 # proceso/runwrap.py — un agente, un proceso aparte del daemon, en 3 SO
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class OpcionesRunwrap:
-    dir_intento: Path                           # brief.md, log.txt, result.json, outcome.json, agent.pid
+    dir_intento: Path  # brief.md, log.txt, result.json, outcome.json, agent.pid
     cwd: Path
     timeout_s: float
     sin_avance_s: float
-    wip_rama: str                               # "" = sin wip-push (revisar)
-    wip_cada_s: float                           # 300: commit `wip:` + push a la rama del bloque; nunca a principal
+    wip_rama: str  # "" = sin wip-push (revisar)
+    wip_cada_s: (
+        float  # 300: commit `wip:` + push a la rama del bloque; nunca a principal
+    )
     lanzamiento: Lanzamiento
 
 
@@ -418,6 +461,7 @@ def vivo(pid: int) -> bool:
 # nucleo/machine.py — fold / estado / decide / MergeTicket (taller), con salud en el mismo log
 # =============================================================================
 
+
 class Estado(enum.Enum):
     ESPERANDO = "esperando dependencias"
     HUMANO = "espera un paso de David"
@@ -440,10 +484,12 @@ class Estado(enum.Enum):
 class VistaBloque:
     bloque: Bloque
     intentos: list[IntentoVisto]
-    verificados: dict[str, dict]                # sha → {ok, detalle}
-    revisiones: list[dict]                      # {sha, veredicto, bloqueantes[{texto, repro, arreglo}], notas, adaptador}
-    pr: dict | None                             # {numero, url, draft}
-    checks: dict[str, dict]                     # sha → {verdes: bool, detalle}
+    verificados: dict[str, dict]  # sha → {ok, detalle}
+    revisiones: list[
+        dict
+    ]  # {sha, veredicto, bloqueantes[{texto, repro, arreglo}], notas, adaptador}
+    pr: dict | None  # {numero, url, draft}
+    checks: dict[str, dict]  # sha → {verdes: bool, detalle}
     mergeados: list[str]
     desplegados: dict[str, dict]
     probados: dict[str, dict]
@@ -476,6 +522,7 @@ def estado(snap: Snapshot, bid: str) -> Estado:
 @dataclass(frozen=True)
 class MergeTicket:
     """Solo `github.compuertas` lo construye. Sin ticket, `efectos.merge` no compila la llamada."""
+
     plan: str
     bloque: str
     sha: str
@@ -484,28 +531,82 @@ class MergeTicket:
 
 @dataclass(frozen=True)
 class StartAttempt:
-    bloque: str; papel: str; elegida: Elegida; n: int; sha: str; feedback: tuple[str, ...]
+    bloque: str
+    papel: str
+    elegida: Elegida
+    n: int
+    sha: str
+    feedback: tuple[str, ...]
+
 
 @dataclass(frozen=True)
-class Verify:      bloque: str; sha: str
-@dataclass(frozen=True)
-class AbrirPR:     bloque: str; sha: str
-@dataclass(frozen=True)
-class MarcarReady: bloque: str; sha: str; pr: int
-@dataclass(frozen=True)
-class LeerChecks:  bloque: str; sha: str; pr: int
-@dataclass(frozen=True)
-class Merge:       ticket: MergeTicket
-@dataclass(frozen=True)
-class Deploy:      bloque: str; sha: str
-@dataclass(frozen=True)
-class Prove:       bloque: str; sha: str
-@dataclass(frozen=True)
-class ProbeHuman:  bloque: str
-@dataclass(frozen=True)
-class Notify:      key: str; bloque: str; plantilla: str; campos: tuple[tuple[str, str], ...]
+class Verify:
+    bloque: str
+    sha: str
 
-Accion = StartAttempt | Verify | AbrirPR | MarcarReady | LeerChecks | Merge | Deploy | Prove | ProbeHuman | Notify
+
+@dataclass(frozen=True)
+class AbrirPR:
+    bloque: str
+    sha: str
+
+
+@dataclass(frozen=True)
+class MarcarReady:
+    bloque: str
+    sha: str
+    pr: int
+
+
+@dataclass(frozen=True)
+class LeerChecks:
+    bloque: str
+    sha: str
+    pr: int
+
+
+@dataclass(frozen=True)
+class Merge:
+    ticket: MergeTicket
+
+
+@dataclass(frozen=True)
+class Deploy:
+    bloque: str
+    sha: str
+
+
+@dataclass(frozen=True)
+class Prove:
+    bloque: str
+    sha: str
+
+
+@dataclass(frozen=True)
+class ProbeHuman:
+    bloque: str
+
+
+@dataclass(frozen=True)
+class Notify:
+    key: str
+    bloque: str
+    plantilla: str
+    campos: tuple[tuple[str, str], ...]
+
+
+Accion = (
+    StartAttempt
+    | Verify
+    | AbrirPR
+    | MarcarReady
+    | LeerChecks
+    | Merge
+    | Deploy
+    | Prove
+    | ProbeHuman
+    | Notify
+)
 
 
 def decide(snap: Snapshot, tabla: dict, ahora: float) -> list[Accion]:
@@ -515,7 +616,9 @@ def decide(snap: Snapshot, tabla: dict, ahora: float) -> list[Accion]:
     raise NotImplementedError
 
 
-def clasificar(ev: Evidencia, res: Resultado | None, sha_en_origin: str, sha_previo: str) -> Falla | None:
+def clasificar(
+    ev: Evidencia, res: Resultado | None, sha_en_origin: str, sha_previo: str
+) -> Falla | None:
     """Combina la clasificación del adaptador con las de taller: MINTIO, SIN_CAMBIOS, PERDIDO, SIN_AVANCE, TIEMPO."""
     raise NotImplementedError
 
@@ -524,27 +627,42 @@ def clasificar(ev: Evidencia, res: Resultado | None, sha_en_origin: str, sha_pre
 # github/ — genérico para cualquier repo; lee RepoConfig, nunca constantes de Orbit
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class VistaPR:
     """Congelada en una llamada (gh pr view + check-runs + hilos): la entrada de las compuertas."""
+
     numero: int
     draft: bool
     head_sha: str
     estado: str
-    checks: dict[str, Literal["verde", "rojo", "pendiente", "ausente"]]   # por nombre, del SHA exacto
+    checks: dict[
+        str, Literal["verde", "rojo", "pendiente", "ausente"]
+    ]  # por nombre, del SHA exacto
     hilos_sin_resolver: int
-    hallazgos_bloqueantes_sin_adjudicar: int                               # bot ai-review: High/Critical o seguridad/datos
+    hallazgos_bloqueantes_sin_adjudicar: (
+        int  # bot ai-review: High/Critical o seguridad/datos
+    )
     bots_que_comentaron_el_sha: frozenset[str]
-    coderabbit_rate_limited: bool                                          # pasa con aviso (David 2026-09-25)
+    coderabbit_rate_limited: bool  # pasa con aviso (David 2026-09-25)
 
 
-def publicar_rama(worktree: Path, rama: str, secretos: dict[str, str]) -> tuple[bool, str]:
+def publicar_rama(
+    worktree: Path, rama: str, secretos: dict[str, str]
+) -> tuple[bool, str]:
     """Hermes entrega_pr._subir: push con GIT_TERMINAL_PROMPT=0; motivo corto y redactado si falla."""
     raise NotImplementedError
 
 
-def abrir_o_reusar_pr(repo: str, base: str, rama: str, titulo: str, cuerpo: str, draft: bool,
-                      secretos: dict[str, str]) -> dict:
+def abrir_o_reusar_pr(
+    repo: str,
+    base: str,
+    rama: str,
+    titulo: str,
+    cuerpo: str,
+    draft: bool,
+    secretos: dict[str, str],
+) -> dict:
     """Hermes entrega_pr: idempotente (si ya hay PR abierto de la rama, su URL). owner/repo desde la URL del remoto."""
     raise NotImplementedError
 
@@ -558,7 +676,9 @@ def leer_vista(repo: str, pr: int, secretos: dict[str, str]) -> VistaPR:
     raise NotImplementedError
 
 
-def compuertas(vista: VistaPR, cfg: RepoConfig, sha_esperado: str, aprobado: bool) -> MergeTicket | list[str]:
+def compuertas(
+    vista: VistaPR, cfg: RepoConfig, sha_esperado: str, aprobado: bool
+) -> MergeTicket | list[str]:
     """Puro (openclaw merge.py portado). Todas se evalúan; la lista de razones es el diagnóstico completo:
     head == sha_esperado ; not draft ; APROBADO sobre ese sha ; cfg.checks todos verdes para ese sha ;
     hilos resueltos ; sin bloqueante del bot sin adjudicar ; bots_del_sha ⊆ comentaron (salvo rate limited → aviso)."""
@@ -574,7 +694,10 @@ def mergear(repo: str, t: MergeTicket, metodo: str, secretos: dict[str, str]) ->
 # despliegue.py / avisos.py / efectos.py / servicio.py / daemon
 # =============================================================================
 
-def desplegar(worktree_principal: Path, receta: Receta, env: dict[str, str]) -> tuple[bool, str]:
+
+def desplegar(
+    worktree_principal: Path, receta: Receta, env: dict[str, str]
+) -> tuple[bool, str]:
     """desplegar → checklist ; si algo sale ≠0 → rollback. Idempotente por marca `Deployed(sha)` en el log.
     El motor no sabe de ssh: la receta del repo sí."""
     raise NotImplementedError
@@ -584,7 +707,9 @@ def probar_real(cmd: str, env: dict[str, str]) -> tuple[bool, str]:
     raise NotImplementedError
 
 
-PLANTILLAS_AVISO: dict[str, str]                # entregado | humano | lento | terminado | atorado | intrusion
+PLANTILLAS_AVISO: dict[
+    str, str
+]  # entregado | humano | lento | terminado | atorado | intrusion
 
 
 def lint_plain(texto: str) -> str:
@@ -592,12 +717,16 @@ def lint_plain(texto: str) -> str:
     raise NotImplementedError
 
 
-def encolar_aviso(home: Path, marca: Marca, plantilla: str, campos: dict[str, str]) -> None:
+def encolar_aviso(
+    home: Path, marca: Marca, plantilla: str, campos: dict[str, str]
+) -> None:
     """Renderiza "<Marca>: …", pasa lint_plain, escribe avisos/pendientes/<ts>-<key>.txt."""
     raise NotImplementedError
 
 
-def enviar_pendientes(home: Path, chat: str, token: str, espejo: tuple[str, ...]) -> None:
+def enviar_pendientes(
+    home: Path, chat: str, token: str, espejo: tuple[str, ...]
+) -> None:
     """Telegram Bot API directo; reclamo por rename (patrón de avisos_sesion); si falla, reintenta al siguiente tick.
     Después, `espejo` (opcional) despierta a la sesión de la marca; su fallo no deshace el aviso."""
     raise NotImplementedError
@@ -606,7 +735,9 @@ def enviar_pendientes(home: Path, chat: str, token: str, espejo: tuple[str, ...]
 class Efectos:
     """Shell delgado (taller). Cada método: ¿ya existe el efecto? → anota y sale. Ningún modelo aquí."""
 
-    def __init__(self, host: Host, store: Store, adaptadores: dict[str, Adaptador]) -> None:
+    def __init__(
+        self, host: Host, store: Store, adaptadores: dict[str, Adaptador]
+    ) -> None:
         raise NotImplementedError
 
     def start_attempt(self, plan: Plan, a: StartAttempt) -> None:
@@ -619,22 +750,42 @@ class Efectos:
         implementar → sha_en_origin → AttemptEnded(entregado|falla)."""
         raise NotImplementedError
 
-    def verify(self, plan: Plan, a: Verify) -> None: raise NotImplementedError
-    def abrir_pr(self, plan: Plan, a: AbrirPR) -> None: raise NotImplementedError
-    def marcar_ready(self, plan: Plan, a: MarcarReady) -> None: raise NotImplementedError
-    def leer_checks(self, plan: Plan, a: LeerChecks) -> None: raise NotImplementedError
-    def merge(self, plan: Plan, a: Merge) -> None: raise NotImplementedError      # exige MergeTicket por tipo
-    def deploy(self, plan: Plan, a: Deploy) -> None: raise NotImplementedError
-    def prove(self, plan: Plan, a: Prove) -> None: raise NotImplementedError
-    def probe_human(self, plan: Plan, a: ProbeHuman) -> None: raise NotImplementedError
-    def notify(self, plan: Plan, a: Notify) -> None: raise NotImplementedError
+    def verify(self, plan: Plan, a: Verify) -> None:
+        raise NotImplementedError
+
+    def abrir_pr(self, plan: Plan, a: AbrirPR) -> None:
+        raise NotImplementedError
+
+    def marcar_ready(self, plan: Plan, a: MarcarReady) -> None:
+        raise NotImplementedError
+
+    def leer_checks(self, plan: Plan, a: LeerChecks) -> None:
+        raise NotImplementedError
+
+    def merge(self, plan: Plan, a: Merge) -> None:
+        raise NotImplementedError  # exige MergeTicket por tipo
+
+    def deploy(self, plan: Plan, a: Deploy) -> None:
+        raise NotImplementedError
+
+    def prove(self, plan: Plan, a: Prove) -> None:
+        raise NotImplementedError
+
+    def probe_human(self, plan: Plan, a: ProbeHuman) -> None:
+        raise NotImplementedError
+
+    def notify(self, plan: Plan, a: Notify) -> None:
+        raise NotImplementedError
 
 
 class Daemon:
     """tick = ingerir(inbox + intentos terminados) → fold → decide → ejecutar → enviar avisos → ¿actualizar?"""
 
-    def __init__(self, home: Path) -> None: raise NotImplementedError
-    def tick(self, ahora: float | None = None) -> bool: raise NotImplementedError
+    def __init__(self, home: Path) -> None:
+        raise NotImplementedError
+
+    def tick(self, ahora: float | None = None) -> bool:
+        raise NotImplementedError
 
     def quizas_actualizar(self) -> bool:
         """Cada 30 min: `git ls-remote` de la etiqueta `estable`; si cambió y ningún efecto síncrono corre,

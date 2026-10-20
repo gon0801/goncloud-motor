@@ -104,7 +104,7 @@ Repo desechable local `/tmp/proto-repo` con un `hello.py` y un test que falla. T
 2. `Host.run_once()` que lanza `claude -p` (o `grok -p`) con flag sin preguntas en un worktree, y valida `delivered.json`.
 3. `AutoReview` con 4 reglas (rm fuera del worktree, push a master, `--no-verify`, escritura remota) como pre-filtro determinista; sin LLM todavía; una acción bloqueada devuelve mensaje y el agente continúa.
 4. Revisión: `claude -p --json-schema` sobre el diff -> `Verdict` ligado al SHA.
-5. Merge local a una rama `main` del repo desechable con guarda del SHA; verificación ejecuta `pytest` (el `acepta:`); `Notifier` imprime el aviso (plantilla) a stdout.
+5. Merge local a una rama `main` del repo desechable con guarda del SHA; verificación ejecuta el `acepta:` (pytest sobre el test del repo desechable); `Notifier` imprime el aviso (plantilla) a stdout.
 6. Dos pruebas de falla: (a) simular 429 con un CLI falso que sale con código y mensaje de cuota -> relevo al segundo CLI falso; (b) matar el host a mitad y reiniciarlo -> termina sin duplicar el merge.
 
 Criterio de éxito: `orbitbot plan add demo.yaml` termina en `NOTIFIED` con el test en verde, sobrevive (a) y (b), y no hay ni un prompt.

@@ -45,15 +45,20 @@ from typing import Literal, NewType, Protocol
 MachineName = Literal["mac", "mini", "pc"]
 PlanId = NewType("PlanId", str)
 BlockId = NewType("BlockId", str)
-CmdId = NewType("CmdId", str)          # ULID que genera el cliente; ukey del recibo
-ModelId = NewType("ModelId", str)      # "anthropic/claude-opus-5-5": identidad de AUTOR y de revisor
-AccountId = NewType("AccountId", str)  # "anthropic": la cuota y el cooldown son de la cuenta
-BootId = NewType("BootId", str)        # cambia en cada arranque del SO
+CmdId = NewType("CmdId", str)  # ULID que genera el cliente; ukey del recibo
+ModelId = NewType(
+    "ModelId", str
+)  # "anthropic/claude-opus-5-5": identidad de AUTOR y de revisor
+AccountId = NewType(
+    "AccountId", str
+)  # "anthropic": la cuota y el cooldown son de la cuenta
+BootId = NewType("BootId", str)  # cambia en cada arranque del SO
 
 
 @dataclass(frozen=True)
 class Sha:
     """40 hex. Solo `Sha.parse` lo construye: un SHA corto o inventado no entra al sistema."""
+
     hex: str
 
     @staticmethod
@@ -87,8 +92,8 @@ class Tiempos:
     timeout_s: float = 4 * 3600
     sin_avance_s: float = 45 * 60
     wip_cada_s: float = 300
-    cooldown_cuota_s: float = 5 * 3600      # si el error no trae hora
-    cooldown_rate_limit_s: float = 120      # de Hermes router: un throttle no es una cuota
+    cooldown_cuota_s: float = 5 * 3600  # si el error no trae hora
+    cooldown_rate_limit_s: float = 120  # de Hermes router: un throttle no es una cuota
     aviso_lento_s: float = 6 * 3600
     checks_sondeo_s: float = 60
 
@@ -100,37 +105,40 @@ class Route:
     Reemplaza a taller.Provider. `argv` es la plantilla headless ({brief} {prompt} {result}
     {model}); `lanzador` = "wsl" envuelve el argv con wsl.exe en la PC.
     """
+
     model: ModelId
     account: AccountId
-    cli: str                      # nombre lógico: claude | kimi | opencode | grok | muse | codex | cursor
+    cli: str  # nombre lógico: claude | kimi | opencode | grok | muse | codex | cursor
     argv: tuple[str, ...]
     effort: str | None
     lanzador: Literal["directo", "wsl"] = "directo"
-    max_parallel: int = 1         # por cuenta y por máquina
+    max_parallel: int = 1  # por cuenta y por máquina
 
 
 @dataclass(frozen=True)
 class Conf:
     """Todo lo que debe ser idéntico en las tres máquinas. Fuente: repo goncloud-motor-conf."""
-    sha: Sha                                    # commit de conf; se anota en cada AttemptStarted
-    motor_version: str                          # versión fijada; el daemon se actualiza a ella
-    cadenas: dict[str, tuple[Route, ...]]       # carril v6 -> 4 posiciones
-    rol_a_carril: dict[Rol, str]                # implementar -> "codigo", revisar -> "planear"
-    reglas_encargo: str                         # preámbulo de todo encargo (no --no-verify, etc.)
-    reglas_revisor: str                         # reglas y trampas del lead, destiladas
-    aviso_chat: str                             # chat de David (no es secreto)
+
+    sha: Sha  # commit de conf; se anota en cada AttemptStarted
+    motor_version: str  # versión fijada; el daemon se actualiza a ella
+    cadenas: dict[str, tuple[Route, ...]]  # carril v6 -> 4 posiciones
+    rol_a_carril: dict[Rol, str]  # implementar -> "codigo", revisar -> "planear"
+    reglas_encargo: str  # preámbulo de todo encargo (no --no-verify, etc.)
+    reglas_revisor: str  # reglas y trampas del lead, destiladas
+    aviso_chat: str  # chat de David (no es secreto)
     tiempos: Tiempos
 
 
 @dataclass(frozen=True)
 class Maquina:
     """Solo hechos de esta máquina. NUNCA roles, modelos ni reglas."""
+
     nombre: MachineName
-    home: Path                       # ~/.motor
-    path_extra: tuple[str, ...]      # p. ej. ~/.openclaw/tools/node/bin en la Mini
-    env_extra: dict[str, str]        # p. ej. NODE_EXTRA_CA_CERTS de Kaspersky en la PC
+    home: Path  # ~/.motor
+    path_extra: tuple[str, ...]  # p. ej. ~/.openclaw/tools/node/bin en la Mini
+    env_extra: dict[str, str]  # p. ej. NODE_EXTRA_CA_CERTS de Kaspersky en la PC
     wsl_distro: str = ""
-    secretos: Path = Path()          # secretos.env (600 / ACL de dueño)
+    secretos: Path = Path()  # secretos.env (600 / ACL de dueño)
 
 
 class ConfRepo:
@@ -164,9 +172,12 @@ MergeMethod = Literal["squash", "merge", "rebase"]
 @dataclass(frozen=True)
 class BotGate:
     """Compuerta opcional de un bot revisor (portada de merge.py: autor + marcador por SHA)."""
-    autores: tuple[str, ...]          # logins reservados, p. ej. github-actions / github-actions[bot]
-    marcador: str                     # texto que cita el SHA revisado
-    bloquea_si: str                   # regex de veredicto bloqueante
+
+    autores: tuple[
+        str, ...
+    ]  # logins reservados, p. ej. github-actions / github-actions[bot]
+    marcador: str  # texto que cita el SHA revisado
+    bloquea_si: str  # regex de veredicto bloqueante
 
 
 @dataclass(frozen=True)
@@ -174,20 +185,24 @@ class DeployRecipe:
     desplegar: str
     checklist: str
     rollback: str
-    ya_desplegado: str = ""           # sonda opcional; si falta, se usa checklist
-    requiere: tuple[str, ...] = ()    # "ssh:goncloud", "cli:psql"... `motor valida` lo comprueba aquí
+    ya_desplegado: str = ""  # sonda opcional; si falta, se usa checklist
+    requiere: tuple[
+        str, ...
+    ] = ()  # "ssh:goncloud", "cli:psql"... `motor valida` lo comprueba aquí
 
 
 @dataclass(frozen=True)
 class RepoSettings:
     repo: RepoRef
     base: str
-    pinned_at: Sha                    # SHA de la base del que se leyó: la rama del agente no lo cambia
+    pinned_at: Sha  # SHA de la base del que se leyó: la rama del agente no lo cambia
     merge_method: MergeMethod
-    checks_extra: tuple[str, ...]     # se SUMAN a los requeridos por la protección de la base
+    checks_extra: tuple[
+        str, ...
+    ]  # se SUMAN a los requeridos por la protección de la base
     bot: BotGate | None
     deploy: DeployRecipe | None
-    wip_publico: bool                 # repo público: ¿fotos wip cada N min o solo al final?
+    wip_publico: bool  # repo público: ¿fotos wip cada N min o solo al final?
 
 
 # =========================================================================== GitHub (github.py)
@@ -214,7 +229,7 @@ class PrView:
 class ChecksVerdict:
     sha: Sha
     pendientes: tuple[str, ...]
-    fallas: tuple[tuple[str, str], ...]   # (nombre, extracto del log fallido)
+    fallas: tuple[tuple[str, str], ...]  # (nombre, extracto del log fallido)
     verdes: tuple[str, ...]
 
     @property
@@ -229,6 +244,7 @@ class ChecksVerdict:
 @dataclass(frozen=True)
 class MergeTicket:
     """Igual que en taller, más PR y checks. Solo machine.merge_gate lo construye."""
+
     plan: PlanId
     block: BlockId
     repo: RepoRef
@@ -244,8 +260,9 @@ class GitHubPort(Protocol):
 
     def file_at(self, repo: RepoRef, ref: str, path: str) -> str | None: ...
 
-    def ensure_draft_pr(self, repo: RepoRef, base: str, head_ref: str, titulo: str,
-                        cuerpo: str) -> PrView:
+    def ensure_draft_pr(
+        self, repo: RepoRef, base: str, head_ref: str, titulo: str, cuerpo: str
+    ) -> PrView:
         """Reusa el PR abierto de esa rama si existe (de entrega_pr). Repo público: cuerpo neutro."""
         ...
 
@@ -259,8 +276,9 @@ class GitHubPort(Protocol):
         """Reglas (rulesets) ∪ protección clásica de la base."""
         ...
 
-    def checks(self, repo: RepoRef, sha: Sha, requeridos: tuple[str, ...],
-               bot: BotGate | None) -> ChecksVerdict:
+    def checks(
+        self, repo: RepoRef, sha: Sha, requeridos: tuple[str, ...], bot: BotGate | None
+    ) -> ChecksVerdict:
         """check-runs + statuses del SHA EXACTO, deduplicados por nombre (último intento gana)."""
         ...
 
@@ -281,7 +299,9 @@ def lee_repo_settings(gh: GitHubPort, repo: RepoRef) -> RepoSettings:
     ...
 
 
-def compuerta_bot(comentarios: list[tuple[str, str]], sha: Sha, gate: BotGate) -> str | None:
+def compuerta_bot(
+    comentarios: list[tuple[str, str]], sha: Sha, gate: BotGate
+) -> str | None:
     """Pura (de merge.py.parsear_bot): None si el bot aprobó ESE sha; si no, por qué no.
     Exige autor reservado: el texto del marcador lo puede escribir cualquiera."""
     ...
@@ -293,6 +313,7 @@ def compuerta_bot(comentarios: list[tuple[str, str]], sha: Sha, gate: BotGate) -
 @dataclass(frozen=True)
 class WipRef:
     """Rama de fotos: motor-wip/<maquina>/<plan>/<bloque>. Nunca la rama del agente."""
+
     nombre: str
 
 
@@ -349,9 +370,10 @@ def foto_wip(worktree: Path, wip: WipRef, hay_secreto: object) -> FotoResultado:
 @dataclass(frozen=True)
 class ProcHandle:
     """Vivo/muerto sin creerle al pid: tras reiniciar, los pids se reciclan."""
+
     pid: int
     boot_id: BootId
-    inicio: float                 # hora de creación del proceso según el SO
+    inicio: float  # hora de creación del proceso según el SO
 
 
 class Contenido(Protocol):
@@ -368,8 +390,9 @@ class Plataforma(Protocol):
         Windows: hora de arranque (ahora - GetTickCount64, redondeada al minuto)."""
         ...
 
-    def lanza_desacoplado(self, argv: list[str], cwd: Path, env: dict[str, str],
-                          log: Path) -> ProcHandle:
+    def lanza_desacoplado(
+        self, argv: list[str], cwd: Path, env: dict[str, str], log: Path
+    ) -> ProcHandle:
         """Lanza runwrap fuera del daemon. POSIX: start_new_session. Windows: DETACHED_PROCESS |
         CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB (si se niega el
         breakaway, reintenta sin él y lo anota: el agente morirá con el daemon, y se acepta)."""
@@ -379,8 +402,9 @@ class Plataforma(Protocol):
         """False si boot_id cambió o si el pid existe pero con otra hora de inicio."""
         ...
 
-    def contiene_y_corre(self, argv: list[str], cwd: Path, env: dict[str, str],
-                         log: Path) -> Contenido:
+    def contiene_y_corre(
+        self, argv: list[str], cwd: Path, env: dict[str, str], log: Path
+    ) -> Contenido:
         """Dentro de runwrap: el AGENTE en su grupo (POSIX) o en su Job kill-on-close (Windows),
         stdin nulo, sin ventana. resolve_shim para .cmd de npm. Lanzador wsl -> guardián."""
         ...
@@ -396,8 +420,9 @@ def resolve_shim(argv: list[str], which: object, systemroot: str) -> list[str]:
     ...
 
 
-def envuelve_wsl(argv: list[str], distro: str, cwd_windows: Path,
-                 pasa_env: tuple[str, ...]) -> tuple[list[str], dict[str, str]]:
+def envuelve_wsl(
+    argv: list[str], distro: str, cwd_windows: Path, pasa_env: tuple[str, ...]
+) -> tuple[list[str], dict[str, str]]:
     """wsl.exe -d <distro> --cd <wslpath> -- python3 -c <GUARDIAN> --parent <argv>;
     devuelve también WSLENV con las variables a cruzar (p. ej. META_API_KEY/u)."""
     ...
@@ -406,15 +431,26 @@ def envuelve_wsl(argv: list[str], distro: str, cwd_windows: Path,
 # =========================================================================== resultados de intento
 
 ResultadoKind = Literal[
-    "entregado", "veredicto",                          # éxitos
-    "cuota", "rate_limit", "auth", "transitorio",      # de la cuenta: no cuentan contra el modelo
-    "corte",                                           # la máquina se reinició: no cuenta contra nadie
-    "tiempo", "sin_avance", "falla", "sin_resultado",  # cuentan contra el modelo en este bloque
-    "mintio", "sin_cambios", "veredicto_invalido",
+    "entregado",
+    "veredicto",  # éxitos
+    "cuota",
+    "rate_limit",
+    "auth",
+    "transitorio",  # de la cuenta: no cuentan contra el modelo
+    "corte",  # la máquina se reinició: no cuenta contra nadie
+    "tiempo",
+    "sin_avance",
+    "falla",
+    "sin_resultado",  # cuentan contra el modelo en este bloque
+    "mintio",
+    "sin_cambios",
+    "veredicto_invalido",
 ]
 
 
-def classify(exit_code: int, timed_out: bool, no_progress: bool, tail: str, cli: str) -> dict:
+def classify(
+    exit_code: int, timed_out: bool, no_progress: bool, tail: str, cli: str
+) -> dict:
     """De taller + adaptadores de Hermes: el parseo de la salida depende del CLI (stream-json de
     claude, json de grok...). Separa rate_limit (2 min) de cuota (hora del error o 5 h)."""
     ...
@@ -430,10 +466,10 @@ class Estado(enum.Enum):
     REVISANDO = "revisando"
     ARREGLAR = "por arreglar"
     VERIFICAR = "por verificar"
-    PR = "por abrir PR draft"            # NUEVO
+    PR = "por abrir PR draft"  # NUEVO
     REVISAR = "por revisar"
-    LISTO_PR = "por marcar listo"        # NUEVO: tras APROBADO, gh pr ready
-    CHECKS = "esperando checks"          # NUEVO: sondeo barato; no es una pausa del plan
+    LISTO_PR = "por marcar listo"  # NUEVO: tras APROBADO, gh pr ready
+    CHECKS = "esperando checks"  # NUEVO: sondeo barato; no es una pausa del plan
     MERGE = "por mergear"
     DESPLEGAR = "por desplegar"
     PROBAR = "por probar con datos reales"
@@ -457,12 +493,17 @@ class MarkReady:
 @dataclass(frozen=True)
 class PollChecks:
     """El efecto decide si toca consultar (≤1 vez cada checks_sondeo_s); solo anota lo terminal."""
+
     block: BlockId
     sha: Sha
 
 
-def revisores_para(autores: frozenset[ModelId], conf: Conf, cooldowns: dict[AccountId, float],
-                   ahora: float) -> tuple[Route, ...]:
+def revisores_para(
+    autores: frozenset[ModelId],
+    conf: Conf,
+    cooldowns: dict[AccountId, float],
+    ahora: float,
+) -> tuple[Route, ...]:
     """Orden de David: Claude (primera posición del carril de revisar); si no está disponible,
     cualquier modelo que NO trabajó en el bloque.
 
@@ -484,7 +525,7 @@ class Recibo:
     estado: EstadoOrden
     plan: PlanId | None
     maquina: MachineName
-    errores: tuple[str, ...] = ()       # solo si rechazado: lo que `valida` encontró
+    errores: tuple[str, ...] = ()  # solo si rechazado: lo que `valida` encontró
 
 
 @dataclass(frozen=True)
@@ -492,7 +533,7 @@ class LineaBloque:
     plan: PlanId
     bloque: BlockId
     estado: Estado
-    frase: str                          # llana, para que la IA se la repita a David
+    frase: str  # llana, para que la IA se la repita a David
     desde: float
 
 
@@ -502,8 +543,9 @@ class Cliente:
 
     def __init__(self, home: Path, maquina: Maquina): ...
 
-    def entregar(self, plan_md: Path, *, en: MachineName | None = None,
-                 espera_s: float = 10) -> Recibo:
+    def entregar(
+        self, plan_md: Path, *, en: MachineName | None = None, espera_s: float = 10
+    ) -> Recibo:
         """Valida aquí (plan + .motor.toml de la base + `requiere` de la receta en ESTA máquina);
         si `en` es otra máquina, pasa el plan por ssh a `motor entrega -` de allá.
 
@@ -514,7 +556,9 @@ class Cliente:
         """
         ...
 
-    def estado(self, plan: PlanId | None = None, *, todas: bool = False) -> list[LineaBloque]: ...
+    def estado(
+        self, plan: PlanId | None = None, *, todas: bool = False
+    ) -> list[LineaBloque]: ...
 
     def hecho(self, plan: PlanId, bloque: BlockId) -> Recibo: ...
 
@@ -557,8 +601,9 @@ def servicio(home: Path) -> int:
     ...
 
 
-def autoactualiza(conf: Conf, version_actual: str,
-                  uv_bin: str) -> Literal["igual", "instalada", "fallo"]:
+def autoactualiza(
+    conf: Conf, version_actual: str, uv_bin: str
+) -> Literal["igual", "instalada", "fallo"]:
     """Si conf.motor_version != actual: `uv tool install --force git+ssh://…@v<ver>`; 'instalada'
     hace que el daemon salga con 75 al final del tick. Los runwrap en curso siguen con el código
     viejo y escriben outcome.json con `schema` versionado."""
