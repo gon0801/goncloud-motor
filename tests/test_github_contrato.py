@@ -129,6 +129,59 @@ class ContratoFalso(unittest.TestCase):
         self.assertEqual((v.terminal, v.green, "ci" in v.fallas), (True, False, True))
 
 
+class GhReintentaTest(unittest.TestCase):
+    """Sin red: `gh` falla como falla cuando la rama recién empujada aún no se ve del lado de GitHub."""
+
+    def gh(self, errores: list[str]):
+        llamadas = []
+
+        class Fake(GhGitHub):
+            def _gh(self, *a):
+                llamadas.append(a[:2])
+                if a[:2] == ("pr", "list"):
+                    return "[]"
+                if a[:2] == ("pr", "create"):
+                    if errores:
+                        raise RuntimeError(errores.pop(0))
+                    return "https://github.com/o/r/pull/7\n"
+                return json.dumps(
+                    {
+                        "number": 7,
+                        "headRefName": "f",
+                        "baseRefName": "main",
+                        "isDraft": True,
+                        "headRefOid": "a" * 40,
+                        "state": "OPEN",
+                        "mergeCommit": None,
+                    }
+                )
+
+        g = Fake()
+        g.dormir = lambda s: llamadas.append(("dormir", s))
+        return g, llamadas
+
+    def test_reintenta_si_la_rama_aun_no_llega(self):
+        g, llamadas = self.gh(
+            ["gh pr create: GraphQL: No commits between main and f (createPullRequest)"]
+            * 2
+        )
+        self.assertEqual(g.abrir_pr("o/r", "f", "main", "t", "c").numero, 7)
+        self.assertEqual(llamadas.count(("pr", "create")), 3)
+        self.assertEqual(llamadas.count(("dormir", 3.0)), 2)
+
+    def test_no_reintenta_otros_errores(self):
+        g, llamadas = self.gh(["gh pr create: HTTP 401: Bad credentials"])
+        with self.assertRaises(RuntimeError):
+            g.abrir_pr("o/r", "f", "main", "t", "c")
+        self.assertEqual(llamadas.count(("pr", "create")), 1)
+
+    def test_se_rinde_tras_los_reintentos(self):
+        g, llamadas = self.gh(["gh pr create: No commits between main and f"] * 20)
+        with self.assertRaises(RuntimeError):
+            g.abrir_pr("o/r", "f", "main", "t", "c")
+        self.assertEqual(llamadas.count(("pr", "create")), 6)
+
+
 @unittest.skipUnless(
     os.environ.get("MOTOR_GH_SANDBOX"),
     "sin MOTOR_GH_SANDBOX: el contrato contra GitHub real no corre",
@@ -163,9 +216,10 @@ class ContratoReal(
         self.tmp.cleanup()
 
     def _commit(self, nombre: str) -> str:
-        (self.w / f"{nombre}.txt").write_text(f"{nombre}\n")
+        # único por corrida: un merge anterior dejó su archivo en main y sin cambios no habría commit
+        (self.w / f"{nombre}-{self.rama}.txt").write_text(f"{nombre}\n")
         git("add", "-A", cwd=self.w)
-        git("commit", "-q", "-m", nombre, cwd=self.w)
+        git("commit", "-q", "-m", nombre, cwd=self.w).check_returncode()
         git("push", "-q", "origin", self.rama, cwd=self.w)
         return git("rev-parse", "HEAD", cwd=self.w).stdout.strip()
 
