@@ -1,7 +1,7 @@
 # Motor de planes en las tres máquinas
 autopiloto: motor
 plan: motor-01
-repo: https://github.com/gon0801/goncloud-motor.git
+repo: git@github.com:gon0801/goncloud-motor.git
 
 <!-- Diseño y decisiones: docs/diseno.md. Lo corre el prototipo en la Mac. Nadie usa el motor para
 trabajo real hasta que pase el bloque I. Repos nuevos que crea el plan, todos privados:
@@ -36,7 +36,7 @@ prueba-real: ssh gwpc "cd %TEMP%\motor-prueba && py -m unittest tests.test_puro 
 ## Bloque A — la conf compartida
 lane: gate
 depende: B
-repo: https://github.com/gon0801/goncloud-motor-conf.git
+repo: git@github.com:gon0801/goncloud-motor-conf.git
 aviso: las tres máquinas ya comparten la misma tabla de modelos y las mismas reglas
 prueba-real: python3 -m motor conf valida .
 | Fila | Contenido | Acepta |
@@ -68,7 +68,7 @@ sonda-humano: bash ops/huellas.sh --servicio --rutas
 ## Bloque D — Orbit listo para el motor
 lane: gate
 depende: -
-repo: https://github.com/gon0801/goncloud-Orbit.git
+repo: git@github.com:gon0801/goncloud-Orbit.git
 aviso: Orbit ya puede recibir planes del motor
 prueba-real: python3 -c "import tomllib;c=tomllib.load(open('.motor.toml','rb'));assert c['repo']['principal']=='master' and 'completa' in c['github']['checks_extra']"
 | Fila | Contenido | Acepta |
@@ -79,7 +79,7 @@ prueba-real: python3 -c "import tomllib;c=tomllib.load(open('.motor.toml','rb'))
 ## Bloque G — Hermes usa el motor y se retira su cadena fija
 lane: release
 depende: -
-repo: https://github.com/gon0801/goncloud-hermes.git
+repo: git@github.com:gon0801/goncloud-hermes.git
 aviso: Hermes ya reparte las tareas chicas y manda al motor todo lo que cambia código
 prueba-real: bash ops/motor-g/checklist.sh
 despliegue: desplegar=ops/motor-g/desplegar.sh checklist=ops/motor-g/checklist.sh rollback=ops/motor-g/rollback.sh
@@ -94,7 +94,7 @@ despliegue: desplegar=ops/motor-g/desplegar.sh checklist=ops/motor-g/checklist.s
 ## Bloque H — OpenClaw usa el motor y se retiran los loops
 lane: release
 depende: -
-repo: https://github.com/gon0801/goncloud-openclaw.git
+repo: git@github.com:gon0801/goncloud-openclaw.git
 aviso: OpenClaw ya reparte las tareas chicas y manda al motor todo lo que cambia código
 prueba-real: bash ops/motor-h/checklist.sh
 despliegue: desplegar=ops/motor-h/desplegar.sh checklist=ops/motor-h/checklist.sh rollback=ops/motor-h/rollback.sh
