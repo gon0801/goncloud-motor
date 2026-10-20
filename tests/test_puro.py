@@ -223,6 +223,9 @@ humano: login pega las llaves
         corre[-1]["conclusion"] = "success"
         self.assertTrue(veredicto("s", ("completa",), corre).green)
         self.assertEqual(veredicto("s", ("comp",), corre).faltan, ("comp",), "un prefijo suelto no cuenta")
+        saltado = [{"name": "completa", "status": "completed", "conclusion": "skipped"}]
+        self.assertEqual(veredicto("s", ("completa",), saltado).faltan, ("completa",),
+                         "saltado en borrador no es aprobado (MOTOR 01, PR #484)")
 
     def test_checks_que_nunca_terminan_avisan_una_vez(self):
         p, now = parse_plan(PLAN), time.time()

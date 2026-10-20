@@ -50,6 +50,8 @@ def veredicto(sha: str, requeridos: tuple[str, ...], runs: list[dict]) -> Checks
         partes = [r for r in runs if r["name"] == c or r["name"].startswith(c + " (")]
         if not partes or any(r["status"] != "completed" for r in partes):
             faltan.append(c)
+        elif all(r["conclusion"] == "skipped" for r in partes):
+            faltan.append(c)   # saltado (p. ej. en borrador) no es aprobado: todavía no corrió de verdad
         elif any(
             r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
         ):
@@ -209,7 +211,7 @@ class GhGitHub:
         runs = json.loads(
             self._gh(
                 "api",
-                f"repos/{n}/commits/{sha}/check-runs",
+                f"repos/{n}/commits/{sha}/check-runs?per_page=100",
                 "--jq",
                 "[.check_runs[]|{name, status, conclusion}]",
             )

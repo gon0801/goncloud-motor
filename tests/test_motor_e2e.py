@@ -215,6 +215,70 @@ class TestSalidaDeWindows(Banco):
         self.assertGreater(len(llamadas), primero, "a los 5 min sí se reintenta")
 
 
+class TestSoloElMotorMergea(Banco):
+    """MOTOR 01, 2026-10-20: GitHub rechazó el merge del PR #484 (pruebas pendientes), el motor se lo
+    devolvió al agente como tarea y el agente mergeó él mismo con `gh pr merge`."""
+
+    def test_el_gh_de_los_agentes_no_mergea(self):
+        falso = self.tmp / "bin"
+        falso.mkdir()
+        (falso / "gh").write_text("#!/bin/sh\necho real \"$@\"\n")
+        (falso / "gh").chmod(0o755)
+        shim = RAIZ / "motor" / "shims" / "gh"
+        env = {**os.environ, "PATH": f"{shim.parent}{os.pathsep}{falso}{os.pathsep}/usr/bin:/bin"}
+        for prohibido in (["pr", "merge", "484", "--squash"], ["pr", "close", "3"], ["pr", "ready", "3"],
+                          ["api", "-X", "PUT", "repos/x/y/pulls/3/merge"]):
+            r = subprocess.run([str(shim), *prohibido], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 3, prohibido)
+            self.assertIn("solo el motor mergea", r.stderr)
+        r = subprocess.run([str(shim), "pr", "view", "3"], env=env, capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "real pr view 3"))
+
+    def _daemon_con_pr(self):
+        from motor.github import PrView
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        motor("entrega", str(self.plan), "--home", str(self.home), "--json", "--espera", "0")
+        d = Daemon(self.home)
+        d.ingest_inbox()
+        plan = d.plans()[0]
+        d.store.append("demo", "A", "PrOpened", {"numero": 7, "rama": "x"})
+        snap = m.fold(plan, d.store.events("demo"))
+
+        class GhFalso:
+            estado, motivo = "abierto", ""
+
+            def ver(self, repo, numero):
+                return PrView(numero, "x", "main", False, "a" * 40, self.estado, "c" * 40)
+
+            def merge(self, *a):
+                from motor.github import MergeRechazado
+                raise MergeRechazado(self.motivo)
+        d.fx.cx.gh = GhFalso()
+        return d, plan, snap
+
+    def test_rechazo_de_github_no_es_tarea_del_agente(self):
+        d, plan, snap = self._daemon_con_pr()
+        d.fx.cx.gh.motivo = "Pull request #7 is not mergeable: the base branch policy prohibits the merge."
+        with self.assertRaises(RuntimeError):
+            d.fx.merge(plan, snap, m.Merge(m.MergeTicket("A", "a" * 40, 7)))
+        self.assertFalse([e for e in d.store.events("demo") if e.kind == "ChecksResult"],
+                         "no se marca rojo ni se manda al agente")
+        d.fx.cx.gh.motivo = "the merge commit cannot be cleanly created"
+        d.fx.merge(plan, snap, m.Merge(m.MergeTicket("A", "a" * 40, 7)))
+        rojo = [e for e in d.store.events("demo") if e.kind == "ChecksResult"]
+        self.assertIn("no mergees tú", rojo[0].data["detalle"])
+
+    def test_merge_hecho_por_fuera_se_adopta(self):
+        d, plan, snap = self._daemon_con_pr()
+        d.fx.cx.gh.estado = "mergeado"
+        d.fx.poll_checks(plan, snap, m.PollChecks("A", "a" * 40))
+        mg = [e for e in d.store.events("demo") if e.kind == "Merged"]
+        self.assertEqual((mg[0].data["sha"], mg[0].data["externo"]), ("a" * 40, True))
+
+    def test_el_encargo_prohibe_mergear(self):
+        self.assertIn("PROHIBIDO mergear", (RAIZ / "motor" / "effects.py").read_text())
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})
