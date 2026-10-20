@@ -67,6 +67,7 @@ def _git_sha(d: Path) -> str:
         check=False,
         capture_output=True,
         text=True,
+        errors="replace",
         stdin=subprocess.DEVNULL,
     )
     return r.stdout.strip() if r.returncode == 0 else "sin-git"

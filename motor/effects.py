@@ -51,10 +51,26 @@ def _run(
         env=env,
         capture_output=True,
         text=True,
+        errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=timeout,
         shell=True,
         executable="/bin/bash" if os.name != "nt" else None,
+    )
+
+
+def es_del_agente(motivo: str) -> bool:
+    """Un merge rechazado es tarea del agente solo si su rama choca con la principal o se movió."""
+    m_ = motivo.lower()
+    return any(
+        x in m_
+        for x in (
+            "cannot be cleanly created",
+            "conflict",
+            "head branch was modified",
+            "does not match",
+            "head commit",
+        )
     )
 
 
@@ -170,6 +186,10 @@ class Effects:
                 "PYTHONPATH": str(RAIZ),
             }
         )
+        # el `gh` de los agentes no mergea, ni cierra, ni marca listo: eso solo lo hace el motor
+        env["PATH"] = os.pathsep.join(
+            [str(RAIZ / "motor" / "shims"), env.get("PATH", "")]
+        )
         cmd = [
             sys.executable,
             "-m",
@@ -238,6 +258,9 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
 ## Cómo se entrega
 1. Un commit por fila, con el id de la fila al inicio del mensaje. Nunca `--no-verify`.
 2. `git push origin HEAD:refs/heads/{rama}` (nunca a `{rc.principal}`).
+   PROHIBIDO mergear, cerrar, aprobar o marcar listo un PR (`gh pr merge`, la API, la web): eso
+   solo lo hace el motor. Si te dicen que el merge falló por conflicto, trae `{rc.principal}` a tu
+   rama (merge o rebase), resuelve y vuelve a entregar.
 3. Escribe en `$MOTOR_RESULT` un JSON: {{"sha": "<git rev-parse HEAD>", "resumen": "..."}}.
    Lo que digas no cuenta como prueba: el motor verifica el SHA y corre cada `Acepta`.
 """
@@ -413,11 +436,31 @@ Escribe en `$MOTOR_RESULT`:
             ukey=f"ready:{plan.id}:{a.block}:{a.sha}",
         )
 
+    def _ya_mergeado(
+        self, plan: Plan, snap: m.Snapshot, block_id: str, sha: str
+    ) -> bool:
+        """Si el PR ya está mergeado (alguien lo hizo fuera del motor), se adopta ese merge para que
+        el plan siga, se anota quién no debió hacerlo y no se vuelve a esperar pruebas."""
+        block = plan.block(block_id)
+        v = self.cx.gh.ver(block.repo, int(snap.blocks[block_id].pr["numero"]))
+        if v.estado != "mergeado":
+            return False
+        self.cx.store.append(
+            plan.id,
+            block_id,
+            "Merged",
+            {"sha": sha, "commit": v.merge_commit, "externo": True},
+            ukey=f"merged:{plan.id}:{block_id}:{sha}",
+        )
+        return True
+
     def poll_checks(self, plan: Plan, snap: m.Snapshot, a: m.PollChecks) -> None:
         k = f"{plan.id}:{a.block}:{a.sha}"
         if time.time() - self._ultimo_poll.get(k, 0) < self.cx.checks_cada_s:
             return
         self._ultimo_poll[k] = time.time()
+        if self._ya_mergeado(plan, snap, a.block, a.sha):
+            return
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
         v = self.cx.gh.checks(
@@ -447,6 +490,8 @@ Escribe en `$MOTOR_RESULT`:
             raise TypeError("merge sin MergeTicket")
         block = plan.block(t.block)
         rc = self.repo_conf(snap, block.repo)
+        if self._ya_mergeado(plan, snap, t.block, t.sha):
+            return
         try:
             pr = self.cx.gh.merge(
                 block.repo,
@@ -456,12 +501,22 @@ Escribe en `$MOTOR_RESULT`:
                 f"{plan.id} {t.block}: {block.titulo}",
             )
         except MergeRechazado as e:
-            # la punta se movió o algo cambió: vuelve al implementador con el motivo
+            if not es_del_agente(str(e)):
+                # GitHub todavía no lo deja (pruebas requeridas pendientes, política de la rama): no es
+                # culpa del agente. Se reintenta en 5 minutos y, si dura una hora, se avisa.
+                raise RuntimeError(
+                    f"GitHub aún no deja mergear: {str(e)[:300]}"
+                ) from None
             self.cx.store.append(
                 plan.id,
                 t.block,
                 "ChecksResult",
-                {"sha": t.sha, "green": False, "detalle": str(e)},
+                {
+                    "sha": t.sha,
+                    "green": False,
+                    "detalle": f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
+                    f"resuelve y vuelve a entregar (no mergees tú). GitHub dijo: {str(e)[:300]}",
+                },
                 ukey=f"rechazo:{plan.id}:{t.block}:{t.sha}:{int(time.time())}",
             )
             return

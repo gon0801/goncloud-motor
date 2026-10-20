@@ -20,15 +20,25 @@ import tempfile
 from pathlib import Path
 
 
-def git(*a: str, cwd: Path | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                          env={**os.environ, **(env or {})})
+def git(
+    *a: str, cwd: Path | None = None, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *a],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, **(env or {})},
+    )
 
 
 SECRETO = re.compile(
     r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|"
     r"xox[abp]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|"
-    r"(?i:(api[_-]?key|token|secret|password|contraseña)\s*[:=]\s*['\"]?[A-Za-z0-9/+_.-]{16,}))")
+    r"(?i:(api[_-]?key|token|secret|password|contraseña)\s*[:=]\s*['\"]?[A-Za-z0-9/+_.-]{16,}))"
+)
 
 
 def foto_wip(worktree: Path, rama_wip: str, local: bool = False) -> str:
@@ -46,32 +56,69 @@ def foto_wip(worktree: Path, rama_wip: str, local: bool = False) -> str:
         if tree == git("rev-parse", "HEAD^{tree}", cwd=worktree).stdout.strip():
             return "igual"
         if local:
-            previa = git("rev-parse", "-q", "--verify", f"refs/{rama_wip}", cwd=worktree).stdout.split()
+            previa = git(
+                "rev-parse", "-q", "--verify", f"refs/{rama_wip}", cwd=worktree
+            ).stdout.split()
         else:
-            previa = git("ls-remote", "origin", f"refs/heads/{rama_wip}", cwd=worktree).stdout.split()
-        if previa and git("rev-parse", "-q", "--verify", f"{previa[0]}^{{tree}}", cwd=worktree).stdout.strip() == tree \
-                and git("rev-parse", "-q", "--verify", f"{previa[0]}^", cwd=worktree).stdout.strip() == head:
-            return "igual"   # la foto anterior ya tiene exactamente esto
-        diff = "" if local else git("diff", "--cached", "HEAD", cwd=worktree, env=env).stdout
+            previa = git(
+                "ls-remote", "origin", f"refs/heads/{rama_wip}", cwd=worktree
+            ).stdout.split()
+        if (
+            previa
+            and git(
+                "rev-parse", "-q", "--verify", f"{previa[0]}^{{tree}}", cwd=worktree
+            ).stdout.strip()
+            == tree
+            and git(
+                "rev-parse", "-q", "--verify", f"{previa[0]}^", cwd=worktree
+            ).stdout.strip()
+            == head
+        ):
+            return "igual"  # la foto anterior ya tiene exactamente esto
+        diff = (
+            ""
+            if local
+            else git("diff", "--cached", "HEAD", cwd=worktree, env=env).stdout
+        )
         if SECRETO.search(diff):
             return "secreto"
-        c = git("-c", "user.name=motor", "-c", "user.email=motor@local", "commit-tree", tree, "-p", head,
-                "-m", "foto del trabajo a medias (motor)", cwd=worktree, env=env).stdout.strip()
+        c = git(
+            "-c",
+            "user.name=motor",
+            "-c",
+            "user.email=motor@local",
+            "commit-tree",
+            tree,
+            "-p",
+            head,
+            "-m",
+            "foto del trabajo a medias (motor)",
+            cwd=worktree,
+            env=env,
+        ).stdout.strip()
     if local:
         p = git("update-ref", f"refs/{rama_wip}", c, cwd=worktree)
         return "guardada" if p.returncode == 0 else f"error: {p.stderr[-200:]}"
-    p = git("push", "-q", "--force", "origin", f"{c}:refs/heads/{rama_wip}", cwd=worktree)
+    p = git(
+        "push", "-q", "--force", "origin", f"{c}:refs/heads/{rama_wip}", cwd=worktree
+    )
     return "subida" if p.returncode == 0 else f"error: {p.stderr[-200:]}"
 
 
 class Workspace:
     def __init__(self, home: Path, maquina: str):
         self.home = home
-        self.maquina = re.sub(r"[^a-z0-9]+", "-", maquina.lower()).strip("-")   # "Mac (prueba)" -> "mac-prueba"
+        self.maquina = re.sub(r"[^a-z0-9]+", "-", maquina.lower()).strip(
+            "-"
+        )  # "Mac (prueba)" -> "mac-prueba"
 
     @staticmethod
     def slug(repo: str) -> str:
-        nombre = re.sub(r"[^A-Za-z0-9]+", "-", repo.rstrip("/").removesuffix(".git").split("/")[-1].split(":")[-1])
+        nombre = re.sub(
+            r"[^A-Za-z0-9]+",
+            "-",
+            repo.rstrip("/").removesuffix(".git").split("/")[-1].split(":")[-1],
+        )
         return f"{nombre}-{hashlib.sha1(repo.encode()).hexdigest()[:6]}"
 
     def rama(self, plan: str, block: str) -> str:
@@ -87,7 +134,14 @@ class Workspace:
             r = git("clone", "-q", repo, str(d))
             if r.returncode != 0:
                 raise RuntimeError(f"no se pudo clonar {repo}: {r.stderr[-300:]}")
-        git("fetch", "-q", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*", cwd=d)
+        git(
+            "fetch",
+            "-q",
+            "--prune",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+            cwd=d,
+        )
         return d
 
     def punta(self, repo: str, rama: str) -> str:
@@ -107,7 +161,9 @@ class Workspace:
         d = self.espejo(repo)
         rama, wip = self.rama(plan, block), self.rama_wip(plan, block)
         w = self.home / "wt" / plan / block
-        remota = git("rev-parse", "--verify", "-q", f"origin/{rama}", cwd=d).stdout.strip()
+        remota = git(
+            "rev-parse", "--verify", "-q", f"origin/{rama}", cwd=d
+        ).stdout.strip()
         punto = f"origin/{rama}" if remota else f"origin/{base}"
         if not w.exists():
             w.parent.mkdir(parents=True, exist_ok=True)
@@ -119,11 +175,19 @@ class Workspace:
             git("checkout", "-q", "-B", rama, punto, cwd=w)
             git("reset", "-q", "--hard", punto, cwd=w)
             git("clean", "-qfd", cwd=w)
-        foto = (git("rev-parse", "--verify", "-q", f"origin/{wip}", cwd=d).stdout.strip()
-                or git("rev-parse", "--verify", "-q", f"refs/{wip}", cwd=d).stdout.strip())
-        if foto and git("rev-parse", f"{foto}^", cwd=d).stdout.strip() == git("rev-parse", "HEAD", cwd=w).stdout.strip():
-            git("checkout", foto, "--", ".", cwd=w)        # lo que quedó a medias vuelve a la carpeta
-            git("reset", "-q", cwd=w)                       # sin commitear, como lo dejó el agente
+        foto = (
+            git("rev-parse", "--verify", "-q", f"origin/{wip}", cwd=d).stdout.strip()
+            or git("rev-parse", "--verify", "-q", f"refs/{wip}", cwd=d).stdout.strip()
+        )
+        if (
+            foto
+            and git("rev-parse", f"{foto}^", cwd=d).stdout.strip()
+            == git("rev-parse", "HEAD", cwd=w).stdout.strip()
+        ):
+            git(
+                "checkout", foto, "--", ".", cwd=w
+            )  # lo que quedó a medias vuelve a la carpeta
+            git("reset", "-q", cwd=w)  # sin commitear, como lo dejó el agente
         return w
 
     def copia(self, repo: str, sha: str, donde: Path) -> Path:

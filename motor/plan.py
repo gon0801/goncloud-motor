@@ -63,7 +63,9 @@ class Block:
     prueba_real: str
     release: Release | None
     human: Human | None
-    checks: tuple[str, ...] = ()   # checks que el plan exige además de la protección de la rama
+    checks: tuple[
+        str, ...
+    ] = ()  # checks que el plan exige además de la protección de la rama
 
 
 @dataclass(frozen=True)
@@ -84,28 +86,53 @@ class Plan:
     def to_dict(self) -> dict:
         def blk(b: Block) -> dict:
             return {
-                "id": b.id, "titulo": b.titulo, "repo": b.repo, "lane": b.lane, "depende": list(b.depende),
-                "rows": [r.__dict__ for r in b.rows], "aviso": b.aviso,
+                "id": b.id,
+                "titulo": b.titulo,
+                "repo": b.repo,
+                "lane": b.lane,
+                "depende": list(b.depende),
+                "rows": [r.__dict__ for r in b.rows],
+                "aviso": b.aviso,
                 "prueba_real": b.prueba_real,
                 "release": b.release.__dict__ if b.release else None,
-                "human": b.human.__dict__ if b.human else None, "checks": list(b.checks),
+                "human": b.human.__dict__ if b.human else None,
+                "checks": list(b.checks),
             }
-        return {"id": self.id, "titulo": self.titulo, "blocks": [blk(b) for b in self.blocks],
-                "implementa": list(self.implementa), "revisa": list(self.revisa)}
+
+        return {
+            "id": self.id,
+            "titulo": self.titulo,
+            "blocks": [blk(b) for b in self.blocks],
+            "implementa": list(self.implementa),
+            "revisa": list(self.revisa),
+        }
 
     @staticmethod
     def from_dict(d: dict) -> Plan:
         blocks = []
         for b in d["blocks"]:
-            blocks.append(Block(
-                id=b["id"], titulo=b["titulo"], repo=b["repo"], lane=b["lane"], depende=tuple(b["depende"]),
-                rows=tuple(Row(**r) for r in b["rows"]), aviso=b["aviso"],
-                prueba_real=b["prueba_real"],
-                release=Release(**b["release"]) if b["release"] else None,
-                human=Human(**b["human"]) if b["human"] else None, checks=tuple(b.get("checks", ())),
-            ))
-        return Plan(id=d["id"], titulo=d["titulo"], blocks=tuple(blocks),
-                    implementa=tuple(d.get("implementa", ())), revisa=tuple(d.get("revisa", ())))
+            blocks.append(
+                Block(
+                    id=b["id"],
+                    titulo=b["titulo"],
+                    repo=b["repo"],
+                    lane=b["lane"],
+                    depende=tuple(b["depende"]),
+                    rows=tuple(Row(**r) for r in b["rows"]),
+                    aviso=b["aviso"],
+                    prueba_real=b["prueba_real"],
+                    release=Release(**b["release"]) if b["release"] else None,
+                    human=Human(**b["human"]) if b["human"] else None,
+                    checks=tuple(b.get("checks", ())),
+                )
+            )
+        return Plan(
+            id=d["id"],
+            titulo=d["titulo"],
+            blocks=tuple(blocks),
+            implementa=tuple(d.get("implementa", ())),
+            revisa=tuple(d.get("revisa", ())),
+        )
 
 
 @dataclass
@@ -133,7 +160,9 @@ def _celdas(linea: str) -> list[str]:
 
 
 def _modelos(valor: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(x.strip().lower() for x in valor.split(",") if x.strip()))
+    return tuple(
+        dict.fromkeys(x.strip().lower() for x in valor.split(",") if x.strip())
+    )
 
 
 def modelos_desconocidos(plan: Plan, conocidos) -> list[str]:
@@ -141,11 +170,18 @@ def modelos_desconocidos(plan: Plan, conocidos) -> list[str]:
     malos = [mo for mo in (*plan.implementa, *plan.revisa) if mo not in conocidos]
     if not malos:
         return []
-    return [f"no conozco el modelo {', '.join(dict.fromkeys(malos))}; los que hay: {', '.join(sorted(conocidos))}"]
+    return [
+        f"no conozco el modelo {', '.join(dict.fromkeys(malos))}; los que hay: {', '.join(sorted(conocidos))}"
+    ]
 
 
-def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int = 0,
-               modelos: set[str] | None = None) -> Plan:
+def parse_plan(
+    texto: str,
+    *,
+    min_implementadores: int = 0,
+    implementadores: int = 0,
+    modelos: set[str] | None = None,
+) -> Plan:
     """Lee el plan y lo valida entero. Devuelve Plan o lanza PlanError con TODOS los errores.
     Con `modelos` (los de la conf) también revisa que existan los que pide `implementa:`/`revisa:`."""
     titulo, plan_id, autopiloto, repo_plan = "", "", "", ""
@@ -165,13 +201,17 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
             if not drafts:
                 continue
             celdas = _celdas(linea)
-            if celdas and (celdas[0].lower() in ("fila", "task") or set(celdas[0]) <= set("-: ")):
+            if celdas and (
+                celdas[0].lower() in ("fila", "task") or set(celdas[0]) <= set("-: ")
+            ):
                 continue
             if len(celdas) < 2:
                 errores.append(f"fila mal formada: {linea!r}")
                 continue
             acepta = celdas[2] if len(celdas) > 2 and celdas[2] not in ("-", "") else ""
-            drafts[-1].rows.append(Row(id=celdas[0], contenido=celdas[1], acepta=acepta))
+            drafts[-1].rows.append(
+                Row(id=celdas[0], contenido=celdas[1], acepta=acepta)
+            )
             continue
         m = _CAMPO.match(linea.strip())
         if m:
@@ -205,7 +245,11 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
         lane = f.get("lane", "")
         if lane not in LANES:
             errores.append(f"bloque {d.id}: lane debe ser una de {LANES}, no {lane!r}")
-        dep = tuple(x.strip() for x in f.get("depende", "-").split(",") if x.strip() not in ("", "-"))
+        dep = tuple(
+            x.strip()
+            for x in f.get("depende", "-").split(",")
+            if x.strip() not in ("", "-")
+        )
         for x in dep:
             if x not in ids:
                 errores.append(f"bloque {d.id}: depende de {x}, que no existe")
@@ -214,33 +258,57 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
             partes = dict(p.split("=", 1) for p in f["despliegue"].split() if "=" in p)
             faltan = {"desplegar", "checklist", "rollback"} - partes.keys()
             if faltan:
-                errores.append(f"bloque {d.id}: al despliegue le falta {sorted(faltan)}")
+                errores.append(
+                    f"bloque {d.id}: al despliegue le falta {sorted(faltan)}"
+                )
             else:
-                release = Release(partes["desplegar"], partes["checklist"], partes["rollback"])
+                release = Release(
+                    partes["desplegar"], partes["checklist"], partes["rollback"]
+                )
         repo = f.get("repo", repo_plan)
         if not repo:
-            errores.append(f"bloque {d.id}: sin repo (pon 'repo:' en el plan o en el bloque)")
+            errores.append(
+                f"bloque {d.id}: sin repo (pon 'repo:' en el plan o en el bloque)"
+            )
         human = None
         if "humano" in f:
             kind, _, que = f["humano"].partition(" ")
             if kind not in HUMAN_KINDS:
                 errores.append(
                     f"bloque {d.id}: 'humano: {kind}' no vale; solo {HUMAN_KINDS}. "
-                    "Lo demás lo resuelve el sistema sin preguntar")
-            human = Human(kind=kind, que_hacer=que.strip(), sonda=f.get("sonda-humano", ""))
+                    "Lo demás lo resuelve el sistema sin preguntar"
+                )
+            human = Human(
+                kind=kind, que_hacer=que.strip(), sonda=f.get("sonda-humano", "")
+            )
         if lane in ("gate", "release") and human is None:
             if not d.rows:
                 errores.append(f"bloque {d.id}: un bloque de código necesita filas")
             if not any(r.acepta for r in d.rows):
-                errores.append(f"bloque {d.id}: ninguna fila trae 'Acepta' (comando que pruebe la entrega)")
+                errores.append(
+                    f"bloque {d.id}: ninguna fila trae 'Acepta' (comando que pruebe la entrega)"
+                )
             if not f.get("prueba-real"):
-                errores.append(f"bloque {d.id}: falta 'prueba-real:' (datos reales antes de decir listo)")
-        blocks.append(Block(
-            id=d.id, titulo=d.titulo, repo=repo, lane=lane, depende=dep, rows=tuple(d.rows),
-            aviso=f.get("aviso", d.titulo), prueba_real=f.get("prueba-real", ""),
-            release=release, human=human,
-            checks=tuple(x.strip() for x in f.get("checks", "").split(",") if x.strip()),
-        ))
+                errores.append(
+                    f"bloque {d.id}: falta 'prueba-real:' (datos reales antes de decir listo)"
+                )
+        blocks.append(
+            Block(
+                id=d.id,
+                titulo=d.titulo,
+                repo=repo,
+                lane=lane,
+                depende=dep,
+                rows=tuple(d.rows),
+                aviso=f.get("aviso", d.titulo),
+                prueba_real=f.get("prueba-real", ""),
+                release=release,
+                human=human,
+                checks=tuple(
+                    x.strip() for x in f.get("checks", "").split(",") if x.strip()
+                ),
+            )
+        )
 
     # ciclos
     grafo = {b.id: b.depende for b in blocks}
@@ -257,13 +325,22 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
     if any(visit.get(n) is None and dfs(n) for n in grafo):
         errores.append("las dependencias entre bloques forman un ciclo")
     if revisa and implementa and set(revisa) <= set(implementa):
-        errores.append("'revisa:' necesita al menos un modelo que no esté en 'implementa:'; "
-                       "nadie revisa su propio trabajo")
+        errores.append(
+            "'revisa:' necesita al menos un modelo que no esté en 'implementa:'; "
+            "nadie revisa su propio trabajo"
+        )
     if not implementa and min_implementadores and implementadores < min_implementadores:
         errores.append(
             f"la política tiene {implementadores} implementador(es); se exigen {min_implementadores} "
-            "para que una cuota agotada no detenga el plan")
-    plan = Plan(id=plan_id, titulo=titulo, blocks=tuple(blocks), implementa=implementa, revisa=revisa)
+            "para que una cuota agotada no detenga el plan"
+        )
+    plan = Plan(
+        id=plan_id,
+        titulo=titulo,
+        blocks=tuple(blocks),
+        implementa=implementa,
+        revisa=revisa,
+    )
     if modelos is not None:
         errores += modelos_desconocidos(plan, modelos)
     if errores:
