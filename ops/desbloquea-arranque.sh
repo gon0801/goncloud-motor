@@ -26,7 +26,9 @@ fi
 if [ "${1:-}" != "--aplicar" ]; then
   echo "arranque: $arranque"
   echo "effects.py parcheado: $parcheado"
-  if launchctl list 2>/dev/null | grep -q "$label"; then
+  # sin grep -q: grep -q cierra el pipe en cuanto encuentra y launchctl muere con
+  # SIGPIPE; con pipefail eso cuenta como "no está" aunque esté (falso negativo).
+  if launchctl list 2>/dev/null | grep "$label" >/dev/null; then
     echo "daemon $label: corriendo"
   else
     echo "daemon $label: NO aparece en launchctl list"
@@ -84,7 +86,8 @@ fi
 
 launchctl kickstart -k "gui/$(id -u)/$label"
 sleep 2
-if launchctl list 2>/dev/null | grep -q "$label"; then
+# sin grep -q: el falso SIGPIPE diría "no volvió a aparecer" con el daemon sano.
+if launchctl list 2>/dev/null | grep "$label" >/dev/null; then
   echo "daemon $label reiniciado con el parche. El próximo despliegue ya corre con MOTOR_RAIZ sano."
 else
   echo "el daemon no volvió a aparecer en launchctl list: revisalo a mano" >&2

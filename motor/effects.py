@@ -17,8 +17,8 @@ from pathlib import Path
 
 from . import machine as m
 from . import plataforma, relevo
-from .fallas import PROVEEDORES
 from .conf import Conf, Maquina, RepoConf
+from .fallas import PROVEEDORES
 from .github import GitHubPort, MergeRechazado
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
@@ -548,6 +548,9 @@ Escribe en `$MOTOR_RESULT`:
             block.repo, commit, self.cx.home / "tmp" / f"despliega-{plan.id}-{a.block}"
         )
         env = self.env_base(dict(rc.prueba_env))
+        # La instalación no tiene .git; la copia (worktree) sí. Sin esto,
+        # instala-todo.sh hace `git -C "$MOTOR_RAIZ"` y sale 3.
+        env["MOTOR_RAIZ"] = str(w)
         if not desplegar:
             ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
         elif (
@@ -591,7 +594,9 @@ Escribe en `$MOTOR_RESULT`:
                 bv.merged[-1]["commit"],
                 self.cx.home / "tmp" / f"prueba-{plan.id}-{a.block}",
             )
-            p = _run(block.prueba_real, w, self.env_base(dict(rc.prueba_env)))
+            env = self.env_base(dict(rc.prueba_env))
+            env["MOTOR_RAIZ"] = str(w)
+            p = _run(block.prueba_real, w, env)
             ok, detalle = p.returncode == 0, (p.stdout + p.stderr)[-500:]
         else:
             ok, detalle = True, "el bloque no declara prueba real"

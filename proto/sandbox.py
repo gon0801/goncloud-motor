@@ -138,9 +138,7 @@ PROD_DIR = "{prod}"
             else "fake_agent.py"
         )
         extra = (
-            ', "--reglas", "%s"' % reglas_revision
-            if script == "fake_reviewer.py"
-            else ""
+            f', "--reglas", "{reglas_revision}"' if script == "fake_reviewer.py" else ""
         )
         rutas.append(
             f'[rutas.{mo}]\ncuenta = "{cuentas.get(mo, mo)}"\ncli = "{mo}"\nmax_parallel = 2\n'
@@ -218,11 +216,11 @@ prueba-real: true
 lane: release
 depende: B
 aviso: la versión 2 ya está en producción
-prueba-real: test "$(cat "$PROD_DIR/version.txt")" = v2
+prueba-real: test "$(cat "$PROD_DIR/version.txt")" = v2 && test "$(git -C "$MOTOR_RAIZ" rev-parse HEAD)" = "$(git rev-parse HEAD)"
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
-| D.1 | escribe: ops/desplegar.sh=mkdir -p "$PROD_DIR" && cp version.txt "$PROD_DIR/version.txt" | test -f ops/desplegar.sh |
-| D.2 | escribe: ops/checklist.sh=test "$(cat "$PROD_DIR/version.txt")" = v2 | test -f ops/checklist.sh |
+| D.1 | escribe: ops/desplegar.sh=mkdir -p "$PROD_DIR" && cp version.txt "$PROD_DIR/version.txt" && test "$(git -C "$MOTOR_RAIZ" rev-parse HEAD)" = "$(git rev-parse HEAD)" | test -f ops/desplegar.sh |
+| D.2 | escribe: ops/checklist.sh=test "$(cat "$PROD_DIR/version.txt")" = v2 && test "$(git -C "$MOTOR_RAIZ" rev-parse HEAD)" = "$(git rev-parse HEAD)" | test -f ops/checklist.sh |
 | D.3 | escribe: ops/rollback.sh=rm -f "$PROD_DIR/version.txt" | test -f ops/rollback.sh |
 
 ## Bloque C — guía en el repo de documentación
