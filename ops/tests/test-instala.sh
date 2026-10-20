@@ -58,6 +58,21 @@ cat >"$S/bin/launchctl" <<'FAKE'
 FAKE
 chmod +x "$S/bin/"*
 
+# git de verdad, pero con fallas de red a pedido: el primer fetch falla si FAKE_GIT_FETCH_FALLA=1
+# (transitorio: un reintento lo absorbe) y todo ls-remote falla si FAKE_GIT_LSREMOTO_FALLA=1.
+GIT_REAL="$(command -v git)"
+cat >"$S/bin/git" <<FAKE
+#!/usr/bin/env bash
+if [ -n "\${FAKE_GIT_FETCH_FALLA:-}" ] && [ "\$1" = -C ] && [ "\$3" = fetch ]; then
+  if [ ! -e "$S/fetch-fallo" ]; then touch "$S/fetch-fallo"; echo "fatal: cannot lock ref" >&2; exit 128; fi
+fi
+if [ -n "\${FAKE_GIT_LSREMOTO_FALLA:-}" ] && [ "\$1" = -C ] && [ "\$3" = ls-remote ]; then
+  echo "fatal: no pude conectar" >&2; exit 128
+fi
+exec $GIT_REAL "\$@"
+FAKE
+chmod +x "$S/bin/git"
+
 reset() { rm -rf "$S/mac" "$S/mini" "$S/sudo.log" "$S/pc-recibido.tar" "$S/launchd"/*; mkdir -p "$S/mac" "$S/mini"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_PC_FALLA FAKE_SUDO_FALLA FAKE_PC_TAREA_RC; }
 I="$RAIZ/ops/instala-todo.sh"
 D="$RAIZ/ops/desinstala-todo.sh"
@@ -120,6 +135,17 @@ git -C "$S/trabajo" reset -q --hard origin/main
 SHA="$(git -C "$S/trabajo" rev-parse HEAD)"
 en_mac espera "etiqueta local vieja no se publica" 0 bash "$I"
 [ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.0^{commit}")" = "$SHA" ] || fallo "origin quedó con v1.0.0 en otro commit que el SHA mergeado"
+
+echo "# red transitoria"
+# El repo del despliegue lo comparte el daemon (fetcha seguido): un fetch puede chocar con un lock.
+reset; git -C "$S/origen.git" tag -d v1.0.0 >/dev/null 2>&1; rm -f "$S/fetch-fallo"
+FAKE_GIT_FETCH_FALLA=1 en_mac espera "un fetch que falla una vez se reintenta" 0 bash "$I"
+[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.0^{commit}")" = "$SHA" ] || fallo "no quedó la etiqueta tras el reintento"
+
+# Sin respuesta de origin no se sabe si la etiqueta existe: peor que fallar es pisarla o duplicarla.
+reset; git -C "$S/origen.git" tag -d v1.0.0 >/dev/null 2>&1
+FAKE_GIT_LSREMOTO_FALLA=1 en_mac espera "ls-remote caído no es etiqueta ausente" '!0' bash "$I"
+git -C "$S/origen.git" rev-parse -q --verify refs/tags/v1.0.0 >/dev/null && fallo "etiquetó sin poder consultar origin"
 
 echo "# desinstalar"
 reset; en_mac bash "$I" >/dev/null 2>&1
