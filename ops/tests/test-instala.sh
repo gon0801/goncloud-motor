@@ -92,6 +92,7 @@ en_mac espera "segunda corrida (actualiza, no reclona)" 0 bash "$I"
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m otro && git -C "$S/trabajo" push -q origin HEAD:main
 en_mac espera "la etiqueta existente se respeta" 0 bash "$I"
 [ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.0^{commit}")" = "$SHA" ] || fallo "la etiqueta existente se movió"
+for m in mac mini; do [ "$(git -C "$S/$m/motor" rev-parse HEAD)" = "$SHA" ] || fallo "$m: ~/motor dejó la etiqueta cuando main avanzó"; done
 
 echo "# instalar con fallas"
 reset; git -C "$S/origen.git" tag -d v1.0.0 >/dev/null
