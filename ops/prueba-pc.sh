@@ -11,12 +11,11 @@ host="${MOTOR_PC:-gwpc}"
 uv='C:\Users\ehven\.local\bin\uv.exe'
 carpeta="%TEMP%\\$dir"
 salida="$(mktemp)"
-trap 'rm -f "$salida"' EXIT
 
-limpiar() { ssh -o BatchMode=yes "$host" "if exist $carpeta rmdir /s /q $carpeta" >/dev/null 2>&1; }
+limpiar() { ssh -o BatchMode=yes "$host" "(if exist $carpeta rmdir /s /q $carpeta)" >/dev/null 2>&1; }
 trap 'limpiar; rm -f "$salida"' EXIT
 
-ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "if exist $carpeta rmdir /s /q $carpeta & mkdir $carpeta" || { echo "ssh/mkdir falló" >&2; exit 3; }
+ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" "(if exist $carpeta rmdir /s /q $carpeta) & mkdir $carpeta" || { echo "ssh/mkdir falló" >&2; exit 3; }
 git archive "$sha" | ssh -o BatchMode=yes "$host" "tar -x -C $carpeta" || { echo "envío del SHA falló" >&2; exit 3; }
 
 ssh -o BatchMode=yes "$host" "cd /d $carpeta && $uv run --python 3.12 python -m unittest -v tests.test_puro tests.test_windows" >"$salida" 2>&1
