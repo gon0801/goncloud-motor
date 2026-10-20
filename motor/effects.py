@@ -50,7 +50,7 @@ def _run(
         cwd=cwd,
         env=env,
         capture_output=True,
-        text=True,
+        text=True, errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=timeout,
         shell=True,

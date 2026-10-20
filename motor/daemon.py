@@ -34,6 +34,13 @@ from .version import SALIDA_RELANZAR, info, pide_otra
 from .workspace import Workspace
 
 
+ESPERA_TRAS_FALLA_S = 300
+
+
+def _bloque(a: m.Action) -> str:
+    return getattr(a, "block", "") or getattr(getattr(a, "ticket", None), "block", "")
+
+
 class Daemon:
     def __init__(self, home: Path, checks_cada_s: float | None = None):
         self.home = home
@@ -66,6 +73,7 @@ class Daemon:
             None  # None: aplicar en el primer tick (también tras un reinicio)
         )
         self._sin_dormir_reintento = 0.0
+        self._espera_efecto: dict[tuple[str, str, str], float] = {}   # efecto que falló -> no antes de
 
     def recargar_conf(self) -> None:
         conf = load_conf(self.maquina.conf)
@@ -192,9 +200,14 @@ class Daemon:
             self.ingest_attempts(plan)
             snap = m.fold(plan, self.store.events(plan.id))
             for a in m.decide(snap, self.cx.policy, now):
+                clave = (plan.id, _bloque(a), type(a).__name__)
+                if now < self._espera_efecto.get(clave, 0):
+                    continue   # falló hace poco: no se repite en cada tick (una prueba por ssh a la PC, p. ej.)
                 try:
                     self.execute(plan, snap, a)
-                except Exception as e:  # noqa: BLE001  red caída, repo borrado, disco lleno: se reintenta el próximo tick
+                    self._espera_efecto.pop(clave, None)
+                except Exception as e:  # noqa: BLE001  red caída, repo borrado, disco lleno: se reintenta en 5 min
+                    self._espera_efecto[clave] = now + ESPERA_TRAS_FALLA_S
                     self._falla_efecto(plan, a, e, now)
                 snap = m.fold(plan, self.store.events(plan.id))
             hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
@@ -224,7 +237,7 @@ class Daemon:
             list(argv),
             check=False,
             capture_output=True,
-            text=True,
+            text=True, errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=60,
         )
@@ -236,9 +249,7 @@ class Daemon:
     def _falla_efecto(self, plan: Plan, a: m.Action, e: Exception, now: float) -> None:
         """Un efecto que revienta no tumba al motor. Se anota una vez por hora y el tick siguiente
         lo reintenta (los efectos son idempotentes); si sigue fallando, el aviso de 'atorado' llega solo."""
-        bloque = getattr(a, "block", "") or getattr(
-            getattr(a, "ticket", None), "block", ""
-        )
+        bloque = _bloque(a)
         clave = f"falla:{plan.id}:{bloque}:{type(a).__name__}:{int(now // 3600)}"
         self.store.append(
             plan.id,

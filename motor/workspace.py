@@ -21,7 +21,7 @@ from pathlib import Path
 
 
 def git(*a: str, cwd: Path | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    return subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL,
                           env={**os.environ, **(env or {})})
 
 
