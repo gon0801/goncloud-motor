@@ -50,8 +50,9 @@ fi
 
 # 2. Mac y Mini: un script POSIX que corre allá.
 instala_posix() {
-  local m=$1
-  en_posix "$m" "$m" "$ETIQUETA" "$REPO_URL" "$CONF_URL" <<'REMOTO'
+  local m=$1 repo_url=$REPO_URL conf_url=$CONF_URL
+  if [ "$m" = mini ]; then repo_url=$REPO_URL_MINI conf_url=$CONF_URL_MINI; fi
+  en_posix "$m" "$m" "$ETIQUETA" "$repo_url" "$conf_url" <<'REMOTO'
 set -euo pipefail
 m=$1 etiqueta=$2 repo=$3 confurl=$4
 motor="$HOME/motor" conf="$HOME/motor-conf" home="$HOME/.motor"
@@ -67,6 +68,8 @@ git -C "$conf" checkout -q --detach origin/HEAD
 mkdir -p "$home"
 [ -f "$conf/maquinas/$m.toml" ] || { echo "la conf no trae maquinas/$m.toml" >&2; exit 1; }
 cp "$conf/maquinas/$m.toml" "$home/maquina.toml"
+# maquinas/<m>.toml declara la conf en ~/.motor/conf: un enlace la deja ahí sin duplicar el clone.
+ln -sfn "$conf" "$home/conf"
 (cd "$motor" && PYTHONPATH=. $py -m motor conf valida "$conf" >/dev/null && PYTHONPATH=. $py -m motor version >/dev/null)
 
 usuario="$(id -un)"
@@ -99,6 +102,8 @@ instala_pc() {
   ssh_a "$(host_de pc)" "git -C $u\\motor-conf checkout -q --detach origin/HEAD" || return 1
   ssh_a "$(host_de pc)" "if not exist $u\\.motor mkdir $u\\.motor" || return 1
   ssh_a "$(host_de pc)" "copy /y $u\\motor-conf\\maquinas\\pc.toml $u\\.motor\\maquina.toml" >/dev/null || return 1
+  # maquinas/pc.toml declara la conf en .motor\conf: una junction la deja ahí sin duplicar el clone (ni admin).
+  ssh_a "$(host_de pc)" "if not exist $u\\.motor\\conf mklink /j $u\\.motor\\conf $u\\motor-conf" || return 1
   ssh_a "$(host_de pc)" "cd /d $u\\motor && $PC_UV run --python 3.12 python -m motor conf valida $u\\motor-conf" >/dev/null || return 1
   tmp="$(mktemp -d)"
   cat >"$tmp/instalar-servicio.txt" <<TXT
