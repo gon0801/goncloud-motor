@@ -190,6 +190,31 @@ class TestEntregaSegura(Banco):
         self.assertTrue(any(e.kind == "EffectFailed" and "se cayó la red" in e.data["error"] for e in evs))
 
 
+class TestSalidaDeWindows(Banco):
+    def test_salida_no_utf8_y_efecto_que_falla_no_se_repite_en_cada_tick(self):
+        """MOTOR 01, 2026-10-20: la prueba por ssh a la PC devolvió una ñ en cp1252 (0xf1) y la
+        verificación reventaba con UnicodeDecodeError en cada tick, corriendo la prueba otra vez."""
+        from motor.effects import _run
+        r = _run("printf 'a\\361o\\n'", None, dict(os.environ))
+        self.assertEqual((r.returncode, r.stdout), (0, "a\ufffdo\n"))
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        motor("entrega", str(self.plan), "--home", str(self.home), "--json", "--espera", "0")
+        d = Daemon(self.home)
+        llamadas = []
+
+        def revienta(*_):
+            llamadas.append(1)
+            raise RuntimeError("se cayó la red")
+        d.fx.start_attempt = revienta
+        ahora = time.time()
+        d.tick(ahora)
+        primero = len(llamadas)
+        d.tick(ahora + 10)
+        self.assertEqual(len(llamadas), primero, "a los 10 s no se repite lo que acaba de fallar")
+        d.tick(ahora + 301)
+        self.assertGreater(len(llamadas), primero, "a los 5 min sí se reintenta")
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})

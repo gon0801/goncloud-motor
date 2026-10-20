@@ -106,7 +106,7 @@ class GhGitHub:
             ["gh", *a],
             check=False,
             capture_output=True,
-            text=True,
+            text=True, errors="replace",
             env=self.env,
             stdin=subprocess.DEVNULL,
         )

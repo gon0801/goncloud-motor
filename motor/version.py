@@ -22,7 +22,7 @@ def sha_actual(raiz: Path = RAIZ) -> str:
         ["git", "-C", str(raiz), "rev-parse", "HEAD"],
         check=False,
         capture_output=True,
-        text=True,
+        text=True, errors="replace",
         stdin=subprocess.DEVNULL,
     )
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "sin-git"

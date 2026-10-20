@@ -15,7 +15,7 @@ def boot_id_sistema() -> str:
             return f.read().strip()
     except OSError:
         pass
-    r = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True)
+    r = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, errors="replace")
     m = re.search(r"sec\s*=\s*(\d+)", r.stdout)
     return m.group(1) if m else "desconocido"
 
