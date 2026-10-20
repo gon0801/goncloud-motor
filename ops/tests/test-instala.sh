@@ -21,6 +21,11 @@ git clone -q --bare "$S/conf-src" "$S/conf.git"
 
 export MOTOR_REPO_URL="$S/origen.git" MOTOR_CONF_URL="$S/conf.git" MOTOR_INSTALA_RAIZ="$S/trabajo"
 export MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_LAUNCHD_DIR="$S/launchd"
+# La Mini clona por sus propias URLs (en la realidad, su alias de ssh github-claw; acá, otro
+# nombre del mismo repo para ver en el log cuál usó).
+ln -s origen.git "$S/origen-mini.git"
+ln -s conf.git "$S/conf-mini.git"
+export MOTOR_REPO_URL_MINI="$S/origen-mini.git" MOTOR_CONF_URL_MINI="$S/conf-mini.git"
 mkdir -p "$S/launchd"
 
 # --- ssh falso: la Mini corre de verdad en su HOME falso; la PC solo registra.
@@ -89,6 +94,7 @@ for m in mac mini; do
   [ "$(git -C "$S/$m/motor" describe --tags --exact-match)" = v1.0.0 ] || fallo "$m: ~/motor sin v1.0.0"
   [ -d "$S/$m/motor-conf/.git" ] || fallo "$m: falta ~/motor-conf"
   cmp -s "$S/conf-src/maquinas/$m.toml" "$S/$m/.motor/maquina.toml" || fallo "$m: maquina.toml no es el de la conf"
+  [ "$(readlink "$S/$m/.motor/conf")" = "$S/$m/motor-conf" ] || fallo "$m: ~/.motor/conf no enlaza a ~/motor-conf"
   contiene "$m txt" "$S/$m/.motor/instalar-servicio.txt" "motor instala --maquina $m"
   contiene "$m txt" "$S/$m/.motor/instalar-servicio.txt" "--imprime"
 done
@@ -100,6 +106,8 @@ contiene "txt de la PC" "$S/pc.txt" "motor instala --maquina pc"
 contiene "txt de la PC" "$S/pc.txt" "schtasks /create"
 contiene "la PC usa la etiqueta" "$FAKE_LOG" "refs/tags/v1.0.0"
 contiene "la PC clona la conf" "$FAKE_LOG" "motor-conf"
+contiene "la Mini clona por su URL" "$FAKE_LOG" "mini v1.0.0 $S/origen-mini.git $S/conf-mini.git"
+contiene "la PC enlaza la conf" "$FAKE_LOG" "mklink /j"
 grep -qE 'dev/goncloud-motor|\.motor-arranque' "$FAKE_LOG" && fallo "tocó ~/dev/goncloud-motor o ~/.motor-arranque"
 [ -e "$S/mac/dev" ] || [ -e "$S/mac/.motor-arranque" ] && fallo "creó carpetas ajenas en la Mac"
 
