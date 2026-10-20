@@ -112,6 +112,15 @@ en_mac espera "SHA sin mergear no se etiqueta" '!0' bash "$I"
 git -C "$S/origen.git" rev-parse -q --verify refs/tags/v1.0.0 >/dev/null && fallo "etiquetó un SHA sin mergear"
 git -C "$S/trabajo" reset -q --hard origin/main
 
+# una v1.0.0 local (no está en origin) sobre un commit sin mergear no debe publicarse
+reset; git -C "$S/origen.git" tag -d v1.0.0 >/dev/null 2>&1
+git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m viejo-sin-mergear
+git -C "$S/trabajo" tag -f v1.0.0 >/dev/null
+git -C "$S/trabajo" reset -q --hard origin/main
+SHA="$(git -C "$S/trabajo" rev-parse HEAD)"
+en_mac espera "etiqueta local vieja no se publica" 0 bash "$I"
+[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.0^{commit}")" = "$SHA" ] || fallo "origin quedó con v1.0.0 en otro commit que el SHA mergeado"
+
 echo "# desinstalar"
 reset; en_mac bash "$I" >/dev/null 2>&1
 touch "$S/mac/.cargado" "$S/mini/.cargado" "$S/launchd/com.goncloud.motor.plist"

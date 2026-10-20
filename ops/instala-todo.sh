@@ -20,8 +20,9 @@ fi
 if [ -n "$(git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA")" ]; then
   echo "etiqueta $ETIQUETA ya existe en origin: se respeta"
 else
-  git -C "$raiz" tag "$ETIQUETA" "$sha" 2>/dev/null || true
-  git -C "$raiz" push -q origin "refs/tags/$ETIQUETA" || { echo "no pude empujar $ETIQUETA" >&2; exit 3; }
+  # Se empuja el SHA verificado, no la etiqueta local: una v1.0.0 local vieja publicaría otro commit.
+  git -C "$raiz" tag -f "$ETIQUETA" "$sha" >/dev/null 2>&1
+  git -C "$raiz" push -q origin "$sha:refs/tags/$ETIQUETA" || { echo "no pude empujar $ETIQUETA" >&2; exit 3; }
   echo "etiqueta $ETIQUETA creada en ${sha:0:12}"
 fi
 
