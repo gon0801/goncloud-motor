@@ -51,6 +51,8 @@ _FRENO_EN_SALIDA = re.compile(
     r"rate[ _-]?limit(?:s)?[ _-](?:exceeded|reached)|rate_limit_error|too many requests",
     re.I,
 )
+# Frase de auth que ningún modelo escribe por casualidad: vale también en la salida mezclada.
+_AUTH_EN_SALIDA = re.compile(r"keychain is locked", re.I)
 _EXCEDIDO = re.compile(r"\bexceeded\b", re.I)
 _RETRY_AFTER = re.compile(
     r"(?:retry[ _-]?after|try again in)[:\s]+(\d+(?:\.\d+)?)\s*([a-z]*)", re.I
@@ -172,7 +174,7 @@ def _canal(texto: str, suelto: bool) -> str | None:
     if _TRANSPORTE.search(texto):
         return "transitorio"
     if not suelto:
-        return None
+        return "auth" if _AUTH_EN_SALIDA.search(texto) else None
     if _AUTH.search(texto):
         return "auth"
     if _EXCEDIDO.search(texto):

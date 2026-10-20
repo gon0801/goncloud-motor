@@ -260,6 +260,46 @@ humano: login pega las llaves
             self.assertFalse(r["rutas"]["k3"]["ejecutable"])
 
 
+class AvanceCadaHoraTest(unittest.TestCase):
+    """David: "prefiero cada hora" (2026-10-20). Si el resumen deja de llegar, algo se cayó."""
+
+    def eventos(self, horas: float, now: float):
+        t0 = now - horas * 3600
+        return [Event(1, t0, "demo", "", "PlanLoaded", {}),
+                Event(2, now - 40 * 60, "demo", "A", "AttemptStarted",
+                      {"n": 1, "role": "implementar", "modelo": "sonnet", "proc": {}, "dir": "d"})]
+
+    def avisos(self, evs, now):
+        return [a for a in m.decide(m.fold(parse_plan(PLAN), evs), pol(), now) if isinstance(a, m.Notify)
+                and a.template == "avance"]
+
+    def test_un_resumen_por_hora_con_lo_que_se_hace(self):
+        now = time.time()
+        self.assertEqual(self.avisos(self.eventos(0.5, now), now), [], "antes de la primera hora, nada")
+        a = self.avisos(self.eventos(2.2, now), now)
+        self.assertEqual([x.key for x in a], ["avance:2"])
+        texto = render("avance", dict(a[0].campos), "Mac", "Motor de planes")
+        self.assertIn("0 de 2 partes listas.", texto)
+        self.assertIn("Ahora trabajo en «uno» (Sonnet, 40 min).", texto)
+        self.assertIn("Nada atorado.", texto)
+        ya = self.eventos(2.2, now) + [Event(3, now, "demo", "", "NoticeQueued", {"key": "avance:2", "texto": "x"})]
+        self.assertEqual(self.avisos(ya, now), [], "una vez por hora")
+
+    def test_plan_terminado_no_manda_resumen(self):
+        now = time.time()
+        p = parse_plan(PLAN)
+        s = m.fold(p, self.eventos(3, now))
+        for bv in s.blocks.values():
+            bv.merged.append({"sha": "a" * 40, "commit": "c"})
+            bv.proved["a" * 40] = {"ok": True}
+        self.assertFalse([a for a in m.decide(s, pol(), now) if isinstance(a, m.Notify) and a.template == "avance"])
+
+    def test_el_resumen_no_se_pierde_por_un_titulo_con_jerga(self):
+        texto = render("avance", {"listas": "3", "total": "9", "ahora": "Ahora hago rebase del commit", "atoron": ""},
+                       "Mini", "Plan")
+        self.assertIn("3 de 9 partes listas. Sigo trabajando.", texto)
+
+
 class ConfValidaTest(unittest.TestCase):
     def test_conf_compartida_y_maquinas(self):
         import shutil
@@ -309,7 +349,8 @@ class ConfTest(unittest.TestCase):
 class AvisosTest(unittest.TestCase):
     def test_plantillas_con_maquina_y_filtro(self):
         campos = {"n": "1", "total": "3", "aviso": "ya puedes bloquear búsquedas", "prueba": "pasó",
-                  "que_hacer": "entra a Seller Central", "hasta": str(time.time() + 3600), "bloque": "el despliegue"}
+                  "que_hacer": "entra a Seller Central", "hasta": str(time.time() + 3600), "bloque": "el despliegue",
+                  "listas": "2", "ahora": "Ahora trabajo en «el reporte» (Sonnet, 12 min).", "atoron": "Nada atorado."}
         for t in PLANTILLAS:
             texto = render(t, campos, "Mini", "Reporte de ventas")
             self.assertTrue(texto.startswith("En la Mini · Reporte de ventas:"))
