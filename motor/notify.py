@@ -24,7 +24,7 @@ PLANTILLAS = {
                "Cuando acabes, dile «ya quedó» a quien te dio el plan.\nLo demás sigue avanzando."),
     "lento": ("Voy más lento: se acabó el cupo de todos los agentes de este paso.\n"
               "Sigo solo cuando se renueve, {hasta}. No tienes que hacer nada."),
-    "terminado": "Terminé el plan: {total} partes hechas y probadas.\nNo queda nada pendiente.",
+    "terminado": "Terminé el plan: todas sus partes quedaron hechas y probadas.\nNo queda nada pendiente.",
     "atorado": ("Me atoré en una parte: {bloque}.\n"
                 "Ningún agente pudo resolverla; Claude la va a revisar y te cuenta.\n"
                 "Lo demás del plan sigue avanzando."),
