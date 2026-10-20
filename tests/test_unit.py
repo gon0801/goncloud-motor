@@ -104,6 +104,21 @@ class MachineTest(unittest.TestCase):
         self.assertFalse([a for a in acc if isinstance(a, m.StartAttempt)])
         self.assertEqual([a.template for a in acc if isinstance(a, m.Notify)].count("lento"), 1)
 
+    def test_revisor_sin_cuota_lo_releva_quien_no_implemento(self):
+        now = time.time()
+        eventos = [
+            ev("AttemptStarted", "A", {"n": 1, "role": "implementar", "provider": "muse", "pid": 1, "dir": "d"}),
+            ev("AttemptEnded", "A", {"n": 1, "role": "implementar", "outcome": {"kind": "cuota"}}),
+            ev("AttemptStarted", "A", {"n": 2, "role": "implementar", "provider": "glm", "pid": 1, "dir": "d"}),
+            ev("AttemptEnded", "A", {"n": 2, "role": "implementar", "outcome": {"kind": "entregado", "sha": "a" * 40}}),
+            ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
+            ev("Cooldown", "", {"provider": "claude", "hasta": now + 3600}),
+        ]
+        acc = m.decide(self.snap(eventos), policy("muse", "glm", "kimi"), now)
+        rev = [a for a in acc if isinstance(a, m.StartAttempt) and a.role == "revisar"]
+        # claude sin cuota; muse y glm trabajaron en el bloque: revisa kimi
+        self.assertEqual(rev[0].provider, "kimi")
+
     def test_no_existe_estado_fallado_ni_pausado(self):
         nombres = {e.name for e in m.Estado}
         self.assertFalse(nombres & {"FALLADO", "FAILED", "PAUSADO", "PAUSED"})

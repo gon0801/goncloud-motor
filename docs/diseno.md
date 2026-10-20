@@ -109,10 +109,10 @@ atoró y que Claude lo revisa, y el resto del plan sigue. Probado:
 6. Shims de `gh`, `git` y `ssh` en el PATH de los agentes como barandal; la frontera real
    es la protección de rama y que solo el daemon mergee y despliegue.
 
-## Preguntas para David
+## Decisiones de David (2026-10-20)
 
-1. ¿La revisión del lead puede ser Claude sin ventana, con las mismas reglas y memorias,
-   en lugar de la ventana abierta? Es lo que quita el tecleo (familia 2).
-2. Cuando la cuota de Claude se acabe, ¿esperamos al reinicio (los implementadores siguen
-   con otros bloques) o se paga Claude por API para la revisión?
-3. ¿Se retira claw de los loops y se queda solo como chat?
+1. La revisión del lead corre sin ventana (Claude headless), con sus reglas y memorias.
+2. Si el revisor no está disponible (cuota), revisa cualquier otro agente que no haya
+   trabajado en ese bloque (`revisores_para`). Reemplaza la regla vieja de "sin revisión
+   cruzada" para el relevo.
+3. INGESTA 01 (`plans/ingesta-01.md` de Orbit) es el primer plan que corre en taller.

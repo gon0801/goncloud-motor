@@ -100,6 +100,10 @@ class BlockView:
                 return a.ended["sha"]
         return ""
 
+    def autores(self) -> set[str]:
+        """Todo proveedor que trabajó en el código del bloque (aunque su intento fallara a medias)."""
+        return {a.provider for a in self.implement_attempts()}
+
     def last_implement_outcome(self) -> dict | None:
         imp = self.implement_attempts()
         return imp[-1].ended if imp else None
@@ -362,6 +366,17 @@ def _elige(ladder: tuple[str, ...], snap: Snapshot, policy: Policy, now: float,
     return None
 
 
+def revisores_para(bv: BlockView, policy: Policy) -> tuple[str, ...]:
+    """Orden de David (2026-10-20): revisa el revisor de la política (Claude); si no está
+    disponible, cualquier otro agente que NO haya trabajado en ese bloque."""
+    autores = bv.autores()
+    vistos: list[str] = []
+    for p in (*policy.revisores, *policy.implementadores):
+        if p not in autores and p not in vistos:
+            vistos.append(p)
+    return tuple(vistos)
+
+
 def _mismo_bloqueante_dos_veces(bv: BlockView) -> bool:
     textos = [tuple(sorted(b["texto"] for b in _bloqueantes(r))) for r in bv.reviews if not _aprobado(r)]
     return len(textos) >= 2 and textos[-1] == textos[-2] and bool(textos[-1])
@@ -393,9 +408,10 @@ def decide(snap: Snapshot, policy: Policy, now: float) -> list[Action]:
         elif e is Estado.VERIFICAR:
             acciones.append(Verify(bid, bv.head()))
         elif e is Estado.REVISAR:
-            p = _elige(policy.revisores, snap, policy, now, bv, "revisar", reservas)
+            escalera = revisores_para(bv, policy)
+            p = _elige(escalera, snap, policy, now, bv, "revisar", reservas)
             if p is None:
-                acciones.extend(_sin_agente(snap, policy, now, bid, policy.revisores, bv))
+                acciones.extend(_sin_agente(snap, policy, now, bid, escalera, bv))
             else:
                 reservas[p] = reservas.get(p, 0) + 1
                 n = len([a for a in bv.attempts if a.role == "revisar"]) + 1
