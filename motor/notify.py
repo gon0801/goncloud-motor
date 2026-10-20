@@ -19,6 +19,8 @@ from pathlib import Path
 DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 
 PLANTILLAS = {
+    "conf_mala": ("Alguien cambió la configuración compartida y trae un error; no la apliqué.\n"
+                  "Sigo trabajando con la anterior. Quien la cambió tiene que corregirla."),
     "entregado": "Listo, parte {n} de {total}: {aviso}.\nLa probé con datos reales: {prueba}.",
     "humano": (
         "Necesito tu mano un momento: {que_hacer}.\n"
