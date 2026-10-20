@@ -36,6 +36,8 @@ def main() -> int:
     marca.parent.mkdir(parents=True, exist_ok=True)
     primera = not marca.exists()
     marca.write_text("1")
+    if os.environ.get("FAKE_LLAVE"):   # variable que puso la ruta (sale de secretos.env)
+        (marca.parent / f"llave-{os.environ['MOTOR_MODEL']}").write_text(os.environ["FAKE_LLAVE"])
 
     if modo == "cuota_primero" and primera:
         reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")

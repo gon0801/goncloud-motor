@@ -61,11 +61,11 @@ def _recibo(home: Path, cmd_id: str) -> dict:
 
 
 def _valida(path: Path, home: Path | None):
-    impl = 0
+    impl, modelos = 0, None
     if home and (home / "maquina.toml").exists():
-        mq = load_maquina(home)
-        impl = len(load_conf(mq.conf).escalera("implementar"))
-    return parse_plan(path.read_text(), min_implementadores=2 if home else 0, implementadores=impl)
+        conf = load_conf(load_maquina(home).conf)
+        impl, modelos = len(conf.escalera("implementar")), set(conf.rutas)
+    return parse_plan(path.read_text(), min_implementadores=2 if home else 0, implementadores=impl, modelos=modelos)
 
 
 def _estado(home: Path) -> list[dict]:

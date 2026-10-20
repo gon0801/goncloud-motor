@@ -31,3 +31,15 @@ argv = ["grok", "--prompt-file", "{brief}", "--always-approve", "--output-format
 cuenta = "meta"
 cli = "muse"
 argv = ["muse", "exec", "--yolo", "--json", "--prompt-file", "{brief}"]
+
+# Fuera de los carriles de la tabla v6: solo entran si un plan los pide ("implementa: qwen", "revisa: deepseek").
+[rutas.deepseek]
+cuenta = "deepseek"
+cli = "claude"
+argv = ["claude", "-p", "--model", "deepseek-v4-pro", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]
+env = { ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN = "${DEEPSEEK_API_KEY}", ANTHROPIC_MODEL = "deepseek-v4-pro", ANTHROPIC_DEFAULT_OPUS_MODEL = "deepseek-v4-pro", ANTHROPIC_DEFAULT_SONNET_MODEL = "deepseek-v4-pro", ANTHROPIC_DEFAULT_HAIKU_MODEL = "deepseek-flash", CLAUDE_CODE_SUBAGENT_MODEL = "deepseek-flash", CLAUDE_CODE_OAUTH_TOKEN = "" }
+
+[rutas.qwen]
+cuenta = "qwen"
+cli = "qwen"
+argv = ["qwen", "--approval-mode", "yolo", "--output-format", "json", "{prompt}"]

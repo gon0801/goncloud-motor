@@ -70,6 +70,9 @@ class Plan:
     id: str
     titulo: str
     blocks: tuple[Block, ...]
+    # Pedido de David para ESTE plan ("implementa: qwen", "revisa: deepseek"). Vacío = la tabla.
+    implementa: tuple[str, ...] = ()
+    revisa: tuple[str, ...] = ()
 
     def block(self, bid: str) -> Block:
         for b in self.blocks:
@@ -86,7 +89,8 @@ class Plan:
                 "release": b.release.__dict__ if b.release else None,
                 "human": b.human.__dict__ if b.human else None,
             }
-        return {"id": self.id, "titulo": self.titulo, "blocks": [blk(b) for b in self.blocks]}
+        return {"id": self.id, "titulo": self.titulo, "blocks": [blk(b) for b in self.blocks],
+                "implementa": list(self.implementa), "revisa": list(self.revisa)}
 
     @staticmethod
     def from_dict(d: dict) -> Plan:
@@ -99,7 +103,8 @@ class Plan:
                 release=Release(**b["release"]) if b["release"] else None,
                 human=Human(**b["human"]) if b["human"] else None,
             ))
-        return Plan(id=d["id"], titulo=d["titulo"], blocks=tuple(blocks))
+        return Plan(id=d["id"], titulo=d["titulo"], blocks=tuple(blocks),
+                    implementa=tuple(d.get("implementa", ())), revisa=tuple(d.get("revisa", ())))
 
 
 @dataclass
@@ -124,9 +129,25 @@ def _celdas(linea: str) -> list[str]:
     return [c.strip() for c in linea.strip().strip("|").split("|")]
 
 
-def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int = 0) -> Plan:
-    """Lee el plan y lo valida entero. Devuelve Plan o lanza PlanError con TODOS los errores."""
+def _modelos(valor: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(x.strip().lower() for x in valor.split(",") if x.strip()))
+
+
+def modelos_desconocidos(plan: Plan, conocidos) -> list[str]:
+    conocidos = set(conocidos)
+    malos = [mo for mo in (*plan.implementa, *plan.revisa) if mo not in conocidos]
+    if not malos:
+        return []
+    return [f"no conozco el modelo {', '.join(dict.fromkeys(malos))}; los que hay: {', '.join(sorted(conocidos))}"]
+
+
+def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int = 0,
+               modelos: set[str] | None = None) -> Plan:
+    """Lee el plan y lo valida entero. Devuelve Plan o lanza PlanError con TODOS los errores.
+    Con `modelos` (los de la conf) también revisa que existan los que pide `implementa:`/`revisa:`."""
     titulo, plan_id, autopiloto, repo_plan = "", "", "", ""
+    implementa: tuple[str, ...] = ()
+    revisa: tuple[str, ...] = ()
     drafts: list[_Draft] = []
     errores: list[str] = []
     for linea in texto.splitlines():
@@ -160,6 +181,10 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
                 autopiloto = valor
             elif clave == "repo":
                 repo_plan = valor
+            elif clave == "implementa":
+                implementa = _modelos(valor)
+            elif clave == "revisa":
+                revisa = _modelos(valor)
 
     if autopiloto != "motor":
         errores.append("falta la línea 'autopiloto: motor'")
@@ -227,10 +252,16 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
 
     if any(visit.get(n) is None and dfs(n) for n in grafo):
         errores.append("las dependencias entre bloques forman un ciclo")
-    if min_implementadores and implementadores < min_implementadores:
+    if revisa and implementa and set(revisa) <= set(implementa):
+        errores.append("'revisa:' necesita al menos un modelo que no esté en 'implementa:'; "
+                       "nadie revisa su propio trabajo")
+    if not implementa and min_implementadores and implementadores < min_implementadores:
         errores.append(
             f"la política tiene {implementadores} implementador(es); se exigen {min_implementadores} "
             "para que una cuota agotada no detenga el plan")
+    plan = Plan(id=plan_id, titulo=titulo, blocks=tuple(blocks), implementa=implementa, revisa=revisa)
+    if modelos is not None:
+        errores += modelos_desconocidos(plan, modelos)
     if errores:
         raise PlanError(errores)
-    return Plan(id=plan_id, titulo=titulo, blocks=tuple(blocks))
+    return plan

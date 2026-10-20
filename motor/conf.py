@@ -32,6 +32,7 @@ class Ruta:
     cli: str
     argv: tuple[str, ...]          # plantilla: {brief} {prompt} {result}
     max_parallel: int = 1          # por cuenta y máquina se suma en machine._ocupados
+    env: tuple[tuple[str, str], ...] = ()   # p. ej. DeepSeek por el CLI de Claude; ${VAR} sale de secretos.env
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,8 @@ def load_conf(d: Path) -> Conf:
     carriles = {k: tuple(v) for k, v in tomllib.loads((d / "modelos.toml").read_text())["carriles"].items()}
     raw_rutas = tomllib.loads((d / "rutas.toml").read_text())["rutas"]
     rutas = {m: Ruta(modelo=m, cuenta=r["cuenta"], cli=r["cli"], argv=tuple(r["argv"]),
-                     max_parallel=int(r.get("max_parallel", 1))) for m, r in raw_rutas.items()}
+                     max_parallel=int(r.get("max_parallel", 1)), env=tuple(sorted(r.get("env", {}).items())))
+             for m, r in raw_rutas.items()}
     general = tomllib.loads((d / "general.toml").read_text()) if (d / "general.toml").exists() else {}
     errores = []
     for papel, carril in papeles.items():

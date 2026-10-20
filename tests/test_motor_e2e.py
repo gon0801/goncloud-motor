@@ -131,6 +131,33 @@ class TestPlan(Banco):
         self.assertTrue(any("Acepta" in x for x in d["errores"]))
 
 
+class TestPedidoDeModelos(Banco):
+    def test_el_plan_elige_quien_implementa_y_quien_revisa(self):
+        """La tabla dice sonnet→glm para implementar y opus→k3 para revisar; el plan pide glm y k3."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        texto = self.plan.read_text().replace("autopiloto: motor\n", "autopiloto: motor\nimplementa: GLM\nrevisa: k3\n", 1)
+        self.plan.write_text(texto)
+        conf = self.tmp / "b" / "conf"
+        rutas = (conf / "rutas.toml").read_text().replace(
+            '[rutas.glm]\n', '[rutas.glm]\nenv = { FAKE_LLAVE = "${MOTOR_TELEGRAM_TOKEN}" }\n', 1)
+        (conf / "rutas.toml").write_text(rutas)
+        git("-c", "user.name=c", "-c", "user.email=c@l", "commit", "-qam", "env por ruta", cwd=conf)
+        malo = self.tmp / "malo.md"
+        malo.write_text(texto.replace("revisa: k3", "revisa: deepseek"))
+        r = motor("entrega", str(malo), "--home", str(self.home), "--json", "--espera", "0")
+        self.assertIn("no conozco el modelo deepseek", r.stdout + r.stderr)
+        r = motor("entrega", str(self.plan), "--home", str(self.home), "--json", "--espera", "0")
+        self.assertEqual(json.loads(r.stdout)["estado"], "encolado", r.stdout + r.stderr)
+        (self.home / "login-hecho").write_text("ok")
+        self.termina()
+        evs = eventos(self.home)
+        usados = {(e.data["role"], e.data["modelo"]) for e in evs if e.kind == "AttemptStarted"}
+        self.assertEqual({mo for rol, mo in usados if rol == "implementar"}, {"glm"})
+        self.assertEqual({mo for rol, mo in usados if rol == "revisar"}, {"k3"})
+        self.assertEqual((self.tmp / "b" / "fake-state" / "llave-glm").read_text(), "prueba",
+                         "la ruta recibe su llave desde secretos.env")
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})

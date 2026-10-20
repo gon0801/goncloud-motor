@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import string
 import subprocess
 import sys
 import time
@@ -105,7 +106,9 @@ class Effects:
         argv = [x.format(brief=str(d / "brief.md"), prompt=prompt, result=str(result)) for x in ruta.argv]
         if ruta.cli in self.cx.maquina.wsl:   # Muse en la PC: dentro de WSL, con su token pasado por WSLENV
             argv = ["wsl.exe", "-e", *argv]
-        env = self.env_base({"MOTOR_RESULT": str(result), "MOTOR_MODEL": a.modelo, "MOTOR_BLOCK": a.block,
+        base = self.env_base()
+        de_ruta = {k: string.Template(v).safe_substitute(base) for k, v in ruta.env}
+        env = self.env_base({**de_ruta, "MOTOR_RESULT": str(result), "MOTOR_MODEL": a.modelo, "MOTOR_BLOCK": a.block,
                              "MOTOR_ROLE": a.role, "WSLENV": "META_API_KEY/u:MOTOR_RESULT/p",
                              "PYTHONPATH": str(RAIZ)})
         cmd = [sys.executable, "-m", "motor.runwrap", "--dir", str(d), "--cwd", str(cwd),

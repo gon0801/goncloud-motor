@@ -132,6 +132,53 @@ class MachineTest(unittest.TestCase):
         self.assertEqual(m.classify(1, False, False, "Your macOS login keychain is locked")["kind"], "auth")
 
 
+class PedidoDeModelosTest(unittest.TestCase):
+    """David: "haz este plan con DeepSeek como revisor y Qwen como implementer" (2026-10-20)."""
+
+    PEDIDO = PLAN.replace("repo: git@github.com:x/app.git\n",
+                          "repo: git@github.com:x/app.git\nimplementa: Qwen\nrevisa: DeepSeek\n", 1)
+
+    def pol(self):
+        cuenta = {"sonnet": "anthropic", "opus": "anthropic", "glm": "zai", "k3": "kimi",
+                  "qwen": "qwen", "deepseek": "deepseek"}
+        return m.Policy(implementadores=("sonnet", "glm"), revisores=("opus", "k3"), cuenta=cuenta,
+                        max_parallel={c: 2 for c in set(cuenta.values())})
+
+    def test_lee_el_pedido_sin_importar_mayusculas(self):
+        p = parse_plan(self.PEDIDO, modelos={"qwen", "deepseek", "sonnet"})
+        self.assertEqual((p.implementa, p.revisa), (("qwen",), ("deepseek",)))
+        self.assertEqual(type(p).from_dict(p.to_dict()), p, "el pedido sobrevive al registro")
+
+    def test_modelo_desconocido_se_rechaza_con_la_lista(self):
+        with self.assertRaises(PlanError) as cm:
+            parse_plan(self.PEDIDO, modelos={"sonnet", "opus"})
+        self.assertIn("no conozco el modelo qwen, deepseek; los que hay: opus, sonnet", str(cm.exception))
+
+    def test_nadie_revisa_su_propio_trabajo(self):
+        mismo = self.PEDIDO.replace("revisa: DeepSeek", "revisa: qwen")
+        with self.assertRaises(PlanError) as cm:
+            parse_plan(mismo)
+        self.assertIn("nadie revisa su propio trabajo", str(cm.exception))
+
+    def test_un_solo_implementador_pedido_no_choca_con_el_minimo(self):
+        parse_plan(self.PEDIDO, min_implementadores=2, implementadores=1)
+
+    def test_el_motor_usa_lo_pedido_y_no_la_tabla(self):
+        now = time.time()
+        p = parse_plan(self.PEDIDO)
+        inicio = [a for a in m.decide(m.fold(p, []), self.pol(), now) if isinstance(a, m.StartAttempt)]
+        self.assertEqual({a.modelo for a in inicio}, {"qwen"})
+        eventos = entregado(modelo="qwen") + [ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
+                                              ev("PrOpened", "A", {"numero": 1})]
+        rev = [a for a in m.decide(m.fold(p, eventos), self.pol(), now) if isinstance(a, m.StartAttempt)
+               and a.role == "revisar"]
+        self.assertEqual(rev[0].modelo, "deepseek")
+        sin_cuota = eventos + [ev("Cooldown", "", {"cuenta": "deepseek", "hasta": now + 3600})]
+        rev = [a for a in m.decide(m.fold(p, sin_cuota), self.pol(), now) if isinstance(a, m.StartAttempt)
+               and a.role == "revisar"]
+        self.assertEqual(rev, [], "si DeepSeek no tiene cuota se espera; no entra otro que David no pidió")
+
+
 class ConfTest(unittest.TestCase):
     def test_maquina_no_puede_traer_papeles_ni_modelos(self):
         with tempfile.TemporaryDirectory() as t:

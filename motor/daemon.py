@@ -21,7 +21,7 @@ from .conf import load_conf, load_maquina
 from .effects import Contexto, Effects
 from .github import para
 from .notify import Notifier
-from .plan import Plan, PlanError
+from .plan import Plan, PlanError, modelos_desconocidos
 from .store import Store
 from .workspace import Workspace
 
@@ -67,6 +67,8 @@ class Daemon:
             if tipo == "plan":
                 try:
                     plan = Plan.from_dict(msg["plan"])
+                    if malos := modelos_desconocidos(plan, self.cx.conf.rutas):
+                        raise PlanError(malos)
                     self.store.append(plan.id, "", "PlanLoaded", {"plan": msg["plan"], "por": msg.get("por", "")},
                                       ukey=f"plan:{plan.id}")
                     self.fx.pin_repos(plan)

@@ -10,6 +10,7 @@ Flujo de un bloque:
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import re
 from dataclasses import dataclass, field
@@ -34,6 +35,12 @@ class Policy:
     rondas_max_por_modelo: int = 5
     cooldown_default_s: float = 5 * 3600
     aviso_lento_s: float = 6 * 3600
+    revision_fija: bool = False        # el plan nombró a sus revisores: no se sale de esa lista
+
+    def para(self, plan: Plan) -> Policy:
+        """La tabla, salvo lo que el plan pidió con 'implementa:' / 'revisa:'."""
+        return dataclasses.replace(self, implementadores=plan.implementa or self.implementadores,
+                                   revisores=plan.revisa or self.revisores, revision_fija=bool(plan.revisa))
 
     @staticmethod
     def from_conf(conf: Conf) -> Policy:
@@ -388,7 +395,8 @@ def revisores_para(bv: BlockView, policy: Policy) -> tuple[str, ...]:
     ahí puede, cualquier otro modelo conocido. Nunca alguien que trabajó en el bloque."""
     autores = bv.autores()
     vistos: list[str] = []
-    for mo in (*policy.revisores, *policy.implementadores, *policy.cuenta):
+    candidatos = policy.revisores if policy.revision_fija else (*policy.revisores, *policy.implementadores, *policy.cuenta)
+    for mo in candidatos:
         if mo not in autores and mo not in vistos:
             vistos.append(mo)
     return tuple(vistos)
@@ -430,6 +438,7 @@ def _mismo_bloqueante_dos_veces(bv: BlockView) -> bool:
 
 
 def decide(snap: Snapshot, policy: Policy, now: float) -> list[Action]:
+    policy = policy.para(snap.plan)
     acciones: list[Action] = []
     reservas: dict[str, int] = {}
     todos_hechos = True

@@ -74,7 +74,7 @@ latidos que no hacen falta con un solo escritor.
 - **Avisos.** Plantillas cerradas, máximo 8 líneas, sin SHAs ni rutas ni jerga. Se envían al
   menos una vez y se guardan en una bandeja de salida.
 
-## Probado en el prototipo (39 pruebas, 1 saltada)
+## Probado en el prototipo (45 pruebas, 1 saltada)
 
 `PYTHONPATH=. python3 -m unittest tests.test_puro tests.test_github_contrato tests.test_motor_e2e`
 
@@ -106,6 +106,20 @@ agentes reales en el servicio.
 | 7 | Plan que nace de un "investiga" | David da su sí | La skill obliga a preguntar "¿quieres que lo implemente?" antes de entregar. Un plan que David dio o un cambio que pidió se entrega directo |
 | 8 | Retirar la cadena de Hermes y Raíces | En cualquier momento | G no espera al canario |
 | 9 | WSL en la PC para Muse | Sí, ya | `wsl --install` como administrador en la PC, luego el login de Muse dentro de WSL |
+
+## Modelos
+
+Por omisión, la tabla v6 de David: implementan Sonnet → Kimi K3 → GLM 5.3 → Grok 4.7; revisan
+Opus → K3 → GLM → Grok. Si no hay revisor de la lista, revisa cualquier modelo que no tocó el bloque.
+
+Un plan puede pedir cualquier combinación con `implementa:` y `revisa:` en su encabezado (orden
+de David, 2026-10-20). Cuando lo hace:
+- Se usan solo esos modelos. Si se quedan sin cuota, el plan espera; no entra otro.
+- `revisa:` necesita al menos un modelo que no esté en `implementa:`.
+- Un modelo sin ruta en la conf se rechaza al entregar, con la lista de los que hay.
+
+Cada ruta puede traer `env` con `${VAR}` de `secretos.env`. Así DeepSeek corre por el CLI de
+Claude con su propia llave, sin tocar la suscripción.
 
 ## Despliegue: un solo plan, "MOTOR 01"
 

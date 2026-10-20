@@ -43,6 +43,14 @@ Un pedido mixto se parte: lo de leer lo haces ya; lo de cambiar va al plan.
 
 `motor hecho <plan> <bloque> --home <home>`.
 
+## Si David pide modelos ("con DeepSeek como revisor y Qwen como implementer")
+
+Pon en el encabezado `implementa: qwen` y `revisa: deepseek`. Cualquier combinación vale, con
+varios separados por coma en orden de relevo. Se usan solo los que pidió: si no tienen cuota, el
+plan espera a que vuelvan, no se cambia a otro. Si quiere respaldo, que lo nombre
+(`revisa: deepseek, opus`). Si `motor valida` dice "no conozco el modelo X", dile a David cuáles
+hay. Sin pedido, no pongas esas líneas: manda la tabla.
+
 ## Formato del plan
 
 ```
@@ -50,6 +58,8 @@ Un pedido mixto se parte: lo de leer lo haces ya; lo de cambiar va al plan.
 autopiloto: motor
 plan: <id-corto-sin-espacios>
 repo: <url del repo>
+implementa: <modelo>[, <modelo>...]   # solo si David lo pidió; si no, se omite y se usa la tabla
+revisa: <modelo>[, <modelo>...]       # ídem
 
 ## Bloque A — <qué entrega, en palabras de David>
 lane: gate                       # gate = código; release = código que se despliega; fast = solo documentos
