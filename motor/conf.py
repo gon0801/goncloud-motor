@@ -87,7 +87,7 @@ def load_conf(d: Path) -> Conf:
 
 # --------------------------------------------------------------------------- máquina
 
-_CLAVES_MAQUINA = {"nombre", "conf", "path_extra", "env", "wsl", "boot_id_archivo", "github"}
+_CLAVES_MAQUINA = {"nombre", "conf", "path_extra", "env", "wsl", "boot_id_archivo", "github", "no_dormir"}
 _PROHIBIDAS = {"papeles", "carriles", "rutas", "modelos", "reglas", "roles", "avisos"}
 
 
@@ -99,6 +99,9 @@ class Maquina:
     env: tuple[tuple[str, str], ...] = ()          # p. ej. certificados de Kaspersky en la PC
     wsl: tuple[str, ...] = ()                       # CLIs que corren dentro de WSL
     github: str = "real"                            # real | falso:<carpeta> (pruebas)
+    # MacBook: comandos para no dormirse (ni con la tapa cerrada) mientras haya un plan en curso
+    no_dormir_encender: tuple[str, ...] = ()
+    no_dormir_apagar: tuple[str, ...] = ()
     secretos: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
 
@@ -116,7 +119,10 @@ def load_maquina(home: Path) -> Maquina:
         nombre=raw["nombre"], conf=Path(raw["conf"]).expanduser(),
         path_extra=tuple(raw.get("path_extra", [])),
         env=tuple(sorted(raw.get("env", {}).items())), wsl=tuple(raw.get("wsl", [])),
-        github=raw.get("github", "real"), secretos=tuple(sorted(load_secretos(home).items())),
+        github=raw.get("github", "real"),
+        no_dormir_encender=tuple(raw.get("no_dormir", {}).get("encender", [])),
+        no_dormir_apagar=tuple(raw.get("no_dormir", {}).get("apagar", [])),
+        secretos=tuple(sorted(load_secretos(home).items())),
     )
 
 

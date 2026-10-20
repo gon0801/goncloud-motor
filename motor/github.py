@@ -51,6 +51,7 @@ class GitHubPort(Protocol):
     def checks(self, repo: str, numero: int, sha: str, extra: tuple[str, ...]) -> ChecksVerdict: ...
     def merge(self, repo: str, numero: int, sha: str, metodo: str, mensaje: str) -> PrView: ...
     def ver(self, repo: str, numero: int) -> PrView: ...
+    def es_privado(self, repo: str) -> bool: ...
 
 
 # --------------------------------------------------------------------------- real
@@ -125,12 +126,19 @@ class GhGitHub:
     def ver(self, repo, numero):
         return self._vista(repo, numero)
 
+    def es_privado(self, repo):
+        """Si no se puede saber, se trata como público: la foto se queda en la máquina."""
+        try:
+            return json.loads(self._gh("repo", "view", self.nombre(repo), "--json", "visibility"))["visibility"] != "PUBLIC"
+        except Exception:
+            return False
+
 
 # --------------------------------------------------------------------------- falso
 
 class FakeGitHub:
     """Estado en `<dir>/github.json`. La "protección" y los checks salen de `<dir>/repos.json`:
-    {"<repo>": {"requeridos": ["ci"], "solo_listo": ["completa"], "checks": {"ci": "./ci.sh"}}}.
+    {"<repo>": {"requeridos": ["ci"], "solo_listo": ["completa"], "checks": {"ci": "./ci.sh"}, "privado": true}}.
     Los checks corren el comando en una copia limpia del SHA; los de `solo_listo` no corren en borrador."""
 
     def __init__(self, d: Path):
@@ -153,6 +161,9 @@ class FakeGitHub:
     def _punta(self, repo: str, rama: str) -> str:
         r = git("ls-remote", repo, f"refs/heads/{rama}")
         return r.stdout.split()[0] if r.stdout.strip() else ""
+
+    def es_privado(self, repo):
+        return bool(self._cfg(repo).get("privado", True))
 
     def _vista(self, repo: str, pr: dict) -> PrView:
         head = pr["head_merge"] if pr["estado"] == "mergeado" else self._punta(repo, pr["rama"])

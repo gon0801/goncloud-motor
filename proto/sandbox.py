@@ -38,7 +38,7 @@ def _repo(base: Path, nombre: str, archivos: dict[str, str]) -> str:
 
 def create(base: Path, *, codigo=("sonnet", "glm"), revisar=("opus", "k3"),
            modos: dict | None = None, reglas_revision="A=extra,B=ruido", sin_avance=30, wip_cada=300,
-           chat_url: str = "", timeout=120) -> tuple[Path, Path]:
+           chat_url: str = "", timeout=120, app_privado=True) -> tuple[Path, Path]:
     modos = {"sonnet": "cuota_primero", "glm": "stdin", "opus": "ok", "k3": "ok", **(modos or {})}
     base.mkdir(parents=True, exist_ok=True)
     prod = base / "prod"
@@ -64,7 +64,7 @@ PROD_DIR = "{prod}"
     gh.mkdir()
     (gh / "repos.json").write_text(json.dumps({
         app: {"requeridos": ["ci", "completa"], "solo_listo": ["completa"],
-              "checks": {"ci": "./ci.sh", "completa": "./ci.sh", "seguridad": "./ci.sh"}},
+              "checks": {"ci": "./ci.sh", "completa": "./ci.sh", "seguridad": "./ci.sh"}, "privado": app_privado},
         docs: {"requeridos": ["ci"], "checks": {"ci": "true"}},
     }))
     conf = base / "conf"

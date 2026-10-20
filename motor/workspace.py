@@ -31,8 +31,10 @@ SECRETO = re.compile(
     r"(?i:(api[_-]?key|token|secret|password|contraseña)\s*[:=]\s*['\"]?[A-Za-z0-9/+_.-]{16,}))")
 
 
-def foto_wip(worktree: Path, rama_wip: str) -> str:
-    """Sube una foto del estado actual de la carpeta. Devuelve 'subida', 'igual', 'secreto' o 'error: ...'."""
+def foto_wip(worktree: Path, rama_wip: str, local: bool = False) -> str:
+    """Sube una foto del estado actual de la carpeta. Devuelve 'subida', 'guardada', 'igual', 'secreto'
+    o 'error: ...'. Con `local` (repos públicos) la foto queda solo en el disco de esta máquina, en
+    `refs/<rama_wip>`: sobrevive un apagón y nunca queda visible en GitHub."""
     head = git("rev-parse", "HEAD", cwd=worktree).stdout.strip()
     if not head:
         return "error: sin HEAD"
@@ -43,15 +45,21 @@ def foto_wip(worktree: Path, rama_wip: str) -> str:
         tree = git("write-tree", cwd=worktree, env=env).stdout.strip()
         if tree == git("rev-parse", "HEAD^{tree}", cwd=worktree).stdout.strip():
             return "igual"
-        previa = git("ls-remote", "origin", f"refs/heads/{rama_wip}", cwd=worktree).stdout.split()
+        if local:
+            previa = git("rev-parse", "-q", "--verify", f"refs/{rama_wip}", cwd=worktree).stdout.split()
+        else:
+            previa = git("ls-remote", "origin", f"refs/heads/{rama_wip}", cwd=worktree).stdout.split()
         if previa and git("rev-parse", "-q", "--verify", f"{previa[0]}^{{tree}}", cwd=worktree).stdout.strip() == tree \
                 and git("rev-parse", "-q", "--verify", f"{previa[0]}^", cwd=worktree).stdout.strip() == head:
             return "igual"   # la foto anterior ya tiene exactamente esto
-        diff = git("diff", "--cached", "HEAD", cwd=worktree, env=env).stdout
+        diff = "" if local else git("diff", "--cached", "HEAD", cwd=worktree, env=env).stdout
         if SECRETO.search(diff):
             return "secreto"
         c = git("-c", "user.name=motor", "-c", "user.email=motor@local", "commit-tree", tree, "-p", head,
                 "-m", "foto del trabajo a medias (motor)", cwd=worktree, env=env).stdout.strip()
+    if local:
+        p = git("update-ref", f"refs/{rama_wip}", c, cwd=worktree)
+        return "guardada" if p.returncode == 0 else f"error: {p.stderr[-200:]}"
     p = git("push", "-q", "--force", "origin", f"{c}:refs/heads/{rama_wip}", cwd=worktree)
     return "subida" if p.returncode == 0 else f"error: {p.stderr[-200:]}"
 
@@ -111,7 +119,8 @@ class Workspace:
             git("checkout", "-q", "-B", rama, punto, cwd=w)
             git("reset", "-q", "--hard", punto, cwd=w)
             git("clean", "-qfd", cwd=w)
-        foto = git("rev-parse", "--verify", "-q", f"origin/{wip}", cwd=d).stdout.strip()
+        foto = (git("rev-parse", "--verify", "-q", f"origin/{wip}", cwd=d).stdout.strip()
+                or git("rev-parse", "--verify", "-q", f"refs/{wip}", cwd=d).stdout.strip())
         if foto and git("rev-parse", f"{foto}^", cwd=d).stdout.strip() == git("rev-parse", "HEAD", cwd=w).stdout.strip():
             git("checkout", foto, "--", ".", cwd=w)        # lo que quedó a medias vuelve a la carpeta
             git("reset", "-q", cwd=w)                       # sin commitear, como lo dejó el agente

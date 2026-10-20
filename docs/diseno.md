@@ -20,7 +20,7 @@ segunda arena con tres candidatos (`docs/arena/motor/`) y un juez independiente:
    cambie código va al motor.** Se retira la cadena fija de 7 pasos de Hermes.
 6. Mismos papeles, tabla de modelos y reglas en las dos marcas.
 7. Revisor: Claude. Si no está, **cualquier modelo que no trabajó el bloque.**
-8. Un solo canal de avisos, en lenguaje llano.
+8. Avisos en lenguaje llano por el bot de la marca que corre el plan.
 9. Sirve para cualquier repo, no solo Orbit.
 
 ## Decisión de síntesis
@@ -74,7 +74,7 @@ latidos que no hacen falta con un solo escritor.
 - **Avisos.** Plantillas cerradas, máximo 8 líneas, sin SHAs ni rutas ni jerga. Se envían al
   menos una vez y se guardan en una bandeja de salida.
 
-## Probado en el prototipo (37 pruebas, 1 saltada)
+## Probado en el prototipo (39 pruebas, 1 saltada)
 
 `PYTHONPATH=. python3 -m unittest tests.test_puro tests.test_github_contrato tests.test_motor_e2e`
 
@@ -93,19 +93,34 @@ latidos que no hacen falta con un solo escritor.
 **No probado:** la PC y WSL, GitHub real, Telegram real, reinicios reales de las máquinas y
 agentes reales en el servicio.
 
+## Respuestas de David (2026-10-20)
+
+| # | Pregunta | Decisión | Cómo queda |
+|---|---|---|---|
+| 1 | MacBook con la tapa cerrada | Un plan largo en la Mac sigue con la tapa cerrada | `[no_dormir]` en `maquina.toml` de la Mac: el motor enciende `pmset disablesleep 1` mientras haya un plan en curso y lo apaga al terminar. Requiere una línea de sudoers para `pmset` (bloque F). Tras un apagón la Mac sigue esperando la contraseña de FileVault |
+| 2 | Canal de avisos | Cada marca avisa por su bot | Mini: bot de OpenClaw; PC: bot de Hermes. Mac: bot de OpenClaw, porque el lead no se queda mirando cuando termina su sesión. Es solo el token en `secretos.env` |
+| 3 | Contraseña de ehven en la tarea de Windows | Sí | Tarea con `LogonType Password` |
+| 4 | Tokens en archivo protegido | Sí | `secretos.env` con modo 600 |
+| 5 | Prender al volver la luz | Sí | PC: ya activado según David. Mini: hoy `autorestart 0`, falta `sudo pmset -a autorestart 1` |
+| 6 | Trabajo a medias en repos públicos | David no decidió. El lead eligió | Repos privados: la foto se sube a GitHub cada 5 min. Repos públicos o de visibilidad desconocida: la foto se queda en el disco de la máquina (`refs/motor-wip/...`). Sobrevive un apagón y nunca se publica |
+| 7 | Plan que nace de un "investiga" | David da su sí | La skill obliga a preguntar "¿quieres que lo implemente?" antes de entregar. Un plan que David dio o un cambio que pidió se entrega directo |
+| 8 | Retirar la cadena de Hermes y Raíces | En cualquier momento | G no espera al canario |
+| 9 | WSL en la PC para Muse | Sí, ya | `wsl --install` como administrador en la PC, luego el login de Muse dentro de WSL |
+
 ## Despliegue: un solo plan, "MOTOR 01"
 
 Lo corre el prototipo en la Mac. Nadie usa el motor para trabajo real hasta que pasa el bloque I.
+G (retirar la cadena de Hermes) puede ir en cualquier momento.
 
 - **A** Repo `goncloud-motor-conf`: tabla de modelos v6, rutas, reglas, `motor conf valida` y CI.
 - **B** Motor: `GhGitHub` probado contra un repo desechable, reglas del router de Hermes,
   rechazo por `requiere` y versión 1.0.
 - **C** Motor en Windows: Job objects, WSL para Muse y `doctor` en la PC por ssh (solo lectura).
 - **D** `.motor.toml` en cada repo que vaya a usarlo (Orbit: `rapido`, `completa`, `gate` y deploy).
-- **E** Paso humano, login: David crea el bot "Motor", corre `claude setup-token` y llena
-  `secretos.env` en las tres máquinas.
+- **E** Paso humano, login: David corre `claude setup-token` y llena `secretos.env` en las tres
+  máquinas (incluye el token del bot de cada marca).
 - **F** Instalar en la Mac, la Mini y la PC (`motor instala`). `doctor` corre como el servicio.
-  En la Mini, `pmset autorestart 1`.
+  En la Mini, `pmset autorestart 1`. En la Mac, sudoers para `pmset disablesleep`.
 - **G** `goncloud-hermes`: skill `motor`, tabla generada, y se apagan `local_orchestrator`,
   Raíces, `avisos_sesion` y el cron `despertar-raices`. Se cierra el PR #37.
 - **H** `goncloud-openclaw`: skill `motor`, tabla generada, `implementer` sin escritura, y se

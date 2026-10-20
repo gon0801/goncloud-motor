@@ -73,7 +73,8 @@ class Effects:
                 sha, texto = self.cx.ws.leer_en_base(repo, principal, ".motor.toml")
             if not texto:
                 texto = f'[repo]\nprincipal = "{principal}"\n'
-            self.cx.store.append(plan.id, "", "RepoPinned", {"repo": repo, "sha": sha, "texto": texto},
+            self.cx.store.append(plan.id, "", "RepoPinned", {"repo": repo, "sha": sha, "texto": texto,
+                                                             "privado": self.cx.gh.es_privado(repo)},
                                  ukey=f"pin:{plan.id}:{repo}")
 
     def attempt_dir(self, plan: str, block: str, role: str, n: int) -> Path:
@@ -92,6 +93,8 @@ class Effects:
             cwd = self.cx.ws.prepara(block.repo, plan.id, block.id, rc.principal)
             brief = self._brief_implementar(plan, block, a, cwd, rc)
             wip = ["--wip-rama", self.cx.ws.rama_wip(plan.id, block.id), "--wip-cada", str(self.cx.policy.wip_cada_s)]
+            if not snap.repos.get(block.repo, {}).get("privado", False):
+                wip.append("--wip-local")   # repo público: lo de a medias no se publica
         else:
             cwd = self.cx.ws.copia(block.repo, a.sha, d / "revision")
             brief = self._brief_revisar(plan, block, a, rc)

@@ -9,4 +9,6 @@ aviso_lento_s = 21600
 [avisos]
 base_url = "https://api.telegram.org"
 chat = ""                 # el chat de David
-token_env = "MOTOR_TELEGRAM_TOKEN"   # bot "Motor", solo envía; el token vive en secretos.env de cada máquina
+token_env = "MOTOR_TELEGRAM_TOKEN"   # el token vive en secretos.env de cada máquina (decisión de David, 2026-10-20):
+                                     # Mini = bot de OpenClaw, PC = bot de Hermes, Mac = bot de OpenClaw.
+                                     # Solo envía: compartir el token con el gateway no le quita mensajes.

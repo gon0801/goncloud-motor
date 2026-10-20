@@ -99,7 +99,12 @@ class Banco(unittest.TestCase):
 class TestPlan(Banco):
     def test_plan_completo_cuota_por_cuenta_y_dos_repos(self):
         self.arranca()
+        sueno = self.tmp / "sueno.log"
+        with open(self.home / "maquina.toml", "a") as f:   # la MacBook: no dormirse mientras haya plan
+            f.write(f'\n[no_dormir]\nencender = ["sh", "-c", "echo sin-dormir >> {sueno}"]\n'
+                    f'apagar = ["sh", "-c", "echo normal >> {sueno}"]\n')
         self.termina()
+        self.assertEqual(sueno.read_text().split(), ["sin-dormir", "normal"], "se enciende una vez y se apaga al terminar")
         evs = self.invariantes()
         self.assertTrue(any(e.kind == "Cooldown" and e.data["cuenta"] == "anthropic" for e in evs))
         revisores = {e.data["modelo"] for e in evs if e.kind == "Reviewed"}
@@ -166,11 +171,26 @@ class TestFallas(Banco):
 
 class TestApagon(Banco):
     def test_corte_de_luz_a_la_mitad_retoma_sin_perder_trabajo(self):
-        self.arranca(codigo=("glm", "grok"), modos={"glm": "parcial_lento", "grok": "ok"}, wip_cada=1)
-        rama_wip = "refs/heads/motor-wip/mac-prueba/demo/A"
+        self._apagon(privado=True)
+
+    def test_repo_publico_la_foto_no_sale_de_la_maquina(self):
+        app = self._apagon(privado=False)
+        self.assertEqual(git("ls-remote", str(app), "refs/heads/motor-wip/*").stdout, "",
+                         "en un repo público lo de a medias nunca se publica")
+
+    def _apagon(self, privado: bool) -> Path:
+        self.arranca(codigo=("glm", "grok"), modos={"glm": "parcial_lento", "grok": "ok"}, wip_cada=1,
+                     app_privado=privado)
         app = self.tmp / "b" / "app.git"
+
+        def hay_foto() -> bool:
+            if privado:
+                return git("ls-remote", str(app), "refs/heads/motor-wip/mac-prueba/demo/A").stdout.strip() != ""
+            espejos = list((self.home / "repos").glob("app-*"))
+            return bool(espejos) and git("rev-parse", "-q", "--verify", "refs/motor-wip/mac-prueba/demo/A",
+                                         cwd=espejos[0]).returncode == 0
         p = daemon(self.home, {"MOTOR_BOOT_ID": "arranque-1"})
-        self.assertTrue(esperar(lambda: git("ls-remote", str(app), rama_wip).stdout.strip() != ""), "no llegó la foto")
+        self.assertTrue(esperar(hay_foto), "no llegó la foto")
         # "se va la luz": muere el motor, el supervisor del agente y el agente
         inicio = [e for e in eventos(self.home) if e.kind == "AttemptStarted" and e.block == "A"][0]
         d = Path(inicio.data["dir"])
@@ -184,12 +204,13 @@ class TestApagon(Banco):
         self.termina(env={"MOTOR_BOOT_ID": "arranque-2"})   # "vuelve la luz"
         evs = self.invariantes()
         cortes = [e for e in evs if e.kind == "AttemptEnded" and e.data["outcome"]["kind"] == "corte"]
-        self.assertEqual([e.block for e in cortes], ["A"])
+        self.assertIn("A", [e.block for e in cortes])   # C puede ir corriendo en paralelo y cortarse también
         segundo = [e for e in evs if e.kind == "AttemptStarted" and e.block == "A" and e.data["n"] == 2][0]
         self.assertEqual(segundo.data["modelo"], "glm", "un corte no es culpa del agente: no se le releva")
         self.assertEqual(git("show", "main:parcial.txt", cwd=app).stdout.strip(),
                          "trabajo a medias que no debe perderse")
         self.assertTrue(any(e.kind == "NoticeQueued" and e.data["key"].startswith("retome:") for e in evs))
+        return app
 
 
 class TestReglasFijas(Banco):
@@ -272,6 +293,13 @@ class TestFotoWip(unittest.TestCase):
         foto = git("ls-remote", str(self.bare), "refs/heads/motor-wip/x").stdout.split()[0]
         self.assertEqual(git("show", f"{foto}:b.txt", cwd=self.bare).stdout, "a medias\n")
         self.assertEqual(foto_wip(self.w, "motor-wip/x"), "igual")
+
+    def test_foto_local_no_sale_de_la_maquina(self):
+        (self.w / "b.txt").write_text("a medias\n")
+        self.assertEqual(foto_wip(self.w, "motor-wip/x", local=True), "guardada")
+        self.assertEqual(git("ls-remote", str(self.bare), "refs/heads/motor-wip/*").stdout, "")
+        self.assertEqual(git("show", "refs/motor-wip/x:b.txt", cwd=self.w).stdout, "a medias\n")
+        self.assertEqual(foto_wip(self.w, "motor-wip/x", local=True), "igual")
 
     def test_no_sube_secretos(self):
         (self.w / "conf.env").write_text("api_key = sk-abcdefghijklmnopqrstuvwxyz123456\n")

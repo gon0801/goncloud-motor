@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -40,6 +41,8 @@ class Daemon:
                               av.get("chat", "")),
             checks_cada_s=checks_cada_s if checks_cada_s is not None else conf.tiempos.get("checks_cada_s", 60.0))
         self.fx = Effects(self.cx)
+        self._sin_dormir: bool | None = None    # None: aplicar en el primer tick (también tras un reinicio)
+        self._sin_dormir_reintento = 0.0
 
     def recargar_conf(self) -> None:
         conf = load_conf(self.maquina.conf)
@@ -113,8 +116,26 @@ class Daemon:
                 snap = m.fold(plan, self.store.events(plan.id))
             hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
             todo_hecho = todo_hecho and hecho and f"terminado:{plan.id}" in snap.plan_notices
+        self.ajusta_sueno(any(not self._terminado(p) for p in planes), now)
         self.cx.notifier.envia_pendientes()
         return todo_hecho and bool(planes)
+
+    def _terminado(self, plan: Plan) -> bool:
+        snap = m.fold(plan, self.store.events(plan.id))
+        return all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
+
+    def ajusta_sueno(self, hay_trabajo: bool, now: float) -> None:
+        """Con un plan en curso la máquina no se duerme; sin planes, vuelve a lo normal.
+        Solo si `maquina.toml` trae [no_dormir] (la MacBook). Si el comando falla, reintenta en 10 min."""
+        mq = self.maquina
+        argv = mq.no_dormir_encender if hay_trabajo else mq.no_dormir_apagar
+        if not argv or self._sin_dormir == hay_trabajo or now < self._sin_dormir_reintento:
+            return
+        r = subprocess.run(list(argv), capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+        if r.returncode == 0:
+            self._sin_dormir = hay_trabajo
+        else:
+            self._sin_dormir_reintento = now + 600
 
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:
         f = {m.StartAttempt: self.fx.start_attempt, m.Verify: self.fx.verify, m.OpenPr: self.fx.open_pr,

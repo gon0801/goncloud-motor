@@ -15,6 +15,11 @@ o una escritura en producción, aunque sea una línea.
 - **Sí**: escribes un plan y se lo entregas al motor. Tú no lo implementas, no lo mergeas y
   no despliegas. Ante la duda, plan.
 
+**Antes de entregar, ¿David pidió implementar?** Si te dio un plan o te pidió hacer el cambio,
+entrégalo directo. Si solo pidió investigar y de ahí salió que hay algo que cambiar, NO lo
+entregues: cuéntale en dos o tres frases qué encontraste y qué cambiarías, y pregúntale
+"¿quieres que lo implemente?". Solo con su sí lo entregas.
+
 Un pedido mixto se parte: lo de leer lo haces ya; lo de cambiar va al plan.
 
 ## Cómo entregar un plan
@@ -26,8 +31,9 @@ Un pedido mixto se parte: lo de leer lo haces ya; lo de cambiar va al plan.
      corriendo; te aviso cuando esté probado").
    - `encolado`: el motor está reiniciando; lo toma solo. Díselo igual.
    - `rechazado`: lee `errores`, corrige y entrega otra vez.
-4. Ya no tienes que darle seguimiento: el motor avisa a David por su propio canal cuando
-   entrega, si necesita su mano (login, código, captcha, pago) o si se atora.
+4. Ya no tienes que darle seguimiento: el motor le avisa a David por tu mismo bot de Telegram
+   (cada aviso empieza con el nombre de la máquina) cuando entrega, si necesita su mano (login,
+   código, captcha, pago) o si se atora.
 
 ## Cuando David pregunta "¿cómo va?"
 
