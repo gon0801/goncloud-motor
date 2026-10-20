@@ -1,0 +1,33 @@
+# modelo -> cuenta que lo paga -> cómo se lanza sin ventana. La cuota es por cuenta:
+# sonnet y opus comparten "anthropic". Rutas absolutas: en la Mac el wrapper de zsh mandaría a tmux.
+# En la PC, maquina.toml puede poner path_extra y `wsl = ["muse"]` (Muse dentro de WSL).
+
+[rutas.sonnet]
+cuenta = "anthropic"
+cli = "claude"
+argv = ["claude", "-p", "--model", "sonnet", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]
+
+[rutas.opus]
+cuenta = "anthropic"
+cli = "claude"
+argv = ["claude", "-p", "--model", "opus", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]
+
+[rutas.k3]
+cuenta = "kimi"
+cli = "kimi"
+argv = ["kimi", "-p", "{prompt}", "--auto", "--output-format", "stream-json"]
+
+[rutas.glm]
+cuenta = "zai"
+cli = "opencode"
+argv = ["opencode", "run", "--auto", "-m", "zai-coding-plan/glm-5.3-flash", "{prompt}"]
+
+[rutas.grok]
+cuenta = "xai"
+cli = "grok"
+argv = ["grok", "--prompt-file", "{brief}", "--always-approve", "--output-format", "json"]
+
+[rutas.muse]
+cuenta = "meta"
+cli = "muse"
+argv = ["muse", "exec", "--yolo", "--json", "--prompt-file", "{brief}"]

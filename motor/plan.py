@@ -3,15 +3,17 @@
 Formato (compatible con las tablas de Orbit, más campos por bloque):
 
     # Título
-    autopiloto: taller
+    autopiloto: motor
     plan: demo
+    repo: git@github.com:dueño/repo.git      # repo por omisión de los bloques
 
     ## Bloque A — qué entrega
     lane: gate                      # fast | gate | release
     depende: -                      # ids de bloques, separados por coma
     aviso: ya puedes saludar        # frase llana para el aviso de entrega
     prueba-real: test -f x          # se corre contra producción después del merge/deploy
-    despliegue: desplegar=ruta checklist=ruta rollback=ruta   # solo lane release
+    repo: <url>                     # opcional: este bloque va en otro repo
+    despliegue: desplegar=ruta checklist=ruta rollback=ruta   # opcional: si no, la receta del .motor.toml del repo
     humano: login Entra a Seller Central y acepta el permiso  # paso que solo David puede hacer
     sonda-humano: test -f ~/.login-ok                          # opcional: detecta el paso hecho
     | Fila | Contenido | Acepta |
@@ -53,6 +55,7 @@ class Human:
 class Block:
     id: str
     titulo: str
+    repo: str
     lane: str
     depende: tuple[str, ...]
     rows: tuple[Row, ...]
@@ -77,7 +80,7 @@ class Plan:
     def to_dict(self) -> dict:
         def blk(b: Block) -> dict:
             return {
-                "id": b.id, "titulo": b.titulo, "lane": b.lane, "depende": list(b.depende),
+                "id": b.id, "titulo": b.titulo, "repo": b.repo, "lane": b.lane, "depende": list(b.depende),
                 "rows": [r.__dict__ for r in b.rows], "aviso": b.aviso,
                 "prueba_real": b.prueba_real,
                 "release": b.release.__dict__ if b.release else None,
@@ -90,7 +93,7 @@ class Plan:
         blocks = []
         for b in d["blocks"]:
             blocks.append(Block(
-                id=b["id"], titulo=b["titulo"], lane=b["lane"], depende=tuple(b["depende"]),
+                id=b["id"], titulo=b["titulo"], repo=b["repo"], lane=b["lane"], depende=tuple(b["depende"]),
                 rows=tuple(Row(**r) for r in b["rows"]), aviso=b["aviso"],
                 prueba_real=b["prueba_real"],
                 release=Release(**b["release"]) if b["release"] else None,
@@ -123,7 +126,7 @@ def _celdas(linea: str) -> list[str]:
 
 def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int = 0) -> Plan:
     """Lee el plan y lo valida entero. Devuelve Plan o lanza PlanError con TODOS los errores."""
-    titulo, plan_id, autopiloto = "", "", ""
+    titulo, plan_id, autopiloto, repo_plan = "", "", "", ""
     drafts: list[_Draft] = []
     errores: list[str] = []
     for linea in texto.splitlines():
@@ -155,9 +158,11 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
                 plan_id = valor
             elif clave == "autopiloto":
                 autopiloto = valor
+            elif clave == "repo":
+                repo_plan = valor
 
-    if autopiloto != "taller":
-        errores.append("falta la línea 'autopiloto: taller'")
+    if autopiloto != "motor":
+        errores.append("falta la línea 'autopiloto: motor'")
     if not plan_id:
         errores.append("falta la línea 'plan: <id>'")
     if not drafts:
@@ -184,8 +189,9 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
                 errores.append(f"bloque {d.id}: al despliegue le falta {sorted(faltan)}")
             else:
                 release = Release(partes["desplegar"], partes["checklist"], partes["rollback"])
-        if lane == "release" and release is None:
-            errores.append(f"bloque {d.id}: lane release sin 'despliegue:' (desplegar, checklist, rollback)")
+        repo = f.get("repo", repo_plan)
+        if not repo:
+            errores.append(f"bloque {d.id}: sin repo (pon 'repo:' en el plan o en el bloque)")
         human = None
         if "humano" in f:
             kind, _, que = f["humano"].partition(" ")
@@ -202,7 +208,7 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
             if not f.get("prueba-real"):
                 errores.append(f"bloque {d.id}: falta 'prueba-real:' (datos reales antes de decir listo)")
         blocks.append(Block(
-            id=d.id, titulo=d.titulo, lane=lane, depende=dep, rows=tuple(d.rows),
+            id=d.id, titulo=d.titulo, repo=repo, lane=lane, depende=dep, rows=tuple(d.rows),
             aviso=f.get("aviso", d.titulo), prueba_real=f.get("prueba-real", ""),
             release=release, human=human,
         ))

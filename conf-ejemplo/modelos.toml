@@ -1,0 +1,5 @@
+# Carriles en orden de relevo (tomados de model-routing.source.json v6 de Hermes).
+# El revisor, si no hay nadie del carril "revisar", sigue con cualquier modelo que no trabajó el bloque.
+[carriles]
+codigo = ["sonnet", "k3", "glm", "grok", "muse"]
+revisar = ["opus", "k3", "glm", "grok"]

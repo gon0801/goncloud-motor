@@ -1,0 +1,4 @@
+# Conf compartida: este repo se instala igual en la Mac, la Mini y la PC.
+[papeles]
+implementar = "codigo"
+revisar = "revisar"

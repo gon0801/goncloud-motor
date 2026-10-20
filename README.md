@@ -1,57 +1,44 @@
-# taller
+# motor
 
-Prototipo de un sistema para que los agentes implementen, se revisen, prueben y
-entreguen solos, cada uno en su computadora, sin que nada los detenga. David y el lead
-planean; `taller` hace el resto y avisa por Telegram en lenguaje llano.
+Motor de planes que corre igual en la Mac, la Mac Mini y la PC. Recibe un plan en Markdown,
+lo implementa con agentes sin ventana, lo hace revisar por un modelo que no lo escribió, lo
+mergea, lo despliega, lo prueba con datos reales y avisa a David en lenguaje llano. Sigue
+solo después de un apagón. No le pide aprobaciones a nadie, salvo login, 2FA, captcha o pago.
 
-Diseño completo y decisiones: [docs/diseno.md](docs/diseno.md).
+El diseño y sus decisiones están en [docs/diseno.md](docs/diseno.md). La guía para claw y
+Hermi está en [skill/motor/SKILL.md](skill/motor/SKILL.md).
 
-## Cómo se usa (lead)
+## Verbos
+
+`motor` = `python3 -m motor` desde esta carpeta.
 
 ```sh
-taller valida plans/mi-plan.md --home ~/.local/state/taller   # revisa el plan antes de arrancar
-taller arranca plans/mi-plan.md --home ~/.local/state/taller  # lo encola
-taller estado --home ~/.local/state/taller                    # una línea por bloque
-taller historia mi-plan B --home ~/.local/state/taller        # qué pasó en el bloque B
-taller hecho mi-plan E --home ~/.local/state/taller           # David terminó un paso humano
-taller nota mi-plan B "usa la función X" --home ...           # llega al siguiente encargo
-taller doctor                                                 # qué agentes reales pueden correr sin ventana
+motor valida plan.md --home ~/.motor                 # ¿el plan está listo para correr solo?
+motor entrega plan.md --home ~/.motor --json --por claw   # tomado | encolado | rechazado
+motor estado --home ~/.motor [--json]                # una línea por bloque
+motor recibo <cmd_id> --home ~/.motor                # qué pasó con una orden
+motor hecho <plan> <bloque> --home ~/.motor          # David terminó un paso humano
+motor nota <plan> <bloque> "texto" --home ~/.motor   # llega al siguiente encargo
+motor doctor --home ~/.motor [--json]                # conf, máquina, rutas y papeles
+motor instala --maquina mac|mini|pc --usuario U --home H --imprime   # plist o tarea de Windows
+motor servicio --home ~/.motor                       # supervisor; lo arranca el servicio
 ```
 
-(`taller` = `python3 -m taller` desde esta carpeta.)
+## Archivos de una máquina
 
-El daemon (`taller daemon --home ...`) corre siempre, bajo launchd en la Mac.
-
-## Formato del plan
-
-Ver [proto/plan_demo.md](proto/plan_demo.md). Cada bloque es una rama y un PR. Cada fila
-trae su comando `Acepta`. Cada bloque de código trae `prueba-real:`. Los bloques de
-despliegue traen `despliegue:` (desplegar, checklist, rollback). Un paso que solo David
-puede hacer va como `humano: login|2fa|captcha|pago <qué hacer>`.
+- `~/.motor/maquina.toml`: nombre, ruta de la conf, `path_extra`, `env`, `wsl` y `github`.
+  Rechaza papeles, modelos, rutas y reglas, que viven en la conf compartida.
+- `~/.motor/secretos.env` con modo 600: `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`,
+  `MOTOR_TELEGRAM_TOKEN`, etc.
+- Conf compartida: ver `conf-ejemplo/`.
+- Por repo: `.motor.toml` en su rama principal.
 
 ## Probarlo
 
 ```sh
-PYTHONPATH=. python3 -m unittest tests.test_unit tests.test_e2e
+PYTHONPATH=. python3 -W ignore -m unittest tests.test_puro tests.test_github_contrato tests.test_motor_e2e
 ```
 
-Las pruebas de punta a punta crean un repo desechable, agentes y revisor simulados, y
-recorren las fallas del catálogo: cuota a media noche, agente que lee de la terminal,
-agente que miente, agente colgado, CI en rojo, daemon muerto a la mitad y bloque sin
-salida. No tocan Orbit, claw, GitHub ni producción.
-
-Demo a mano:
-
-```sh
-python3 proto/sandbox.py /tmp/taller-demo
-python3 -m taller arranca proto/plan_demo.md --home /tmp/taller-demo/home
-touch /tmp/taller-demo/home/login-hecho        # el "paso humano"
-python3 -m taller daemon --home /tmp/taller-demo/home --intervalo 0.3 --hasta-terminar
-python3 -m taller historia demo --home /tmp/taller-demo/home
-ls /tmp/taller-demo/home/avisos/pendientes      # los avisos que recibiría David
-```
-
-## Agentes reales
-
-`ejemplos/taller.toml` trae las escaleras con Muse, GLM (opencode), Kimi, Grok, Codex y
-Cursor como implementadores y Claude como revisor, todos sin ventana.
+Las pruebas crean repos desechables, un GitHub falso, agentes y revisores simulados, un
+servidor que imita a Telegram, y simulan un apagón. No tocan Orbit, OpenClaw, Hermes, GitHub
+ni producción. `MOTOR_GH_SANDBOX=<dueño/repo>` corre además el contrato contra GitHub real.

@@ -1,0 +1,12 @@
+[tiempos]
+timeout_s = 14400         # 4 h por intento
+sin_avance_s = 2700       # 45 min sin cambios -> se detiene y entra otro
+wip_cada_s = 300          # foto del trabajo a medias cada 5 min
+checks_cada_s = 60
+cooldown_default_s = 18000
+aviso_lento_s = 21600
+
+[avisos]
+base_url = "https://api.telegram.org"
+chat = ""                 # el chat de David
+token_env = "MOTOR_TELEGRAM_TOKEN"   # bot "Motor", solo envía; el token vive en secretos.env de cada máquina
