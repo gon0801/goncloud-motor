@@ -5,7 +5,8 @@ repo: git@github.com:gon0801/goncloud-motor.git
 
 <!-- Diseño y decisiones: docs/diseno.md. Revisado por Grok el 2026-10-20 (a pedido de David).
 Antes de entregarlo, el lead: (1) crea privados gon0801/goncloud-motor (con este prototipo) y
-gon0801/goncloud-motor-conf (con conf-ejemplo/), los dos con main protegida; (2) arranca el prototipo con
+gon0801/goncloud-motor-conf (con conf-ejemplo/). GitHub gratuito no protege ramas privadas: los checks
+que importan los exige el motor (`checks:` y `.motor.toml`), no la protección; (2) arranca el prototipo con
 `--home ~/.motor-arranque`, que NUNCA es el ~/.motor que instala F. Todo lo que este plan necesita del
 motor para verificarse ya está en el prototipo (conf valida, checks en matriz, dependencias antes de
 pasos humanos). Lo que B y C agregan llega a las máquinas con la instalación de F, no al prototipo.
@@ -18,7 +19,7 @@ aviso: el motor ya abre, revisa y mergea PRs en GitHub de verdad
 prueba-real: MOTOR_GH_SANDBOX=gon0801/motor-sandbox python3 -m unittest tests.test_github_contrato.ContratoReal
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
-| B.1 | Crear el repo privado gon0801/motor-sandbox (main protegida, check requerido "ci" de un workflow que corre `true`). Correr `ContratoReal` y arreglar `GhGitHub` hasta que pase: borrador, listo, checks requeridos de la protección, merge con `--match-head-commit`, rechazo si la punta se movió. | MOTOR_GH_SANDBOX=gon0801/motor-sandbox python3 -m unittest tests.test_github_contrato.ContratoReal |
+| B.1 | Crear el repo privado gon0801/motor-sandbox con un workflow "ci" que corre `true` (GitHub gratuito no protege ramas privadas: el motor exige "ci" como check extra). Correr `ContratoReal` y arreglar `GhGitHub` hasta que pase: borrador, listo, checks requeridos de la protección, merge con `--match-head-commit`, rechazo si la punta se movió. | MOTOR_GH_SANDBOX=gon0801/motor-sandbox python3 -m unittest tests.test_github_contrato.ContratoReal |
 | B.2 | Portar a `motor/relevo.py` las reglas puras de `_run_owned` de `plugins/goncloud-team/subscriptions/router.py` (goncloud-hermes, `origin/feat/hermes-team`): avance por tipo de falla, horizonte de cuarentena, `retry_after`, rate limit corto (2 min). Sin arriendos ni estado. Portar al menos 40 pruebas a `tests/test_relevo.py` y usar `relevo.py` en `machine._elige`. | python3 -c "import sys,unittest;s=unittest.defaultTestLoader.loadTestsFromName('tests.test_relevo');sys.exit(0 if s.countTestCases()>=40 and unittest.TextTestRunner().run(s).wasSuccessful() else 1)" |
 | B.3 | Clasificación de fallas por proveedor (claude, kimi, opencode, grok, muse, qwen, deepseek) tomada de los adapters de Hermes, con una salida real por caso en `tests/datos/fallas/<proveedor>-<caso>.txt` y la prueba `tests/test_fallas.py` que recorre esa carpeta. | python3 -m unittest tests.test_fallas |
 | B.4 | Clave `tiene = ["ssh-goncloud", ...]` en `maquina.toml` (esquema cerrado). `motor entrega` rechaza un plan cuyo repo pide en `[deploy] requiere` algo que la máquina no tiene, con el motivo en una frase llana. Prueba `tests/test_requiere.py`. | python3 -m unittest tests.test_requiere |
