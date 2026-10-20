@@ -3,7 +3,11 @@
 Síntoma: el paso de despliegue del bloque F falla siempre con
 `ops/instala-todo.sh: salida 3` y `rollback: salida 0`, una ronda tras otra.
 No es un bug del script de la rama: es la combinación del merge adoptado y el
-`MOTOR_RAIZ` que exporta el daemon.
+`MOTOR_RAIZ` que exporta el daemon. El arreglo de fondo ya viaja en este repo
+(`deploy()`/`prove()` de `motor/effects.py` apuntan `MOTOR_RAIZ` a la copia que
+se despliega) y el daemon en marcha quedó parcheado con el mismo cambio
+(2026-10-20 16:43, reiniciado): el próximo despliegue ya corre con
+`MOTOR_RAIZ` sano.
 
 ## Mecánica del bucle
 
@@ -45,8 +49,17 @@ El script hace exactamente los pasos manuales de abajo: respalda
 `~/.motor-arranque/motor/motor/effects.py`, aplica el parche de `MOTOR_RAIZ` en
 `deploy()` y `prove()` (idempotente, con anclas exactas), valida con
 `py_compile` (si no compila restaura el respaldo) y reinicia el daemon con
-`launchctl kickstart -k gui/$(id -u)/com.goncloud.motor-arranque`. Probado
-punta a punta con un arranque y un launchctl falsos el 2026-10-20.
+`launchctl kickstart -k gui/$(id -u)/com.goncloud.motor-arranque`. Probado por
+`bash ops/tests/test-desbloquea.sh` (arranque y launchctl falsos; el launchctl
+falso sigue escribiendo después de la coincidencia, que era justo el caso que
+un probe ad-hoc de una línea tapaba: ver la nota de abajo).
+
+Nota (2026-10-20, intento 14): la detección de "¿está el daemon?" se arregló.
+Era `launchctl list | grep -q "$label"` bajo `set -o pipefail`: `grep -q` cierra
+el pipe al encontrar, launchctl recibe SIGPIPE y sale 141, y el script cantaba
+"el daemon no volvió a aparecer en launchctl list" con el daemon sano (falso
+negativo también en el dry-run). El launchctl de mentira de una línea no lo
+reproducía; el de la prueba sí y por eso lo atrapa.
 
 Dejar `_ya_mergeado` como está (`"commit": v.merge_commit`: el despliegue
 tiene que seguir corriendo el árbol mergeado, nunca la cabeza sin mergear de
@@ -58,6 +71,16 @@ El cambio va en `deploy()` y `prove()` de
 `~/.motor-arranque/motor/motor/effects.py`: que `MOTOR_RAIZ` apunte a la copia
 del árbol mergeado (o que no se exporte). `ws.copia()` es un
 `git worktree add --detach`, o sea un árbol con `.git`.
+
+**Ese cambio ya está en el repo** (intento 14): `motor/effects.py` de la rama
+lleva esas dos líneas exactas, y `proto/sandbox.py` hace que el desplegar, el
+checklist y la prueba-real del banco e2e exijan
+`git -C "$MOTOR_RAIZ" rev-parse HEAD` = HEAD del árbol desplegado — con el
+código viejo `tests/test_motor_e2e.py` no termina el plan (verificado: falla)
+y con el arreglo pasa. El parche de `ops/desbloquea-arranque.sh` y el arreglo
+del repo son el mismo cambio (la prueba también lo exige), así que cuando esta
+rama llegue a `main` y el arranque se reinstale, el daemon nace arreglado y el
+desbloqueo manual deja de hacer falta para bucles nuevos.
 
 Pasos exactos (verificados 2026-10-20):
 
@@ -122,17 +145,24 @@ Verificado 2026-10-20: con `MOTOR_RAIZ` apuntando al worktree el script sale 0
 (con `MOTOR_RAIZ=~/.motor-arranque/motor`, sin `.git`, sale 3 en el fetch, que
 es el bucle observado).
 
-## Estado real (verificado 2026-10-20, intento F-implementar-11)
+## Estado real (2026-10-20, cierre del intento F-implementar-14)
 
-- `v1.0.0` en GitHub apunta a `4b6cf2d` (el SHA mergeado; re-verificado con
-  `gh api repos/gon0801/goncloud-motor/git/refs/tags/v1.0.0`).
+- El PR #6 sigue siendo el único PR de la rama (`gh pr list --state all`) y
+  quedó mergeado en `4b6cf2d`: por eso cada ronda adopta ese merge viejo y el
+  despliegue corre el script de ese commit, no el de la rama.
+- `v1.0.0` en GitHub apunta a `4b6cf2d` (re-verificado con
+  `git ls-remote --tags origin refs/tags/v1.0.0`).
 - Las tres máquinas instaladas: `bash ops/huellas.sh` sale 0 (motor 0.1.0
-  `4b6cf2d`, conf `988acd0`, doctor ok en Mac, Mini y PC). Lo hizo a mano el
-  intento F-implementar-8; re-verificado hoy.
-- Remotes en la Mini: `~/motor` y `~/motor-conf` ya apuntan a
-  `git@github-claw:gon0801/...` (verificado por ssh).
-- El daemon de arranque corre bajo launchd: label `com.goncloud.motor-arranque`,
-  `KeepAlive=true`, `PYTHONPATH=~/.motor-arranque/motor`. Sigue sin el parche:
-  `env_base()` exporta `MOTOR_RAIZ=~/.motor-arranque/motor` (sin `.git`).
+  `4b6cf2d`, conf `988acd0`, doctor ok en Mac, Mini y PC; re-corrido hoy).
+  Lo instaló a mano el intento F-implementar-8.
+- El daemon de arranque corre parcheado: `deploy()` y `prove()` de
+  `~/.motor-arranque/motor/motor/effects.py` ya ponen
+  `env["MOTOR_RAIZ"] = str(w)` (aplicado el 2026-10-20 16:43 con
+  `ops/desbloquea-arranque.sh --aplicar` y daemon reiniciado; el mismo cambio
+  que esta rama). El próximo despliegue del bloque pasa el paso 1 del script
+  viejo (`fetch` sobre un árbol con `.git`, HEAD `4b6cf2d` en `origin/main`,
+  etiqueta respetada).
 - Las pruebas de aceptación del bloque salen 0 en la rama:
-  `bash ops/tests/test-instala.sh` y `bash ops/tests/test-huellas.sh`.
+  `bash ops/tests/test-instala.sh`, `bash ops/tests/test-huellas.sh` y
+  `bash ops/tests/test-desbloquea.sh`; la batería de Python completa
+  (194 pruebas) también sale 0 en este SHA y en el anterior.
