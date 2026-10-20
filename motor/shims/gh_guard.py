@@ -29,12 +29,17 @@ def main() -> int:
     args = sys.argv[1:]
     que = bloqueado(args)
     if que:
-        print(f"{que} está prohibido para los agentes: solo el motor mergea, marca listo o cierra PRs. "
-              "Si el merge falló por conflicto, actualiza tu rama con la principal y vuelve a entregar.",
-              file=sys.stderr)
+        print(
+            f"{que} está prohibido para los agentes: solo el motor mergea, marca listo o cierra PRs. "
+            "Si el merge falló por conflicto, actualiza tu rama con la principal y vuelve a entregar.",
+            file=sys.stderr,
+        )
         return 3
-    path = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep)
-                           if os.path.abspath(p or ".") != AQUI)
+    path = os.pathsep.join(
+        p
+        for p in os.environ.get("PATH", "").split(os.pathsep)
+        if os.path.abspath(p or ".") != AQUI
+    )
     real = shutil.which("gh", path=path)
     if not real:
         print("gh no está instalado", file=sys.stderr)

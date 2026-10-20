@@ -36,7 +36,7 @@ cuenta la cuota por cuenta y no por modelo, y sube el trabajo a medias de la for
 | C3 | `maquina.toml` con esquema cerrado: rechaza papeles, modelos, rutas y reglas | Hecho y probado |
 | C3 | `requiere` del repo revisado al entregar el plan | Se lee de `.motor.toml`. Falta rechazar el plan cuando la máquina no lo cumple (MOTOR 01 B) |
 | C3 | `doctor` que corre dentro del contexto del servicio, no por ssh | `doctor` existe. Correrlo como el servicio queda para MOTOR 01 F |
-| C2 | Código de procesos de Windows de Hermes `process.py`: shims `.cmd`, grupo propio fuera del Job, tarea al arrancar | Partes puras hechas y probadas en la Mac. Job objects y WSL sin probar en la PC (MOTOR 01 C) |
+| C2 | Código de procesos de Windows de Hermes `process.py`: shims `.cmd`, grupo propio fuera del Job, tarea al arrancar | Partes puras hechas y probadas en la Mac. Job object, taskkill y guardián de WSL en `windows.py`, probados en la PC con `ops/prueba-pc.sh` (MOTOR 01 C) |
 | C2 | Reglas puras de `router._run_owned` y clasificación de fallas por proveedor | Clasificación básica hecha. Portar el resto con sus pruebas queda para MOTOR 01 B |
 | C2 | Nombre de la máquina al inicio de cada aviso | Hecho: "En la Mini · <plan>:" |
 

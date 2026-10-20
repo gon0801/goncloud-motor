@@ -51,7 +51,9 @@ def veredicto(sha: str, requeridos: tuple[str, ...], runs: list[dict]) -> Checks
         if not partes or any(r["status"] != "completed" for r in partes):
             faltan.append(c)
         elif all(r["conclusion"] == "skipped" for r in partes):
-            faltan.append(c)   # saltado (p. ej. en borrador) no es aprobado: todavía no corrió de verdad
+            faltan.append(
+                c
+            )  # saltado (p. ej. en borrador) no es aprobado: todavía no corrió de verdad
         elif any(
             r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
         ):
@@ -108,7 +110,8 @@ class GhGitHub:
             ["gh", *a],
             check=False,
             capture_output=True,
-            text=True, errors="replace",
+            text=True,
+            errors="replace",
             env=self.env,
             stdin=subprocess.DEVNULL,
         )

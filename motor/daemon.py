@@ -73,7 +73,9 @@ class Daemon:
             None  # None: aplicar en el primer tick (también tras un reinicio)
         )
         self._sin_dormir_reintento = 0.0
-        self._espera_efecto: dict[tuple[str, str, str], float] = {}   # efecto que falló -> no antes de
+        self._espera_efecto: dict[
+            tuple[str, str, str], float
+        ] = {}  # efecto que falló -> no antes de
 
     def recargar_conf(self) -> None:
         conf = load_conf(self.maquina.conf)
@@ -202,7 +204,7 @@ class Daemon:
             for a in m.decide(snap, self.cx.policy, now):
                 clave = (plan.id, _bloque(a), type(a).__name__)
                 if now < self._espera_efecto.get(clave, 0):
-                    continue   # falló hace poco: no se repite en cada tick (una prueba por ssh a la PC, p. ej.)
+                    continue  # falló hace poco: no se repite en cada tick (una prueba por ssh a la PC, p. ej.)
                 try:
                     self.execute(plan, snap, a)
                     self._espera_efecto.pop(clave, None)
@@ -237,7 +239,8 @@ class Daemon:
             list(argv),
             check=False,
             capture_output=True,
-            text=True, errors="replace",
+            text=True,
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=60,
         )

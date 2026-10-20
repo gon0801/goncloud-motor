@@ -31,22 +31,40 @@ class Store:
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS events ("
             " id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, plan TEXT NOT NULL,"
-            " block TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, ukey TEXT UNIQUE)")
+            " block TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, ukey TEXT UNIQUE)"
+        )
         self.db.execute(
             "CREATE TRIGGER IF NOT EXISTS events_append_only BEFORE UPDATE ON events "
-            "BEGIN SELECT RAISE(ABORT, 'append-only'); END")
+            "BEGIN SELECT RAISE(ABORT, 'append-only'); END"
+        )
         self.db.execute(
             "CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events "
-            "BEGIN SELECT RAISE(ABORT, 'append-only'); END")
+            "BEGIN SELECT RAISE(ABORT, 'append-only'); END"
+        )
 
-    def append(self, plan: str, block: str, kind: str, data: dict, *, ukey: str | None = None,
-               ts: float | None = None) -> bool:
+    def append(
+        self,
+        plan: str,
+        block: str,
+        kind: str,
+        data: dict,
+        *,
+        ukey: str | None = None,
+        ts: float | None = None,
+    ) -> bool:
         """Agrega un evento. Con `ukey`, el mismo hecho dos veces queda una sola vez (idempotente)."""
         try:
             self.db.execute(
                 "INSERT INTO events (ts, plan, block, kind, data, ukey) VALUES (?,?,?,?,?,?)",
-                (ts if ts is not None else time.time(), plan, block, kind,
-                 json.dumps(data, ensure_ascii=False, sort_keys=True), ukey))
+                (
+                    ts if ts is not None else time.time(),
+                    plan,
+                    block,
+                    kind,
+                    json.dumps(data, ensure_ascii=False, sort_keys=True),
+                    ukey,
+                ),
+            )
             return True
         except sqlite3.IntegrityError:
             return False

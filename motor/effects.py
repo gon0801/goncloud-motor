@@ -50,7 +50,8 @@ def _run(
         cwd=cwd,
         env=env,
         capture_output=True,
-        text=True, errors="replace",
+        text=True,
+        errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=timeout,
         shell=True,
@@ -58,12 +59,19 @@ def _run(
     )
 
 
-
 def es_del_agente(motivo: str) -> bool:
     """Un merge rechazado es tarea del agente solo si su rama choca con la principal o se movió."""
     m_ = motivo.lower()
-    return any(x in m_ for x in ("cannot be cleanly created", "conflict", "head branch was modified",
-                                 "does not match", "head commit"))
+    return any(
+        x in m_
+        for x in (
+            "cannot be cleanly created",
+            "conflict",
+            "head branch was modified",
+            "does not match",
+            "head commit",
+        )
+    )
 
 
 class Effects:
@@ -179,7 +187,9 @@ class Effects:
             }
         )
         # el `gh` de los agentes no mergea, ni cierra, ni marca listo: eso solo lo hace el motor
-        env["PATH"] = os.pathsep.join([str(RAIZ / "motor" / "shims"), env.get("PATH", "")])
+        env["PATH"] = os.pathsep.join(
+            [str(RAIZ / "motor" / "shims"), env.get("PATH", "")]
+        )
         cmd = [
             sys.executable,
             "-m",
@@ -426,15 +436,22 @@ Escribe en `$MOTOR_RESULT`:
             ukey=f"ready:{plan.id}:{a.block}:{a.sha}",
         )
 
-    def _ya_mergeado(self, plan: Plan, snap: m.Snapshot, block_id: str, sha: str) -> bool:
+    def _ya_mergeado(
+        self, plan: Plan, snap: m.Snapshot, block_id: str, sha: str
+    ) -> bool:
         """Si el PR ya está mergeado (alguien lo hizo fuera del motor), se adopta ese merge para que
         el plan siga, se anota quién no debió hacerlo y no se vuelve a esperar pruebas."""
         block = plan.block(block_id)
         v = self.cx.gh.ver(block.repo, int(snap.blocks[block_id].pr["numero"]))
         if v.estado != "mergeado":
             return False
-        self.cx.store.append(plan.id, block_id, "Merged", {"sha": sha, "commit": v.merge_commit, "externo": True},
-                             ukey=f"merged:{plan.id}:{block_id}:{sha}")
+        self.cx.store.append(
+            plan.id,
+            block_id,
+            "Merged",
+            {"sha": sha, "commit": v.merge_commit, "externo": True},
+            ukey=f"merged:{plan.id}:{block_id}:{sha}",
+        )
         return True
 
     def poll_checks(self, plan: Plan, snap: m.Snapshot, a: m.PollChecks) -> None:
@@ -487,14 +504,19 @@ Escribe en `$MOTOR_RESULT`:
             if not es_del_agente(str(e)):
                 # GitHub todavía no lo deja (pruebas requeridas pendientes, política de la rama): no es
                 # culpa del agente. Se reintenta en 5 minutos y, si dura una hora, se avisa.
-                raise RuntimeError(f"GitHub aún no deja mergear: {str(e)[:300]}") from None
+                raise RuntimeError(
+                    f"GitHub aún no deja mergear: {str(e)[:300]}"
+                ) from None
             self.cx.store.append(
                 plan.id,
                 t.block,
                 "ChecksResult",
-                {"sha": t.sha, "green": False,
-                 "detalle": f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
-                            f"resuelve y vuelve a entregar (no mergees tú). GitHub dijo: {str(e)[:300]}"},
+                {
+                    "sha": t.sha,
+                    "green": False,
+                    "detalle": f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
+                    f"resuelve y vuelve a entregar (no mergees tú). GitHub dijo: {str(e)[:300]}",
+                },
                 ukey=f"rechazo:{plan.id}:{t.block}:{t.sha}:{int(time.time())}",
             )
             return
