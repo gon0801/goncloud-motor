@@ -491,6 +491,46 @@ class TestSoloElMotorMergea(Banco):
         self.assertIn("PROHIBIDO mergear", (RAIZ / "motor" / "effects.py").read_text())
 
 
+class TestConfSeActualizaSola(Banco):
+    """David (2026-10-20): agregar, quitar o reemplazar modelos tiene que ser fácil. Es un cambio
+    en el repo de la conf; cada máquina lo trae sola y solo aplica una conf válida."""
+
+    def test_modelo_nuevo_llega_y_una_conf_rota_no(self):
+        self.home, _ = sandbox.create(self.tmp / "b")
+        conf, bare, w = self.tmp / "b" / "conf", self.tmp / "conf.git", self.tmp / "conf-w"
+        git("clone", "-q", "--bare", str(conf), str(bare))
+        git("remote", "add", "origin", str(bare), cwd=conf)
+        git("fetch", "-q", "origin", cwd=conf)
+        git("clone", "-q", str(bare), str(w))
+        d = Daemon(self.home)
+        self.assertNotIn("qwen", d.cx.conf.escalera("implementar"))
+
+        modelos = (w / "modelos.toml").read_text().replace('codigo = ["', 'codigo = ["qwen", "', 1)
+        (w / "modelos.toml").write_text(modelos)
+        with open(w / "rutas.toml", "a") as f:
+            f.write('\n[rutas.qwen]\ncuenta = "qwen"\ncli = "qwen"\nargv = ["qwen", "{prompt}"]\n')
+        git("-c", "user.name=a", "-c", "user.email=a@l", "commit", "-qam", "qwen", cwd=w)
+        git("push", "-q", "origin", "HEAD", cwd=w)
+        ahora = time.time()
+        d.tick(ahora)
+        self.assertEqual(d.cx.conf.escalera("implementar")[0], "qwen", "el modelo nuevo llegó solo")
+
+        with open(w / "rutas.toml", "a") as f:
+            f.write('\n[rutas.roto]\ncuenta = "x"\ncli = "x"\nargv = ["x"]\n')
+        git("-c", "user.name=a", "-c", "user.email=a@l", "commit", "-qam", "roto", cwd=w)
+        git("push", "-q", "origin", "HEAD", cwd=w)
+        sha_bueno = d.cx.conf.sha
+        d.tick(ahora + 10)
+        d.tick(ahora + 901)
+        self.assertEqual(d.cx.conf.sha, sha_bueno, "una conf que no pasa la validación no se aplica")
+        self.assertNotIn("roto", d.cx.conf.rutas)
+        evs = Store(self.home / "motor.db").events()
+        self.assertEqual(len([e for e in evs if e.kind == "ConfRechazada"]), 1)
+        self.assertTrue(list((self.home / "avisos" / "pendientes").glob("*confmala*")), "se avisa una vez")
+        d.tick(ahora + 1900)
+        self.assertEqual(len([e for e in Store(self.home / "motor.db").events() if e.kind == "ConfRechazada"]), 1)
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})

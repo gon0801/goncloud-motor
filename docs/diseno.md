@@ -118,6 +118,16 @@ de David, 2026-10-20). Cuando lo hace:
 - `revisa:` necesita al menos un modelo que no esté en `implementa:`.
 - Un modelo sin ruta en la conf se rechaza al entregar, con la lista de los que hay.
 
+**Agregar, quitar o reemplazar un modelo** es un cambio en el repo `goncloud-motor-conf`, nada más:
+1. Agregar: una entrada en `rutas.toml` (cómo se lanza sin ventana y qué cuenta lo paga) y, si
+   necesita llave, esa llave en `secretos.env` de cada máquina. Con eso ya se puede pedir en un
+   plan (`implementa: nuevo`). Para que entre solo, se pone su nombre en `modelos.toml`, en el
+   carril y la posición que toque.
+2. Quitar: se borra su nombre del carril (la ruta puede quedarse).
+3. Reemplazar: se cambia un nombre por otro en el carril.
+Cada máquina trae la conf sola cada 15 minutos y la aplica solo si pasa `motor conf valida`; si no
+la pasa, sigue con la anterior y avisa una vez.
+
 Cada ruta puede traer `env` con `${VAR}` de `secretos.env`. Así DeepSeek corre por el CLI de
 Claude con su propia llave, sin tocar la suscripción.
 
