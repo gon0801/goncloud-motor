@@ -34,6 +34,20 @@ No es un bug del script de la rama: es la combinación del merge adoptado y el
 
 ## Desbloqueo (lo hace una persona, en el motor instalado)
 
+Un solo comando, desde un checkout de este repo (cualquier rama reciente):
+
+```sh
+bash ops/desbloquea-arranque.sh            # muestra el estado, no toca nada
+bash ops/desbloquea-arranque.sh --aplicar  # parchea effects.py y reinicia el daemon
+```
+
+El script hace exactamente los pasos manuales de abajo: respalda
+`~/.motor-arranque/motor/motor/effects.py`, aplica el parche de `MOTOR_RAIZ` en
+`deploy()` y `prove()` (idempotente, con anclas exactas), valida con
+`py_compile` (si no compila restaura el respaldo) y reinicia el daemon con
+`launchctl kickstart -k gui/$(id -u)/com.goncloud.motor-arranque`. Probado
+punta a punta con un arranque y un launchctl falsos el 2026-10-20.
+
 Dejar `_ya_mergeado` como está (`"commit": v.merge_commit`: el despliegue
 tiene que seguir corriendo el árbol mergeado, nunca la cabeza sin mergear de
 la rama — grabar `"commit": sha` haría que `deploy()` copie la cabeza, que no
