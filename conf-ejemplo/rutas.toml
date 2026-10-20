@@ -15,7 +15,7 @@ argv = ["claude", "-p", "--model", "opus", "--permission-mode", "bypassPermissio
 [rutas.k3]
 cuenta = "kimi"
 cli = "kimi"
-argv = ["kimi", "-p", "{prompt}", "--auto", "--output-format", "stream-json"]
+argv = ["kimi", "-p", "{prompt}", "--output-format", "stream-json"]   # -p ya corre sin preguntar; con --auto o --yolo falla
 
 [rutas.glm]
 cuenta = "zai"
