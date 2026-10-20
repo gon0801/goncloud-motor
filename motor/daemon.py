@@ -69,6 +69,8 @@ class Daemon:
                     plan = Plan.from_dict(msg["plan"])
                     if malos := modelos_desconocidos(plan, self.cx.conf.rutas):
                         raise PlanError(malos)
+                    for repo in dict.fromkeys(b.repo for b in plan.blocks):
+                        self.cx.ws.espejo(repo)   # antes de cargarlo: un repo que no existe rechaza el plan
                     self.store.append(plan.id, "", "PlanLoaded", {"plan": msg["plan"], "por": msg.get("por", "")},
                                       ukey=f"plan:{plan.id}")
                     self.fx.pin_repos(plan)
@@ -76,9 +78,7 @@ class Daemon:
                 except (PlanError, RuntimeError, KeyError) as e:
                     resultado = f"rechazado: {e}"
             elif tipo == "hecho":
-                self.store.append(plan_id, msg["block"], "HumanDone", {"por": msg.get("por", "")},
-                                  ukey=f"humano:{plan_id}:{msg['block']}")
-                resultado = "anotado"
+                resultado = self._hecho(plan_id, msg)
             elif tipo == "nota":
                 self.store.append(plan_id, msg["block"], "Note", {"texto": msg["texto"]}, ukey=f"nota:{cmd_id}")
                 resultado = "anotado"
@@ -87,6 +87,16 @@ class Daemon:
             self.store.append(plan_id or "", "", "CommandReceived", {"cmd_id": cmd_id, "tipo": tipo, "resultado": resultado},
                               ukey=f"cmd:{cmd_id}")
             os.replace(f, hechos / f.name)
+
+    def _hecho(self, plan_id: str, msg: dict) -> str:
+        plan = next((p for p in self.plans() if p.id == plan_id), None)
+        if plan is None or msg["block"] not in {b.id for b in plan.blocks}:
+            return "rechazado: no conozco ese plan o ese paso"
+        if m.estado(m.fold(plan, self.store.events(plan.id)), msg["block"]) is not m.Estado.HUMANO:
+            return "rechazado: ese paso todavía no te toca; te aviso cuando sí"
+        self.store.append(plan_id, msg["block"], "HumanDone", {"por": msg.get("por", "")},
+                          ukey=f"humano:{plan_id}:{msg['block']}")
+        return "anotado"
 
     def ingest_attempts(self, plan: Plan) -> None:
         snap = m.fold(plan, self.store.events(plan.id))
@@ -114,7 +124,10 @@ class Daemon:
             self.ingest_attempts(plan)
             snap = m.fold(plan, self.store.events(plan.id))
             for a in m.decide(snap, self.cx.policy, now):
-                self.execute(plan, snap, a)
+                try:
+                    self.execute(plan, snap, a)
+                except Exception as e:   # red caída, repo borrado, disco lleno: se reintenta el próximo tick
+                    self._falla_efecto(plan, a, e, now)
                 snap = m.fold(plan, self.store.events(plan.id))
             hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
             todo_hecho = todo_hecho and hecho and f"terminado:{plan.id}" in snap.plan_notices
@@ -138,6 +151,14 @@ class Daemon:
             self._sin_dormir = hay_trabajo
         else:
             self._sin_dormir_reintento = now + 600
+
+    def _falla_efecto(self, plan: Plan, a: m.Action, e: Exception, now: float) -> None:
+        """Un efecto que revienta no tumba al motor. Se anota una vez por hora y el tick siguiente
+        lo reintenta (los efectos son idempotentes); si sigue fallando, el aviso de 'atorado' llega solo."""
+        bloque = getattr(a, "block", "") or getattr(getattr(a, "ticket", None), "block", "")
+        clave = f"falla:{plan.id}:{bloque}:{type(a).__name__}:{int(now // 3600)}"
+        self.store.append(plan.id, bloque, "EffectFailed", {"accion": type(a).__name__, "error": str(e)[-500:]},
+                          ukey=clave)
 
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:
         f = {m.StartAttempt: self.fx.start_attempt, m.Verify: self.fx.verify, m.OpenPr: self.fx.open_pr,

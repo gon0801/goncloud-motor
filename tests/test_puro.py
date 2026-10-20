@@ -10,8 +10,10 @@ from pathlib import Path
 
 from motor import machine as m
 from motor.conf import ConfError, RepoConf, load_maquina
+from motor.__main__ import conf_valida, doctor
+from motor.github import veredicto
 from motor.notify import PLANTILLAS, AvisoInvalido, lint_plain, render
-from motor.plan import PlanError, parse_plan
+from motor.plan import PlanError, _celdas, parse_plan
 from motor.plataforma.windows import flags_creacion, resolve_shim, tarea_xml, CREATE_BREAKAWAY_FROM_JOB
 from motor.servicio import plist_launchd
 from motor.store import Event
@@ -177,6 +179,106 @@ class PedidoDeModelosTest(unittest.TestCase):
         rev = [a for a in m.decide(m.fold(p, sin_cuota), self.pol(), now) if isinstance(a, m.StartAttempt)
                and a.role == "revisar"]
         self.assertEqual(rev, [], "si DeepSeek no tiene cuota se espera; no entra otro que David no pidió")
+
+
+class RevisionGrokTest(unittest.TestCase):
+    """Hallazgos de la revisión de Grok a MOTOR 01 (2026-10-20)."""
+
+    PASOS = PLAN + """
+## Bloque F — instalar
+lane: gate
+prueba-real: true
+| Fila | Contenido | Acepta |
+| F.1 | instalar | true |
+
+## Bloque E — llaves
+lane: fast
+depende: F
+humano: login pega las llaves
+"""
+
+    def test_no_pide_el_paso_humano_antes_de_sus_dependencias(self):
+        s = m.fold(parse_plan(self.PASOS), [])
+        self.assertIs(m.estado(s, "E"), m.Estado.ESPERANDO)
+        avisos = [a for a in m.decide(s, pol(), time.time()) if isinstance(a, m.Notify) and a.template == "humano"]
+        self.assertEqual(avisos, [], "a David no se le pide nada que todavía no puede hacer")
+
+    def test_pipe_escapado_queda_dentro_de_la_celda(self):
+        self.assertEqual(_celdas(r"| G.4 | cerrar | gh pr view 37 --json state -q .state \| grep -q CLOSED |"),
+                         ["G.4", "cerrar", "gh pr view 37 --json state -q .state | grep -q CLOSED"])
+
+    def test_checks_por_bloque(self):
+        p = parse_plan(PLAN.replace("lane: gate\nprueba-real: true\n| Fila",
+                                    "lane: gate\nchecks: espejo-de-g, gate\nprueba-real: true\n| Fila", 1))
+        self.assertEqual(p.block("A").checks, ("espejo-de-g", "gate"))
+        self.assertEqual(type(p).from_dict(p.to_dict()).block("A").checks, ("espejo-de-g", "gate"))
+
+    def test_check_en_matriz(self):
+        corre = [{"name": f"completa ({i}, 3)", "status": "completed", "conclusion": "success"} for i in (1, 2)]
+        corre.append({"name": "completa (3, 3)", "status": "in_progress", "conclusion": None})
+        v = veredicto("s", ("completa",), corre)
+        self.assertEqual((v.terminal, v.faltan), (False, ("completa",)))
+        corre[-1] = {"name": "completa (3, 3)", "status": "completed", "conclusion": "failure"}
+        self.assertEqual(veredicto("s", ("completa",), corre).fallas, ("completa",))
+        corre[-1]["conclusion"] = "success"
+        self.assertTrue(veredicto("s", ("completa",), corre).green)
+        self.assertEqual(veredicto("s", ("comp",), corre).faltan, ("comp",), "un prefijo suelto no cuenta")
+
+    def test_checks_que_nunca_terminan_avisan_una_vez(self):
+        p, now = parse_plan(PLAN), time.time()
+        base = entregado() + [ev("Verified", "A", {"sha": "a" * 40, "ok": True}), ev("PrOpened", "A", {"numero": 1}),
+                              ev("Reviewed", "A", {"sha": "a" * 40, "veredicto": "APROBADO", "bloqueantes": []}),
+                              ev("MarkedReady", "A", {"sha": "a" * 40})]
+        base[-1] = Event(base[-1].id, now - 7 * 3600, "demo", "A", "MarkedReady", {"sha": "a" * 40})
+        acc = [a for a in m.decide(m.fold(p, base), pol(), now) if isinstance(a, m.Notify)]
+        self.assertIn("atorado:A", [a.key for a in acc])
+
+    def test_efecto_que_falla_una_hora_avisa(self):
+        p, now = parse_plan(PLAN), time.time()
+        fallas = [Event(900 + i, now - h, "demo", "A", "EffectFailed", {"accion": "OpenPr", "error": "red"})
+                  for i, h in enumerate((4000, 10))]
+        acc = [a for a in m.decide(m.fold(p, entregado() + fallas), pol(), now) if isinstance(a, m.Notify)]
+        self.assertIn("atorado:A", [a.key for a in acc])
+        acc = [a for a in m.decide(m.fold(p, entregado() + fallas[1:]), pol(), now) if isinstance(a, m.Notify)]
+        self.assertNotIn("atorado:A", [a.key for a in acc], "una falla suelta no molesta a David")
+
+    def test_doctor_busca_en_path_extra_de_la_maquina(self):
+        with tempfile.TemporaryDirectory() as t:
+            h, binario = Path(t), Path(t) / "bin"
+            binario.mkdir()
+            (binario / "claude").write_text("#!/bin/sh\n")
+            (binario / "claude").chmod(0o755)
+            conf = Path(__file__).resolve().parent.parent / "conf-ejemplo"
+            (h / "maquina.toml").write_text(f'nombre = "PC"\nconf = "{conf}"\npath_extra = ["{binario}"]\n')
+            viejo = os.environ.get("PATH", "")
+            os.environ["PATH"] = "/usr/bin:/bin"   # git sí; los CLIs de agentes no
+            try:
+                r = doctor(h)
+            finally:
+                os.environ["PATH"] = viejo
+            self.assertTrue(r["rutas"]["sonnet"]["ejecutable"])
+            self.assertFalse(r["rutas"]["k3"]["ejecutable"])
+
+
+class ConfValidaTest(unittest.TestCase):
+    def test_conf_compartida_y_maquinas(self):
+        import shutil
+        raiz = Path(__file__).resolve().parent.parent
+        self.assertEqual(conf_valida(raiz / "conf-ejemplo"), [])
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / "conf"
+            shutil.copytree(raiz / "conf-ejemplo", d)
+            (d / "maquinas").mkdir()
+            (d / "maquinas" / "mac.toml").write_text('nombre = "Mac"\nconf = "~/c"\n[avisos]\nchat = "1"\n')
+            (d / "maquinas" / "pc.toml").write_text('nombre = "PC"\n')
+            (d / "maquinas" / "mini.toml").write_text('nombre = "Mini"\nconf = "~/c"\n[no_dormir]\nencender = "pmset 1"\napagar = []\n')
+            with open(d / "rutas.toml", "a") as f:
+                f.write('\n[rutas.x]\ncuenta = "a"\ncli = "x"\nargv = ["x"]\nenv = { K = "sk-abcdefghijklmnopqrstuvwxyz123456" }\n')
+            texto = "\n".join(conf_valida(d))
+        for esperado in ("mac.toml: maquina.toml no puede traer ['avisos']", "pc.toml: maquina.toml necesita 'nombre' y 'conf'",
+                         "mini.toml: [no_dormir] lleva dos listas", "ruta x: el comando no recibe el encargo",
+                         "forma de llave"):
+            self.assertIn(esperado, texto)
 
 
 class ConfTest(unittest.TestCase):

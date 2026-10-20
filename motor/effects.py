@@ -53,7 +53,7 @@ class Effects:
     # ------------------------------------------------------------------ entorno
     def env_base(self, extra: dict | None = None) -> dict:
         mq = self.cx.maquina
-        env = {**os.environ, **dict(mq.env), **dict(mq.secretos), **(extra or {})}
+        env = {**os.environ, **dict(mq.env), **dict(mq.secretos), "MOTOR_RAIZ": str(RAIZ), **(extra or {})}
         if mq.path_extra:
             env["PATH"] = os.pathsep.join([*mq.path_extra, env.get("PATH", "")])
         return env
@@ -244,7 +244,8 @@ Escribe en `$MOTOR_RESULT`:
         self._ultimo_poll[k] = time.time()
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
-        v = self.cx.gh.checks(block.repo, int(snap.blocks[a.block].pr["numero"]), a.sha, rc.checks_extra)
+        v = self.cx.gh.checks(block.repo, int(snap.blocks[a.block].pr["numero"]), a.sha,
+                              tuple(dict.fromkeys([*rc.checks_extra, *block.checks])))
         if v.terminal:   # solo se anota el resultado final: los sondeos no ensucian el log
             self.cx.store.append(plan.id, a.block, "ChecksResult",
                                  {"sha": a.sha, "green": v.green, "detalle": f"fallaron: {list(v.fallas)}" if v.fallas else ""},

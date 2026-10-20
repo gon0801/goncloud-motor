@@ -41,6 +41,20 @@ class ChecksVerdict:
     fallas: tuple[str, ...]
 
 
+def veredicto(sha: str, requeridos: tuple[str, ...], runs: list[dict]) -> ChecksVerdict:
+    """Un check requerido "completa" cubre también una matriz "completa (1, 6)" … "completa (6, 6)":
+    está terminado cuando todas sus partes terminaron, y verde cuando todas salieron bien."""
+    faltan, fallas = [], []
+    for c in requeridos:
+        partes = [r for r in runs if r["name"] == c or r["name"].startswith(c + " (")]
+        if not partes or any(r["status"] != "completed" for r in partes):
+            faltan.append(c)
+        elif any(r["conclusion"] not in ("success", "skipped", "neutral") for r in partes):
+            fallas.append(c)
+    return ChecksVerdict(sha, terminal=not faltan or bool(fallas), green=not faltan and not fallas,
+                         faltan=tuple(faltan), fallas=tuple(fallas))
+
+
 class MergeRechazado(RuntimeError):
     pass
 
@@ -105,12 +119,7 @@ class GhGitHub:
         requeridos = tuple(dict.fromkeys([*req, *extra]))
         runs = json.loads(self._gh("api", f"repos/{n}/commits/{sha}/check-runs", "--jq",
                                    "[.check_runs[]|{name, status, conclusion}]"))
-        por_nombre = {r["name"]: r for r in runs}
-        faltan = tuple(c for c in requeridos if c not in por_nombre or por_nombre[c]["status"] != "completed")
-        fallas = tuple(c for c in requeridos if c in por_nombre and por_nombre[c]["status"] == "completed"
-                       and por_nombre[c]["conclusion"] not in ("success", "skipped", "neutral"))
-        return ChecksVerdict(sha, terminal=not faltan or bool(fallas), green=not faltan and not fallas,
-                             faltan=faltan, fallas=fallas)
+        return veredicto(sha, requeridos, runs)
 
     def merge(self, repo, numero, sha, metodo, mensaje):
         try:

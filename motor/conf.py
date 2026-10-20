@@ -107,8 +107,13 @@ class Maquina:
     secretos: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
 
-def load_maquina(home: Path) -> Maquina:
-    raw = tomllib.loads((home / "maquina.toml").read_text())
+def valida_maquina(raw: dict) -> None:
+    """Esquema cerrado de maquina.toml (también lo usa `motor conf valida` sobre maquinas/*.toml)."""
+    if "nombre" not in raw or "conf" not in raw:
+        raise ConfError("maquina.toml necesita 'nombre' y 'conf'")
+    nd = raw.get("no_dormir")
+    if nd is not None and not (isinstance(nd.get("encender"), list) and isinstance(nd.get("apagar"), list)):
+        raise ConfError("[no_dormir] lleva dos listas: encender = [...] y apagar = [...]")
     malas = set(raw) & _PROHIBIDAS
     if malas:
         raise ConfError(
@@ -117,6 +122,11 @@ def load_maquina(home: Path) -> Maquina:
     extras = set(raw) - _CLAVES_MAQUINA
     if extras:
         raise ConfError(f"maquina.toml trae claves desconocidas: {sorted(extras)}")
+
+
+def load_maquina(home: Path) -> Maquina:
+    raw = tomllib.loads((home / "maquina.toml").read_text())
+    valida_maquina(raw)
     return Maquina(
         nombre=raw["nombre"], conf=Path(raw["conf"]).expanduser(),
         path_extra=tuple(raw.get("path_extra", [])),

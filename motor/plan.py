@@ -63,6 +63,7 @@ class Block:
     prueba_real: str
     release: Release | None
     human: Human | None
+    checks: tuple[str, ...] = ()   # checks que el plan exige además de la protección de la rama
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ class Plan:
                 "rows": [r.__dict__ for r in b.rows], "aviso": b.aviso,
                 "prueba_real": b.prueba_real,
                 "release": b.release.__dict__ if b.release else None,
-                "human": b.human.__dict__ if b.human else None,
+                "human": b.human.__dict__ if b.human else None, "checks": list(b.checks),
             }
         return {"id": self.id, "titulo": self.titulo, "blocks": [blk(b) for b in self.blocks],
                 "implementa": list(self.implementa), "revisa": list(self.revisa)}
@@ -101,7 +102,7 @@ class Plan:
                 rows=tuple(Row(**r) for r in b["rows"]), aviso=b["aviso"],
                 prueba_real=b["prueba_real"],
                 release=Release(**b["release"]) if b["release"] else None,
-                human=Human(**b["human"]) if b["human"] else None,
+                human=Human(**b["human"]) if b["human"] else None, checks=tuple(b.get("checks", ())),
             ))
         return Plan(id=d["id"], titulo=d["titulo"], blocks=tuple(blocks),
                     implementa=tuple(d.get("implementa", ())), revisa=tuple(d.get("revisa", ())))
@@ -126,7 +127,9 @@ _CAMPO = re.compile(r"^([a-z-]+):\s*(.*)$")
 
 
 def _celdas(linea: str) -> list[str]:
-    return [c.strip() for c in linea.strip().strip("|").split("|")]
+    """Separa por `|`, salvo `\\|` (un pipe dentro de la celda, como en Markdown)."""
+    partes = re.split(r"(?<!\\)\|", linea.strip().strip("|"))
+    return [c.strip().replace("\\|", "|") for c in partes]
 
 
 def _modelos(valor: str) -> tuple[str, ...]:
@@ -236,6 +239,7 @@ def parse_plan(texto: str, *, min_implementadores: int = 0, implementadores: int
             id=d.id, titulo=d.titulo, repo=repo, lane=lane, depende=dep, rows=tuple(d.rows),
             aviso=f.get("aviso", d.titulo), prueba_real=f.get("prueba-real", ""),
             release=release, human=human,
+            checks=tuple(x.strip() for x in f.get("checks", "").split(",") if x.strip()),
         ))
 
     # ciclos

@@ -158,6 +158,38 @@ class TestPedidoDeModelos(Banco):
                          "la ruta recibe su llave desde secretos.env")
 
 
+class TestEntregaSegura(Banco):
+    def test_repo_que_no_existe_rechaza_el_plan_sin_cargarlo(self):
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        malo = self.tmp / "malo.md"
+        malo.write_text(self.plan.read_text().replace("repo: ", "repo: /no/existe/x.git\n#", 1))
+        r = motor("entrega", str(malo), "--home", str(self.home), "--json", "--espera", "0")
+        cmd = json.loads(r.stdout)["cmd_id"]
+        d = Daemon(self.home)
+        d.ingest_inbox()
+        self.assertEqual(d.plans(), [], "un plan con un repo inexistente no queda cargado")
+        recibo = [e for e in Store(self.home / "motor.db").events() if e.kind == "CommandReceived"]
+        self.assertEqual(recibo[0].data["cmd_id"], cmd)
+        self.assertTrue(recibo[0].data["resultado"].startswith("rechazado"))
+
+    def test_hecho_antes_de_tiempo_se_rechaza_y_un_efecto_que_revienta_no_tumba_al_motor(self):
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        self.plan.write_text(self.plan.read_text().replace("lane: fast\nhumano:", "lane: fast\ndepende: A\nhumano:", 1))
+        motor("entrega", str(self.plan), "--home", str(self.home), "--json", "--espera", "0")
+        motor("hecho", "demo", "E", "--home", str(self.home))
+        d = Daemon(self.home)
+
+        def revienta(*_):
+            raise RuntimeError("se cayó la red")
+        d.fx.start_attempt = revienta
+        d.tick()
+        evs = eventos(self.home)
+        hecho = [e for e in Store(self.home / "motor.db").events() if e.kind == "CommandReceived" and e.data["tipo"] == "hecho"]
+        self.assertTrue(hecho[0].data["resultado"].startswith("rechazado: ese paso todavía no te toca"))
+        self.assertFalse(any(e.kind == "HumanDone" for e in evs))
+        self.assertTrue(any(e.kind == "EffectFailed" and "se cayó la red" in e.data["error"] for e in evs))
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})

@@ -74,7 +74,7 @@ latidos que no hacen falta con un solo escritor.
 - **Avisos.** Plantillas cerradas, máximo 8 líneas, sin SHAs ni rutas ni jerga. Se envían al
   menos una vez y se guardan en una bandeja de salida.
 
-## Probado en el prototipo (45 pruebas, 1 saltada)
+## Probado en el prototipo (55 pruebas, 1 saltada)
 
 `PYTHONPATH=. python3 -m unittest tests.test_puro tests.test_github_contrato tests.test_motor_e2e`
 

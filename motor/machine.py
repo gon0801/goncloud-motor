@@ -107,6 +107,8 @@ class BlockView:
     human_done: bool = False
     notes: list[str] = field(default_factory=list)
     notices: set[str] = field(default_factory=set)
+    listo_desde: dict[str, float] = field(default_factory=dict)   # sha -> cuándo se marcó listo
+    fallas_efecto: list[float] = field(default_factory=list)      # cuándo falló un efecto (red, GitHub, disco)
 
     def implement_attempts(self) -> list[Attempt]:
         return [a for a in self.attempts if a.role == "implementar"]
@@ -176,6 +178,9 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.reviews.append(d)
         elif e.kind == "MarkedReady":
             bv.ready.add(d["sha"])
+            bv.listo_desde.setdefault(d["sha"], e.ts)
+        elif e.kind == "EffectFailed":
+            bv.fallas_efecto.append(e.ts)
         elif e.kind == "ChecksResult":
             bv.checks[d["sha"]] = d
         elif e.kind == "Merged":
@@ -210,12 +215,12 @@ def estado(snap: Snapshot, bid: str) -> Estado:
     m = bv.merged_sha()
     if m and bv.proved.get(m, {}).get("ok"):
         return Estado.HECHO
+    if any(estado(snap, dep) is not Estado.HECHO for dep in b.depende):
+        return Estado.ESPERANDO     # antes que el paso humano: no se le pide nada a David antes de tiempo
     if b.human and not bv.human_done:
         return Estado.HUMANO
     if b.human and not b.rows:
         return Estado.HECHO
-    if any(estado(snap, dep) is not Estado.HECHO for dep in b.depende):
-        return Estado.ESPERANDO
     run = bv.running()
     if run:
         return Estado.IMPLEMENTANDO if run.role == "implementar" else Estado.REVISANDO
@@ -447,6 +452,8 @@ def decide(snap: Snapshot, policy: Policy, now: float) -> list[Action]:
         e = estado(snap, bid)
         if e is not Estado.HECHO:
             todos_hechos = False
+        if f"atorado:{bid}" not in bv.notices and _sin_avance_propio(bv, e, policy, now):
+            acciones.append(Notify(f"atorado:{bid}", bid, "atorado", (("bloque", b.aviso),)))
         if e is Estado.HUMANO:
             if b.human and b.human.sonda:
                 acciones.append(ProbeHuman(bid))
@@ -490,6 +497,16 @@ def decide(snap: Snapshot, policy: Policy, now: float) -> list[Action]:
     if todos_hechos and f"terminado:{snap.plan.id}" not in snap.plan_notices:
         acciones.append(Notify(f"terminado:{snap.plan.id}", "", "terminado", (("total", str(len(snap.blocks))),)))
     return acciones
+
+
+def _sin_avance_propio(bv: BlockView, e: Estado, policy: Policy, now: float) -> bool:
+    """Atascos que no dependen de un agente: checks que nunca terminan (un nombre que no existe)
+    o un efecto que lleva una hora fallando. Se avisa una vez y el motor sigue reintentando."""
+    if e is Estado.CHECKS:
+        desde = bv.listo_desde.get(bv.head())
+        if desde is not None and now - desde > policy.aviso_lento_s:
+            return True
+    return len(bv.fallas_efecto) >= 2 and bv.fallas_efecto[-1] - bv.fallas_efecto[0] >= 3600
 
 
 def _sin_agente(snap: Snapshot, policy: Policy, now: float, ladder: tuple[str, ...],

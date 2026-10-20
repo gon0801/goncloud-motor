@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -28,8 +29,9 @@ import uuid
 from pathlib import Path
 
 from . import machine as m
-from .conf import ConfError, load_conf, load_maquina
+from .conf import ConfError, load_conf, load_maquina, valida_maquina
 from .plan import PlanError, parse_plan
+from .workspace import SECRETO as SECRETO_CONF
 
 
 def _db(home: Path) -> Path:
@@ -93,7 +95,7 @@ def doctor(home: Path) -> dict:
     except (ConfError, OSError, KeyError) as e:
         return {"ok": False, "problemas": [str(e)], "rutas": {}}
     out["maquina"], out["conf_sha"] = mq.nombre, conf.sha
-    path = ":".join([*mq.path_extra, "/Users/dn/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
+    path = os.pathsep.join([*mq.path_extra, os.environ.get("PATH", "")])
     for modelo, r in conf.rutas.items():
         exe = r.argv[0]
         ok = Path(exe).exists() or bool(shutil.which(exe, path=path))
@@ -105,6 +107,30 @@ def doctor(home: Path) -> dict:
             out["ok"] = False
             out["problemas"].append(f"ningún modelo del papel {papel} puede correr aquí")
     return out
+
+
+def conf_valida(d: Path) -> list[str]:
+    """Lo que tiene que cumplir la conf compartida antes de llegar a las tres máquinas."""
+    import tomllib
+    try:
+        conf = load_conf(d)
+    except (ConfError, OSError, KeyError, tomllib.TOMLDecodeError) as e:
+        return [f"conf: {e}"]
+    errores = []
+    for mo, r in conf.rutas.items():
+        if not any("{prompt}" in x or "{brief}" in x for x in r.argv):
+            errores.append(f"ruta {mo}: el comando no recibe el encargo ({{prompt}} o {{brief}})")
+    for papel in conf.papeles:
+        if not conf.escalera(papel):
+            errores.append(f"papel {papel}: sin modelos")
+    for f in sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []:
+        try:
+            valida_maquina(tomllib.loads(f.read_text()))
+        except (ConfError, tomllib.TOMLDecodeError) as e:
+            errores.append(f"maquinas/{f.name}: {e}")
+    if SECRETO_CONF.search("\n".join(p.read_text(errors="replace") for p in d.rglob("*.toml"))):
+        errores.append("hay algo con forma de llave en la conf; las llaves van en secretos.env de cada máquina")
+    return errores
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -127,7 +153,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--intervalo", type=float, default=10.0); s.add_argument("--hasta-terminar", action="store_true")
     s.add_argument("--tope", type=float, default=0); s.add_argument("--checks-cada", type=float)
     s = sub.add_parser("servicio"); s.add_argument("--home", type=Path, required=True)
+    s = sub.add_parser("conf"); s.add_argument("accion", choices=["valida"]); s.add_argument("dir", type=Path)
     a = ap.parse_args(argv)
+
+    if a.cmd == "conf":
+        errores = conf_valida(a.dir)
+        print("ok" if not errores else "La conf no está lista:\n" + "\n".join(f"  - {e}" for e in errores))
+        return 0 if not errores else 2
 
     if a.cmd in ("valida", "entrega"):
         try:
