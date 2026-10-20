@@ -524,6 +524,25 @@ def _elige(
     for k, v in reservas.items():
         ocupados[k] = ocupados.get(k, 0) + v
     mios = [a for a in bv.attempts if a.role == role]
+    # Primera pasada: salta al que acaba de fallar si otro puede correr; si nadie, lo admite.
+    for saltar in (True, False):
+        mo = _elige_pasada(ladder, snap, policy, now, bv, role, ocupados, mios, saltar)
+        if mo is not None:
+            return mo
+    return None
+
+
+def _elige_pasada(
+    ladder: tuple[str, ...],
+    snap: Snapshot,
+    policy: Policy,
+    now: float,
+    bv: BlockView,
+    role: str,
+    ocupados: dict[str, int],
+    mios: list[Attempt],
+    saltar_avanzo: bool,
+) -> str | None:
     for mo in ladder:
         cuenta = policy.cuenta.get(mo, mo)
         if snap.cooldowns.get(cuenta, 0) > now or _cuarentena(
@@ -544,7 +563,7 @@ def _elige(
                     fallas += 1
         if fallas >= policy.fallas_seguidas_max:
             continue
-        if _avanzo_de(mios, mo) and any(x != mo for x in ladder):
+        if saltar_avanzo and _avanzo_de(mios, mo):
             continue
         if role == "implementar":
             rondas = sum(

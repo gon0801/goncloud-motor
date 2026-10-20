@@ -144,6 +144,14 @@ class DetallesTest(unittest.TestCase):
             "modelo_no_disponible",
         )
 
+    def test_palabras_sueltas_en_lo_que_dijo_el_agente_no_son_del_proveedor(self):
+        for texto in (
+            "RecursionError: maximum recursion depth exceeded",
+            "FAILED tests/test_authentication.py::test_login",
+            "error: insufficient permissions to write .git/index",
+        ):
+            self.assertEqual(clasifica("claude", texto)["kind"], "falla", texto)
+
     def test_saldo_agotado_es_cuota(self):
         self.assertEqual(
             clasifica("deepseek", "API Error: 402 Insufficient Balance")["kind"],

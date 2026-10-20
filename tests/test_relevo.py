@@ -318,6 +318,23 @@ class EligeConRelevoTest(unittest.TestCase):
     def setUp(self):
         self.t = time.time()
 
+    def test_no_salta_al_que_fallo_si_el_siguiente_esta_en_pausa(self):
+        pol = m.Policy(
+            implementadores=("sonnet", "glm"),
+            revisores=("opus",),
+            cuenta={"sonnet": "anthropic", "glm": "zai", "opus": "anthropic"},
+            max_parallel={"anthropic": 2, "zai": 2},
+        )
+        evs = _intento("sonnet", "falla", 1, self.t - 10) + [
+            _ev("Cooldown", "", {"cuenta": "zai", "hasta": self.t + 3600}, self.t - 5)
+        ]
+        from motor.plan import parse_plan
+
+        acc = m.decide(m.fold(parse_plan(PLAN), evs), pol, self.t)
+        inicios = [a for a in acc if isinstance(a, m.StartAttempt)]
+        self.assertEqual([a.modelo for a in inicios], ["sonnet"])
+        self.assertFalse([a for a in acc if isinstance(a, m.Notify)])
+
     def test_sin_historial_empieza_el_primero(self):
         self.assertEqual(_quien([], self.t), "sonnet")
 

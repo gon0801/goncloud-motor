@@ -29,6 +29,13 @@ _QUOTA = re.compile(
     r"\bquota\b|\bbalance\b|insufficient|usage[ _-]?limit|out of credit|\b(?:daily|weekly|monthly)\b[^.\n]{0,24}\blimit",
     re.I,
 )
+# En la salida del agente solo frases de cuota inequívocas: "insufficient permissions" o un
+# "exceeded" de una prueba no son cuota.
+_QUOTA_EN_SALIDA = re.compile(
+    r"usage[ _-]?limit|insufficient (?:balance|credit|quota)|quota exceeded|exceeded[^.\n]{0,20}quota|out of credit|"
+    r"\b(?:daily|weekly|monthly)\b[^.\n]{0,24}\blimit",
+    re.I,
+)
 # Un freno que nombra el plan o un reinicio de horas es la ventana gastada con palabras de freno.
 _VENTANA_GASTADA = re.compile(
     r"\bresets?\s+at\b|\bresets?\s+in\b(?!\s+\d)|billing (?:period|cycle)|for (?:your|this|the) (?:current )?plan|plan[ _-]?limit",
@@ -149,7 +156,7 @@ def _canal(texto: str, suelto: bool) -> str | None:
     palabra de freno (stderr); si no, solo en contexto HTTP y en el idioma de error del proveedor."""
     if _MODELO_NIVEL.search(texto):
         return "modelo_no_disponible"
-    if _QUOTA.search(texto):
+    if (_QUOTA if suelto else _QUOTA_EN_SALIDA).search(texto):
         return "cuota"
     freno = _FRENO if suelto else _FRENO_EN_SALIDA
     if freno.search(texto):
@@ -164,6 +171,8 @@ def _canal(texto: str, suelto: bool) -> str | None:
             return _CODIGOS[m.group(1) or m.group(2)]
     if _TRANSPORTE.search(texto):
         return "transitorio"
+    if not suelto:
+        return None
     if _AUTH.search(texto):
         return "auth"
     if _EXCEDIDO.search(texto):
