@@ -19,7 +19,7 @@ git -C "$S/conf-src" add -A
 git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m conf
 git clone -q --bare "$S/conf-src" "$S/conf.git"
 
-export MOTOR_REPO_URL="$S/origen.git" MOTOR_CONF_URL="$S/conf.git" MOTOR_RAIZ="$S/trabajo"
+export MOTOR_REPO_URL="$S/origen.git" MOTOR_CONF_URL="$S/conf.git" MOTOR_INSTALA_RAIZ="$S/trabajo"
 export MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_LAUNCHD_DIR="$S/launchd"
 mkdir -p "$S/launchd"
 
@@ -65,6 +65,8 @@ en_mac() { HOME="$S/mac" "$@"; }
 
 echo "# instalar"
 reset
+# El motor exporta MOTOR_RAIZ (su propia carpeta, sin git) a quien despliega: no debe romper la instalación.
+export MOTOR_RAIZ="$S/no-es-repo"
 en_mac espera "instala en las tres" 0 bash "$I"
 [ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.0^{commit}")" = "$SHA" ] || fallo "la etiqueta v1.0.0 no quedó en el SHA mergeado"
 for m in mac mini; do

@@ -7,7 +7,7 @@ set -uo pipefail
 export LC_ALL=C
 aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$aqui/lib.sh"
-raiz="${MOTOR_RAIZ:-$(cd "$aqui/.." && pwd)}"
+raiz="${MOTOR_INSTALA_RAIZ:-$(cd "$aqui/.." && pwd)}"
 rama="${MOTOR_RAMA:-main}"
 
 # 1. La etiqueta, sobre un SHA que ya está en la rama principal (nunca sobre algo sin mergear).
