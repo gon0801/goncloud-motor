@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034
 # Lo común de ops/*.sh: las tres máquinas y cómo hablarles. Se carga con `.`, no se ejecuta.
 # Mac = esta máquina (sin ssh, salvo que MOTOR_MAC_SSH nombre un host); Mini y PC = por ssh.
 # Estos scripts viven en el repo del motor, pero nunca tocan ~/dev/goncloud-motor ni ~/.motor-arranque

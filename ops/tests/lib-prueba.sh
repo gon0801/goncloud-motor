@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034
 # Lo común de las pruebas de ops/: un ssh falso en el PATH, un HOME de mentira y verificadores.
 # Se carga con `.`. Nada de esto toca las máquinas reales.
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -7,7 +8,6 @@ mkdir -p "$S/bin" "$S/mac" "$S/mini"
 export FAKE_LOG="$S/ssh.log" S
 : >"$FAKE_LOG"
 PATH="$S/bin:$PATH"
-HOME_REAL="$HOME"
 fallos=0
 
 fallo() { echo "  FALLA: $*" >&2; fallos=$((fallos + 1)); }
