@@ -35,6 +35,7 @@ class Policy:
     rondas_max_por_modelo: int = 5
     cooldown_default_s: float = 5 * 3600
     aviso_lento_s: float = 6 * 3600
+    avance_cada_s: float = 3600        # resumen a David mientras el plan corre (orden de David, 2026-10-20)
     revision_fija: bool = False        # el plan nombró a sus revisores: no se sale de esa lista
 
     def para(self, plan: Plan) -> Policy:
@@ -54,7 +55,7 @@ class Policy:
             timeout_s=t.get("timeout_s", 4 * 3600), sin_avance_s=t.get("sin_avance_s", 45 * 60),
             wip_cada_s=t.get("wip_cada_s", 300),
             cooldown_default_s=t.get("cooldown_default_s", 5 * 3600),
-            aviso_lento_s=t.get("aviso_lento_s", 6 * 3600))
+            aviso_lento_s=t.get("aviso_lento_s", 6 * 3600), avance_cada_s=t.get("avance_cada_s", 3600))
 
 
 # --------------------------------------------------------------------------- vista
@@ -145,6 +146,7 @@ class Snapshot:
     cooldowns: dict[str, float]          # cuenta -> hasta (epoch)
     plan_notices: set[str]
     repos: dict[str, dict]               # repo -> .motor.toml fijado {"sha", "texto"}
+    inicio: float = 0.0                  # cuándo se cargó el plan (para el resumen de cada hora)
 
 
 def fold(plan: Plan, events: list[Event]) -> Snapshot:
@@ -152,6 +154,7 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
     cooldowns: dict[str, float] = {}
     plan_notices: set[str] = set()
     repos: dict[str, dict] = {}
+    inicio = events[0].ts if events else 0.0
     for e in events:
         d = e.data
         bv = blocks.get(e.block)
@@ -195,7 +198,8 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.human_done = True
         elif e.kind == "Note":
             bv.notes.append(d["texto"])
-    return Snapshot(plan=plan, blocks=blocks, cooldowns=cooldowns, plan_notices=plan_notices, repos=repos)
+    return Snapshot(plan=plan, blocks=blocks, cooldowns=cooldowns, plan_notices=plan_notices, repos=repos,
+                    inicio=inicio)
 
 
 # --------------------------------------------------------------------------- estado
@@ -494,9 +498,43 @@ def decide(snap: Snapshot, policy: Policy, now: float) -> list[Action]:
                 acciones.append(Notify(key, bid, "entregado", (
                     ("aviso", b.aviso), ("n", str(hechos)), ("total", str(len(snap.blocks))),
                     ("prueba", "pasó" if b.prueba_real else "sin prueba real declarada"))))
+    if not todos_hechos and snap.inicio and policy.avance_cada_s > 0:
+        n = int((now - snap.inicio) // policy.avance_cada_s)
+        if n >= 1 and f"avance:{n}" not in snap.plan_notices:
+            acciones.append(Notify(f"avance:{n}", "", "avance", _resumen(snap, now)))
     if todos_hechos and f"terminado:{snap.plan.id}" not in snap.plan_notices:
         acciones.append(Notify(f"terminado:{snap.plan.id}", "", "terminado", (("total", str(len(snap.blocks))),)))
     return acciones
+
+
+NOMBRES = {"sonnet": "Sonnet", "opus": "Opus", "k3": "Kimi", "glm": "GLM", "grok": "Grok", "qwen": "Qwen",
+           "deepseek": "DeepSeek", "muse": "Muse", "haiku": "Haiku", "fable": "Fable"}
+
+
+def _resumen(snap: Snapshot, now: float) -> tuple[tuple[str, str], ...]:
+    """El latido de cada hora: cuántas partes van, qué se está haciendo y si algo está atorado.
+    Si deja de llegar, David sabe que el motor o la máquina se cayeron."""
+    estados = {bid: estado(snap, bid) for bid in snap.blocks}
+    listas = sum(e is Estado.HECHO for e in estados.values())
+    corriendo = []
+    for bid, bv in snap.blocks.items():
+        run = bv.running()
+        if run:
+            que = "reviso" if run.role == "revisar" else "trabajo en"
+            corriendo.append(f"{que} «{bv.block.titulo}» ({NOMBRES.get(run.modelo, run.modelo.capitalize())}, "
+                             f"{int((now - run.started) // 60)} min)")
+    if corriendo:
+        ahora = "Ahora " + "; ".join(corriendo) + "."
+    elif any(e is Estado.HUMANO for e in estados.values()):
+        ahora = "Ahora espero tu paso; te mandé el aviso con lo que hay que hacer."
+    elif any(e is Estado.CHECKS for e in estados.values()):
+        ahora = "Ahora espero las pruebas automáticas de GitHub."
+    else:
+        ahora = "Ahora estoy entre un paso y otro."
+    atorados = [bv.block.titulo for bid, bv in snap.blocks.items()
+                if f"atorado:{bid}" in bv.notices and estados[bid] is not Estado.HECHO]
+    atoron = ("Atorado: " + "; ".join(f"«{x}»" for x in atorados) + ".") if atorados else "Nada atorado."
+    return (("listas", str(listas)), ("total", str(len(snap.blocks))), ("ahora", ahora), ("atoron", atoron))
 
 
 def _sin_avance_propio(bv: BlockView, e: Estado, policy: Policy, now: float) -> bool:
