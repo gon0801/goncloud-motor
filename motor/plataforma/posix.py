@@ -15,7 +15,9 @@ def boot_id_sistema() -> str:
             return f.read().strip()
     except OSError:
         pass
-    r = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True)
+    r = subprocess.run(
+        ["sysctl", "-n", "kern.boottime"], capture_output=True, text=True
+    )
     m = re.search(r"sec\s*=\s*(\d+)", r.stdout)
     return m.group(1) if m else "desconocido"
 
@@ -32,10 +34,14 @@ def pid_vivo(pid: int) -> bool:
     except PermissionError:
         return True
     try:
-        r, _ = os.waitpid(pid, os.WNOHANG)   # un hijo terminado sin recoger
+        r, _ = os.waitpid(pid, os.WNOHANG)  # un hijo terminado sin recoger
         return r == 0
     except ChildProcessError:
         return True
+
+
+def contener(p: subprocess.Popen) -> None:
+    """Nada que hacer: `start_new_session` ya dio grupo propio."""
 
 
 def matar_grupo(p: subprocess.Popen) -> None:

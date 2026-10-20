@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-from .plataforma import kwargs_grupo, matar_grupo
+from .plataforma import contener, kwargs_grupo, matar_grupo
 from .workspace import foto_wip
 
 
@@ -46,7 +46,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sin-avance", type=float, required=True)
     ap.add_argument("--wip-rama", default="")
     ap.add_argument("--wip-cada", type=float, default=300)
-    ap.add_argument("--wip-local", action="store_true", help="repo público: la foto no sale de esta máquina")
+    ap.add_argument(
+        "--wip-local",
+        action="store_true",
+        help="repo público: la foto no sale de esta máquina",
+    )
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
@@ -55,8 +59,16 @@ def main(argv: list[str] | None = None) -> int:
     fotos: list[str] = []
     inicio = ultima_foto = time.time()
     with open(log, "ab") as out:
-        p = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                             env={**os.environ, "MOTOR_ATTEMPT_DIR": str(d)}, **kwargs_grupo())
+        p = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, "MOTOR_ATTEMPT_DIR": str(d)},
+            **kwargs_grupo(),
+        )
+        contener(p)
         (d / "agent.pid").write_text(str(p.pid))
         ultimo = (log.stat().st_size, _mtime_arbol(cwd))
         ultimo_cambio = time.time()
@@ -78,9 +90,14 @@ def main(argv: list[str] | None = None) -> int:
                 break
     if a.wip_rama:
         fotos.append(foto_wip(cwd, a.wip_rama, a.wip_local))
-    outcome = {"exit": p.returncode, "timed_out": timed_out, "no_progress": no_progress,
-               "tail": log.read_text(errors="replace")[-2000:], "fotos": fotos[-5:],
-               "segundos": round(time.time() - inicio, 1)}
+    outcome = {
+        "exit": p.returncode,
+        "timed_out": timed_out,
+        "no_progress": no_progress,
+        "tail": log.read_text(errors="replace")[-2000:],
+        "fotos": fotos[-5:],
+        "segundos": round(time.time() - inicio, 1),
+    }
     tmp = d / "outcome.json.tmp"
     tmp.write_text(json.dumps(outcome, ensure_ascii=False))
     os.replace(tmp, d / "outcome.json")
