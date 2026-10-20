@@ -3,6 +3,7 @@
 # temporal, corre test_puro + test_windows con uv y borra la carpeta. Sale != 0 si algo falla,
 # si ssh falla o si test_windows se saltó (salvo la prueba de WSL cuando la PC no tiene distro).
 set -uo pipefail
+export LC_ALL=C
 
 sha="${1:?uso: ops/prueba-pc.sh <sha>}"
 sha="$(git rev-parse --verify "$sha^{commit}")" || exit 2
