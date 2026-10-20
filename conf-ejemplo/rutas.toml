@@ -20,7 +20,7 @@ argv = ["kimi", "-p", "{prompt}", "--auto", "--output-format", "stream-json"]
 [rutas.glm]
 cuenta = "zai"
 cli = "opencode"
-argv = ["opencode", "run", "--auto", "-m", "zai-coding-plan/glm-5.3-flash", "{prompt}"]
+argv = ["opencode", "run", "--auto", "-m", "zai-coding-plan/glm-5.3", "{prompt}"]
 
 [rutas.grok]
 cuenta = "xai"

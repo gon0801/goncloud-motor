@@ -1,5 +1,7 @@
-# Carriles en orden de relevo (tomados de model-routing.source.json v6 de Hermes).
-# El revisor, si no hay nadie del carril "revisar", sigue con cualquier modelo que no trabajó el bloque.
+# Carriles en orden de relevo = tabla v6 de David (model-routing.source.json de goncloud-hermes,
+# 2026-10-17): codigo = carril "codigo"; revisar = carril "planear" (PLANEAR/REVISAR).
+# Si no hay nadie del carril "revisar", revisa cualquier modelo que no trabajó el bloque.
+# Muse no está en la v6: queda con ruta pero fuera de los carriles hasta que David lo pida.
 [carriles]
-codigo = ["sonnet", "k3", "glm", "grok", "muse"]
+codigo = ["sonnet", "k3", "glm", "grok"]
 revisar = ["opus", "k3", "glm", "grok"]
