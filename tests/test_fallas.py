@@ -179,3 +179,24 @@ class DetallesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProveedorDeLaRutaTest(unittest.TestCase):
+    """Effects.collect clasifica con el proveedor de la ruta: una regresión aquí tumbaba al daemon entero."""
+
+    def test_la_cuenta_manda_si_es_un_proveedor_conocido_y_si_no_el_cli(self):
+        from types import SimpleNamespace
+
+        from motor.conf import Ruta
+        from motor.effects import Effects
+
+        rutas = {
+            "deepseek": Ruta("deepseek", "deepseek", "claude", ("claude", "{prompt}")),
+            "sonnet": Ruta("sonnet", "anthropic", "claude", ("claude", "{prompt}")),
+            "glm": Ruta("glm", "zai", "opencode", ("opencode", "{prompt}")),
+        }
+        fx = Effects(SimpleNamespace(conf=SimpleNamespace(rutas=rutas)))
+        self.assertEqual(
+            [fx._proveedor(x) for x in ("deepseek", "sonnet", "glm", "no-existe")],
+            ["deepseek", "claude", "opencode", ""],
+        )

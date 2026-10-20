@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import machine as m
 from . import plataforma, relevo
+from .fallas import PROVEEDORES
 from .conf import Conf, Maquina, RepoConf
 from .github import GitHubPort, MergeRechazado
 from .notify import Notifier, render
@@ -259,6 +260,13 @@ Escribe en `$MOTOR_RESULT`:
 {{"sha": "{a.sha}", "veredicto": "APROBADO" | "CAMBIOS",
   "bloqueantes": [{{"texto": "...", "repro": "comando", "arreglo": "..."}}], "notas": ["..."]}}
 """
+
+    def _proveedor(self, modelo: str) -> str:
+        """Quién habla: la cuenta si es un proveedor conocido (DeepSeek usa el CLI de Claude), si no el CLI."""
+        r = self.cx.conf.rutas.get(modelo)
+        if r is None:
+            return ""
+        return r.cuenta if r.cuenta in PROVEEDORES else r.cli
 
     def collect(
         self, plan: Plan, snap: m.Snapshot, block_id: str, att: m.Attempt
