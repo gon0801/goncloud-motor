@@ -1,0 +1,45 @@
+# Config real de ejemplo (no se usa en las pruebas). Copiar a ~/.local/state/taller/taller.toml.
+# Todas las rutas son absolutas: el wrapper de zsh convertiría `muse`/`claude` en tmux.
+
+[repo]
+origin = "git@github.com:gon0801/goncloud-Orbit.git"
+principal = "master"
+ci = "github"          # PR draft -> APROBADO -> gh pr ready (dispara completa) -> merge con el SHA exacto
+
+[produccion]
+dir = "/tmp/taller-prod-no-usar"   # en Orbit el despliegue va por ssh goncloud con los scripts del merge
+
+[tiempos]
+timeout_s = 14400          # 4 h por intento
+sin_avance_s = 2700        # 45 min sin cambios en el log ni en el worktree -> se detiene y releva
+cooldown_default_s = 18000 # si el error de cuota no dice cuándo se reinicia: 5 h
+aviso_lento_s = 21600      # avisa a David solo si todos quedan sin cupo más de 6 h
+
+[escaleras]
+implementadores = ["muse", "glm", "kimi", "grok", "codex", "cursor"]
+revisores = ["claude"]
+
+[telegram]
+token_env = "TALLER_TELEGRAM_TOKEN"
+chat = ""                  # id del chat de David
+
+[proveedores.muse]
+argv = ["/Users/dn/.local/bin/muse", "exec", "--yolo", "--json", "--prompt-file", "{brief}"]
+
+[proveedores.glm]
+argv = ["/Users/dn/.opencode/bin/opencode", "run", "--auto", "-m", "zai-coding-plan/glm-5.3-flash", "{prompt}"]
+
+[proveedores.kimi]
+argv = ["/opt/homebrew/bin/kimi", "-p", "{prompt}", "--auto", "--output-format", "stream-json"]
+
+[proveedores.grok]
+argv = ["/opt/homebrew/bin/grok", "--prompt-file", "{brief}", "--always-approve", "--output-format", "json"]
+
+[proveedores.codex]
+argv = ["/opt/homebrew/bin/codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "{prompt}"]
+
+[proveedores.cursor]
+argv = ["/Users/dn/.local/bin/cursor-agent", "-p", "--yolo", "--trust", "--output-format", "json", "{prompt}"]
+
+[proveedores.claude]
+argv = ["/Users/dn/.local/bin/claude", "-p", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]

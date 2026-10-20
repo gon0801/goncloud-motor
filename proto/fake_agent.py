@@ -1,0 +1,85 @@
+"""Implementador simulado. Hace lo que dicen las líneas `escribe: ruta=contenido` del encargo.
+
+Modo por FAKE_MODE (para probar cada falla del catálogo):
+  ok             trabaja normal
+  cuota_primero  la primera vez sale como si se le acabara la cuota (429 con hora de reinicio)
+  mentiroso      trabaja pero reporta un SHA que no existe
+  stdin          intenta leer de la terminal antes de trabajar (como un prompt de permiso)
+  cuelga         no hace nada y no muestra avance
+  rompe_primero  la primera entrega rompe la CI; la siguiente la arregla
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def git(*a: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *a], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+
+def main() -> int:
+    brief_path = sys.argv[sys.argv.index("--prompt-file") + 1]
+    brief = Path(brief_path).read_text()
+    modo = os.environ.get("FAKE_MODE", "ok")
+    estado = Path(os.environ.get("FAKE_STATE", "/tmp")) / f"{os.environ['TALLER_PROVIDER']}-{os.environ['TALLER_BLOCK']}"
+    estado.mkdir(parents=True, exist_ok=True)
+    primera = not (estado / "ya").exists()
+    (estado / "ya").write_text("1")
+
+    if modo == "cuota_primero" and primera:
+        reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"Error: 429 Too Many Requests: weekly limit reached, resets at {reset}")
+        return 1
+    if modo == "stdin":
+        dato = sys.stdin.read()  # con /dev/null devuelve "" al instante: nunca se cuelga
+        print(f"stdin leído: {len(dato)} bytes")
+    if modo == "cuelga":
+        time.sleep(3600)
+        return 0
+
+    rama = re.search(r"en la rama `([^`]+)`", brief).group(1)
+    git("config", "user.email", "agente@local")
+    git("config", "user.name", os.environ["TALLER_PROVIDER"])
+    for linea in brief.splitlines():
+        mm = re.search(r"(?:^- (\S+): )?.*?escribe: (\S+?)=(.*)$", linea)
+        if not mm:
+            continue
+        fila, ruta, contenido = mm.group(1) or "arreglo", mm.group(2), mm.group(3).strip()
+        contenido = contenido.split(" | ")[0]
+        p = Path(ruta)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        nuevo = contenido.replace("\\n", "\n") + "\n"
+        if not p.exists() or p.read_text() != nuevo:
+            p.write_text(nuevo)
+            git("add", "-A")
+            git("commit", "-q", "-m", f"{fila}: {ruta}")
+    if modo == "rompe_primero":
+        roto = Path("roto.txt")
+        if primera:
+            roto.write_text("ROMPE\n")
+        elif roto.exists():
+            roto.unlink()
+        git("add", "-A")
+        git("commit", "-q", "-m", "ajuste")
+    push = git("push", "-q", "origin", f"HEAD:refs/heads/{rama}")
+    if push.returncode != 0:
+        print(push.stderr)
+        return 1
+    sha = git("rev-parse", "HEAD").stdout.strip()
+    if modo == "mentiroso":
+        sha = "0123456789abcdef0123456789abcdef01234567"
+    Path(os.environ["TALLER_RESULT"]).write_text(json.dumps({"sha": sha, "resumen": "hecho"}))
+    print("listo")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
