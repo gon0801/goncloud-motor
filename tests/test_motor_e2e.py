@@ -923,6 +923,45 @@ class TestTopesEntrePlanes(Banco):
         )
 
 
+class TestLimpieza(Banco):
+    def test_al_terminar_borra_ramas_y_copias_y_luego_los_registros(self):
+        """David (2026-10-21): al acabar un plan no deben quedar ramas del motor en GitHub ni copias de
+        trabajo; los registros de cada intento se guardan 14 días."""
+        self.arranca()
+        self.termina()
+        b = self.tmp / "b"
+        for repo in ("app.git", "docs.git"):
+            ramas = git(
+                "for-each-ref", "--format=%(refname:short)", "refs/heads", cwd=b / repo
+            ).stdout.split()
+            self.assertEqual(
+                [r for r in ramas if r.startswith(("motor/", "motor-wip/"))],
+                [],
+                f"{repo}: {ramas}",
+            )
+        self.assertFalse((self.home / "wt" / "demo").exists(), "sin copias de trabajo")
+        self.assertFalse(
+            list((self.home / "intentos" / "demo").glob("*/revision")),
+            "sin copias de revisión",
+        )
+        self.assertTrue(
+            (self.home / "intentos" / "demo").exists(), "los registros se quedan"
+        )
+        self.assertTrue(any(e.kind == "Limpiado" for e in eventos(self.home)))
+        self.assertEqual(
+            git("show", "main:saludo.txt", cwd=b / "app.git").stdout.strip(),
+            "hola",
+            "lo mergeado sigue",
+        )
+        d = Daemon(self.home)
+        d.fx.purga_registros(d.plans(), time.time() + 13 * 86400)
+        self.assertTrue(
+            (self.home / "intentos" / "demo").exists(), "antes de 14 días no se borran"
+        )
+        d.fx.purga_registros(d.plans(), time.time() + 15 * 86400)
+        self.assertFalse((self.home / "intentos" / "demo").exists(), "a los 14 días sí")
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})

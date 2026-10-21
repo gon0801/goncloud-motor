@@ -171,6 +171,7 @@ class Snapshot:
     plan_notices: set[str]
     repos: dict[str, dict]  # repo -> .motor.toml fijado {"sha", "texto"}
     inicio: float = 0.0  # cuándo se cargó el plan (para el resumen de cada hora)
+    limpio: bool = False  # ya se borraron sus ramas y copias de trabajo
 
 
 def fold(plan: Plan, events: list[Event]) -> Snapshot:
@@ -179,6 +180,7 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
     plan_notices: set[str] = set()
     repos: dict[str, dict] = {}
     inicio = events[0].ts if events else 0.0
+    limpio = any(e.kind == "Limpiado" for e in events)
     for e in events:
         d = e.data
         bv = blocks.get(e.block)
@@ -241,6 +243,7 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
         plan_notices=plan_notices,
         repos=repos,
         inicio=inicio,
+        limpio=limpio,
     )
 
 
@@ -381,6 +384,13 @@ class Notify:
     campos: tuple[tuple[str, str], ...]
 
 
+@dataclass(frozen=True)
+class Limpia:
+    """Plan terminado y avisado: borrar sus ramas en GitHub y sus copias de trabajo."""
+
+    plan: str
+
+
 Action = (
     StartAttempt
     | Verify
@@ -392,6 +402,7 @@ Action = (
     | Prove
     | ProbeHuman
     | Notify
+    | Limpia
 )
 
 
@@ -700,6 +711,12 @@ def decide(
         n = int((now - snap.inicio) // policy.avance_cada_s)
         if n >= 1 and f"avance:{n}" not in snap.plan_notices:
             acciones.append(Notify(f"avance:{n}", "", "avance", _resumen(snap, now)))
+    if (
+        todos_hechos
+        and f"terminado:{snap.plan.id}" in snap.plan_notices
+        and not snap.limpio
+    ):
+        acciones.append(Limpia(snap.plan.id))
     if todos_hechos and f"terminado:{snap.plan.id}" not in snap.plan_notices:
         acciones.append(
             Notify(
