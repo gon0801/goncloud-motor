@@ -3,32 +3,36 @@
 Pieza nueva: motor/rastro.py (puro). Cambios chicos: conf.py (PstackConf), effects.py (brief, collect,
 start_attempt), machine.py (NO_ES_FALLA no cambia; solo el kind nuevo cuenta como falla), relevo.py (DE_KIND).
 """
+
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
 # ------------------------------------------------------------------ conf (goncloud-motor-conf/pstack.toml)
 class Carril(enum.Enum):
-    FAST = "fast"      # solo docs/chore/cierre
+    FAST = "fast"  # solo docs/chore/cierre
     CODIGO = "codigo"
 
 
 @dataclass(frozen=True)
 class Exigencia:
     skill: bool = True
-    min_subagentes: int = 0     # arranca en 0 en todo; sube a 1 en codigo/implementar tras medir
+    min_subagentes: int = (
+        0  # arranca en 0 en todo; sube a 1 en codigo/implementar tras medir
+    )
 
 
 @dataclass(frozen=True)
 class PstackConf:
-    sha: str                                     # commit fijado de cursor/plugins
-    exigir: bool                                 # false mientras no estén instaladas las tres máquinas
+    sha: str  # commit fijado de cursor/plugins
+    exigir: bool  # false mientras no estén instaladas las tres máquinas
     exigencia: dict[tuple[Carril, str], Exigencia]  # (carril, "implementar"|"revisar")
 
-    def para(self, carril: Carril, rol: str) -> Exigencia: raise NotImplementedError
+    def para(self, carril: Carril, rol: str) -> Exigencia:
+        raise NotImplementedError
 
 
 # maquina.toml: pstack_dir = "/Users/dn/.agents"  (Mini y PC lo ponen en el suyo; WSL en el de WSL)
@@ -36,18 +40,19 @@ class PstackConf:
 
 # ------------------------------------------------------------------ rastro.py (puro)
 class FuenteRastro(enum.Enum):
-    CLAUDE_TRANSCRIPT = "claude"   # ~/.claude/projects/<cwd>/<--session-id>.jsonl
-    STREAM_LOG = "stream-log"      # kimi, opencode --format json: <intento>/log.txt
-    GROK_UPDATES = "grok"          # ~/.grok/sessions/<cwd>/<sessionId>/updates.jsonl
-    MUSE_SESSION = "muse"          # session.jsonl por --session-id
-    QWEN_JSON = "qwen"             # --json-file {rastro}
+    CLAUDE_TRANSCRIPT = "claude"  # ~/.claude/projects/<cwd>/<--session-id>.jsonl
+    STREAM_LOG = "stream-log"  # kimi, opencode --format json: <intento>/log.txt
+    GROK_UPDATES = "grok"  # ~/.grok/sessions/<cwd>/<sessionId>/updates.jsonl
+    MUSE_SESSION = "muse"  # session.jsonl por --session-id
+    QWEN_JSON = "qwen"  # --json-file {rastro}
 
 
 @dataclass(frozen=True)
 class Evidencia:
     """Lo que el rastro prueba. `reconocido=False` = no había ni un evento entendible: no verificable."""
+
     reconocido: bool
-    cargo_skill: bool = False       # Skill/skill/read_skill 'poteto-mode' O lectura de .../poteto-mode/SKILL.md
+    cargo_skill: bool = False  # Skill/skill/read_skill 'poteto-mode' O lectura de .../poteto-mode/SKILL.md
     subagentes: int = 0
     comandos: int = 0
     fuente: str = ""

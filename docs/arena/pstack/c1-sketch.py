@@ -30,7 +30,6 @@ En goncloud-motor-conf (lo que llega solo a las tres máquinas cada 15 min):
 from __future__ import annotations
 
 import enum
-import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,8 +111,12 @@ class Modo(enum.StrEnum):
 @dataclass(frozen=True)
 class PstackConf:
     raiz_conf: Path  # <conf>/pstack y <conf>/pstack-motor
-    exigencias: Mapping[tuple[str, str], Exigencia]  # (papel, lane) -> exigencia; completa (valida)
-    modos: Mapping[str, Modo]  # formato -> modo; un formato sin modo no puede estar en una ruta
+    exigencias: Mapping[
+        tuple[str, str], Exigencia
+    ]  # (papel, lane) -> exigencia; completa (valida)
+    modos: Mapping[
+        str, Modo
+    ]  # formato -> modo; un formato sin modo no puede estar en una ruta
 
     def exigencia(self, papel: str, lane: str) -> Exigencia:
         return self.exigencias[(papel, lane)]
@@ -128,7 +131,9 @@ class Formato:
     agregar un CLI = una fila aquí + un mapa en pstack-motor/<cli>.md + fixtures medidos."""
 
     nombre: str
-    llamadas: Callable[[dict, str], tuple[Llamada, ...]]  # (línea JSON, sesión) -> llamadas principales
+    llamadas: Callable[
+        [dict, str], tuple[Llamada, ...]
+    ]  # (línea JSON, sesión) -> llamadas principales
     skill: frozenset[str]  # herramientas que cargan una skill por nombre
     arg_skill: str
     leer: frozenset[str]  # herramientas que leen un archivo
@@ -166,45 +171,72 @@ def _muse(linea: dict, sesion: str) -> tuple[Llamada, ...]:
 
 FORMATOS: dict[str, Formato] = {
     "claude-stream": Formato(
-        "claude-stream", _claude,
-        skill=frozenset({"Skill"}), arg_skill="skill",
-        leer=frozenset({"Read"}), arg_ruta="file_path",
-        subagente=frozenset({"Agent", "Task"}), arg_tipo="subagent_type",
-        todos=frozenset({"TodoWrite"}), comando=frozenset({"Bash"}),
+        "claude-stream",
+        _claude,
+        skill=frozenset({"Skill"}),
+        arg_skill="skill",
+        leer=frozenset({"Read"}),
+        arg_ruta="file_path",
+        subagente=frozenset({"Agent", "Task"}),
+        arg_tipo="subagent_type",
+        todos=frozenset({"TodoWrite"}),
+        comando=frozenset({"Bash"}),
     ),
     "kimi-stream": Formato(
-        "kimi-stream", _kimi,
-        skill=frozenset({"Skill"}), arg_skill="skill",
-        leer=frozenset({"Read"}), arg_ruta="path",  # TODO medir el nombre del argumento
-        subagente=frozenset({"Agent", "AgentSwarm"}), arg_tipo="subagent_type",
-        todos=frozenset({"SetTodoList"}), comando=frozenset({"Bash"}),  # TODO medir
+        "kimi-stream",
+        _kimi,
+        skill=frozenset({"Skill"}),
+        arg_skill="skill",
+        leer=frozenset({"Read"}),
+        arg_ruta="path",  # TODO medir el nombre del argumento
+        subagente=frozenset({"Agent", "AgentSwarm"}),
+        arg_tipo="subagent_type",
+        todos=frozenset({"SetTodoList"}),
+        comando=frozenset({"Bash"}),  # TODO medir
     ),
     "opencode-json": Formato(
-        "opencode-json", _opencode,
-        skill=frozenset({"skill"}), arg_skill="name",
-        leer=frozenset({"read"}), arg_ruta="filePath",
-        subagente=frozenset({"task"}), arg_tipo="subagent_type",
-        todos=frozenset({"todowrite"}), comando=frozenset({"bash"}),
+        "opencode-json",
+        _opencode,
+        skill=frozenset({"skill"}),
+        arg_skill="name",
+        leer=frozenset({"read"}),
+        arg_ruta="filePath",
+        subagente=frozenset({"task"}),
+        arg_tipo="subagent_type",
+        todos=frozenset({"todowrite"}),
+        comando=frozenset({"bash"}),
     ),
     "grok-acp": Formato(
-        "grok-acp", _grok,
-        skill=frozenset(), arg_skill="",  # grok no tiene herramienta de skills: carga = read_file
-        leer=frozenset({"read_file"}), arg_ruta="path",
-        subagente=frozenset({"spawn_subagent"}), arg_tipo="agent",
-        todos=frozenset({"todo_write"}), comando=frozenset({"run_terminal_command"}),
+        "grok-acp",
+        _grok,
+        skill=frozenset(),
+        arg_skill="",  # grok no tiene herramienta de skills: carga = read_file
+        leer=frozenset({"read_file"}),
+        arg_ruta="path",
+        subagente=frozenset({"spawn_subagent"}),
+        arg_tipo="agent",
+        todos=frozenset({"todo_write"}),
+        comando=frozenset({"run_terminal_command"}),
     ),
     "muse-jsonl": Formato(
-        "muse-jsonl", _muse,
-        skill=frozenset({"muse.read_skill", "read_skill"}), arg_skill="name",
-        leer=frozenset({"muse.read_file", "read_file"}), arg_ruta="path",
-        subagente=frozenset({"muse.subagent_spawn", "muse.workflow"}), arg_tipo="subagent_type",
-        todos=frozenset({"muse.write_todos"}), comando=frozenset({"muse.bash", "bash"}),
+        "muse-jsonl",
+        _muse,
+        skill=frozenset({"muse.read_skill", "read_skill"}),
+        arg_skill="name",
+        leer=frozenset({"muse.read_file", "read_file"}),
+        arg_ruta="path",
+        subagente=frozenset({"muse.subagent_spawn", "muse.workflow"}),
+        arg_tipo="subagent_type",
+        todos=frozenset({"muse.write_todos"}),
+        comando=frozenset({"muse.bash", "bash"}),
     ),
     # qwen: sin fila hasta medir su herramienta de skills. Sin fila, su ruta no pasa `conf valida`.
 }
 
 # La copia fija se reconoce por su carpeta con el árbol, con / o \ y desde WSL (/mnt/c/…).
-_RE_SKILL = r"[/\\]pstack[/\\]{arbol}[/\\]pstack[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$"
+_RE_SKILL = (
+    r"[/\\]pstack[/\\]{arbol}[/\\]pstack[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$"
+)
 _RE_PLAYBOOK = r"[/\\]pstack[/\\]{arbol}[/\\]pstack[/\\]skills[/\\]poteto-mode[/\\]playbooks[/\\]([^/\\]+)\.md$"
 
 
@@ -274,7 +306,9 @@ class Ruta:
     modelo: str
     cuenta: str
     cli: str
-    argv: tuple[str, ...]  # plantilla: {brief} {prompt} {result} + NUEVOS {pstack} {sesion}
+    argv: tuple[
+        str, ...
+    ]  # plantilla: {brief} {prompt} {result} + NUEVOS {pstack} {sesion}
     huella: str  # NUEVO: nombre en pstack.FORMATOS; obligatorio
     max_parallel: int = 1
     env: tuple[tuple[str, str], ...] = ()
@@ -302,9 +336,13 @@ class PstackIntento:
     """Lo que el arranque fija y la recogida usa: `<intento>/pstack.json`. Se juzga contra la exigencia
     que escribió el encargo, aunque la conf haya cambiado mientras el agente trabajaba."""
 
-    arbol: str  # id de la copia fija (hash de los árboles git de pstack/ y pstack-motor/)
+    arbol: (
+        str  # id de la copia fija (hash de los árboles git de pstack/ y pstack-motor/)
+    )
     raiz: Path  # <home>/pstack/<arbol>
-    sesion: str  # uuid5(dir del intento): estable si el arranque se repite tras una caída
+    sesion: (
+        str  # uuid5(dir del intento): estable si el arranque se repite tras una caída
+    )
     formato: str
     modo: Modo
     exigencia: Exigencia
@@ -319,7 +357,9 @@ class EffectsPstack:
         de árboles sin intentos vivos se borran con los registros de 14 días."""
         raise NotImplementedError
 
-    def prepara_pstack(self, d: Path, role: str, lane: str, ruta: Ruta) -> PstackIntento:
+    def prepara_pstack(
+        self, d: Path, role: str, lane: str, ruta: Ruta
+    ) -> PstackIntento:
         """Escribe `<d>/pstack.json`. Lo llama start_attempt antes de armar el argv.
         argv: x.format(brief=…, prompt=…, result=…, pstack=str(raiz), sesion=sesion).
         runwrap: + ["--huella", formato, "--sesion", sesion, "--arbol", arbol, "--puerta", str(n)]
@@ -390,4 +430,3 @@ def agente_ajeno(nombre: str) -> int:
     se lanzan otros agentes; usa tus subagentes". Los paneles de pstack se hacen con subagentes del
     propio CLI; la diversidad de modelos la pone el revisor del motor."""
     raise NotImplementedError
-
