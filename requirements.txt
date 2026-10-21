@@ -1,0 +1,5 @@
+# El motor no tiene dependencias: es stdlib puro. Este archivo existe para que el workflow
+# de CI generado por quality-kit (que solo corre pytest si hay pyproject.toml o requirements.txt)
+# instale pytest + pytest-xdist y corra la batería completa en cada push y PR (regla 8 de AGENTS.md:
+# la unión de los jobs de CI es la batería). Si algún día el repo gane una dependencia real,
+# va aqui y el workflow la instala solo.
