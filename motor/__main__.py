@@ -39,9 +39,11 @@ def _db(home: Path) -> Path:
     return home / "motor.db"
 
 
-def _encola(home: Path, msg: dict) -> str:
+def _encola(home: Path, msg: dict, buzon: Path | None = None) -> str:
+    """Deja la orden en la bandeja del motor, o en `buzon` si quien entrega solo puede escribir en su
+    carpeta (OpenBot): el motor también recoge de los buzones que declara maquina.toml."""
     cmd_id = msg.setdefault("cmd_id", uuid.uuid4().hex[:12])
-    inbox = home / "inbox"
+    inbox = buzon or home / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     tmp = inbox / f".{cmd_id}.tmp"
     tmp.write_text(json.dumps(msg, ensure_ascii=False), encoding="utf-8")
@@ -195,6 +197,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--json", action="store_true")
     s.add_argument("--espera", type=float, default=10)
     s.add_argument("--por", default="")
+    s.add_argument(
+        "--buzon",
+        type=Path,
+        help="carpeta propia donde dejar el plan (agentes con acceso solo a su carpeta)",
+    )
     s = sub.add_parser("estado")
     s.add_argument("--home", type=Path, required=True)
     s.add_argument("--json", action="store_true")
@@ -274,7 +281,11 @@ def main(argv: list[str] | None = None) -> int:
                 + ", ".join(f"{b.id}({b.lane})" for b in plan.blocks)
             )
             return 0
-        cmd_id = _encola(a.home, {"tipo": "plan", "plan": plan.to_dict(), "por": a.por})
+        cmd_id = _encola(
+            a.home,
+            {"tipo": "plan", "plan": plan.to_dict(), "por": a.por},
+            getattr(a, "buzon", None),
+        )
         fin = time.time() + a.espera
         rec = _recibo(a.home, cmd_id)
         while rec["estado"] == "encolado" and time.time() < fin:

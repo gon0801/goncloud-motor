@@ -150,6 +150,7 @@ _CLAVES_MAQUINA = {
     "github",
     "no_dormir",
     "tiene",
+    "buzones",
 }
 _PROHIBIDAS = {"papeles", "carriles", "rutas", "modelos", "reglas", "roles", "avisos"}
 
@@ -163,6 +164,9 @@ class Maquina:
     wsl: tuple[str, ...] = ()  # CLIs que corren dentro de WSL
     github: str = "real"  # real | falso:<carpeta> (pruebas)
     tiene: tuple[str, ...] = ()  # capacidades de esta máquina, p. ej. "ssh-goncloud"
+    # carpetas (con comodines) donde agentes con acceso solo a su carpeta dejan planes para el motor,
+    # p. ej. "/Users/dn/OpenBot/Agents/*/motor-buzon" (David, 2026-10-21)
+    buzones: tuple[str, ...] = ()
     # MacBook: comandos para no dormirse (ni con la tapa cerrada) mientras haya un plan en curso
     no_dormir_encender: tuple[str, ...] = ()
     no_dormir_apagar: tuple[str, ...] = ()
@@ -209,6 +213,7 @@ def load_maquina(home: Path) -> Maquina:
         wsl=tuple(raw.get("wsl", [])),
         github=raw.get("github", "real"),
         tiene=tuple(raw.get("tiene", [])),
+        buzones=tuple(raw.get("buzones", [])),
         no_dormir_encender=tuple(raw.get("no_dormir", {}).get("encender", [])),
         no_dormir_apagar=tuple(raw.get("no_dormir", {}).get("apagar", [])),
         secretos=tuple(sorted(load_secretos(home).items())),
