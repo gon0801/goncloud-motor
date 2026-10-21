@@ -657,6 +657,16 @@ class AvisosTest(unittest.TestCase):
         )
         self.assertNotIn("3eda9854", texto)
 
+    def test_aviso_humano_con_jerga_no_queda_vago(self):
+        texto = render(
+            "humano",
+            {"que_hacer": "llena ~/.motor/secretos.env y chmod 600"},
+            "Mac",
+            "Motor",
+        )
+        self.assertIn("Necesito tu mano", texto)
+        self.assertNotIn("Avancé en un plan", texto)
+
     def test_rechaza(self):
         for malo in (
             "Listo 3eda9854",

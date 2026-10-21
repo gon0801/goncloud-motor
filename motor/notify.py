@@ -90,6 +90,13 @@ def render(template: str, campos: dict[str, str], maquina: str, titulo: str) -> 
             return lint_plain(
                 f"En la {maquina} · {titulo}:\n{c['listas']} de {c.get('total', '?')} partes listas. Sigo trabajando."
             )
+        if (
+            template == "humano"
+        ):  # nunca un aviso vago cuando te necesita (MOTOR 01, bloque E)
+            return lint_plain(
+                f"En la {maquina} · {titulo}:\nNecesito tu mano en un paso que solo tú puedes hacer.\n"
+                "Pídele a quien te dio el plan los pasos exactos; lo demás sigue avanzando."
+            )
         return lint_plain(
             f"En la {maquina}:\nAvancé en un plan; quien te lo dio te puede contar el detalle."
         )
