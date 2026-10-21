@@ -806,6 +806,21 @@ class TestYaEnLaBase(Banco):
 
 
 class TestDespliegueQueSePasa(Banco):
+    def test_al_pasarse_del_tope_no_quedan_procesos_vivos(self):
+        """shopify-token-01: el `crontab -` que abrió desplegar.sh siguió colgado tras el tope."""
+        from motor.effects import _run_tope
+
+        marca = f"sleep 87.{os.getpid()}"
+        r = _run_tope(f"bash -c '{marca} & wait'", None, dict(os.environ), 1)
+        self.assertEqual(r.returncode, 124)
+        time.sleep(0.5)
+        vivos = subprocess.run(
+            ["pgrep", "-f", marca], capture_output=True, text=True
+        ).stdout.split()
+        for pid in vivos:
+            os.kill(int(pid), signal.SIGKILL)
+        self.assertEqual(vivos, [], "el hijo que abrió el programa también se muere")
+
     def test_una_revision_que_se_pasa_del_tope_es_una_falla_y_no_un_ciclo(self):
         """MOTOR 01, bloque I: verifica.sh se pasaba de 15 min, el motor lo tomaba como tropiezo
         pasajero y lo reintentaba para siempre sin pasar el bloque a arreglo."""
@@ -857,6 +872,55 @@ class TestDespliegueQueSePasa(Banco):
         d = [e for e in eventos(self.home) if e.kind == "Deployed"][0]
         self.assertFalse(d.data["ok"])
         self.assertIn("salida 124", d.data["detalle"])
+
+
+class TestTopesEntrePlanes(Banco):
+    def test_dos_planes_no_rebasan_el_tope_de_la_cuenta(self):
+        """Con dos planes en la Mini, cada uno creía libre la cuenta de Claude."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        texto = self.plan.read_text(encoding="utf-8")
+        otro = self.tmp / "otro.md"
+        otro.write_text(texto.replace("plan: demo", "plan: demo2", 1), encoding="utf-8")
+        for p in (self.plan, otro):
+            r = motor(
+                "entrega", str(p), "--home", str(self.home), "--json", "--espera", "0"
+            )
+            self.assertIn("encolado", r.stdout, r.stdout + r.stderr)
+        d = Daemon(self.home)
+        lanzados = []
+
+        def lanza(plan, snap, a):
+            lanzados.append((plan.id, a.modelo))
+            d.store.append(
+                plan.id,
+                a.block,
+                "AttemptStarted",
+                {
+                    "n": a.n,
+                    "role": a.role,
+                    "modelo": a.modelo,
+                    "cuenta": "anthropic",
+                    "proc": {
+                        "pid": os.getpid(),
+                        "boot_id": __import__(
+                            "motor.plataforma", fromlist=["boot_id"]
+                        ).boot_id(),
+                    },
+                    "dir": str(self.tmp),
+                },
+                ukey=f"start:{plan.id}:{a.block}:{a.role}:{a.n}",
+            )
+
+        d.fx.start_attempt = lanza
+        d.tick()
+        sonnet = [x for x in lanzados if x[1] == "sonnet"]
+        # el banco deja 2 por cuenta: la máquina entera no pasa de 2 Sonnet (antes salían 4, dos por plan)
+        self.assertEqual(len(sonnet), 2, f"tope por máquina, no por plan: {lanzados}")
+        self.assertEqual(
+            len([x for x in lanzados if x[1] == "glm"]),
+            2,
+            f"el otro plan toma la siguiente cuenta: {lanzados}",
+        )
 
 
 class TestFallas(Banco):

@@ -558,6 +558,47 @@ class AvanceCadaHoraTest(unittest.TestCase):
         self.assertIn("3 de 9 partes listas. Sigo trabajando.", texto)
 
 
+class TopesPorMaquinaTest(unittest.TestCase):
+    """David (2026-10-21): máximo 4 agentes por máquina y 2 por cuenta, sumando TODOS los planes."""
+
+    def inicios(self, externos, **kw):
+        pol_ = m.Policy(
+            implementadores=("sonnet", "glm"),
+            revisores=("opus", "k3"),
+            cuenta={
+                "sonnet": "anthropic",
+                "opus": "anthropic",
+                "glm": "zai",
+                "k3": "kimi",
+            },
+            max_parallel={"anthropic": 1, "zai": 1, "kimi": 1},
+            **kw,
+        )
+        acc = m.decide(m.fold(parse_plan(PLAN), []), pol_, time.time(), externos)
+        return [a for a in acc if isinstance(a, m.StartAttempt)], [
+            a for a in acc if isinstance(a, m.Notify)
+        ]
+
+    def test_otro_plan_ocupa_la_cuenta(self):
+        inicio, _ = self.inicios({"anthropic": 1})
+        self.assertNotIn(
+            "sonnet",
+            {a.modelo for a in inicio},
+            "Claude ya trabaja en otro plan de esta máquina",
+        )
+
+    def test_tope_total_de_la_maquina(self):
+        inicio, avisos = self.inicios({"kimi": 1, "zai": 1}, agentes_por_maquina=2)
+        self.assertEqual(inicio, [], "la máquina ya tiene su tope: nadie más arranca")
+        self.assertEqual(
+            [a for a in avisos if a.template in ("atorado", "lento")],
+            [],
+            "esperar turno no es atoro",
+        )
+        inicio, _ = self.inicios({"kimi": 1}, agentes_por_maquina=2)
+        self.assertEqual(len(inicio), 1, "con un lugar libre arranca uno solo")
+
+
 class ConfValidaTest(unittest.TestCase):
     def test_conf_compartida_y_maquinas(self):
         import shutil

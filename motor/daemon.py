@@ -273,8 +273,11 @@ class Daemon:
         planes = self.plans()
         for plan in planes:
             self.ingest_attempts(plan)
+        for plan in planes:
             snap = m.fold(plan, self.store.events(plan.id))
-            for a in m.decide(snap, self.cx.policy, now):
+            for a in m.decide(
+                snap, self.cx.policy, now, self._ocupados_fuera(planes, plan)
+            ):
                 clave = (plan.id, _bloque(a), type(a).__name__)
                 if now < self._espera_efecto.get(clave, 0):
                     continue  # falló hace poco: no se repite en cada tick (una prueba por ssh a la PC, p. ej.)
@@ -292,6 +295,18 @@ class Daemon:
         self.ajusta_sueno(any(not self._terminado(p) for p in planes), now)
         self.cx.notifier.envia_pendientes()
         return todo_hecho and bool(planes)
+
+    def _ocupados_fuera(self, planes: list[Plan], este: Plan) -> dict[str, int]:
+        """Agentes corriendo en los otros planes de esta máquina, por cuenta."""
+        n: dict[str, int] = {}
+        for p in planes:
+            if p.id == este.id:
+                continue
+            for c, k in m._ocupados(
+                m.fold(p, self.store.events(p.id)), self.cx.policy
+            ).items():
+                n[c] = n.get(c, 0) + k
+        return n
 
     def _terminado(self, plan: Plan) -> bool:
         snap = m.fold(plan, self.store.events(plan.id))
