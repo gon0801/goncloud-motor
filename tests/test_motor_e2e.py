@@ -732,6 +732,49 @@ class TestEnvDeLaMaquina(Banco):
                 os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
 
 
+class TestYaEnLaBase(Banco):
+    def test_lo_que_ya_esta_en_la_rama_principal_no_abre_pr_y_termina(self):
+        """MOTOR 01, canario en la Mini: la PC ya había mergeado el mismo trabajo en el mismo repo; la
+        Mini entregó un SHA que ya estaba en main y se quedó intentando abrir un PR vacío."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        app, w = self.tmp / "b" / "app.git", self.tmp / "otra"
+        git("clone", "-q", str(app), str(w))
+        (w / "saludo.txt").write_text("hola\n", encoding="utf-8")
+        (w / "despedida.txt").write_text("adios\n", encoding="utf-8")
+        git("add", "-A", cwd=w)
+        git(
+            "-c",
+            "user.name=otra",
+            "-c",
+            "user.email=o@l",
+            "commit",
+            "-qm",
+            "otra máquina ya lo hizo",
+            cwd=w,
+        )
+        git("push", "-q", "origin", "HEAD:main", cwd=w)
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        (self.home / "login-hecho").write_text("ok")
+        self.termina()
+        evs = eventos(self.home)
+        self.assertFalse(
+            [e for e in evs if e.kind == "PrOpened" and e.block == "A"], "sin PR vacío"
+        )
+        mg = [e for e in evs if e.kind == "Merged" and e.block == "A"]
+        self.assertTrue(mg and mg[0].data.get("ya_en_base"))
+        self.assertTrue(
+            any(e.kind == "Proved" and e.block == "A" and e.data["ok"] for e in evs)
+        )
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})

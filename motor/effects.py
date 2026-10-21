@@ -417,6 +417,25 @@ Escribe en `$MOTOR_RESULT`:
     def open_pr(self, plan: Plan, snap: m.Snapshot, a: m.OpenPr) -> None:
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
+        d = self.cx.ws.espejo(block.repo)
+        if (
+            git(
+                "merge-base", "--is-ancestor", a.sha, f"origin/{rc.principal}", cwd=d
+            ).returncode
+            == 0
+        ):
+            # Lo entregado ya está en la rama principal (otro plan lo mergeó antes; MOTOR 01, canario en
+            # la Mini): no hay nada que mergear y GitHub no deja abrir un PR vacío. Se da por mergeado
+            # y sigue a la prueba real, que es la que dice si de verdad funciona.
+            base = git("rev-parse", f"origin/{rc.principal}", cwd=d).stdout.strip()
+            self.cx.store.append(
+                plan.id,
+                a.block,
+                "Merged",
+                {"sha": a.sha, "commit": base, "ya_en_base": True},
+                ukey=f"merged:{plan.id}:{a.block}:{a.sha}",
+            )
+            return
         pr = self.cx.gh.abrir_pr(
             block.repo,
             self.cx.ws.rama(plan.id, a.block),
