@@ -575,6 +575,14 @@ class Effects:
         fb = "\n".join(f"- {x}" for x in a.feedback) or "- (primer intento)"
         rama = self.cx.ws.rama(plan.id, block.id)
         pendientes = git("status", "--short", cwd=cwd).stdout.strip()
+        repro_json = repro_texto = ""
+        if block.es_bug:
+            repro_json = ', "repro": "<comando>"'
+            repro_texto = (
+                "\n4. Este bloque arregla un bug: en `repro` pon UN comando que falle en el commit base "
+                "(donde estaba el bug) y salga 0 en tu punta. El motor lo corre en las dos copias; "
+                "si no falla antes o no pasa después, devuelve tu entrega."
+            )
         return f"""{self.cx.conf.reglas}
 # Encargo {plan.id} · bloque {block.id} · intento {a.n}
 
@@ -599,8 +607,8 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
    PROHIBIDO mergear, cerrar, aprobar o marcar listo un PR (`gh pr merge`, la API, la web): eso
    solo lo hace el motor. Si te dicen que el merge falló por conflicto, trae `{rc.principal}` a tu
    rama (merge o rebase), resuelve y vuelve a entregar.
-3. Escribe en `$MOTOR_RESULT` un JSON: {{"sha": "<git rev-parse HEAD>", "resumen": "..."}}.
-   Lo que digas no cuenta como prueba: el motor verifica el SHA y corre cada `Acepta`.
+3. Escribe en `$MOTOR_RESULT` un JSON: {{"sha": "<git rev-parse HEAD>", "resumen": "..."{repro_json}}}.
+   Lo que digas no cuenta como prueba: el motor verifica el SHA y corre cada `Acepta`.{repro_texto}
 """
 
     def _brief_revisar(
@@ -623,7 +631,8 @@ Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal
 
 {filas}
 
-{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). Lo demás va en `notas`.
+{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
+de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás va en `notas`.
 Escribe en `$MOTOR_RESULT`:
 {{"sha": "{a.sha}", "veredicto": "APROBADO" | "CAMBIOS",
   "bloqueantes": [{{"texto": "...", "repro": "comando", "arreglo": "..."}}], "notas": ["..."]}}
@@ -701,16 +710,29 @@ Escribe en `$MOTOR_RESULT`:
                     "kind": "veredicto_invalido",
                     "detalle": "el veredicto no cita el SHA revisado",
                 }
+            veredicto = res["veredicto"]
+            bloqueantes = list(res.get("bloqueantes", []))
+            notas = list(res.get("notas", []))
+            bloqueantes, bajados = self._reproduce_bloqueantes(
+                plan, snap, block, att.sha, bloqueantes
+            )
+            notas += [
+                f"Bajó de bloqueante a nota (su repro salió 0, no reprodujo nada): {b.get('texto', '')}"
+                for b in bajados
+            ]
+            if bajados and not any(b.get("repro", "").strip() for b in bloqueantes):
+                veredicto = "APROBADO"  # ya no queda nada que se pueda reproducir
             self.cx.store.append(
                 plan.id,
                 block_id,
                 "Reviewed",
                 {
                     "sha": att.sha,
-                    "veredicto": res["veredicto"],
+                    "veredicto": veredicto,
                     "modelo": att.modelo,
-                    "bloqueantes": res.get("bloqueantes", []),
-                    "notas": res.get("notas", []),
+                    "bloqueantes": bloqueantes,
+                    "notas": notas,
+                    **({"bajados": bajados} if bajados else {}),
                 },
                 ukey=f"review:{att.dir}",
             )
@@ -727,11 +749,84 @@ Escribe en `$MOTOR_RESULT`:
                 "kind": "sin_cambios",
                 "detalle": "volvió a entregar lo mismo que ya había fallado",
             }
+        if block.es_bug and (
+            falla := self._comprueba_repro(plan, snap, block, res, punta)
+        ):
+            return falla
         return {
             "kind": "entregado",
             "sha": punta,
             "resumen": str(res.get("resumen", ""))[:500],
         }
+
+    def _corre_en(
+        self, plan: Plan, snap: m.Snapshot, block, sha: str, nombre: str, cmd: str
+    ):
+        """Corre `cmd` en una copia limpia de `sha` (con el entorno de pruebas del repo)."""
+        rc = self.repo_conf(snap, block.repo)
+        w = self.cx.ws.copia(
+            block.repo, sha, self.cx.home / "tmp" / f"{nombre}-{plan.id}-{block.id}"
+        )
+        tope = float(self.cx.conf.tiempos.get("repro_tope_s", 300))
+        return _run_tope(cmd, w, self.env_base(dict(rc.prueba_env)), tope)
+
+    def _comprueba_repro(
+        self, plan: Plan, snap: m.Snapshot, block, res: dict, punta: str
+    ) -> dict | None:
+        """Un arreglo de bug trae un `repro` que falla en el commit base y sale 0 en la punta entregada."""
+        repro = str(res.get("repro", "")).strip()
+        if not repro:
+            return {
+                "kind": "sin_repro",
+                "detalle": "el bloque es de bug y tu resultado no trae `repro`: un comando que falle en el "
+                "commit base y salga 0 en tu punta",
+            }
+        rc = self.repo_conf(snap, block.repo)
+        espejo = self.cx.ws.espejo(block.repo)
+        base = git(
+            "merge-base", f"origin/{rc.principal}", punta, cwd=espejo
+        ).stdout.strip()
+        if not base:
+            return {
+                "kind": "sin_repro",
+                "detalle": f"no encontré el commit base de tu rama contra {rc.principal}",
+            }
+        p = self._corre_en(plan, snap, block, base, "repro-base", repro)
+        if p.returncode == 0:
+            return {
+                "kind": "sin_repro",
+                "detalle": f"tu `repro` sale 0 en el commit base ({base[:7]}), donde debe fallar: "
+                "no demuestra el bug",
+            }
+        p = self._corre_en(plan, snap, block, punta, "repro-punta", repro)
+        if p.returncode != 0:
+            return {
+                "kind": "sin_repro",
+                "detalle": f"tu `repro` salió {p.returncode} en tu punta ({punta[:7]}), donde debe salir 0: "
+                f"{(p.stdout + p.stderr)[-300:]}",
+            }
+        return None
+
+    def _reproduce_bloqueantes(
+        self, plan: Plan, snap: m.Snapshot, block, sha: str, bloqueantes: list
+    ) -> tuple[list, list]:
+        """Corre el `repro` de cada bloqueante en una copia del commit revisado. Si sale 0, no reprodujo
+        nada: el bloqueante baja a nota. (bloqueantes que se quedan, bloqueantes que bajan)"""
+        quedan: list = []
+        bajan: list = []
+        for i, b in enumerate(bloqueantes):
+            cmd = str(b.get("repro", "")).strip() if isinstance(b, dict) else ""
+            if (
+                cmd
+                and self._corre_en(
+                    plan, snap, block, sha, f"repro-rev{i}", cmd
+                ).returncode
+                == 0
+            ):
+                bajan.append(b)
+            else:
+                quedan.append(b)
+        return quedan, bajan
 
     # ------------------------------------------------------------------ pasos
     def verify(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> None:

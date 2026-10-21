@@ -22,6 +22,7 @@ from motor import pstack as ps
 from motor import relevo
 from motor.__main__ import conf_valida
 from motor.conf import load_conf
+from motor.plan import Plan, parse_plan
 
 SKILL = "/Users/dn/.motor/pstack/abc123/pstack/skills/poteto-mode/SKILL.md"
 PLAYBOOK = "/Users/dn/.motor/pstack/abc123/pstack/skills/poteto-mode/playbooks/docs.md"
@@ -485,6 +486,42 @@ class TestCopiaFija(unittest.TestCase):
     def test_sin_pstack_cuenta_como_falla_del_modelo(self):
         self.assertEqual(relevo.desde_kind("sin_pstack"), relevo.Falla.TASK_FAILURE)
         self.assertNotIn("sin_pstack", m.NO_ES_FALLA)
+
+
+class TestBloqueDeBug(unittest.TestCase):
+    PLAN = """# x
+autopiloto: motor
+plan: x
+repo: /r
+
+## Bloque A — {titulo}
+lane: gate
+{tipo}prueba-real: true
+| Fila | Contenido | Acepta |
+| --- | --- | --- |
+| A.1 | algo | true |
+"""
+
+    def bloque(self, titulo="algo", tipo=""):
+        texto = self.PLAN.format(titulo=titulo, tipo=f"tipo: {tipo}\n" if tipo else "")
+        return parse_plan(texto).blocks[0]
+
+    def test_es_de_bug_por_el_campo_tipo_o_por_el_titulo(self):
+        self.assertTrue(self.bloque(tipo="bug").es_bug)
+        self.assertTrue(self.bloque(tipo="BUG").es_bug)
+        self.assertTrue(self.bloque(titulo="arregla el Bug del saludo").es_bug)
+        self.assertFalse(
+            self.bloque(titulo="depura el servicio").es_bug, "debug no es bug"
+        )
+        self.assertFalse(self.bloque(tipo="feature").es_bug)
+
+    def test_el_tipo_sobrevive_al_log_de_eventos(self):
+        plan = parse_plan(self.PLAN.format(titulo="algo", tipo="tipo: bug\n"))
+        self.assertTrue(Plan.from_dict(plan.to_dict()).blocks[0].es_bug)
+
+    def test_sin_repro_cuenta_como_falla_del_modelo(self):
+        self.assertEqual(relevo.desde_kind("sin_repro"), relevo.Falla.TASK_FAILURE)
+        self.assertNotIn("sin_repro", m.NO_ES_FALLA)
 
 
 if __name__ == "__main__":

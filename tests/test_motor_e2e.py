@@ -1351,13 +1351,15 @@ class BancoPstack(Banco):
         bloque_extra: str = "",
         fila=None,
         antes=None,
+        titulo="saludo",
+        reglas_revision="Z=nada",  # el revisor falso no pide nada extra
         **kw,
     ):
         self.home, self.plan = sandbox.create(
             self.tmp / "b",
             pstack={"exigir": exigir, "clis": self.CLIS},
             modos={"sonnet": "ok", "glm": "ok", "opus": "ok", "k3": "ok", **modos},
-            reglas_revision="Z=nada",  # el revisor falso no pide nada extra
+            reglas_revision=reglas_revision,
             **kw,
         )
         if antes:
@@ -1366,7 +1368,7 @@ class BancoPstack(Banco):
         base = self.plan.read_text().split("## Bloque A")[0]
         self.plan.write_text(
             base
-            + "## Bloque A — saludo\nlane: gate\naviso: ya saluda\nprueba-real: true\n"
+            + f"## Bloque A — {titulo}\nlane: gate\naviso: ya saluda\nprueba-real: true\n"
             + bloque_extra
             + f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| {fila} |\n"
         )
@@ -1464,6 +1466,93 @@ class TestPstack(BancoPstack):
         self.assertIn("claude", avisos[0])
         h = json.loads((self.intentos("implementar")[0] / "huella.json").read_text())
         self.assertEqual(h["estado"], "no_verificable")
+
+
+FILA_BUG = (
+    r"A.1 | escribe: saludo.txt=hola \| repro: test -f saludo.txt | test -f saludo.txt"
+)
+
+
+class TestResultadosNoSoloCarga(BancoPstack):
+    """B.4: el motor comprueba el `repro` del arreglo de bug y el de cada bloqueante del revisor."""
+
+    def test_bug_con_repro_que_falla_en_la_base_y_pasa_en_la_punta_se_entrega(self):
+        self.arranca_pstack(False, {}, "tipo: bug\n", FILA_BUG)
+        self.assertEqual([o["kind"] for o in self.fines("implementar")], ["entregado"])
+
+    def test_un_titulo_con_bug_tambien_es_bloque_de_bug(self):
+        self.arranca_pstack(
+            False,
+            {"sonnet": "sin_repro_primero"},
+            fila=FILA_BUG,
+            titulo="arregla el bug del saludo",
+        )
+        self.assertEqual(
+            [o["kind"] for o in self.fines("implementar")], ["sin_repro", "entregado"]
+        )
+
+    def test_sin_repro_el_resultado_es_sin_repro(self):
+        self.arranca_pstack(
+            False, {"sonnet": "sin_repro_primero"}, "tipo: bug\n", FILA_BUG
+        )
+        fines = self.fines("implementar")
+        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
+        self.assertIn("no trae `repro`", fines[0]["detalle"])
+        brief2 = (self.intentos("implementar")[1] / "brief.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("sin_repro (", brief2, "el siguiente intento sabe por qué")
+        self.assertIn('"repro": "<comando>"', brief2)
+
+    def test_un_repro_que_ya_pasa_en_la_base_no_demuestra_el_bug(self):
+        self.arranca_pstack(
+            False, {"sonnet": "repro_malo_primero"}, "tipo: bug\n", FILA_BUG
+        )
+        fines = self.fines("implementar")
+        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
+        self.assertIn("sale 0 en el commit base", fines[0]["detalle"])
+
+    def test_un_repro_que_no_pasa_en_la_punta_tampoco_vale(self):
+        self.arranca_pstack(
+            False, {"sonnet": "repro_roto_primero"}, "tipo: bug\n", FILA_BUG
+        )
+        fines = self.fines("implementar")
+        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
+        self.assertIn("en tu punta", fines[0]["detalle"])
+
+    def test_un_bloque_que_no_es_de_bug_no_pide_repro(self):
+        self.arranca_pstack(False, {})
+        self.assertEqual([o["kind"] for o in self.fines("implementar")], ["entregado"])
+        brief = (self.intentos("implementar")[0] / "brief.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("Este bloque arregla un bug", brief)
+
+    def reviews(self):
+        return [e.data for e in eventos(self.home) if e.kind == "Reviewed"]
+
+    def test_un_bloqueante_cuyo_repro_sale_0_baja_a_nota(self):
+        self.arranca_pstack(False, {"opus": "repro_falso"})
+        r = self.reviews()[0]
+        self.assertEqual(r["veredicto"], "APROBADO", "ya no queda nada reproducible")
+        self.assertEqual(r["bloqueantes"], [])
+        self.assertEqual(len(r["bajados"]), 1)
+        self.assertTrue(
+            any(
+                "Bajó de bloqueante a nota" in n and "dice que falta algo" in n
+                for n in r["notas"]
+            )
+        )
+
+    def test_un_bloqueante_que_si_reproduce_sigue_bloqueando(self):
+        self.arranca_pstack(False, {}, reglas_revision="A=extra")
+        r = self.reviews()[0]
+        self.assertEqual(r["veredicto"], "CAMBIOS")
+        self.assertEqual(
+            [b["repro"] for b in r["bloqueantes"]], ["test -f A-extra.txt"]
+        )
+        self.assertNotIn("bajados", r)
+        self.assertEqual(self.reviews()[-1]["veredicto"], "APROBADO", "tras el arreglo")
 
 
 class TestPuertaEnVivo(BancoPstack):

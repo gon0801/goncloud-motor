@@ -2,6 +2,7 @@
 
 extra  pide un archivo `<bloque>-extra.txt` con comando que lo reproduce
 ruido  CAMBIOS sin comando de reproducción (la regla 4 lo trata como aprobado)
+modo repro_falso  CAMBIOS con un bloqueante cuyo `repro` sale 0 (el motor lo baja a nota)
 """
 
 from __future__ import annotations
@@ -52,6 +53,15 @@ def main() -> int:
                     "repro": f"test -f {bloque}-extra.txt",
                     "arreglo": f"escribe: {bloque}-extra.txt=ok",
                 }
+            ],
+        }
+    elif modo == "repro_falso":  # un bloqueante cuyo comando sale 0: no reprodujo nada
+        out = {
+            "sha": sha,
+            "veredicto": "CAMBIOS",
+            "notas": [],
+            "bloqueantes": [
+                {"texto": "dice que falta algo", "repro": "true", "arreglo": "?"}
             ],
         }
     elif reglas.get(bloque) == "ruido":

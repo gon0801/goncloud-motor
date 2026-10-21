@@ -14,6 +14,7 @@ Formato (compatible con las tablas de Orbit, más campos por bloque):
     prueba-real: test -f x          # se corre contra producción después del merge/deploy
     repo: <url>                     # opcional: este bloque va en otro repo
     despliegue: desplegar=ruta checklist=ruta rollback=ruta   # opcional: si no, la receta del .motor.toml del repo
+    tipo: bug                       # opcional: un bloque de bug entrega un `repro` (ver effects.collect)
     humano: login Entra a Seller Central y acepta el permiso  # paso que solo David puede hacer
     sonda-humano: test -f ~/.login-ok                          # opcional: detecta el paso hecho
     | Fila | Contenido | Acepta |
@@ -66,6 +67,14 @@ class Block:
     checks: tuple[
         str, ...
     ] = ()  # checks que el plan exige además de la protección de la rama
+    tipo: str = ""  # "bug" si el bloque arregla un bug
+
+    @property
+    def es_bug(self) -> bool:
+        """Un bloque es de bug si su campo `tipo` es `bug` o su título dice "bug"."""
+        return self.tipo.strip().lower() == "bug" or bool(
+            re.search(r"\bbugs?\b", self.titulo, re.IGNORECASE)
+        )
 
 
 @dataclass(frozen=True)
@@ -97,6 +106,7 @@ class Plan:
                 "release": b.release.__dict__ if b.release else None,
                 "human": b.human.__dict__ if b.human else None,
                 "checks": list(b.checks),
+                "tipo": b.tipo,
             }
 
         return {
@@ -124,6 +134,7 @@ class Plan:
                     release=Release(**b["release"]) if b["release"] else None,
                     human=Human(**b["human"]) if b["human"] else None,
                     checks=tuple(b.get("checks", ())),
+                    tipo=b.get("tipo", ""),
                 )
             )
         return Plan(
@@ -320,6 +331,7 @@ def parse_plan(
                 checks=tuple(
                     x.strip() for x in f.get("checks", "").split(",") if x.strip()
                 ),
+                tipo=f.get("tipo", "").strip().lower(),
             )
         )
 
