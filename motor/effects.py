@@ -42,6 +42,19 @@ class Contexto:
     checks_cada_s: float = 60.0
 
 
+def _run_tope(
+    cmd: str, cwd: Path | None, env: dict, timeout: float
+) -> subprocess.CompletedProcess:
+    """Como _run, pero pasarse del tope es una salida 124 (falla), no una excepción: MOTOR 01, bloque I,
+    la revisión del despliegue se pasaba de 15 min y el motor la reintentaba para siempre."""
+    try:
+        return _run(cmd, cwd, env, timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            cmd, 124, "", f"se pasó del tope de {int(timeout)} s"
+        )
+
+
 def _run(
     cmd: str, cwd: Path | None, env: dict, timeout: float = 900
 ) -> subprocess.CompletedProcess:
@@ -595,11 +608,12 @@ Escribe en `$MOTOR_RESULT`:
         # La instalación no tiene .git; la copia (worktree) sí. Sin esto,
         # instala-todo.sh hace `git -C "$MOTOR_RAIZ"` y sale 3.
         env["MOTOR_RAIZ"] = str(w)
+        tope = float(self.cx.conf.tiempos.get("despliegue_tope_s", 900))
         if not desplegar:
             ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
         elif (
             a.sha in bv.deploy_started
-            and _run(f"bash {checklist}", w, env).returncode == 0
+            and _run_tope(f"bash {checklist}", w, env, tope).returncode == 0
         ):
             ok, detalle = True, "ya estaba desplegado (se comprobó antes de repetir)"
         else:
@@ -612,11 +626,11 @@ Escribe en `$MOTOR_RESULT`:
             )
             pasos, ok = [], True
             for paso in (desplegar, checklist):
-                p = _run(f"bash {paso}", w, env)
+                p = _run_tope(f"bash {paso}", w, env, tope)
                 pasos.append(f"{paso}: salida {p.returncode}")
                 if p.returncode != 0:
                     ok = False
-                    rb = _run(f"bash {rollback}", w, env)
+                    rb = _run_tope(f"bash {rollback}", w, env, tope)
                     pasos.append(f"rollback: salida {rb.returncode}")
                     break
             detalle = "\n".join(pasos)

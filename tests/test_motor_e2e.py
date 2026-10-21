@@ -775,6 +775,60 @@ class TestYaEnLaBase(Banco):
         )
 
 
+class TestDespliegueQueSePasa(Banco):
+    def test_una_revision_que_se_pasa_del_tope_es_una_falla_y_no_un_ciclo(self):
+        """MOTOR 01, bloque I: verifica.sh se pasaba de 15 min, el motor lo tomaba como tropiezo
+        pasajero y lo reintentaba para siempre sin pasar el bloque a arreglo."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        g = self.tmp / "b" / "conf" / "general.toml"
+        g.write_text(
+            g.read_text(encoding="utf-8").replace(
+                "[tiempos]\n", "[tiempos]\ndespliegue_tope_s = 3\n"
+            ),
+            encoding="utf-8",
+        )
+        git(
+            "-c",
+            "user.name=c",
+            "-c",
+            "user.email=c@l",
+            "commit",
+            "-qam",
+            "tope corto",
+            cwd=self.tmp / "b" / "conf",
+        )
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                'escribe: ops/checklist.sh=test "$(cat "$PROD_DIR/version.txt")" = v2',
+                "escribe: ops/checklist.sh=sleep 30",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        (self.home / "login-hecho").write_text("ok")
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(e.kind == "Deployed" for e in eventos(self.home)), tope=150
+            ),
+            "el despliegue terminó (en falla), no se quedó reintentando",
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        d = [e for e in eventos(self.home) if e.kind == "Deployed"][0]
+        self.assertFalse(d.data["ok"])
+        self.assertIn("salida 124", d.data["detalle"])
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})
