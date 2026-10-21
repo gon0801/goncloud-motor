@@ -188,6 +188,14 @@ class Workspace:
                 "checkout", foto, "--", ".", cwd=w
             )  # lo que quedó a medias vuelve a la carpeta
             git("reset", "-q", cwd=w)  # sin commitear, como lo dejó el agente
+        elif remota:
+            # Rama ya existente: se trae la base. Tras un merge (squash) lo viejo ya está en la base y el
+            # arreglo choca si no; MOTOR 01, bloque F. Si hay conflicto, se deja como estaba y el
+            # agente lo resuelve con el motivo que le da el motor.
+            r = git("-c", "user.name=motor", "-c", "user.email=motor@local", "merge", "-q", "--no-edit",
+                    f"origin/{base}", cwd=w)
+            if r.returncode != 0:
+                git("merge", "--abort", cwd=w)
         return w
 
     def copia(self, repo: str, sha: str, donde: Path) -> Path:

@@ -487,6 +487,15 @@ class TestSoloElMotorMergea(Banco):
         mg = [e for e in d.store.events("demo") if e.kind == "Merged"]
         self.assertEqual((mg[0].data["sha"], mg[0].data["externo"]), ("a" * 40, True))
 
+    def test_pr_mergeado_con_otro_contenido_no_se_adopta(self):
+        d, plan, snap = self._daemon_con_pr()
+        d.fx.cx.gh.estado = "mergeado"
+        d.fx.poll_checks(plan, snap, m.PollChecks("A", "b" * 40))
+        evs = d.store.events("demo")
+        self.assertFalse([e for e in evs if e.kind == "Merged"], "no se despliega lo que se mergeó antes")
+        self.assertEqual([e.data["numero"] for e in evs if e.kind == "PrCerrado"], [7])
+        self.assertIsNone(m.fold(plan, evs).blocks["A"].pr, "el siguiente paso abre un PR nuevo")
+
     def test_el_encargo_prohibe_mergear(self):
         self.assertIn("PROHIBIDO mergear", (RAIZ / "motor" / "effects.py").read_text())
 
@@ -529,6 +538,22 @@ class TestConfSeActualizaSola(Banco):
         self.assertTrue(list((self.home / "avisos" / "pendientes").glob("*confmala*")), "se avisa una vez")
         d.tick(ahora + 1900)
         self.assertEqual(len([e for e in Store(self.home / "motor.db").events() if e.kind == "ConfRechazada"]), 1)
+
+
+class TestArregloTrasDespliegueFallido(Banco):
+    def test_el_arreglo_va_en_un_pr_nuevo_y_se_despliega_lo_arreglado(self):
+        """MOTOR 01, bloque F: el despliegue falló tras el merge, el arreglo quedó en la rama y el motor
+        siguió usando el PR ya mergeado; desplegaba otra vez el código viejo, en ciclo, casi 3 horas."""
+        self.arranca(codigo=("glm", "grok"), modos={"glm": "despliegue_roto_primero", "grok": "ok"})
+        self.termina()
+        evs = eventos(self.home)
+        prs = [e.data["numero"] for e in evs if e.kind == "PrOpened" and e.block == "D"]
+        merges = [e for e in evs if e.kind == "Merged" and e.block == "D"]
+        despliegues = [e.data["ok"] for e in evs if e.kind == "Deployed" and e.block == "D"]
+        self.assertEqual(len(set(prs)), 2, "el arreglo va en un PR nuevo")
+        self.assertEqual(len({mg.data["commit"] for mg in merges}), 2, "y se mergea de verdad")
+        self.assertEqual(despliegues, [False, True], "el segundo despliegue ya lleva el arreglo")
+        self.assertFalse([e for e in evs if e.kind == "Merged" and e.data.get("externo")])
 
 
 class TestFallas(Banco):
