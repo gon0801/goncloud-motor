@@ -6,19 +6,24 @@ Separado por conocimiento: `Workspace` sabe de git local, `GitHubPort` de PRs y 
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
 import json
 import os
+import re
 import shutil
 import string
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import machine as m
 from .plataforma.windows import argv_en_wsl
 from . import plataforma, relevo
+from . import pstack as ps
 from .conf import Conf, Maquina, RepoConf
 from .fallas import PROVEEDORES
 from .github import GitHubPort, MergeRechazado
@@ -98,6 +103,103 @@ def es_del_agente(motivo: str) -> bool:
     )
 
 
+def arbol_de(conf_dir: Path) -> str:
+    """Id de la copia fija de pstack: hash de lo que hay en `pstack/` y `pstack-motor/` de la conf.
+    Mismo contenido, mismo id en las tres máquinas; otro contenido, otra carpeta."""
+    h = hashlib.sha256()
+    for nombre in ("pstack", "pstack-motor"):
+        base = conf_dir / nombre
+        if not base.is_dir():
+            continue
+        for f in sorted(p for p in base.rglob("*") if p.is_file()):
+            h.update(f.relative_to(conf_dir).as_posix().encode() + b"\0")
+            h.update(f.read_bytes() + b"\0")
+    return h.hexdigest()[:12]
+
+
+def materializa_pstack(conf_dir: Path, raiz: Path) -> tuple[str, Path] | None:
+    """Copia `pstack/` y `pstack-motor/` de la conf a `<raiz>/<id de árbol>/` con un rename atómico:
+    nadie ve una copia a medias, y una copia ya hecha no se toca (no cambia mientras dura un intento)."""
+    if not (conf_dir / "pstack").is_dir():
+        return None
+    id_ = arbol_de(conf_dir)
+    destino = raiz / id_
+    if destino.exists():
+        os.utime(destino)  # en uso: la limpieza de 14 días no la cuenta como vieja
+        return id_, destino
+    raiz.mkdir(parents=True, exist_ok=True)
+    tmp = raiz / f".tmp-{id_}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+    try:
+        for nombre in ("pstack", "pstack-motor"):
+            if (conf_dir / nombre).is_dir():
+                shutil.copytree(conf_dir / nombre, tmp / nombre)
+        try:
+            os.rename(tmp, destino)
+        except OSError:
+            if (
+                not destino.exists()
+            ):  # si otro proceso la dejó lista primero, es la misma
+                raise
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return id_, destino
+
+
+def errores_pstack(d: Path, conf) -> list[str]:
+    """Para `motor conf valida`: pstack.toml tiene que coincidir con la copia fija que lleva la conf."""
+    pc = conf.pstack
+    if pc is None:
+        return []
+    copia = d / "pstack"
+    if not (copia / "skills" / ps.SKILL_BASE / "SKILL.md").is_file():
+        return [
+            "pstack.toml existe pero falta pstack/skills/poteto-mode/SKILL.md en la conf"
+        ]
+    errores = []
+    if not pc.commit:
+        errores.append("pstack.toml [pstack] commit: falta el commit de la copia fija")
+    marca = next(
+        (
+            (copia / n).read_text(encoding="utf-8", errors="replace")
+            for n in ("ORIGEN", "COMMIT")
+            if (copia / n).is_file()
+        ),
+        None,
+    )
+    if marca is None:
+        if pc.exigir:
+            errores.append(
+                "pstack/ no dice de qué commit viene (falta pstack/ORIGEN): no puedo comprobar que "
+                "pstack.toml coincide con la copia fija"
+            )
+    elif pc.commit and pc.commit[:7] not in marca:
+        errores.append(
+            f"pstack.toml dice el commit {pc.commit[:12]} y la copia fija viene de otro "
+            f"({marca.strip().splitlines()[0][:80]})"
+        )
+    for papel in ps.PAPELES:
+        for lane in ps.LANES:
+            if (lane, papel) not in pc.exigencias:
+                errores.append(f"pstack.toml: falta la exigencia de {papel} en {lane}")
+    for (lane, papel), e in pc.exigencias.items():
+        for sk in e.skills:
+            if not (copia / "skills" / sk / "SKILL.md").is_file():
+                errores.append(
+                    f"pstack.toml: la exigencia de {papel} en {lane} pide la skill {sk}, "
+                    "que no está en la copia"
+                )
+    for r in conf.rutas.values():
+        if r.cli not in ps.FORMATOS:
+            errores.append(f"ruta {r.modelo}: no sé leer el registro del CLI {r.cli}")
+        elif not (d / "pstack-motor" / f"{r.cli}.md").is_file():
+            errores.append(
+                f"falta pstack-motor/{r.cli}.md (mapa del CLI de {r.modelo})"
+            )
+    if not (d / "pstack-motor" / "motor.md").is_file():
+        errores.append("falta pstack-motor/motor.md")
+    return errores
+
+
 SONDA_CADA_S = 120
 SONDA_TOPE_S = 900
 
@@ -109,6 +211,7 @@ class Effects:
         self._sondas: dict[
             str, tuple[subprocess.Popen, float]
         ] = {}  # sonda humana corriendo aparte
+        self._pstack: tuple[str, tuple[str, Path] | None] | None = None
 
     # ------------------------------------------------------------------ entorno
     def env_base(self, extra: dict | None = None) -> dict:
@@ -169,6 +272,134 @@ class Effects:
     def attempt_dir(self, plan: str, block: str, role: str, n: int) -> Path:
         return self.cx.home / "intentos" / plan / f"{block}-{role}-{n}"
 
+    # ------------------------------------------------------------------ pstack
+    def asegura_pstack(self) -> tuple[str, Path] | None:
+        """La copia fija de pstack de la conf vigente, ya materializada en `<home>/pstack/<id>/`."""
+        conf = self.cx.conf
+        if conf.pstack is None or conf.dir is None:
+            return None
+        if self._pstack and self._pstack[0] == conf.sha != "sin-git":
+            return self._pstack[1]
+        copia = materializa_pstack(conf.dir, self.cx.home / "pstack")
+        self._pstack = (conf.sha, copia)
+        return copia
+
+    def _prepara_pstack(
+        self, d: Path, lane: str, role: str, cli: str, cwd: Path, sesion: str
+    ) -> dict | None:
+        """Fija lo que este intento exige y dónde se lee su registro; lo guarda en `pstack.json`.
+        `collect` juzga contra esto, no contra la conf de entonces: la conf puede cambiar a medias."""
+        pc, copia = self.cx.conf.pstack, self.asegura_pstack()
+        if pc is None or copia is None:
+            return None
+        arbol, raiz = copia
+        registros = []
+        if cli == "claude":  # el transcript de la sesión que fijamos con --session-id
+            base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+            for c in dict.fromkeys([str(cwd), str(cwd.resolve())]):
+                registros.append(
+                    str(
+                        base
+                        / "projects"
+                        / re.sub(r"[^A-Za-z0-9]", "-", c)
+                        / f"{sesion}.jsonl"
+                    )
+                )
+        info = {
+            "cli": cli,
+            "lane": lane,
+            "role": role,
+            "exigir": pc.exigir,
+            "exigencia": pc.exigencia(lane, role).to_dict(),
+            "arbol": arbol,
+            "raiz": str(raiz),
+            "sesion": sesion,
+            "registros": [*registros, str(d / "log.txt")],
+        }
+        (d / "pstack.json").write_text(
+            json.dumps(info, ensure_ascii=False), encoding="utf-8"
+        )
+        return info
+
+    def _seccion_pstack(self, info: dict | None) -> str:
+        """Lo que el encargo lleva de pstack: motor.md, el mapa del CLI y "Cómo trabajas"."""
+        if info is None:
+            return ""
+        raiz = Path(info["raiz"])
+        partes = []
+        for titulo, f in (
+            ("Lo que manda el motor sobre pstack", raiz / "pstack-motor" / "motor.md"),
+            (f"Mapa de {info['cli']}", raiz / "pstack-motor" / f"{info['cli']}.md"),
+        ):
+            if f.is_file():
+                partes.append(f"## {titulo}\n{f.read_text(encoding='utf-8').strip()}\n")
+        partes.append(
+            ps.instrucciones(
+                ps.Exigencia.from_dict(info["exigencia"]), info["cli"], str(raiz)
+            )
+        )
+        return "\n".join(partes) + "\n"
+
+    def _juzga_pstack(self, d: Path) -> dict | None:
+        """Lee el registro real del intento, guarda `huella.json` y, si el motor exige pstack y falta
+        algo, devuelve el resultado `sin_pstack`. Un registro ilegible deja pasar la entrega con aviso."""
+        try:
+            info = json.loads((d / "pstack.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        h = ps.Huella(legible=False)
+        fuente = ""
+        for r in info["registros"]:
+            try:
+                texto = Path(r).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            h = ps.huella(texto, info["cli"])
+            fuente = r
+            if h.legible:
+                break
+        veredicto = ps.juzga(h, ps.Exigencia.from_dict(info["exigencia"]))
+        if isinstance(veredicto, ps.Falta):
+            estado = "falta"
+        else:
+            estado = "cumple" if veredicto.verificable else "no_verificable"
+        (d / "huella.json").write_text(
+            json.dumps(
+                {
+                    "cli": info["cli"],
+                    "fuente": fuente,
+                    "exigir": info["exigir"],
+                    "estado": estado,
+                    "faltas": list(veredicto.faltas) if estado == "falta" else [],
+                    "huella": h.to_dict(),
+                    "exigencia": info["exigencia"],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        if not info["exigir"]:
+            return None
+        if estado == "no_verificable":
+            self._avisa_no_verificable(info["cli"])
+        if estado == "falta":
+            return {"kind": "sin_pstack", "detalle": veredicto.texto()}
+        return None
+
+    def _avisa_no_verificable(self, cli: str) -> None:
+        """Una vez por CLI y por día: no pude leer el registro, la entrega pasó sin comprobarse."""
+        dia = dt.date.today().isoformat()
+        marca = self.cx.home / "avisos-pstack" / f"{cli}-{dia}"
+        if marca.exists():
+            return
+        marca.parent.mkdir(parents=True, exist_ok=True)
+        marca.write_text(dia, encoding="utf-8")
+        self.cx.notifier.encola(
+            f"pstack-ilegible:{cli}:{dia}",
+            f"En {self.cx.maquina.nombre}: no pude leer el registro de {cli}, así que no comprobé que "
+            "usara poteto-mode. Dejé pasar la entrega. Este aviso sale una vez al día por herramienta.",
+        )
+
     # ------------------------------------------------------------------ intentos
     def start_attempt(self, plan: Plan, snap: m.Snapshot, a: m.StartAttempt) -> None:
         d = self.attempt_dir(plan.id, a.block, a.role, a.n)
@@ -191,7 +422,6 @@ class Effects:
         ruta = self.cx.conf.rutas[a.modelo]
         if a.role == "implementar":
             cwd = self.cx.ws.prepara(block.repo, plan.id, block.id, rc.principal)
-            brief = self._brief_implementar(plan, block, a, cwd, rc)
             wip = [
                 "--wip-rama",
                 self.cx.ws.rama_wip(plan.id, block.id),
@@ -202,13 +432,29 @@ class Effects:
                 wip.append("--wip-local")  # repo público: lo de a medias no se publica
         else:
             cwd = self.cx.ws.copia(block.repo, a.sha, d / "revision")
-            brief = self._brief_revisar(plan, block, a, rc)
             wip = []
+        # un uuid por intento: el CLI lo usa como id de sesión y así el motor sabe qué registro leer
+        marca_sesion = d / "sesion"
+        if not marca_sesion.exists():
+            marca_sesion.write_text(str(uuid.uuid4()), encoding="utf-8")
+        sesion = marca_sesion.read_text(encoding="utf-8").strip()
+        info_pstack = self._prepara_pstack(d, block.lane, a.role, ruta.cli, cwd, sesion)
+        seccion = self._seccion_pstack(info_pstack)
+        if a.role == "implementar":
+            brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
+        else:
+            brief = self._brief_revisar(plan, block, a, rc, seccion)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
         prompt = f"Lee {d / 'brief.md'} y ejecútalo completo sin preguntar nada."
         argv = [
-            x.format(brief=str(d / "brief.md"), prompt=prompt, result=str(result))
+            x.format(
+                brief=str(d / "brief.md"),
+                prompt=prompt,
+                result=str(result),
+                pstack=info_pstack["raiz"] if info_pstack else "",
+                sesion=sesion,
+            )
             for x in ruta.argv
         ]
         if (
@@ -270,7 +516,13 @@ class Effects:
         )
 
     def _brief_implementar(
-        self, plan: Plan, block, a: m.StartAttempt, cwd: Path, rc: RepoConf
+        self,
+        plan: Plan,
+        block,
+        a: m.StartAttempt,
+        cwd: Path,
+        rc: RepoConf,
+        seccion_pstack: str = "",
     ) -> str:
         filas = "\n".join(
             f"- {r.id}: {r.contenido}"
@@ -298,7 +550,7 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
 ## Lo que quedó sin commitear de un intento anterior
 {pendientes or "(nada)"}
 
-## Cómo se entrega
+{seccion_pstack}## Cómo se entrega
 1. Un commit por fila, con el id de la fila al inicio del mensaje. Nunca `--no-verify`.
 2. `git push origin HEAD:refs/heads/{rama}` (nunca a `{rc.principal}`).
    PROHIBIDO mergear, cerrar, aprobar o marcar listo un PR (`gh pr merge`, la API, la web): eso
@@ -308,7 +560,14 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
    Lo que digas no cuenta como prueba: el motor verifica el SHA y corre cada `Acepta`.
 """
 
-    def _brief_revisar(self, plan: Plan, block, a: m.StartAttempt, rc: RepoConf) -> str:
+    def _brief_revisar(
+        self,
+        plan: Plan,
+        block,
+        a: m.StartAttempt,
+        rc: RepoConf,
+        seccion_pstack: str = "",
+    ) -> str:
         filas = "\n".join(
             f"- {r.id}: {r.contenido}"
             + (f" | Acepta: `{r.acepta}`" if r.acepta else "")
@@ -321,7 +580,7 @@ Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal
 
 {filas}
 
-Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). Lo demás va en `notas`.
+{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). Lo demás va en `notas`.
 Escribe en `$MOTOR_RESULT`:
 {{"sha": "{a.sha}", "veredicto": "APROBADO" | "CAMBIOS",
   "bloqueantes": [{{"texto": "...", "repro": "comando", "arreglo": "..."}}], "notas": ["..."]}}
@@ -350,6 +609,8 @@ Escribe en `$MOTOR_RESULT`:
                 "detalle": "el proceso desapareció sin dejar resultado",
             }
         o = json.loads(oc.read_text(encoding="utf-8"))
+        if o.get("puerta"):  # runwrap lo cortó en vivo: no cargó poteto-mode a tiempo
+            return {"kind": "sin_pstack", "detalle": o["puerta"]}
         c = m.classify(
             o["exit"],
             o["timed_out"],
@@ -378,6 +639,8 @@ Escribe en `$MOTOR_RESULT`:
             return c
         if c["kind"] != "terminado":
             return c
+        if (falta := self._juzga_pstack(d)) is not None:
+            return falta
         try:
             res = json.loads((d / "result.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -775,8 +1038,18 @@ Escribe en `$MOTOR_RESULT`:
         )
 
     def purga_registros(self, planes: list[Plan], now: float) -> None:
-        """Borra los registros de intentos de los planes limpiados hace más de `registros_dias`."""
+        """Borra los registros de intentos de los planes limpiados hace más de `registros_dias`,
+        y las copias de pstack que ningún intento usa hace ese mismo tiempo (menos la vigente)."""
         dias = float(self.cx.conf.tiempos.get("registros_dias", 14))
+        vigente = self._pstack[1][0] if self._pstack and self._pstack[1] else ""
+        raiz = self.cx.home / "pstack"
+        for x in raiz.iterdir() if raiz.is_dir() else ():
+            try:
+                vieja = now - x.stat().st_mtime > dias * 86400
+            except OSError:
+                continue
+            if vieja and x.name != vigente:
+                shutil.rmtree(x, ignore_errors=True)
         for p in planes:
             limpio = next(
                 (e for e in self.cx.store.events(p.id) if e.kind == "Limpiado"), None

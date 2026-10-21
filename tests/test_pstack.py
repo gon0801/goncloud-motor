@@ -7,9 +7,21 @@ reemplaza por registros reales de cada máquina.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
+import time
 import unittest
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
+from motor import effects as ef
+from motor import machine as m
 from motor import pstack as ps
+from motor import relevo
+from motor.__main__ import conf_valida
+from motor.conf import load_conf
 
 SKILL = "/Users/dn/.motor/pstack/abc123/pstack/skills/poteto-mode/SKILL.md"
 PLAYBOOK = "/Users/dn/.motor/pstack/abc123/pstack/skills/poteto-mode/playbooks/docs.md"
@@ -349,6 +361,130 @@ class TestConf(unittest.TestCase):
     def test_celda_mal_nombrada_se_rechaza(self):
         with self.assertRaises(ValueError):
             ps.parse_conf({"exigencia": {"turbo": {"revisar": {}}}})
+
+
+class TestCopiaFija(unittest.TestCase):
+    """B.2: la copia fija de pstack en ~/.motor/pstack/<id de árbol>/."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pstack-copia-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.conf = self.tmp / "conf"
+        sk = self.conf / "pstack" / "skills" / "poteto-mode"
+        sk.mkdir(parents=True)
+        (sk / "SKILL.md").write_text("v1\n")
+        (self.conf / "pstack" / "skills" / "interrogate").mkdir()
+        (self.conf / "pstack" / "skills" / "interrogate" / "SKILL.md").write_text("i\n")
+        (self.conf / "pstack" / "ORIGEN").write_text("origen: x abc1234567\n")
+        (self.conf / "pstack-motor").mkdir()
+        (self.conf / "pstack-motor" / "motor.md").write_text("m\n")
+        self.raiz = self.tmp / "home" / "pstack"
+
+    def test_materializa_una_vez_y_no_cambia_mientras_el_contenido_sea_el_mismo(self):
+        id1, d1 = ef.materializa_pstack(self.conf, self.raiz)
+        self.assertEqual(d1, self.raiz / id1)
+        self.assertEqual(
+            (d1 / "pstack/skills/poteto-mode/SKILL.md").read_text(), "v1\n"
+        )
+        self.assertTrue((d1 / "pstack-motor/motor.md").is_file())
+        self.assertEqual(
+            [p.name for p in self.raiz.iterdir()], [id1], "sin restos .tmp"
+        )
+        (d1 / "marca").write_text("no se toca")
+        self.assertEqual(ef.materializa_pstack(self.conf, self.raiz), (id1, d1))
+        self.assertTrue(
+            (d1 / "marca").exists(), "una copia hecha no se vuelve a escribir"
+        )
+
+    def test_otro_contenido_es_otra_copia_y_la_vieja_sigue_ahi(self):
+        id1, d1 = ef.materializa_pstack(self.conf, self.raiz)
+        (self.conf / "pstack/skills/poteto-mode/SKILL.md").write_text("v2\n")
+        id2, d2 = ef.materializa_pstack(self.conf, self.raiz)
+        self.assertNotEqual(id1, id2)
+        self.assertEqual(
+            (d1 / "pstack/skills/poteto-mode/SKILL.md").read_text(), "v1\n"
+        )
+        self.assertEqual(
+            (d2 / "pstack/skills/poteto-mode/SKILL.md").read_text(), "v2\n"
+        )
+
+    def test_sin_pstack_en_la_conf_no_hay_copia(self):
+        shutil.rmtree(self.conf / "pstack")
+        self.assertIsNone(ef.materializa_pstack(self.conf, self.raiz))
+
+    def test_la_limpieza_de_14_dias_borra_las_copias_viejas_menos_la_vigente(self):
+        vieja = self.raiz / "vieja"
+        reciente = self.raiz / "reciente"
+        vigente = self.raiz / "vigente"
+        for d in (vieja, reciente, vigente):
+            d.mkdir(parents=True)
+        hace_20_dias = time.time() - 20 * 86400
+        for d in (vieja, vigente):
+            os.utime(d, (hace_20_dias, hace_20_dias))
+        fx = ef.Effects.__new__(ef.Effects)
+        fx._pstack = ("sha", ("vigente", vigente))
+        fx.cx = SimpleNamespace(
+            home=self.tmp / "home", conf=SimpleNamespace(tiempos={})
+        )
+        fx.purga_registros([], time.time())
+        self.assertEqual(
+            sorted(p.name for p in self.raiz.iterdir()), ["reciente", "vigente"]
+        )
+
+    def conf_cargada(self, exigir=True, commit="abc1234567"):
+        (self.conf / "papeles.toml").write_text(
+            '[papeles]\nimplementar = "c"\nrevisar = "r"\n'
+        )
+        (self.conf / "modelos.toml").write_text('[carriles]\nc = ["a"]\nr = ["a"]\n')
+        (self.conf / "rutas.toml").write_text(
+            '[rutas.a]\ncuenta = "x"\ncli = "claude"\nargv = ["claude", "{prompt}"]\n'
+        )
+        celdas = "".join(
+            f'[exigencia.{lane}.{papel}]\nskills = ["poteto-mode"]\n'
+            for lane in ps.LANES
+            for papel in ps.PAPELES
+        )
+        (self.conf / "pstack-motor" / "claude.md").write_text("c\n")
+        (self.conf / "pstack.toml").write_text(
+            f'[pstack]\ncommit = "{commit}"\nexigir = {str(exigir).lower()}\n{celdas}'
+        )
+        return load_conf(self.conf)
+
+    def test_conf_valida_exige_que_pstack_toml_coincida_con_la_copia_fija(self):
+        self.assertEqual(ef.errores_pstack(self.conf, self.conf_cargada()), [])
+        e = ef.errores_pstack(self.conf, self.conf_cargada(commit="9999999999"))
+        self.assertEqual(len(e), 1)
+        self.assertIn("la copia fija viene de otro", e[0])
+
+    def test_conf_valida_pide_las_skills_y_los_mapas_que_nombra(self):
+        c = self.conf_cargada()
+        shutil.rmtree(self.conf / "pstack/skills/interrogate")
+        pc = ps.parse_conf(
+            {
+                "pstack": {"commit": "abc1234567"},
+                "exigencia": {
+                    lane: {papel: {"skills": ["poteto-mode", "interrogate"]}}
+                    for lane in ps.LANES
+                    for papel in ps.PAPELES
+                },
+            }
+        )
+        errores = ef.errores_pstack(self.conf, replace(c, pstack=pc))
+        self.assertTrue(any("interrogate" in x for x in errores), errores)
+        os.remove(self.conf / "pstack-motor" / "claude.md")
+        self.assertTrue(
+            any("pstack-motor/claude.md" in x for x in ef.errores_pstack(self.conf, c))
+        )
+
+    def test_conf_valida_corre_desde_el_cli(self):
+        self.conf_cargada()
+        self.assertEqual(conf_valida(self.conf), [])
+        self.conf_cargada(commit="9999999999")
+        self.assertTrue(any("otro" in x for x in conf_valida(self.conf)))
+
+    def test_sin_pstack_cuenta_como_falla_del_modelo(self):
+        self.assertEqual(relevo.desde_kind("sin_pstack"), relevo.Falla.TASK_FAILURE)
+        self.assertNotIn("sin_pstack", m.NO_ES_FALLA)
 
 
 if __name__ == "__main__":

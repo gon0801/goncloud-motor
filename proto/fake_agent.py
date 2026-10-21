@@ -9,6 +9,7 @@ Modos (cada uno es una falla del catálogo):
   stdin           lee de la terminal antes de trabajar (como un prompt de permiso)
   cuelga          no hace nada y no muestra avance
   rompe_primero   la primera entrega rompe las pruebas automáticas; la siguiente lo arregla
+  pstack_*        trabaja normal y deja un registro con o sin poteto-mode (ver fake_log.py)
   parcial_lento   en el bloque A, la primera vez deja un archivo sin commitear y se queda trabajando
                   (para simular un apagón a la mitad); la siguiente termina
 """
@@ -45,6 +46,13 @@ def main() -> int:
         (marca.parent / f"llave-{os.environ['MOTOR_MODEL']}").write_text(
             os.environ["FAKE_LLAVE"]
         )
+
+    if modo.startswith(
+        "pstack"
+    ):  # deja en el registro lo que hizo con poteto-mode (fake_log.py)
+        from fake_log import emite
+
+        emite(modo, primera)
 
     if modo == "cuota_primero" and primera:
         reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).strftime(

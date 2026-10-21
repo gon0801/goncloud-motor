@@ -18,6 +18,8 @@ from pathlib import Path
 
 import tomllib
 
+from .pstack import PstackConf, parse_conf
+
 
 class ConfError(ValueError):
     pass
@@ -53,6 +55,8 @@ class Conf:
     motor: dict[str, str] = field(
         default_factory=dict
     )  # versión que la conf fija: {"version", "sha"}
+    pstack: PstackConf | None = None  # pstack.toml; sin él, el motor no usa pstack
+    dir: Path | None = None  # carpeta de la conf (de ahí sale la copia fija de pstack)
 
     def escalera(self, papel: str) -> tuple[str, ...]:
         return self.carriles[self.papeles[papel]]
@@ -114,6 +118,14 @@ def load_conf(d: Path) -> Conf:
                 errores.append(
                     f"el carril {carril} nombra al modelo {mo}, que no tiene ruta"
                 )
+    pstack = None
+    if (d / "pstack.toml").exists():
+        try:
+            pstack = parse_conf(
+                tomllib.loads((d / "pstack.toml").read_text(encoding="utf-8"))
+            )
+        except (ValueError, tomllib.TOMLDecodeError) as e:
+            errores.append(f"pstack.toml: {e}")
     if errores:
         raise ConfError("; ".join(errores))
     reglas_dir = d / "reglas"
@@ -135,6 +147,8 @@ def load_conf(d: Path) -> Conf:
             for k, v in fijada.items()
             if k in ("version", "sha") and isinstance(v, str)
         },
+        pstack=pstack,
+        dir=d,
     )
 
 

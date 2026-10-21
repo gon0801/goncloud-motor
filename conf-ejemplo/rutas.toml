@@ -1,6 +1,8 @@
 # modelo -> cuenta que lo paga -> cómo se lanza sin ventana. La cuota es por cuenta:
 # sonnet y opus comparten "anthropic". Rutas absolutas: en la Mac el wrapper de zsh mandaría a tmux.
 # En la PC, maquina.toml puede poner path_extra y `wsl = ["muse"]` (Muse dentro de WSL).
+# Marcadores del argv: {prompt} {brief} {result}, y para pstack {pstack} (la copia fija de pstack de este
+# intento, ~/.motor/pstack/<id>/) y {sesion} (un uuid por intento, p. ej. `--session-id {sesion}`).
 
 [rutas.sonnet]
 cuenta = "anthropic"

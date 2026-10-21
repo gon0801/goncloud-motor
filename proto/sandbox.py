@@ -49,6 +49,29 @@ def _repo(base: Path, nombre: str, archivos: dict[str, str]) -> str:
     return str(bare)
 
 
+def _pstack_en_conf(conf: Path, pstack: dict) -> None:
+    """Una copia fija de pstack mínima y su pstack.toml (`exigir`; `skills` extra para revisar)."""
+    sk = conf / "pstack" / "skills" / "poteto-mode"
+    (sk / "playbooks").mkdir(parents=True)
+    (sk / "SKILL.md").write_text("# poteto-mode\n")
+    (sk / "playbooks" / "docs.md").write_text("# docs\n")
+    (conf / "pstack" / "ORIGEN").write_text("origen: prueba abc1234567\n")
+    mp = conf / "pstack-motor"
+    mp.mkdir()
+    (mp / "motor.md").write_text("REGLA-DEL-MOTOR: no abras ni mergees PRs.\n")
+    for cli in ("claude", "kimi", "opencode", "grok", "muse", "qwen"):
+        (mp / f"{cli}.md").write_text(f"Mapa de {cli}.\n")
+    celdas = "".join(
+        f'[exigencia.{lane}.{papel}]\nskills = ["poteto-mode"]\n'
+        for lane in ("fast", "gate", "release")
+        for papel in ("implementar", "revisar")
+    )
+    exigir = "true" if pstack.get("exigir") else "false"
+    (conf / "pstack.toml").write_text(
+        f'[pstack]\ncommit = "abc1234567"\nexigir = {exigir}\n{celdas}'
+    )
+
+
 def create(
     base: Path,
     *,
@@ -61,6 +84,7 @@ def create(
     chat_url: str = "",
     timeout=120,
     app_privado=True,
+    pstack: dict | None = None,
 ) -> tuple[Path, Path]:
     modos = {
         "sonnet": "cuota_primero",
@@ -141,7 +165,7 @@ PROD_DIR = "{prod}"
             f', "--reglas", "{reglas_revision}"' if script == "fake_reviewer.py" else ""
         )
         rutas.append(
-            f'[rutas.{mo}]\ncuenta = "{cuentas.get(mo, mo)}"\ncli = "{mo}"\nmax_parallel = 2\n'
+            f'[rutas.{mo}]\ncuenta = "{cuentas.get(mo, mo)}"\ncli = "{(pstack or {}).get("clis", {}).get(mo, mo)}"\nmax_parallel = 2\n'
             f'argv = ["{PY}", "{PROTO / script}", "--modo", "{modos.get(mo, "ok")}"{extra}, "--prompt-file", "{{brief}}"]\n'
         )
     (conf / "rutas.toml").write_text("\n".join(rutas))
@@ -163,6 +187,8 @@ token_env = "MOTOR_TELEGRAM_TOKEN"
     (conf / "reglas" / "revisor.md").write_text(
         "Revisa como el lead: solo bloquea lo reproducible.\n"
     )
+    if pstack is not None:
+        _pstack_en_conf(conf, pstack)
     sh("git", "init", "-q", cwd=conf)
     sh("git", "add", "-A", cwd=conf)
     sh(

@@ -1338,5 +1338,124 @@ class TestFotoWip(unittest.TestCase):
         )
 
 
+class BancoPstack(Banco):
+    """Un solo bloque, con la copia fija de pstack en la conf y todos los agentes falsos como `claude`."""
+
+    CLIS = {"sonnet": "claude", "glm": "claude", "opus": "claude", "k3": "claude"}
+
+    def arranca_pstack(
+        self, exigir: bool, modos: dict, bloque_extra: str = "", fila=None, **kw
+    ):
+        self.home, self.plan = sandbox.create(
+            self.tmp / "b",
+            pstack={"exigir": exigir, "clis": self.CLIS},
+            modos={"sonnet": "ok", "glm": "ok", "opus": "ok", "k3": "ok", **modos},
+            reglas_revision="Z=nada",  # el revisor falso no pide nada extra
+            **kw,
+        )
+        fila = fila or "A.1 | escribe: saludo.txt=hola | test -f saludo.txt"
+        base = self.plan.read_text().split("## Bloque A")[0]
+        self.plan.write_text(
+            base
+            + "## Bloque A — saludo\nlane: gate\naviso: ya saluda\nprueba-real: true\n"
+            + bloque_extra
+            + f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| {fila} |\n"
+        )
+        r = motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        self.assertEqual(
+            json.loads(r.stdout)["estado"], "encolado", r.stdout + r.stderr
+        )
+        self.termina()
+
+    def intentos(self, rol: str) -> list[Path]:
+        return sorted((self.home / "intentos" / "demo").glob(f"A-{rol}-*"))
+
+    def fines(self, rol: str) -> list[dict]:
+        return [
+            e.data["outcome"]
+            for e in eventos(self.home)
+            if e.kind == "AttemptEnded" and e.data["role"] == rol
+        ]
+
+
+class TestPstack(BancoPstack):
+    def test_sin_exigir_el_encargo_lleva_pstack_y_se_guarda_la_huella_sin_rechazar(
+        self,
+    ):
+        self.arranca_pstack(False, {"sonnet": "pstack_no", "opus": "pstack_ok"})
+        for rol in ("implementar", "revisar"):
+            brief = (self.intentos(rol)[0] / "brief.md").read_text(encoding="utf-8")
+            self.assertIn("REGLA-DEL-MOTOR", brief, "motor.md va en el encargo")
+            self.assertIn("Mapa de claude.", brief, "y el mapa del CLI")
+            self.assertIn("## Cómo trabajas", brief)
+        h = json.loads((self.intentos("implementar")[0] / "huella.json").read_text())
+        self.assertEqual((h["estado"], h["exigir"]), ("falta", False))
+        self.assertEqual(h["faltas"], ["no cargó la skill poteto-mode"])
+        h = json.loads((self.intentos("revisar")[0] / "huella.json").read_text())
+        self.assertEqual(h["estado"], "cumple")
+        self.assertEqual(
+            [o["kind"] for o in self.fines("implementar")],
+            ["entregado"],
+            "con exigir = false el motor entrega igual que hoy",
+        )
+        info = json.loads((self.intentos("implementar")[0] / "pstack.json").read_text())
+        copia = Path(info["raiz"])
+        self.assertEqual(copia.parent, self.home / "pstack")
+        self.assertTrue((copia / "pstack/skills/poteto-mode/SKILL.md").is_file())
+        self.assertTrue((copia / "pstack-motor/motor.md").is_file())
+
+    def test_exigir_rechaza_con_sin_pstack_y_el_siguiente_intento_sabe_por_que(self):
+        self.arranca_pstack(True, {"sonnet": "pstack_no_primero", "opus": "pstack_ok"})
+        fines = self.fines("implementar")
+        self.assertEqual([o["kind"] for o in fines], ["sin_pstack", "entregado"])
+        self.assertEqual(fines[0]["detalle"], "no cargó la skill poteto-mode")
+        brief2 = (self.intentos("implementar")[1] / "brief.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("sin_pstack (no cargó la skill poteto-mode)", brief2)
+        raices = {
+            json.loads((d / "pstack.json").read_text())["raiz"]
+            for d in self.intentos("implementar")
+        }
+        self.assertEqual(
+            len(raices), 1, "la copia fija es la misma en los dos intentos"
+        )
+
+    def test_sin_pstack_cuenta_como_falla_del_modelo_y_entra_el_relevo(self):
+        self.arranca_pstack(
+            True, {"sonnet": "pstack_no", "glm": "pstack_ok", "opus": "pstack_ok"}
+        )
+        modelos = [
+            e.data["modelo"]
+            for e in eventos(self.home)
+            if e.kind == "AttemptStarted" and e.data["role"] == "implementar"
+        ]
+        self.assertIn("glm", modelos, "tras fallar sonnet, entra el siguiente modelo")
+        self.assertEqual(self.fines("implementar")[-1]["kind"], "entregado")
+        self.assertIn("sin_pstack", [o["kind"] for o in self.fines("implementar")])
+
+    def test_registro_ilegible_pasa_y_avisa_una_sola_vez_por_cli_y_dia(self):
+        self.arranca_pstack(
+            True, {}
+        )  # los agentes falsos en modo ok no dejan registro legible
+        self.assertEqual([o["kind"] for o in self.fines("implementar")], ["entregado"])
+        avisos = [
+            f.read_text(encoding="utf-8")
+            for f in (self.home / "avisos" / "pendientes").glob("*pstack-ilegible*")
+        ]
+        self.assertEqual(len(avisos), 1, "implementar y revisar usan claude: un aviso")
+        self.assertIn("claude", avisos[0])
+        h = json.loads((self.intentos("implementar")[0] / "huella.json").read_text())
+        self.assertEqual(h["estado"], "no_verificable")
+
+
 if __name__ == "__main__":
     unittest.main()

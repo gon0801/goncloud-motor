@@ -26,6 +26,13 @@ def main() -> int:
     bloque, sha = m.group(1), m.group(2)
     marca = Path(os.environ["FAKE_STATE"]) / f"rev-{os.environ['MOTOR_MODEL']}"
     marca.parent.mkdir(parents=True, exist_ok=True)
+    if modo.startswith(
+        "pstack"
+    ):  # deja en el registro lo que hizo con poteto-mode (fake_log.py)
+        from fake_log import emite
+
+        emite(modo, not marca.exists())
+        marca.write_text("1")
     if modo == "cuota_primero" and not marca.exists():
         marca.write_text("1")
         reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=3)).strftime(
