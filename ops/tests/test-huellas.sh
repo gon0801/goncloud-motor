@@ -42,6 +42,10 @@ sano; espera "todo coincide" 0 bash "$H"
 sano; espera "todo coincide con --servicio --rutas" 0 bash "$H" --servicio --rutas
 contiene "tabla" "$S/salida" "Las tres huellas coinciden"
 
+# MOTOR 01: la PC contestó con una "ú" en cp1252 (byte 0xfa) y huellas.sh reventaba al leerla.
+sano; printf '{"ok": true, "problemas": [], "rutas": {}, "maquina": "pc", "conf_sha": "cccccccccccc2222", "nota": "men\372"}' >"$R/gwpc.doctor"
+espera "la PC contesta en cp1252" 0 bash "$H"
+
 sano; echo '{"version": "0.1.0", "sha": "bbbbbbbbbbbb3333"}' >"$R/mini@fake.version"
 espera "el sha del motor difiere en la Mini" '!0' bash "$H"
 contiene "dice cuál" "$S/salida" "no coinciden"

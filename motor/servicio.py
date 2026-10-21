@@ -51,7 +51,9 @@ def plist_launchd(
 
 def instalable(maquina: str, usuario: str, python: str, home: str, raiz: str) -> str:
     if maquina.lower() == "pc":
-        return tarea_xml(usuario, python, home)
+        return tarea_xml(
+            usuario, python, home, raiz
+        )  # sin carpeta de trabajo, `-m motor` no encuentra el paquete
     return plist_launchd(usuario, python, home, raiz)
 
 

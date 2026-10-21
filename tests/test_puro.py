@@ -690,7 +690,17 @@ class ServicioTest(unittest.TestCase):
         self.assertTrue(flags_creacion() & CREATE_BREAKAWAY_FROM_JOB)
 
     def test_tarea_arranca_sin_sesion(self):
-        x = tarea_xml("ehven", r"C:\uv\python.exe", r"C:\Users\ehven\.motor")
+        x = tarea_xml(
+            "ehven",
+            r"C:\uv\python.exe",
+            r"C:\Users\ehven\.motor",
+            r"C:\Users\ehven\motor",
+        )
+        self.assertIn(
+            r"<WorkingDirectory>C:\Users\ehven\motor</WorkingDirectory>",
+            x,
+            "sin carpeta de trabajo la tarea sale con 1 al instante (MOTOR 01, PC)",
+        )
         for esperado in (
             "<BootTrigger>",
             "<LogonType>Password</LogonType>",

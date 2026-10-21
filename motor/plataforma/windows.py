@@ -50,7 +50,7 @@ def resolve_shim(
     return [nombre]
 
 
-def tarea_xml(usuario: str, python: str, home: str) -> str:
+def tarea_xml(usuario: str, python: str, home: str, raiz: str = "") -> str:
     """Tarea programada: al ARRANCAR, aunque nadie inicie sesión (contraseña guardada en
     Windows), sin límite de tiempo, reintentar si falla."""
     return f"""<?xml version="1.0" encoding="UTF-16"?>
@@ -66,7 +66,7 @@ def tarea_xml(usuario: str, python: str, home: str) -> str:
     <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
     <AllowStartOnDemand>true</AllowStartOnDemand>
   </Settings>
-  <Actions Context="Author"><Exec><Command>{python}</Command><Arguments>-m motor servicio --home "{home}"</Arguments></Exec></Actions>
+  <Actions Context="Author"><Exec><Command>{python}</Command><Arguments>-m motor servicio --home "{home}"</Arguments>{f"<WorkingDirectory>{raiz}</WorkingDirectory>" if raiz else ""}</Exec></Actions>
 </Task>
 """
 
