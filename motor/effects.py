@@ -173,7 +173,18 @@ class Effects:
     def start_attempt(self, plan: Plan, snap: m.Snapshot, a: m.StartAttempt) -> None:
         d = self.attempt_dir(plan.id, a.block, a.role, a.n)
         if (d / "started").exists():
-            return  # se lanzó y el daemon cayó antes de anotar: no se duplica
+            # se lanzó y el daemon cayó antes de anotar: no se duplica; se anota con la marca, así
+            # cuenta para los topes y su resultado se recoge (revisión de Grok a MOTOR 01)
+            datos = json.loads((d / "started").read_text(encoding="utf-8"))
+            if "n" in datos:
+                self.cx.store.append(
+                    plan.id,
+                    a.block,
+                    "AttemptStarted",
+                    datos,
+                    ukey=f"start:{plan.id}:{a.block}:{a.role}:{a.n}",
+                )
+            return
         d.mkdir(parents=True, exist_ok=True)
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
@@ -238,22 +249,23 @@ class Effects:
             *argv,
         ]
         proc = plataforma.lanzar_separado(cmd, cwd, env, d / "runwrap.log")
-        (d / "started").write_text(json.dumps(proc), encoding="utf-8")
+        datos = {
+            "n": a.n,
+            "role": a.role,
+            "modelo": a.modelo,
+            "cuenta": ruta.cuenta,
+            "proc": proc,
+            "dir": str(d),
+            "sha": a.sha,
+            "conf_sha": self.cx.conf.sha,
+            "feedback": list(a.feedback),
+        }
+        (d / "started").write_text(json.dumps(datos), encoding="utf-8")
         self.cx.store.append(
             plan.id,
             a.block,
             "AttemptStarted",
-            {
-                "n": a.n,
-                "role": a.role,
-                "modelo": a.modelo,
-                "cuenta": ruta.cuenta,
-                "proc": proc,
-                "dir": str(d),
-                "sha": a.sha,
-                "conf_sha": self.cx.conf.sha,
-                "feedback": list(a.feedback),
-            },
+            datos,
             ukey=f"start:{plan.id}:{a.block}:{a.role}:{a.n}",
         )
 

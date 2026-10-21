@@ -4,42 +4,50 @@
 
 [rutas.sonnet]
 cuenta = "anthropic"
+max_parallel = 4
 cli = "claude"
 argv = ["claude", "-p", "--model", "sonnet", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]
 
 [rutas.opus]
 cuenta = "anthropic"
+max_parallel = 4
 cli = "claude"
 argv = ["claude", "-p", "--model", "opus", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]
 
 [rutas.k3]
 cuenta = "kimi"
+max_parallel = 4
 cli = "kimi"
 argv = ["kimi", "-p", "{prompt}", "--output-format", "stream-json"]   # -p ya corre sin preguntar; con --auto o --yolo falla
 
 [rutas.glm]
 cuenta = "zai"
+max_parallel = 4
 cli = "opencode"
 argv = ["opencode", "run", "--auto", "-m", "zai-coding-plan/glm-5.3", "{prompt}"]
 
 [rutas.grok]
 cuenta = "xai"
+max_parallel = 4
 cli = "grok"
 argv = ["grok", "--prompt-file", "{brief}", "--always-approve", "--output-format", "json"]
 
 [rutas.muse]
 cuenta = "meta"
+max_parallel = 4
 cli = "muse"
 argv = ["muse", "exec", "--yolo", "--json", "--prompt-file", "{brief}"]
 
 # Fuera de los carriles de la tabla v6: solo entran si un plan los pide ("implementa: qwen", "revisa: deepseek").
 [rutas.deepseek]
 cuenta = "deepseek"
+max_parallel = 4
 cli = "claude"
 argv = ["claude", "-p", "--model", "deepseek-v4-pro", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]
 env = { ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic", ANTHROPIC_AUTH_TOKEN = "${DEEPSEEK_API_KEY}", ANTHROPIC_MODEL = "deepseek-v4-pro", ANTHROPIC_DEFAULT_OPUS_MODEL = "deepseek-v4-pro", ANTHROPIC_DEFAULT_SONNET_MODEL = "deepseek-v4-pro", ANTHROPIC_DEFAULT_HAIKU_MODEL = "deepseek-flash", CLAUDE_CODE_SUBAGENT_MODEL = "deepseek-flash", CLAUDE_CODE_OAUTH_TOKEN = "" }
 
 [rutas.qwen]
 cuenta = "qwen"
+max_parallel = 4
 cli = "qwen"
 argv = ["qwen", "--approval-mode", "yolo", "--output-format", "json", "{prompt}"]

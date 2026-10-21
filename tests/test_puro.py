@@ -599,7 +599,158 @@ class TopesPorMaquinaTest(unittest.TestCase):
         self.assertEqual(len(inicio), 1, "con un lugar libre arranca uno solo")
 
 
+class RevisionGrokModelosTest(unittest.TestCase):
+    """Hallazgos de la revisión de Grok a la elección de modelos (2026-10-21), con sus escenarios."""
+
+    CUENTA = {
+        "sonnet": "anthropic",
+        "opus": "anthropic",
+        "k3": "kimi",
+        "glm": "zai",
+        "grok": "xai",
+        "muse": "meta",
+        "deepseek": "deepseek",
+        "qwen": "qwen",
+    }
+
+    def pol(self, **kw):
+        return m.Policy(
+            implementadores=("sonnet", "k3", "glm", "grok"),
+            revisores=("opus", "k3", "glm", "grok"),
+            cuenta=self.CUENTA,
+            max_parallel={c: 4 for c in set(self.CUENTA.values())},
+            agentes_por_maquina=4,
+            **kw,
+        )
+
+    def intento(self, i, modelo, kind, ts, role="implementar", block="A", sha=""):
+        return [
+            Event(
+                i,
+                ts - 1,
+                "demo",
+                block,
+                "AttemptStarted",
+                {
+                    "n": i,
+                    "role": role,
+                    "modelo": modelo,
+                    "proc": {},
+                    "dir": "d",
+                    "sha": sha,
+                },
+            ),
+            Event(
+                i + 1000,
+                ts,
+                "demo",
+                block,
+                "AttemptEnded",
+                {
+                    "n": i,
+                    "role": role,
+                    "outcome": {"kind": kind, "sha": "a" * 40}
+                    if kind == "entregado"
+                    else {"kind": kind},
+                },
+            ),
+        ]
+
+    def inicios(self, evs, now, **kw):
+        acc = m.decide(m.fold(parse_plan(PLAN), evs), self.pol(), now, **kw)
+        return [a for a in acc if isinstance(a, m.StartAttempt)], [
+            a for a in acc if isinstance(a, m.Notify)
+        ]
+
+    def test_1_el_revisor_de_relevo_sale_de_los_carriles(self):
+        now = time.time()
+        evs = self.intento(1, "grok", "entregado", now - 60) + [
+            Event(5, now, "demo", "A", "Verified", {"sha": "a" * 40, "ok": True}),
+            Event(6, now, "demo", "A", "PrOpened", {"numero": 1}),
+        ]
+        evs += [
+            Event(
+                10 + i, now, "demo", "", "Cooldown", {"cuenta": c, "hasta": now + 3600}
+            )
+            for i, c in enumerate(("anthropic", "kimi", "zai"))
+        ]
+        inicio, _ = self.inicios(evs, now)
+        rev = [a.modelo for a in inicio if a.role == "revisar"]
+        self.assertFalse(
+            set(rev) & {"muse", "deepseek", "qwen"},
+            f"Muse/DeepSeek/Qwen solo si el plan los pide: {rev}",
+        )
+
+    def test_2_esperar_una_cuenta_que_vuelve_sola_no_es_atoro(self):
+        now = time.time()
+        evs = []
+        for i, mo in enumerate(("k3", "k3", "glm", "glm", "grok", "grok")):
+            evs += self.intento(20 + i, mo, "falla", now - 600 + i)
+        evs.append(
+            Event(
+                99,
+                now,
+                "demo",
+                "",
+                "Cooldown",
+                {"cuenta": "anthropic", "hasta": now + 1800},
+            )
+        )
+        _, avisos = self.inicios(evs, now)
+        self.assertNotIn(
+            "atorado:A",
+            [a.key for a in avisos],
+            "Claude vuelve en 30 min: no está atorado",
+        )
+
+    def test_3_la_pausa_de_cuota_de_otro_plan_cuenta(self):
+        now = time.time()
+        inicio, _ = self.inicios([], now, cooldowns_fuera={"anthropic": now + 3600})
+        self.assertNotIn(
+            "sonnet", {a.modelo for a in inicio}, "otro plan ya dejó a Claude sin cupo"
+        )
+
+    def test_4_revisa_que_solo_puede_implementar_se_rechaza(self):
+        from motor.plan import revisa_sin_quien
+
+        tabla = ("sonnet", "k3", "glm", "grok")
+        solo_sonnet = parse_plan(
+            PLAN.replace(
+                "repo: git@github.com:x/app.git\n",
+                "repo: git@github.com:x/app.git\nrevisa: sonnet\n",
+                1,
+            )
+        )
+        self.assertTrue(revisa_sin_quien(solo_sonnet, tabla))
+        con_opus = parse_plan(
+            PLAN.replace(
+                "repo: git@github.com:x/app.git\n",
+                "repo: git@github.com:x/app.git\nrevisa: sonnet, opus\n",
+                1,
+            )
+        )
+        self.assertEqual(revisa_sin_quien(con_opus, tabla), [])
+
+    def test_5_un_corte_tras_una_cuarentena_vencida_no_aparta_a_la_cuenta(self):
+        now = time.time()
+        evs = self.intento(1, "sonnet", "auth", now - 2 * 3600) + self.intento(
+            2, "sonnet", "corte", now - 60
+        )
+        inicio, _ = self.inicios(evs, now)
+        self.assertEqual([a.modelo for a in inicio if a.block == "A"], ["sonnet"])
+
+
 class ConfValidaTest(unittest.TestCase):
+    def test_la_conf_de_ejemplo_trae_los_topes_de_4(self):
+        """Revisión de Grok: sin max_parallel la cuenta queda en 1 y sin agentes_por_maquina no hay tope."""
+        from motor.conf import load_conf
+
+        pol_ = m.Policy.from_conf(
+            load_conf(Path(__file__).resolve().parent.parent / "conf-ejemplo")
+        )
+        self.assertEqual(pol_.agentes_por_maquina, 4)
+        self.assertEqual(set(pol_.max_parallel.values()), {4})
+
     def test_conf_compartida_y_maquinas(self):
         import shutil
 

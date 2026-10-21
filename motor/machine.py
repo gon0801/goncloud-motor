@@ -171,6 +171,7 @@ class Snapshot:
     plan_notices: set[str]
     repos: dict[str, dict]  # repo -> .motor.toml fijado {"sha", "texto"}
     inicio: float = 0.0  # cuándo se cargó el plan (para el resumen de cada hora)
+    intentos_fuera: tuple = ()  # intentos terminados de OTROS planes de la máquina (cuarentena por cuenta)
     limpio: bool = False  # ya se borraron sus ramas y copias de trabajo
 
 
@@ -482,13 +483,14 @@ def _ocupados(snap: Snapshot, policy: Policy) -> dict[str, int]:
 
 def revisores_para(bv: BlockView, policy: Policy) -> tuple[str, ...]:
     """Orden de David (2026-10-20): revisa el carril de revisión (Claude primero); si nadie de
-    ahí puede, cualquier otro modelo conocido. Nunca alguien que trabajó en el bloque."""
+    ahí puede, cualquier otro modelo de los carriles (Muse, Qwen o DeepSeek solo si el plan los pide
+    en `revisa:`; revisión de Grok a MOTOR 01). Nunca alguien que trabajó en el bloque."""
     autores = bv.autores()
     vistos: list[str] = []
     candidatos = (
         policy.revisores
         if policy.revision_fija
-        else (*policy.revisores, *policy.implementadores, *policy.cuenta)
+        else (*policy.revisores, *policy.implementadores)
     )
     for mo in candidatos:
         if mo not in autores and mo not in vistos:
@@ -503,8 +505,10 @@ def _cuarentena(snap: Snapshot, policy: Policy, cuenta: str, now: float) -> bool
     for a in sorted(
         (
             a
-            for bv in snap.blocks.values()
-            for a in bv.attempts
+            for a in (
+                *(a for bv in snap.blocks.values() for a in bv.attempts),
+                *snap.intentos_fuera,
+            )
             if a.ended and policy.cuenta.get(a.modelo, a.modelo) == cuenta
         ),
         key=lambda a: a.ended_at,
@@ -513,6 +517,8 @@ def _cuarentena(snap: Snapshot, policy: Policy, cuenta: str, now: float) -> bool
         falla = relevo.desde_kind(kind)
         if kind in ("entregado", "veredicto"):
             desde = None
+        elif kind in NO_ES_FALLA:
+            continue  # un corte de luz no rearma nada (revisión de Grok a MOTOR 01)
         elif falla is relevo.Falla.AUTH or (
             desde is not None and relevo.rearma_cuarentena(falla)
         ):
@@ -622,10 +628,24 @@ def _mismo_bloqueante_dos_veces(bv: BlockView) -> bool:
 
 
 def decide(
-    snap: Snapshot, policy: Policy, now: float, externos: dict[str, int] | None = None
+    snap: Snapshot,
+    policy: Policy,
+    now: float,
+    externos: dict[str, int] | None = None,
+    cooldowns_fuera: dict[str, float] | None = None,
+    intentos_fuera: tuple = (),
 ) -> list[Action]:
     """`externos`: agentes corriendo en OTROS planes de esta máquina, por cuenta. Los topes son por
-    máquina, no por plan (con dos planes en la Mini, cada uno creía libre la cuenta de Claude)."""
+    máquina, no por plan (con dos planes en la Mini, cada uno creía libre la cuenta de Claude).
+    `cooldowns_fuera` e `intentos_fuera`: la cuota y las credenciales también son de la cuenta, no
+    del plan; si otro plan ya la dejó sin cupo o en cuarentena, este tampoco la usa."""
+    if cooldowns_fuera or intentos_fuera:
+        cd = dict(snap.cooldowns)
+        for c, h in (cooldowns_fuera or {}).items():
+            cd[c] = max(cd.get(c, 0), h)
+        snap = dataclasses.replace(
+            snap, cooldowns=cd, intentos_fuera=tuple(intentos_fuera)
+        )
     policy = policy.para(snap.plan)
     acciones: list[Action] = []
     reservas: dict[str, int] = dict(externos or {})
@@ -822,6 +842,12 @@ def _sin_agente(
                 )
             ]
         return []
+    if any(
+        snap.cooldowns.get(policy.cuenta.get(m, m), 0) > now
+        or _cuarentena(snap, policy, policy.cuenta.get(m, m), now)
+        for m in ladder
+    ):
+        return []  # una cuenta de la escalera vuelve sola con el reloj: es espera, no atoro
     ocupados = _ocupados(snap, policy)
     for k, v in (reservas or {}).items():
         ocupados[k] = ocupados.get(k, 0) + v
