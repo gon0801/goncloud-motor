@@ -55,9 +55,9 @@ d, maquinas, servicio, rutas = Path(sys.argv[1]), sys.argv[2].split(), sys.argv[
 
 def lee(m, n):
     """(json | None, motivo): ssh caído, salida que no es JSON o código raro se dicen en llano."""
-    rc = (d / f"{m}.{n}.rc").read_text().strip()
-    out = (d / f"{m}.{n}").read_text()
-    err = (d / f"{m}.{n}.err").read_text().strip().splitlines()
+    rc = (d / f"{m}.{n}.rc").read_text(errors="replace").strip()
+    out = (d / f"{m}.{n}").read_text(errors="replace")
+    err = (d / f"{m}.{n}.err").read_text(errors="replace").strip().splitlines()
     try:
         return json.loads(out), ""
     except ValueError:
@@ -85,7 +85,7 @@ for m in maquinas:
     else:
         estado.append("doctor ok")
     if servicio:
-        rc = (d / f"{m}.servicio.rc").read_text().strip()
+        rc = (d / f"{m}.servicio.rc").read_text(errors="replace").strip()
         if rc != "0":
             problemas.append(f"{m}: el servicio no está cargado")
         estado.append("servicio " + ("ok" if rc == "0" else "NO"))
