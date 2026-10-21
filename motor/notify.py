@@ -39,6 +39,10 @@ PLANTILLAS = {
         "Lo demás del plan sigue avanzando."
     ),
     "retome": "Se fue la luz o se reinició la máquina; ya retomé solo donde me quedé.",
+    "rechazado": (
+        "No pude tomar este plan: {motivo}\n"
+        "Se lo dije a {por}; tiene que corregirlo y entregarlo otra vez."
+    ),
     "avance": "{listas} de {total} partes listas.\n{ahora}\n{atoron}",
 }
 
@@ -89,6 +93,13 @@ def render(template: str, campos: dict[str, str], maquina: str, titulo: str) -> 
         ):  # el latido nunca se pierde por un título con jerga
             return lint_plain(
                 f"En la {maquina} · {titulo}:\n{c['listas']} de {c.get('total', '?')} partes listas. Sigo trabajando."
+            )
+        if (
+            template == "rechazado"
+        ):  # un rechazo nunca se pierde por un motivo con jerga
+            return lint_plain(
+                f"En la {maquina} · {titulo}:\nNo pude tomar este plan; trae un problema que hay que corregir.\n"
+                f"Pídele a {c.get('por', 'quien te lo dio')} que revise el recibo y lo entregue otra vez."
             )
         if (
             template == "humano"
