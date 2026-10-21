@@ -68,6 +68,10 @@ nuevo; export FAKE_FASE=hecho
 espera "el plan termina sin pasar por a medias: no reinicia" '!0' bash "$C"
 [ "$(cuenta "$FAKE_LOG" 'shutdown')" = 0 ] || fallo "reinició un plan ya terminado"
 
+nuevo; export FAKE_FASE=corriendo
+espera "corriendo sin bloque a medias: no reinicia" '!0' bash "$C"
+[ "$(cuenta "$FAKE_LOG" shutdown)" = 0 ] || fallo "reinició sin bloque a medias"
+
 nuevo; echo a_medias >"$E/gon@mini-fake"; echo a_medias >"$E/gwpc"
 espera "el plan ya está en el motor: no se entrega de nuevo" 0 bash "$C"
 [ "$(cuenta "$FAKE_LOG" 'oc-forja.sh')" = 0 ] || fallo "re-entregó un plan que el motor ya tenía"
