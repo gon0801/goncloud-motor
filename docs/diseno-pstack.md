@@ -31,8 +31,11 @@ pedirla en un plan grande.
 
 1. El motor exige desde el primer día (sin modo "observar"). Para no rechazar trabajo bueno, antes de
    encender la exigencia se mide el registro real de cada CLI en cada máquina y queda como prueba.
-2. Dentro de un encargo ningún agente lanza otros modelos por la terminal (shims que salen con error);
-   delega solo a subagentes de su propio CLI. La variedad de modelos la pone el revisor del motor.
+2. Corrección de David el mismo día: poteto-mode pide paneles de modelos distintos (interrogate, arena,
+   swarm, how, why: "una segunda opinión es el mismo encargo con otro modelo"), así que un agente SÍ
+   puede llamar a otros CLIs de modelos dentro de su encargo. Va contado: cada llamada pasa por un shim
+   del motor que la registra, ocupa un lugar de los topes (4 por máquina, por cuenta) y respeta las
+   pausas de cuota; la llamada anidada no puede llamar a otra (profundidad 1).
 3. El revisor trabaja con poteto-mode más `interrogate` en carriles de código; en fast solo poteto-mode.
 
 ## Forma
@@ -51,8 +54,8 @@ pedirla en un plan grande.
   `{pstack}` y `{sesion}` a las rutas (`--plugin-dir`, `--skills-dir`, sesión fija para leer el
   transcript correcto), escribe el encargo, y en `collect` juzga la huella: si falta algo, kind
   `sin_pstack` con la lista en llano; cuenta como falla del modelo (relevo a las 2).
-- `runwrap`: aplica la puerta en vivo; pone en el PATH del agente shims de los CLIs de agentes que
-  salen con error.
+- `runwrap`: aplica la puerta en vivo; pone en el PATH del agente shims de los CLIs de modelos que
+  dejan pasar la llamada contada (lugar en los topes, cuota de la cuenta, profundidad 1).
 
 ## Plan
 
