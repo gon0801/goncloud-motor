@@ -422,7 +422,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "PrOpened",
             {"numero": pr.numero, "rama": pr.rama},
-            ukey=f"pr:{plan.id}:{a.block}:{pr.numero}",   # tras un merge, el arreglo abre otro PR
+            ukey=f"pr:{plan.id}:{a.block}:{pr.numero}",  # tras un merge, el arreglo abre otro PR
         )
 
     def mark_ready(self, plan: Plan, snap: m.Snapshot, a: m.MarkReady) -> None:
@@ -449,8 +449,13 @@ Escribe en `$MOTOR_RESULT`:
         if v.estado != "mergeado" or v.head != sha:
             # cerrado, o mergeado con OTRO contenido (MOTOR 01, bloque F: se adoptaba el merge viejo y
             # se desplegaba otra vez el código con el error): ese PR ya no sirve, se abre uno nuevo
-            self.cx.store.append(plan.id, block_id, "PrCerrado", {"numero": numero, "estado": v.estado},
-                                 ukey=f"prcerrado:{plan.id}:{block_id}:{numero}")
+            self.cx.store.append(
+                plan.id,
+                block_id,
+                "PrCerrado",
+                {"numero": numero, "estado": v.estado},
+                ukey=f"prcerrado:{plan.id}:{block_id}:{numero}",
+            )
             return True
         self.cx.store.append(
             plan.id,

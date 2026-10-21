@@ -219,7 +219,7 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.checks[d["sha"]] = d
         elif e.kind == "Merged":
             bv.merged.append(d)
-            bv.pr = None   # ese PR ya se usó: un arreglo posterior (p. ej. tras un despliegue fallido) va en uno nuevo
+            bv.pr = None  # ese PR ya se usó: un arreglo posterior (p. ej. tras un despliegue fallido) va en uno nuevo
         elif e.kind == "PrCerrado":
             bv.pr = None
         elif e.kind == "DeployStarted":

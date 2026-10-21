@@ -492,9 +492,14 @@ class TestSoloElMotorMergea(Banco):
         d.fx.cx.gh.estado = "mergeado"
         d.fx.poll_checks(plan, snap, m.PollChecks("A", "b" * 40))
         evs = d.store.events("demo")
-        self.assertFalse([e for e in evs if e.kind == "Merged"], "no se despliega lo que se mergeó antes")
+        self.assertFalse(
+            [e for e in evs if e.kind == "Merged"],
+            "no se despliega lo que se mergeó antes",
+        )
         self.assertEqual([e.data["numero"] for e in evs if e.kind == "PrCerrado"], [7])
-        self.assertIsNone(m.fold(plan, evs).blocks["A"].pr, "el siguiente paso abre un PR nuevo")
+        self.assertIsNone(
+            m.fold(plan, evs).blocks["A"].pr, "el siguiente paso abre un PR nuevo"
+        )
 
     def test_el_encargo_prohibe_mergear(self):
         self.assertIn("PROHIBIDO mergear", (RAIZ / "motor" / "effects.py").read_text())
@@ -506,7 +511,11 @@ class TestConfSeActualizaSola(Banco):
 
     def test_modelo_nuevo_llega_y_una_conf_rota_no(self):
         self.home, _ = sandbox.create(self.tmp / "b")
-        conf, bare, w = self.tmp / "b" / "conf", self.tmp / "conf.git", self.tmp / "conf-w"
+        conf, bare, w = (
+            self.tmp / "b" / "conf",
+            self.tmp / "conf.git",
+            self.tmp / "conf-w",
+        )
         git("clone", "-q", "--bare", str(conf), str(bare))
         git("remote", "add", "origin", str(bare), cwd=conf)
         git("fetch", "-q", "origin", cwd=conf)
@@ -514,46 +523,83 @@ class TestConfSeActualizaSola(Banco):
         d = Daemon(self.home)
         self.assertNotIn("qwen", d.cx.conf.escalera("implementar"))
 
-        modelos = (w / "modelos.toml").read_text().replace('codigo = ["', 'codigo = ["qwen", "', 1)
+        modelos = (
+            (w / "modelos.toml")
+            .read_text()
+            .replace('codigo = ["', 'codigo = ["qwen", "', 1)
+        )
         (w / "modelos.toml").write_text(modelos)
         with open(w / "rutas.toml", "a") as f:
-            f.write('\n[rutas.qwen]\ncuenta = "qwen"\ncli = "qwen"\nargv = ["qwen", "{prompt}"]\n')
-        git("-c", "user.name=a", "-c", "user.email=a@l", "commit", "-qam", "qwen", cwd=w)
+            f.write(
+                '\n[rutas.qwen]\ncuenta = "qwen"\ncli = "qwen"\nargv = ["qwen", "{prompt}"]\n'
+            )
+        git(
+            "-c", "user.name=a", "-c", "user.email=a@l", "commit", "-qam", "qwen", cwd=w
+        )
         git("push", "-q", "origin", "HEAD", cwd=w)
         ahora = time.time()
         d.tick(ahora)
-        self.assertEqual(d.cx.conf.escalera("implementar")[0], "qwen", "el modelo nuevo llegó solo")
+        self.assertEqual(
+            d.cx.conf.escalera("implementar")[0], "qwen", "el modelo nuevo llegó solo"
+        )
 
         with open(w / "rutas.toml", "a") as f:
             f.write('\n[rutas.roto]\ncuenta = "x"\ncli = "x"\nargv = ["x"]\n')
-        git("-c", "user.name=a", "-c", "user.email=a@l", "commit", "-qam", "roto", cwd=w)
+        git(
+            "-c", "user.name=a", "-c", "user.email=a@l", "commit", "-qam", "roto", cwd=w
+        )
         git("push", "-q", "origin", "HEAD", cwd=w)
         sha_bueno = d.cx.conf.sha
         d.tick(ahora + 10)
         d.tick(ahora + 901)
-        self.assertEqual(d.cx.conf.sha, sha_bueno, "una conf que no pasa la validación no se aplica")
+        self.assertEqual(
+            d.cx.conf.sha, sha_bueno, "una conf que no pasa la validación no se aplica"
+        )
         self.assertNotIn("roto", d.cx.conf.rutas)
         evs = Store(self.home / "motor.db").events()
         self.assertEqual(len([e for e in evs if e.kind == "ConfRechazada"]), 1)
-        self.assertTrue(list((self.home / "avisos" / "pendientes").glob("*confmala*")), "se avisa una vez")
+        self.assertTrue(
+            list((self.home / "avisos" / "pendientes").glob("*confmala*")),
+            "se avisa una vez",
+        )
         d.tick(ahora + 1900)
-        self.assertEqual(len([e for e in Store(self.home / "motor.db").events() if e.kind == "ConfRechazada"]), 1)
+        self.assertEqual(
+            len(
+                [
+                    e
+                    for e in Store(self.home / "motor.db").events()
+                    if e.kind == "ConfRechazada"
+                ]
+            ),
+            1,
+        )
 
 
 class TestArregloTrasDespliegueFallido(Banco):
     def test_el_arreglo_va_en_un_pr_nuevo_y_se_despliega_lo_arreglado(self):
         """MOTOR 01, bloque F: el despliegue falló tras el merge, el arreglo quedó en la rama y el motor
         siguió usando el PR ya mergeado; desplegaba otra vez el código viejo, en ciclo, casi 3 horas."""
-        self.arranca(codigo=("glm", "grok"), modos={"glm": "despliegue_roto_primero", "grok": "ok"})
+        self.arranca(
+            codigo=("glm", "grok"),
+            modos={"glm": "despliegue_roto_primero", "grok": "ok"},
+        )
         self.termina()
         evs = eventos(self.home)
         prs = [e.data["numero"] for e in evs if e.kind == "PrOpened" and e.block == "D"]
         merges = [e for e in evs if e.kind == "Merged" and e.block == "D"]
-        despliegues = [e.data["ok"] for e in evs if e.kind == "Deployed" and e.block == "D"]
+        despliegues = [
+            e.data["ok"] for e in evs if e.kind == "Deployed" and e.block == "D"
+        ]
         self.assertEqual(len(set(prs)), 2, "el arreglo va en un PR nuevo")
-        self.assertEqual(len({mg.data["commit"] for mg in merges}), 2, "y se mergea de verdad")
-        self.assertEqual(despliegues, [False, True], "el segundo despliegue ya lleva el arreglo")
-        self.assertFalse([e for e in evs if e.kind == "Merged" and e.data.get("externo")])
+        self.assertEqual(
+            len({mg.data["commit"] for mg in merges}), 2, "y se mergea de verdad"
+        )
+        self.assertEqual(
+            despliegues, [False, True], "el segundo despliegue ya lleva el arreglo"
+        )
+        self.assertFalse(
+            [e for e in evs if e.kind == "Merged" and e.data.get("externo")]
+        )
 
 
 class TestFallas(Banco):
