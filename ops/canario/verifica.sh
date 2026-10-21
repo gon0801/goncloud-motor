@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Espera el final de la prueba de fuego (tope de 3 h) y sale 0 solo si, en CADA máquina (claw/Mini y
-# Hermi/PC), el plan canario terminó; hay un PR y un merge por bloque de código y su prueba real;
+# Hermi/PC), el plan canario terminó; hay un PR y un merge por bloque de código (un Merged `ya_en_base` vale por los dos) y su prueba real;
 # el paso humano quedó hecho; el reinicio quedó anotado como corte (no como falla); y llegaron por
 # el bot de esa marca el aviso de cada bloque, el de «retomé» y el de «terminé». La Mac no cuenta.
 # Si una máquina está reiniciándose, el ssh falla y simplemente se vuelve a mirar.
@@ -78,7 +78,7 @@ for m in maquinas:
             if not v["humano_hecho"]:
                 faltan.append(f"{n}: el paso humano {b} no se detectó")
             continue
-        if v["prs"] < 1:
+        if v["prs"] < 1 and not v["ya_en_base"]:
             faltan.append(f"{n}: el bloque {b} no tiene PR")
         if v["merges"] < 1:
             faltan.append(f"{n}: el bloque {b} no tiene merge")
