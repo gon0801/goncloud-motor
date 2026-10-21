@@ -16,7 +16,11 @@ def boot_id_sistema() -> str:
     except OSError:
         pass
     r = subprocess.run(
-        ["sysctl", "-n", "kern.boottime"],
+        [
+            "/usr/sbin/sysctl",
+            "-n",
+            "kern.boottime",
+        ],  # ruta fija: el PATH del servicio no trae /usr/sbin
         capture_output=True,
         text=True,
         errors="replace",
