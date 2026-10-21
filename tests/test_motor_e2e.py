@@ -666,6 +666,49 @@ class TestSondaLenta(Banco):
             ef.SONDA_CADA_S = viejo
 
 
+class TestEnvDeLaMaquina(Banco):
+    def test_el_motor_clona_con_el_alias_de_la_maquina(self):
+        """MOTOR 01: la Mini rechazó el plan canario porque su llave por omisión no entra a GitHub;
+        con GIT_CONFIG_* en maquina.toml el motor reescribe la dirección al alias que sí entra."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        app = str(self.tmp / "b" / "app.git")
+        with open(self.home / "maquina.toml", "a", encoding="utf-8") as f:
+            f.write(
+                f'GIT_CONFIG_COUNT = "1"\nGIT_CONFIG_KEY_0 = "url.{app}.insteadOf"\n'
+                'GIT_CONFIG_VALUE_0 = "alias-falso:app"\n'
+            )
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                f"repo: {app}", "repo: alias-falso:app", 1
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        viejo = {
+            k: os.environ.get(k)
+            for k in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")
+        }
+        try:
+            d = Daemon(self.home)
+            d.ingest_inbox()
+            self.assertEqual(
+                [p.id for p in d.plans()],
+                ["demo"],
+                "el plan se tomó: el clon usó el alias",
+            )
+        finally:
+            for k, v in viejo.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})

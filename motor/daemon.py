@@ -45,6 +45,10 @@ class Daemon:
     def __init__(self, home: Path, checks_cada_s: float | None = None):
         self.home = home
         self.maquina = load_maquina(home)
+        # El env de la máquina vale también para el propio motor (git, verificar, desplegar), no solo
+        # para los agentes. MOTOR 01: la Mini entra a GitHub por el alias github-claw y su motor no
+        # podía clonar; su maquina.toml lo resuelve con GIT_CONFIG_* (url.<alias>.insteadOf).
+        os.environ.update(dict(self.maquina.env))
         self.store = Store(home / "motor.db")
         conf = load_conf(self.maquina.conf)
         av = conf.avisos
