@@ -81,9 +81,17 @@ contiene "lo dice" "$S/salida" "aprobada"
 for maq in mini pc; do
   bien; home "$S/$maq/.motor" ya_en_base=B
   espera "$maq con un Merged ya_en_base y sin PR vale" 0 bash "$V"
+  if grep -qF "un PR y un merge por bloque" "$S/salida"; then
+    fallo "$maq: el mensaje de aprobación afirma un PR por bloque y hubo ya_en_base"
+  fi
   bien; home "$S/$maq/.motor" ya_en_base=B sin_merge=B
   espera "$maq sin PR ni merge no vale" '!0' bash "$V"
 done
+
+# ya_en_base en LAS DOS máquinas: ninguna hizo el PR de verdad -> no aprueba.
+bien; home "$S/mini/.motor" ya_en_base=B; home "$S/pc/.motor" ya_en_base=B
+espera "ya_en_base en las dos máquinas no vale" '!0' bash "$V"
+contiene "dice que no hubo PR real" "$S/salida" "no tiene PR en ninguna máquina"
 
 casos=(
   "sin_pr=B|no tiene PR"
