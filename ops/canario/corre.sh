@@ -121,8 +121,19 @@ entrega() { # entrega <m>: manda plan.md + mensaje por tar y le habla al agente 
   return 0
 }
 
+entrega_directa() { # entrega_directa <m>: si el agente no la dejó tomada, el mismo `motor entrega` de su skill, sin el agente
+  local m=$1 nombre
+  nombre="$(marca "$m")"
+  corre "$m" "$posix entrega \"\$HOME/canario/plan.md\" --home \"\$HOME/.motor\" --json --por $nombre" \
+    "$pc entrega %USERPROFILE%\\canario\\plan.md --home %USERPROFILE%\\.motor --json --por $nombre" >"$d/$m.directa" 2>&1
+}
+
 servicio_arriba() { # servicio_arriba <m>
   corre "$1" "launchctl print system/$SERVICIO_MAC" "schtasks /query /tn $TAREA_PC" >/dev/null 2>&1
+}
+
+puede_reiniciar() { # la Mini necesita `sudo -n` sin contraseña; en la PC `shutdown` va sin más
+  [ "$1" = pc ] || ssh_a "$(host_de mini)" "sudo -n -l shutdown" >/dev/null 2>&1
 }
 
 reinicia() { # reinicia <m>: la orden de reinicio de esa máquina; el ssh se corta al caer, no importa el código
@@ -145,9 +156,14 @@ lleva() { # lleva <m>: todo el recorrido de una máquina; 0 = quedó reiniciada 
     echo "$nombre: entregando el plan por su canal normal"
     entrega "$m" || { echo "$nombre: no pude copiarle el plan (ssh)" >&2; return 3; }
     fase="$(espera_fase "$m" "$TOPE_ENTREGA_S" corriendo a_medias)" || {
-      echo "$nombre: el motor no tomó el plan en ${TOPE_ENTREGA_S}s (fase: $fase). Lo que contestó el agente:" >&2
+      echo "$nombre: el agente no dejó el plan tomado en ${TOPE_ENTREGA_S}s (fase: $fase); corro su mismo \`motor entrega\`. Contestó:" >&2
       tail -n 15 "$d/$m.canal" 2>/dev/null | sed 's/^/    | /' >&2
-      return 4
+      entrega_directa "$m"
+      fase="$(espera_fase "$m" "$TOPE_ENTREGA_S" corriendo a_medias)" || {
+        echo "$nombre: el motor no tomó el plan en ${TOPE_ENTREGA_S}s (fase: $fase). \`motor entrega\` dijo:" >&2
+        tail -n 15 "$d/$m.directa" 2>/dev/null | sed 's/^/    | /' >&2
+        return 4
+      }
     }
   else
     echo "$nombre: el motor ya tiene el plan (fase: $fase); no lo entrego de nuevo"
@@ -163,6 +179,7 @@ lleva() { # lleva <m>: todo el recorrido de una máquina; 0 = quedó reiniciada 
     [ $SECONDS -ge $fin ] && { echo "$nombre: el servicio no está arriba; no reinicio" >&2; return 6; }
     sleep "$SONDEO_S"
   done
+  puede_reiniciar "$m" || { echo "$nombre: no puede reiniciarse sin contraseña (solo una persona: sudoers NOPASSWD para shutdown); no reinicio" >&2; return 7; }
   date -u +%Y-%m-%dT%H:%M:%SZ >"$ESTADO/$m.reiniciada"   # antes de reiniciar: nunca dos veces
   echo "$nombre: reiniciando $m"
   reinicia "$m" >"$d/$m.reinicio" 2>&1
