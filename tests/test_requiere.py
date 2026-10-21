@@ -171,6 +171,34 @@ class EntregaTest(unittest.TestCase):
         self.assertEqual(rec["estado"], "tomado", rec)
         self.assertEqual(len(rec["planes"]), 1)
 
+    def test_entregar_el_plan_con_cambios_lo_reemplaza(self):
+        """INGESTA 01: la prueba real de S corría docker en la Mini. Reentregar el plan corregido
+        decía "tomado" y el motor seguía con el texto viejo."""
+        mq = self.home / "maquina.toml"
+        mq.write_text('tiene = ["ssh-goncloud"]\n' + mq.read_text())
+        self.entrega()
+        self.assertEqual(self.entrega()["estado"], "tomado")
+
+        def cargas():
+            return [
+                e
+                for e in Store(self.home / "motor.db").events()
+                if e.kind == "PlanLoaded"
+            ]
+
+        self.assertEqual(len(cargas()), 1, "el mismo texto otra vez no hace nada")
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                "prueba-real: true", "prueba-real: test -f saludo.txt", 1
+            ),
+            encoding="utf-8",
+        )
+        rec = self.entrega()
+        self.assertEqual(rec["estado"], "tomado", rec)
+        self.assertEqual(len(cargas()), 2)
+        self.assertEqual(len(rec["planes"]), 1)
+        self.assertEqual(rec["planes"][0].blocks[0].prueba_real, "test -f saludo.txt")
+
     def test_otra_capacidad_no_basta(self):
         mq = self.home / "maquina.toml"
         mq.write_text('tiene = ["docker"]\n' + mq.read_text())

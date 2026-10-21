@@ -43,6 +43,16 @@ class Contexto:
     checks_cada_s: float = 60.0
 
 
+RECETA = (
+    "El motor corre cada script de la receta con `bash <script>`, sin argumentos, desde una copia "
+    "del commit mergeado; MOTOR_SHA trae ese commit."
+)
+
+
+def _cola(p: subprocess.CompletedProcess) -> str:
+    return (p.stdout + p.stderr)[-500:].strip()
+
+
 def _run_tope(
     cmd: str, cwd: Path | None, env: dict, timeout: float
 ) -> subprocess.CompletedProcess:
@@ -631,6 +641,7 @@ Escribe en `$MOTOR_RESULT`:
         # La instalación no tiene .git; la copia (worktree) sí. Sin esto,
         # instala-todo.sh hace `git -C "$MOTOR_RAIZ"` y sale 3.
         env["MOTOR_RAIZ"] = str(w)
+        env["MOTOR_SHA"] = commit
         tope = float(self.cx.conf.tiempos.get("despliegue_tope_s", 900))
         if not desplegar:
             ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
@@ -652,9 +663,15 @@ Escribe en `$MOTOR_RESULT`:
                 p = _run_tope(f"bash {paso}", w, env, tope)
                 pasos.append(f"{paso}: salida {p.returncode}")
                 if p.returncode != 0:
+                    # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
+                    # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
                     ok = False
+                    pasos.append(_cola(p))
                     rb = _run_tope(f"bash {rollback}", w, env, tope)
                     pasos.append(f"rollback: salida {rb.returncode}")
+                    if rb.returncode != 0:
+                        pasos.append(_cola(rb))
+                    pasos.append(RECETA)
                     break
             detalle = "\n".join(pasos)
         self.cx.store.append(

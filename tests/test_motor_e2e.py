@@ -953,6 +953,44 @@ class TestDespliegueQueSePasa(Banco):
         self.assertFalse(d.data["ok"])
         self.assertIn("salida 124", d.data["detalle"])
 
+    def test_un_despliegue_fallido_deja_su_salida_y_el_sha(self):
+        """INGESTA 01: desplegar.sh pedía el SHA como argumento y el agente solo veía "salida 1"."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                'escribe: ops/checklist.sh=test "$(cat "$PROD_DIR/version.txt")" = v2',
+                'escribe: ops/checklist.sh=echo "uso: lo vi $MOTOR_SHA" >&2; exit 1',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        (self.home / "login-hecho").write_text("ok")
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(e.kind == "Deployed" for e in eventos(self.home)), tope=150
+            )
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        ev = eventos(self.home)
+        d = [e for e in ev if e.kind == "Deployed"][0]
+        commit = [e for e in ev if e.kind == "Merged" and e.block == "D"][-1].data[
+            "commit"
+        ]
+        self.assertFalse(d.data["ok"])
+        self.assertIn(f"uso: lo vi {commit}", d.data["detalle"])
+        self.assertIn("sin argumentos", d.data["detalle"])
+
 
 class TestTopesEntrePlanes(Banco):
     def test_dos_planes_no_rebasan_el_tope_de_la_cuenta(self):
