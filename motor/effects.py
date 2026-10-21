@@ -161,7 +161,7 @@ class Effects:
             cwd = self.cx.ws.copia(block.repo, a.sha, d / "revision")
             brief = self._brief_revisar(plan, block, a, rc)
             wip = []
-        (d / "brief.md").write_text(brief)
+        (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
         prompt = f"Lee {d / 'brief.md'} y ejecútalo completo sin preguntar nada."
         argv = [
@@ -206,7 +206,7 @@ class Effects:
             *argv,
         ]
         proc = plataforma.lanzar_separado(cmd, cwd, env, d / "runwrap.log")
-        (d / "started").write_text(json.dumps(proc))
+        (d / "started").write_text(json.dumps(proc), encoding="utf-8")
         self.cx.store.append(
             plan.id,
             a.block,
@@ -305,7 +305,7 @@ Escribe en `$MOTOR_RESULT`:
                 "kind": "perdido",
                 "detalle": "el proceso desapareció sin dejar resultado",
             }
-        o = json.loads(oc.read_text())
+        o = json.loads(oc.read_text(encoding="utf-8"))
         c = m.classify(
             o["exit"],
             o["timed_out"],
@@ -335,7 +335,7 @@ Escribe en `$MOTOR_RESULT`:
         if c["kind"] != "terminado":
             return c
         try:
-            res = json.loads((d / "result.json").read_text())
+            res = json.loads((d / "result.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {
                 "kind": "sin_resultado",

@@ -272,16 +272,24 @@ class FakeGitHub:
 
     def _cargar(self) -> dict:
         p = self.d / "github.json"
-        return json.loads(p.read_text()) if p.exists() else {"prs": {}, "checks": {}}
+        return (
+            json.loads(p.read_text(encoding="utf-8"))
+            if p.exists()
+            else {"prs": {}, "checks": {}}
+        )
 
     def _guardar(self, s: dict) -> None:
         tmp = self.d / "github.json.tmp"
-        tmp.write_text(json.dumps(s, indent=1))
+        tmp.write_text(json.dumps(s, indent=1), encoding="utf-8")
         os.replace(tmp, self.d / "github.json")
 
     def _cfg(self, repo: str) -> dict:
         p = self.d / "repos.json"
-        return json.loads(p.read_text()).get(repo, {}) if p.exists() else {}
+        return (
+            json.loads(p.read_text(encoding="utf-8")).get(repo, {})
+            if p.exists()
+            else {}
+        )
 
     def _punta(self, repo: str, rama: str) -> str:
         r = git("ls-remote", repo, f"refs/heads/{rama}")

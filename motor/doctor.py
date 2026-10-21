@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import fallas, plataforma
 from .conf import ConfError, Maquina, Ruta, load_conf, load_maquina
+from .plataforma.windows import argv_windows, env_minimo_windows
 from .servicio import PATH_SERVICIO
 
 ESPERA_S = 60.0
@@ -37,6 +38,7 @@ def entorno_del_servicio(mq: Maquina, ruta: Ruta, result: Path) -> dict[str, str
         ]
     )
     base = {
+        **(env_minimo_windows(os.environ) if os.name == "nt" else {}),
         "HOME": os.environ.get("HOME", ""),
         "PATH": path,
         **dict(mq.env),
@@ -58,7 +60,7 @@ def prueba_de_ruta(mq: Maquina, ruta: Ruta, espera_s: float = ESPERA_S) -> dict:
     with tempfile.TemporaryDirectory(prefix="motor-doctor-") as t:
         d = Path(t)
         brief, result = d / "brief.md", d / "result.json"
-        brief.write_text(ENCARGO + "\n")
+        brief.write_text(ENCARGO + "\n", encoding="utf-8")
         argv = [
             x.format(brief=str(brief), prompt=ENCARGO, result=str(result))
             for x in ruta.argv
@@ -66,6 +68,8 @@ def prueba_de_ruta(mq: Maquina, ruta: Ruta, espera_s: float = ESPERA_S) -> dict:
         if ruta.cli in mq.wsl:
             argv = ["wsl.exe", "-e", *argv]
         env = entorno_del_servicio(mq, ruta, result)
+        if os.name == "nt":
+            argv = argv_windows(argv, env)
         try:
             p = subprocess.Popen(
                 argv,

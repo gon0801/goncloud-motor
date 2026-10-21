@@ -74,12 +74,14 @@ def _git_sha(d: Path) -> str:
 
 
 def load_conf(d: Path) -> Conf:
-    papeles = tomllib.loads((d / "papeles.toml").read_text())["papeles"]
+    papeles = tomllib.loads((d / "papeles.toml").read_text(encoding="utf-8"))["papeles"]
     carriles = {
         k: tuple(v)
-        for k, v in tomllib.loads((d / "modelos.toml").read_text())["carriles"].items()
+        for k, v in tomllib.loads((d / "modelos.toml").read_text(encoding="utf-8"))[
+            "carriles"
+        ].items()
     }
-    raw_rutas = tomllib.loads((d / "rutas.toml").read_text())["rutas"]
+    raw_rutas = tomllib.loads((d / "rutas.toml").read_text(encoding="utf-8"))["rutas"]
     rutas = {
         m: Ruta(
             modelo=m,
@@ -92,7 +94,7 @@ def load_conf(d: Path) -> Conf:
         for m, r in raw_rutas.items()
     }
     general = (
-        tomllib.loads((d / "general.toml").read_text())
+        tomllib.loads((d / "general.toml").read_text(encoding="utf-8"))
         if (d / "general.toml").exists()
         else {}
     )
@@ -120,10 +122,10 @@ def load_conf(d: Path) -> Conf:
         papeles=papeles,
         carriles=carriles,
         rutas=rutas,
-        reglas=(reglas_dir / "encargo.md").read_text()
+        reglas=(reglas_dir / "encargo.md").read_text(encoding="utf-8")
         if (reglas_dir / "encargo.md").exists()
         else "",
-        reglas_revisor=(reglas_dir / "revisor.md").read_text()
+        reglas_revisor=(reglas_dir / "revisor.md").read_text(encoding="utf-8")
         if (reglas_dir / "revisor.md").exists()
         else "",
         tiempos={k: float(v) for k, v in general.get("tiempos", {}).items()},
@@ -197,7 +199,7 @@ def valida_maquina(raw: dict) -> None:
 
 
 def load_maquina(home: Path) -> Maquina:
-    raw = tomllib.loads((home / "maquina.toml").read_text())
+    raw = tomllib.loads((home / "maquina.toml").read_text(encoding="utf-8"))
     valida_maquina(raw)
     return Maquina(
         nombre=raw["nombre"],
@@ -221,7 +223,7 @@ def load_secretos(home: Path) -> dict[str, str]:
     if os.name == "posix" and stat.S_IMODE(p.stat().st_mode) & 0o077:
         raise ConfError("secretos.env tiene permisos abiertos; debe ser 600")
     out = {}
-    for linea in p.read_text().splitlines():
+    for linea in p.read_text(encoding="utf-8").splitlines():
         linea = linea.strip()
         if linea and not linea.startswith("#") and "=" in linea:
             k, v = linea.split("=", 1)
