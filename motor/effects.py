@@ -515,7 +515,9 @@ Escribe en `$MOTOR_RESULT`:
             if "head branch was modified" in str(e).lower():
                 if self.cx.gh.ver(block.repo, t.pr).head == t.sha:
                     # GitHub todavía asienta el PR recién abierto (MOTOR 01, PR #9): misma punta, se reintenta
-                    raise RuntimeError(f"GitHub pidió reintentar el merge: {str(e)[:200]}") from None
+                    raise RuntimeError(
+                        f"GitHub pidió reintentar el merge: {str(e)[:200]}"
+                    ) from None
             elif not es_del_agente(str(e)):
                 # GitHub todavía no lo deja (pruebas requeridas pendientes, política de la rama): no es
                 # culpa del agente. Se reintenta en 5 minutos y, si dura una hora, se avisa.

@@ -484,12 +484,21 @@ class TestSoloElMotorMergea(Banco):
         """MOTOR 01, PR #9: GitHub dijo "Head branch was modified" justo después de abrir el PR, con la
         misma punta; no es tarea del agente."""
         d, plan, snap = self._daemon_con_pr()
-        d.fx.cx.gh.motivo = "GraphQL: Head branch was modified. Review and try the merge again."
+        d.fx.cx.gh.motivo = (
+            "GraphQL: Head branch was modified. Review and try the merge again."
+        )
         with self.assertRaises(RuntimeError):
             d.fx.merge(plan, snap, m.Merge(m.MergeTicket("A", "a" * 40, 7)))
-        self.assertFalse([e for e in d.store.events("demo") if e.kind == "ChecksResult"])
-        d.fx.merge(plan, snap, m.Merge(m.MergeTicket("A", "b" * 40, 7)))   # la punta sí se movió
-        self.assertTrue([e for e in d.store.events("demo") if e.kind == "ChecksResult"], "eso sí vuelve al agente")
+        self.assertFalse(
+            [e for e in d.store.events("demo") if e.kind == "ChecksResult"]
+        )
+        d.fx.merge(
+            plan, snap, m.Merge(m.MergeTicket("A", "b" * 40, 7))
+        )  # la punta sí se movió
+        self.assertTrue(
+            [e for e in d.store.events("demo") if e.kind == "ChecksResult"],
+            "eso sí vuelve al agente",
+        )
 
     def test_merge_hecho_por_fuera_se_adopta(self):
         d, plan, snap = self._daemon_con_pr()
