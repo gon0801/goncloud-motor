@@ -17,8 +17,8 @@ from pathlib import Path
 
 from . import machine as m
 from . import plataforma, relevo
-from .fallas import PROVEEDORES
 from .conf import Conf, Maquina, RepoConf
+from .fallas import PROVEEDORES
 from .github import GitHubPort, MergeRechazado
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
@@ -421,7 +421,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "PrOpened",
             {"numero": pr.numero, "rama": pr.rama},
-            ukey=f"pr:{plan.id}:{a.block}:{pr.numero}",   # tras un merge, el arreglo abre otro PR
+            ukey=f"pr:{plan.id}:{a.block}:{pr.numero}",  # tras un merge, el arreglo abre otro PR
         )
 
     def mark_ready(self, plan: Plan, snap: m.Snapshot, a: m.MarkReady) -> None:
@@ -448,8 +448,13 @@ Escribe en `$MOTOR_RESULT`:
         if v.estado != "mergeado" or v.head != sha:
             # cerrado, o mergeado con OTRO contenido (MOTOR 01, bloque F: se adoptaba el merge viejo y
             # se desplegaba otra vez el código con el error): ese PR ya no sirve, se abre uno nuevo
-            self.cx.store.append(plan.id, block_id, "PrCerrado", {"numero": numero, "estado": v.estado},
-                                 ukey=f"prcerrado:{plan.id}:{block_id}:{numero}")
+            self.cx.store.append(
+                plan.id,
+                block_id,
+                "PrCerrado",
+                {"numero": numero, "estado": v.estado},
+                ukey=f"prcerrado:{plan.id}:{block_id}:{numero}",
+            )
             return True
         self.cx.store.append(
             plan.id,
@@ -510,7 +515,9 @@ Escribe en `$MOTOR_RESULT`:
             if "head branch was modified" in str(e).lower():
                 if self.cx.gh.ver(block.repo, t.pr).head == t.sha:
                     # GitHub todavía asienta el PR recién abierto (MOTOR 01, PR #9): misma punta, se reintenta
-                    raise RuntimeError(f"GitHub pidió reintentar el merge: {str(e)[:200]}") from None
+                    raise RuntimeError(
+                        f"GitHub pidió reintentar el merge: {str(e)[:200]}"
+                    ) from None
             elif not es_del_agente(str(e)):
                 # GitHub todavía no lo deja (pruebas requeridas pendientes, política de la rama): no es
                 # culpa del agente. Se reintenta en 5 minutos y, si dura una hora, se avisa.
@@ -558,6 +565,9 @@ Escribe en `$MOTOR_RESULT`:
             block.repo, commit, self.cx.home / "tmp" / f"despliega-{plan.id}-{a.block}"
         )
         env = self.env_base(dict(rc.prueba_env))
+        # La instalación no tiene .git; la copia (worktree) sí. Sin esto,
+        # instala-todo.sh hace `git -C "$MOTOR_RAIZ"` y sale 3.
+        env["MOTOR_RAIZ"] = str(w)
         if not desplegar:
             ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
         elif (
@@ -601,7 +611,9 @@ Escribe en `$MOTOR_RESULT`:
                 bv.merged[-1]["commit"],
                 self.cx.home / "tmp" / f"prueba-{plan.id}-{a.block}",
             )
-            p = _run(block.prueba_real, w, self.env_base(dict(rc.prueba_env)))
+            env = self.env_base(dict(rc.prueba_env))
+            env["MOTOR_RAIZ"] = str(w)
+            p = _run(block.prueba_real, w, env)
             ok, detalle = p.returncode == 0, (p.stdout + p.stderr)[-500:]
         else:
             ok, detalle = True, "el bloque no declara prueba real"

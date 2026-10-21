@@ -7,28 +7,52 @@ set -uo pipefail
 export LC_ALL=C
 aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$aqui/lib.sh"
-raiz="${MOTOR_RAIZ:-$(cd "$aqui/.." && pwd)}"
+raiz="${MOTOR_INSTALA_RAIZ:-$(cd "$aqui/.." && pwd)}"
 rama="${MOTOR_RAMA:-main}"
 
 # 1. La etiqueta, sobre un SHA que ya está en la rama principal (nunca sobre algo sin mergear).
-git -C "$raiz" fetch -q --tags origin || { echo "no pude traer origin" >&2; exit 3; }
+# Lo de red se reintenta: este repo lo comparte el daemon, que fetcha seguido, y un fetch o un
+# push puede chocar con otro proceso (lock) o con un bache de red. Eso no debe tumbar el despliegue.
+reintenta() { # reintenta <veces> <comando...>
+  local n=$1 i
+  shift
+  for i in $(seq "$n"); do
+    "$@" && return 0
+    [ "$i" -lt "$n" ] && sleep 2
+  done
+  return 1
+}
+
+reintenta 3 git -C "$raiz" fetch -q --force --tags origin || { echo "no pude traer origin" >&2; exit 3; }
 sha="$(git -C "$raiz" rev-parse HEAD)" || exit 3
 if ! git -C "$raiz" merge-base --is-ancestor "$sha" "origin/$rama"; then
   echo "el SHA ${sha:0:12} no está mergeado en origin/$rama: no se etiqueta" >&2
   exit 3
 fi
-if [ -n "$(git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA")" ]; then
+if ! etiqueta_remota="$(reintenta 3 git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA")"; then
+  # Sin respuesta no se sabe si la etiqueta existe: peor que fallar es pisarla o duplicarla.
+  echo "no pude consultar las etiquetas de origin" >&2
+  exit 3
+fi
+if [ -n "$etiqueta_remota" ]; then
   echo "etiqueta $ETIQUETA ya existe en origin: se respeta"
 else
-  git -C "$raiz" tag "$ETIQUETA" "$sha" 2>/dev/null || true
-  git -C "$raiz" push -q origin "refs/tags/$ETIQUETA" || { echo "no pude empujar $ETIQUETA" >&2; exit 3; }
-  echo "etiqueta $ETIQUETA creada en ${sha:0:12}"
+  # Se empuja el SHA verificado, no la etiqueta local: una v1.0.0 local vieja publicaría otro commit.
+  if ! reintenta 3 git -C "$raiz" push -q origin "$sha:refs/tags/$ETIQUETA"; then
+    # Si otro la creó mientras tanto, igual vale: lo que importa es que la etiqueta exista.
+    git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA" | grep -q . \
+      || { echo "no pude empujar $ETIQUETA" >&2; exit 3; }
+    echo "etiqueta $ETIQUETA la creó otro mientras tanto: se respeta"
+  else
+    echo "etiqueta $ETIQUETA creada en ${sha:0:12}"
+  fi
 fi
 
 # 2. Mac y Mini: un script POSIX que corre allá.
 instala_posix() {
-  local m=$1
-  en_posix "$m" "$m" "$ETIQUETA" "$REPO_URL" "$CONF_URL" <<'REMOTO'
+  local m=$1 repo_url=$REPO_URL conf_url=$CONF_URL
+  if [ "$m" = mini ]; then repo_url=$REPO_URL_MINI conf_url=$CONF_URL_MINI; fi
+  en_posix "$m" "$m" "$ETIQUETA" "$repo_url" "$conf_url" <<'REMOTO'
 set -euo pipefail
 m=$1 etiqueta=$2 repo=$3 confurl=$4
 motor="$HOME/motor" conf="$HOME/motor-conf" home="$HOME/.motor"
@@ -44,6 +68,8 @@ git -C "$conf" checkout -q --detach origin/HEAD
 mkdir -p "$home"
 [ -f "$conf/maquinas/$m.toml" ] || { echo "la conf no trae maquinas/$m.toml" >&2; exit 1; }
 cp "$conf/maquinas/$m.toml" "$home/maquina.toml"
+# maquinas/<m>.toml declara la conf en ~/.motor/conf: un enlace la deja ahí sin duplicar el clone.
+ln -sfn "$conf" "$home/conf"
 (cd "$motor" && PYTHONPATH=. $py -m motor conf valida "$conf" >/dev/null && PYTHONPATH=. $py -m motor version >/dev/null)
 
 usuario="$(id -un)"
@@ -76,6 +102,8 @@ instala_pc() {
   ssh_a "$(host_de pc)" "git -C $u\\motor-conf checkout -q --detach origin/HEAD" || return 1
   ssh_a "$(host_de pc)" "if not exist $u\\.motor mkdir $u\\.motor" || return 1
   ssh_a "$(host_de pc)" "copy /y $u\\motor-conf\\maquinas\\pc.toml $u\\.motor\\maquina.toml" >/dev/null || return 1
+  # maquinas/pc.toml declara la conf en .motor\conf: una junction la deja ahí sin duplicar el clone (ni admin).
+  ssh_a "$(host_de pc)" "if not exist $u\\.motor\\conf mklink /j $u\\.motor\\conf $u\\motor-conf" || return 1
   ssh_a "$(host_de pc)" "cd /d $u\\motor && $PC_UV run --python 3.12 python -m motor conf valida $u\\motor-conf" >/dev/null || return 1
   tmp="$(mktemp -d)"
   cat >"$tmp/instalar-servicio.txt" <<TXT

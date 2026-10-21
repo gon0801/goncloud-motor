@@ -158,7 +158,7 @@ class GhGitHub:
                 "--head",
                 rama,
                 "--state",
-                "open",   # un PR ya mergeado o cerrado no se reusa: el arreglo siguiente va en uno nuevo
+                "open",  # un PR ya mergeado o cerrado no se reusa: el arreglo siguiente va en uno nuevo
                 "--json",
                 "number",
             )
@@ -308,8 +308,11 @@ class FakeGitHub:
 
     def abrir_pr(self, repo, rama, base, titulo, cuerpo):
         s = self._cargar()
-        abiertos = [k for k, pr in s["prs"].items()
-                    if k.startswith(f"{repo}#{rama}#") and pr["estado"] == "abierto"]
+        abiertos = [
+            k
+            for k, pr in s["prs"].items()
+            if k.startswith(f"{repo}#{rama}#") and pr["estado"] == "abierto"
+        ]
         k = abiertos[0] if abiertos else f"{repo}#{rama}#{len(s['prs']) + 1}"
         if k not in s["prs"]:
             s["prs"][k] = {

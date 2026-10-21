@@ -192,8 +192,17 @@ class Workspace:
             # Rama ya existente: se trae la base. Tras un merge (squash) lo viejo ya está en la base y el
             # arreglo choca si no; MOTOR 01, bloque F. Si hay conflicto, se deja como estaba y el
             # agente lo resuelve con el motivo que le da el motor.
-            r = git("-c", "user.name=motor", "-c", "user.email=motor@local", "merge", "-q", "--no-edit",
-                    f"origin/{base}", cwd=w)
+            r = git(
+                "-c",
+                "user.name=motor",
+                "-c",
+                "user.email=motor@local",
+                "merge",
+                "-q",
+                "--no-edit",
+                f"origin/{base}",
+                cwd=w,
+            )
             if r.returncode != 0:
                 git("merge", "--abort", cwd=w)
         return w

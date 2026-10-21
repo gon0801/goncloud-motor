@@ -85,21 +85,40 @@ class Daemon:
             return
         self._proxima_conf = now + float(self.cx.conf.tiempos.get("conf_cada_s", 900))
         d = self.maquina.conf
-        if not (d / ".git").exists() or git("fetch", "-q", "origin", cwd=d).returncode != 0:
+        if (
+            not (d / ".git").exists()
+            or git("fetch", "-q", "origin", cwd=d).returncode != 0
+        ):
             return
         rama = git("rev-parse", "--abbrev-ref", "HEAD", cwd=d).stdout.strip()
         antes = git("rev-parse", "HEAD", cwd=d).stdout.strip()
-        nueva = git("rev-parse", "-q", "--verify", f"origin/{rama}", cwd=d).stdout.strip()
-        if not nueva or nueva == antes or git("merge-base", "--is-ancestor", nueva, antes, cwd=d).returncode == 0:
+        nueva = git(
+            "rev-parse", "-q", "--verify", f"origin/{rama}", cwd=d
+        ).stdout.strip()
+        if (
+            not nueva
+            or nueva == antes
+            or git("merge-base", "--is-ancestor", nueva, antes, cwd=d).returncode == 0
+        ):
             return
         if git("merge", "-q", "--ff-only", f"origin/{rama}", cwd=d).returncode != 0:
-            return   # la copia de esta máquina tiene cambios propios: no se pisa
+            return  # la copia de esta máquina tiene cambios propios: no se pisa
         from .__main__ import conf_valida
+
         errores = conf_valida(d)
         if errores:
             git("reset", "-q", "--hard", antes, cwd=d)
-            if self.store.append("", "", "ConfRechazada", {"sha": nueva, "errores": errores[:5]}, ukey=f"confmala:{nueva}"):
-                self.cx.notifier.encola(f"confmala:{nueva[:12]}", render("conf_mala", {}, self.maquina.nombre, "Motor de planes"))
+            if self.store.append(
+                "",
+                "",
+                "ConfRechazada",
+                {"sha": nueva, "errores": errores[:5]},
+                ukey=f"confmala:{nueva}",
+            ):
+                self.cx.notifier.encola(
+                    f"confmala:{nueva[:12]}",
+                    render("conf_mala", {}, self.maquina.nombre, "Motor de planes"),
+                )
 
     def recargar_conf(self) -> None:
         conf = load_conf(self.maquina.conf)
