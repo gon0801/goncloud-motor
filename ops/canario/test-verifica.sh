@@ -64,7 +64,7 @@ env.mkdir(parents=True)
 (h / "avisos" / "pendientes").mkdir()
 nombres = [f"canario_entregado_{b}" for b in "ABC"] + ["canario_terminado_canario", "canario_retome_boot1"]
 for n in nombres:
-    if n.split("canario_", 1)[1] != e("sin_aviso"):
+    if e("sin_aviso") != "todos" and n.split("canario_", 1)[1] != e("sin_aviso"):
         (env / f"1000-{n}.txt").write_text("En la Mini · canario:\nListo", encoding="utf-8")
 if e("pendiente") == "1":
     (h / "avisos" / "pendientes" / "2000-canario_avance_1.txt").write_text("x", encoding="utf-8")
@@ -95,6 +95,16 @@ for maq in mini pc; do
     espera "$maq con ${c%%|*}" '!0' bash "$V"
     contiene "dice qué falta" "$S/salida" "${c##*|}"
   done
+done
+
+# Avisos de OTRO plan de la máquina no cuentan: sin los del canario, no llegó ninguno.
+for maq in mini pc; do
+  bien; home "$S/$maq/.motor" sin_aviso=todos
+  for n in entregado_A entregado_B entregado_C terminado_viejo retome_boot0; do
+    touch "$S/$maq/.motor/avisos/enviados/1000-viejo_$n.txt"
+  done
+  espera "$maq con avisos solo de otro plan" '!0' bash "$V"
+  contiene "dice que no llegó" "$S/salida" "no llegó el aviso"
 done
 
 bien; rm -rf "$S/mini/.motor"; mkdir -p "$S/mini/.motor"

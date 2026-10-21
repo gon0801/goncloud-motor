@@ -68,11 +68,12 @@ enviados, pendientes = nombres("enviados"), nombres("pendientes")
 
 
 def llego(fragmento):
-    return any(re.search(fragmento, n) for n in enviados)
+    # Solo los avisos de ESTE plan: el Notifier nombra cada archivo '<ms>-<plan>_<clave>.txt'.
+    return any(re.search(rf"^\d+-{re.escape(plan)}_{fragmento}", n) for n in enviados)
 
 
 avisos = {f"entregado_{b}": llego(rf"entregado_{re.escape(b)}\.txt$") for b in codigo}
-avisos["terminado"] = llego(r"terminado_")
+avisos["terminado"] = llego(rf"terminado_{re.escape(plan)}\.txt$")
 avisos["retome"] = llego(r"retome_")
 
 print(
