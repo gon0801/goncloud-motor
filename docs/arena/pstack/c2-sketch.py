@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 # =============================================================================
@@ -44,7 +44,9 @@ class PstackPin:
 # Un adaptador faltante no es error (Claude no necesita tabla); uno sobrante para un cli sin ruta sí.
 
 
-def valida_pstack(raw: dict, pasos_requeridos: tuple[str, ...], pasos_presentes: tuple[str, ...]) -> list[str]:
+def valida_pstack(
+    raw: dict, pasos_requeridos: tuple[str, ...], pasos_presentes: tuple[str, ...]
+) -> list[str]:
     """Errores de `pstack.toml` y de `reglas/pasos/`. Lo usa `motor conf valida` y `load_conf`."""
     raise NotImplementedError
 
@@ -74,7 +76,9 @@ class Documento:
     """El paso deja un archivo en la carpeta del intento con la forma de su template."""
 
     archivo: str  # "how.md" | "design.md"
-    secciones: tuple[str, ...]  # encabezados que deben estar (los del template de la hoja)
+    secciones: tuple[
+        str, ...
+    ]  # encabezados que deben estar (los del template de la hoja)
     cita_rutas: bool  # toda ruta entre acentos graves debe existir en el repo
     min_lineas: int
 
@@ -104,12 +108,16 @@ Entrega = Documento | Commits | Repro | Veredicto
 @dataclass(frozen=True)
 class Paso:
     id: str
-    hojas: tuple[str, ...]  # rutas dentro de <pstack>/ que se pegan verbatim en el brief
+    hojas: tuple[
+        str, ...
+    ]  # rutas dentro de <pstack>/ que se pegan verbatim en el brief
     escribe: bool  # trabaja en la carpeta del bloque (True) o en una copia de solo lectura (False)
     entrega: Entrega
     por: Por = Por.RONDA
     candidatos: int = 1  # delegados en paralelo; el paso queda hecho con >= 1 válido cuando todos terminaron
-    insumos: tuple[str, ...] = ()  # ids de pasos previos cuyas entregas válidas se le dan por ruta
+    insumos: tuple[
+        str, ...
+    ] = ()  # ids de pasos previos cuyas entregas válidas se le dan por ruta
 
 
 @dataclass(frozen=True)
@@ -157,7 +165,12 @@ FUNDAR = Paso(
     _HOW,
     escribe=False,
     por=Por.BLOQUE,
-    entrega=Documento("how.md", ("Overview", "Key Concepts", "How It Works", "Where Things Live", "Gotchas"), True, 30),
+    entrega=Documento(
+        "how.md",
+        ("Overview", "Key Concepts", "How It Works", "Where Things Live", "Gotchas"),
+        True,
+        30,
+    ),
 )
 DISENAR = Paso(
     "disenar",
@@ -168,27 +181,82 @@ DISENAR = Paso(
     insumos=("fundar",),
     entrega=Documento(
         "design.md",
-        ("Problem", "Usage", "Shape", "Tradeoffs accepted", "Alternatives considered", "Open questions and risks", "Next implementation step"),
+        (
+            "Problem",
+            "Usage",
+            "Shape",
+            "Tradeoffs accepted",
+            "Alternatives considered",
+            "Open questions and risks",
+            "Next implementation step",
+        ),
         True,
         40,
     ),
 )
 REPRODUCIR = Paso("reproducir", (), escribe=False, por=Por.BLOQUE, entrega=Repro())
-IMPLEMENTAR = Paso("implementar", _IMPLEMENTA, escribe=True, insumos=("fundar", "disenar", "reproducir"), entrega=Commits())
-IMPLEMENTAR_TDD = Paso("implementar", (*_IMPLEMENTA, "skills/tdd/SKILL.md"), escribe=True, insumos=("fundar", "reproducir"), entrega=Commits())
-PULIR = Paso("pulir", _PULE, escribe=True, insumos=("disenar",), entrega=Commits(puede_no_mover=True))
-REDACTAR = Paso("redactar", ("skills/unslop/SKILL.md", "skills/technical-writing/SKILL.md"), escribe=True, entrega=Commits())
-REVISAR = Paso("revisar", _REVISA, escribe=False, insumos=("fundar", "disenar"), entrega=Veredicto())
+IMPLEMENTAR = Paso(
+    "implementar",
+    _IMPLEMENTA,
+    escribe=True,
+    insumos=("fundar", "disenar", "reproducir"),
+    entrega=Commits(),
+)
+IMPLEMENTAR_TDD = Paso(
+    "implementar",
+    (*_IMPLEMENTA, "skills/tdd/SKILL.md"),
+    escribe=True,
+    insumos=("fundar", "reproducir"),
+    entrega=Commits(),
+)
+PULIR = Paso(
+    "pulir",
+    _PULE,
+    escribe=True,
+    insumos=("disenar",),
+    entrega=Commits(puede_no_mover=True),
+)
+REDACTAR = Paso(
+    "redactar",
+    ("skills/unslop/SKILL.md", "skills/technical-writing/SKILL.md"),
+    escribe=True,
+    entrega=Commits(),
+)
+REVISAR = Paso(
+    "revisar",
+    _REVISA,
+    escribe=False,
+    insumos=("fundar", "disenar"),
+    entrega=Veredicto(),
+)
 
 JUGADAS: dict[str, Jugada] = {
-    "docs": Jugada("docs", (REDACTAR,), "poteto-mode: Non-negotiables (prosa -> unslop, docs -> technical-writing)"),
-    "feature": Jugada("feature", (FUNDAR, DISENAR, IMPLEMENTAR, PULIR), "poteto-mode/playbooks/feature.md pasos 1, 2, 4, 6 y Opening a PR (deslop, no-comments)"),
-    "bug-fix": Jugada("bug-fix", (REPRODUCIR, FUNDAR, IMPLEMENTAR_TDD, PULIR), "poteto-mode/playbooks/bug-fix.md pasos 1, 2, 3, 5"),
-    "revision": Jugada("revision", (REVISAR,), "interrogate pasos 3 y 5, un revisor que también es lead"),
+    "docs": Jugada(
+        "docs",
+        (REDACTAR,),
+        "poteto-mode: Non-negotiables (prosa -> unslop, docs -> technical-writing)",
+    ),
+    "feature": Jugada(
+        "feature",
+        (FUNDAR, DISENAR, IMPLEMENTAR, PULIR),
+        "poteto-mode/playbooks/feature.md pasos 1, 2, 4, 6 y Opening a PR (deslop, no-comments)",
+    ),
+    "bug-fix": Jugada(
+        "bug-fix",
+        (REPRODUCIR, FUNDAR, IMPLEMENTAR_TDD, PULIR),
+        "poteto-mode/playbooks/bug-fix.md pasos 1, 2, 3, 5",
+    ),
+    "revision": Jugada(
+        "revision",
+        (REVISAR,),
+        "interrogate pasos 3 y 5, un revisor que también es lead",
+    ),
 }
 
 # Toda hoja que nombra la tabla, más lo que `Pstack.materializa` exige para dar la carpeta por buena.
-HOJAS_REQUERIDAS: tuple[str, ...] = tuple(sorted({h for j in JUGADAS.values() for p in j.pasos for h in p.hojas}))
+HOJAS_REQUERIDAS: tuple[str, ...] = tuple(
+    sorted({h for j in JUGADAS.values() for p in j.pasos for h in p.hojas})
+)
 
 
 def jugada_para(block, role: str, revisores_panel: int = 1) -> Jugada:
@@ -222,7 +290,9 @@ def siguiente(jugada: Jugada, bv, role: str) -> tuple[Lanzamiento, ...]:
     raise NotImplementedError
 
 
-def ladder_para(lanz: Lanzamiento, bv, ladder: tuple[str, ...], role: str) -> tuple[str, ...]:
+def ladder_para(
+    lanz: Lanzamiento, bv, ladder: tuple[str, ...], role: str
+) -> tuple[str, ...]:
     """El modelo que ya trabajó esta ronda va primero (menos autores, mismo estilo), la escalera
     después. Para `disenar` con 2 candidatos, el segundo prefiere un modelo distinto del primero."""
     raise NotImplementedError
@@ -282,8 +352,11 @@ def comprueba(
     punta: str,
     sha_inicio: str,
     existe_en_repo: Callable[[str], bool],
-    corre_repro: Callable[[str], int] | None = None,  # exit code en la copia; lo da effects
-    bases_validas: tuple[str, ...] = (),  # "cand-0", "cand-1": a quién puede nombrar el implementador
+    corre_repro: Callable[[str], int]
+    | None = None,  # exit code en la copia; lo da effects
+    bases_validas: tuple[
+        str, ...
+    ] = (),  # "cand-0", "cand-1": a quién puede nombrar el implementador
 ) -> dict:
     """outcome del intento según `paso.entrega`. Agota la unión:
     Documento -> `paso_hecho` o `paso_invalido` ("design.md no trae la sección X" / "cita `a/b.py`, que no existe").
@@ -344,7 +417,11 @@ class Pstack:
 # machine.py (cambios)
 # =============================================================================
 
-EXITOS = ("entregado", "veredicto", "paso_hecho")  # reemplaza los ("entregado", "veredicto") sueltos
+EXITOS = (
+    "entregado",
+    "veredicto",
+    "paso_hecho",
+)  # reemplaza los ("entregado", "veredicto") sueltos
 NO_ES_FALLA = (*EXITOS, "corte")
 
 
@@ -358,7 +435,9 @@ class Attempt:
     started: float
     proc: dict
     dir: str
-    paso: str = "implementar"  # intentos viejos sin paso se leen como el único paso de antes
+    paso: str = (
+        "implementar"  # intentos viejos sin paso se leen como el único paso de antes
+    )
     cand: int = 0
     sha: str = ""
     ended: dict | None = None
