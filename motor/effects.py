@@ -422,7 +422,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "PrOpened",
             {"numero": pr.numero, "rama": pr.rama},
-            ukey=f"pr:{plan.id}:{a.block}",
+            ukey=f"pr:{plan.id}:{a.block}:{pr.numero}",   # tras un merge, el arreglo abre otro PR
         )
 
     def mark_ready(self, plan: Plan, snap: m.Snapshot, a: m.MarkReady) -> None:
@@ -442,9 +442,16 @@ Escribe en `$MOTOR_RESULT`:
         """Si el PR ya está mergeado (alguien lo hizo fuera del motor), se adopta ese merge para que
         el plan siga, se anota quién no debió hacerlo y no se vuelve a esperar pruebas."""
         block = plan.block(block_id)
-        v = self.cx.gh.ver(block.repo, int(snap.blocks[block_id].pr["numero"]))
-        if v.estado != "mergeado":
+        numero = int(snap.blocks[block_id].pr["numero"])
+        v = self.cx.gh.ver(block.repo, numero)
+        if v.estado == "abierto":
             return False
+        if v.estado != "mergeado" or v.head != sha:
+            # cerrado, o mergeado con OTRO contenido (MOTOR 01, bloque F: se adoptaba el merge viejo y
+            # se desplegaba otra vez el código con el error): ese PR ya no sirve, se abre uno nuevo
+            self.cx.store.append(plan.id, block_id, "PrCerrado", {"numero": numero, "estado": v.estado},
+                                 ukey=f"prcerrado:{plan.id}:{block_id}:{numero}")
+            return True
         self.cx.store.append(
             plan.id,
             block_id,

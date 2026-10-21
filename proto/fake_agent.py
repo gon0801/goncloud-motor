@@ -73,6 +73,10 @@ def main() -> int:
             p.write_text(nuevo)
             git("add", "-A")
             git("commit", "-q", "-m", f"{fila}: {ruta}")
+    if modo == "despliegue_roto_primero" and primera and os.environ["MOTOR_BLOCK"] == "D":
+        Path("ops/desplegar.sh").write_text("exit 3\n")   # se mergea, el despliegue falla y hay que arreglar
+        git("add", "-A")
+        git("commit", "-q", "-m", "D.1: desplegar (con un error)")
     if modo == "rompe_primero":
         roto = Path("roto.txt")
         if primera:
