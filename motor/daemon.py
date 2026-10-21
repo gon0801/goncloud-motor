@@ -49,6 +49,12 @@ class Daemon:
         # para los agentes. MOTOR 01: la Mini entra a GitHub por el alias github-claw y su motor no
         # podía clonar; su maquina.toml lo resuelve con GIT_CONFIG_* (url.<alias>.insteadOf).
         os.environ.update(dict(self.maquina.env))
+        # Igual con path_extra: el motor también usa programas de la máquina (gh, git). MOTOR 01: en
+        # la Mini `gh` solo vive en ~/.openclaw/tools/node/bin y el motor no podía abrir PRs.
+        if self.maquina.path_extra:
+            os.environ["PATH"] = os.pathsep.join(
+                [*self.maquina.path_extra, os.environ.get("PATH", "")]
+            )
         self.store = Store(home / "motor.db")
         conf = load_conf(self.maquina.conf)
         av = conf.avisos

@@ -667,6 +667,29 @@ class TestSondaLenta(Banco):
 
 
 class TestEnvDeLaMaquina(Banco):
+    def test_el_motor_usa_el_path_extra_de_la_maquina(self):
+        """MOTOR 01, Mini: `gh` solo está en una carpeta de path_extra; el motor no lo encontraba."""
+        import shutil
+
+        self.home, _ = sandbox.create(self.tmp / "b")
+        binario = self.tmp / "solo-esta-maquina"
+        binario.mkdir()
+        (binario / "gh-de-prueba").write_text("#!/bin/sh\n", encoding="utf-8")
+        (binario / "gh-de-prueba").chmod(0o755)
+        texto = (self.home / "maquina.toml").read_text(encoding="utf-8")
+        (self.home / "maquina.toml").write_text(
+            texto.replace("[env]", f'path_extra = ["{binario}"]\n[env]', 1),
+            encoding="utf-8",
+        )
+        viejo = os.environ.get("PATH", "")
+        try:
+            Daemon(self.home)
+            self.assertEqual(
+                shutil.which("gh-de-prueba"), str(binario / "gh-de-prueba")
+            )
+        finally:
+            os.environ["PATH"] = viejo
+
     def test_el_motor_clona_con_el_alias_de_la_maquina(self):
         """MOTOR 01: la Mini rechazó el plan canario porque su llave por omisión no entra a GitHub;
         con GIT_CONFIG_* en maquina.toml el motor reescribe la dirección al alias que sí entra."""
