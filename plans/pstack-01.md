@@ -3,57 +3,64 @@ autopiloto: motor
 plan: pstack-01
 repo: git@github.com:gon0801/goncloud-motor.git
 
-<!-- Diseño: docs/diseno-pstack.md (y docs/arena/pstack/ con los tres candidatos y los hechos medidos).
-Decisiones de David 2026-10-21: (1) el motor exige desde el primer día, por eso C mide el registro real
-de cada CLI en cada máquina ANTES de encender la exigencia en E; (2) un agente sí puede llamar a otros
-modelos para sus paneles (poteto-mode los pide), contado por el motor; (3) el revisor usa poteto-mode + interrogate en carriles de código. Máquinas: Mac
-(local, home ~/.motor), Mini (ssh gon@100.73.187.5), PC (ssh gwpc; Muse dentro de WSL). Nada se
-instala a mano en las máquinas: pstack llega dentro de la conf compartida. -->
+<!-- Diseño completo: docs/diseno-pstack.md. Los tres candidatos y los hechos medidos están en docs/arena/pstack/.
+
+Qué cambia: hoy ningún agente del motor usa poteto-mode, ni siquiera en la Mac. Este plan hace tres cosas.
+Pone una copia fija de pstack dentro de la conf compartida, para que llegue igual a la Mac, la Mini y la PC.
+Le dice a cada agente cómo trabajar con poteto-mode. Y comprueba en el registro real de cada intento que lo hizo.
+
+Decisiones de David (2026-10-21):
+1. El motor exige poteto-mode desde el primer día. Por eso el bloque C mide el registro real de cada CLI en cada máquina antes de que el bloque E encienda la exigencia.
+2. Un agente puede llamar a otros modelos para sus paneles, porque poteto-mode los pide (interrogate, arena, swarm). El motor cuenta cada llamada en los topes y en la cuota.
+3. El revisor usa poteto-mode e interrogate en los carriles de código. En el carril fast usa solo poteto-mode.
+
+Máquinas: la Mac (local, motor en ~/.motor), la Mini (ssh gon@100.73.187.5) y la PC (ssh gwpc; Muse corre dentro de WSL).
+No instales nada a mano en ninguna máquina. -->
 
 ## Bloque A — pstack fijo dentro de la conf compartida
 lane: gate
 depende: -
 repo: git@github.com:gon0801/goncloud-motor-conf.git
-aviso: pstack quedó en la configuración compartida, en una versión fija, igual para las tres máquinas
+aviso: pstack ya está en la configuración compartida, en una versión fija e igual para las tres máquinas
 prueba-real: python3 scripts/trae_pstack.py --comprueba
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
-| A.1 | `scripts/trae_pstack.py <sha>`: baja cursor/plugins en ese commit (el mismo origen y transformación que `~/bin/sincronizar-pstack.sh` de la Mac: `disable-model-invocation: false`, nombres de carpeta) a `pstack/`; `--comprueba` lo regenera en una carpeta temporal y compara byte a byte (sale ≠0 si alguien editó la copia). Correrlo con el commit que hoy usa la Mac (`~/.agents/pstack-oficial`, `git -C … rev-parse HEAD`). | python3 scripts/trae_pstack.py --comprueba |
-| A.2 | `pstack-motor/motor.md`: lo que manda sobre poteto-mode dentro de un encargo del motor (el agente no abre, marca listo ni mergea PRs: commit y push a su rama; Babysit y Shipping no aplican; no hay pausas ni preguntas, el plan es la autorización; desplegar es del motor; para paneles de otros modelos llama a sus CLIs, y el motor cuenta esas llamadas). Y un mapa por CLI en `pstack-motor/<cli>.md` (claude, kimi, opencode, grok, muse, qwen) con cómo carga una skill y cómo lanza un subagente en ese CLI, medido con `--help` (no inventar flags). | test -f pstack-motor/motor.md -a -f pstack-motor/claude.md -a -f pstack-motor/kimi.md -a -f pstack-motor/opencode.md -a -f pstack-motor/grok.md -a -f pstack-motor/muse.md -a -f pstack-motor/qwen.md |
-| A.3 | `pstack.toml`: `[pstack] commit = "<sha>"`, `exigir = false` (se enciende en E) y `[exigencia]` por carril × papel: en todos, cargar poteto-mode; `codigo`/`gate`/`release` implementar: abrir un playbook; revisar en gate/release: además cargar `interrogate`; `min_subagentes = 0` en todas las celdas (se sube después de medir costo); fast: solo cargar poteto-mode. | python3 -c "import tomllib;t=tomllib.load(open('pstack.toml','rb'));assert t['pstack']['commit'] and t['pstack']['exigir'] is False and t['exigencia']" |
+| A.1 | Escribe `scripts/trae_pstack.py <commit>`. El script baja cursor/plugins en ese commit a la carpeta `pstack/` y aplica la misma transformación que `~/bin/sincronizar-pstack.sh` de la Mac (`disable-model-invocation: false` y los nombres de carpeta). Con `--comprueba`, el script regenera la copia en una carpeta temporal, la compara byte a byte con `pstack/` y sale ≠0 si son distintas. Usa el commit que tiene hoy la Mac: `git -C ~/.agents/pstack-oficial rev-parse HEAD`. | python3 scripts/trae_pstack.py --comprueba |
+| A.2 | Escribe `pstack-motor/motor.md` con lo que manda sobre poteto-mode dentro de un encargo del motor. El agente nunca abre, marca listo ni mergea un PR: hace commit y push a su rama. Los playbooks Babysit y Shipping no aplican. El agente no pausa ni pregunta, porque el plan es la autorización. El despliegue lo hace el motor. Para un panel de otros modelos, el agente llama al CLI de ese modelo y el motor cuenta la llamada. Escribe también un mapa por CLI en `pstack-motor/<cli>.md` (claude, kimi, opencode, grok, muse y qwen). Cada mapa dice cómo carga una skill ese CLI y cómo lanza un subagente. Saca cada flag de `<cli> --help`; no inventes flags. | test -f pstack-motor/motor.md -a -f pstack-motor/claude.md -a -f pstack-motor/kimi.md -a -f pstack-motor/opencode.md -a -f pstack-motor/grok.md -a -f pstack-motor/muse.md -a -f pstack-motor/qwen.md |
+| A.3 | Escribe `pstack.toml` con tres partes. `[pstack] commit` es el commit de A.1. `exigir = false`, porque el bloque E la enciende. `[exigencia]` es la tabla de exigencias por carril y papel: en todas las celdas, cargar poteto-mode; al implementar en gate y release, además abrir un playbook; al revisar en gate y release, además cargar interrogate; en fast, solo cargar poteto-mode. Pon `min_subagentes = 0` en todas las celdas; se sube después de medir el costo. | python3 -c "import tomllib;t=tomllib.load(open('pstack.toml','rb'));assert t['pstack']['commit'] and t['pstack']['exigir'] is False and t['exigencia']" |
 
-## Bloque B — el motor pide, verifica y hace cumplir
+## Bloque B — el motor pide y comprueba poteto-mode
 lane: gate
 depende: -
 aviso: el motor ya sabe pedirle a cada agente que use poteto-mode y comprobarlo en su registro real
 prueba-real: python3 -m unittest tests.test_pstack tests.test_motor_e2e
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
-| B.1 | `motor/pstack.py` puro: `Huella` (skills cargadas, playbook abierto, lista de tareas, subagentes, comandos) sacada del registro real del intento, nunca de lo que el agente dice; tabla `FORMATOS` con una fila por CLI (cómo se ve cargar una skill —herramienta `Skill`/`skill`/`read_skill` o lectura de `…/poteto-mode/SKILL.md` de la copia fija—, lanzar subagente y correr comando); `huella(fuente, formato)`, `juzga(huella, exigencia) -> Cumple \| Falta(lista en llano)`, `puerta(eventos, n)` (sin poteto-mode a la acción 6 → cortar), `instrucciones(exigencia, cli)` (texto de "Cómo trabajas" del encargo). Fuente por CLI según docs/arena/pstack/hechos.md §4: Claude el transcript de su `--session-id` fijo; Kimi y opencode (`--format json`) el `log.txt`; Grok su `updates.jsonl`; Muse su `session.jsonl`; Qwen su `--json-file`. Registro ilegible = "no verificable": pasa y avisa una vez por CLI y día. Pruebas `tests/test_pstack.py` con registros de ejemplo por CLI. | python3 -m unittest tests.test_pstack |
-| B.2 | `effects`: materializa la copia de pstack de la conf por id de árbol en `~/.motor/pstack/<árbol>/` (atómico, inmutable mientras dura el intento; las viejas se borran con la limpieza de 14 días); agrega a `rutas.toml` los marcadores `{pstack}` y `{sesion}` (uuid por intento); el encargo de implementar y de revisar lleva `motor.md`, el mapa del CLI e `instrucciones(...)`; `collect` juzga la huella si `pstack.exigir` es true: si falta algo, kind `sin_pstack` con la lista (cuenta como falla del modelo; alta en `relevo.DE_KIND`), y deja `huella.json` en la carpeta del intento. Con `exigir = false` no cambia nada de hoy. `motor conf valida` exige `pstack.toml` coherente con la copia. | python3 -m unittest tests.test_pstack tests.test_motor_e2e |
-| B.3 | `runwrap`: aplica la `puerta` en vivo leyendo el registro (corta al agente y deja `puerta` en outcome.json si a la acción 6 no cargó poteto-mode). Llamadas a otros modelos dentro del encargo (paneles de interrogate, arena, swarm): shims de `claude`, `kimi`, `opencode`, `grok`, `muse`, `qwen` en el PATH del agente que dejan pasar la llamada pero CONTADA: la registran como sub-intento (modelo, cuenta, inicio, fin) en la carpeta del intento; el motor la cuenta en los topes (4 por máquina y por cuenta) y en las pausas de cuota de la cuenta; si no hay lugar o la cuenta está en pausa, el shim sale con un mensaje llano ("esa cuenta no tiene lugar ahora; usa otro modelo") en vez de esperar; dentro de la llamada anidada los shims rechazan otra llamada (profundidad 1). Pruebas: un agente falso cuya llamada a otro CLI pasa y cuenta; con la cuenta llena, rechaza; anidada, rechaza. | python3 -m unittest tests.test_motor_e2e |
-| B.4 | Comprobaciones de resultado: (a) si el bloque es un arreglo de bug (`tipo: bug` en el bloque o la palabra "bug" en su título), el result del implementador trae `repro`: el motor lo corre en el SHA base (debe salir ≠0) y en la punta entregada (debe salir 0); si no, kind `sin_repro`. (b) Para cada bloqueante del revisor, el motor corre su `repro` en la copia del SHA revisado; si sale 0 no reprodujo y baja a nota. Pruebas e2e con el GitHub falso. | python3 -m unittest tests.test_motor_e2e |
+| B.1 | Crea `motor/pstack.py` con funciones puras. `huella(fuente, formato)` saca del registro real del intento qué hizo el agente: las skills que cargó, si abrió un playbook, si usó su lista de tareas, los subagentes que lanzó y los comandos que corrió. Nunca uses lo que el agente escribe en su resultado. `juzga(huella, exigencia)` devuelve `Cumple` o `Falta` con la lista de lo que faltó en lenguaje llano. `puerta(eventos, n)` dice si hay que cortar al agente: si a la acción 6 no cargó poteto-mode, se corta. `instrucciones(exigencia, cli)` escribe la sección "Cómo trabajas" del encargo. La tabla `FORMATOS` tiene una fila por CLI. Cada fila dice cómo se ve en su registro cargar una skill, lanzar un subagente y correr un comando. Cargar una skill cuenta de dos formas: por la herramienta de skills del CLI (`Skill`, `skill` o `read_skill`) o por leer `…/poteto-mode/SKILL.md` de la copia fija. La fuente del registro de cada CLI está en `docs/arena/pstack/hechos.md`, sección 4. Si el registro no se puede leer, el resultado es "no verificable": la entrega pasa y el motor avisa una vez por CLI y por día. Pruebas en `tests/test_pstack.py` con un registro de ejemplo por CLI. | python3 -m unittest tests.test_pstack |
+| B.2 | En `motor/effects.py`: materializa la copia fija de pstack en `~/.motor/pstack/<id de árbol>/`, con un rename atómico. La copia no cambia mientras dura un intento. La limpieza de 14 días borra las copias viejas. Agrega los marcadores `{pstack}` y `{sesion}` a las rutas de `rutas.toml`; `{sesion}` es un uuid por intento. El encargo de implementar y el de revisar llevan `motor.md`, el mapa del CLI y la sección "Cómo trabajas". Si `pstack.exigir` es true, `collect` juzga la huella. Si falta algo, el resultado es el kind `sin_pstack` con la lista de lo que faltó. `sin_pstack` cuenta como falla del modelo: agrégalo a `relevo.DE_KIND`. Guarda `huella.json` en la carpeta del intento. Con `exigir = false`, el motor se comporta igual que hoy. `motor conf valida` exige que `pstack.toml` coincida con la copia fija. | python3 -m unittest tests.test_pstack tests.test_motor_e2e |
+| B.3 | En `motor/runwrap.py`: aplica la puerta en vivo. Si el agente llega a la acción 6 sin cargar poteto-mode, córtalo y deja `puerta` en `outcome.json`. Pon en el PATH del agente un shim por cada CLI de modelos (`claude`, `kimi`, `opencode`, `grok`, `muse` y `qwen`). El shim deja pasar la llamada y la cuenta. Registra cada llamada en la carpeta del intento: modelo, cuenta, inicio y fin. El motor cuenta esas llamadas en los topes (4 por máquina y 4 por cuenta) y respeta las pausas de cuota de la cuenta. Si la cuenta no tiene lugar o está en pausa, el shim sale enseguida con el mensaje "esa cuenta no tiene lugar ahora; usa otro modelo". Dentro de una llamada, los shims rechazan otra llamada. Escribe tres pruebas con un agente falso: una llamada a otro CLI pasa y queda contada; con la cuenta llena, se rechaza; una llamada desde dentro de otra, se rechaza. | python3 -m unittest tests.test_motor_e2e |
+| B.4 | Comprueba resultados, no solo la carga de la skill. Primero, un bloque es de bug si su campo `tipo` es `bug` o su título dice "bug". En un bloque de bug, el resultado del implementador trae un comando `repro`. El motor corre `repro` en el commit base, donde debe fallar, y en la punta entregada, donde debe salir 0. Si no se cumple, el resultado es el kind `sin_repro`. Segundo, el motor corre el `repro` de cada bloqueante del revisor en una copia del commit revisado. Si el comando sale 0, no reprodujo nada y el bloqueante baja a nota. Escribe pruebas e2e de los dos casos con el GitHub falso. | python3 -m unittest tests.test_motor_e2e |
 
-## Bloque C — medición real en cada CLI y cada máquina
+## Bloque C — el motor lee bien a cada agente en cada máquina
 lane: gate
 depende: A, B
-aviso: medí cómo registra cada agente en cada máquina; el motor ya los lee bien a todos
+aviso: medí cómo registra cada agente en cada máquina, y el motor ya los lee bien a todos
 prueba-real: bash ops/pstack/mide.sh --juzga
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
-| C.1 | `ops/pstack/mide.sh`: en la Mac (local), la Mini (ssh) y la PC (ssh; Muse en WSL), materializa la copia de pstack de la rama de A y corre cada CLI con su ruta real y un encargo mínimo ("carga poteto-mode, abre el playbook de Docs y lanza un subagente que lea README.md; no cambies nada") en una carpeta temporal; trae el registro de cada uno a `tests/datos/pstack/<cli>-<maquina>/`. Solo escribe en carpetas temporales de cada máquina y las borra. | bash -n ops/pstack/mide.sh |
-| C.2 | Con esos registros reales, pruebas en `tests/test_pstack.py` que exigen que `huella` vea, para cada CLI en cada máquina, la carga de poteto-mode, el playbook y el subagente; y que un registro sin carga dé `Falta`. Si algún CLI no puede cargar skills en alguna máquina, se dice en la prueba con el motivo y su fila de `FORMATOS` lo marca. | python3 -m unittest tests.test_pstack |
-| C.3 | `mide.sh --juzga`: corre la medición en vivo y sale 0 solo si `juzga` da `Cumple` para todos los CLI de los carriles en las tres máquinas. | bash -n ops/pstack/mide.sh |
+| C.1 | Escribe `ops/pstack/mide.sh`. El script corre en la Mac (local), en la Mini (ssh) y en la PC (ssh; Muse dentro de WSL). En cada máquina, materializa la copia fija de pstack de la rama del bloque A y corre cada CLI con su ruta real. El encargo es mínimo: "carga poteto-mode, abre el playbook Docs y lanza un subagente que lea README.md; no cambies nada". Cada corrida usa una carpeta temporal. El script trae el registro de cada CLI a `tests/datos/pstack/<cli>-<maquina>/` y borra las carpetas temporales. No escribe en ninguna otra parte. | bash -n ops/pstack/mide.sh |
+| C.2 | Agrega a `tests/test_pstack.py` pruebas con esos registros reales. Para cada CLI en cada máquina, `huella` debe ver la carga de poteto-mode, el playbook y el subagente. Un registro sin carga debe dar `Falta`. Si un CLI no puede cargar skills en una máquina, la prueba lo dice con el motivo y la fila de ese CLI en `FORMATOS` lo marca. | python3 -m unittest tests.test_pstack |
+| C.3 | Agrega a `mide.sh` la opción `--juzga`. Con ella, el script corre la medición en vivo y sale 0 solo si `juzga` da `Cumple` para todos los CLI de los carriles en las tres máquinas. | bash -n ops/pstack/mide.sh |
 
-## Bloque D — instalar la versión nueva del motor en las tres
+## Bloque D — la versión nueva del motor en las tres máquinas
 lane: release
 depende: C
-aviso: la versión del motor que exige pstack ya está en la Mac, la Mini y la PC (todavía sin exigir)
+aviso: la versión del motor que comprueba poteto-mode ya está en la Mac, la Mini y la PC, todavía sin exigirlo
 prueba-real: bash ops/huellas.sh --rutas
 despliegue: desplegar=ops/instala-todo.sh checklist=ops/huellas.sh rollback=ops/desinstala-todo.sh
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
-| D.1 | Sube la etiqueta por omisión de `ops/lib.sh` a la siguiente versión (la última es v1.0.14) para que `instala-todo.sh` instale este código; ajusta `ops/tests/test-instala.sh`. | bash ops/tests/test-instala.sh |
+| D.1 | Sube la etiqueta por omisión de `ops/lib.sh` a la versión siguiente. La última instalada es v1.0.14. Así, `instala-todo.sh` instala este código. Ajusta `ops/tests/test-instala.sh` a la etiqueta nueva. | bash ops/tests/test-instala.sh |
 
 ## Bloque E — encender la exigencia
 lane: gate
@@ -63,4 +70,4 @@ aviso: desde ahora todo agente del motor trabaja con poteto-mode, y el motor lo 
 prueba-real: ssh gon@100.73.187.5 'cd ~/motor && PYTHONPATH=. ~/.local/bin/uv run --python 3.12 python -m motor doctor --home ~/.motor --como-servicio --json' | python3 -c "import json,sys;t=sys.stdin.read();d=json.loads(t[t.find('{'):]);sys.exit(0 if d.get('ok') else 1)"
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
-| E.1 | `rutas.toml`: cada ruta recibe pstack por la vía medida en C (Claude y DeepSeek `--plugin-dir {pstack}/pstack` y `--session-id {sesion}`; Kimi `--skills-dir`; opencode `--format json`; Muse y Grok la ruta absoluta del SKILL.md vía el encargo; Qwen `--json-file`). `pstack.toml` `exigir = true`. | PYTHONPATH="$MOTOR_RAIZ" python3 -m motor conf valida . |
+| E.1 | En `rutas.toml`, dale pstack a cada ruta por la vía que midió el bloque C. Claude y DeepSeek: `--plugin-dir {pstack}/pstack` y `--session-id {sesion}`. Kimi: `--skills-dir`. opencode: `--format json`. Muse y Grok: la ruta absoluta de `SKILL.md`, que va en el encargo. Qwen: `--json-file`. Después pon `exigir = true` en `pstack.toml`. | PYTHONPATH="$MOTOR_RAIZ" python3 -m motor conf valida . |
