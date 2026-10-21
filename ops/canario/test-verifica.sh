@@ -28,7 +28,7 @@ chmod +x "$S/bin/ssh"
 
 # Un home con el plan canario en el estado que se pide. Lo que no se pide, queda en regla.
 #   sin_pr=B  sin_merge=C  sin_prueba=A  sin_humano=1  sin_terminado=1  sin_corte=1  corte_falla=1
-#   sin_aviso=entregado_B  pendiente=1
+#   ya_en_base=B (Merged sin PR)  sin_aviso=entregado_B  pendiente=1
 home() { # home <carpeta> [clave=valor...]
   local h=$1; shift
   rm -rf "$h"; mkdir -p "$h"
@@ -45,10 +45,12 @@ st = Store(h / "motor.db")
 P = "canario"
 e = os.environ.get
 for b in "ABC":
-    if e("sin_pr") != b:
+    if e("sin_pr") != b and e("ya_en_base") != b:
         st.append(P, b, "PrOpened", {"numero": 1}, ukey=f"pr:{b}")
     if e("sin_merge") != b:
-        st.append(P, b, "Merged", {"commit": "abc"}, ukey=f"merge:{b}")
+        # ya_en_base=B: un Merged sin PR porque lo entregado ya estaba en la rama principal
+        base = e("ya_en_base") == b
+        st.append(P, b, "Merged", {"commit": "abc", **({"ya_en_base": True} if base else {})}, ukey=f"merge:{b}")
     st.append(P, b, "Proved", {"sha": "abc", "ok": e("sin_prueba") != b}, ukey=f"proved:{b}")
 if e("sin_humano") != "1":
     st.append(P, "H", "HumanDone", {"por": "sonda"}, ukey="humano")
@@ -75,6 +77,21 @@ bien() { home "$S/mini/.motor"; home "$S/pc/.motor"; unset FAKE_CAE; }
 
 bien; espera "todo en regla en las dos" 0 bash "$V"
 contiene "lo dice" "$S/salida" "aprobada"
+
+for maq in mini pc; do
+  bien; home "$S/$maq/.motor" ya_en_base=B
+  espera "$maq con un Merged ya_en_base y sin PR vale" 0 bash "$V"
+  if grep -qF "un PR y un merge por bloque" "$S/salida"; then
+    fallo "$maq: el mensaje de aprobación afirma un PR por bloque y hubo ya_en_base"
+  fi
+  bien; home "$S/$maq/.motor" ya_en_base=B sin_merge=B
+  espera "$maq sin PR ni merge no vale" '!0' bash "$V"
+done
+
+# ya_en_base en LAS DOS máquinas: ninguna hizo el PR de verdad -> no aprueba.
+bien; home "$S/mini/.motor" ya_en_base=B; home "$S/pc/.motor" ya_en_base=B
+espera "ya_en_base en las dos máquinas no vale" '!0' bash "$V"
+contiene "dice que no hubo PR real" "$S/salida" "no tiene PR en ninguna máquina"
 
 casos=(
   "sin_pr=B|no tiene PR"

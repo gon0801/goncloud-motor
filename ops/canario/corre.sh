@@ -27,6 +27,7 @@ python3 -I - "$PLAN" <<'PY' || exit 2
 import sys
 sys.exit(0 if "autopiloto: motor" in open(sys.argv[1], encoding="utf-8").read() else 1)
 PY
+PLAN_ID="$(sed -n 's/^plan: *//p' "$PLAN" | head -1)"
 mkdir -p "$ESTADO"
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
@@ -128,6 +129,15 @@ entrega_directa() { # entrega_directa <m>: si el agente no la dejó tomada, el m
     "$pc entrega %USERPROFILE%\\canario\\plan.md --home %USERPROFILE%\\.motor --json --por $nombre" >"$d/$m.directa" 2>&1
 }
 
+cortes_de() { # cortes_de <m>: cuántos cortes (reinicios a media corrida) anotó el motor de esa máquina para el plan
+  local py='if python3 -c "import sqlite3" 2>/dev/null; then py=python3; else py="uv run --python 3.12 python"; fi; $py -'
+  if [ "$1" = pc ]; then
+    ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python - %USERPROFILE%\\.motor $PLAN_ID \"\" \"\"" <"$aqui/resumen.py" 2>/dev/null
+  else
+    ssh_a "$(host_de mini)" "$(printf '%q ' bash -c "$py \"\$HOME/.motor\" $PLAN_ID \"\" \"\"")" <"$aqui/resumen.py" 2>/dev/null
+  fi | tr -d '\r' | python3 -I -c 'import json,sys; l=sys.stdin.read().splitlines(); print(json.loads(l[-1]).get("cortes", 0) if l else 0)' 2>/dev/null || echo 0
+}
+
 servicio_arriba() { # servicio_arriba <m>
   corre "$1" "launchctl print system/$SERVICIO_MAC" "schtasks /query /tn $TAREA_PC" >/dev/null 2>&1
 }
@@ -152,6 +162,12 @@ lleva() { # lleva <m>: todo el recorrido de una máquina; 0 = quedó reiniciada 
     return 0
   fi
   fase="$(fase_de "$m")"
+  if [ "$fase" = hecho ] && [ "$(cortes_de "$m")" -ge 1 ] 2>/dev/null; then
+    # Ya terminó y su motor anotó el corte: el reinicio ocurrió aunque se perdiera la marca.
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$ESTADO/$m.reiniciada"
+    echo "$nombre: el canario ya terminó y hay un corte anotado; cuenta como reiniciada, no toco nada"
+    return 0
+  fi
   if [ "$fase" = ausente ]; then
     echo "$nombre: entregando el plan por su canal normal"
     entrega "$m" || { echo "$nombre: no pude copiarle el plan (ssh)" >&2; return 3; }

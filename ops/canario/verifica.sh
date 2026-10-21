@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Espera el final de la prueba de fuego (tope de 3 h) y sale 0 solo si, en CADA máquina (claw/Mini y
-# Hermi/PC), el plan canario terminó; hay un PR y un merge por bloque de código y su prueba real;
+# Hermi/PC), el plan canario terminó; hay un PR y un merge por bloque de código (un Merged `ya_en_base`
+# solo vale si la otra máquina sí hizo el PR y el merge de ese bloque) y su prueba real;
 # el paso humano quedó hecho; el reinicio quedó anotado como corte (no como falla); y llegaron por
 # el bot de esa marca el aviso de cada bloque, el de «retomé» y el de «terminé». La Mac no cuenta.
 # Si una máquina está reiniciándose, el ssh falla y simplemente se vuelve a mirar.
@@ -49,25 +50,38 @@ toma() {
 
 # juzga: lee los resúmenes, imprime la tabla y sale 0 (todo bien), 1 (falta algo) o 3 (falla definitiva).
 juzga() {
-  python3 -I - "$d" "$CANARIO_MAQUINAS" <<'PY'
+  python3 -I - "$d" "$CANARIO_MAQUINAS" "$CODIGO" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 d, maquinas = Path(sys.argv[1]), sys.argv[2].split()
+codigo = [b for b in sys.argv[3].split(",") if b]
 NOMBRE = {"mini": "claw (Mini)", "pc": "Hermi (PC)"}
-faltan, definitivas = [], []
+faltan, definitivas, notas = [], [], []
+resumenes = {}
 for m in maquinas:
     txt = (d / f"{m}.json").read_text(errors="replace").strip()
     try:
         r = json.loads(txt.splitlines()[-1]) if txt else None
     except ValueError:
         r = None
-    n = NOMBRE[m]
     if r is None:
         err = (d / f"{m}.err").read_text(errors="replace").strip().splitlines()
-        faltan.append(f"{n}: no contestó ({err[-1] if err else 'sin salida'})")
+        faltan.append(f"{NOMBRE[m]}: no contestó ({err[-1] if err else 'sin salida'})")
         continue
+    resumenes[m] = r
+
+# Un Merged ya_en_base (sin PR) solo vale si la otra máquina sí hizo el PR y el merge del bloque.
+pr_real = {
+    b: any(
+        r["bloques"].get(b, {}).get("prs", 0) >= 1 and r["bloques"].get(b, {}).get("merges", 0) >= 1
+        for r in resumenes.values()
+    )
+    for b in codigo
+}
+for m, r in resumenes.items():
+    n = NOMBRE[m]
     if not r["plan_existe"]:
         faltan.append(f"{n}: el motor no tiene el plan")
         continue
@@ -79,7 +93,12 @@ for m in maquinas:
                 faltan.append(f"{n}: el paso humano {b} no se detectó")
             continue
         if v["prs"] < 1:
-            faltan.append(f"{n}: el bloque {b} no tiene PR")
+            if v["ya_en_base"] and pr_real.get(b):
+                notas.append(f"{n}: el bloque {b} ya estaba en la rama principal (su PR y su merge los hizo la otra máquina)")
+            elif v["ya_en_base"]:
+                faltan.append(f"{b} no tiene PR en ninguna máquina (lo entregado ya estaba en base: resetea el repo canario)")
+            else:
+                faltan.append(f"{n}: el bloque {b} no tiene PR")
         if v["merges"] < 1:
             faltan.append(f"{n}: el bloque {b} no tiene merge")
         if not v["probado"]:
@@ -93,9 +112,13 @@ for m in maquinas:
             faltan.append(f"{n}: no llegó el aviso «{aviso}» por su bot")
     if r["avisos_pendientes"]:
         faltan.append(f"{n}: {r['avisos_pendientes']} aviso(s) siguen sin enviarse")
-for linea in definitivas + faltan:
+for linea in dict.fromkeys(definitivas + faltan):
     print(f"  - {linea}")
-sys.exit(3 if definitivas else 1 if faltan else 0)
+if definitivas or faltan:
+    sys.exit(3 if definitivas else 1)
+for linea in dict.fromkeys(notas):
+    print(f"  - {linea}")
+sys.exit(0)
 PY
 }
 
@@ -106,7 +129,14 @@ while :; do
   falta="$(juzga)"
   rc=$?
   case $rc in
-    0) echo "Prueba de fuego aprobada: claw y Hermi terminaron el plan, con un PR y un merge por bloque, el corte anotado y los avisos recibidos."; exit 0 ;;
+    0)
+      if [ -n "$falta" ]; then
+        echo "Prueba de fuego aprobada: claw y Hermi terminaron el plan, con el corte anotado y los avisos recibidos."
+        echo "$falta"
+      else
+        echo "Prueba de fuego aprobada: claw y Hermi terminaron el plan, con un PR y un merge por bloque, el corte anotado y los avisos recibidos."
+      fi
+      exit 0 ;;
     3) echo "La prueba de fuego FALLÓ de forma definitiva:" >&2; echo "$falta" >&2; exit 1 ;;
   esac
   if [ $SECONDS -ge $fin ]; then

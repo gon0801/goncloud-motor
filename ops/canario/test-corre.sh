@@ -20,6 +20,7 @@ f="$E/$host"
 case "$args" in
   "tar -x"*|*"tar -x -C"*) cat >/dev/null ;;
   *"sudo -n -l"*) exit "${FAKE_SUDO_RC:-0}" ;;
+  *' canario '*) cat >/dev/null; echo "{\"cortes\": ${FAKE_CORTES:-0}}" ;;
   *" entrega "*) [ -n "${FAKE_ENTREGA_MUDA:-}" ] || echo "${FAKE_FASE:-a_medias}" >"$f"; echo "tomado" ;;
   *oc-forja.sh*|*"hermes chat"*) [ -n "${FAKE_AGENTE_MUDO:-}" ] || echo "${FAKE_FASE:-a_medias}" >"$f"; echo "tomado" ;;
   *" estado "*) case "$(cat "$f" 2>/dev/null)" in
@@ -38,7 +39,7 @@ chmod +x "$S/bin/ssh"
 nuevo() { # estado limpio: nada entregado, sin marcas de reinicio
   rm -rf "$E" "$S/marcas"; mkdir -p "$E"; : >"$FAKE_LOG"
   export MOTOR_CANARIO_ESTADO="$S/marcas"
-  unset FAKE_SERVICIO_RC FAKE_AGENTE_MUDO FAKE_ENTREGA_MUDA FAKE_SUDO_RC FAKE_FASE
+  unset FAKE_CORTES FAKE_SERVICIO_RC FAKE_AGENTE_MUDO FAKE_ENTREGA_MUDA FAKE_SUDO_RC FAKE_FASE
 }
 cuenta() { grep -cF -- "$2" "$1" || true; }
 cuenta_reinicios() { grep -cE 'shutdown -r now|shutdown /r' "$FAKE_LOG" || true; } # los dos reinicios; no cuenta el `sudo -n -l shutdown`
@@ -81,6 +82,11 @@ contiene "lo dice" "$S/salida" "no tomó el plan"
 nuevo; export FAKE_FASE=hecho
 espera "el plan termina sin pasar por a medias: no reinicia" '!0' bash "$C"
 [ "$(cuenta_reinicios)" = 0 ] || fallo "reinició un plan ya terminado"
+
+nuevo; export FAKE_CORTES=1; echo hecho >"$E/gon@mini-fake"; echo hecho >"$E/gwpc"
+espera "ya hecho con corte anotado: cuenta como reiniciada sin tocar nada" 0 bash "$C"
+[ "$(cuenta_reinicios)" = 0 ] && [ "$(cuenta "$FAKE_LOG" 'oc-forja.sh')" = 0 ] || fallo "tocó una máquina ya terminada"
+[ -e "$MOTOR_CANARIO_ESTADO/mini.reiniciada" ] && [ -e "$MOTOR_CANARIO_ESTADO/pc.reiniciada" ] || fallo "no contó las dos como reiniciadas"
 
 nuevo; export FAKE_FASE=corriendo
 espera "corriendo sin bloque a medias: no reinicia" '!0' bash "$C"

@@ -40,6 +40,8 @@ for b in codigo:
     bloques[b] = {
         "prs": len(de(b, "PrOpened")),
         "merges": len(de(b, "Merged")),
+        # Merged sin PR: lo entregado ya estaba en la rama principal (otro plan lo mergeó antes).
+        "ya_en_base": sum(1 for d in de(b, "Merged") if d.get("ya_en_base")),
         "probado": bool(probados),
     }
 for b in humano:
