@@ -666,6 +666,169 @@ class TestSondaLenta(Banco):
             ef.SONDA_CADA_S = viejo
 
 
+class TestEnvDeLaMaquina(Banco):
+    def test_el_motor_usa_el_path_extra_de_la_maquina(self):
+        """MOTOR 01, Mini: `gh` solo está en una carpeta de path_extra; el motor no lo encontraba."""
+        import shutil
+
+        self.home, _ = sandbox.create(self.tmp / "b")
+        binario = self.tmp / "solo-esta-maquina"
+        binario.mkdir()
+        (binario / "gh-de-prueba").write_text("#!/bin/sh\n", encoding="utf-8")
+        (binario / "gh-de-prueba").chmod(0o755)
+        texto = (self.home / "maquina.toml").read_text(encoding="utf-8")
+        (self.home / "maquina.toml").write_text(
+            texto.replace("[env]", f'path_extra = ["{binario}"]\n[env]', 1),
+            encoding="utf-8",
+        )
+        viejo = os.environ.get("PATH", "")
+        try:
+            Daemon(self.home)
+            self.assertEqual(
+                shutil.which("gh-de-prueba"), str(binario / "gh-de-prueba")
+            )
+        finally:
+            os.environ["PATH"] = viejo
+
+    def test_el_motor_clona_con_el_alias_de_la_maquina(self):
+        """MOTOR 01: la Mini rechazó el plan canario porque su llave por omisión no entra a GitHub;
+        con GIT_CONFIG_* en maquina.toml el motor reescribe la dirección al alias que sí entra."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        app = str(self.tmp / "b" / "app.git")
+        with open(self.home / "maquina.toml", "a", encoding="utf-8") as f:
+            f.write(
+                f'GIT_CONFIG_COUNT = "1"\nGIT_CONFIG_KEY_0 = "url.{app}.insteadOf"\n'
+                'GIT_CONFIG_VALUE_0 = "alias-falso:app"\n'
+            )
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                f"repo: {app}", "repo: alias-falso:app", 1
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        viejo = {
+            k: os.environ.get(k)
+            for k in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")
+        }
+        try:
+            d = Daemon(self.home)
+            d.ingest_inbox()
+            self.assertEqual(
+                [p.id for p in d.plans()],
+                ["demo"],
+                "el plan se tomó: el clon usó el alias",
+            )
+        finally:
+            for k, v in viejo.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
+class TestYaEnLaBase(Banco):
+    def test_lo_que_ya_esta_en_la_rama_principal_no_abre_pr_y_termina(self):
+        """MOTOR 01, canario en la Mini: la PC ya había mergeado el mismo trabajo en el mismo repo; la
+        Mini entregó un SHA que ya estaba en main y se quedó intentando abrir un PR vacío."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        app, w = self.tmp / "b" / "app.git", self.tmp / "otra"
+        git("clone", "-q", str(app), str(w))
+        (w / "saludo.txt").write_text("hola\n", encoding="utf-8")
+        (w / "despedida.txt").write_text("adios\n", encoding="utf-8")
+        git("add", "-A", cwd=w)
+        git(
+            "-c",
+            "user.name=otra",
+            "-c",
+            "user.email=o@l",
+            "commit",
+            "-qm",
+            "otra máquina ya lo hizo",
+            cwd=w,
+        )
+        git("push", "-q", "origin", "HEAD:main", cwd=w)
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        (self.home / "login-hecho").write_text("ok")
+        self.termina()
+        evs = eventos(self.home)
+        self.assertFalse(
+            [e for e in evs if e.kind == "PrOpened" and e.block == "A"], "sin PR vacío"
+        )
+        mg = [e for e in evs if e.kind == "Merged" and e.block == "A"]
+        self.assertTrue(mg and mg[0].data.get("ya_en_base"))
+        self.assertTrue(
+            any(e.kind == "Proved" and e.block == "A" and e.data["ok"] for e in evs)
+        )
+
+
+class TestDespliegueQueSePasa(Banco):
+    def test_una_revision_que_se_pasa_del_tope_es_una_falla_y_no_un_ciclo(self):
+        """MOTOR 01, bloque I: verifica.sh se pasaba de 15 min, el motor lo tomaba como tropiezo
+        pasajero y lo reintentaba para siempre sin pasar el bloque a arreglo."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        g = self.tmp / "b" / "conf" / "general.toml"
+        g.write_text(
+            g.read_text(encoding="utf-8").replace(
+                "[tiempos]\n", "[tiempos]\ndespliegue_tope_s = 3\n"
+            ),
+            encoding="utf-8",
+        )
+        git(
+            "-c",
+            "user.name=c",
+            "-c",
+            "user.email=c@l",
+            "commit",
+            "-qam",
+            "tope corto",
+            cwd=self.tmp / "b" / "conf",
+        )
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                'escribe: ops/checklist.sh=test "$(cat "$PROD_DIR/version.txt")" = v2',
+                "escribe: ops/checklist.sh=sleep 30",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        (self.home / "login-hecho").write_text("ok")
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(e.kind == "Deployed" for e in eventos(self.home)), tope=150
+            ),
+            "el despliegue terminó (en falla), no se quedó reintentando",
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        d = [e for e in eventos(self.home) if e.kind == "Deployed"][0]
+        self.assertFalse(d.data["ok"])
+        self.assertIn("salida 124", d.data["detalle"])
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})

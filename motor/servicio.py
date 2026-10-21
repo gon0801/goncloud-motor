@@ -19,7 +19,7 @@ from .version import espera_antes_de_relanzar
 
 
 # El PATH con el que launchd lanza el servicio (y por tanto los agentes); `doctor --como-servicio` lo reutiliza.
-PATH_SERVICIO = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+PATH_SERVICIO = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 
 def plist_launchd(

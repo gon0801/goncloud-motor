@@ -783,6 +783,29 @@ class ServicioTest(unittest.TestCase):
         )
         self.assertIn(r"<WorkingDirectory>C:\Users\ehven\motor</WorkingDirectory>", x)
 
+    def test_boot_id_con_el_path_del_servicio(self):
+        """MOTOR 01, Mini: el servicio no tiene /usr/sbin en el PATH y `sysctl` no se encontraba;
+        ningún agente arrancaba (boot_id fallaba en StartAttempt)."""
+        import subprocess
+        import sys
+
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent),
+        }
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from motor.plataforma import boot_id; print(boot_id())",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.strip())
+
     def test_launchd_arranca_sin_sesion(self):
         p = plist_launchd(
             "gon", "/usr/bin/python3", "/Users/gon/.motor", "/Users/gon/motor"
