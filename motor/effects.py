@@ -324,9 +324,8 @@ class Effects:
             "sesion": sesion,
             "registros": [*registros, str(d / "log.txt")],
         }
-        (d / "pstack.json").write_text(
-            json.dumps(info, ensure_ascii=False), encoding="utf-8"
-        )
+        texto = json.dumps(info, ensure_ascii=False)
+        (d / "pstack.json").write_text(texto, encoding="utf-8")
         return info
 
     def _seccion_pstack(self, info: dict | None) -> str:
@@ -371,21 +370,19 @@ class Effects:
             estado = "falta"
         else:
             estado = "cumple" if veredicto.verificable else "no_verificable"
-        (d / "huella.json").write_text(
-            json.dumps(
-                {
-                    "cli": info["cli"],
-                    "fuente": fuente,
-                    "exigir": info["exigir"],
-                    "estado": estado,
-                    "faltas": list(veredicto.faltas) if estado == "falta" else [],
-                    "huella": h.to_dict(),
-                    "exigencia": info["exigencia"],
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        texto = json.dumps(
+            {
+                "cli": info["cli"],
+                "fuente": fuente,
+                "exigir": info["exigir"],
+                "estado": estado,
+                "faltas": list(veredicto.faltas) if estado == "falta" else [],
+                "huella": h.to_dict(),
+                "exigencia": info["exigencia"],
+            },
+            ensure_ascii=False,
         )
+        (d / "huella.json").write_text(texto, encoding="utf-8")
         if not info["exigir"]:
             return None
         if estado == "no_verificable":
@@ -487,24 +484,22 @@ class Effects:
             [str(RAIZ / "motor" / "shims"), env.get("PATH", "")]
         )
         # el shim de cada CLI de modelos lee de aquí qué cuenta es cada llamada y cuánto cabe
-        (d / "cupos.json").write_text(
-            json.dumps(
-                {
-                    "home": str(self.cx.home),
-                    "rutas": {
-                        mo: {
-                            "cli": r.cli,
-                            "cuenta": r.cuenta,
-                            "modelo_arg": _modelo_arg(r.argv),
-                        }
-                        for mo, r in self.cx.conf.rutas.items()
-                    },
-                    "max_parallel": dict(self.cx.policy.max_parallel),
-                    "agentes_por_maquina": self.cx.policy.agentes_por_maquina,
-                }
-            ),
-            encoding="utf-8",
+        cupos = json.dumps(
+            {
+                "home": str(self.cx.home),
+                "rutas": {
+                    mo: {
+                        "cli": r.cli,
+                        "cuenta": r.cuenta,
+                        "modelo_arg": _modelo_arg(r.argv),
+                    }
+                    for mo, r in self.cx.conf.rutas.items()
+                },
+                "max_parallel": dict(self.cx.policy.max_parallel),
+                "agentes_por_maquina": self.cx.policy.agentes_por_maquina,
+            }
         )
+        (d / "cupos.json").write_text(cupos, encoding="utf-8")
         puerta: list[str] = []
         if (
             info_pstack and info_pstack["exigir"]
