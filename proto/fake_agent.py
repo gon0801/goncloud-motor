@@ -10,6 +10,8 @@ Modos (cada uno es una falla del catálogo):
   cuelga          no hace nada y no muestra avance
   rompe_primero   la primera entrega rompe las pruebas automáticas; la siguiente lo arregla
   pstack_*        trabaja normal y deja un registro con o sin poteto-mode (ver fake_log.py)
+  panel*          llama a `kimi` por el shim del motor y guarda lo que contestó (panel_anida: la llamada
+                  intenta, desde dentro, llamar a otro CLI)
   parcial_lento   en el bloque A, la primera vez deja un archivo sin commitear y se queda trabajando
                   (para simular un apagón a la mitad); la siguiente termina
 """
@@ -53,6 +55,19 @@ def main() -> int:
         from fake_log import emite
 
         emite(modo, primera)
+
+    if modo.startswith(
+        "panel"
+    ):  # pide una segunda opinión a otro CLI de modelos, por el shim del motor
+        r = subprocess.run(
+            ["kimi", "--model", "k3", "-p", "hola"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        (
+            Path(os.environ["FAKE_STATE"]) / f"panel-{os.environ['MOTOR_MODEL']}.json"
+        ).write_text(json.dumps({"rc": r.returncode, "out": r.stdout, "err": r.stderr}))
 
     if modo == "cuota_primero" and primera:
         reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).strftime(

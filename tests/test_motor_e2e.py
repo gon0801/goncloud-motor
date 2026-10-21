@@ -19,6 +19,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ / "proto"))
 import sandbox  # noqa: E402
 
+from motor import llamadas  # noqa: E402
 from motor import machine as m  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.notify import lint_plain  # noqa: E402
@@ -1341,10 +1342,16 @@ class TestFotoWip(unittest.TestCase):
 class BancoPstack(Banco):
     """Un solo bloque, con la copia fija de pstack en la conf y todos los agentes falsos como `claude`."""
 
-    CLIS = {"sonnet": "claude", "glm": "claude", "opus": "claude", "k3": "claude"}
+    CLIS = {"sonnet": "claude", "glm": "claude", "opus": "claude", "k3": "kimi"}
 
     def arranca_pstack(
-        self, exigir: bool, modos: dict, bloque_extra: str = "", fila=None, **kw
+        self,
+        exigir: bool,
+        modos: dict,
+        bloque_extra: str = "",
+        fila=None,
+        antes=None,
+        **kw,
     ):
         self.home, self.plan = sandbox.create(
             self.tmp / "b",
@@ -1353,6 +1360,8 @@ class BancoPstack(Banco):
             reglas_revision="Z=nada",  # el revisor falso no pide nada extra
             **kw,
         )
+        if antes:
+            antes()
         fila = fila or "A.1 | escribe: saludo.txt=hola | test -f saludo.txt"
         base = self.plan.read_text().split("## Bloque A")[0]
         self.plan.write_text(
@@ -1455,6 +1464,178 @@ class TestPstack(BancoPstack):
         self.assertIn("claude", avisos[0])
         h = json.loads((self.intentos("implementar")[0] / "huella.json").read_text())
         self.assertEqual(h["estado"], "no_verificable")
+
+
+class TestPuertaEnVivo(BancoPstack):
+    def test_corta_al_agente_que_llega_a_la_accion_6_sin_poteto_mode(self):
+        self.arranca_pstack(
+            True, {"sonnet": "pstack_lento", "glm": "pstack_ok", "opus": "pstack_ok"}
+        )
+        d = self.intentos("implementar")[0]
+        o = json.loads((d / "outcome.json").read_text(encoding="utf-8"))
+        self.assertIn("no cargó poteto-mode en sus primeras 6 acciones", o["puerta"])
+        self.assertLess(
+            o["segundos"],
+            12,
+            "lo cortó en vivo: el agente falso tardaba 18 s en acabar",
+        )
+        self.assertFalse((d / "result.json").exists(), "no llegó a entregar")
+        fin = self.fines("implementar")[0]
+        self.assertEqual(fin["kind"], "sin_pstack")
+        self.assertIn("primeras 6 acciones", fin["detalle"])
+        self.assertEqual(self.fines("implementar")[-1]["kind"], "entregado")
+
+    def test_sin_exigir_no_hay_puerta(self):
+        self.arranca_pstack(False, {"sonnet": "pstack_lento", "opus": "pstack_ok"})
+        o = json.loads(
+            (self.intentos("implementar")[0] / "outcome.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertNotIn("puerta", o)
+        self.assertEqual([x["kind"] for x in self.fines("implementar")], ["entregado"])
+
+
+class TestLlamadasAOtrosModelos(BancoPstack):
+    """B.3: el agente llama a otro CLI de modelos por el shim del motor."""
+
+    def cli_falsos(self):
+        """Carpeta con `kimi` y `claude` falsos (lo que hay detrás de los shims) en el PATH de la máquina."""
+        binario = self.tmp / "clis"
+        binario.mkdir()
+        for nombre in ("kimi", "claude"):
+            f = binario / nombre
+            f.write_text(
+                f'#!/bin/sh\nexec "{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} "$@"\n'
+            )
+            f.chmod(0o755)
+        return binario
+
+    def maquina(self, extra_env: str = ""):
+        texto = (self.home / "maquina.toml").read_text(encoding="utf-8")
+        (self.home / "maquina.toml").write_text(
+            texto.replace(
+                "[env]", f'path_extra = ["{self.cli_falsos()}"]\n[env]\n{extra_env}', 1
+            ),
+            encoding="utf-8",
+        )
+
+    def panel(self) -> dict:
+        return json.loads(
+            (self.tmp / "b" / "fake-state" / "panel-sonnet.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def llamadas(self) -> list[dict]:
+        return [
+            json.loads(f.read_text(encoding="utf-8"))
+            for f in sorted(
+                (self.intentos("implementar")[0] / "llamadas").glob("*.json")
+            )
+        ]
+
+    def test_una_llamada_a_otro_cli_pasa_y_queda_contada(self):
+        self.arranca_pstack(
+            False, {"sonnet": "panel", "opus": "ok"}, antes=lambda: self.maquina()
+        )
+        r = self.panel()
+        self.assertEqual(r["rc"], 0, r["err"])
+        self.assertIn("kimi-respuesta", r["out"], "la llamada llegó al CLI real")
+        self.assertIn(
+            "libro:agente/anthropic,llamada/kimi",
+            r["out"],
+            "mientras corría, el agente y su llamada ocupaban lugar en el libro de cuentas",
+        )
+        [ll] = self.llamadas()
+        self.assertEqual(
+            (ll["modelo"], ll["cuenta"], ll["cli"]), ("k3", "kimi", "kimi")
+        )
+        self.assertTrue(ll["inicio"] and ll["fin"] >= ll["inicio"])
+        self.assertEqual(
+            list((self.home / "llamadas").glob("*.json")),
+            [],
+            "al terminar no queda nada vivo",
+        )
+
+    def test_con_la_cuenta_llena_se_rechaza(self):
+        def lleno():
+            self.maquina()
+            # dos llamadas vivas de la cuenta kimi (max_parallel = 2): dueño, este mismo proceso de prueba
+            for i in range(2):
+                llamadas.registra(
+                    self.home,
+                    f"llamada-ocupada{i}",
+                    {
+                        "tipo": "llamada",
+                        "cuenta": "kimi",
+                        "pid": os.getpid(),
+                        "inicio": 1,
+                    },
+                )
+
+        self.arranca_pstack(False, {"sonnet": "panel", "opus": "ok"}, antes=lleno)
+        r = self.panel()
+        self.assertEqual(r["rc"], 3)
+        self.assertEqual(
+            r["err"].strip(), "esa cuenta no tiene lugar ahora; usa otro modelo"
+        )
+        self.assertNotIn("kimi-respuesta", r["out"], "el CLI real ni se llamó")
+        self.assertFalse((self.intentos("implementar")[0] / "llamadas").exists())
+
+    def test_una_cuenta_en_pausa_de_cuota_rechaza(self):
+        def en_pausa():
+            self.maquina()
+            Store(self.home / "motor.db").append(
+                "demo",
+                "",
+                "Cooldown",
+                {"cuenta": "kimi", "hasta": time.time() + 3600, "modelo": "k3"},
+            )
+
+        self.arranca_pstack(False, {"sonnet": "panel", "opus": "ok"}, antes=en_pausa)
+        r = self.panel()
+        self.assertEqual(
+            (r["rc"], r["err"].strip()),
+            (3, "esa cuenta no tiene lugar ahora; usa otro modelo"),
+        )
+
+    def test_una_llamada_desde_dentro_de_otra_se_rechaza(self):
+        self.arranca_pstack(
+            False,
+            {"sonnet": "panel", "opus": "ok"},
+            antes=lambda: self.maquina('FAKE_ANIDA = "1"\n'),
+        )
+        r = self.panel()
+        self.assertEqual(r["rc"], 0, "la primera llamada sí pasó")
+        self.assertIn("anidada-rc:3", r["out"])
+        self.assertIn("no se puede llamar a otro modelo desde dentro", r["out"])
+        self.assertEqual(len(self.llamadas()), 1, "la anidada no se contó: no se hizo")
+
+    def test_el_motor_cuenta_las_llamadas_vivas_en_los_topes(self):
+        self.home, _ = sandbox.create(self.tmp / "b")
+        llamadas.registra(
+            self.home,
+            "llamada-x",
+            {"tipo": "llamada", "cuenta": "kimi", "pid": os.getpid(), "inicio": 1},
+        )
+        llamadas.registra(
+            self.home,
+            "agente-x",
+            {"tipo": "agente", "cuenta": "zai", "pid": os.getpid(), "inicio": 1},
+        )
+        llamadas.registra(
+            self.home,
+            "llamada-muerta",
+            {"tipo": "llamada", "cuenta": "kimi", "pid": 2**22 + 12345, "inicio": 1},
+        )
+        d = Daemon(self.home)
+        self.assertEqual(
+            d._ocupados_fuera([], None),
+            {"kimi": 1},
+            "las llamadas vivas ocupan lugar; el agente ya lo cuenta su intento; el muerto se limpia",
+        )
+        self.assertFalse((self.home / "llamadas" / "llamada-muerta.json").exists())
 
 
 if __name__ == "__main__":

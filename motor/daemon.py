@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import llamadas
 from . import machine as m
 from . import plataforma
 from .conf import (
@@ -339,8 +340,9 @@ class Daemon:
         return cd, tuple(intentos)
 
     def _ocupados_fuera(self, planes: list[Plan], este: Plan) -> dict[str, int]:
-        """Agentes corriendo en los otros planes de esta máquina, por cuenta."""
-        n: dict[str, int] = {}
+        """Agentes corriendo en los otros planes de esta máquina, por cuenta, más las llamadas a otros
+        modelos que están haciendo los agentes de cualquier plan (shims de motor/llamadas.py)."""
+        n: dict[str, int] = dict(llamadas.por_cuenta(self.home, solo_llamadas=True))
         for p in planes:
             if p.id == este.id:
                 continue

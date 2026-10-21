@@ -103,6 +103,14 @@ def es_del_agente(motivo: str) -> bool:
     )
 
 
+def _modelo_arg(argv) -> str:
+    """El valor de `--model` / `-m` en el argv de una ruta (así el shim reconoce a qué ruta llama el agente)."""
+    for i, x in enumerate(argv[:-1]):
+        if x in ("--model", "-m"):
+            return argv[i + 1]
+    return ""
+
+
 def arbol_de(conf_dir: Path) -> str:
     """Id de la copia fija de pstack: hash de lo que hay en `pstack/` y `pstack-motor/` de la conf.
     Mismo contenido, mismo id en las tres máquinas; otro contenido, otra carpeta."""
@@ -478,10 +486,45 @@ class Effects:
         env["PATH"] = os.pathsep.join(
             [str(RAIZ / "motor" / "shims"), env.get("PATH", "")]
         )
+        # el shim de cada CLI de modelos lee de aquí qué cuenta es cada llamada y cuánto cabe
+        (d / "cupos.json").write_text(
+            json.dumps(
+                {
+                    "home": str(self.cx.home),
+                    "rutas": {
+                        mo: {
+                            "cli": r.cli,
+                            "cuenta": r.cuenta,
+                            "modelo_arg": _modelo_arg(r.argv),
+                        }
+                        for mo, r in self.cx.conf.rutas.items()
+                    },
+                    "max_parallel": dict(self.cx.policy.max_parallel),
+                    "agentes_por_maquina": self.cx.policy.agentes_por_maquina,
+                }
+            ),
+            encoding="utf-8",
+        )
+        puerta: list[str] = []
+        if (
+            info_pstack and info_pstack["exigir"]
+        ):  # la puerta en vivo es parte de exigir
+            puerta = [
+                "--puerta",
+                str(info_pstack["exigencia"]["puerta"]),
+                "--cli",
+                ruta.cli,
+                *[x for r in info_pstack["registros"] for x in ("--registro", r)],
+            ]
         cmd = [
             sys.executable,
             "-m",
             "motor.runwrap",
+            "--home",
+            str(self.cx.home),
+            "--cuenta",
+            ruta.cuenta,
+            *puerta,
             "--dir",
             str(d),
             "--cwd",
