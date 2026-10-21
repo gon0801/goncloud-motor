@@ -98,6 +98,33 @@ class ComoServicioTest(Banco):
         self.assertTrue(r["ok"], "cada papel tiene al menos una ruta que responde")
         self.assertTrue(any(p.startswith("malo:") for p in r["problemas"]))
 
+    def test_carpeta_ocupada_al_terminar_no_tumba_el_doctor(self):
+        """MOTOR 01, PC: Windows no dejó borrar la carpeta temporal (un hijo por WSL la ocupaba) y
+        el PermissionError tumbaba toda la revisión de la PC."""
+        import shutil
+        from unittest import mock
+
+        real = shutil.rmtree
+
+        def ocupada(
+            path, ignore_errors=False, onerror=None, *, onexc=None, dir_fd=None
+        ):
+            if "motor-doctor-" in str(path):
+                err = PermissionError(
+                    32, "The process cannot access the file", str(path)
+                )
+                if ignore_errors:
+                    return None
+                if onexc:  # así reporta rmtree un archivo ocupado
+                    return onexc(os.rmdir, str(path), err)
+                raise err
+            return real(path, ignore_errors=ignore_errors)
+
+        self.arma({"bueno": RESPONDE}, {"implementar": ["bueno"], "revisar": ["bueno"]})
+        with mock.patch("shutil.rmtree", ocupada):
+            r = como_servicio(self.home, espera_s=20)
+        self.assertTrue(r["rutas"]["bueno"]["responde"], r)
+
     def test_no_ok_si_a_un_papel_no_le_responde_nadie(self):
         self.arma(
             {"bueno": RESPONDE, "malo": NO_RESPONDE},

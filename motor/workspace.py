@@ -48,7 +48,7 @@ def foto_wip(worktree: Path, rama_wip: str, local: bool = False) -> str:
     head = git("rev-parse", "HEAD", cwd=worktree).stdout.strip()
     if not head:
         return "error: sin HEAD"
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
         git("read-tree", "HEAD", cwd=worktree, env=env)
         git("add", "-A", cwd=worktree, env=env)
