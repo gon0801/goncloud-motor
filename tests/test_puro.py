@@ -709,6 +709,18 @@ class ServicioTest(unittest.TestCase):
         ):
             self.assertIn(esperado, x)
 
+    def test_instalable_pc_pasa_la_carpeta_del_motor(self):
+        from motor.servicio import instalable
+
+        x = instalable(
+            "pc",
+            "ehven",
+            r"C:\uv\python.exe",
+            r"C:\Users\ehven\.motor",
+            r"C:\Users\ehven\motor",
+        )
+        self.assertIn(r"<WorkingDirectory>C:\Users\ehven\motor</WorkingDirectory>", x)
+
     def test_launchd_arranca_sin_sesion(self):
         p = plist_launchd(
             "gon", "/usr/bin/python3", "/Users/gon/.motor", "/Users/gon/motor"
