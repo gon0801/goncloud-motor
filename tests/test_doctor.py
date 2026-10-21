@@ -101,27 +101,18 @@ class ComoServicioTest(Banco):
     def test_carpeta_ocupada_al_terminar_no_tumba_el_doctor(self):
         """MOTOR 01, PC: Windows no dejó borrar la carpeta temporal (un hijo por WSL la ocupaba) y
         el PermissionError tumbaba toda la revisión de la PC."""
-        import shutil
         from unittest import mock
 
-        real = shutil.rmtree
-
-        def ocupada(
-            path, ignore_errors=False, onerror=None, *, onexc=None, dir_fd=None
-        ):
-            if "motor-doctor-" in str(path):
-                err = PermissionError(
-                    32, "The process cannot access the file", str(path)
-                )
-                if ignore_errors:
-                    return None
-                if onexc:  # así reporta rmtree un archivo ocupado
-                    return onexc(os.rmdir, str(path), err)
-                raise err
-            return real(path, ignore_errors=ignore_errors)
+        class Ocupada(tempfile.TemporaryDirectory):
+            def cleanup(self):
+                if not self._ignore_cleanup_errors:
+                    raise PermissionError(
+                        32, "The process cannot access the file", self.name
+                    )
+                super().cleanup()
 
         self.arma({"bueno": RESPONDE}, {"implementar": ["bueno"], "revisar": ["bueno"]})
-        with mock.patch("shutil.rmtree", ocupada):
+        with mock.patch("motor.doctor.tempfile.TemporaryDirectory", Ocupada):
             r = como_servicio(self.home, espera_s=20)
         self.assertTrue(r["rutas"]["bueno"]["responde"], r)
 
