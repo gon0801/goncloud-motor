@@ -182,6 +182,67 @@ class GhReintentaTest(unittest.TestCase):
         self.assertEqual(llamadas.count(("pr", "create")), 6)
 
 
+class GhChecksSaltadoTest(unittest.TestCase):
+    """Sin red: lo que GitHub devolvió para Orbit PR #487 cuando el motor esperó horas (INGESTA 01)."""
+
+    def checks(self, borrador: bool, listo: list[str]):
+        runs = [
+            ("gate", "success", "19:37:23"),
+            ("reconcile", "success", "19:36:30"),
+            ("completa", "skipped", "19:36:20"),
+            ("completa", "skipped", "19:37:51"),
+        ]
+
+        class Fake(GhGitHub):
+            def _gh(self, *a):
+                if a[:2] == ("pr", "view"):
+                    return json.dumps(
+                        {
+                            "number": 487,
+                            "headRefName": "f",
+                            "baseRefName": "master",
+                            "isDraft": borrador,
+                            "headRefOid": "a" * 40,
+                            "state": "OPEN",
+                            "mergeCommit": None,
+                        }
+                    )
+                if a[1].endswith("/required_status_checks"):
+                    return '["gate", "reconcile"]'
+                if "/issues/487/events" in a[1]:
+                    return "".join(f"{h}\n" for h in listo)
+                if "/check-runs" in a[1]:
+                    assert "completed_at" in a[-1], (
+                        "sin la hora no se sabe cuándo se saltó"
+                    )
+                    return json.dumps(
+                        [
+                            {
+                                "name": n,
+                                "status": "completed",
+                                "conclusion": c,
+                                "completed_at": f"2026-10-21T{h}Z",
+                            }
+                            for n, c, h in runs
+                        ]
+                    )
+                raise AssertionError(a)
+
+        return Fake().checks("https://github.com/o/r", 487, "a" * 40, ("completa",))
+
+    def test_salto_tras_listo_es_verde(self):
+        self.assertTrue(self.checks(False, ["2026-10-21T19:37:40Z"]).green)
+
+    def test_salto_antes_de_volver_a_listo_no_cuenta(self):
+        v = self.checks(False, ["2026-10-21T19:00:00Z", "2026-10-21T19:40:00Z"])
+        self.assertEqual(v.faltan, ("completa",))
+
+    def test_en_borrador_no_cuenta(self):
+        self.assertEqual(
+            self.checks(True, ["2026-10-21T19:37:40Z"]).faltan, ("completa",)
+        )
+
+
 @unittest.skipUnless(
     os.environ.get("MOTOR_GH_SANDBOX"),
     "sin MOTOR_GH_SANDBOX: el contrato contra GitHub real no corre",

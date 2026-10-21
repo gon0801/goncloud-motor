@@ -406,6 +406,52 @@ humano: login pega las llaves
             "saltado en borrador no es aprobado (MOTOR 01, PR #484)",
         )
 
+    def test_saltado_a_proposito_tras_listo_es_aprobado(self):
+        """Orbit PR #487 (INGESTA 01): listo a las 19:37:40; `completa` se saltó en borrador y otra
+        vez ya listo, porque no había código. El motor esperó horas una prueba que nunca iba a correr."""
+
+        def run(nombre, conclusion, hora):
+            return {
+                "name": nombre,
+                "status": "completed",
+                "conclusion": conclusion,
+                "completed_at": f"2026-10-21T{hora}Z",
+            }
+
+        req = ("gate", "reconcile", "completa")
+        borrador = [
+            run("gate", "success", "19:37:23"),
+            run("reconcile", "success", "19:36:30"),
+            run("completa", "skipped", "19:36:20"),
+        ]
+        listo = "2026-10-21T19:37:40Z"
+        self.assertEqual(
+            veredicto("s", req, borrador, listo).faltan,
+            ("completa",),
+            "el salto del borrador no cuenta: falta la corrida de ya listo",
+        )
+        self.assertEqual(
+            veredicto("s", req, borrador, None).faltan,
+            ("completa",),
+            "en borrador ningún salto cuenta",
+        )
+        mismo_segundo = [*borrador, run("completa", "skipped", "19:37:40")]
+        self.assertEqual(
+            veredicto("s", req, mismo_segundo, listo).faltan,
+            ("completa",),
+            "en el mismo segundo no se sabe si fue antes o después de listo",
+        )
+        tras_listo = [*borrador, run("completa", "skipped", "19:37:51")]
+        self.assertTrue(veredicto("s", req, tras_listo, listo).green)
+        corre = [*borrador, run("completa", "success", "19:45:00")]
+        self.assertTrue(veredicto("s", req, corre, listo).green)
+        corre[-1]["conclusion"] = "failure"
+        self.assertEqual(veredicto("s", req, corre, listo).fallas, ("completa",))
+        self.assertTrue(
+            veredicto("s", req, borrador, "").green,
+            "nunca fue borrador: el salto cuenta",
+        )
+
     def test_checks_que_nunca_terminan_avisan_una_vez(self):
         p, now = parse_plan(PLAN), time.time()
         base = entregado() + [
