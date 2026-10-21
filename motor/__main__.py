@@ -44,7 +44,7 @@ def _encola(home: Path, msg: dict) -> str:
     inbox = home / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     tmp = inbox / f".{cmd_id}.tmp"
-    tmp.write_text(json.dumps(msg, ensure_ascii=False))
+    tmp.write_text(json.dumps(msg, ensure_ascii=False), encoding="utf-8")
     tmp.rename(inbox / f"{time.time_ns()}-{cmd_id}.json")
     return cmd_id
 
@@ -80,7 +80,7 @@ def _valida(path: Path, home: Path | None):
         conf = load_conf(load_maquina(home).conf)
         impl, modelos = len(conf.escalera("implementar")), set(conf.rutas)
     return parse_plan(
-        path.read_text(),
+        path.read_text(encoding="utf-8"),
         min_implementadores=2 if home else 0,
         implementadores=impl,
         modelos=modelos,
@@ -162,11 +162,13 @@ def conf_valida(d: Path) -> list[str]:
         sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []
     ):
         try:
-            valida_maquina(tomllib.loads(f.read_text()))
+            valida_maquina(tomllib.loads(f.read_text(encoding="utf-8")))
         except (ConfError, tomllib.TOMLDecodeError) as e:
             errores.append(f"maquinas/{f.name}: {e}")
     if SECRETO_CONF.search(
-        "\n".join(p.read_text(errors="replace") for p in d.rglob("*.toml"))
+        "\n".join(
+            p.read_text(errors="replace", encoding="utf-8") for p in d.rglob("*.toml")
+        )
     ):
         errores.append(
             "hay algo con forma de llave en la conf; las llaves van en secretos.env de cada máquina"

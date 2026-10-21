@@ -117,7 +117,7 @@ class Notifier:
         self.pend.mkdir(parents=True, exist_ok=True)
         nombre = re.sub(r"[^A-Za-z0-9_.-]", "_", key)
         tmp = self.pend / f".{nombre}.tmp"
-        tmp.write_text(texto)
+        tmp.write_text(texto, encoding="utf-8")
         os.replace(tmp, self.pend / f"{int(time.time() * 1000)}-{nombre}.txt")
 
     def envia_pendientes(self) -> int:
@@ -127,7 +127,7 @@ class Notifier:
         n = 0
         for f in sorted(self.pend.glob("*.txt")):
             data = urllib.parse.urlencode(
-                {"chat_id": self.chat, "text": f.read_text()}
+                {"chat_id": self.chat, "text": f.read_text(encoding="utf-8")}
             ).encode()
             try:
                 with urllib.request.urlopen(

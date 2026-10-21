@@ -35,7 +35,9 @@ def resolve_shim(
     for d in path.split(";"):
         if not d:
             continue
-        for ext in ("",) + tuple(exts):
+        # primero con extensión: npm deja junto a `x.cmd` un `x` sin extensión (script de bash)
+        # que Windows no puede ejecutar (MOTOR 01, PC: GLM y Qwen no arrancaban)
+        for ext in tuple(exts) + ("",):
             cand = Path(d) / f"{nombre}{ext}"
             if cand.is_file():
                 if cand.suffix.lower() in (".cmd", ".bat"):
@@ -48,6 +50,50 @@ def resolve_shim(
                     ]
                 return [str(cand)]
     return [nombre]
+
+
+def argv_windows(argv: list[str], env: dict) -> list[str]:
+    """argv listo para CreateProcess: resuelve `.cmd`/`.bat` de npm por el PATH del agente."""
+    if not argv or os.path.isabs(argv[0]):
+        return argv
+    return (
+        resolve_shim(
+            argv[0], env.get("PATH", ""), env.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        )
+        + argv[1:]
+    )
+
+
+# Lo mínimo de Windows sin lo que muchos CLIs no arrancan (Bun pide SystemRoot para la red; node
+# revienta sin APPDATA/USERPROFILE). El servicio real los hereda de la sesión de la tarea.
+ENV_WINDOWS = (
+    "SystemRoot",
+    "windir",
+    "SystemDrive",
+    "PATHEXT",
+    "ComSpec",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "USERPROFILE",
+    "USERNAME",
+    "USERDOMAIN",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "TEMP",
+    "TMP",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+)
+
+
+def env_minimo_windows(origen: dict) -> dict:
+    return {k: origen[k] for k in ENV_WINDOWS if k in origen}
 
 
 def tarea_xml(usuario: str, python: str, home: str, raiz: str = "") -> str:
@@ -93,7 +139,7 @@ def padre_ido(padre):
 def hijos_propios():
     f = pathlib.Path('/proc/self/task') / str(os.getpid()) / 'children'
     try:
-        return [int(x) for x in f.read_text().split()]
+        return [int(x) for x in f.read_text(encoding="utf-8").split()]
     except OSError:
         return []
 

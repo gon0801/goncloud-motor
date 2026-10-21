@@ -59,17 +59,24 @@ def main(argv: list[str] | None = None) -> int:
     fotos: list[str] = []
     inicio = ultima_foto = time.time()
     with open(log, "ab") as out:
+        env_agente = {**os.environ, "MOTOR_ATTEMPT_DIR": str(d)}
+        if (
+            os.name == "nt"
+        ):  # los CLIs de npm son `.cmd`: CreateProcess no los ejecuta directo
+            from .plataforma.windows import argv_windows
+
+            cmd = argv_windows(cmd, env_agente)
         p = subprocess.Popen(
             cmd,
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=subprocess.STDOUT,
-            env={**os.environ, "MOTOR_ATTEMPT_DIR": str(d)},
+            env=env_agente,
             **kwargs_grupo(),
         )
         contener(p)
-        (d / "agent.pid").write_text(str(p.pid))
+        (d / "agent.pid").write_text(str(p.pid), encoding="utf-8")
         ultimo = (log.stat().st_size, _mtime_arbol(cwd))
         ultimo_cambio = time.time()
         timed_out = no_progress = False
@@ -94,12 +101,12 @@ def main(argv: list[str] | None = None) -> int:
         "exit": p.returncode,
         "timed_out": timed_out,
         "no_progress": no_progress,
-        "tail": log.read_text(errors="replace")[-2000:],
+        "tail": log.read_text(errors="replace", encoding="utf-8")[-2000:],
         "fotos": fotos[-5:],
         "segundos": round(time.time() - inicio, 1),
     }
     tmp = d / "outcome.json.tmp"
-    tmp.write_text(json.dumps(outcome, ensure_ascii=False))
+    tmp.write_text(json.dumps(outcome, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, d / "outcome.json")
     return 0
 

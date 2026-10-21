@@ -141,7 +141,7 @@ class Daemon:
         hechos = inbox / "procesados"
         hechos.mkdir(parents=True, exist_ok=True)
         for f in sorted(inbox.glob("*.json")):
-            msg = json.loads(f.read_text())
+            msg = json.loads(f.read_text(encoding="utf-8"))
             cmd_id, tipo = msg["cmd_id"], msg["tipo"]
             plan_id = msg.get("plan") if tipo != "plan" else msg["plan"]["id"]
             if tipo == "plan":

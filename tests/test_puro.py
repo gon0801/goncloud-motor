@@ -686,6 +686,43 @@ class ServicioTest(unittest.TestCase):
             self.assertEqual(argv[1:4], ["/d", "/s", "/c"])
             self.assertTrue(argv[-1].endswith("claude.cmd"))
 
+    def test_windows_prefiere_el_cmd_al_script_sin_extension(self):
+        """MOTOR 01, PC: npm deja `opencode` (bash) junto a `opencode.cmd`; el primero no corre en Windows."""
+        from motor.plataforma.windows import argv_windows
+
+        with tempfile.TemporaryDirectory() as t:
+            (Path(t) / "opencode").write_text("#!/bin/sh\n", encoding="utf-8")
+            (Path(t) / "opencode.cmd").write_text("@echo off", encoding="utf-8")
+            argv = argv_windows(["opencode", "run", "x"], {"PATH": t})
+            self.assertTrue(argv[-3].endswith("opencode.cmd"), argv)
+            self.assertEqual(argv[-2:], ["run", "x"])
+            self.assertEqual(
+                argv_windows([r"C:\x\claude.exe", "-p"], {"PATH": t}),
+                [r"C:\x\claude.exe", "-p"],
+            )
+
+    def test_windows_entorno_minimo(self):
+        from motor.plataforma.windows import env_minimo_windows
+
+        e = env_minimo_windows(
+            {"SystemRoot": r"C:\Windows", "APPDATA": "a", "OTRA": "x"}
+        )
+        self.assertEqual(e, {"SystemRoot": r"C:\Windows", "APPDATA": "a"})
+
+    def test_todo_el_motor_lee_y_escribe_utf8(self):
+        """En Windows el texto por omisión es cp1252: Grok no pudo leer el encargo (MOTOR 01, PC)."""
+        import re
+
+        raiz = Path(__file__).resolve().parent.parent / "motor"
+        sin = [
+            f"{f.name}:{n}"
+            for f in raiz.rglob("*.py")
+            for n, linea in enumerate(f.read_text(encoding="utf-8").splitlines(), 1)
+            if re.search(r"\.(read_text|write_text)\(", linea)
+            and "encoding=" not in linea
+        ]
+        self.assertEqual(sin, [])
+
     def test_windows_grupo_propio_fuera_del_job(self):
         self.assertTrue(flags_creacion() & CREATE_BREAKAWAY_FROM_JOB)
 
