@@ -98,6 +98,24 @@ class ComoServicioTest(Banco):
         self.assertTrue(r["ok"], "cada papel tiene al menos una ruta que responde")
         self.assertTrue(any(p.startswith("malo:") for p in r["problemas"]))
 
+    def test_carpeta_ocupada_al_terminar_no_tumba_el_doctor(self):
+        """MOTOR 01, PC: Windows no dejó borrar la carpeta temporal (un hijo por WSL la ocupaba) y
+        el PermissionError tumbaba toda la revisión de la PC."""
+        from unittest import mock
+
+        class Ocupada(tempfile.TemporaryDirectory):
+            def cleanup(self):
+                if not self._ignore_cleanup_errors:
+                    raise PermissionError(
+                        32, "The process cannot access the file", self.name
+                    )
+                super().cleanup()
+
+        self.arma({"bueno": RESPONDE}, {"implementar": ["bueno"], "revisar": ["bueno"]})
+        with mock.patch("motor.doctor.tempfile.TemporaryDirectory", Ocupada):
+            r = como_servicio(self.home, espera_s=20)
+        self.assertTrue(r["rutas"]["bueno"]["responde"], r)
+
     def test_no_ok_si_a_un_papel_no_le_responde_nadie(self):
         self.arma(
             {"bueno": RESPONDE, "malo": NO_RESPONDE},

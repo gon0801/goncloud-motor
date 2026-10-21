@@ -57,7 +57,11 @@ def entorno_del_servicio(mq: Maquina, ruta: Ruta, result: Path) -> dict[str, str
 def prueba_de_ruta(mq: Maquina, ruta: Ruta, espera_s: float = ESPERA_S) -> dict:
     """Corre el encargo de prueba de una ruta. `responde` = salió bien dentro del plazo y dijo algo."""
     inicio = time.time()
-    with tempfile.TemporaryDirectory(prefix="motor-doctor-") as t:
+    # ignore_cleanup_errors: en Windows un hijo (p. ej. por WSL) puede seguir ocupando la carpeta al
+    # terminar y el borrado tumbaba todo el doctor (MOTOR 01, PC). Se deja la carpeta y se sigue.
+    with tempfile.TemporaryDirectory(
+        prefix="motor-doctor-", ignore_cleanup_errors=True
+    ) as t:
         d = Path(t)
         brief, result = d / "brief.md", d / "result.json"
         brief.write_text(ENCARGO + "\n", encoding="utf-8")
