@@ -146,11 +146,26 @@ class Daemon:
                 vistos[e.plan] = Plan.from_dict(e.data["plan"])
         return list(vistos.values())
 
+    def _bandejas(self) -> list[Path]:
+        """La bandeja del motor y los buzones de la máquina (agentes que solo escriben en su carpeta)."""
+        import glob
+
+        extra = [
+            Path(x)
+            for patron in self.maquina.buzones
+            for x in sorted(glob.glob(os.path.expanduser(patron)))
+        ]
+        return [self.home / "inbox", *(b for b in extra if b.is_dir())]
+
     def ingest_inbox(self) -> None:
         inbox = self.home / "inbox"
         hechos = inbox / "procesados"
         hechos.mkdir(parents=True, exist_ok=True)
-        for f in sorted(inbox.glob("*.json")):
+        archivos = sorted(
+            (f for b in self._bandejas() for f in b.glob("*.json")),
+            key=lambda f: f.name,
+        )
+        for f in archivos:
             msg = json.loads(f.read_text(encoding="utf-8"))
             cmd_id, tipo = msg["cmd_id"], msg["tipo"]
             plan_id = msg.get("plan") if tipo != "plan" else msg["plan"]["id"]

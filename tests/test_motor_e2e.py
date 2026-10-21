@@ -295,6 +295,46 @@ class TestPedidoDeModelos(Banco):
 
 
 class TestEntregaSegura(Banco):
+    def test_un_agente_que_solo_escribe_en_su_carpeta_entrega_por_su_buzon(self):
+        """OpenBot (2026-10-21): implementer e ingenieria quedan con acceso solo a su carpeta; dejan el
+        plan en su buzón y el motor lo recoge de ahí."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        buzon = self.tmp / "agentes" / "agent-x" / "motor-buzon"
+        buzon.mkdir(parents=True)
+        texto = (self.home / "maquina.toml").read_text(encoding="utf-8")
+        (self.home / "maquina.toml").write_text(
+            texto.replace(
+                "[env]", f'buzones = ["{self.tmp}/agentes/*/motor-buzon"]\n[env]', 1
+            ),
+            encoding="utf-8",
+        )
+        r = motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+            "--buzon",
+            str(buzon),
+        )
+        self.assertEqual(
+            json.loads(r.stdout)["estado"], "encolado", r.stdout + r.stderr
+        )
+        self.assertFalse(
+            list((self.home / "inbox").glob("*.json"))
+            if (self.home / "inbox").exists()
+            else [],
+            "no escribió en la bandeja del motor",
+        )
+        d = Daemon(self.home)
+        d.ingest_inbox()
+        self.assertEqual([p.id for p in d.plans()], ["demo"])
+        self.assertEqual(
+            list(buzon.glob("*.json")), [], "el motor se lo llevó del buzón"
+        )
+
     def test_un_intento_lanzado_y_no_anotado_se_recupera_de_su_marca(self):
         """Revisión de Grok: si el motor muere entre lanzar al agente y anotarlo, el intento no contaba
         para los topes ni se recogía su resultado."""
