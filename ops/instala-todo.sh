@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instala el motor en la Mac, la Mini y la PC: etiqueta v1.0.0 sobre el SHA mergeado, y en cada máquina
+# Instala el motor en la Mac, la Mini y la PC: etiqueta (v1.0.1 por omisión) sobre el SHA mergeado, y en cada máquina
 # ~/motor (en esa etiqueta), ~/motor-conf, ~/.motor/maquina.toml e ~/.motor/instalar-servicio.txt.
 # No pide sudo: lo que sí lo necesita queda escrito en instalar-servicio.txt para la persona.
 # Sale != 0 si alguna máquina falla (las demás se intentan igual y se dice cuál falló).
@@ -37,7 +37,7 @@ fi
 if [ -n "$etiqueta_remota" ]; then
   echo "etiqueta $ETIQUETA ya existe en origin: se respeta"
 else
-  # Se empuja el SHA verificado, no la etiqueta local: una v1.0.0 local vieja publicaría otro commit.
+  # Se empuja el SHA verificado, no la etiqueta local: una etiqueta local vieja publicaría otro commit.
   if ! reintenta 3 git -C "$raiz" push -q origin "$sha:refs/tags/$ETIQUETA"; then
     # Si otro la creó mientras tanto, igual vale: lo que importa es que la etiqueta exista.
     git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA" | grep -q . \
