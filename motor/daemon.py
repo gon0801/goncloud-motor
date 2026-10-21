@@ -181,6 +181,25 @@ class Daemon:
                     resultado = "tomado"
                 except (PlanError, RuntimeError, KeyError) as e:
                     resultado = f"rechazado: {e}"
+                    # Quien entregó pudo irse con "encolado": el rechazo tiene que llegarle a David
+                    # (MOTOR 01: INGESTA 01 se rechazó en la Mini y nadie se enteró).
+                    titulo = str(
+                        msg.get("plan", {}).get("titulo")
+                        or msg.get("plan", {}).get("id")
+                        or "un plan"
+                    )
+                    self.cx.notifier.encola(
+                        f"rechazo:{cmd_id}",
+                        render(
+                            "rechazado",
+                            {
+                                "motivo": str(e).splitlines()[0][:300],
+                                "por": msg.get("por") or "quien te lo dio",
+                            },
+                            self.maquina.nombre,
+                            titulo,
+                        ),
+                    )
             elif tipo == "hecho":
                 resultado = self._hecho(plan_id, msg)
             elif tipo == "nota":

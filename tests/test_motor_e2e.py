@@ -295,6 +295,36 @@ class TestPedidoDeModelos(Banco):
 
 
 class TestEntregaSegura(Banco):
+    def test_un_plan_rechazado_se_avisa_aunque_quien_entrego_se_fue_con_encolado(self):
+        """MOTOR 01: claw entregó INGESTA 01, se fue con "encolado" y el motor de la Mini lo rechazó
+        sin que nadie se enterara."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        malo = self.tmp / "malo.md"
+        malo.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                "repo: ", "repo: /no/existe/x.git\n#", 1
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(malo),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+            "--por",
+            "claw",
+        )
+        Daemon(self.home).ingest_inbox()
+        avisos = list((self.home / "avisos" / "pendientes").glob("*rechazo*"))
+        self.assertEqual(len(avisos), 1)
+        texto = avisos[0].read_text(encoding="utf-8")
+        self.assertIn("En la Mac (prueba) · Demo de saludo:", texto)
+        self.assertIn("claw", texto)
+        lint_plain(texto)
+
     def test_repo_que_no_existe_rechaza_el_plan_sin_cargarlo(self):
         self.home, self.plan = sandbox.create(self.tmp / "b")
         malo = self.tmp / "malo.md"
