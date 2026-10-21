@@ -19,6 +19,8 @@ echo "$host :: $args" >>"$FAKE_LOG"
 f="$E/$host"
 case "$args" in
   "tar -x"*|*"tar -x -C"*) cat >/dev/null ;;
+  *"sudo -n -l"*) exit "${FAKE_SUDO_RC:-0}" ;;
+  *" entrega "*) [ -n "${FAKE_ENTREGA_MUDA:-}" ] || echo "${FAKE_FASE:-a_medias}" >"$f"; echo "tomado" ;;
   *oc-forja.sh*|*"hermes chat"*) [ -n "${FAKE_AGENTE_MUDO:-}" ] || echo "${FAKE_FASE:-a_medias}" >"$f"; echo "tomado" ;;
   *" estado "*) case "$(cat "$f" 2>/dev/null)" in
       a_medias) echo '[{"plan":"canario","bloques":[{"bloque":"A","estado":"implementando"}],"hecho":false}]' ;;
@@ -36,9 +38,10 @@ chmod +x "$S/bin/ssh"
 nuevo() { # estado limpio: nada entregado, sin marcas de reinicio
   rm -rf "$E" "$S/marcas"; mkdir -p "$E"; : >"$FAKE_LOG"
   export MOTOR_CANARIO_ESTADO="$S/marcas"
-  unset FAKE_SERVICIO_RC FAKE_AGENTE_MUDO FAKE_FASE
+  unset FAKE_SERVICIO_RC FAKE_AGENTE_MUDO FAKE_ENTREGA_MUDA FAKE_SUDO_RC FAKE_FASE
 }
 cuenta() { grep -cF -- "$2" "$1" || true; }
+cuenta_reinicios() { grep -cE 'shutdown -r now|shutdown /r' "$FAKE_LOG" || true; } # los dos reinicios; no cuenta el `sudo -n -l shutdown`
 
 nuevo
 espera "entrega y reinicia las dos" 0 bash "$C"
@@ -51,26 +54,37 @@ contiene "canal de Hermi" "$FAKE_LOG" "hermes chat"
 grep -qi 'mac' "$FAKE_LOG" && fallo "se habló con la Mac: $(grep -i mac "$FAKE_LOG")"
 
 espera "repetir no reinicia ni entrega otra vez" 0 bash "$C"
-[ "$(cuenta "$FAKE_LOG" 'shutdown')" = 2 ] || fallo "se reinició más de una vez cada una"
+[ "$(cuenta "$FAKE_LOG" 'shutdown -r now')" = 1 ] && [ "$(cuenta "$FAKE_LOG" 'shutdown /r')" = 1 ] || fallo "se reinició más de una vez cada una"
 [ "$(cuenta "$FAKE_LOG" 'oc-forja.sh')" = 1 ] || fallo "se volvió a entregar a claw"
 
 nuevo; export FAKE_SERVICIO_RC=1
 espera "servicio caído: no reinicia" '!0' bash "$C"
-[ "$(cuenta "$FAKE_LOG" 'shutdown')" = 0 ] || fallo "reinició con el servicio caído"
+[ "$(cuenta_reinicios)" = 0 ] || fallo "reinició con el servicio caído"
 contiene "lo dice" "$S/salida" "servicio no está arriba"
 
 nuevo; export FAKE_AGENTE_MUDO=1
+espera "agente mudo: entrega directa y reinicia las dos" 0 bash "$C"
+contiene "entregó sin agente" "$FAKE_LOG" " entrega "
+[ "$(cuenta "$FAKE_LOG" 'shutdown -r now')" = 1 ] && [ "$(cuenta "$FAKE_LOG" 'shutdown /r')" = 1 ] || fallo "no reinició la Mini y la PC tras la entrega directa"
+
+nuevo; export FAKE_SUDO_RC=1
+espera "Mini sin sudo sin contraseña: no reinicia y falla" '!0' bash "$C"
+[ "$(cuenta "$FAKE_LOG" 'shutdown -r now')" = 0 ] || fallo "reinició la Mini sin poder"
+contiene "lo dice" "$S/salida" "sudoers"
+[ ! -e "$MOTOR_CANARIO_ESTADO/mini.reiniciada" ] || fallo "marcó reiniciada una Mini que no se reinició"
+
+nuevo; export FAKE_AGENTE_MUDO=1 FAKE_ENTREGA_MUDA=1
 espera "el motor no toma el plan: no reinicia" '!0' bash "$C"
-[ "$(cuenta "$FAKE_LOG" 'shutdown')" = 0 ] || fallo "reinició sin plan"
+[ "$(cuenta_reinicios)" = 0 ] || fallo "reinició sin plan"
 contiene "lo dice" "$S/salida" "no tomó el plan"
 
 nuevo; export FAKE_FASE=hecho
 espera "el plan termina sin pasar por a medias: no reinicia" '!0' bash "$C"
-[ "$(cuenta "$FAKE_LOG" 'shutdown')" = 0 ] || fallo "reinició un plan ya terminado"
+[ "$(cuenta_reinicios)" = 0 ] || fallo "reinició un plan ya terminado"
 
 nuevo; export FAKE_FASE=corriendo
 espera "corriendo sin bloque a medias: no reinicia" '!0' bash "$C"
-[ "$(cuenta "$FAKE_LOG" shutdown)" = 0 ] || fallo "reinició sin bloque a medias"
+[ "$(cuenta_reinicios)" = 0 ] || fallo "reinició sin bloque a medias"
 
 nuevo; echo a_medias >"$E/gon@mini-fake"; echo a_medias >"$E/gwpc"
 espera "el plan ya está en el motor: no se entrega de nuevo" 0 bash "$C"
@@ -78,9 +92,13 @@ espera "el plan ya está en el motor: no se entrega de nuevo" 0 bash "$C"
 
 nuevo
 espera "si el host de la Mini es esta máquina, se niega" '!0' env MOTOR_SSH_MINI=localhost bash "$C"
-[ "$(cuenta "$FAKE_LOG" 'shutdown')" = 0 ] || fallo "reinició con un host que es esta máquina"
+[ "$(cuenta_reinicios)" = 0 ] || fallo "reinició con un host que es esta máquina"
 
 nuevo
 espera "plan inexistente" '!0' env MOTOR_CANARIO_PLAN="$S/no-existe.md" bash "$C"
+
+nuevo; mkdir -p "$S/marcas"; : >"$S/marcas/mini.reiniciada"; : >"$S/marcas/pc.reiniciada"
+espera "limpia.sh (el rollback del despliegue) existe y borra las marcas" 0 bash "$RAIZ/ops/canario/limpia.sh"
+[ ! -e "$S/marcas/mini.reiniciada" ] && [ ! -e "$S/marcas/pc.reiniciada" ] || fallo "limpia.sh dejó marcas"
 
 termina
