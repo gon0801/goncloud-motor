@@ -178,9 +178,14 @@ class EntregaTest(unittest.TestCase):
         mq.write_text('tiene = ["ssh-goncloud"]\n' + mq.read_text())
         self.entrega()
         self.assertEqual(self.entrega()["estado"], "tomado")
-        cargas = lambda: [
-            e for e in Store(self.home / "motor.db").events() if e.kind == "PlanLoaded"
-        ]
+
+        def cargas():
+            return [
+                e
+                for e in Store(self.home / "motor.db").events()
+                if e.kind == "PlanLoaded"
+            ]
+
         self.assertEqual(len(cargas()), 1, "el mismo texto otra vez no hace nada")
         self.plan.write_text(
             self.plan.read_text(encoding="utf-8").replace(
