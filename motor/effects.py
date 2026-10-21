@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import string
 import subprocess
 import sys
@@ -723,6 +724,54 @@ Escribe en `$MOTOR_RESULT`:
         except subprocess.TimeoutExpired:
             return
         self.probe_human(plan, snap, a)
+
+    def limpia(self, plan: Plan, snap: m.Snapshot, a: m.Limpia) -> None:
+        """Plan hecho, probado y avisado: borra sus ramas (la del bloque y la de fotos) en GitHub, sus
+        copias de trabajo y de revisión en esta máquina. Los registros de cada intento se quedan
+        `registros_dias` (14) y los borra purga_registros. Las copias base de cada repo no se tocan."""
+        borradas: list[str] = []
+        espejos: set[Path] = set()
+        for bid, bv in snap.blocks.items():
+            if bv.block.human and not bv.block.rows:
+                continue
+            d = self.cx.ws.espejo(bv.block.repo)
+            espejos.add(d)
+            for rama in (
+                self.cx.ws.rama(plan.id, bid),
+                self.cx.ws.rama_wip(plan.id, bid),
+            ):
+                if git("ls-remote", "--heads", "origin", rama, cwd=d).stdout.strip():
+                    if (
+                        git("push", "-q", "origin", "--delete", rama, cwd=d).returncode
+                        == 0
+                    ):
+                        borradas.append(f"{bv.block.repo}:{rama}")
+                git("update-ref", "-d", f"refs/{rama}", cwd=d)
+            w = self.cx.home / "wt" / plan.id / bid
+            if w.exists():
+                git("worktree", "remove", "--force", str(w), cwd=d)
+            git("branch", "-q", "-D", self.cx.ws.rama(plan.id, bid), cwd=d)
+        shutil.rmtree(self.cx.home / "wt" / plan.id, ignore_errors=True)
+        for x in (self.cx.home / "tmp").glob(f"*-{plan.id}-*"):
+            shutil.rmtree(x, ignore_errors=True)
+        for x in (self.cx.home / "intentos" / plan.id).glob("*/revision"):
+            shutil.rmtree(x, ignore_errors=True)
+        for d in espejos:
+            git("worktree", "prune", cwd=d)
+        self.cx.store.append(
+            plan.id, "", "Limpiado", {"ramas": borradas}, ukey=f"limpiado:{plan.id}"
+        )
+
+    def purga_registros(self, planes: list[Plan], now: float) -> None:
+        """Borra los registros de intentos de los planes limpiados hace más de `registros_dias`."""
+        dias = float(self.cx.conf.tiempos.get("registros_dias", 14))
+        for p in planes:
+            limpio = next(
+                (e for e in self.cx.store.events(p.id) if e.kind == "Limpiado"), None
+            )
+            carpeta = self.cx.home / "intentos" / p.id
+            if limpio and now - limpio.ts > dias * 86400 and carpeta.exists():
+                shutil.rmtree(carpeta, ignore_errors=True)
 
     def notify(self, plan: Plan, snap: m.Snapshot, a: m.Notify) -> None:
         if a.template == "humano" and snap.blocks[a.block].human_done:

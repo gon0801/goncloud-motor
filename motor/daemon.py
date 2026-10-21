@@ -290,9 +290,13 @@ class Daemon:
                 snap = m.fold(plan, self.store.events(plan.id))
             hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
             todo_hecho = (
-                todo_hecho and hecho and f"terminado:{plan.id}" in snap.plan_notices
+                todo_hecho
+                and hecho
+                and f"terminado:{plan.id}" in snap.plan_notices
+                and snap.limpio
             )
         self.ajusta_sueno(any(not self._terminado(p) for p in planes), now)
+        self.fx.purga_registros(planes, now)
         self.cx.notifier.envia_pendientes()
         return todo_hecho and bool(planes)
 
@@ -362,6 +366,7 @@ class Daemon:
             m.Prove: self.fx.prove,
             m.ProbeHuman: self.fx.probe_human,
             m.Notify: self.fx.notify,
+            m.Limpia: self.fx.limpia,
         }[type(a)]
         f(plan, snap, a)
 
