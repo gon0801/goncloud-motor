@@ -36,6 +36,7 @@ class Policy:
     rondas_max_por_modelo: int = 5
     cooldown_default_s: float = 5 * 3600
     aviso_lento_s: float = 6 * 3600
+    agentes_por_maquina: int = 0  # tope de agentes a la vez en esta máquina, sumando todos los planes (0 = sin tope)
     avance_cada_s: float = (
         3600  # resumen a David mientras el plan corre (orden de David, 2026-10-20)
     )
@@ -69,6 +70,7 @@ class Policy:
             cooldown_default_s=t.get("cooldown_default_s", 5 * 3600),
             aviso_lento_s=t.get("aviso_lento_s", 6 * 3600),
             avance_cada_s=t.get("avance_cada_s", 3600),
+            agentes_por_maquina=int(t.get("agentes_por_maquina", 0)),
         )
 
 
@@ -561,6 +563,11 @@ def _elige_pasada(
             continue
         if ocupados.get(cuenta, 0) >= policy.max_parallel.get(cuenta, 1):
             continue
+        if (
+            policy.agentes_por_maquina
+            and sum(ocupados.values()) >= policy.agentes_por_maquina
+        ):
+            return None  # la máquina ya tiene su tope de agentes: espera turno
         fallas = 0
         for a in reversed(mios):
             if a.ended and a.ended.get("kind") in ("entregado", "veredicto"):
@@ -603,10 +610,14 @@ def _mismo_bloqueante_dos_veces(bv: BlockView) -> bool:
     return len(textos) >= 2 and textos[-1] == textos[-2] and bool(textos[-1])
 
 
-def decide(snap: Snapshot, policy: Policy, now: float) -> list[Action]:
+def decide(
+    snap: Snapshot, policy: Policy, now: float, externos: dict[str, int] | None = None
+) -> list[Action]:
+    """`externos`: agentes corriendo en OTROS planes de esta máquina, por cuenta. Los topes son por
+    máquina, no por plan (con dos planes en la Mini, cada uno creía libre la cuenta de Claude)."""
     policy = policy.para(snap.plan)
     acciones: list[Action] = []
-    reservas: dict[str, int] = {}
+    reservas: dict[str, int] = dict(externos or {})
     todos_hechos = True
     for bid, bv in snap.blocks.items():
         b = bv.block
@@ -640,7 +651,7 @@ def decide(snap: Snapshot, policy: Policy, now: float) -> list[Action]:
             )
             mo = _elige(ladder, snap, policy, now, bv, role, reservas)
             if mo is None:
-                acciones.extend(_sin_agente(snap, policy, now, ladder, bv))
+                acciones.extend(_sin_agente(snap, policy, now, ladder, bv, reservas))
             else:
                 c = policy.cuenta.get(mo, mo)
                 reservas[c] = reservas.get(c, 0) + 1
@@ -769,7 +780,12 @@ def _sin_avance_propio(bv: BlockView, e: Estado, policy: Policy, now: float) -> 
 
 
 def _sin_agente(
-    snap: Snapshot, policy: Policy, now: float, ladder: tuple[str, ...], bv: BlockView
+    snap: Snapshot,
+    policy: Policy,
+    now: float,
+    ladder: tuple[str, ...],
+    bv: BlockView,
+    reservas: dict[str, int] | None = None,
 ) -> list[Action]:
     """Nadie de la escalera puede ahora. En cuota: el reloj los devuelve solos (aviso solo si
     tarda más de `aviso_lento_s`). Ocupados: el siguiente tick. Agotados: un aviso y sigue el resto."""
@@ -790,6 +806,13 @@ def _sin_agente(
             ]
         return []
     ocupados = _ocupados(snap, policy)
+    for k, v in (reservas or {}).items():
+        ocupados[k] = ocupados.get(k, 0) + v
+    if (
+        policy.agentes_por_maquina
+        and sum(ocupados.values()) >= policy.agentes_por_maquina
+    ):
+        return []  # todos los lugares de la máquina están ocupados: es turno, no atoro
     if any(
         ocupados.get(policy.cuenta.get(m, m), 0)
         >= policy.max_parallel.get(policy.cuenta.get(m, m), 1)

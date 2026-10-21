@@ -58,19 +58,29 @@ def _run_tope(
 def _run(
     cmd: str, cwd: Path | None, env: dict, timeout: float = 900
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    """Corre `cmd` en su propio grupo; al pasarse del tope mata el grupo entero, no solo el shell.
+    Shopify-token-01: el tope cortaba `bash desplegar.sh` y el `crontab -` que había abierto se
+    quedaba colgado en la Mini, esperando un permiso que nadie contestaba."""
+    p = subprocess.Popen(
         cmd,
-        check=False,
         cwd=cwd,
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         errors="replace",
         stdin=subprocess.DEVNULL,
-        timeout=timeout,
         shell=True,
         executable="/bin/bash" if os.name != "nt" else None,
+        **plataforma.kwargs_grupo(),
     )
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        plataforma.matar_grupo(p)
+        p.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
 def es_del_agente(motivo: str) -> bool:
