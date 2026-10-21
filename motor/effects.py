@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import machine as m
+from .plataforma.windows import argv_en_wsl
 from . import plataforma, relevo
 from .conf import Conf, Maquina, RepoConf
 from .fallas import PROVEEDORES
@@ -178,7 +179,7 @@ class Effects:
         if (
             ruta.cli in self.cx.maquina.wsl
         ):  # Muse en la PC: dentro de WSL, con su token pasado por WSLENV
-            argv = ["wsl.exe", "-e", *argv]
+            argv = argv_en_wsl(argv)
         base = self.env_base()
         de_ruta = {k: string.Template(v).safe_substitute(base) for k, v in ruta.env}
         env = self.env_base(
