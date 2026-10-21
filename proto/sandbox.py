@@ -14,6 +14,12 @@ from pathlib import Path
 PROTO = Path(__file__).resolve().parent
 PY = sys.executable
 
+# Windows escribe en cp1252 por defecto: los archivos de prueba se escriben siempre en UTF-8.
+_escribe = Path.write_text
+Path.write_text = lambda self, data, encoding="utf-8", *a, **k: _escribe(
+    self, data, encoding, *a, **k
+)
+
 
 def sh(*a: str, cwd: Path | None = None) -> None:
     subprocess.run(
@@ -113,7 +119,7 @@ checklist = "ops/checklist.sh"
 rollback = "ops/rollback.sh"
 requiere = []
 [pruebas.env]
-PROD_DIR = "{prod}"
+PROD_DIR = "{Path(prod).as_posix()}"
 """,
         },
     )
@@ -166,7 +172,7 @@ PROD_DIR = "{prod}"
         )
         rutas.append(
             f'[rutas.{mo}]\ncuenta = "{cuentas.get(mo, mo)}"\ncli = "{(pstack or {}).get("clis", {}).get(mo, mo)}"\nmax_parallel = 2\n'
-            f'argv = ["{PY}", "{PROTO / script}", "--modo", "{modos.get(mo, "ok")}"{extra}, "--prompt-file", "{{brief}}"]\n'
+            f'argv = ["{Path(PY).as_posix()}", "{(PROTO / script).as_posix()}", "--modo", "{modos.get(mo, "ok")}"{extra}, "--prompt-file", "{{brief}}"]\n'
         )
     (conf / "rutas.toml").write_text("\n".join(rutas))
     (conf / "general.toml").write_text(f"""[tiempos]
@@ -206,10 +212,10 @@ token_env = "MOTOR_TELEGRAM_TOKEN"
     home = base / "home"
     home.mkdir()
     (home / "maquina.toml").write_text(f"""nombre = "Mac (prueba)"
-conf = "{conf}"
-github = "falso:{gh}"
+conf = "{Path(conf).as_posix()}"
+github = "falso:{Path(gh).as_posix()}"
 [env]
-FAKE_STATE = "{base / "fake-state"}"
+FAKE_STATE = "{(base / "fake-state").as_posix()}"
 """)
     sec = home / "secretos.env"
     sec.write_text("MOTOR_TELEGRAM_TOKEN=prueba\n")
@@ -218,7 +224,7 @@ FAKE_STATE = "{base / "fake-state"}"
     plan.write_text(f"""# Demo de saludo
 autopiloto: motor
 plan: demo
-repo: {app}
+repo: {Path(app).as_posix()}
 
 ## Bloque A — archivos de saludo
 lane: gate
@@ -251,7 +257,7 @@ prueba-real: test "$(cat "$PROD_DIR/version.txt")" = v2 && test "$(git -C "$MOTO
 
 ## Bloque C — guía en el repo de documentación
 lane: gate
-repo: {docs}
+repo: {Path(docs).as_posix()}
 aviso: la guía ya está publicada
 prueba-real: true
 | Fila | Contenido | Acepta |
