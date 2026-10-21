@@ -229,6 +229,19 @@ def argv_wsl(
     ]
 
 
+def ruta_wsl(x: str) -> str:
+    """`C:\\Users\\x\\brief.md` -> `/mnt/c/Users/x/brief.md`; lo demás queda igual."""
+    if len(x) > 2 and x[1] == ":" and x[0].isalpha() and x[2] in "\\/":
+        return f"/mnt/{x[0].lower()}" + x[2:].replace("\\", "/")
+    return x
+
+
+def argv_en_wsl(argv: list[str]) -> list[str]:
+    """Comando que corre DENTRO de WSL: las rutas de Windows del argv se traducen (MOTOR 01, PC:
+    Muse no encontraba `C:\\...\\brief.md`). El directorio de trabajo lo traduce wsl.exe solo."""
+    return ["wsl.exe", "-e", *(ruta_wsl(x) for x in argv)]
+
+
 def env_wsl(env: dict, nombres: list[str]) -> dict:
     """`wsl.exe` solo pasa a Linux las variables listadas en WSLENV (separadas por `:`)."""
     previas = [n for n in env.get("WSLENV", "").split(":") if n]

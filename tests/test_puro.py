@@ -701,6 +701,31 @@ class ServicioTest(unittest.TestCase):
                 [r"C:\x\claude.exe", "-p"],
             )
 
+    def test_wsl_traduce_rutas_de_windows(self):
+        """MOTOR 01, PC: Muse corría en WSL pero recibía `C:\\...\\brief.md`, que Linux no ve."""
+        from motor.plataforma.windows import argv_en_wsl
+
+        self.assertEqual(
+            argv_en_wsl(
+                [
+                    "muse",
+                    "exec",
+                    "--prompt-file",
+                    r"C:\Users\ehven\.motor\brief.md",
+                    "--json",
+                ]
+            ),
+            [
+                "wsl.exe",
+                "-e",
+                "muse",
+                "exec",
+                "--prompt-file",
+                "/mnt/c/Users/ehven/.motor/brief.md",
+                "--json",
+            ],
+        )
+
     def test_windows_entorno_minimo(self):
         from motor.plataforma.windows import env_minimo_windows
 
