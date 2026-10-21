@@ -80,7 +80,8 @@ def veredicto(
 
 def _salto_del_borrador(run: dict, listo_desde: str | None) -> bool:
     return run.get("conclusion") == "skipped" and (
-        listo_desde is None or (run.get("completed_at") or "") < listo_desde
+        listo_desde is None
+        or (listo_desde != "" and (run.get("completed_at") or "") <= listo_desde)
     )
 
 

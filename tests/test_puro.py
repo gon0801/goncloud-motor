@@ -435,6 +435,12 @@ humano: login pega las llaves
             ("completa",),
             "en borrador ningún salto cuenta",
         )
+        mismo_segundo = [*borrador, run("completa", "skipped", "19:37:40")]
+        self.assertEqual(
+            veredicto("s", req, mismo_segundo, listo).faltan,
+            ("completa",),
+            "en el mismo segundo no se sabe si fue antes o después de listo",
+        )
         tras_listo = [*borrador, run("completa", "skipped", "19:37:51")]
         self.assertTrue(veredicto("s", req, tras_listo, listo).green)
         corre = [*borrador, run("completa", "success", "19:45:00")]
