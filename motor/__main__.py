@@ -31,7 +31,7 @@ from pathlib import Path
 
 from . import machine as m
 from .conf import ConfError, load_conf, load_maquina, valida_maquina
-from .plan import PlanError, parse_plan
+from .plan import PlanError, parse_plan, revisa_sin_quien
 from .workspace import SECRETO as SECRETO_CONF
 
 
@@ -75,16 +75,23 @@ def _recibo(home: Path, cmd_id: str) -> dict:
 
 
 def _valida(path: Path, home: Path | None):
-    impl, modelos = 0, None
+    impl, modelos, tabla = 0, None, ()
     if home and (home / "maquina.toml").exists():
         conf = load_conf(load_maquina(home).conf)
-        impl, modelos = len(conf.escalera("implementar")), set(conf.rutas)
-    return parse_plan(
+        impl, modelos, tabla = (
+            len(conf.escalera("implementar")),
+            set(conf.rutas),
+            conf.escalera("implementar"),
+        )
+    plan = parse_plan(
         path.read_text(encoding="utf-8"),
         min_implementadores=2 if home else 0,
         implementadores=impl,
         modelos=modelos,
     )
+    if tabla and (malos := revisa_sin_quien(plan, tabla)):
+        raise PlanError(malos)
+    return plan
 
 
 def _estado(home: Path) -> list[dict]:

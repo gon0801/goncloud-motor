@@ -295,6 +295,46 @@ class TestPedidoDeModelos(Banco):
 
 
 class TestEntregaSegura(Banco):
+    def test_un_intento_lanzado_y_no_anotado_se_recupera_de_su_marca(self):
+        """Revisión de Grok: si el motor muere entre lanzar al agente y anotarlo, el intento no contaba
+        para los topes ni se recogía su resultado."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        d = Daemon(self.home)
+        d.ingest_inbox()
+        plan = d.plans()[0]
+        carpeta = self.home / "intentos" / "demo" / "A-implementar-1"
+        carpeta.mkdir(parents=True)
+        datos = {
+            "n": 1,
+            "role": "implementar",
+            "modelo": "glm",
+            "cuenta": "zai",
+            "proc": {"pid": 1, "boot_id": "x"},
+            "dir": str(carpeta),
+            "sha": "",
+            "conf_sha": "c",
+            "feedback": [],
+        }
+        (carpeta / "started").write_text(json.dumps(datos), encoding="utf-8")
+        d.fx.start_attempt(
+            plan,
+            m.fold(plan, d.store.events("demo")),
+            m.StartAttempt("A", "implementar", "glm", 1, "", ()),
+        )
+        anotados = [e for e in d.store.events("demo") if e.kind == "AttemptStarted"]
+        self.assertEqual(
+            [(e.block, e.data["modelo"]) for e in anotados], [("A", "glm")]
+        )
+
     def test_un_plan_rechazado_se_avisa_aunque_quien_entrego_se_fue_con_encolado(self):
         """MOTOR 01: claw entregó INGESTA 01, se fue con "encolado" y el motor de la Mini lo rechazó
         sin que nadie se enterara."""

@@ -175,6 +175,19 @@ def modelos_desconocidos(plan: Plan, conocidos) -> list[str]:
     ]
 
 
+def revisa_sin_quien(plan: Plan, implementadores_tabla) -> list[str]:
+    """Con la tabla a la mano: si `revisa:` solo trae modelos que pueden implementar este plan, en
+    cuanto uno entregue nadie podrá revisarlo (revisión de Grok a MOTOR 01: `revisa: sonnet` sin
+    `implementa:` dejaba el bloque atorado)."""
+    efectivos = set(plan.implementa or implementadores_tabla)
+    if plan.revisa and set(plan.revisa) <= efectivos:
+        return [
+            "'revisa:' necesita al menos un modelo que no pueda implementar este plan "
+            f"(implementan: {', '.join(sorted(efectivos))}); nadie revisa su propio trabajo"
+        ]
+    return []
+
+
 def parse_plan(
     texto: str,
     *,

@@ -1,6 +1,7 @@
 [tiempos]
+agentes_por_maquina = 4   # tope de agentes a la vez por máquina, sumando todos los planes
 timeout_s = 14400         # 4 h por intento
-sin_avance_s = 2700       # 45 min sin cambios -> se detiene y entra otro
+sin_avance_s = 2700       # 45 min sin cambios -> se detiene; a la segunda vez seguida, entra otro modelo
 wip_cada_s = 300          # foto del trabajo a medias cada 5 min
 checks_cada_s = 60
 cooldown_default_s = 18000

@@ -28,7 +28,7 @@ from .conf import (
 from .effects import Contexto, Effects
 from .github import para
 from .notify import Notifier, render
-from .plan import Plan, PlanError, modelos_desconocidos
+from .plan import Plan, PlanError, modelos_desconocidos, revisa_sin_quien
 from .store import Store
 from .version import SALIDA_RELANZAR, info, pide_otra
 from .workspace import Workspace, git
@@ -157,7 +157,9 @@ class Daemon:
             if tipo == "plan":
                 try:
                     plan = Plan.from_dict(msg["plan"])
-                    if malos := modelos_desconocidos(plan, self.cx.conf.rutas):
+                    if malos := modelos_desconocidos(
+                        plan, self.cx.conf.rutas
+                    ) or revisa_sin_quien(plan, self.cx.conf.escalera("implementar")):
                         raise PlanError(malos)
                     for repo in dict.fromkeys(b.repo for b in plan.blocks):
                         self.cx.ws.espejo(
@@ -275,8 +277,14 @@ class Daemon:
             self.ingest_attempts(plan)
         for plan in planes:
             snap = m.fold(plan, self.store.events(plan.id))
+            cd_fuera, int_fuera = self._cuentas_fuera(planes, plan)
             for a in m.decide(
-                snap, self.cx.policy, now, self._ocupados_fuera(planes, plan)
+                snap,
+                self.cx.policy,
+                now,
+                self._ocupados_fuera(planes, plan),
+                cd_fuera,
+                int_fuera,
             ):
                 clave = (plan.id, _bloque(a), type(a).__name__)
                 if now < self._espera_efecto.get(clave, 0):
@@ -299,6 +307,21 @@ class Daemon:
         self.fx.purga_registros(planes, now)
         self.cx.notifier.envia_pendientes()
         return todo_hecho and bool(planes)
+
+    def _cuentas_fuera(
+        self, planes: list[Plan], este: Plan
+    ) -> tuple[dict[str, float], tuple]:
+        """Pausas de cuota e intentos terminados de los otros planes de esta máquina."""
+        cd: dict[str, float] = {}
+        intentos: list = []
+        for p in planes:
+            if p.id == este.id:
+                continue
+            s = m.fold(p, self.store.events(p.id))
+            for c, h in s.cooldowns.items():
+                cd[c] = max(cd.get(c, 0), h)
+            intentos += [a for bv in s.blocks.values() for a in bv.attempts if a.ended]
+        return cd, tuple(intentos)
 
     def _ocupados_fuera(self, planes: list[Plan], este: Plan) -> dict[str, int]:
         """Agentes corriendo en los otros planes de esta máquina, por cuenta."""
