@@ -73,10 +73,17 @@ def es_del_agente(motivo: str) -> bool:
     )
 
 
+SONDA_CADA_S = 120
+SONDA_TOPE_S = 900
+
+
 class Effects:
     def __init__(self, cx: Contexto):
         self.cx = cx
         self._ultimo_poll: dict[str, float] = {}
+        self._sondas: dict[
+            str, tuple[subprocess.Popen, float]
+        ] = {}  # sonda humana corriendo aparte
 
     # ------------------------------------------------------------------ entorno
     def env_base(self, extra: dict | None = None) -> dict:
@@ -626,22 +633,52 @@ Escribe en `$MOTOR_RESULT`:
         )
 
     def probe_human(self, plan: Plan, snap: m.Snapshot, a: m.ProbeHuman) -> None:
+        """La sonda corre aparte y sin tope de un minuto: una revisión de tres máquinas tarda varios
+        (MOTOR 01, bloque E: con 60 s nunca pasaba). Una a la vez por bloque y como mucho cada 2 min;
+        el tick no la espera."""
         h = plan.block(a.block).human
-        if (
-            h
-            and h.sonda
-            and _run(
-                h.sonda, None, self.env_base({"MOTOR_HOME": str(self.cx.home)}), 60
-            ).returncode
-            == 0
-        ):
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "HumanDone",
-                {"por": "sonda"},
-                ukey=f"humano:{plan.id}:{a.block}",
-            )
+        if not (h and h.sonda):
+            return
+        clave, ahora = f"{plan.id}:{a.block}", time.time()
+        corriendo = self._sondas.get(clave)
+        if corriendo:
+            p, desde = corriendo
+            if p.poll() is None:
+                if ahora - desde > SONDA_TOPE_S:
+                    p.kill()
+                    p.wait()
+                    self._sondas.pop(clave)
+                return
+            self._sondas.pop(clave)
+            if p.returncode == 0:
+                self.cx.store.append(
+                    plan.id,
+                    a.block,
+                    "HumanDone",
+                    {"por": "sonda"},
+                    ukey=f"humano:{plan.id}:{a.block}",
+                )
+            self._ultimo_poll[f"sonda:{clave}"] = ahora
+            return
+        if ahora - self._ultimo_poll.get(f"sonda:{clave}", 0) < SONDA_CADA_S:
+            return
+        p = subprocess.Popen(
+            h.sonda,
+            shell=True,
+            env=self.env_base({"MOTOR_HOME": str(self.cx.home)}),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            executable="/bin/bash" if os.name != "nt" else None,
+        )
+        self._sondas[clave] = (p, ahora)
+        try:
+            p.wait(
+                timeout=5
+            )  # una sonda rápida (un archivo) se resuelve en este mismo paso: sin aviso de más
+        except subprocess.TimeoutExpired:
+            return
+        self.probe_human(plan, snap, a)
 
     def notify(self, plan: Plan, snap: m.Snapshot, a: m.Notify) -> None:
         if a.template == "humano" and snap.blocks[a.block].human_done:

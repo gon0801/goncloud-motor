@@ -622,6 +622,50 @@ class TestArregloTrasDespliegueFallido(Banco):
         )
 
 
+class TestSondaLenta(Banco):
+    def test_una_sonda_de_varios_minutos_no_traba_el_motor_y_si_cuenta(self):
+        """MOTOR 01, bloque E: la sonda revisa tres máquinas y tarda minutos; con tope de 60 s
+        nunca pasaba. Ahora corre aparte: el tick no la espera y, al terminar bien, cuenta."""
+        import motor.effects as ef
+
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        self.plan.write_text(
+            self.plan.read_text().replace(
+                'sonda-humano: test -f "$MOTOR_HOME/login-hecho"',
+                'sonda-humano: sleep 8 && test -f "$MOTOR_HOME/login-hecho"',
+            )
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        (self.home / "login-hecho").write_text("ok")
+        d = Daemon(self.home)
+        d.fx.start_attempt = lambda *_: None
+        viejo, ef.SONDA_CADA_S = ef.SONDA_CADA_S, 0
+        try:
+            inicio = time.time()
+            d.tick()
+            self.assertLess(time.time() - inicio, 7, "el tick no espera la sonda (8 s)")
+            self.assertTrue(
+                esperar(
+                    lambda: (
+                        (d.tick() or True)
+                        and any(e.kind == "HumanDone" for e in eventos(self.home))
+                    ),
+                    tope=40,
+                ),
+                "la sonda lenta sí cuenta",
+            )
+        finally:
+            ef.SONDA_CADA_S = viejo
+
+
 class TestFallas(Banco):
     def test_stdin_no_cuelga(self):
         self.arranca(modos={"sonnet": "stdin", "glm": "stdin"})
