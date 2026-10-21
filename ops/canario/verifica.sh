@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Espera el final de la prueba de fuego (tope de 3 h) y sale 0 solo si, en CADA máquina (claw/Mini y
+# Hermi/PC), el plan canario terminó; hay un PR y un merge por bloque de código y su prueba real;
+# el paso humano quedó hecho; el reinicio quedó anotado como corte (no como falla); y llegaron por
+# el bot de esa marca el aviso de cada bloque, el de «retomé» y el de «terminé». La Mac no cuenta.
+# Si una máquina está reiniciándose, el ssh falla y simplemente se vuelve a mirar.
+#   MOTOR_CANARIO_PLAN       el plan (por omisión, plan.md de esta carpeta)
+#   MOTOR_CANARIO_TOPE_S     cuánto espera como máximo (10800 = 3 h)
+#   MOTOR_CANARIO_SONDEO_S   cada cuánto mira (60)
+set -uo pipefail
+export LC_ALL=C
+aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$aqui/../lib.sh"
+
+PLAN="${MOTOR_CANARIO_PLAN:-$aqui/plan.md}"
+TOPE_S="${MOTOR_CANARIO_TOPE_S:-10800}"
+SONDEO_S="${MOTOR_CANARIO_SONDEO_S:-60}"
+CANARIO_MAQUINAS="mini pc"
+
+d="$(mktemp -d)"
+trap 'rm -rf "$d"' EXIT
+
+# Los bloques del plan: ids de código y ids de paso humano (del mismo analizador que usa el motor).
+listas="$(PYTHONPATH="$aqui/../.." python3 -I - "$PLAN" <<'PY'
+import sys
+sys.path.insert(0, __import__("os").environ["PYTHONPATH"])
+from motor.plan import parse_plan
+
+plan = parse_plan(open(sys.argv[1], encoding="utf-8").read())
+print(plan.id)
+print(",".join(b.id for b in plan.blocks if b.human is None))
+print(",".join(b.id for b in plan.blocks if b.human is not None))
+PY
+)" || { echo "no pude leer el plan: $PLAN" >&2; exit 2; }
+PLAN_ID="$(sed -n 1p <<<"$listas")" CODIGO="$(sed -n 2p <<<"$listas")" HUMANO="$(sed -n 3p <<<"$listas")"
+
+py='if python3 -c "import sqlite3" 2>/dev/null; then py=python3; else py="uv run --python 3.12 python"; fi; $py -'
+pc_py="$PC_UV run --python 3.12 python -"
+
+# toma <m>: el resumen de esa máquina en $d/<m>.json (vacío si no contesta).
+toma() {
+  local m=$1
+  if [ "$m" = pc ]; then
+    ssh_a "$(host_de pc)" "$pc_py %USERPROFILE%\\.motor $PLAN_ID \"$CODIGO\" \"$HUMANO\"" <"$aqui/resumen.py" 2>"$d/$m.err" | tr -d '\r' >"$d/$m.json"
+  else
+    ssh_a "$(host_de mini)" "$(printf '%q ' bash -c "$py \"\$HOME/.motor\" $PLAN_ID \"$CODIGO\" \"$HUMANO\"")" <"$aqui/resumen.py" 2>"$d/$m.err" >"$d/$m.json"
+  fi
+}
+
+# juzga: lee los resúmenes, imprime la tabla y sale 0 (todo bien), 1 (falta algo) o 3 (falla definitiva).
+juzga() {
+  python3 -I - "$d" "$CANARIO_MAQUINAS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+d, maquinas = Path(sys.argv[1]), sys.argv[2].split()
+NOMBRE = {"mini": "claw (Mini)", "pc": "Hermi (PC)"}
+faltan, definitivas = [], []
+for m in maquinas:
+    txt = (d / f"{m}.json").read_text(errors="replace").strip()
+    try:
+        r = json.loads(txt.splitlines()[-1]) if txt else None
+    except ValueError:
+        r = None
+    n = NOMBRE[m]
+    if r is None:
+        err = (d / f"{m}.err").read_text(errors="replace").strip().splitlines()
+        faltan.append(f"{n}: no contestó ({err[-1] if err else 'sin salida'})")
+        continue
+    if not r["plan_existe"]:
+        faltan.append(f"{n}: el motor no tiene el plan")
+        continue
+    if not r["terminado"]:
+        faltan.append(f"{n}: el plan no ha terminado")
+    for b, v in r["bloques"].items():
+        if "humano_hecho" in v:
+            if not v["humano_hecho"]:
+                faltan.append(f"{n}: el paso humano {b} no se detectó")
+            continue
+        if v["prs"] < 1:
+            faltan.append(f"{n}: el bloque {b} no tiene PR")
+        if v["merges"] < 1:
+            faltan.append(f"{n}: el bloque {b} no tiene merge")
+        if not v["probado"]:
+            faltan.append(f"{n}: el bloque {b} no pasó su prueba real")
+    if r["cortes_como_falla"]:
+        definitivas.append(f"{n}: un corte se trató como falla (agente castigado por un reinicio)")
+    if r["cortes"] < 1:
+        faltan.append(f"{n}: no hay ningún corte anotado (¿se reinició a media corrida?)")
+    for aviso, llego in r["avisos"].items():
+        if not llego:
+            faltan.append(f"{n}: no llegó el aviso «{aviso}» por su bot")
+    if r["avisos_pendientes"]:
+        faltan.append(f"{n}: {r['avisos_pendientes']} aviso(s) siguen sin enviarse")
+for linea in definitivas + faltan:
+    print(f"  - {linea}")
+sys.exit(3 if definitivas else 1 if faltan else 0)
+PY
+}
+
+fin=$((SECONDS + TOPE_S))
+while :; do
+  for m in $CANARIO_MAQUINAS; do toma "$m" & done
+  wait
+  falta="$(juzga)"
+  rc=$?
+  case $rc in
+    0) echo "Prueba de fuego aprobada: claw y Hermi terminaron el plan, con un PR y un merge por bloque, el corte anotado y los avisos recibidos."; exit 0 ;;
+    3) echo "La prueba de fuego FALLÓ de forma definitiva:" >&2; echo "$falta" >&2; exit 1 ;;
+  esac
+  if [ $SECONDS -ge $fin ]; then
+    echo "La prueba de fuego no terminó en ${TOPE_S}s. Falta:" >&2; echo "$falta" >&2; exit 1
+  fi
+  echo "[$((SECONDS))s] todavía falta:"; echo "$falta"
+  sleep "$SONDEO_S"
+done
