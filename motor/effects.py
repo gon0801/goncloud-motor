@@ -847,6 +847,12 @@ Escribe en `$MOTOR_RESULT`:
                 "kind": "sin_cambios",
                 "detalle": "volvió a entregar lo mismo que ya había fallado",
             }
+        if self._es_la_base_al_cargar(snap, block, punta):
+            return {
+                "kind": "sin_cambios",
+                "detalle": "entregó la punta de la rama principal tal como estaba al cargar el plan: "
+                "no cambió nada",
+            }
         if block.es_bug and (
             falla := self._comprueba_repro(plan, snap, block, res, punta)
         ):
@@ -895,6 +901,19 @@ Escribe en `$MOTOR_RESULT`:
                 },
             },
             ukey=claves.intento_terminado(plan.id, a.block, a.role, a.n),
+        )
+
+    def _es_la_base_al_cargar(self, snap: m.Snapshot, block, punta: str) -> bool:
+        """¿Lo entregado es la rama principal de cuando se cargó el plan, o algo que ya estaba en ella?
+        Eso no es un cambio: dárselo por bueno terminaba en un `Merged` sin que nadie mergeara nada."""
+        base = snap.repos.get(block.repo, {}).get("sha", "")
+        if not base:
+            return False
+        if punta == base:
+            return True
+        espejo = self.cx.ws.espejo(block.repo)
+        return (
+            git("merge-base", "--is-ancestor", punta, base, cwd=espejo).returncode == 0
         )
 
     def _entrego(self, plan: Plan, block_id: str, d: Path) -> bool:
@@ -1048,13 +1067,7 @@ Escribe en `$MOTOR_RESULT`:
             # la Mini): no hay nada que mergear y GitHub no deja abrir un PR vacío. Se da por mergeado
             # y sigue a la prueba real, que es la que dice si de verdad funciona.
             base = git("rev-parse", f"origin/{rc.principal}", cwd=d).stdout.strip()
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "Merged",
-                {"sha": a.sha, "commit": base, "ya_en_base": True},
-                ukey=claves.integrado(plan.id, a.block, a.sha),
-            )
+            self.adopta_externo(plan, snap, a.block, a.sha, base, ya_en_base=True)
             return
         pr = self.cx.gh.abrir_pr(
             block.repo,
@@ -1103,14 +1116,42 @@ Escribe en `$MOTOR_RESULT`:
                 ukey=claves.pr_cerrado(plan.id, block_id, numero),
             )
             return True
+        self.adopta_externo(plan, snap, block_id, sha, v.merge_commit)
+        return True
+
+    def adopta_externo(
+        self,
+        plan: Plan,
+        snap: m.Snapshot,
+        block_id: str,
+        sha: str,
+        commit: str,
+        ya_en_base: bool = False,
+    ) -> None:
+        """Con `merge`, la única puerta de `Merged`: un merge que alguien hizo por fuera del motor se
+        adopta para que el plan siga, y se avisa una vez."""
+        bv = snap.blocks[block_id]
+        clave = f"externo:{block_id}"
+        avisado = clave in bv.notices or any(
+            e.kind == "NoticeQueued" and e.data["key"] == clave
+            for e in self.cx.store.events(plan.id)
+        )  # el log, no solo la foto: un reintento con la foto vieja no avisa dos veces
+        if not avisado:
+            self.notify(
+                plan,
+                snap,
+                m.Notify(clave, block_id, "externo", (("bloque", bv.block.aviso),)),
+            )
+        datos = {"sha": sha, "commit": commit, "externo": True}
+        if ya_en_base:
+            datos["ya_en_base"] = True
         self.cx.store.append(
             plan.id,
             block_id,
             "Merged",
-            {"sha": sha, "commit": v.merge_commit, "externo": True},
+            datos,
             ukey=claves.integrado(plan.id, block_id, sha),
         )
-        return True
 
     def poll_checks(self, plan: Plan, snap: m.Snapshot, a: m.PollChecks) -> None:
         k = f"{plan.id}:{a.block}:{a.sha}"

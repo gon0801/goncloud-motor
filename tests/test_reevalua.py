@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import subprocess
 import unittest
 import unittest.mock
@@ -433,14 +434,18 @@ def hecho_en(plan: Plan, version: int = 1) -> list:
     ]
 
 
+def entregar(d, cmd_id, plan):
+    from motor.plan import Comando
+
+    cmd = Comando.from_dict(
+        {"cmd_id": cmd_id, "tipo": "plan", "plan": plan, "por": "t"}
+    )
+    return d._procesa(cmd)
+
+
 class ReentregaTest(Banco):
     def _entrega(self, d, cmd_id, plan):
-        from motor.plan import Comando
-
-        cmd = Comando.from_dict(
-            {"cmd_id": cmd_id, "tipo": "plan", "plan": plan, "por": "t"}
-        )
-        return d._procesa(cmd)
+        return entregar(d, cmd_id, plan)
 
     def test_cada_entrega_distinta_es_una_version_y_el_recibo_la_dice(self):
         d = self.daemon()
@@ -665,6 +670,164 @@ class ReentregaTest(Banco):
         self.assertEqual(
             len([e for e in self.eventos("AttemptEnded") if e.block == "C"]), 1
         )
+
+
+def _git(*a, cwd=None):
+    r = subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@l", *a],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+class MergeTicketTest(Banco):
+    def setUp(self):
+        super().setUp()
+        self.d = self.daemon()
+        self.bare = Path(self.plan["blocks"][0]["repo"])
+        self.seed = self.tmp / "b" / "seed-app"
+        self.base0 = _git("rev-parse", "main", cwd=self.bare)
+
+    def commit(self, rama: str, archivo: str) -> str:
+        """Un commit nuevo sobre la base, empujado a `rama` del repo del bloque."""
+        _git("checkout", "-q", "-B", f"w-{archivo}", self.base0, cwd=self.seed)
+        (self.seed / archivo).write_text("x\n")
+        _git("add", "-A", cwd=self.seed)
+        _git("commit", "-q", "-m", archivo, cwd=self.seed)
+        sha = _git("rev-parse", "HEAD", cwd=self.seed)
+        _git("push", "-q", str(self.bare), f"HEAD:refs/heads/{rama}", cwd=self.seed)
+        return sha
+
+    def entrega_en_rama(self, plan_id: str, sha: str) -> None:
+        rama = self.d.cx.ws.rama(plan_id, "A")
+        _git("update-ref", f"refs/heads/{rama}", sha, cwd=self.bare)
+
+    def collect(self, plan_id: str, sha: str, n: int = 1):
+        plan = next(p for p in self.d.plans() if p.id == plan_id)
+        carpeta = self.tmp / f"intento-{plan_id}-{n}"
+        carpeta.mkdir()
+        (carpeta / "outcome.json").write_text(
+            json.dumps(
+                {"exit": 0, "timed_out": False, "no_progress": False, "tail": ""}
+            )
+        )
+        (carpeta / "result.json").write_text(
+            json.dumps({"sha": sha, "resumen": "listo"})
+        )
+        att = m.Attempt(
+            n=n,
+            role="implementar",
+            modelo="glm",
+            started=0.0,
+            proc={},
+            dir=str(carpeta),
+        )
+        return self.d.fx.collect(plan, self.d._fold(plan), "A", att)
+
+    def carga(self, plan_id="demo"):
+        entregar(self.d, f"c-{plan_id}", {**self.plan, "id": plan_id})
+        return next(p for p in self.d.plans() if p.id == plan_id)
+
+    # ------------------------------------------------------------------ sin_cambios
+
+    def test_entregar_la_punta_de_la_base_al_cargar_el_plan_es_sin_cambios(self):
+        self.carga()
+        self.entrega_en_rama("demo", self.base0)
+        out = self.collect("demo", self.base0)
+        self.assertEqual(out["kind"], "sin_cambios", out)
+
+    def test_entregar_algo_que_ya_estaba_en_la_base_al_cargar_tambien(self):
+        nuevo = self.commit("main", "uno.txt")
+        self.base0 = nuevo
+        self.carga("otro")
+        self.entrega_en_rama("otro", _git("rev-parse", f"{nuevo}^", cwd=self.bare))
+        out = self.collect("otro", _git("rev-parse", f"{nuevo}^", cwd=self.bare))
+        self.assertEqual(out["kind"], "sin_cambios", out)
+
+    def test_entregar_trabajo_nuevo_sigue_siendo_entregado(self):
+        self.carga()
+        sha = self.commit(self.d.cx.ws.rama("demo", "A"), "saludo.txt")
+        out = self.collect("demo", sha)
+        self.assertEqual((out["kind"], out["sha"]), ("entregado", sha))
+
+    def test_lo_que_otro_plan_mergeo_despues_de_cargar_no_es_sin_cambios(self):
+        self.carga()
+        ajeno = self.commit("main", "ajeno.txt")
+        self.entrega_en_rama("demo", ajeno)
+        self.assertEqual(self.collect("demo", ajeno)["kind"], "entregado")
+
+    # ------------------------------------------------------------------ Merged
+
+    def test_merged_solo_nace_de_merge_con_ticket_o_de_adoptar_uno_externo(self):
+        permitidas = {"merge", "adopta_externo"}
+        vistas = set()
+        for f in sorted((RAIZ / "motor").rglob("*.py")):
+            arbol = ast.parse(f.read_text(encoding="utf-8"))
+            for fn in ast.walk(arbol):
+                if not isinstance(fn, ast.FunctionDef):
+                    continue
+                for c in ast.walk(fn):
+                    if (
+                        isinstance(c, ast.Call)
+                        and isinstance(c.func, ast.Attribute)
+                        and c.func.attr == "append"
+                        and any(
+                            isinstance(x, ast.Constant) and x.value == "Merged"
+                            for x in c.args
+                        )
+                    ):
+                        vistas.add((f.name, fn.name))
+        self.assertEqual(
+            vistas, {("effects.py", n) for n in permitidas}, "otra parte anota Merged"
+        )
+
+    def test_merge_sin_ticket_no_anota_nada(self):
+        plan = self.carga()
+        snap = self.d._fold(plan)
+        with self.assertRaises(TypeError):
+            self.d.fx.merge(plan, snap, m.Merge("a" * 40))
+        self.assertEqual(self.eventos("Merged"), [])
+
+    def test_la_entrega_ya_en_la_base_se_adopta_y_se_avisa_una_vez(self):
+        plan = self.carga()
+        ajeno = self.commit("main", "ajeno.txt")
+        snap = self.d._fold(plan)
+        self.d.fx.open_pr(plan, snap, m.OpenPr("A", ajeno))
+        (merged,) = self.eventos("Merged")
+        self.assertEqual(
+            (merged.data["sha"], merged.data["externo"], merged.data["ya_en_base"]),
+            (ajeno, True, True),
+        )
+        (aviso,) = self.avisos("externo")
+        self.assertIn("Alguien integró el bloque", aviso.read_text())
+        self.assertIn("por fuera; sigo con eso", aviso.read_text())
+        self.d.fx.open_pr(plan, self.d._fold(plan), m.OpenPr("A", ajeno))
+        self.assertEqual(len(self.eventos("Merged")), 1)
+        self.assertEqual(len(self.avisos("externo")), 1, "avisa una vez")
+
+    def test_un_pr_mergeado_por_fuera_se_adopta_y_se_avisa_una_vez(self):
+        from motor.github import PrView
+
+        plan = self.carga()
+        sha = "a" * 40
+        self.d.store.append(
+            "demo", "A", "PrOpened", {"numero": 7, "rama": "x"}, ukey="pr"
+        )
+
+        class Gh:
+            def ver(self, repo, numero):
+                return PrView(numero, "x", "main", False, sha, "mergeado", "c" * 40)
+
+        self.d.fx.cx.gh = Gh()
+        snap = self.d._fold(plan)
+        for _ in range(2):  # un reintento con la misma foto del log
+            self.d.fx.poll_checks(plan, snap, m.PollChecks("A", sha))
+        (merged,) = self.eventos("Merged")
+        self.assertTrue(merged.data["externo"])
+        self.assertEqual(len(self.avisos("externo")), 1)
 
 
 class ClavesTest(unittest.TestCase):
