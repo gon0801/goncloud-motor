@@ -1335,20 +1335,133 @@ Escribe en `$MOTOR_RESULT`:
                     plan.id, a.block, a.sha, tuple(v.faltan), v.github_termino
                 ),
             )
+            self._relanza_saltada(plan, snap, a, v)
+            return
+        if not v.green and self._relanza_fallidas_tras_reentrega(plan, snap, a, v):
+            return  # una falla pasajera no se le cuenta todavía al agente
         if (
             v.terminal
         ):  # solo se anota el resultado final: los sondeos no ensucian el log
+            detalle = ""
+            if v.fallas:
+                detalle = self._detalle_rojo(plan, snap, a, v)
+            previos = sum(
+                1
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "ChecksResult"
+                and e.block == a.block
+                and e.data.get("sha") == a.sha
+            )
             self.cx.store.append(
                 plan.id,
                 a.block,
                 "ChecksResult",
-                {
-                    "sha": a.sha,
-                    "green": v.green,
-                    "detalle": f"fallaron: {list(v.fallas)}" if v.fallas else "",
-                },
-                ukey=claves.checks_resultado(plan.id, a.block, a.sha),
+                {"sha": a.sha, "green": v.green, "detalle": detalle},
+                ukey=claves.checks_resultado(plan.id, a.block, a.sha, vez=previos),
             )
+
+    def _relanza_saltada(self, plan, snap, a, v) -> None:
+        """Una obligatoria saltada en borrador y que GitHub ya no va a correr: se relanza una vez."""
+        if not (v.github_termino and v.faltan):
+            return
+        esp = snap.blocks[a.block].esperando.get(a.sha) or {}
+        if not esp.get("github_termino"):
+            return
+        espera = getattr(getattr(self.cx, "policy", None), "aviso_incoherente_s", 1800)
+        if time.time() - esp.get("desde", time.time()) < espera:
+            return
+        if any(
+            e.kind == "ChecksRelanzados"
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and e.data.get("motivo") == "saltada"
+            for e in self.cx.store.events(plan.id)
+        ):
+            return
+        repo = plan.block(a.block).repo
+        ids = []
+        for nombre in v.faltan:
+            for c in v.corridas:
+                if c.get("nombre") == nombre and c.get("run_id"):
+                    self.cx.gh.relanzar_corrida(repo, c["run_id"])
+                    ids.append(c["run_id"])
+        if ids:
+            self.cx.store.append(
+                plan.id,
+                a.block,
+                "ChecksRelanzados",
+                {"sha": a.sha, "motivo": "saltada", "run_ids": ids},
+                ukey=claves.checks_relanzados(plan.id, a.block, a.sha, "saltada"),
+            )
+
+    def _relanza_fallidas_tras_reentrega(self, plan, snap, a, v) -> bool:
+        eventos = self.cx.store.events(plan.id)
+        rojos = [
+            e
+            for e in eventos
+            if e.kind == "ChecksResult"
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and not e.data.get("green")
+        ]
+        if not rojos:
+            return False
+        bv = snap.blocks[a.block]
+        if bv.entrega_ts(a.sha) <= rojos[-1].ts:
+            return False
+        if any(
+            e.kind == "ChecksRelanzados"
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and e.data.get("motivo") == "fallidas"
+            and e.ts > rojos[-1].ts
+            for e in eventos
+        ):
+            return False
+        repo = plan.block(a.block).repo
+        ids = []
+        for c in v.corridas_fallidas:
+            if c.get("run_id"):
+                self.cx.gh.relanzar_fallidas(repo, c["run_id"])
+                ids.append(c["run_id"])
+        if not ids:
+            return False
+        self.cx.store.append(
+            plan.id,
+            a.block,
+            "ChecksRelanzados",
+            {"sha": a.sha, "motivo": "fallidas", "run_ids": ids},
+            ukey=claves.checks_relanzados(plan.id, a.block, a.sha, "fallidas"),
+        )
+        return True
+
+    def _detalle_rojo(self, plan, snap, a, v) -> str:
+        numero = int((snap.blocks[a.block].pr or {}).get("numero", 0))
+        partes = [f"fallaron: {list(v.fallas)} en el PR #{numero}"]
+        log = getattr(self.cx.gh, "log_fallido", None)
+        for c in v.corridas_fallidas:
+            partes.append(f"{c.get('nombre', '')}: {c.get('url', '')}".strip())
+            if log and c.get("run_id"):
+                texto = log(plan.block(a.block).repo, c["run_id"])
+                if texto:
+                    partes.append("\n".join(texto.splitlines()[-80:]))
+        return "\n".join(partes)
+
+    def _checks_rojo_por_merge(self, plan, t, detalle: str) -> None:
+        rechazos = sum(
+            1
+            for e in self.cx.store.events(plan.id)
+            if e.kind == "ChecksResult"
+            and e.block == t.block
+            and e.data.get("sha") == t.sha
+        )
+        self.cx.store.append(
+            plan.id,
+            t.block,
+            "ChecksResult",
+            {"sha": t.sha, "green": False, "detalle": detalle},
+            ukey=claves.checks_resultado(plan.id, t.block, t.sha, rechazo=rechazos),
+        )
 
     def merge(self, plan: Plan, snap: m.Snapshot, a: m.Merge) -> None:
         t = a.ticket

@@ -122,16 +122,28 @@ def _atasco(
     - un paso del motor que lleva una hora fallando (red, GitHub, disco)."""
     bid, head = bv.block.id, bv.head()
     if e is Estado.CHECKS:
+        pol = bv.politica_bloquea.get(head)
+        if pol and now - pol["desde"] > EFECTO_ATASCO_S:
+            return Diagnostico(
+                Causa.POLITICA_BLOQUEA,
+                f"GitHub no deja mergear por su política desde hace {avisos._dura(now - pol['desde'])}: "
+                f"{pol['detalle'][:300]}",
+                f"atorado:{bid}:politica:{head[:12]}",
+                True,
+                pol["detalle"][:300],
+            )
         esp = bv.esperando.get(head) or {}
+        relanzada = head in bv.relanzadas_saltadas
         if (
             esp.get("github_termino")
             and esp.get("faltan")
             and now - esp["desde"] > policy.aviso_incoherente_s
         ):
+            extra = "; ya la relancé una vez y sigue sin correr" if relanzada else ""
             return Diagnostico(
                 Causa.CHECKS_INCOHERENTE,
                 f"GitHub ya terminó sus pruebas, pero sigo esperando {avisos._lista(esp['faltan'])}, "
-                f"que no llegó a correr ({avisos._dura(now - esp['desde'])})",
+                f"que no llegó a correr ({avisos._dura(now - esp['desde'])}){extra}",
                 f"atorado:{bid}:incoherente:{head[:12]}",
                 True,
                 f"faltan={list(esp['faltan'])}",
