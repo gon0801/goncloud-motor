@@ -571,30 +571,60 @@ humano: login pega las llaves
 
     def test_efecto_que_falla_una_hora_avisa(self):
         p, now = parse_plan(PLAN), time.time()
-        fallas = [
-            Event(
-                900 + i,
-                now - h,
-                "demo",
-                "A",
-                "EffectFailed",
-                {"accion": "OpenPr", "error": "red"},
-            )
-            for i, h in enumerate((4000, 10))
-        ]
-        acc = [
-            a
-            for a in m.decide(m.fold(p, entregado() + fallas), pol(), now)
-            if isinstance(a, m.Notify)
-        ]
-        self.assertIn("atorado:A", [a.key for a in acc])
-        acc = [
-            a
-            for a in m.decide(m.fold(p, entregado() + fallas[1:]), pol(), now)
-            if isinstance(a, m.Notify)
-        ]
-        self.assertNotIn(
-            "atorado:A", [a.key for a in acc], "una falla suelta no molesta a David"
+
+        def fallas(*hace):
+            return [
+                Event(
+                    900 + i,
+                    now - h,
+                    "demo",
+                    "A",
+                    "EffectFailed",
+                    {"accion": "OpenPr", "error": "red"},
+                )
+                for i, h in enumerate(sorted(hace, reverse=True))
+            ]
+
+        def atorados(evs):
+            return [
+                a.key
+                for a in m.decide(m.fold(p, entregado() + evs), pol(), now)
+                if isinstance(a, m.Notify) and a.key.startswith("atorado:A")
+            ]
+
+        seguidas = fallas(*range(10, 3700, 600))  # una cada 10 min durante una hora
+        self.assertEqual(len(atorados(seguidas)), 1)
+        self.assertEqual(
+            atorados(fallas(10)), [], "una falla suelta no molesta a David"
+        )
+        self.assertEqual(
+            atorados(fallas(4000, 10)),
+            [],
+            "dos fallas sueltas separadas por una hora no son una hora fallando (PSTACK 01)",
+        )
+        self.assertEqual(
+            atorados(fallas(*range(3000, 7000, 600))),
+            [],
+            "ya dejó de fallar hace 50 min: no se queda pegado",
+        )
+
+    def test_repetida_deja_de_ser_atasco_con_un_arreglo_en_camino(self):
+        """INGESTA 01: el resumen seguía diciendo "atorado" mientras el revisor ya veía el arreglo."""
+        p, now = parse_plan(PLAN), time.time()
+        evs = []
+        for i in range(3):
+            sha = f"{i + 1:x}" * 40
+            evs += entregado(sha=sha, n=i + 1) + [
+                ev("Merged", "A", {"sha": sha, "commit": "c"}),
+                ev("Proved", "A", {"sha": sha, "ok": False, "detalle": "x"}),
+            ]
+        snap = m.fold(p, evs)
+        self.assertIsNotNone(
+            m._sin_avance_propio(snap.blocks["A"], m.estado(snap, "A"), pol(), now)
+        )
+        snap = m.fold(p, evs + entregado(sha="f" * 40, n=4))
+        self.assertIsNone(
+            m._sin_avance_propio(snap.blocks["A"], m.estado(snap, "A"), pol(), now)
         )
 
     def test_doctor_busca_en_path_extra_de_la_maquina(self):

@@ -445,9 +445,12 @@ Escribe en `$MOTOR_RESULT`:
             block.repo, a.sha, self.cx.home / "tmp" / f"verifica-{plan.id}-{a.block}"
         )
         fallas = []
+        # Pasarse del tope es una falla de la fila con su motivo, no un tropiezo que se reintenta para
+        # siempre (PSTACK 01 en la PC: la batería e2e tardaba más de 15 min y se reintentó horas).
+        tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
         for r in block.rows:
             if r.acepta:
-                p = _run(r.acepta, w, self.env_base(dict(rc.prueba_env)))
+                p = _run_tope(r.acepta, w, self.env_base(dict(rc.prueba_env)), tope)
                 if p.returncode != 0:
                     fallas.append(
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
@@ -709,8 +712,13 @@ Escribe en `$MOTOR_RESULT`:
             )
             env = self.env_base(dict(rc.prueba_env))
             env["MOTOR_RAIZ"] = str(w)
-            p = _run(block.prueba_real, w, env)
-            ok, detalle = p.returncode == 0, (p.stdout + p.stderr)[-500:]
+            tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
+            p = _run_tope(block.prueba_real, w, env, tope)
+            # La salida puede ir a un archivo (la sonda de INGESTA 01): sin esto el agente veía "".
+            ok, detalle = (
+                p.returncode == 0,
+                _cola(p) or f"salió {p.returncode} sin imprimir nada",
+            )
         else:
             ok, detalle = True, "el bloque no declara prueba real"
         self.cx.store.append(
