@@ -378,6 +378,43 @@ class ChecksTest(unittest.TestCase):
         self.assertIn("linea-021", rojo.data["detalle"])
         self.assertNotIn("linea-001", rojo.data["detalle"])
 
+    def test_encargo_tras_rojo_trae_pr_cada_url_y_el_final_del_log(self):
+        from motor.diagnostico import encargo
+
+        gh = GhGrabado(
+            runs=json.dumps(
+                [
+                    _run("ci", conclusion="failure", rid=7),
+                    _run("otra", conclusion="failure", rid=8),
+                ]
+            )
+        )
+        plan, store, fx = self._fx(gh)
+        store.append(
+            "demo",
+            "A",
+            "AttemptStarted",
+            {"n": 1, "role": "implementar", "modelo": "glm", "proc": {}, "dir": "d"},
+        )
+        store.append(
+            "demo",
+            "A",
+            "AttemptEnded",
+            {
+                "n": 1,
+                "role": "implementar",
+                "outcome": {"kind": "entregado", "sha": SHA},
+            },
+        )
+        fx.poll_checks(plan, self._snap(plan, store), m.PollChecks("A", SHA))
+        texto = "\n".join(encargo(self._snap(plan, store), "A", pol(), 0))
+        self.assertIn("PR #7", texto)
+        self.assertIn("https://github.com/o/r/actions/runs/7", texto)
+        self.assertIn("https://github.com/o/r/actions/runs/8", texto)
+        self.assertIn("linea-021", texto)
+        self.assertIn("linea-100", texto)
+        self.assertNotIn("linea-001", texto)
+
     def test_reentrega_del_mismo_sha_relanza_las_fallidas_una_vez(self):
         gh = GhGrabado(runs=json.dumps([_run("ci", conclusion="failure", rid=7)]))
         plan, store, fx = self._fx(gh)

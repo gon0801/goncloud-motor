@@ -445,7 +445,7 @@ def _lineas(bv: m.BlockView) -> list[str]:
                 )
         c = bv.checks.get(head)
         if c and not c["green"]:
-            out.append(f"Pruebas automáticas en rojo: {c.get('detalle', '')[:800]}")
+            out.append(f"Pruebas automáticas en rojo: {c.get('detalle', '')}")
         mg = bv.merged_sha()
         if mg and mg == head:
             if mg in bv.deployed and not bv.deployed[mg]["ok"]:
