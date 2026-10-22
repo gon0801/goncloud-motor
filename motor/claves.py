@@ -95,8 +95,17 @@ def integrado(plan: str, block: str, sha: str) -> str:
     return f"merged:{plan}:{block}:{sha}"
 
 
-def despliegue_iniciado(plan: str, block: str, sha: str) -> str:
-    return f"deploy-inicio:{plan}:{block}:{sha}"
+def verificacion_iniciada(plan: str, block: str, sha: str, n: int = 0) -> str:
+    return f"verify-inicio:{plan}:{block}:{sha}:{n}"
+
+
+def despliegue_iniciado(plan: str, block: str, sha: str, n: int = 0) -> str:
+    base = f"deploy-inicio:{plan}:{block}:{sha}"
+    return base if not n else f"{base}:{n}"
+
+
+def prueba_iniciada(plan: str, block: str, sha: str, n: int = 0) -> str:
+    return f"prove-inicio:{plan}:{block}:{sha}:{n}"
 
 
 def desplegado(
@@ -151,7 +160,9 @@ POR_TIPO = {
     "ChecksEsperando": checks_esperando,
     "ChecksResult": checks_resultado,
     "Merged": integrado,
+    "VerifyStarted": verificacion_iniciada,
     "DeployStarted": despliegue_iniciado,
+    "ProveStarted": prueba_iniciada,
     "Deployed": desplegado,
     "Proved": probado,
     "HumanDone": humano_hecho,

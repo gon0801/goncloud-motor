@@ -141,6 +141,8 @@ class BlockView:
     ready: set[str] = field(default_factory=set)
     checks: dict[str, dict] = field(default_factory=dict)
     merged: list[dict] = field(default_factory=list)
+    verify_started: set[str] = field(default_factory=set)
+    prove_started: set[str] = field(default_factory=set)
     deploy_started: set[str] = field(default_factory=set)
     deployed: dict[str, dict] = field(default_factory=dict)
     proved: dict[str, dict] = field(default_factory=dict)
@@ -347,6 +349,10 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             bv.listo_desde.pop(sha, None)
             bv.checks.pop(sha, None)
             bv.esperando.pop(sha, None)
+        elif e.kind == "VerifyStarted":
+            bv.verify_started.add(d["sha"])
+        elif e.kind == "ProveStarted":
+            bv.prove_started.add(d["sha"])
         elif e.kind == "DeployStarted":
             bv.deploy_started.add(d["sha"])
         elif e.kind == "HumanDone":

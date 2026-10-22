@@ -1033,7 +1033,137 @@ Escribe en `$MOTOR_RESULT`:
             self.cx.maquina
         )
 
+    _APARTE = {
+        "verify": ("VerifyStarted", "Verified", "verified"),
+        "deploy": ("DeployStarted", "Deployed", "deployed"),
+        "prove": ("ProveStarted", "Proved", "proved"),
+    }
+
+    def _aparte(self, kind: str, plan: Plan, snap: m.Snapshot, a) -> None:
+        started_kind, terminal_kind, campo = self._APARTE[kind]
+        block = plan.block(a.block)
+        h_insumo, h_maquina = self._huellas(campo, block, snap)
+        starteds = [
+            e
+            for e in self.cx.store.events(plan.id)
+            if e.kind == started_kind
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+        ]
+        if starteds:
+            ultimo = starteds[-1]
+            d = Path(ultimo.data["dir"]) if ultimo.data.get("dir") else None
+            if d is not None:
+                oc = d / "outcome.json"
+                if oc.exists():
+                    payload = json.loads(oc.read_text(encoding="utf-8"))
+                    if payload.get("error"):
+                        oc.replace(d / "outcome-error.json")
+                        raise RuntimeError(str(payload["error"]))
+                    datos = payload.get("data") or {}
+                    if (
+                        datos.get("huella", h_insumo) == h_insumo
+                        and datos.get("huella_maquina", h_maquina) == h_maquina
+                    ):
+                        if terminal_kind == "Verified":
+                            self.cx.store.append(
+                                plan.id,
+                                a.block,
+                                "Verified",
+                                datos,
+                                ukey=claves.verificado(
+                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                ),
+                            )
+                        elif terminal_kind == "Deployed":
+                            self.cx.store.append(
+                                plan.id,
+                                a.block,
+                                "Deployed",
+                                datos,
+                                ukey=claves.desplegado(
+                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                ),
+                            )
+                        else:
+                            self.cx.store.append(
+                                plan.id,
+                                a.block,
+                                "Proved",
+                                datos,
+                                ukey=claves.probado(
+                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                ),
+                            )
+                        return
+                else:
+                    proc = ultimo.data.get("proc") or {}
+                    if proc and plataforma.estado_proc(proc) == "vivo":
+                        return
+        n = max((int(e.data.get("n", 0)) for e in starteds), default=0) + 1
+        d = self.cx.home / "aparte" / plan.id / f"{a.block}-{kind}-{n}"
+        d.mkdir(parents=True, exist_ok=True)
+        spec = {
+            "kind": kind,
+            "block": a.block,
+            "sha": a.sha,
+            "plan": plan.to_dict(),
+            "repos": snap.repos,
+            "merged": {bid: bv.merged for bid, bv in snap.blocks.items()},
+            "deploy_started": {
+                bid: sorted(bv.deploy_started) for bid, bv in snap.blocks.items()
+            },
+            "verify_started": {
+                bid: sorted(bv.verify_started) for bid, bv in snap.blocks.items()
+            },
+            "prove_started": {
+                bid: sorted(bv.prove_started) for bid, bv in snap.blocks.items()
+            },
+        }
+        texto_spec = json.dumps(spec, ensure_ascii=False)
+        (d / "spec.json").write_text(texto_spec, encoding="utf-8")
+        cmd = [
+            sys.executable,
+            "-m",
+            "motor.aparte",
+            "--home",
+            str(self.cx.home),
+            "--dir",
+            str(d),
+        ]
+        proc = plataforma.lanzar_separado(
+            cmd, RAIZ, self.env_base({"PYTHONPATH": str(RAIZ)}), d / "aparte.log"
+        )
+        datos_started = {"sha": a.sha, "dir": str(d), "proc": proc, "n": n}
+        if started_kind == "VerifyStarted":
+            self.cx.store.append(
+                plan.id,
+                a.block,
+                "VerifyStarted",
+                datos_started,
+                ukey=claves.verificacion_iniciada(plan.id, a.block, a.sha, n),
+            )
+        elif started_kind == "DeployStarted":
+            self.cx.store.append(
+                plan.id,
+                a.block,
+                "DeployStarted",
+                datos_started,
+                ukey=claves.despliegue_iniciado(plan.id, a.block, a.sha, n),
+            )
+        else:
+            self.cx.store.append(
+                plan.id,
+                a.block,
+                "ProveStarted",
+                datos_started,
+                ukey=claves.prueba_iniciada(plan.id, a.block, a.sha, n),
+            )
+
     def verify(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> None:
+        self._aparte("verify", plan, snap, a)
+
+    def _verify_data(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> dict:
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
         w = self.cx.ws.copia(
@@ -1041,8 +1171,6 @@ Escribe en `$MOTOR_RESULT`:
         )
         fallas, faltan = [], []
         h_insumo, h_maquina = self._huellas("verified", block, snap)
-        # Pasarse del tope es una falla de la fila con su motivo, no un tropiezo que se reintenta para
-        # siempre (PSTACK 01 en la PC: la batería e2e tardaba más de 15 min y se reintentó horas).
         tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
         for r in block.rows:
             if r.acepta:
@@ -1052,20 +1180,14 @@ Escribe en `$MOTOR_RESULT`:
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
                     )
                     faltan += comandos_faltantes(p.stdout + p.stderr)
-        self.cx.store.append(
-            plan.id,
-            a.block,
-            "Verified",
-            {
-                "sha": a.sha,
-                "ok": not fallas,
-                "detalle": "\n".join(fallas),
-                "falta_comando": sorted(set(faltan)),
-                "huella": h_insumo,
-                "huella_maquina": h_maquina,
-            },
-            ukey=claves.verificado(plan.id, a.block, a.sha, h_insumo, h_maquina),
-        )
+        return {
+            "sha": a.sha,
+            "ok": not fallas,
+            "detalle": "\n".join(fallas),
+            "falta_comando": sorted(set(faltan)),
+            "huella": h_insumo,
+            "huella_maquina": h_maquina,
+        }
 
     def open_pr(self, plan: Plan, snap: m.Snapshot, a: m.OpenPr) -> None:
         block = plan.block(a.block)
@@ -1275,6 +1397,9 @@ Escribe en `$MOTOR_RESULT`:
         return huella.receta_de(block, snap.repos)
 
     def deploy(self, plan: Plan, snap: m.Snapshot, a: m.Deploy) -> None:
+        self._aparte("deploy", plan, snap, a)
+
+    def _deploy_data(self, plan: Plan, snap: m.Snapshot, a: m.Deploy) -> dict:
         bv = snap.blocks[a.block]
         block = bv.block
         rc = self.repo_conf(snap, block.repo)
@@ -1303,13 +1428,6 @@ Escribe en `$MOTOR_RESULT`:
         ):
             ok, detalle = True, "ya estaba desplegado (se comprobó antes de repetir)"
         else:
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "DeployStarted",
-                {"sha": a.sha},
-                ukey=claves.despliegue_iniciado(plan.id, a.block, a.sha),
-            )
             pasos, ok = [], True
             for paso in (desplegar, checklist):
                 p = _run(f"bash {paso}", w, env, tope)
@@ -1327,22 +1445,19 @@ Escribe en `$MOTOR_RESULT`:
                     pasos.append(RECETA)
                     break
             detalle = "\n".join(pasos)
-        self.cx.store.append(
-            plan.id,
-            a.block,
-            "Deployed",
-            {
-                "sha": a.sha,
-                "ok": ok,
-                "detalle": detalle,
-                "falta_comando": sorted(set(faltan)),
-                "huella": h_insumo,
-                "huella_maquina": h_maquina,
-            },
-            ukey=claves.desplegado(plan.id, a.block, a.sha, h_insumo, h_maquina),
-        )
+        return {
+            "sha": a.sha,
+            "ok": ok,
+            "detalle": detalle,
+            "falta_comando": sorted(set(faltan)),
+            "huella": h_insumo,
+            "huella_maquina": h_maquina,
+        }
 
     def prove(self, plan: Plan, snap: m.Snapshot, a: m.Prove) -> None:
+        self._aparte("prove", plan, snap, a)
+
+    def _prove_data(self, plan: Plan, snap: m.Snapshot, a: m.Prove) -> dict:
         bv = snap.blocks[a.block]
         block = bv.block
         h_insumo, h_maquina = self._huellas("proved", block, snap)
@@ -1367,20 +1482,14 @@ Escribe en `$MOTOR_RESULT`:
                 faltan = comandos_faltantes(p.stdout + p.stderr)
         else:
             ok, detalle = True, "el bloque no declara prueba real"
-        self.cx.store.append(
-            plan.id,
-            a.block,
-            "Proved",
-            {
-                "sha": a.sha,
-                "ok": ok,
-                "detalle": detalle,
-                "falta_comando": sorted(set(faltan)),
-                "huella": h_insumo,
-                "huella_maquina": h_maquina,
-            },
-            ukey=claves.probado(plan.id, a.block, a.sha, h_insumo, h_maquina),
-        )
+        return {
+            "sha": a.sha,
+            "ok": ok,
+            "detalle": detalle,
+            "falta_comando": sorted(set(faltan)),
+            "huella": h_insumo,
+            "huella_maquina": h_maquina,
+        }
 
     def probe_human(self, plan: Plan, snap: m.Snapshot, a: m.ProbeHuman) -> None:
         """La sonda corre aparte y sin tope de un minuto: una revisión de tres máquinas tarda varios

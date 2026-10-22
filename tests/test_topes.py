@@ -69,5 +69,82 @@ class TopesTest(unittest.TestCase):
         self.assertIn("parcial", r.stdout)
 
 
+class ApartTest(unittest.TestCase):
+    def test_verify_corre_aparte_y_se_recoge_en_otro_tick(self):
+        import subprocess as sp
+        import time
+
+        from motor import machine as m
+        from motor.plan import Plan
+        from tests.test_no_caerse import Banco
+
+        banco = Banco("setUp")
+        banco.setUp()
+        d = banco.daemon()
+        plan_dict = banco.plan
+        plan_dict["blocks"][0]["rows"] = [
+            {"id": "A.1", "contenido": "x", "acepta": "sleep 3; true"}
+        ]
+        plan = Plan.from_dict(plan_dict)
+        repo = plan.block("A").repo
+        sha = sp.run(
+            ["git", "rev-parse", "main"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        inicio = time.time()
+        d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha))
+        self.assertLess(time.time() - inicio, 2)
+        self.assertEqual(len(banco.eventos("VerifyStarted")), 1)
+        self.assertEqual(banco.eventos("Verified"), [])
+        fin = time.time() + 20
+        while time.time() < fin and not banco.eventos("Verified"):
+            d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha))
+            time.sleep(0.2)
+        self.assertEqual(len(banco.eventos("Verified")), 1)
+        self.assertTrue(banco.eventos("Verified")[0].data["ok"])
+        self.assertEqual(len(banco.eventos("VerifyStarted")), 1)
+
+    def test_si_el_aparte_muere_se_relanza_y_si_termino_se_recoge(self):
+        import os
+        import signal
+        import subprocess as sp
+        import time
+
+        from motor import machine as m
+        from motor.plan import Plan
+        from tests.test_no_caerse import Banco
+
+        banco = Banco("setUp")
+        banco.setUp()
+        d = banco.daemon()
+        plan_dict = banco.plan
+        plan_dict["blocks"][0]["rows"] = [
+            {"id": "A.1", "contenido": "x", "acepta": "sleep 2; true"}
+        ]
+        plan = Plan.from_dict(plan_dict)
+        repo = plan.block("A").repo
+        sha = sp.run(
+            ["git", "rev-parse", "main"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha))
+        proc = banco.eventos("VerifyStarted")[0].data["proc"]
+        os.killpg(int(proc["pid"]), signal.SIGKILL)
+        time.sleep(0.3)
+        d2 = banco.daemon()
+        fin = time.time() + 20
+        while time.time() < fin and not banco.eventos("Verified"):
+            d2.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha))
+            time.sleep(0.2)
+        self.assertEqual(len(banco.eventos("Verified")), 1)
+        self.assertGreaterEqual(len(banco.eventos("VerifyStarted")), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
