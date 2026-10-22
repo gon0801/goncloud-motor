@@ -1058,8 +1058,6 @@ def _sin_agente(
 
 # --------------------------------------------------------------------------- clasificación
 
-retry_after_s = fallas.retry_after_s
-
 
 def classify(
     exit_code: int, timed_out: bool, no_progress: bool, tail: str, proveedor: str = ""
