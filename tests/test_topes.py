@@ -39,13 +39,64 @@ class TopesTest(unittest.TestCase):
         self.assertEqual(vistos[0][1]["env"]["GIT_TERMINAL_PROMPT"], "0")
 
     def test_git_pasarse_del_tope_lanza(self):
-        with mock.patch.object(
-            workspace.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired("git", 60),
-        ):
+        import socket
+        import tempfile
+        import threading
+        import time
+        from pathlib import Path
+
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(5)
+        puerto = srv.getsockname()[1]
+        aceptados: list[socket.socket] = []
+
+        def acepta():
+            while True:
+                try:
+                    c, _ = srv.accept()
+                except OSError:
+                    return
+                aceptados.append(c)
+
+        hilo = threading.Thread(target=acepta, daemon=True)
+        hilo.start()
+        try:
+            inicio = time.time()
             with self.assertRaises(subprocess.TimeoutExpired):
-                workspace.git("status")
+                workspace.git(
+                    "ls-remote",
+                    f"http://127.0.0.1:{puerto}/repo",
+                    timeout=2,
+                )
+            self.assertLess(time.time() - inicio, 10)
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp) / "repo"
+                subprocess.run(
+                    ["git", "init", "-q", str(repo)],
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo),
+                        "remote",
+                        "add",
+                        "origin",
+                        f"http://127.0.0.1:{puerto}/repo",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    workspace.git("fetch", "origin", cwd=repo, timeout=2)
+        finally:
+            srv.close()
+            for c in aceptados:
+                c.close()
 
     def test_run_no_espera_al_hijo_en_segundo_plano(self):
         import os
