@@ -57,7 +57,7 @@ lane: release
 depende: C
 aviso: la versión del motor que comprueba poteto-mode ya está en la Mac, la Mini y la PC, todavía sin exigirlo
 prueba-real: bash ops/huellas.sh --rutas
-despliegue: desplegar=ops/instala-todo.sh checklist=ops/huellas.sh rollback=ops/desinstala-todo.sh
+despliegue: desplegar=ops/instala-todo.sh checklist=ops/huellas.sh rollback=ops/vuelve-a-la-anterior.sh
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
 | D.1 | Sube la etiqueta por omisión de `ops/lib.sh` a la versión siguiente. La última instalada es v1.0.14. Así, `instala-todo.sh` instala este código. Ajusta `ops/tests/test-instala.sh` a la etiqueta nueva. | bash ops/tests/test-instala.sh |
