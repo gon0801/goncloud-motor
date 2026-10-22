@@ -146,5 +146,41 @@ class ApartTest(unittest.TestCase):
         self.assertGreaterEqual(len(banco.eventos("VerifyStarted")), 2)
 
 
+class CicloTest(unittest.TestCase):
+    def test_tick_sin_trabajo_con_muchos_limpiados_es_rapido(self):
+        import json as js
+        import time
+
+        from tests.test_no_caerse import Banco
+
+        banco = Banco("setUp")
+        banco.setUp()
+        d = banco.daemon()
+        filas = []
+        for i in range(100):
+            pid = f"viejo-{i}"
+            plan = {**banco.plan, "id": pid}
+            filas.append((1.0, pid, "", "PlanLoaded", js.dumps({"plan": plan})))
+            filas.append((1.0, pid, "", "Limpiado", js.dumps({"ramas": []})))
+            for j in range(298):
+                filas.append((1.0, pid, "A", "Note", js.dumps({"texto": str(j)})))
+        d.store.db.executemany(
+            "INSERT INTO events (ts, plan, block, kind, data) VALUES (?,?,?,?,?)",
+            filas,
+        )
+        indices = {
+            r[0]
+            for r in d.store.db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='events'"
+            )
+        }
+        self.assertIn("idx_events_plan", indices)
+        self.assertNotIn("viejo-0", [p.id for p in d.plans()])
+        d.tick()
+        inicio = time.time()
+        d.tick()
+        self.assertLess(time.time() - inicio, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

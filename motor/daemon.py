@@ -56,9 +56,10 @@ class OtroMotor(RuntimeError):
 
 
 def planes_de(store: Store) -> list[Plan]:
+    limpiados = {e.plan for e in store.events(kind="Limpiado")}
     vistos: dict[str, Plan] = {}
-    for e in store.events():
-        if e.kind == "PlanLoaded":
+    for e in store.events(kind="PlanLoaded"):
+        if e.plan not in limpiados:
             vistos[e.plan] = Plan.from_dict(e.data["plan"])
     return list(vistos.values())
 
@@ -381,10 +382,17 @@ class Daemon:
         self._fase("ingest_inbox", self.ingest_inbox, now)
         todo_hecho = True
         planes = self.plans()
+        self._folds_fuera: dict[str, m.Snapshot] | None = {}
+        self._llamadas_fuera: dict[str, int] | None = None
         for plan in planes:
             self._fase(
                 "ingest_attempts", lambda: self.ingest_attempts(plan), now, plan.id
             )
+        for plan in planes:
+            try:
+                self._folds_fuera[plan.id] = self._fold(plan)
+            except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
+                continue
         for plan in planes:
             todo_hecho = self._tick_plan(plan, planes, now) and todo_hecho
         self._fase(
@@ -394,6 +402,8 @@ class Daemon:
         )
         self._fase("purga_registros", lambda: self.fx.purga_registros(planes, now), now)
         self._fase("envia_pendientes", self.cx.notifier.envia_pendientes, now)
+        self._folds_fuera = None
+        self._llamadas_fuera = None
         return todo_hecho and bool(planes)
 
     def _fase(self, accion: str, fn, now: float, plan_id: str = "") -> bool:
@@ -462,13 +472,19 @@ class Daemon:
         """Pausas de cuota e intentos terminados de los otros planes de esta máquina."""
         cd: dict[str, float] = {}
         intentos: list = []
+        cache = getattr(self, "_folds_fuera", None)
         for p in planes:
             if p.id == este.id:
                 continue
-            try:
-                s = self._fold(p)
-            except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
-                continue
+            if cache is not None:
+                s = cache.get(p.id)
+                if s is None:
+                    continue
+            else:
+                try:
+                    s = self._fold(p)
+                except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
+                    continue
             for c, h in s.cooldowns.items():
                 cd[c] = max(cd.get(c, 0), h)
             intentos += [a for bv in s.blocks.values() for a in bv.attempts if a.ended]
@@ -477,14 +493,25 @@ class Daemon:
     def _ocupados_fuera(self, planes: list[Plan], este: Plan) -> dict[str, int]:
         """Agentes corriendo en los otros planes de esta máquina, por cuenta, más las llamadas a otros
         modelos que están haciendo los agentes de cualquier plan (shims de motor/llamadas.py)."""
-        n: dict[str, int] = dict(llamadas.por_cuenta(self.home, solo_llamadas=True))
+        if getattr(self, "_llamadas_fuera", None) is None:
+            self._llamadas_fuera = dict(
+                llamadas.por_cuenta(self.home, solo_llamadas=True)
+            )
+        n: dict[str, int] = dict(self._llamadas_fuera)
+        cache = getattr(self, "_folds_fuera", None)
         for p in planes:
             if p.id == este.id:
                 continue
-            try:
-                ocupados = m._ocupados(self._fold(p), self.cx.policy)
-            except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
-                continue
+            if cache is not None:
+                s = cache.get(p.id)
+                if s is None:
+                    continue
+            else:
+                try:
+                    s = self._fold(p)
+                except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
+                    continue
+            ocupados = m._ocupados(s, self.cx.policy)
             for c, k in ocupados.items():
                 n[c] = n.get(c, 0) + k
         return n
@@ -536,7 +563,7 @@ class Daemon:
         para que un reinicio del motor no parta una racha en dos."""
         abiertas: dict[tuple[str, str, str], tuple[float, float]] = {}
         try:
-            eventos = self.store.events()
+            eventos = self.store.events(kind=("EffectFailed", "EffectOk"))
         except Exception:  # noqa: BLE001  sin log legible no hay rachas que recordar
             return abiertas
         for ev in eventos:
