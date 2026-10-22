@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instala el motor en la Mac, la Mini y la PC: etiqueta (v1.0.23 por omisión) sobre el SHA mergeado, y en cada máquina
+# Instala el motor en la Mac, la Mini y la PC: etiqueta (v1.0.24 por omisión) sobre el SHA mergeado, y en cada máquina
 # ~/motor (en esa etiqueta), ~/motor-conf, ~/.motor/maquina.toml e ~/.motor/instalar-servicio.txt.
 # No pide sudo: lo que sí lo necesita queda escrito en instalar-servicio.txt para la persona.
 # Sale != 0 si alguna máquina falla (las demás se intentan igual y se dice cuál falló).
@@ -61,6 +61,14 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 if python3 -c 'import tomllib' 2>/dev/null; then py="python3"; else py="uv run --python 3.12 python"; fi
 
 if [ -d "$motor/.git" ]; then git -C "$motor" fetch -q --tags --force origin; else git clone -q "$repo" "$motor"; fi
+# La marcha atrás (ops/vuelve-a-la-anterior.sh) lee esta marca: la etiqueta que la máquina
+# tenía antes de la entrega. Se anota solo cuando la etiqueta cambia; en una instalación
+# nueva no hay etiqueta anterior que anotar.
+anterior="$(git -C "$motor" describe --tags --exact-match 2>/dev/null || true)"
+if [ -n "$anterior" ] && [ "$anterior" != "$etiqueta" ]; then
+  mkdir -p "$home"
+  echo "$anterior" >"$home/etiqueta-anterior"
+fi
 git -C "$motor" checkout -q --detach "refs/tags/$etiqueta"
 if [ -d "$conf/.git" ]; then git -C "$conf" fetch -q origin; else git clone -q "$confurl" "$conf"; fi
 git -C "$conf" checkout -q --detach origin/HEAD
@@ -95,8 +103,14 @@ REMOTO
 
 # 3. PC: cmd.exe por ssh (mismo uv que ops/prueba-pc.sh).
 instala_pc() {
-  local u='%USERPROFILE%' tmp
+  local u='%USERPROFILE%' tmp anterior
   ssh_a "$(host_de pc)" "if exist $u\\motor\\.git (git -C $u\\motor fetch -q --tags --force origin) else (git clone -q $REPO_URL $u\\motor)" || return 1
+  # Marca para la marcha atrás: la etiqueta que la PC tenía antes, solo cuando cambia.
+  # En una instalación nueva (o sobre una rama, no una etiqueta) no hay nada que anotar.
+  anterior="$(ssh_a "$(host_de pc)" "git -C $u\\motor describe --tags --exact-match 2>nul" 2>/dev/null | tr -d '[:space:]')" || anterior=""
+  if [ -n "$anterior" ] && [ "$anterior" != "$ETIQUETA" ]; then
+    ssh_a "$(host_de pc)" "echo $anterior> $u\\.motor\\etiqueta-anterior" || return 1
+  fi
   ssh_a "$(host_de pc)" "git -C $u\\motor checkout -q --detach refs/tags/$ETIQUETA" || return 1
   ssh_a "$(host_de pc)" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf fetch -q origin) else (git clone -q $CONF_URL $u\\motor-conf)" || return 1
   ssh_a "$(host_de pc)" "git -C $u\\motor-conf checkout -q --detach origin/HEAD" || return 1
