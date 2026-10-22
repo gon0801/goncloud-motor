@@ -154,9 +154,12 @@ class TickTest(Banco):
         def se_pasa(hay_trabajo, now):
             raise subprocess.TimeoutExpired("caffeinate", 60)
 
+        enviados = []
         d.ajusta_sueno = se_pasa
+        d.cx.notifier.envia_pendientes = lambda *a, **k: enviados.append(1)
         d.tick()
         self.assertTrue(lanzados, "los planes avanzaron antes de la fase que falló")
+        self.assertTrue(enviados, "el tick siguió después de la fase que falló")
         self.assertEqual(list(self.fallas(d)), ["ajusta_sueno"])
 
     def test_cada_fase_suelta_se_anota_y_deja_seguir(self):
@@ -168,6 +171,8 @@ class TickTest(Banco):
         ):
             with self.subTest(fase=fase):
                 d = self.entrega("demo")
+                lanzados = []
+                d.fx.start_attempt = lambda plan, snap, a: lanzados.append(plan.id)
                 destino = {"fx": d.fx, "notifier": d.cx.notifier}.get(donde, d)
 
                 def revienta(*a, **k):
@@ -176,11 +181,7 @@ class TickTest(Banco):
                 setattr(destino, fase, revienta)
                 d.tick()
                 self.assertIn(fase, self.fallas(d))
-                self.assertIn(
-                    "demo",
-                    {e.plan for e in d.store.events() if e.kind == "AttemptStarted"}
-                    | {e.plan for e in d.store.events() if e.kind == "PlanLoaded"},
-                )
+                self.assertIn("demo", lanzados, "los planes siguen avanzando")
 
     def test_run_atrapa_un_tick_malo_lo_escribe_y_sigue(self):
         d = self.daemon()
