@@ -15,6 +15,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ / "proto"))
 import sandbox  # noqa: E402
 
+from motor import machine as m  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.notify import PLANTILLAS, lint_plain, render  # noqa: E402
 from motor.plan import parse_plan  # noqa: E402
@@ -195,6 +196,95 @@ class TickTest(Banco):
             self.assertEqual(d.run(0.01, True, 5), 0)
         self.assertEqual(len(llamadas), 2)
         self.assertIn("tick roto", err.getvalue())
+
+
+class ResultadoTest(Banco):
+    def collect(self, rol: str, resultado: object | str) -> dict | None:
+        d = self.daemon()
+        d.store.append("demo", "", "PlanLoaded", {"plan": self.plan, "por": "t"})
+        carpeta = self.tmp / f"intento-{rol}"
+        carpeta.mkdir(exist_ok=True)
+        (carpeta / "outcome.json").write_text(
+            json.dumps(
+                {"exit": 0, "timed_out": False, "no_progress": False, "tail": ""}
+            )
+        )
+        (carpeta / "result.json").write_text(
+            resultado if isinstance(resultado, str) else json.dumps(resultado)
+        )
+        att = m.Attempt(
+            n=1,
+            role=rol,
+            modelo="sonnet",
+            started=0.0,
+            proc={},
+            dir=str(carpeta),
+            sha="a" * 40,
+        )
+        plan = d.plans()[0]
+        snap = m.fold(plan, d.store.events("demo"))
+        return d.fx.collect(plan, snap, "A", att)
+
+    def veredicto(self, **cambios) -> dict:
+        return {
+            "sha": "a" * 40,
+            "veredicto": "CAMBIOS",
+            "bloqueantes": [{"texto": "falla"}],
+            "notas": ["una nota"],
+            **cambios,
+        }
+
+    def test_implementar_con_un_resultado_que_no_cumple_es_sin_resultado(self):
+        casos = {
+            "una lista": ["sha", "resumen"],
+            "un texto": '"hecho"',
+            "sin resumen": {"sha": "a" * 40},
+            "sha que no es texto": {"sha": 3, "resumen": "x"},
+            "resumen nulo": {"sha": "a" * 40, "resumen": None},
+            "json roto": "{no",
+        }
+        for nombre, res in casos.items():
+            with self.subTest(nombre):
+                out = self.collect("implementar", res)
+                self.assertEqual(out["kind"], "sin_resultado", out)
+                self.assertTrue(out["detalle"])
+
+    def test_revisar_con_un_resultado_que_no_cumple_es_veredicto_invalido(self):
+        casos = {
+            "una lista": [],
+            "bloqueantes con textos": self.veredicto(bloqueantes=["texto"]),
+            "bloqueantes nulo": self.veredicto(bloqueantes=None),
+            "bloqueante sin texto": self.veredicto(bloqueantes=[{"repro": "false"}]),
+            "repro que no es texto": self.veredicto(
+                bloqueantes=[{"texto": "x", "repro": 1}]
+            ),
+            "arreglo que no es texto": self.veredicto(
+                bloqueantes=[{"texto": "x", "arreglo": ["a"]}]
+            ),
+            "sin notas": {k: v for k, v in self.veredicto().items() if k != "notas"},
+            "notas que no son textos": self.veredicto(notas=[1]),
+            "veredicto raro": self.veredicto(veredicto="TAL VEZ"),
+            "sin sha": {k: v for k, v in self.veredicto().items() if k != "sha"},
+        }
+        for nombre, res in casos.items():
+            with self.subTest(nombre):
+                out = self.collect("revisar", res)
+                self.assertEqual(out["kind"], "veredicto_invalido", out)
+                self.assertTrue(out["detalle"])
+
+    def test_el_motivo_dice_que_falla(self):
+        out = self.collect("revisar", self.veredicto(bloqueantes=[{"repro": "x"}]))
+        self.assertIn("bloqueantes[0]", out["detalle"])
+        self.assertIn("texto", out["detalle"])
+        out = self.collect("implementar", ["x"])
+        self.assertIn("no es un objeto", out["detalle"])
+
+    def test_un_veredicto_bien_formado_se_registra(self):
+        res = self.veredicto(
+            bloqueantes=[{"texto": "falla", "repro": "", "arreglo": "x"}]
+        )
+        out = self.collect("revisar", res)
+        self.assertEqual(out, {"kind": "veredicto"})
 
 
 CAMPOS = {

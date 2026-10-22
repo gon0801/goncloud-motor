@@ -758,37 +758,31 @@ Escribe en `$MOTOR_RESULT`:
             return c
         if (falta := self._juzga_pstack(d)) is not None:
             return falta
+        revisando = att.role == "revisar"
+        malo = "sin_resultado" if not revisando else "veredicto_invalido"
         try:
             res = json.loads((d / "result.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError:
             return {
                 "kind": "sin_resultado",
                 "detalle": "terminó sin escribir el resultado",
             }
+        except ValueError:
+            return {"kind": malo, "detalle": "result.json no es JSON válido"}
+        if motivo := _resultado_invalido(res, revisando):
+            return {"kind": malo, "detalle": motivo}
         block = plan.block(block_id)
-        if att.role == "revisar":
-            if res.get("sha") != att.sha or res.get("veredicto") not in (
-                "APROBADO",
-                "CAMBIOS",
-            ):
+        if revisando:
+            if res["sha"] != att.sha:
                 return {
                     "kind": "veredicto_invalido",
                     "detalle": "el veredicto no cita el SHA revisado",
                 }
             veredicto = res["veredicto"]
-            # el revisor es entrada externa: solo objetos, `repro`/`texto` siempre texto
-            crudos = res.get("bloqueantes")
             bloqueantes = [
-                {
-                    **b,
-                    "texto": str(b.get("texto") or ""),
-                    "repro": str(b.get("repro") or ""),
-                }
-                for b in (crudos if isinstance(crudos, list) else [])
-                if isinstance(b, dict)
+                {**b, "repro": b.get("repro", "")} for b in res["bloqueantes"]
             ]
-            notas = res.get("notas")
-            notas = list(notas) if isinstance(notas, list) else []
+            notas = list(res["notas"])
             bloqueantes, bajados = self._reproduce_bloqueantes(
                 plan, snap, block, att.sha, bloqueantes
             )
@@ -1323,6 +1317,41 @@ Escribe en `$MOTOR_RESULT`:
             {"key": a.key, "texto": texto},
             ukey=f"notice:{plan.id}:{a.key}",
         )
+
+
+def _resultado_invalido(res: object, revisando: bool) -> str:
+    """Frontera de `result.json`: el motivo exacto si no cumple la forma, vacío si cumple."""
+    if not isinstance(res, dict):
+        return f"result.json no es un objeto (es {type(res).__name__})"
+
+    def falta(clave: str, tipo: str) -> str:
+        return f"result.json: '{clave}' tiene que ser {tipo}"
+
+    if not isinstance(res.get("sha"), str):
+        return falta("sha", "texto")
+    if not revisando:
+        return "" if isinstance(res.get("resumen"), str) else falta("resumen", "texto")
+    if res.get("veredicto") not in ("APROBADO", "CAMBIOS"):
+        return "result.json: 'veredicto' tiene que ser APROBADO o CAMBIOS"
+    bloqueantes = res.get("bloqueantes")
+    if not isinstance(bloqueantes, list):
+        return falta("bloqueantes", "una lista")
+    for i, b in enumerate(bloqueantes):
+        if not isinstance(b, dict):
+            return f"result.json: bloqueantes[{i}] tiene que ser un objeto con 'texto'"
+        for clave, obligatoria in (
+            ("texto", True),
+            ("repro", False),
+            ("arreglo", False),
+        ):
+            if clave in b and not isinstance(b[clave], str):
+                return f"result.json: bloqueantes[{i}].{clave} tiene que ser texto"
+            if obligatoria and clave not in b:
+                return f"result.json: bloqueantes[{i}] no trae 'texto'"
+    notas = res.get("notas")
+    if not isinstance(notas, list) or not all(isinstance(n, str) for n in notas):
+        return falta("notas", "una lista de textos")
+    return ""
 
 
 def _iso_a_epoch(iso: str | None) -> float:
