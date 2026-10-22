@@ -251,13 +251,37 @@ def env_wsl(env: dict, nombres: list[str]) -> dict:
     }
 
 
-def boot_id_sistema() -> str:  # pragma: no cover
-    import ctypes
+def boot_id_desde_last_boot(valor) -> str:
+    if valor is None:
+        return "desconocido"
+    if hasattr(valor, "isoformat"):
+        return valor.isoformat()
+    texto = str(valor).strip()
+    return texto or "desconocido"
 
-    ms = ctypes.windll.kernel32.GetTickCount64()
-    return str(
-        int(time.time() - ms / 1000) // 10
-    )  # hora de arranque, redondeada a 10 s
+
+def _last_boot_up_time() -> str:  # pragma: no cover
+    r = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString('o')",
+        ],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    return r.stdout.strip()
+
+
+def boot_id_sistema(consulta=None) -> str:
+    if consulta is not None:
+        return boot_id_desde_last_boot(consulta())
+    return boot_id_desde_last_boot(_last_boot_up_time())  # pragma: no cover
 
 
 def kwargs_grupo() -> dict:  # pragma: no cover
