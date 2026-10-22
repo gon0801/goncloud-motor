@@ -109,7 +109,8 @@ NO_ES_FALLA = (
     "veredicto",
     "corte",
     "interrumpido",
-)  # un apagón o una orden del motor no son culpa del agente
+    "bloqueado",
+)  # un apagón, una orden del motor o lo que no es el código no son culpa del agente
 
 
 @dataclass
@@ -161,6 +162,9 @@ class BlockView:
     obsoletos: set[str] = field(
         default_factory=set
     )  # SHAs cuya verificación ya no vale (cambió su Acepta o la máquina) y no se ha repetido
+    bloqueo: dict | None = (
+        None  # {"motivo", "huella_maquina"}: el agente dijo que no es el código; espera nota, plan o máquina
+    )
     reabierto: dict | None = (
         None  # {"version", "cambios", "agente", "desde"}: una versión nueva del plan tocó un bloque ya hecho
     )
@@ -260,6 +264,8 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                         "agente": any(c.tipo == "fila" for c in cambios),
                         "desde": len(blocks[b.id].implement_attempts()),
                     }
+                if todos:
+                    blocks[b.id].bloqueo = None  # el plan corregido destraba al bloque
                 for a in blocks[b.id].attempts:
                     if a.role == "implementar" and a.ended is None and todos:
                         a.cambios += [f"el plan cambió: {c.texto}" for c in todos]
@@ -300,6 +306,17 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             for a in bv.attempts:
                 if a.n == d["n"] and a.role == d["role"] and a.ended is None:
                     a.ended, a.ended_at = d["outcome"], e.ts
+                    if a.role == "implementar":
+                        bv.bloqueo = (
+                            {
+                                "motivo": d["outcome"].get("detalle", ""),
+                                "huella_maquina": d["outcome"].get(
+                                    "huella_maquina", ""
+                                ),
+                            }
+                            if d["outcome"].get("kind") == "bloqueado"
+                            else None
+                        )
         elif e.kind in RESULTADOS:
             resultados.append((bv, e))
             if e.kind == "Proved" and d.get("ok"):
@@ -340,6 +357,11 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             for a in bv.attempts:
                 if a.role == "implementar" and a.ended is None:
                     a.cambios.append(f"llegó una nota: {d['texto']}")
+            bv.bloqueo = None  # una nota destraba al bloque que esperaba
+    for bv in blocks.values():
+        b = bv.bloqueo
+        if b and maquina is not None and b["huella_maquina"] not in ("", maquina):
+            bv.bloqueo = None  # la máquina corregida también
     viejos: dict[str, set[str]] = {}
     for bv, e in resultados:
         campo = RESULTADOS[e.kind]
@@ -736,7 +758,7 @@ def faltan_comandos(bv: BlockView) -> tuple[str, list[str]]:
 def espera_cambio(bv: BlockView) -> bool:
     """El bloque no vuelve a un agente: lo que falla no es su código y solo cambia con otro plan o
     con otra máquina (F.1). El diagnóstico lo dice y avisa una vez."""
-    return bool(faltan_comandos(bv)[1])
+    return bool(faltan_comandos(bv)[1]) or bv.bloqueo is not None
 
 
 def bloqueo(

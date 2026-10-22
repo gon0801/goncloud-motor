@@ -673,6 +673,12 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
 ## Lo que quedó sin commitear de un intento anterior
 {pendientes or "(nada)"}
 
+## Si lo que falla no es el código del bloque
+Si lo que falla es la máquina, una Acepta que no puede pasar aquí o un servicio externo, no lo
+arregles por tu cuenta ni cambies el plan o la máquina. Escribe en `$MOTOR_RESULT`
+`{{"bloqueado": "<motivo en una frase>"}}` y termina. El motor no le pasa el bloque a otro agente:
+avisa y espera una nota, un plan corregido o una máquina corregida.
+
 {seccion_pstack}## Cómo se entrega
 1. Un commit por fila, con el id de la fila al inicio del mensaje. Nunca `--no-verify`.
 2. `git push origin HEAD:refs/heads/{rama}` (nunca a `{rc.principal}`).
@@ -797,6 +803,12 @@ Escribe en `$MOTOR_RESULT`:
             }
         except ValueError:
             return {"kind": malo, "detalle": "result.json no es JSON válido"}
+        if not revisando and (motivo := _bloqueado(res)):
+            return {
+                "kind": "bloqueado",
+                "detalle": motivo,
+                "huella_maquina": huella.de_maquina(self.cx.maquina),
+            }
         if motivo := _resultado_invalido(res, revisando):
             return {"kind": malo, "detalle": motivo}
         block = plan.block(block_id)
@@ -1491,6 +1503,12 @@ def _escribe_marca(ruta: Path, datos: dict) -> None:
     tmp = ruta.with_name(ruta.name + ".tmp")
     tmp.write_text(json.dumps(datos), encoding="utf-8")
     os.replace(tmp, ruta)
+
+
+def _bloqueado(res: object) -> str:
+    """El motivo si el agente dijo que no es el código del bloque lo que falla; vacío si no."""
+    motivo = res.get("bloqueado") if isinstance(res, dict) else None
+    return motivo.strip()[:500] if isinstance(motivo, str) else ""
 
 
 def _resultado_invalido(res: object, revisando: bool) -> str:

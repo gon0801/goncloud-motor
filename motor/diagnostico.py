@@ -54,6 +54,7 @@ class Causa(enum.Enum):
     CHECKS_INCOHERENTE = "checks_incoherente"
     CHECKS_LENTO = "checks_lento"
     FALTA_COMANDO = "falta_comando"
+    BLOQUEADO = "bloqueado"
     FUERA_DE_CONTROL = "fuera_de_control"
     REPETIDA = "repetida"
     EFECTO_FALLANDO = "efecto_fallando"
@@ -143,6 +144,16 @@ def _atasco(
                 f"atorado:{bid}:checks:{head[:12]}",
                 True,
             )
+    if bv.bloqueo is not None and e is Estado.ARREGLAR:
+        n = len(bv.implement_attempts())
+        return Diagnostico(
+            Causa.BLOQUEADO,
+            f"el agente dice que lo que falla no es el código: {bv.bloqueo['motivo']}; "
+            "espero una nota, un plan corregido o una máquina corregida",
+            f"atorado:{bid}:bloqueado:{n}",
+            True,
+            bv.bloqueo["motivo"],
+        )
     paso, falta = m.faltan_comandos(bv)
     if falta:
         # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin, así que el
@@ -345,6 +356,8 @@ def por_que(bv: m.BlockView) -> str:
         return "el intento anterior se cortó por un reinicio o apagón"
     if last and last.get("kind") == "interrumpido":
         return "llegó una nota o un cambio del plan y se detuvo el intento anterior"
+    if last and last.get("kind") == "bloqueado":
+        return "el intento anterior quedó bloqueado y ya cambió la nota, el plan o la máquina"
     if last and last.get("kind") != "entregado":
         return "el intento anterior terminó sin entregar"
     return ""
@@ -368,6 +381,11 @@ def _lineas(bv: m.BlockView) -> list[str]:
         out.append(
             f"El intento anterior se detuvo para darte esto: {last.get('detalle', '')}. "
             "Lo que llevaba quedó en la rama y en una foto; sigue desde ahí y tenlo en cuenta."
+        )
+    elif last and last.get("kind") == "bloqueado":
+        out.append(
+            f"El intento anterior quedó bloqueado: {last.get('detalle', '')}. Desde entonces hubo una "
+            "nota o cambió el plan o la máquina; revisa si ya puedes seguir."
         )
     elif last and last.get("kind") != "entregado":
         motivo = (

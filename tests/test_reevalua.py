@@ -12,6 +12,7 @@ from pathlib import Path
 
 from motor import claves, huella
 from motor import machine as m
+from motor.conf import RepoConf
 from motor.diagnostico import Causa, diagnostico, encargo
 from motor.plan import Plan, parse_plan
 from tests.test_no_caerse import Banco
@@ -1055,6 +1056,185 @@ class InterrumpeTest(Banco):
         self.assertEqual(
             len(self.eventos("AttemptEnded")), 1, "no se detiene dos veces"
         )
+
+
+MOTIVO = "el servicio de pagos no contesta desde esta máquina"
+
+
+def bloqueado(n=1, maquina="m1"):
+    return [
+        inicia(n),
+        termina("bloqueado", n, detalle=MOTIVO, huella_maquina=maquina),
+    ]
+
+
+class BloqueadoTest(Banco):
+    def collect(self, resultado):
+        d = self.daemon()
+        d.store.append("demo", "", "PlanLoaded", {"plan": self.plan, "por": "t"})
+        carpeta = self.tmp / "intento-bloqueado"
+        carpeta.mkdir(exist_ok=True)
+        (carpeta / "outcome.json").write_text(
+            json.dumps(
+                {"exit": 0, "timed_out": False, "no_progress": False, "tail": ""}
+            )
+        )
+        (carpeta / "result.json").write_text(json.dumps(resultado))
+        att = m.Attempt(
+            n=1,
+            role="implementar",
+            modelo="glm",
+            started=0.0,
+            proc={},
+            dir=str(carpeta),
+        )
+        plan = d.plans()[0]
+        return d.fx.collect(plan, d._fold(plan), "A", att)
+
+    def test_el_encargo_le_dice_que_no_arregle_lo_que_no_es_el_codigo(self):
+        d = self.daemon()
+        plan = Plan.from_dict(self.plan)
+        brief = d.fx._brief_implementar(
+            plan,
+            plan.block("A"),
+            m.StartAttempt("A", "implementar", "glm", 1, "", ()),
+            self.tmp,
+            RepoConf.parse(""),
+        )
+        self.assertIn(
+            "la máquina, una Acepta que no puede pasar aquí o un servicio externo",
+            brief,
+        )
+        self.assertIn('{"bloqueado": "<motivo en una frase>"}', brief)
+
+    def test_el_resultado_bloqueado_termina_el_intento_con_su_motivo(self):
+        out = self.collect({"bloqueado": f"  {MOTIVO}  "})
+        self.assertEqual(out["kind"], "bloqueado")
+        self.assertEqual(out["detalle"], MOTIVO)
+        self.assertTrue(out["huella_maquina"])
+
+    def test_un_bloqueado_vacio_o_que_no_es_texto_no_cuenta(self):
+        for malo in ("", "   ", None, 3, ["x"]):
+            with self.subTest(malo=malo):
+                self.assertEqual(
+                    self.collect({"bloqueado": malo})["kind"], "sin_resultado"
+                )
+
+    def test_el_motor_no_regresa_el_bloque_a_otro_agente_y_avisa_una_vez(self):
+        snap = m.fold(parse_plan(PLAN), bloqueado())
+        acs = m.decide(snap, pol(), 1e10)
+        self.assertNotIn("StartAttempt", tipos(acs))
+        d = diagnostico(snap, "A", pol(), 1e10)
+        self.assertIs(d.causa, Causa.BLOQUEADO)
+        self.assertTrue(d.atorado)
+        self.assertIn(MOTIVO, d.motivo)
+        (aviso,) = [
+            a
+            for a in acs
+            if isinstance(a, m.Notify) and a.template == "atorado" and a.block == "A"
+        ]
+        self.assertIn(MOTIVO, dict(aviso.campos)["motivo"])
+        evs = bloqueado() + [ev("NoticeQueued", "A", {"key": aviso.key})]
+        otra = m.decide(m.fold(parse_plan(PLAN), evs), pol(), 1e10)
+        self.assertEqual(
+            [
+                a
+                for a in otra
+                if isinstance(a, m.Notify)
+                and a.template == "atorado"
+                and a.block == "A"
+            ],
+            [],
+        )
+        self.assertNotIn("StartAttempt", tipos(otra))
+
+    def test_bloqueado_no_cuenta_como_falla_del_modelo(self):
+        evs = bloqueado(1) + bloqueado(2) + bloqueado(3)
+        snap = m.fold(parse_plan(PLAN), evs)
+        policy = pol()
+        for mo in ("sonnet", "glm"):
+            motivo, _ = m.bloqueo(
+                snap,
+                policy,
+                1e10,
+                snap.blocks["A"],
+                "implementar",
+                mo,
+                policy.implementadores,
+            )
+            self.assertEqual(motivo, "")
+
+    def test_una_nota_lo_destraba_y_el_encargo_lleva_el_motivo_y_la_nota(self):
+        evs = bloqueado() + [ev("Note", "A", {"texto": "ya abrí el acceso"})]
+        snap = m.fold(parse_plan(PLAN), evs)
+        (inicio,) = [
+            a
+            for a in m.decide(snap, pol(), 1e10)
+            if isinstance(a, m.StartAttempt) and a.block == "A"
+        ]
+        texto = "\n".join(inicio.feedback)
+        self.assertIn(MOTIVO, texto)
+        self.assertIn("Nota del lead: ya abrí el acceso", texto)
+
+    def test_un_plan_corregido_del_bloque_lo_destraba(self):
+        v1, v2 = plan_con("true"), plan_con("test -f README.md")
+        evs = [carga(v1, 1), *bloqueado(), carga(v2, 2)]
+        acs = m.decide(m.fold(v2, evs), pol(), 1e10)
+        self.assertIn("StartAttempt", tipos(acs))
+
+    def test_un_plan_que_cambia_otro_bloque_no_lo_destraba(self):
+        v1 = parse_plan(PLAN)
+        v2 = parse_plan(PLAN.replace("| C.1 | algo | true |", "| C.1 | otra | true |"))
+        evs = [carga(v1, 1), *bloqueado(), carga(v2, 2)]
+        self.assertNotIn("StartAttempt", tipos(m.decide(m.fold(v2, evs), pol(), 1e10)))
+
+    def test_una_maquina_corregida_lo_destraba(self):
+        plan = parse_plan(PLAN)
+        mismo = m.decide(m.fold(plan, bloqueado(maquina="m1"), "m1"), pol(), 1e10)
+        self.assertNotIn("StartAttempt", tipos(mismo))
+        otra = m.decide(m.fold(plan, bloqueado(maquina="m1"), "m2"), pol(), 1e10)
+        self.assertIn("StartAttempt", tipos(otra))
+
+    def test_en_el_tick_no_lanza_agente_y_avisa_una_vez(self):
+        d = self.daemon()
+        lanzados = []
+        d.fx.start_attempt = lambda plan, snap, a: lanzados.append(a)
+        entregar(d, "c1", self.plan)
+        carpeta = self.tmp / "intento"
+        carpeta.mkdir()
+        d.store.append(
+            "demo",
+            "A",
+            "AttemptStarted",
+            {
+                "n": 1,
+                "role": "implementar",
+                "modelo": "glm",
+                "proc": {},
+                "dir": str(carpeta),
+            },
+            ukey="s",
+        )
+        d.store.append(
+            "demo",
+            "A",
+            "AttemptEnded",
+            {
+                "n": 1,
+                "role": "implementar",
+                "outcome": {"kind": "bloqueado", "detalle": MOTIVO},
+            },
+            ukey="e",
+        )
+        d.tick()
+        d.tick()
+        self.assertEqual([a for a in lanzados if a.block == "A"], [])
+        atorados = [
+            e
+            for e in self.eventos("NoticeQueued")
+            if e.block == "A" and e.data["key"].startswith("atorado:A:bloqueado")
+        ]
+        self.assertEqual(len(atorados), 1)
 
 
 class ClavesTest(unittest.TestCase):

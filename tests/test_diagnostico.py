@@ -256,6 +256,15 @@ humano: login pega las llaves
         self.assertCausa(d, Causa.FALTA_COMANDO, atorado=True)
         self.assertEqual(d.clave, "atorado:A:comando:python")
 
+    def test_bloqueado(self):
+        evs = intento(
+            "glm", "bloqueado", 1, 600, detalle="el servicio de pagos no contesta"
+        )
+        d = diag(evs)
+        self.assertCausa(d, Causa.BLOQUEADO, atorado=True)
+        self.assertEqual(d.clave, "atorado:A:bloqueado:1")
+        self.assertIn("el servicio de pagos no contesta", d.motivo)
+
     def test_repetida(self):
         evs = []
         for i in range(3):
@@ -315,6 +324,7 @@ humano: login pega las llaves
             "incoherente": r"atorado:\w+:incoherente:\w+",
             "checks": r"atorado:\w+:checks:\w+",
             "comando": r"atorado:\w+:comando:[\w,]+",
+            "bloqueado": r"atorado:\w+:bloqueado:\d+",
             "fuera": r"atorado:\w+:fuera:\w+:\w+",
             "repetida": r"atorado:\w+:repite:\w+:\d+",
             "efecto": r"atorado:\w+:efecto:\w+:\d+",
@@ -327,6 +337,7 @@ humano: login pega las llaves
             "incoherente": "atorado:A:incoherente:x",
             "checks": "atorado:A:checks:x",
             "comando": "atorado:A:comando:x",
+            "bloqueado": "atorado:A:bloqueado:1",
             "fuera": "atorado:A:fuera:prueba:abc",
             "repetida": "atorado:A:repite:prueba:0",
             "efecto": "atorado:A:efecto:Verify:1",
