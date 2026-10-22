@@ -23,6 +23,7 @@ from motor import llamadas  # noqa: E402
 from motor import machine as m  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.notify import lint_plain  # noqa: E402
+from motor.plan import Plan  # noqa: E402
 from motor.store import Store  # noqa: E402
 from motor.workspace import foto_wip, git  # noqa: E402
 
@@ -155,7 +156,8 @@ class Banco(unittest.TestCase):
             if e.kind == "NoticeQueued":
                 lint_plain(e.data["texto"])
                 self.assertTrue(e.data["texto"].startswith("En la Mac (prueba)"))
-        snap = m.fold(Daemon(self.home).plans()[0], evs)
+        cargas = [e for e in evs if e.kind == "PlanLoaded"]
+        snap = m.fold(Plan.from_dict(cargas[-1].data["plan"]), evs)
         self.assertTrue(all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks))
         return evs
 
