@@ -125,6 +125,9 @@ class Attempt:
     ended_at: float = (
         0.0  # cuándo terminó (del log): alimenta la cuarentena de la cuenta
     )
+    cambios: list[str] = field(
+        default_factory=list
+    )  # notas y cambios del plan que llegaron mientras corría: el motor lo detiene
 
 
 @dataclass
@@ -247,7 +250,8 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                 antes = previo.get(b.id) if previo else None
                 if antes is None or b.id not in blocks:
                     continue
-                cambios = cambios_de(antes, b)
+                todos = cambios_de(antes, b)
+                cambios = [c for c in todos if c.tipo != "bloque"]
                 hecho = crudo_merged.get(b.id, "") in crudo_probados.get(b.id, ())
                 if cambios and hecho:
                     blocks[b.id].reabierto = {
@@ -256,6 +260,9 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                         "agente": any(c.tipo == "fila" for c in cambios),
                         "desde": len(blocks[b.id].implement_attempts()),
                     }
+                for a in blocks[b.id].attempts:
+                    if a.role == "implementar" and a.ended is None and todos:
+                        a.cambios += [f"el plan cambió: {c.texto}" for c in todos]
             previo = {b.id: b for b in ahora.blocks}
         elif bv is None and e.kind == "AttemptStarted":
             huerfanos[(e.block, d["n"], d["role"])] = Attempt(
@@ -330,6 +337,9 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         elif e.kind == "Note":
             bv.notes.append(d["texto"])
             bv.hecho_ts = e.ts
+            for a in bv.attempts:
+                if a.role == "implementar" and a.ended is None:
+                    a.cambios.append(f"llegó una nota: {d['texto']}")
     viejos: dict[str, set[str]] = {}
     for bv, e in resultados:
         campo = RESULTADOS[e.kind]
@@ -853,6 +863,11 @@ def decide(
             acciones.append(
                 ProbeHuman(bid)
             )  # antes del aviso: si ya lo hizo, no se molesta
+        run = bv.running()
+        if run and run.role == "implementar" and run.cambios:
+            acciones.append(
+                Interrumpe(bid, run.role, run.n, "; ".join(run.cambios)[:500])
+            )
         d = diagnostico.diagnostico(snap, bid, policy, now)
         for n in avisos.avisos_de(snap, bid, policy, now, d):
             if n.key not in bv.notices | snap.plan_notices | ya:

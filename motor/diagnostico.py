@@ -343,6 +343,8 @@ def por_que(bv: m.BlockView) -> str:
     last = bv.last_implement_outcome()
     if last and last.get("kind") == "corte":
         return "el intento anterior se cortó por un reinicio o apagón"
+    if last and last.get("kind") == "interrumpido":
+        return "llegó una nota o un cambio del plan y se detuvo el intento anterior"
     if last and last.get("kind") != "entregado":
         return "el intento anterior terminó sin entregar"
     return ""
@@ -362,7 +364,12 @@ def _lineas(bv: m.BlockView) -> list[str]:
             + "."
         )
     last = bv.last_implement_outcome()
-    if last and last.get("kind") != "entregado":
+    if last and last.get("kind") == "interrumpido":
+        out.append(
+            f"El intento anterior se detuvo para darte esto: {last.get('detalle', '')}. "
+            "Lo que llevaba quedó en la rama y en una foto; sigue desde ahí y tenlo en cuenta."
+        )
+    elif last and last.get("kind") != "entregado":
         motivo = (
             "un corte de luz o reinicio"
             if last.get("kind") == "corte"

@@ -148,7 +148,7 @@ class Plan:
 
 @dataclass(frozen=True)
 class Cambio:
-    tipo: str  # fila | acepta | prueba
+    tipo: str  # fila | acepta | prueba (reabren un bloque hecho) | bloque (solo avisa)
     texto: str
 
 
@@ -173,6 +173,16 @@ def cambios_de(antes: Block, ahora: Block) -> list[Cambio]:
                 )
             )
     out += [Cambio("fila", f"se quitó la fila {i}") for i in viejas if i not in nuevas]
+    if antes.titulo != ahora.titulo:
+        out.append(Cambio("bloque", f"lo que entrega ahora es: {ahora.titulo}"))
+    if (antes.lane, antes.release, antes.checks) != (
+        ahora.lane,
+        ahora.release,
+        ahora.checks,
+    ):
+        out.append(
+            Cambio("bloque", "cambió el carril, la receta de despliegue o los checks")
+        )
     if antes.prueba_real != ahora.prueba_real:
         out.append(
             Cambio(

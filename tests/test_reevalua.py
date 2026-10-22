@@ -830,6 +830,233 @@ class MergeTicketTest(Banco):
         self.assertEqual(len(self.avisos("externo")), 1)
 
 
+def inicia(n=1, block="A", **extra):
+    return ev(
+        "AttemptStarted",
+        block,
+        {
+            "n": n,
+            "role": "implementar",
+            "modelo": "glm",
+            "proc": {},
+            "dir": f"d{n}",
+            **extra,
+        },
+    )
+
+
+def termina(kind, n=1, block="A", **extra):
+    return ev(
+        "AttemptEnded",
+        block,
+        {"n": n, "role": "implementar", "outcome": {"kind": kind, **extra}},
+    )
+
+
+def interrupciones(acs, bloque="A"):
+    return [a for a in acs if isinstance(a, m.Interrumpe) and a.block == bloque]
+
+
+class InterrumpeTest(Banco):
+    def test_una_nota_con_un_intento_en_curso_lo_detiene(self):
+        evs = [inicia(), ev("Note", "A", {"texto": "usa la API nueva"})]
+        acs = m.decide(m.fold(parse_plan(PLAN), evs), pol(), 1e10)
+        (i,) = interrupciones(acs)
+        self.assertEqual((i.role, i.n), ("implementar", 1))
+        self.assertIn("usa la API nueva", i.motivo)
+        self.assertNotIn(
+            "StartAttempt", tipos(acs), "el relevo sale cuando el intento ya terminó"
+        )
+
+    def test_la_nota_que_ya_iba_en_el_encargo_no_detiene_nada(self):
+        evs = [ev("Note", "A", {"texto": "x"}), inicia()]
+        acs = m.decide(m.fold(parse_plan(PLAN), evs), pol(), 1e10)
+        self.assertEqual(interrupciones(acs), [])
+
+    def test_una_nota_con_el_intento_terminado_no_detiene_nada(self):
+        evs = [inicia(), termina("entregado", sha=SHA), ev("Note", "A", {"texto": "x"})]
+        acs = m.decide(m.fold(parse_plan(PLAN), evs), pol(), 1e10)
+        self.assertEqual(interrupciones(acs), [])
+
+    def test_una_nota_de_otro_bloque_no_detiene_este(self):
+        evs = [inicia(), ev("Note", "C", {"texto": "x"})]
+        acs = m.decide(m.fold(parse_plan(PLAN), evs), pol(), 1e10)
+        self.assertEqual(interrupciones(acs), [])
+
+    def test_un_intento_de_revisar_no_se_detiene(self):
+        revisar = ev(
+            "AttemptStarted",
+            "A",
+            {
+                "n": 1,
+                "role": "revisar",
+                "modelo": "opus",
+                "proc": {},
+                "dir": "r",
+                "sha": SHA,
+            },
+        )
+        evs = [revisar, ev("Note", "A", {"texto": "x"})]
+        acs = m.decide(m.fold(parse_plan(PLAN), evs), pol(), 1e10)
+        self.assertEqual(interrupciones(acs), [])
+
+    def test_una_version_nueva_que_cambia_el_bloque_detiene_el_intento(self):
+        v1 = plan_con("true")
+        v2 = plan_con("test -f README.md")
+        evs = [carga(v1, 1), inicia(), carga(v2, 2)]
+        acs = m.decide(m.fold(v2, evs), pol(), 1e10)
+        (i,) = interrupciones(acs)
+        self.assertIn(
+            "la Acepta de A.1 cambió de `true` a `test -f README.md`", i.motivo
+        )
+
+    def test_una_version_que_no_toca_el_bloque_lo_deja_trabajar(self):
+        v1 = parse_plan(PLAN)
+        v2 = parse_plan(PLAN.replace("| C.1 | algo | true |", "| C.1 | otra | true |"))
+        evs = [carga(v1, 1), inicia(), carga(v2, 2)]
+        acs = m.decide(m.fold(v2, evs), pol(), 1e10)
+        self.assertEqual(interrupciones(acs), [])
+
+    def test_el_intento_siguiente_lleva_la_nota_y_el_cambio_en_el_encargo(self):
+        v1 = plan_con("true")
+        v2 = plan_con("test -f README.md")
+        evs = [
+            carga(v1, 1),
+            inicia(),
+            ev("Note", "A", {"texto": "usa la API nueva"}),
+            carga(v2, 2),
+        ]
+        (i,) = interrupciones(m.decide(m.fold(v2, evs), pol(), 1e10))
+        evs.append(termina("interrumpido", detalle=i.motivo, foto="subida"))
+        snap = m.fold(v2, evs)
+        self.assertIs(m.estado(snap, "A"), m.Estado.ARREGLAR)
+        (inicio,) = [
+            a
+            for a in m.decide(snap, pol(), 1e10)
+            if isinstance(a, m.StartAttempt) and a.block == "A"
+        ]
+        texto = "\n".join(inicio.feedback)
+        self.assertIn("Nota del lead: usa la API nueva", texto)
+        self.assertIn("la Acepta de A.1 cambió", texto)
+        self.assertIn("se detuvo", texto)
+
+    def test_el_intento_detenido_no_cuenta_como_falla_del_modelo(self):
+        evs = [
+            inicia(1),
+            termina("interrumpido", 1, detalle="x"),
+            inicia(2),
+            termina("interrumpido", 2, detalle="y"),
+            inicia(3),
+            termina("interrumpido", 3, detalle="z"),
+        ]
+        snap = m.fold(parse_plan(PLAN), evs)
+        policy = pol()
+        for mo in ("sonnet", "glm"):
+            motivo, _ = m.bloqueo(
+                snap,
+                policy,
+                1e10,
+                snap.blocks["A"],
+                "implementar",
+                mo,
+                policy.implementadores,
+            )
+            self.assertEqual(motivo, "", f"{mo} sigue disponible")
+        self.assertIsNot(
+            diagnostico(snap, "A", policy, 1e10).causa, Causa.ESCALERA_AGOTADA
+        )
+
+    # ------------------------------------------------------------------ el efecto
+
+    def _con_intento(self):
+        import sys
+
+        from motor import plataforma
+
+        d = self.daemon()
+        lanzados = []
+        d.fx.start_attempt = lambda plan, snap, a: lanzados.append(a)
+        entregar(d, "c1", self.plan)
+        plan = d.plans()[0]
+        d.cx.ws.prepara(plan.block("A").repo, plan.id, "A", "main")
+        w = self.home / "wt" / "demo" / "A"
+        (w / "a_medias.txt").write_text("sin commitear\n")
+        carpeta = self.tmp / "intento-a"
+        carpeta.mkdir()
+        p = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            **plataforma.kwargs_grupo(),
+        )
+        proc = {
+            "pid": p.pid,
+            "boot_id": plataforma.boot_id(),
+            "inicio": plataforma.hora_inicio(p.pid),
+        }
+        d.store.append(
+            "demo",
+            "A",
+            "AttemptStarted",
+            {
+                "n": 1,
+                "role": "implementar",
+                "modelo": "glm",
+                "proc": proc,
+                "dir": str(carpeta),
+            },
+            ukey="s",
+        )
+        return d, p, lanzados
+
+    def test_el_motor_detiene_el_proceso_guarda_la_foto_y_relanza_con_la_nota(self):
+        import os
+
+        d, p, lanzados = self._con_intento()
+        entregar(d, "c1", self.plan)
+        from motor.plan import Comando
+
+        d._procesa(
+            Comando.from_dict(
+                {
+                    "cmd_id": "n1",
+                    "tipo": "nota",
+                    "plan": "demo",
+                    "block": "A",
+                    "texto": "usa la API nueva",
+                }
+            )
+        )
+        try:
+            d.tick()
+            p.wait(timeout=10)
+        finally:
+            if p.poll() is None:
+                os.killpg(p.pid, 9)
+        (fin,) = self.eventos("AttemptEnded")
+        self.assertEqual(fin.data["outcome"]["kind"], "interrumpido")
+        self.assertIn("usa la API nueva", fin.data["outcome"]["detalle"])
+        self.assertIn(fin.data["outcome"]["foto"], ("subida", "guardada"))
+        rama = d.cx.ws.rama_wip("demo", "A")
+        foto = subprocess.run(
+            ["git", "ls-remote", self.plan["blocks"][0]["repo"], f"refs/heads/{rama}"],
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertTrue(foto.strip(), "la foto wip quedó en el remoto")
+        self.assertEqual(
+            [a for a in lanzados if a.block == "A"],
+            [],
+            "este tick solo detuvo el intento",
+        )
+        d.tick()
+        (nuevo,) = [a for a in lanzados if a.block == "A"]
+        self.assertEqual((nuevo.block, nuevo.role, nuevo.n), ("A", "implementar", 2))
+        self.assertIn("Nota del lead: usa la API nueva", "\n".join(nuevo.feedback))
+        d.tick()
+        self.assertEqual(
+            len(self.eventos("AttemptEnded")), 1, "no se detiene dos veces"
+        )
+
+
 class ClavesTest(unittest.TestCase):
     def test_ninguna_otra_parte_arma_una_a_mano(self):
         llamadas = list(_llamadas_con_ukey())
