@@ -42,6 +42,7 @@ if [ "$host" = gwpc ]; then
     "echo ok") echo ok ;;
     # Estado de mentira de la PC: la etiqueta que tiene ~/motor y la marca de la marcha atrás.
     *"describe --tags --exact-match"*) [ -f "$S/pc-tag" ] && { cat "$S/pc-tag"; exit 0; } || exit 1 ;;
+    *"tag --points-at HEAD"*) [ -f "$S/pc-tag" ] && printf '%s\r\n' "$(cat "$S/pc-tag")"; exit 0 ;;
     *"checkout -q --detach refs/tags/"*) echo "${*##*refs/tags/}" >"$S/pc-tag" ;;
     "type "*"etiqueta-anterior"*) [ -f "$S/pc-etiqueta-anterior" ] && { cat "$S/pc-etiqueta-anterior"; exit 0; } || exit 1 ;;
     "echo "*"etiqueta-anterior"*) v="${*#echo }"; echo "${v%%>*}" >"$S/pc-etiqueta-anterior" ;;
@@ -227,5 +228,42 @@ contiene "dice cuál" "$S/salida" "mini"
 [ -e "$S/mac/.cargado" ] && [ -e "$S/mini/.cargado" ] || fallo "la marcha atrás descargó el servicio"
 grep -q "schtasks /delete" "$FAKE_LOG" && fallo "la marcha atrás borró la tarea de la PC"
 [ ! -e "$S/sudo.log" ] || fallo "la marcha atrás llamó a sudo"
+
+avanza() { git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1" && git -C "$S/trabajo" push -q origin HEAD:main; }
+tag_en() { git -C "$S/$1/motor" describe --tags --exact-match 2>/dev/null; }
+dos_entregas() { # deja las tres en $2, con la marca en $1 (como tras dos entregas buenas)
+  MOTOR_ETIQUETA=$1 en_mac espera "entrega $1" 0 bash "$I"; unset MOTOR_ETIQUETA
+  avanza "$2"
+  MOTOR_ETIQUETA=$2 en_mac espera "entrega $2" 0 bash "$I"; unset MOTOR_ETIQUETA
+  avanza "siguiente-$2"
+}
+en_su_etiqueta() { # en_su_etiqueta <caso> <etiqueta de antes de la entrega>
+  for m in mac mini; do [ "$(tag_en $m)" = "$2" ] || fallo "$1: $m tenía $2 antes de la entrega y la marcha atrás la dejó en $(tag_en $m)"; done
+  [ "$(cat "$S/pc-tag")" = "$2" ] || fallo "$1: pc tenía $2 antes de la entrega y la marcha atrás la dejó en $(cat "$S/pc-tag")"
+}
+
+# La entrega falla antes de tocar ninguna máquina (origin no responde): la marcha atrás no
+# puede bajar a nadie a la marca de la entrega anterior.
+reset
+dos_entregas v1.0.22 v1.0.23
+git -C "$S/origen.git" tag -d v1.0.24 >/dev/null
+export MOTOR_ETIQUETA=v1.0.24
+FAKE_GIT_LSREMOTO_FALLA=1 en_mac espera "entrega v1.0.24 falla antes de tocar las máquinas" '!0' bash "$I"; unset FAKE_GIT_LSREMOTO_FALLA
+en_su_etiqueta "precondición: la entrega no tocó las máquinas" v1.0.23
+en_mac espera "marcha atrás de una entrega que no tocó las máquinas" 0 bash "$V"
+contiene "dice que se queda" "$S/salida" "no está en v1.0.24; se queda"
+en_su_etiqueta "entrega que no tocó las máquinas" v1.0.23
+unset MOTOR_ETIQUETA
+
+# La entrega falla en una máquina sin tocarla (ssh caído) y la máquina ya responde en la
+# marcha atrás: se queda en su etiqueta, no baja a la marca vieja.
+reset
+dos_entregas v1.0.30 v1.0.31
+export MOTOR_ETIQUETA=v1.0.32
+FAKE_CAE="gon@mini-fake" en_mac espera "entrega v1.0.32 falla en la Mini" '!0' bash "$I"; unset FAKE_CAE
+[ "$(tag_en mini)" = v1.0.31 ] || fallo "precondición: la Mini debía seguir en v1.0.31"
+en_mac espera "marcha atrás con la Mini de vuelta" 0 bash "$V"
+en_su_etiqueta "entrega que no tocó la Mini" v1.0.31
+unset MOTOR_ETIQUETA
 
 termina
