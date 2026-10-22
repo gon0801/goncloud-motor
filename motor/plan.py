@@ -209,6 +209,7 @@ class PlanError(ValueError):
 
 
 _BLOQUE = re.compile(r"^##\s+Bloque\s+(\S+)\s*(?:[—-]+\s*(.*))?$")
+_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _CAMPO = re.compile(r"^([a-z-]+):\s*(.*)$")
 
 
@@ -216,6 +217,11 @@ def _celdas(linea: str) -> list[str]:
     """Separa por `|`, salvo `\\|` (un pipe dentro de la celda, como en Markdown)."""
     partes = re.split(r"(?<!\\)\|", linea.strip().strip("|"))
     return [c.strip().replace("\\|", "|") for c in partes]
+
+
+def _id_malo(valor: str) -> bool:
+    """Los ids acaban en nombres de rama y de carpeta: nada que git o el disco lean distinto."""
+    return not _ID.match(valor) or valor.endswith(".lock") or ".." in valor
 
 
 def _modelos(valor: str) -> tuple[str, ...]:
@@ -280,6 +286,12 @@ def parse_plan(
             if len(celdas) < 2:
                 errores.append(f"fila mal formada: {linea!r}")
                 continue
+            if len(celdas) > 3:
+                errores.append(
+                    f"fila con más de tres celdas: {linea!r}. Si el comando lleva una barra "
+                    "vertical, escápala con una barra invertida (\\|)"
+                )
+                continue
             acepta = celdas[2] if len(celdas) > 2 and celdas[2] not in ("-", "") else ""
             drafts[-1].rows.append(
                 Row(id=celdas[0], contenido=celdas[1], acepta=acepta)
@@ -305,6 +317,17 @@ def parse_plan(
         errores.append("falta la línea 'autopiloto: motor'")
     if not plan_id:
         errores.append("falta la línea 'plan: <id>'")
+    if plan_id and _id_malo(plan_id):
+        errores.append(
+            f"el id del plan {plan_id!r} no vale: letras, números, punto, guion y guion bajo, "
+            "empezando con letra o número, sin '..' y sin terminar en '.lock'"
+        )
+    for d in drafts:
+        if _id_malo(d.id):
+            errores.append(
+                f"el id del bloque {d.id!r} no vale: letras, números, punto, guion y guion bajo, "
+                "empezando con letra o número, sin '..' y sin terminar en '.lock'"
+            )
     if not drafts:
         errores.append("el plan no tiene bloques ('## Bloque X — ...')")
 

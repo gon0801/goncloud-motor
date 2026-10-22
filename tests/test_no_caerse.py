@@ -18,7 +18,7 @@ import sandbox  # noqa: E402
 from motor import machine as m  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.notify import PLANTILLAS, lint_plain, render  # noqa: E402
-from motor.plan import parse_plan  # noqa: E402
+from motor.plan import PlanError, parse_plan  # noqa: E402
 
 
 class Banco(unittest.TestCase):
@@ -285,6 +285,98 @@ class ResultadoTest(Banco):
         )
         out = self.collect("revisar", res)
         self.assertEqual(out, {"kind": "veredicto"})
+
+
+PLAN_MD = """# Demo
+autopiloto: motor
+plan: {plan}
+repo: git@github.com:x/y.git
+
+## Bloque {bloque} — algo
+lane: gate
+prueba-real: true
+{fila}
+"""
+FILA = "| A.1 | haz algo | test -f x |"
+
+
+class PlanTest(Banco):
+    def md(self, plan="demo", bloque="A", fila=FILA) -> str:
+        return PLAN_MD.format(
+            plan=plan,
+            bloque=bloque,
+            fila=f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n{fila}",
+        )
+
+    def test_ids_buenos(self):
+        for ok in ("demo", "motor-02", "a.b_c", "B1", "9"):
+            with self.subTest(ok):
+                parse_plan(self.md(plan=ok, bloque=ok))
+
+    def test_ids_malos_de_plan_y_de_bloque(self):
+        for malo in ("-x", ".x", "_x", "a..b", "x.lock", "a/b", "ñu", "a:b", "x~"):
+            for donde in ("plan", "bloque"):
+                with self.subTest(donde=donde, id=malo):
+                    texto = self.md(**{donde: malo})
+                    with self.assertRaises(PlanError) as cm:
+                        parse_plan(texto)
+                    self.assertIn(malo, str(cm.exception))
+
+    def test_fila_con_mas_de_tres_celdas_dice_como_escapar_la_barra(self):
+        with self.assertRaises(PlanError) as cm:
+            parse_plan(self.md(fila="| A.1 | haz algo | cat x | grep y |"))
+        self.assertIn("barra vertical", str(cm.exception))
+        self.assertIn("barra invertida", str(cm.exception))
+
+    def test_la_barra_escapada_si_vale(self):
+        p = parse_plan(self.md(fila=r"| A.1 | haz algo | cat x \| grep y |"))
+        self.assertEqual(p.blocks[0].rows[0].acepta, "cat x | grep y")
+
+    def entrega_release(self, repo_archivos: dict, despliegue: str = "") -> str:
+        repo = sandbox._repo(self.tmp / "b", "rel", repo_archivos)
+        md = f"""# Demo
+autopiloto: motor
+plan: rel
+repo: {repo}
+
+## Bloque R — a producción
+lane: release
+{despliegue}
+prueba-real: true
+| Fila | Contenido | Acepta |
+| --- | --- | --- |
+| R.1 | escribe: x=1 | test -f x |
+"""
+        msg = {
+            "cmd_id": "r1",
+            "tipo": "plan",
+            "plan": parse_plan(md).to_dict(),
+            "por": "t",
+        }
+        (self.home / "inbox").mkdir(exist_ok=True)
+        (self.home / "inbox" / "1.json").write_text(json.dumps(msg))
+        d = self.daemon()
+        d.ingest_inbox()
+        return next(
+            e.data["resultado"] for e in d.store.events() if e.kind == "CommandReceived"
+        )
+
+    def test_release_sin_despliegue_ni_receta_se_rechaza_al_entregar(self):
+        res = self.entrega_release({"README.md": "x\n"})
+        self.assertTrue(res.startswith("rechazado: "), res)
+        self.assertIn("release", res)
+        self.assertTrue(list((self.home / "inbox" / "rechazados").glob("1.json")))
+
+    def test_release_con_despliegue_en_el_plan_se_toma(self):
+        res = self.entrega_release(
+            {"README.md": "x\n"},
+            "despliegue: desplegar=d.sh checklist=c.sh rollback=r.sh",
+        )
+        self.assertEqual(res, "tomado")
+
+    def test_release_con_receta_en_el_motor_toml_se_toma(self):
+        toml = '[deploy]\ndesplegar = "d.sh"\nchecklist = "c.sh"\nrollback = "r.sh"\n'
+        self.assertEqual(self.entrega_release({".motor.toml": toml}), "tomado")
 
 
 CAMPOS = {
