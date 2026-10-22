@@ -52,6 +52,37 @@ def resolve_shim(
     return [nombre]
 
 
+BASH_GIT_POR_OMISION = r"C:\Program Files\Git\bin\bash.exe"
+
+
+def resuelve_bash(configurado: str = "") -> str:
+    return (
+        configurado.strip()
+        if configurado and configurado.strip()
+        else BASH_GIT_POR_OMISION
+    )
+
+
+def es_bash_de_wsl(ruta: str) -> bool:
+    baja = (ruta or "").lower().replace("/", "\\")
+    return baja.endswith(r"\system32\bash.exe") or r"\windowsapps\bash.exe" in baja
+
+
+def argv_shell(cmd: str, configurado: str = "") -> tuple:
+    bash = resuelve_bash(configurado)
+    if es_bash_de_wsl(bash):
+        bash = BASH_GIT_POR_OMISION
+    return ([bash, "-c", cmd], False, None)
+
+
+def es_stub_tienda(ruta: str) -> bool:
+    return "windowsapps" in (ruta or "").lower().replace("/", "\\")
+
+
+def path_sin_stub_tienda(path: str, sep: str = ";") -> str:
+    return sep.join(p for p in (path or "").split(sep) if p and not es_stub_tienda(p))
+
+
 def argv_windows(argv: list[str], env: dict) -> list[str]:
     """argv listo para CreateProcess: resuelve `.cmd`/`.bat` de npm por el PATH del agente."""
     if not argv or os.path.isabs(argv[0]):
