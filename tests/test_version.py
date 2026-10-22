@@ -144,9 +144,13 @@ class DaemonTest(unittest.TestCase):
     def test_sin_version_fijada_la_conf_trae_motor_vacio(self):
         self.assertEqual(load_conf(self.conf).motor, {})
 
-    def test_el_daemon_sale_con_75_si_la_conf_fija_otra_version(self):
+    def test_el_daemon_no_sale_si_la_conf_fija_una_version_que_no_esta_instalada(self):
         self.fija('[motor]\nversion = "99.0.0"\n')
-        self.assertEqual(Daemon(self.home).run(0.05, False, 5), SALIDA_RELANZAR)
+        self.assertEqual(
+            Daemon(self.home).run(0.05, False, 0.3),
+            3,
+            "sale por el tope de tiempo, no por versión",
+        )
 
     def test_el_daemon_sigue_si_la_conf_fija_la_version_que_corre(self):
         self.fija(f'[motor]\nversion = "{motor.__version__}"\n')
@@ -156,13 +160,15 @@ class DaemonTest(unittest.TestCase):
             "sale por el tope de tiempo, no por versión",
         )
 
-    def test_el_proceso_del_daemon_sale_con_75_y_dice_por_que(self):
+    def test_el_proceso_del_daemon_sigue_y_avisa_si_la_version_no_esta_instalada(self):
         self.fija('[motor]\nsha = "ffffffffffff"\n')
         r = motor_cli(
-            "daemon", "--home", str(self.home), "--intervalo", "0.05", "--tope", "20"
+            "daemon", "--home", str(self.home), "--intervalo", "0.05", "--tope", "2"
         )
-        self.assertEqual(r.returncode, 75, r.stderr)
-        self.assertIn("ffffffffffff", r.stderr)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(
+            len(list((self.home / "avisos" / "pendientes").glob("*.txt"))), 1
+        )
 
     def test_un_cambio_de_version_en_la_conf_se_nota_sin_reiniciar(self):
         d = Daemon(self.home)

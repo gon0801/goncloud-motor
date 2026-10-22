@@ -44,6 +44,10 @@ PLANTILLAS = {
         "Se lo dije a {por}; tiene que corregirlo y entregarlo otra vez."
     ),
     "avance": "{listas} de {total} partes listas.\n{ahora}\n{atoron}",
+    "version": (
+        "Falta instalar algo: esta máquina necesita la versión {version} del motor.\n"
+        "Sigo trabajando con la que tengo; quien administra el motor tiene que instalarla."
+    ),
 }
 
 _HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
@@ -101,6 +105,10 @@ FIJOS = {
         "Pídele a quien te lo dio que revise el recibo y lo entregue otra vez."
     ),
     "avance": "Sigo trabajando en el plan.",
+    "version": (
+        "Falta instalar algo: esta máquina necesita otra versión del motor.\n"
+        "Sigo trabajando con la que tengo; quien administra el motor tiene que instalarla."
+    ),
 }
 PARCIAL = {  # con el título del plan y solo los campos que casi siempre llegan
     "avance": "{listas} de {total} partes listas. Sigo trabajando.",
@@ -113,6 +121,7 @@ PARCIAL = {  # con el título del plan y solo los campos que casi siempre llegan
         "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
     ),
     "humano": FIJOS["humano"],
+    "version": FIJOS["version"],
 }
 GENERICO = "Avancé en un plan; quien te lo dio te puede contar el detalle."
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import unittest.mock
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ / "proto"))
 import sandbox  # noqa: E402
 
+import motor  # noqa: E402
 from motor import machine as m  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.notify import PLANTILLAS, lint_plain, render  # noqa: E402
@@ -377,6 +379,46 @@ prueba-real: true
     def test_release_con_receta_en_el_motor_toml_se_toma(self):
         toml = '[deploy]\ndesplegar = "d.sh"\nchecklist = "c.sh"\nrollback = "r.sh"\n'
         self.assertEqual(self.entrega_release({".motor.toml": toml}), "tomado")
+
+
+class VersionTest(Banco):
+    def fija(self, bloque: str) -> None:
+        g = self.tmp / "b" / "conf" / "general.toml"
+        g.write_text(g.read_text() + "\n" + bloque)
+
+    def test_una_version_que_no_esta_instalada_no_tumba_al_daemon_y_avisa_una_vez(self):
+        self.fija('[motor]\nversion = "99.0.0"\n')
+        d = self.daemon()
+        self.assertEqual(d.run(0.01, False, 0.3), 3)
+        avisos = self.avisos("version")
+        self.assertEqual(len(avisos), 1, "un solo aviso aunque pasen muchos ticks")
+        self.assertIn(
+            "esta máquina necesita la versión 99.0.0 del motor",
+            avisos[0].read_text(encoding="utf-8"),
+        )
+        self.assertEqual(len(self.eventos("VersionFaltante")), 1)
+        self.assertEqual(self.daemon().run(0.01, False, 0.1), 3)
+        self.assertEqual(len(self.avisos("version")), 1, "ni tras un reinicio")
+
+    def test_la_version_instalada_no_avisa(self):
+        self.fija(f'[motor]\nversion = "{motor.__version__}"\n')
+        self.assertEqual(self.daemon().run(0.01, False, 0.2), 3)
+        self.assertEqual(self.avisos("version"), [])
+
+    def test_si_el_codigo_en_disco_cambio_sale_con_75_al_terminar_el_tick(self):
+        sha = ["a" * 40]
+        with unittest.mock.patch("motor.version.sha_actual", lambda *_: sha[0]):
+            d = self.daemon()
+            ticks = []
+            tick = d.tick
+            d.tick = lambda now=None: ticks.append(1) or tick(now)
+            sha[0] = "b" * 40
+            self.assertEqual(d.run(0.01, False, 5), 75)
+        self.assertEqual(len(ticks), 1, "el tick en curso termina antes de salir")
+
+    def test_si_el_codigo_no_cambio_sigue(self):
+        with unittest.mock.patch("motor.version.sha_actual", lambda *_: "a" * 40):
+            self.assertEqual(self.daemon().run(0.01, False, 0.2), 3)
 
 
 CAMPOS = {

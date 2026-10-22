@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import llamadas
 from . import machine as m
-from . import plataforma
+from . import plataforma, version
 from .conf import (
     RepoConf,
     load_conf,
@@ -88,6 +88,7 @@ class Daemon:
             else conf.tiempos.get("checks_cada_s", 60.0),
         )
         self.fx = Effects(self.cx)
+        self._sha_arranque = version.sha_actual()
         self._sin_dormir: bool | None = (
             None  # None: aplicar en el primer tick (también tras un reinicio)
         )
@@ -147,6 +148,30 @@ class Daemon:
     def pide_otra_version(self) -> str:
         """Si la conf fija una versión o un commit distinto del que corre, la frase de la diferencia."""
         return pide_otra(self.cx.conf.motor, info())
+
+    def avisa_version_faltante(self) -> None:
+        """Si la conf fija una versión que no está instalada en disco, no hay nada que relanzar: se
+        avisa una vez y el motor sigue con la que tiene."""
+        if not pide_otra(self.cx.conf.motor, version.instalada()):
+            return
+        fijada = self.cx.conf.motor
+        pedida = fijada.get("version") or fijada.get("sha", "")[:12]
+        if self.store.append(
+            "",
+            "",
+            "VersionFaltante",
+            {"pedida": pedida},
+            ukey=f"versionfalta:{self.maquina.nombre}:{pedida}",
+        ):
+            self.cx.notifier.encola(
+                f"version:{pedida}",
+                render(
+                    "version",
+                    {"version": pedida},
+                    self.maquina.nombre,
+                    "Motor de planes",
+                ),
+            )
 
     def plans(self) -> list[Plan]:
         vistos: dict[str, Plan] = {}
@@ -509,14 +534,6 @@ class Daemon:
     def run(self, intervalo: float, hasta_terminar: bool, tope_s: float = 0) -> int:
         inicio = time.time()
         while True:
-            self.recargar_conf()
-            if otra := self.pide_otra_version():
-                print(
-                    f"motor: {otra}; salgo con 75 para que el supervisor me relance",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                return SALIDA_RELANZAR
             try:
                 terminado = self.tick()
             except Exception:  # noqa: BLE001  un tick malo se escribe en el log del servicio y sigue el siguiente
@@ -526,6 +543,19 @@ class Daemon:
                     flush=True,
                 )
                 terminado = False
+            try:
+                self.avisa_version_faltante()
+                cambio = version.sha_actual() != self._sha_arranque
+            except Exception:  # noqa: BLE001  mirar la versión nunca tumba al motor
+                cambio = False
+            if cambio:
+                print(
+                    "motor: el código instalado en disco cambió desde que arranqué; "
+                    "salgo con 75 para que el supervisor me relance con el nuevo",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return SALIDA_RELANZAR
             if terminado and hasta_terminar:
                 return 0
             if tope_s and time.time() - inicio > tope_s:
