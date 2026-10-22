@@ -859,8 +859,22 @@ def _sin_avance_propio(
     falta = (bv.verified.get(head) or {}).get("falta_comando") if head else None
     if falta:
         # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin.
+        # Un aviso por comando, no uno por ronda ni otro cuando se suma un comando nuevo.
+        prefijo = f"atorado:{bid}:comando:"
+        avisados = {
+            c
+            for k in bv.notices
+            if k.startswith(prefijo)
+            for c in k[len(prefijo) :].split(",")
+        }
+        nuevos = [c for c in falta if c not in avisados]
+        clave = (
+            prefijo + ",".join(nuevos)
+            if nuevos
+            else min(k for k in bv.notices if k.startswith(prefijo))
+        )
         return (
-            f"atorado:{bid}:comando:{','.join(falta)}",  # uno por comando, no uno por ronda
+            clave,
             (
                 f"la verificación del plan usa {', '.join(falta)}, que esta máquina no tiene; "
                 "hay que corregir el plan o instalarlo en la máquina"

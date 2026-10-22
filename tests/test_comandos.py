@@ -83,6 +83,12 @@ class ComandoFaltanteTest(unittest.TestCase):
         )
         evs = ronda("a" * 40, 1) + [ev("NoticeQueued", "A", {"key": a.key})]
         self.assertEqual(avisos(evs + ronda("b" * 40, 2)), [], "una vez por comando")
+        evs += ronda("b" * 40, 2)
+        evs[-1].data["falta_comando"] = ["python", "test"]
+        (b,) = avisos(evs)
+        self.assertEqual(b.key, "atorado:A:comando:test", "solo el comando nuevo")
+        evs += [ev("NoticeQueued", "A", {"key": b.key})] + ronda("c" * 40, 3)
+        self.assertEqual(avisos(evs), [], "python solo, ya avisado: nada")
 
 
 if __name__ == "__main__":
