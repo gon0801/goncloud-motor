@@ -591,5 +591,44 @@ class TestGrokJson(unittest.TestCase):
         self.assertEqual(h.skills, ("poteto-mode",))
 
 
+class TestBloqueantesDelRevisorMalformados(unittest.TestCase):
+    """B.4: el revisor es entrada externa; un bloqueante raro no debe tumbar `collect`."""
+
+    def _collect(self, bloqueantes):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        (d / "outcome.json").write_text(
+            json.dumps(dict(exit=0, timed_out=False, no_progress=False, tail=""))
+        )
+        (d / "result.json").write_text(
+            json.dumps(
+                dict(sha="abc", veredicto="CAMBIOS", notas=[], bloqueantes=bloqueantes)
+            )
+        )
+        eventos = []
+        N = SimpleNamespace
+        fx = ef.Effects(N(store=N(append=lambda *a, **k: eventos.append(a))))
+        fx._proveedor = lambda mod: ""
+        fx._corre_en = lambda p, s, b, sha, n, c: SimpleNamespace(returncode=0)
+        r = fx.collect(
+            N(id="p", block=lambda b: N(id=b)),
+            None,
+            "A",
+            N(dir=str(d), role="revisar", sha="abc", modelo="opus", n=1),
+        )
+        return r, eventos
+
+    def test_repro_null_y_bloqueante_no_objeto_no_revientan(self):
+        r, ev = self._collect(
+            [dict(texto="a", repro="true"), dict(texto="b", repro=None), "suelto"]
+        )
+        self.assertEqual(r["kind"], "veredicto")
+        self.assertEqual(len(ev[0][3]["bajados"]), 1)
+
+    def test_bloqueantes_null_no_revienta(self):
+        r, _ = self._collect(None)
+        self.assertEqual(r["kind"], "veredicto")
+
+
 if __name__ == "__main__":
     unittest.main()

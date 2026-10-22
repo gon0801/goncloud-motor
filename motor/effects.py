@@ -744,16 +744,27 @@ Escribe en `$MOTOR_RESULT`:
                     "detalle": "el veredicto no cita el SHA revisado",
                 }
             veredicto = res["veredicto"]
-            bloqueantes = list(res.get("bloqueantes", []))
-            notas = list(res.get("notas", []))
+            # el revisor es entrada externa: solo objetos, `repro`/`texto` siempre texto
+            crudos = res.get("bloqueantes")
+            bloqueantes = [
+                {
+                    **b,
+                    "texto": str(b.get("texto") or ""),
+                    "repro": str(b.get("repro") or ""),
+                }
+                for b in (crudos if isinstance(crudos, list) else [])
+                if isinstance(b, dict)
+            ]
+            notas = res.get("notas")
+            notas = list(notas) if isinstance(notas, list) else []
             bloqueantes, bajados = self._reproduce_bloqueantes(
                 plan, snap, block, att.sha, bloqueantes
             )
             notas += [
-                f"Bajó de bloqueante a nota (su repro salió 0, no reprodujo nada): {b.get('texto', '')}"
+                f"Bajó de bloqueante a nota (su repro salió 0, no reprodujo nada): {b['texto']}"
                 for b in bajados
             ]
-            if bajados and not any(b.get("repro", "").strip() for b in bloqueantes):
+            if bajados and not any(b["repro"].strip() for b in bloqueantes):
                 veredicto = "APROBADO"  # ya no queda nada que se pueda reproducir
             self.cx.store.append(
                 plan.id,
