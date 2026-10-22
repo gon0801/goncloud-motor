@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -102,6 +105,96 @@ class BandejaTest(Banco):
         d.tick()
         d.tick()
         self.assertEqual(len(self.avisos("rechazo")), 1)
+
+
+class TickTest(Banco):
+    def entrega(self, plan_id: str) -> Daemon:
+        d = self.daemon()
+        d.store.append(
+            plan_id,
+            "",
+            "PlanLoaded",
+            {"plan": {**self.plan, "id": plan_id}, "por": "test"},
+            ukey=f"plan:{plan_id}",
+        )
+        return d
+
+    def fallas(self, d: Daemon) -> dict[str, list]:
+        porfase: dict[str, list] = {}
+        for e in d.store.events():
+            if e.kind == "EffectFailed":
+                porfase.setdefault(e.data["accion"], []).append(e)
+        return porfase
+
+    def test_un_plan_con_el_log_roto_no_detiene_a_otro(self):
+        d = self.entrega("roto")
+        d.store.append(
+            "roto",
+            "A",
+            "Reviewed",
+            {"sha": "x", "veredicto": "CAMBIOS", "bloqueantes": ["no soy un dict", 3]},
+            ukey="malo",
+        )
+        d = self.entrega("sano")
+        lanzados = []
+        d.fx.start_attempt = lambda plan, snap, a: lanzados.append(plan.id)
+        d.tick()
+        self.assertIn("sano", lanzados, "el plan sano avanza")
+        fallas = self.fallas(d)
+        self.assertEqual({e.plan for es in fallas.values() for e in es}, {"roto"})
+
+    def test_un_ajusta_sueno_que_se_pasa_del_tope_no_detiene_el_tick(self):
+        d = self.entrega("demo")
+        lanzados = []
+        d.fx.start_attempt = lambda plan, snap, a: lanzados.append(plan.id)
+
+        def se_pasa(hay_trabajo, now):
+            raise subprocess.TimeoutExpired("caffeinate", 60)
+
+        d.ajusta_sueno = se_pasa
+        d.tick()
+        self.assertTrue(lanzados, "los planes avanzaron antes de la fase que falló")
+        self.assertEqual(list(self.fallas(d)), ["ajusta_sueno"])
+
+    def test_cada_fase_suelta_se_anota_y_deja_seguir(self):
+        for fase, donde in (
+            ("trae_conf", "trae_conf"),
+            ("recargar_conf", "recargar_conf"),
+            ("purga_registros", "fx"),
+            ("envia_pendientes", "notifier"),
+        ):
+            with self.subTest(fase=fase):
+                d = self.entrega("demo")
+                destino = {"fx": d.fx, "notifier": d.cx.notifier}.get(donde, d)
+
+                def revienta(*a, **k):
+                    raise OSError("se cayó")
+
+                setattr(destino, fase, revienta)
+                d.tick()
+                self.assertIn(fase, self.fallas(d))
+                self.assertIn(
+                    "demo",
+                    {e.plan for e in d.store.events() if e.kind == "AttemptStarted"}
+                    | {e.plan for e in d.store.events() if e.kind == "PlanLoaded"},
+                )
+
+    def test_run_atrapa_un_tick_malo_lo_escribe_y_sigue(self):
+        d = self.daemon()
+        llamadas = []
+
+        def tick(now=None):
+            llamadas.append(1)
+            if len(llamadas) == 1:
+                raise RuntimeError("tick roto")
+            return True
+
+        d.tick = tick
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(d.run(0.01, True, 5), 0)
+        self.assertEqual(len(llamadas), 2)
+        self.assertIn("tick roto", err.getvalue())
 
 
 CAMPOS = {

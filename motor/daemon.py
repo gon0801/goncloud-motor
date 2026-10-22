@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from . import llamadas
@@ -324,45 +325,83 @@ class Daemon:
 
     def tick(self, now: float | None = None) -> bool:
         now = now if now is not None else time.time()
-        self.trae_conf(now)
-        self.recargar_conf()
-        self.ingest_inbox()
+        self._fase("trae_conf", lambda: self.trae_conf(now), now)
+        self._fase("recargar_conf", self.recargar_conf, now)
+        self._fase("ingest_inbox", self.ingest_inbox, now)
         todo_hecho = True
         planes = self.plans()
         for plan in planes:
-            self.ingest_attempts(plan)
-        for plan in planes:
-            snap = m.fold(plan, self.store.events(plan.id))
-            cd_fuera, int_fuera = self._cuentas_fuera(planes, plan)
-            for a in m.decide(
-                snap,
-                self.cx.policy,
-                now,
-                self._ocupados_fuera(planes, plan),
-                cd_fuera,
-                int_fuera,
-            ):
-                clave = (plan.id, _bloque(a), type(a).__name__)
-                if now < self._espera_efecto.get(clave, 0):
-                    continue  # falló hace poco: no se repite en cada tick (una prueba por ssh a la PC, p. ej.)
-                try:
-                    self.execute(plan, snap, a)
-                    self._espera_efecto.pop(clave, None)
-                except Exception as e:  # noqa: BLE001  red caída, repo borrado, disco lleno: se reintenta en 5 min
-                    self._espera_efecto[clave] = now + ESPERA_TRAS_FALLA_S
-                    self._falla_efecto(plan, a, e, now)
-                snap = m.fold(plan, self.store.events(plan.id))
-            hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
-            todo_hecho = (
-                todo_hecho
-                and hecho
-                and f"terminado:{plan.id}" in snap.plan_notices
-                and snap.limpio
+            self._fase(
+                "ingest_attempts", lambda: self.ingest_attempts(plan), now, plan.id
             )
-        self.ajusta_sueno(any(not self._terminado(p) for p in planes), now)
-        self.fx.purga_registros(planes, now)
-        self.cx.notifier.envia_pendientes()
+        for plan in planes:
+            todo_hecho = self._tick_plan(plan, planes, now) and todo_hecho
+        self._fase(
+            "ajusta_sueno",
+            lambda: self.ajusta_sueno(self._hay_trabajo(planes), now),
+            now,
+        )
+        self._fase("purga_registros", lambda: self.fx.purga_registros(planes, now), now)
+        self._fase("envia_pendientes", self.cx.notifier.envia_pendientes, now)
         return todo_hecho and bool(planes)
+
+    def _fase(self, accion: str, fn, now: float, plan_id: str = "") -> bool:
+        """Una fase del tick que revienta se anota como EffectFailed y el tick sigue con lo demás."""
+        try:
+            fn()
+            return True
+        except Exception as e:  # noqa: BLE001  una fase mala no tumba al motor ni a los otros planes
+            self._falla_fase(plan_id, accion, e, now)
+            return False
+
+    def _falla_fase(self, plan_id: str, accion: str, e: Exception, now: float) -> None:
+        try:
+            self._anota_falla(plan_id, "", accion, e, now)
+        except Exception:  # noqa: BLE001  ni siquiera un log que no escribe tumba al tick
+            print(f"motor: {accion} falló: {e!r}", file=sys.stderr, flush=True)
+
+    def _tick_plan(self, plan: Plan, planes: list[Plan], now: float) -> bool:
+        """fold, decide y ejecutar de un plan. Devuelve si el plan quedó entregado y limpio."""
+        try:
+            snap = m.fold(plan, self.store.events(plan.id))
+        except Exception as e:  # noqa: BLE001
+            self._falla_fase(plan.id, "fold", e, now)
+            return False
+        try:
+            cd_fuera, int_fuera = self._cuentas_fuera(planes, plan)
+            acciones = list(
+                m.decide(
+                    snap,
+                    self.cx.policy,
+                    now,
+                    self._ocupados_fuera(planes, plan),
+                    cd_fuera,
+                    int_fuera,
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            self._falla_fase(plan.id, "decide", e, now)
+            return False
+        for a in acciones:
+            clave = (plan.id, _bloque(a), type(a).__name__)
+            if now < self._espera_efecto.get(clave, 0):
+                continue  # falló hace poco: no se repite en cada tick (una prueba por ssh a la PC, p. ej.)
+            try:
+                self.execute(plan, snap, a)
+                self._espera_efecto.pop(clave, None)
+            except Exception as e:  # noqa: BLE001  red caída, repo borrado, disco lleno: se reintenta en 5 min
+                self._espera_efecto[clave] = now + ESPERA_TRAS_FALLA_S
+                self._falla_efecto(plan, a, e, now)
+            try:
+                snap = m.fold(plan, self.store.events(plan.id))
+            except Exception as e:  # noqa: BLE001
+                self._falla_fase(plan.id, "fold", e, now)
+                return False
+        hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
+        return hecho and f"terminado:{plan.id}" in snap.plan_notices and snap.limpio
+
+    def _hay_trabajo(self, planes: list[Plan]) -> bool:
+        return any(not self._terminado(p) for p in planes)
 
     def _cuentas_fuera(
         self, planes: list[Plan], este: Plan
@@ -373,7 +412,10 @@ class Daemon:
         for p in planes:
             if p.id == este.id:
                 continue
-            s = m.fold(p, self.store.events(p.id))
+            try:
+                s = m.fold(p, self.store.events(p.id))
+            except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
+                continue
             for c, h in s.cooldowns.items():
                 cd[c] = max(cd.get(c, 0), h)
             intentos += [a for bv in s.blocks.values() for a in bv.attempts if a.ended]
@@ -386,14 +428,21 @@ class Daemon:
         for p in planes:
             if p.id == este.id:
                 continue
-            for c, k in m._ocupados(
-                m.fold(p, self.store.events(p.id)), self.cx.policy
-            ).items():
+            try:
+                ocupados = m._ocupados(
+                    m.fold(p, self.store.events(p.id)), self.cx.policy
+                )
+            except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
+                continue
+            for c, k in ocupados.items():
                 n[c] = n.get(c, 0) + k
         return n
 
     def _terminado(self, plan: Plan) -> bool:
-        snap = m.fold(plan, self.store.events(plan.id))
+        try:
+            snap = m.fold(plan, self.store.events(plan.id))
+        except Exception:  # noqa: BLE001  un plan que no se puede leer no mantiene despierta la máquina
+            return True
         return all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
 
     def ajusta_sueno(self, hay_trabajo: bool, now: float) -> None:
@@ -407,15 +456,19 @@ class Daemon:
             or now < self._sin_dormir_reintento
         ):
             return
-        r = subprocess.run(
-            list(argv),
-            check=False,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            stdin=subprocess.DEVNULL,
-            timeout=60,
-        )
+        try:
+            r = subprocess.run(
+                list(argv),
+                check=False,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                stdin=subprocess.DEVNULL,
+                timeout=60,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            self._sin_dormir_reintento = now + 600
+            raise
         if r.returncode == 0:
             self._sin_dormir = hay_trabajo
         else:
@@ -424,14 +477,17 @@ class Daemon:
     def _falla_efecto(self, plan: Plan, a: m.Action, e: Exception, now: float) -> None:
         """Un efecto que revienta no tumba al motor. Se anota una vez por hora y el tick siguiente
         lo reintenta (los efectos son idempotentes); si sigue fallando, el aviso de 'atorado' llega solo."""
-        bloque = _bloque(a)
-        clave = f"falla:{plan.id}:{bloque}:{type(a).__name__}:{int(now // 3600)}"
+        self._anota_falla(plan.id, _bloque(a), type(a).__name__, e, now)
+
+    def _anota_falla(
+        self, plan_id: str, bloque: str, accion: str, e: Exception, now: float
+    ) -> None:
         self.store.append(
-            plan.id,
+            plan_id,
             bloque,
             "EffectFailed",
-            {"accion": type(a).__name__, "error": str(e)[-500:]},
-            ukey=clave,
+            {"accion": accion, "error": str(e)[-500:]},
+            ukey=f"falla:{plan_id}:{bloque}:{accion}:{int(now // 3600)}",
         )
 
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:
@@ -461,7 +517,16 @@ class Daemon:
                     flush=True,
                 )
                 return SALIDA_RELANZAR
-            if self.tick() and hasta_terminar:
+            try:
+                terminado = self.tick()
+            except Exception:  # noqa: BLE001  un tick malo se escribe en el log del servicio y sigue el siguiente
+                print(
+                    f"motor: el tick falló, sigo con el siguiente:\n{traceback.format_exc()}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                terminado = False
+            if terminado and hasta_terminar:
                 return 0
             if tope_s and time.time() - inicio > tope_s:
                 return 3
