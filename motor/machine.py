@@ -191,6 +191,18 @@ class BlockView:
         imp = self.implement_attempts()
         return imp[-1].ended if imp else None
 
+    def entrega_ts(self, sha: str) -> float:
+        return max(
+            (
+                a.ended_at
+                for a in self.implement_attempts()
+                if a.ended
+                and a.ended.get("kind") == "entregado"
+                and a.ended.get("sha") == sha
+            ),
+            default=0.0,
+        )
+
     def review_for(self, sha: str) -> dict | None:
         rs = [r for r in self.reviews if r["sha"] == sha]
         return rs[-1] if rs else None
@@ -482,6 +494,10 @@ def estado(snap: Snapshot, bid: str) -> Estado:
     if c is None:
         return Estado.CHECKS
     if not c["green"]:
+        if bv.entrega_ts(head) > bv.checks_ts.get(head, 0.0):
+            return (
+                Estado.CHECKS
+            )  # reentrega del mismo SHA: se vuelve a mirar antes de contar la falla
         return Estado.ARREGLAR
     return Estado.MERGE
 
