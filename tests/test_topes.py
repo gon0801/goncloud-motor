@@ -307,6 +307,68 @@ class ApartTest(unittest.TestCase):
         self.assertEqual(len(banco.eventos("Verified")), 1)
         self.assertEqual(len(banco.eventos("VerifyStarted")), 1)
 
+    def test_segundo_sha_no_recoge_el_outcome_del_primero(self):
+        import subprocess as sp
+        import time
+        from pathlib import Path
+
+        from motor import machine as m
+        from motor.plan import Plan
+        from tests.test_no_caerse import Banco
+
+        banco = Banco("setUp")
+        banco.setUp()
+        d = banco.daemon()
+        banco.plan["blocks"][0]["rows"] = [
+            {
+                "id": "A.1",
+                "contenido": "x",
+                "acepta": "if test -f roto; then sleep 3; exit 1; fi",
+            }
+        ]
+        plan = Plan.from_dict(banco.plan)
+        bare = Path(plan.block("A").repo)
+        seed = bare.parent / ("seed-" + bare.name[:-4])
+
+        def git(*a):
+            return sp.run(
+                ["git", "-c", "user.name=x", "-c", "user.email=x@l", *a],
+                cwd=seed,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+        def verifica(sha):
+            fin = time.time() + 20
+            hallados = []
+            while time.time() < fin:
+                hallados = [
+                    e.data for e in banco.eventos("Verified") if e.data["sha"] == sha
+                ]
+                if hallados:
+                    break
+                d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha))
+                time.sleep(0.2)
+            return hallados
+
+        sha1 = git("rev-parse", "HEAD")
+        v1 = verifica(sha1)
+        self.assertTrue(v1 and v1[0]["ok"], v1)
+        (seed / "roto").write_text("x", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "rompe la Acepta")
+        git("push", "-q", str(bare), "main")
+        sha2 = git("rev-parse", "HEAD")
+        v2 = verifica(sha2)
+        self.assertTrue(v2, "el SHA nuevo nunca anota su propio Verified")
+        self.assertFalse(v2[0]["ok"])
+        dirs = {
+            e.data["sha"]: Path(e.data["dir"]).name
+            for e in banco.eventos("VerifyStarted")
+        }
+        self.assertNotEqual(dirs[sha1], dirs[sha2])
+
 
 class CicloTest(unittest.TestCase):
     def test_tick_sin_trabajo_con_muchos_limpiados_es_rapido(self):

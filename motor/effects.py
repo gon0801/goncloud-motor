@@ -1063,7 +1063,8 @@ Escribe en `$MOTOR_RESULT`:
                         raise RuntimeError(str(payload["error"]))
                     datos = payload.get("data") or {}
                     if (
-                        datos.get("huella", h_insumo) == h_insumo
+                        datos.get("sha") == a.sha
+                        and datos.get("huella", h_insumo) == h_insumo
                         and datos.get("huella_maquina", h_maquina) == h_maquina
                     ):
                         if terminal_kind == "Verified":
@@ -1102,7 +1103,7 @@ Escribe en `$MOTOR_RESULT`:
                     if proc and plataforma.estado_proc(proc) == "vivo":
                         return
         n = max((int(e.data.get("n", 0)) for e in starteds), default=0) + 1
-        d = self.cx.home / "aparte" / plan.id / f"{a.block}-{kind}-{n}"
+        d = self.cx.home / "aparte" / plan.id / f"{a.block}-{kind}-{a.sha[:12]}-{n}"
         d.mkdir(parents=True, exist_ok=True)
         marcados: dict[str, set[str]] = {}
         for e in self.cx.store.events(plan.id):
