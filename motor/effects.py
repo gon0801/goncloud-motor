@@ -48,6 +48,16 @@ class Contexto:
     checks_cada_s: float = 60.0
 
 
+def _posix(cmd: str) -> tuple:
+    """Cómo correr un comando POSIX del motor (Acepta, sondas, pruebas reales) en cada plataforma:
+    (args, shell, executable) para Popen. En Windows no hay /bin/bash y `shell=True` con executable
+    sale mal (le pasa /c): se llama al bash/sh de Git por argv; sin bash, el shell del sistema."""
+    if os.name != "nt":
+        return cmd, True, "/bin/bash"
+    sh = shutil.which("bash") or shutil.which("sh")
+    return ([sh, "-c", cmd], False, None) if sh else (cmd, True, None)
+
+
 def _run_tope(
     cmd: str, cwd: Path | None, env: dict, timeout: float
 ) -> subprocess.CompletedProcess:
@@ -67,17 +77,19 @@ def _run(
     """Corre `cmd` en su propio grupo; al pasarse del tope mata el grupo entero, no solo el shell.
     Shopify-token-01: el tope cortaba `bash desplegar.sh` y el `crontab -` que había abierto se
     quedaba colgado en la Mini, esperando un permiso que nadie contestaba."""
+    argv, shell, exe = _posix(cmd)
     p = subprocess.Popen(
-        cmd,
+        argv,
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         errors="replace",
         stdin=subprocess.DEVNULL,
-        shell=True,
-        executable="/bin/bash" if os.name != "nt" else None,
+        shell=shell,
+        executable=exe,
         **plataforma.kwargs_grupo(),
     )
     try:
@@ -1115,14 +1127,15 @@ Escribe en `$MOTOR_RESULT`:
             return
         if ahora - self._ultimo_poll.get(f"sonda:{clave}", 0) < SONDA_CADA_S:
             return
+        argv, shell, exe = _posix(h.sonda)
         p = subprocess.Popen(
-            h.sonda,
-            shell=True,
+            argv,
+            shell=shell,
             env=self.env_base({"MOTOR_HOME": str(self.cx.home)}),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            executable="/bin/bash" if os.name != "nt" else None,
+            executable=exe,
         )
         self._sondas[clave] = (p, ahora)
         try:
