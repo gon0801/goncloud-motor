@@ -18,6 +18,7 @@ Modos (cada uno es una falla del catálogo):
                   (el `repro` bueno viene de una fila del encargo: `| repro: <comando>`)
   commits_sin_push   la primera vez deja dos commits locales sin push y un archivo sin commitear, y se corta;
                   la siguiente anota lo que ve en la carpeta (`retoma.json`) y entrega normal
+  commits_limpios igual que commits_sin_push pero sin archivo sin commitear: la carpeta queda limpia
   borra_viejo     la primera vez borra `viejo.py` sin commitear y se corta; la siguiente anota lo que ve
   entrega_y_sigue entrega (push y result.json) y sigue imprimiendo hasta que lo detienen
   parcial_lento   en el bloque A, la primera vez deja un archivo sin commitear y se queda trabajando
@@ -103,14 +104,15 @@ def main() -> int:
     rama = re.search(r"en la rama `([^`]+)`", brief).group(1)
     git("config", "user.email", "agente@local")
     git("config", "user.name", os.environ["MOTOR_MODEL"])
-    if modo in ("commits_sin_push", "borra_viejo"):
+    if modo in ("commits_sin_push", "commits_limpios", "borra_viejo"):
         if primera:
-            if modo == "commits_sin_push":
+            if modo != "borra_viejo":
                 for i in (1, 2):
                     Path(f"local{i}.txt").write_text(f"{i}\n")
                     git("add", "-A")
                     git("commit", "-q", "-m", f"local {i}")
-                Path("sin_commit.txt").write_text("a medias\n")
+                if modo == "commits_sin_push":
+                    Path("sin_commit.txt").write_text("a medias\n")
             else:
                 Path("viejo.py").unlink()
             sys.stdout.flush()

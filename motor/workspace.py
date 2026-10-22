@@ -53,8 +53,6 @@ def foto_wip(worktree: Path, rama_wip: str, local: bool = False) -> str:
         git("read-tree", "HEAD", cwd=worktree, env=env)
         git("add", "-A", cwd=worktree, env=env)
         tree = git("write-tree", cwd=worktree, env=env).stdout.strip()
-        if tree == git("rev-parse", "HEAD^{tree}", cwd=worktree).stdout.strip():
-            return "igual"
         if local:
             previa = git(
                 "rev-parse", "-q", "--verify", f"refs/{rama_wip}", cwd=worktree

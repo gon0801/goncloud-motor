@@ -124,6 +124,21 @@ class RetomaTest(unittest.TestCase):
                     self.assertEqual(visto["log"][:2], ["local 2", "local 1"], visto)
                     self.assertIn("?? sin_commit.txt", visto["status"])
 
+    def test_dos_commits_locales_con_la_carpeta_limpia_vuelven(self):
+        for local in (False, True):
+            with self.subTest(repo_publico=local):
+                self.nuevo(f"l{int(local)}")
+                w = self.intento_cortado("commits_limpios", local)
+                self.assertEqual(git("status", "--porcelain", cwd=w).stdout, "")
+                w = self.ws.prepara(self.repo, "demo", "A", "main")
+                self.assertEqual(
+                    git(
+                        "rev-list", "--count", "origin/main..HEAD", cwd=w
+                    ).stdout.strip(),
+                    "2",
+                )
+                self.assertEqual(git("status", "--porcelain", cwd=w).stdout, "")
+
     def test_lo_que_el_agente_borro_sigue_borrado(self):
         for local in (False, True):
             with self.subTest(repo_publico=local):
