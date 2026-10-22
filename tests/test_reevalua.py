@@ -505,6 +505,15 @@ class ReevaluaTest(Banco):
             ev("Merged", "A", {"sha": sha, "commit": sha}),
             ev("DeployStarted", "A", {"sha": sha}),
         ]
+        aparte_viejo = self.tmp / "aparte-viejo"
+        aparte_viejo.mkdir()
+        (aparte_viejo / "desplegando").write_text(sha, encoding="utf-8")
+        d.store.append(
+            "demo",
+            "A",
+            "DeployStarted",
+            {"sha": sha, "dir": str(aparte_viejo), "proc": {}, "n": 1},
+        )
         self._espera_aparte(
             lambda: d.fx.deploy(plan, m.fold(plan, evs), m.Deploy("A", sha)),
             "Deployed",

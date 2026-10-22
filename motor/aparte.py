@@ -53,12 +53,14 @@ def main(argv: list[str] | None = None) -> int:
         spec = json.loads((d / "spec.json").read_text(encoding="utf-8"))
         cx = _contexto(Path(a.home))
         fx = Effects(cx)
+        fx._dir_aparte = d
         plan = Plan.from_dict(spec["plan"])
         blocks = {}
         for b in plan.blocks:
             bv = m.BlockView(block=b)
             bv.merged = list(spec.get("merged", {}).get(b.id, []))
             bv.deploy_started = set(spec.get("deploy_started", {}).get(b.id, []))
+            bv.deploy_marcados = set(spec.get("deploy_marcados", {}).get(b.id, []))
             bv.verify_started = set(spec.get("verify_started", {}).get(b.id, []))
             bv.prove_started = set(spec.get("prove_started", {}).get(b.id, []))
             blocks[b.id] = bv
@@ -79,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             datos = fx._prove_data(plan, snap, m.Prove(spec["block"], spec["sha"]))
             terminal = "Proved"
+        if spec.get("huella") is not None:
+            datos["huella"] = spec["huella"]
+            datos["huella_maquina"] = spec["huella_maquina"]
         payload = {"kind": terminal, "data": datos}
     except Exception as e:  # noqa: BLE001
         payload = {"error": f"{type(e).__name__}: {e}"}

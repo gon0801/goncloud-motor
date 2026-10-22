@@ -270,6 +270,7 @@ class Effects:
             str, tuple[subprocess.Popen, float]
         ] = {}  # sonda humana corriendo aparte
         self._pstack: tuple[str, tuple[str, Path] | None] | None = None
+        self._dir_aparte: Path | None = None
 
     # ------------------------------------------------------------------ entorno
     def env_base(self, extra: dict | None = None) -> dict:
@@ -1103,10 +1104,22 @@ Escribe en `$MOTOR_RESULT`:
         n = max((int(e.data.get("n", 0)) for e in starteds), default=0) + 1
         d = self.cx.home / "aparte" / plan.id / f"{a.block}-{kind}-{n}"
         d.mkdir(parents=True, exist_ok=True)
+        marcados: dict[str, set[str]] = {}
+        for e in self.cx.store.events(plan.id):
+            if (
+                e.kind == "DeployStarted"
+                and e.data.get("sha")
+                and e.data.get("dir")
+                and (Path(e.data["dir"]) / "desplegando").exists()
+            ):
+                marcados.setdefault(e.block, set()).add(e.data["sha"])
         spec = {
             "kind": kind,
             "block": a.block,
             "sha": a.sha,
+            "huella": h_insumo,
+            "huella_maquina": h_maquina,
+            "deploy_marcados": {bid: sorted(shas) for bid, shas in marcados.items()},
             "plan": plan.to_dict(),
             "repos": snap.repos,
             "merged": {bid: bv.merged for bid, bv in snap.blocks.items()},
@@ -1419,7 +1432,7 @@ Escribe en `$MOTOR_RESULT`:
         if not desplegar:
             ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
         elif (
-            a.sha in bv.deploy_started
+            a.sha in bv.deploy_marcados
             and not any(
                 e.kind == "Deployed" and e.data.get("sha") == a.sha
                 for e in self.cx.store.events(plan.id)
@@ -1428,6 +1441,8 @@ Escribe en `$MOTOR_RESULT`:
         ):
             ok, detalle = True, "ya estaba desplegado (se comprobó antes de repetir)"
         else:
+            if self._dir_aparte is not None:
+                (self._dir_aparte / "desplegando").write_text(a.sha, encoding="utf-8")
             pasos, ok = [], True
             for paso in (desplegar, checklist):
                 p = _run(f"bash {paso}", w, env, tope)

@@ -196,6 +196,117 @@ class ApartTest(unittest.TestCase):
         self.assertEqual(len(banco.eventos("Verified")), 1)
         self.assertGreaterEqual(len(banco.eventos("VerifyStarted")), 2)
 
+    def test_deploy_copia_que_falla_una_vez_luego_despliega_de_verdad(self):
+        import subprocess as sp
+        import time
+
+        from motor import machine as m
+        from motor.plan import Plan
+        from tests.test_no_caerse import Banco
+        from tests.test_puro import ev
+
+        banco = Banco("setUp")
+        banco.setUp()
+        prod = banco.tmp / "prod"
+        prod.write_text("viejo\n", encoding="utf-8")
+        b = banco.plan["blocks"][0]
+        b["lane"] = "release"
+        b["release"] = {
+            "desplegar": f"-c 'echo nuevo > {prod}'",
+            "checklist": f"-c 'test -f {prod}'",
+            "rollback": "-c true",
+        }
+        d = banco.daemon()
+        plan = Plan.from_dict(banco.plan)
+        sha = sp.run(
+            ["git", "rev-parse", "main"],
+            cwd=plan.block("A").repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        base = [
+            ev(
+                "AttemptStarted",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "modelo": "glm",
+                    "proc": {},
+                    "dir": "d",
+                },
+            ),
+            ev(
+                "AttemptEnded",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "outcome": {"kind": "entregado", "sha": sha},
+                },
+            ),
+            ev("Merged", "A", {"sha": sha, "commit": sha}),
+        ]
+        snap = lambda: m.fold(  # noqa: E731
+            plan,
+            base + [e for e in d.store.events("demo") if e.kind == "DeployStarted"],
+        )
+        estorbo = d.cx.home / "tmp" / "despliega-demo-A"
+        estorbo.parent.mkdir(parents=True, exist_ok=True)
+        estorbo.write_text("la copia falla una vez", encoding="utf-8")
+        fallo = None
+        fin = time.time() + 30
+        while time.time() < fin and fallo is None:
+            try:
+                d.fx.deploy(plan, snap(), m.Deploy("A", sha))
+            except RuntimeError as e:
+                fallo = str(e)
+            time.sleep(0.2)
+        self.assertIsNotNone(fallo)
+        estorbo.unlink()
+        fin = time.time() + 30
+        while time.time() < fin and not banco.eventos("Deployed"):
+            d.fx.deploy(plan, snap(), m.Deploy("A", sha))
+            time.sleep(0.2)
+        (r,) = banco.eventos("Deployed")
+        self.assertTrue(r.data["ok"], r.data)
+        self.assertNotIn("ya estaba desplegado", r.data["detalle"])
+        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "nuevo")
+
+    def test_verify_con_maquina_cambiada_se_recoge_a_la_primera(self):
+        import subprocess as sp
+        import time
+
+        from motor import machine as m
+        from motor.plan import Plan
+        from tests.test_no_caerse import Banco
+
+        banco = Banco("setUp")
+        banco.setUp()
+        d = banco.daemon()
+        banco.plan["blocks"][0]["rows"] = [
+            {"id": "A.1", "contenido": "x", "acepta": "true"}
+        ]
+        plan = Plan.from_dict(banco.plan)
+        sha = sp.run(
+            ["git", "rev-parse", "main"],
+            cwd=plan.block("A").repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        mq = banco.home / "maquina.toml"
+        texto = mq.read_text(encoding="utf-8")
+        self.assertNotIn("tiene", texto)
+        mq.write_text('tiene = ["ssh-goncloud"]\n' + texto, encoding="utf-8")
+        fin = time.time() + 15
+        while time.time() < fin and not banco.eventos("Verified"):
+            d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha))
+            time.sleep(0.3)
+        self.assertEqual(len(banco.eventos("Verified")), 1)
+        self.assertEqual(len(banco.eventos("VerifyStarted")), 1)
+
 
 class CicloTest(unittest.TestCase):
     def test_tick_sin_trabajo_con_muchos_limpiados_es_rapido(self):

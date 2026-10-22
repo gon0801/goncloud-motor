@@ -144,6 +144,7 @@ class BlockView:
     verify_started: set[str] = field(default_factory=set)
     prove_started: set[str] = field(default_factory=set)
     deploy_started: set[str] = field(default_factory=set)
+    deploy_marcados: set[str] = field(default_factory=set)
     deployed: dict[str, dict] = field(default_factory=dict)
     proved: dict[str, dict] = field(default_factory=dict)
     human_done: bool = False
