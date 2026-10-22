@@ -47,6 +47,48 @@ def pid_vivo(pid: int) -> bool:
         return True
 
 
+def hora_inicio(pid: int) -> str:
+    """Hora de inicio del proceso tal como la da `ps` (""  si no existe). Distingue un pid reusado."""
+    ps = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
+    try:
+        r = subprocess.run(
+            [ps, "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except OSError:
+        return ""
+    return " ".join(r.stdout.split())
+
+
+def matar_grupo_pid(pid: int) -> None:
+    """TERM y luego KILL al grupo de `pid` (el agente y el supervisor corren en su propia sesión)."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        fin = time.time() + 2
+        while time.time() < fin and pid_vivo(pid):
+            time.sleep(0.05)
+        if not pid_vivo(pid):
+            return
+
+
+def candado_exclusivo(f) -> bool:
+    """Toma el candado exclusivo de un archivo abierto, sin esperar. False si otro lo tiene."""
+    import fcntl
+
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
 def contener(p: subprocess.Popen) -> None:
     """Nada que hacer: `start_new_session` ya dio grupo propio."""
 

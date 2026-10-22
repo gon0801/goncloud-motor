@@ -145,8 +145,14 @@ class Workspace:
         return d
 
     def punta(self, repo: str, rama: str) -> str:
+        """SHA de la punta remota de la rama; "" solo si la rama no existe. Si el remoto no contesta
+        sube RuntimeError: un remoto caído no es una rama inexistente."""
         r = git("ls-remote", repo, f"refs/heads/{rama}")
-        return r.stdout.split()[0] if r.returncode == 0 and r.stdout.strip() else ""
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"no se pudo consultar {repo}: {r.stderr.strip()[-300:]}"
+            )
+        return r.stdout.split()[0] if r.stdout.strip() else ""
 
     def leer_en_base(self, repo: str, base: str, ruta: str) -> tuple[str, str]:
         """(SHA de la base, contenido del archivo en ese SHA). Vacío si no existe."""
@@ -156,8 +162,10 @@ class Workspace:
         return sha, (r.stdout if r.returncode == 0 else "")
 
     def prepara(self, repo: str, plan: str, block: str, base: str) -> Path:
-        """Carpeta del bloque en la punta de su rama (o de la base); restaura la foto wip si
-        corresponde a esa punta. Idempotente: llamarla de nuevo deja el mismo resultado."""
+        """Carpeta del bloque en la punta de su rama (o de la base). Si hay una foto wip cuyo padre
+        desciende de ese punto, la rama arranca en el padre de la foto y encima queda, sin commitear,
+        el árbol de la foto: lo commiteado en local y lo borrado o a medias vuelven como estaban.
+        Idempotente: llamarla de nuevo deja el mismo resultado."""
         d = self.espejo(repo)
         rama, wip = self.rama(plan, block), self.rama_wip(plan, block)
         w = self.home / "wt" / plan / block
@@ -165,28 +173,39 @@ class Workspace:
             "rev-parse", "--verify", "-q", f"origin/{rama}", cwd=d
         ).stdout.strip()
         punto = f"origin/{rama}" if remota else f"origin/{base}"
-        if not w.exists():
-            w.parent.mkdir(parents=True, exist_ok=True)
-            git("worktree", "prune", cwd=d)
-            r = git("worktree", "add", "-q", "-B", rama, str(w), punto, cwd=d)
-            if r.returncode != 0:
-                raise RuntimeError(r.stderr)
-        else:
-            git("checkout", "-q", "-B", rama, punto, cwd=w)
-            git("reset", "-q", "--hard", punto, cwd=w)
-            git("clean", "-qfd", cwd=w)
         foto = (
             git("rev-parse", "--verify", "-q", f"origin/{wip}", cwd=d).stdout.strip()
             or git("rev-parse", "--verify", "-q", f"refs/{wip}", cwd=d).stdout.strip()
         )
+        padre = (
+            git("rev-parse", "-q", "--verify", f"{foto}^", cwd=d).stdout.strip()
+            if foto
+            else ""
+        )
         if (
-            foto
-            and git("rev-parse", f"{foto}^", cwd=d).stdout.strip()
-            == git("rev-parse", "HEAD", cwd=w).stdout.strip()
+            padre
+            and git("merge-base", "--is-ancestor", punto, padre, cwd=d).returncode != 0
         ):
-            git(
-                "checkout", foto, "--", ".", cwd=w
-            )  # lo que quedó a medias vuelve a la carpeta
+            padre = ""  # foto vieja o de otra historia: no se restaura
+        arranque = padre or punto
+        # la decisión ya está tomada; solo ahora se toca la carpeta
+        if not w.exists():
+            w.parent.mkdir(parents=True, exist_ok=True)
+            git("worktree", "prune", cwd=d)
+            r = git("worktree", "add", "-q", "-B", rama, str(w), arranque, cwd=d)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr)
+        else:
+            git("checkout", "-q", "-B", rama, arranque, cwd=w)
+            git("reset", "-q", "--hard", arranque, cwd=w)
+            git("clean", "-qfd", cwd=w)
+        if padre:
+            # read-tree -m -u pasa de HEAD al árbol de la foto: lo que el agente borró sigue borrado
+            r = git("read-tree", "-m", "-u", "HEAD", foto, cwd=w)
+            if r.returncode != 0:
+                raise RuntimeError(
+                    f"no se pudo restaurar la foto {foto[:7]}: {r.stderr[-300:]}"
+                )
             git("reset", "-q", cwd=w)  # sin commitear, como lo dejó el agente
         elif remota:
             # Rama ya existente: se trae la base. Tras un merge (squash) lo viejo ya está en la base y el

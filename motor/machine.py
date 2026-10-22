@@ -211,7 +211,7 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
                     role=d["role"],
                     modelo=d["modelo"],
                     started=e.ts,
-                    proc=d["proc"],
+                    proc=d.get("proc") or {},
                     dir=d["dir"],
                     sha=d.get("sha", ""),
                 )

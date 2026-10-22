@@ -252,6 +252,9 @@ def errores_pstack(d: Path, conf) -> list[str]:
     return errores
 
 
+HOLGURA_VIVO_S = (
+    900  # un intento "vivo" tanto después de su tope de tiempo se da por perdido
+)
 SONDA_CADA_S = 120
 SONDA_TOPE_S = 900
 
@@ -602,19 +605,22 @@ class Effects:
             "--",
             *argv,
         ]
-        proc = plataforma.lanzar_separado(cmd, cwd, env, d / "runwrap.log")
         datos = {
             "n": a.n,
             "role": a.role,
             "modelo": a.modelo,
             "cuenta": ruta.cuenta,
-            "proc": proc,
+            "proc": {},
             "dir": str(d),
             "sha": a.sha,
             "conf_sha": self.cx.conf.sha,
             "feedback": list(a.feedback),
         }
-        (d / "started").write_text(json.dumps(datos), encoding="utf-8")
+        # la marca va antes de lanzar: si el daemon cae entre las dos cosas, el intento no se duplica
+        # (sin `proc` se da por perdido y se relanza); con el pid, la marca se completa
+        _escribe_marca(d / "started", datos)
+        datos["proc"] = plataforma.lanzar_separado(cmd, cwd, env, d / "runwrap.log")
+        _escribe_marca(d / "started", datos)
         self.cx.store.append(
             plan.id,
             a.block,
@@ -716,25 +722,46 @@ Escribe en `$MOTOR_RESULT`:
         d = Path(att.dir)
         oc = d / "outcome.json"
         if not oc.exists():
-            st = plataforma.estado_proc(att.proc)
+            st = plataforma.estado_proc(att.proc) if att.proc else "muerto"
             if st == "vivo":
-                return None
-            if st == "corte":
-                return {"kind": "corte", "detalle": "la máquina se apagó o reinició"}
-            return {
-                "kind": "perdido",
-                "detalle": "el proceso desapareció sin dejar resultado",
-            }
+                if (
+                    time.time() - att.started
+                    <= self.cx.policy.timeout_s + HOLGURA_VIVO_S
+                ):
+                    return None
+                self._mata_intento(d, att.proc)
+                return {
+                    "kind": "perdido",
+                    "detalle": "sigue 'vivo' mucho después de su tope de tiempo; el motor lo detuvo",
+                }
+            if (
+                not oc.exists()
+            ):  # pudo aparecer entre la primera lectura y la consulta del pid
+                if st == "corte":
+                    return {
+                        "kind": "corte",
+                        "detalle": "la máquina se apagó o reinició",
+                    }
+                self._mata_intento(d, None)
+                return {
+                    "kind": "perdido",
+                    "detalle": "el proceso desapareció sin dejar resultado",
+                }
         o = json.loads(oc.read_text(encoding="utf-8"))
         if o.get("puerta"):  # runwrap lo cortó en vivo: no cargó poteto-mode a tiempo
             return {"kind": "sin_pstack", "detalle": o["puerta"]}
-        c = m.classify(
-            o["exit"],
-            o["timed_out"],
-            o["no_progress"],
-            o["tail"],
-            self._proveedor(att.modelo),
-        )
+        if att.role == "implementar" and self._entrego(plan, block_id, d):
+            c = {
+                "kind": "terminado"
+            }  # dejó su entrega: lo que pasó después con el proceso no la borra
+        else:
+            c = m.classify(
+                o["exit"],
+                o["timed_out"],
+                o["no_progress"],
+                o["tail"],
+                self._proveedor(att.modelo),
+            )
         if c["kind"] in ("cuota", "rate_limit"):
             if c["kind"] == "cuota":
                 hasta = (
@@ -828,6 +855,33 @@ Escribe en `$MOTOR_RESULT`:
             "sha": punta,
             "resumen": str(res.get("resumen", ""))[:500],
         }
+
+    def _entrego(self, plan: Plan, block_id: str, d: Path) -> bool:
+        """Hay un `result.json` válido cuyo SHA es la punta remota de la rama del bloque."""
+        try:
+            res = json.loads((d / "result.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if _resultado_invalido(res, False):
+            return False
+        sha = res["sha"]
+        if len(sha) < 7:
+            return False
+        block = plan.block(block_id)
+        punta = self.cx.ws.punta(block.repo, self.cx.ws.rama(plan.id, block_id))
+        return bool(punta) and punta.startswith(sha)
+
+    def _mata_intento(self, d: Path, proc: dict | None) -> None:
+        """Detiene lo que quede de un intento perdido (agente y supervisor) antes de relanzar en la
+        misma carpeta. Solo mata un pid si sigue siendo el proceso que se lanzó (misma hora de inicio)."""
+        if proc and proc.get("pid"):
+            plataforma.matar_proc(int(proc["pid"]), proc.get("inicio", ""))
+        try:
+            pid = int((d / "agent.pid").read_text(encoding="utf-8").strip())
+            inicio = (d / "agent.inicio").read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return
+        plataforma.matar_proc(pid, inicio)
 
     def _corre_en(
         self, plan: Plan, snap: m.Snapshot, block, sha: str, nombre: str, cmd: str
@@ -1317,6 +1371,12 @@ Escribe en `$MOTOR_RESULT`:
             {"key": a.key, "texto": texto},
             ukey=f"notice:{plan.id}:{a.key}",
         )
+
+
+def _escribe_marca(ruta: Path, datos: dict) -> None:
+    tmp = ruta.with_name(ruta.name + ".tmp")
+    tmp.write_text(json.dumps(datos), encoding="utf-8")
+    os.replace(tmp, ruta)
 
 
 def _resultado_invalido(res: object, revisando: bool) -> str:

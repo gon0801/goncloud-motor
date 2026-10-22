@@ -24,6 +24,15 @@ class Event:
 
 
 class Store:
+    @classmethod
+    def solo_lectura(cls, path: Path) -> Store:
+        """Abre la base sin poder escribirla ni crearla (`motor estado` mira, no es el escritor)."""
+        s = cls.__new__(cls)
+        s.db = sqlite3.connect(
+            f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30
+        )
+        return s
+
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, isolation_level=None, timeout=30)

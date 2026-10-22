@@ -21,6 +21,7 @@ from motor import machine as m  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.notify import PLANTILLAS, lint_plain, render  # noqa: E402
 from motor.plan import PlanError, parse_plan  # noqa: E402
+from motor.store import Store  # noqa: E402
 
 
 class Banco(unittest.TestCase):
@@ -30,7 +31,9 @@ class Banco(unittest.TestCase):
         self.plan = parse_plan(self.plan_md.read_text(encoding="utf-8")).to_dict()
 
     def daemon(self) -> Daemon:
-        d = Daemon(self.home)
+        if getattr(self, "_ultimo", None):
+            self._ultimo._candado.close()  # "el motor se reinició": el anterior suelta el candado
+        d = self._ultimo = Daemon(self.home)
         d.fx.start_attempt = lambda plan, snap, a: (
             None
         )  # el tick no lanza agentes de verdad
@@ -40,7 +43,7 @@ class Banco(unittest.TestCase):
         return sorted((self.home / "avisos" / "pendientes").glob(f"*{parte}*.txt"))
 
     def eventos(self, kind: str):
-        return [e for e in Daemon(self.home).store.events() if e.kind == kind]
+        return [e for e in Store(self.home / "motor.db").events() if e.kind == kind]
 
 
 class BandejaTest(Banco):
