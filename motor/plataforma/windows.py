@@ -320,27 +320,43 @@ def boot_id_desde_last_boot(valor) -> str:
 
 
 def _last_boot_up_time() -> str:  # pragma: no cover
-    r = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString('o')",
-        ],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        check=False,
+    powershell = str(
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
     )
+    try:
+        r = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString('o')",
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
     return r.stdout.strip()
+
+
+_cache_boot_id: list = [None]
 
 
 def boot_id_sistema(consulta=None) -> str:
     if consulta is not None:
         return boot_id_desde_last_boot(consulta())
-    return boot_id_desde_last_boot(_last_boot_up_time())  # pragma: no cover
+    if _cache_boot_id[0] is None:  # pragma: no cover
+        _cache_boot_id[0] = boot_id_desde_last_boot(_last_boot_up_time())
+    return _cache_boot_id[0]  # pragma: no cover
 
 
 def kwargs_grupo() -> dict:  # pragma: no cover

@@ -63,6 +63,37 @@ class ArranqueTest(unittest.TestCase):
             proc = {"pid": os.getpid(), "boot_id": "1700000000"}
             self.assertEqual(plataforma.estado_proc(proc), "corte")
 
+    def test_lectura_fallida_de_last_boot_no_es_corte(self):
+        pid = os.getpid()
+        proc = {
+            "pid": pid,
+            "boot_id": windows.boot_id_sistema(
+                consulta=lambda: "2026-10-20T08:15:30.5000000-07:00"
+            ),
+            "inicio": plataforma.hora_inicio(pid),
+        }
+        with mock.patch.dict(os.environ):
+            os.environ.pop("MOTOR_BOOT_ID", None)
+            with mock.patch.object(
+                plataforma,
+                "boot_id_sistema",
+                lambda: windows.boot_id_sistema(consulta=lambda: ""),
+            ):
+                self.assertEqual(plataforma.estado_proc(proc), "vivo")
+
+    def test_marcas_incomparables_no_son_corte(self):
+        self.assertTrue(
+            plataforma.mismo_arranque(
+                "desconocido", "2026-10-20T08:15:30.5000000-07:00"
+            )
+        )
+        self.assertTrue(
+            plataforma.mismo_arranque("170000000", "2026-10-20T08:15:30-07:00")
+        )
+        self.assertTrue(plataforma.mismo_arranque(None, "170000000"))
+        self.assertTrue(plataforma.mismo_arranque("", "170000000"))
+        self.assertFalse(plataforma.mismo_arranque("1700000000", "1700002000"))
+
 
 class ShellTest(unittest.TestCase):
     def test_por_omision_es_git_bash(self):

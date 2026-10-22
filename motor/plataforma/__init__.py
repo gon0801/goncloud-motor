@@ -45,7 +45,7 @@ def mismo_arranque(a, b) -> bool:
     if a == b:
         return True
     if a in (None, "", "desconocido") or b in (None, "", "desconocido"):
-        return False
+        return True
     try:
         return abs(int(str(a)) - int(str(b))) < 120
     except ValueError:
@@ -56,7 +56,7 @@ def mismo_arranque(a, b) -> bool:
         fa = datetime.fromisoformat(str(a).replace("Z", "+00:00"))
         fb = datetime.fromisoformat(str(b).replace("Z", "+00:00"))
     except ValueError:
-        return False
+        return True
     return abs((fa - fb).total_seconds()) < 120
 
 
