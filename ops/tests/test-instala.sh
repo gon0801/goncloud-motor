@@ -40,6 +40,11 @@ if [ "$host" = gwpc ]; then
     "tar -x"*) cat >"$S/pc-recibido.tar" ;;
     "schtasks /query"*) exit "${FAKE_PC_TAREA_RC:-0}" ;;
     "echo ok") echo ok ;;
+    # Estado de mentira de la PC: la etiqueta que tiene ~/motor y la marca de la marcha atrás.
+    *"describe --tags --exact-match"*) [ -f "$S/pc-tag" ] && { cat "$S/pc-tag"; exit 0; } || exit 1 ;;
+    *"checkout -q --detach refs/tags/"*) echo "${*##*refs/tags/}" >"$S/pc-tag" ;;
+    "type "*"etiqueta-anterior"*) [ -f "$S/pc-etiqueta-anterior" ] && { cat "$S/pc-etiqueta-anterior"; exit 0; } || exit 1 ;;
+    "echo "*"etiqueta-anterior"*) v="${*#echo }"; echo "${v%%>*}" >"$S/pc-etiqueta-anterior" ;;
     *) [ -z "${FAKE_PC_FALLA:-}" ] || { echo "git: no pude" >&2; exit 1; } ;;
   esac
   exit 0
@@ -78,7 +83,7 @@ exec $GIT_REAL "\$@"
 FAKE
 chmod +x "$S/bin/git"
 
-reset() { rm -rf "$S/mac" "$S/mini" "$S/sudo.log" "$S/pc-recibido.tar" "$S/launchd"/*; mkdir -p "$S/mac" "$S/mini"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_PC_FALLA FAKE_SUDO_FALLA FAKE_PC_TAREA_RC; }
+reset() { rm -rf "$S/mac" "$S/mini" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-etiqueta-anterior" "$S/launchd"/*; mkdir -p "$S/mac" "$S/mini"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_PC_FALLA FAKE_SUDO_FALLA FAKE_PC_TAREA_RC MOTOR_ETIQUETA; }
 I="$RAIZ/ops/instala-todo.sh"
 D="$RAIZ/ops/desinstala-todo.sh"
 en_mac() { HOME="$S/mac" "$@"; }
@@ -110,8 +115,13 @@ contiene "la Mini clona por su URL" "$FAKE_LOG" "mini v1.0.24 $S/origen-mini.git
 contiene "la PC enlaza la conf" "$FAKE_LOG" "mklink /j"
 grep -qE 'dev/goncloud-motor|\.motor-arranque' "$FAKE_LOG" && fallo "tocó ~/dev/goncloud-motor o ~/.motor-arranque"
 [ -e "$S/mac/dev" ] || [ -e "$S/mac/.motor-arranque" ] && fallo "creó carpetas ajenas en la Mac"
+for m in mac mini; do [ ! -e "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: anotó etiqueta-anterior en una instalación nueva"; done
+[ ! -e "$S/pc-etiqueta-anterior" ] || fallo "pc: anotó etiqueta-anterior en una instalación nueva"
 
 en_mac espera "segunda corrida (actualiza, no reclona)" 0 bash "$I"
+# La etiqueta no cambió: la marca de la marcha atrás no se toca.
+for m in mac mini; do [ ! -e "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: anotó etiqueta-anterior sin cambio de etiqueta"; done
+[ ! -e "$S/pc-etiqueta-anterior" ] || fallo "pc: anotó etiqueta-anterior sin cambio de etiqueta"
 
 # una etiqueta avanzada por otro commit: la segunda corrida respeta la v1.0.24 existente
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m otro && git -C "$S/trabajo" push -q origin HEAD:main
@@ -172,5 +182,50 @@ FAKE_SUDO_FALLA=1 en_mac espera "sin contraseña no puede descargar" '!0' bash "
 FAKE_CAE="gon@mini-fake" en_mac espera "ssh a la Mini falla al desinstalar" '!0' bash "$D"
 FAKE_PC_FALLA=1 FAKE_PC_TAREA_RC=0 en_mac espera "la PC no puede borrar la tarea" '!0' bash "$D"
 FAKE_CAE=gwpc FAKE_PC_TAREA_RC=1 en_mac espera "sin ssh a la PC" '!0' bash "$D"
+
+echo "# marcha atrás"
+V="$RAIZ/ops/vuelve-a-la-anterior.sh"
+reset
+# v1.0.24 ya existe de las secciones de arriba sobre el mismo SHA: se borra para que la
+# entrega nueva la cree sobre un commit distinto (si no, describe no distingue las etiquetas).
+git -C "$S/origen.git" tag -d v1.0.24 >/dev/null
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "entrega anterior en v1.0.23" 0 bash "$I"
+unset MOTOR_ETIQUETA
+git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m avance && git -C "$S/trabajo" push -q origin HEAD:main
+touch "$S/mac/.cargado" "$S/mini/.cargado"
+en_mac espera "entrega nueva en v1.0.24" 0 bash "$I"
+for m in mac mini; do
+  contiene "marca $m" "$S/$m/.motor/etiqueta-anterior" "v1.0.23"
+  [ "$(git -C "$S/$m/motor" describe --tags --exact-match)" = v1.0.24 ] || fallo "$m: no quedó en v1.0.24"
+done
+contiene "marca pc" "$S/pc-etiqueta-anterior" "v1.0.23"
+[ "$(cat "$S/pc-tag")" = v1.0.24 ] || fallo "pc: no quedó en v1.0.24"
+
+# Sin marca la máquina no se mueve y no es error.
+rm "$S/mac/.motor/etiqueta-anterior"
+en_mac espera "marcha atrás en las tres" 0 bash "$V"
+[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.24 ] || fallo "mac: se movió sin marca"
+[ "$(git -C "$S/mini/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mini: no volvió a v1.0.23"
+[ "$(cat "$S/pc-tag")" = v1.0.23 ] || fallo "pc: no volvió a v1.0.23"
+[ -e "$S/mac/.cargado" ] && [ -e "$S/mini/.cargado" ] || fallo "la marcha atrás descargó el servicio"
+grep -q "schtasks /delete" "$FAKE_LOG" && fallo "la marcha atrás borró la tarea de la PC"
+[ ! -e "$S/sudo.log" ] || fallo "la marcha atrás llamó a sudo"
+
+# Una entrega que falla en una máquina, seguida de su marcha atrás: las otras dos vuelven a
+# su etiqueta de antes y el servicio sigue cargado en las tres.
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23" 0 bash "$I"
+unset MOTOR_ETIQUETA
+touch "$S/mac/.cargado" "$S/mini/.cargado"
+FAKE_CAE="gon@mini-fake" en_mac espera "entrega que falla en la Mini" '!0' bash "$I"
+[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.24 ] || fallo "mac: no quedó en v1.0.24"
+[ "$(git -C "$S/mini/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mini: se movió pese al ssh caído"
+FAKE_CAE="gon@mini-fake" en_mac espera "marcha atrás con la Mini caída" '!0' bash "$V"
+contiene "dice cuál" "$S/salida" "mini"
+[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mac: no volvió a v1.0.23"
+[ "$(cat "$S/pc-tag")" = v1.0.23 ] || fallo "pc: no volvió a v1.0.23"
+[ -e "$S/mac/.cargado" ] && [ -e "$S/mini/.cargado" ] || fallo "la marcha atrás descargó el servicio"
+grep -q "schtasks /delete" "$FAKE_LOG" && fallo "la marcha atrás borró la tarea de la PC"
+[ ! -e "$S/sudo.log" ] || fallo "la marcha atrás llamó a sudo"
 
 termina
