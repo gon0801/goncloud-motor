@@ -56,12 +56,19 @@ class OtroMotor(RuntimeError):
 
 
 def planes_de(store: Store) -> list[Plan]:
-    limpiados = {e.plan for e in store.events(kind="Limpiado")}
+    ultima_limpieza: dict[str, int] = {}
+    for e in store.events(kind="Limpiado"):
+        ultima_limpieza[e.plan] = e.id
     vistos: dict[str, Plan] = {}
+    ultima_carga: dict[str, int] = {}
     for e in store.events(kind="PlanLoaded"):
-        if e.plan not in limpiados:
-            vistos[e.plan] = Plan.from_dict(e.data["plan"])
-    return list(vistos.values())
+        ultima_carga[e.plan] = e.id
+        vistos[e.plan] = Plan.from_dict(e.data["plan"])
+    return [
+        p
+        for pid, p in vistos.items()
+        if ultima_limpieza.get(pid, 0) <= ultima_carga.get(pid, 0)
+    ]
 
 
 class Daemon:
@@ -460,6 +467,8 @@ class Daemon:
             except Exception as e:  # noqa: BLE001
                 self._falla_fase(plan.id, "fold", e, now)
                 return False
+        if getattr(self, "_folds_fuera", None) is not None:
+            self._folds_fuera[plan.id] = snap
         hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
         return hecho and f"terminado:{plan.id}" in snap.plan_notices and snap.limpio
 

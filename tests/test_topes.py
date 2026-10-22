@@ -343,6 +343,87 @@ class CicloTest(unittest.TestCase):
         d.tick()
         self.assertLess(time.time() - inicio, 0.5)
 
+    def test_plan_limpiado_y_reentregado_vuelve_a_estar_en_plans(self):
+        import json as js
+
+        from tests.test_no_caerse import Banco
+
+        banco = Banco("setUp")
+        banco.setUp()
+        d = banco.daemon()
+        d.store.append("demo", "", "PlanLoaded", {"plan": banco.plan, "version": 1})
+        d.store.append("demo", "", "Limpiado", {"ramas": []})
+        self.assertNotIn("demo", [p.id for p in d.plans()])
+        nuevo = js.loads(js.dumps(banco.plan))
+        nuevo["blocks"][0]["rows"].append(
+            {"id": "A.9", "contenido": "fila nueva tras limpiar", "acepta": "true"}
+        )
+        inbox = banco.home / "inbox"
+        inbox.mkdir(exist_ok=True)
+        (inbox / "v2.json").write_text(
+            js.dumps({"cmd_id": "v2", "tipo": "plan", "plan": nuevo, "por": "David"}),
+            encoding="utf-8",
+        )
+        d.tick()
+        self.assertIn("demo", [p.id for p in d.plans()])
+
+    def test_purga_borra_registros_de_un_limpiado_aunque_plans_no_lo_traiga(self):
+        import time
+
+        from tests.test_no_caerse import Banco
+
+        banco = Banco("setUp")
+        banco.setUp()
+        d = banco.daemon()
+        d.store.append("demo", "", "PlanLoaded", {"plan": banco.plan, "version": 1})
+        d.store.append("demo", "", "Limpiado", {"ramas": []})
+        carpeta = banco.home / "intentos" / "demo"
+        carpeta.mkdir(parents=True)
+        (carpeta / "registro.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(d.plans(), [])
+        d.fx.purga_registros(d.plans(), time.time() + 15 * 86400)
+        self.assertFalse(carpeta.exists())
+
+    def test_el_cupo_por_cuenta_se_respeta_entre_planes_del_mismo_tick(self):
+        import json as js
+
+        from tests.test_no_caerse import Banco
+
+        banco = Banco("setUp")
+        banco.setUp()
+        d = banco.daemon()
+
+        def arranca(plan, snap, a):
+            d.store.append(
+                plan.id,
+                a.block,
+                "AttemptStarted",
+                {
+                    "n": a.n,
+                    "role": a.role,
+                    "modelo": a.modelo,
+                    "proc": {},
+                    "dir": "d",
+                },
+            )
+
+        d.fx.start_attempt = arranca
+        for pid in ("uno", "dos", "tres", "cuatro"):
+            p = js.loads(js.dumps(banco.plan))
+            p["id"] = pid
+            p["blocks"] = [p["blocks"][0]]
+            p["blocks"][0]["depende"] = []
+            d.store.append(pid, "", "PlanLoaded", {"plan": p, "version": 1})
+        d.tick()
+        pol = d.cx.policy
+        por_cuenta: dict[str, int] = {}
+        for e in banco.eventos("AttemptStarted"):
+            c = pol.cuenta.get(e.data["modelo"], e.data["modelo"])
+            por_cuenta[c] = por_cuenta.get(c, 0) + 1
+        self.assertTrue(por_cuenta)
+        for c, k in por_cuenta.items():
+            self.assertLessEqual(k, pol.max_parallel.get(c, 1), c)
+
 
 if __name__ == "__main__":
     unittest.main()

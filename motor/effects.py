@@ -1592,7 +1592,7 @@ Escribe en `$MOTOR_RESULT`:
             plan.id, "", "Limpiado", {"ramas": borradas}, ukey=claves.limpiado(plan.id)
         )
 
-    def purga_registros(self, planes: list[Plan], now: float) -> None:
+    def purga_registros(self, _planes: list[Plan], now: float) -> None:
         """Borra los registros de intentos de los planes limpiados hace más de `registros_dias`,
         y las copias de pstack que ningún intento usa hace ese mismo tiempo (menos la vigente)."""
         dias = float(self.cx.conf.tiempos.get("registros_dias", 14))
@@ -1605,12 +1605,16 @@ Escribe en `$MOTOR_RESULT`:
                 continue
             if vieja and x.name != vigente:
                 shutil.rmtree(x, ignore_errors=True)
-        for p in planes:
-            limpio = next(
-                (e for e in self.cx.store.events(p.id) if e.kind == "Limpiado"), None
-            )
-            carpeta = self.cx.home / "intentos" / p.id
-            if limpio and now - limpio.ts > dias * 86400 and carpeta.exists():
+        ultima_carga: dict[str, int] = {}
+        for e in self.cx.store.events(kind="PlanLoaded"):
+            ultima_carga[e.plan] = e.id
+        limpios: dict[str, float] = {}
+        for e in self.cx.store.events(kind="Limpiado"):
+            if ultima_carga.get(e.plan, 0) <= e.id:
+                limpios[e.plan] = e.ts
+        for pid, ts in limpios.items():
+            carpeta = self.cx.home / "intentos" / pid
+            if now - ts > dias * 86400 and carpeta.exists():
                 shutil.rmtree(carpeta, ignore_errors=True)
 
     def notify(self, plan: Plan, snap: m.Snapshot, a: m.Notify) -> None:
