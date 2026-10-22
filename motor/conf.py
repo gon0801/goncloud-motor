@@ -160,7 +160,6 @@ _CLAVES_MAQUINA = {
     "path_extra",
     "env",
     "wsl",
-    "boot_id_archivo",
     "github",
     "no_dormir",
     "tiene",

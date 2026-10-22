@@ -42,7 +42,7 @@ _VENTANA_GASTADA = re.compile(
     re.I,
 )
 _RESETS_IN = re.compile(r"\bresets?\s+in\s+(\d+(?:\.\d+)?)\s*([a-z]*)", re.I)
-FRENO_CORTO_S = 120  # igual que relevo.ESPERA_MAX_S: más largo que esto ya es cuota
+FRENO_CORTO_S = 120  # más largo que esto ya es cuota, no un freno corto
 _FRENO = re.compile(
     r"rate[ _-]?limit|too many requests|retry[ _-]?after|throttl|try again (?:later|in a (?:moment|bit|few))|slow down|overloaded",
     re.I,
