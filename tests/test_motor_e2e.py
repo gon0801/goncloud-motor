@@ -586,11 +586,14 @@ class TestSoloElMotorMergea(Banco):
     def test_rechazo_de_github_no_es_tarea_del_agente(self):
         d, plan, snap = self._daemon_con_pr()
         d.fx.cx.gh.motivo = "Pull request #7 is not mergeable: the base branch policy prohibits the merge."
-        with self.assertRaises(RuntimeError):
-            d.fx.merge(plan, snap, m.Merge(m.MergeTicket("A", "a" * 40, 7)))
+        d.fx.merge(plan, snap, m.Merge(m.MergeTicket("A", "a" * 40, 7)))
         self.assertFalse(
             [e for e in d.store.events("demo") if e.kind == "ChecksResult"],
             "no se marca rojo ni se manda al agente",
+        )
+        self.assertTrue(
+            [e for e in d.store.events("demo") if e.kind == "ChecksInvalidados"],
+            "la política invalida los checks y el bloque vuelve a esperarlos",
         )
         d.fx.cx.gh.motivo = "the merge commit cannot be cleanly created"
         d.fx.merge(plan, snap, m.Merge(m.MergeTicket("A", "a" * 40, 7)))

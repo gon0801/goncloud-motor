@@ -160,6 +160,46 @@ class MergeRechazado(RuntimeError):
     pass
 
 
+class PuntaMovida(MergeRechazado):
+    """La punta de la rama del PR ya no es el SHA revisado."""
+
+
+class Conflicto(MergeRechazado):
+    """La rama choca con la base y no se puede crear el merge."""
+
+
+class PoliticaBloquea(MergeRechazado):
+    """La política de la rama (protección, revisiones, checks) no deja mergear."""
+
+
+class Borrador(MergeRechazado):
+    """El PR sigue en borrador."""
+
+
+def clasificar_merge(error: BaseException) -> MergeRechazado:
+    """El texto de GitHub se lee solo aquí, en la frontera: fuera solo viajan tipos."""
+    if isinstance(error, (PuntaMovida, Conflicto, PoliticaBloquea, Borrador)):
+        return error  # type: ignore[return-value]
+    texto = str(error)
+    bajo = texto.lower()
+    if "draft" in bajo or "borrador" in bajo:
+        return Borrador(texto)
+    if any(
+        x in bajo
+        for x in (
+            "head branch was modified",
+            "does not match",
+            "match-head",
+            "expected head",
+            "head commit",
+        )
+    ):
+        return PuntaMovida(texto)
+    if any(x in bajo for x in ("cannot be cleanly created", "conflict", "conflicto")):
+        return Conflicto(texto)
+    return PoliticaBloquea(texto)
+
+
 class GitHubPort(Protocol):
     def abrir_pr(
         self, repo: str, rama: str, base: str, titulo: str, cuerpo: str
@@ -413,10 +453,10 @@ class GhGitHub:
                 mensaje.splitlines()[0],
             )
         except RuntimeError as e:
-            raise MergeRechazado(str(e)) from None
+            raise clasificar_merge(e) from None
         v = self._vista(repo, numero)
         if v.estado != "mergeado":
-            raise MergeRechazado("GitHub no lo marcó como mergeado")
+            raise PoliticaBloquea("GitHub no lo marcó como mergeado")
         return v
 
     def ver(self, repo, numero):
@@ -606,14 +646,14 @@ class FakeGitHub:
             return self._vista(repo, pr)
         punta = self._punta(repo, pr["rama"])
         if punta != sha:
-            raise MergeRechazado(
+            raise PuntaMovida(
                 f"la punta de la rama ({punta[:7]}) no es el SHA aprobado"
             )
         if pr["borrador"]:
-            raise MergeRechazado("el PR sigue en borrador")
+            raise Borrador("el PR sigue en borrador")
         v = self.checks(repo, numero, sha, ())
         if not v.green:
-            raise MergeRechazado(
+            raise PoliticaBloquea(
                 f"checks requeridos no están en verde: {v.faltan + v.fallas}"
             )
         with tempfile.TemporaryDirectory() as t:
@@ -621,7 +661,7 @@ class FakeGitHub:
             git("clone", "-q", "-b", pr["base"], repo, str(w))
             r = git("merge", "--squash", sha, cwd=w)
             if r.returncode != 0:
-                raise MergeRechazado("conflicto con la rama base")
+                raise Conflicto("conflicto con la rama base")
             git(
                 "-c",
                 "user.name=github",
@@ -634,7 +674,7 @@ class FakeGitHub:
                 cwd=w,
             )
             if git("push", "-q", "origin", pr["base"], cwd=w).returncode != 0:
-                raise MergeRechazado("la rama base se movió; reintenta")
+                raise PuntaMovida("la rama base se movió; reintenta")
             commit = git("rev-parse", "HEAD", cwd=w).stdout.strip()
         s = self._cargar()
         pr = self._pr(s, repo, numero)
@@ -654,12 +694,17 @@ def para(maquina_github: str, env: dict | None = None) -> GitHubPort:
 
 
 __all__ = [
-    "PrView",
+    "Borrador",
     "ChecksVerdict",
-    "MergeRechazado",
-    "GitHubPort",
-    "GhGitHub",
+    "Conflicto",
     "FakeGitHub",
-    "para",
+    "GhGitHub",
+    "GitHubPort",
+    "MergeRechazado",
+    "PoliticaBloquea",
+    "PrView",
+    "PuntaMovida",
     "asdict",
+    "clasificar_merge",
+    "para",
 ]

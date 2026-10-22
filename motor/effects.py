@@ -21,16 +21,23 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claves, huella
+from . import claves, huella, plataforma, relevo
 from . import machine as m
-from .plataforma.windows import argv_en_wsl
-from . import plataforma, relevo
 from . import pstack as ps
 from .conf import Conf, Maquina, RepoConf
 from .fallas import PROVEEDORES
-from .github import GitHubPort, MergeRechazado
+from .github import (
+    Borrador,
+    Conflicto,
+    GitHubPort,
+    MergeRechazado,
+    PoliticaBloquea,
+    PuntaMovida,
+    clasificar_merge,
+)
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
+from .plataforma.windows import argv_en_wsl
 from .store import Store
 from .workspace import Workspace, foto_wip, git
 
@@ -1479,39 +1486,56 @@ Escribe en `$MOTOR_RESULT`:
                 rc.merge,
                 f"{plan.id} {t.block}: {block.titulo}",
             )
-        except MergeRechazado as e:
-            if "head branch was modified" in str(e).lower():
+        except MergeRechazado as e0:
+            e = clasificar_merge(e0)
+            if isinstance(e, PuntaMovida):
                 if self.cx.gh.ver(block.repo, t.pr).head == t.sha:
                     # GitHub todavía asienta el PR recién abierto (MOTOR 01, PR #9): misma punta, se reintenta
                     raise RuntimeError(
                         f"GitHub pidió reintentar el merge: {str(e)[:200]}"
                     ) from None
-            elif not es_del_agente(str(e)):
-                # GitHub todavía no lo deja (pruebas requeridas pendientes, política de la rama): no es
-                # culpa del agente. Se reintenta en 5 minutos y, si dura una hora, se avisa.
-                raise RuntimeError(
-                    f"GitHub aún no deja mergear: {str(e)[:300]}"
-                ) from None
-            rechazos = sum(
-                1
-                for e in self.cx.store.events(plan.id)
-                if e.kind == "ChecksResult"
-                and e.block == t.block
-                and e.data.get("sha") == t.sha
-            )
-            self.cx.store.append(
-                plan.id,
-                t.block,
-                "ChecksResult",
-                {
-                    "sha": t.sha,
-                    "green": False,
-                    "detalle": f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
+                self._checks_rojo_por_merge(
+                    plan,
+                    t,
+                    "alguien subió un commit a la rama del PR después de la revisión; "
+                    "revísalo y vuelve a entregar",
+                )
+                return
+            if isinstance(e, Borrador):
+                self.cx.gh.marcar_listo(block.repo, t.pr)
+                self.cx.store.append(
+                    plan.id,
+                    t.block,
+                    "MarkedReady",
+                    {"sha": t.sha},
+                    ukey=claves.marcado_listo(plan.id, t.block, t.sha),
+                )
+                return
+            if isinstance(e, PoliticaBloquea):
+                n = sum(
+                    1
+                    for x in self.cx.store.events(plan.id)
+                    if x.kind == "ChecksInvalidados"
+                    and x.block == t.block
+                    and x.data.get("sha") == t.sha
+                )
+                self.cx.store.append(
+                    plan.id,
+                    t.block,
+                    "ChecksInvalidados",
+                    {"sha": t.sha, "detalle": str(e)[:500]},
+                    ukey=claves.checks_invalidados(plan.id, t.block, t.sha, n),
+                )
+                return
+            if isinstance(e, Conflicto):
+                self._checks_rojo_por_merge(
+                    plan,
+                    t,
+                    f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
                     f"resuelve y vuelve a entregar (no mergees tú). GitHub dijo: {str(e)[:300]}",
-                },
-                ukey=claves.checks_resultado(plan.id, t.block, t.sha, rechazo=rechazos),
-            )
-            return
+                )
+                return
+            raise RuntimeError(f"GitHub aún no deja mergear: {str(e)[:300]}") from None
         self.cx.store.append(
             plan.id,
             t.block,
