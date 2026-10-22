@@ -180,11 +180,12 @@ class Workspace:
             if foto
             else ""
         )
-        if (
-            padre
-            and git("merge-base", "--is-ancestor", punto, padre, cwd=d).returncode != 0
+        if padre and (
+            git("merge-base", "--is-ancestor", punto, padre, cwd=d).returncode != 0
+            or git("rev-parse", f"{foto}^{{tree}}", cwd=d).stdout
+            == git("rev-parse", f"{punto}^{{tree}}", cwd=d).stdout
         ):
-            padre = ""  # foto vieja o de otra historia: no se restaura
+            padre = ""  # foto vieja, de otra historia o vacía: no se restaura
         arranque = padre or punto
         # la decisión ya está tomada; solo ahora se toca la carpeta
         if not w.exists():

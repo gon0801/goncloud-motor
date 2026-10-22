@@ -151,6 +151,35 @@ class RetomaTest(unittest.TestCase):
                 self.assertEqual(self.agente("borra_viejo", w), 0)
                 self.assertFalse(self.retoma()["viejo"])
 
+    def test_foto_final_vacia_no_impide_traer_la_base(self):
+        """La foto que runwrap toma al terminar un intento normal no trae nada: el intento 2
+        debe seguir mezclando la base (MOTOR 01, bloque F)."""
+        for local in (False, True):
+            with self.subTest(repo_publico=local):
+                self.nuevo(f"v{int(local)}")
+                w = self.ws.prepara(self.repo, "demo", "A", "main")
+                (w / "arreglo.txt").write_text("1\n")
+                git("add", "-A", cwd=w)
+                confirma(git(*GIT, "commit", "-q", "-m", "A.1", cwd=w))
+                confirma(
+                    git("push", "-q", "origin", f"HEAD:refs/heads/{self.rama}", cwd=w)
+                )
+                foto_wip(w, self.wip, local)
+                otro = self.t / f"otro{int(local)}"
+                git("clone", "-q", self.repo, str(otro))
+                (otro / "base.txt").write_text("otro bloque mergeado\n")
+                git("add", "-A", cwd=otro)
+                confirma(git(*GIT, "commit", "-q", "-m", "otro bloque", cwd=otro))
+                confirma(git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=otro))
+                w = self.ws.prepara(self.repo, "demo", "A", "main")
+                self.assertEqual(
+                    git(
+                        "merge-base", "--is-ancestor", "origin/main", "HEAD", cwd=w
+                    ).returncode,
+                    0,
+                    "el intento 2 trae main",
+                )
+
     def test_foto_que_no_desciende_de_la_punta_no_se_restaura(self):
         w = self.intento_cortado("commits_sin_push")
         # mientras tanto la rama avanzó por otro lado: la foto es de otra historia
