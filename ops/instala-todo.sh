@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instala el motor en la Mac, la Mini y la PC: etiqueta (v1.0.23 por omisión) sobre el SHA mergeado, y en cada máquina
+# Instala el motor en la Mac, la Mini y la PC: etiqueta (v1.0.24 por omisión) sobre el SHA mergeado, y en cada máquina
 # ~/motor (en esa etiqueta), ~/motor-conf, ~/.motor/maquina.toml e ~/.motor/instalar-servicio.txt.
 # No pide sudo: lo que sí lo necesita queda escrito en instalar-servicio.txt para la persona.
 # Sale != 0 si alguna máquina falla (las demás se intentan igual y se dice cuál falló).
