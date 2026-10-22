@@ -1185,6 +1185,7 @@ Escribe en `$MOTOR_RESULT`:
         rc = self.repo_conf(snap, block.repo)
         desplegar, checklist, rollback = self._receta(snap, block)
         h_insumo, h_maquina = self._huellas("deployed", block, snap)
+        faltan: list[str] = []
         commit = bv.merged[-1]["commit"]
         w = self.cx.ws.copia(
             block.repo, commit, self.cx.home / "tmp" / f"despliega-{plan.id}-{a.block}"
@@ -1219,6 +1220,7 @@ Escribe en `$MOTOR_RESULT`:
                     # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
                     ok = False
                     pasos.append(_cola(p))
+                    faltan += comandos_faltantes(p.stdout + p.stderr)
                     rb = _run_tope(f"bash {rollback}", w, env, tope)
                     pasos.append(f"rollback: salida {rb.returncode}")
                     if rb.returncode != 0:
@@ -1234,6 +1236,7 @@ Escribe en `$MOTOR_RESULT`:
                 "sha": a.sha,
                 "ok": ok,
                 "detalle": detalle,
+                "falta_comando": sorted(set(faltan)),
                 "huella": h_insumo,
                 "huella_maquina": h_maquina,
             },
@@ -1244,6 +1247,7 @@ Escribe en `$MOTOR_RESULT`:
         bv = snap.blocks[a.block]
         block = bv.block
         h_insumo, h_maquina = self._huellas("proved", block, snap)
+        faltan: list[str] = []
         if block.prueba_real:
             rc = self.repo_conf(snap, block.repo)
             w = self.cx.ws.copia(
@@ -1260,6 +1264,8 @@ Escribe en `$MOTOR_RESULT`:
                 p.returncode == 0,
                 _cola(p) or f"salió {p.returncode} sin imprimir nada",
             )
+            if not ok:
+                faltan = comandos_faltantes(p.stdout + p.stderr)
         else:
             ok, detalle = True, "el bloque no declara prueba real"
         self.cx.store.append(
@@ -1270,6 +1276,7 @@ Escribe en `$MOTOR_RESULT`:
                 "sha": a.sha,
                 "ok": ok,
                 "detalle": detalle,
+                "falta_comando": sorted(set(faltan)),
                 "huella": h_insumo,
                 "huella_maquina": h_maquina,
             },

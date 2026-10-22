@@ -11,6 +11,7 @@ from pathlib import Path
 
 from motor import claves, huella
 from motor import machine as m
+from motor.diagnostico import Causa, diagnostico
 from motor.plan import Plan, parse_plan
 from tests.test_no_caerse import Banco
 from tests.test_puro import PLAN, entregado, ev, pol
@@ -241,6 +242,151 @@ class ReevaluaTest(Banco):
         self.assertEqual(len(vs), 2, "otra Acepta sobre el mismo SHA es otro resultado")
         self.assertNotEqual(vs[0].data["huella"], vs[1].data["huella"])
         self.assertTrue(vs[1].data["ok"])
+
+    # ------------------------------------------------------------------ F.2: prove y deploy
+
+    def _merged(self, plan, campo, ok, **extra):
+        """Entrega ya mergeada y con su último paso (proved | deployed) fallando."""
+        evs = entregado() + [
+            verificado(plan=plan),
+            ev("PrOpened", "A", {"numero": 1}),
+            ev("Merged", "A", {"sha": SHA, "commit": "c" * 40}),
+        ]
+        kind = {"proved": "Proved", "deployed": "Deployed"}[campo]
+        return evs + [
+            ev(
+                kind,
+                "A",
+                {
+                    "sha": SHA,
+                    "ok": ok,
+                    "detalle": "x",
+                    "huella": huella.insumo_de(campo, plan.block("A"), {}),
+                    "huella_maquina": MAQUINA,
+                    **extra,
+                },
+            )
+        ]
+
+    def _plan_release(self, desplegar="d.sh"):
+        texto = PLAN.replace("lane: gate", "lane: release", 1).replace(
+            "prueba-real: true",
+            f"prueba-real: true\ndespliegue: desplegar={desplegar} checklist=c.sh rollback=r.sh",
+            1,
+        )
+        return parse_plan(texto)
+
+    def _espera(self, plan, evs, paso):
+        snap, acs = acciones(plan, evs)
+        self.assertIs(m.estado(snap, "A"), m.Estado.ARREGLAR)
+        self.assertNotIn("StartAttempt", tipos(acs), "el bloque no vuelve al agente")
+        d = diagnostico(snap, "A", pol(), 1e10)
+        self.assertIs(d.causa, Causa.FALTA_COMANDO)
+        self.assertTrue(d.atorado)
+        self.assertIn(paso, d.motivo)
+        self.assertIn("sin-este-comando", d.motivo)
+        (aviso,) = [
+            a for a in acs if isinstance(a, m.Notify) and a.template == "atorado"
+        ]
+        despues = evs + [ev("NoticeQueued", "A", {"key": aviso.key})]
+        _, acs = acciones(plan, despues)
+        self.assertEqual(
+            [a for a in acs if isinstance(a, m.Notify) and a.template == "atorado"],
+            [],
+            "avisa una vez",
+        )
+
+    def test_la_prueba_real_que_pide_un_comando_que_falta_no_vuelve_al_agente(self):
+        plan = plan_con(prueba="sin-este-comando --x")
+        evs = self._merged(plan, "proved", False, falta_comando=["sin-este-comando"])
+        self._espera(plan, evs, "la prueba real")
+
+    def test_el_despliegue_que_pide_un_comando_que_falta_no_vuelve_al_agente(self):
+        plan = self._plan_release()
+        evs = self._merged(plan, "deployed", False, falta_comando=["sin-este-comando"])
+        self._espera(plan, evs, "el despliegue")
+
+    def test_la_verificacion_tampoco_vuelve_al_agente(self):
+        plan = plan_con("sin-este-comando")
+        evs = entregado() + [
+            verificado(plan=plan, ok=False, falta_comando=["sin-este-comando"])
+        ]
+        self._espera(plan, evs, "la verificación")
+
+    def test_una_prueba_real_que_falla_sin_falta_de_comando_si_vuelve_al_agente(self):
+        plan = plan_con(prueba="false")
+        evs = self._merged(plan, "proved", False, falta_comando=[])
+        _, acs = acciones(plan, evs)
+        self.assertIn("StartAttempt", tipos(acs))
+
+    def test_el_bloque_espera_a_que_cambie_el_plan_o_la_maquina(self):
+        plan = plan_con(prueba="sin-este-comando")
+        evs = self._merged(plan, "proved", False, falta_comando=["sin-este-comando"])
+        self.assertNotIn("StartAttempt", tipos(acciones(plan, evs)[1]))
+        corregido = plan_con(prueba="true")
+        snap, acs = acciones(corregido, evs)
+        self.assertEqual(tipos(acs), ["Prove"], "el plan corregido prueba el mismo SHA")
+        snap, acs = acciones(plan, evs, maquina="otra")
+        self.assertEqual(tipos(acs), ["Prove"], "la máquina corregida también")
+
+    def _fx_con_mergeado(self, plan_dict):
+        d = self.daemon()
+        plan = Plan.from_dict(plan_dict)
+        repo = plan.block("A").repo
+        sha = subprocess.run(
+            ["git", "rev-parse", "main"], cwd=repo, capture_output=True, text=True
+        ).stdout.strip()
+        evs = [
+            ev(
+                "AttemptStarted",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "modelo": "glm",
+                    "proc": {},
+                    "dir": "d",
+                },
+            ),
+            ev(
+                "AttemptEnded",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "outcome": {"kind": "entregado", "sha": sha},
+                },
+            ),
+            ev("Merged", "A", {"sha": sha, "commit": sha}),
+        ]
+        return d, plan, sha, m.fold(plan, evs)
+
+    def test_prove_anota_el_comando_que_falta(self):
+        self.plan["blocks"][0]["prueba_real"] = "sin-este-comando-xyz --x"
+        d, plan, sha, snap = self._fx_con_mergeado(self.plan)
+        d.fx.prove(plan, snap, m.Prove("A", sha))
+        (p,) = self.eventos("Proved")
+        self.assertFalse(p.data["ok"])
+        self.assertEqual(p.data["falta_comando"], ["sin-este-comando-xyz"])
+
+    def test_deploy_anota_el_comando_que_falta(self):
+        self.plan["blocks"][0]["lane"] = "release"
+        self.plan["blocks"][0]["release"] = {
+            "desplegar": "-c sin-este-comando-xyz",
+            "checklist": "-c true",
+            "rollback": "-c true",
+        }
+        d, plan, sha, snap = self._fx_con_mergeado(self.plan)
+        d.fx.deploy(plan, snap, m.Deploy("A", sha))
+        (r,) = self.eventos("Deployed")
+        self.assertFalse(r.data["ok"])
+        self.assertEqual(r.data["falta_comando"], ["sin-este-comando-xyz"])
+
+    def test_prove_que_pasa_no_trae_comandos_faltantes(self):
+        d, plan, sha, snap = self._fx_con_mergeado(self.plan)
+        d.fx.prove(plan, snap, m.Prove("A", sha))
+        (p,) = self.eventos("Proved")
+        self.assertEqual((p.data["ok"], p.data["falta_comando"]), (True, []))
 
 
 class ClavesTest(unittest.TestCase):

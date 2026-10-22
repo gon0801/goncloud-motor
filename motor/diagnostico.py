@@ -143,9 +143,10 @@ def _atasco(
                 f"atorado:{bid}:checks:{head[:12]}",
                 True,
             )
-    falta = (bv.verified.get(head) or {}).get("falta_comando") if head else None
+    paso, falta = m.faltan_comandos(bv)
     if falta:
-        # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin.
+        # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin, así que el
+        # bloque espera un plan o una máquina corregidos (F.1).
         # Un aviso por comando, no uno por ronda ni otro cuando se suma un comando nuevo.
         prefijo = f"atorado:{bid}:comando:"
         avisados = {
@@ -162,7 +163,7 @@ def _atasco(
         )
         return Diagnostico(
             Causa.FALTA_COMANDO,
-            f"la verificación del plan usa {', '.join(falta)}, que esta máquina no tiene; "
+            f"{paso} del plan usa {', '.join(falta)}, que esta máquina no tiene; "
             "hay que corregir el plan o instalarlo en la máquina",
             clave,
             True,

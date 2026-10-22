@@ -604,6 +604,27 @@ def _fuera_de_control(bv: BlockView) -> bool:
     )
 
 
+def faltan_comandos(bv: BlockView) -> tuple[str, list[str]]:
+    """(qué paso, comandos) si el último paso del motor falló por un comando que esta máquina no tiene:
+    la verificación de las filas, la prueba real o el despliegue. El agente no puede arreglarlo."""
+    head, mg = bv.head(), bv.merged_sha()
+    pasos = (
+        ("la prueba real", bv.proved.get(mg) if mg and mg == head else None),
+        ("el despliegue", bv.deployed.get(mg) if mg and mg == head else None),
+        ("la verificación", bv.verified.get(head) if head else None),
+    )
+    for paso, r in pasos:
+        if r and not r.get("ok") and r.get("falta_comando"):
+            return paso, list(r["falta_comando"])
+    return "", []
+
+
+def espera_cambio(bv: BlockView) -> bool:
+    """El bloque no vuelve a un agente: lo que falla no es su código y solo cambia con otro plan o
+    con otra máquina (F.1). El diagnóstico lo dice y avisa una vez."""
+    return bool(faltan_comandos(bv)[1])
+
+
 def bloqueo(
     snap: Snapshot,
     policy: Policy,
@@ -733,7 +754,9 @@ def decide(
             if n.key not in bv.notices | snap.plan_notices | ya:
                 ya.add(n.key)
                 acciones.append(n)
-        if e in (Estado.ARREGLAR, Estado.REVISAR):
+        if e in (Estado.ARREGLAR, Estado.REVISAR) and not (
+            e is Estado.ARREGLAR and espera_cambio(bv)
+        ):
             role = "implementar" if e is Estado.ARREGLAR else "revisar"
             ladder = (
                 policy.implementadores
