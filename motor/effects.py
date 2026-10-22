@@ -1356,11 +1356,23 @@ Escribe en `$MOTOR_RESULT`:
             return
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
+        relanzadas = tuple(
+            dict.fromkeys(
+                str(rid)
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "ChecksRelanzados"
+                and e.block == a.block
+                and e.data.get("sha") == a.sha
+                and e.data.get("motivo") == "saltada"
+                for rid in e.data.get("run_ids", [])
+            )
+        )
         v = self.cx.gh.checks(
             block.repo,
             int(snap.blocks[a.block].pr["numero"]),
             a.sha,
             tuple(dict.fromkeys([*rc.checks_extra, *block.checks])),
+            relanzadas,
         )
         if not v.terminal:
             # Qué falta y si GitHub ya terminó: se anota solo cuando cambia (los sondeos no ensucian

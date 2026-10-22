@@ -323,6 +323,46 @@ class ChecksTest(unittest.TestCase):
         self.assertTrue(d.atorado)
         self.assertIn("relancé", d.motivo)
 
+    def test_relanzada_que_vuelve_a_saltarse_no_es_verde(self):
+        from motor import claves
+
+        class Gh(GhGrabado):
+            def _gh(self, *a):
+                if a[0] == "api" and "/events" in a[1]:
+                    return "2026-10-21T21:00:00Z"
+                return super()._gh(*a)
+
+        salto = _run("completa", conclusion="skipped", rid=42)
+        salto["completed_at"] = "2026-10-21T20:00:00Z"
+        gh = Gh(proteccion=json.dumps(["completa"]), runs=json.dumps([salto]))
+        plan, store, fx = self._fx(gh)
+        store.append(
+            "demo",
+            "A",
+            "ChecksEsperando",
+            {"sha": SHA, "faltan": ["completa"], "github_termino": True},
+            ukey=claves.checks_esperando("demo", "A", SHA, ("completa",), True),
+            ts=time.time() - 3600,
+        )
+        fx.poll_checks(plan, self._snap(plan, store), m.PollChecks("A", SHA))
+        self.assertEqual(gh.relanzadas, ["42"])
+        salto["completed_at"] = "2026-10-22T12:00:00Z"
+        gh.runs = json.dumps([salto])
+        self.assertEqual(gh.checks("o/r", 7, SHA, (), ("42",)).faltan, ("completa",))
+        fx.poll_checks(plan, self._snap(plan, store), m.PollChecks("A", SHA))
+        self.assertEqual(gh.relanzadas, ["42"])
+        self.assertFalse(
+            [
+                e
+                for e in store.events("demo")
+                if e.kind == "ChecksResult" and e.data.get("green")
+            ]
+        )
+        self.assertEqual(
+            self._snap(plan, store).blocks["A"].esperando[SHA]["faltan"],
+            ["completa"],
+        )
+
     def test_rojo_trae_pr_url_y_las_ultimas_80_lineas(self):
         gh = GhGrabado(runs=json.dumps([_run("ci", conclusion="failure", rid=7)]))
         plan, store, fx = self._fx(gh)

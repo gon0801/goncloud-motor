@@ -72,6 +72,7 @@ def veredicto(
     runs: list[dict],
     listo_desde: str | None = None,
     estados: list[dict] | None = None,
+    relanzadas: tuple[str, ...] = (),
 ) -> ChecksVerdict:
     """Un check requerido "completa" cubre también una matriz "completa (1, 6)" … "completa (6, 6)":
     está terminado cuando todas sus partes terminaron, y verde cuando todas salieron bien.
@@ -79,8 +80,12 @@ def veredicto(
     Un check saltado cuenta solo si se saltó después de que el PR dejó el borrador (`listo_desde`,
     hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
     no prueba nada (MOTOR 01, PR #484); el salto a propósito de un PR listo sí (Orbit salta
-    `completa` si no hay código: INGESTA 01 esperó horas)."""
+    `completa` si no hay código: INGESTA 01 esperó horas). Una corrida cuyo `run_id` ya se
+    relanzó por saltada (`relanzadas`) siempre cuenta como salto del borrador: `gh run rerun`
+    repite el evento original, con el PR en borrador, así que GitHub la vuelve a saltar aunque
+    su `completed_at` quede después de `listo_desde`."""
     estados = estados or []
+    relanzadas_set = {str(r) for r in relanzadas}
     corridas = tuple(_corrida(r) for r in runs)
     fallidas = tuple(
         c
@@ -92,7 +97,9 @@ def veredicto(
         e.get("context", "") for e in estados if e.get("state") in ("failure", "error")
     )
     if not requeridos:
-        efectivas = [r for r in runs if not _salto_del_borrador(r, listo_desde)]
+        efectivas = [
+            r for r in runs if not _salto_del_borrador(r, listo_desde, relanzadas_set)
+        ]
         corriendo = any(r.get("status") != "completed" for r in efectivas) or any(
             e.get("state") == "pending" for e in estados
         )
@@ -118,7 +125,7 @@ def veredicto(
             r
             for r in runs
             if (r["name"] == c or r["name"].startswith(c + " ("))
-            and not _salto_del_borrador(r, listo_desde)
+            and not _salto_del_borrador(r, listo_desde, relanzadas_set)
         ]
         if not partes:
             sts = [e for e in estados if e.get("context") == c]
@@ -148,9 +155,14 @@ def veredicto(
     )
 
 
-def _salto_del_borrador(run: dict, listo_desde: str | None) -> bool:
+def _salto_del_borrador(
+    run: dict,
+    listo_desde: str | None,
+    relanzadas: set[str] | frozenset[str] = frozenset(),
+) -> bool:
     return run.get("conclusion") == "skipped" and (
-        listo_desde is None
+        _run_id(run) in relanzadas
+        or listo_desde is None
         or (listo_desde != "" and (run.get("completed_at") or "") <= listo_desde)
     )
 
@@ -205,7 +217,12 @@ class GitHubPort(Protocol):
     ) -> PrView: ...
     def marcar_listo(self, repo: str, numero: int) -> None: ...
     def checks(
-        self, repo: str, numero: int, sha: str, extra: tuple[str, ...]
+        self,
+        repo: str,
+        numero: int,
+        sha: str,
+        extra: tuple[str, ...],
+        relanzadas: tuple[str, ...] = (),
     ) -> ChecksVerdict: ...
     def merge(
         self, repo: str, numero: int, sha: str, metodo: str, mensaje: str
@@ -350,7 +367,7 @@ class GhGitHub:
     def _sin_proteccion(e: RuntimeError) -> bool:
         return "Branch not protected" in str(e)
 
-    def checks(self, repo, numero, sha, extra):
+    def checks(self, repo, numero, sha, extra, relanzadas=()):
         n = self.nombre(repo)
         pr = self._vista(repo, numero)
         try:
@@ -412,6 +429,7 @@ class GhGitHub:
             runs,
             None if pr.borrador else self._listo_desde(n, numero),
             estados,
+            tuple(str(r) for r in relanzadas),
         )
 
     def relanzar_corrida(self, repo, run_id):
@@ -585,7 +603,7 @@ class FakeGitHub:
                 == 0
             )
 
-    def checks(self, repo, numero, sha, extra):
+    def checks(self, repo, numero, sha, extra, relanzadas=()):
         s = self._cargar()
         pr = self._pr(s, repo, numero)
         cfg = self._cfg(repo)
