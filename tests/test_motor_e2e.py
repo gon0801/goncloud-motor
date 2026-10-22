@@ -906,10 +906,10 @@ class TestYaEnLaBase(Banco):
 class TestDespliegueQueSePasa(Banco):
     def test_al_pasarse_del_tope_no_quedan_procesos_vivos(self):
         """shopify-token-01: el `crontab -` que abrió desplegar.sh siguió colgado tras el tope."""
-        from motor.effects import _run_tope
+        from motor.effects import _run
 
         marca = f"sleep 87.{os.getpid()}"
-        r = _run_tope(f"bash -c '{marca} & wait'", None, dict(os.environ), 1)
+        r = _run(f"bash -c '{marca} & wait'", None, dict(os.environ), 1)
         self.assertEqual(r.returncode, 124)
         time.sleep(0.5)
         vivos = subprocess.run(

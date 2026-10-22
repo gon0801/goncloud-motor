@@ -105,4 +105,7 @@ def matar_grupo(p: subprocess.Popen) -> None:
             time.sleep(0.05)
         if p.poll() is not None:
             return
-    p.wait()
+    try:
+        p.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass

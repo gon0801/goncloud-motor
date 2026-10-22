@@ -15,6 +15,7 @@ import shutil
 import string
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -91,19 +92,6 @@ def _cola(p: subprocess.CompletedProcess) -> str:
     return (p.stdout + p.stderr)[-500:].strip()
 
 
-def _run_tope(
-    cmd: str, cwd: Path | None, env: dict, timeout: float
-) -> subprocess.CompletedProcess:
-    """Como _run, pero pasarse del tope es una salida 124 (falla), no una excepción: MOTOR 01, bloque I,
-    la revisión del despliegue se pasaba de 15 min y el motor la reintentaba para siempre."""
-    try:
-        return _run(cmd, cwd, env, timeout)
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            cmd, 124, "", f"se pasó del tope de {int(timeout)} s"
-        )
-
-
 def _run(
     cmd: str, cwd: Path | None, env: dict, timeout: float = 900
 ) -> subprocess.CompletedProcess:
@@ -111,27 +99,41 @@ def _run(
     Shopify-token-01: el tope cortaba `bash desplegar.sh` y el `crontab -` que había abierto se
     quedaba colgado en la Mini, esperando un permiso que nadie contestaba."""
     argv, shell, exe = _posix(cmd)
-    p = subprocess.Popen(
-        argv,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdin=subprocess.DEVNULL,
-        shell=shell,
-        executable=exe,
-        **plataforma.kwargs_grupo(),
-    )
-    try:
-        out, err = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        plataforma.matar_grupo(p)
-        p.communicate()
-        raise
-    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        p = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout=out_f,
+            stderr=err_f,
+            stdin=subprocess.DEVNULL,
+            shell=shell,
+            executable=exe,
+            **plataforma.kwargs_grupo(),
+        )
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            plataforma.matar_grupo(p)
+            try:
+                p.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+            out_f.seek(0)
+            err_f.seek(0)
+            out = out_f.read().decode("utf-8", errors="replace")
+            err = err_f.read().decode("utf-8", errors="replace")
+            return subprocess.CompletedProcess(
+                cmd,
+                124,
+                out,
+                err + f"se pasó del tope de {int(timeout)} s",
+            )
+        out_f.seek(0)
+        err_f.seek(0)
+        out = out_f.read().decode("utf-8", errors="replace")
+        err = err_f.read().decode("utf-8", errors="replace")
+        return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
 def es_del_agente(motivo: str) -> bool:
@@ -964,7 +966,7 @@ Escribe en `$MOTOR_RESULT`:
             block.repo, sha, self.cx.home / "tmp" / f"{nombre}-{plan.id}-{block.id}"
         )
         tope = float(self.cx.conf.tiempos.get("repro_tope_s", 300))
-        return _run_tope(cmd, w, self.env_base(dict(rc.prueba_env)), tope)
+        return _run(cmd, w, self.env_base(dict(rc.prueba_env)), tope)
 
     def _comprueba_repro(
         self, plan: Plan, snap: m.Snapshot, block, res: dict, punta: str
@@ -1044,7 +1046,7 @@ Escribe en `$MOTOR_RESULT`:
         tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
         for r in block.rows:
             if r.acepta:
-                p = _run_tope(r.acepta, w, self.env_base(dict(rc.prueba_env)), tope)
+                p = _run(r.acepta, w, self.env_base(dict(rc.prueba_env)), tope)
                 if p.returncode != 0:
                     fallas.append(
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
@@ -1297,7 +1299,7 @@ Escribe en `$MOTOR_RESULT`:
                 e.kind == "Deployed" and e.data.get("sha") == a.sha
                 for e in self.cx.store.events(plan.id)
             )
-            and _run_tope(f"bash {checklist}", w, env, tope).returncode == 0
+            and _run(f"bash {checklist}", w, env, tope).returncode == 0
         ):
             ok, detalle = True, "ya estaba desplegado (se comprobó antes de repetir)"
         else:
@@ -1310,7 +1312,7 @@ Escribe en `$MOTOR_RESULT`:
             )
             pasos, ok = [], True
             for paso in (desplegar, checklist):
-                p = _run_tope(f"bash {paso}", w, env, tope)
+                p = _run(f"bash {paso}", w, env, tope)
                 pasos.append(f"{paso}: salida {p.returncode}")
                 if p.returncode != 0:
                     # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
@@ -1318,7 +1320,7 @@ Escribe en `$MOTOR_RESULT`:
                     ok = False
                     pasos.append(_cola(p))
                     faltan += comandos_faltantes(p.stdout + p.stderr)
-                    rb = _run_tope(f"bash {rollback}", w, env, tope)
+                    rb = _run(f"bash {rollback}", w, env, tope)
                     pasos.append(f"rollback: salida {rb.returncode}")
                     if rb.returncode != 0:
                         pasos.append(_cola(rb))
@@ -1355,7 +1357,7 @@ Escribe en `$MOTOR_RESULT`:
             env = self.env_base(dict(rc.prueba_env))
             env["MOTOR_RAIZ"] = str(w)
             tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
-            p = _run_tope(block.prueba_real, w, env, tope)
+            p = _run(block.prueba_real, w, env, tope)
             # La salida puede ir a un archivo (la sonda de INGESTA 01): sin esto el agente veía "".
             ok, detalle = (
                 p.returncode == 0,

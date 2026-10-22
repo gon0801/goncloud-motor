@@ -441,4 +441,7 @@ def matar_grupo(p: subprocess.Popen) -> None:  # pragma: no cover
             p.kill()
     except OSError:
         pass
-    p.wait()
+    try:
+        p.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass

@@ -47,6 +47,27 @@ class TopesTest(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 workspace.git("status")
 
+    def test_run_no_espera_al_hijo_en_segundo_plano(self):
+        import os
+        import time
+
+        from motor.effects import _run
+
+        inicio = time.time()
+        r = _run("echo ok; (sleep 30) &", None, dict(os.environ), timeout=10)
+        self.assertLess(time.time() - inicio, 2)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("ok", r.stdout)
+
+    def test_run_colgado_devuelve_124_con_salida_parcial(self):
+        import os
+
+        from motor.effects import _run
+
+        r = _run("echo parcial; sleep 30", None, dict(os.environ), timeout=1)
+        self.assertEqual(r.returncode, 124)
+        self.assertIn("parcial", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
