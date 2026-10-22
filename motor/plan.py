@@ -147,6 +147,53 @@ class Plan:
 
 
 @dataclass(frozen=True)
+class Cambio:
+    tipo: str  # fila | acepta | prueba (reabren un bloque hecho) | bloque (solo avisa)
+    texto: str
+
+
+def cambios_de(antes: Block, ahora: Block) -> list[Cambio]:
+    """Qué cambió en el contenido de un bloque entre dos versiones del plan: sus filas, la Acepta de
+    cada fila o su prueba real. Es lo que reabre un bloque hecho y lo que se le dice al agente."""
+    viejas = {r.id: r for r in antes.rows}
+    nuevas = {r.id: r for r in ahora.rows}
+    out: list[Cambio] = []
+    for r in ahora.rows:
+        v = viejas.get(r.id)
+        if v is None:
+            out.append(Cambio("fila", f"fila nueva {r.id}: {r.contenido}"))
+            continue
+        if v.contenido != r.contenido:
+            out.append(Cambio("fila", f"la fila {r.id} ahora pide: {r.contenido}"))
+        if v.acepta != r.acepta:
+            out.append(
+                Cambio(
+                    "acepta",
+                    f"la Acepta de {r.id} cambió de `{v.acepta}` a `{r.acepta}`",
+                )
+            )
+    out += [Cambio("fila", f"se quitó la fila {i}") for i in viejas if i not in nuevas]
+    if antes.titulo != ahora.titulo:
+        out.append(Cambio("bloque", f"lo que entrega ahora es: {ahora.titulo}"))
+    if (antes.lane, antes.release, antes.checks) != (
+        ahora.lane,
+        ahora.release,
+        ahora.checks,
+    ):
+        out.append(
+            Cambio("bloque", "cambió el carril, la receta de despliegue o los checks")
+        )
+    if antes.prueba_real != ahora.prueba_real:
+        out.append(
+            Cambio(
+                "prueba",
+                f"la prueba real cambió de `{antes.prueba_real}` a `{ahora.prueba_real}`",
+            )
+        )
+    return out
+
+
+@dataclass(frozen=True)
 class Comando:
     """Un archivo de la bandeja ya validado: lo que no cumple la forma no pasa de aquí."""
 

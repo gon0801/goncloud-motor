@@ -18,7 +18,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import llamadas
+from . import claves, huella, llamadas
 from . import machine as m
 from . import plataforma, version
 from .conf import (
@@ -116,6 +116,9 @@ class Daemon:
         self._espera_efecto: dict[
             tuple[str, str, str], float
         ] = {}  # efecto que falló -> no antes de
+        self._fallas_n: dict[
+            tuple[str, str, str], int
+        ] = {}  # fallas ya anotadas por (plan, bloque, acción): numera su clave
         self._rachas = self._rachas_abiertas()
 
     def trae_conf(self, now: float) -> None:
@@ -154,7 +157,7 @@ class Daemon:
                 "",
                 "ConfRechazada",
                 {"sha": nueva, "errores": errores[:5]},
-                ukey=f"confmala:{nueva}",
+                ukey=claves.conf_rechazada(nueva),
             ):
                 self.cx.notifier.encola(
                     f"confmala:{nueva[:12]}",
@@ -182,7 +185,7 @@ class Daemon:
             "",
             "VersionFaltante",
             {"pedida": pedida},
-            ukey=f"versionfalta:{self.maquina.nombre}:{pedida}",
+            ukey=claves.version_faltante(self.maquina.nombre, pedida),
         ):
             self.cx.notifier.encola(
                 f"version:{pedida}",
@@ -193,6 +196,9 @@ class Daemon:
                     "Motor de planes",
                 ),
             )
+
+    def _fold(self, plan: Plan) -> m.Snapshot:
+        return m.fold(plan, self.store.events(plan.id), huella.de_maquina(self.maquina))
 
     def plans(self) -> list[Plan]:
         return planes_de(self.store)
@@ -225,7 +231,7 @@ class Daemon:
                     "",
                     "CommandReceived",
                     {"cmd_id": cmd.cmd_id, "tipo": cmd.tipo, "resultado": resultado},
-                    ukey=f"cmd:{cmd.cmd_id}",
+                    ukey=claves.comando(cmd.cmd_id),
                 )
                 destino = hechos
             except Exception as e:  # noqa: BLE001  un archivo malo no frena a los demás de la bandeja
@@ -260,7 +266,7 @@ class Daemon:
                 "tipo": str(msg.get("tipo", "")),
                 "resultado": f"rechazado: {motivo}",
             },
-            ukey=f"cmd:{cmd_id}",
+            ukey=claves.comando(cmd_id),
         )
         if nuevo:
             self.cx.notifier.encola(
@@ -282,7 +288,7 @@ class Daemon:
                 cmd.block,
                 "Note",
                 {"texto": cmd.texto},
-                ukey=f"nota:{cmd.cmd_id}",
+                ukey=claves.nota(cmd.cmd_id),
             )
             return "anotado"
         plan = Plan.from_dict(cmd.plan)
@@ -310,39 +316,42 @@ class Daemon:
                             "ni el repo tiene su receta de despliegue en .motor.toml"
                         ]
                     )
-        self.store.append(
-            plan.id,
-            "",
-            "PlanLoaded",
-            {"plan": cmd.plan, "por": cmd.por},
-            # Entregar otra vez el plan con cambios lo reemplaza (lo hecho sigue hecho);
-            # el mismo texto otra vez no hace nada. Antes el cambio se ignoraba en
-            # silencio y el recibo decía "tomado" (INGESTA 01, prueba real de S).
-            ukey=f"plan:{plan.id}:{_huella(cmd.plan)}",
+        # El plan vigente es el de la última entrega: un texto distinto del vigente es una versión
+        # nueva (también si es uno anterior, que así se reactiva); el mismo texto otra vez no hace
+        # nada. Lo hecho sigue hecho salvo lo que el cambio toque (machine.fold).
+        cargas = [e for e in self.store.events(plan.id) if e.kind == "PlanLoaded"]
+        version = max(
+            (e.data.get("version", i) for i, e in enumerate(cargas, 1)), default=0
         )
+        if not cargas or _huella(cargas[-1].data["plan"]) != _huella(cmd.plan):
+            version += 1
+            self.store.append(
+                plan.id,
+                "",
+                "PlanLoaded",
+                {"plan": cmd.plan, "por": cmd.por, "version": version},
+                ukey=claves.plan_cargado(plan.id, version),
+            )
         self.fx.pin_repos(plan)
-        return "tomado"
+        return f"tomado (versión {version})"
 
     def _hecho(self, plan_id: str, cmd: Comando) -> str:
         plan = next((p for p in self.plans() if p.id == plan_id), None)
         if plan is None or cmd.block not in {b.id for b in plan.blocks}:
             return "rechazado: no conozco ese plan o ese paso"
-        if (
-            m.estado(m.fold(plan, self.store.events(plan.id)), cmd.block)
-            is not m.Estado.HUMANO
-        ):
+        if m.estado(self._fold(plan), cmd.block) is not m.Estado.HUMANO:
             return "rechazado: ese paso todavía no te toca; te aviso cuando sí"
         self.store.append(
             plan_id,
             cmd.block,
             "HumanDone",
             {"por": cmd.por},
-            ukey=f"humano:{plan_id}:{cmd.block}",
+            ukey=claves.humano_hecho(plan_id, cmd.block),
         )
         return "anotado"
 
     def ingest_attempts(self, plan: Plan) -> None:
-        snap = m.fold(plan, self.store.events(plan.id))
+        snap = self._fold(plan)
         for bid, bv in snap.blocks.items():
             att = bv.running()
             if att is None:
@@ -355,7 +364,7 @@ class Daemon:
                 bid,
                 "AttemptEnded",
                 {"n": att.n, "role": att.role, "outcome": out},
-                ukey=f"ended:{plan.id}:{bid}:{att.role}:{att.n}",
+                ukey=claves.intento_terminado(plan.id, bid, att.role, att.n),
             )
             if out["kind"] == "corte":
                 key = f"retome:{plataforma.boot_id()}"
@@ -406,7 +415,7 @@ class Daemon:
     def _tick_plan(self, plan: Plan, planes: list[Plan], now: float) -> bool:
         """fold, decide y ejecutar de un plan. Devuelve si el plan quedó entregado y limpio."""
         try:
-            snap = m.fold(plan, self.store.events(plan.id))
+            snap = self._fold(plan)
         except Exception as e:  # noqa: BLE001
             self._falla_fase(plan.id, "fold", e, now)
             return False
@@ -437,7 +446,7 @@ class Daemon:
                 self._espera_efecto[clave] = now + ESPERA_TRAS_FALLA_S
                 self._falla_efecto(plan, a, e, now)
             try:
-                snap = m.fold(plan, self.store.events(plan.id))
+                snap = self._fold(plan)
             except Exception as e:  # noqa: BLE001
                 self._falla_fase(plan.id, "fold", e, now)
                 return False
@@ -457,7 +466,7 @@ class Daemon:
             if p.id == este.id:
                 continue
             try:
-                s = m.fold(p, self.store.events(p.id))
+                s = self._fold(p)
             except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
                 continue
             for c, h in s.cooldowns.items():
@@ -473,9 +482,7 @@ class Daemon:
             if p.id == este.id:
                 continue
             try:
-                ocupados = m._ocupados(
-                    m.fold(p, self.store.events(p.id)), self.cx.policy
-                )
+                ocupados = m._ocupados(self._fold(p), self.cx.policy)
             except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
                 continue
             for c, k in ocupados.items():
@@ -484,7 +491,7 @@ class Daemon:
 
     def _terminado(self, plan: Plan) -> bool:
         try:
-            snap = m.fold(plan, self.store.events(plan.id))
+            snap = self._fold(plan)
         except Exception:  # noqa: BLE001  un plan que no se puede leer no mantiene despierta la máquina
             return True
         return all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
@@ -536,6 +543,7 @@ class Daemon:
             clave = (ev.plan, ev.block, ev.data.get("accion", ""))
             if ev.kind == "EffectFailed":
                 abiertas[clave] = (ev.data.get("desde", ev.ts), ev.ts)
+                self._fallas_n[clave] = self._fallas_n.get(clave, 0) + 1
             elif ev.kind == "EffectOk":
                 abiertas.pop(clave, None)
         return abiertas
@@ -549,14 +557,16 @@ class Daemon:
             desde = (
                 now  # dos fallas sueltas, sin reintentos entre ellas, no son una racha
             )
+        n = self._fallas_n.get(clave, 0) + 1
         self.store.append(
             plan_id,
             bloque,
             "EffectFailed",
             {"accion": accion, "error": str(e)[-500:], "desde": desde},
-            ukey=f"falla:{plan_id}:{bloque}:{accion}:{int(now)}",
+            ukey=claves.falla_de_efecto(plan_id, bloque, accion, n),
             ts=now,
         )
+        self._fallas_n[clave] = n
         self._rachas[clave] = (desde, now)
 
     def _cierra_racha(self, plan_id: str, bloque: str, accion: str) -> None:
@@ -568,7 +578,12 @@ class Daemon:
                 bloque,
                 "EffectOk",
                 {"accion": accion, "desde": racha[0]},
-                ukey=f"ok:{plan_id}:{bloque}:{accion}:{int(racha[0])}",
+                ukey=claves.efecto_ok(
+                    plan_id,
+                    bloque,
+                    accion,
+                    self._fallas_n.get((plan_id, bloque, accion), 0),
+                ),
             )
 
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:
@@ -583,6 +598,7 @@ class Daemon:
             m.Prove: self.fx.prove,
             m.ProbeHuman: self.fx.probe_human,
             m.Notify: self.fx.notify,
+            m.Interrumpe: self.fx.interrumpe,
             m.Limpia: self.fx.limpia,
         }[type(a)]
         f(plan, snap, a)

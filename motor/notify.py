@@ -46,6 +46,7 @@ PLANTILLAS = {
         "Se lo dije a {por}; tiene que corregirlo y entregarlo otra vez."
     ),
     "avance": "{listas} de {total} partes listas.\n{ahora}\n{atoron}",
+    "externo": "Alguien integró el bloque «{bloque}» por fuera; sigo con eso.",
     "version": (
         "Falta instalar algo: esta máquina necesita la versión {version} del motor.\n"
         "Sigo trabajando con la que tengo; quien administra el motor tiene que instalarla."
@@ -107,6 +108,7 @@ FIJOS = {
         "Pídele a quien te lo dio que revise el recibo y lo entregue otra vez."
     ),
     "avance": "Sigo trabajando en el plan.",
+    "externo": "Alguien integró una parte del plan por fuera; sigo con eso.",
     "version": (
         "Falta instalar algo: esta máquina necesita otra versión del motor.\n"
         "Sigo trabajando con la que tengo; quien administra el motor tiene que instalarla."
@@ -123,6 +125,7 @@ PARCIAL = {  # con el título del plan y solo los campos que casi siempre llegan
         "Sigo intentando; lo demás del plan sigue avanzando."
     ),
     "humano": FIJOS["humano"],
+    "externo": FIJOS["externo"],
     "version": FIJOS["version"],
 }
 GENERICO = "Avancé en un plan; quien te lo dio te puede contar el detalle."

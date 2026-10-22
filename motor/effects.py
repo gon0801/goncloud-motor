@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import claves, huella
 from . import machine as m
 from .plataforma.windows import argv_en_wsl
 from . import plataforma, relevo
@@ -30,7 +31,7 @@ from .github import GitHubPort, MergeRechazado
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
 from .store import Store
-from .workspace import Workspace, git
+from .workspace import Workspace, foto_wip, git
 
 RAIZ = Path(__file__).resolve().parent.parent
 _FALTA = re.compile(
@@ -321,7 +322,7 @@ class Effects:
                     "texto": texto,
                     "privado": self.cx.gh.es_privado(repo),
                 },
-                ukey=f"pin:{plan.id}:{repo}",
+                ukey=claves.repo_fijado(plan.id, repo),
             )
 
     def attempt_dir(self, plan: str, block: str, role: str, n: int) -> Path:
@@ -489,7 +490,7 @@ class Effects:
                     a.block,
                     "AttemptStarted",
                     datos,
-                    ukey=f"start:{plan.id}:{a.block}:{a.role}:{a.n}",
+                    ukey=claves.intento_iniciado(plan.id, a.block, a.role, a.n),
                 )
             return
         d.mkdir(parents=True, exist_ok=True)
@@ -626,7 +627,7 @@ class Effects:
             a.block,
             "AttemptStarted",
             datos,
-            ukey=f"start:{plan.id}:{a.block}:{a.role}:{a.n}",
+            ukey=claves.intento_iniciado(plan.id, a.block, a.role, a.n),
         )
 
     def _brief_implementar(
@@ -671,6 +672,12 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
 
 ## Lo que quedó sin commitear de un intento anterior
 {pendientes or "(nada)"}
+
+## Si lo que falla no es el código del bloque
+Si lo que falla es la máquina, una Acepta que no puede pasar aquí o un servicio externo, no lo
+arregles por tu cuenta ni cambies el plan o la máquina. Escribe en `$MOTOR_RESULT`
+`{{"bloqueado": "<motivo en una frase>"}}` y termina. El motor no le pasa el bloque a otro agente:
+avisa y espera una nota, un plan corregido o una máquina corregida.
 
 {seccion_pstack}## Cómo se entrega
 1. Un commit por fila, con el id de la fila al inicio del mensaje. Nunca `--no-verify`.
@@ -778,7 +785,7 @@ Escribe en `$MOTOR_RESULT`:
                 "",
                 "Cooldown",
                 {"cuenta": cuenta, "hasta": hasta, "modelo": att.modelo},
-                ukey=f"cooldown:{att.dir}",
+                ukey=claves.cooldown(att.dir),
             )
             return c
         if c["kind"] != "terminado":
@@ -796,6 +803,12 @@ Escribe en `$MOTOR_RESULT`:
             }
         except ValueError:
             return {"kind": malo, "detalle": "result.json no es JSON válido"}
+        if not revisando and (motivo := _bloqueado(res)):
+            return {
+                "kind": "bloqueado",
+                "detalle": motivo,
+                "huella_maquina": huella.de_maquina(self.cx.maquina),
+            }
         if motivo := _resultado_invalido(res, revisando):
             return {"kind": malo, "detalle": motivo}
         block = plan.block(block_id)
@@ -831,7 +844,7 @@ Escribe en `$MOTOR_RESULT`:
                     "notas": notas,
                     **({"bajados": bajados} if bajados else {}),
                 },
-                ukey=f"review:{att.dir}",
+                ukey=claves.revisado(att.dir),
             )
             return {"kind": "veredicto"}
         sha = str(res.get("sha", ""))
@@ -846,6 +859,12 @@ Escribe en `$MOTOR_RESULT`:
                 "kind": "sin_cambios",
                 "detalle": "volvió a entregar lo mismo que ya había fallado",
             }
+        if self._es_la_base_al_cargar(snap, block, punta):
+            return {
+                "kind": "sin_cambios",
+                "detalle": "entregó la punta de la rama principal tal como estaba al cargar el plan: "
+                "no cambió nada",
+            }
         if block.es_bug and (
             falla := self._comprueba_repro(plan, snap, block, res, punta)
         ):
@@ -855,6 +874,59 @@ Escribe en `$MOTOR_RESULT`:
             "sha": punta,
             "resumen": str(res.get("resumen", ""))[:500],
         }
+
+    def interrumpe(self, plan: Plan, snap: m.Snapshot, a: m.Interrumpe) -> None:
+        """Detiene el intento en curso, guarda la foto de lo que llevaba y lo anota como `interrumpido`
+        (no es falla del modelo). Idempotente: si ya terminó, el evento repetido no entra."""
+        inicio = next(
+            (
+                e.data
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "AttemptStarted"
+                and (e.block, e.data["n"], e.data["role"]) == (a.block, a.n, a.role)
+            ),
+            None,
+        )
+        if inicio is None:
+            return
+        self._mata_intento(Path(inicio["dir"]), inicio.get("proc") or None)
+        foto = ""
+        w = self.cx.home / "wt" / plan.id / a.block
+        if a.role == "implementar" and w.exists():
+            wip = self.cx.ws.rama_wip(plan.id, a.block)
+            privado = False
+            if a.block in snap.blocks:
+                repo = snap.blocks[a.block].block.repo
+                privado = bool(snap.repos.get(repo, {}).get("privado", False))
+            foto = foto_wip(w, wip, local=not privado)
+        self.cx.store.append(
+            plan.id,
+            a.block,
+            "AttemptEnded",
+            {
+                "n": a.n,
+                "role": a.role,
+                "outcome": {
+                    "kind": "interrumpido",
+                    "detalle": a.motivo,
+                    "foto": foto,
+                },
+            },
+            ukey=claves.intento_terminado(plan.id, a.block, a.role, a.n),
+        )
+
+    def _es_la_base_al_cargar(self, snap: m.Snapshot, block, punta: str) -> bool:
+        """¿Lo entregado es la rama principal de cuando se cargó el plan, o algo que ya estaba en ella?
+        Eso no es un cambio: dárselo por bueno terminaba en un `Merged` sin que nadie mergeara nada."""
+        base = snap.repos.get(block.repo, {}).get("sha", "")
+        if not base:
+            return False
+        if punta == base:
+            return True
+        espejo = self.cx.ws.espejo(block.repo)
+        return (
+            git("merge-base", "--is-ancestor", punta, base, cwd=espejo).returncode == 0
+        )
 
     def _entrego(self, plan: Plan, block_id: str, d: Path) -> bool:
         """Hay un `result.json` válido cuyo SHA es la punta remota de la rama del bloque."""
@@ -953,6 +1025,12 @@ Escribe en `$MOTOR_RESULT`:
         return quedan, bajan
 
     # ------------------------------------------------------------------ pasos
+    def _huellas(self, campo: str, block, snap: m.Snapshot) -> tuple[str, str]:
+        """(huella del insumo, huella de la máquina) que lleva el resultado que se va a anotar."""
+        return huella.insumo_de(campo, block, snap.repos), huella.de_maquina(
+            self.cx.maquina
+        )
+
     def verify(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> None:
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
@@ -960,6 +1038,7 @@ Escribe en `$MOTOR_RESULT`:
             block.repo, a.sha, self.cx.home / "tmp" / f"verifica-{plan.id}-{a.block}"
         )
         fallas, faltan = [], []
+        h_insumo, h_maquina = self._huellas("verified", block, snap)
         # Pasarse del tope es una falla de la fila con su motivo, no un tropiezo que se reintenta para
         # siempre (PSTACK 01 en la PC: la batería e2e tardaba más de 15 min y se reintentó horas).
         tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
@@ -980,8 +1059,10 @@ Escribe en `$MOTOR_RESULT`:
                 "ok": not fallas,
                 "detalle": "\n".join(fallas),
                 "falta_comando": sorted(set(faltan)),
+                "huella": h_insumo,
+                "huella_maquina": h_maquina,
             },
-            ukey=f"verified:{plan.id}:{a.block}:{a.sha}",
+            ukey=claves.verificado(plan.id, a.block, a.sha, h_insumo, h_maquina),
         )
 
     def open_pr(self, plan: Plan, snap: m.Snapshot, a: m.OpenPr) -> None:
@@ -998,13 +1079,7 @@ Escribe en `$MOTOR_RESULT`:
             # la Mini): no hay nada que mergear y GitHub no deja abrir un PR vacío. Se da por mergeado
             # y sigue a la prueba real, que es la que dice si de verdad funciona.
             base = git("rev-parse", f"origin/{rc.principal}", cwd=d).stdout.strip()
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "Merged",
-                {"sha": a.sha, "commit": base, "ya_en_base": True},
-                ukey=f"merged:{plan.id}:{a.block}:{a.sha}",
-            )
+            self.adopta_externo(plan, snap, a.block, a.sha, base, ya_en_base=True)
             return
         pr = self.cx.gh.abrir_pr(
             block.repo,
@@ -1018,7 +1093,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "PrOpened",
             {"numero": pr.numero, "rama": pr.rama},
-            ukey=f"pr:{plan.id}:{a.block}:{pr.numero}",  # tras un merge, el arreglo abre otro PR
+            ukey=claves.pr_abierto(plan.id, a.block, pr.numero),
         )
 
     def mark_ready(self, plan: Plan, snap: m.Snapshot, a: m.MarkReady) -> None:
@@ -1029,7 +1104,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "MarkedReady",
             {"sha": a.sha},
-            ukey=f"ready:{plan.id}:{a.block}:{a.sha}",
+            ukey=claves.marcado_listo(plan.id, a.block, a.sha),
         )
 
     def _ya_mergeado(
@@ -1050,17 +1125,45 @@ Escribe en `$MOTOR_RESULT`:
                 block_id,
                 "PrCerrado",
                 {"numero": numero, "estado": v.estado},
-                ukey=f"prcerrado:{plan.id}:{block_id}:{numero}",
+                ukey=claves.pr_cerrado(plan.id, block_id, numero),
             )
             return True
+        self.adopta_externo(plan, snap, block_id, sha, v.merge_commit)
+        return True
+
+    def adopta_externo(
+        self,
+        plan: Plan,
+        snap: m.Snapshot,
+        block_id: str,
+        sha: str,
+        commit: str,
+        ya_en_base: bool = False,
+    ) -> None:
+        """Con `merge`, la única puerta de `Merged`: un merge que alguien hizo por fuera del motor se
+        adopta para que el plan siga, y se avisa una vez."""
+        bv = snap.blocks[block_id]
+        clave = f"externo:{block_id}"
+        avisado = clave in bv.notices or any(
+            e.kind == "NoticeQueued" and e.data["key"] == clave
+            for e in self.cx.store.events(plan.id)
+        )  # el log, no solo la foto: un reintento con la foto vieja no avisa dos veces
+        if not avisado:
+            self.notify(
+                plan,
+                snap,
+                m.Notify(clave, block_id, "externo", (("bloque", bv.block.aviso),)),
+            )
+        datos = {"sha": sha, "commit": commit, "externo": True}
+        if ya_en_base:
+            datos["ya_en_base"] = True
         self.cx.store.append(
             plan.id,
             block_id,
             "Merged",
-            {"sha": sha, "commit": v.merge_commit, "externo": True},
-            ukey=f"merged:{plan.id}:{block_id}:{sha}",
+            datos,
+            ukey=claves.integrado(plan.id, block_id, sha),
         )
-        return True
 
     def poll_checks(self, plan: Plan, snap: m.Snapshot, a: m.PollChecks) -> None:
         k = f"{plan.id}:{a.block}:{a.sha}"
@@ -1090,7 +1193,9 @@ Escribe en `$MOTOR_RESULT`:
                     "faltan": list(v.faltan),
                     "github_termino": v.github_termino,
                 },
-                ukey=f"espera:{k}:{','.join(v.faltan)}:{v.github_termino}",
+                ukey=claves.checks_esperando(
+                    plan.id, a.block, a.sha, tuple(v.faltan), v.github_termino
+                ),
             )
         if (
             v.terminal
@@ -1104,7 +1209,7 @@ Escribe en `$MOTOR_RESULT`:
                     "green": v.green,
                     "detalle": f"fallaron: {list(v.fallas)}" if v.fallas else "",
                 },
-                ukey=f"checks:{k}",
+                ukey=claves.checks_resultado(plan.id, a.block, a.sha),
             )
 
     def merge(self, plan: Plan, snap: m.Snapshot, a: m.Merge) -> None:
@@ -1136,6 +1241,13 @@ Escribe en `$MOTOR_RESULT`:
                 raise RuntimeError(
                     f"GitHub aún no deja mergear: {str(e)[:300]}"
                 ) from None
+            rechazos = sum(
+                1
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "ChecksResult"
+                and e.block == t.block
+                and e.data.get("sha") == t.sha
+            )
             self.cx.store.append(
                 plan.id,
                 t.block,
@@ -1146,7 +1258,7 @@ Escribe en `$MOTOR_RESULT`:
                     "detalle": f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
                     f"resuelve y vuelve a entregar (no mergees tú). GitHub dijo: {str(e)[:300]}",
                 },
-                ukey=f"rechazo:{plan.id}:{t.block}:{t.sha}:{int(time.time())}",
+                ukey=claves.checks_resultado(plan.id, t.block, t.sha, rechazo=rechazos),
             )
             return
         self.cx.store.append(
@@ -1154,24 +1266,19 @@ Escribe en `$MOTOR_RESULT`:
             t.block,
             "Merged",
             {"sha": t.sha, "commit": pr.merge_commit},
-            ukey=f"merged:{plan.id}:{t.block}:{t.sha}",
+            ukey=claves.integrado(plan.id, t.block, t.sha),
         )
 
     def _receta(self, snap: m.Snapshot, block) -> tuple[str, str, str]:
-        if block.release:
-            return (
-                block.release.desplegar,
-                block.release.checklist,
-                block.release.rollback,
-            )
-        rc = self.repo_conf(snap, block.repo)
-        return rc.desplegar, rc.checklist, rc.rollback
+        return huella.receta_de(block, snap.repos)
 
     def deploy(self, plan: Plan, snap: m.Snapshot, a: m.Deploy) -> None:
         bv = snap.blocks[a.block]
         block = bv.block
         rc = self.repo_conf(snap, block.repo)
         desplegar, checklist, rollback = self._receta(snap, block)
+        h_insumo, h_maquina = self._huellas("deployed", block, snap)
+        faltan: list[str] = []
         commit = bv.merged[-1]["commit"]
         w = self.cx.ws.copia(
             block.repo, commit, self.cx.home / "tmp" / f"despliega-{plan.id}-{a.block}"
@@ -1186,6 +1293,10 @@ Escribe en `$MOTOR_RESULT`:
             ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
         elif (
             a.sha in bv.deploy_started
+            and not any(
+                e.kind == "Deployed" and e.data.get("sha") == a.sha
+                for e in self.cx.store.events(plan.id)
+            )
             and _run_tope(f"bash {checklist}", w, env, tope).returncode == 0
         ):
             ok, detalle = True, "ya estaba desplegado (se comprobó antes de repetir)"
@@ -1195,7 +1306,7 @@ Escribe en `$MOTOR_RESULT`:
                 a.block,
                 "DeployStarted",
                 {"sha": a.sha},
-                ukey=f"deploy-inicio:{plan.id}:{a.block}:{a.sha}",
+                ukey=claves.despliegue_iniciado(plan.id, a.block, a.sha),
             )
             pasos, ok = [], True
             for paso in (desplegar, checklist):
@@ -1206,6 +1317,7 @@ Escribe en `$MOTOR_RESULT`:
                     # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
                     ok = False
                     pasos.append(_cola(p))
+                    faltan += comandos_faltantes(p.stdout + p.stderr)
                     rb = _run_tope(f"bash {rollback}", w, env, tope)
                     pasos.append(f"rollback: salida {rb.returncode}")
                     if rb.returncode != 0:
@@ -1217,13 +1329,22 @@ Escribe en `$MOTOR_RESULT`:
             plan.id,
             a.block,
             "Deployed",
-            {"sha": a.sha, "ok": ok, "detalle": detalle},
-            ukey=f"deployed:{plan.id}:{a.block}:{a.sha}",
+            {
+                "sha": a.sha,
+                "ok": ok,
+                "detalle": detalle,
+                "falta_comando": sorted(set(faltan)),
+                "huella": h_insumo,
+                "huella_maquina": h_maquina,
+            },
+            ukey=claves.desplegado(plan.id, a.block, a.sha, h_insumo, h_maquina),
         )
 
     def prove(self, plan: Plan, snap: m.Snapshot, a: m.Prove) -> None:
         bv = snap.blocks[a.block]
         block = bv.block
+        h_insumo, h_maquina = self._huellas("proved", block, snap)
+        faltan: list[str] = []
         if block.prueba_real:
             rc = self.repo_conf(snap, block.repo)
             w = self.cx.ws.copia(
@@ -1240,14 +1361,23 @@ Escribe en `$MOTOR_RESULT`:
                 p.returncode == 0,
                 _cola(p) or f"salió {p.returncode} sin imprimir nada",
             )
+            if not ok:
+                faltan = comandos_faltantes(p.stdout + p.stderr)
         else:
             ok, detalle = True, "el bloque no declara prueba real"
         self.cx.store.append(
             plan.id,
             a.block,
             "Proved",
-            {"sha": a.sha, "ok": ok, "detalle": detalle},
-            ukey=f"proved:{plan.id}:{a.block}:{a.sha}",
+            {
+                "sha": a.sha,
+                "ok": ok,
+                "detalle": detalle,
+                "falta_comando": sorted(set(faltan)),
+                "huella": h_insumo,
+                "huella_maquina": h_maquina,
+            },
+            ukey=claves.probado(plan.id, a.block, a.sha, h_insumo, h_maquina),
         )
 
     def probe_human(self, plan: Plan, snap: m.Snapshot, a: m.ProbeHuman) -> None:
@@ -1274,7 +1404,7 @@ Escribe en `$MOTOR_RESULT`:
                     a.block,
                     "HumanDone",
                     {"por": "sonda"},
-                    ukey=f"humano:{plan.id}:{a.block}",
+                    ukey=claves.humano_hecho(plan.id, a.block),
                 )
             self._ultimo_poll[f"sonda:{clave}"] = ahora
             return
@@ -1333,7 +1463,7 @@ Escribe en `$MOTOR_RESULT`:
         for d in espejos:
             git("worktree", "prune", cwd=d)
         self.cx.store.append(
-            plan.id, "", "Limpiado", {"ramas": borradas}, ukey=f"limpiado:{plan.id}"
+            plan.id, "", "Limpiado", {"ramas": borradas}, ukey=claves.limpiado(plan.id)
         )
 
     def purga_registros(self, planes: list[Plan], now: float) -> None:
@@ -1369,7 +1499,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "NoticeQueued",
             {"key": a.key, "texto": texto},
-            ukey=f"notice:{plan.id}:{a.key}",
+            ukey=claves.aviso_encolado(plan.id, a.key),
         )
 
 
@@ -1377,6 +1507,12 @@ def _escribe_marca(ruta: Path, datos: dict) -> None:
     tmp = ruta.with_name(ruta.name + ".tmp")
     tmp.write_text(json.dumps(datos), encoding="utf-8")
     os.replace(tmp, ruta)
+
+
+def _bloqueado(res: object) -> str:
+    """El motivo si el agente dijo que no es el código del bloque lo que falla; vacío si no."""
+    motivo = res.get("bloqueado") if isinstance(res, dict) else None
+    return motivo.strip()[:500] if isinstance(motivo, str) else ""
 
 
 def _resultado_invalido(res: object, revisando: bool) -> str:

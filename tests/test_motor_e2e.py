@@ -848,9 +848,13 @@ class TestEnvDeLaMaquina(Banco):
 
 
 class TestYaEnLaBase(Banco):
-    def test_lo_que_ya_esta_en_la_rama_principal_no_abre_pr_y_termina(self):
-        """MOTOR 01, canario en la Mini: la PC ya había mergeado el mismo trabajo en el mismo repo; la
-        Mini entregó un SHA que ya estaba en main y se quedó intentando abrir un PR vacío."""
+    def test_entregar_lo_que_ya_estaba_en_la_rama_principal_es_sin_cambios_no_un_merge(
+        self,
+    ):
+        """MOTOR 01, canario en la Mini: la PC ya había mergeado el mismo trabajo y la Mini entregó la
+        punta de main. MOTOR 02, F.4: eso termina el intento como `sin_cambios`; `Merged` solo nace de
+        un merge del motor o de adoptar uno externo (el caso de un merge posterior a la carga del plan
+        lo cubre MergeTicketTest)."""
         self.home, self.plan = sandbox.create(self.tmp / "b")
         app, w = self.tmp / "b" / "app.git", self.tmp / "otra"
         git("clone", "-q", str(app), str(w))
@@ -878,15 +882,24 @@ class TestYaEnLaBase(Banco):
             "0",
         )
         (self.home / "login-hecho").write_text("ok")
-        self.termina()
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(
+                    e.kind == "AttemptEnded"
+                    and e.block == "A"
+                    and e.data["outcome"]["kind"] == "sin_cambios"
+                    for e in eventos(self.home)
+                ),
+                tope=150,
+            )
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
         evs = eventos(self.home)
         self.assertFalse(
-            [e for e in evs if e.kind == "PrOpened" and e.block == "A"], "sin PR vacío"
-        )
-        mg = [e for e in evs if e.kind == "Merged" and e.block == "A"]
-        self.assertTrue(mg and mg[0].data.get("ya_en_base"))
-        self.assertTrue(
-            any(e.kind == "Proved" and e.block == "A" and e.data["ok"] for e in evs)
+            [e for e in evs if e.kind in ("PrOpened", "Merged") and e.block == "A"],
+            "sin PR vacío y sin Merged",
         )
 
 

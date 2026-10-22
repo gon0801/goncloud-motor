@@ -54,6 +54,7 @@ class Causa(enum.Enum):
     CHECKS_INCOHERENTE = "checks_incoherente"
     CHECKS_LENTO = "checks_lento"
     FALTA_COMANDO = "falta_comando"
+    BLOQUEADO = "bloqueado"
     FUERA_DE_CONTROL = "fuera_de_control"
     REPETIDA = "repetida"
     EFECTO_FALLANDO = "efecto_fallando"
@@ -143,9 +144,20 @@ def _atasco(
                 f"atorado:{bid}:checks:{head[:12]}",
                 True,
             )
-    falta = (bv.verified.get(head) or {}).get("falta_comando") if head else None
+    if bv.bloqueo is not None and e is Estado.ARREGLAR:
+        n = len(bv.implement_attempts())
+        return Diagnostico(
+            Causa.BLOQUEADO,
+            f"el agente dice que lo que falla no es el código: {bv.bloqueo['motivo']}; "
+            "espero una nota, un plan corregido o una máquina corregida",
+            f"atorado:{bid}:bloqueado:{n}",
+            True,
+            bv.bloqueo["motivo"],
+        )
+    paso, falta = m.faltan_comandos(bv)
     if falta:
-        # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin.
+        # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin, así que el
+        # bloque espera un plan o una máquina corregidos (F.1).
         # Un aviso por comando, no uno por ronda ni otro cuando se suma un comando nuevo.
         prefijo = f"atorado:{bid}:comando:"
         avisados = {
@@ -162,7 +174,7 @@ def _atasco(
         )
         return Diagnostico(
             Causa.FALTA_COMANDO,
-            f"la verificación del plan usa {', '.join(falta)}, que esta máquina no tiene; "
+            f"{paso} del plan usa {', '.join(falta)}, que esta máquina no tiene; "
             "hay que corregir el plan o instalarlo en la máquina",
             clave,
             True,
@@ -321,6 +333,8 @@ def por_que(bv: m.BlockView) -> str:
     """Por qué el bloque volvió a un agente, en palabras para David (sin rutas ni detalles técnicos:
     el detalle completo va en el encargo del agente y en `motor estado`)."""
     head, mg = bv.head(), bv.merged_sha()
+    if bv.reapertura():
+        return "el plan cambió lo que pide este bloque"
     if mg and mg == head:
         if mg in bv.proved and not bv.proved[mg]["ok"]:
             return "falló la prueba con datos reales"
@@ -340,6 +354,10 @@ def por_que(bv: m.BlockView) -> str:
     last = bv.last_implement_outcome()
     if last and last.get("kind") == "corte":
         return "el intento anterior se cortó por un reinicio o apagón"
+    if last and last.get("kind") == "interrumpido":
+        return "llegó una nota o un cambio del plan y se detuvo el intento anterior"
+    if last and last.get("kind") == "bloqueado":
+        return "el intento anterior quedó bloqueado y ya cambió la nota, el plan o la máquina"
     if last and last.get("kind") != "entregado":
         return "el intento anterior terminó sin entregar"
     return ""
@@ -352,8 +370,24 @@ def _tecnico(bv: m.BlockView) -> str:
 def _lineas(bv: m.BlockView) -> list[str]:
     """Lo que el agente necesita saber para arreglar, un punto por hallazgo (con detalles técnicos)."""
     out: list[str] = []
+    if r := bv.reapertura():
+        out.append(
+            f"El plan cambió (versión {r['version']}) y este bloque ya estaba hecho: "
+            + "; ".join(r["cambios"])
+            + "."
+        )
     last = bv.last_implement_outcome()
-    if last and last.get("kind") != "entregado":
+    if last and last.get("kind") == "interrumpido":
+        out.append(
+            f"El intento anterior se detuvo para darte esto: {last.get('detalle', '')}. "
+            "Lo que llevaba quedó en la rama y en una foto; sigue desde ahí y tenlo en cuenta."
+        )
+    elif last and last.get("kind") == "bloqueado":
+        out.append(
+            f"El intento anterior quedó bloqueado: {last.get('detalle', '')}. Desde entonces hubo una "
+            "nota o cambió el plan o la máquina; revisa si ya puedes seguir."
+        )
+    elif last and last.get("kind") != "entregado":
         motivo = (
             "un corte de luz o reinicio"
             if last.get("kind") == "corte"

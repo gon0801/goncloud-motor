@@ -14,9 +14,9 @@ import dataclasses
 import enum
 from dataclasses import dataclass, field
 
-from . import fallas, relevo
+from . import fallas, huella, relevo
 from .conf import Conf
-from .plan import Block, Plan
+from .plan import Block, Plan, cambios_de
 from .store import Event
 
 
@@ -104,7 +104,13 @@ class Estado(enum.Enum):
     HECHO = "hecho"
 
 
-NO_ES_FALLA = ("entregado", "veredicto", "corte")  # un apagón no es culpa del agente
+NO_ES_FALLA = (
+    "entregado",
+    "veredicto",
+    "corte",
+    "interrumpido",
+    "bloqueado",
+)  # un apagón, una orden del motor o lo que no es el código no son culpa del agente
 
 
 @dataclass
@@ -120,6 +126,9 @@ class Attempt:
     ended_at: float = (
         0.0  # cuándo terminó (del log): alimenta la cuarentena de la cuenta
     )
+    cambios: list[str] = field(
+        default_factory=list
+    )  # notas y cambios del plan que llegaron mientras corría: el motor lo detiene
 
 
 @dataclass
@@ -150,6 +159,15 @@ class BlockView:
     esperando: dict[str, dict] = field(
         default_factory=dict
     )  # sha -> {"faltan", "github_termino", "desde"}: qué pruebas de GitHub se esperan
+    obsoletos: set[str] = field(
+        default_factory=set
+    )  # SHAs cuya verificación ya no vale (cambió su Acepta o la máquina) y no se ha repetido
+    bloqueo: dict | None = (
+        None  # {"motivo", "huella_maquina"}: el agente dijo que no es el código; espera nota, plan o máquina
+    )
+    reabierto: dict | None = (
+        None  # {"version", "cambios", "agente", "desde"}: una versión nueva del plan tocó un bloque ya hecho
+    )
 
     def implement_attempts(self) -> list[Attempt]:
         return [a for a in self.attempts if a.role == "implementar"]
@@ -178,6 +196,16 @@ class BlockView:
     def merged_sha(self) -> str:
         return self.merged[-1]["sha"] if self.merged else ""
 
+    def reapertura(self) -> dict | None:
+        """La reapertura por un cambio del plan sigue abierta hasta que un agente entregue algo nuevo."""
+        r = self.reabierto
+        if r is None:
+            return None
+        nuevas = self.implement_attempts()[r["desde"] :]
+        if any(a.ended and a.ended.get("kind") == "entregado" for a in nuevas):
+            return None
+        return r
+
 
 @dataclass
 class Snapshot:
@@ -189,19 +217,72 @@ class Snapshot:
     inicio: float = 0.0  # cuándo se cargó el plan (para el resumen de cada hora)
     intentos_fuera: tuple = ()  # intentos terminados de OTROS planes de la máquina (cuarentena por cuenta)
     limpio: bool = False  # ya se borraron sus ramas y copias de trabajo
+    version: int = 0  # la del plan vigente: el de la última entrega
+    huerfanos: tuple = ()  # intentos en curso de bloques que la versión vigente ya no tiene
 
 
-def fold(plan: Plan, events: list[Event]) -> Snapshot:
+RESULTADOS = {"Verified": "verified", "Proved": "proved", "Deployed": "deployed"}
+
+
+def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapshot:
+    """`maquina`: la huella de la máquina que corre (huella.de_maquina). Sin ella, los resultados no se
+    comparan contra la máquina (pruebas puras); con ella, uno medido en otra configuración se ignora."""
     blocks = {b.id: BlockView(block=b) for b in plan.blocks}
+    resultados: list[tuple[BlockView, Event]] = []
     cooldowns: dict[str, float] = {}
     plan_notices: set[str] = set()
     repos: dict[str, dict] = {}
     inicio = events[0].ts if events else 0.0
     limpio = any(e.kind == "Limpiado" for e in events)
+    version, cargas, previo = 0, 0, None
+    huerfanos: dict[tuple[str, int, str], Attempt] = {}
+    crudo_merged: dict[str, str] = {}  # bloque -> SHA del último Merged
+    crudo_probados: dict[
+        str, set[str]
+    ] = {}  # bloque -> SHAs con Proved ok (sin mirar la huella)
     for e in events:
         d = e.data
         bv = blocks.get(e.block)
-        if e.kind == "Cooldown":
+        if e.kind == "PlanLoaded":
+            cargas += 1
+            version = d.get("version", cargas)
+            try:
+                ahora = Plan.from_dict(d["plan"])
+            except (KeyError, TypeError):
+                continue  # una carga sin plan legible cuenta como versión, no como cambio
+            for b in ahora.blocks:
+                antes = previo.get(b.id) if previo else None
+                if antes is None or b.id not in blocks:
+                    continue
+                todos = cambios_de(antes, b)
+                cambios = [c for c in todos if c.tipo != "bloque"]
+                hecho = crudo_merged.get(b.id, "") in crudo_probados.get(b.id, ())
+                if cambios and hecho:
+                    blocks[b.id].reabierto = {
+                        "version": version,
+                        "cambios": [c.texto for c in cambios],
+                        "agente": any(c.tipo == "fila" for c in cambios),
+                        "desde": len(blocks[b.id].implement_attempts()),
+                    }
+                if todos:
+                    blocks[b.id].bloqueo = None  # el plan corregido destraba al bloque
+                for a in blocks[b.id].attempts:
+                    if a.role == "implementar" and a.ended is None and todos:
+                        a.cambios += [f"el plan cambió: {c.texto}" for c in todos]
+            previo = {b.id: b for b in ahora.blocks}
+        elif bv is None and e.kind == "AttemptStarted":
+            huerfanos[(e.block, d["n"], d["role"])] = Attempt(
+                n=d["n"],
+                role=d["role"],
+                modelo=d["modelo"],
+                started=e.ts,
+                proc=d.get("proc") or {},
+                dir=d["dir"],
+                sha=d.get("sha", ""),
+            )
+        elif bv is None and e.kind == "AttemptEnded":
+            huerfanos.pop((e.block, d["n"], d["role"]), None)
+        elif e.kind == "Cooldown":
             cooldowns[d["cuenta"]] = max(cooldowns.get(d["cuenta"], 0), d["hasta"])
         elif e.kind == "RepoPinned":
             repos[d["repo"]] = d
@@ -225,9 +306,21 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             for a in bv.attempts:
                 if a.n == d["n"] and a.role == d["role"] and a.ended is None:
                     a.ended, a.ended_at = d["outcome"], e.ts
-        elif e.kind == "Verified":
-            bv.verified[d["sha"]] = d
-            bv.hecho_ts = e.ts
+                    if a.role == "implementar":
+                        bv.bloqueo = (
+                            {
+                                "motivo": d["outcome"].get("detalle", ""),
+                                "huella_maquina": d["outcome"].get(
+                                    "huella_maquina", ""
+                                ),
+                            }
+                            if d["outcome"].get("kind") == "bloqueado"
+                            else None
+                        )
+        elif e.kind in RESULTADOS:
+            resultados.append((bv, e))
+            if e.kind == "Proved" and d.get("ok"):
+                crudo_probados.setdefault(e.block, set()).add(d["sha"])
         elif e.kind == "PrOpened":
             bv.pr = d
         elif e.kind == "Reviewed":
@@ -244,6 +337,7 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
         elif e.kind == "ChecksEsperando":
             bv.esperando[d["sha"]] = {**d, "desde": e.ts}
         elif e.kind == "Merged":
+            crudo_merged[e.block] = d["sha"]
             bv.merged.append(d)
             bv.pr = None  # ese PR ya se usó: un arreglo posterior (p. ej. tras un despliegue fallido) va en uno nuevo
         elif e.kind == "PrCerrado":
@@ -255,17 +349,29 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.esperando.pop(sha, None)
         elif e.kind == "DeployStarted":
             bv.deploy_started.add(d["sha"])
-        elif e.kind == "Deployed":
-            bv.deployed[d["sha"]] = d
-            bv.hecho_ts = e.ts
-        elif e.kind == "Proved":
-            bv.proved[d["sha"]] = d
-            bv.hecho_ts = e.ts
         elif e.kind == "HumanDone":
             bv.human_done = True
         elif e.kind == "Note":
             bv.notes.append(d["texto"])
             bv.hecho_ts = e.ts
+            for a in bv.attempts:
+                if a.role == "implementar" and a.ended is None:
+                    a.cambios.append(f"llegó una nota: {d['texto']}")
+            bv.bloqueo = None  # una nota destraba al bloque que esperaba
+    for bv in blocks.values():
+        b = bv.bloqueo
+        if b and maquina is not None and b["huella_maquina"] not in ("", maquina):
+            bv.bloqueo = None  # la máquina corregida también
+    viejos: dict[str, set[str]] = {}
+    for bv, e in resultados:
+        campo = RESULTADOS[e.kind]
+        if huella.vigente(e.data, huella.insumo_de(campo, bv.block, repos), maquina):
+            getattr(bv, campo)[e.data["sha"]] = e.data
+            bv.hecho_ts = max(bv.hecho_ts, e.ts)
+        elif campo == "verified":
+            viejos.setdefault(bv.block.id, set()).add(e.data["sha"])
+    for bid, shas in viejos.items():
+        blocks[bid].obsoletos = shas - blocks[bid].verified.keys()
     return Snapshot(
         plan=plan,
         blocks=blocks,
@@ -274,6 +380,8 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
         repos=repos,
         inicio=inicio,
         limpio=limpio,
+        version=version,
+        huerfanos=tuple((k, a) for k, a in huerfanos.items()),
     )
 
 
@@ -293,7 +401,16 @@ def estado(snap: Snapshot, bid: str) -> Estado:
     bv = snap.blocks[bid]
     b = bv.block
     m = bv.merged_sha()
-    if m and bv.proved.get(m, {}).get("ok"):
+    reap = bv.reapertura()
+    pide_agente = bool(reap and reap["agente"])
+    if (
+        m
+        and bv.proved.get(m, {}).get("ok")
+        and m not in bv.obsoletos
+        and bv.verified.get(m, {}).get("ok", True)
+        and not pide_agente
+        and (bv.reabierto is None or bv.head() == m)
+    ):
         return Estado.HECHO
     if any(estado(snap, dep) is not Estado.HECHO for dep in b.depende):
         return (
@@ -306,8 +423,20 @@ def estado(snap: Snapshot, bid: str) -> Estado:
     run = bv.running()
     if run:
         return Estado.IMPLEMENTANDO if run.role == "implementar" else Estado.REVISANDO
+    if pide_agente:
+        return (
+            Estado.ARREGLAR
+        )  # el plan cambió lo que pide una fila: un agente tiene que tocarlo
     head = bv.head()
     if m and head == m:
+        if head in bv.obsoletos:
+            return (
+                Estado.VERIFICAR
+            )  # ya mergeada, pero su Acepta o la máquina cambiaron
+        if not bv.verified.get(head, {}).get("ok", True):
+            return (
+                Estado.ARREGLAR
+            )  # la nueva Acepta no pasa sobre lo que ya está mergeado
         if b.lane == "release" and not bv.deployed.get(m, {}).get("ok"):
             return Estado.ARREGLAR if m in bv.deployed else Estado.DESPLEGAR
         if m in bv.proved:
@@ -415,6 +544,16 @@ class Notify:
 
 
 @dataclass(frozen=True)
+class Interrumpe:
+    """Detener un intento en curso porque lo que le pidieron ya no vale (el bloque salió del plan)."""
+
+    block: str
+    role: str
+    n: int
+    motivo: str
+
+
+@dataclass(frozen=True)
 class Limpia:
     """Plan terminado y avisado: borrar sus ramas en GitHub y sus copias de trabajo."""
 
@@ -432,6 +571,7 @@ Action = (
     | Prove
     | ProbeHuman
     | Notify
+    | Interrumpe
     | Limpia
 )
 
@@ -600,6 +740,27 @@ def _fuera_de_control(bv: BlockView) -> bool:
     )
 
 
+def faltan_comandos(bv: BlockView) -> tuple[str, list[str]]:
+    """(qué paso, comandos) si el último paso del motor falló por un comando que esta máquina no tiene:
+    la verificación de las filas, la prueba real o el despliegue. El agente no puede arreglarlo."""
+    head, mg = bv.head(), bv.merged_sha()
+    pasos = (
+        ("la prueba real", bv.proved.get(mg) if mg and mg == head else None),
+        ("el despliegue", bv.deployed.get(mg) if mg and mg == head else None),
+        ("la verificación", bv.verified.get(head) if head else None),
+    )
+    for paso, r in pasos:
+        if r and not r.get("ok") and r.get("falta_comando"):
+            return paso, list(r["falta_comando"])
+    return "", []
+
+
+def espera_cambio(bv: BlockView) -> bool:
+    """El bloque no vuelve a un agente: lo que falla no es su código y solo cambia con otro plan o
+    con otra máquina (F.1). El diagnóstico lo dice y avisa una vez."""
+    return bool(faltan_comandos(bv)[1]) or bv.bloqueo is not None
+
+
 def bloqueo(
     snap: Snapshot,
     policy: Policy,
@@ -724,12 +885,19 @@ def decide(
             acciones.append(
                 ProbeHuman(bid)
             )  # antes del aviso: si ya lo hizo, no se molesta
+        run = bv.running()
+        if run and run.role == "implementar" and run.cambios:
+            acciones.append(
+                Interrumpe(bid, run.role, run.n, "; ".join(run.cambios)[:500])
+            )
         d = diagnostico.diagnostico(snap, bid, policy, now)
         for n in avisos.avisos_de(snap, bid, policy, now, d):
             if n.key not in bv.notices | snap.plan_notices | ya:
                 ya.add(n.key)
                 acciones.append(n)
-        if e in (Estado.ARREGLAR, Estado.REVISAR):
+        if e in (Estado.ARREGLAR, Estado.REVISAR) and not (
+            e is Estado.ARREGLAR and espera_cambio(bv)
+        ):
             role = "implementar" if e is Estado.ARREGLAR else "revisar"
             ladder = (
                 policy.implementadores
@@ -785,6 +953,8 @@ def decide(
                         ),
                     )
                 )
+    for (bid, n, role), _ in snap.huerfanos:
+        acciones.append(Interrumpe(bid, role, n, "el bloque salió del plan"))
     if not todos_hechos and snap.inicio and policy.avance_cada_s > 0:
         n = int((now - snap.inicio) // policy.avance_cada_s)
         if n >= 1 and f"avance:{n}" not in snap.plan_notices:

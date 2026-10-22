@@ -29,6 +29,7 @@ import time
 import uuid
 from pathlib import Path
 
+from . import huella
 from . import machine as m
 from .conf import ConfError, load_conf, load_maquina, valida_maquina
 from .plan import PlanError, parse_plan, revisa_sin_quien
@@ -112,9 +113,13 @@ def _estado(home: Path) -> list[dict]:
     store = Store.solo_lectura(
         home / "motor.db"
     )  # sin construir un Daemon: ni candado ni escritura
+    try:
+        maquina = huella.de_maquina(load_maquina(home))
+    except (ConfError, OSError, KeyError):
+        maquina = None
     out = []
     for plan in planes_de(store):
-        snap = m.fold(plan, store.events(plan.id))
+        snap = m.fold(plan, store.events(plan.id), maquina)
         bloques = []
         for bid, bv in snap.blocks.items():
             run = bv.running()
