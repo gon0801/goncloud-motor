@@ -217,6 +217,10 @@ class TestPlan(Banco):
         )
         est = json.loads(motor("estado", "--home", str(self.home), "--json").stdout)
         self.assertEqual(est[0]["plan"], "demo")
+        self.assertTrue(
+            all(b["motivo"] for b in est[0]["bloques"]),
+            "cada parte dice qué hace o qué espera",
+        )
 
     def test_plan_invalido_se_rechaza_en_el_momento(self):
         self.home, self.plan = sandbox.create(self.tmp / "b")
