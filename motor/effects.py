@@ -31,7 +31,7 @@ from .github import GitHubPort, MergeRechazado
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
 from .store import Store
-from .workspace import Workspace, git
+from .workspace import Workspace, foto_wip, git
 
 RAIZ = Path(__file__).resolve().parent.parent
 _FALTA = re.compile(
@@ -856,6 +856,46 @@ Escribe en `$MOTOR_RESULT`:
             "sha": punta,
             "resumen": str(res.get("resumen", ""))[:500],
         }
+
+    def interrumpe(self, plan: Plan, snap: m.Snapshot, a: m.Interrumpe) -> None:
+        """Detiene el intento en curso, guarda la foto de lo que llevaba y lo anota como `interrumpido`
+        (no es falla del modelo). Idempotente: si ya terminó, el evento repetido no entra."""
+        inicio = next(
+            (
+                e.data
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "AttemptStarted"
+                and (e.block, e.data["n"], e.data["role"]) == (a.block, a.n, a.role)
+            ),
+            None,
+        )
+        if inicio is None:
+            return
+        self._mata_intento(Path(inicio["dir"]), inicio.get("proc") or None)
+        foto = ""
+        w = self.cx.home / "wt" / plan.id / a.block
+        if a.role == "implementar" and w.exists():
+            wip = self.cx.ws.rama_wip(plan.id, a.block)
+            privado = False
+            if a.block in snap.blocks:
+                repo = snap.blocks[a.block].block.repo
+                privado = bool(snap.repos.get(repo, {}).get("privado", False))
+            foto = foto_wip(w, wip, local=not privado)
+        self.cx.store.append(
+            plan.id,
+            a.block,
+            "AttemptEnded",
+            {
+                "n": a.n,
+                "role": a.role,
+                "outcome": {
+                    "kind": "interrumpido",
+                    "detalle": a.motivo,
+                    "foto": foto,
+                },
+            },
+            ukey=claves.intento_terminado(plan.id, a.block, a.role, a.n),
+        )
 
     def _entrego(self, plan: Plan, block_id: str, d: Path) -> bool:
         """Hay un `result.json` válido cuyo SHA es la punta remota de la rama del bloque."""

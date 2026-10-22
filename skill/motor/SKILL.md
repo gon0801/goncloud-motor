@@ -27,8 +27,10 @@ Un pedido mixto se parte: lo de leer lo haces ya; lo de cambiar va al plan.
 1. Escribe el plan con el formato de abajo en un archivo temporal.
 2. `motor valida <plan.md> --home <home>`: si dice que no está listo, corrige lo que diga y repite.
 3. `motor entrega <plan.md> --home <home> --json --por <tu nombre>`.
-   - `tomado`: dile a David en una frase qué va a pasar ("Lo convertí en plan y ya está
-     corriendo; te aviso cuando esté probado").
+   - `tomado (versión N)`: dile a David en una frase qué va a pasar ("Lo convertí en plan y ya
+     está corriendo; te aviso cuando esté probado"). Entregar otra vez un plan corregido (o uno
+     anterior) es una versión nueva: lo hecho sigue hecho, salvo los bloques cuyas filas, Acepta
+     o prueba real cambiaron, que se vuelven a hacer.
    - `encolado`: el motor está reiniciando; lo toma solo. Díselo igual.
    - `rechazado`: lee `errores`, corrige y entrega otra vez.
 4. Ya no tienes que darle seguimiento: el motor le avisa a David por tu mismo bot de Telegram

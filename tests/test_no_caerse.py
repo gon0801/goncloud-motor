@@ -95,7 +95,7 @@ class BandejaTest(Banco):
             e.data["cmd_id"]: e.data["resultado"]
             for e in self.eventos("CommandReceived")
         }
-        self.assertEqual(recibos["c9"], "tomado")
+        self.assertEqual(recibos["c9"], "tomado (versión 1)")
         for cmd_id in ("c4", "c5", "c6", "c7", "3-sin-cmd-id", "1-roto", "2-utf8"):
             self.assertTrue(
                 recibos[cmd_id].startswith("rechazado: "), (cmd_id, recibos)
@@ -378,11 +378,13 @@ prueba-real: true
             {"README.md": "x\n"},
             "despliegue: desplegar=d.sh checklist=c.sh rollback=r.sh",
         )
-        self.assertEqual(res, "tomado")
+        self.assertEqual(res, "tomado (versión 1)")
 
     def test_release_con_receta_en_el_motor_toml_se_toma(self):
         toml = '[deploy]\ndesplegar = "d.sh"\nchecklist = "c.sh"\nrollback = "r.sh"\n'
-        self.assertEqual(self.entrega_release({".motor.toml": toml}), "tomado")
+        self.assertEqual(
+            self.entrega_release({".motor.toml": toml}), "tomado (versión 1)"
+        )
 
 
 class VersionTest(Banco):

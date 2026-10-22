@@ -322,6 +322,8 @@ def por_que(bv: m.BlockView) -> str:
     """Por qué el bloque volvió a un agente, en palabras para David (sin rutas ni detalles técnicos:
     el detalle completo va en el encargo del agente y en `motor estado`)."""
     head, mg = bv.head(), bv.merged_sha()
+    if bv.reapertura():
+        return "el plan cambió lo que pide este bloque"
     if mg and mg == head:
         if mg in bv.proved and not bv.proved[mg]["ok"]:
             return "falló la prueba con datos reales"
@@ -353,6 +355,12 @@ def _tecnico(bv: m.BlockView) -> str:
 def _lineas(bv: m.BlockView) -> list[str]:
     """Lo que el agente necesita saber para arreglar, un punto por hallazgo (con detalles técnicos)."""
     out: list[str] = []
+    if r := bv.reapertura():
+        out.append(
+            f"El plan cambió (versión {r['version']}) y este bloque ya estaba hecho: "
+            + "; ".join(r["cambios"])
+            + "."
+        )
     last = bv.last_implement_outcome()
     if last and last.get("kind") != "entregado":
         motivo = (

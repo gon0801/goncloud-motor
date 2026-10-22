@@ -12,8 +12,10 @@ demasiado finas (el mismo hecho entra dos veces):
 from __future__ import annotations
 
 
-def plan_cargado(plan: str, huella: str) -> str:
-    return f"plan:{plan}:{huella}"
+def plan_cargado(plan: str, version: int) -> str:
+    """Cada entrega con contenido distinto del vigente es una versión: volver a entregar un texto
+    anterior es una versión nueva, no la misma."""
+    return f"plan:{plan}:v{version}"
 
 
 def comando(cmd_id: str) -> str:

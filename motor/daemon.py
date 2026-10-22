@@ -316,18 +316,24 @@ class Daemon:
                             "ni el repo tiene su receta de despliegue en .motor.toml"
                         ]
                     )
-        self.store.append(
-            plan.id,
-            "",
-            "PlanLoaded",
-            {"plan": cmd.plan, "por": cmd.por},
-            # Entregar otra vez el plan con cambios lo reemplaza (lo hecho sigue hecho);
-            # el mismo texto otra vez no hace nada. Antes el cambio se ignoraba en
-            # silencio y el recibo decía "tomado" (INGESTA 01, prueba real de S).
-            ukey=claves.plan_cargado(plan.id, _huella(cmd.plan)),
+        # El plan vigente es el de la última entrega: un texto distinto del vigente es una versión
+        # nueva (también si es uno anterior, que así se reactiva); el mismo texto otra vez no hace
+        # nada. Lo hecho sigue hecho salvo lo que el cambio toque (machine.fold).
+        cargas = [e for e in self.store.events(plan.id) if e.kind == "PlanLoaded"]
+        version = max(
+            (e.data.get("version", i) for i, e in enumerate(cargas, 1)), default=0
         )
+        if not cargas or _huella(cargas[-1].data["plan"]) != _huella(cmd.plan):
+            version += 1
+            self.store.append(
+                plan.id,
+                "",
+                "PlanLoaded",
+                {"plan": cmd.plan, "por": cmd.por, "version": version},
+                ukey=claves.plan_cargado(plan.id, version),
+            )
         self.fx.pin_repos(plan)
-        return "tomado"
+        return f"tomado (versión {version})"
 
     def _hecho(self, plan_id: str, cmd: Comando) -> str:
         plan = next((p for p in self.plans() if p.id == plan_id), None)
@@ -592,6 +598,7 @@ class Daemon:
             m.Prove: self.fx.prove,
             m.ProbeHuman: self.fx.probe_human,
             m.Notify: self.fx.notify,
+            m.Interrumpe: self.fx.interrumpe,
             m.Limpia: self.fx.limpia,
         }[type(a)]
         f(plan, snap, a)

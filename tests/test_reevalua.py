@@ -11,7 +11,7 @@ from pathlib import Path
 
 from motor import claves, huella
 from motor import machine as m
-from motor.diagnostico import Causa, diagnostico
+from motor.diagnostico import Causa, diagnostico, encargo
 from motor.plan import Plan, parse_plan
 from tests.test_no_caerse import Banco
 from tests.test_puro import PLAN, entregado, ev, pol
@@ -327,7 +327,9 @@ class ReevaluaTest(Banco):
         snap, acs = acciones(corregido, evs)
         self.assertEqual(tipos(acs), ["Prove"], "el plan corregido prueba el mismo SHA")
         snap, acs = acciones(plan, evs, maquina="otra")
-        self.assertEqual(tipos(acs), ["Prove"], "la máquina corregida también")
+        self.assertEqual(
+            tipos(acs), ["Verify"], "otra máquina repite desde el primer paso"
+        )
 
     def _fx_con_mergeado(self, plan_dict):
         d = self.daemon()
@@ -387,6 +389,282 @@ class ReevaluaTest(Banco):
         d.fx.prove(plan, snap, m.Prove("A", sha))
         (p,) = self.eventos("Proved")
         self.assertEqual((p.data["ok"], p.data["falta_comando"]), (True, []))
+
+
+def carga(plan: Plan, version: int, **extra):
+    return ev(
+        "PlanLoaded", "", {"plan": plan.to_dict(), "por": "t", "version": version}
+    )
+
+
+def sin_bloque_c() -> Plan:
+    texto = PLAN.split("## Bloque C")[0]
+    return parse_plan(texto)
+
+
+def hecho_en(plan: Plan, version: int = 1) -> list:
+    """El bloque A entregado, verificado, mergeado y probado con lo que el plan pedía."""
+    b = plan.block("A")
+    return [
+        carga(plan, version),
+        *entregado(),
+        ev(
+            "Verified",
+            "A",
+            {
+                "sha": SHA,
+                "ok": True,
+                "detalle": "",
+                "huella": huella.insumo_de("verified", b, {}),
+            },
+        ),
+        ev("PrOpened", "A", {"numero": 1}),
+        ev("Merged", "A", {"sha": SHA, "commit": "c" * 40}),
+        ev(
+            "Proved",
+            "A",
+            {
+                "sha": SHA,
+                "ok": True,
+                "detalle": "",
+                "huella": huella.insumo_de("proved", b, {}),
+            },
+        ),
+    ]
+
+
+class ReentregaTest(Banco):
+    def _entrega(self, d, cmd_id, plan):
+        from motor.plan import Comando
+
+        cmd = Comando.from_dict(
+            {"cmd_id": cmd_id, "tipo": "plan", "plan": plan, "por": "t"}
+        )
+        return d._procesa(cmd)
+
+    def test_cada_entrega_distinta_es_una_version_y_el_recibo_la_dice(self):
+        d = self.daemon()
+        v1 = self.plan
+        v2 = {**self.plan, "titulo": "otro título"}
+        v2 = {
+            **self.plan,
+            "blocks": [
+                {**b, "rows": [{**r, "acepta": "true"} for r in b["rows"]]}
+                if b["id"] == "A"
+                else b
+                for b in self.plan["blocks"]
+            ],
+        }
+        self.assertNotEqual(v1, v2)
+        self.assertEqual(self._entrega(d, "c1", v1), "tomado (versión 1)")
+        self.assertEqual(
+            self._entrega(d, "c1b", v1),
+            "tomado (versión 1)",
+            "el mismo texto no hace nada",
+        )
+        self.assertEqual(self._entrega(d, "c2", v2), "tomado (versión 2)")
+        self.assertEqual(self._entrega(d, "c3", v1), "tomado (versión 3)")
+        cargas = self.eventos("PlanLoaded")
+        self.assertEqual([e.data["version"] for e in cargas], [1, 2, 3])
+
+    def test_reentregar_una_version_anterior_la_reactiva(self):
+        d = self.daemon()
+        v1 = self.plan
+        v2 = {
+            **self.plan,
+            "blocks": [
+                {**b, "prueba_real": "test -f otra-cosa"} if b["id"] == "A" else b
+                for b in self.plan["blocks"]
+            ],
+        }
+        self._entrega(d, "c1", v1)
+        self._entrega(d, "c2", v2)
+        self.assertEqual(d.plans()[0].block("A").prueba_real, "test -f otra-cosa")
+        self.assertEqual(self._entrega(d, "c3", v1), "tomado (versión 3)")
+        vigente = d.plans()[0]
+        self.assertEqual(vigente.to_dict(), Plan.from_dict(v1).to_dict())
+        snap = d._fold(vigente)
+        self.assertEqual(snap.version, 3)
+
+    def test_un_plan_con_eventos_viejos_sin_version_sigue_contando(self):
+        d = self.daemon()
+        d.store.append(
+            "demo", "", "PlanLoaded", {"plan": self.plan, "por": "t"}, ukey="viejo"
+        )
+        v2 = {**self.plan, "titulo": "nuevo"}
+        v2["blocks"] = [
+            {**b, "aviso": "otro"} if b["id"] == "A" else b for b in self.plan["blocks"]
+        ]
+        self.assertEqual(self._entrega(d, "c2", v2), "tomado (versión 2)")
+
+    def test_un_bloque_hecho_cuya_acepta_cambia_se_reabre_y_el_encargo_lo_dice(self):
+        v1 = plan_con("true")
+        v2 = plan_con("test -f README.md")
+        base = hecho_en(v1)
+        snap = m.fold(v1, base)
+        self.assertIs(m.estado(snap, "A"), m.Estado.HECHO)
+        evs = base + [carga(v2, 2)]
+        snap = m.fold(v2, evs)
+        self.assertIs(
+            m.estado(snap, "A"), m.Estado.VERIFICAR, "se verifica el mismo SHA"
+        )
+        self.assertEqual(tipos(m.decide(snap, pol(), 1e10)), ["Verify"])
+        fallo = evs + [
+            ev(
+                "Verified",
+                "A",
+                {
+                    "sha": SHA,
+                    "ok": False,
+                    "detalle": "A.1 salió 1",
+                    "huella": huella.insumo_de("verified", v2.block("A"), {}),
+                },
+            )
+        ]
+        snap = m.fold(v2, fallo)
+        self.assertIs(m.estado(snap, "A"), m.Estado.ARREGLAR)
+        texto = "\n".join(encargo(snap, "A", pol(), 1e10))
+        self.assertIn("El plan cambió (versión 2)", texto)
+        self.assertIn("la Acepta de A.1 cambió de `true` a `test -f README.md`", texto)
+        ok = evs + [fallo[-1]]
+        ok[-1] = ev("Verified", "A", {**fallo[-1].data, "ok": True})
+        self.assertIs(
+            m.estado(m.fold(v2, ok), "A"), m.Estado.HECHO, "pasa y vuelve a estar hecho"
+        )
+
+    def test_un_bloque_hecho_cuya_fila_cambia_vuelve_a_un_agente_con_lo_que_cambio(
+        self,
+    ):
+        v1 = plan_con("true")
+        v2 = parse_plan(
+            PLAN.replace("| A.1 | algo | true |", "| A.1 | algo distinto | true |")
+        )
+        snap = m.fold(v2, hecho_en(v1) + [carga(v2, 2)])
+        self.assertIs(m.estado(snap, "A"), m.Estado.ARREGLAR)
+        (inicio,) = [
+            a
+            for a in m.decide(snap, pol(), 1e10)
+            if isinstance(a, m.StartAttempt) and a.block == "A"
+        ]
+        self.assertIn(
+            "la fila A.1 ahora pide: algo distinto", "\n".join(inicio.feedback)
+        )
+        self.assertIn("El plan cambió (versión 2)", "\n".join(inicio.feedback))
+        entrega = hecho_en(v1) + [carga(v2, 2)] + entregado(sha="b" * 40, n=2)
+        snap = m.fold(v2, entrega)
+        self.assertIs(
+            m.estado(snap, "A"), m.Estado.VERIFICAR, "lo nuevo sigue el camino normal"
+        )
+        self.assertIsNone(snap.blocks["A"].reapertura())
+
+    def test_un_bloque_hecho_cuya_prueba_real_cambia_se_vuelve_a_probar(self):
+        v1 = plan_con(prueba="true")
+        v2 = plan_con(prueba="test -f README.md")
+        snap = m.fold(v2, hecho_en(v1) + [carga(v2, 2)])
+        self.assertIs(m.estado(snap, "A"), m.Estado.PROBAR)
+        self.assertIn(
+            "la prueba real cambió",
+            "\n".join(snap.blocks["A"].reapertura()["cambios"]),
+        )
+
+    def test_lo_que_no_es_filas_acepta_ni_prueba_real_no_reabre(self):
+        v1 = plan_con()
+        con_aviso = PLAN.replace(
+            "## Bloque A — uno\nlane: gate",
+            "## Bloque A — uno\nlane: gate\naviso: otro aviso",
+        )
+        v3 = parse_plan(con_aviso)
+        self.assertNotEqual(v1.block("A").aviso, v3.block("A").aviso)
+        snap = m.fold(v3, hecho_en(v1) + [carga(v3, 2)])
+        self.assertIs(m.estado(snap, "A"), m.Estado.HECHO)
+        self.assertIsNone(snap.blocks["A"].reabierto)
+
+    def test_un_bloque_que_no_estaba_hecho_no_se_reabre(self):
+        v1 = plan_con("true")
+        v2 = parse_plan(PLAN.replace("| A.1 | algo | true |", "| A.1 | otra | true |"))
+        base = hecho_en(v1)[:4]  # entregado y verificado, sin merge
+        snap = m.fold(v2, base + [carga(v2, 2)])
+        self.assertIsNone(snap.blocks["A"].reabierto)
+
+    def test_quitar_un_bloque_con_un_intento_en_curso_lo_detiene(self):
+        v1, v2 = parse_plan(PLAN), sin_bloque_c()
+        marca = ev(
+            "AttemptStarted",
+            "C",
+            {"n": 1, "role": "implementar", "modelo": "glm", "proc": {}, "dir": "d"},
+        )
+        evs = [carga(v1, 1), marca, carga(v2, 2)]
+        snap = m.fold(v2, evs)
+        self.assertEqual(snap.version, 2)
+        acs = m.decide(snap, pol(), 1e10)
+        self.assertEqual(
+            [a for a in acs if isinstance(a, m.Interrumpe)],
+            [m.Interrumpe("C", "implementar", 1, "el bloque salió del plan")],
+        )
+        terminado = evs + [
+            ev(
+                "AttemptEnded",
+                "C",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "outcome": {"kind": "entregado", "sha": SHA},
+                },
+            )
+        ]
+        acs = m.decide(m.fold(v2, terminado), pol(), 1e10)
+        self.assertEqual([a for a in acs if isinstance(a, m.Interrumpe)], [])
+
+    def test_el_motor_detiene_el_proceso_del_bloque_quitado(self):
+        import os
+        import sys
+
+        from motor import plataforma
+
+        d = self.daemon()
+        self._entrega(d, "c1", self.plan)
+        quitado = {
+            **self.plan,
+            "blocks": [b for b in self.plan["blocks"] if b["id"] != "C"],
+        }
+        carpeta = self.tmp / "intento-c"
+        carpeta.mkdir()
+        p = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            **plataforma.kwargs_grupo(),
+        )
+        proc = {
+            "pid": p.pid,
+            "boot_id": plataforma.boot_id(),
+            "inicio": plataforma.hora_inicio(p.pid),
+        }
+        d.store.append(
+            "demo",
+            "C",
+            "AttemptStarted",
+            {
+                "n": 1,
+                "role": "implementar",
+                "modelo": "glm",
+                "proc": proc,
+                "dir": str(carpeta),
+            },
+            ukey="s",
+        )
+        self.assertEqual(self._entrega(d, "c2", quitado), "tomado (versión 2)")
+        try:
+            d.tick()
+            p.wait(timeout=10)
+        finally:
+            if p.poll() is None:
+                os.killpg(p.pid, 9)
+        (fin,) = [e for e in self.eventos("AttemptEnded") if e.block == "C"]
+        self.assertEqual(fin.data["outcome"]["kind"], "interrumpido")
+        self.assertIn("salió del plan", fin.data["outcome"]["detalle"])
+        d.tick()
+        self.assertEqual(
+            len([e for e in self.eventos("AttemptEnded") if e.block == "C"]), 1
+        )
 
 
 class ClavesTest(unittest.TestCase):
