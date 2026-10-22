@@ -28,6 +28,7 @@ from .conf import (
     motivo_requiere,
     requisitos_faltantes,
 )
+from .diagnostico import HUECO_EFECTO_S
 from .effects import Contexto, Effects
 from .github import para
 from .notify import Notifier, render
@@ -115,6 +116,7 @@ class Daemon:
         self._espera_efecto: dict[
             tuple[str, str, str], float
         ] = {}  # efecto que falló -> no antes de
+        self._rachas = self._rachas_abiertas()
 
     def trae_conf(self, now: float) -> None:
         """La conf compartida llega sola: cada `conf_cada_s` (15 min) se trae de su repo. Solo se
@@ -389,10 +391,11 @@ class Daemon:
         """Una fase del tick que revienta se anota como EffectFailed y el tick sigue con lo demás."""
         try:
             fn()
-            return True
         except Exception as e:  # noqa: BLE001  una fase mala no tumba al motor ni a los otros planes
             self._falla_fase(plan_id, accion, e, now)
             return False
+        self._cierra_racha(plan_id, "", accion)
+        return True
 
     def _falla_fase(self, plan_id: str, accion: str, e: Exception, now: float) -> None:
         try:
@@ -429,6 +432,7 @@ class Daemon:
             try:
                 self.execute(plan, snap, a)
                 self._espera_efecto.pop(clave, None)
+                self._cierra_racha(plan.id, clave[1], clave[2])
             except Exception as e:  # noqa: BLE001  red caída, repo borrado, disco lleno: se reintenta en 5 min
                 self._espera_efecto[clave] = now + ESPERA_TRAS_FALLA_S
                 self._falla_efecto(plan, a, e, now)
@@ -515,20 +519,57 @@ class Daemon:
             self._sin_dormir_reintento = now + 600
 
     def _falla_efecto(self, plan: Plan, a: m.Action, e: Exception, now: float) -> None:
-        """Un efecto que revienta no tumba al motor. Se anota una vez por hora y el tick siguiente
-        lo reintenta (los efectos son idempotentes); si sigue fallando, el aviso de 'atorado' llega solo."""
+        """Un efecto que revienta no tumba al motor. Se anota cada vez, con el `desde` de su racha, y el
+        tick siguiente lo reintenta (los efectos son idempotentes); si sigue una hora, `diagnostico`
+        lo vuelve atasco y avisa una vez."""
         self._anota_falla(plan.id, _bloque(a), type(a).__name__, e, now)
+
+    def _rachas_abiertas(self) -> dict[tuple[str, str, str], tuple[float, float]]:
+        """(plan, bloque, acción) -> (desde, última falla) de lo que sigue fallando, leído del log
+        para que un reinicio del motor no parta una racha en dos."""
+        abiertas: dict[tuple[str, str, str], tuple[float, float]] = {}
+        try:
+            eventos = self.store.events()
+        except Exception:  # noqa: BLE001  sin log legible no hay rachas que recordar
+            return abiertas
+        for ev in eventos:
+            clave = (ev.plan, ev.block, ev.data.get("accion", ""))
+            if ev.kind == "EffectFailed":
+                abiertas[clave] = (ev.data.get("desde", ev.ts), ev.ts)
+            elif ev.kind == "EffectOk":
+                abiertas.pop(clave, None)
+        return abiertas
 
     def _anota_falla(
         self, plan_id: str, bloque: str, accion: str, e: Exception, now: float
     ) -> None:
+        clave = (plan_id, bloque, accion)
+        desde, ultima = self._rachas.get(clave, (now, now))
+        if now - ultima > HUECO_EFECTO_S:
+            desde = (
+                now  # dos fallas sueltas, sin reintentos entre ellas, no son una racha
+            )
         self.store.append(
             plan_id,
             bloque,
             "EffectFailed",
-            {"accion": accion, "error": str(e)[-500:]},
-            ukey=f"falla:{plan_id}:{bloque}:{accion}:{int(now // 3600)}",
+            {"accion": accion, "error": str(e)[-500:], "desde": desde},
+            ukey=f"falla:{plan_id}:{bloque}:{accion}:{int(now)}",
+            ts=now,
         )
+        self._rachas[clave] = (desde, now)
+
+    def _cierra_racha(self, plan_id: str, bloque: str, accion: str) -> None:
+        """El primer éxito de la acción termina su racha; se anota una sola vez."""
+        racha = self._rachas.pop((plan_id, bloque, accion), None)
+        if racha is not None:
+            self.store.append(
+                plan_id,
+                bloque,
+                "EffectOk",
+                {"accion": accion, "desde": racha[0]},
+                ukey=f"ok:{plan_id}:{bloque}:{accion}:{int(racha[0])}",
+            )
 
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:
         f = {

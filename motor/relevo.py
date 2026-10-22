@@ -73,6 +73,15 @@ DE_KIND = {
 }
 # Las que el reloj devuelve solas (pausa o cuarentena): no cuentan en la racha de fallas del modelo.
 LAS_RESUELVE_EL_RELOJ = frozenset({Falla.QUOTA, Falla.RATE_LIMIT, Falla.AUTH})
+# Fallas pasajeras (red, resultado perdido o ilegible, tiempo): no gastan la escalera del bloque,
+# solo ponen al modelo en una pausa corta que crece con cada una seguida.
+PASAJERAS = frozenset({"transitorio", "sin_resultado", "perdido", "tiempo"})
+PAUSAS_PASAJERAS_S = (60, 300, 900, 1800)
+
+
+def pausa_pasajera_s(seguidas: int) -> float:
+    """1, 5, 15 y 30 min; de la cuarta en adelante se queda en 30."""
+    return PAUSAS_PASAJERAS_S[min(max(seguidas, 1), len(PAUSAS_PASAJERAS_S)) - 1]
 
 
 def desde_kind(kind: str) -> Falla | None:

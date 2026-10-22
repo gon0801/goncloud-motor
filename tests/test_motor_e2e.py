@@ -1226,7 +1226,8 @@ class TestFallas(Banco):
         p = daemon(self.home)
         ok = esperar(
             lambda: any(
-                e.kind == "NoticeQueued" and e.data["key"] == "atorado:A"
+                e.kind == "NoticeQueued"
+                and e.data["key"].startswith("atorado:A:agotada:")
                 for e in eventos(self.home)
             ),
             60,
