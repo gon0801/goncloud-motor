@@ -13,6 +13,7 @@ sys.path.insert(0, str(RAIZ / "proto"))
 import sandbox  # noqa: E402
 
 from motor.daemon import Daemon  # noqa: E402
+from motor.notify import PLANTILLAS, lint_plain, render  # noqa: E402
 from motor.plan import parse_plan  # noqa: E402
 
 
@@ -101,6 +102,56 @@ class BandejaTest(Banco):
         d.tick()
         d.tick()
         self.assertEqual(len(self.avisos("rechazo")), 1)
+
+
+CAMPOS = {
+    "motivo": "no pude leer el plan",
+    "por": "Claude",
+    "n": "1",
+    "total": "3",
+    "aviso": "ya puedes saludar",
+    "prueba": "pasó",
+    "que_hacer": "entra a Seller Central",
+    "hasta": "1792000000",
+    "bloque": "el despliegue",
+    "listas": "2",
+    "ahora": "Ahora trabajo en «el reporte».",
+    "atoron": "Nada atorado.",
+}
+
+
+class AvisosTest(unittest.TestCase):
+    def test_ningun_titulo_con_jerga_tumba_un_aviso(self):
+        titulos = (
+            "Webhooks JSON de Shopify",
+            "Sincronizar /ads/campaign",
+            "Reporte 20261021",
+            "commit diario",
+        )
+        for plantilla in PLANTILLAS:
+            for titulo in titulos:
+                with self.subTest(plantilla=plantilla, titulo=titulo):
+                    texto = render(plantilla, CAMPOS, "Mini", titulo)
+                    self.assertEqual(lint_plain(texto), texto)
+
+    def test_con_jerga_en_los_campos_o_campos_que_faltan_tampoco_lanza(self):
+        malos = {k: "commit 3eda9854 en /var/log/x" for k in CAMPOS} | {
+            "hasta": "no es una fecha"
+        }
+        for plantilla in PLANTILLAS:
+            for campos in (malos, {}):
+                with self.subTest(plantilla=plantilla, campos=bool(campos)):
+                    texto = render(plantilla, campos, "Mini", "x")
+                    self.assertEqual(lint_plain(texto), texto)
+
+    def test_primero_cambia_el_titulo_y_conserva_los_datos(self):
+        texto = render("entregado", CAMPOS, "Mini", "commit diario")
+        self.assertIn("En la Mini · un plan:", texto)
+        self.assertIn("ya puedes saludar", texto)
+
+    def test_un_aviso_sano_no_cambia(self):
+        texto = render("terminado", {}, "Mini", "Reporte de ventas")
+        self.assertTrue(texto.startswith("En la Mini · Reporte de ventas:"))
 
 
 if __name__ == "__main__":
