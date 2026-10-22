@@ -11,8 +11,9 @@ Qué cambia para David: el motor deja de caerse por un archivo malo, deja de per
 los agentes, avisa una vez y con el motivo cuando algo se atora, y se destraba solo cuando se corrige
 el plan o la máquina. En la PC los planes corren igual que en la Mac, y Muse puede trabajar en WSL.
 
-Arranque: este plan toca los mismos archivos que PSTACK 01 (effects.py, runwrap.py, relevo.py) y
-también saca versiones del motor. Entrégalo cuando PSTACK 01 haya terminado su bloque D.
+Arranque: en la Mini, cuando SP-API 02 termine. PSTACK 01 se corta en la PC después de su bloque B
+(toca los mismos archivos y sus bloques C y D no corren bien en Windows); sus bloques C, D y E van
+después de este plan.
 
 Reglas para quien implementa:
 1. Cada arreglo lleva en el mismo commit una prueba que falla sin el arreglo. El revisor lo comprueba
