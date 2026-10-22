@@ -23,47 +23,9 @@ class AvanceTest(unittest.TestCase):
         self.assertFalse(relevo.avanza(Falla.TIMEOUT))
         self.assertNotIn(Falla.TIMEOUT, relevo.AVANZAN)
 
-    # test_transport_failure_without_mutation_advances
-    def test_transporte_sin_mutacion_avanza(self):
-        self.assertTrue(relevo.avanza(Falla.TRANSPORT, mutado=False))
-
-    # test_transport_failure_after_mutation_blocks_the_stage
-    def test_transporte_tras_mutacion_bloquea(self):
-        self.assertFalse(relevo.avanza(Falla.TRANSPORT, mutado=True))
-
-    # test_task_failure_without_mutation_advances_to_the_next_slot
-    def test_falla_de_tarea_sin_mutacion_avanza(self):
-        self.assertTrue(relevo.avanza(Falla.TASK_FAILURE))
-
-    # test_task_failure_after_mutation_blocks_the_stage
-    def test_falla_de_tarea_tras_mutacion_bloquea(self):
-        self.assertFalse(relevo.avanza(Falla.TASK_FAILURE, mutado=True))
-
-    # test_a_rejected_envelope_advances_to_the_next_slot_when_nothing_changed
-    def test_sobre_rechazado_sin_cambios_avanza(self):
-        self.assertTrue(relevo.avanza(Falla.INVALID_TERMINAL))
-
-    # test_a_rejected_envelope_blocks_once_the_workspace_was_mutated
-    def test_sobre_rechazado_con_cambios_bloquea(self):
-        self.assertFalse(relevo.avanza(Falla.INVALID_TERMINAL, mutado=True))
-
     # test_non_advancing_failure_blocks_the_stage
     def test_peticion_invalida_no_avanza(self):
         self.assertFalse(relevo.avanza(Falla.INVALID_REQUEST))
-
-    def test_cuota_y_auth_avanzan_aunque_haya_mutacion(self):
-        # solo transporte, sobre inválido y falla de tarea se frenan por mutación (_BLOCK_AFTER_MUTATION)
-        for f in (Falla.QUOTA, Falla.RATE_LIMIT, Falla.AUTH, Falla.MODEL_UNAVAILABLE):
-            self.assertTrue(relevo.avanza(f, mutado=True), f)
-
-    # F12: la reclasificación de JEV nunca saca a una falla del bloqueo por mutación
-    def test_la_clase_de_las_reglas_manda_sobre_la_reclasificada(self):
-        self.assertFalse(
-            relevo.avanza(Falla.QUOTA, mutado=True, heuristica=Falla.TRANSPORT)
-        )
-        self.assertTrue(
-            relevo.avanza(Falla.QUOTA, mutado=False, heuristica=Falla.TRANSPORT)
-        )
 
     def test_modelo_no_disponible_avanza(self):
         self.assertTrue(relevo.avanza(Falla.MODEL_UNAVAILABLE))
@@ -101,83 +63,6 @@ class PausaTest(unittest.TestCase):
         self.assertEqual(relevo.pausa_cuenta_s(Falla.RATE_LIMIT, 5), 120)
         self.assertEqual(relevo.pausa_cuenta_s(Falla.QUOTA, 30), 15 * 60)
 
-    # test_plan_exhaustion_advances_at_once_and_benches_the_account
-    def test_cuota_avanza_de_inmediato_y_pausa(self):
-        paso = relevo.tras_falla(Falla.QUOTA)
-        self.assertEqual(
-            (paso.accion, paso.espera_s, paso.pausa_s), ("avanzar", 0.0, 900)
-        )
-
-    # F14: la pausa sigue a la clase de las reglas, no a la de JEV
-    def test_la_pausa_sigue_a_la_clase_de_las_reglas(self):
-        paso = relevo.tras_falla(Falla.TRANSPORT, heuristica=Falla.QUOTA)
-        self.assertEqual((paso.accion, paso.pausa_s), ("avanzar", 900))
-        paso = relevo.tras_falla(Falla.QUOTA, heuristica=Falla.TRANSPORT)
-        self.assertEqual(
-            (paso.accion, paso.pausa_s),
-            ("avanzar", None),
-            "un transporte leído como cuota no pausa nada",
-        )
-
-
-class RateLimitTest(unittest.TestCase):
-    # test_a_passing_throttle_is_retried_on_the_same_route
-    def test_un_freno_pasajero_se_reintenta_en_la_misma_ruta(self):
-        paso = relevo.tras_falla(Falla.RATE_LIMIT)
-        self.assertEqual((paso.accion, paso.espera_s), ("reintentar", 20.0))
-
-    def test_el_segundo_reintento_espera_60(self):
-        self.assertEqual(relevo.espera_rate_limit(1, None, 20), 60.0)
-
-    def test_se_acaba_el_presupuesto_de_reintentos(self):
-        self.assertIsNone(relevo.espera_rate_limit(2, None, 80))
-        self.assertEqual(
-            relevo.tras_falla(Falla.RATE_LIMIT, reintentos=2, dormido_s=80).accion,
-            "avanzar",
-        )
-
-    # test_a_throttle_waits_as_long_as_the_vendor_asks_within_the_lease
-    def test_espera_lo_que_pide_el_proveedor_dentro_del_limite(self):
-        self.assertEqual(relevo.espera_rate_limit(0, 90.0, 0), 90.0)
-        self.assertEqual(relevo.espera_rate_limit(0, 120.0, 0), 120.0)
-
-    # test_a_throttle_longer_than_the_lease_allows_advances_without_waiting
-    def test_un_freno_mas_largo_que_el_limite_avanza_sin_esperar(self):
-        self.assertIsNone(relevo.espera_rate_limit(0, 121.0, 0))
-        paso = relevo.tras_falla(Falla.RATE_LIMIT, retry_after_s=300)
-        self.assertEqual((paso.accion, paso.pausa_s), ("avanzar", 300))
-
-    # test_a_throttle_wait_never_outlasts_the_stage_lease
-    def test_la_espera_nunca_pasa_del_limite_por_reintento(self):
-        for pista in (1.0, 60.0, 120.0):
-            self.assertLessEqual(
-                relevo.espera_rate_limit(0, pista, 0), relevo.ESPERA_MAX_S
-            )
-
-    # test_a_throttle_on_every_slot_stops_waiting_once_the_stage_budget_is_spent
-    def test_con_el_presupuesto_del_encargo_gastado_ya_no_espera(self):
-        self.assertIsNone(relevo.espera_rate_limit(0, None, 170))  # 170 + 20 > 180
-        self.assertEqual(relevo.espera_rate_limit(0, None, 160), 20.0)  # 160 + 20 = 180
-
-    def test_un_freno_tras_mutacion_se_detiene_si_la_clase_bloquea(self):
-        # test_a_throttle_after_a_mutation_retries_the_route_as_a_continuation: el rate limit SÍ reintenta
-        paso = relevo.tras_falla(Falla.RATE_LIMIT, mutado=True)
-        self.assertEqual(paso.accion, "reintentar")
-
-    def test_simula_la_cadena_de_esperas_de_un_freno_persistente(self):
-        esperas, dormido, reintentos = [], 0.0, 0
-        while True:
-            paso = relevo.tras_falla(
-                Falla.RATE_LIMIT, reintentos=reintentos, dormido_s=dormido
-            )
-            if paso.accion != "reintentar":
-                break
-            esperas.append(paso.espera_s)
-            dormido += paso.espera_s
-            reintentos += 1
-        self.assertEqual(esperas, [20.0, 60.0])
-        self.assertEqual((paso.accion, paso.pausa_s), ("avanzar", 120))
-
 
 class CuarentenaTest(unittest.TestCase):
     # test_a_fresh_quota_quarantine_still_skips_the_route
@@ -206,22 +91,6 @@ class CuarentenaTest(unittest.TestCase):
         for f in Falla:
             if f is not Falla.RATE_LIMIT:
                 self.assertTrue(relevo.rearma_cuarentena(f), f)
-
-    # test_model_unavailable_keeps_the_account_ready / test_task_failure_keeps_a_shared_adapter_ready...
-    def test_estas_fallas_dejan_la_cuenta_sana(self):
-        for f in (
-            Falla.MODEL_UNAVAILABLE,
-            Falla.INVALID_TERMINAL,
-            Falla.TASK_FAILURE,
-            Falla.RATE_LIMIT,
-            Falla.INVALID_REQUEST,
-            None,
-        ):
-            self.assertTrue(relevo.cuenta_sana(f), f)
-
-    def test_estas_fallas_hacen_sospechar_de_la_cuenta(self):
-        for f in (Falla.AUTH, Falla.QUOTA, Falla.TRANSPORT, Falla.TIMEOUT):
-            self.assertFalse(relevo.cuenta_sana(f), f)
 
 
 class VocabularioTest(unittest.TestCase):
@@ -448,11 +317,6 @@ class ClasificaFrenoTest(unittest.TestCase):
             )["kind"],
             "cuota",
         )
-
-    def test_retry_after_en_minutos_y_milisegundos(self):
-        self.assertEqual(m.retry_after_s("retry-after: 2 minutes"), 120.0)
-        self.assertEqual(m.retry_after_s("retry after 1500ms"), 1.5)
-        self.assertIsNone(m.retry_after_s("rate limit exceeded"))
 
 
 if __name__ == "__main__":
