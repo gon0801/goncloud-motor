@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -38,11 +39,13 @@ from .workspace import foto_wip
 SHIMS = Path(__file__).resolve().parent / "shims"
 
 
+_SALTA = {".git", ".venv", "node_modules", "__pycache__"}
+
+
 def _mtime_arbol(raiz: Path) -> float:
     m = 0.0
     for dirpath, dirnames, filenames in os.walk(raiz):
-        if ".git" in dirnames:
-            dirnames.remove(".git")
+        dirnames[:] = [d for d in dirnames if d not in _SALTA]
         for f in filenames:
             try:
                 m = max(m, os.stat(os.path.join(dirpath, f)).st_mtime)
@@ -140,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     d, cwd = Path(a.dir), Path(a.cwd)
     log = d / "log.txt"
     fotos: list[str] = []
-    inicio = ultima_foto = time.time()
+    inicio = time.time()
     with open(log, "ab") as out:
         env_agente = {**os.environ, "MOTOR_ATTEMPT_DIR": str(d)}
         cmd = _sin_shims(cmd, env_agente)
@@ -174,9 +177,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         motivo_puerta, ultima_puerta = "", 0.0
         ultimo = (log.stat().st_size, _mtime_arbol(cwd))
-        ultimo_cambio = time.time()
+        ultimo_cambio = ultimo_escaneo = time.time()
         timed_out = no_progress = cerrado = False
         resultado = d / "result.json"
+        foto_lock = threading.Lock()
+        foto_stop = threading.Event()
+
+        def _foto() -> None:
+            with foto_lock:
+                try:
+                    fotos.append(foto_wip(cwd, a.wip_rama, a.wip_local))
+                except Exception as e:  # noqa: BLE001
+                    fotos.append(f"error: {e}")
+
+        def _fotos_periodicas() -> None:
+            while not foto_stop.wait(a.wip_cada):
+                _foto()
+
+        if a.wip_rama:
+            threading.Thread(target=_fotos_periodicas, daemon=True).start()
         while p.poll() is None:
             time.sleep(0.2)
             if not puerta.decidida and time.time() - ultima_puerta >= 1.0:
@@ -185,12 +204,11 @@ def main(argv: list[str] | None = None) -> int:
                 if motivo_puerta:
                     matar_grupo(p)
                     break
-            ahora = (log.stat().st_size, _mtime_arbol(cwd))
-            if ahora != ultimo:
-                ultimo, ultimo_cambio = ahora, time.time()
-            if a.wip_rama and time.time() - ultima_foto >= a.wip_cada:
-                fotos.append(foto_wip(cwd, a.wip_rama, a.wip_local))
-                ultima_foto = time.time()
+            if time.time() - ultimo_escaneo >= 10:
+                ultimo_escaneo = time.time()
+                ahora = (log.stat().st_size, _mtime_arbol(cwd))
+                if ahora != ultimo:
+                    ultimo, ultimo_cambio = ahora, time.time()
             try:
                 entrego = resultado.stat().st_mtime
             except OSError:
@@ -212,7 +230,10 @@ def main(argv: list[str] | None = None) -> int:
     if a.home and a.cuenta:
         llamadas.quita(Path(a.home), clave)
     if a.wip_rama:
-        fotos.append(foto_wip(cwd, a.wip_rama, a.wip_local))
+        foto_stop.set()
+        hilo_final = threading.Thread(target=_foto, daemon=True)
+        hilo_final.start()
+        hilo_final.join(timeout=5)
     outcome = {
         "exit": 0 if cerrado else p.returncode,
         "cerrado_tras_resultado": cerrado,
