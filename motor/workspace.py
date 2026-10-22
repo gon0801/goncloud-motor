@@ -142,6 +142,8 @@ class Workspace:
             r = git("clone", "-q", repo, str(d))
             if r.returncode != 0:
                 raise RuntimeError(f"no se pudo clonar {repo}: {r.stderr[-300:]}")
+        git("config", "worktree.useRelativePaths", "true", cwd=d)
+        git("worktree", "repair", "--relative-paths", cwd=d)
         git(
             "fetch",
             "-q",
@@ -201,10 +203,21 @@ class Workspace:
         if not w.exists():
             w.parent.mkdir(parents=True, exist_ok=True)
             git("worktree", "prune", cwd=d)
-            r = git("worktree", "add", "-q", "-B", rama, str(w), arranque, cwd=d)
+            r = git(
+                "worktree",
+                "add",
+                "--relative-paths",
+                "-q",
+                "-B",
+                rama,
+                str(w),
+                arranque,
+                cwd=d,
+            )
             if r.returncode != 0:
                 raise RuntimeError(r.stderr)
         else:
+            git("worktree", "repair", "--relative-paths", cwd=d)
             git("checkout", "-q", "-B", rama, arranque, cwd=w)
             git("reset", "-q", "--hard", arranque, cwd=w)
             git("clean", "-qfd", cwd=w)
@@ -242,7 +255,16 @@ class Workspace:
             git("worktree", "remove", "--force", str(donde), cwd=d)
         git("worktree", "prune", cwd=d)
         donde.parent.mkdir(parents=True, exist_ok=True)
-        r = git("worktree", "add", "-q", "--detach", str(donde), sha, cwd=d)
+        r = git(
+            "worktree",
+            "add",
+            "--relative-paths",
+            "-q",
+            "--detach",
+            str(donde),
+            sha,
+            cwd=d,
+        )
         if r.returncode != 0:
             raise RuntimeError(r.stderr)
         return donde

@@ -126,5 +126,97 @@ class ShellTest(unittest.TestCase):
             self.assertIn("42", r.stdout)
 
 
+class WslTest(unittest.TestCase):
+    def _repo(self, tmp):
+        import subprocess
+        from pathlib import Path
+
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+
+        def corre(*a):
+            return subprocess.run(
+                ["git", *a], cwd=repo, capture_output=True, text=True, check=True
+            )
+
+        corre("init", "-q", "-b", "main")
+        corre("config", "user.email", "t@t")
+        corre("config", "user.name", "t")
+        (repo / "a.txt").write_text("hola\n", encoding="utf-8")
+        corre("add", ".")
+        corre("commit", "-qm", "uno")
+        return repo
+
+    def test_prepara_guarda_ruta_relativa_en_git(self):
+        import tempfile
+        from pathlib import Path
+
+        from motor.workspace import Workspace, git
+
+        with tempfile.TemporaryDirectory() as t:
+            repo = self._repo(t)
+            home = Path(t) / "home"
+            ws = Workspace(home, "pc")
+            w = ws.prepara(str(repo), "planx", "I", "main")
+            texto = (w / ".git").read_text(encoding="utf-8").strip()
+            self.assertTrue(texto.startswith("gitdir:"))
+            ruta = texto.removeprefix("gitdir:").strip()
+            self.assertFalse(os.path.isabs(ruta), texto)
+            espejo = ws.espejo(str(repo))
+            self.assertEqual(
+                git("config", "worktree.useRelativePaths", cwd=espejo).stdout.strip(),
+                "true",
+            )
+            self.assertEqual(git("rev-parse", "HEAD", cwd=w).returncode, 0)
+
+    def test_carpeta_existente_se_convierte_a_relativa(self):
+        import tempfile
+        from pathlib import Path
+
+        from motor.workspace import Workspace, git
+
+        with tempfile.TemporaryDirectory() as t:
+            repo = self._repo(t)
+            home = Path(t) / "home"
+            ws = Workspace(home, "pc")
+            w = ws.prepara(str(repo), "planx", "I", "main")
+            espejo = ws.espejo(str(repo))
+            git("worktree", "remove", "--force", str(w), cwd=espejo)
+            git("config", "worktree.useRelativePaths", "false", cwd=espejo)
+            git(
+                "worktree",
+                "add",
+                "--no-relative-paths",
+                "-q",
+                "-B",
+                ws.rama("planx", "I"),
+                str(w),
+                "HEAD",
+                cwd=espejo,
+            )
+            antes = (w / ".git").read_text(encoding="utf-8")
+            self.assertTrue(os.path.isabs(antes.removeprefix("gitdir:").strip()))
+            ws.prepara(str(repo), "planx", "I", "main")
+            despues = (w / ".git").read_text(encoding="utf-8").strip()
+            self.assertFalse(os.path.isabs(despues.removeprefix("gitdir:").strip()))
+
+    def test_copia_guarda_ruta_relativa_en_git(self):
+        import tempfile
+        from pathlib import Path
+
+        from motor.workspace import Workspace, git
+
+        with tempfile.TemporaryDirectory() as t:
+            repo = self._repo(t)
+            home = Path(t) / "home"
+            ws = Workspace(home, "pc")
+            sha = git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+            donde = Path(t) / "copia"
+            ws.copia(str(repo), sha, donde)
+            texto = (donde / ".git").read_text(encoding="utf-8").strip()
+            ruta = texto.removeprefix("gitdir:").strip()
+            self.assertFalse(os.path.isabs(ruta), texto)
+
+
 if __name__ == "__main__":
     unittest.main()
