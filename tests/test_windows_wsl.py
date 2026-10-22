@@ -93,6 +93,7 @@ class ArranqueTest(unittest.TestCase):
         self.assertTrue(plataforma.mismo_arranque(None, "170000000"))
         self.assertTrue(plataforma.mismo_arranque("", "170000000"))
         self.assertFalse(plataforma.mismo_arranque("1700000000", "1700002000"))
+        self.assertFalse(plataforma.mismo_arranque("arranque-1", "arranque-2"))
 
 
 class ShellTest(unittest.TestCase):
