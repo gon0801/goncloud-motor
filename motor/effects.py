@@ -6,6 +6,7 @@ Separado por conocimiento: `Workspace` sabe de git local, `GitHubPort` de PRs y 
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -91,7 +92,12 @@ def _posix(cmd: str) -> tuple:
 
 RECETA = (
     "El motor corre cada script de la receta con `bash <script>`, sin argumentos, desde una copia "
-    "del commit mergeado; MOTOR_SHA trae ese commit."
+    "del commit mergeado; MOTOR_SHA trae ese commit. "
+    "Contrato de salida: 0 es bien, y el checklist solo sale 0 si producción ya corre el commit de "
+    "MOTOR_SHA (si corre otro, sale distinto de 0). "
+    "75 dice «no es el código; reintenta luego»: el motor reintenta a los 15 minutos sin culpar al "
+    "agente, no hace rollback porque no cambió nada, y tres horas seguidas de 75 son atasco. "
+    "Cualquier otro código es una falla: en el despliegue el motor hace rollback con el tercer script."
 )
 
 
@@ -143,18 +149,34 @@ def _run(
         return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
-def es_del_agente(motivo: str) -> bool:
-    """Un merge rechazado es tarea del agente solo si su rama choca con la principal o se movió."""
-    m_ = motivo.lower()
-    return any(
-        x in m_
-        for x in (
-            "cannot be cleanly created",
-            "conflict",
-            "does not match",
-            "head commit",
-        )
-    )
+@contextlib.contextmanager
+def _lock_despliegue(home: Path, repo: str):
+    """Dos despliegues del mismo repo en la misma máquina, de uno en uno (también entre procesos)."""
+    d = home / "locks-despliegue"
+    d.mkdir(parents=True, exist_ok=True)
+    f = open(d / (hashlib.sha256(repo.encode()).hexdigest()[:16] + ".lock"), "a+")
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except ImportError:
+            import msvcrt
+
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except ImportError:
+            import msvcrt
+
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        f.close()
 
 
 def _modelo_arg(argv) -> str:
@@ -1091,7 +1113,14 @@ Escribe en `$MOTOR_RESULT`:
                                 "Deployed",
                                 datos,
                                 ukey=claves.desplegado(
-                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                    plan.id,
+                                    a.block,
+                                    a.sha,
+                                    h_insumo,
+                                    h_maquina,
+                                    vez=int(ultimo.data.get("n", 0))
+                                    if datos.get("codigo") == 75
+                                    else 0,
                                 ),
                             )
                         else:
@@ -1101,7 +1130,14 @@ Escribe en `$MOTOR_RESULT`:
                                 "Proved",
                                 datos,
                                 ukey=claves.probado(
-                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                    plan.id,
+                                    a.block,
+                                    a.sha,
+                                    h_insumo,
+                                    h_maquina,
+                                    vez=int(ultimo.data.get("n", 0))
+                                    if datos.get("codigo") == 75
+                                    else 0,
                                 ),
                             )
                         return
@@ -1567,41 +1603,44 @@ Escribe en `$MOTOR_RESULT`:
         env["MOTOR_RAIZ"] = str(w)
         env["MOTOR_SHA"] = commit
         tope = float(self.cx.conf.tiempos.get("despliegue_tope_s", 900))
-        if not desplegar:
-            ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
-        elif (
-            a.sha in bv.deploy_marcados
-            and not any(
-                e.kind == "Deployed" and e.data.get("sha") == a.sha
-                for e in self.cx.store.events(plan.id)
+        codigo = 0
+        if not (desplegar and checklist and rollback):
+            ok, detalle = (
+                False,
+                "el bloque es de despliegue y el repo no trae receta completa",
             )
-            and _run(f"bash {checklist}", w, env, tope).returncode == 0
-        ):
-            ok, detalle = True, "ya estaba desplegado (se comprobó antes de repetir)"
         else:
-            if self._dir_aparte is not None:
-                (self._dir_aparte / "desplegando").write_text(a.sha, encoding="utf-8")
-            pasos, ok = [], True
-            for paso in (desplegar, checklist):
-                p = _run(f"bash {paso}", w, env, tope)
-                pasos.append(f"{paso}: salida {p.returncode}")
-                if p.returncode != 0:
-                    # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
-                    # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
-                    ok = False
-                    pasos.append(_cola(p))
-                    faltan += comandos_faltantes(p.stdout + p.stderr)
-                    rb = _run(f"bash {rollback}", w, env, tope)
-                    pasos.append(f"rollback: salida {rb.returncode}")
-                    if rb.returncode != 0:
-                        pasos.append(_cola(rb))
-                    pasos.append(RECETA)
-                    break
-            detalle = "\n".join(pasos)
+            with _lock_despliegue(self.cx.home, block.repo):
+                if self._dir_aparte is not None:
+                    marca = self._dir_aparte / "desplegando"
+                    marca.write_text(a.sha, encoding="utf-8")
+                pasos, ok = [], True
+                for paso in (desplegar, checklist):
+                    p = _run(f"bash {paso}", w, env, tope)
+                    pasos.append(f"{paso}: salida {p.returncode}")
+                    if p.returncode == 75:
+                        ok, codigo = False, 75
+                        pasos.append("no es el código; reintenta luego")
+                        pasos.append(_cola(p))
+                        break
+                    if p.returncode != 0:
+                        # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
+                        # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
+                        ok = False
+                        pasos.append(_cola(p))
+                        faltan += comandos_faltantes(p.stdout + p.stderr)
+                        rb = _run(f"bash {rollback}", w, env, tope)
+                        pasos.append(f"rollback: salida {rb.returncode}")
+                        if rb.returncode != 0:
+                            pasos.append(_cola(rb))
+                        pasos.append(RECETA)
+                        break
+                detalle = "\n".join(pasos)
         return {
             "sha": a.sha,
             "ok": ok,
             "detalle": detalle,
+            "codigo": codigo,
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,
@@ -1631,14 +1670,18 @@ Escribe en `$MOTOR_RESULT`:
                 p.returncode == 0,
                 _cola(p) or f"salió {p.returncode} sin imprimir nada",
             )
+            codigo = p.returncode
+            if codigo == 75:
+                detalle = f"no es el código; reintenta luego: {detalle}"
             if not ok:
                 faltan = comandos_faltantes(p.stdout + p.stderr)
         else:
-            ok, detalle = True, "el bloque no declara prueba real"
+            ok, detalle, codigo = True, "el bloque no declara prueba real", 0
         return {
             "sha": a.sha,
             "ok": ok,
             "detalle": detalle,
+            "codigo": codigo,
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,

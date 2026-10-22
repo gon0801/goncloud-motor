@@ -53,6 +53,8 @@ class Causa(enum.Enum):
     ESCALERA_AGOTADA = "escalera_agotada"
     CHECKS_INCOHERENTE = "checks_incoherente"
     CHECKS_LENTO = "checks_lento"
+    POLITICA_BLOQUEA = "politica_bloquea"
+    SALIDA_75 = "salida_75"
     FALTA_COMANDO = "falta_comando"
     BLOQUEADO = "bloqueado"
     FUERA_DE_CONTROL = "fuera_de_control"
@@ -192,8 +194,28 @@ def _atasco(
             True,
             f"faltan={list(falta)}",
         )
+    mg = bv.merged_sha()
+    for campo in ("deployed", "proved"):
+        t = bv.temporales.get(f"{campo}:{mg}") if mg else None
+        if t and now - t[0] >= 3 * 3600:
+            que = (
+                "el despliegue" if campo == "deployed" else "la prueba con datos reales"
+            )
+            return Diagnostico(
+                Causa.SALIDA_75,
+                f"{que} lleva {avisos._dura(now - t[0])} saliendo 75 (no es el código; reintenta luego)",
+                f"atorado:{bid}:salida75:{campo}:{mg[:12]}",
+                True,
+                f"{campo} sale 75 desde hace {avisos._dura(now - t[0])}",
+            )
     for tipo, campo, ok, que in REPETIDA_CAMPOS:
         d = getattr(bv, campo)
+        if (
+            campo in ("deployed", "proved")
+            and d
+            and list(d.values())[-1].get("codigo") == 75
+        ):
+            continue
         n = _seguidas(d, ok)
         # Solo mientras no haya un arreglo nuevo: con otra entrega en camino ya no es atasco.
         if n >= policy.repeticiones_max and list(d)[-1] == head:

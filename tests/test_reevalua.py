@@ -470,7 +470,7 @@ class ReevaluaTest(Banco):
         self.assertNotIn("ya estaba desplegado", segundo["detalle"])
         self.assertEqual(prod.read_text(encoding="utf-8").strip(), "nuevo")
 
-    def test_deploy_cortado_sin_deployed_si_toma_el_atajo(self):
+    def test_deploy_cortado_sin_deployed_ya_no_toma_el_atajo(self):
         prod = self.tmp / "prod"
         prod.write_text("viejo\n", encoding="utf-8")
         bloque = self.plan["blocks"][0]
@@ -520,8 +520,8 @@ class ReevaluaTest(Banco):
         )
         (r,) = self.eventos("Deployed")
         self.assertTrue(r.data["ok"])
-        self.assertIn("ya estaba desplegado", r.data["detalle"])
-        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "viejo")
+        self.assertNotIn("ya estaba desplegado", r.data["detalle"])
+        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "nuevo")
 
     def test_prove_que_pasa_no_trae_comandos_faltantes(self):
         d, plan, sha, snap = self._fx_con_mergeado(self.plan)

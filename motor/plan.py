@@ -398,7 +398,9 @@ def parse_plan(
         release = None
         if "despliegue" in f:
             partes = dict(p.split("=", 1) for p in f["despliegue"].split() if "=" in p)
-            faltan = {"desplegar", "checklist", "rollback"} - partes.keys()
+            faltan = {"desplegar", "checklist", "rollback"} - {
+                k for k, v in partes.items() if v.strip()
+            }
             if faltan:
                 errores.append(
                     f"bloque {d.id}: al despliegue le falta {sorted(faltan)}"
