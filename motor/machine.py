@@ -14,7 +14,7 @@ import dataclasses
 import enum
 from dataclasses import dataclass, field
 
-from . import fallas, relevo
+from . import fallas, huella, relevo
 from .conf import Conf
 from .plan import Block, Plan
 from .store import Event
@@ -191,8 +191,14 @@ class Snapshot:
     limpio: bool = False  # ya se borraron sus ramas y copias de trabajo
 
 
-def fold(plan: Plan, events: list[Event]) -> Snapshot:
+RESULTADOS = {"Verified": "verified", "Proved": "proved", "Deployed": "deployed"}
+
+
+def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapshot:
+    """`maquina`: la huella de la máquina que corre (huella.de_maquina). Sin ella, los resultados no se
+    comparan contra la máquina (pruebas puras); con ella, uno medido en otra configuración se ignora."""
     blocks = {b.id: BlockView(block=b) for b in plan.blocks}
+    resultados: list[tuple[BlockView, Event]] = []
     cooldowns: dict[str, float] = {}
     plan_notices: set[str] = set()
     repos: dict[str, dict] = {}
@@ -225,9 +231,8 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             for a in bv.attempts:
                 if a.n == d["n"] and a.role == d["role"] and a.ended is None:
                     a.ended, a.ended_at = d["outcome"], e.ts
-        elif e.kind == "Verified":
-            bv.verified[d["sha"]] = d
-            bv.hecho_ts = e.ts
+        elif e.kind in RESULTADOS:
+            resultados.append((bv, e))
         elif e.kind == "PrOpened":
             bv.pr = d
         elif e.kind == "Reviewed":
@@ -255,17 +260,16 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.esperando.pop(sha, None)
         elif e.kind == "DeployStarted":
             bv.deploy_started.add(d["sha"])
-        elif e.kind == "Deployed":
-            bv.deployed[d["sha"]] = d
-            bv.hecho_ts = e.ts
-        elif e.kind == "Proved":
-            bv.proved[d["sha"]] = d
-            bv.hecho_ts = e.ts
         elif e.kind == "HumanDone":
             bv.human_done = True
         elif e.kind == "Note":
             bv.notes.append(d["texto"])
             bv.hecho_ts = e.ts
+    for bv, e in resultados:
+        campo = RESULTADOS[e.kind]
+        if huella.vigente(e.data, huella.insumo_de(campo, bv.block, repos), maquina):
+            getattr(bv, campo)[e.data["sha"]] = e.data
+            bv.hecho_ts = max(bv.hecho_ts, e.ts)
     return Snapshot(
         plan=plan,
         blocks=blocks,

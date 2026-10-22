@@ -18,7 +18,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import claves, llamadas
+from . import claves, huella, llamadas
 from . import machine as m
 from . import plataforma, version
 from .conf import (
@@ -197,6 +197,9 @@ class Daemon:
                 ),
             )
 
+    def _fold(self, plan: Plan) -> m.Snapshot:
+        return m.fold(plan, self.store.events(plan.id), huella.de_maquina(self.maquina))
+
     def plans(self) -> list[Plan]:
         return planes_de(self.store)
 
@@ -330,10 +333,7 @@ class Daemon:
         plan = next((p for p in self.plans() if p.id == plan_id), None)
         if plan is None or cmd.block not in {b.id for b in plan.blocks}:
             return "rechazado: no conozco ese plan o ese paso"
-        if (
-            m.estado(m.fold(plan, self.store.events(plan.id)), cmd.block)
-            is not m.Estado.HUMANO
-        ):
+        if m.estado(self._fold(plan), cmd.block) is not m.Estado.HUMANO:
             return "rechazado: ese paso todavía no te toca; te aviso cuando sí"
         self.store.append(
             plan_id,
@@ -345,7 +345,7 @@ class Daemon:
         return "anotado"
 
     def ingest_attempts(self, plan: Plan) -> None:
-        snap = m.fold(plan, self.store.events(plan.id))
+        snap = self._fold(plan)
         for bid, bv in snap.blocks.items():
             att = bv.running()
             if att is None:
@@ -409,7 +409,7 @@ class Daemon:
     def _tick_plan(self, plan: Plan, planes: list[Plan], now: float) -> bool:
         """fold, decide y ejecutar de un plan. Devuelve si el plan quedó entregado y limpio."""
         try:
-            snap = m.fold(plan, self.store.events(plan.id))
+            snap = self._fold(plan)
         except Exception as e:  # noqa: BLE001
             self._falla_fase(plan.id, "fold", e, now)
             return False
@@ -440,7 +440,7 @@ class Daemon:
                 self._espera_efecto[clave] = now + ESPERA_TRAS_FALLA_S
                 self._falla_efecto(plan, a, e, now)
             try:
-                snap = m.fold(plan, self.store.events(plan.id))
+                snap = self._fold(plan)
             except Exception as e:  # noqa: BLE001
                 self._falla_fase(plan.id, "fold", e, now)
                 return False
@@ -460,7 +460,7 @@ class Daemon:
             if p.id == este.id:
                 continue
             try:
-                s = m.fold(p, self.store.events(p.id))
+                s = self._fold(p)
             except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
                 continue
             for c, h in s.cooldowns.items():
@@ -476,9 +476,7 @@ class Daemon:
             if p.id == este.id:
                 continue
             try:
-                ocupados = m._ocupados(
-                    m.fold(p, self.store.events(p.id)), self.cx.policy
-                )
+                ocupados = m._ocupados(self._fold(p), self.cx.policy)
             except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
                 continue
             for c, k in ocupados.items():
@@ -487,7 +485,7 @@ class Daemon:
 
     def _terminado(self, plan: Plan) -> bool:
         try:
-            snap = m.fold(plan, self.store.events(plan.id))
+            snap = self._fold(plan)
         except Exception:  # noqa: BLE001  un plan que no se puede leer no mantiene despierta la máquina
             return True
         return all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)

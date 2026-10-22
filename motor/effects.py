@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claves
+from . import claves, huella
 from . import machine as m
 from .plataforma.windows import argv_en_wsl
 from . import plataforma, relevo
@@ -954,6 +954,12 @@ Escribe en `$MOTOR_RESULT`:
         return quedan, bajan
 
     # ------------------------------------------------------------------ pasos
+    def _huellas(self, campo: str, block, snap: m.Snapshot) -> tuple[str, str]:
+        """(huella del insumo, huella de la máquina) que lleva el resultado que se va a anotar."""
+        return huella.insumo_de(campo, block, snap.repos), huella.de_maquina(
+            self.cx.maquina
+        )
+
     def verify(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> None:
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
@@ -961,6 +967,7 @@ Escribe en `$MOTOR_RESULT`:
             block.repo, a.sha, self.cx.home / "tmp" / f"verifica-{plan.id}-{a.block}"
         )
         fallas, faltan = [], []
+        h_insumo, h_maquina = self._huellas("verified", block, snap)
         # Pasarse del tope es una falla de la fila con su motivo, no un tropiezo que se reintenta para
         # siempre (PSTACK 01 en la PC: la batería e2e tardaba más de 15 min y se reintentó horas).
         tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
@@ -981,8 +988,10 @@ Escribe en `$MOTOR_RESULT`:
                 "ok": not fallas,
                 "detalle": "\n".join(fallas),
                 "falta_comando": sorted(set(faltan)),
+                "huella": h_insumo,
+                "huella_maquina": h_maquina,
             },
-            ukey=claves.verificado(plan.id, a.block, a.sha),
+            ukey=claves.verificado(plan.id, a.block, a.sha, h_insumo, h_maquina),
         )
 
     def open_pr(self, plan: Plan, snap: m.Snapshot, a: m.OpenPr) -> None:
@@ -1168,20 +1177,14 @@ Escribe en `$MOTOR_RESULT`:
         )
 
     def _receta(self, snap: m.Snapshot, block) -> tuple[str, str, str]:
-        if block.release:
-            return (
-                block.release.desplegar,
-                block.release.checklist,
-                block.release.rollback,
-            )
-        rc = self.repo_conf(snap, block.repo)
-        return rc.desplegar, rc.checklist, rc.rollback
+        return huella.receta_de(block, snap.repos)
 
     def deploy(self, plan: Plan, snap: m.Snapshot, a: m.Deploy) -> None:
         bv = snap.blocks[a.block]
         block = bv.block
         rc = self.repo_conf(snap, block.repo)
         desplegar, checklist, rollback = self._receta(snap, block)
+        h_insumo, h_maquina = self._huellas("deployed", block, snap)
         commit = bv.merged[-1]["commit"]
         w = self.cx.ws.copia(
             block.repo, commit, self.cx.home / "tmp" / f"despliega-{plan.id}-{a.block}"
@@ -1227,13 +1230,20 @@ Escribe en `$MOTOR_RESULT`:
             plan.id,
             a.block,
             "Deployed",
-            {"sha": a.sha, "ok": ok, "detalle": detalle},
-            ukey=claves.desplegado(plan.id, a.block, a.sha),
+            {
+                "sha": a.sha,
+                "ok": ok,
+                "detalle": detalle,
+                "huella": h_insumo,
+                "huella_maquina": h_maquina,
+            },
+            ukey=claves.desplegado(plan.id, a.block, a.sha, h_insumo, h_maquina),
         )
 
     def prove(self, plan: Plan, snap: m.Snapshot, a: m.Prove) -> None:
         bv = snap.blocks[a.block]
         block = bv.block
+        h_insumo, h_maquina = self._huellas("proved", block, snap)
         if block.prueba_real:
             rc = self.repo_conf(snap, block.repo)
             w = self.cx.ws.copia(
@@ -1256,8 +1266,14 @@ Escribe en `$MOTOR_RESULT`:
             plan.id,
             a.block,
             "Proved",
-            {"sha": a.sha, "ok": ok, "detalle": detalle},
-            ukey=claves.probado(plan.id, a.block, a.sha),
+            {
+                "sha": a.sha,
+                "ok": ok,
+                "detalle": detalle,
+                "huella": h_insumo,
+                "huella_maquina": h_maquina,
+            },
+            ukey=claves.probado(plan.id, a.block, a.sha, h_insumo, h_maquina),
         )
 
     def probe_human(self, plan: Plan, snap: m.Snapshot, a: m.ProbeHuman) -> None:
