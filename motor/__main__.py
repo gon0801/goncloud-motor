@@ -98,10 +98,17 @@ def _valida(path: Path, home: Path | None):
 
 def _estado(home: Path) -> list[dict]:
     from .daemon import planes_de
+    from .diagnostico import diagnostico
     from .store import Store
 
     if not (home / "motor.db").exists():
         return []
+    try:
+        policy = m.Policy.from_conf(load_conf(load_maquina(home).conf))
+    except (ConfError, OSError, KeyError):
+        policy = m.Policy(
+            (), (), {}, {}
+        )  # sin conf legible: el motivo sale sin escalera
     store = Store.solo_lectura(
         home / "motor.db"
     )  # sin construir un Daemon: ni candado ni escritura
@@ -117,7 +124,7 @@ def _estado(home: Path) -> list[dict]:
                     "estado": m.estado(snap, bid).value,
                     "agente": run.modelo if run else "",
                     "papel": run.role if run else "",
-                    "motivo": m.motivo(snap, bid, time.time()),
+                    "motivo": diagnostico(snap, bid, policy, time.time()).motivo,
                 }
             )
         out.append(
@@ -153,6 +160,14 @@ def doctor(home: Path) -> dict:
             out["problemas"].append(
                 f"ningún modelo del papel {papel} puede correr aquí"
             )
+    # Sin token o sin chat ningún aviso sale: el motor se atora en silencio.
+    token_env = conf.avisos.get("token_env", "MOTOR_TELEGRAM_TOKEN")
+    if not dict(mq.secretos).get(token_env):
+        out["ok"] = False
+        out["problemas"].append(f"avisos: falta el token de Telegram ({token_env})")
+    if not conf.avisos.get("chat"):
+        out["ok"] = False
+        out["problemas"].append("avisos: falta el chat de Telegram ([avisos] chat)")
     return out
 
 

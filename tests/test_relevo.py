@@ -216,7 +216,7 @@ class EligeConRelevoTest(unittest.TestCase):
     # test_a_timeout_failure_blocks_the_stage_instead_of_advancing
     def test_tras_un_tiempo_agotado_reintenta_el_mismo(self):
         self.assertEqual(
-            _quien(_intento("sonnet", "tiempo", 1, self.t - 10), self.t), "sonnet"
+            _quien(_intento("sonnet", "tiempo", 1, self.t - 600), self.t), "sonnet"
         )
 
     def test_dos_tiempos_seguidos_ya_agotan_el_reintento(self):

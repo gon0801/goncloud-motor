@@ -12,10 +12,12 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
+TOPE_TELEGRAM = 4000  # Telegram corta en 4096
 DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 
 PLANTILLAS = {
@@ -36,7 +38,7 @@ PLANTILLAS = {
     "atorado": (
         "Me atoré en una parte: {bloque}.\n"
         "Motivo: {motivo}.\n"
-        "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
+        "Sigo intentando; lo demás del plan sigue avanzando."
     ),
     "retome": "Se fue la luz o se reinició la máquina; ya retomé solo donde me quedé.",
     "rechazado": (
@@ -97,7 +99,7 @@ FIJOS = {
     "terminado": PLANTILLAS["terminado"],
     "atorado": (
         "Me atoré en una parte del plan.\n"
-        "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
+        "Sigo intentando; lo demás del plan sigue avanzando."
     ),
     "retome": PLANTILLAS["retome"],
     "rechazado": (
@@ -118,7 +120,7 @@ PARCIAL = {  # con el título del plan y solo los campos que casi siempre llegan
     ),
     "atorado": (
         "Me atoré en una parte: {bloque}.\n"
-        "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
+        "Sigo intentando; lo demás del plan sigue avanzando."
     ),
     "humano": FIJOS["humano"],
     "version": FIJOS["version"],
@@ -150,7 +152,7 @@ def render(template: str, campos: dict[str, str], maquina: str, titulo: str) -> 
     ]
     for intento in intentos:
         try:
-            return lint_plain(intento())
+            return lint_plain(intento())[:TOPE_TELEGRAM]
         except Exception:  # noqa: BLE001  un aviso nunca se pierde por un dato del plan
             continue
     return GENERICO
@@ -161,9 +163,10 @@ class Notifier:
     archivo, el aviso puede repetirse una vez; nunca se pierde."""
 
     def __init__(self, home: Path, base_url: str, token: str, chat: str):
-        self.pend, self.env = (
+        self.pend, self.env, self.malos = (
             home / "avisos" / "pendientes",
             home / "avisos" / "enviados",
+            home / "avisos" / "fallidos",
         )
         self.base_url, self.token, self.chat = base_url.rstrip("/"), token, chat
 
@@ -191,6 +194,13 @@ class Notifier:
                 ) as r:
                     if not json.loads(r.read() or b"{}").get("ok", True):
                         return n
+            except urllib.error.HTTPError as e:
+                if e.code == 429 or not 400 <= e.code < 500:
+                    return n  # frenos y caídas de Telegram vuelven solos: se reintenta
+                # Telegram rechazó ESTE aviso (token, chat o texto malo): no se reintenta ni frena la cola
+                self.malos.mkdir(parents=True, exist_ok=True)
+                os.replace(f, self.malos / f.name)
+                continue
             except OSError:
                 return n
             os.replace(f, self.env / f.name)

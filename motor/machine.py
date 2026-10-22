@@ -49,6 +49,7 @@ class Policy:
     revision_fija: bool = (
         False  # el plan nombró a sus revisores: no se sale de esa lista
     )
+    cli: dict[str, str] = field(default_factory=dict)  # modelo -> CLI (qué login falta)
 
     def para(self, plan: Plan) -> Policy:
         """La tabla, salvo lo que el plan pidió con 'implementa:' / 'revisa:'."""
@@ -69,6 +70,7 @@ class Policy:
             implementadores=conf.escalera("implementar"),
             revisores=conf.escalera("revisar"),
             cuenta={m: r.cuenta for m, r in conf.rutas.items()},
+            cli={m: r.cli for m, r in conf.rutas.items()},
             max_parallel=cuentas,
             timeout_s=t.get("timeout_s", 4 * 3600),
             sin_avance_s=t.get("sin_avance_s", 45 * 60),
@@ -139,9 +141,9 @@ class BlockView:
     listo_desde: dict[str, float] = field(
         default_factory=dict
     )  # sha -> cuándo se marcó listo
-    fallas_efecto: list[float] = field(
-        default_factory=list
-    )  # cuándo falló un efecto (red, GitHub, disco)
+    rachas: dict[str, tuple[float, float]] = field(
+        default_factory=dict
+    )  # acción -> (desde, última falla): efectos que siguen fallando (red, GitHub, disco)
     esperando: dict[str, dict] = field(
         default_factory=dict
     )  # sha -> {"faltan", "github_termino", "desde"}: qué pruebas de GitHub se esperan
@@ -230,7 +232,9 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.ready.add(d["sha"])
             bv.listo_desde.setdefault(d["sha"], e.ts)
         elif e.kind == "EffectFailed":
-            bv.fallas_efecto.append(e.ts)
+            bv.rachas[d["accion"]] = (d.get("desde", e.ts), e.ts)
+        elif e.kind == "EffectOk":
+            bv.rachas.pop(d["accion"], None)
         elif e.kind == "ChecksResult":
             bv.checks[d["sha"]] = d
         elif e.kind == "ChecksEsperando":
@@ -240,6 +244,11 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.pr = None  # ese PR ya se usó: un arreglo posterior (p. ej. tras un despliegue fallido) va en uno nuevo
         elif e.kind == "PrCerrado":
             bv.pr = None
+            sha = bv.head()  # el PR nuevo vuelve a pasar por "listo" y por las pruebas
+            bv.ready.discard(sha)
+            bv.listo_desde.pop(sha, None)
+            bv.checks.pop(sha, None)
+            bv.esperando.pop(sha, None)
         elif e.kind == "DeployStarted":
             bv.deploy_started.add(d["sha"])
         elif e.kind == "Deployed":
@@ -441,48 +450,6 @@ def merge_gate(bv: BlockView) -> MergeTicket | str:
     return MergeTicket(block=bv.block.id, sha=head, pr=int(bv.pr["numero"]))
 
 
-def _feedback(bv: BlockView) -> tuple[str, ...]:
-    out: list[str] = []
-    last = bv.last_implement_outcome()
-    if last and last.get("kind") != "entregado":
-        motivo = (
-            "un corte de luz o reinicio"
-            if last.get("kind") == "corte"
-            else last.get("kind")
-        )
-        out.append(
-            f"El intento anterior terminó por: {motivo} ({str(last.get('detalle', ''))[:300]}). "
-            "Sigue desde lo que haya en la rama y lo que quedó sin commitear en esta carpeta."
-        )
-    head = bv.head()
-    if head:
-        v = bv.verified.get(head)
-        if v and not v["ok"]:
-            out.append(f"La verificación falló: {v.get('detalle', '')[:800]}")
-        r = bv.review_for(head)
-        if r and not _aprobado(r):
-            for blq in _bloqueantes(r):
-                out.append(
-                    f"BLOQUEANTE: {blq['texto']} | repro: {blq['repro']}"
-                    + (f" | arreglo: {blq['arreglo']}" if blq.get("arreglo") else "")
-                )
-        c = bv.checks.get(head)
-        if c and not c["green"]:
-            out.append(f"Pruebas automáticas en rojo: {c.get('detalle', '')[:800]}")
-        m = bv.merged_sha()
-        if m and m == head:
-            if m in bv.deployed and not bv.deployed[m]["ok"]:
-                out.append(
-                    f"El despliegue falló y se revirtió: {bv.deployed[m].get('detalle', '')[:800]}"
-                )
-            if m in bv.proved and not bv.proved[m]["ok"]:
-                out.append(
-                    f"La prueba con datos reales falló: {bv.proved[m].get('detalle', '')[:800]}"
-                )
-    out.extend(f"Nota del lead: {n}" for n in bv.notes)
-    return tuple(out)
-
-
 def _ocupados(snap: Snapshot, policy: Policy) -> dict[str, int]:
     """Intentos corriendo por CUENTA (Sonnet y Opus comparten la de anthropic)."""
     n: dict[str, int] = {}
@@ -512,9 +479,17 @@ def revisores_para(bv: BlockView, policy: Policy) -> tuple[str, ...]:
 
 
 def _cuarentena(snap: Snapshot, policy: Policy, cuenta: str, now: float) -> bool:
+    return _sesion(snap, policy, cuenta, now)[0] is not None
+
+
+def _sesion(
+    snap: Snapshot, policy: Policy, cuenta: str, now: float
+) -> tuple[float | None, float | None]:
     """Credenciales caídas = cuenta fuera una hora, y luego se prueba otra vez. Solo un éxito real la
-    levanta; otra falla (salvo un freno corto) rearma el reloj. Todo sale del log (relevo.py)."""
-    desde = None
+    levanta; otra falla (salvo un freno corto) rearma el reloj. Todo sale del log (relevo.py).
+    Devuelve (desde, racha): cuándo empezó la cuarentena vigente (None si no hay) y cuándo falló la
+    primera sesión desde el último éxito, que no cambia mientras la sesión siga caída."""
+    desde = racha = None
     for a in sorted(
         (
             a
@@ -529,14 +504,18 @@ def _cuarentena(snap: Snapshot, policy: Policy, cuenta: str, now: float) -> bool
         kind = a.ended.get("kind", "")
         falla = relevo.desde_kind(kind)
         if kind in ("entregado", "veredicto"):
-            desde = None
+            desde = racha = None
         elif kind in NO_ES_FALLA:
             continue  # un corte de luz no rearma nada (revisión de Grok a MOTOR 01)
         elif falla is relevo.Falla.AUTH or (
             desde is not None and relevo.rearma_cuarentena(falla)
         ):
             desde = a.ended_at
-    return relevo.cuarentena_activa(desde is not None, desde, now)
+            if falla is relevo.Falla.AUTH and racha is None:
+                racha = a.ended_at
+    if not relevo.cuarentena_activa(desde is not None, desde, now):
+        return None, None
+    return desde, racha
 
 
 def _avanzo_de(mios: list[Attempt], mo: str) -> bool:
@@ -574,6 +553,80 @@ def _elige(
     return None
 
 
+def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
+    """¿Este intento terminado gasta la escalera del modelo? No: entregar, un apagón, lo que resuelve el
+    reloj (cuota, freno, sesión), las fallas pasajeras (tienen su pausa) y un `sin_cambios` cuando el
+    bloque falló por algo que el agente no controla (comando que falta, prueba real, despliegue)."""
+    kind = a.ended.get("kind", "")
+    if kind in ("entregado", "veredicto") or kind in NO_ES_FALLA:
+        return False
+    if (
+        kind in relevo.PASAJERAS
+        or relevo.desde_kind(kind) in relevo.LAS_RESUELVE_EL_RELOJ
+    ):
+        return False
+    return not (kind == "sin_cambios" and _fuera_de_control(bv))
+
+
+def _fuera_de_control(bv: BlockView) -> bool:
+    head, merged = bv.head(), bv.merged_sha()
+    return bool(
+        (bv.verified.get(head) or {}).get("falta_comando")
+        or (merged and merged in bv.proved and not bv.proved[merged]["ok"])
+        or (merged and merged in bv.deployed and not bv.deployed[merged]["ok"])
+    )
+
+
+def bloqueo(
+    snap: Snapshot,
+    policy: Policy,
+    now: float,
+    bv: BlockView,
+    role: str,
+    mo: str,
+    ladder: tuple[str, ...],
+) -> tuple[str, float]:
+    """Por qué este modelo no puede tomar el bloque ahora, y hasta cuándo ('' si puede):
+    agotado (su escalera, sus rondas o el mismo bloqueante), cupo (pausa de cuota), sesion
+    (cuarentena de credenciales) o pausa (falla pasajera reciente)."""
+    mios = [a for a in bv.attempts if a.role == role]
+    ventana = []  # lo que pasó desde el último éxito
+    for a in reversed(mios):
+        if a.ended and a.ended.get("kind") in ("entregado", "veredicto"):
+            break
+        ventana.append(a)
+    suyos = [a for a in reversed(ventana) if a.modelo == mo and a.ended]
+    if sum(_cuenta_falla(a, bv) for a in suyos) >= policy.fallas_seguidas_max:
+        return "agotado", 0.0
+    if role == "implementar":
+        rondas = sum(
+            1
+            for a in mios
+            if a.modelo == mo and a.ended and a.ended.get("kind") == "entregado"
+        )
+        if rondas >= policy.rondas_max_por_modelo:
+            return "agotado", 0.0
+        if (
+            _mismo_bloqueante_dos_veces(bv)
+            and mios
+            and mios[-1].modelo == mo
+            and len(ladder) > 1
+        ):
+            return "agotado", 0.0
+    cuenta = policy.cuenta.get(mo, mo)
+    if snap.cooldowns.get(cuenta, 0) > now:
+        return "cupo", snap.cooldowns[cuenta]
+    desde, racha = _sesion(snap, policy, cuenta, now)
+    if desde is not None:
+        return "sesion", racha or desde
+    seguidas = sum(a.ended.get("kind") in relevo.PASAJERAS for a in suyos)
+    if suyos and suyos[-1].ended.get("kind") in relevo.PASAJERAS:
+        hasta = suyos[-1].ended_at + relevo.pausa_pasajera_s(seguidas)
+        if hasta > now:
+            return "pausa", hasta
+    return "", 0.0
+
+
 def _elige_pasada(
     ladder: tuple[str, ...],
     snap: Snapshot,
@@ -587,9 +640,7 @@ def _elige_pasada(
 ) -> str | None:
     for mo in ladder:
         cuenta = policy.cuenta.get(mo, mo)
-        if snap.cooldowns.get(cuenta, 0) > now or _cuarentena(
-            snap, policy, cuenta, now
-        ):
+        if bloqueo(snap, policy, now, bv, role, mo, ladder)[0]:
             continue
         if ocupados.get(cuenta, 0) >= policy.max_parallel.get(cuenta, 1):
             continue
@@ -598,35 +649,8 @@ def _elige_pasada(
             and sum(ocupados.values()) >= policy.agentes_por_maquina
         ):
             return None  # la máquina ya tiene su tope de agentes: espera turno
-        fallas = 0
-        for a in reversed(mios):
-            if a.ended and a.ended.get("kind") in ("entregado", "veredicto"):
-                break
-            if a.modelo == mo and a.ended and a.ended.get("kind") not in NO_ES_FALLA:
-                if (
-                    relevo.desde_kind(a.ended.get("kind", ""))
-                    not in relevo.LAS_RESUELVE_EL_RELOJ
-                ):
-                    fallas += 1
-        if fallas >= policy.fallas_seguidas_max:
-            continue
         if saltar_avanzo and _avanzo_de(mios, mo):
             continue
-        if role == "implementar":
-            rondas = sum(
-                1
-                for a in mios
-                if a.modelo == mo and a.ended and a.ended.get("kind") == "entregado"
-            )
-            if rondas >= policy.rondas_max_por_modelo:
-                continue
-            if (
-                _mismo_bloqueante_dos_veces(bv)
-                and mios
-                and mios[-1].modelo == mo
-                and len(ladder) > 1
-            ):
-                continue
         return mo
     return None
 
@@ -659,38 +683,28 @@ def decide(
         snap = dataclasses.replace(
             snap, cooldowns=cd, intentos_fuera=tuple(intentos_fuera)
         )
+    from . import avisos, diagnostico  # se importan aquí: ambos dependen de este módulo
+
     policy = policy.para(snap.plan)
     acciones: list[Action] = []
     reservas: dict[str, int] = dict(externos or {})
     todos_hechos = True
+    ya: set[str] = set()
     for bid, bv in snap.blocks.items():
         b = bv.block
         e = estado(snap, bid)
         if e is not Estado.HECHO:
             todos_hechos = False
-        atasco = _sin_avance_propio(bv, e, policy, now)
-        if atasco and atasco[0] not in bv.notices:
+        if e is Estado.HUMANO and b.human and b.human.sonda:
             acciones.append(
-                Notify(
-                    atasco[0],
-                    bid,
-                    "atorado",
-                    (("bloque", b.aviso), ("motivo", atasco[1])),
-                )
-            )
-        if e is Estado.HUMANO:
-            if b.human and b.human.sonda:
-                acciones.append(ProbeHuman(bid))
-            if f"humano:{bid}" not in bv.notices:
-                acciones.append(
-                    Notify(
-                        f"humano:{bid}",
-                        bid,
-                        "humano",
-                        (("que_hacer", b.human.que_hacer),),
-                    )
-                )
-        elif e in (Estado.ARREGLAR, Estado.REVISAR):
+                ProbeHuman(bid)
+            )  # antes del aviso: si ya lo hizo, no se molesta
+        d = diagnostico.diagnostico(snap, bid, policy, now)
+        for n in avisos.avisos_de(snap, bid, policy, now, d):
+            if n.key not in bv.notices | snap.plan_notices | ya:
+                ya.add(n.key)
+                acciones.append(n)
+        if e in (Estado.ARREGLAR, Estado.REVISAR):
             role = "implementar" if e is Estado.ARREGLAR else "revisar"
             ladder = (
                 policy.implementadores
@@ -698,13 +712,15 @@ def decide(
                 else revisores_para(bv, policy)
             )
             mo = _elige(ladder, snap, policy, now, bv, role, reservas)
-            if mo is None:
-                acciones.extend(_sin_agente(snap, policy, now, ladder, bv, reservas))
-            else:
+            if mo is not None:
                 c = policy.cuenta.get(mo, mo)
                 reservas[c] = reservas.get(c, 0) + 1
                 n = len([a for a in bv.attempts if a.role == role]) + 1
-                fb = _feedback(bv) if role == "implementar" else ()
+                fb = (
+                    diagnostico.encargo(snap, bid, policy, now)
+                    if role == "implementar"
+                    else ()
+                )
                 acciones.append(StartAttempt(bid, role, mo, n, bv.head(), fb))
         elif e is Estado.VERIFICAR:
             acciones.append(Verify(bid, bv.head()))
@@ -748,7 +764,7 @@ def decide(
         n = int((now - snap.inicio) // policy.avance_cada_s)
         if n >= 1 and f"avance:{n}" not in snap.plan_notices:
             acciones.append(
-                Notify(f"avance:{n}", "", "avance", _resumen(snap, now, policy))
+                Notify(f"avance:{n}", "", "avance", avisos._resumen(snap, now, policy))
             )
     if (
         todos_hechos
@@ -766,294 +782,6 @@ def decide(
             )
         )
     return acciones
-
-
-NOMBRES = {
-    "sonnet": "Sonnet",
-    "opus": "Opus",
-    "k3": "Kimi",
-    "glm": "GLM",
-    "grok": "Grok",
-    "qwen": "Qwen",
-    "deepseek": "DeepSeek",
-    "muse": "Muse",
-    "haiku": "Haiku",
-    "fable": "Fable",
-}
-
-
-def _resumen(snap: Snapshot, now: float, policy: Policy) -> tuple[tuple[str, str], ...]:
-    """El latido de cada hora: cuántas partes van, qué se está haciendo y si algo está atorado.
-    Si deja de llegar, David sabe que el motor o la máquina se cayeron."""
-    estados = {bid: estado(snap, bid) for bid in snap.blocks}
-    listas = sum(e is Estado.HECHO for e in estados.values())
-    partes = []
-    for bid, bv in snap.blocks.items():
-        if estados[bid] in (Estado.HECHO, Estado.ESPERANDO):
-            continue
-        run = bv.running()
-        if run:
-            que = "reviso" if run.role == "revisar" else "trabajo en"
-            frase = (
-                f"{que} «{bv.block.titulo}» ({NOMBRES.get(run.modelo, run.modelo.capitalize())}, "
-                f"{_dura(now - run.started)})"
-            )
-            falla = _ultima_falla(bv) if run.role == "implementar" else ""
-            partes.append(frase + (f" porque {falla}" if falla else ""))
-        else:
-            partes.append(f"«{bv.block.titulo}»: {motivo(snap, bid, now)}")
-    if partes:
-        ahora = "Ahora " + "; ".join(partes) + "."
-    else:
-        ahora = "Ahora estoy entre un paso y otro."
-    atorados = []
-    for bid, bv in snap.blocks.items():
-        causa = (
-            None
-            if estados[bid] is Estado.HECHO
-            else _sin_avance_propio(bv, estados[bid], policy, now)
-        )
-        if causa:
-            atorados.append(f"«{bv.block.titulo}» ({causa[1]})")
-    atoron = ("Atorado: " + "; ".join(atorados) + ".") if atorados else "Nada atorado."
-    return (
-        ("listas", str(listas)),
-        ("total", str(len(snap.blocks))),
-        ("ahora", ahora),
-        ("atoron", atoron),
-    )
-
-
-def _sin_avance_propio(
-    bv: BlockView, e: Estado, policy: Policy, now: float
-) -> tuple[str, str] | None:
-    """Atascos que no dependen de un agente, como (clave del aviso, motivo para David). Se avisa una
-    vez por causa y el motor sigue intentando:
-    - GitHub ya terminó todas sus pruebas y falta una requerida (INGESTA 01 esperó horas así);
-    - pruebas que no terminan nunca (un nombre que no existe);
-    - la misma falla varias veces seguidas (la prueba real de una sonda que solo corre de noche);
-    - un efecto que lleva una hora fallando (red, GitHub, disco)."""
-    bid = bv.block.id
-    if e is Estado.CHECKS:
-        head = bv.head()
-        esp = bv.esperando.get(head) or {}
-        if (
-            esp.get("github_termino")
-            and esp.get("faltan")
-            and now - esp["desde"] > policy.aviso_incoherente_s
-        ):
-            return (
-                f"atorado:{bid}:incoherente:{head[:12]}",
-                (
-                    f"GitHub ya terminó sus pruebas, pero sigo esperando {_lista(esp['faltan'])}, "
-                    f"que no llegó a correr ({_dura(now - esp['desde'])})"
-                ),
-            )
-        desde = bv.listo_desde.get(head)
-        if desde is not None and now - desde > policy.aviso_lento_s:
-            return (
-                f"atorado:{bid}",
-                f"las pruebas de GitHub llevan {_dura(now - desde)} sin terminar",
-            )
-    head = bv.head()
-    falta = (bv.verified.get(head) or {}).get("falta_comando") if head else None
-    if falta:
-        # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin.
-        # Un aviso por comando, no uno por ronda ni otro cuando se suma un comando nuevo.
-        prefijo = f"atorado:{bid}:comando:"
-        avisados = {
-            c
-            for k in bv.notices
-            if k.startswith(prefijo)
-            for c in k[len(prefijo) :].split(",")
-        }
-        nuevos = [c for c in falta if c not in avisados]
-        clave = (
-            prefijo + ",".join(nuevos)
-            if nuevos
-            else min(k for k in bv.notices if k.startswith(prefijo))
-        )
-        return (
-            clave,
-            (
-                f"la verificación del plan usa {', '.join(falta)}, que esta máquina no tiene; "
-                "hay que corregir el plan o instalarlo en la máquina"
-            ),
-        )
-    for tipo, d, campo, que in (
-        ("verificacion", bv.verified, "ok", "falló la verificación de las filas"),
-        ("prueba", bv.proved, "ok", "falló la prueba con datos reales"),
-        ("despliegue", bv.deployed, "ok", "falló el despliegue"),
-        ("checks", bv.checks, "green", "las pruebas de GitHub salieron en rojo"),
-    ):
-        n = _seguidas(d, campo)
-        # Solo mientras no haya un arreglo nuevo: con otra entrega en camino ya no es atasco.
-        if n >= policy.repeticiones_max and list(d)[-1] == head:
-            antes = (
-                len(d) - n
-            )  # fija la clave mientras dura la racha: un aviso por racha
-            return (
-                f"atorado:{bid}:repite:{tipo}:{antes}",
-                f"{que}, {n} veces seguidas",
-            )
-    racha = _racha(bv.fallas_efecto)
-    if racha and now - racha[1] < 15 * 60 and racha[1] - racha[0] >= 3600:
-        return (
-            f"atorado:{bid}:efecto:{int(racha[0])}",
-            "un paso del motor lleva una hora fallando (red o GitHub); sigo reintentando",
-        )
-    return None
-
-
-def _racha(fallas: list[float], hueco: float = 15 * 60) -> tuple[float, float] | None:
-    """(inicio, fin) de las últimas fallas seguidas, sin huecos de más de `hueco` entre ellas. Dos
-    fallas sueltas separadas por una hora no son "una hora fallando" (PSTACK 01 en la PC)."""
-    if not fallas:
-        return None
-    ini = fallas[-1]
-    for t in reversed(fallas[:-1]):
-        if ini - t > hueco:
-            break
-        ini = t
-    return ini, fallas[-1]
-
-
-def _seguidas(d: dict[str, dict], campo: str) -> int:
-    n = 0
-    for v in reversed(list(d.values())):
-        if v.get(campo):
-            break
-        n += 1
-    return n
-
-
-def _dura(seg: float) -> str:
-    m = int(seg // 60)
-    if m < 60:
-        return f"{max(m, 1)} min"
-    h, m = divmod(m, 60)
-    return f"{h} h" + (f" {m} min" if m else "")
-
-
-def _lista(nombres) -> str:
-    q = [f"la prueba «{n}»" for n in nombres]
-    return q[0] if len(q) == 1 else ", ".join(q[:-1]) + " y " + q[-1]
-
-
-def _ultima_falla(bv: BlockView) -> str:
-    """Por qué el bloque volvió a un agente, en palabras para David (sin rutas ni detalles técnicos:
-    el detalle completo va en el encargo del agente y en `motor estado`)."""
-    head, m = bv.head(), bv.merged_sha()
-    if m and m == head:
-        if m in bv.proved and not bv.proved[m]["ok"]:
-            return "falló la prueba con datos reales"
-        if m in bv.deployed and not bv.deployed[m]["ok"]:
-            return "falló el despliegue y se revirtió"
-    c = bv.checks.get(head)
-    if c and not c["green"]:
-        if str(c.get("detalle", "")).startswith("el merge falló"):
-            return "GitHub no dejó integrarlo; hay que traer lo último de la rama principal"
-        return "las pruebas automáticas de GitHub salieron en rojo"
-    r = bv.review_for(head) if head else None
-    if r and not _aprobado(r):
-        return "el revisor pidió cambios"
-    v = bv.verified.get(head) if head else None
-    if v and not v["ok"]:
-        return "falló la verificación de las filas"
-    last = bv.last_implement_outcome()
-    if last and last.get("kind") == "corte":
-        return "el intento anterior se cortó por un reinicio o apagón"
-    if last and last.get("kind") != "entregado":
-        return "el intento anterior terminó sin entregar"
-    return ""
-
-
-def motivo(snap: Snapshot, bid: str, now: float) -> str:
-    """Qué hace o qué espera una parte, en una frase para David."""
-    bv, e = snap.blocks[bid], estado(snap, bid)
-    head = bv.head()
-    if e is Estado.CHECKS:
-        faltan = (bv.esperando.get(head) or {}).get("faltan")
-        desde = bv.listo_desde.get(head, now)
-        que = _lista(faltan) + " de GitHub" if faltan else "las pruebas de GitHub"
-        return f"espero {que} desde hace {_dura(now - desde)}"
-    if e in (Estado.ARREGLAR, Estado.IMPLEMENTANDO):
-        falla = _ultima_falla(bv)
-        return f"toca arreglarla porque {falla}" if falla else "toca hacerla"
-    return {
-        Estado.ESPERANDO: "espera a que terminen las partes de las que depende",
-        Estado.HUMANO: "espera tu paso",
-        Estado.REVISAR: "toca revisarla",
-        Estado.REVISANDO: "la están revisando",
-        Estado.VERIFICAR: "la verifico",
-        Estado.PR: "abro su propuesta de cambio en GitHub",
-        Estado.LISTO: "la marco lista en GitHub",
-        Estado.MERGE: "la integro",
-        Estado.DESPLEGAR: "la despliego a producción",
-        Estado.PROBAR: "la pruebo con datos reales",
-        Estado.HECHO: "terminada",
-    }.get(e, e.value)
-
-
-def _sin_agente(
-    snap: Snapshot,
-    policy: Policy,
-    now: float,
-    ladder: tuple[str, ...],
-    bv: BlockView,
-    reservas: dict[str, int] | None = None,
-) -> list[Action]:
-    """Nadie de la escalera puede ahora. En cuota: el reloj los devuelve solos (aviso solo si
-    tarda más de `aviso_lento_s`). Ocupados: el siguiente tick. Agotados: un aviso y sigue el resto."""
-    hasta = [snap.cooldowns.get(policy.cuenta.get(m, m), 0) for m in ladder]
-    if hasta and all(h > now for h in hasta):
-        primero = min(hasta)
-        if (
-            primero - now >= policy.aviso_lento_s
-            and f"lento:{int(primero)}" not in snap.plan_notices
-        ):
-            return [
-                Notify(
-                    f"lento:{int(primero)}",
-                    "",
-                    "lento",
-                    (("hasta", str(int(primero))),),
-                )
-            ]
-        return []
-    if any(
-        snap.cooldowns.get(policy.cuenta.get(m, m), 0) > now
-        or _cuarentena(snap, policy, policy.cuenta.get(m, m), now)
-        for m in ladder
-    ):
-        return []  # una cuenta de la escalera vuelve sola con el reloj: es espera, no atoro
-    ocupados = _ocupados(snap, policy)
-    for k, v in (reservas or {}).items():
-        ocupados[k] = ocupados.get(k, 0) + v
-    if (
-        policy.agentes_por_maquina
-        and sum(ocupados.values()) >= policy.agentes_por_maquina
-    ):
-        return []  # todos los lugares de la máquina están ocupados: es turno, no atoro
-    if any(
-        ocupados.get(policy.cuenta.get(m, m), 0)
-        >= policy.max_parallel.get(policy.cuenta.get(m, m), 1)
-        for m in ladder
-    ):
-        return []
-    if f"atorado:{bv.block.id}" in bv.notices:
-        return []
-    return [
-        Notify(
-            f"atorado:{bv.block.id}",
-            bv.block.id,
-            "atorado",
-            (
-                ("bloque", bv.block.aviso),
-                ("motivo", "ningún agente disponible pudo tomarla"),
-            ),
-        )
-    ]
 
 
 # --------------------------------------------------------------------------- clasificación

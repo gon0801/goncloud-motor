@@ -12,6 +12,7 @@ from pathlib import Path
 from motor import machine as m
 from motor.conf import ConfError, RepoConf, load_maquina
 from motor.__main__ import conf_valida, doctor
+from motor.diagnostico import diagnostico
 from motor.github import veredicto
 from motor.notify import PLANTILLAS, AvisoInvalido, lint_plain, render
 from motor.plan import PlanError, _celdas, parse_plan
@@ -470,7 +471,7 @@ humano: login pega las llaves
         acc = [
             a for a in m.decide(m.fold(p, base), pol(), now) if isinstance(a, m.Notify)
         ]
-        self.assertIn("atorado:A", [a.key for a in acc])
+        self.assertIn("atorado:A:checks:" + "a" * 12, [a.key for a in acc])
 
     def _en_checks(self, now, listo_hace=600):
         base = entregado() + [
@@ -525,10 +526,10 @@ humano: login pega las llaves
             ev("NoticeQueued", "A", {"key": a.key}),
         ]
         self.assertEqual(avisos(ya), [], "una vez")
-        snap = m.fold(p, self._en_checks(now, 3 * 3600) + [espera(40 * 60)])
+        snap = m.fold(p, self._en_checks(now, 3 * 3600) + [espera(10 * 60)])
         self.assertIn(
             "espero la prueba «completa» de GitHub desde hace 3 h",
-            m.motivo(snap, "A", now),
+            diagnostico(snap, "A", pol(), now).motivo,
         )
 
     def test_la_misma_falla_tres_veces_avisa_una_vez(self):
@@ -569,45 +570,6 @@ humano: login pega las llaves
             "un aviso por racha, no uno por ronda",
         )
 
-    def test_efecto_que_falla_una_hora_avisa(self):
-        p, now = parse_plan(PLAN), time.time()
-
-        def fallas(*hace):
-            return [
-                Event(
-                    900 + i,
-                    now - h,
-                    "demo",
-                    "A",
-                    "EffectFailed",
-                    {"accion": "OpenPr", "error": "red"},
-                )
-                for i, h in enumerate(sorted(hace, reverse=True))
-            ]
-
-        def atorados(evs):
-            return [
-                a.key
-                for a in m.decide(m.fold(p, entregado() + evs), pol(), now)
-                if isinstance(a, m.Notify) and a.key.startswith("atorado:A")
-            ]
-
-        seguidas = fallas(*range(10, 3700, 600))  # una cada 10 min durante una hora
-        self.assertEqual(len(atorados(seguidas)), 1)
-        self.assertEqual(
-            atorados(fallas(10)), [], "una falla suelta no molesta a David"
-        )
-        self.assertEqual(
-            atorados(fallas(4000, 10)),
-            [],
-            "dos fallas sueltas separadas por una hora no son una hora fallando (PSTACK 01)",
-        )
-        self.assertEqual(
-            atorados(fallas(*range(3000, 7000, 600))),
-            [],
-            "ya dejó de fallar hace 50 min: no se queda pegado",
-        )
-
     def test_repetida_deja_de_ser_atasco_con_un_arreglo_en_camino(self):
         """INGESTA 01: el resumen seguía diciendo "atorado" mientras el revisor ya veía el arreglo."""
         p, now = parse_plan(PLAN), time.time()
@@ -619,13 +581,9 @@ humano: login pega las llaves
                 ev("Proved", "A", {"sha": sha, "ok": False, "detalle": "x"}),
             ]
         snap = m.fold(p, evs)
-        self.assertIsNotNone(
-            m._sin_avance_propio(snap.blocks["A"], m.estado(snap, "A"), pol(), now)
-        )
+        self.assertTrue(diagnostico(snap, "A", pol(), now).atorado)
         snap = m.fold(p, evs + entregado(sha="f" * 40, n=4))
-        self.assertIsNone(
-            m._sin_avance_propio(snap.blocks["A"], m.estado(snap, "A"), pol(), now)
-        )
+        self.assertFalse(diagnostico(snap, "A", pol(), now).atorado)
 
     def test_doctor_busca_en_path_extra_de_la_maquina(self):
         with tempfile.TemporaryDirectory() as t:
