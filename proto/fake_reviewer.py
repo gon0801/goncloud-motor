@@ -2,6 +2,7 @@
 
 extra  pide un archivo `<bloque>-extra.txt` con comando que lo reproduce
 ruido  CAMBIOS sin comando de reproducción (la regla 4 lo trata como aprobado)
+modo repro_falso  CAMBIOS con un bloqueante cuyo `repro` sale 0 (el motor lo baja a nota)
 """
 
 from __future__ import annotations
@@ -26,6 +27,13 @@ def main() -> int:
     bloque, sha = m.group(1), m.group(2)
     marca = Path(os.environ["FAKE_STATE"]) / f"rev-{os.environ['MOTOR_MODEL']}"
     marca.parent.mkdir(parents=True, exist_ok=True)
+    if modo.startswith(
+        "pstack"
+    ):  # deja en el registro lo que hizo con poteto-mode (fake_log.py)
+        from fake_log import emite
+
+        emite(modo, not marca.exists())
+        marca.write_text("1")
     if modo == "cuota_primero" and not marca.exists():
         marca.write_text("1")
         reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=3)).strftime(
@@ -45,6 +53,15 @@ def main() -> int:
                     "repro": f"test -f {bloque}-extra.txt",
                     "arreglo": f"escribe: {bloque}-extra.txt=ok",
                 }
+            ],
+        }
+    elif modo == "repro_falso":  # un bloqueante cuyo comando sale 0: no reprodujo nada
+        out = {
+            "sha": sha,
+            "veredicto": "CAMBIOS",
+            "notas": [],
+            "bloqueantes": [
+                {"texto": "dice que falta algo", "repro": "true", "arreglo": "?"}
             ],
         }
     elif reglas.get(bloque) == "ruido":

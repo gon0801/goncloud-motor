@@ -14,6 +14,12 @@ from pathlib import Path
 PROTO = Path(__file__).resolve().parent
 PY = sys.executable
 
+# Windows escribe en cp1252 por defecto: los archivos de prueba se escriben siempre en UTF-8.
+_escribe = Path.write_text
+Path.write_text = lambda self, data, encoding="utf-8", *a, **k: _escribe(
+    self, data, encoding, *a, **k
+)
+
 
 def sh(*a: str, cwd: Path | None = None) -> None:
     subprocess.run(
@@ -28,7 +34,7 @@ def _repo(base: Path, nombre: str, archivos: dict[str, str]) -> str:
     for ruta, contenido in archivos.items():
         p = seed / ruta
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(contenido)
+        p.write_text(contenido, encoding="utf-8")
         if ruta.endswith(".sh"):
             p.chmod(0o755)
     sh("git", "init", "-q", "-b", "main", cwd=seed)
@@ -46,7 +52,30 @@ def _repo(base: Path, nombre: str, archivos: dict[str, str]) -> str:
         cwd=seed,
     )
     sh("git", "push", "-q", str(bare), "main", cwd=seed)
-    return str(bare)
+    return bare.as_posix()
+
+
+def _pstack_en_conf(conf: Path, pstack: dict) -> None:
+    """Una copia fija de pstack mínima y su pstack.toml (`exigir`; `skills` extra para revisar)."""
+    sk = conf / "pstack" / "skills" / "poteto-mode"
+    (sk / "playbooks").mkdir(parents=True)
+    (sk / "SKILL.md").write_text("# poteto-mode\n")
+    (sk / "playbooks" / "docs.md").write_text("# docs\n")
+    (conf / "pstack" / "ORIGEN").write_text("origen: prueba abc1234567\n")
+    mp = conf / "pstack-motor"
+    mp.mkdir()
+    (mp / "motor.md").write_text("REGLA-DEL-MOTOR: no abras ni mergees PRs.\n")
+    for cli in ("claude", "kimi", "opencode", "grok", "muse", "qwen"):
+        (mp / f"{cli}.md").write_text(f"Mapa de {cli}.\n")
+    celdas = "".join(
+        f'[exigencia.{lane}.{papel}]\nskills = ["poteto-mode"]\n'
+        for lane in ("fast", "gate", "release")
+        for papel in ("implementar", "revisar")
+    )
+    exigir = "true" if pstack.get("exigir") else "false"
+    (conf / "pstack.toml").write_text(
+        f'[pstack]\ncommit = "abc1234567"\nexigir = {exigir}\n{celdas}'
+    )
 
 
 def create(
@@ -61,6 +90,7 @@ def create(
     chat_url: str = "",
     timeout=120,
     app_privado=True,
+    pstack: dict | None = None,
 ) -> tuple[Path, Path]:
     modos = {
         "sonnet": "cuota_primero",
@@ -89,7 +119,7 @@ checklist = "ops/checklist.sh"
 rollback = "ops/rollback.sh"
 requiere = []
 [pruebas.env]
-PROD_DIR = "{prod}"
+PROD_DIR = "{Path(prod).as_posix()}"
 """,
         },
     )
@@ -103,13 +133,13 @@ PROD_DIR = "{prod}"
                     "requeridos": ["ci", "completa"],
                     "solo_listo": ["completa"],
                     "checks": {
-                        "ci": "./ci.sh",
-                        "completa": "./ci.sh",
-                        "seguridad": "./ci.sh",
+                        "ci": "sh ./ci.sh",
+                        "completa": "sh ./ci.sh",
+                        "seguridad": "sh ./ci.sh",
                     },
                     "privado": app_privado,
                 },
-                docs: {"requeridos": ["ci"], "checks": {"ci": "true"}},
+                docs: {"requeridos": ["ci"], "checks": {"ci": "sh -c true"}},
             }
         )
     )
@@ -141,8 +171,8 @@ PROD_DIR = "{prod}"
             f', "--reglas", "{reglas_revision}"' if script == "fake_reviewer.py" else ""
         )
         rutas.append(
-            f'[rutas.{mo}]\ncuenta = "{cuentas.get(mo, mo)}"\ncli = "{mo}"\nmax_parallel = 2\n'
-            f'argv = ["{PY}", "{PROTO / script}", "--modo", "{modos.get(mo, "ok")}"{extra}, "--prompt-file", "{{brief}}"]\n'
+            f'[rutas.{mo}]\ncuenta = "{cuentas.get(mo, mo)}"\ncli = "{(pstack or {}).get("clis", {}).get(mo, mo)}"\nmax_parallel = 2\n'
+            f'argv = ["{Path(PY).as_posix()}", "{(PROTO / script).as_posix()}", "--modo", "{modos.get(mo, "ok")}"{extra}, "--prompt-file", "{{brief}}"]\n'
         )
     (conf / "rutas.toml").write_text("\n".join(rutas))
     (conf / "general.toml").write_text(f"""[tiempos]
@@ -163,6 +193,8 @@ token_env = "MOTOR_TELEGRAM_TOKEN"
     (conf / "reglas" / "revisor.md").write_text(
         "Revisa como el lead: solo bloquea lo reproducible.\n"
     )
+    if pstack is not None:
+        _pstack_en_conf(conf, pstack)
     sh("git", "init", "-q", cwd=conf)
     sh("git", "add", "-A", cwd=conf)
     sh(
@@ -180,19 +212,20 @@ token_env = "MOTOR_TELEGRAM_TOKEN"
     home = base / "home"
     home.mkdir()
     (home / "maquina.toml").write_text(f"""nombre = "Mac (prueba)"
-conf = "{conf}"
-github = "falso:{gh}"
+conf = "{Path(conf).as_posix()}"
+github = "falso:{Path(gh).as_posix()}"
 [env]
-FAKE_STATE = "{base / "fake-state"}"
+FAKE_STATE = "{(base / "fake-state").as_posix()}"
 """)
     sec = home / "secretos.env"
     sec.write_text("MOTOR_TELEGRAM_TOKEN=prueba\n")
     sec.chmod(0o600)
     plan = base / "plan.md"
-    plan.write_text(f"""# Demo de saludo
+    plan.write_text(
+        f"""# Demo de saludo
 autopiloto: motor
 plan: demo
-repo: {app}
+repo: {Path(app).as_posix()}
 
 ## Bloque A — archivos de saludo
 lane: gate
@@ -225,7 +258,7 @@ prueba-real: test "$(cat "$PROD_DIR/version.txt")" = v2 && test "$(git -C "$MOTO
 
 ## Bloque C — guía en el repo de documentación
 lane: gate
-repo: {docs}
+repo: {Path(docs).as_posix()}
 aviso: la guía ya está publicada
 prueba-real: true
 | Fila | Contenido | Acepta |
@@ -236,7 +269,9 @@ prueba-real: true
 lane: fast
 humano: login Entra a Seller Central y acepta el permiso de anuncios
 sonda-humano: test -f "$MOTOR_HOME/login-hecho"
-""")
+""",
+        encoding="utf-8",
+    )
     return home, plan
 
 

@@ -168,6 +168,9 @@ def conf_valida(d: Path) -> list[str]:
     for papel in conf.papeles:
         if not conf.escalera(papel):
             errores.append(f"papel {papel}: sin modelos")
+    from .effects import errores_pstack
+
+    errores += errores_pstack(d, conf)
     for f in (
         sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []
     ):

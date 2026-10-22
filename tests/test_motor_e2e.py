@@ -19,13 +19,14 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ / "proto"))
 import sandbox  # noqa: E402
 
+from motor import llamadas  # noqa: E402
 from motor import machine as m  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.notify import lint_plain  # noqa: E402
 from motor.store import Store  # noqa: E402
 from motor.workspace import foto_wip, git  # noqa: E402
 
-ENV = {**os.environ, "PYTHONPATH": str(RAIZ)}
+ENV = {**os.environ, "PYTHONPATH": str(RAIZ), "PYTHONUTF8": "1"}
 
 
 def motor(
@@ -167,8 +168,8 @@ class TestPlan(Banco):
             self.home / "maquina.toml", "a"
         ) as f:  # la MacBook: no dormirse mientras haya plan
             f.write(
-                f'\n[no_dormir]\nencender = ["sh", "-c", "echo sin-dormir >> {sueno}"]\n'
-                f'apagar = ["sh", "-c", "echo normal >> {sueno}"]\n'
+                f'\n[no_dormir]\nencender = ["sh", "-c", "echo sin-dormir >> {sueno.as_posix()}"]\n'
+                f'apagar = ["sh", "-c", "echo normal >> {sueno.as_posix()}"]\n'
             )
         self.termina()
         self.assertEqual(
@@ -1468,6 +1469,411 @@ class TestFotoWip(unittest.TestCase):
         self.assertEqual(
             git("ls-remote", str(self.bare), "refs/heads/motor-wip/x").stdout, ""
         )
+
+
+class BancoPstack(Banco):
+    """Un solo bloque, con la copia fija de pstack en la conf y todos los agentes falsos como `claude`."""
+
+    CLIS = {"sonnet": "claude", "glm": "claude", "opus": "claude", "k3": "kimi"}
+
+    def arranca_pstack(
+        self,
+        exigir: bool,
+        modos: dict,
+        bloque_extra: str = "",
+        fila=None,
+        antes=None,
+        titulo="saludo",
+        reglas_revision="Z=nada",  # el revisor falso no pide nada extra
+        **kw,
+    ):
+        self.home, self.plan = sandbox.create(
+            self.tmp / "b",
+            pstack={"exigir": exigir, "clis": self.CLIS},
+            modos={"sonnet": "ok", "glm": "ok", "opus": "ok", "k3": "ok", **modos},
+            reglas_revision=reglas_revision,
+            **kw,
+        )
+        if antes:
+            antes()
+        fila = fila or "A.1 | escribe: saludo.txt=hola | test -f saludo.txt"
+        base = self.plan.read_text().split("## Bloque A")[0]
+        self.plan.write_text(
+            base
+            + f"## Bloque A — {titulo}\nlane: gate\naviso: ya saluda\nprueba-real: true\n"
+            + bloque_extra
+            + f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| {fila} |\n",
+            encoding="utf-8",
+        )
+        r = motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        self.assertEqual(
+            json.loads(r.stdout)["estado"], "encolado", r.stdout + r.stderr
+        )
+        self.termina()
+
+    def intentos(self, rol: str) -> list[Path]:
+        return sorted((self.home / "intentos" / "demo").glob(f"A-{rol}-*"))
+
+    def fines(self, rol: str) -> list[dict]:
+        return [
+            e.data["outcome"]
+            for e in eventos(self.home)
+            if e.kind == "AttemptEnded" and e.data["role"] == rol
+        ]
+
+
+class TestPstack(BancoPstack):
+    def test_sin_exigir_el_encargo_lleva_pstack_y_se_guarda_la_huella_sin_rechazar(
+        self,
+    ):
+        self.arranca_pstack(False, {"sonnet": "pstack_no", "opus": "pstack_ok"})
+        for rol in ("implementar", "revisar"):
+            brief = (self.intentos(rol)[0] / "brief.md").read_text(encoding="utf-8")
+            self.assertIn("REGLA-DEL-MOTOR", brief, "motor.md va en el encargo")
+            self.assertIn("Mapa de claude.", brief, "y el mapa del CLI")
+            self.assertIn("## Cómo trabajas", brief)
+        h = json.loads(
+            (self.intentos("implementar")[0] / "huella.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual((h["estado"], h["exigir"]), ("falta", False))
+        self.assertEqual(h["faltas"], ["no cargó la skill poteto-mode"])
+        h = json.loads(
+            (self.intentos("revisar")[0] / "huella.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(h["estado"], "cumple")
+        self.assertEqual(
+            [o["kind"] for o in self.fines("implementar")],
+            ["entregado"],
+            "con exigir = false el motor entrega igual que hoy",
+        )
+        info = json.loads((self.intentos("implementar")[0] / "pstack.json").read_text())
+        copia = Path(info["raiz"])
+        self.assertEqual(copia.parent, self.home / "pstack")
+        self.assertTrue((copia / "pstack/skills/poteto-mode/SKILL.md").is_file())
+        self.assertTrue((copia / "pstack-motor/motor.md").is_file())
+
+    def test_exigir_rechaza_con_sin_pstack_y_el_siguiente_intento_sabe_por_que(self):
+        self.arranca_pstack(True, {"sonnet": "pstack_no_primero", "opus": "pstack_ok"})
+        fines = self.fines("implementar")
+        self.assertEqual([o["kind"] for o in fines], ["sin_pstack", "entregado"])
+        self.assertEqual(fines[0]["detalle"], "no cargó la skill poteto-mode")
+        brief2 = (self.intentos("implementar")[1] / "brief.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("sin_pstack (no cargó la skill poteto-mode)", brief2)
+        raices = {
+            json.loads((d / "pstack.json").read_text())["raiz"]
+            for d in self.intentos("implementar")
+        }
+        self.assertEqual(
+            len(raices), 1, "la copia fija es la misma en los dos intentos"
+        )
+
+    def test_sin_pstack_cuenta_como_falla_del_modelo_y_entra_el_relevo(self):
+        self.arranca_pstack(
+            True, {"sonnet": "pstack_no", "glm": "pstack_ok", "opus": "pstack_ok"}
+        )
+        modelos = [
+            e.data["modelo"]
+            for e in eventos(self.home)
+            if e.kind == "AttemptStarted" and e.data["role"] == "implementar"
+        ]
+        self.assertIn("glm", modelos, "tras fallar sonnet, entra el siguiente modelo")
+        self.assertEqual(self.fines("implementar")[-1]["kind"], "entregado")
+        self.assertIn("sin_pstack", [o["kind"] for o in self.fines("implementar")])
+
+    def test_registro_ilegible_pasa_y_avisa_una_sola_vez_por_cli_y_dia(self):
+        self.arranca_pstack(
+            True, {}
+        )  # los agentes falsos en modo ok no dejan registro legible
+        self.assertEqual([o["kind"] for o in self.fines("implementar")], ["entregado"])
+        avisos = [
+            f.read_text(encoding="utf-8")
+            for f in (self.home / "avisos" / "pendientes").glob("*pstack-ilegible*")
+        ]
+        self.assertEqual(len(avisos), 1, "implementar y revisar usan claude: un aviso")
+        self.assertIn("claude", avisos[0])
+        h = json.loads(
+            (self.intentos("implementar")[0] / "huella.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(h["estado"], "no_verificable")
+
+
+FILA_BUG = (
+    r"A.1 | escribe: saludo.txt=hola \| repro: test -f saludo.txt | test -f saludo.txt"
+)
+
+
+class TestResultadosNoSoloCarga(BancoPstack):
+    """B.4: el motor comprueba el `repro` del arreglo de bug y el de cada bloqueante del revisor."""
+
+    def test_bug_con_repro_que_falla_en_la_base_y_pasa_en_la_punta_se_entrega(self):
+        self.arranca_pstack(False, {}, "tipo: bug\n", FILA_BUG)
+        self.assertEqual([o["kind"] for o in self.fines("implementar")], ["entregado"])
+
+    def test_un_titulo_con_bug_tambien_es_bloque_de_bug(self):
+        self.arranca_pstack(
+            False,
+            {"sonnet": "sin_repro_primero"},
+            fila=FILA_BUG,
+            titulo="arregla el bug del saludo",
+        )
+        self.assertEqual(
+            [o["kind"] for o in self.fines("implementar")], ["sin_repro", "entregado"]
+        )
+
+    def test_sin_repro_el_resultado_es_sin_repro(self):
+        self.arranca_pstack(
+            False, {"sonnet": "sin_repro_primero"}, "tipo: bug\n", FILA_BUG
+        )
+        fines = self.fines("implementar")
+        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
+        self.assertIn("no trae `repro`", fines[0]["detalle"])
+        brief2 = (self.intentos("implementar")[1] / "brief.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("sin_repro (", brief2, "el siguiente intento sabe por qué")
+        self.assertIn('"repro": "<comando>"', brief2)
+
+    def test_un_repro_que_ya_pasa_en_la_base_no_demuestra_el_bug(self):
+        self.arranca_pstack(
+            False, {"sonnet": "repro_malo_primero"}, "tipo: bug\n", FILA_BUG
+        )
+        fines = self.fines("implementar")
+        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
+        self.assertIn("sale 0 en el commit base", fines[0]["detalle"])
+
+    def test_un_repro_que_no_pasa_en_la_punta_tampoco_vale(self):
+        self.arranca_pstack(
+            False, {"sonnet": "repro_roto_primero"}, "tipo: bug\n", FILA_BUG
+        )
+        fines = self.fines("implementar")
+        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
+        self.assertIn("en tu punta", fines[0]["detalle"])
+
+    def test_un_bloque_que_no_es_de_bug_no_pide_repro(self):
+        self.arranca_pstack(False, {})
+        self.assertEqual([o["kind"] for o in self.fines("implementar")], ["entregado"])
+        brief = (self.intentos("implementar")[0] / "brief.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("Este bloque arregla un bug", brief)
+
+    def reviews(self):
+        return [e.data for e in eventos(self.home) if e.kind == "Reviewed"]
+
+    def test_un_bloqueante_cuyo_repro_sale_0_baja_a_nota(self):
+        self.arranca_pstack(False, {"opus": "repro_falso"})
+        r = self.reviews()[0]
+        self.assertEqual(r["veredicto"], "APROBADO", "ya no queda nada reproducible")
+        self.assertEqual(r["bloqueantes"], [])
+        self.assertEqual(len(r["bajados"]), 1)
+        self.assertTrue(
+            any(
+                "Bajó de bloqueante a nota" in n and "dice que falta algo" in n
+                for n in r["notas"]
+            )
+        )
+
+    def test_un_bloqueante_que_si_reproduce_sigue_bloqueando(self):
+        self.arranca_pstack(False, {}, reglas_revision="A=extra")
+        r = self.reviews()[0]
+        self.assertEqual(r["veredicto"], "CAMBIOS")
+        self.assertEqual(
+            [b["repro"] for b in r["bloqueantes"]], ["test -f A-extra.txt"]
+        )
+        self.assertNotIn("bajados", r)
+        self.assertEqual(self.reviews()[-1]["veredicto"], "APROBADO", "tras el arreglo")
+
+
+class TestPuertaEnVivo(BancoPstack):
+    def test_corta_al_agente_que_llega_a_la_accion_6_sin_poteto_mode(self):
+        self.arranca_pstack(
+            True, {"sonnet": "pstack_lento", "glm": "pstack_ok", "opus": "pstack_ok"}
+        )
+        d = self.intentos("implementar")[0]
+        o = json.loads((d / "outcome.json").read_text(encoding="utf-8"))
+        self.assertIn("no cargó poteto-mode en sus primeras 6 acciones", o["puerta"])
+        self.assertLess(
+            o["segundos"],
+            12,
+            "lo cortó en vivo: el agente falso tardaba 18 s en acabar",
+        )
+        self.assertFalse((d / "result.json").exists(), "no llegó a entregar")
+        fin = self.fines("implementar")[0]
+        self.assertEqual(fin["kind"], "sin_pstack")
+        self.assertIn("primeras 6 acciones", fin["detalle"])
+        self.assertEqual(self.fines("implementar")[-1]["kind"], "entregado")
+
+    def test_sin_exigir_no_hay_puerta(self):
+        self.arranca_pstack(False, {"sonnet": "pstack_lento", "opus": "pstack_ok"})
+        o = json.loads(
+            (self.intentos("implementar")[0] / "outcome.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertNotIn("puerta", o)
+        self.assertEqual([x["kind"] for x in self.fines("implementar")], ["entregado"])
+
+
+class TestLlamadasAOtrosModelos(BancoPstack):
+    """B.3: el agente llama a otro CLI de modelos por el shim del motor."""
+
+    def cli_falsos(self):
+        """Carpeta con `kimi` y `claude` falsos (lo que hay detrás de los shims) en el PATH de la máquina."""
+        binario = self.tmp / "clis"
+        binario.mkdir()
+        for nombre in ("kimi", "claude"):
+            f = binario / nombre
+            f.write_text(
+                f'#!/bin/sh\nexec "{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} "$@"\n'
+            )
+            f.chmod(0o755)
+            (binario / f"{nombre}.cmd").write_text(  # en Windows solo corren los .cmd
+                f'@"{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} %*\r\n',
+                encoding="utf-8",
+            )
+        return binario
+
+    def maquina(self, extra_env: str = ""):
+        texto = (self.home / "maquina.toml").read_text(encoding="utf-8")
+        (self.home / "maquina.toml").write_text(
+            texto.replace(
+                "[env]",
+                f'path_extra = ["{self.cli_falsos().as_posix()}"]\n[env]\n{extra_env}',
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    def panel(self) -> dict:
+        return json.loads(
+            (self.tmp / "b" / "fake-state" / "panel-sonnet.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def llamadas(self) -> list[dict]:
+        return [
+            json.loads(f.read_text(encoding="utf-8"))
+            for f in sorted(
+                (self.intentos("implementar")[0] / "llamadas").glob("*.json")
+            )
+        ]
+
+    def test_una_llamada_a_otro_cli_pasa_y_queda_contada(self):
+        self.arranca_pstack(
+            False, {"sonnet": "panel", "opus": "ok"}, antes=lambda: self.maquina()
+        )
+        r = self.panel()
+        self.assertEqual(r["rc"], 0, r["err"])
+        self.assertIn("kimi-respuesta", r["out"], "la llamada llegó al CLI real")
+        self.assertIn(
+            "libro:agente/anthropic,llamada/kimi",
+            r["out"],
+            "mientras corría, el agente y su llamada ocupaban lugar en el libro de cuentas",
+        )
+        [ll] = self.llamadas()
+        self.assertEqual(
+            (ll["modelo"], ll["cuenta"], ll["cli"]), ("k3", "kimi", "kimi")
+        )
+        self.assertTrue(ll["inicio"] and ll["fin"] >= ll["inicio"])
+        self.assertEqual(
+            list((self.home / "llamadas").glob("*.json")),
+            [],
+            "al terminar no queda nada vivo",
+        )
+
+    def test_con_la_cuenta_llena_se_rechaza(self):
+        def lleno():
+            self.maquina()
+            # dos llamadas vivas de la cuenta kimi (max_parallel = 2): dueño, este mismo proceso de prueba
+            for i in range(2):
+                llamadas.registra(
+                    self.home,
+                    f"llamada-ocupada{i}",
+                    {
+                        "tipo": "llamada",
+                        "cuenta": "kimi",
+                        "pid": os.getpid(),
+                        "inicio": 1,
+                    },
+                )
+
+        self.arranca_pstack(False, {"sonnet": "panel", "opus": "ok"}, antes=lleno)
+        r = self.panel()
+        self.assertEqual(r["rc"], 3)
+        self.assertEqual(
+            r["err"].strip(), "esa cuenta no tiene lugar ahora; usa otro modelo"
+        )
+        self.assertNotIn("kimi-respuesta", r["out"], "el CLI real ni se llamó")
+        self.assertFalse((self.intentos("implementar")[0] / "llamadas").exists())
+
+    def test_una_cuenta_en_pausa_de_cuota_rechaza(self):
+        def en_pausa():
+            self.maquina()
+            Store(self.home / "motor.db").append(
+                "demo",
+                "",
+                "Cooldown",
+                {"cuenta": "kimi", "hasta": time.time() + 3600, "modelo": "k3"},
+            )
+
+        self.arranca_pstack(False, {"sonnet": "panel", "opus": "ok"}, antes=en_pausa)
+        r = self.panel()
+        self.assertEqual(
+            (r["rc"], r["err"].strip()),
+            (3, "esa cuenta no tiene lugar ahora; usa otro modelo"),
+        )
+
+    def test_una_llamada_desde_dentro_de_otra_se_rechaza(self):
+        self.arranca_pstack(
+            False,
+            {"sonnet": "panel", "opus": "ok"},
+            antes=lambda: self.maquina('FAKE_ANIDA = "1"\n'),
+        )
+        r = self.panel()
+        self.assertEqual(r["rc"], 0, "la primera llamada sí pasó")
+        self.assertIn("anidada-rc:3", r["out"])
+        self.assertIn("no se puede llamar a otro modelo desde dentro", r["out"])
+        self.assertEqual(len(self.llamadas()), 1, "la anidada no se contó: no se hizo")
+
+    def test_el_motor_cuenta_las_llamadas_vivas_en_los_topes(self):
+        self.home, _ = sandbox.create(self.tmp / "b")
+        llamadas.registra(
+            self.home,
+            "llamada-x",
+            {"tipo": "llamada", "cuenta": "kimi", "pid": os.getpid(), "inicio": 1},
+        )
+        llamadas.registra(
+            self.home,
+            "agente-x",
+            {"tipo": "agente", "cuenta": "zai", "pid": os.getpid(), "inicio": 1},
+        )
+        llamadas.registra(
+            self.home,
+            "llamada-muerta",
+            {"tipo": "llamada", "cuenta": "kimi", "pid": 2**22 + 12345, "inicio": 1},
+        )
+        d = Daemon(self.home)
+        self.assertEqual(
+            d._ocupados_fuera([], None),
+            {"kimi": 1},
+            "las llamadas vivas ocupan lugar; el agente ya lo cuenta su intento; el muerto se limpia",
+        )
+        self.assertFalse((self.home / "llamadas" / "llamada-muerta.json").exists())
 
 
 if __name__ == "__main__":

@@ -9,6 +9,13 @@ Modos (cada uno es una falla del catálogo):
   stdin           lee de la terminal antes de trabajar (como un prompt de permiso)
   cuelga          no hace nada y no muestra avance
   rompe_primero   la primera entrega rompe las pruebas automáticas; la siguiente lo arregla
+  pstack_*        trabaja normal y deja un registro con o sin poteto-mode (ver fake_log.py)
+  panel*          llama a `kimi` por el shim del motor y guarda lo que contestó (panel_anida: la llamada
+                  intenta, desde dentro, llamar a otro CLI)
+  repro_malo_primero / repro_roto_primero / sin_repro_primero
+                  la primera entrega trae un `repro` que ya pasa en la base / que no pasa ni en la punta /
+                  no trae `repro`
+                  (el `repro` bueno viene de una fila del encargo: `| repro: <comando>`)
   parcial_lento   en el bloque A, la primera vez deja un archivo sin commitear y se queda trabajando
                   (para simular un apagón a la mitad); la siguiente termina
 """
@@ -19,6 +26,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -45,6 +53,26 @@ def main() -> int:
         (marca.parent / f"llave-{os.environ['MOTOR_MODEL']}").write_text(
             os.environ["FAKE_LLAVE"]
         )
+
+    if modo.startswith(
+        "pstack"
+    ):  # deja en el registro lo que hizo con poteto-mode (fake_log.py)
+        from fake_log import emite
+
+        emite(modo, primera)
+
+    if modo.startswith(
+        "panel"
+    ):  # pide una segunda opinión a otro CLI de modelos, por el shim del motor
+        r = subprocess.run(
+            [shutil.which("kimi") or "kimi", "--model", "k3", "-p", "hola"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        (
+            Path(os.environ["FAKE_STATE"]) / f"panel-{os.environ['MOTOR_MODEL']}.json"
+        ).write_text(json.dumps({"rc": r.returncode, "out": r.stdout, "err": r.stderr}))
 
     if modo == "cuota_primero" and primera:
         reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).strftime(
@@ -74,7 +102,11 @@ def main() -> int:
     if Path("parcial.txt").exists():
         git("add", "parcial.txt")
         git("commit", "-q", "-m", "continúa lo que quedó a medias")
+    repro = ""
     for linea in brief.splitlines():
+        rr = re.search(r"\| repro: (.*?)(?: \| |$)", linea)
+        if rr:
+            repro = rr.group(1).strip()
         mm = re.search(r"(?:^- (\S+): )?.*?escribe: (\S+?)=(.*)$", linea)
         if not mm:
             continue
@@ -115,9 +147,16 @@ def main() -> int:
     sha = git("rev-parse", "HEAD").stdout.strip()
     if modo == "mentiroso":
         sha = "0123456789abcdef0123456789abcdef01234567"
-    Path(os.environ["MOTOR_RESULT"]).write_text(
-        json.dumps({"sha": sha, "resumen": "hecho"})
-    )
+    if modo == "repro_malo_primero" and primera:
+        repro = "test -f README.md"  # ya pasa en la base: no demuestra nada
+    if modo == "repro_roto_primero" and primera:
+        repro = "test -f nada-de-nada.txt"  # falla en la base, pero también en la punta
+    if modo == "sin_repro_primero" and primera:
+        repro = ""
+    resultado = {"sha": sha, "resumen": "hecho"}
+    if repro:
+        resultado["repro"] = repro
+    Path(os.environ["MOTOR_RESULT"]).write_text(json.dumps(resultado))
     print("listo")
     return 0
 

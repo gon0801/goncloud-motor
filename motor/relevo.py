@@ -94,6 +94,8 @@ DE_KIND = {
     "sin_resultado": Falla.INVALID_TERMINAL,
     "veredicto_invalido": Falla.INVALID_TERMINAL,
     "perdido": Falla.TASK_FAILURE,
+    "sin_pstack": Falla.TASK_FAILURE,  # no usó poteto-mode: falla del modelo, no de la cuenta
+    "sin_repro": Falla.TASK_FAILURE,  # arreglo de bug sin una prueba que falle en la base y pase en la punta
 }
 # Las que el reloj devuelve solas (pausa o cuarentena): no cuentan en la racha de fallas del modelo.
 LAS_RESUELVE_EL_RELOJ = frozenset({Falla.QUOTA, Falla.RATE_LIMIT, Falla.AUTH})
