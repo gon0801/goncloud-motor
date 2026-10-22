@@ -77,9 +77,15 @@ def pr_cerrado(plan: str, block: str, numero: int) -> str:
 
 
 def checks_esperando(
-    plan: str, block: str, sha: str, faltan: tuple[str, ...], github_termino: bool
+    plan: str,
+    block: str,
+    sha: str,
+    faltan: tuple[str, ...],
+    github_termino: bool,
+    vez: int = 0,
 ) -> str:
-    return f"espera:{plan}:{block}:{sha}:{','.join(faltan)}:{github_termino}"
+    base = f"espera:{plan}:{block}:{sha}:{','.join(faltan)}:{github_termino}"
+    return base if not vez else f"{base}:v{vez}"
 
 
 def checks_resultado(

@@ -336,6 +336,32 @@ class ChecksTest(unittest.TestCase):
         salto["completed_at"] = "2026-10-21T20:00:00Z"
         gh = Gh(proteccion=json.dumps(["completa"]), runs=json.dumps([salto]))
         plan, store, fx = self._fx(gh)
+        t0 = time.time() - 3 * 3600
+        store.append(
+            "demo",
+            "A",
+            "AttemptStarted",
+            {"n": 1, "role": "implementar", "modelo": "glm", "proc": {}, "dir": "d"},
+            ts=t0,
+        )
+        store.append(
+            "demo",
+            "A",
+            "AttemptEnded",
+            {
+                "n": 1,
+                "role": "implementar",
+                "outcome": {"kind": "entregado", "sha": SHA},
+            },
+            ts=t0 + 1,
+        )
+        for kind, data in [
+            ("Verified", {"sha": SHA, "ok": True}),
+            ("PrOpened", {"numero": 7, "rama": "f"}),
+            ("Reviewed", {"sha": SHA, "veredicto": "APROBADO", "bloqueantes": []}),
+            ("MarkedReady", {"sha": SHA}),
+        ]:
+            store.append("demo", "A", kind, data, ts=t0 + 2)
         store.append(
             "demo",
             "A",
@@ -346,6 +372,10 @@ class ChecksTest(unittest.TestCase):
         )
         fx.poll_checks(plan, self._snap(plan, store), m.PollChecks("A", SHA))
         self.assertEqual(gh.relanzadas, ["42"])
+        gh.runs = json.dumps(
+            [_run("completa", conclusion=None, rid=42, status="in_progress")]
+        )
+        fx.poll_checks(plan, self._snap(plan, store), m.PollChecks("A", SHA))
         salto["completed_at"] = "2026-10-22T12:00:00Z"
         gh.runs = json.dumps([salto])
         self.assertEqual(gh.checks("o/r", 7, SHA, (), ("42",)).faltan, ("completa",))
@@ -362,6 +392,10 @@ class ChecksTest(unittest.TestCase):
             self._snap(plan, store).blocks["A"].esperando[SHA]["faltan"],
             ["completa"],
         )
+        d = diagnostico(self._snap(plan, store), "A", pol(), time.time() + 2 * 3600)
+        self.assertTrue(d.atorado)
+        self.assertEqual(d.causa, Causa.CHECKS_INCOHERENTE)
+        self.assertIn("relancé", d.motivo)
 
     def test_rojo_trae_pr_url_y_las_ultimas_80_lineas(self):
         gh = GhGrabado(runs=json.dumps([_run("ci", conclusion="failure", rid=7)]))

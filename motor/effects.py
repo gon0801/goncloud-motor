@@ -1375,22 +1375,38 @@ Escribe en `$MOTOR_RESULT`:
             relanzadas,
         )
         if not v.terminal:
-            # Qué falta y si GitHub ya terminó: se anota solo cuando cambia (los sondeos no ensucian
-            # el log). Con esto el aviso dice qué prueba se espera, y el motor nota la incoherencia
-            # de esperar algo que GitHub ya no va a correr (INGESTA 01 esperó horas en silencio).
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "ChecksEsperando",
-                {
-                    "sha": a.sha,
-                    "faltan": list(v.faltan),
-                    "github_termino": v.github_termino,
-                },
-                ukey=claves.checks_esperando(
-                    plan.id, a.block, a.sha, tuple(v.faltan), v.github_termino
-                ),
-            )
+            # Se anota solo cuando (faltan, github_termino) cambia respecto del último
+            # ChecksEsperando del store, no del snap: un sondeo puede traer un snap fijo.
+            previos = [
+                e
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "ChecksEsperando"
+                and e.block == a.block
+                and e.data.get("sha") == a.sha
+            ]
+            ultimo = previos[-1].data if previos else None
+            if ultimo is None or (
+                list(ultimo.get("faltan", [])),
+                ultimo.get("github_termino"),
+            ) != (list(v.faltan), v.github_termino):
+                self.cx.store.append(
+                    plan.id,
+                    a.block,
+                    "ChecksEsperando",
+                    {
+                        "sha": a.sha,
+                        "faltan": list(v.faltan),
+                        "github_termino": v.github_termino,
+                    },
+                    ukey=claves.checks_esperando(
+                        plan.id,
+                        a.block,
+                        a.sha,
+                        tuple(v.faltan),
+                        v.github_termino,
+                        vez=len(previos),
+                    ),
+                )
             self._relanza_saltada(plan, snap, a, v)
             return
         if not v.green and self._relanza_fallidas_tras_reentrega(plan, snap, a, v):
