@@ -800,6 +800,49 @@ class DespliegueTest(unittest.TestCase):
         self.assertEqual(r["codigo"], 75)
         self.assertIn("no es el código; reintenta luego", r["detalle"])
 
+    def test_segundo_deploy_tras_75_ya_anotado_lanza_un_intento_nuevo(self):
+        fx, plan, snap, corre, t = self._fx({})
+        h_ins, h_maq = fx._huellas("deployed", plan.block("A"), snap)
+        d = t / "aparte-1"
+        d.mkdir()
+        datos = {
+            "sha": SHA,
+            "ok": False,
+            "codigo": 75,
+            "detalle": "no es el código; reintenta luego",
+            "huella": h_ins,
+            "huella_maquina": h_maq,
+            "falta_comando": [],
+        }
+        (d / "outcome.json").write_text(json.dumps({"data": datos}))
+        fx.cx.store.append(
+            "demo",
+            "A",
+            "DeployStarted",
+            {"sha": SHA, "dir": str(d), "proc": {}, "n": 1},
+            ts=time.time() - 1200,
+        )
+        fx.deploy(plan, snap, m.Deploy("A", SHA))
+        self.assertEqual(
+            [
+                e.data.get("codigo")
+                for e in fx.cx.store.events("demo")
+                if e.kind == "Deployed"
+            ],
+            [75],
+        )
+        lanzados = []
+        original = fxmod.plataforma.lanzar_separado
+        fxmod.plataforma.lanzar_separado = lambda *a, **k: lanzados.append(a) or {}
+        try:
+            fx.env_base = lambda extra=None: {}
+            fx.deploy(plan, snap, m.Deploy("A", SHA))
+        finally:
+            fxmod.plataforma.lanzar_separado = original
+        self.assertEqual(len(lanzados), 1)
+        iniciados = [e for e in fx.cx.store.events("demo") if e.kind == "DeployStarted"]
+        self.assertEqual(iniciados[-1].data.get("n"), 2)
+
     def test_75_reintenta_a_los_15_min_y_a_las_3_h_es_atasco(self):
         from tests.test_puro import ev
 

@@ -1097,7 +1097,7 @@ Escribe en `$MOTOR_RESULT`:
                         and datos.get("huella_maquina", h_maquina) == h_maquina
                     ):
                         if terminal_kind == "Verified":
-                            self.cx.store.append(
+                            anotado = self.cx.store.append(
                                 plan.id,
                                 a.block,
                                 "Verified",
@@ -1107,7 +1107,7 @@ Escribe en `$MOTOR_RESULT`:
                                 ),
                             )
                         elif terminal_kind == "Deployed":
-                            self.cx.store.append(
+                            anotado = self.cx.store.append(
                                 plan.id,
                                 a.block,
                                 "Deployed",
@@ -1124,7 +1124,7 @@ Escribe en `$MOTOR_RESULT`:
                                 ),
                             )
                         else:
-                            self.cx.store.append(
+                            anotado = self.cx.store.append(
                                 plan.id,
                                 a.block,
                                 "Proved",
@@ -1140,7 +1140,8 @@ Escribe en `$MOTOR_RESULT`:
                                     else 0,
                                 ),
                             )
-                        return
+                        if anotado or datos.get("codigo") != 75:
+                            return
                 else:
                     proc = ultimo.data.get("proc") or {}
                     if proc and plataforma.estado_proc(proc) == "vivo":
