@@ -808,12 +808,13 @@ def _resumen(snap: Snapshot, now: float, policy: Policy) -> tuple[tuple[str, str
         ahora = "Ahora estoy entre un paso y otro."
     atorados = []
     for bid, bv in snap.blocks.items():
-        if estados[bid] is Estado.HECHO or not any(
-            k.startswith(f"atorado:{bid}") for k in bv.notices
-        ):
-            continue
-        causa = _sin_avance_propio(bv, estados[bid], policy, now)
-        atorados.append(f"«{bv.block.titulo}»" + (f" ({causa[1]})" if causa else ""))
+        causa = (
+            None
+            if estados[bid] is Estado.HECHO
+            else _sin_avance_propio(bv, estados[bid], policy, now)
+        )
+        if causa:
+            atorados.append(f"«{bv.block.titulo}» ({causa[1]})")
     atoron = ("Atorado: " + "; ".join(atorados) + ".") if atorados else "Nada atorado."
     return (
         ("listas", str(listas)),
@@ -854,29 +855,42 @@ def _sin_avance_propio(
                 f"atorado:{bid}",
                 f"las pruebas de GitHub llevan {_dura(now - desde)} sin terminar",
             )
-    for tipo, d, campo in (
-        ("prueba", bv.proved, "ok"),
-        ("despliegue", bv.deployed, "ok"),
-        ("checks", bv.checks, "green"),
+    head = bv.head()
+    for tipo, d, campo, que in (
+        ("prueba", bv.proved, "ok", "falló la prueba con datos reales"),
+        ("despliegue", bv.deployed, "ok", "falló el despliegue"),
+        ("checks", bv.checks, "green", "las pruebas de GitHub salieron en rojo"),
     ):
         n = _seguidas(d, campo)
-        if n >= policy.repeticiones_max:
+        # Solo mientras no haya un arreglo nuevo: con otra entrega en camino ya no es atasco.
+        if n >= policy.repeticiones_max and list(d)[-1] == head:
             antes = (
                 len(d) - n
             )  # fija la clave mientras dura la racha: un aviso por racha
             return (
                 f"atorado:{bid}:repite:{tipo}:{antes}",
-                f"{_ultima_falla(bv) or 'la misma falla'}, {n} veces seguidas",
+                f"{que}, {n} veces seguidas",
             )
-    if (
-        len(bv.fallas_efecto) >= 2
-        and bv.fallas_efecto[-1] - bv.fallas_efecto[0] >= 3600
-    ):
+    racha = _racha(bv.fallas_efecto)
+    if racha and now - racha[1] < 15 * 60 and racha[1] - racha[0] >= 3600:
         return (
-            f"atorado:{bid}",
+            f"atorado:{bid}:efecto:{int(racha[0])}",
             "un paso del motor lleva una hora fallando (red o GitHub); sigo reintentando",
         )
     return None
+
+
+def _racha(fallas: list[float], hueco: float = 15 * 60) -> tuple[float, float] | None:
+    """(inicio, fin) de las últimas fallas seguidas, sin huecos de más de `hueco` entre ellas. Dos
+    fallas sueltas separadas por una hora no son "una hora fallando" (PSTACK 01 en la PC)."""
+    if not fallas:
+        return None
+    ini = fallas[-1]
+    for t in reversed(fallas[:-1]):
+        if ini - t > hueco:
+            break
+        ini = t
+    return ini, fallas[-1]
 
 
 def _seguidas(d: dict[str, dict], campo: str) -> int:

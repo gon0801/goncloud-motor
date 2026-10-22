@@ -995,6 +995,59 @@ class TestDespliegueQueSePasa(Banco):
         self.assertIn(f"uso: lo vi {commit}", d.data["detalle"])
         self.assertIn("sin argumentos", d.data["detalle"])
 
+    def test_una_verificacion_que_se_pasa_del_tope_es_una_falla_con_motivo(self):
+        """PSTACK 01 en la PC: la Acepta corría la batería e2e, tardaba más de 15 min y el motor la
+        reintentaba horas como si fuera un tropiezo de red."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        g = self.tmp / "b" / "conf" / "general.toml"
+        g.write_text(
+            g.read_text(encoding="utf-8").replace(
+                "[tiempos]\n", "[tiempos]\nverifica_tope_s = 3\n"
+            ),
+            encoding="utf-8",
+        )
+        git(
+            "-c", "user.name=c", "-c", "user.email=c@l",
+            "commit", "-qam", "tope corto", cwd=self.tmp / "b" / "conf",
+        )  # fmt: skip
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                '| test "$(cat saludo.txt)" = hola |', "| sleep 30 |", 1
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(
+                    e.kind == "Verified" and e.block == "A" for e in eventos(self.home)
+                ),
+                tope=150,
+            )
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        ev = eventos(self.home)
+        v = [e for e in ev if e.kind == "Verified" and e.block == "A"][0]
+        self.assertFalse(v.data["ok"])
+        self.assertIn("se pasó del tope de 3 s", v.data["detalle"])
+        self.assertFalse(
+            [
+                e
+                for e in ev
+                if e.kind == "EffectFailed" and e.data.get("accion") == "Verify"
+            ]
+        )
+
 
 class TestTopesEntrePlanes(Banco):
     def test_dos_planes_no_rebasan_el_tope_de_la_cuenta(self):
