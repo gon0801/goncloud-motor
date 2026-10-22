@@ -36,6 +36,12 @@ class Policy:
     rondas_max_por_modelo: int = 5
     cooldown_default_s: float = 5 * 3600
     aviso_lento_s: float = 6 * 3600
+    aviso_incoherente_s: float = (
+        30 * 60
+    )  # GitHub ya terminó y el motor sigue esperando una prueba
+    repeticiones_max: int = (
+        3  # la misma falla tantas veces seguidas: algo no cuadra, se avisa
+    )
     agentes_por_maquina: int = 0  # tope de agentes a la vez en esta máquina, sumando todos los planes (0 = sin tope)
     avance_cada_s: float = (
         3600  # resumen a David mientras el plan corre (orden de David, 2026-10-20)
@@ -69,6 +75,8 @@ class Policy:
             wip_cada_s=t.get("wip_cada_s", 300),
             cooldown_default_s=t.get("cooldown_default_s", 5 * 3600),
             aviso_lento_s=t.get("aviso_lento_s", 6 * 3600),
+            aviso_incoherente_s=t.get("aviso_incoherente_s", 30 * 60),
+            repeticiones_max=int(t.get("repeticiones_max", 3)),
             avance_cada_s=t.get("avance_cada_s", 3600),
             agentes_por_maquina=int(t.get("agentes_por_maquina", 0)),
         )
@@ -134,6 +142,9 @@ class BlockView:
     fallas_efecto: list[float] = field(
         default_factory=list
     )  # cuándo falló un efecto (red, GitHub, disco)
+    esperando: dict[str, dict] = field(
+        default_factory=dict
+    )  # sha -> {"faltan", "github_termino", "desde"}: qué pruebas de GitHub se esperan
 
     def implement_attempts(self) -> list[Attempt]:
         return [a for a in self.attempts if a.role == "implementar"]
@@ -222,6 +233,8 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.fallas_efecto.append(e.ts)
         elif e.kind == "ChecksResult":
             bv.checks[d["sha"]] = d
+        elif e.kind == "ChecksEsperando":
+            bv.esperando[d["sha"]] = {**d, "desde": e.ts}
         elif e.kind == "Merged":
             bv.merged.append(d)
             bv.pr = None  # ese PR ya se usó: un arreglo posterior (p. ej. tras un despliegue fallido) va en uno nuevo
@@ -655,11 +668,15 @@ def decide(
         e = estado(snap, bid)
         if e is not Estado.HECHO:
             todos_hechos = False
-        if f"atorado:{bid}" not in bv.notices and _sin_avance_propio(
-            bv, e, policy, now
-        ):
+        atasco = _sin_avance_propio(bv, e, policy, now)
+        if atasco and atasco[0] not in bv.notices:
             acciones.append(
-                Notify(f"atorado:{bid}", bid, "atorado", (("bloque", b.aviso),))
+                Notify(
+                    atasco[0],
+                    bid,
+                    "atorado",
+                    (("bloque", b.aviso), ("motivo", atasco[1])),
+                )
             )
         if e is Estado.HUMANO:
             if b.human and b.human.sonda:
@@ -730,7 +747,9 @@ def decide(
     if not todos_hechos and snap.inicio and policy.avance_cada_s > 0:
         n = int((now - snap.inicio) // policy.avance_cada_s)
         if n >= 1 and f"avance:{n}" not in snap.plan_notices:
-            acciones.append(Notify(f"avance:{n}", "", "avance", _resumen(snap, now)))
+            acciones.append(
+                Notify(f"avance:{n}", "", "avance", _resumen(snap, now, policy))
+            )
     if (
         todos_hechos
         and f"terminado:{snap.plan.id}" in snap.plan_notices
@@ -763,38 +782,40 @@ NOMBRES = {
 }
 
 
-def _resumen(snap: Snapshot, now: float) -> tuple[tuple[str, str], ...]:
+def _resumen(snap: Snapshot, now: float, policy: Policy) -> tuple[tuple[str, str], ...]:
     """El latido de cada hora: cuántas partes van, qué se está haciendo y si algo está atorado.
     Si deja de llegar, David sabe que el motor o la máquina se cayeron."""
     estados = {bid: estado(snap, bid) for bid in snap.blocks}
     listas = sum(e is Estado.HECHO for e in estados.values())
-    corriendo = []
+    partes = []
     for bid, bv in snap.blocks.items():
+        if estados[bid] in (Estado.HECHO, Estado.ESPERANDO):
+            continue
         run = bv.running()
         if run:
             que = "reviso" if run.role == "revisar" else "trabajo en"
-            corriendo.append(
+            frase = (
                 f"{que} «{bv.block.titulo}» ({NOMBRES.get(run.modelo, run.modelo.capitalize())}, "
-                f"{int((now - run.started) // 60)} min)"
+                f"{_dura(now - run.started)})"
             )
-    if corriendo:
-        ahora = "Ahora " + "; ".join(corriendo) + "."
-    elif any(e is Estado.HUMANO for e in estados.values()):
-        ahora = "Ahora espero tu paso; te mandé el aviso con lo que hay que hacer."
-    elif any(e is Estado.CHECKS for e in estados.values()):
-        ahora = "Ahora espero las pruebas automáticas de GitHub."
+            falla = _ultima_falla(bv) if run.role == "implementar" else ""
+            partes.append(frase + (f" porque {falla}" if falla else ""))
+        else:
+            partes.append(f"«{bv.block.titulo}»: {motivo(snap, bid, now)}")
+    if partes:
+        ahora = "Ahora " + "; ".join(partes) + "."
     else:
         ahora = "Ahora estoy entre un paso y otro."
-    atorados = [
-        bv.block.titulo
-        for bid, bv in snap.blocks.items()
-        if f"atorado:{bid}" in bv.notices and estados[bid] is not Estado.HECHO
-    ]
-    atoron = (
-        ("Atorado: " + "; ".join(f"«{x}»" for x in atorados) + ".")
-        if atorados
-        else "Nada atorado."
-    )
+    atorados = []
+    for bid, bv in snap.blocks.items():
+        causa = (
+            None
+            if estados[bid] is Estado.HECHO
+            else _sin_avance_propio(bv, estados[bid], policy, now)
+        )
+        if causa:
+            atorados.append(f"«{bv.block.titulo}» ({causa[1]})")
+    atoron = ("Atorado: " + "; ".join(atorados) + ".") if atorados else "Nada atorado."
     return (
         ("listas", str(listas)),
         ("total", str(len(snap.blocks))),
@@ -803,17 +824,175 @@ def _resumen(snap: Snapshot, now: float) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _sin_avance_propio(bv: BlockView, e: Estado, policy: Policy, now: float) -> bool:
-    """Atascos que no dependen de un agente: checks que nunca terminan (un nombre que no existe)
-    o un efecto que lleva una hora fallando. Se avisa una vez y el motor sigue reintentando."""
+def _sin_avance_propio(
+    bv: BlockView, e: Estado, policy: Policy, now: float
+) -> tuple[str, str] | None:
+    """Atascos que no dependen de un agente, como (clave del aviso, motivo para David). Se avisa una
+    vez por causa y el motor sigue intentando:
+    - GitHub ya terminó todas sus pruebas y falta una requerida (INGESTA 01 esperó horas así);
+    - pruebas que no terminan nunca (un nombre que no existe);
+    - la misma falla varias veces seguidas (la prueba real de una sonda que solo corre de noche);
+    - un efecto que lleva una hora fallando (red, GitHub, disco)."""
+    bid = bv.block.id
     if e is Estado.CHECKS:
-        desde = bv.listo_desde.get(bv.head())
+        head = bv.head()
+        esp = bv.esperando.get(head) or {}
+        if (
+            esp.get("github_termino")
+            and esp.get("faltan")
+            and now - esp["desde"] > policy.aviso_incoherente_s
+        ):
+            return (
+                f"atorado:{bid}:incoherente:{head[:12]}",
+                (
+                    f"GitHub ya terminó sus pruebas, pero sigo esperando {_lista(esp['faltan'])}, "
+                    f"que no llegó a correr ({_dura(now - esp['desde'])})"
+                ),
+            )
+        desde = bv.listo_desde.get(head)
         if desde is not None and now - desde > policy.aviso_lento_s:
-            return True
-    return (
-        len(bv.fallas_efecto) >= 2
-        and bv.fallas_efecto[-1] - bv.fallas_efecto[0] >= 3600
-    )
+            return (
+                f"atorado:{bid}",
+                f"las pruebas de GitHub llevan {_dura(now - desde)} sin terminar",
+            )
+    head = bv.head()
+    falta = (bv.verified.get(head) or {}).get("falta_comando") if head else None
+    if falta:
+        # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin.
+        # Un aviso por comando, no uno por ronda ni otro cuando se suma un comando nuevo.
+        prefijo = f"atorado:{bid}:comando:"
+        avisados = {
+            c
+            for k in bv.notices
+            if k.startswith(prefijo)
+            for c in k[len(prefijo) :].split(",")
+        }
+        nuevos = [c for c in falta if c not in avisados]
+        clave = (
+            prefijo + ",".join(nuevos)
+            if nuevos
+            else min(k for k in bv.notices if k.startswith(prefijo))
+        )
+        return (
+            clave,
+            (
+                f"la verificación del plan usa {', '.join(falta)}, que esta máquina no tiene; "
+                "hay que corregir el plan o instalarlo en la máquina"
+            ),
+        )
+    for tipo, d, campo, que in (
+        ("verificacion", bv.verified, "ok", "falló la verificación de las filas"),
+        ("prueba", bv.proved, "ok", "falló la prueba con datos reales"),
+        ("despliegue", bv.deployed, "ok", "falló el despliegue"),
+        ("checks", bv.checks, "green", "las pruebas de GitHub salieron en rojo"),
+    ):
+        n = _seguidas(d, campo)
+        # Solo mientras no haya un arreglo nuevo: con otra entrega en camino ya no es atasco.
+        if n >= policy.repeticiones_max and list(d)[-1] == head:
+            antes = (
+                len(d) - n
+            )  # fija la clave mientras dura la racha: un aviso por racha
+            return (
+                f"atorado:{bid}:repite:{tipo}:{antes}",
+                f"{que}, {n} veces seguidas",
+            )
+    racha = _racha(bv.fallas_efecto)
+    if racha and now - racha[1] < 15 * 60 and racha[1] - racha[0] >= 3600:
+        return (
+            f"atorado:{bid}:efecto:{int(racha[0])}",
+            "un paso del motor lleva una hora fallando (red o GitHub); sigo reintentando",
+        )
+    return None
+
+
+def _racha(fallas: list[float], hueco: float = 15 * 60) -> tuple[float, float] | None:
+    """(inicio, fin) de las últimas fallas seguidas, sin huecos de más de `hueco` entre ellas. Dos
+    fallas sueltas separadas por una hora no son "una hora fallando" (PSTACK 01 en la PC)."""
+    if not fallas:
+        return None
+    ini = fallas[-1]
+    for t in reversed(fallas[:-1]):
+        if ini - t > hueco:
+            break
+        ini = t
+    return ini, fallas[-1]
+
+
+def _seguidas(d: dict[str, dict], campo: str) -> int:
+    n = 0
+    for v in reversed(list(d.values())):
+        if v.get(campo):
+            break
+        n += 1
+    return n
+
+
+def _dura(seg: float) -> str:
+    m = int(seg // 60)
+    if m < 60:
+        return f"{max(m, 1)} min"
+    h, m = divmod(m, 60)
+    return f"{h} h" + (f" {m} min" if m else "")
+
+
+def _lista(nombres) -> str:
+    q = [f"la prueba «{n}»" for n in nombres]
+    return q[0] if len(q) == 1 else ", ".join(q[:-1]) + " y " + q[-1]
+
+
+def _ultima_falla(bv: BlockView) -> str:
+    """Por qué el bloque volvió a un agente, en palabras para David (sin rutas ni detalles técnicos:
+    el detalle completo va en el encargo del agente y en `motor estado`)."""
+    head, m = bv.head(), bv.merged_sha()
+    if m and m == head:
+        if m in bv.proved and not bv.proved[m]["ok"]:
+            return "falló la prueba con datos reales"
+        if m in bv.deployed and not bv.deployed[m]["ok"]:
+            return "falló el despliegue y se revirtió"
+    c = bv.checks.get(head)
+    if c and not c["green"]:
+        if str(c.get("detalle", "")).startswith("el merge falló"):
+            return "GitHub no dejó integrarlo; hay que traer lo último de la rama principal"
+        return "las pruebas automáticas de GitHub salieron en rojo"
+    r = bv.review_for(head) if head else None
+    if r and not _aprobado(r):
+        return "el revisor pidió cambios"
+    v = bv.verified.get(head) if head else None
+    if v and not v["ok"]:
+        return "falló la verificación de las filas"
+    last = bv.last_implement_outcome()
+    if last and last.get("kind") == "corte":
+        return "el intento anterior se cortó por un reinicio o apagón"
+    if last and last.get("kind") != "entregado":
+        return "el intento anterior terminó sin entregar"
+    return ""
+
+
+def motivo(snap: Snapshot, bid: str, now: float) -> str:
+    """Qué hace o qué espera una parte, en una frase para David."""
+    bv, e = snap.blocks[bid], estado(snap, bid)
+    head = bv.head()
+    if e is Estado.CHECKS:
+        faltan = (bv.esperando.get(head) or {}).get("faltan")
+        desde = bv.listo_desde.get(head, now)
+        que = _lista(faltan) + " de GitHub" if faltan else "las pruebas de GitHub"
+        return f"espero {que} desde hace {_dura(now - desde)}"
+    if e in (Estado.ARREGLAR, Estado.IMPLEMENTANDO):
+        falla = _ultima_falla(bv)
+        return f"toca arreglarla porque {falla}" if falla else "toca hacerla"
+    return {
+        Estado.ESPERANDO: "espera a que terminen las partes de las que depende",
+        Estado.HUMANO: "espera tu paso",
+        Estado.REVISAR: "toca revisarla",
+        Estado.REVISANDO: "la están revisando",
+        Estado.VERIFICAR: "la verifico",
+        Estado.PR: "abro su propuesta de cambio en GitHub",
+        Estado.LISTO: "la marco lista en GitHub",
+        Estado.MERGE: "la integro",
+        Estado.DESPLEGAR: "la despliego a producción",
+        Estado.PROBAR: "la pruebo con datos reales",
+        Estado.HECHO: "terminada",
+    }.get(e, e.value)
 
 
 def _sin_agente(
@@ -869,7 +1048,10 @@ def _sin_agente(
             f"atorado:{bv.block.id}",
             bv.block.id,
             "atorado",
-            (("bloque", bv.block.aviso),),
+            (
+                ("bloque", bv.block.aviso),
+                ("motivo", "ningún agente disponible pudo tomarla"),
+            ),
         )
     ]
 

@@ -218,6 +218,10 @@ class TestPlan(Banco):
         )
         est = json.loads(motor("estado", "--home", str(self.home), "--json").stdout)
         self.assertEqual(est[0]["plan"], "demo")
+        self.assertTrue(
+            all(b["motivo"] for b in est[0]["bloques"]),
+            "cada parte dice qué hace o qué espera",
+        )
 
     def test_plan_invalido_se_rechaza_en_el_momento(self):
         self.home, self.plan = sandbox.create(self.tmp / "b")
@@ -953,6 +957,134 @@ class TestDespliegueQueSePasa(Banco):
         d = [e for e in eventos(self.home) if e.kind == "Deployed"][0]
         self.assertFalse(d.data["ok"])
         self.assertIn("salida 124", d.data["detalle"])
+
+    def test_un_despliegue_fallido_deja_su_salida_y_el_sha(self):
+        """INGESTA 01: desplegar.sh pedía el SHA como argumento y el agente solo veía "salida 1"."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                'escribe: ops/checklist.sh=test "$(cat "$PROD_DIR/version.txt")" = v2',
+                'escribe: ops/checklist.sh=echo "uso: lo vi $MOTOR_SHA" >&2; exit 1',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        (self.home / "login-hecho").write_text("ok")
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(e.kind == "Deployed" for e in eventos(self.home)), tope=150
+            )
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        ev = eventos(self.home)
+        d = [e for e in ev if e.kind == "Deployed"][0]
+        commit = [e for e in ev if e.kind == "Merged" and e.block == "D"][-1].data[
+            "commit"
+        ]
+        self.assertFalse(d.data["ok"])
+        self.assertIn(f"uso: lo vi {commit}", d.data["detalle"])
+        self.assertIn("sin argumentos", d.data["detalle"])
+
+    def test_una_verificacion_que_se_pasa_del_tope_es_una_falla_con_motivo(self):
+        """PSTACK 01 en la PC: la Acepta corría la batería e2e, tardaba más de 15 min y el motor la
+        reintentaba horas como si fuera un tropiezo de red."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        g = self.tmp / "b" / "conf" / "general.toml"
+        g.write_text(
+            g.read_text(encoding="utf-8").replace(
+                "[tiempos]\n", "[tiempos]\nverifica_tope_s = 3\n"
+            ),
+            encoding="utf-8",
+        )
+        git(
+            "-c", "user.name=c", "-c", "user.email=c@l",
+            "commit", "-qam", "tope corto", cwd=self.tmp / "b" / "conf",
+        )  # fmt: skip
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                '| test "$(cat saludo.txt)" = hola |', "| sleep 30 |", 1
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(
+                    e.kind == "Verified" and e.block == "A" for e in eventos(self.home)
+                ),
+                tope=150,
+            )
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        ev = eventos(self.home)
+        v = [e for e in ev if e.kind == "Verified" and e.block == "A"][0]
+        self.assertFalse(v.data["ok"])
+        self.assertIn("se pasó del tope de 3 s", v.data["detalle"])
+        self.assertFalse(
+            [
+                e
+                for e in ev
+                if e.kind == "EffectFailed" and e.data.get("accion") == "Verify"
+            ]
+        )
+
+    def test_una_acepta_con_un_comando_que_no_existe_lo_anota(self):
+        """INGESTA 01, bloque C: la Acepta usaba un comando que la Mini no tiene y el bloque volvía
+        al agente, que no podía arreglarlo."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                '| test "$(cat saludo.txt)" = hola |',
+                "| comando-que-no-existe-xyz |",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(
+                    e.kind == "Verified" and e.block == "A" for e in eventos(self.home)
+                ),
+                tope=150,
+            )
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        v = [e for e in eventos(self.home) if e.kind == "Verified" and e.block == "A"][
+            0
+        ]
+        self.assertEqual(v.data["falta_comando"], ["comando-que-no-existe-xyz"])
 
 
 class TestTopesEntrePlanes(Banco):

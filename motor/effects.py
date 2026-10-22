@@ -33,6 +33,28 @@ from .store import Store
 from .workspace import Workspace, git
 
 RAIZ = Path(__file__).resolve().parent.parent
+_FALTA = re.compile(
+    r"(?:^|\s)([\w.+-]+): (?:command not found|orden no encontrada)"
+    r"|'([^']+)' is not recognized as an internal or external command"
+)
+
+
+def con_python(env: dict) -> dict:
+    """Los planes escritos en la PC dicen `python`; la Mac y la Mini solo traen `python3`
+    (INGESTA 01, bloque C). Si falta `python` y hay `python3`, el motor pone uno que llama a python3."""
+    ruta = env.get("PATH", "")
+    if (
+        os.name != "nt"
+        and not shutil.which("python", path=ruta)
+        and shutil.which("python3", path=ruta)
+    ):
+        env["PATH"] = os.pathsep.join([str(RAIZ / "motor" / "shims" / "python"), ruta])
+    return env
+
+
+def comandos_faltantes(salida: str) -> list[str]:
+    """Comandos que la máquina no tiene, según lo que dijo el shell (bash o cmd de Windows)."""
+    return sorted({a or b for a, b in _FALTA.findall(salida)})
 
 
 @dataclass
@@ -56,6 +78,16 @@ def _posix(cmd: str) -> tuple:
         return cmd, True, "/bin/bash"
     sh = shutil.which("bash") or shutil.which("sh")
     return ([sh, "-c", cmd], False, None) if sh else (cmd, True, None)
+
+
+RECETA = (
+    "El motor corre cada script de la receta con `bash <script>`, sin argumentos, desde una copia "
+    "del commit mergeado; MOTOR_SHA trae ese commit."
+)
+
+
+def _cola(p: subprocess.CompletedProcess) -> str:
+    return (p.stdout + p.stderr)[-500:].strip()
 
 
 def _run_tope(
@@ -245,7 +277,7 @@ class Effects:
         }
         if mq.path_extra:
             env["PATH"] = os.pathsep.join([*mq.path_extra, env.get("PATH", "")])
-        return env
+        return con_python(env)
 
     def repo_conf(self, snap: m.Snapshot, repo: str) -> RepoConf:
         return RepoConf.parse(snap.repos.get(repo, {}).get("texto", ""))
@@ -879,19 +911,28 @@ Escribe en `$MOTOR_RESULT`:
         w = self.cx.ws.copia(
             block.repo, a.sha, self.cx.home / "tmp" / f"verifica-{plan.id}-{a.block}"
         )
-        fallas = []
+        fallas, faltan = [], []
+        # Pasarse del tope es una falla de la fila con su motivo, no un tropiezo que se reintenta para
+        # siempre (PSTACK 01 en la PC: la batería e2e tardaba más de 15 min y se reintentó horas).
+        tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
         for r in block.rows:
             if r.acepta:
-                p = _run(r.acepta, w, self.env_base(dict(rc.prueba_env)))
+                p = _run_tope(r.acepta, w, self.env_base(dict(rc.prueba_env)), tope)
                 if p.returncode != 0:
                     fallas.append(
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
                     )
+                    faltan += comandos_faltantes(p.stdout + p.stderr)
         self.cx.store.append(
             plan.id,
             a.block,
             "Verified",
-            {"sha": a.sha, "ok": not fallas, "detalle": "\n".join(fallas)},
+            {
+                "sha": a.sha,
+                "ok": not fallas,
+                "detalle": "\n".join(fallas),
+                "falta_comando": sorted(set(faltan)),
+            },
             ukey=f"verified:{plan.id}:{a.block}:{a.sha}",
         )
 
@@ -988,6 +1029,21 @@ Escribe en `$MOTOR_RESULT`:
             a.sha,
             tuple(dict.fromkeys([*rc.checks_extra, *block.checks])),
         )
+        if not v.terminal:
+            # Qué falta y si GitHub ya terminó: se anota solo cuando cambia (los sondeos no ensucian
+            # el log). Con esto el aviso dice qué prueba se espera, y el motor nota la incoherencia
+            # de esperar algo que GitHub ya no va a correr (INGESTA 01 esperó horas en silencio).
+            self.cx.store.append(
+                plan.id,
+                a.block,
+                "ChecksEsperando",
+                {
+                    "sha": a.sha,
+                    "faltan": list(v.faltan),
+                    "github_termino": v.github_termino,
+                },
+                ukey=f"espera:{k}:{','.join(v.faltan)}:{v.github_termino}",
+            )
         if (
             v.terminal
         ):  # solo se anota el resultado final: los sondeos no ensucian el log
@@ -1076,6 +1132,7 @@ Escribe en `$MOTOR_RESULT`:
         # La instalación no tiene .git; la copia (worktree) sí. Sin esto,
         # instala-todo.sh hace `git -C "$MOTOR_RAIZ"` y sale 3.
         env["MOTOR_RAIZ"] = str(w)
+        env["MOTOR_SHA"] = commit
         tope = float(self.cx.conf.tiempos.get("despliegue_tope_s", 900))
         if not desplegar:
             ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
@@ -1097,9 +1154,15 @@ Escribe en `$MOTOR_RESULT`:
                 p = _run_tope(f"bash {paso}", w, env, tope)
                 pasos.append(f"{paso}: salida {p.returncode}")
                 if p.returncode != 0:
+                    # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
+                    # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
                     ok = False
+                    pasos.append(_cola(p))
                     rb = _run_tope(f"bash {rollback}", w, env, tope)
                     pasos.append(f"rollback: salida {rb.returncode}")
+                    if rb.returncode != 0:
+                        pasos.append(_cola(rb))
+                    pasos.append(RECETA)
                     break
             detalle = "\n".join(pasos)
         self.cx.store.append(
@@ -1122,8 +1185,13 @@ Escribe en `$MOTOR_RESULT`:
             )
             env = self.env_base(dict(rc.prueba_env))
             env["MOTOR_RAIZ"] = str(w)
-            p = _run(block.prueba_real, w, env)
-            ok, detalle = p.returncode == 0, (p.stdout + p.stderr)[-500:]
+            tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
+            p = _run_tope(block.prueba_real, w, env, tope)
+            # La salida puede ir a un archivo (la sonda de INGESTA 01): sin esto el agente veía "".
+            ok, detalle = (
+                p.returncode == 0,
+                _cola(p) or f"salió {p.returncode} sin imprimir nada",
+            )
         else:
             ok, detalle = True, "el bloque no declara prueba real"
         self.cx.store.append(

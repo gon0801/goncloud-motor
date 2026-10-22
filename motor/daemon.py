@@ -9,6 +9,7 @@ existe antes de repetirse, y los agentes corren aparte (runwrap).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -40,6 +41,12 @@ ESPERA_TRAS_FALLA_S = 300
 
 def _bloque(a: m.Action) -> str:
     return getattr(a, "block", "") or getattr(getattr(a, "ticket", None), "block", "")
+
+
+def _huella(plan: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(plan, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()[:16]
 
 
 class Daemon:
@@ -193,7 +200,10 @@ class Daemon:
                         "",
                         "PlanLoaded",
                         {"plan": msg["plan"], "por": msg.get("por", "")},
-                        ukey=f"plan:{plan.id}",
+                        # Entregar otra vez el plan con cambios lo reemplaza (lo hecho sigue hecho);
+                        # el mismo texto otra vez no hace nada. Antes el cambio se ignoraba en
+                        # silencio y el recibo decía "tomado" (INGESTA 01, prueba real de S).
+                        ukey=f"plan:{plan.id}:{_huella(msg['plan'])}",
                     )
                     self.fx.pin_repos(plan)
                     resultado = "tomado"

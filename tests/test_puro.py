@@ -406,6 +406,52 @@ humano: login pega las llaves
             "saltado en borrador no es aprobado (MOTOR 01, PR #484)",
         )
 
+    def test_saltado_a_proposito_tras_listo_es_aprobado(self):
+        """Orbit PR #487 (INGESTA 01): listo a las 19:37:40; `completa` se saltó en borrador y otra
+        vez ya listo, porque no había código. El motor esperó horas una prueba que nunca iba a correr."""
+
+        def run(nombre, conclusion, hora):
+            return {
+                "name": nombre,
+                "status": "completed",
+                "conclusion": conclusion,
+                "completed_at": f"2026-10-21T{hora}Z",
+            }
+
+        req = ("gate", "reconcile", "completa")
+        borrador = [
+            run("gate", "success", "19:37:23"),
+            run("reconcile", "success", "19:36:30"),
+            run("completa", "skipped", "19:36:20"),
+        ]
+        listo = "2026-10-21T19:37:40Z"
+        self.assertEqual(
+            veredicto("s", req, borrador, listo).faltan,
+            ("completa",),
+            "el salto del borrador no cuenta: falta la corrida de ya listo",
+        )
+        self.assertEqual(
+            veredicto("s", req, borrador, None).faltan,
+            ("completa",),
+            "en borrador ningún salto cuenta",
+        )
+        mismo_segundo = [*borrador, run("completa", "skipped", "19:37:40")]
+        self.assertEqual(
+            veredicto("s", req, mismo_segundo, listo).faltan,
+            ("completa",),
+            "en el mismo segundo no se sabe si fue antes o después de listo",
+        )
+        tras_listo = [*borrador, run("completa", "skipped", "19:37:51")]
+        self.assertTrue(veredicto("s", req, tras_listo, listo).green)
+        corre = [*borrador, run("completa", "success", "19:45:00")]
+        self.assertTrue(veredicto("s", req, corre, listo).green)
+        corre[-1]["conclusion"] = "failure"
+        self.assertEqual(veredicto("s", req, corre, listo).fallas, ("completa",))
+        self.assertTrue(
+            veredicto("s", req, borrador, "").green,
+            "nunca fue borrador: el salto cuenta",
+        )
+
     def test_checks_que_nunca_terminan_avisan_una_vez(self):
         p, now = parse_plan(PLAN), time.time()
         base = entregado() + [
@@ -426,32 +472,159 @@ humano: login pega las llaves
         ]
         self.assertIn("atorado:A", [a.key for a in acc])
 
-    def test_efecto_que_falla_una_hora_avisa(self):
+    def _en_checks(self, now, listo_hace=600):
+        base = entregado() + [
+            ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
+            ev("PrOpened", "A", {"numero": 1}),
+            ev(
+                "Reviewed",
+                "A",
+                {"sha": "a" * 40, "veredicto": "APROBADO", "bloqueantes": []},
+            ),
+        ]
+        return base + [
+            Event(900, now - listo_hace, "demo", "A", "MarkedReady", {"sha": "a" * 40})
+        ]
+
+    def test_github_terminado_y_esperando_una_prueba_avisa_con_el_motivo(self):
+        """INGESTA 01: GitHub había terminado todo y el motor esperó horas una prueba saltada sin
+        decir nada; el aviso de cada hora solo decía "espero las pruebas automáticas"."""
         p, now = parse_plan(PLAN), time.time()
-        fallas = [
-            Event(
-                900 + i,
-                now - h,
+
+        def espera(hace, termino=True):
+            return Event(
+                901,
+                now - hace,
                 "demo",
                 "A",
-                "EffectFailed",
-                {"accion": "OpenPr", "error": "red"},
+                "ChecksEsperando",
+                {"sha": "a" * 40, "faltan": ["completa"], "github_termino": termino},
             )
-            for i, h in enumerate((4000, 10))
+
+        def avisos(evs):
+            return [
+                a
+                for a in m.decide(m.fold(p, evs), pol(), now)
+                if isinstance(a, m.Notify) and a.template == "atorado"
+            ]
+
+        self.assertEqual(avisos(self._en_checks(now) + [espera(10 * 60)]), [])
+        self.assertEqual(
+            avisos(self._en_checks(now, 3600) + [espera(40 * 60, termino=False)]),
+            [],
+            "GitHub todavía corre algo: es espera, no atasco",
+        )
+        (a,) = avisos(self._en_checks(now, 3600) + [espera(40 * 60)])
+        motivo = dict(a.campos)["motivo"]
+        self.assertIn("«completa»", motivo)
+        self.assertIn("GitHub ya terminó", motivo)
+        texto = render("atorado", dict(a.campos), "Mini", "INGESTA 01")
+        self.assertIn("Motivo: GitHub ya terminó", texto)
+        ya = self._en_checks(now, 3600) + [
+            espera(40 * 60),
+            ev("NoticeQueued", "A", {"key": a.key}),
         ]
-        acc = [
-            a
-            for a in m.decide(m.fold(p, entregado() + fallas), pol(), now)
-            if isinstance(a, m.Notify)
-        ]
-        self.assertIn("atorado:A", [a.key for a in acc])
-        acc = [
-            a
-            for a in m.decide(m.fold(p, entregado() + fallas[1:]), pol(), now)
-            if isinstance(a, m.Notify)
-        ]
-        self.assertNotIn(
-            "atorado:A", [a.key for a in acc], "una falla suelta no molesta a David"
+        self.assertEqual(avisos(ya), [], "una vez")
+        snap = m.fold(p, self._en_checks(now, 3 * 3600) + [espera(40 * 60)])
+        self.assertIn(
+            "espero la prueba «completa» de GitHub desde hace 3 h",
+            m.motivo(snap, "A", now),
+        )
+
+    def test_la_misma_falla_tres_veces_avisa_una_vez(self):
+        """INGESTA 01, bloque S: la prueba real abortaba por la hora y el bloque rebotaba entre
+        agentes sin que nadie se enterara."""
+        p, now = parse_plan(PLAN), time.time()
+
+        def rondas(n):
+            evs = []
+            for i in range(n):
+                sha = f"{i:x}" * 40
+                evs += entregado(sha=sha[:40], n=i + 1) + [
+                    ev("Merged", "A", {"sha": sha[:40], "commit": "c"}),
+                    ev(
+                        "Proved",
+                        "A",
+                        {"sha": sha[:40], "ok": False, "detalle": "ABORTA"},
+                    ),
+                ]
+            return evs
+
+        def avisos(evs):
+            return [
+                a
+                for a in m.decide(m.fold(p, evs), pol(), now)
+                if isinstance(a, m.Notify) and a.template == "atorado"
+            ]
+
+        self.assertEqual(avisos(rondas(2)), [])
+        (a,) = avisos(rondas(3))
+        self.assertEqual(
+            dict(a.campos)["motivo"],
+            "falló la prueba con datos reales, 3 veces seguidas",
+        )
+        self.assertEqual(
+            avisos(rondas(4) + [ev("NoticeQueued", "A", {"key": a.key})]),
+            [],
+            "un aviso por racha, no uno por ronda",
+        )
+
+    def test_efecto_que_falla_una_hora_avisa(self):
+        p, now = parse_plan(PLAN), time.time()
+
+        def fallas(*hace):
+            return [
+                Event(
+                    900 + i,
+                    now - h,
+                    "demo",
+                    "A",
+                    "EffectFailed",
+                    {"accion": "OpenPr", "error": "red"},
+                )
+                for i, h in enumerate(sorted(hace, reverse=True))
+            ]
+
+        def atorados(evs):
+            return [
+                a.key
+                for a in m.decide(m.fold(p, entregado() + evs), pol(), now)
+                if isinstance(a, m.Notify) and a.key.startswith("atorado:A")
+            ]
+
+        seguidas = fallas(*range(10, 3700, 600))  # una cada 10 min durante una hora
+        self.assertEqual(len(atorados(seguidas)), 1)
+        self.assertEqual(
+            atorados(fallas(10)), [], "una falla suelta no molesta a David"
+        )
+        self.assertEqual(
+            atorados(fallas(4000, 10)),
+            [],
+            "dos fallas sueltas separadas por una hora no son una hora fallando (PSTACK 01)",
+        )
+        self.assertEqual(
+            atorados(fallas(*range(3000, 7000, 600))),
+            [],
+            "ya dejó de fallar hace 50 min: no se queda pegado",
+        )
+
+    def test_repetida_deja_de_ser_atasco_con_un_arreglo_en_camino(self):
+        """INGESTA 01: el resumen seguía diciendo "atorado" mientras el revisor ya veía el arreglo."""
+        p, now = parse_plan(PLAN), time.time()
+        evs = []
+        for i in range(3):
+            sha = f"{i + 1:x}" * 40
+            evs += entregado(sha=sha, n=i + 1) + [
+                ev("Merged", "A", {"sha": sha, "commit": "c"}),
+                ev("Proved", "A", {"sha": sha, "ok": False, "detalle": "x"}),
+            ]
+        snap = m.fold(p, evs)
+        self.assertIsNotNone(
+            m._sin_avance_propio(snap.blocks["A"], m.estado(snap, "A"), pol(), now)
+        )
+        snap = m.fold(p, evs + entregado(sha="f" * 40, n=4))
+        self.assertIsNone(
+            m._sin_avance_propio(snap.blocks["A"], m.estado(snap, "A"), pol(), now)
         )
 
     def test_doctor_busca_en_path_extra_de_la_maquina(self):
@@ -521,7 +694,10 @@ class AvanceCadaHoraTest(unittest.TestCase):
         self.assertEqual([x.key for x in a], ["avance:2"])
         texto = render("avance", dict(a[0].campos), "Mac", "Motor de planes")
         self.assertIn("0 de 2 partes listas.", texto)
-        self.assertIn("Ahora trabajo en «uno» (Sonnet, 40 min).", texto)
+        self.assertIn("Ahora trabajo en «uno» (Sonnet, 40 min);", texto)
+        self.assertIn(
+            "«otro repo»: toca hacerla.", texto, "también lo que espera turno"
+        )
         self.assertIn("Nada atorado.", texto)
         ya = self.eventos(2.2, now) + [
             Event(3, now, "demo", "", "NoticeQueued", {"key": "avance:2", "texto": "x"})

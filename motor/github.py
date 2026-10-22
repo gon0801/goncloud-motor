@@ -40,20 +40,34 @@ class ChecksVerdict:
     green: bool
     faltan: tuple[str, ...]
     fallas: tuple[str, ...]
+    github_termino: bool = (
+        False  # GitHub ya no tiene nada corriendo ni en cola para este SHA
+    )
 
 
-def veredicto(sha: str, requeridos: tuple[str, ...], runs: list[dict]) -> ChecksVerdict:
+def veredicto(
+    sha: str,
+    requeridos: tuple[str, ...],
+    runs: list[dict],
+    listo_desde: str | None = None,
+) -> ChecksVerdict:
     """Un check requerido "completa" cubre también una matriz "completa (1, 6)" … "completa (6, 6)":
-    está terminado cuando todas sus partes terminaron, y verde cuando todas salieron bien."""
+    está terminado cuando todas sus partes terminaron, y verde cuando todas salieron bien.
+
+    Un check saltado cuenta solo si se saltó después de que el PR dejó el borrador (`listo_desde`,
+    hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
+    no prueba nada (MOTOR 01, PR #484); el salto a propósito de un PR listo sí (Orbit salta
+    `completa` si no hay código: INGESTA 01 esperó horas)."""
     faltan, fallas = [], []
     for c in requeridos:
-        partes = [r for r in runs if r["name"] == c or r["name"].startswith(c + " (")]
+        partes = [
+            r
+            for r in runs
+            if (r["name"] == c or r["name"].startswith(c + " ("))
+            and not _salto_del_borrador(r, listo_desde)
+        ]
         if not partes or any(r["status"] != "completed" for r in partes):
             faltan.append(c)
-        elif all(r["conclusion"] == "skipped" for r in partes):
-            faltan.append(
-                c
-            )  # saltado (p. ej. en borrador) no es aprobado: todavía no corrió de verdad
         elif any(
             r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
         ):
@@ -64,6 +78,14 @@ def veredicto(sha: str, requeridos: tuple[str, ...], runs: list[dict]) -> Checks
         green=not faltan and not fallas,
         faltan=tuple(faltan),
         fallas=tuple(fallas),
+        github_termino=bool(runs) and all(r["status"] == "completed" for r in runs),
+    )
+
+
+def _salto_del_borrador(run: dict, listo_desde: str | None) -> bool:
+    return run.get("conclusion") == "skipped" and (
+        listo_desde is None
+        or (listo_desde != "" and (run.get("completed_at") or "") <= listo_desde)
     )
 
 
@@ -216,10 +238,23 @@ class GhGitHub:
                 "api",
                 f"repos/{n}/commits/{sha}/check-runs?per_page=100",
                 "--jq",
-                "[.check_runs[]|{name, status, conclusion}]",
+                "[.check_runs[]|{name, status, conclusion, completed_at}]",
             )
         )
-        return veredicto(sha, requeridos, runs)
+        return veredicto(
+            sha, requeridos, runs, None if pr.borrador else self._listo_desde(n, numero)
+        )
+
+    def _listo_desde(self, n: str, numero: int) -> str:
+        """Hora (de GitHub) en que el PR dejó el borrador por última vez; "" si nunca fue borrador."""
+        horas = self._gh(
+            "api",
+            f"repos/{n}/issues/{numero}/events?per_page=100",
+            "--paginate",
+            "--jq",
+            '.[]|select(.event=="ready_for_review")|.created_at',
+        ).split()
+        return horas[-1] if horas else ""
 
     def merge(self, repo, numero, sha, metodo, mensaje):
         try:
@@ -387,6 +422,7 @@ class FakeGitHub:
             green=not faltan and not fallas,
             faltan=tuple(faltan),
             fallas=tuple(fallas),
+            github_termino=True,  # el falso corre todo en el acto
         )
 
     def merge(self, repo, numero, sha, metodo, mensaje):
