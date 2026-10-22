@@ -30,7 +30,8 @@ def git(
         text=True,
         errors="replace",
         stdin=subprocess.DEVNULL,
-        env={**os.environ, **(env or {})},
+        env={**os.environ, **(env or {}), "GIT_TERMINAL_PROMPT": "0"},
+        timeout=180 if {"clone", "fetch", "push"} & set(a) else 60,
     )
 
 

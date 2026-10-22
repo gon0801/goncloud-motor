@@ -134,8 +134,9 @@ class GhGitHub:
             capture_output=True,
             text=True,
             errors="replace",
-            env=self.env,
+            env={**self.env, "GIT_TERMINAL_PROMPT": "0"},
             stdin=subprocess.DEVNULL,
+            timeout=180 if {"clone", "fetch", "push"} & set(a) else 60,
         )
         if r.returncode != 0:
             raise RuntimeError(f"gh {' '.join(a[:3])}: {r.stderr[-300:]}")
