@@ -112,6 +112,7 @@ def _estado(home: Path) -> list[dict]:
                     "estado": m.estado(snap, bid).value,
                     "agente": run.modelo if run else "",
                     "papel": run.role if run else "",
+                    "motivo": m.motivo(snap, bid, time.time()),
                 }
             )
         out.append(
@@ -325,7 +326,9 @@ def main(argv: list[str] | None = None) -> int:
             for p in est:
                 print(f"{p['plan']}: {p['titulo']}")
                 for b in p["bloques"]:
-                    print(f"  {b['bloque']:<4} {b['estado']:<32} {b['agente']}")
+                    print(
+                        f"  {b['bloque']:<4} {b['estado']:<32} {b['agente']:<8} {b['motivo']}"
+                    )
         return 0
     if a.cmd == "doctor":
         if a.como_servicio:

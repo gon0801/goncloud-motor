@@ -553,6 +553,21 @@ Escribe en `$MOTOR_RESULT`:
             a.sha,
             tuple(dict.fromkeys([*rc.checks_extra, *block.checks])),
         )
+        if not v.terminal:
+            # Qué falta y si GitHub ya terminó: se anota solo cuando cambia (los sondeos no ensucian
+            # el log). Con esto el aviso dice qué prueba se espera, y el motor nota la incoherencia
+            # de esperar algo que GitHub ya no va a correr (INGESTA 01 esperó horas en silencio).
+            self.cx.store.append(
+                plan.id,
+                a.block,
+                "ChecksEsperando",
+                {
+                    "sha": a.sha,
+                    "faltan": list(v.faltan),
+                    "github_termino": v.github_termino,
+                },
+                ukey=f"espera:{k}:{','.join(v.faltan)}:{v.github_termino}",
+            )
         if (
             v.terminal
         ):  # solo se anota el resultado final: los sondeos no ensucian el log

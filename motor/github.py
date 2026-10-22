@@ -40,6 +40,9 @@ class ChecksVerdict:
     green: bool
     faltan: tuple[str, ...]
     fallas: tuple[str, ...]
+    github_termino: bool = (
+        False  # GitHub ya no tiene nada corriendo ni en cola para este SHA
+    )
 
 
 def veredicto(
@@ -75,6 +78,7 @@ def veredicto(
         green=not faltan and not fallas,
         faltan=tuple(faltan),
         fallas=tuple(fallas),
+        github_termino=bool(runs) and all(r["status"] == "completed" for r in runs),
     )
 
 
@@ -418,6 +422,7 @@ class FakeGitHub:
             green=not faltan and not fallas,
             faltan=tuple(faltan),
             fallas=tuple(fallas),
+            github_termino=True,  # el falso corre todo en el acto
         )
 
     def merge(self, repo, numero, sha, metodo, mensaje):

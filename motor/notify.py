@@ -35,8 +35,8 @@ PLANTILLAS = {
     "terminado": "Terminé el plan: todas sus partes quedaron hechas y probadas.\nNo queda nada pendiente.",
     "atorado": (
         "Me atoré en una parte: {bloque}.\n"
-        "Ningún agente pudo resolverla; Claude la va a revisar y te cuenta.\n"
-        "Lo demás del plan sigue avanzando."
+        "Motivo: {motivo}.\n"
+        "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
     ),
     "retome": "Se fue la luz o se reinició la máquina; ya retomé solo donde me quedé.",
     "rechazado": (
@@ -100,6 +100,13 @@ def render(template: str, campos: dict[str, str], maquina: str, titulo: str) -> 
             return lint_plain(
                 f"En la {maquina} · {titulo}:\nNo pude tomar este plan; trae un problema que hay que corregir.\n"
                 f"Pídele a {c.get('por', 'quien te lo dio')} que revise el recibo y lo entregue otra vez."
+            )
+        if (
+            template == "atorado" and "bloque" in c
+        ):  # sin el motivo, pero el aviso llega
+            return lint_plain(
+                f"En la {maquina} · {titulo}:\nMe atoré en una parte: {c['bloque']}.\n"
+                "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
             )
         if (
             template == "humano"
