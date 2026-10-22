@@ -11,9 +11,9 @@ Qué cambia para David: el motor deja de caerse por un archivo malo, deja de per
 los agentes, avisa una vez y con el motivo cuando algo se atora, y se destraba solo cuando se corrige
 el plan o la máquina. En la PC los planes corren igual que en la Mac, y Muse puede trabajar en WSL.
 
-Arranque: en la Mini, cuando SP-API 02 termine. PSTACK 01 se corta en la PC después de su bloque B
-(toca los mismos archivos y sus bloques C y D no corren bien en Windows); sus bloques C, D y E van
-después de este plan.
+Arranque: en la Mac, entregado por OpenBot (DG), cuando se integre la parte B de PSTACK 01 (PR 41).
+PSTACK 01 quedó cortado en la PC a sus bloques A y B (toca los mismos archivos y sus bloques C y D
+no corren bien en Windows); sus bloques C, D y E van después de este plan.
 
 Reglas para quien implementa:
 0. Trabaja con poteto-mode de pstack. La primera fila de cada bloque dice cómo cargarlo.
