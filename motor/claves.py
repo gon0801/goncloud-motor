@@ -77,18 +77,36 @@ def pr_cerrado(plan: str, block: str, numero: int) -> str:
 
 
 def checks_esperando(
-    plan: str, block: str, sha: str, faltan: tuple[str, ...], github_termino: bool
+    plan: str,
+    block: str,
+    sha: str,
+    faltan: tuple[str, ...],
+    github_termino: bool,
+    vez: int = 0,
 ) -> str:
-    return f"espera:{plan}:{block}:{sha}:{','.join(faltan)}:{github_termino}"
+    base = f"espera:{plan}:{block}:{sha}:{','.join(faltan)}:{github_termino}"
+    return base if not vez else f"{base}:v{vez}"
 
 
 def checks_resultado(
-    plan: str, block: str, sha: str, rechazo: int | None = None
+    plan: str, block: str, sha: str, rechazo: int | None = None, vez: int = 0
 ) -> str:
     """El resultado final de las pruebas de un SHA. `rechazo` numera los merges que GitHub rechazó
     sobre ese mismo SHA: cada uno es un resultado nuevo, no el mismo."""
     base = f"checks:{plan}:{block}:{sha}"
-    return base if rechazo is None else f"rechazo:{plan}:{block}:{sha}:{rechazo}"
+    if rechazo is not None:
+        return f"rechazo:{plan}:{block}:{sha}:{rechazo}"
+    return base if not vez else f"{base}:v{vez}"
+
+
+def checks_relanzados(plan: str, block: str, sha: str, motivo: str, n: int = 0) -> str:
+    base = f"relanzados:{plan}:{block}:{sha}:{motivo}"
+    return base if not n else f"{base}:{n}"
+
+
+def checks_invalidados(plan: str, block: str, sha: str, n: int = 0) -> str:
+    base = f"invalidados:{plan}:{block}:{sha}"
+    return base if not n else f"{base}:{n}"
 
 
 def integrado(plan: str, block: str, sha: str) -> str:
@@ -109,15 +127,17 @@ def prueba_iniciada(plan: str, block: str, sha: str, n: int = 0) -> str:
 
 
 def desplegado(
-    plan: str, block: str, sha: str, huella: str = "", maquina: str = ""
+    plan: str, block: str, sha: str, huella: str = "", maquina: str = "", vez: int = 0
 ) -> str:
-    return _con_huella(f"deployed:{plan}:{block}:{sha}", huella, maquina)
+    base = _con_huella(f"deployed:{plan}:{block}:{sha}", huella, maquina)
+    return base if not vez else f"{base}:v{vez}"
 
 
 def probado(
-    plan: str, block: str, sha: str, huella: str = "", maquina: str = ""
+    plan: str, block: str, sha: str, huella: str = "", maquina: str = "", vez: int = 0
 ) -> str:
-    return _con_huella(f"proved:{plan}:{block}:{sha}", huella, maquina)
+    base = _con_huella(f"proved:{plan}:{block}:{sha}", huella, maquina)
+    return base if not vez else f"{base}:v{vez}"
 
 
 def humano_hecho(plan: str, block: str) -> str:
@@ -159,6 +179,8 @@ POR_TIPO = {
     "PrCerrado": pr_cerrado,
     "ChecksEsperando": checks_esperando,
     "ChecksResult": checks_resultado,
+    "ChecksRelanzados": checks_relanzados,
+    "ChecksInvalidados": checks_invalidados,
     "Merged": integrado,
     "VerifyStarted": verificacion_iniciada,
     "DeployStarted": despliegue_iniciado,

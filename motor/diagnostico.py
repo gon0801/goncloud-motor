@@ -53,6 +53,8 @@ class Causa(enum.Enum):
     ESCALERA_AGOTADA = "escalera_agotada"
     CHECKS_INCOHERENTE = "checks_incoherente"
     CHECKS_LENTO = "checks_lento"
+    POLITICA_BLOQUEA = "politica_bloquea"
+    SALIDA_75 = "salida_75"
     FALTA_COMANDO = "falta_comando"
     BLOQUEADO = "bloqueado"
     FUERA_DE_CONTROL = "fuera_de_control"
@@ -122,16 +124,28 @@ def _atasco(
     - un paso del motor que lleva una hora fallando (red, GitHub, disco)."""
     bid, head = bv.block.id, bv.head()
     if e is Estado.CHECKS:
+        pol = bv.politica_bloquea.get(head)
+        if pol and now - pol["desde"] > EFECTO_ATASCO_S:
+            return Diagnostico(
+                Causa.POLITICA_BLOQUEA,
+                f"GitHub no deja mergear por su política desde hace {avisos._dura(now - pol['desde'])}: "
+                f"{pol['detalle'][:300]}",
+                f"atorado:{bid}:politica:{head[:12]}",
+                True,
+                pol["detalle"][:300],
+            )
         esp = bv.esperando.get(head) or {}
+        relanzada = head in bv.relanzadas_saltadas
         if (
             esp.get("github_termino")
             and esp.get("faltan")
             and now - esp["desde"] > policy.aviso_incoherente_s
         ):
+            extra = "; ya la relancé una vez y sigue sin correr" if relanzada else ""
             return Diagnostico(
                 Causa.CHECKS_INCOHERENTE,
                 f"GitHub ya terminó sus pruebas, pero sigo esperando {avisos._lista(esp['faltan'])}, "
-                f"que no llegó a correr ({avisos._dura(now - esp['desde'])})",
+                f"que no llegó a correr ({avisos._dura(now - esp['desde'])}){extra}",
                 f"atorado:{bid}:incoherente:{head[:12]}",
                 True,
                 f"faltan={list(esp['faltan'])}",
@@ -180,8 +194,28 @@ def _atasco(
             True,
             f"faltan={list(falta)}",
         )
+    mg = bv.merged_sha()
+    for campo in ("deployed", "proved"):
+        t = bv.temporales.get(f"{campo}:{mg}") if mg else None
+        if t and now - t[0] >= 3 * 3600:
+            que = (
+                "el despliegue" if campo == "deployed" else "la prueba con datos reales"
+            )
+            return Diagnostico(
+                Causa.SALIDA_75,
+                f"{que} lleva {avisos._dura(now - t[0])} saliendo 75 (no es el código; reintenta luego)",
+                f"atorado:{bid}:salida75:{campo}:{mg[:12]}",
+                True,
+                f"{campo} sale 75 desde hace {avisos._dura(now - t[0])}",
+            )
     for tipo, campo, ok, que in REPETIDA_CAMPOS:
         d = getattr(bv, campo)
+        if (
+            campo in ("deployed", "proved")
+            and d
+            and list(d.values())[-1].get("codigo") == 75
+        ):
+            continue
         n = _seguidas(d, ok)
         # Solo mientras no haya un arreglo nuevo: con otra entrega en camino ya no es atasco.
         if n >= policy.repeticiones_max and list(d)[-1] == head:
@@ -411,7 +445,7 @@ def _lineas(bv: m.BlockView) -> list[str]:
                 )
         c = bv.checks.get(head)
         if c and not c["green"]:
-            out.append(f"Pruebas automáticas en rojo: {c.get('detalle', '')[:800]}")
+            out.append(f"Pruebas automáticas en rojo: {c.get('detalle', '')}")
         mg = bv.merged_sha()
         if mg and mg == head:
             if mg in bv.deployed and not bv.deployed[mg]["ok"]:

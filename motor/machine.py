@@ -19,7 +19,6 @@ from .conf import Conf
 from .plan import Block, Plan, cambios_de
 from .store import Event
 
-
 # --------------------------------------------------------------------------- política
 
 
@@ -165,6 +164,12 @@ class BlockView:
     obsoletos: set[str] = field(
         default_factory=set
     )  # SHAs cuya verificación ya no vale (cambió su Acepta o la máquina) y no se ha repetido
+    checks_ts: dict[str, float] = field(default_factory=dict)
+    relanzadas_saltadas: set[str] = field(default_factory=set)
+    politica_bloquea: dict[str, dict] = field(default_factory=dict)
+    temporales: dict[str, tuple[float, float]] = field(
+        default_factory=dict
+    )  # "deployed:<sha>" | "proved:<sha>" -> (desde, último) de salidas 75 seguidas
     bloqueo: dict | None = (
         None  # {"motivo", "huella_maquina"}: el agente dijo que no es el código; espera nota, plan o máquina
     )
@@ -191,6 +196,18 @@ class BlockView:
     def last_implement_outcome(self) -> dict | None:
         imp = self.implement_attempts()
         return imp[-1].ended if imp else None
+
+    def entrega_ts(self, sha: str) -> float:
+        return max(
+            (
+                a.ended_at
+                for a in self.implement_attempts()
+                if a.ended
+                and a.ended.get("kind") == "entregado"
+                and a.ended.get("sha") == sha
+            ),
+            default=0.0,
+        )
 
     def review_for(self, sha: str) -> dict | None:
         rs = [r for r in self.reviews if r["sha"] == sha]
@@ -337,6 +354,20 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             bv.rachas.pop(d["accion"], None)
         elif e.kind == "ChecksResult":
             bv.checks[d["sha"]] = d
+            bv.checks_ts[d["sha"]] = e.ts
+        elif e.kind == "ChecksRelanzados":
+            if d.get("motivo") == "saltada":
+                bv.relanzadas_saltadas.add(d["sha"])
+        elif e.kind == "ChecksInvalidados":
+            bv.checks.pop(d["sha"], None)
+            bv.checks_ts.pop(d["sha"], None)
+            bv.esperando.pop(d["sha"], None)
+            previa = bv.politica_bloquea.get(d["sha"])
+            if previa is None or previa.get("detalle") != d.get("detalle", ""):
+                bv.politica_bloquea[d["sha"]] = {
+                    "desde": e.ts,
+                    "detalle": d.get("detalle", ""),
+                }
         elif e.kind == "ChecksEsperando":
             bv.esperando[d["sha"]] = {**d, "desde": e.ts}
         elif e.kind == "Merged":
@@ -375,6 +406,12 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         if huella.vigente(e.data, huella.insumo_de(campo, bv.block, repos), maquina):
             getattr(bv, campo)[e.data["sha"]] = e.data
             bv.hecho_ts = max(bv.hecho_ts, e.ts)
+            clave_t = f"{campo}:{e.data['sha']}"
+            if e.data.get("codigo") == 75 and not e.data.get("ok"):
+                desde = bv.temporales.get(clave_t, (e.ts, e.ts))[0]
+                bv.temporales[clave_t] = (desde, e.ts)
+            else:
+                bv.temporales.pop(clave_t, None)
         elif campo == "verified":
             viejos.setdefault(bv.block.id, set()).add(e.data["sha"])
     for bid, shas in viejos.items():
@@ -445,9 +482,13 @@ def estado(snap: Snapshot, bid: str) -> Estado:
                 Estado.ARREGLAR
             )  # la nueva Acepta no pasa sobre lo que ya está mergeado
         if b.lane == "release" and not bv.deployed.get(m, {}).get("ok"):
-            return Estado.ARREGLAR if m in bv.deployed else Estado.DESPLEGAR
+            if m in bv.deployed and bv.deployed[m].get("codigo") != 75:
+                return Estado.ARREGLAR
+            return Estado.DESPLEGAR
         if m in bv.proved:
-            return Estado.ARREGLAR
+            return (
+                Estado.PROBAR if bv.proved[m].get("codigo") == 75 else Estado.ARREGLAR
+            )
         return Estado.PROBAR
     last = bv.last_implement_outcome()
     if not head or (last and last.get("kind") != "entregado"):
@@ -470,6 +511,10 @@ def estado(snap: Snapshot, bid: str) -> Estado:
     if c is None:
         return Estado.CHECKS
     if not c["green"]:
+        if bv.entrega_ts(head) > bv.checks_ts.get(head, 0.0):
+            return (
+                Estado.CHECKS
+            )  # reentrega del mismo SHA: se vuelve a mirar antes de contar la falla
         return Estado.ARREGLAR
     return Estado.MERGE
 
@@ -742,8 +787,18 @@ def _fuera_de_control(bv: BlockView) -> bool:
     head, merged = bv.head(), bv.merged_sha()
     return bool(
         (bv.verified.get(head) or {}).get("falta_comando")
-        or (merged == head and merged in bv.proved and not bv.proved[merged]["ok"])
-        or (merged == head and merged in bv.deployed and not bv.deployed[merged]["ok"])
+        or (
+            merged == head
+            and merged in bv.proved
+            and not bv.proved[merged]["ok"]
+            and bv.proved[merged].get("codigo") != 75
+        )
+        or (
+            merged == head
+            and merged in bv.deployed
+            and not bv.deployed[merged]["ok"]
+            and bv.deployed[merged].get("codigo") != 75
+        )
     )
 
 
@@ -935,9 +990,13 @@ def decide(
             if isinstance(t, MergeTicket):
                 acciones.append(Merge(t))
         elif e is Estado.DESPLEGAR:
-            acciones.append(Deploy(bid, bv.merged_sha()))
+            t = bv.temporales.get(f"deployed:{bv.merged_sha()}")
+            if not (t and now - t[1] < 900):
+                acciones.append(Deploy(bid, bv.merged_sha()))
         elif e is Estado.PROBAR:
-            acciones.append(Prove(bid, bv.merged_sha()))
+            t = bv.temporales.get(f"proved:{bv.merged_sha()}")
+            if not (t and now - t[1] < 900):
+                acciones.append(Prove(bid, bv.merged_sha()))
         elif e is Estado.HECHO:
             key = f"entregado:{bid}"
             if key not in bv.notices and (b.rows or not b.human):

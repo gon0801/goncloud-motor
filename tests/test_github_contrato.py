@@ -209,6 +209,10 @@ class GhChecksSaltadoTest(unittest.TestCase):
                     )
                 if a[1].endswith("/required_status_checks"):
                     return '["gate", "reconcile"]'
+                if "/rules/branches/" in a[1]:
+                    return "[]"
+                if a[1].endswith("/status"):
+                    return '{"state": "success", "statuses": []}'
                 if "/issues/487/events" in a[1]:
                     return "".join(f"{h}\n" for h in listo)
                 if "/check-runs" in a[1]:

@@ -6,6 +6,7 @@ Separado por conocimiento: `Workspace` sabe de git local, `GitHubPort` de PRs y 
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -21,16 +22,23 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claves, huella
+from . import claves, huella, plataforma, relevo
 from . import machine as m
-from .plataforma.windows import argv_en_wsl
-from . import plataforma, relevo
 from . import pstack as ps
 from .conf import Conf, Maquina, RepoConf
 from .fallas import PROVEEDORES
-from .github import GitHubPort, MergeRechazado
+from .github import (
+    Borrador,
+    Conflicto,
+    GitHubPort,
+    MergeRechazado,
+    PoliticaBloquea,
+    PuntaMovida,
+    clasificar_merge,
+)
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
+from .plataforma.windows import argv_en_wsl
 from .store import Store
 from .workspace import Workspace, foto_wip, git
 
@@ -84,7 +92,12 @@ def _posix(cmd: str) -> tuple:
 
 RECETA = (
     "El motor corre cada script de la receta con `bash <script>`, sin argumentos, desde una copia "
-    "del commit mergeado; MOTOR_SHA trae ese commit."
+    "del commit mergeado; MOTOR_SHA trae ese commit. "
+    "Contrato de salida: 0 es bien, y el checklist solo sale 0 si producción ya corre el commit de "
+    "MOTOR_SHA (si corre otro, sale distinto de 0). "
+    "75 dice «no es el código; reintenta luego»: el motor reintenta a los 15 minutos sin culpar al "
+    "agente, no hace rollback porque no cambió nada, y tres horas seguidas de 75 son atasco. "
+    "Cualquier otro código es una falla: en el despliegue el motor hace rollback con el tercer script."
 )
 
 
@@ -136,18 +149,34 @@ def _run(
         return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
-def es_del_agente(motivo: str) -> bool:
-    """Un merge rechazado es tarea del agente solo si su rama choca con la principal o se movió."""
-    m_ = motivo.lower()
-    return any(
-        x in m_
-        for x in (
-            "cannot be cleanly created",
-            "conflict",
-            "does not match",
-            "head commit",
-        )
-    )
+@contextlib.contextmanager
+def _lock_despliegue(home: Path, repo: str):
+    """Dos despliegues del mismo repo en la misma máquina, de uno en uno (también entre procesos)."""
+    d = home / "locks-despliegue"
+    d.mkdir(parents=True, exist_ok=True)
+    f = open(d / (hashlib.sha256(repo.encode()).hexdigest()[:16] + ".lock"), "a+")
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except ImportError:
+            import msvcrt
+
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except ImportError:
+            import msvcrt
+
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        f.close()
 
 
 def _modelo_arg(argv) -> str:
@@ -1068,7 +1097,7 @@ Escribe en `$MOTOR_RESULT`:
                         and datos.get("huella_maquina", h_maquina) == h_maquina
                     ):
                         if terminal_kind == "Verified":
-                            self.cx.store.append(
+                            anotado = self.cx.store.append(
                                 plan.id,
                                 a.block,
                                 "Verified",
@@ -1078,26 +1107,41 @@ Escribe en `$MOTOR_RESULT`:
                                 ),
                             )
                         elif terminal_kind == "Deployed":
-                            self.cx.store.append(
+                            anotado = self.cx.store.append(
                                 plan.id,
                                 a.block,
                                 "Deployed",
                                 datos,
                                 ukey=claves.desplegado(
-                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                    plan.id,
+                                    a.block,
+                                    a.sha,
+                                    h_insumo,
+                                    h_maquina,
+                                    vez=int(ultimo.data.get("n", 0))
+                                    if datos.get("codigo") == 75
+                                    else 0,
                                 ),
                             )
                         else:
-                            self.cx.store.append(
+                            anotado = self.cx.store.append(
                                 plan.id,
                                 a.block,
                                 "Proved",
                                 datos,
                                 ukey=claves.probado(
-                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                    plan.id,
+                                    a.block,
+                                    a.sha,
+                                    h_insumo,
+                                    h_maquina,
+                                    vez=int(ultimo.data.get("n", 0))
+                                    if datos.get("codigo") == 75
+                                    else 0,
                                 ),
                             )
-                        return
+                        if anotado or datos.get("codigo") != 75:
+                            return
                 else:
                     proc = ultimo.data.get("proc") or {}
                     if proc and plataforma.estado_proc(proc) == "vivo":
@@ -1312,43 +1356,192 @@ Escribe en `$MOTOR_RESULT`:
             return
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
+        relanzadas = tuple(
+            dict.fromkeys(
+                str(rid)
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "ChecksRelanzados"
+                and e.block == a.block
+                and e.data.get("sha") == a.sha
+                and e.data.get("motivo") == "saltada"
+                for rid in e.data.get("run_ids", [])
+            )
+        )
         v = self.cx.gh.checks(
             block.repo,
             int(snap.blocks[a.block].pr["numero"]),
             a.sha,
             tuple(dict.fromkeys([*rc.checks_extra, *block.checks])),
+            relanzadas,
         )
         if not v.terminal:
-            # Qué falta y si GitHub ya terminó: se anota solo cuando cambia (los sondeos no ensucian
-            # el log). Con esto el aviso dice qué prueba se espera, y el motor nota la incoherencia
-            # de esperar algo que GitHub ya no va a correr (INGESTA 01 esperó horas en silencio).
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "ChecksEsperando",
-                {
-                    "sha": a.sha,
-                    "faltan": list(v.faltan),
-                    "github_termino": v.github_termino,
-                },
-                ukey=claves.checks_esperando(
-                    plan.id, a.block, a.sha, tuple(v.faltan), v.github_termino
-                ),
-            )
+            # Se anota solo cuando (faltan, github_termino) cambia respecto del último
+            # ChecksEsperando del store, no del snap: un sondeo puede traer un snap fijo.
+            previos = [
+                e
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "ChecksEsperando"
+                and e.block == a.block
+                and e.data.get("sha") == a.sha
+            ]
+            ultimo = previos[-1].data if previos else None
+            if ultimo is None or (
+                list(ultimo.get("faltan", [])),
+                ultimo.get("github_termino"),
+            ) != (list(v.faltan), v.github_termino):
+                self.cx.store.append(
+                    plan.id,
+                    a.block,
+                    "ChecksEsperando",
+                    {
+                        "sha": a.sha,
+                        "faltan": list(v.faltan),
+                        "github_termino": v.github_termino,
+                    },
+                    ukey=claves.checks_esperando(
+                        plan.id,
+                        a.block,
+                        a.sha,
+                        tuple(v.faltan),
+                        v.github_termino,
+                        vez=len(previos),
+                    ),
+                )
+            self._relanza_saltada(plan, snap, a, v)
+            return
+        if not v.green and self._relanza_fallidas_tras_reentrega(plan, snap, a, v):
+            return  # una falla pasajera no se le cuenta todavía al agente
         if (
             v.terminal
         ):  # solo se anota el resultado final: los sondeos no ensucian el log
+            detalle = ""
+            if v.fallas:
+                detalle = self._detalle_rojo(plan, snap, a, v)
+            previos = sum(
+                1
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "ChecksResult"
+                and e.block == a.block
+                and e.data.get("sha") == a.sha
+            )
             self.cx.store.append(
                 plan.id,
                 a.block,
                 "ChecksResult",
-                {
-                    "sha": a.sha,
-                    "green": v.green,
-                    "detalle": f"fallaron: {list(v.fallas)}" if v.fallas else "",
-                },
-                ukey=claves.checks_resultado(plan.id, a.block, a.sha),
+                {"sha": a.sha, "green": v.green, "detalle": detalle},
+                ukey=claves.checks_resultado(plan.id, a.block, a.sha, vez=previos),
             )
+
+    def _relanza_saltada(self, plan, snap, a, v) -> None:
+        """Una obligatoria saltada en borrador y que GitHub ya no va a correr: se relanza una vez."""
+        if not (v.github_termino and v.faltan):
+            return
+        esp = snap.blocks[a.block].esperando.get(a.sha) or {}
+        if not esp.get("github_termino"):
+            return
+        espera = getattr(getattr(self.cx, "policy", None), "aviso_incoherente_s", 1800)
+        if time.time() - esp.get("desde", time.time()) < espera:
+            return
+        if any(
+            e.kind == "ChecksRelanzados"
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and e.data.get("motivo") == "saltada"
+            for e in self.cx.store.events(plan.id)
+        ):
+            return
+        repo = plan.block(a.block).repo
+        ids = []
+        for nombre in v.faltan:
+            for c in v.corridas:
+                if c.get("nombre") == nombre and c.get("run_id"):
+                    self.cx.gh.relanzar_corrida(repo, c["run_id"])
+                    ids.append(c["run_id"])
+        if ids:
+            self.cx.store.append(
+                plan.id,
+                a.block,
+                "ChecksRelanzados",
+                {"sha": a.sha, "motivo": "saltada", "run_ids": ids},
+                ukey=claves.checks_relanzados(plan.id, a.block, a.sha, "saltada"),
+            )
+
+    def _relanza_fallidas_tras_reentrega(self, plan, snap, a, v) -> bool:
+        eventos = self.cx.store.events(plan.id)
+        rojos = [
+            e
+            for e in eventos
+            if e.kind == "ChecksResult"
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and not e.data.get("green")
+        ]
+        if not rojos:
+            return False
+        bv = snap.blocks[a.block]
+        if bv.entrega_ts(a.sha) <= rojos[-1].ts:
+            return False
+        if any(
+            e.kind == "ChecksRelanzados"
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and e.data.get("motivo") == "fallidas"
+            and e.ts > rojos[-1].ts
+            for e in eventos
+        ):
+            return False
+        repo = plan.block(a.block).repo
+        ids = []
+        for c in v.corridas_fallidas:
+            if c.get("run_id"):
+                self.cx.gh.relanzar_fallidas(repo, c["run_id"])
+                ids.append(c["run_id"])
+        if not ids:
+            return False
+        previos = sum(
+            1
+            for e in eventos
+            if e.kind == "ChecksRelanzados"
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and e.data.get("motivo") == "fallidas"
+        )
+        self.cx.store.append(
+            plan.id,
+            a.block,
+            "ChecksRelanzados",
+            {"sha": a.sha, "motivo": "fallidas", "run_ids": ids},
+            ukey=claves.checks_relanzados(plan.id, a.block, a.sha, "fallidas", previos),
+        )
+        return True
+
+    def _detalle_rojo(self, plan, snap, a, v) -> str:
+        numero = int((snap.blocks[a.block].pr or {}).get("numero", 0))
+        partes = [f"fallaron: {list(v.fallas)} en el PR #{numero}"]
+        log = getattr(self.cx.gh, "log_fallido", None)
+        for c in v.corridas_fallidas:
+            partes.append(f"{c.get('nombre', '')}: {c.get('url', '')}".strip())
+            if log and c.get("run_id"):
+                texto = log(plan.block(a.block).repo, c["run_id"])
+                if texto:
+                    partes.append("\n".join(texto.splitlines()[-80:]))
+        return "\n".join(partes)
+
+    def _checks_rojo_por_merge(self, plan, t, detalle: str) -> None:
+        rechazos = sum(
+            1
+            for e in self.cx.store.events(plan.id)
+            if e.kind == "ChecksResult"
+            and e.block == t.block
+            and e.data.get("sha") == t.sha
+        )
+        self.cx.store.append(
+            plan.id,
+            t.block,
+            "ChecksResult",
+            {"sha": t.sha, "green": False, "detalle": detalle},
+            ukey=claves.checks_resultado(plan.id, t.block, t.sha, rechazo=rechazos),
+        )
 
     def merge(self, plan: Plan, snap: m.Snapshot, a: m.Merge) -> None:
         t = a.ticket
@@ -1366,39 +1559,56 @@ Escribe en `$MOTOR_RESULT`:
                 rc.merge,
                 f"{plan.id} {t.block}: {block.titulo}",
             )
-        except MergeRechazado as e:
-            if "head branch was modified" in str(e).lower():
+        except MergeRechazado as e0:
+            e = clasificar_merge(e0)
+            if isinstance(e, PuntaMovida):
                 if self.cx.gh.ver(block.repo, t.pr).head == t.sha:
                     # GitHub todavía asienta el PR recién abierto (MOTOR 01, PR #9): misma punta, se reintenta
                     raise RuntimeError(
                         f"GitHub pidió reintentar el merge: {str(e)[:200]}"
                     ) from None
-            elif not es_del_agente(str(e)):
-                # GitHub todavía no lo deja (pruebas requeridas pendientes, política de la rama): no es
-                # culpa del agente. Se reintenta en 5 minutos y, si dura una hora, se avisa.
-                raise RuntimeError(
-                    f"GitHub aún no deja mergear: {str(e)[:300]}"
-                ) from None
-            rechazos = sum(
-                1
-                for e in self.cx.store.events(plan.id)
-                if e.kind == "ChecksResult"
-                and e.block == t.block
-                and e.data.get("sha") == t.sha
-            )
-            self.cx.store.append(
-                plan.id,
-                t.block,
-                "ChecksResult",
-                {
-                    "sha": t.sha,
-                    "green": False,
-                    "detalle": f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
+                self._checks_rojo_por_merge(
+                    plan,
+                    t,
+                    "alguien subió un commit a la rama del PR después de la revisión; "
+                    "revísalo y vuelve a entregar",
+                )
+                return
+            if isinstance(e, Borrador):
+                self.cx.gh.marcar_listo(block.repo, t.pr)
+                self.cx.store.append(
+                    plan.id,
+                    t.block,
+                    "MarkedReady",
+                    {"sha": t.sha},
+                    ukey=claves.marcado_listo(plan.id, t.block, t.sha),
+                )
+                return
+            if isinstance(e, PoliticaBloquea):
+                n = sum(
+                    1
+                    for x in self.cx.store.events(plan.id)
+                    if x.kind == "ChecksInvalidados"
+                    and x.block == t.block
+                    and x.data.get("sha") == t.sha
+                )
+                self.cx.store.append(
+                    plan.id,
+                    t.block,
+                    "ChecksInvalidados",
+                    {"sha": t.sha, "detalle": str(e)[:500]},
+                    ukey=claves.checks_invalidados(plan.id, t.block, t.sha, n),
+                )
+                return
+            if isinstance(e, Conflicto):
+                self._checks_rojo_por_merge(
+                    plan,
+                    t,
+                    f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
                     f"resuelve y vuelve a entregar (no mergees tú). GitHub dijo: {str(e)[:300]}",
-                },
-                ukey=claves.checks_resultado(plan.id, t.block, t.sha, rechazo=rechazos),
-            )
-            return
+                )
+                return
+            raise RuntimeError(f"GitHub aún no deja mergear: {str(e)[:300]}") from None
         self.cx.store.append(
             plan.id,
             t.block,
@@ -1430,41 +1640,44 @@ Escribe en `$MOTOR_RESULT`:
         env["MOTOR_RAIZ"] = str(w)
         env["MOTOR_SHA"] = commit
         tope = float(self.cx.conf.tiempos.get("despliegue_tope_s", 900))
-        if not desplegar:
-            ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
-        elif (
-            a.sha in bv.deploy_marcados
-            and not any(
-                e.kind == "Deployed" and e.data.get("sha") == a.sha
-                for e in self.cx.store.events(plan.id)
+        codigo = 0
+        if not (desplegar and checklist and rollback):
+            ok, detalle = (
+                False,
+                "el bloque es de despliegue y el repo no trae receta completa",
             )
-            and _run(f"bash {checklist}", w, env, tope).returncode == 0
-        ):
-            ok, detalle = True, "ya estaba desplegado (se comprobó antes de repetir)"
         else:
-            if self._dir_aparte is not None:
-                (self._dir_aparte / "desplegando").write_text(a.sha, encoding="utf-8")
-            pasos, ok = [], True
-            for paso in (desplegar, checklist):
-                p = _run(f"bash {paso}", w, env, tope)
-                pasos.append(f"{paso}: salida {p.returncode}")
-                if p.returncode != 0:
-                    # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
-                    # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
-                    ok = False
-                    pasos.append(_cola(p))
-                    faltan += comandos_faltantes(p.stdout + p.stderr)
-                    rb = _run(f"bash {rollback}", w, env, tope)
-                    pasos.append(f"rollback: salida {rb.returncode}")
-                    if rb.returncode != 0:
-                        pasos.append(_cola(rb))
-                    pasos.append(RECETA)
-                    break
-            detalle = "\n".join(pasos)
+            with _lock_despliegue(self.cx.home, block.repo):
+                if self._dir_aparte is not None:
+                    marca = self._dir_aparte / "desplegando"
+                    marca.write_text(a.sha, encoding="utf-8")
+                pasos, ok = [], True
+                for paso in (desplegar, checklist):
+                    p = _run(f"bash {paso}", w, env, tope)
+                    pasos.append(f"{paso}: salida {p.returncode}")
+                    if p.returncode == 75:
+                        ok, codigo = False, 75
+                        pasos.append("no es el código; reintenta luego")
+                        pasos.append(_cola(p))
+                        break
+                    if p.returncode != 0:
+                        # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
+                        # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
+                        ok = False
+                        pasos.append(_cola(p))
+                        faltan += comandos_faltantes(p.stdout + p.stderr)
+                        rb = _run(f"bash {rollback}", w, env, tope)
+                        pasos.append(f"rollback: salida {rb.returncode}")
+                        if rb.returncode != 0:
+                            pasos.append(_cola(rb))
+                        pasos.append(RECETA)
+                        break
+                detalle = "\n".join(pasos)
         return {
             "sha": a.sha,
             "ok": ok,
             "detalle": detalle,
+            "codigo": codigo,
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,
@@ -1494,14 +1707,18 @@ Escribe en `$MOTOR_RESULT`:
                 p.returncode == 0,
                 _cola(p) or f"salió {p.returncode} sin imprimir nada",
             )
+            codigo = p.returncode
+            if codigo == 75:
+                detalle = f"no es el código; reintenta luego: {detalle}"
             if not ok:
                 faltan = comandos_faltantes(p.stdout + p.stderr)
         else:
-            ok, detalle = True, "el bloque no declara prueba real"
+            ok, detalle, codigo = True, "el bloque no declara prueba real", 0
         return {
             "sha": a.sha,
             "ok": ok,
             "detalle": detalle,
+            "codigo": codigo,
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,

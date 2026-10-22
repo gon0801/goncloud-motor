@@ -18,7 +18,7 @@ from motor.__main__ import doctor
 from motor.avisos import _resumen
 from motor.daemon import Daemon
 from motor.diagnostico import Causa, diagnostico
-from motor.notify import PLANTILLAS, FIJOS, PARCIAL, Notifier, render
+from motor.notify import FIJOS, PARCIAL, PLANTILLAS, Notifier, render
 from motor.store import Event
 from tests.test_no_caerse import Banco
 from tests.test_puro import PLAN, entregado, parse_plan, pol
@@ -241,6 +241,32 @@ humano: login pega las llaves
         d = diag(evs)
         self.assertCausa(d, Causa.CHECKS_INCOHERENTE, atorado=True)
         self.assertEqual(d.clave, "atorado:A:incoherente:" + SHA[:12])
+
+    def test_politica_bloquea(self):
+        evs = hasta_pr() + [
+            e("MarkedReady", {"sha": SHA}, 3600),
+            e(
+                "ChecksInvalidados",
+                {"sha": SHA, "detalle": "branch protection: required review"},
+                3601,
+            ),
+        ]
+        d = diag(evs)
+        self.assertCausa(d, Causa.POLITICA_BLOQUEA, atorado=True)
+        self.assertIn("required review", d.motivo)
+
+    def test_salida_75(self):
+        evs = hasta_pr() + [
+            e("Merged", {"sha": SHA, "commit": SHA}, 3 * 3600 + 200),
+            e(
+                "Deployed",
+                {"sha": SHA, "ok": False, "codigo": 75, "detalle": "75"},
+                3 * 3600 + 100,
+            ),
+        ]
+        d = diag(evs)
+        self.assertCausa(d, Causa.SALIDA_75, atorado=True)
+        self.assertIn("75", d.motivo)
 
     def test_checks_lento(self):
         evs = hasta_pr() + [e("MarkedReady", {"sha": SHA}, 7 * 3600)]
