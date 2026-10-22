@@ -215,6 +215,9 @@ def hijos_propios():
 
 
 def correr(plazo, cmd, parado):
+    shims = os.environ.get('MOTOR_SHIMS', '')
+    if shims:
+        os.environ['PATH'] = shims + ':' + os.environ.get('PATH', '')
     padre = os.getppid()
     sigue = (lambda: True) if plazo is None else (lambda: time.time() < plazo)
     code = 124
@@ -313,12 +316,12 @@ def argv_en_wsl(argv: list[str]) -> list[str]:
 
 def variables_wsl(env: dict) -> list[str]:
     nombres = [
-        f"{k}/p" if k == "MOTOR_RESULT" else k for k in env if k.startswith("MOTOR_")
+        f"{k}/p" if k in ("MOTOR_RESULT", "MOTOR_SHIMS") else k
+        for k in env
+        if k.startswith("MOTOR_")
     ]
     if "META_API_KEY" in env and "META_API_KEY" not in nombres:
         nombres.append("META_API_KEY")
-    if "PATH" in env and not any(n.startswith("PATH/") or n == "PATH" for n in nombres):
-        nombres.append("PATH/lp")
     return nombres
 
 
@@ -340,11 +343,8 @@ def lanzamiento_wsl(
     ahora: float | None = None,
 ) -> tuple[list[str], dict]:
     shims = str(Path(__file__).resolve().parent.parent / "shims")
-    ruta = env.get("PATH", "")
-    partes = ruta.split(os.pathsep) if ruta else []
     env2 = dict(env)
-    if shims not in partes:
-        env2["PATH"] = os.pathsep.join([shims, ruta]) if ruta else shims
+    env2["MOTOR_SHIMS"] = shims
     argv = argv_wsl(distro, [ruta_wsl(x) for x in cmd], timeout=timeout, ahora=ahora)
     return argv, env_wsl(env2)
 

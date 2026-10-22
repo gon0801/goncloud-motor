@@ -252,11 +252,12 @@ class WslTest(unittest.TestCase):
         self.assertEqual(argv[-2:], ["muse", "exec"])
         self.assertIn("SIGKILL", windows.GUARDIAN_WSL)
 
-    def test_env_wsl_pasa_motor_meta_y_path(self):
+    def test_env_wsl_pasa_motor_meta_y_shims_sin_path(self):
         env = windows.env_wsl(
             {
                 "MOTOR_RESULT": r"C:\x\result.json",
                 "MOTOR_BLOCK": "I",
+                "MOTOR_SHIMS": r"C:\motor\shims",
                 "META_API_KEY": "k",
                 "PATH": r"C:\motor\shims;C:\Windows",
                 "OTRA": "no",
@@ -265,11 +266,14 @@ class WslTest(unittest.TestCase):
         nombres = env["WSLENV"].split(":")
         self.assertIn("MOTOR_RESULT/p", nombres)
         self.assertIn("MOTOR_BLOCK", nombres)
+        self.assertIn("MOTOR_SHIMS/p", nombres)
         self.assertIn("META_API_KEY", nombres)
-        self.assertTrue(any(n.startswith("PATH/") for n in nombres))
+        self.assertFalse(
+            any(n == "PATH" or n.startswith("PATH/") for n in nombres), nombres
+        )
         self.assertNotIn("OTRA", nombres)
 
-    def test_lanzamiento_wsl_arma_path_con_filtro_gh(self):
+    def test_lanzamiento_wsl_pasa_shims_sin_path_en_wslenv(self):
         argv, env = windows.lanzamiento_wsl(
             ["muse", "exec", "--prompt-file", r"C:\x\brief.md"],
             {"MOTOR_RESULT": r"C:\x\r.json", "META_API_KEY": "k", "PATH": "/usr/bin"},
@@ -279,8 +283,35 @@ class WslTest(unittest.TestCase):
         self.assertIn(windows.GUARDIAN_WSL, argv)
         self.assertIn("2060.0", argv)
         self.assertIn("/mnt/c/x/brief.md", argv)
-        self.assertTrue(env["PATH"].split(os.pathsep)[0].endswith("shims"))
-        self.assertIn("gh", os.listdir(env["PATH"].split(os.pathsep)[0]))
+        self.assertTrue(env["MOTOR_SHIMS"].endswith("shims"))
+        self.assertIn("gh", os.listdir(env["MOTOR_SHIMS"]))
+        self.assertIn("muse", os.listdir(env["MOTOR_SHIMS"]))
+        nombres = env["WSLENV"].split(":")
+        self.assertIn("MOTOR_SHIMS/p", nombres)
+        self.assertFalse(
+            any(n == "PATH" or n.startswith("PATH/") for n in nombres), nombres
+        )
+
+    @unittest.skipUnless(os.name == "nt", "lanza wsl.exe real en la PC")
+    def test_wsl_python3_y_shims_resuelven_en_linux(self):
+        import subprocess
+
+        argv, env = windows.lanzamiento_wsl(
+            ["/bin/sh", "-c", "command -v python3 && command -v muse && command -v gh"],
+            {
+                **os.environ,
+                "MOTOR_RESULT": r"C:\motor-test\result.json",
+                "META_API_KEY": "k",
+            },
+            timeout=60,
+        )
+        r = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        lineas = [x.strip() for x in r.stdout.splitlines() if x.strip()]
+        self.assertEqual(len(lineas), 3, lineas)
+        self.assertNotIn("shims", lineas[0])
+        self.assertTrue(lineas[1].endswith("/shims/muse"), lineas)
+        self.assertTrue(lineas[2].endswith("/shims/gh"), lineas)
 
     def test_doctor_y_start_attempt_usan_el_mismo_constructor(self):
         import inspect
