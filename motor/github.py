@@ -94,10 +94,11 @@ def veredicto(
         e.get("context", "") for e in estados if e.get("state") in ("failure", "error")
     )
     if not requeridos:
-        corriendo = any(r.get("status") != "completed" for r in runs) or any(
+        efectivas = [r for r in runs if not _salto_del_borrador(r, listo_desde)]
+        corriendo = any(r.get("status") != "completed" for r in efectivas) or any(
             e.get("state") == "pending" for e in estados
         )
-        hay = bool(runs or estados)
+        hay = bool(efectivas or estados)
         fallas_sin = tuple(
             dict.fromkeys(
                 [c["nombre"] for c in fallidas if c["nombre"]] + list(estados_malos)
@@ -345,7 +346,11 @@ class GhGitHub:
 
     def _es_404(self, e: RuntimeError) -> bool:
         t = str(e)
-        return "Branch not protected" in t or "HTTP 404" in t or " 404" in t
+        return "HTTP 404" in t or " 404" in t
+
+    @staticmethod
+    def _sin_proteccion(e: RuntimeError) -> bool:
+        return "Branch not protected" in str(e)
 
     def checks(self, repo, numero, sha, extra):
         n = self.nombre(repo)
@@ -360,7 +365,7 @@ class GhGitHub:
                 )
             )
         except RuntimeError as e:
-            if not self._es_404(e):
+            if not self._sin_proteccion(e):
                 raise
             req = []
         try:

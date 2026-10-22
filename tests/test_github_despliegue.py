@@ -159,6 +159,25 @@ class ChecksTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             gh.checks("o/r", 7, SHA, ())
 
+    def test_proteccion_404_generico_es_falla_del_efecto(self):
+        gh = GhGrabado(proteccion=RuntimeError("gh: Not Found (HTTP 404)"))
+        with self.assertRaises(RuntimeError):
+            gh.checks("o/r", 7, SHA, ())
+
+    def test_sin_requeridos_salto_en_borrador_no_es_verde(self):
+        salto = {
+            "name": "ci",
+            "status": "completed",
+            "conclusion": "skipped",
+            "completed_at": "2026-10-21T20:00:00Z",
+            "id": 1,
+            "html_url": "https://github.com/o/r/actions/runs/1",
+            "details_url": "https://github.com/o/r/actions/runs/1",
+        }
+        v = veredicto(SHA, (), [salto], "2026-10-21T21:00:00Z")
+        self.assertFalse(v.green)
+        self.assertFalse(v.terminal)
+
     def test_las_reglas_de_la_rama_aportan_requeridos(self):
         reglas = json.dumps(
             [
