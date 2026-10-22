@@ -94,10 +94,11 @@ lane: release
 depende: D
 aviso: la versión del motor que no se cae, no pierde trabajo y avisa cuando se atora ya está en la Mac, la Mini y la PC
 prueba-real: bash ops/huellas.sh --rutas
-despliegue: desplegar=ops/instala-todo.sh checklist=ops/huellas.sh rollback=ops/desinstala-todo.sh
+despliegue: desplegar=ops/instala-todo.sh checklist=ops/huellas.sh rollback=ops/vuelve-a-la-anterior.sh
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
 | E.1 | Trabaja con poteto-mode de pstack. Antes de tocar código, lee `/Users/dn/.motor/conf/pstack-motor/motor.md`, que manda donde choca con poteto-mode, y el mapa de tu CLI en `/Users/dn/.motor/conf/pstack-motor/<tu cli>.md`. Después carga `/Users/dn/.motor/conf/pstack/skills/poteto-mode/SKILL.md`, abre el playbook que toca (Bug fix para cada arreglo, Refactoring para mover o borrar código, Feature para lo nuevo) y copia sus pasos a tu lista de tareas. Al terminar, nombra en `resumen` el playbook que seguiste. Sube la etiqueta por omisión de `ops/lib.sh` a la siguiente de la última publicada (`git tag -l 'v1.*' --sort=-v:refname`, la primera). Ajusta `ops/tests/test-instala.sh` a la etiqueta nueva. Con B.6, cada daemon se reinicia solo al ver la versión nueva en disco. | bash ops/tests/test-instala.sh |
+| E.2 | Escribe `ops/vuelve-a-la-anterior.sh`, la marcha atrás de la receta. Deja cada máquina en la etiqueta que tenía antes de la entrega: `ops/instala-todo.sh` la anota en `~/.motor/etiqueta-anterior` de cada máquina antes de cambiarla, solo cuando la etiqueta cambia. Nunca descarga el servicio ni borra la tarea programada. El 2026-10-22, la marcha atrás de entonces (`ops/desinstala-todo.sh`) borró la tarea del motor en la PC y lo dejó apagado. Pruebas en `ops/tests/test-instala.sh`. Una entrega que falla en una máquina, seguida de su marcha atrás, deja las otras dos en su etiqueta de antes y el servicio cargado en las tres. | bash ops/tests/test-instala.sh |
 
 ## Bloque F - corregir el plan o la máquina destraba el bloque
 lane: gate
@@ -157,7 +158,7 @@ lane: release
 depende: I
 aviso: la versión nueva del motor ya corre en la Mac, la Mini y la PC, y la probé en las tres
 prueba-real: bash ops/prueba-motor-02.sh
-despliegue: desplegar=ops/instala-todo.sh checklist=ops/huellas.sh rollback=ops/desinstala-todo.sh
+despliegue: desplegar=ops/instala-todo.sh checklist=ops/huellas.sh rollback=ops/vuelve-a-la-anterior.sh
 | Fila | Contenido | Acepta |
 | --- | --- | --- |
 | J.1 | Trabaja con poteto-mode de pstack. Antes de tocar código, lee `/Users/dn/.motor/conf/pstack-motor/motor.md`, que manda donde choca con poteto-mode, y el mapa de tu CLI en `/Users/dn/.motor/conf/pstack-motor/<tu cli>.md`. Después carga `/Users/dn/.motor/conf/pstack/skills/poteto-mode/SKILL.md`, abre el playbook que toca (Bug fix para cada arreglo, Refactoring para mover o borrar código, Feature para lo nuevo) y copia sus pasos a tu lista de tareas. Al terminar, nombra en `resumen` el playbook que seguiste. Sube la etiqueta por omisión de `ops/lib.sh` a la siguiente de la última publicada. Ajusta `ops/tests/test-instala.sh` a la etiqueta nueva. | bash ops/tests/test-instala.sh |
