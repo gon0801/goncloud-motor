@@ -30,7 +30,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import llamadas
+from . import llamadas, plataforma
 from . import pstack as ps
 from .plataforma import contener, kwargs_grupo, matar_grupo
 from .workspace import foto_wip
@@ -154,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
             **kwargs_grupo(),
         )
         contener(p)
+        # la hora de inicio va primero: con agent.pid presente ya hay con qué confirmar que sigue siendo él
+        (d / "agent.inicio").write_text(plataforma.hora_inicio(p.pid), encoding="utf-8")
         (d / "agent.pid").write_text(str(p.pid), encoding="utf-8")
         clave = f"agente-{os.getpid()}"
         if a.home and a.cuenta:

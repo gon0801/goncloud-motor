@@ -97,12 +97,17 @@ def _valida(path: Path, home: Path | None):
 
 
 def _estado(home: Path) -> list[dict]:
-    from .daemon import Daemon
+    from .daemon import planes_de
+    from .store import Store
 
-    d = Daemon(home)
+    if not (home / "motor.db").exists():
+        return []
+    store = Store.solo_lectura(
+        home / "motor.db"
+    )  # sin construir un Daemon: ni candado ni escritura
     out = []
-    for plan in d.plans():
-        snap = m.fold(plan, d.store.events(plan.id))
+    for plan in planes_de(store):
+        snap = m.fold(plan, store.events(plan.id))
         bloques = []
         for bid, bv in snap.blocks.items():
             run = bv.running()
@@ -357,9 +362,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if a.cmd == "daemon":
-        from .daemon import Daemon
+        from .daemon import Daemon, OtroMotor
 
-        return Daemon(a.home, a.checks_cada).run(a.intervalo, a.hasta_terminar, a.tope)
+        try:
+            d = Daemon(a.home, a.checks_cada)
+        except OtroMotor as e:
+            print(f"motor: {e}", file=sys.stderr)
+            return 1
+        return d.run(a.intervalo, a.hasta_terminar, a.tope)
     if a.cmd == "servicio":
         from .servicio import supervisor
 

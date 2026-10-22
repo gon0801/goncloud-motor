@@ -50,9 +50,28 @@ def _huella(plan: dict) -> str:
     ).hexdigest()[:16]
 
 
+class OtroMotor(RuntimeError):
+    """Ya hay un daemon sobre este home."""
+
+
+def planes_de(store: Store) -> list[Plan]:
+    vistos: dict[str, Plan] = {}
+    for e in store.events():
+        if e.kind == "PlanLoaded":
+            vistos[e.plan] = Plan.from_dict(e.data["plan"])
+    return list(vistos.values())
+
+
 class Daemon:
     def __init__(self, home: Path, checks_cada_s: float | None = None):
         self.home = home
+        # un solo escritor de la base por home: dos daemons duplicarían lanzamientos y efectos
+        self._candado = plataforma.candado(home / "motor.lock")
+        if self._candado is None:
+            raise OtroMotor(
+                f"ya hay un motor corriendo sobre {home} (candado {home / 'motor.lock'}); "
+                "un segundo no puede arrancar"
+            )
         self.maquina = load_maquina(home)
         # El env de la máquina vale también para el propio motor (git, verificar, desplegar), no solo
         # para los agentes. MOTOR 01: la Mini entra a GitHub por el alias github-claw y su motor no
@@ -174,11 +193,7 @@ class Daemon:
             )
 
     def plans(self) -> list[Plan]:
-        vistos: dict[str, Plan] = {}
-        for e in self.store.events():
-            if e.kind == "PlanLoaded":
-                vistos[e.plan] = Plan.from_dict(e.data["plan"])
-        return list(vistos.values())
+        return planes_de(self.store)
 
     def _bandejas(self) -> list[Path]:
         """La bandeja del motor y los buzones de la máquina (agentes que solo escriben en su carpeta)."""
