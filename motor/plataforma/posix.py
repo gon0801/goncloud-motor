@@ -9,7 +9,33 @@ import subprocess
 import time
 
 
-def boot_id_sistema() -> str:
+TOLERANCIA_ARRANQUE_S = 120
+
+_cache_boottime: list = [None, None]
+
+
+def _sec_boottime(texto: str) -> int | None:
+    m = re.search(r"sec\s*=\s*(\d+)", texto or "")
+    if m:
+        return int(m.group(1))
+    texto = (texto or "").strip()
+    return int(texto) if texto.isdigit() else None
+
+
+def boot_id_desde_boottime(texto: str) -> str:
+    sec = _sec_boottime(texto)
+    if sec is None:
+        return "desconocido"
+    previo_sec, previo_id = _cache_boottime
+    if previo_sec is not None and abs(sec - previo_sec) < TOLERANCIA_ARRANQUE_S:
+        return previo_id
+    _cache_boottime[:] = [sec, str(sec)]
+    return str(sec)
+
+
+def boot_id_sistema(lectura=None) -> str:
+    if lectura is not None:
+        return boot_id_desde_boottime(lectura())
     try:
         with open("/proc/sys/kernel/random/boot_id") as f:
             return f.read().strip()
@@ -20,13 +46,12 @@ def boot_id_sistema() -> str:
             "/usr/sbin/sysctl",
             "-n",
             "kern.boottime",
-        ],  # ruta fija: el PATH del servicio no trae /usr/sbin
+        ],
         capture_output=True,
         text=True,
         errors="replace",
     )
-    m = re.search(r"sec\s*=\s*(\d+)", r.stdout)
-    return m.group(1) if m else "desconocido"
+    return boot_id_desde_boottime(r.stdout)
 
 
 def kwargs_grupo() -> dict:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -50,6 +52,74 @@ def resolve_shim(
                     ]
                 return [str(cand)]
     return [nombre]
+
+
+BASH_GIT_POR_OMISION = r"C:\Program Files\Git\bin\bash.exe"
+
+
+def resuelve_bash(configurado: str = "") -> str:
+    return (
+        configurado.strip()
+        if configurado and configurado.strip()
+        else BASH_GIT_POR_OMISION
+    )
+
+
+def es_bash_de_wsl(ruta: str) -> bool:
+    baja = (ruta or "").lower().replace("/", "\\")
+    return baja.endswith(r"\system32\bash.exe") or r"\windowsapps\bash.exe" in baja
+
+
+def argv_shell(cmd: str, configurado: str = "") -> tuple:
+    bash = resuelve_bash(configurado)
+    if es_bash_de_wsl(bash):
+        bash = BASH_GIT_POR_OMISION
+    return ([bash, "-c", cmd], False, None)
+
+
+def es_stub_tienda(ruta: str) -> bool:
+    return "windowsapps" in (ruta or "").lower().replace("/", "\\")
+
+
+def path_sin_stub_tienda(path: str, sep: str = ";") -> str:
+    return sep.join(p for p in (path or "").split(sep) if p and not es_stub_tienda(p))
+
+
+def _ruta_git_bash(ruta: str) -> str:
+    if len(ruta) > 2 and ruta[1] == ":" and ruta[0].isalpha():
+        return "/" + ruta[0].lower() + ruta[2:].replace("\\", "/")
+    return ruta.replace("\\", "/")
+
+
+def carpeta_python_real() -> Path | None:
+    d = Path(tempfile.gettempdir()) / "motor-python"
+    exe = _ruta_git_bash(sys.executable)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        for nombre in ("python", "python3"):
+            p = d / nombre
+            contenido = f'#!/bin/sh\nexec "{exe}" "$@"\n'
+            try:
+                actual = p.read_text(encoding="utf-8")
+            except OSError:
+                actual = ""
+            if actual != contenido:
+                p.write_text(contenido, encoding="utf-8")
+                p.chmod(0o755)
+    except OSError:
+        return None
+    return d
+
+
+def path_con_python_real(path: str, sep: str = ";") -> str:
+    limpio = path_sin_stub_tienda(path, sep)
+    carpeta = carpeta_python_real()
+    if carpeta is None:
+        return limpio
+    partes = [p for p in limpio.split(sep) if p] if limpio else []
+    if str(carpeta) in partes:
+        return limpio
+    return sep.join([str(carpeta), *partes])
 
 
 def argv_windows(argv: list[str], env: dict) -> list[str]:
@@ -145,6 +215,9 @@ def hijos_propios():
 
 
 def correr(plazo, cmd, parado):
+    shims = os.environ.get('MOTOR_SHIMS', '')
+    if shims:
+        os.environ['PATH'] = shims + ':' + os.environ.get('PATH', '')
     padre = os.getppid()
     sigue = (lambda: True) if plazo is None else (lambda: time.time() < plazo)
     code = 124
@@ -207,17 +280,16 @@ def argv_wsl(
     timeout: float | None = None,
     ahora: float | None = None,
 ) -> list[str]:
-    """`wsl.exe -d <distro> --exec` + guardián + `cmd`. Sin `timeout` el guardián vive lo que
-    viva su padre; con `timeout`, ese plazo absoluto. El guardián va por `-c`, sin `-S`/site."""
     plazo = (
         "--parent"
         if timeout is None
         else str((time.time() if ahora is None else ahora) + timeout)
     )
+    base = ["wsl.exe"]
+    if distro:
+        base += ["-d", distro]
     return [
-        "wsl.exe",
-        "-d",
-        distro,
+        *base,
         "--exec",
         "/usr/bin/python3",
         "-I",
@@ -242,8 +314,20 @@ def argv_en_wsl(argv: list[str]) -> list[str]:
     return ["wsl.exe", "-e", *(ruta_wsl(x) for x in argv)]
 
 
-def env_wsl(env: dict, nombres: list[str]) -> dict:
-    """`wsl.exe` solo pasa a Linux las variables listadas en WSLENV (separadas por `:`)."""
+def variables_wsl(env: dict) -> list[str]:
+    nombres = [
+        f"{k}/p" if k in ("MOTOR_RESULT", "MOTOR_SHIMS") else k
+        for k in env
+        if k.startswith("MOTOR_")
+    ]
+    if "META_API_KEY" in env and "META_API_KEY" not in nombres:
+        nombres.append("META_API_KEY")
+    return nombres
+
+
+def env_wsl(env: dict, nombres: list[str] | None = None) -> dict:
+    if nombres is None:
+        nombres = variables_wsl(env)
     previas = [n for n in env.get("WSLENV", "").split(":") if n]
     return {
         **env,
@@ -251,13 +335,67 @@ def env_wsl(env: dict, nombres: list[str]) -> dict:
     }
 
 
-def boot_id_sistema() -> str:  # pragma: no cover
-    import ctypes
+def lanzamiento_wsl(
+    cmd: list[str],
+    env: dict,
+    timeout: float | None = None,
+    distro: str = "",
+    ahora: float | None = None,
+) -> tuple[list[str], dict]:
+    shims = str(Path(__file__).resolve().parent.parent / "shims")
+    env2 = dict(env)
+    env2["MOTOR_SHIMS"] = shims
+    argv = argv_wsl(distro, [ruta_wsl(x) for x in cmd], timeout=timeout, ahora=ahora)
+    return argv, env_wsl(env2)
 
-    ms = ctypes.windll.kernel32.GetTickCount64()
-    return str(
-        int(time.time() - ms / 1000) // 10
-    )  # hora de arranque, redondeada a 10 s
+
+def boot_id_desde_last_boot(valor) -> str:
+    if valor is None:
+        return "desconocido"
+    if hasattr(valor, "isoformat"):
+        return valor.isoformat()
+    texto = str(valor).strip()
+    return texto or "desconocido"
+
+
+def _last_boot_up_time() -> str:  # pragma: no cover
+    powershell = str(
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    try:
+        r = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString('o')",
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.strip()
+
+
+_cache_boot_id: list = [None]
+
+
+def boot_id_sistema(consulta=None) -> str:
+    if consulta is not None:
+        return boot_id_desde_last_boot(consulta())
+    if _cache_boot_id[0] is None:  # pragma: no cover
+        _cache_boot_id[0] = boot_id_desde_last_boot(_last_boot_up_time())
+    return _cache_boot_id[0]  # pragma: no cover
 
 
 def kwargs_grupo() -> dict:  # pragma: no cover

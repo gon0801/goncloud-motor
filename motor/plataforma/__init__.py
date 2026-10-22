@@ -41,6 +41,40 @@ import subprocess
 from pathlib import Path
 
 
+def _clase_marca(x) -> str:
+    from datetime import datetime
+
+    try:
+        int(str(x))
+        return "numero"
+    except ValueError:
+        pass
+    try:
+        datetime.fromisoformat(str(x).replace("Z", "+00:00"))
+        return "fecha"
+    except ValueError:
+        return "opaca"
+
+
+def mismo_arranque(a, b) -> bool:
+    if a == b:
+        return True
+    if a in (None, "", "desconocido") or b in (None, "", "desconocido"):
+        return True
+    clase_a, clase_b = _clase_marca(a), _clase_marca(b)
+    if clase_a != clase_b:
+        return True
+    if clase_a == "opaca":
+        return False
+    if clase_a == "numero":
+        return abs(int(str(a)) - int(str(b))) < 120
+    from datetime import datetime
+
+    fa = datetime.fromisoformat(str(a).replace("Z", "+00:00"))
+    fb = datetime.fromisoformat(str(b).replace("Z", "+00:00"))
+    return abs((fa - fb).total_seconds()) < 120
+
+
 def boot_id() -> str:
     """MOTOR_BOOT_ID permite simular un reinicio en las pruebas."""
     return os.environ.get("MOTOR_BOOT_ID") or boot_id_sistema()
@@ -61,7 +95,7 @@ def lanzar_separado(cmd: list[str], cwd: Path, env: dict, log: Path) -> dict:
 
 
 def estado_proc(proc: dict) -> str:
-    if proc.get("boot_id") != boot_id():
+    if not mismo_arranque(proc.get("boot_id"), boot_id()):
         return "corte"
     if not pid_vivo(int(proc["pid"])):
         return "muerto"

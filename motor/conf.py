@@ -159,6 +159,7 @@ _CLAVES_MAQUINA = {
     "conf",
     "path_extra",
     "env",
+    "bash",
     "wsl",
     "github",
     "no_dormir",
@@ -175,6 +176,7 @@ class Maquina:
     path_extra: tuple[str, ...] = ()
     env: tuple[tuple[str, str], ...] = ()  # p. ej. certificados de Kaspersky en la PC
     wsl: tuple[str, ...] = ()  # CLIs que corren dentro de WSL
+    bash: str = ""  # Git Bash de la PC; vacío usa C:\Program Files\Git\bin\bash.exe
     github: str = "real"  # real | falso:<carpeta> (pruebas)
     tiene: tuple[str, ...] = ()  # capacidades de esta máquina, p. ej. "ssh-goncloud"
     # carpetas (con comodines) donde agentes con acceso solo a su carpeta dejan planes para el motor,
@@ -196,6 +198,10 @@ def valida_maquina(raw: dict) -> None:
     ):
         raise ConfError(
             "[no_dormir] lleva dos listas: encender = [...] y apagar = [...]"
+        )
+    if "bash" in raw and not (isinstance(raw["bash"], str) and raw["bash"].strip()):
+        raise ConfError(
+            '"bash" es la ruta de Git Bash: bash = "C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe"'
         )
     tiene = raw.get("tiene", [])
     if not (
@@ -224,6 +230,7 @@ def load_maquina(home: Path) -> Maquina:
         path_extra=tuple(raw.get("path_extra", [])),
         env=tuple(sorted(raw.get("env", {}).items())),
         wsl=tuple(raw.get("wsl", [])),
+        bash=str(raw.get("bash", "")),
         github=raw.get("github", "real"),
         tiene=tuple(raw.get("tiene", [])),
         buzones=tuple(raw.get("buzones", [])),

@@ -38,7 +38,7 @@ from .github import (
 )
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
-from .plataforma.windows import argv_en_wsl
+from .plataforma.windows import argv_shell, lanzamiento_wsl, path_con_python_real
 from .store import Store
 from .workspace import Workspace, foto_wip, git
 
@@ -49,17 +49,25 @@ _FALTA = re.compile(
 )
 
 
-def con_python(env: dict) -> dict:
-    """Los planes escritos en la PC dicen `python`; la Mac y la Mini solo traen `python3`
-    (INGESTA 01, bloque C). Si falta `python` y hay `python3`, el motor pone uno que llama a python3."""
+def con_python(env: dict, en_windows: bool | None = None) -> dict:
+    if en_windows is None:
+        en_windows = os.name == "nt"
+    if en_windows:
+        return env
     ruta = env.get("PATH", "")
-    if (
-        os.name != "nt"
-        and not shutil.which("python", path=ruta)
-        and shutil.which("python3", path=ruta)
-    ):
+    if not shutil.which("python", path=ruta) and shutil.which("python3", path=ruta):
         env["PATH"] = os.pathsep.join([str(RAIZ / "motor" / "shims" / "python"), ruta])
     return env
+
+
+def con_python_de_comando(env: dict, en_windows: bool | None = None) -> dict:
+    if en_windows is None:
+        en_windows = os.name == "nt"
+    if not en_windows:
+        return env
+    salida = dict(env)
+    salida["PATH"] = path_con_python_real(salida.get("PATH", ""))
+    return salida
 
 
 def comandos_faltantes(salida: str) -> list[str]:
@@ -80,14 +88,10 @@ class Contexto:
     checks_cada_s: float = 60.0
 
 
-def _posix(cmd: str) -> tuple:
-    """Cómo correr un comando POSIX del motor (Acepta, sondas, pruebas reales) en cada plataforma:
-    (args, shell, executable) para Popen. En Windows no hay /bin/bash y `shell=True` con executable
-    sale mal (le pasa /c): se llama al bash/sh de Git por argv; sin bash, el shell del sistema."""
+def _posix(cmd: str, bash: str = "") -> tuple:
     if os.name != "nt":
         return cmd, True, "/bin/bash"
-    sh = shutil.which("bash") or shutil.which("sh")
-    return ([sh, "-c", cmd], False, None) if sh else (cmd, True, None)
+    return argv_shell(cmd, bash)
 
 
 RECETA = (
@@ -106,12 +110,10 @@ def _cola(p: subprocess.CompletedProcess) -> str:
 
 
 def _run(
-    cmd: str, cwd: Path | None, env: dict, timeout: float = 900
+    cmd: str, cwd: Path | None, env: dict, timeout: float = 900, bash: str = ""
 ) -> subprocess.CompletedProcess:
-    """Corre `cmd` en su propio grupo; al pasarse del tope mata el grupo entero, no solo el shell.
-    Shopify-token-01: el tope cortaba `bash desplegar.sh` y el `crontab -` que había abierto se
-    quedaba colgado en la Mini, esperando un permiso que nadie contestaba."""
-    argv, shell, exe = _posix(cmd)
+    argv, shell, exe = _posix(cmd, bash)
+    env = con_python_de_comando(env)
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
         p = subprocess.Popen(
             argv,
@@ -566,10 +568,6 @@ class Effects:
             )
             for x in ruta.argv
         ]
-        if (
-            ruta.cli in self.cx.maquina.wsl
-        ):  # Muse en la PC: dentro de WSL, con su token pasado por WSLENV
-            argv = argv_en_wsl(argv)
         base = self.env_base()
         de_ruta = {k: string.Template(v).safe_substitute(base) for k, v in ruta.env}
         env = self.env_base(
@@ -579,14 +577,14 @@ class Effects:
                 "MOTOR_MODEL": a.modelo,
                 "MOTOR_BLOCK": a.block,
                 "MOTOR_ROLE": a.role,
-                "WSLENV": "META_API_KEY/u:MOTOR_RESULT/p",
                 "PYTHONPATH": str(RAIZ),
             }
         )
-        # el `gh` de los agentes no mergea, ni cierra, ni marca listo: eso solo lo hace el motor
         env["PATH"] = os.pathsep.join(
             [str(RAIZ / "motor" / "shims"), env.get("PATH", "")]
         )
+        if ruta.cli in self.cx.maquina.wsl:
+            argv, env = lanzamiento_wsl(argv, env, timeout=self.cx.policy.timeout_s)
         # el shim de cada CLI de modelos lee de aquí qué cuenta es cada llamada y cuánto cabe
         cupos = json.dumps(
             {
@@ -996,7 +994,9 @@ Escribe en `$MOTOR_RESULT`:
             block.repo, sha, self.cx.home / "tmp" / f"{nombre}-{plan.id}-{block.id}"
         )
         tope = float(self.cx.conf.tiempos.get("repro_tope_s", 300))
-        return _run(cmd, w, self.env_base(dict(rc.prueba_env)), tope)
+        return _run(
+            cmd, w, self.env_base(dict(rc.prueba_env)), tope, bash=self.cx.maquina.bash
+        )
 
     def _comprueba_repro(
         self, plan: Plan, snap: m.Snapshot, block, res: dict, punta: str
@@ -1232,7 +1232,13 @@ Escribe en `$MOTOR_RESULT`:
         tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
         for r in block.rows:
             if r.acepta:
-                p = _run(r.acepta, w, self.env_base(dict(rc.prueba_env)), tope)
+                p = _run(
+                    r.acepta,
+                    w,
+                    self.env_base(dict(rc.prueba_env)),
+                    tope,
+                    bash=self.cx.maquina.bash,
+                )
                 if p.returncode != 0:
                     fallas.append(
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
@@ -1653,7 +1659,7 @@ Escribe en `$MOTOR_RESULT`:
                     marca.write_text(a.sha, encoding="utf-8")
                 pasos, ok = [], True
                 for paso in (desplegar, checklist):
-                    p = _run(f"bash {paso}", w, env, tope)
+                    p = _run(f"bash {paso}", w, env, tope, bash=self.cx.maquina.bash)
                     pasos.append(f"{paso}: salida {p.returncode}")
                     if p.returncode == 75:
                         ok, codigo = False, 75
@@ -1666,7 +1672,9 @@ Escribe en `$MOTOR_RESULT`:
                         ok = False
                         pasos.append(_cola(p))
                         faltan += comandos_faltantes(p.stdout + p.stderr)
-                        rb = _run(f"bash {rollback}", w, env, tope)
+                        rb = _run(
+                            f"bash {rollback}", w, env, tope, bash=self.cx.maquina.bash
+                        )
                         pasos.append(f"rollback: salida {rb.returncode}")
                         if rb.returncode != 0:
                             pasos.append(_cola(rb))
@@ -1701,7 +1709,7 @@ Escribe en `$MOTOR_RESULT`:
             env = self.env_base(dict(rc.prueba_env))
             env["MOTOR_RAIZ"] = str(w)
             tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
-            p = _run(block.prueba_real, w, env, tope)
+            p = _run(block.prueba_real, w, env, tope, bash=self.cx.maquina.bash)
             # La salida puede ir a un archivo (la sonda de INGESTA 01): sin esto el agente veía "".
             ok, detalle = (
                 p.returncode == 0,
@@ -1754,11 +1762,11 @@ Escribe en `$MOTOR_RESULT`:
             return
         if ahora - self._ultimo_poll.get(f"sonda:{clave}", 0) < SONDA_CADA_S:
             return
-        argv, shell, exe = _posix(h.sonda)
+        argv, shell, exe = _posix(h.sonda, self.cx.maquina.bash)
         p = subprocess.Popen(
             argv,
             shell=shell,
-            env=self.env_base({"MOTOR_HOME": str(self.cx.home)}),
+            env=con_python_de_comando(self.env_base({"MOTOR_HOME": str(self.cx.home)})),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
