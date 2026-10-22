@@ -398,6 +398,56 @@ class ChecksTest(unittest.TestCase):
             len([e for e in store.events("demo") if e.kind == "ChecksResult"]), 2
         )
 
+    def test_tercera_entrega_del_mismo_sha_relanza_y_cuenta_el_rojo(self):
+        gh = GhGrabado(runs=json.dumps([_run("ci", conclusion="failure", rid=7)]))
+        plan, store, fx = self._fx(gh)
+
+        def entrega(n):
+            store.append(
+                "demo",
+                "A",
+                "AttemptStarted",
+                {
+                    "n": n,
+                    "role": "implementar",
+                    "modelo": "glm",
+                    "proc": {},
+                    "dir": "d",
+                },
+            )
+            store.append(
+                "demo",
+                "A",
+                "AttemptEnded",
+                {
+                    "n": n,
+                    "role": "implementar",
+                    "outcome": {"kind": "entregado", "sha": SHA},
+                },
+            )
+
+        def poll():
+            fx.poll_checks(plan, self._snap(plan, store), m.PollChecks("A", SHA))
+
+        entrega(1)
+        poll()
+        for kind, datos in [
+            ("Verified", {"sha": SHA, "ok": True}),
+            ("PrOpened", {"numero": 7, "rama": "f"}),
+            ("Reviewed", {"sha": SHA, "veredicto": "APROBADO", "bloqueantes": []}),
+            ("MarkedReady", {"sha": SHA}),
+        ]:
+            store.append("demo", "A", kind, datos)
+        entrega(2)
+        poll()
+        poll()
+        entrega(3)
+        for _ in range(4):
+            poll()
+        self.assertEqual(gh.relanzadas_fallidas, ["7", "7"])
+        rojos = [e for e in store.events("demo") if e.kind == "ChecksResult"]
+        self.assertGreaterEqual(len(rojos), 3)
+
 
 class MergeTest(unittest.TestCase):
     def setUp(self):

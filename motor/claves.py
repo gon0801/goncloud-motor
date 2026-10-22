@@ -93,8 +93,9 @@ def checks_resultado(
     return base if not vez else f"{base}:v{vez}"
 
 
-def checks_relanzados(plan: str, block: str, sha: str, motivo: str) -> str:
-    return f"relanzados:{plan}:{block}:{sha}:{motivo}"
+def checks_relanzados(plan: str, block: str, sha: str, motivo: str, n: int = 0) -> str:
+    base = f"relanzados:{plan}:{block}:{sha}:{motivo}"
+    return base if not n else f"{base}:{n}"
 
 
 def checks_invalidados(plan: str, block: str, sha: str, n: int = 0) -> str:

@@ -1469,12 +1469,20 @@ Escribe en `$MOTOR_RESULT`:
                 ids.append(c["run_id"])
         if not ids:
             return False
+        previos = sum(
+            1
+            for e in eventos
+            if e.kind == "ChecksRelanzados"
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and e.data.get("motivo") == "fallidas"
+        )
         self.cx.store.append(
             plan.id,
             a.block,
             "ChecksRelanzados",
             {"sha": a.sha, "motivo": "fallidas", "run_ids": ids},
-            ukey=claves.checks_relanzados(plan.id, a.block, a.sha, "fallidas"),
+            ukey=claves.checks_relanzados(plan.id, a.block, a.sha, "fallidas", previos),
         )
         return True
 
