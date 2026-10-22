@@ -1605,13 +1605,15 @@ Escribe en `$MOTOR_RESULT`:
                 continue
             if vieja and x.name != vigente:
                 shutil.rmtree(x, ignore_errors=True)
+        store = getattr(self.cx, "store", None)
         ultima_carga: dict[str, int] = {}
-        for e in self.cx.store.events(kind="PlanLoaded"):
-            ultima_carga[e.plan] = e.id
         limpios: dict[str, float] = {}
-        for e in self.cx.store.events(kind="Limpiado"):
-            if ultima_carga.get(e.plan, 0) <= e.id:
-                limpios[e.plan] = e.ts
+        if store is not None:
+            for e in store.events(kind="PlanLoaded"):
+                ultima_carga[e.plan] = e.id
+            for e in store.events(kind="Limpiado"):
+                if ultima_carga.get(e.plan, 0) <= e.id:
+                    limpios[e.plan] = e.ts
         for pid, ts in limpios.items():
             carpeta = self.cx.home / "intentos" / pid
             if now - ts > dias * 86400 and carpeta.exists():
