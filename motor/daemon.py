@@ -30,7 +30,7 @@ from .conf import (
 from .effects import Contexto, Effects
 from .github import para
 from .notify import Notifier, render
-from .plan import Plan, PlanError, modelos_desconocidos, revisa_sin_quien
+from .plan import Comando, Plan, PlanError, modelos_desconocidos, revisa_sin_quien
 from .store import Store
 from .version import SALIDA_RELANZAR, info, pide_otra
 from .workspace import Workspace, git
@@ -167,104 +167,134 @@ class Daemon:
 
     def ingest_inbox(self) -> None:
         inbox = self.home / "inbox"
-        hechos = inbox / "procesados"
+        hechos, malos = inbox / "procesados", inbox / "rechazados"
         hechos.mkdir(parents=True, exist_ok=True)
         archivos = sorted(
             (f for b in self._bandejas() for f in b.glob("*.json")),
             key=lambda f: f.name,
         )
         for f in archivos:
-            msg = json.loads(f.read_text(encoding="utf-8"))
-            cmd_id, tipo = msg["cmd_id"], msg["tipo"]
-            plan_id = msg.get("plan") if tipo != "plan" else msg["plan"]["id"]
-            if tipo == "plan":
-                try:
-                    plan = Plan.from_dict(msg["plan"])
-                    if malos := modelos_desconocidos(
-                        plan, self.cx.conf.rutas
-                    ) or revisa_sin_quien(plan, self.cx.conf.escalera("implementar")):
-                        raise PlanError(malos)
-                    for repo in dict.fromkeys(b.repo for b in plan.blocks):
-                        self.cx.ws.espejo(
-                            repo
-                        )  # antes de cargarlo: un repo que no existe rechaza el plan
-                        rc = RepoConf.parse(self.fx.conf_base(repo)[1])
-                        if faltan := requisitos_faltantes(
-                            rc.requiere, self.maquina.tiene
-                        ):
-                            raise PlanError(
-                                [motivo_requiere(self.maquina.nombre, repo, faltan)]
-                            )
-                    self.store.append(
-                        plan.id,
-                        "",
-                        "PlanLoaded",
-                        {"plan": msg["plan"], "por": msg.get("por", "")},
-                        # Entregar otra vez el plan con cambios lo reemplaza (lo hecho sigue hecho);
-                        # el mismo texto otra vez no hace nada. Antes el cambio se ignoraba en
-                        # silencio y el recibo decía "tomado" (INGESTA 01, prueba real de S).
-                        ukey=f"plan:{plan.id}:{_huella(msg['plan'])}",
-                    )
-                    self.fx.pin_repos(plan)
-                    resultado = "tomado"
-                except (PlanError, RuntimeError, KeyError) as e:
-                    resultado = f"rechazado: {e}"
-                    # Quien entregó pudo irse con "encolado": el rechazo tiene que llegarle a David
-                    # (MOTOR 01: INGESTA 01 se rechazó en la Mini y nadie se enteró).
-                    titulo = str(
-                        msg.get("plan", {}).get("titulo")
-                        or msg.get("plan", {}).get("id")
-                        or "un plan"
-                    )
-                    self.cx.notifier.encola(
-                        f"rechazo:{cmd_id}",
-                        render(
-                            "rechazado",
-                            {
-                                "motivo": str(e).splitlines()[0][:300],
-                                "por": msg.get("por") or "quien te lo dio",
-                            },
-                            self.maquina.nombre,
-                            titulo,
-                        ),
-                    )
-            elif tipo == "hecho":
-                resultado = self._hecho(plan_id, msg)
-            elif tipo == "nota":
+            try:
+                cmd = Comando.from_dict(json.loads(f.read_text(encoding="utf-8")))
+                resultado = self._procesa(cmd)
                 self.store.append(
-                    plan_id,
-                    msg["block"],
-                    "Note",
-                    {"texto": msg["texto"]},
-                    ukey=f"nota:{cmd_id}",
+                    cmd.plan_id,
+                    "",
+                    "CommandReceived",
+                    {"cmd_id": cmd.cmd_id, "tipo": cmd.tipo, "resultado": resultado},
+                    ukey=f"cmd:{cmd.cmd_id}",
                 )
-                resultado = "anotado"
-            else:
-                resultado = f"rechazado: tipo desconocido {tipo}"
-            self.store.append(
-                plan_id or "",
-                "",
-                "CommandReceived",
-                {"cmd_id": cmd_id, "tipo": tipo, "resultado": resultado},
-                ukey=f"cmd:{cmd_id}",
-            )
-            os.replace(f, hechos / f.name)
+                destino = hechos
+            except Exception as e:  # noqa: BLE001  un archivo malo no frena a los demás de la bandeja
+                self._rechaza(f, e)
+                destino = malos
+            destino.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(f, destino / f.name)
+            except OSError:
+                pass  # se queda en la bandeja: lo hecho es idempotente (ukey) y el aviso no se repite
 
-    def _hecho(self, plan_id: str, msg: dict) -> str:
+    def _rechaza(self, f: Path, e: Exception) -> None:
+        """Quien entregó pudo irse con "encolado": el rechazo tiene que llegarle a David
+        (MOTOR 01: INGESTA 01 se rechazó en la Mini y nadie se enteró)."""
+        motivo = (str(e).strip() or type(e).__name__).splitlines()[0][:300]
+        msg: dict = {}
+        try:
+            leido = json.loads(f.read_text(encoding="utf-8"))
+            msg = leido if isinstance(leido, dict) else {}
+        except (OSError, ValueError):
+            pass
+        cmd_id = msg["cmd_id"] if isinstance(msg.get("cmd_id"), str) else f.stem
+        plan = msg.get("plan") if isinstance(msg.get("plan"), dict) else {}
+        titulo = str(plan.get("titulo") or plan.get("id") or "un plan")
+        por = msg["por"] if isinstance(msg.get("por"), str) and msg["por"] else ""
+        nuevo = self.store.append(
+            "",
+            "",
+            "CommandReceived",
+            {
+                "cmd_id": cmd_id,
+                "tipo": str(msg.get("tipo", "")),
+                "resultado": f"rechazado: {motivo}",
+            },
+            ukey=f"cmd:{cmd_id}",
+        )
+        if nuevo:
+            self.cx.notifier.encola(
+                f"rechazo:{cmd_id}",
+                render(
+                    "rechazado",
+                    {"motivo": motivo, "por": por or "quien te lo dio"},
+                    self.maquina.nombre,
+                    titulo,
+                ),
+            )
+
+    def _procesa(self, cmd: Comando) -> str:
+        if cmd.tipo == "hecho":
+            return self._hecho(cmd.plan_id, cmd)
+        if cmd.tipo == "nota":
+            self.store.append(
+                cmd.plan_id,
+                cmd.block,
+                "Note",
+                {"texto": cmd.texto},
+                ukey=f"nota:{cmd.cmd_id}",
+            )
+            return "anotado"
+        plan = Plan.from_dict(cmd.plan)
+        if malos := modelos_desconocidos(plan, self.cx.conf.rutas) or revisa_sin_quien(
+            plan, self.cx.conf.escalera("implementar")
+        ):
+            raise PlanError(malos)
+        for repo in dict.fromkeys(b.repo for b in plan.blocks):
+            self.cx.ws.espejo(
+                repo
+            )  # antes de cargarlo: un repo que no existe rechaza el plan
+            rc = RepoConf.parse(self.fx.conf_base(repo)[1])
+            if faltan := requisitos_faltantes(rc.requiere, self.maquina.tiene):
+                raise PlanError([motivo_requiere(self.maquina.nombre, repo, faltan)])
+            for b in plan.blocks:
+                if (
+                    b.repo == repo
+                    and b.lane == "release"
+                    and not b.release
+                    and not (rc.desplegar and rc.checklist and rc.rollback)
+                ):
+                    raise PlanError(
+                        [
+                            f"el bloque {b.id} es de lane release y no trae 'despliegue:' "
+                            "ni el repo tiene su receta de despliegue en .motor.toml"
+                        ]
+                    )
+        self.store.append(
+            plan.id,
+            "",
+            "PlanLoaded",
+            {"plan": cmd.plan, "por": cmd.por},
+            # Entregar otra vez el plan con cambios lo reemplaza (lo hecho sigue hecho);
+            # el mismo texto otra vez no hace nada. Antes el cambio se ignoraba en
+            # silencio y el recibo decía "tomado" (INGESTA 01, prueba real de S).
+            ukey=f"plan:{plan.id}:{_huella(cmd.plan)}",
+        )
+        self.fx.pin_repos(plan)
+        return "tomado"
+
+    def _hecho(self, plan_id: str, cmd: Comando) -> str:
         plan = next((p for p in self.plans() if p.id == plan_id), None)
-        if plan is None or msg["block"] not in {b.id for b in plan.blocks}:
+        if plan is None or cmd.block not in {b.id for b in plan.blocks}:
             return "rechazado: no conozco ese plan o ese paso"
         if (
-            m.estado(m.fold(plan, self.store.events(plan.id)), msg["block"])
+            m.estado(m.fold(plan, self.store.events(plan.id)), cmd.block)
             is not m.Estado.HUMANO
         ):
             return "rechazado: ese paso todavía no te toca; te aviso cuando sí"
         self.store.append(
             plan_id,
-            msg["block"],
+            cmd.block,
             "HumanDone",
-            {"por": msg.get("por", "")},
-            ukey=f"humano:{plan_id}:{msg['block']}",
+            {"por": cmd.por},
+            ukey=f"humano:{plan_id}:{cmd.block}",
         )
         return "anotado"
 

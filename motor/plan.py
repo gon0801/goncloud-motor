@@ -146,6 +146,54 @@ class Plan:
         )
 
 
+@dataclass(frozen=True)
+class Comando:
+    """Un archivo de la bandeja ya validado: lo que no cumple la forma no pasa de aquí."""
+
+    cmd_id: str
+    tipo: str
+    plan_id: str
+    por: str
+    plan: dict | None = None
+    block: str = ""
+    texto: str = ""
+
+    @staticmethod
+    def from_dict(d: object) -> Comando:
+        if not isinstance(d, dict):
+            raise PlanError(["el mensaje no es un objeto JSON"])
+
+        def texto(clave: str, de: dict = d, donde: str = "el mensaje") -> str:
+            v = de.get(clave)
+            if not isinstance(v, str):
+                raise PlanError([f"{donde} no trae '{clave}' como texto"])
+            return v
+
+        cmd_id, tipo = texto("cmd_id"), texto("tipo")
+        por = d.get("por", "")
+        if not isinstance(por, str):
+            raise PlanError(["el mensaje trae 'por' y no es texto"])
+        if tipo == "plan":
+            plan = d.get("plan")
+            if not isinstance(plan, dict):
+                raise PlanError(["el mensaje no trae 'plan' como objeto"])
+            return Comando(cmd_id, tipo, texto("id", plan, "el plan"), por, plan=plan)
+        if tipo not in ("nota", "hecho"):
+            raise PlanError([f"tipo desconocido {tipo}"])
+        plan_id = d.get("plan", "")
+        if not isinstance(plan_id, str):
+            raise PlanError(["el mensaje trae 'plan' y no es texto"])
+        block = texto("block")
+        return Comando(
+            cmd_id,
+            tipo,
+            plan_id,
+            por,
+            block=block,
+            texto=texto("texto") if tipo == "nota" else "",
+        )
+
+
 @dataclass
 class _Draft:
     id: str
