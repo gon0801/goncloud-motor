@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -31,7 +32,7 @@ def main() -> int:
         print("libro:" + ",".join(sorted(f"{r['tipo']}/{r['cuenta']}" for r in vivos)))
     if os.environ.get("FAKE_ANIDA"):
         r = subprocess.run(
-            ["claude", "-p", "hola"],
+            [shutil.which("claude") or "claude", "-p", "hola"],
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,

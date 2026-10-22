@@ -26,7 +26,7 @@ from motor.notify import lint_plain  # noqa: E402
 from motor.store import Store  # noqa: E402
 from motor.workspace import foto_wip, git  # noqa: E402
 
-ENV = {**os.environ, "PYTHONPATH": str(RAIZ)}
+ENV = {**os.environ, "PYTHONPATH": str(RAIZ), "PYTHONUTF8": "1"}
 
 
 def motor(
@@ -168,8 +168,8 @@ class TestPlan(Banco):
             self.home / "maquina.toml", "a"
         ) as f:  # la MacBook: no dormirse mientras haya plan
             f.write(
-                f'\n[no_dormir]\nencender = ["sh", "-c", "echo sin-dormir >> {sueno}"]\n'
-                f'apagar = ["sh", "-c", "echo normal >> {sueno}"]\n'
+                f'\n[no_dormir]\nencender = ["sh", "-c", "echo sin-dormir >> {sueno.as_posix()}"]\n'
+                f'apagar = ["sh", "-c", "echo normal >> {sueno.as_posix()}"]\n'
             )
         self.termina()
         self.assertEqual(
@@ -1370,7 +1370,8 @@ class BancoPstack(Banco):
             base
             + f"## Bloque A — {titulo}\nlane: gate\naviso: ya saluda\nprueba-real: true\n"
             + bloque_extra
-            + f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| {fila} |\n"
+            + f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| {fila} |\n",
+            encoding="utf-8",
         )
         r = motor(
             "entrega",
@@ -1407,10 +1408,16 @@ class TestPstack(BancoPstack):
             self.assertIn("REGLA-DEL-MOTOR", brief, "motor.md va en el encargo")
             self.assertIn("Mapa de claude.", brief, "y el mapa del CLI")
             self.assertIn("## Cómo trabajas", brief)
-        h = json.loads((self.intentos("implementar")[0] / "huella.json").read_text())
+        h = json.loads(
+            (self.intentos("implementar")[0] / "huella.json").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertEqual((h["estado"], h["exigir"]), ("falta", False))
         self.assertEqual(h["faltas"], ["no cargó la skill poteto-mode"])
-        h = json.loads((self.intentos("revisar")[0] / "huella.json").read_text())
+        h = json.loads(
+            (self.intentos("revisar")[0] / "huella.json").read_text(encoding="utf-8")
+        )
         self.assertEqual(h["estado"], "cumple")
         self.assertEqual(
             [o["kind"] for o in self.fines("implementar")],
@@ -1464,7 +1471,11 @@ class TestPstack(BancoPstack):
         ]
         self.assertEqual(len(avisos), 1, "implementar y revisar usan claude: un aviso")
         self.assertIn("claude", avisos[0])
-        h = json.loads((self.intentos("implementar")[0] / "huella.json").read_text())
+        h = json.loads(
+            (self.intentos("implementar")[0] / "huella.json").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertEqual(h["estado"], "no_verificable")
 
 
@@ -1598,13 +1609,19 @@ class TestLlamadasAOtrosModelos(BancoPstack):
                 f'#!/bin/sh\nexec "{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} "$@"\n'
             )
             f.chmod(0o755)
+            (binario / f"{nombre}.cmd").write_text(  # en Windows solo corren los .cmd
+                f'@"{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} %*\r\n',
+                encoding="utf-8",
+            )
         return binario
 
     def maquina(self, extra_env: str = ""):
         texto = (self.home / "maquina.toml").read_text(encoding="utf-8")
         (self.home / "maquina.toml").write_text(
             texto.replace(
-                "[env]", f'path_extra = ["{self.cli_falsos()}"]\n[env]\n{extra_env}', 1
+                "[env]",
+                f'path_extra = ["{self.cli_falsos().as_posix()}"]\n[env]\n{extra_env}',
+                1,
             ),
             encoding="utf-8",
         )

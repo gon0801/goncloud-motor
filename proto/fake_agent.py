@@ -26,6 +26,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -64,7 +65,7 @@ def main() -> int:
         "panel"
     ):  # pide una segunda opinión a otro CLI de modelos, por el shim del motor
         r = subprocess.run(
-            ["kimi", "--model", "k3", "-p", "hola"],
+            [shutil.which("kimi") or "kimi", "--model", "k3", "-p", "hola"],
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,

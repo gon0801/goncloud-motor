@@ -34,7 +34,7 @@ def _repo(base: Path, nombre: str, archivos: dict[str, str]) -> str:
     for ruta, contenido in archivos.items():
         p = seed / ruta
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(contenido)
+        p.write_text(contenido, encoding="utf-8")
         if ruta.endswith(".sh"):
             p.chmod(0o755)
     sh("git", "init", "-q", "-b", "main", cwd=seed)
@@ -52,7 +52,7 @@ def _repo(base: Path, nombre: str, archivos: dict[str, str]) -> str:
         cwd=seed,
     )
     sh("git", "push", "-q", str(bare), "main", cwd=seed)
-    return str(bare)
+    return bare.as_posix()
 
 
 def _pstack_en_conf(conf: Path, pstack: dict) -> None:
@@ -133,13 +133,13 @@ PROD_DIR = "{Path(prod).as_posix()}"
                     "requeridos": ["ci", "completa"],
                     "solo_listo": ["completa"],
                     "checks": {
-                        "ci": "./ci.sh",
-                        "completa": "./ci.sh",
-                        "seguridad": "./ci.sh",
+                        "ci": "sh ./ci.sh",
+                        "completa": "sh ./ci.sh",
+                        "seguridad": "sh ./ci.sh",
                     },
                     "privado": app_privado,
                 },
-                docs: {"requeridos": ["ci"], "checks": {"ci": "true"}},
+                docs: {"requeridos": ["ci"], "checks": {"ci": "sh -c true"}},
             }
         )
     )
@@ -221,7 +221,8 @@ FAKE_STATE = "{(base / "fake-state").as_posix()}"
     sec.write_text("MOTOR_TELEGRAM_TOKEN=prueba\n")
     sec.chmod(0o600)
     plan = base / "plan.md"
-    plan.write_text(f"""# Demo de saludo
+    plan.write_text(
+        f"""# Demo de saludo
 autopiloto: motor
 plan: demo
 repo: {Path(app).as_posix()}
@@ -268,7 +269,9 @@ prueba-real: true
 lane: fast
 humano: login Entra a Seller Central y acepta el permiso de anuncios
 sonda-humano: test -f "$MOTOR_HOME/login-hecho"
-""")
+""",
+        encoding="utf-8",
+    )
     return home, plan
 
 
