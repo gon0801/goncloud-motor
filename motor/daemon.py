@@ -18,7 +18,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import llamadas
+from . import claves, llamadas
 from . import machine as m
 from . import plataforma, version
 from .conf import (
@@ -116,6 +116,9 @@ class Daemon:
         self._espera_efecto: dict[
             tuple[str, str, str], float
         ] = {}  # efecto que falló -> no antes de
+        self._fallas_n: dict[
+            tuple[str, str, str], int
+        ] = {}  # fallas ya anotadas por (plan, bloque, acción): numera su clave
         self._rachas = self._rachas_abiertas()
 
     def trae_conf(self, now: float) -> None:
@@ -154,7 +157,7 @@ class Daemon:
                 "",
                 "ConfRechazada",
                 {"sha": nueva, "errores": errores[:5]},
-                ukey=f"confmala:{nueva}",
+                ukey=claves.conf_rechazada(nueva),
             ):
                 self.cx.notifier.encola(
                     f"confmala:{nueva[:12]}",
@@ -182,7 +185,7 @@ class Daemon:
             "",
             "VersionFaltante",
             {"pedida": pedida},
-            ukey=f"versionfalta:{self.maquina.nombre}:{pedida}",
+            ukey=claves.version_faltante(self.maquina.nombre, pedida),
         ):
             self.cx.notifier.encola(
                 f"version:{pedida}",
@@ -225,7 +228,7 @@ class Daemon:
                     "",
                     "CommandReceived",
                     {"cmd_id": cmd.cmd_id, "tipo": cmd.tipo, "resultado": resultado},
-                    ukey=f"cmd:{cmd.cmd_id}",
+                    ukey=claves.comando(cmd.cmd_id),
                 )
                 destino = hechos
             except Exception as e:  # noqa: BLE001  un archivo malo no frena a los demás de la bandeja
@@ -260,7 +263,7 @@ class Daemon:
                 "tipo": str(msg.get("tipo", "")),
                 "resultado": f"rechazado: {motivo}",
             },
-            ukey=f"cmd:{cmd_id}",
+            ukey=claves.comando(cmd_id),
         )
         if nuevo:
             self.cx.notifier.encola(
@@ -282,7 +285,7 @@ class Daemon:
                 cmd.block,
                 "Note",
                 {"texto": cmd.texto},
-                ukey=f"nota:{cmd.cmd_id}",
+                ukey=claves.nota(cmd.cmd_id),
             )
             return "anotado"
         plan = Plan.from_dict(cmd.plan)
@@ -318,7 +321,7 @@ class Daemon:
             # Entregar otra vez el plan con cambios lo reemplaza (lo hecho sigue hecho);
             # el mismo texto otra vez no hace nada. Antes el cambio se ignoraba en
             # silencio y el recibo decía "tomado" (INGESTA 01, prueba real de S).
-            ukey=f"plan:{plan.id}:{_huella(cmd.plan)}",
+            ukey=claves.plan_cargado(plan.id, _huella(cmd.plan)),
         )
         self.fx.pin_repos(plan)
         return "tomado"
@@ -337,7 +340,7 @@ class Daemon:
             cmd.block,
             "HumanDone",
             {"por": cmd.por},
-            ukey=f"humano:{plan_id}:{cmd.block}",
+            ukey=claves.humano_hecho(plan_id, cmd.block),
         )
         return "anotado"
 
@@ -355,7 +358,7 @@ class Daemon:
                 bid,
                 "AttemptEnded",
                 {"n": att.n, "role": att.role, "outcome": out},
-                ukey=f"ended:{plan.id}:{bid}:{att.role}:{att.n}",
+                ukey=claves.intento_terminado(plan.id, bid, att.role, att.n),
             )
             if out["kind"] == "corte":
                 key = f"retome:{plataforma.boot_id()}"
@@ -536,6 +539,7 @@ class Daemon:
             clave = (ev.plan, ev.block, ev.data.get("accion", ""))
             if ev.kind == "EffectFailed":
                 abiertas[clave] = (ev.data.get("desde", ev.ts), ev.ts)
+                self._fallas_n[clave] = self._fallas_n.get(clave, 0) + 1
             elif ev.kind == "EffectOk":
                 abiertas.pop(clave, None)
         return abiertas
@@ -549,14 +553,16 @@ class Daemon:
             desde = (
                 now  # dos fallas sueltas, sin reintentos entre ellas, no son una racha
             )
+        n = self._fallas_n.get(clave, 0) + 1
         self.store.append(
             plan_id,
             bloque,
             "EffectFailed",
             {"accion": accion, "error": str(e)[-500:], "desde": desde},
-            ukey=f"falla:{plan_id}:{bloque}:{accion}:{int(now)}",
+            ukey=claves.falla_de_efecto(plan_id, bloque, accion, n),
             ts=now,
         )
+        self._fallas_n[clave] = n
         self._rachas[clave] = (desde, now)
 
     def _cierra_racha(self, plan_id: str, bloque: str, accion: str) -> None:
@@ -568,7 +574,12 @@ class Daemon:
                 bloque,
                 "EffectOk",
                 {"accion": accion, "desde": racha[0]},
-                ukey=f"ok:{plan_id}:{bloque}:{accion}:{int(racha[0])}",
+                ukey=claves.efecto_ok(
+                    plan_id,
+                    bloque,
+                    accion,
+                    self._fallas_n.get((plan_id, bloque, accion), 0),
+                ),
             )
 
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:

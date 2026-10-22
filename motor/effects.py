@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import claves
 from . import machine as m
 from .plataforma.windows import argv_en_wsl
 from . import plataforma, relevo
@@ -321,7 +322,7 @@ class Effects:
                     "texto": texto,
                     "privado": self.cx.gh.es_privado(repo),
                 },
-                ukey=f"pin:{plan.id}:{repo}",
+                ukey=claves.repo_fijado(plan.id, repo),
             )
 
     def attempt_dir(self, plan: str, block: str, role: str, n: int) -> Path:
@@ -489,7 +490,7 @@ class Effects:
                     a.block,
                     "AttemptStarted",
                     datos,
-                    ukey=f"start:{plan.id}:{a.block}:{a.role}:{a.n}",
+                    ukey=claves.intento_iniciado(plan.id, a.block, a.role, a.n),
                 )
             return
         d.mkdir(parents=True, exist_ok=True)
@@ -626,7 +627,7 @@ class Effects:
             a.block,
             "AttemptStarted",
             datos,
-            ukey=f"start:{plan.id}:{a.block}:{a.role}:{a.n}",
+            ukey=claves.intento_iniciado(plan.id, a.block, a.role, a.n),
         )
 
     def _brief_implementar(
@@ -778,7 +779,7 @@ Escribe en `$MOTOR_RESULT`:
                 "",
                 "Cooldown",
                 {"cuenta": cuenta, "hasta": hasta, "modelo": att.modelo},
-                ukey=f"cooldown:{att.dir}",
+                ukey=claves.cooldown(att.dir),
             )
             return c
         if c["kind"] != "terminado":
@@ -831,7 +832,7 @@ Escribe en `$MOTOR_RESULT`:
                     "notas": notas,
                     **({"bajados": bajados} if bajados else {}),
                 },
-                ukey=f"review:{att.dir}",
+                ukey=claves.revisado(att.dir),
             )
             return {"kind": "veredicto"}
         sha = str(res.get("sha", ""))
@@ -981,7 +982,7 @@ Escribe en `$MOTOR_RESULT`:
                 "detalle": "\n".join(fallas),
                 "falta_comando": sorted(set(faltan)),
             },
-            ukey=f"verified:{plan.id}:{a.block}:{a.sha}",
+            ukey=claves.verificado(plan.id, a.block, a.sha),
         )
 
     def open_pr(self, plan: Plan, snap: m.Snapshot, a: m.OpenPr) -> None:
@@ -1003,7 +1004,7 @@ Escribe en `$MOTOR_RESULT`:
                 a.block,
                 "Merged",
                 {"sha": a.sha, "commit": base, "ya_en_base": True},
-                ukey=f"merged:{plan.id}:{a.block}:{a.sha}",
+                ukey=claves.integrado(plan.id, a.block, a.sha),
             )
             return
         pr = self.cx.gh.abrir_pr(
@@ -1018,7 +1019,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "PrOpened",
             {"numero": pr.numero, "rama": pr.rama},
-            ukey=f"pr:{plan.id}:{a.block}:{pr.numero}",  # tras un merge, el arreglo abre otro PR
+            ukey=claves.pr_abierto(plan.id, a.block, pr.numero),
         )
 
     def mark_ready(self, plan: Plan, snap: m.Snapshot, a: m.MarkReady) -> None:
@@ -1029,7 +1030,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "MarkedReady",
             {"sha": a.sha},
-            ukey=f"ready:{plan.id}:{a.block}:{a.sha}",
+            ukey=claves.marcado_listo(plan.id, a.block, a.sha),
         )
 
     def _ya_mergeado(
@@ -1050,7 +1051,7 @@ Escribe en `$MOTOR_RESULT`:
                 block_id,
                 "PrCerrado",
                 {"numero": numero, "estado": v.estado},
-                ukey=f"prcerrado:{plan.id}:{block_id}:{numero}",
+                ukey=claves.pr_cerrado(plan.id, block_id, numero),
             )
             return True
         self.cx.store.append(
@@ -1058,7 +1059,7 @@ Escribe en `$MOTOR_RESULT`:
             block_id,
             "Merged",
             {"sha": sha, "commit": v.merge_commit, "externo": True},
-            ukey=f"merged:{plan.id}:{block_id}:{sha}",
+            ukey=claves.integrado(plan.id, block_id, sha),
         )
         return True
 
@@ -1090,7 +1091,9 @@ Escribe en `$MOTOR_RESULT`:
                     "faltan": list(v.faltan),
                     "github_termino": v.github_termino,
                 },
-                ukey=f"espera:{k}:{','.join(v.faltan)}:{v.github_termino}",
+                ukey=claves.checks_esperando(
+                    plan.id, a.block, a.sha, tuple(v.faltan), v.github_termino
+                ),
             )
         if (
             v.terminal
@@ -1104,7 +1107,7 @@ Escribe en `$MOTOR_RESULT`:
                     "green": v.green,
                     "detalle": f"fallaron: {list(v.fallas)}" if v.fallas else "",
                 },
-                ukey=f"checks:{k}",
+                ukey=claves.checks_resultado(plan.id, a.block, a.sha),
             )
 
     def merge(self, plan: Plan, snap: m.Snapshot, a: m.Merge) -> None:
@@ -1136,6 +1139,13 @@ Escribe en `$MOTOR_RESULT`:
                 raise RuntimeError(
                     f"GitHub aún no deja mergear: {str(e)[:300]}"
                 ) from None
+            rechazos = sum(
+                1
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "ChecksResult"
+                and e.block == t.block
+                and e.data.get("sha") == t.sha
+            )
             self.cx.store.append(
                 plan.id,
                 t.block,
@@ -1146,7 +1156,7 @@ Escribe en `$MOTOR_RESULT`:
                     "detalle": f"el merge falló por conflicto con {rc.principal}: trae {rc.principal} a tu rama, "
                     f"resuelve y vuelve a entregar (no mergees tú). GitHub dijo: {str(e)[:300]}",
                 },
-                ukey=f"rechazo:{plan.id}:{t.block}:{t.sha}:{int(time.time())}",
+                ukey=claves.checks_resultado(plan.id, t.block, t.sha, rechazo=rechazos),
             )
             return
         self.cx.store.append(
@@ -1154,7 +1164,7 @@ Escribe en `$MOTOR_RESULT`:
             t.block,
             "Merged",
             {"sha": t.sha, "commit": pr.merge_commit},
-            ukey=f"merged:{plan.id}:{t.block}:{t.sha}",
+            ukey=claves.integrado(plan.id, t.block, t.sha),
         )
 
     def _receta(self, snap: m.Snapshot, block) -> tuple[str, str, str]:
@@ -1195,7 +1205,7 @@ Escribe en `$MOTOR_RESULT`:
                 a.block,
                 "DeployStarted",
                 {"sha": a.sha},
-                ukey=f"deploy-inicio:{plan.id}:{a.block}:{a.sha}",
+                ukey=claves.despliegue_iniciado(plan.id, a.block, a.sha),
             )
             pasos, ok = [], True
             for paso in (desplegar, checklist):
@@ -1218,7 +1228,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "Deployed",
             {"sha": a.sha, "ok": ok, "detalle": detalle},
-            ukey=f"deployed:{plan.id}:{a.block}:{a.sha}",
+            ukey=claves.desplegado(plan.id, a.block, a.sha),
         )
 
     def prove(self, plan: Plan, snap: m.Snapshot, a: m.Prove) -> None:
@@ -1247,7 +1257,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "Proved",
             {"sha": a.sha, "ok": ok, "detalle": detalle},
-            ukey=f"proved:{plan.id}:{a.block}:{a.sha}",
+            ukey=claves.probado(plan.id, a.block, a.sha),
         )
 
     def probe_human(self, plan: Plan, snap: m.Snapshot, a: m.ProbeHuman) -> None:
@@ -1274,7 +1284,7 @@ Escribe en `$MOTOR_RESULT`:
                     a.block,
                     "HumanDone",
                     {"por": "sonda"},
-                    ukey=f"humano:{plan.id}:{a.block}",
+                    ukey=claves.humano_hecho(plan.id, a.block),
                 )
             self._ultimo_poll[f"sonda:{clave}"] = ahora
             return
@@ -1333,7 +1343,7 @@ Escribe en `$MOTOR_RESULT`:
         for d in espejos:
             git("worktree", "prune", cwd=d)
         self.cx.store.append(
-            plan.id, "", "Limpiado", {"ramas": borradas}, ukey=f"limpiado:{plan.id}"
+            plan.id, "", "Limpiado", {"ramas": borradas}, ukey=claves.limpiado(plan.id)
         )
 
     def purga_registros(self, planes: list[Plan], now: float) -> None:
@@ -1369,7 +1379,7 @@ Escribe en `$MOTOR_RESULT`:
             a.block,
             "NoticeQueued",
             {"key": a.key, "texto": texto},
-            ukey=f"notice:{plan.id}:{a.key}",
+            ukey=claves.aviso_encolado(plan.id, a.key),
         )
 
 
