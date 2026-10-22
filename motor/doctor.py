@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import fallas, plataforma
 from .conf import ConfError, Maquina, Ruta, load_conf, load_maquina
-from .plataforma.windows import argv_en_wsl, argv_windows, env_minimo_windows, env_wsl
+from .plataforma.windows import argv_windows, env_minimo_windows, lanzamiento_wsl
 from .servicio import PATH_SERVICIO
 
 ESPERA_S = 60.0
@@ -69,11 +69,9 @@ def prueba_de_ruta(mq: Maquina, ruta: Ruta, espera_s: float = ESPERA_S) -> dict:
             x.format(brief=str(brief), prompt=ENCARGO, result=str(result))
             for x in ruta.argv
         ]
-        if ruta.cli in mq.wsl:
-            argv = argv_en_wsl(argv)
         env = entorno_del_servicio(mq, ruta, result)
         if ruta.cli in mq.wsl:
-            env = env_wsl(env, ["MOTOR_RESULT/p", "META_API_KEY/u"])
+            argv, env = lanzamiento_wsl(argv, env, timeout=espera_s)
         if os.name == "nt":
             argv = argv_windows(argv, env)
         try:

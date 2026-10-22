@@ -200,6 +200,54 @@ class WslTest(unittest.TestCase):
             despues = (w / ".git").read_text(encoding="utf-8").strip()
             self.assertFalse(os.path.isabs(despues.removeprefix("gitdir:").strip()))
 
+    def test_argv_wsl_lleva_guardian_y_tope(self):
+        argv = windows.argv_wsl("Ubuntu", ["muse", "exec"], timeout=30, ahora=1000.0)
+        self.assertEqual(argv[:3], ["wsl.exe", "-d", "Ubuntu"])
+        self.assertIn(windows.GUARDIAN_WSL, argv)
+        self.assertIn("1030.0", argv)
+        self.assertEqual(argv[-2:], ["muse", "exec"])
+        self.assertIn("SIGKILL", windows.GUARDIAN_WSL)
+
+    def test_env_wsl_pasa_motor_meta_y_path(self):
+        env = windows.env_wsl(
+            {
+                "MOTOR_RESULT": r"C:\x\result.json",
+                "MOTOR_BLOCK": "I",
+                "META_API_KEY": "k",
+                "PATH": r"C:\motor\shims;C:\Windows",
+                "OTRA": "no",
+            }
+        )
+        nombres = env["WSLENV"].split(":")
+        self.assertIn("MOTOR_RESULT/p", nombres)
+        self.assertIn("MOTOR_BLOCK", nombres)
+        self.assertIn("META_API_KEY", nombres)
+        self.assertTrue(any(n.startswith("PATH/") for n in nombres))
+        self.assertNotIn("OTRA", nombres)
+
+    def test_lanzamiento_wsl_arma_path_con_filtro_gh(self):
+        argv, env = windows.lanzamiento_wsl(
+            ["muse", "exec", "--prompt-file", r"C:\x\brief.md"],
+            {"MOTOR_RESULT": r"C:\x\r.json", "META_API_KEY": "k", "PATH": "/usr/bin"},
+            timeout=60,
+            ahora=2000.0,
+        )
+        self.assertIn(windows.GUARDIAN_WSL, argv)
+        self.assertIn("2060.0", argv)
+        self.assertIn("/mnt/c/x/brief.md", argv)
+        self.assertTrue(env["PATH"].split(os.pathsep)[0].endswith("shims"))
+        self.assertIn("gh", os.listdir(env["PATH"].split(os.pathsep)[0]))
+
+    def test_doctor_y_start_attempt_usan_el_mismo_constructor(self):
+        import inspect
+
+        from motor import doctor, effects
+
+        self.assertIn("lanzamiento_wsl", inspect.getsource(doctor.prueba_de_ruta))
+        self.assertIn(
+            "lanzamiento_wsl", inspect.getsource(effects.Effects.start_attempt)
+        )
+
     def test_copia_guarda_ruta_relativa_en_git(self):
         import tempfile
         from pathlib import Path

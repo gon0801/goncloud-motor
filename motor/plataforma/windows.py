@@ -238,17 +238,16 @@ def argv_wsl(
     timeout: float | None = None,
     ahora: float | None = None,
 ) -> list[str]:
-    """`wsl.exe -d <distro> --exec` + guardián + `cmd`. Sin `timeout` el guardián vive lo que
-    viva su padre; con `timeout`, ese plazo absoluto. El guardián va por `-c`, sin `-S`/site."""
     plazo = (
         "--parent"
         if timeout is None
         else str((time.time() if ahora is None else ahora) + timeout)
     )
+    base = ["wsl.exe"]
+    if distro:
+        base += ["-d", distro]
     return [
-        "wsl.exe",
-        "-d",
-        distro,
+        *base,
         "--exec",
         "/usr/bin/python3",
         "-I",
@@ -273,13 +272,42 @@ def argv_en_wsl(argv: list[str]) -> list[str]:
     return ["wsl.exe", "-e", *(ruta_wsl(x) for x in argv)]
 
 
-def env_wsl(env: dict, nombres: list[str]) -> dict:
-    """`wsl.exe` solo pasa a Linux las variables listadas en WSLENV (separadas por `:`)."""
+def variables_wsl(env: dict) -> list[str]:
+    nombres = [
+        f"{k}/p" if k == "MOTOR_RESULT" else k for k in env if k.startswith("MOTOR_")
+    ]
+    if "META_API_KEY" in env and "META_API_KEY" not in nombres:
+        nombres.append("META_API_KEY")
+    if "PATH" in env and not any(n.startswith("PATH/") or n == "PATH" for n in nombres):
+        nombres.append("PATH/lp")
+    return nombres
+
+
+def env_wsl(env: dict, nombres: list[str] | None = None) -> dict:
+    if nombres is None:
+        nombres = variables_wsl(env)
     previas = [n for n in env.get("WSLENV", "").split(":") if n]
     return {
         **env,
         "WSLENV": ":".join(previas + [n for n in nombres if n not in previas]),
     }
+
+
+def lanzamiento_wsl(
+    cmd: list[str],
+    env: dict,
+    timeout: float | None = None,
+    distro: str = "",
+    ahora: float | None = None,
+) -> tuple[list[str], dict]:
+    shims = str(Path(__file__).resolve().parent.parent / "shims")
+    ruta = env.get("PATH", "")
+    partes = ruta.split(os.pathsep) if ruta else []
+    env2 = dict(env)
+    if shims not in partes:
+        env2["PATH"] = os.pathsep.join([shims, ruta]) if ruta else shims
+    argv = argv_wsl(distro, [ruta_wsl(x) for x in cmd], timeout=timeout, ahora=ahora)
+    return argv, env_wsl(env2)
 
 
 def boot_id_desde_last_boot(valor) -> str:

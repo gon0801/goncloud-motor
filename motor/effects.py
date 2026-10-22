@@ -38,7 +38,7 @@ from .github import (
 )
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
-from .plataforma.windows import argv_en_wsl, argv_shell, path_sin_stub_tienda
+from .plataforma.windows import argv_shell, lanzamiento_wsl, path_sin_stub_tienda
 from .store import Store
 from .workspace import Workspace, foto_wip, git
 
@@ -558,10 +558,6 @@ class Effects:
             )
             for x in ruta.argv
         ]
-        if (
-            ruta.cli in self.cx.maquina.wsl
-        ):  # Muse en la PC: dentro de WSL, con su token pasado por WSLENV
-            argv = argv_en_wsl(argv)
         base = self.env_base()
         de_ruta = {k: string.Template(v).safe_substitute(base) for k, v in ruta.env}
         env = self.env_base(
@@ -571,14 +567,14 @@ class Effects:
                 "MOTOR_MODEL": a.modelo,
                 "MOTOR_BLOCK": a.block,
                 "MOTOR_ROLE": a.role,
-                "WSLENV": "META_API_KEY/u:MOTOR_RESULT/p",
                 "PYTHONPATH": str(RAIZ),
             }
         )
-        # el `gh` de los agentes no mergea, ni cierra, ni marca listo: eso solo lo hace el motor
         env["PATH"] = os.pathsep.join(
             [str(RAIZ / "motor" / "shims"), env.get("PATH", "")]
         )
+        if ruta.cli in self.cx.maquina.wsl:
+            argv, env = lanzamiento_wsl(argv, env, timeout=self.cx.policy.timeout_s)
         # el shim de cada CLI de modelos lee de aquí qué cuenta es cada llamada y cuánto cabe
         cupos = json.dumps(
             {
