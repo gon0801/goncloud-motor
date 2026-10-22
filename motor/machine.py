@@ -595,8 +595,8 @@ def _fuera_de_control(bv: BlockView) -> bool:
     head, merged = bv.head(), bv.merged_sha()
     return bool(
         (bv.verified.get(head) or {}).get("falta_comando")
-        or (merged and merged in bv.proved and not bv.proved[merged]["ok"])
-        or (merged and merged in bv.deployed and not bv.deployed[merged]["ok"])
+        or (merged == head and merged in bv.proved and not bv.proved[merged]["ok"])
+        or (merged == head and merged in bv.deployed and not bv.deployed[merged]["ok"])
     )
 
 

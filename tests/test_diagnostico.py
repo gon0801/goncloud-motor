@@ -572,6 +572,35 @@ class EscaleraTest(unittest.TestCase):
                     [a.key for a in avisos if a.template == "atorado"], [d.clave]
                 )
 
+    def test_arreglo_nuevo_que_no_pasa_la_verificacion_no_es_fuera_de_control(self):
+        s2 = "b" * 40
+        for k, plan in (("Proved", PLAN), ("Deployed", PLAN_RELEASE)):
+            evs = (
+                intento("sonnet", "entregado", 1, 100000, sha=SHA)
+                + [
+                    e("Merged", {"sha": SHA, "commit": "c"}, 99000),
+                    e(k, {"sha": SHA, "ok": False}, 98000),
+                ]
+                + intento("sonnet", "entregado", 2, 5000, sha=s2)
+                + [
+                    e(
+                        "Verified",
+                        {
+                            "sha": s2,
+                            "ok": False,
+                            "detalle": "D.1 salio 1",
+                            "falta_comando": [],
+                        },
+                        4900,
+                    )
+                ]
+                + intento("glm", "sin_cambios", 3, 1000)
+            )
+            with self.subTest(k=k):
+                ini, _ = self.inicios(evs, plan=plan)
+                self.assertEqual(len(ini), 1)
+                self.assertIsNot(diag(evs, plan=plan).causa, Causa.FUERA_DE_CONTROL)
+
     def test_un_hecho_nuevo_o_una_nota_del_lead_suelta_el_bloque(self):
         pol1 = self.solo_sonnet()
         base = (
