@@ -103,14 +103,15 @@ class GhGrabado(GhGitHub):
 
 
 def _run(nombre, conclusion="success", rid=1, status="completed"):
+    job = rid + 100000
     return {
         "name": nombre,
         "status": status,
         "conclusion": conclusion,
         "completed_at": "2026-10-21T20:00:00Z",
-        "id": rid,
-        "html_url": f"https://github.com/o/r/actions/runs/{rid}",
-        "details_url": f"https://github.com/o/r/actions/runs/{rid}",
+        "id": job,
+        "html_url": f"https://github.com/o/r/actions/runs/{rid}/job/{job}",
+        "details_url": f"https://github.com/o/r/actions/runs/{rid}/job/{job}",
     }
 
 
@@ -209,6 +210,18 @@ class ChecksTest(unittest.TestCase):
         self.assertTrue(
             any("--paginate" in str(a) and "/check-runs" in str(a) for a in gh.llamadas)
         )
+
+    def test_run_id_sale_de_la_url_no_del_id_del_job(self):
+        from motor.github import _run_id
+
+        u = "https://github.com/cli/cli/actions/runs/39848362394/job/120067601052"
+        self.assertEqual(
+            _run_id({"id": 120067601052, "html_url": u, "details_url": u}),
+            "39848362394",
+        )
+        gh = GhGrabado(runs=json.dumps([_run("ci", conclusion="failure", rid=7)]))
+        v = gh.checks("o/r", 7, SHA, ())
+        self.assertEqual(v.corridas_fallidas[0]["run_id"], "7")
 
     def test_veredicto_sin_requeridos_exige_que_todo_termine_y_pase(self):
         v = veredicto(SHA, (), [_run("ci", status="in_progress", conclusion=None)])

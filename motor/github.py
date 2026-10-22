@@ -48,14 +48,12 @@ class ChecksVerdict:
 
 
 def _run_id(r: dict) -> str:
-    rid = r.get("run_id") or r.get("id")
-    if rid:
-        return str(rid)
     for k in ("details_url", "html_url", "url"):
         partes = str(r.get(k) or "").split("/actions/runs/")
         if len(partes) == 2 and partes[1].split("/")[0].isdigit():
             return partes[1].split("/")[0]
-    return ""
+    rid = r.get("run_id") or r.get("id")
+    return str(rid) if rid else ""
 
 
 def _corrida(r: dict) -> dict:
