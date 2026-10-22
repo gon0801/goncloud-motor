@@ -137,6 +137,9 @@ class BlockView:
     proved: dict[str, dict] = field(default_factory=dict)
     human_done: bool = False
     notes: list[str] = field(default_factory=list)
+    hecho_ts: float = (
+        0.0  # último hecho nuevo (Verified, Proved, Deployed o nota del lead)
+    )
     notices: set[str] = field(default_factory=set)
     listo_desde: dict[str, float] = field(
         default_factory=dict
@@ -224,6 +227,7 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
                     a.ended, a.ended_at = d["outcome"], e.ts
         elif e.kind == "Verified":
             bv.verified[d["sha"]] = d
+            bv.hecho_ts = e.ts
         elif e.kind == "PrOpened":
             bv.pr = d
         elif e.kind == "Reviewed":
@@ -253,12 +257,15 @@ def fold(plan: Plan, events: list[Event]) -> Snapshot:
             bv.deploy_started.add(d["sha"])
         elif e.kind == "Deployed":
             bv.deployed[d["sha"]] = d
+            bv.hecho_ts = e.ts
         elif e.kind == "Proved":
             bv.proved[d["sha"]] = d
+            bv.hecho_ts = e.ts
         elif e.kind == "HumanDone":
             bv.human_done = True
         elif e.kind == "Note":
             bv.notes.append(d["texto"])
+            bv.hecho_ts = e.ts
     return Snapshot(
         plan=plan,
         blocks=blocks,
@@ -568,6 +575,22 @@ def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
     return not (kind == "sin_cambios" and _fuera_de_control(bv))
 
 
+def espera_hecho(bv: BlockView, role: str) -> bool:
+    """El último intento del agente terminó en `sin_cambios` y el bloque sigue fallando por algo que
+    él no controla: otro agente repetiría lo mismo, así que nadie toma el bloque hasta que llegue un
+    hecho nuevo (Verified, Proved, Deployed o una nota del lead)."""
+    mios = [a for a in bv.attempts if a.role == role]
+    ult = mios[-1] if mios else None
+    return bool(
+        role == "implementar"
+        and ult
+        and ult.ended
+        and ult.ended.get("kind") == "sin_cambios"
+        and ult.ended_at > bv.hecho_ts
+        and _fuera_de_control(bv)
+    )
+
+
 def _fuera_de_control(bv: BlockView) -> bool:
     head, merged = bv.head(), bv.merged_sha()
     return bool(
@@ -587,8 +610,10 @@ def bloqueo(
     ladder: tuple[str, ...],
 ) -> tuple[str, float]:
     """Por qué este modelo no puede tomar el bloque ahora, y hasta cuándo ('' si puede):
-    agotado (su escalera, sus rondas o el mismo bloqueante), cupo (pausa de cuota), sesion
+    fuera (espera un hecho nuevo), agotado (su escalera, sus rondas o el mismo bloqueante), cupo (pausa de cuota), sesion
     (cuarentena de credenciales) o pausa (falla pasajera reciente)."""
+    if espera_hecho(bv, role):
+        return "fuera", 0.0
     mios = [a for a in bv.attempts if a.role == role]
     ventana = []  # lo que pasó desde el último éxito
     for a in reversed(mios):

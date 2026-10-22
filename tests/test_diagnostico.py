@@ -268,6 +268,20 @@ humano: login pega las llaves
         self.assertCausa(d, Causa.REPETIDA, atorado=True)
         self.assertEqual(d.clave, "atorado:A:repite:prueba:0")
 
+    def test_fuera_de_control(self):
+        evs = (
+            entregado()
+            + [
+                e("Merged", {"sha": SHA, "commit": "c"}, 99),
+                e("Proved", {"sha": SHA, "ok": False}, 98),
+            ]
+            + intento("sonnet", "sin_cambios", 2, 50)
+            + intento("glm", "sin_cambios", 3, 40)
+        )
+        d = diag(evs)
+        self.assertCausa(d, Causa.FUERA_DE_CONTROL, atorado=True)
+        self.assertEqual(d.clave, f"atorado:A:fuera:prueba:{SHA[:12]}")
+
     def test_efecto_fallando(self):
         evs = entregado() + [
             e(
@@ -301,6 +315,7 @@ humano: login pega las llaves
             "incoherente": r"atorado:\w+:incoherente:\w+",
             "checks": r"atorado:\w+:checks:\w+",
             "comando": r"atorado:\w+:comando:[\w,]+",
+            "fuera": r"atorado:\w+:fuera:\w+:\w+",
             "repetida": r"atorado:\w+:repite:\w+:\d+",
             "efecto": r"atorado:\w+:efecto:\w+:\d+",
         }
@@ -312,6 +327,7 @@ humano: login pega las llaves
             "incoherente": "atorado:A:incoherente:x",
             "checks": "atorado:A:checks:x",
             "comando": "atorado:A:comando:x",
+            "fuera": "atorado:A:fuera:prueba:abc",
             "repetida": "atorado:A:repite:prueba:0",
             "efecto": "atorado:A:efecto:Verify:1",
         }
@@ -527,7 +543,10 @@ class EscaleraTest(unittest.TestCase):
             + intento("sonnet", "sin_cambios", 3, 8000)
         )
         ini, _ = self.inicios(evs, pol1)
-        self.assertEqual(len(ini), 1, "no es culpa del agente")
+        self.assertEqual(
+            ini, [], "otro agente repetiría lo mismo: espera un hecho nuevo"
+        )
+        self.assertIs(diag(evs, policy=pol1).causa, Causa.FALTA_COMANDO)
 
     def test_sin_cambios_no_cuenta_si_fallo_la_prueba_real_o_el_despliegue(self):
         pol1 = self.solo_sonnet()
@@ -543,8 +562,108 @@ class EscaleraTest(unittest.TestCase):
                 + intento("sonnet", "sin_cambios", 3, 8000)
             )
             with self.subTest(malo=malo.kind):
-                ini, _ = self.inicios(evs, pol1, plan=plan)
+                ini, avisos = self.inicios(evs, pol1, plan=plan)
+                self.assertEqual(ini, [], "cero StartAttempt: no hay bucle sin fin")
+                d = diag(evs, policy=pol1, plan=plan)
+                self.assertIs(d.causa, Causa.FUERA_DE_CONTROL)
+                self.assertTrue(d.atorado)
+                self.assertIn(":fuera:", d.clave)
+                self.assertEqual(
+                    [a.key for a in avisos if a.template == "atorado"], [d.clave]
+                )
+
+    def test_un_hecho_nuevo_o_una_nota_del_lead_suelta_el_bloque(self):
+        pol1 = self.solo_sonnet()
+        base = (
+            intento("sonnet", "entregado", 1, 10000, sha=SHA)
+            + [
+                e("Merged", {"sha": SHA, "commit": "c"}, 9800),
+                e("Proved", {"sha": SHA, "ok": False}, 9500),
+            ]
+            + intento("sonnet", "sin_cambios", 2, 9000)
+        )
+        ini, _ = self.inicios(base, pol1)
+        self.assertEqual(ini, [])
+        for nuevo in (
+            e("Note", {"texto": "usa otro host"}, 100),
+            e("Proved", {"sha": SHA, "ok": False}, 100),
+        ):
+            with self.subTest(nuevo=nuevo.kind):
+                ini, _ = self.inicios(base + [nuevo], pol1)
                 self.assertEqual(len(ini), 1)
+
+    def test_el_bucle_de_sin_cambios_tras_prueba_real_fallada_se_detiene_y_avisa_una_vez(
+        self,
+    ):
+        evs = intento("sonnet", "entregado", 1, 100000, sha=SHA) + [
+            e("Merged", {"sha": SHA, "commit": "c"}, 99000),
+            e("Proved", {"sha": SHA, "ok": False}, 98000),
+        ]
+        for n in range(2, 12):
+            evs += intento(
+                "sonnet" if n % 2 else "glm", "sin_cambios", n, 1000 - n * 10
+            )
+        ini, avisos = self.inicios(evs, now=NOW - 890 + 1)
+        self.assertEqual(ini, [])
+        self.assertEqual(len([a for a in avisos if a.template == "atorado"]), 1)
+
+    def test_todas_sin_sesion_pasa_por_el_tick_del_daemon_y_encola_un_aviso_por_cuenta(
+        self,
+    ):
+        class Tick(Banco):
+            def runTest(s):
+                d = s.daemon()
+                d.store.append(
+                    "demo",
+                    "",
+                    "PlanLoaded",
+                    {"plan": s.plan, "por": "t"},
+                    ukey="plan:demo",
+                )
+                p = d.plans()[0]
+                sn = m.fold(p, d.store.events(p.id))
+                b = next(x for x in sn.blocks if m.estado(sn, x) is m.Estado.ARREGLAR)
+                now = time.time()
+                imp = d.cx.policy.para(p).implementadores
+                for n, mo in enumerate(imp, 1):
+                    d.store.append(
+                        p.id,
+                        b,
+                        "AttemptStarted",
+                        {
+                            "n": n,
+                            "role": "implementar",
+                            "modelo": mo,
+                            "proc": {},
+                            "dir": f"d{n}",
+                        },
+                        ukey=f"s{n}",
+                        ts=now - 99 + n,
+                    )
+                    d.store.append(
+                        p.id,
+                        b,
+                        "AttemptEnded",
+                        {"n": n, "role": "implementar", "outcome": {"kind": "auth"}},
+                        ukey=f"e{n}",
+                        ts=now - 90 + n,
+                    )
+                d._tick_plan(p, [p], now)
+                ev = d.store.events(p.id)
+                fallas = [x.data for x in ev if x.kind == "EffectFailed"]
+                s.assertEqual(fallas, [])
+                claves = [
+                    x.data["key"]
+                    for x in ev
+                    if x.kind == "NoticeQueued"
+                    and x.data["key"].startswith("humano:auth:")
+                ]
+                cuentas = {d.cx.policy.para(p).cuenta.get(mo, mo) for mo in imp}
+                s.assertEqual(len(claves), len(cuentas))
+                s.assertEqual(len(s.avisos("humano_auth")), len(cuentas))
+
+        r = unittest.TextTestRunner(verbosity=0).run(Tick())
+        self.assertTrue(r.wasSuccessful())
 
     def test_sin_cambios_si_cuenta_cuando_el_agente_pudo_cambiar_algo(self):
         pol1 = self.solo_sonnet()

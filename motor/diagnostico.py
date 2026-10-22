@@ -54,6 +54,7 @@ class Causa(enum.Enum):
     CHECKS_INCOHERENTE = "checks_incoherente"
     CHECKS_LENTO = "checks_lento"
     FALTA_COMANDO = "falta_comando"
+    FUERA_DE_CONTROL = "fuera_de_control"
     REPETIDA = "repetida"
     EFECTO_FALLANDO = "efecto_fallando"
 
@@ -233,6 +234,15 @@ def _sin_agente(
                 Causa.TURNO, f"{toca}; espera su turno, los agentes están ocupados"
             )
         return Diagnostico(causa, toca, detalle=_tecnico(bv))
+    if all(c == "fuera" for c, _ in est.values()):
+        tipo, que = _fuera(bv)
+        return Diagnostico(
+            Causa.FUERA_DE_CONTROL,
+            f"{que}, y el agente ya intentó sin poder cambiar nada; espero un resultado nuevo o tu nota",
+            f"atorado:{bid}:fuera:{tipo}:{(bv.merged_sha() or bv.head())[:12]}",
+            True,
+            f"{tipo}; el último intento terminó en sin_cambios",
+        )
     vivos = {mo: v for mo, v in est.items() if v[0] != "agotado"}
     if not vivos:
         return Diagnostico(
@@ -264,6 +274,15 @@ def _sin_agente(
     return Diagnostico(
         Causa.PAUSA_CUENTAS, f"{toca}; espera un momento a que vuelva un agente"
     )
+
+
+def _fuera(bv: m.BlockView) -> tuple[str, str]:
+    mg = bv.merged_sha()
+    if (bv.verified.get(bv.head()) or {}).get("falta_comando"):
+        return "comando", "falta un comando que pide la verificación del plan"
+    if mg in bv.deployed and not bv.deployed[mg]["ok"]:
+        return "despliegue", "falló el despliegue"
+    return "prueba", "falló la prueba con datos reales"
 
 
 def sesiones_caidas(

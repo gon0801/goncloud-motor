@@ -1358,7 +1358,7 @@ Escribe en `$MOTOR_RESULT`:
                 shutil.rmtree(carpeta, ignore_errors=True)
 
     def notify(self, plan: Plan, snap: m.Snapshot, a: m.Notify) -> None:
-        if a.template == "humano" and snap.blocks[a.block].human_done:
+        if a.template == "humano" and a.block and snap.blocks[a.block].human_done:
             return  # la sonda ya lo vio hecho en este mismo paso: no se molesta a David
         texto = render(
             a.template, dict(a.campos), self.cx.maquina.nombre, plan.titulo or plan.id
