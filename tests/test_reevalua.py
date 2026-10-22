@@ -207,6 +207,16 @@ class ReevaluaTest(Banco):
             snap.blocks["A"].verified[SHA]["ok"], "el de v1 sigue en el log"
         )
 
+    def _espera_aparte(self, llama, kind: str, n: int = 1):
+        import time
+
+        for _ in range(300):
+            llama()
+            if len(self.eventos(kind)) >= n:
+                return
+            time.sleep(0.1)
+        self.fail(f"no llegó {kind} aparte")
+
     def _fx_verifica(self, acepta: str):
         d = self.daemon()
         plan = Plan.from_dict(self.plan)
@@ -221,7 +231,9 @@ class ReevaluaTest(Banco):
         d_plan = self.plan["blocks"][0]
         d_plan["rows"] = [{"id": "A.1", "contenido": "x", "acepta": acepta}]
         plan = Plan.from_dict(self.plan)
-        d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha))
+        self._espera_aparte(
+            lambda: d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha)), "Verified"
+        )
         return d, sha
 
     def test_verify_anota_la_huella_y_repetirlo_con_otra_acepta_entra(self):
@@ -239,7 +251,11 @@ class ReevaluaTest(Banco):
         self.assertTrue(v["huella"] and v["huella_maquina"])
         self.plan["blocks"][0]["rows"][0]["acepta"] = "true"
         plan = Plan.from_dict(self.plan)
-        d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha))
+        self._espera_aparte(
+            lambda: d.fx.verify(plan, m.fold(plan, []), m.Verify("A", sha)),
+            "Verified",
+            2,
+        )
         vs = self.eventos("Verified")
         self.assertEqual(len(vs), 2, "otra Acepta sobre el mismo SHA es otro resultado")
         self.assertNotEqual(vs[0].data["huella"], vs[1].data["huella"])
@@ -368,7 +384,7 @@ class ReevaluaTest(Banco):
     def test_prove_anota_el_comando_que_falta(self):
         self.plan["blocks"][0]["prueba_real"] = "sin-este-comando-xyz --x"
         d, plan, sha, snap = self._fx_con_mergeado(self.plan)
-        d.fx.prove(plan, snap, m.Prove("A", sha))
+        self._espera_aparte(lambda: d.fx.prove(plan, snap, m.Prove("A", sha)), "Proved")
         (p,) = self.eventos("Proved")
         self.assertFalse(p.data["ok"])
         self.assertEqual(p.data["falta_comando"], ["sin-este-comando-xyz"])
@@ -381,7 +397,9 @@ class ReevaluaTest(Banco):
             "rollback": "-c true",
         }
         d, plan, sha, snap = self._fx_con_mergeado(self.plan)
-        d.fx.deploy(plan, snap, m.Deploy("A", sha))
+        self._espera_aparte(
+            lambda: d.fx.deploy(plan, snap, m.Deploy("A", sha)), "Deployed"
+        )
         (r,) = self.eventos("Deployed")
         self.assertFalse(r.data["ok"])
         self.assertEqual(r.data["falta_comando"], ["sin-este-comando-xyz"])
@@ -429,7 +447,10 @@ class ReevaluaTest(Banco):
             ),
             ev("Merged", "A", {"sha": sha, "commit": sha}),
         ]
-        d.fx.deploy(plan, m.fold(plan, base), m.Deploy("A", sha))
+        self._espera_aparte(
+            lambda: d.fx.deploy(plan, m.fold(plan, base), m.Deploy("A", sha)),
+            "Deployed",
+        )
         primero = self.eventos("Deployed")[-1].data
         self.assertFalse(primero["ok"])
         self.assertEqual(primero["falta_comando"], ["sin-este-comando-xyz"])
@@ -441,7 +462,9 @@ class ReevaluaTest(Banco):
         ]
         snap = m.fold(corregido, base + guardados)
         self.assertIs(m.estado(snap, "A"), m.Estado.DESPLEGAR)
-        d.fx.deploy(corregido, snap, m.Deploy("A", sha))
+        self._espera_aparte(
+            lambda: d.fx.deploy(corregido, snap, m.Deploy("A", sha)), "Deployed", 2
+        )
         segundo = self.eventos("Deployed")[-1].data
         self.assertTrue(segundo["ok"])
         self.assertNotIn("ya estaba desplegado", segundo["detalle"])
@@ -482,7 +505,19 @@ class ReevaluaTest(Banco):
             ev("Merged", "A", {"sha": sha, "commit": sha}),
             ev("DeployStarted", "A", {"sha": sha}),
         ]
-        d.fx.deploy(plan, m.fold(plan, evs), m.Deploy("A", sha))
+        aparte_viejo = self.tmp / "aparte-viejo"
+        aparte_viejo.mkdir()
+        (aparte_viejo / "desplegando").write_text(sha, encoding="utf-8")
+        d.store.append(
+            "demo",
+            "A",
+            "DeployStarted",
+            {"sha": sha, "dir": str(aparte_viejo), "proc": {}, "n": 1},
+        )
+        self._espera_aparte(
+            lambda: d.fx.deploy(plan, m.fold(plan, evs), m.Deploy("A", sha)),
+            "Deployed",
+        )
         (r,) = self.eventos("Deployed")
         self.assertTrue(r.data["ok"])
         self.assertIn("ya estaba desplegado", r.data["detalle"])
@@ -490,7 +525,7 @@ class ReevaluaTest(Banco):
 
     def test_prove_que_pasa_no_trae_comandos_faltantes(self):
         d, plan, sha, snap = self._fx_con_mergeado(self.plan)
-        d.fx.prove(plan, snap, m.Prove("A", sha))
+        self._espera_aparte(lambda: d.fx.prove(plan, snap, m.Prove("A", sha)), "Proved")
         (p,) = self.eventos("Proved")
         self.assertEqual((p.data["ok"], p.data["falta_comando"]), (True, []))
 

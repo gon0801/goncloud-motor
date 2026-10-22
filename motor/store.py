@@ -42,6 +42,7 @@ class Store:
             " id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, plan TEXT NOT NULL,"
             " block TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, ukey TEXT UNIQUE)"
         )
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_events_plan ON events(plan)")
         self.db.execute(
             "CREATE TRIGGER IF NOT EXISTS events_append_only BEFORE UPDATE ON events "
             "BEGIN SELECT RAISE(ABORT, 'append-only'); END"
@@ -78,11 +79,23 @@ class Store:
         except sqlite3.IntegrityError:
             return False
 
-    def events(self, plan: str | None = None) -> list[Event]:
+    def events(
+        self, plan: str | None = None, kind: str | tuple[str, ...] | None = None
+    ) -> list[Event]:
         q = "SELECT id, ts, plan, block, kind, data FROM events"
-        args: tuple = ()
+        args: list = []
+        conds: list[str] = []
         if plan is not None:
-            q += " WHERE plan = ?"
-            args = (plan,)
-        rows = self.db.execute(q + " ORDER BY id", args).fetchall()
+            conds.append("plan = ?")
+            args.append(plan)
+        if kind is not None:
+            if isinstance(kind, tuple):
+                conds.append(f"kind IN ({','.join('?' for _ in kind)})")
+                args.extend(kind)
+            else:
+                conds.append("kind = ?")
+                args.append(kind)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        rows = self.db.execute(q + " ORDER BY id", tuple(args)).fetchall()
         return [Event(r[0], r[1], r[2], r[3], r[4], json.loads(r[5])) for r in rows]

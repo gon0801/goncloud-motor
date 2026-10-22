@@ -20,9 +20,18 @@ import tempfile
 from pathlib import Path
 
 
+TOPE_LARGO_S = 180.0
+TOPE_CORTO_S = 60.0
+
+
 def git(
-    *a: str, cwd: Path | None = None, env: dict | None = None
+    *a: str,
+    cwd: Path | None = None,
+    env: dict | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
+    if timeout is None:
+        timeout = TOPE_LARGO_S if {"clone", "fetch", "push"} & set(a) else TOPE_CORTO_S
     return subprocess.run(
         ["git", *a],
         cwd=cwd,
@@ -30,7 +39,8 @@ def git(
         text=True,
         errors="replace",
         stdin=subprocess.DEVNULL,
-        env={**os.environ, **(env or {})},
+        env={**os.environ, **(env or {}), "GIT_TERMINAL_PROMPT": "0"},
+        timeout=timeout,
     )
 
 
