@@ -9,8 +9,8 @@ Lo que el motor hace hoy:
 - Una pausa de cuenta por cuota dura lo que pida el proveedor y, si no dice, `cooldown_default_s`
   de la conf (5 h); `COOLDOWN_CUOTA_S` solo es el tope de un freno corto. Un rate limit corto
   pausa 2 min, o lo que pidió el proveedor con ese tope.
-- Una cuarentena (credenciales, red) dura una hora y luego se prueba otra vez; solo un éxito real
-  la levanta y otra falla la rearma.
+- Una cuarentena por credenciales caídas dura una hora y luego se prueba otra vez; solo un éxito
+  real la levanta y otra falla (salvo un freno corto) la rearma.
 """
 
 from __future__ import annotations
