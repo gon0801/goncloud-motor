@@ -355,7 +355,6 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         elif e.kind == "ChecksResult":
             bv.checks[d["sha"]] = d
             bv.checks_ts[d["sha"]] = e.ts
-            bv.politica_bloquea.pop(d["sha"], None)
         elif e.kind == "ChecksRelanzados":
             if d.get("motivo") == "saltada":
                 bv.relanzadas_saltadas.add(d["sha"])
@@ -363,10 +362,12 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             bv.checks.pop(d["sha"], None)
             bv.checks_ts.pop(d["sha"], None)
             bv.esperando.pop(d["sha"], None)
-            bv.politica_bloquea[d["sha"]] = {
-                "desde": e.ts,
-                "detalle": d.get("detalle", ""),
-            }
+            previa = bv.politica_bloquea.get(d["sha"])
+            if previa is None or previa.get("detalle") != d.get("detalle", ""):
+                bv.politica_bloquea[d["sha"]] = {
+                    "desde": e.ts,
+                    "detalle": d.get("detalle", ""),
+                }
         elif e.kind == "ChecksEsperando":
             bv.esperando[d["sha"]] = {**d, "desde": e.ts}
         elif e.kind == "Merged":

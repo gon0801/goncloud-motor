@@ -560,6 +560,51 @@ class MergeTest(unittest.TestCase):
         self.assertTrue(d.atorado)
         self.assertIn("required review", d.motivo)
 
+    def test_politica_conserva_desde_plegando_eventos(self):
+        plan = parse_plan(PLAN)
+        t = Path(tempfile.mkdtemp(prefix="h-pol-"))
+        store = Store(t / "motor.db")
+        t0 = time.time() - 2 * 3600
+
+        def ev(k, d, ts):
+            store.append("demo", "A", k, d, ts=ts)
+
+        ev(
+            "AttemptStarted",
+            {"n": 1, "role": "implementar", "modelo": "glm", "proc": {}, "dir": "d"},
+            t0,
+        )
+        ev(
+            "AttemptEnded",
+            {
+                "n": 1,
+                "role": "implementar",
+                "outcome": {"kind": "entregado", "sha": SHA},
+            },
+            t0 + 1,
+        )
+        for k, d in [
+            ("Verified", {"sha": SHA, "ok": True}),
+            ("PrOpened", {"numero": 7, "rama": "f"}),
+            ("Reviewed", {"sha": SHA, "veredicto": "APROBADO", "bloqueantes": []}),
+            ("MarkedReady", {"sha": SHA}),
+        ]:
+            ev(k, d, t0 + 2)
+        for i in range(16):
+            ts = t0 + 10 + i * 300
+            ev("ChecksResult", {"sha": SHA, "green": True, "detalle": ""}, ts)
+            ev(
+                "ChecksInvalidados",
+                {"sha": SHA, "detalle": "Required approving review"},
+                ts + 5,
+            )
+        snap = m.fold(plan, store.events("demo"))
+        self.assertEqual(snap.blocks["A"].politica_bloquea[SHA]["desde"], t0 + 15)
+        d = diagnostico(snap, "A", pol(), t0 + 10 + 16 * 300)
+        self.assertTrue(d.atorado)
+        self.assertEqual(d.causa, Causa.POLITICA_BLOQUEA)
+        self.assertIn("Required approving review", d.motivo)
+
     def test_borrador_marca_el_pr_como_listo(self):
         plan, store, fx, snap, gh = self._fx_merge(Borrador("draft"))
         fx.merge(plan, snap, m.Merge(m.MergeTicket("A", SHA, 7)))
