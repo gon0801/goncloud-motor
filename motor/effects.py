@@ -1293,6 +1293,10 @@ Escribe en `$MOTOR_RESULT`:
             ok, detalle = False, "el bloque es de despliegue y el repo no trae receta"
         elif (
             a.sha in bv.deploy_started
+            and not any(
+                e.kind == "Deployed" and e.data.get("sha") == a.sha
+                for e in self.cx.store.events(plan.id)
+            )
             and _run_tope(f"bash {checklist}", w, env, tope).returncode == 0
         ):
             ok, detalle = True, "ya estaba desplegado (se comprobó antes de repetir)"

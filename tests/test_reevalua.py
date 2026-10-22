@@ -386,6 +386,108 @@ class ReevaluaTest(Banco):
         self.assertFalse(r.data["ok"])
         self.assertEqual(r.data["falta_comando"], ["sin-este-comando-xyz"])
 
+    def test_deploy_tras_fallo_y_rollback_vuelve_a_desplegar_con_el_plan_corregido(
+        self,
+    ):
+        prod = self.tmp / "prod"
+        bloque = self.plan["blocks"][0]
+        bloque["lane"] = "release"
+        bloque["release"] = {
+            "desplegar": f"-c 'sin-este-comando-xyz && echo nuevo > {prod}'",
+            "checklist": f"-c 'test -f {prod}'",
+            "rollback": f"-c 'echo viejo > {prod}'",
+        }
+        d = self.daemon()
+        plan = Plan.from_dict(self.plan)
+        sha = subprocess.run(
+            ["git", "rev-parse", "main"],
+            cwd=plan.block("A").repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        base = [
+            ev(
+                "AttemptStarted",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "modelo": "glm",
+                    "proc": {},
+                    "dir": "d",
+                },
+            ),
+            ev(
+                "AttemptEnded",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "outcome": {"kind": "entregado", "sha": sha},
+                },
+            ),
+            ev("Merged", "A", {"sha": sha, "commit": sha}),
+        ]
+        d.fx.deploy(plan, m.fold(plan, base), m.Deploy("A", sha))
+        primero = self.eventos("Deployed")[-1].data
+        self.assertFalse(primero["ok"])
+        self.assertEqual(primero["falta_comando"], ["sin-este-comando-xyz"])
+        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "viejo")
+        bloque["release"]["desplegar"] = f"-c 'echo nuevo > {prod}'"
+        corregido = Plan.from_dict(self.plan)
+        guardados = [
+            e for e in d.store.events("demo") if e.kind in ("DeployStarted", "Deployed")
+        ]
+        snap = m.fold(corregido, base + guardados)
+        self.assertIs(m.estado(snap, "A"), m.Estado.DESPLEGAR)
+        d.fx.deploy(corregido, snap, m.Deploy("A", sha))
+        segundo = self.eventos("Deployed")[-1].data
+        self.assertTrue(segundo["ok"])
+        self.assertNotIn("ya estaba desplegado", segundo["detalle"])
+        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "nuevo")
+
+    def test_deploy_cortado_sin_deployed_si_toma_el_atajo(self):
+        prod = self.tmp / "prod"
+        prod.write_text("viejo\n", encoding="utf-8")
+        bloque = self.plan["blocks"][0]
+        bloque["lane"] = "release"
+        bloque["release"] = {
+            "desplegar": f"-c 'echo nuevo > {prod}'",
+            "checklist": f"-c 'test -f {prod}'",
+            "rollback": "-c true",
+        }
+        d, plan, sha, _snap = self._fx_con_mergeado(self.plan)
+        evs = [
+            ev(
+                "AttemptStarted",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "modelo": "glm",
+                    "proc": {},
+                    "dir": "d",
+                },
+            ),
+            ev(
+                "AttemptEnded",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "outcome": {"kind": "entregado", "sha": sha},
+                },
+            ),
+            ev("Merged", "A", {"sha": sha, "commit": sha}),
+            ev("DeployStarted", "A", {"sha": sha}),
+        ]
+        d.fx.deploy(plan, m.fold(plan, evs), m.Deploy("A", sha))
+        (r,) = self.eventos("Deployed")
+        self.assertTrue(r.data["ok"])
+        self.assertIn("ya estaba desplegado", r.data["detalle"])
+        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "viejo")
+
     def test_prove_que_pasa_no_trae_comandos_faltantes(self):
         d, plan, sha, snap = self._fx_con_mergeado(self.plan)
         d.fx.prove(plan, snap, m.Prove("A", sha))
