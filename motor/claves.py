@@ -109,15 +109,17 @@ def prueba_iniciada(plan: str, block: str, sha: str, n: int = 0) -> str:
 
 
 def desplegado(
-    plan: str, block: str, sha: str, huella: str = "", maquina: str = ""
+    plan: str, block: str, sha: str, huella: str = "", maquina: str = "", vez: int = 0
 ) -> str:
-    return _con_huella(f"deployed:{plan}:{block}:{sha}", huella, maquina)
+    base = _con_huella(f"deployed:{plan}:{block}:{sha}", huella, maquina)
+    return base if not vez else f"{base}:v{vez}"
 
 
 def probado(
-    plan: str, block: str, sha: str, huella: str = "", maquina: str = ""
+    plan: str, block: str, sha: str, huella: str = "", maquina: str = "", vez: int = 0
 ) -> str:
-    return _con_huella(f"proved:{plan}:{block}:{sha}", huella, maquina)
+    base = _con_huella(f"proved:{plan}:{block}:{sha}", huella, maquina)
+    return base if not vez else f"{base}:v{vez}"
 
 
 def humano_hecho(plan: str, block: str) -> str:

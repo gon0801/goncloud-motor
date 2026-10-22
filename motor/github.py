@@ -43,6 +43,29 @@ class ChecksVerdict:
     github_termino: bool = (
         False  # GitHub ya no tiene nada corriendo ni en cola para este SHA
     )
+    corridas: tuple = ()  # {"nombre", "run_id", "url", "status", "conclusion"} de cada check run
+    corridas_fallidas: tuple = ()  # las corridas terminadas en rojo, con su url y run_id
+
+
+def _run_id(r: dict) -> str:
+    rid = r.get("run_id") or r.get("id")
+    if rid:
+        return str(rid)
+    for k in ("details_url", "html_url", "url"):
+        partes = str(r.get(k) or "").split("/actions/runs/")
+        if len(partes) == 2 and partes[1].split("/")[0].isdigit():
+            return partes[1].split("/")[0]
+    return ""
+
+
+def _corrida(r: dict) -> dict:
+    return {
+        "nombre": r.get("name", ""),
+        "run_id": _run_id(r),
+        "url": r.get("html_url") or r.get("details_url") or "",
+        "status": r.get("status", ""),
+        "conclusion": r.get("conclusion"),
+    }
 
 
 def veredicto(
@@ -50,6 +73,7 @@ def veredicto(
     requeridos: tuple[str, ...],
     runs: list[dict],
     listo_desde: str | None = None,
+    estados: list[dict] | None = None,
 ) -> ChecksVerdict:
     """Un check requerido "completa" cubre también una matriz "completa (1, 6)" … "completa (6, 6)":
     está terminado cuando todas sus partes terminaron, y verde cuando todas salieron bien.
@@ -58,6 +82,37 @@ def veredicto(
     hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
     no prueba nada (MOTOR 01, PR #484); el salto a propósito de un PR listo sí (Orbit salta
     `completa` si no hay código: INGESTA 01 esperó horas)."""
+    estados = estados or []
+    corridas = tuple(_corrida(r) for r in runs)
+    fallidas = tuple(
+        c
+        for c, r in zip(corridas, runs)
+        if r.get("status") == "completed"
+        and r.get("conclusion") not in ("success", "skipped", "neutral", None)
+    )
+    estados_malos = tuple(
+        e.get("context", "") for e in estados if e.get("state") in ("failure", "error")
+    )
+    if not requeridos:
+        corriendo = any(r.get("status") != "completed" for r in runs) or any(
+            e.get("state") == "pending" for e in estados
+        )
+        hay = bool(runs or estados)
+        fallas_sin = tuple(
+            dict.fromkeys(
+                [c["nombre"] for c in fallidas if c["nombre"]] + list(estados_malos)
+            )
+        )
+        return ChecksVerdict(
+            sha,
+            terminal=hay and not corriendo,
+            green=hay and not corriendo and not fallas_sin,
+            faltan=(),
+            fallas=fallas_sin,
+            github_termino=hay and not corriendo,
+            corridas=corridas,
+            corridas_fallidas=fallidas,
+        )
     faltan, fallas = [], []
     for c in requeridos:
         partes = [
@@ -66,7 +121,15 @@ def veredicto(
             if (r["name"] == c or r["name"].startswith(c + " ("))
             and not _salto_del_borrador(r, listo_desde)
         ]
-        if not partes or any(r["status"] != "completed" for r in partes):
+        if not partes:
+            sts = [e for e in estados if e.get("context") == c]
+            if sts and all(e.get("state") == "success" for e in sts):
+                continue
+            if sts and any(e.get("state") in ("failure", "error") for e in sts):
+                fallas.append(c)
+            else:
+                faltan.append(c)
+        elif any(r["status"] != "completed" for r in partes):
             faltan.append(c)
         elif any(
             r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
@@ -78,7 +141,11 @@ def veredicto(
         green=not faltan and not fallas,
         faltan=tuple(faltan),
         fallas=tuple(fallas),
-        github_termino=bool(runs) and all(r["status"] == "completed" for r in runs),
+        github_termino=bool(runs or estados)
+        and all(r["status"] == "completed" for r in runs)
+        and all(e.get("state") != "pending" for e in estados),
+        corridas=corridas,
+        corridas_fallidas=fallidas,
     )
 
 
@@ -219,6 +286,24 @@ class GhGitHub:
         if self._vista(repo, numero).borrador:
             self._gh("pr", "ready", str(numero), "-R", self.nombre(repo))
 
+    @staticmethod
+    def _paginas(texto: str) -> list:
+        out, dec, i = [], json.JSONDecoder(), 0
+        texto = texto.strip()
+        while i < len(texto):
+            while i < len(texto) and texto[i].isspace():
+                i += 1
+            if i >= len(texto):
+                break
+            obj, j = dec.raw_decode(texto, i)
+            out.append(obj)
+            i = j
+        return out
+
+    def _es_404(self, e: RuntimeError) -> bool:
+        t = str(e)
+        return "Branch not protected" in t or "HTTP 404" in t or " 404" in t
+
     def checks(self, repo, numero, sha, extra):
         n = self.nombre(repo)
         pr = self._vista(repo, numero)
@@ -231,20 +316,76 @@ class GhGitHub:
                     ".contexts",
                 )
             )
-        except RuntimeError:
+        except RuntimeError as e:
+            if not self._es_404(e):
+                raise
             req = []
+        try:
+            reglas = self._paginas(
+                self._gh(
+                    "api",
+                    f"repos/{n}/rules/branches/{pr.base}",
+                    "--paginate",
+                )
+            )
+        except RuntimeError as e:
+            if not self._es_404(e):
+                raise
+            reglas = []
+        for pagina in reglas:
+            for regla in pagina if isinstance(pagina, list) else []:
+                if regla.get("type") != "required_status_checks":
+                    continue
+                for c in (regla.get("parameters") or {}).get(
+                    "required_status_checks", []
+                ):
+                    ctx = c.get("context") if isinstance(c, dict) else c
+                    if ctx and ctx not in req:
+                        req.append(ctx)
         requeridos = tuple(dict.fromkeys([*req, *extra]))
-        runs = json.loads(
+        runs: list[dict] = []
+        for pagina in self._paginas(
             self._gh(
                 "api",
                 f"repos/{n}/commits/{sha}/check-runs?per_page=100",
+                "--paginate",
                 "--jq",
-                "[.check_runs[]|{name, status, conclusion, completed_at}]",
+                "[.check_runs[]|{name, status, conclusion, completed_at, id, html_url, details_url}]",
             )
-        )
+        ):
+            runs.extend(pagina if isinstance(pagina, list) else [])
+        estados: list[dict] = []
+        for pagina in self._paginas(
+            self._gh("api", f"repos/{n}/commits/{sha}/status", "--paginate")
+        ):
+            if isinstance(pagina, dict):
+                estados.extend(pagina.get("statuses") or [])
         return veredicto(
-            sha, requeridos, runs, None if pr.borrador else self._listo_desde(n, numero)
+            sha,
+            requeridos,
+            runs,
+            None if pr.borrador else self._listo_desde(n, numero),
+            estados,
         )
+
+    def relanzar_corrida(self, repo, run_id):
+        if run_id:
+            self._gh("run", "rerun", str(run_id), "-R", self.nombre(repo))
+
+    def relanzar_fallidas(self, repo, run_id):
+        if run_id:
+            self._gh("run", "rerun", str(run_id), "--failed", "-R", self.nombre(repo))
+
+    def log_fallido(self, repo, run_id) -> str:
+        if not run_id:
+            return ""
+        try:
+            texto = self._gh(
+                "run", "view", str(run_id), "--log-failed", "-R", self.nombre(repo)
+            )
+        except RuntimeError:
+            return ""
+        return "\n".join(texto.splitlines()[-80:])
 
     def _listo_desde(self, n: str, numero: int) -> str:
         """Hora (de GitHub) en que el PR dejó el borrador por última vez; "" si nunca fue borrador."""
@@ -417,6 +558,17 @@ class FakeGitHub:
             if not s["checks"][k]:
                 fallas.append(c)
         self._guardar(s)
+        corridas = tuple(
+            {
+                "nombre": c,
+                "run_id": "",
+                "url": "",
+                "status": "completed",
+                "conclusion": "failure" if c in fallas else "success",
+            }
+            for c in requeridos
+            if c not in faltan
+        )
         return ChecksVerdict(
             sha,
             terminal=not faltan or bool(fallas),
@@ -424,7 +576,28 @@ class FakeGitHub:
             faltan=tuple(faltan),
             fallas=tuple(fallas),
             github_termino=True,  # el falso corre todo en el acto
+            corridas=corridas,
+            corridas_fallidas=tuple(
+                c for c in corridas if c["conclusion"] == "failure"
+            ),
         )
+
+    def relanzar_corrida(self, repo, run_id):
+        s = self._cargar()
+        s.setdefault("relanzadas", []).append(
+            {"repo": repo, "run_id": str(run_id), "fallidas": False}
+        )
+        self._guardar(s)
+
+    def relanzar_fallidas(self, repo, run_id):
+        s = self._cargar()
+        s.setdefault("relanzadas", []).append(
+            {"repo": repo, "run_id": str(run_id), "fallidas": True}
+        )
+        self._guardar(s)
+
+    def log_fallido(self, repo, run_id) -> str:
+        return ""
 
     def merge(self, repo, numero, sha, metodo, mensaje):
         s = self._cargar()
