@@ -7,6 +7,7 @@ el código que haya en disco (la instalación lo actualiza antes de relanzar).
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -27,6 +28,21 @@ def sha_actual(raiz: Path = RAIZ) -> str:
         stdin=subprocess.DEVNULL,
     )
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "sin-git"
+
+
+def version_en_disco(raiz: Path = RAIZ) -> str:
+    """La versión del código que hay en disco ahora (el proceso en marcha puede traer otra más vieja)."""
+    try:
+        texto = (raiz / "motor" / "__init__.py").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(r'^__version__\s*=\s*"([^"]+)"', texto, re.M)
+    return m.group(1) if m else ""
+
+
+def instalada(raiz: Path = RAIZ) -> dict[str, str]:
+    """Lo que hay instalado en disco, en la misma forma que `info()`."""
+    return {"version": version_en_disco(raiz), "sha": sha_actual(raiz)}
 
 
 def info(raiz: Path = RAIZ) -> dict[str, str]:

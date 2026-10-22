@@ -15,11 +15,12 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from . import llamadas
 from . import machine as m
-from . import plataforma
+from . import plataforma, version
 from .conf import (
     RepoConf,
     load_conf,
@@ -30,7 +31,7 @@ from .conf import (
 from .effects import Contexto, Effects
 from .github import para
 from .notify import Notifier, render
-from .plan import Plan, PlanError, modelos_desconocidos, revisa_sin_quien
+from .plan import Comando, Plan, PlanError, modelos_desconocidos, revisa_sin_quien
 from .store import Store
 from .version import SALIDA_RELANZAR, info, pide_otra
 from .workspace import Workspace, git
@@ -87,6 +88,7 @@ class Daemon:
             else conf.tiempos.get("checks_cada_s", 60.0),
         )
         self.fx = Effects(self.cx)
+        self._sha_arranque = version.sha_actual()
         self._sin_dormir: bool | None = (
             None  # None: aplicar en el primer tick (también tras un reinicio)
         )
@@ -147,6 +149,30 @@ class Daemon:
         """Si la conf fija una versión o un commit distinto del que corre, la frase de la diferencia."""
         return pide_otra(self.cx.conf.motor, info())
 
+    def avisa_version_faltante(self) -> None:
+        """Si la conf fija una versión que no está instalada en disco, no hay nada que relanzar: se
+        avisa una vez y el motor sigue con la que tiene."""
+        if not pide_otra(self.cx.conf.motor, version.instalada()):
+            return
+        fijada = self.cx.conf.motor
+        pedida = fijada.get("version") or fijada.get("sha", "")[:12]
+        if self.store.append(
+            "",
+            "",
+            "VersionFaltante",
+            {"pedida": pedida},
+            ukey=f"versionfalta:{self.maquina.nombre}:{pedida}",
+        ):
+            self.cx.notifier.encola(
+                f"version:{pedida}",
+                render(
+                    "version",
+                    {"version": pedida},
+                    self.maquina.nombre,
+                    "Motor de planes",
+                ),
+            )
+
     def plans(self) -> list[Plan]:
         vistos: dict[str, Plan] = {}
         for e in self.store.events():
@@ -167,104 +193,134 @@ class Daemon:
 
     def ingest_inbox(self) -> None:
         inbox = self.home / "inbox"
-        hechos = inbox / "procesados"
+        hechos, malos = inbox / "procesados", inbox / "rechazados"
         hechos.mkdir(parents=True, exist_ok=True)
         archivos = sorted(
             (f for b in self._bandejas() for f in b.glob("*.json")),
             key=lambda f: f.name,
         )
         for f in archivos:
-            msg = json.loads(f.read_text(encoding="utf-8"))
-            cmd_id, tipo = msg["cmd_id"], msg["tipo"]
-            plan_id = msg.get("plan") if tipo != "plan" else msg["plan"]["id"]
-            if tipo == "plan":
-                try:
-                    plan = Plan.from_dict(msg["plan"])
-                    if malos := modelos_desconocidos(
-                        plan, self.cx.conf.rutas
-                    ) or revisa_sin_quien(plan, self.cx.conf.escalera("implementar")):
-                        raise PlanError(malos)
-                    for repo in dict.fromkeys(b.repo for b in plan.blocks):
-                        self.cx.ws.espejo(
-                            repo
-                        )  # antes de cargarlo: un repo que no existe rechaza el plan
-                        rc = RepoConf.parse(self.fx.conf_base(repo)[1])
-                        if faltan := requisitos_faltantes(
-                            rc.requiere, self.maquina.tiene
-                        ):
-                            raise PlanError(
-                                [motivo_requiere(self.maquina.nombre, repo, faltan)]
-                            )
-                    self.store.append(
-                        plan.id,
-                        "",
-                        "PlanLoaded",
-                        {"plan": msg["plan"], "por": msg.get("por", "")},
-                        # Entregar otra vez el plan con cambios lo reemplaza (lo hecho sigue hecho);
-                        # el mismo texto otra vez no hace nada. Antes el cambio se ignoraba en
-                        # silencio y el recibo decía "tomado" (INGESTA 01, prueba real de S).
-                        ukey=f"plan:{plan.id}:{_huella(msg['plan'])}",
-                    )
-                    self.fx.pin_repos(plan)
-                    resultado = "tomado"
-                except (PlanError, RuntimeError, KeyError) as e:
-                    resultado = f"rechazado: {e}"
-                    # Quien entregó pudo irse con "encolado": el rechazo tiene que llegarle a David
-                    # (MOTOR 01: INGESTA 01 se rechazó en la Mini y nadie se enteró).
-                    titulo = str(
-                        msg.get("plan", {}).get("titulo")
-                        or msg.get("plan", {}).get("id")
-                        or "un plan"
-                    )
-                    self.cx.notifier.encola(
-                        f"rechazo:{cmd_id}",
-                        render(
-                            "rechazado",
-                            {
-                                "motivo": str(e).splitlines()[0][:300],
-                                "por": msg.get("por") or "quien te lo dio",
-                            },
-                            self.maquina.nombre,
-                            titulo,
-                        ),
-                    )
-            elif tipo == "hecho":
-                resultado = self._hecho(plan_id, msg)
-            elif tipo == "nota":
+            try:
+                cmd = Comando.from_dict(json.loads(f.read_text(encoding="utf-8")))
+                resultado = self._procesa(cmd)
                 self.store.append(
-                    plan_id,
-                    msg["block"],
-                    "Note",
-                    {"texto": msg["texto"]},
-                    ukey=f"nota:{cmd_id}",
+                    cmd.plan_id,
+                    "",
+                    "CommandReceived",
+                    {"cmd_id": cmd.cmd_id, "tipo": cmd.tipo, "resultado": resultado},
+                    ukey=f"cmd:{cmd.cmd_id}",
                 )
-                resultado = "anotado"
-            else:
-                resultado = f"rechazado: tipo desconocido {tipo}"
-            self.store.append(
-                plan_id or "",
-                "",
-                "CommandReceived",
-                {"cmd_id": cmd_id, "tipo": tipo, "resultado": resultado},
-                ukey=f"cmd:{cmd_id}",
-            )
-            os.replace(f, hechos / f.name)
+                destino = hechos
+            except Exception as e:  # noqa: BLE001  un archivo malo no frena a los demás de la bandeja
+                self._rechaza(f, e)
+                destino = malos
+            destino.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(f, destino / f.name)
+            except OSError:
+                pass  # se queda en la bandeja: lo hecho es idempotente (ukey) y el aviso no se repite
 
-    def _hecho(self, plan_id: str, msg: dict) -> str:
+    def _rechaza(self, f: Path, e: Exception) -> None:
+        """Quien entregó pudo irse con "encolado": el rechazo tiene que llegarle a David
+        (MOTOR 01: INGESTA 01 se rechazó en la Mini y nadie se enteró)."""
+        motivo = (str(e).strip() or type(e).__name__).splitlines()[0][:300]
+        msg: dict = {}
+        try:
+            leido = json.loads(f.read_text(encoding="utf-8"))
+            msg = leido if isinstance(leido, dict) else {}
+        except (OSError, ValueError):
+            pass
+        cmd_id = msg["cmd_id"] if isinstance(msg.get("cmd_id"), str) else f.stem
+        plan = msg.get("plan") if isinstance(msg.get("plan"), dict) else {}
+        titulo = str(plan.get("titulo") or plan.get("id") or "un plan")
+        por = msg["por"] if isinstance(msg.get("por"), str) and msg["por"] else ""
+        nuevo = self.store.append(
+            "",
+            "",
+            "CommandReceived",
+            {
+                "cmd_id": cmd_id,
+                "tipo": str(msg.get("tipo", "")),
+                "resultado": f"rechazado: {motivo}",
+            },
+            ukey=f"cmd:{cmd_id}",
+        )
+        if nuevo:
+            self.cx.notifier.encola(
+                f"rechazo:{cmd_id}",
+                render(
+                    "rechazado",
+                    {"motivo": motivo, "por": por or "quien te lo dio"},
+                    self.maquina.nombre,
+                    titulo,
+                ),
+            )
+
+    def _procesa(self, cmd: Comando) -> str:
+        if cmd.tipo == "hecho":
+            return self._hecho(cmd.plan_id, cmd)
+        if cmd.tipo == "nota":
+            self.store.append(
+                cmd.plan_id,
+                cmd.block,
+                "Note",
+                {"texto": cmd.texto},
+                ukey=f"nota:{cmd.cmd_id}",
+            )
+            return "anotado"
+        plan = Plan.from_dict(cmd.plan)
+        if malos := modelos_desconocidos(plan, self.cx.conf.rutas) or revisa_sin_quien(
+            plan, self.cx.conf.escalera("implementar")
+        ):
+            raise PlanError(malos)
+        for repo in dict.fromkeys(b.repo for b in plan.blocks):
+            self.cx.ws.espejo(
+                repo
+            )  # antes de cargarlo: un repo que no existe rechaza el plan
+            rc = RepoConf.parse(self.fx.conf_base(repo)[1])
+            if faltan := requisitos_faltantes(rc.requiere, self.maquina.tiene):
+                raise PlanError([motivo_requiere(self.maquina.nombre, repo, faltan)])
+            for b in plan.blocks:
+                if (
+                    b.repo == repo
+                    and b.lane == "release"
+                    and not b.release
+                    and not (rc.desplegar and rc.checklist and rc.rollback)
+                ):
+                    raise PlanError(
+                        [
+                            f"el bloque {b.id} es de lane release y no trae 'despliegue:' "
+                            "ni el repo tiene su receta de despliegue en .motor.toml"
+                        ]
+                    )
+        self.store.append(
+            plan.id,
+            "",
+            "PlanLoaded",
+            {"plan": cmd.plan, "por": cmd.por},
+            # Entregar otra vez el plan con cambios lo reemplaza (lo hecho sigue hecho);
+            # el mismo texto otra vez no hace nada. Antes el cambio se ignoraba en
+            # silencio y el recibo decía "tomado" (INGESTA 01, prueba real de S).
+            ukey=f"plan:{plan.id}:{_huella(cmd.plan)}",
+        )
+        self.fx.pin_repos(plan)
+        return "tomado"
+
+    def _hecho(self, plan_id: str, cmd: Comando) -> str:
         plan = next((p for p in self.plans() if p.id == plan_id), None)
-        if plan is None or msg["block"] not in {b.id for b in plan.blocks}:
+        if plan is None or cmd.block not in {b.id for b in plan.blocks}:
             return "rechazado: no conozco ese plan o ese paso"
         if (
-            m.estado(m.fold(plan, self.store.events(plan.id)), msg["block"])
+            m.estado(m.fold(plan, self.store.events(plan.id)), cmd.block)
             is not m.Estado.HUMANO
         ):
             return "rechazado: ese paso todavía no te toca; te aviso cuando sí"
         self.store.append(
             plan_id,
-            msg["block"],
+            cmd.block,
             "HumanDone",
-            {"por": msg.get("por", "")},
-            ukey=f"humano:{plan_id}:{msg['block']}",
+            {"por": cmd.por},
+            ukey=f"humano:{plan_id}:{cmd.block}",
         )
         return "anotado"
 
@@ -294,45 +350,83 @@ class Daemon:
 
     def tick(self, now: float | None = None) -> bool:
         now = now if now is not None else time.time()
-        self.trae_conf(now)
-        self.recargar_conf()
-        self.ingest_inbox()
+        self._fase("trae_conf", lambda: self.trae_conf(now), now)
+        self._fase("recargar_conf", self.recargar_conf, now)
+        self._fase("ingest_inbox", self.ingest_inbox, now)
         todo_hecho = True
         planes = self.plans()
         for plan in planes:
-            self.ingest_attempts(plan)
-        for plan in planes:
-            snap = m.fold(plan, self.store.events(plan.id))
-            cd_fuera, int_fuera = self._cuentas_fuera(planes, plan)
-            for a in m.decide(
-                snap,
-                self.cx.policy,
-                now,
-                self._ocupados_fuera(planes, plan),
-                cd_fuera,
-                int_fuera,
-            ):
-                clave = (plan.id, _bloque(a), type(a).__name__)
-                if now < self._espera_efecto.get(clave, 0):
-                    continue  # falló hace poco: no se repite en cada tick (una prueba por ssh a la PC, p. ej.)
-                try:
-                    self.execute(plan, snap, a)
-                    self._espera_efecto.pop(clave, None)
-                except Exception as e:  # noqa: BLE001  red caída, repo borrado, disco lleno: se reintenta en 5 min
-                    self._espera_efecto[clave] = now + ESPERA_TRAS_FALLA_S
-                    self._falla_efecto(plan, a, e, now)
-                snap = m.fold(plan, self.store.events(plan.id))
-            hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
-            todo_hecho = (
-                todo_hecho
-                and hecho
-                and f"terminado:{plan.id}" in snap.plan_notices
-                and snap.limpio
+            self._fase(
+                "ingest_attempts", lambda: self.ingest_attempts(plan), now, plan.id
             )
-        self.ajusta_sueno(any(not self._terminado(p) for p in planes), now)
-        self.fx.purga_registros(planes, now)
-        self.cx.notifier.envia_pendientes()
+        for plan in planes:
+            todo_hecho = self._tick_plan(plan, planes, now) and todo_hecho
+        self._fase(
+            "ajusta_sueno",
+            lambda: self.ajusta_sueno(self._hay_trabajo(planes), now),
+            now,
+        )
+        self._fase("purga_registros", lambda: self.fx.purga_registros(planes, now), now)
+        self._fase("envia_pendientes", self.cx.notifier.envia_pendientes, now)
         return todo_hecho and bool(planes)
+
+    def _fase(self, accion: str, fn, now: float, plan_id: str = "") -> bool:
+        """Una fase del tick que revienta se anota como EffectFailed y el tick sigue con lo demás."""
+        try:
+            fn()
+            return True
+        except Exception as e:  # noqa: BLE001  una fase mala no tumba al motor ni a los otros planes
+            self._falla_fase(plan_id, accion, e, now)
+            return False
+
+    def _falla_fase(self, plan_id: str, accion: str, e: Exception, now: float) -> None:
+        try:
+            self._anota_falla(plan_id, "", accion, e, now)
+        except Exception:  # noqa: BLE001  ni siquiera un log que no escribe tumba al tick
+            print(f"motor: {accion} falló: {e!r}", file=sys.stderr, flush=True)
+
+    def _tick_plan(self, plan: Plan, planes: list[Plan], now: float) -> bool:
+        """fold, decide y ejecutar de un plan. Devuelve si el plan quedó entregado y limpio."""
+        try:
+            snap = m.fold(plan, self.store.events(plan.id))
+        except Exception as e:  # noqa: BLE001
+            self._falla_fase(plan.id, "fold", e, now)
+            return False
+        try:
+            cd_fuera, int_fuera = self._cuentas_fuera(planes, plan)
+            acciones = list(
+                m.decide(
+                    snap,
+                    self.cx.policy,
+                    now,
+                    self._ocupados_fuera(planes, plan),
+                    cd_fuera,
+                    int_fuera,
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            self._falla_fase(plan.id, "decide", e, now)
+            return False
+        for a in acciones:
+            clave = (plan.id, _bloque(a), type(a).__name__)
+            if now < self._espera_efecto.get(clave, 0):
+                continue  # falló hace poco: no se repite en cada tick (una prueba por ssh a la PC, p. ej.)
+            try:
+                self.execute(plan, snap, a)
+                self._espera_efecto.pop(clave, None)
+            except Exception as e:  # noqa: BLE001  red caída, repo borrado, disco lleno: se reintenta en 5 min
+                self._espera_efecto[clave] = now + ESPERA_TRAS_FALLA_S
+                self._falla_efecto(plan, a, e, now)
+            try:
+                snap = m.fold(plan, self.store.events(plan.id))
+            except Exception as e:  # noqa: BLE001
+                self._falla_fase(plan.id, "fold", e, now)
+                return False
+        hecho = all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
+        return hecho and f"terminado:{plan.id}" in snap.plan_notices and snap.limpio
+
+    def _hay_trabajo(self, planes: list[Plan]) -> bool:
+        return any(not self._terminado(p) for p in planes)
 
     def _cuentas_fuera(
         self, planes: list[Plan], este: Plan
@@ -343,7 +437,10 @@ class Daemon:
         for p in planes:
             if p.id == este.id:
                 continue
-            s = m.fold(p, self.store.events(p.id))
+            try:
+                s = m.fold(p, self.store.events(p.id))
+            except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
+                continue
             for c, h in s.cooldowns.items():
                 cd[c] = max(cd.get(c, 0), h)
             intentos += [a for bv in s.blocks.values() for a in bv.attempts if a.ended]
@@ -356,14 +453,21 @@ class Daemon:
         for p in planes:
             if p.id == este.id:
                 continue
-            for c, k in m._ocupados(
-                m.fold(p, self.store.events(p.id)), self.cx.policy
-            ).items():
+            try:
+                ocupados = m._ocupados(
+                    m.fold(p, self.store.events(p.id)), self.cx.policy
+                )
+            except Exception:  # noqa: BLE001  el plan roto lo anota su propio tick
+                continue
+            for c, k in ocupados.items():
                 n[c] = n.get(c, 0) + k
         return n
 
     def _terminado(self, plan: Plan) -> bool:
-        snap = m.fold(plan, self.store.events(plan.id))
+        try:
+            snap = m.fold(plan, self.store.events(plan.id))
+        except Exception:  # noqa: BLE001  un plan que no se puede leer no mantiene despierta la máquina
+            return True
         return all(m.estado(snap, b) is m.Estado.HECHO for b in snap.blocks)
 
     def ajusta_sueno(self, hay_trabajo: bool, now: float) -> None:
@@ -377,15 +481,19 @@ class Daemon:
             or now < self._sin_dormir_reintento
         ):
             return
-        r = subprocess.run(
-            list(argv),
-            check=False,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            stdin=subprocess.DEVNULL,
-            timeout=60,
-        )
+        try:
+            r = subprocess.run(
+                list(argv),
+                check=False,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                stdin=subprocess.DEVNULL,
+                timeout=60,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            self._sin_dormir_reintento = now + 600
+            raise
         if r.returncode == 0:
             self._sin_dormir = hay_trabajo
         else:
@@ -394,14 +502,17 @@ class Daemon:
     def _falla_efecto(self, plan: Plan, a: m.Action, e: Exception, now: float) -> None:
         """Un efecto que revienta no tumba al motor. Se anota una vez por hora y el tick siguiente
         lo reintenta (los efectos son idempotentes); si sigue fallando, el aviso de 'atorado' llega solo."""
-        bloque = _bloque(a)
-        clave = f"falla:{plan.id}:{bloque}:{type(a).__name__}:{int(now // 3600)}"
+        self._anota_falla(plan.id, _bloque(a), type(a).__name__, e, now)
+
+    def _anota_falla(
+        self, plan_id: str, bloque: str, accion: str, e: Exception, now: float
+    ) -> None:
         self.store.append(
-            plan.id,
+            plan_id,
             bloque,
             "EffectFailed",
-            {"accion": type(a).__name__, "error": str(e)[-500:]},
-            ukey=clave,
+            {"accion": accion, "error": str(e)[-500:]},
+            ukey=f"falla:{plan_id}:{bloque}:{accion}:{int(now // 3600)}",
         )
 
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:
@@ -423,15 +534,29 @@ class Daemon:
     def run(self, intervalo: float, hasta_terminar: bool, tope_s: float = 0) -> int:
         inicio = time.time()
         while True:
-            self.recargar_conf()
-            if otra := self.pide_otra_version():
+            try:
+                terminado = self.tick()
+            except Exception:  # noqa: BLE001  un tick malo se escribe en el log del servicio y sigue el siguiente
                 print(
-                    f"motor: {otra}; salgo con 75 para que el supervisor me relance",
+                    f"motor: el tick falló, sigo con el siguiente:\n{traceback.format_exc()}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                terminado = False
+            try:
+                self.avisa_version_faltante()
+                cambio = version.sha_actual() != self._sha_arranque
+            except Exception:  # noqa: BLE001  mirar la versión nunca tumba al motor
+                cambio = False
+            if cambio:
+                print(
+                    "motor: el código instalado en disco cambió desde que arranqué; "
+                    "salgo con 75 para que el supervisor me relance con el nuevo",
                     file=sys.stderr,
                     flush=True,
                 )
                 return SALIDA_RELANZAR
-            if self.tick() and hasta_terminar:
+            if terminado and hasta_terminar:
                 return 0
             if tope_s and time.time() - inicio > tope_s:
                 return 3

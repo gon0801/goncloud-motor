@@ -618,16 +618,21 @@ class TestBloqueantesDelRevisorMalformados(unittest.TestCase):
         )
         return r, eventos
 
-    def test_repro_null_y_bloqueante_no_objeto_no_revientan(self):
-        r, ev = self._collect(
-            [dict(texto="a", repro="true"), dict(texto="b", repro=None), "suelto"]
-        )
+    def test_bloqueante_sin_repro_no_revienta(self):
+        r, ev = self._collect([dict(texto="a", repro="true"), dict(texto="b")])
         self.assertEqual(r["kind"], "veredicto")
         self.assertEqual(len(ev[0][3]["bajados"]), 1)
 
-    def test_bloqueantes_null_no_revienta(self):
-        r, _ = self._collect(None)
-        self.assertEqual(r["kind"], "veredicto")
+    def test_repro_null_y_bloqueante_no_objeto_son_veredicto_invalido(self):
+        for malo in (
+            [dict(texto="b", repro=None)],
+            ["suelto"],
+            None,
+        ):
+            with self.subTest(malo=malo):
+                r, ev = self._collect(malo)
+                self.assertEqual(r["kind"], "veredicto_invalido")
+                self.assertEqual(ev, [])
 
 
 if __name__ == "__main__":

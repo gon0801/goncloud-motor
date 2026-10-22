@@ -44,6 +44,10 @@ PLANTILLAS = {
         "Se lo dije a {por}; tiene que corregirlo y entregarlo otra vez."
     ),
     "avance": "{listas} de {total} partes listas.\n{ahora}\n{atoron}",
+    "version": (
+        "Falta instalar algo: esta máquina necesita la versión {version} del motor.\n"
+        "Sigo trabajando con la que tengo; quien administra el motor tiene que instalarla."
+    ),
 }
 
 _HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
@@ -79,45 +83,77 @@ def _hora(epoch: str) -> str:
     return f"el {DIAS[t.weekday()]} a las {t.hour}:{t.minute:02d}"
 
 
+FIJOS = {
+    "conf_mala": PLANTILLAS["conf_mala"],
+    "entregado": "Listo, terminó una parte del plan.\nLa probé con datos reales.",
+    "humano": (
+        "Necesito tu mano en un paso que solo tú puedes hacer.\n"
+        "Pídele a quien te dio el plan los pasos exactos; lo demás sigue avanzando."
+    ),
+    "lento": (
+        "Voy más lento: se acabó el cupo de todos los agentes de este paso.\n"
+        "Sigo solo cuando se renueve. No tienes que hacer nada."
+    ),
+    "terminado": PLANTILLAS["terminado"],
+    "atorado": (
+        "Me atoré en una parte del plan.\n"
+        "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
+    ),
+    "retome": PLANTILLAS["retome"],
+    "rechazado": (
+        "No pude tomar este plan; trae un problema que hay que corregir.\n"
+        "Pídele a quien te lo dio que revise el recibo y lo entregue otra vez."
+    ),
+    "avance": "Sigo trabajando en el plan.",
+    "version": (
+        "Falta instalar algo: esta máquina necesita otra versión del motor.\n"
+        "Sigo trabajando con la que tengo; quien administra el motor tiene que instalarla."
+    ),
+}
+PARCIAL = {  # con el título del plan y solo los campos que casi siempre llegan
+    "avance": "{listas} de {total} partes listas. Sigo trabajando.",
+    "rechazado": (
+        "No pude tomar este plan; trae un problema que hay que corregir.\n"
+        "Pídele a {por} que revise el recibo y lo entregue otra vez."
+    ),
+    "atorado": (
+        "Me atoré en una parte: {bloque}.\n"
+        "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
+    ),
+    "humano": FIJOS["humano"],
+    "version": FIJOS["version"],
+}
+GENERICO = "Avancé en un plan; quien te lo dio te puede contar el detalle."
+
+
 def render(template: str, campos: dict[str, str], maquina: str, titulo: str) -> str:
-    """Aviso completo, ya revisado. Si algo del plan trae jerga, cae a un texto genérico."""
+    """Aviso completo, ya revisado, y nunca lanza: si el texto con los datos del plan no pasa
+    `lint_plain`, prueba con "un plan" por título, luego con el texto fijo de la plantilla sin
+    ningún campo, y al final con el aviso genérico."""
     c = dict(campos)
-    if "hasta" in c:
-        c["hasta"] = _hora(c["hasta"])
-    try:
-        cuerpo = PLANTILLAS[template].format(**c)
-        return lint_plain(f"En la {maquina} · {titulo}:\n{cuerpo}")
-    except (AvisoInvalido, KeyError):
-        if (
-            template == "avance" and "listas" in c
-        ):  # el latido nunca se pierde por un título con jerga
-            return lint_plain(
-                f"En la {maquina} · {titulo}:\n{c['listas']} de {c.get('total', '?')} partes listas. Sigo trabajando."
-            )
-        if (
-            template == "rechazado"
-        ):  # un rechazo nunca se pierde por un motivo con jerga
-            return lint_plain(
-                f"En la {maquina} · {titulo}:\nNo pude tomar este plan; trae un problema que hay que corregir.\n"
-                f"Pídele a {c.get('por', 'quien te lo dio')} que revise el recibo y lo entregue otra vez."
-            )
-        if (
-            template == "atorado" and "bloque" in c
-        ):  # sin el motivo, pero el aviso llega
-            return lint_plain(
-                f"En la {maquina} · {titulo}:\nMe atoré en una parte: {c['bloque']}.\n"
-                "Claude la va a revisar y te cuenta. Lo demás del plan sigue avanzando."
-            )
-        if (
-            template == "humano"
-        ):  # nunca un aviso vago cuando te necesita (MOTOR 01, bloque E)
-            return lint_plain(
-                f"En la {maquina} · {titulo}:\nNecesito tu mano en un paso que solo tú puedes hacer.\n"
-                "Pídele a quien te dio el plan los pasos exactos; lo demás sigue avanzando."
-            )
-        return lint_plain(
-            f"En la {maquina}:\nAvancé en un plan; quien te lo dio te puede contar el detalle."
-        )
+
+    def completo(titulo: str) -> str:
+        datos = dict(c)
+        if "hasta" in datos:
+            datos["hasta"] = _hora(datos["hasta"])
+        return f"En la {maquina} · {titulo}:\n{PLANTILLAS[template].format(**datos)}"
+
+    def parcial() -> str:
+        return f"En la {maquina} · {titulo}:\n{PARCIAL[template].format(**{'por': 'quien te lo dio', 'total': '?', **c})}"
+
+    intentos = [
+        lambda: completo(str(titulo)),
+        parcial,
+        lambda: completo("un plan"),
+        lambda: f"En la {maquina}:\n{FIJOS[template]}",
+        lambda: f"En la {maquina}:\n{GENERICO}",
+    ]
+    for intento in intentos:
+        try:
+            return lint_plain(intento())
+        except Exception:  # noqa: BLE001  un aviso nunca se pierde por un dato del plan
+            continue
+    return GENERICO
 
 
 class Notifier:
