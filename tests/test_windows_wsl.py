@@ -155,6 +155,54 @@ class ShellTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("42", r.stdout)
 
+    def test_path_del_agente_en_windows_conserva_windowsapps(self):
+        from motor.effects import con_python
+
+        path = r"C:\Users\x\AppData\Local\Microsoft\WindowsApps;C:\Python314;C:\Windows"
+        self.assertEqual(con_python({"PATH": path}, en_windows=True)["PATH"], path)
+
+    def test_path_de_comando_en_windows_quita_windowsapps(self):
+        from motor.effects import con_python_de_comando
+
+        path = r"C:\Users\x\AppData\Local\Microsoft\WindowsApps;C:\Python314;C:\Windows"
+        salida = con_python_de_comando({"PATH": path}, en_windows=True)["PATH"]
+        self.assertNotIn("WindowsApps", salida)
+        self.assertIn("motor-python", salida.split(";")[0])
+
+    @unittest.skipUnless(os.name == "nt", "en la PC corre con cmd real")
+    def test_pc_env_del_agente_con_shims_python_y_gh(self):
+        import subprocess
+        import types
+
+        from motor.effects import RAIZ, Effects
+
+        mq = types.SimpleNamespace(env=(), secretos=(), path_extra=())
+        env = Effects.env_base(
+            types.SimpleNamespace(cx=types.SimpleNamespace(maquina=mq))
+        )
+        env["PATH"] = os.pathsep.join(
+            [str(RAIZ / "motor" / "shims"), env.get("PATH", "")]
+        )
+        py = subprocess.run(
+            ["cmd.exe", "/c", "python", "-c", "print(40+2)"],
+            env=env,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+        self.assertEqual(py.stdout.strip(), "42", py.stdout + py.stderr)
+        gh = subprocess.run(
+            ["cmd.exe", "/c", "gh", "pr", "merge", "1"],
+            env=env,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+        self.assertEqual(gh.returncode, 3, gh.stdout + gh.stderr)
+        self.assertIn("prohibido", gh.stderr)
+
     @unittest.skipUnless(os.name == "nt", "en la PC corre con Git Bash real")
     def test_pc_test_f_sustitucion_y_python3(self):
         import tempfile

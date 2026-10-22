@@ -49,14 +49,25 @@ _FALTA = re.compile(
 )
 
 
-def con_python(env: dict) -> dict:
-    ruta = env.get("PATH", "")
-    if os.name == "nt":
-        env["PATH"] = path_con_python_real(ruta)
+def con_python(env: dict, en_windows: bool | None = None) -> dict:
+    if en_windows is None:
+        en_windows = os.name == "nt"
+    if en_windows:
         return env
+    ruta = env.get("PATH", "")
     if not shutil.which("python", path=ruta) and shutil.which("python3", path=ruta):
         env["PATH"] = os.pathsep.join([str(RAIZ / "motor" / "shims" / "python"), ruta])
     return env
+
+
+def con_python_de_comando(env: dict, en_windows: bool | None = None) -> dict:
+    if en_windows is None:
+        en_windows = os.name == "nt"
+    if not en_windows:
+        return env
+    salida = dict(env)
+    salida["PATH"] = path_con_python_real(salida.get("PATH", ""))
+    return salida
 
 
 def comandos_faltantes(salida: str) -> list[str]:
@@ -102,8 +113,7 @@ def _run(
     cmd: str, cwd: Path | None, env: dict, timeout: float = 900, bash: str = ""
 ) -> subprocess.CompletedProcess:
     argv, shell, exe = _posix(cmd, bash)
-    if os.name == "nt":
-        env = con_python(dict(env))
+    env = con_python_de_comando(env)
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
         p = subprocess.Popen(
             argv,
@@ -1756,7 +1766,7 @@ Escribe en `$MOTOR_RESULT`:
         p = subprocess.Popen(
             argv,
             shell=shell,
-            env=self.env_base({"MOTOR_HOME": str(self.cx.home)}),
+            env=con_python_de_comando(self.env_base({"MOTOR_HOME": str(self.cx.home)})),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
