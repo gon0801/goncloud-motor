@@ -25,6 +25,7 @@ from motor.conf import load_conf
 from motor.plan import Plan, parse_plan
 
 SKILL = "/Users/dn/.motor/pstack/abc123/pstack/skills/poteto-mode/SKILL.md"
+RAIZ = "/Users/dn/.motor/pstack/abc123"
 PLAYBOOK = "/Users/dn/.motor/pstack/abc123/pstack/skills/poteto-mode/playbooks/docs.md"
 
 
@@ -153,7 +154,7 @@ class TestFormatos(unittest.TestCase):
     def test_huella_ve_skill_playbook_lista_subagente_y_comando_en_cada_cli(self):
         for cli, (fab, cargar, playbook, sub, todos, cmd) in CASOS.items():
             with self.subTest(cli=cli):
-                h = ps.huella(fab(cargar, playbook, todos, sub, cmd), cli)
+                h = ps.huella(fab(cargar, playbook, todos, sub, cmd), cli, RAIZ)
                 self.assertTrue(h.legible)
                 self.assertIn("poteto-mode", h.skills)
                 self.assertEqual(h.poteto_en, 1)
@@ -173,13 +174,36 @@ class TestFormatos(unittest.TestCase):
 
     def test_cargar_leyendo_el_skill_md_cuenta_igual_que_la_herramienta(self):
         h = ps.huella(
-            claude(("Read", {"file_path": SKILL})), "claude"
+            claude(("Read", {"file_path": SKILL})), "claude", RAIZ
         )  # Claude también puede cargar con Read
         self.assertEqual(h.skills, ("poteto-mode",))
         h = ps.huella(
-            claude(("Read", {"file_path": SKILL.replace("/", "\\")})), "claude"
+            claude(("Read", {"file_path": SKILL.replace("/", "\\")})), "claude", RAIZ
         )
         self.assertEqual(h.skills, ("poteto-mode",), "rutas de Windows")
+
+    def test_leer_un_skill_md_fuera_de_la_copia_fija_no_cuenta(self):
+        fuera = [
+            "/tmp/hecha-por-el-agente/poteto-mode/SKILL.md",
+            "/Users/dn/.claude/skills/poteto-mode/SKILL.md",
+            "/Users/dn/.motor/pstack/otra/pstack/skills/poteto-mode/SKILL.md",
+            RAIZ + "/pstack/skills/../../../x/poteto-mode/SKILL.md",
+        ]
+        for ruta in fuera:
+            with self.subTest(ruta=ruta):
+                log = claude(("Read", {"file_path": ruta}))
+                for raiz in (RAIZ, None):
+                    h = ps.huella(log, "claude", raiz)
+                    self.assertIsNone(h.poteto_en)
+                    self.assertIsInstance(ps.juzga(h, ps.Exigencia()), ps.Falta)
+        self.assertTrue(
+            ps.puerta(
+                ps.eventos(
+                    claude(*[("Read", {"file_path": fuera[0]})] * 6), "claude", RAIZ
+                )[0],
+                6,
+            )
+        )
 
     def test_las_llamadas_de_un_subagente_no_son_del_agente(self):
         h = ps.huella(
@@ -229,6 +253,22 @@ class TestNoVerificable(unittest.TestCase):
                 r = ps.juzga(h, ps.Exigencia(playbook=True, min_subagentes=2))
                 self.assertEqual(r, ps.Cumple(verificable=False))
 
+    def test_objeto_final_de_grok_json_es_no_verificable(self):
+        final = json.dumps(
+            {
+                "text": "listo",
+                "thought": "",
+                "sessionId": "s1",
+                "cwd": "/w",
+                "num_turns": 9,
+                "usage": {},
+                "total_cost_usd": 0.1,
+            }
+        )
+        h = ps.huella(final, "grok", RAIZ)
+        self.assertFalse(h.legible)
+        self.assertEqual(ps.juzga(h, ps.Exigencia()), ps.Cumple(verificable=False))
+
     def test_registro_legible_sin_acciones_si_falta(self):
         h = ps.huella(jl({"type": "system"}), "claude")
         self.assertTrue(h.legible)
@@ -237,7 +277,7 @@ class TestNoVerificable(unittest.TestCase):
 
 class TestJuzga(unittest.TestCase):
     def h(self, *llamadas):
-        return ps.huella(claude(*llamadas), "claude")
+        return ps.huella(claude(*llamadas), "claude", RAIZ)
 
     def test_cumple(self):
         h = self.h(
@@ -287,7 +327,7 @@ class TestJuzga(unittest.TestCase):
 
 class TestPuerta(unittest.TestCase):
     def acciones(self, *llamadas):
-        return ps.eventos(claude(*llamadas), "claude")[0]
+        return ps.eventos(claude(*llamadas), "claude", RAIZ)[0]
 
     def test_corta_si_a_la_accion_6_no_cargo_poteto_mode(self):
         ev = self.acciones(*[("Bash", {"command": "ls"})] * 6)
@@ -522,6 +562,33 @@ lane: gate
     def test_sin_repro_cuenta_como_falla_del_modelo(self):
         self.assertEqual(relevo.desde_kind("sin_repro"), relevo.Falla.TASK_FAILURE)
         self.assertNotIn("sin_repro", m.NO_ES_FALLA)
+
+
+class TestGrokJson(unittest.TestCase):
+    def test_grok_json_se_juzga_con_el_updates_jsonl_de_su_sesion(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ses = tmp / ".grok" / "sessions" / "-w" / "s1"
+        ses.mkdir(parents=True)
+        (ses / "updates.jsonl").write_text(
+            jl(
+                {"tool_name": "read_file", "args": {"path": SKILL}},
+                {"tool_name": "todo_write", "args": {}},
+            ),
+            encoding="utf-8",
+        )
+        log = tmp / "log.txt"
+        log.write_text(
+            json.dumps({"text": "listo", "sessionId": "s1", "cwd": "/w"}),
+            encoding="utf-8",
+        )
+        info = {"cli": "grok", "registros": [str(log)]}
+        os.environ["GROK_HOME"] = str(tmp / ".grok")
+        self.addCleanup(os.environ.pop, "GROK_HOME", None)
+        regs = ef.Effects._registros_de(info)
+        self.assertEqual(regs[0], str(ses / "updates.jsonl"))
+        h = ps.huella(Path(regs[0]).read_text(encoding="utf-8"), "grok", RAIZ)
+        self.assertEqual(h.skills, ("poteto-mode",))
 
 
 if __name__ == "__main__":

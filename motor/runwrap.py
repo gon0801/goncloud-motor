@@ -2,7 +2,7 @@
 
     python -m motor.runwrap --dir <intento> --cwd <carpeta> --timeout S --sin-avance S
         [--wip-rama <rama> --wip-cada S]
-        [--puerta N --cli CLI --registro RUTA...] [--home H --cuenta C] -- <argv del agente...>
+        [--puerta N --cli CLI --raiz COPIA --registro RUTA...] [--home H --cuenta C] -- <argv del agente...>
 
 - stdin cerrado y grupo de procesos propio: ningún prompt de permiso puede colgarlo.
 - Falta de avance: ni el log ni la carpeta cambian en `--sin-avance` s -> se detiene.
@@ -51,8 +51,8 @@ def _mtime_arbol(raiz: Path) -> float:
 class PuertaEnVivo:
     """Lee el registro del agente a medida que crece y dice cuándo hay que cortarlo."""
 
-    def __init__(self, cli: str, n: int, fuentes: list[Path]):
-        self.cli, self.n, self.fuentes = cli, n, fuentes
+    def __init__(self, cli: str, n: int, fuentes: list[Path], raiz: str = ""):
+        self.cli, self.n, self.fuentes, self.raiz = cli, n, fuentes, raiz
         self.decidida = cli not in ps.FORMATOS or n <= 0
         self._leido: dict[Path, int] = {}
         self._lineas: dict[Path, list[str]] = {}
@@ -77,7 +77,7 @@ class PuertaEnVivo:
             return ""
         for f in self.fuentes:
             self._nuevas(f)
-            acciones, legible = ps.eventos(self._lineas.get(f, []), self.cli)
+            acciones, legible = ps.eventos(self._lineas.get(f, []), self.cli, self.raiz)
             if not legible:
                 continue
             if ps.puerta(acciones, self.n):
@@ -126,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--puerta", type=int, default=0)
     ap.add_argument("--cli", default="")
+    ap.add_argument("--raiz", default="", help="raíz de la copia fija de pstack")
     ap.add_argument("--registro", action="append", default=[])
     ap.add_argument("--home", default="")
     ap.add_argument("--cuenta", default="")
@@ -162,7 +163,9 @@ def main(argv: list[str] | None = None) -> int:
                     "inicio": inicio,
                 },
             )
-        puerta = PuertaEnVivo(a.cli, a.puerta, [Path(x) for x in a.registro] or [log])
+        puerta = PuertaEnVivo(
+            a.cli, a.puerta, [Path(x) for x in a.registro] or [log], a.raiz
+        )
         motivo_puerta, ultima_puerta = "", 0.0
         ultimo = (log.stat().st_size, _mtime_arbol(cwd))
         ultimo_cambio = time.time()

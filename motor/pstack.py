@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -166,7 +167,10 @@ def _estado(o: dict) -> Llamadas:
 
 def _tool_name(o: dict) -> Llamadas:
     """Grok (`updates.jsonl` / `streaming-json`): una línea por herramienta con `tool_name`."""
-    visto = bool(o)
+    visto = any(
+        k in o
+        for k in ("tool_name", "tool_call", "update", "sessionUpdate", "toolCall")
+    )  # el objeto final de `--output-format json` (hechos.md §4) no trae nada de esto
     nombre = o.get("tool_name") or (o.get("tool_call") or {}).get("name")
     if not nombre:
         return [], visto
@@ -273,8 +277,22 @@ FORMATOS: dict[str, Formato] = {
     ),
 }
 
-_RUTA_SKILL = re.compile(r"(?:^|/)skills/([^/]+)/SKILL\.md$|(?:^|/)([^/]+)/SKILL\.md$")
-_RUTA_PLAYBOOK = re.compile(rf"(?:^|/){SKILL_BASE}/playbooks/([^/]+)\.md$")
+_RUTA_SKILL = re.compile(r"([^/]+)/SKILL\.md$")
+_RUTA_PLAYBOOK = re.compile(rf"{SKILL_BASE}/playbooks/([^/]+)\.md$")
+
+
+def _bajo_skills(ruta: str, raiz: str | None) -> str | None:
+    """Lo que queda de `ruta` bajo `<raiz>/pstack/skills/`, o None si cae fuera de la copia fija
+    (otra copia, la skill propia del agente, un archivo que él escribió)."""
+    if not raiz:
+        return None
+    base = posixpath.normpath(raiz.replace("\\", "/")) + "/pstack/skills/"
+    r = posixpath.normpath(ruta.replace("\\", "/"))
+    if re.match(r"[A-Za-z]:", base):  # rutas de Windows: sin distinguir mayúsculas
+        ok = r.lower().startswith(base.lower())
+    else:
+        ok = r.startswith(base)
+    return r[len(base) :] if ok else None
 
 
 def _nombre_skill(x: str) -> str:
@@ -283,7 +301,9 @@ def _nombre_skill(x: str) -> str:
     ]  # `pstack:poteto-mode` y `poteto-mode` cuentan igual
 
 
-def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> Accion:
+def _clasifica(
+    f: Formato, herramienta: str, args: dict, n: int, raiz: str | None = None
+) -> Accion:
     h = herramienta.lower().rsplit(".", 1)[-1]
     if h in f.skill:
         nombre = next(
@@ -301,10 +321,12 @@ def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> Accion:
                 "",
             )
         ).replace("\\", "/")
-        if mm := _RUTA_PLAYBOOK.search(ruta):
-            return Accion("playbook", mm.group(1), n)
-        if mm := _RUTA_SKILL.search(ruta):
-            return Accion("skill", mm.group(1) or mm.group(2), n)
+        rel = _bajo_skills(ruta, raiz)
+        if rel is not None:
+            if mm := _RUTA_PLAYBOOK.fullmatch(rel):
+                return Accion("playbook", mm.group(1), n)
+            if mm := _RUTA_SKILL.fullmatch(rel):
+                return Accion("skill", mm.group(1), n)
         return Accion("otra", "", n)
     if h in f.subagente:
         tipo = next(
@@ -348,9 +370,12 @@ def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
             yield o
 
 
-def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bool]:
+def eventos(
+    fuente: str | Iterable[str], formato: str, raiz: str | None = None
+) -> tuple[list[Accion], bool]:
     """(acciones del agente principal en orden, ¿el registro se pudo leer?). Lo usan `huella` y la
-    puerta en vivo de runwrap."""
+    puerta en vivo de runwrap.
+    Leer un `SKILL.md` solo cuenta como cargar la skill si está bajo `<raiz>/pstack/skills/` (la copia fija)."""
     f = FORMATOS[formato]
     acciones: list[Accion] = []
     legible = False
@@ -364,15 +389,17 @@ def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bo
                 continue
             vistos.add(ident)
         for herramienta, args in llamadas:
-            acciones.append(_clasifica(f, herramienta, args, len(acciones) + 1))
+            acciones.append(_clasifica(f, herramienta, args, len(acciones) + 1, raiz))
     return acciones, legible
 
 
-def huella(fuente: str | Iterable[str] | None, formato: str) -> Huella:
+def huella(
+    fuente: str | Iterable[str] | None, formato: str, raiz: str | None = None
+) -> Huella:
     """Lo que el agente hizo según su registro. Sin registro, o con uno que no se entiende: `legible=False`."""
     if not fuente or formato not in FORMATOS:
         return Huella(legible=False)
-    acciones, legible = eventos(fuente, formato)
+    acciones, legible = eventos(fuente, formato, raiz)
     if not legible:
         return Huella(legible=False)
     skills = tuple(dict.fromkeys(a.nombre for a in acciones if a.tipo == "skill"))

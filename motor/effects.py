@@ -368,12 +368,12 @@ class Effects:
             return None
         h = ps.Huella(legible=False)
         fuente = ""
-        for r in info["registros"]:
+        for r in self._registros_de(info):
             try:
                 texto = Path(r).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            h = ps.huella(texto, info["cli"])
+            h = ps.huella(texto, info["cli"], info["raiz"])
             fuente = r
             if h.legible:
                 break
@@ -402,6 +402,30 @@ class Effects:
         if estado == "falta":
             return {"kind": "sin_pstack", "detalle": veredicto.texto()}
         return None
+
+    @staticmethod
+    def _registros_de(info: dict) -> list[str]:
+        """Los registros donde buscar la huella. `grok --output-format json` deja en log.txt un solo
+        objeto final sin herramientas: las acciones están en `~/.grok/sessions/<cwd>/<sessionId>/updates.jsonl`."""
+        registros = list(info["registros"])
+        if info["cli"] != "grok":
+            return registros
+        try:
+            texto = Path(registros[-1]).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return registros
+        ids = []
+        for o in ps._objetos(texto):
+            sid = o.get("sessionId") or o.get("session_id")
+            if isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9._-]+", sid):
+                ids.append(sid)
+        base = Path(os.environ.get("GROK_HOME") or Path.home() / ".grok") / "sessions"
+        extra = [
+            str(p)
+            for sid in dict.fromkeys(ids)
+            for p in sorted(base.glob(f"*/{sid}/updates.jsonl"))
+        ]
+        return [*extra, *registros]
 
     def _avisa_no_verificable(self, cli: str) -> None:
         """Una vez por CLI y por día: no pude leer el registro, la entrega pasó sin comprobarse."""
@@ -521,6 +545,8 @@ class Effects:
                 str(info_pstack["exigencia"]["puerta"]),
                 "--cli",
                 ruta.cli,
+                "--raiz",
+                info_pstack["raiz"],
                 *[x for r in info_pstack["registros"] for x in ("--registro", r)],
             ]
         cmd = [
