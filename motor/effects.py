@@ -38,7 +38,7 @@ from .github import (
 )
 from .notify import Notifier, render
 from .plan import HUMAN_KINDS, Plan
-from .plataforma.windows import argv_shell, lanzamiento_wsl, path_sin_stub_tienda
+from .plataforma.windows import argv_shell, lanzamiento_wsl, path_con_python_real
 from .store import Store
 from .workspace import Workspace, foto_wip, git
 
@@ -52,7 +52,7 @@ _FALTA = re.compile(
 def con_python(env: dict) -> dict:
     ruta = env.get("PATH", "")
     if os.name == "nt":
-        env["PATH"] = path_sin_stub_tienda(ruta)
+        env["PATH"] = path_con_python_real(ruta)
         return env
     if not shutil.which("python", path=ruta) and shutil.which("python3", path=ruta):
         env["PATH"] = os.pathsep.join([str(RAIZ / "motor" / "shims" / "python"), ruta])

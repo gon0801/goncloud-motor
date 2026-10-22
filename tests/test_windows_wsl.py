@@ -134,25 +134,38 @@ class ShellTest(unittest.TestCase):
         with self.assertRaises(ConfError):
             valida_maquina({"nombre": "pc", "conf": "x", "bash": ""})
 
+    @unittest.skipIf(os.name == "nt", "la PC lo prueba por _run con Git Bash")
+    def test_path_con_python_real_pone_interprete_que_funciona(self):
+        import subprocess
+
+        limpio = windows.path_con_python_real(
+            r"C:\Users\x\AppData\Local\Microsoft\WindowsApps;C:\Windows"
+        )
+        self.assertNotIn("WindowsApps", limpio)
+        carpeta = limpio.split(";")[0]
+        for nombre in ("python", "python3"):
+            r = subprocess.run(
+                [nombre, "-c", "print(40+2)"],
+                env={**os.environ, "PATH": carpeta},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("42", r.stdout)
+
     @unittest.skipUnless(os.name == "nt", "en la PC corre con Git Bash real")
     def test_pc_test_f_sustitucion_y_python3(self):
-        import subprocess
         import tempfile
         from pathlib import Path
+
+        from motor.effects import _run
 
         with tempfile.TemporaryDirectory() as t:
             marca = Path(t) / "marca.txt"
             marca.write_text("ok", encoding="utf-8")
             cmd = f'test -f "{marca}" && echo "$(python3 -c \'print(40+2)\')"'
-            argv, shell, exe = windows.argv_shell(cmd)
-            r = subprocess.run(
-                argv,
-                shell=shell,
-                executable=exe,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            r = _run(cmd, Path(t), dict(os.environ))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("42", r.stdout)
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -81,6 +83,43 @@ def es_stub_tienda(ruta: str) -> bool:
 
 def path_sin_stub_tienda(path: str, sep: str = ";") -> str:
     return sep.join(p for p in (path or "").split(sep) if p and not es_stub_tienda(p))
+
+
+def _ruta_git_bash(ruta: str) -> str:
+    if len(ruta) > 2 and ruta[1] == ":" and ruta[0].isalpha():
+        return "/" + ruta[0].lower() + ruta[2:].replace("\\", "/")
+    return ruta.replace("\\", "/")
+
+
+def carpeta_python_real() -> Path | None:
+    d = Path(tempfile.gettempdir()) / "motor-python"
+    exe = _ruta_git_bash(sys.executable)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        for nombre in ("python", "python3"):
+            p = d / nombre
+            contenido = f'#!/bin/sh\nexec "{exe}" "$@"\n'
+            try:
+                actual = p.read_text(encoding="utf-8")
+            except OSError:
+                actual = ""
+            if actual != contenido:
+                p.write_text(contenido, encoding="utf-8")
+                p.chmod(0o755)
+    except OSError:
+        return None
+    return d
+
+
+def path_con_python_real(path: str, sep: str = ";") -> str:
+    limpio = path_sin_stub_tienda(path, sep)
+    carpeta = carpeta_python_real()
+    if carpeta is None:
+        return limpio
+    partes = [p for p in limpio.split(sep) if p] if limpio else []
+    if str(carpeta) in partes:
+        return limpio
+    return sep.join([str(carpeta), *partes])
 
 
 def argv_windows(argv: list[str], env: dict) -> list[str]:
