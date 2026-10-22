@@ -856,7 +856,18 @@ def _sin_avance_propio(
                 f"las pruebas de GitHub llevan {_dura(now - desde)} sin terminar",
             )
     head = bv.head()
+    falta = (bv.verified.get(head) or {}).get("falta_comando") if head else None
+    if falta:
+        # El agente no puede arreglar la máquina ni la Acepta del plan: rebotaría sin fin.
+        return (
+            f"atorado:{bid}:comando:{','.join(falta)}",  # uno por comando, no uno por ronda
+            (
+                f"la verificación del plan usa {', '.join(falta)}, que esta máquina no tiene; "
+                "hay que corregir el plan o instalarlo en la máquina"
+            ),
+        )
     for tipo, d, campo, que in (
+        ("verificacion", bv.verified, "ok", "falló la verificación de las filas"),
         ("prueba", bv.proved, "ok", "falló la prueba con datos reales"),
         ("despliegue", bv.deployed, "ok", "falló el despliegue"),
         ("checks", bv.checks, "green", "las pruebas de GitHub salieron en rojo"),

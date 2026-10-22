@@ -1048,6 +1048,43 @@ class TestDespliegueQueSePasa(Banco):
             ]
         )
 
+    def test_una_acepta_con_un_comando_que_no_existe_lo_anota(self):
+        """INGESTA 01, bloque C: la Acepta usaba un comando que la Mini no tiene y el bloque volvía
+        al agente, que no podía arreglarlo."""
+        self.home, self.plan = sandbox.create(self.tmp / "b")
+        self.plan.write_text(
+            self.plan.read_text(encoding="utf-8").replace(
+                '| test "$(cat saludo.txt)" = hola |',
+                "| comando-que-no-existe-xyz |",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        p = daemon(self.home)
+        self.assertTrue(
+            esperar(
+                lambda: any(
+                    e.kind == "Verified" and e.block == "A" for e in eventos(self.home)
+                ),
+                tope=150,
+            )
+        )
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        v = [e for e in eventos(self.home) if e.kind == "Verified" and e.block == "A"][
+            0
+        ]
+        self.assertEqual(v.data["falta_comando"], ["comando-que-no-existe-xyz"])
+
 
 class TestTopesEntrePlanes(Banco):
     def test_dos_planes_no_rebasan_el_tope_de_la_cuenta(self):

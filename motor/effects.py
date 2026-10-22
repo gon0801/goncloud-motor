@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import string
 import subprocess
@@ -28,6 +29,28 @@ from .store import Store
 from .workspace import Workspace, git
 
 RAIZ = Path(__file__).resolve().parent.parent
+_FALTA = re.compile(
+    r"(?:^|\s)([\w.+-]+): (?:command not found|orden no encontrada)"
+    r"|'([^']+)' is not recognized as an internal or external command"
+)
+
+
+def con_python(env: dict) -> dict:
+    """Los planes escritos en la PC dicen `python`; la Mac y la Mini solo traen `python3`
+    (INGESTA 01, bloque C). Si falta `python` y hay `python3`, el motor pone uno que llama a python3."""
+    ruta = env.get("PATH", "")
+    if (
+        os.name != "nt"
+        and not shutil.which("python", path=ruta)
+        and shutil.which("python3", path=ruta)
+    ):
+        env["PATH"] = os.pathsep.join([str(RAIZ / "motor" / "shims" / "python"), ruta])
+    return env
+
+
+def comandos_faltantes(salida: str) -> list[str]:
+    """Comandos que la máquina no tiene, según lo que dijo el shell (bash o cmd de Windows)."""
+    return sorted({a or b for a, b in _FALTA.findall(salida)})
 
 
 @dataclass
@@ -132,7 +155,7 @@ class Effects:
         }
         if mq.path_extra:
             env["PATH"] = os.pathsep.join([*mq.path_extra, env.get("PATH", "")])
-        return env
+        return con_python(env)
 
     def repo_conf(self, snap: m.Snapshot, repo: str) -> RepoConf:
         return RepoConf.parse(snap.repos.get(repo, {}).get("texto", ""))
@@ -444,7 +467,7 @@ Escribe en `$MOTOR_RESULT`:
         w = self.cx.ws.copia(
             block.repo, a.sha, self.cx.home / "tmp" / f"verifica-{plan.id}-{a.block}"
         )
-        fallas = []
+        fallas, faltan = [], []
         # Pasarse del tope es una falla de la fila con su motivo, no un tropiezo que se reintenta para
         # siempre (PSTACK 01 en la PC: la batería e2e tardaba más de 15 min y se reintentó horas).
         tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
@@ -455,11 +478,17 @@ Escribe en `$MOTOR_RESULT`:
                     fallas.append(
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
                     )
+                    faltan += comandos_faltantes(p.stdout + p.stderr)
         self.cx.store.append(
             plan.id,
             a.block,
             "Verified",
-            {"sha": a.sha, "ok": not fallas, "detalle": "\n".join(fallas)},
+            {
+                "sha": a.sha,
+                "ok": not fallas,
+                "detalle": "\n".join(fallas),
+                "falta_comando": sorted(set(faltan)),
+            },
             ukey=f"verified:{plan.id}:{a.block}:{a.sha}",
         )
 
