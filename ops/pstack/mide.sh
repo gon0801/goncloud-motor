@@ -7,7 +7,8 @@
 # Cada CLI corre como lo lanza el motor: el argv de su ruta tal cual (solo se sustituyen {prompt}, {brief},
 # {result}, {pstack} y {sesion}), el entorno de la máquina con secretos y sin MOTOR_*, y el registro se
 # lee donde lo lee el motor. Los flags que hacen legible un registro van en el rutas.toml con que se
-# mide (ver --rutas).
+# mide (ver --rutas). Una corrida que pasa el tope se reintenta una vez: el API del modelo a veces se
+# cuelga a media corrida y una sola corrida colgada no puede hundir la medición.
 #   --rutas <archivo>   rutas.toml con el que se mide (uno que no se pueda leer sale 2); por omisión
 #             conf-ejemplo/rutas.toml de este repo (las rutas que el bloque E copia a producción), no
 #             el rutas.toml de la conf de producción
@@ -222,7 +223,7 @@ try:
 
     def una(cli):
         res = {"cli": cli, "ruta": "", "plantilla": [], "rc": None, "segundos": 0, "raiz": raiz_de(cli),
-               "registro": "", "extras": [], "version": "", "error": ""}
+               "registro": "", "extras": [], "version": "", "error": "", "reintentos": 0}
         ruta_n = PREFERIDA[cli]
         ruta = rutas.get(ruta_n)
         if not ruta or ruta.get("cli") != cli:
@@ -267,7 +268,11 @@ try:
     hilos, resultados = [], {}
     for cli in CLIS:
         def corre_uno(c=cli):
-            resultados[c] = una(c)
+            res = una(c)
+            if res["rc"] is None and res["error"].startswith("pasó el tope"):
+                res = una(c)
+                res["reintentos"] = 1
+            resultados[c] = res
         t = threading.Thread(target=corre_uno)
         hilos.append(t)
         t.start()

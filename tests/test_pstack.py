@@ -988,6 +988,35 @@ class TestMide(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(pid, 0)
 
+    def test_la_corrida_que_pasa_el_tope_se_reintenta_una_vez_y_vale_la_segunda(self):
+        # El API del modelo a veces se cuelga a media corrida (mac/opencode, intento 11):
+        # una sola corrida colgada no puede hundir la medición si la segunda corre bien.
+        with tempfile.TemporaryDirectory() as t:
+            marca = Path(t) / "intentos"
+            falso = (
+                'echo x >> "$MARCA"\n'
+                '[ "$(wc -l < "$MARCA" | tr -d " ")" -lt 2 ] && sleep 300\n'
+                'printf \'{"type":"system"}\\n\'\n'
+            )
+            c = self._claude(
+                falsos={"claude": falso}, extra_env={"MARCA": str(marca)}, tope=2
+            )
+            self.assertEqual(c["rc"], 0)
+            self.assertEqual(c["error"], "")
+            self.assertEqual(c["reintentos"], 1)
+            self.assertIn('{"type":"system"}', c["registro"])
+
+    def test_el_reintento_del_tope_es_uno_solo(self):
+        c = self._claude(falsos={"claude": "sleep 300"}, tope=2)
+        self.assertIsNone(c["rc"])
+        self.assertIn("pasó el tope", c["error"])
+        self.assertEqual(c["reintentos"], 1)
+
+    def test_la_que_no_pasa_el_tope_no_se_reintenta(self):
+        c = self._claude(falsos={"claude": "exit 1"})
+        self.assertEqual(c["rc"], 1)
+        self.assertEqual(c["reintentos"], 0)
+
     def test_no_deja_carpetas_temporales_y_la_conf_no_queda_junto_a_la_corrida(self):
         s = self._corre_mide(falsos={"claude": 'find "$TMPDIR" -name rutas.toml'})
         c = next(c for c in s["corridas"] if c["cli"] == "claude")
