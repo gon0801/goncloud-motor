@@ -1,0 +1,17 @@
+{
+ "intento": "A-revisar-6",
+ "cli": "claude",
+ "lane": "gate",
+ "role": "revisar",
+ "raiz": "/Users/dn/.motor/pstack/56fc00716ce9",
+ "exigencia": {
+  "skills": [
+   "poteto-mode",
+   "interrogate"
+  ],
+  "playbook": false,
+  "todos": false,
+  "min_subagentes": 0,
+  "puerta": 6
+ }
+}

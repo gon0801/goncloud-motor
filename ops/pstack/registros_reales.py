@@ -1,0 +1,112 @@
+"""Datos de prueba sacados de registros reales de pstack, sin prompts.
+
+recorta <carpeta_intento> <carpeta_salida>
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+RAIZ_REPO = Path(__file__).resolve().parents[2]
+if str(RAIZ_REPO) not in sys.path:
+    sys.path.insert(0, str(RAIZ_REPO))
+
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+_CAMPO = {"Read": "file_path", "Skill": "skill", "Bash": "command"}
+_META = ("intento", "cli", "lane", "role", "raiz", "exigencia")
+
+
+def sin_cuerpos_heredoc(comando: str) -> str:
+    salida: list[str] = []
+    cierre: str | None = None
+    for linea in comando.split("\n"):
+        if cierre is not None:
+            if linea.strip() == cierre:
+                salida.append(linea)
+                cierre = None
+            continue
+        salida.append(linea)
+        if m := _HEREDOC.search(linea):
+            cierre = m.group(2)
+    return "\n".join(salida)
+
+
+def reduce_input(nombre: str, args: dict, raiz: str) -> dict:
+    if nombre in ("Agent", "Task"):
+        return (
+            {"subagent_type": args["subagent_type"]} if "subagent_type" in args else {}
+        )
+    if nombre == "Bash":
+        cmd = str(args.get("command", ""))
+        return {"command": sin_cuerpos_heredoc(cmd) if raiz and raiz in cmd else "true"}
+    campo = _CAMPO.get(nombre)
+    return {campo: args[campo]} if campo and campo in args else {}
+
+
+def recorta_registro(lineas, raiz: str) -> list[dict]:
+    salida = []
+    for linea in lineas:
+        try:
+            o = json.loads(linea)
+        except ValueError:
+            continue
+        if (
+            not isinstance(o, dict)
+            or o.get("type") != "assistant"
+            or o.get("parent_tool_use_id")
+        ):
+            continue
+        contenido = (o.get("message") or {}).get("content") or []
+        usos = [
+            {
+                "type": "tool_use",
+                "name": b.get("name", ""),
+                "input": reduce_input(b.get("name", ""), b.get("input") or {}, raiz),
+            }
+            for b in contenido
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        if usos:
+            salida.append({"type": "assistant", "message": {"content": usos}})
+    return salida
+
+
+def primer_registro(info: dict) -> Path | None:
+    return next((Path(p) for p in info.get("registros", []) if Path(p).is_file()), None)
+
+
+def recorta(carpeta_intento: Path, carpeta_salida: Path) -> None:
+    info = json.loads((carpeta_intento / "pstack.json").read_text(encoding="utf-8"))
+    fuente = primer_registro(info)
+    if fuente is None:
+        raise SystemExit(f"{carpeta_intento}: ningún archivo de `registros` existe")
+    with fuente.open(encoding="utf-8") as f:
+        registro = recorta_registro(f, info["raiz"])
+    carpeta_salida.mkdir(parents=True, exist_ok=True)
+    (carpeta_salida / "registro.jsonl").write_text(
+        "".join(json.dumps(o, ensure_ascii=False) + "\n" for o in registro),
+        encoding="utf-8",
+    )
+    meta = {k: info.get(k) for k in _META}
+    meta["intento"] = meta["intento"] or carpeta_intento.name
+    (carpeta_salida / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    )
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[0] == "recorta":
+        recorta(Path(argv[1]), Path(argv[2]))
+        return 0
+    print(
+        "uso: registros_reales.py recorta <carpeta_intento> <carpeta_salida>",
+        file=sys.stderr,
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
