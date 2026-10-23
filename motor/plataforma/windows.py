@@ -11,6 +11,7 @@ En la Mac se prueban las partes puras (`resolve_shim`, `flags_creacion`, `tarea_
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,10 @@ def es_bash_de_wsl(ruta: str) -> bool:
 
 def argv_shell(cmd: str, configurado: str = "") -> tuple:
     bash = resuelve_bash(configurado)
+    if re.match(r"\s*schtasks\b", cmd, re.IGNORECASE):
+        cmd = (
+            "MSYS_NO_PATHCONV=1 " + cmd
+        )  # sin esto Git Bash vuelve /query una ruta de Git
     if es_bash_de_wsl(bash):
         bash = BASH_GIT_POR_OMISION
     return ([bash, "-c", cmd], False, None)

@@ -9,6 +9,7 @@
     motor doctor --home H [--json]                          qué puede correr aquí, sin modelo
     motor doctor --home H --como-servicio [--espera S]      cada ruta con un encargo de prueba, en el entorno del servicio
     motor instala --maquina mac|mini|pc --usuario U --home H --imprime
+    motor programadas --home H [--json]                      tareas que apuntan a carpetas que el motor borra (sale 3 si hay)
     motor version [--json]                                   versión del paquete y SHA del código que corre
     motor daemon --home H [--intervalo S] [--hasta-terminar] [--tope S]
     motor servicio --home H                                  supervisor (lo lanza launchd / la tarea)
@@ -26,10 +27,11 @@ import shutil
 import sqlite3
 import sys
 import time
+import tomllib
 import uuid
 from pathlib import Path
 
-from . import huella
+from . import efimeras, huella
 from . import machine as m
 from .conf import ConfError, load_conf, load_maquina, valida_maquina
 from .plan import PlanError, parse_plan, revisa_sin_quien
@@ -143,7 +145,52 @@ def _estado(home: Path) -> list[dict]:
     return out
 
 
-def doctor(home: Path) -> dict:
+def _lee_programadas(home: Path, sistema: bool = True):
+    """(lectura de efimeras.lee_tareas, hallazgos): las tareas que contienen una carpeta del motor."""
+    # Sin resolve(): una tarea guarda la ruta tal como se escribió; resolver un enlace del home
+    # (/var -> /private/var en macOS) haría que nunca matchee.
+    home = Path(os.path.abspath(os.path.expanduser(home)))
+    usuario = Path.home()
+    error = ""
+    try:
+        mq = load_maquina(home)
+        nombre, conf_dir, bash = mq.nombre, mq.conf, mq.bash
+    except (ConfError, OSError, KeyError, tomllib.TOMLDecodeError) as e:
+        nombre, conf_dir, bash = "", None, ""
+        if (home / "maquina.toml").exists():
+            error = f"no pude leer maquina.toml: {e!r}"
+    try:
+        lectura = efimeras.lee_tareas(
+            nombre, conf_dir, sistema, home=usuario, bash=bash
+        )
+    except Exception as e:  # noqa: BLE001 - un plist roto no puede dar exit 1: nada se pudo asegurar
+        lectura = ({}, [], {"lectura": f"{type(e).__name__}: {e}"}, {})
+    if error:
+        lectura[2]["maquina.toml"] = error
+    tareas = lectura[0]
+    hallazgos = []
+    for carpeta in efimeras.CARPETAS_DEL_MOTOR:
+        ruta = home / carpeta
+        for tarea in efimeras.tareas_con(tareas, ruta, usuario):
+            hallazgos.append({"tarea": tarea, "carpeta": str(ruta)})
+    return lectura, hallazgos
+
+
+def programadas(home: Path, sistema: bool = True) -> tuple[dict, int]:
+    """Qué tareas programadas apuntan a carpetas que el motor borra, y el código de salida:
+    0 limpio, 3 con hallazgos, 4 si ninguna fuente se pudo leer."""
+    (_, leidas, sin_leer, negados), hallazgos = _lee_programadas(home, sistema)
+    out = {
+        "leidas": leidas,
+        "sin_leer": [f"{n}: {motivo}" for n, motivo in sin_leer.items()],
+        "hallazgos": hallazgos,
+    }
+    if negados:
+        out["negados"] = [f"{n}: {motivo}" for n, motivo in negados.items()]
+    return out, 4 if not leidas else 3 if hallazgos else 0
+
+
+def doctor(home: Path, programadas_sistema: bool = True) -> dict:
     """Corre en el contexto donde corre el servicio (no por ssh): ahí es donde importa."""
     out: dict = {"ok": True, "problemas": [], "rutas": {}}
     try:
@@ -173,7 +220,47 @@ def doctor(home: Path) -> dict:
     if not conf.avisos.get("chat"):
         out["ok"] = False
         out["problemas"].append("avisos: falta el chat de Telegram ([avisos] chat)")
+    prog, codigo = programadas(home, programadas_sistema)
+    if programadas_sistema:
+        del_sistema = set(efimeras.nombres_del_sistema(Path.home()))
+        ciegas = [x for x in prog["sin_leer"] if x.split(": ", 1)[0] in del_sistema]
+        if codigo == 4 or ciegas:
+            out["ok"] = False
+            out["problemas"].append(
+                "no pude leer las tareas programadas del sistema: "
+                + "; ".join(ciegas or prog["sin_leer"] or ["ninguna fuente"])
+            )
+    nombres = sorted({h["tarea"] for h in prog["hallazgos"]})
+    out["programadas"] = {"en_carpetas_del_motor": len(nombres), "tareas": nombres}
+    if nombres:
+        out["ok"] = False
+        out["problemas"].append(
+            f"{len(nombres)} tareas programadas apuntan a carpetas que el motor borra: "
+            + ", ".join(nombres)
+        )
     return out
+
+
+def _errores_programadas(d: Path) -> list[str]:
+    import tomllib
+
+    f = d / efimeras.ARCHIVO_EXTRAS
+    if not f.exists():
+        return []
+    try:
+        raw = tomllib.loads(f.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        return [f"{efimeras.ARCHIVO_EXTRAS}: {e}"]
+    maquinas: set[str] = set()
+    for m_ in sorted((d / "maquinas").glob("*.toml")):
+        maquinas.add(m_.stem)
+        try:
+            maquinas.add(
+                tomllib.loads(m_.read_text(encoding="utf-8")).get("nombre", "")
+            )
+        except (OSError, tomllib.TOMLDecodeError):
+            pass
+    return efimeras.valida_programadas(raw, maquinas - {""})
 
 
 def conf_valida(d: Path) -> list[str]:
@@ -196,6 +283,7 @@ def conf_valida(d: Path) -> list[str]:
     from .effects import errores_pstack
 
     errores += errores_pstack(d, conf)
+    errores += _errores_programadas(d)
     for f in (
         sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []
     ):
@@ -252,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--json", action="store_true")
     s.add_argument("--como-servicio", action="store_true")
     s.add_argument("--espera", type=float, default=60)
+    s = sub.add_parser("programadas")
+    s.add_argument("--home", type=Path, required=True)
+    s.add_argument("--json", action="store_true")
     s = sub.add_parser("instala")
     s.add_argument("--maquina", required=True)
     s.add_argument("--usuario", required=True)
@@ -368,6 +459,22 @@ def main(argv: list[str] | None = None) -> int:
         d = doctor(a.home)
         print(json.dumps(d, ensure_ascii=False, indent=None if a.json else 1))
         return 0 if d["ok"] else 1
+    if a.cmd == "programadas":
+        out, codigo = programadas(a.home)
+        if a.json:
+            print(json.dumps(out, ensure_ascii=False))
+        else:
+            for h in out["hallazgos"]:
+                print(f"{h['tarea']} apunta a {h['carpeta']}")
+            for x in out["sin_leer"]:
+                print(f"sin leer: {x}")
+            for x in out.get("negados", []):
+                print(f"negado: {x}")
+            print(
+                f"{len(out['hallazgos'])} tareas en carpetas del motor; "
+                f"{len(out['leidas'])} fuentes leídas"
+            )
+        return codigo
     if a.cmd == "instala":
         from .servicio import instalable
 
