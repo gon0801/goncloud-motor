@@ -35,7 +35,8 @@ class CierreTrasResultadoTest(unittest.TestCase):
         mataba "sin avance" y la entrega se perdía."""
         o, dura = self.corre(
             "import os, time, pathlib\n"
-            "pathlib.Path(os.environ['MOTOR_ATTEMPT_DIR'], 'result.json').write_text('{}')\n"
+            "pathlib.Path(os.environ['MOTOR_ATTEMPT_DIR'], 'result.json').write_text("
+            '\'{"bloqueado": "se quedó pegado"}\')\n'
             "time.sleep(60)\n"
         )
         self.assertLess(dura, 20)
