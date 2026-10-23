@@ -251,6 +251,58 @@ class GhChecksSaltadoTest(unittest.TestCase):
         )
 
 
+class GhChecksRepoPrivadoTest(unittest.TestCase):
+    """Sin red: un repo privado en el plan gratis responde 403 a protección y a reglas. Así
+    se trabó PSTACK 01 C en goncloud-motor el 2026-10-22 (PollChecks fallando cada 5 min)."""
+
+    def checks(self, conclusion: str):
+        plan_gratis = (
+            "gh: Upgrade to GitHub Pro or make this repository public to enable this "
+            "feature. (HTTP 403)"
+        )
+
+        class Fake(GhGitHub):
+            def _gh(self, *a):
+                if a[:2] == ("pr", "view"):
+                    return json.dumps(
+                        {
+                            "number": 56,
+                            "headRefName": "f",
+                            "baseRefName": "main",
+                            "isDraft": False,
+                            "headRefOid": "a" * 40,
+                            "state": "OPEN",
+                            "mergeCommit": None,
+                        }
+                    )
+                if a[1].endswith("/required_status_checks") or "/rules/branches/" in a[1]:
+                    raise RuntimeError(f"gh {' '.join(a)}: {plan_gratis}")
+                if a[1].endswith("/status"):
+                    return '{"state": "success", "statuses": []}'
+                if "/issues/56/events" in a[1]:
+                    return "2026-10-22T21:40:00Z\n"
+                if "/check-runs" in a[1]:
+                    return json.dumps(
+                        [
+                            {
+                                "name": "quality",
+                                "status": "completed",
+                                "conclusion": conclusion,
+                                "completed_at": "2026-10-22T21:45:00Z",
+                            }
+                        ]
+                    )
+                raise AssertionError(a)
+
+        return Fake().checks("https://github.com/o/r", 56, "a" * 40, ("quality",))
+
+    def test_sin_proteccion_por_plan_espera_las_pruebas_del_repo(self):
+        self.assertTrue(self.checks("success").green)
+
+    def test_sin_proteccion_por_plan_una_prueba_roja_sigue_roja(self):
+        self.assertFalse(self.checks("failure").green)
+
+
 class PollChecksAnotaLaEsperaTest(unittest.TestCase):
     """El motor anota qué prueba espera y si GitHub ya terminó, una vez por cambio: de ahí salen el
     motivo del aviso y la alarma de incoherencia (INGESTA 01)."""
