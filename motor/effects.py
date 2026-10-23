@@ -410,7 +410,7 @@ class Effects:
         (d / "pstack.json").write_text(texto, encoding="utf-8")
         return info
 
-    def _seccion_pstack(self, info: dict | None) -> str:
+    def _seccion_pstack(self, info: dict | None, correccion: bool = False) -> str:
         """Lo que el encargo lleva de pstack: motor.md, el mapa del CLI y "Cómo trabajas"."""
         if info is None:
             return ""
@@ -424,7 +424,10 @@ class Effects:
                 partes.append(f"## {titulo}\n{f.read_text(encoding='utf-8').strip()}\n")
         partes.append(
             ps.instrucciones(
-                ps.Exigencia.from_dict(info["exigencia"]), info["cli"], str(raiz)
+                ps.Exigencia.from_dict(info["exigencia"]),
+                info["cli"],
+                str(raiz),
+                correccion,
             )
         )
         return "\n".join(partes) + "\n"
@@ -550,7 +553,9 @@ class Effects:
             marca_sesion.write_text(str(uuid.uuid4()), encoding="utf-8")
         sesion = marca_sesion.read_text(encoding="utf-8").strip()
         info_pstack = self._prepara_pstack(d, block.lane, a.role, ruta.cli, cwd, sesion)
-        seccion = self._seccion_pstack(info_pstack)
+        seccion = self._seccion_pstack(
+            info_pstack, a.role == "implementar" and bool(a.feedback)
+        )
         if a.role == "implementar":
             brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
         else:
