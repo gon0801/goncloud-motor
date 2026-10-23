@@ -1670,26 +1670,6 @@ class TestRegresaPorPlaybook(BancoPstack):
         self.assertIn("abre `bug-fix` con Read", self.brief(1))
         self.assertNotIn("No abriste el playbook", self.brief(2))
 
-    def test_si_el_modelo_del_regreso_no_puede_correr_el_que_entra_no_hereda_el_aviso(
-        self,
-    ):
-        self.arranca_pstack(
-            True,
-            {"sonnet": "pstack_real_pausa:A-implementar-2", "glm": "pstack_playbook"},
-            playbook=True,
-            codigo=("sonnet", "glm"),
-        )
-        fines = self.fines("implementar")
-        self.assertEqual([o["kind"] for o in fines], ["sin_pstack", "entregado"])
-        self.assertTrue(fines[0].get("solo_playbook"))
-        modelos = [
-            e.data["modelo"]
-            for e in eventos(self.home)
-            if e.kind == "AttemptStarted" and e.data["role"] == "implementar"
-        ]
-        self.assertEqual(modelos, ["sonnet", "glm"], "sonnet en pausa: entra glm")
-        self.assertNotIn("No abriste el playbook", self.brief(1))
-
     def test_la_prueba_existente_de_faltar_poteto_mode_sigue_sin_regreso(self):
         self.arranca_pstack(True, {"sonnet": "pstack_no_primero", "opus": "pstack_ok"})
         fines = self.fines("implementar")

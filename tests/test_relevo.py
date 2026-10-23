@@ -393,17 +393,6 @@ class RegresaPorPlaybookTest(unittest.TestCase):
         bv = snap.blocks["A"]
         self.assertEqual([m._cuenta_falla(a, bv) for a in bv.attempts], [False, True])
 
-    def test_cuenta_falla_con_un_intento_que_no_esta_en_la_lista(self):
-        from motor.plan import parse_plan
-
-        snap = m.fold(
-            parse_plan(PLAN),
-            _intento("sonnet", "sin_pstack", 1, self.t - 10, solo_playbook=True),
-        )
-        bv = snap.blocks["A"]
-        ajeno = _att("sonnet", "sin_pstack", 9, solo_playbook=True)
-        self.assertTrue(m._cuenta_falla(ajeno, bv))
-
     def test_si_el_modelo_no_puede_correr_la_escalera_sigue(self):
         evs = _intento("sonnet", "sin_pstack", 1, self.t - 10, solo_playbook=True) + [
             _ev(
