@@ -876,7 +876,8 @@ class TestMide(unittest.TestCase):
             env = {
                 k: v
                 for k, v in os.environ.items()
-                if k != "CLAUDE_CONFIG_DIR" and not k.startswith("MOTOR_")
+                if k not in ("CLAUDE_CONFIG_DIR", "GROK_HOME")
+                and not k.startswith("MOTOR_")
             }
             env.update(HOME=str(home), TMPDIR=str(tmpdir), **(extra_env or {}))
             p = subprocess.run(
@@ -976,10 +977,50 @@ class TestMide(unittest.TestCase):
                 os.kill(pid, 0)
 
     def test_no_deja_carpetas_temporales_y_la_conf_no_queda_junto_a_la_corrida(self):
-        s = self._corre_mide(falsos={"claude": 'ls "$TMPDIR"'})
+        s = self._corre_mide(falsos={"claude": 'find "$TMPDIR" -name rutas.toml'})
         c = next(c for c in s["corridas"] if c["cli"] == "claude")
-        self.assertNotIn("mide-pstack-conf-", c["registro"])
+        self.assertNotIn("rutas.toml", c["registro"])
         self.assertEqual(s["sobrante"], [])
+
+    def _grok_falso(self):
+        return r"""
+raiz=$(grep -o 'copia fija `[^`]*`' "$2" | head -1 | cut -d'`' -f2)
+sid=s-$$; d="$HOME/.grok/sessions/x/$sid"; mkdir -p "$d"
+printf '{"tool_name":"read_file","args":{"path":"%s"}}\n' "$raiz/pstack/skills/poteto-mode/SKILL.md" "$raiz/pstack/skills/poteto-mode/playbooks/investigation.md" >"$d/updates.jsonl"
+echo '{"tool_name":"spawn_subagent","args":{"agent":"general-purpose"}}' >>"$d/updates.jsonl"
+printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$sid"
+"""
+
+    def _corre_grok(self):
+        s = self._corre_mide(
+            rutas='[rutas.grok]\ncli = "grok"\n'
+            'argv = ["grok", "--prompt-file", "{brief}", "--always-approve", "--output-format", "json"]\n',
+            modelos='[carriles]\ncodigo = ["grok"]\n',
+            falsos={"grok": self._grok_falso()},
+        )
+        self.assertEqual(s["error"], "")
+        return next(c for c in s["corridas"] if c["cli"] == "grok")
+
+    def test_grok_con_el_objeto_final_con_sangria_trae_su_updates_jsonl_y_cumple(self):
+        c = self._corre_grok()
+        self.assertIn('\n  "sessionId": "s-', c["registro"])
+        self.assertEqual(len(c["extras"]), 1)
+        ns = {"__name__": "agrega"}
+        exec(compile(_heredoc(2), "mide.sh:agrega", "exec"), ns)
+        estado, _, fuente, _ = ns["juicio_de"](c)
+        self.assertEqual(estado, "Cumple")
+        self.assertIn("updates.jsonl", fuente)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ses = tmp / "sessions" / "x" / c["extras"][0]["id"]
+        ses.mkdir(parents=True)
+        (ses / "updates.jsonl").write_text(c["extras"][0]["texto"], encoding="utf-8")
+        log = tmp / "log.txt"
+        log.write_text(c["registro"], encoding="utf-8")
+        os.environ["GROK_HOME"] = str(tmp)
+        self.addCleanup(os.environ.pop, "GROK_HOME", None)
+        regs = ef.Effects._registros_de({"cli": "grok", "registros": [str(log)]})
+        self.assertEqual(regs[0], str(ses / "updates.jsonl"))
 
     def test_una_conf_que_no_se_puede_leer_es_un_error_no_una_medicion_vacia(self):
         casos = {
@@ -1171,6 +1212,15 @@ class TestJuzgaDeMide(unittest.TestCase):
                 corridas = cambia(mq, corridas)
             salidas[mq] = _salida(mq, corridas, carriles=carriles)
         return salidas
+
+    def test_grok_solo_usa_el_updates_jsonl_de_un_sessionid_que_el_motor_leeria(self):
+        extra = {"id": "s9", "fuente": "updates.jsonl", "texto": _cumple("grok")}
+        anidado = json.dumps({"usage": {"sessionId": "s9"}})
+        c = {**_corrida("grok", anidado), "extras": [extra]}
+        self.assertEqual(self.juicio(c)[0], "NO VERIFICABLE")
+        propio = json.dumps({"text": "listo", "sessionId": "s9"})
+        c = {**_corrida("grok", propio), "extras": [extra]}
+        self.assertEqual(self.juicio(c)[0], "Cumple")
 
     def test_todos_los_cli_de_los_carriles_cumplen_no_deja_problemas(self):
         filas, problemas, _ = self.agrega(self._todas(), list(MAQUINAS))

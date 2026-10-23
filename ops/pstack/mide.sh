@@ -189,7 +189,7 @@ try:
 
     def registros_extra(cli, sid, trabajo, log_texto):
         """Los registros que el motor lee antes de log.txt: el transcript de claude (por --session-id) y
-        el updates.jsonl de grok (por el sessionId de su salida). Es lo de Efectos._prepara_pstack y _registros_de."""
+        los updates.jsonl de grok que nombra su salida (aquí, todos los ids que parecen sessionId; juicio_de deja los que el motor leería). Es lo de Efectos._prepara_pstack y _registros_de."""
         extra = []
         if cli == "claude":
             base = Path(env.get("CLAUDE_CONFIG_DIR") or HOME / ".claude") / "projects"
@@ -202,7 +202,7 @@ try:
             base = Path(env.get("GROK_HOME") or HOME / ".grok") / "sessions"
             for i in ids:
                 for p in sorted(base.glob(f"*/{i}/updates.jsonl")):
-                    extra.append({"fuente": f"~/.grok/sessions/<cwd>/{i}/updates.jsonl", "texto": p.read_text(encoding="utf-8", errors="replace")})
+                    extra.append({"id": i, "fuente": f"~/.grok/sessions/<cwd>/{i}/updates.jsonl", "texto": p.read_text(encoding="utf-8", errors="replace")})
         return extra
 
     def una(cli):
@@ -337,9 +337,21 @@ def registro_corto(texto):
     return "\n".join(out) + "\n"
 
 
+def grok_ids(texto):
+    """Los sessionId que Efectos._registros_de saca de log.txt: de primer nivel, de los objetos que lee ps._objetos."""
+    return {
+        sid
+        for o in ps._objetos(texto)
+        for sid in (o.get("sessionId") or o.get("session_id"),)
+        if isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9._-]+", sid)
+    }
+
+
 def juicio_de(c):
     """(estado, huella, fuente, texto) de una corrida: el registro que el motor leería, el primero legible."""
-    candidatos = [*c.get("extras", []), {"fuente": "log.txt (stdout y stderr)", "texto": c["registro"]}]
+    ids = grok_ids(c["registro"]) if c["cli"] == "grok" else None
+    extras = [r for r in c.get("extras", []) if ids is None or r.get("id") in ids]
+    candidatos = [*extras, {"fuente": "log.txt (stdout y stderr)", "texto": c["registro"]}]
     h, fuente, texto = ps.Huella(legible=False), candidatos[-1]["fuente"], c["registro"]
     for r in candidatos:
         h = ps.huella(r["texto"], c["cli"], c["raiz"])
@@ -398,8 +410,9 @@ def agrega(salidas, maquinas):
 
 
 def escribe_datos(destino, maquinas, corridas):
-    """Una carpeta por (CLI, máquina) de ESTA corrida: lo que quedó de otra corrida se borra, no se mezcla."""
-    for m in maquinas:
+    """Una carpeta por (CLI, máquina) de ESTA corrida: lo que quedó de otra corrida en una máquina que respondió se borra, no se mezcla;
+    una máquina que no respondió conserva sus datos."""
+    for m in {m for m, _, _ in corridas}:
         for cli in ps.FORMATOS:
             shutil.rmtree(destino / f"{cli}-{m}", ignore_errors=True)
     for m, c, texto in corridas:
