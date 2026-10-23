@@ -1122,11 +1122,22 @@ tool Read "{\"file_path\":\"$raiz/pstack/skills/poteto-mode/playbooks/investigat
 tool Agent '{"subagent_type":"general-purpose"}'
 """
 
+# Cada CLI que mide.sh mide y no es claude sale de este falso: anota cómo lo lanzaron y muere,
+# para que la prueba no dependa de qué haya instalado en el PATH de esta máquina.
+FALSO_INERTE = '#!/bin/sh\necho "$0 $*" >>"$FALSO_LANZADOS"\nexit 1\n'
+
+
+def _clis():
+    """La lista CLIS de mide_py: los CLI que mide.sh mide siempre, haya carril o no."""
+    import re
+
+    return json.loads(re.search(r"(?m)^CLIS = (\[.*\])", _heredoc(1)).group(1))
+
 
 class TestMideDePuntaAPunta(unittest.TestCase):
     """C.3: `mide.sh --juzga` entero, con ssh y uv falsos que corren todo en esta máquina."""
 
-    def _corre(self, modo, args=(), argv_log=None):
+    def _corre(self, modo, args=(), argv_log=None, lanzados=None):
         import subprocess
 
         with tempfile.TemporaryDirectory() as t:
@@ -1142,6 +1153,9 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
             (home / ".motor" / "maquina.toml").write_text(f'path_extra = ["{bin_}"]\n')
             (bin_ / "claude").write_text(FALSO_CLAUDE)
+            for cli in _clis():
+                if cli != "claude":
+                    (bin_ / cli).write_text(FALSO_INERTE)
             (bin_ / "ssh").write_text('#!/bin/sh\nshift 5\nexec bash -c "$*"\n')
             (bin_ / "uv").write_text('#!/bin/sh\nshift 4\nexec python3 "$@"\n')
             for f in bin_.iterdir():
@@ -1167,6 +1181,7 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 MIDE_TOPE_S="60",
                 FALSO_MODO=modo,
                 FALSO_ARGV=str(t / "argv.log"),
+                FALSO_LANZADOS=str(t / "lanzados.log"),
             )
             antes = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
             r = subprocess.run(
@@ -1186,6 +1201,11 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             if argv_log is not None:
                 registro = t / "argv.log"
                 argv_log.extend(
+                    registro.read_text().splitlines() if registro.exists() else []
+                )
+            if lanzados is not None:
+                registro = t / "lanzados.log"
+                lanzados.extend(
                     registro.read_text().splitlines() if registro.exists() else []
                 )
         self.assertEqual(antes, despues)
@@ -1221,8 +1241,31 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             self.assertNotIn("--session-id", linea)
 
     def test_rutas_con_un_archivo_que_no_existe_sale_2_sin_medir(self):
-        r = self._corre("cumple", args=("--rutas", "/no/existe.toml"))
+        lanzadas, lanzados = [], []
+        r = self._corre(
+            "cumple",
+            args=("--rutas", "/no/existe.toml"),
+            argv_log=lanzadas,
+            lanzados=lanzados,
+        )
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no puedo leer /no/existe.toml", r.stderr)
+        self.assertEqual(lanzadas, [])
+        self.assertEqual(lanzados, [])
+
+    def test_los_cli_que_no_son_claude_se_miden_con_los_falsos_de_bin(self):
+        # Sin un falso por CLI en bin_, mide.sh lanzaría los CLI reales del PATH.
+        lanzados = []
+        r = self._corre("cumple", lanzados=lanzados)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(lanzados)
+        ceros = [x.split(" ", 1)[0] for x in lanzados]
+        padres = {str(Path(c).parent) for c in ceros}
+        self.assertEqual(len(padres), 1, lanzados)
+        nombres = {Path(c).name for c in ceros}
+        for cli in _clis():
+            if cli != "claude":
+                self.assertIn(cli, nombres)
 
     def test_juzga_sale_distinto_de_cero_si_el_cli_no_cargo_nada(self):
         r = self._corre("nada")
