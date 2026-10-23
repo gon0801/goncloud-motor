@@ -1,15 +1,20 @@
 {
   "cli": "muse",
   "ruta": "muse",
+  "plantilla": [
+    "muse",
+    "exec",
+    "--yolo",
+    "--json",
+    "--prompt-file",
+    "{brief}"
+  ],
   "rc": 0,
-  "segundos": 42,
-  "raiz": "/mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/copia",
-  "fuente": "(WSL) ~/.local/share/muse/sessions/AAAA/MM/DD/44a37c1b-41d3-4759-9886-d4c462af959f/session.jsonl",
-  "stdout_cola": "s/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/copia/pstack/skills/poteto-mode/playbooks/investigation.md). Copié sus pasos a la lista de tareas.\\n\\nthroughput checkpoint: n/a, read-only investigation\\n\\nLancé un subagente con la ruta absoluta de la skill. El subagente leyó [poteto-mode](/mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/copia/pstack/skills/poteto-mode/SKILL.md) y [README.md](/mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/corrida-muse/trabajo/README.md). Confirmó lectura de solo lectura, sin ediciones.\\n\\nOpening a PR queda como skip. Lo hace el motor.\"}}\n",
-  "stderr_cola": "muse: workspace root: /mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/corrida-muse/trabajo (cwd default)\nmuse: workspace trust: trusted source=run-flag\n",
+  "segundos": 38,
+  "raiz": "/mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-copia-bpm2sje4",
   "version": "Muse Code 1.4.12 (1.4.12-R6909.1)",
   "error": "",
-  "juicio": "Cumple",
-  "en_carril": false,
-  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "d\",\"payload_schema_version\":1,\"payload\":{\"command_id\":\"01a166e9-394c-7db3-b5e0-4344c370d80f\",\"kind\":\"run_terminal\",\"reason\":null,\"run_stream\":{\"id\":\"01a166e9-394c-7db3-b5e0-4344c370d80f\",\"kind\":\"run\"},\"terminal\":\"completed\",\"text\":\"Hecho. Cargué poteto-mode y abrí el playbook Investigation.\\n\\nthroughput checkpoint: n/a, read-only investigation\\n\\nEl subagente leyó [README.md](/mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-muse-hbhgoin6/trabajo/README.md:1). El título es \\\"Carpeta de medición\\\". El único texto adicional dice \\\"No hay nada que cambiar aquí\\\".\\n\\nNo cambié ningún archivo.\"}}\n"
 }

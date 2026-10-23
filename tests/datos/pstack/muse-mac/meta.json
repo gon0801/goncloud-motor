@@ -1,15 +1,20 @@
 {
   "cli": "muse",
   "ruta": "muse",
+  "plantilla": [
+    "muse",
+    "exec",
+    "--yolo",
+    "--json",
+    "--prompt-file",
+    "{brief}"
+  ],
   "rc": 1,
-  "segundos": 15,
-  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-8qzm29st/copia",
-  "fuente": "~/.local/share/muse/sessions/AAAA/MM/DD/04d715fe-f613-4742-b4c5-27e7cf088cf9/session.jsonl",
-  "stdout_cola": "a_version\":1,\"id\":\"018f0000-0000-7000-8000-00000000c3fc\",\"stream\":{\"kind\":\"session\",\"id\":\"04d715fe-f613-4742-b4c5-27e7cf088cf9\"},\"sequence\":88,\"recorded_at\":1780531400000172,\"record_type\":\"event\",\"durability\":\"durable\",\"causation_id\":\"01a166c0-4d7a-7572-b06a-4e83fa745f27\",\"payload_type\":\"run.terminal.failed\",\"payload_schema_version\":1,\"payload\":{\"kind\":\"run_terminal\",\"command_id\":\"01a166c0-4d7a-7572-b06a-4e83fa745f27\",\"run_stream\":{\"kind\":\"run\",\"id\":\"01a166c0-4d7a-7572-b06a-4e83fa745f27\"},\"terminal\":\"failed\",\"text\":\"\",\"reason\":\"missing meta credentials: run `muse login` or set META_API_KEY\"}}\n",
-  "stderr_cola": "muse: workspace root: /private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-8qzm29st/corrida-muse/trabajo (cwd default)\nmuse: workspace trust: trusted source=run-flag\nmuse: Skills: 148 loaded · 1 warning · 21 details hidden\nmuse:   `skills_catalog` was trimmed to fit its size limit (32 KB): 132 descriptions compacted, 0 skill ids omitted\nmuse:   Run `muse skills list --source all` for full diagnostics.\nrun ended with Failed: missing meta credentials: run `muse login` or set META_API_KEY\n",
+  "segundos": 1,
+  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy",
   "version": "Muse Code 1.4.12 (1.4.12-R6909.1)",
   "error": "",
-  "juicio": "Falta: no abrió ningún playbook de poteto-mode; lanzó 0 subagente(s) y se pedían al menos 1",
-  "en_carril": false,
-  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "missing meta credentials: run `muse login` or set META_API_KEY, or save credentials at /Users/dn/.config/muse/auth.json\n"
 }

@@ -1,15 +1,19 @@
 {
   "cli": "kimi",
   "ruta": "k3",
+  "plantilla": [
+    "kimi",
+    "-p",
+    "{prompt}",
+    "--output-format",
+    "stream-json"
+  ],
   "rc": 0,
-  "segundos": 157,
-  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-8qzm29st/copia",
-  "fuente": "stdout",
-  "stdout_cola": "ack/skills/poteto-mode/SKILL.md` es la skill cargada.\\n- `copia/pstack-motor/motor.md` y `kimi.md` son las páginas del motor leídas al inicio.\\n\\n**Gotchas.** El README no encarga nada, así que la investigación se resuelve en una lectura. No había PR, CI ni despliegue, y el playbook no pide ninguno en modo investigación de solo lectura.\"}\n{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"session_0e759ec0-bc59-4690-84e3-68e907a7bae5\",\"command\":\"kimi -r session_0e759ec0-bc59-4690-84e3-68e907a7bae5\",\"content\":\"To resume this session: kimi -r session_0e759ec0-bc59-4690-84e3-68e907a7bae5\"}\n",
-  "stderr_cola": "",
+  "segundos": 151,
+  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy",
   "version": "2.1.1",
   "error": "",
-  "juicio": "Falta: no abrió ningún playbook de poteto-mode",
-  "en_carril": true,
-  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "``json\\n{\\\"sha\\\": null, \\\"resumen\\\": \\\"Investigación read-only. README.md de trabajo/ es un marcador trivial ('# Carpeta de medición', 'No hay nada que cambiar aquí.'). Subagente explore lo leyó y lo verifiqué en persona. Sin repo git (sha null) y sin $MOTOR_RESULT en el entorno, JSON entregado inline. Ningún archivo modificado.\\\"}\\n```\"}\n{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"session_b56bf00d-f133-446a-9c76-6a2de8e64e22\",\"command\":\"kimi -r session_b56bf00d-f133-446a-9c76-6a2de8e64e22\",\"content\":\"To resume this session: kimi -r session_b56bf00d-f133-446a-9c76-6a2de8e64e22\"}\n"
 }

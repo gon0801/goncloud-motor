@@ -1,15 +1,20 @@
 {
   "cli": "grok",
   "ruta": "grok",
+  "plantilla": [
+    "grok",
+    "--prompt-file",
+    "{brief}",
+    "--always-approve",
+    "--output-format",
+    "json"
+  ],
   "rc": 0,
-  "segundos": 138,
-  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-8qzm29st/copia",
-  "fuente": "~/.grok/sessions/<cwd>/0f2e76ae-5aca-49c3-bd4b-d7020f2be354/updates.jsonl",
-  "stdout_cola": "s dos puntos solo precedirán listas. El resumen será factual y breve.\",\n  \"usage\": {\n    \"input_tokens\": 61015,\n    \"cache_read_input_tokens\": 451840,\n    \"cache_creation_input_tokens\": 0,\n    \"output_tokens\": 9776,\n    \"reasoning_tokens\": 7350,\n    \"total_tokens\": 522631\n  },\n  \"num_turns\": 10,\n  \"total_cost_usd\": 0.406606,\n  \"total_cost_usd_ticks\": 4066060000,\n  \"modelUsage\": {\n    \"grok-4.7-build\": {\n      \"inputTokens\": 61015,\n      \"outputTokens\": 9776,\n      \"cacheReadInputTokens\": 451840,\n      \"cacheCreationInputTokens\": 0,\n      \"modelCalls\": 12,\n      \"costUSD\": 0.406606\n    }\n  }\n}\n",
-  "stderr_cola": "",
+  "segundos": 151,
+  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy",
   "version": "grok 1.0.67 (2fe064390d07) [stable]",
   "error": "",
-  "juicio": "Cumple",
-  "en_carril": true,
-  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+  "fuente": "~/.grok/sessions/<cwd>/01a166e9-1fc9-7532-a786-04c0ef831847/updates.jsonl",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "umidor será el motor de medición y la persona que abra la carpeta.\",\n  \"usage\": {\n    \"input_tokens\": 130020,\n    \"cache_read_input_tokens\": 341376,\n    \"cache_creation_input_tokens\": 0,\n    \"output_tokens\": 11743,\n    \"reasoning_tokens\": 9187,\n    \"total_tokens\": 483139\n  },\n  \"num_turns\": 8,\n  \"total_cost_usd\": 0.501186,\n  \"total_cost_usd_ticks\": 5011860000,\n  \"modelUsage\": {\n    \"grok-4.7-build\": {\n      \"inputTokens\": 130020,\n      \"outputTokens\": 11743,\n      \"cacheReadInputTokens\": 341376,\n      \"cacheCreationInputTokens\": 0,\n      \"modelCalls\": 13,\n      \"costUSD\": 0.501186\n    }\n  }\n}\n"
 }

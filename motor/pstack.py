@@ -213,6 +213,16 @@ def _muse(o: dict) -> Llamadas:
                 visto = visto or v
         return out, visto
     visto = "type" in o or "event" in o or "payload_type" in o
+    if o.get("payload_type") == "tool.result" and isinstance(o.get("payload"), dict):
+        # `muse exec --json`: solo el resultado de cada herramienta, con su nombre y, al leer, la ruta
+        p = o["payload"]
+        nombre = str((p.get("correlation_facts") or {}).get("tool_name", ""))
+        ruta = re.search(r"`(/[^`]+)`", str(p.get("text", "")))
+        return (
+            [(nombre, {"path": ruta.group(1), "name": ruta.group(1)} if ruta else {})]
+            if nombre
+            else []
+        ), visto
     evento = (
         (o.get("payload") or {}).get("event")
         if isinstance(o.get("payload"), dict)
@@ -252,6 +262,9 @@ class Formato:
         str, ...
     ] = ()  # el CLI repite la misma llamada con otro estado: se cuenta una vez
     sin_skill: str = ""  # por qué este CLI no tiene herramienta de skills y carga leyendo el SKILL.md
+    sin_carga_en: tuple[
+        tuple[str, str], ...
+    ] = ()  # (máquina, motivo): en esa máquina el CLI no entra y no puede cargar skills
 
 
 FORMATOS: dict[str, Formato] = {
@@ -305,6 +318,10 @@ FORMATOS: dict[str, Formato] = {
         subagente=("subagent_spawn", "workflow"),
         todos=("write_todos",),
         comando=("bash", "run_command", "shell"),
+        sin_carga_en=(
+            ("mac", "missing meta credentials: falta `muse login` en la Mac"),
+            ("mini", "missing meta credentials: falta `muse login` en la Mini"),
+        ),
     ),
     "qwen": Formato(
         "qwen",
@@ -367,6 +384,10 @@ def _clasifica(
         if mm := _RUTA_SKILL.search(
             nombre.replace("\\", "/")
         ):  # muse: `read_skill` con la ruta del SKILL.md
+            if raiz and _bajo_skills(nombre.replace("\\", "/"), raiz) is None:
+                return Accion(
+                    "otra", "", n
+                )  # otra copia de la skill: no es la copia fija
             nombre = mm.group(1)
         return Accion("skill", _nombre_skill(nombre), n)
     if h in f.leer:
@@ -414,14 +435,15 @@ def _clasifica(
 def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
     """Objetos JSON del registro: una línea por objeto, o un arreglo completo (qwen `--output-format json`)."""
     texto = fuente if isinstance(fuente, str) else "\n".join(fuente)
-    t = texto.strip()
-    if t.startswith("["):
+    inicio = re.search(r"(?m)^\[", texto)
+    if inicio:  # el arreglo puede traer avisos del CLI (stderr) antes o después
         try:
-            for o in json.loads(t):
+            arreglo, _ = json.JSONDecoder().raw_decode(texto[inicio.start() :])
+            for o in arreglo:
                 if isinstance(o, dict):
                     yield o
             return
-        except ValueError:
+        except (ValueError, TypeError):
             pass
     for linea in texto.splitlines():
         linea = linea.strip()
