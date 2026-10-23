@@ -7,8 +7,10 @@ import io
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -419,7 +421,8 @@ class ProgramadasTest(unittest.TestCase):
 
     def test_cada_carpeta_que_el_motor_borra_cuenta(self):
         self.assertEqual(
-            efimeras.CARPETAS_DEL_MOTOR, ("tmp", "wt", "intentos", "pstack")
+            efimeras.CARPETAS_DEL_MOTOR,
+            (efimeras.TMP, efimeras.WT, efimeras.INTENTOS, efimeras.PSTACK),
         )
         for carpeta in efimeras.CARPETAS_DEL_MOTOR:
             lectura = ({"t": f"run {self.home}/{carpeta}/x"}, ["f"], {}, {})
@@ -470,16 +473,79 @@ class ProgramadasTest(unittest.TestCase):
             json.loads(salida)["sin_leer"], ["crontab -l: no pude correrlo"]
         )
 
-    def test_limpia_y_purga_usan_las_mismas_carpetas(self):
-        import inspect
 
-        from motor import effects
+class LimpiezaCarpetasTest(unittest.TestCase):
+    """limpia y purga_registros borran las carpetas de CARPETAS_DEL_MOTOR: comportamiento."""
 
-        fuente = inspect.getsource(effects.Effects.limpia) + inspect.getsource(
-            effects.Effects.purga_registros
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp(prefix="efimeras-limpia-"))
+        self.addCleanup(lambda: shutil.rmtree(self.t, ignore_errors=True))
+        self.plan = parse_plan(PLAN_RELEASE)
+        self.store = Store(self.t / "motor.db")
+        cx = SimpleNamespace(
+            home=self.t,
+            maquina=Maquina(nombre="x", conf=self.t),
+            conf=SimpleNamespace(tiempos={}, dir=self.t),
+            store=self.store,
+            ws=self._ws(),
+            gh=FakeGitHub(self.t / "gh"),
         )
-        for nombre in ("TMP", "WT", "INTENTOS", "PSTACK"):
-            self.assertIn(f"efimeras.{nombre}", fuente)
+        self.fx = Effects(cx)
+
+    def _ws(self):
+        class Ws:
+            base = self.t
+
+            def espejo(self, repo):
+                return self.base / "espejo"
+
+            def rama(self, plan, bid):
+                return f"motor/{plan}/{bid}"
+
+            def rama_wip(self, plan, bid):
+                return f"motor/{plan}/{bid}/wip"
+
+        return Ws()
+
+    def _git_ok(self, *a, **k):
+        return subprocess.CompletedProcess(a, 0, "", "")
+
+    def test_limpia_borra_wt_tmp_e_intentos_del_plan(self):
+        pid = self.plan.id
+        wt = self.t / efimeras.WT / pid / "A"
+        tmp = self.t / efimeras.TMP / f"x-{pid}-y"
+        rev = self.t / efimeras.INTENTOS / pid / "intento-1" / "revision"
+        for d in (wt, tmp, rev):
+            d.mkdir(parents=True)
+        otra = self.t / efimeras.WT / "otro-plan"
+        otra.mkdir()
+        snap = m.Snapshot(
+            plan=self.plan,
+            blocks={"A": m.BlockView(block=self.plan.block("A"))},
+            cooldowns={},
+            plan_notices=set(),
+            repos={},
+        )
+        with mock.patch("motor.effects.git", side_effect=self._git_ok):
+            self.fx.limpia(self.plan, snap, m.Limpia(pid))
+        self.assertFalse((self.t / efimeras.WT / pid).exists())
+        self.assertFalse(tmp.exists())
+        self.assertFalse(rev.exists())
+        self.assertTrue(otra.exists())
+
+    def test_purga_registros_borra_intentos_y_pstack_viejos(self):
+        pid = self.plan.id
+        self.store.append(pid, "", "PlanLoaded", {"plan": {}, "version": 1})
+        self.store.append(pid, "", "Limpiado", {"ramas": []})
+        intentos = self.t / efimeras.INTENTOS / pid
+        intentos.mkdir(parents=True)
+        pstack_vieja = self.t / efimeras.PSTACK / "vieja"
+        pstack_vieja.mkdir(parents=True)
+        viejo = time.time() - 30 * 86400
+        os.utime(pstack_vieja, (viejo, viejo))
+        self.fx.purga_registros([], time.time() + 15 * 86400)
+        self.assertFalse(intentos.exists())
+        self.assertFalse(pstack_vieja.exists())
 
 
 class ConfValidaTest(unittest.TestCase):
