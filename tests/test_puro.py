@@ -1144,5 +1144,87 @@ class ServicioTest(unittest.TestCase):
             self.assertIn(esperado, p)
 
 
+class CorreccionTest(unittest.TestCase):
+    """StartAttempt.correccion: lo marca un bloque de bug o una revisión no aprobada,
+    nunca el texto del feedback (un cambio de plan o una Acepta fallida también lo traen)."""
+
+    def arranque(self, eventos, plan=PLAN):
+        s = m.fold(parse_plan(plan), eventos)
+        return next(
+            a
+            for a in m.decide(s, pol(), time.time())
+            if isinstance(a, m.StartAttempt) and a.role == "implementar"
+        )
+
+    def test_un_bloque_de_bug_arranca_en_correccion(self):
+        plan = PLAN.replace(
+            "lane: gate\nprueba-real", "lane: gate\ntipo: bug\nprueba-real", 1
+        )
+        self.assertTrue(self.arranque([], plan).correccion)
+
+    def test_una_revision_no_aprobada_lo_vuelve_correccion(self):
+        eventos = entregado() + [
+            ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
+            ev("PrOpened", "A", {"numero": 7}),
+            ev(
+                "Reviewed",
+                "A",
+                {
+                    "sha": "a" * 40,
+                    "veredicto": "CAMBIOS",
+                    "bloqueantes": [{"texto": "x", "repro": "false"}],
+                },
+            ),
+        ]
+        self.assertTrue(self.arranque(eventos).correccion)
+
+    def test_una_revision_aprobada_no_es_correccion(self):
+        eventos = entregado() + [
+            ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
+            ev("PrOpened", "A", {"numero": 7}),
+            ev(
+                "Reviewed",
+                "A",
+                {"sha": "a" * 40, "veredicto": "APROBADO", "bloqueantes": []},
+            ),
+            ev("MarkedReady", "A", {"sha": "a" * 40}),
+            ev("ChecksResult", "A", {"sha": "a" * 40, "green": False, "detalle": "x"}),
+        ]
+        a = self.arranque(eventos)
+        self.assertFalse(
+            a.correccion, "las pruebas en rojo no son una ronda de corrección"
+        )
+
+    def test_el_feedback_solo_no_marca_la_correccion(self):
+        eventos = [
+            ev(
+                "AttemptStarted",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "modelo": "glm",
+                    "proc": {},
+                    "dir": "d",
+                },
+            ),
+            ev(
+                "AttemptEnded",
+                "A",
+                {
+                    "n": 1,
+                    "role": "implementar",
+                    "outcome": {
+                        "kind": "interrumpido",
+                        "detalle": "el plan cambió: la fila A.1",
+                    },
+                },
+            ),
+        ]
+        a = self.arranque(eventos)
+        self.assertTrue(any("plan cambió" in x for x in a.feedback))
+        self.assertFalse(a.correccion)
+
+
 if __name__ == "__main__":
     unittest.main()

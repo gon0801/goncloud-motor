@@ -530,6 +530,7 @@ class StartAttempt:
     n: int
     sha: str
     feedback: tuple[str, ...]
+    correccion: bool  # bloque de bug o una revisión de este bloque no aprobada
 
 
 @dataclass(frozen=True)
@@ -976,7 +977,11 @@ def decide(
                     if role == "implementar"
                     else ()
                 )
-                acciones.append(StartAttempt(bid, role, mo, n, bv.head(), fb))
+                # nunca del texto del feedback: un cambio de plan o una Acepta fallida también lo traen
+                correccion = b.es_bug or any(not _aprobado(r) for r in bv.reviews)
+                acciones.append(
+                    StartAttempt(bid, role, mo, n, bv.head(), fb, correccion)
+                )
         elif e is Estado.VERIFICAR:
             acciones.append(Verify(bid, bv.head()))
         elif e is Estado.PR:

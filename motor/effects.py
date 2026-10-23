@@ -27,6 +27,7 @@ from . import machine as m
 from . import pstack as ps
 from .conf import Conf, Maquina, RepoConf
 from .fallas import PROVEEDORES
+from .guias import guias
 from .github import (
     Borrador,
     Conflicto,
@@ -272,13 +273,20 @@ def errores_pstack(d: Path, conf) -> list[str]:
         for lane in ps.LANES:
             if (lane, papel) not in pc.exigencias:
                 errores.append(f"pstack.toml: falta la exigencia de {papel} en {lane}")
+    clis = dict.fromkeys(r.cli for r in conf.rutas.values())
+    vistas: set[str] = set()
     for (lane, papel), e in pc.exigencias.items():
-        for sk in e.skills:
-            if not (copia / "skills" / sk / "SKILL.md").is_file():
-                errores.append(
-                    f"pstack.toml: la exigencia de {papel} en {lane} pide la skill {sk}, "
-                    "que no está en la copia"
-                )
+        for cli in clis:
+            for correccion in (False, True):
+                for g in guias(e, cli, correccion):
+                    if g in vistas:
+                        continue
+                    vistas.add(g)
+                    if not (d / g).is_file():
+                        errores.append(
+                            f"pstack.toml: la exigencia de {papel} en {lane} pide la guía {g}, "
+                            "que no está en la copia"
+                        )
     for r in conf.rutas.values():
         if r.cli not in ps.FORMATOS:
             errores.append(f"ruta {r.modelo}: no sé leer el registro del CLI {r.cli}")

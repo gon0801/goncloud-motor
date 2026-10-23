@@ -418,6 +418,9 @@ class TestCopiaFija(unittest.TestCase):
         (self.conf / "pstack" / "skills" / "interrogate").mkdir()
         (self.conf / "pstack" / "skills" / "interrogate" / "SKILL.md").write_text("i\n")
         (self.conf / "pstack" / "ORIGEN").write_text("origen: x abc1234567\n")
+        arnes = self.conf / "pstack" / "docs" / "harness"
+        arnes.mkdir(parents=True)
+        (arnes / "claude-code.md").write_text("adaptador\n")
         (self.conf / "pstack-motor").mkdir()
         (self.conf / "pstack-motor" / "motor.md").write_text("m\n")
         self.raiz = self.tmp / "home" / "pstack"

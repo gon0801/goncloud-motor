@@ -440,7 +440,9 @@ class ProcesosTest(unittest.TestCase):
         snap = m.fold(self.plan, self.d.store.events("demo"))
         with mock.patch("motor.effects.plataforma.lanzar_separado", lanza):
             self.d.fx.start_attempt(
-                self.plan, snap, m.StartAttempt("A", "implementar", "glm", 1, "", ())
+                self.plan,
+                snap,
+                m.StartAttempt("A", "implementar", "glm", 1, "", (), False),
             )
         self.assertTrue(visto["marca"], "la marca existe antes de lanzar")
         marca = json.loads(
@@ -456,7 +458,7 @@ class ProcesosTest(unittest.TestCase):
         self,
     ):
         snap = m.fold(self.plan, self.d.store.events("demo"))
-        a = m.StartAttempt("A", "implementar", "glm", 1, "", ())
+        a = m.StartAttempt("A", "implementar", "glm", 1, "", (), False)
         with mock.patch(
             "motor.effects.plataforma.lanzar_separado", side_effect=OSError("cae")
         ):

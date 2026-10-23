@@ -375,7 +375,7 @@ class TestEntregaSegura(Banco):
         d.fx.start_attempt(
             plan,
             m.fold(plan, d.store.events("demo")),
-            m.StartAttempt("A", "implementar", "glm", 1, "", ()),
+            m.StartAttempt("A", "implementar", "glm", 1, "", (), False),
         )
         anotados = [e for e in d.store.events("demo") if e.kind == "AttemptStarted"]
         self.assertEqual(
