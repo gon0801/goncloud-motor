@@ -800,6 +800,7 @@ class DespliegueTest(unittest.TestCase):
             store=Store(t / "motor.db"),
             ws=ws,
             gh=None,
+            programadas_sistema=False,
         )
         fx = Effects(cx)
         snap = m.Snapshot(

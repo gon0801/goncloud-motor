@@ -9,9 +9,17 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from motor import efimeras
+from motor import machine as m
+from motor.conf import Maquina
+from motor.effects import Effects
+from motor.github import FakeGitHub
+from motor.plan import parse_plan
+from motor.store import Store
+from tests.test_github_despliegue import PLAN_RELEASE, SHA, _WsFalso
 
 HOME_MAC = "/Users/gon"
 HOME_PC = r"C:\Users\ehven"
@@ -321,6 +329,153 @@ class FuentesTest(unittest.TestCase):
         _, leidas, sin_leer, _ = efimeras.lee_tareas("mac", self.conf, sistema=False)
         self.assertEqual(leidas, [])
         self.assertIn("salió 3", sin_leer["echo no; exit 3"])
+
+
+class DespliegueEfimerasTest(unittest.TestCase):
+    """`deploy` revisa las tareas programadas justo después de `desplegar.sh`."""
+
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp(prefix="efimeras-dep-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
+        self.agents = self.t / "LaunchAgents"
+        self.agents.mkdir()
+        self.fijo = self.t / "fijo"
+        self.fijo.mkdir()
+        self.conf = self.t / "conf"
+        self.conf.mkdir()
+        (self.conf / "programadas.toml").write_text(
+            f"[x]\narchivos = ['{self.agents}/*.plist']\n"
+        )
+        self.w = self.t / "copia-1"
+
+    def plist(self, apunta: Path, nombre="ai.demo.plist") -> Path:
+        p = self.agents / nombre
+        p.write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": "ai.demo",
+                    "ProgramArguments": ["/bin/sh", f"{apunta}/run.sh"],
+                }
+            )
+        )
+        return p
+
+    def corre(self, scripts: dict[str, str], sistema: bool = False):
+        plan = parse_plan(PLAN_RELEASE)
+        ws = _WsFalso(self.t)
+        cx = SimpleNamespace(
+            home=self.t,
+            maquina=Maquina(nombre="x", conf=self.conf),
+            conf=SimpleNamespace(tiempos={}, dir=self.conf),
+            store=Store(self.t / "motor.db"),
+            ws=ws,
+            gh=FakeGitHub(self.t / "gh"),
+            programadas_sistema=sistema,
+        )
+        fx = Effects(cx)
+        snap = m.Snapshot(
+            plan=plan,
+            blocks={"A": m.BlockView(block=plan.block("A"))},
+            cooldowns={},
+            plan_notices=set(),
+            repos={},
+        )
+        snap.blocks["A"].merged = [{"sha": SHA, "commit": SHA}]
+        w = ws.copia("", "", None)
+        self.assertEqual(w, self.w)
+        for nombre, cuerpo in scripts.items():
+            (w / "ops" / nombre).write_text(cuerpo)
+        ws.copia = lambda repo, sha, destino: w
+        return fx._deploy_data(plan, snap, m.Deploy("A", SHA))
+
+    def receta_que_deja(self, destino: str, rollback="true") -> dict[str, str]:
+        return {
+            "d.sh": f"cat > {self.agents}/ai.demo.plist <<EOF\n{destino}/run.sh\nEOF\n",
+            "c.sh": "touch checklist-corrio\n",
+            "r.sh": f"touch rollback-corrio\n{rollback}\n",
+        }
+
+    def test_la_receta_que_deja_un_plist_apuntando_a_su_copia_falla_y_hace_rollback(
+        self,
+    ):
+        r = self.corre(self.receta_que_deja("$MOTOR_RAIZ"))
+        self.assertFalse(r["ok"])
+        self.assertIn(
+            f"La receta dejó {self.agents / 'ai.demo.plist'} apuntando a {self.w}, una carpeta que el motor "
+            "borra al terminar. Instala lo que corre la tarea en una carpeta fija "
+            "(por ejemplo ~/.local/share/<nombre>) y apunta ahí.",
+            r["detalle"],
+        )
+        self.assertTrue((self.w / "rollback-corrio").exists())
+        self.assertFalse((self.w / "checklist-corrio").exists())
+        self.assertIn("La marcha atrás no la quitó.", r["detalle"])
+
+    def test_si_el_rollback_quita_la_tarea_no_dice_que_sigue(self):
+        r = self.corre(
+            self.receta_que_deja(
+                "$MOTOR_RAIZ", rollback=f"rm {self.agents}/ai.demo.plist"
+            )
+        )
+        self.assertFalse(r["ok"])
+        self.assertNotIn("La marcha atrás no la quitó.", r["detalle"])
+
+    def test_la_misma_receta_apuntando_a_una_carpeta_fija_pasa(self):
+        r = self.corre(self.receta_que_deja(str(self.fijo)))
+        self.assertTrue(r["ok"], r["detalle"])
+        self.assertTrue((self.w / "checklist-corrio").exists())
+        self.assertFalse((self.w / "rollback-corrio").exists())
+
+    def test_un_segundo_intento_con_el_plist_malo_ya_presente_tambien_falla(self):
+        self.plist(self.w)
+        r = self.corre({"d.sh": "true\n", "c.sh": "true\n", "r.sh": "true\n"})
+        self.assertFalse(r["ok"])
+        self.assertIn("apuntando a", r["detalle"])
+        self.assertIn("La marcha atrás no la quitó.", r["detalle"])
+
+    def test_un_despliegue_que_sale_bien_deja_en_el_detalle_lo_que_imprimio(self):
+        r = self.corre(
+            {
+                "d.sh": "echo 'la etiqueta v1 ya existe'\n",
+                "c.sh": "echo 'produccion corre el sha'\n",
+                "r.sh": "true\n",
+            }
+        )
+        self.assertTrue(r["ok"], r["detalle"])
+        self.assertIn("la etiqueta v1 ya existe", r["detalle"])
+        self.assertIn("produccion corre el sha", r["detalle"])
+
+    def test_fuente_del_sistema_sin_leer_tumba_el_despliegue(self):
+        scripts = {
+            "d.sh": "true\n",
+            "c.sh": "touch checklist-corrio\n",
+            "r.sh": "touch rollback-corrio\n",
+        }
+        lectura = ({}, [], {efimeras.CRONTAB: "pasó de 30 s"}, {})
+        with (
+            mock.patch.object(
+                efimeras, "nombres_del_sistema", return_value=[efimeras.CRONTAB]
+            ),
+            mock.patch.object(efimeras, "lee_tareas", return_value=lectura),
+        ):
+            r = self.corre(scripts, sistema=True)
+        self.assertFalse(r["ok"])
+        self.assertIn("No pude leer crontab -l (pasó de 30 s)", r["detalle"])
+        self.assertIn("no puedo asegurar", r["detalle"])
+        self.assertTrue((self.w / "rollback-corrio").exists())
+        self.assertFalse((self.w / "checklist-corrio").exists())
+
+    def test_fuente_extra_sin_leer_y_archivos_negados_solo_van_al_detalle(self):
+        lectura = (
+            {},
+            ["x"],
+            {"echo roto": "salió 3"},
+            {"/Library/LaunchDaemons/root.plist": "sin permiso"},
+        )
+        with mock.patch.object(efimeras, "lee_tareas", return_value=lectura):
+            r = self.corre({"d.sh": "true\n", "c.sh": "true\n", "r.sh": "true\n"})
+        self.assertTrue(r["ok"], r["detalle"])
+        self.assertIn("echo roto", r["detalle"])
+        self.assertIn("root.plist", r["detalle"])
 
 
 if __name__ == "__main__":

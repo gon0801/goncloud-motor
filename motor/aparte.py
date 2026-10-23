@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         cx = _contexto(Path(a.home))
         fx = Effects(cx)
         fx._dir_aparte = d
+        cx.programadas_sistema = spec.get("programadas_sistema", True)
         plan = Plan.from_dict(spec["plan"])
         blocks = {}
         for b in plan.blocks:
