@@ -6,7 +6,8 @@
 # registro de cada corrida a tests/datos/pstack/<cli>-<maquina>/. Las carpetas temporales se borran.
 # Cada CLI corre como lo lanza el motor: el argv de su ruta tal cual (solo se sustituyen {prompt}, {brief},
 # {result}, {pstack} y {sesion}), el entorno de la máquina con secretos y sin MOTOR_*, y el registro se
-# lee donde lo lee el motor. Los flags que hacen legible un registro van en rutas.toml de la conf.
+# lee donde lo lee el motor. Los flags que hacen legible un registro van en el rutas.toml con que se
+# mide (ver --rutas).
 #   --rutas <archivo>   rutas.toml con el que se mide; por omisión conf-ejemplo/rutas.toml de este repo (las
 #             rutas que el bloque E copia a producción), no el rutas.toml de la conf de producción
 #   --juzga   corre la medición en vivo, no toca tests/datos y sale 0 solo si `juzga` da Cumple para
@@ -31,7 +32,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -r "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
+[ -s "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
 RUTAS_B64="$(base64 <"$rutas" | tr -d '\n')"
 
 d="$(mktemp -d)"

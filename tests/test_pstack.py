@@ -1267,6 +1267,18 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             if cli != "claude":
                 self.assertIn(cli, nombres)
 
+    def test_rutas_vacio_sale_2_sin_medir(self):
+        # Un --rutas legible pero vacío no puede medir en silencio con las rutas de la conf.
+        with tempfile.TemporaryDirectory() as t:
+            vacio = Path(t) / "vacio.toml"
+            vacio.write_text("")
+            lanzadas = []
+            r = self._corre("cumple", args=("--rutas", str(vacio)), argv_log=lanzadas)
+            mensaje = f"no puedo leer {vacio}"
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(mensaje, r.stderr)
+        self.assertEqual(lanzadas, [])
+
     def test_juzga_sale_distinto_de_cero_si_el_cli_no_cargo_nada(self):
         r = self._corre("nada")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
