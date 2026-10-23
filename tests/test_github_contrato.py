@@ -275,7 +275,10 @@ class GhChecksRepoPrivadoTest(unittest.TestCase):
                             "mergeCommit": None,
                         }
                     )
-                if a[1].endswith("/required_status_checks") or "/rules/branches/" in a[1]:
+                if (
+                    a[1].endswith("/required_status_checks")
+                    or "/rules/branches/" in a[1]
+                ):
                     raise RuntimeError(f"gh {' '.join(a)}: {plan_gratis}")
                 if a[1].endswith("/status"):
                     return '{"state": "success", "statuses": []}'
