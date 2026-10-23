@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import posixpath
 import re
+import shlex
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
@@ -65,6 +66,9 @@ class Accion:
     tipo: str  # skill | playbook | todos | subagente | comando | otra
     nombre: str = ""  # skill sin prefijo, playbook, tipo de subagente o comando
     n: int = 0  # 1, 2, 3... entre las acciones del agente principal
+    lee: tuple[
+        tuple[str, str], ...
+    ] = ()  # ("skill"|"playbook", nombre) leídos por terminal
 
 
 @dataclass(frozen=True)
@@ -368,6 +372,178 @@ def _nombre_skill(x: str) -> str:
     ]  # `pstack:poteto-mode` y `poteto-mode` cuentan igual
 
 
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+_ASIGNA = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_VARIABLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
+_SALIDA_A_OTRO_LADO = re.compile(r"(?:1|&)?>")
+_ENTRADA = re.compile(r"\d*<")
+_LECTORES = ("cat", "sed", "head")
+_PALABRAS_DE_CONTROL = (
+    "do",
+    "then",
+    "else",
+    "elif",
+    "if",
+    "while",
+    "until",
+    "!",
+    "{",
+    "time",
+)
+
+
+def _sin_heredocs(comando: str) -> str:
+    salida: list[str] = []
+    cierre: str | None = None
+    for linea in comando.split("\n"):
+        if cierre is not None:
+            if linea.strip() == cierre:
+                salida.append(linea)
+                cierre = None
+            continue
+        salida.append(linea)
+        if m := _HEREDOC.search(linea):
+            cierre = m.group(2)
+    return "\n".join(salida)
+
+
+def _simples(comando: str) -> list[tuple[str, bool]] | None:
+    """Parte `comando` en comandos simples, respetando comillas: (texto, ¿su salida va por tubería?).
+    None si unas comillas no cierran."""
+    partes: list[tuple[str, bool]] = []
+    buf: list[str] = []
+    q = ""
+    i, n = 0, len(comando)
+
+    def corta(tuberia: bool = False) -> None:
+        partes.append(("".join(buf), tuberia))
+        buf.clear()
+
+    while i < n:
+        c = comando[i]
+        sig = comando[i + 1] if i + 1 < n else ""
+        if q:
+            buf.append(c)
+            if c == "\\" and q == '"' and sig:
+                buf.append(sig)
+                i += 1
+            elif c == q:
+                q = ""
+        elif c == "\\" and sig:
+            buf.append(c + sig)
+            i += 1
+        elif c in "'\"":
+            q = c
+            buf.append(c)
+        elif c in "\n;":
+            corta()
+        elif c == "&" and sig == "&":
+            corta()
+            i += 1
+        elif c == "&" and (sig == ">" or (buf and buf[-1][-1:] in "<>")):
+            buf.append(c)
+        elif c == "&":
+            corta()
+        elif c == "|" and sig == "|":
+            corta()
+            i += 1
+        elif c == "|" and buf and buf[-1][-1:] == ">":
+            buf.append(c)
+        elif c == "|":
+            corta(True)
+            if sig == "&":
+                i += 1
+        else:
+            buf.append(c)
+        i += 1
+    if q:
+        return None
+    corta()
+    return partes
+
+
+def _expande(palabra: str, variables: dict[str, str]) -> str:
+    return _VARIABLE.sub(
+        lambda m: variables.get(m.group(1) or m.group(2), m.group(0)), palabra
+    )
+
+
+def _argumentos(palabras: list[str]) -> list[str] | None:
+    """Los argumentos de un comando sin sus redirecciones; None si desvía o descarta su salida."""
+    args: list[str] = []
+    i = 0
+    while i < len(palabras):
+        w = palabras[i]
+        if _SALIDA_A_OTRO_LADO.match(w):
+            return None
+        if _ENTRADA.match(w):
+            i += 1 if re.fullmatch(r"\d*<+-?", w) is None else 2
+            continue
+        if re.fullmatch(r"\d+>>?", w):
+            i += 2
+            continue
+        args.append(w)
+        i += 1
+    return args
+
+
+def lecturas_de_terminal(comando: str, raiz: str | None) -> tuple[tuple[str, str], ...]:
+    """Las skills y playbooks de la copia fija (`<raiz>/pstack/skills/`) que `comando` lee con
+    `cat`, `sed` o `head`, en orden, como ("skill", nombre) y ("playbook", nombre).
+    No cuenta lo que no es un comando (cuerpos de heredoc), lo que escribe o desvía su salida,
+    lo que va por tubería, `sed -i`, ni rutas relativas o de otra copia."""
+    if not raiz or not comando:
+        return ()
+    simples = _simples(_sin_heredocs(comando))
+    if simples is None:
+        return ()
+    variables: dict[str, str] = {}
+    lee: list[tuple[str, str]] = []
+    for texto, tuberia in simples:
+        try:
+            palabras = shlex.split(texto)
+        except ValueError:
+            return ()
+        while palabras and palabras[0] in _PALABRAS_DE_CONTROL:
+            palabras.pop(0)
+        asignaciones = []
+        while palabras and _ASIGNA.match(palabras[0]):
+            asignaciones.append(palabras.pop(0))
+        if not palabras:
+            palabras_asignadas = asignaciones
+        elif palabras[0] == "export" and not asignaciones:
+            palabras_asignadas = [w for w in palabras[1:] if _ASIGNA.match(w)]
+        else:
+            palabras_asignadas = []
+        for w in palabras_asignadas:
+            nombre, valor = w.split("=", 1)
+            variables[nombre] = _expande(valor, variables)
+        if palabras_asignadas or not palabras or tuberia:
+            continue
+        palabras = [_expande(w, variables) for w in palabras]
+        if palabras[0] not in _LECTORES:
+            continue
+        args = _argumentos(palabras[1:])
+        if args is None:
+            continue
+        if palabras[0] == "sed" and any(
+            a == "--in-place"
+            or a.startswith("--in-place=")
+            or re.match(r"-[A-Za-z]*i", a)
+            for a in args
+        ):
+            continue
+        for a in args:
+            rel = _bajo_skills(a, raiz)
+            if rel is None:
+                continue
+            if m := _RUTA_PLAYBOOK.fullmatch(rel):
+                lee.append(("playbook", m.group(1)))
+            elif m := _RUTA_SKILL.fullmatch(rel):
+                lee.append(("skill", m.group(1)))
+    return tuple(lee)
+
+
 def _clasifica(
     f: Formato, herramienta: str, args: dict, n: int, raiz: str | None = None
 ) -> Accion:
@@ -428,7 +604,7 @@ def _clasifica(
         return Accion("todos", "", n)
     if h in f.comando:
         cmd = next((str(args[k]) for k in ("command", "cmd") if args.get(k)), "")
-        return Accion("comando", cmd, n)
+        return Accion("comando", cmd, n, lecturas_de_terminal(cmd, raiz))
     return Accion("otra", "", n)
 
 
@@ -490,6 +666,12 @@ def eventos(
     return acciones, legible
 
 
+def _cargas(a: Accion, tipo: str) -> tuple[str, ...]:
+    """Los nombres de `tipo` (skill o playbook) que la acción cargó: por su herramienta o leyendo por terminal."""
+    propios = (a.nombre,) if a.tipo == tipo else ()
+    return propios + tuple(nombre for t, nombre in a.lee if t == tipo)
+
+
 def huella(
     fuente: str | Iterable[str] | None, formato: str, raiz: str | None = None
 ) -> Huella:
@@ -499,18 +681,20 @@ def huella(
     acciones, legible = eventos(fuente, formato, raiz)
     if not legible:
         return Huella(legible=False)
-    skills = tuple(dict.fromkeys(a.nombre for a in acciones if a.tipo == "skill"))
+    skills = tuple(
+        dict.fromkeys(nombre for a in acciones for nombre in _cargas(a, "skill"))
+    )
     return Huella(
         skills=skills,
         playbooks=tuple(
-            dict.fromkeys(a.nombre for a in acciones if a.tipo == "playbook")
+            dict.fromkeys(nombre for a in acciones for nombre in _cargas(a, "playbook"))
         ),
         todos=sum(a.tipo == "todos" for a in acciones),
         subagentes=tuple(a.nombre for a in acciones if a.tipo == "subagente"),
         comandos=tuple(a.nombre for a in acciones if a.tipo == "comando"),
         acciones=len(acciones),
         poteto_en=next(
-            (a.n for a in acciones if a.tipo == "skill" and a.nombre == SKILL_BASE),
+            (a.n for a in acciones if SKILL_BASE in _cargas(a, "skill")),
             None,
         ),
     )
@@ -523,7 +707,7 @@ def puerta(eventos_: list[Accion], n: int = PUERTA_ACCIONES) -> bool:
     """True si hay que cortar: el agente ya hizo `n` acciones y entre ellas no cargó poteto-mode."""
     if n <= 0 or len(eventos_) < n:
         return False
-    return not any(a.tipo == "skill" and a.nombre == SKILL_BASE for a in eventos_[:n])
+    return not any(SKILL_BASE in _cargas(a, "skill") for a in eventos_[:n])
 
 
 def juzga(h: Huella, e: Exigencia) -> Cumple | Falta:
