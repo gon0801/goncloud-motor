@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import claves, efimeras, huella, plataforma, relevo
@@ -86,8 +86,10 @@ class Contexto:
     gh: GitHubPort
     notifier: Notifier
     checks_cada_s: float = 60.0
-    programadas_sistema: bool = (
-        True  # False: el banco de pruebas no lee crontab, plist ni schtasks reales
+    # MOTOR_PROGRAMADAS_SISTEMA=0: el banco de pruebas no lee crontab, plist ni schtasks reales,
+    # tampoco en los subprocesos (daemon y aparte) que heredan el entorno.
+    programadas_sistema: bool = field(
+        default_factory=lambda: os.environ.get("MOTOR_PROGRAMADAS_SISTEMA") != "0"
     )
 
 

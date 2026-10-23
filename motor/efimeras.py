@@ -51,7 +51,7 @@ def normaliza(s: str, home: str | Path) -> str:
     s = re.sub(r"\$\{HOME\}|\$HOME(?![\w])", lambda _: h, s)
     s = re.sub(r"(?<![\w~])~(?=[/\\]|$|[\s\"'])", lambda _: h, s)
     s = re.sub(r"\\+", "/", s)
-    s = re.sub(r"(?<![\w/])/([A-Za-z])/", lambda mo: f"{mo.group(1)}:/", s)
+    s = re.sub(r"(?<![\w/])/{1,2}([A-Za-z])/", lambda mo: f"{mo.group(1)}:/", s)
     return re.sub(r"/{2,}", "/", s)
 
 
@@ -118,7 +118,7 @@ def ejecuta(
             p.wait(timeout=tope)
         except subprocess.TimeoutExpired:
             plataforma.matar_grupo(p)
-            p.wait()
+            p.wait(timeout=5)
             raise
         o.seek(0)
         e.seek(0)
@@ -213,10 +213,11 @@ def _lee_schtasks(tareas, leidas, sin_leer, negados, bash) -> None:
         sin_leer["schtasks"] = f"no pude correrlo: {e}"
         return
     filas = filas_schtasks(p.stdout)
+    if not filas and "no scheduled tasks" in (p.stdout + p.stderr).lower():
+        leidas.append("schtasks")
+        return
     if not filas:
-        sin_leer["schtasks"] = (
-            f"salió {p.returncode} sin filas: {(p.stdout + p.stderr).strip()[-200:]}"
-        )
+        sin_leer["schtasks"] = f"salió {p.returncode} sin filas CSV"
         return
     leidas.append("schtasks")
     for fila in filas:
@@ -294,6 +295,9 @@ def _lee_extras(
     for patron in archivos:
         patron = str(Path(patron).expanduser())
         hallados = sorted(glob.glob(patron))
+        if not hallados:
+            sin_leer[patron] = "el patrón no encontró ningún archivo"
+            continue
         leidas.append(patron)
         for h in map(Path, hallados):
             if h.is_dir():
@@ -310,9 +314,7 @@ def _lee_extras(
             sin_leer[cmd] = f"no pude correrlo: {e}"
             continue
         if p.returncode != 0:
-            sin_leer[cmd] = (
-                f"salió {p.returncode}: {(p.stdout + p.stderr).strip()[-200:]}"
-            )
+            sin_leer[cmd] = f"salió {p.returncode}"
             continue
         leidas.append(cmd)
         tareas[cmd] = p.stdout + p.stderr

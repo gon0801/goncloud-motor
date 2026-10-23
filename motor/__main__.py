@@ -27,6 +27,7 @@ import shutil
 import sqlite3
 import sys
 import time
+import tomllib
 import uuid
 from pathlib import Path
 
@@ -146,17 +147,23 @@ def _estado(home: Path) -> list[dict]:
 
 def _lee_programadas(home: Path, sistema: bool = True):
     """(lectura de efimeras.lee_tareas, hallazgos): las tareas que contienen una carpeta del motor."""
+    home = home.expanduser().resolve()
+    error = ""
     try:
         mq = load_maquina(home)
         nombre, conf_dir, bash = mq.nombre, mq.conf, mq.bash
-    except (ConfError, OSError, KeyError):
+    except (ConfError, OSError, KeyError, tomllib.TOMLDecodeError) as e:
         nombre, conf_dir, bash = "", None, ""
-    lectura = efimeras.lee_tareas(nombre, conf_dir, sistema, bash=bash)
+        if (home / "maquina.toml").exists():
+            error = f"no pude leer maquina.toml: {e!r}"
+    lectura = efimeras.lee_tareas(nombre, conf_dir, sistema, home=home, bash=bash)
+    if error:
+        lectura[2]["maquina.toml"] = error
     tareas = lectura[0]
     hallazgos = []
     for carpeta in efimeras.CARPETAS_DEL_MOTOR:
         ruta = home / carpeta
-        for tarea in efimeras.tareas_con(tareas, ruta):
+        for tarea in efimeras.tareas_con(tareas, ruta, home):
             hallazgos.append({"tarea": tarea, "carpeta": str(ruta)})
     return lectura, hallazgos
 
@@ -209,6 +216,7 @@ def doctor(home: Path, programadas_sistema: bool = True) -> dict:
     nombres = sorted({h["tarea"] for h in prog["hallazgos"]})
     out["programadas"] = {"en_carpetas_del_motor": len(nombres), "tareas": nombres}
     if nombres:
+        out["ok"] = False
         out["problemas"].append(
             f"{len(nombres)} tareas programadas apuntan a carpetas que el motor borra: "
             + ", ".join(nombres)

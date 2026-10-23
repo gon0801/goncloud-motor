@@ -128,6 +128,12 @@ class ContieneTest(unittest.TestCase):
             )
         )
 
+    def test_git_bash_con_doble_barra_inicial(self):
+        ruta = r"C:\Users\ehven\.motor\wt\demo\A"
+        self.assertTrue(
+            efimeras.contiene("//c/Users/ehven/.motor/wt/demo/A/x.sh", ruta, HOME_PC)
+        )
+
     def test_windows_barras_variables_git_bash_y_mayusculas(self):
         ruta = r"C:\Users\ehven\.motor\wt\demo\A"
         fila = SCHTASKS_PC.replace(r"\.motor", r"\.motor\wt\demo\A")
@@ -267,6 +273,34 @@ class FuentesTest(unittest.TestCase):
         self.assertEqual(leidas, [])
         self.assertIn("schtasks", sin_leer)
 
+    def test_schtasks_sin_tareas_visibles_cuenta_como_leida(self):
+        with mock.patch.object(
+            efimeras,
+            "ejecuta",
+            return_value=_cp(0, "INFO: There are no scheduled tasks presently."),
+        ):
+            tareas, leidas, sin_leer, _ = efimeras.lee_tareas(
+                "pc", self.conf, home=HOME_PC, plataforma_="win32"
+            )
+        self.assertEqual((tareas, leidas, sin_leer), ({}, ["schtasks"], {}))
+
+    def test_patron_de_archivos_que_no_encuentra_nada_queda_sin_leer(self):
+        (self.conf / "programadas.toml").write_text(
+            '[mac]\narchivos = ["/no/existe/nada-*.plist"]\n'
+        )
+        _, leidas, sin_leer, _ = self.mac(dirs=[])
+        self.assertNotIn("/no/existe/nada-*.plist", leidas)
+        self.assertIn("/no/existe/nada-*.plist", sin_leer)
+
+    def test_el_motivo_de_un_comando_que_falla_no_guarda_su_salida(self):
+        (self.conf / "programadas.toml").write_text(
+            '[mac]\ncomandos = ["echo secreto-123; exit 3"]\n'
+        )
+        _, _, sin_leer, _ = self.mac(dirs=[])
+        motivo = sin_leer["echo secreto-123; exit 3"]
+        self.assertIn("3", motivo)
+        self.assertNotIn("secreto-123", motivo)
+
     def test_linux_solo_lee_crontab(self):
         with mock.patch.object(
             efimeras, "ejecuta", return_value=_cp(0, CRON_LINEA + "\n")
@@ -336,7 +370,7 @@ class FuentesTest(unittest.TestCase):
 
 class ProgramadasTest(unittest.TestCase):
     def setUp(self):
-        self.t = Path(tempfile.mkdtemp(prefix="programadas-"))
+        self.t = Path(tempfile.mkdtemp(prefix="programadas-")).resolve()
         self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
         self.home = self.t / "motor-home"
         self.home.mkdir()
@@ -390,6 +424,42 @@ class ProgramadasTest(unittest.TestCase):
         for carpeta in efimeras.CARPETAS_DEL_MOTOR:
             lectura = ({"t": f"run {self.home}/{carpeta}/x"}, ["f"], {}, {})
             self.assertEqual(self.corre(lectura)[0], 3, carpeta)
+
+    def test_home_relativo_no_matchea_cualquier_tmp(self):
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(self.t)
+        lectura = ({"crontab:1": "* * * * * /tmp/otra-cosa.sh"}, ["crontab -l"], {}, {})
+        with (
+            mock.patch.object(efimeras, "lee_tareas", return_value=lectura),
+        ):
+            out, codigo = cli.programadas(Path("motor-home"))
+        self.assertEqual((codigo, out["hallazgos"]), (0, []))
+
+    def test_maquina_toml_invalido_o_sin_conf_no_mata_el_comando(self):
+        for cuerpo in ("esto no es toml [[", 'nombre = "x"\n'):
+            (self.home / "maquina.toml").write_text(cuerpo)
+            with mock.patch.object(
+                efimeras,
+                "_lee_sistema",
+                side_effect=lambda h, p, b, ta, le, si, ne: le.append("crontab -l"),
+            ):
+                out, codigo = cli.programadas(self.home)
+            self.assertEqual(codigo, 0, cuerpo)
+            self.assertTrue(any("maquina.toml" in x for x in out["sin_leer"]), cuerpo)
+
+    def test_patron_vacio_con_el_sistema_roto_sale_4(self):
+        (self.home / "maquina.toml").write_text(f'nombre = "mac"\nconf = "{self.t}"\n')
+        (self.t / "programadas.toml").write_text(
+            '[mac]\narchivos = ["/no/existe/nada-*.plist"]\n'
+        )
+
+        def roto(h, p, b, ta, le, si, ne):
+            si["crontab -l"] = "no pude"
+
+        with mock.patch.object(efimeras, "_lee_sistema", side_effect=roto):
+            out, codigo = cli.programadas(self.home)
+        self.assertEqual((codigo, out["leidas"]), (4, []))
 
     def test_sin_ninguna_fuente_legible_sale_4(self):
         codigo, salida = self.corre(
@@ -591,3 +661,20 @@ class DespliegueEfimerasTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BancoSinSistemaTest(unittest.TestCase):
+    def test_el_banco_apaga_la_lectura_del_sistema_tambien_en_subprocesos(self):
+        env = {**os.environ}
+        r = subprocess.run(
+            [
+                "python3",
+                "-c",
+                "from motor.effects import Contexto; "
+                "print(Contexto.__dataclass_fields__['programadas_sistema'].default_factory())",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.stdout.strip(), "False", r.stderr)

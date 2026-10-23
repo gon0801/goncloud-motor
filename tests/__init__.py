@@ -1,13 +1,7 @@
-"""El banco de pruebas no lee el crontab, los plist ni `schtasks` reales del equipo al desplegar."""
+"""El banco de pruebas no lee el crontab, los plist ni `schtasks` reales del equipo al desplegar.
 
-from motor import daemon
+La variable la heredan los subprocesos (daemon, aparte) que lanzan los tests e2e."""
 
-_init = daemon.Daemon.__init__
+import os
 
-
-def _sin_programadas_del_sistema(self, *a, **k):
-    _init(self, *a, **k)
-    self.cx.programadas_sistema = False
-
-
-daemon.Daemon.__init__ = _sin_programadas_del_sistema
+os.environ["MOTOR_PROGRAMADAS_SISTEMA"] = "0"
