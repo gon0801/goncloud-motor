@@ -1111,6 +1111,7 @@ class TestLogMezclado(unittest.TestCase):
 
 FALSO_CLAUDE = r"""#!/bin/sh
 [ "$1" = --version ] && { echo 0; exit 0; }
+[ -n "$FALSO_ARGV" ] && echo "$*" >>"$FALSO_ARGV"
 for a; do p=$a; done
 brief=${p#Lee }; brief=${brief%% y ejec*}
 raiz=$(grep -o 'copia fija `[^`]*`' "$brief" | head -1 | cut -d'`' -f2)
@@ -1125,7 +1126,7 @@ tool Agent '{"subagent_type":"general-purpose"}'
 class TestMideDePuntaAPunta(unittest.TestCase):
     """C.3: `mide.sh --juzga` entero, con ssh y uv falsos que corren todo en esta máquina."""
 
-    def _corre(self, modo):
+    def _corre(self, modo, args=(), argv_log=None):
         import subprocess
 
         with tempfile.TemporaryDirectory() as t:
@@ -1165,10 +1166,16 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 MOTOR_PC_UV=str(bin_ / "uv"),
                 MIDE_TOPE_S="60",
                 FALSO_MODO=modo,
+                FALSO_ARGV=str(t / "argv.log"),
             )
             antes = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
             r = subprocess.run(
-                ["bash", str(REPO / "ops" / "pstack" / "mide.sh"), "--juzga"],
+                [
+                    "bash",
+                    str(REPO / "ops" / "pstack" / "mide.sh"),
+                    "--juzga",
+                    *args,
+                ],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -1176,6 +1183,11 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 check=False,
             )
             despues = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
+            if argv_log is not None:
+                registro = t / "argv.log"
+                argv_log.extend(
+                    registro.read_text().splitlines() if registro.exists() else []
+                )
         self.assertEqual(antes, despues)
         return r
 
@@ -1185,6 +1197,32 @@ class TestMideDePuntaAPunta(unittest.TestCase):
         self.assertEqual(r.stdout.count("Cumple"), 3 + 1)
         for mq in MAQUINAS:
             self.assertRegex(r.stdout, rf"(?m)^{mq}\s+claude\s+Cumple$")
+
+    def test_mide_toma_por_omision_las_rutas_de_conf_ejemplo_y_no_las_de_la_conf(self):
+        lanzadas = []
+        r = self._corre("cumple", argv_log=lanzadas)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(lanzadas)
+        for linea in lanzadas:
+            self.assertIn("--session-id", linea)
+            self.assertIn("--output-format json", linea)
+
+    def test_rutas_cambia_el_archivo_con_el_que_se_mide(self):
+        with tempfile.TemporaryDirectory() as t:
+            otras = Path(t) / "otras.toml"
+            otras.write_text(
+                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "--solo-estas", "{prompt}"]\n'
+            )
+            lanzadas = []
+            self._corre("cumple", args=("--rutas", str(otras)), argv_log=lanzadas)
+        self.assertTrue(lanzadas)
+        for linea in lanzadas:
+            self.assertIn("--solo-estas", linea)
+            self.assertNotIn("--session-id", linea)
+
+    def test_rutas_con_un_archivo_que_no_existe_sale_2_sin_medir(self):
+        r = self._corre("cumple", args=("--rutas", "/no/existe.toml"))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
     def test_juzga_sale_distinto_de_cero_si_el_cli_no_cargo_nada(self):
         r = self._corre("nada")
