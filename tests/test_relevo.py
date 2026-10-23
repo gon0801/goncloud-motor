@@ -319,5 +319,85 @@ class ClasificaFrenoTest(unittest.TestCase):
         )
 
 
+def _att(modelo, kind, n, role="implementar", **extra):
+    return m.Attempt(
+        n=n,
+        role=role,
+        modelo=modelo,
+        started=0.0,
+        proc={},
+        dir=f"d{n}",
+        ended={"kind": kind, **extra},
+        ended_at=float(n),
+    )
+
+
+class RegresaPorPlaybookTest(unittest.TestCase):
+    def setUp(self):
+        self.t = time.time()
+
+    def test_el_primer_sin_pstack_solo_playbook_de_un_modelo_es_regreso(self):
+        mios = [_att("sonnet", "sin_pstack", 1, solo_playbook=True)]
+        self.assertTrue(m.regresa_por_playbook(mios, 0))
+
+    def test_el_segundo_del_mismo_modelo_ya_no(self):
+        mios = [
+            _att("sonnet", "sin_pstack", 1, solo_playbook=True),
+            _att("sonnet", "sin_pstack", 2, solo_playbook=True),
+        ]
+        self.assertEqual(
+            [m.regresa_por_playbook(mios, i) for i in (0, 1)], [True, False]
+        )
+
+    def test_el_de_otro_modelo_despues_del_primero_si_es_regreso(self):
+        mios = [
+            _att("sonnet", "sin_pstack", 1, solo_playbook=True),
+            _att("glm", "sin_pstack", 2, solo_playbook=True),
+        ]
+        self.assertTrue(m.regresa_por_playbook(mios, 1))
+
+    def test_sin_la_marca_u_otro_fin_no_es_regreso(self):
+        mios = [_att("sonnet", "sin_pstack", 1), _att("glm", "falla", 2)]
+        self.assertEqual(
+            [m.regresa_por_playbook(mios, i) for i in (0, 1)], [False, False]
+        )
+
+    def test_tras_un_regreso_vuelve_el_mismo_modelo(self):
+        evs = _intento("sonnet", "sin_pstack", 1, self.t - 10, solo_playbook=True)
+        self.assertEqual(_quien(evs, self.t), "sonnet")
+
+    def test_sin_la_marca_sigue_el_relevo_de_siempre(self):
+        evs = _intento("sonnet", "sin_pstack", 1, self.t - 10)
+        self.assertEqual(_quien(evs, self.t), "glm")
+
+    def test_el_segundo_solo_playbook_del_mismo_modelo_avanza(self):
+        evs = _intento(
+            "sonnet", "sin_pstack", 1, self.t - 20, solo_playbook=True
+        ) + _intento("sonnet", "sin_pstack", 2, self.t - 10, solo_playbook=True)
+        self.assertEqual(_quien(evs, self.t), "glm")
+
+    def test_el_regreso_no_gasta_la_racha_de_fallas(self):
+        from motor.plan import parse_plan
+
+        snap = m.fold(
+            parse_plan(PLAN),
+            _intento("sonnet", "sin_pstack", 1, self.t - 20, solo_playbook=True)
+            + _intento("sonnet", "sin_pstack", 2, self.t - 10, solo_playbook=True),
+        )
+        bv = snap.blocks["A"]
+        self.assertEqual([m._cuenta_falla(a, bv) for a in bv.attempts], [False, True])
+
+    def test_si_el_modelo_no_puede_correr_la_escalera_sigue(self):
+        evs = _intento("sonnet", "sin_pstack", 1, self.t - 10, solo_playbook=True) + [
+            _ev(
+                "Cooldown",
+                "",
+                {"cuenta": "anthropic", "hasta": self.t + 3600},
+                self.t - 5,
+            )
+        ]
+        self.assertEqual(_quien(evs, self.t), "glm")
+
+
 if __name__ == "__main__":
     unittest.main()

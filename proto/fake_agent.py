@@ -64,7 +64,7 @@ def main() -> int:
     ):  # deja en el registro lo que hizo con poteto-mode (fake_log.py)
         from fake_log import emite
 
-        emite(modo, primera)
+        emite(modo, primera, brief)
 
     if modo.startswith(
         "panel"

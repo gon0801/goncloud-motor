@@ -67,8 +67,10 @@ def _pstack_en_conf(conf: Path, pstack: dict) -> None:
     (mp / "motor.md").write_text("REGLA-DEL-MOTOR: no abras ni mergees PRs.\n")
     for cli in ("claude", "kimi", "opencode", "grok", "muse", "qwen"):
         (mp / f"{cli}.md").write_text(f"Mapa de {cli}.\n")
+    playbook = "playbook = true\n" if pstack.get("playbook") else ""
     celdas = "".join(
         f'[exigencia.{lane}.{papel}]\nskills = ["poteto-mode"]\n'
+        + (playbook if papel == "implementar" else "")
         for lane in ("fast", "gate", "release")
         for papel in ("implementar", "revisar")
     )

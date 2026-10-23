@@ -32,7 +32,7 @@ def main() -> int:
     ):  # deja en el registro lo que hizo con poteto-mode (fake_log.py)
         from fake_log import emite
 
-        emite(modo, not marca.exists())
+        emite(modo, not marca.exists(), brief)
         marca.write_text("1")
     if modo == "cuota_primero" and not marca.exists():
         marca.write_text("1")
