@@ -514,7 +514,7 @@ class ProgramadasTest(unittest.TestCase):
         with (
             mock.patch.object(efimeras, "lee_tareas", return_value=lectura),
         ):
-            out, codigo = cli.programadas(Path("motor-home"))
+            out, codigo = cli.programadas(Path("."))
         self.assertEqual((codigo, out["hallazgos"]), (0, []))
 
     def test_maquina_toml_invalido_o_sin_conf_no_mata_el_comando(self):
