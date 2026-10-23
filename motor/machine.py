@@ -913,6 +913,19 @@ def _mismo_bloqueante_dos_veces(bv: BlockView) -> bool:
     return len(textos) >= 2 and textos[-1] == textos[-2] and bool(textos[-1])
 
 
+def _feedback_revisor(bv: BlockView) -> tuple[str, ...]:
+    """Por qué terminó el revisor anterior, si no fue con veredicto: el siguiente lo sabe y lo corrige."""
+    revs = [a for a in bv.attempts if a.role == "revisar"]
+    if not revs or not revs[-1].ended:
+        return ()
+    o = revs[-1].ended
+    if o.get("kind") == "veredicto":
+        return ()
+    return (
+        f"El revisor anterior terminó por: {o.get('kind')} ({str(o.get('detalle', ''))[:300]}).",
+    )
+
+
 def decide(
     snap: Snapshot,
     policy: Policy,
@@ -975,7 +988,7 @@ def decide(
                 fb = (
                     diagnostico.encargo(snap, bid, policy, now)
                     if role == "implementar"
-                    else ()
+                    else _feedback_revisor(bv)
                 )
                 # nunca del texto del feedback: un cambio de plan o una Acepta fallida también lo traen
                 correccion = b.es_bug or any(not _aprobado(r) for r in bv.reviews)

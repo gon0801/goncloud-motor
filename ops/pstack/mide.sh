@@ -2,7 +2,8 @@
 # Mide, con registros reales, qué hace cada CLI de modelos con la copia fija de pstack.
 # Corre en la Mac (local), la Mini (ssh) y la PC (ssh; Muse dentro de WSL). En cada máquina baja
 # `origin/main` de goncloud-motor-conf a una carpeta temporal, copia ahí `pstack/` y `pstack-motor/`
-# (la copia fija), lanza cada CLI con su ruta real de rutas.toml y el encargo mínimo, y trae el
+# (la copia fija), lanza cada CLI con su ruta real de rutas.toml y el encargo mínimo (lanzar dos
+# subagentes que lean README.md, con la sección "Cómo trabajas" de pstack.instrucciones), y trae el
 # registro de cada corrida a tests/datos/pstack/<cli>-<maquina>/. Las carpetas temporales se borran.
 # Cada CLI corre como lo lanza el motor: el argv de su ruta tal cual (solo se sustituyen {prompt}, {brief},
 # {result}, {pstack} y {sesion}), el entorno de la máquina con secretos y sin MOTOR_*, y el registro se
@@ -20,8 +21,6 @@ aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$aqui/../.." && pwd)"
 . "$repo/ops/lib.sh"
 
-# El playbook Docs no existe en el pstack fijo: Investigation es el de solo lectura.
-PLAYBOOK="${MIDE_PLAYBOOK:-investigation}"
 TOPE_S="${MIDE_TOPE_S:-900}"
 
 juzga=0
@@ -37,6 +36,17 @@ done
 [ -f "$rutas" ] && [ -r "$rutas" ] && [ -s "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
 RUTAS_B64="$(base64 <"$rutas" | tr -d '\n')" && [ -n "$RUTAS_B64" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
 
+# La sección "Cómo trabajas" es la misma que lleva un encargo real: sale de pstack.instrucciones.
+INSTR_B64="$(python3 -I - "$repo" <<'PY' | base64 | tr -d '\n'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from motor import pstack as ps
+
+e = ps.Exigencia(min_subagentes=2)
+print(json.dumps({cli: ps.instrucciones(e, cli) for cli in ps.FORMATOS}, ensure_ascii=False))
+PY
+)" && [ -n "$INSTR_B64" ] || { echo "no pude armar las instrucciones" >&2; exit 2; }
+
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
 
@@ -45,17 +55,15 @@ import base64, json, os, re, shutil, signal, string, subprocess, sys, tempfile, 
 from pathlib import Path
 
 if len(sys.argv) != 6:
-    raise SystemExit("uso: mide.py <conf> <maquina> <playbook> <tope> <rutas_b64>")
-conf_url, maquina, playbook, tope = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-RUTAS_B64 = sys.argv[5]
+    raise SystemExit("uso: mide.py <conf> <maquina> <tope> <rutas_b64> <instr_b64>")
+conf_url, maquina, tope = sys.argv[1], sys.argv[2], int(sys.argv[3])
+RUTAS_B64 = sys.argv[4]
+INSTR = json.loads(base64.b64decode(sys.argv[5]).decode("utf-8"))
 WIN = os.name == "nt"
 HOME = Path.home()
 CLIS = ["claude", "kimi", "opencode", "grok", "muse", "qwen"]
 PREFERIDA = {"claude": "sonnet", "kimi": "k3", "opencode": "glm", "grok": "grok", "muse": "muse", "qwen": "qwen"}
-TAREA = (
-    "Carga poteto-mode, abre el playbook " + playbook + " y lanza un subagente que lea README.md. "
-    "No cambies nada."
-)
+TAREA = "Lanza dos subagentes y pídeles que lean README.md. No cambies nada."
 
 
 def corre(argv, **kw):
@@ -161,30 +169,13 @@ try:
     def raiz_de(cli):
         return ruta_wsl(str(copia)) if cli in wsl else str(copia)
 
-    def herramienta(cli):
-        return {
-            "claude": "`Skill`", "kimi": "`Skill`", "opencode": "`skill`", "muse": "`read_skill`",
-        }.get(cli)
-
     def encargo(cli):
-        raiz = raiz_de(cli)
         partes = [f"# Encargo de medición · {cli}\n\n{TAREA}\n"]
         for titulo, f in (("Lo que manda el motor sobre pstack", "motor.md"), (f"Mapa de {cli}", f"{cli}.md")):
             p = copia / "pstack-motor" / f
             if p.is_file():
                 partes.append(f"## {titulo}\n{p.read_text(encoding='utf-8').strip()}\n")
-        h = herramienta(cli)
-        cargar = f"la herramienta de skills de tu CLI ({h})" if h else "una lectura de su `SKILL.md`"
-        partes.append(
-            "## Cómo trabajas\n"
-            f"Este encargo se hace con pstack, en la copia fija `{raiz}`. Antes lee `{raiz}/pstack-motor/motor.md` "
-            f"y `{raiz}/pstack-motor/{cli}.md`.\n"
-            f"1. Carga la skill `poteto-mode` antes de tu acción número 6: con {cargar} o leyendo "
-            f"`{raiz}/pstack/skills/poteto-mode/SKILL.md`. Si no la cargas, el motor te detiene.\n"
-            f"2. Abre el playbook `{playbook}` de poteto-mode (`{raiz}/pstack/skills/poteto-mode/playbooks/{playbook}.md`).\n"
-            "3. Lanza un subagente con el mecanismo de tu CLI y pásale la ruta absoluta de la skill.\n"
-            "4. El motor lee el registro de tus herramientas, no tu resumen: lo que solo digas no cuenta.\n"
-        )
+        partes.append(INSTR[cli])
         return "\n".join(partes)
 
     def entorno_de(cli, ruta):
@@ -298,10 +289,10 @@ mide_en() {
   [ "$m" = mini ] && url=$CONF_URL_MINI
   case "$m" in
     pc)
-      ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python - $url $m $PLAYBOOK $TOPE_S $RUTAS_B64" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
+      ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python - $url $m $TOPE_S $RUTAS_B64 $INSTR_B64" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
       ;;
     *)
-      local cmd="$py_posix; \$py - $url $m $PLAYBOOK $TOPE_S $RUTAS_B64"
+      local cmd="$py_posix; \$py - $url $m $TOPE_S $RUTAS_B64 $INSTR_B64"
       if es_local "$m"; then
         bash -c "$cmd" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
       else
@@ -323,7 +314,7 @@ if __name__ == "__main__":
     sys.path.insert(0, sys.argv[2])
 from motor import pstack as ps
 
-EXIGENCIA = ps.Exigencia(playbook=True, min_subagentes=1)
+EXIGENCIA = ps.Exigencia(min_subagentes=2)
 TOPE_TEXTO = 1500
 
 
@@ -374,7 +365,7 @@ def juicio_de(c):
     candidatos = [*extras, {"fuente": "log.txt (stdout y stderr)", "texto": c["registro"]}]
     h, fuente, texto = ps.Huella(legible=False), candidatos[-1]["fuente"], c["registro"]
     for r in candidatos:
-        h = ps.huella(r["texto"], c["cli"], c["raiz"])
+        h = ps.huella(r["texto"], c["cli"])
         fuente, texto = r["fuente"], r["texto"]
         if h.legible:
             break

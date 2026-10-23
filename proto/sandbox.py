@@ -56,7 +56,7 @@ def _repo(base: Path, nombre: str, archivos: dict[str, str]) -> str:
 
 
 def _pstack_en_conf(conf: Path, pstack: dict) -> None:
-    """Una copia fija de pstack mínima y su pstack.toml (`exigir`; `skills` extra para revisar).
+    """Una copia fija de pstack mínima y su pstack.toml (`exigir`; `min_subagentes` por "lane.papel").
     Trae los archivos que pide `guias()`: los dos playbooks y el adaptador de Claude."""
     sk = conf / "pstack" / "skills" / "poteto-mode"
     (sk / "playbooks").mkdir(parents=True)
@@ -74,6 +74,11 @@ def _pstack_en_conf(conf: Path, pstack: dict) -> None:
         (mp / f"{cli}.md").write_text(f"Mapa de {cli}.\n")
     celdas = "".join(
         f'[exigencia.{lane}.{papel}]\nskills = ["poteto-mode"]\n'
+        + (
+            f"min_subagentes = {pstack['min_subagentes'][f'{lane}.{papel}']}\n"
+            if pstack.get("min_subagentes", {}).get(f"{lane}.{papel}")
+            else ""
+        )
         for lane in ("fast", "gate", "release")
         for papel in ("implementar", "revisar")
     )

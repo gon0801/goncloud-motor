@@ -485,7 +485,7 @@ class Effects:
                 texto = Path(r).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            h = ps.huella(texto, info["cli"], info["raiz"])
+            h = ps.huella(texto, info["cli"])
             fuente = r
             if h.legible:
                 break
@@ -651,19 +651,6 @@ class Effects:
             }
         )
         (d / "cupos.json").write_text(cupos, encoding="utf-8")
-        puerta: list[str] = []
-        if (
-            info_pstack and info_pstack["exigir"]
-        ):  # la puerta en vivo es parte de exigir
-            puerta = [
-                "--puerta",
-                str(info_pstack["exigencia"]["puerta"]),
-                "--cli",
-                ruta.cli,
-                "--raiz",
-                info_pstack["raiz"],
-                *[x for r in info_pstack["registros"] for x in ("--registro", r)],
-            ]
         cmd = [
             sys.executable,
             "-m",
@@ -672,7 +659,6 @@ class Effects:
             str(self.cx.home),
             "--cuenta",
             ruta.cuenta,
-            *puerta,
             "--dir",
             str(d),
             "--cwd",
@@ -781,6 +767,13 @@ avisa y espera una nota, un plan corregido o una máquina corregida.
             + (f" | Acepta: `{r.acepta}`" if r.acepta else "")
             for r in block.rows
         )
+        antes = ""
+        if a.feedback:
+            antes = (
+                "## Qué pasó antes (corrígelo primero)\n"
+                + "\n".join(f"- {x}" for x in a.feedback)
+                + "\n\n"
+            )
         return f"""{self.cx.conf.reglas_revisor}
 # Revisión {plan.id} · bloque {block.id} · SHA {a.sha}
 
@@ -788,7 +781,7 @@ Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal
 
 {filas}
 
-{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
+{antes}{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
 de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás va en `notas`.
 Escribe en `$MOTOR_RESULT`:
 {{"sha": "{a.sha}", "veredicto": "APROBADO" | "CAMBIOS",
@@ -834,8 +827,6 @@ Escribe en `$MOTOR_RESULT`:
                     "detalle": "el proceso desapareció sin dejar resultado",
                 }
         o = json.loads(oc.read_text(encoding="utf-8"))
-        if o.get("puerta"):  # runwrap lo cortó en vivo: no cargó poteto-mode a tiempo
-            return {"kind": "sin_pstack", "detalle": o["puerta"]}
         if att.role == "implementar" and self._entrego(plan, block_id, d):
             c = {
                 "kind": "terminado"

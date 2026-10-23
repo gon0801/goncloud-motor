@@ -519,7 +519,6 @@ class ProcesosTest(unittest.TestCase):
             (carpeta / "outcome.json").write_text(
                 json.dumps(
                     {
-                        "puerta": "no cargó poteto-mode",
                         "exit": 0,
                         "timed_out": False,
                         "no_progress": False,
@@ -532,7 +531,7 @@ class ProcesosTest(unittest.TestCase):
         with mock.patch("motor.effects.plataforma.estado_proc", estado):
             res = self.collect(att)
         self.assertEqual(
-            res["kind"], "sin_pstack", "se leyó el resultado, no se dio por perdido"
+            res["kind"], "sin_resultado", "se leyó el resultado, no se dio por perdido"
         )
 
 
