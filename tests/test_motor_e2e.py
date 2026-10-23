@@ -1590,11 +1590,6 @@ class TestPstack(BancoPstack):
             encoding="utf-8"
         )
         self.assertIn("sin_pstack (no cargó la skill poteto-mode)", brief2)
-        self.assertIn("playbooks/bug-fix.md", brief2)
-        brief1 = (self.intentos("implementar")[0] / "brief.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("playbooks/bug-fix.md", brief1)
         raices = {
             json.loads((d / "pstack.json").read_text())["raiz"]
             for d in self.intentos("implementar")

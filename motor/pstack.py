@@ -732,11 +732,8 @@ def juzga(h: Huella, e: Exigencia) -> Cumple | Falta:
     return Falta(tuple(faltas)) if faltas else Cumple()
 
 
-def instrucciones(
-    e: Exigencia, cli: str, raiz: str = "{pstack}", correccion: bool = False
-) -> str:
-    """La sección "Cómo trabajas" del encargo. `raiz` es la carpeta de la copia fija de pstack.
-    `correccion`: el intento arregla lo que otro dejó mal; el playbook ya no se elige, es `bug-fix`."""
+def instrucciones(e: Exigencia, cli: str, raiz: str = "{pstack}") -> str:
+    """La sección "Cómo trabajas" del encargo. `raiz` es la carpeta de la copia fija de pstack."""
     f = FORMATOS.get(cli)
     cargar = (
         f"la herramienta de skills de tu CLI ({', '.join(f'`{x}`' for x in f.skill)})"
@@ -752,16 +749,7 @@ def instrucciones(
             pasos.append(
                 f"Carga y sigue completa la skill `{s}` (`{raiz}/pstack/skills/{s}/SKILL.md`)."
             )
-    if cli == "claude":
-        pasos.append(
-            "Abre cada `SKILL.md` y el playbook con la herramienta `Read`, no con `cat` en la terminal."
-        )
-    if correccion:
-        pasos.append(
-            f"Esta es una ronda de corrección: abre el playbook `bug-fix` de `{SKILL_BASE}` "
-            f"(`{raiz}/pstack/skills/{SKILL_BASE}/playbooks/bug-fix.md`) y síguelo."
-        )
-    elif e.playbook:
+    if e.playbook:
         pasos.append(
             f"Elige un playbook de `{SKILL_BASE}` y ábrelo (`{raiz}/pstack/skills/{SKILL_BASE}/playbooks/`)."
         )

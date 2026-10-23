@@ -370,24 +370,6 @@ class TestInstrucciones(unittest.TestCase):
         ):
             self.assertIn(esperado, t)
 
-    def test_claude_pide_abrir_con_read_y_otro_cli_no(self):
-        e = ps.Exigencia()
-        self.assertIn("herramienta `Read`", ps.instrucciones(e, "claude", "/x"))
-        for cli in ("kimi", "grok", "opencode"):
-            self.assertNotIn("herramienta `Read`", ps.instrucciones(e, cli, "/x"))
-
-    def test_la_ronda_de_correccion_manda_al_playbook_bug_fix(self):
-        for e in (ps.Exigencia(), ps.Exigencia(playbook=True)):
-            con = ps.instrucciones(e, "claude", "/x/pstack/abc", correccion=True)
-            self.assertIn(
-                "/x/pstack/abc/pstack/skills/poteto-mode/playbooks/bug-fix.md", con
-            )
-            self.assertIn("ronda de corrección", con)
-            self.assertNotIn("Elige un playbook", con)
-            self.assertNotIn(
-                "playbooks/bug-fix.md", ps.instrucciones(e, "claude", "/x")
-            )
-
     def test_cli_sin_herramienta_de_skills_pide_leer_el_skill_md(self):
         t = ps.instrucciones(ps.Exigencia(), "grok", "/x")
         self.assertIn("una lectura de su `SKILL.md`", t)
