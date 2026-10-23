@@ -443,6 +443,16 @@ class ProgramadasTest(unittest.TestCase):
         )
         self.assertTrue(any("ai.demo.plist" in p for p in doc["problemas"]))
 
+    def test_doctor_no_da_ok_si_no_pudo_leer_una_fuente_del_sistema(self):
+        conf = Path(__file__).resolve().parent.parent / "conf-ejemplo"
+        (self.home / "maquina.toml").write_text(f"nombre = 'mac'\nconf = '{conf}'\n")
+        nombre = efimeras.nombres_del_sistema(Path.home())[0]
+        lectura = ({}, ["otra"], {nombre: "pasó de 30 s"}, {})
+        with mock.patch.object(efimeras, "lee_tareas", return_value=lectura):
+            doc = cli.doctor(self.home)
+        self.assertFalse(doc["ok"])
+        self.assertTrue(any("no pude leer las tareas" in p for p in doc["problemas"]))
+
     def test_lee_el_home_del_usuario_y_no_el_del_motor(self):
         usuario = self.t / "usuario"
         agents = usuario / "Library" / "LaunchAgents"
@@ -728,14 +738,29 @@ class DespliegueEfimerasTest(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertNotIn("La marcha atrás no la quitó.", r["detalle"])
 
-    def test_un_plist_truncado_no_revienta_el_despliegue_y_hace_rollback(self):
+    def test_un_plist_truncado_ajeno_no_tumba_el_despliegue(self):
         (self.agents / "roto.plist").write_bytes(
             b'<?xml version="1.0"?><plist><dict><key>a</key>'
         )
         r = self.corre(self.receta_que_deja(str(self.fijo)))
-        self.assertFalse(r["ok"])
-        self.assertTrue((self.w / "rollback-corrio").exists())
-        self.assertIn("No pude revisar las tareas programadas", r["detalle"])
+        self.assertTrue(r["ok"], r["detalle"])
+        self.assertFalse((self.w / "rollback-corrio").exists())
+
+    def test_un_plist_truncado_en_la_carpeta_es_fuente_leida_con_texto_crudo(self):
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        carpeta = home / "Library" / "LaunchAgents"
+        carpeta.mkdir(parents=True)
+        (carpeta / "roto.plist").write_bytes(
+            b'<?xml version="1.0"?><plist><dict><key>a</key><string>/x/wt/y</string>'
+        )
+        tareas, leidas, sin_leer, _ = efimeras.lee_tareas(
+            "", None, home=home, plataforma_="darwin", bash="/bin/bash"
+        )
+        self.assertIn(str(carpeta), leidas)
+        self.assertNotIn(str(carpeta), sin_leer)
+        texto = next(v for k, v in tareas.items() if k.endswith("roto.plist"))
+        self.assertTrue(efimeras.contiene(texto, "/x/wt/y", home))
 
     def test_la_misma_receta_apuntando_a_una_carpeta_fija_pasa(self):
         r = self.corre(self.receta_que_deja(str(self.fijo)))
@@ -796,10 +821,6 @@ class DespliegueEfimerasTest(unittest.TestCase):
         self.assertIn("root.plist", r["detalle"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BancoSinSistemaTest(unittest.TestCase):
     def test_el_banco_apaga_la_lectura_del_sistema_tambien_en_subprocesos(self):
         env = {**os.environ}
@@ -815,3 +836,7 @@ class BancoSinSistemaTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(r.stdout.strip(), "False", r.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

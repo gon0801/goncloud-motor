@@ -220,7 +220,16 @@ def doctor(home: Path, programadas_sistema: bool = True) -> dict:
     if not conf.avisos.get("chat"):
         out["ok"] = False
         out["problemas"].append("avisos: falta el chat de Telegram ([avisos] chat)")
-    prog, _ = programadas(home, programadas_sistema)
+    prog, codigo = programadas(home, programadas_sistema)
+    if programadas_sistema:
+        del_sistema = set(efimeras.nombres_del_sistema(Path.home()))
+        ciegas = [x for x in prog["sin_leer"] if x.split(": ", 1)[0] in del_sistema]
+        if codigo == 4 or ciegas:
+            out["ok"] = False
+            out["problemas"].append(
+                "no pude leer las tareas programadas del sistema: "
+                + "; ".join(ciegas or prog["sin_leer"] or ["ninguna fuente"])
+            )
     nombres = sorted({h["tarea"] for h in prog["hallazgos"]})
     out["programadas"] = {"en_carpetas_del_motor": len(nombres), "tareas": nombres}
     if nombres:
@@ -459,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{h['tarea']} apunta a {h['carpeta']}")
             for x in out["sin_leer"]:
                 print(f"sin leer: {x}")
+            for x in out.get("negados", []):
+                print(f"negado: {x}")
             print(
                 f"{len(out['hallazgos'])} tareas en carpetas del motor; "
                 f"{len(out['leidas'])} fuentes leídas"
