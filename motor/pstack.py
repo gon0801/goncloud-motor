@@ -548,41 +548,23 @@ def juzga(h: Huella, e: Exigencia) -> Cumple | Falta:
     return Falta(tuple(faltas)) if faltas else Cumple()
 
 
-def instrucciones(e: Exigencia, cli: str, raiz: str = "{pstack}") -> str:
-    """La sección "Cómo trabajas" del encargo. `raiz` es la carpeta de la copia fija de pstack."""
-    f = FORMATOS.get(cli)
-    cargar = (
-        f"la herramienta de skills de tu CLI ({', '.join(f'`{x}`' for x in f.skill)})"
-        if f and f.skill
-        else "una lectura de su `SKILL.md`"
-    )
+def instrucciones(e: Exigencia, cli: str) -> str:
+    """La sección "Cómo trabajas" del encargo; sale de la misma exigencia que luego juzga.
+    No pide cargar ni abrir nada: las guías van completas en el anexo del encargo."""
     pasos = [
-        f"Carga la skill `{SKILL_BASE}` antes de tu acción número {e.puerta}: con {cargar} "
-        f"o leyendo `{raiz}/pstack/skills/{SKILL_BASE}/SKILL.md`. Si no la cargas, el motor te detiene."
+        "Las guías que pide este intento van completas en «## Anexo: tus guías», al final del "
+        "encargo. Las rutas que una guía menciona son relativas a la carpeta de esa guía.",
     ]
-    for s in e.skills:
-        if s != SKILL_BASE:
-            pasos.append(
-                f"Carga y sigue completa la skill `{s}` (`{raiz}/pstack/skills/{s}/SKILL.md`)."
-            )
-    if e.playbook:
-        pasos.append(
-            f"Elige un playbook de `{SKILL_BASE}` y ábrelo (`{raiz}/pstack/skills/{SKILL_BASE}/playbooks/`)."
-        )
-    if e.todos:
-        pasos.append("Lleva tu lista de tareas con la herramienta de tareas de tu CLI.")
     if e.min_subagentes:
         pasos.append(
-            f"Lanza al menos {e.min_subagentes} subagente(s) reales de tu CLI cuando el playbook lo pida."
+            f"Lanza al menos {e.min_subagentes} subagente(s) con la herramienta de subagentes de "
+            "tu CLI. En Kimi, cada elemento de `items` de `AgentSwarm` cuenta como un subagente."
         )
     pasos.append(
-        "El motor lee el registro de tus herramientas, no tu resumen: lo que solo digas no cuenta."
+        "El motor juzga lo que haces, no lo que lees: lo que solo digas no cuenta."
     )
     cuerpo = "\n".join(f"{i}. {p}" for i, p in enumerate(pasos, 1))
-    return (
-        f"## Cómo trabajas\nEste encargo se hace con pstack, en la copia fija `{raiz}`. "
-        f"Antes lee `{raiz}/pstack-motor/motor.md` y `{raiz}/pstack-motor/{cli}.md`.\n{cuerpo}\n"
-    )
+    return f"## Cómo trabajas\nEste encargo se hace con pstack.\n{cuerpo}\n"
 
 
 # --------------------------------------------------------------------------- conf (pstack.toml)

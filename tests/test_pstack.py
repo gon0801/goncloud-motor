@@ -350,30 +350,25 @@ class TestPuerta(unittest.TestCase):
 
 
 class TestInstrucciones(unittest.TestCase):
-    def test_la_seccion_sale_de_la_misma_exigencia_que_juzga(self):
-        e = ps.Exigencia(
-            skills=("poteto-mode", "interrogate"),
-            playbook=True,
-            todos=True,
-            min_subagentes=2,
-        )
-        t = ps.instrucciones(e, "claude", "/x/pstack/abc")
+    def test_no_pide_cargar_nada_las_guias_van_en_el_anexo(self):
+        t = ps.instrucciones(ps.Exigencia(), "claude")
         self.assertTrue(t.startswith("## Cómo trabajas"))
-        for esperado in (
-            "antes de tu acción número 6",
-            "`interrogate`",
-            "playbook",
-            "lista de tareas",
-            "al menos 2 subagente",
-            "/x/pstack/abc/pstack-motor/claude.md",
-            "no tu resumen",
+        self.assertIn("## Anexo: tus guías", t)
+        self.assertIn("relativas a la carpeta de esa guía", t)
+        self.assertIn("juzga lo que haces, no lo que lees", t)
+        for prohibido in (
+            "antes de tu acción",
+            "ábrelo",
+            "te detiene",
+            "Carga la skill",
         ):
-            self.assertIn(esperado, t)
+            self.assertNotIn(prohibido, t)
 
-    def test_cli_sin_herramienta_de_skills_pide_leer_el_skill_md(self):
-        t = ps.instrucciones(ps.Exigencia(), "grok", "/x")
-        self.assertIn("una lectura de su `SKILL.md`", t)
-        self.assertNotIn("playbook", t)
+    def test_con_subagentes_dice_cuantos_y_como_cuenta_agentswarm_en_kimi(self):
+        t = ps.instrucciones(ps.Exigencia(min_subagentes=2), "kimi")
+        self.assertIn("al menos 2 subagente(s)", t)
+        self.assertIn("AgentSwarm", t)
+        self.assertNotIn("subagente", ps.instrucciones(ps.Exigencia(), "kimi"))
 
 
 class TestConf(unittest.TestCase):

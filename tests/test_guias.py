@@ -6,11 +6,20 @@
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
+import tempfile
 import time
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
+from motor import effects as ef
 from motor import machine as m
 from motor import pstack as ps
+from motor.conf import RepoConf, load_conf
 from motor.guias import guias
 from motor.plan import parse_plan
 from motor.store import Event
@@ -160,6 +169,161 @@ class TestGuias(unittest.TestCase):
     def test_claude_lleva_el_adaptador_y_kimi_no(self):
         self.assertEqual(guias(GATE_IMPL, "claude", False)[-1], ADAPTADOR)
         self.assertNotIn(ADAPTADOR, guias(GATE_IMPL, "kimi", False))
+
+
+def _conf_falsa(tmp: Path) -> Path:
+    """Una conf mínima con copia de pstack: todas las guías que `guias()` puede pedir."""
+    conf = tmp / "conf"
+    (conf / "reglas").mkdir(parents=True)
+    (conf / "reglas" / "encargo.md").write_text("Reglas del encargo.\n")
+    (conf / "reglas" / "revisor.md").write_text("Reglas del revisor.\n")
+    (conf / "papeles.toml").write_text(
+        '[papeles]\nimplementar = "codigo"\nrevisar = "revisar"\n'
+    )
+    (conf / "modelos.toml").write_text(
+        '[carriles]\ncodigo = ["sonnet"]\nrevisar = ["opus"]\n'
+    )
+    (conf / "rutas.toml").write_text(
+        '[rutas.sonnet]\ncuenta = "anthropic"\ncli = "claude"\n'
+        'argv = ["claude", "{prompt}"]\n'
+        '[rutas.opus]\ncuenta = "anthropic"\ncli = "claude"\n'
+        'argv = ["claude", "{prompt}"]\n'
+    )
+    sk = conf / "pstack" / "skills" / "poteto-mode"
+    (sk / "playbooks").mkdir(parents=True)
+    (sk / "SKILL.md").write_text("# poteto-mode\nmodo de trabajo\n")
+    (sk / "playbooks" / "feature.md").write_text("# playbook feature\n")
+    (sk / "playbooks" / "bug-fix.md").write_text("# playbook bug-fix\n")
+    it = conf / "pstack" / "skills" / "interrogate"
+    it.mkdir()
+    (it / "SKILL.md").write_text("# interrogate\nrevisa en serio\n")
+    arnes = conf / "pstack" / "docs" / "harness"
+    arnes.mkdir(parents=True)
+    (arnes / "claude-code.md").write_text("# adaptador de Claude Code\n")
+    (conf / "pstack" / "ORIGEN").write_text("origen: prueba abc1234567\n")
+    mp = conf / "pstack-motor"
+    mp.mkdir()
+    (mp / "motor.md").write_text("REGLA-DEL-MOTOR: no abras ni mergees PRs.\n")
+    (mp / "claude.md").write_text("Mapa de claude.\n")
+    celdas = "".join(
+        f'[exigencia.{lane}.{papel}]\nskills = ["poteto-mode", "interrogate"]\n'
+        "playbook = true\n"
+        for lane in ("fast", "gate", "release")
+        for papel in ("implementar", "revisar")
+    )
+    (conf / "pstack.toml").write_text(
+        f'[pstack]\ncommit = "abc1234567"\nexigir = true\n{celdas}'
+    )
+    return conf
+
+
+def _briefs(conf_dir: Path, tmp: Path) -> dict[str, tuple[str, dict]]:
+    """El encargo completo (con anexo) de implementar y de revisar en gate, con feedback vacío."""
+    conf = load_conf(conf_dir)
+    fx = ef.Effects(
+        SimpleNamespace(
+            home=tmp / "home",
+            conf=conf,
+            ws=SimpleNamespace(rama=lambda p, b: f"motor/{p}/{b}"),
+        )
+    )
+    cwd = tmp / "repo"
+    cwd.mkdir(exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=cwd, check=True)
+    plan = parse_plan(PLAN)
+    block = plan.block("A")
+    rc = RepoConf.parse('[repo]\nprincipal = "main"\n')
+    briefs = {}
+    for role in ("implementar", "revisar"):
+        a = m.StartAttempt("A", role, "sonnet", 1, "a" * 40, (), False)
+        d = tmp / f"intento-{role}"
+        d.mkdir(exist_ok=True)
+        info = fx._prepara_pstack(d, "gate", role, "claude", cwd, "s1", a.correccion)
+        seccion = fx._seccion_pstack(info)
+        if role == "implementar":
+            brief = fx._brief_implementar(plan, block, a, cwd, rc, seccion)
+        else:
+            brief = fx._brief_revisar(plan, block, a, rc, seccion)
+        briefs[role] = (brief + fx._anexo_guias(info), info)
+    return briefs
+
+
+class TestEncargo(unittest.TestCase):
+    """A.2: el encargo lleva las guías completas en «## Anexo: tus guías», al final."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pstack-encargo-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.conf_dir = _conf_falsa(self.tmp)
+        self.briefs = _briefs(self.conf_dir, self.tmp)
+
+    def test_la_entrega_va_antes_del_anexo(self):
+        impl, _ = self.briefs["implementar"]
+        rev, _ = self.briefs["revisar"]
+        anexo_impl = impl.index("\n## Anexo: tus guías\n")
+        anexo_rev = rev.index("\n## Anexo: tus guías\n")
+        self.assertLess(impl.index("## Cómo se entrega"), anexo_impl)
+        self.assertLess(rev.index("MOTOR_RESULT"), anexo_rev)
+
+    def test_ningun_encargo_habla_de_cargar_ni_de_detenerse(self):
+        for brief, _ in self.briefs.values():
+            for prohibido in ("antes de tu acción", "ábrelo", "te detiene"):
+                self.assertNotIn(prohibido, brief)
+
+    def test_el_anexo_trae_cada_guia_completa_con_su_ruta(self):
+        for brief, info in self.briefs.values():
+            raiz = Path(info["raiz"])
+            for g in info["guias"]:
+                self.assertIn(f"### {g['ruta']}", brief)
+                self.assertIn(str(raiz / g["ruta"]), brief)
+                self.assertIn(
+                    (raiz / g["ruta"]).read_text(encoding="utf-8").strip(), brief
+                )
+        _, info = self.briefs["implementar"]
+        guardado = json.loads(
+            (self.tmp / "intento-implementar" / "pstack.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        raiz = Path(info["raiz"])
+        self.assertEqual(
+            guardado["guias"],
+            [
+                {"ruta": g, "bytes": (raiz / g).stat().st_size}
+                for g in guias(GATE_REV, "claude", False)
+            ],
+        )
+
+    def test_si_falta_una_guia_el_intento_no_se_lanza_y_el_error_la_nombra(self):
+        os.remove(self.conf_dir / FEATURE)
+        conf = load_conf(self.conf_dir)
+        fx = ef.Effects(
+            SimpleNamespace(
+                home=self.tmp / "home2",
+                conf=conf,
+                ws=SimpleNamespace(rama=lambda p, b: f"motor/{p}/{b}"),
+            )
+        )
+        d = self.tmp / "intento-roto"
+        d.mkdir()
+        with self.assertRaises(FileNotFoundError) as cm:
+            fx._prepara_pstack(
+                d, "gate", "implementar", "claude", self.tmp, "s2", False
+            )
+        self.assertIn(FEATURE, str(cm.exception))
+        self.assertFalse((d / "pstack.json").exists())
+
+    def test_con_la_conf_real_el_encargo_cabe_en_45_kb(self):
+        real = os.environ.get("MOTOR_CONF_REAL")
+        if not real:
+            self.skipTest("sin MOTOR_CONF_REAL")
+        tmp = Path(tempfile.mkdtemp(prefix="pstack-encargo-real-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        for role, (brief, _) in _briefs(Path(real), tmp).items():
+            kb = len(brief.encode("utf-8")) / 1024
+            self.assertLess(
+                len(brief.encode("utf-8")), 45 * 1024, f"{role}: {kb:.1f} KB"
+            )
 
 
 if __name__ == "__main__":

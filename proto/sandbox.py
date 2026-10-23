@@ -56,11 +56,16 @@ def _repo(base: Path, nombre: str, archivos: dict[str, str]) -> str:
 
 
 def _pstack_en_conf(conf: Path, pstack: dict) -> None:
-    """Una copia fija de pstack mínima y su pstack.toml (`exigir`; `skills` extra para revisar)."""
+    """Una copia fija de pstack mínima y su pstack.toml (`exigir`; `skills` extra para revisar).
+    Trae los archivos que pide `guias()`: los dos playbooks y el adaptador de Claude."""
     sk = conf / "pstack" / "skills" / "poteto-mode"
     (sk / "playbooks").mkdir(parents=True)
     (sk / "SKILL.md").write_text("# poteto-mode\n")
-    (sk / "playbooks" / "docs.md").write_text("# docs\n")
+    (sk / "playbooks" / "feature.md").write_text("# feature\n")
+    (sk / "playbooks" / "bug-fix.md").write_text("# bug-fix\n")
+    arnes = conf / "pstack" / "docs" / "harness"
+    arnes.mkdir(parents=True)
+    (arnes / "claude-code.md").write_text("# adaptador de Claude Code\n")
     (conf / "pstack" / "ORIGEN").write_text("origen: prueba abc1234567\n")
     mp = conf / "pstack-motor"
     mp.mkdir()

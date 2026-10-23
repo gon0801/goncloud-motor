@@ -388,14 +388,29 @@ class Effects:
         return copia
 
     def _prepara_pstack(
-        self, d: Path, lane: str, role: str, cli: str, cwd: Path, sesion: str
+        self,
+        d: Path,
+        lane: str,
+        role: str,
+        cli: str,
+        cwd: Path,
+        sesion: str,
+        correccion: bool,
     ) -> dict | None:
         """Fija lo que este intento exige y dónde se lee su registro; lo guarda en `pstack.json`.
-        `collect` juzga contra esto, no contra la conf de entonces: la conf puede cambiar a medias."""
+        `collect` juzga contra esto, no contra la conf de entonces: la conf puede cambiar a medias.
+        Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo."""
         pc, copia = self.cx.conf.pstack, self.asegura_pstack()
         if pc is None or copia is None:
             return None
         arbol, raiz = copia
+        e = pc.exigencia(lane, role)
+        lista = guias(e, cli, correccion)
+        for rel in lista:
+            if not (raiz / rel).is_file():
+                raise FileNotFoundError(
+                    f"falta la guía {rel} en la copia fija {raiz}: el intento no se lanza"
+                )
         registros = []
         if cli == "claude":  # el transcript de la sesión que fijamos con --session-id
             base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
@@ -413,11 +428,14 @@ class Effects:
             "lane": lane,
             "role": role,
             "exigir": pc.exigir,
-            "exigencia": pc.exigencia(lane, role).to_dict(),
+            "exigencia": e.to_dict(),
             "arbol": arbol,
             "raiz": str(raiz),
             "sesion": sesion,
             "registros": [*registros, str(d / "log.txt")],
+            "guias": [
+                {"ruta": rel, "bytes": (raiz / rel).stat().st_size} for rel in lista
+            ],
         }
         texto = json.dumps(info, ensure_ascii=False)
         (d / "pstack.json").write_text(texto, encoding="utf-8")
@@ -436,10 +454,21 @@ class Effects:
             if f.is_file():
                 partes.append(f"## {titulo}\n{f.read_text(encoding='utf-8').strip()}\n")
         partes.append(
-            ps.instrucciones(
-                ps.Exigencia.from_dict(info["exigencia"]), info["cli"], str(raiz)
-            )
+            ps.instrucciones(ps.Exigencia.from_dict(info["exigencia"]), info["cli"])
         )
+        return "\n".join(partes) + "\n"
+
+    def _anexo_guias(self, info: dict | None) -> str:
+        """Las guías completas al final del encargo: un título por archivo y su ruta absoluta."""
+        if info is None:
+            return ""
+        raiz = Path(info["raiz"])
+        partes = ["## Anexo: tus guías\n"]
+        for g in info["guias"]:
+            f = raiz / g["ruta"]
+            partes.append(
+                f"### {g['ruta']}\n`{f}`\n\n{f.read_text(encoding='utf-8').strip()}\n"
+            )
         return "\n".join(partes) + "\n"
 
     def _juzga_pstack(self, d: Path) -> dict | None:
@@ -562,15 +591,22 @@ class Effects:
         if not marca_sesion.exists():
             marca_sesion.write_text(str(uuid.uuid4()), encoding="utf-8")
         sesion = marca_sesion.read_text(encoding="utf-8").strip()
-        info_pstack = self._prepara_pstack(d, block.lane, a.role, ruta.cli, cwd, sesion)
+        info_pstack = self._prepara_pstack(
+            d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion
+        )
         seccion = self._seccion_pstack(info_pstack)
         if a.role == "implementar":
             brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
         else:
             brief = self._brief_revisar(plan, block, a, rc, seccion)
+        brief += self._anexo_guias(info_pstack)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
-        prompt = f"Lee {d / 'brief.md'} y ejecútalo completo sin preguntar nada."
+        kb = max(1, round(len(brief.encode("utf-8")) / 1024))
+        prompt = (
+            f"Lee el encargo completo en {d / 'brief.md'} ({kb} KB) con tu herramienta "
+            "de lectura de archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
+        )
         argv = [
             x.format(
                 brief=str(d / "brief.md"),
