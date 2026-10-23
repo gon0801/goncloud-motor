@@ -94,10 +94,10 @@ reset
 # El motor exporta MOTOR_RAIZ (su propia carpeta, sin git) a quien despliega: no debe romper la instalación.
 export MOTOR_RAIZ="$S/no-es-repo"
 en_mac espera "instala en las tres" 0 bash "$I"
-[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.26^{commit}")" = "$SHA" ] || fallo "la etiqueta v1.0.26 no quedó en el SHA mergeado"
+[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.27^{commit}")" = "$SHA" ] || fallo "la etiqueta v1.0.27 no quedó en el SHA mergeado"
 for m in mac mini; do
   [ "$(git -C "$S/$m/motor" rev-parse HEAD)" = "$SHA" ] || fallo "$m: ~/motor no está en la etiqueta"
-  [ "$(git -C "$S/$m/motor" describe --tags --exact-match)" = v1.0.26 ] || fallo "$m: ~/motor sin v1.0.26"
+  [ "$(git -C "$S/$m/motor" describe --tags --exact-match)" = v1.0.27 ] || fallo "$m: ~/motor sin v1.0.27"
   [ -d "$S/$m/motor-conf/.git" ] || fallo "$m: falta ~/motor-conf"
   cmp -s "$S/conf-src/maquinas/$m.toml" "$S/$m/.motor/maquina.toml" || fallo "$m: maquina.toml no es el de la conf"
   [ "$(readlink "$S/$m/.motor/conf")" = "$S/$m/motor-conf" ] || fallo "$m: ~/.motor/conf no enlaza a ~/motor-conf"
@@ -110,9 +110,9 @@ contiene "sudoers mini" "$S/mini/.motor/instalar-servicio.txt" "/sbin/shutdown"
 tar -xf "$S/pc-recibido.tar" -O instalar-servicio.txt >"$S/pc.txt" 2>/dev/null
 contiene "txt de la PC" "$S/pc.txt" "motor instala --maquina pc"
 contiene "txt de la PC" "$S/pc.txt" "schtasks /create"
-contiene "la PC usa la etiqueta" "$FAKE_LOG" "refs/tags/v1.0.26"
+contiene "la PC usa la etiqueta" "$FAKE_LOG" "refs/tags/v1.0.27"
 contiene "la PC clona la conf" "$FAKE_LOG" "motor-conf"
-contiene "la Mini clona por su URL" "$FAKE_LOG" "mini v1.0.26 $S/origen-mini.git $S/conf-mini.git"
+contiene "la Mini clona por su URL" "$FAKE_LOG" "mini v1.0.27 $S/origen-mini.git $S/conf-mini.git"
 contiene "la PC enlaza la conf" "$FAKE_LOG" "mklink /j"
 grep -qE 'dev/goncloud-motor|\.motor-arranque' "$FAKE_LOG" && fallo "tocó ~/dev/goncloud-motor o ~/.motor-arranque"
 [ -e "$S/mac/dev" ] || [ -e "$S/mac/.motor-arranque" ] && fallo "creó carpetas ajenas en la Mac"
@@ -124,14 +124,14 @@ en_mac espera "segunda corrida (actualiza, no reclona)" 0 bash "$I"
 for m in mac mini; do [ ! -e "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: anotó etiqueta-anterior sin cambio de etiqueta"; done
 [ ! -e "$S/pc-etiqueta-anterior" ] || fallo "pc: anotó etiqueta-anterior sin cambio de etiqueta"
 
-# una etiqueta avanzada por otro commit: la segunda corrida respeta la v1.0.26 existente
+# una etiqueta avanzada por otro commit: la segunda corrida respeta la v1.0.27 existente
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m otro && git -C "$S/trabajo" push -q origin HEAD:main
 en_mac espera "la etiqueta existente se respeta" 0 bash "$I"
-[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.26^{commit}")" = "$SHA" ] || fallo "la etiqueta existente se movió"
+[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.27^{commit}")" = "$SHA" ] || fallo "la etiqueta existente se movió"
 for m in mac mini; do [ "$(git -C "$S/$m/motor" rev-parse HEAD)" = "$SHA" ] || fallo "$m: ~/motor dejó la etiqueta cuando main avanzó"; done
 
 echo "# instalar con fallas"
-reset; git -C "$S/origen.git" tag -d v1.0.26 >/dev/null
+reset; git -C "$S/origen.git" tag -d v1.0.27 >/dev/null
 FAKE_CAE="gon@mini-fake" en_mac espera "ssh a la Mini falla" '!0' bash "$I"
 contiene "dice cuál" "$S/salida" "mini"
 [ -d "$S/mac/motor/.git" ] || fallo "la Mac debía instalarse aunque la Mini fallara"
@@ -139,32 +139,32 @@ reset
 FAKE_PC_FALLA=1 en_mac espera "el remoto de la PC falla" '!0' bash "$I"
 contiene "dice cuál" "$S/salida" "pc"
 
-reset; git -C "$S/origen.git" tag -d v1.0.26 >/dev/null
+reset; git -C "$S/origen.git" tag -d v1.0.27 >/dev/null
 git -C "$S/trabajo" checkout -q --detach HEAD
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m sin-mergear
 en_mac espera "SHA sin mergear no se etiqueta" '!0' bash "$I"
-git -C "$S/origen.git" rev-parse -q --verify refs/tags/v1.0.26 >/dev/null && fallo "etiquetó un SHA sin mergear"
+git -C "$S/origen.git" rev-parse -q --verify refs/tags/v1.0.27 >/dev/null && fallo "etiquetó un SHA sin mergear"
 git -C "$S/trabajo" reset -q --hard origin/main
 
-# una v1.0.26 local (no está en origin) sobre un commit sin mergear no debe publicarse
-reset; git -C "$S/origen.git" tag -d v1.0.26 >/dev/null 2>&1
+# una v1.0.27 local (no está en origin) sobre un commit sin mergear no debe publicarse
+reset; git -C "$S/origen.git" tag -d v1.0.27 >/dev/null 2>&1
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m viejo-sin-mergear
-git -C "$S/trabajo" tag -f v1.0.26 >/dev/null
+git -C "$S/trabajo" tag -f v1.0.27 >/dev/null
 git -C "$S/trabajo" reset -q --hard origin/main
 SHA="$(git -C "$S/trabajo" rev-parse HEAD)"
 en_mac espera "etiqueta local vieja no se publica" 0 bash "$I"
-[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.26^{commit}")" = "$SHA" ] || fallo "origin quedó con v1.0.26 en otro commit que el SHA mergeado"
+[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.27^{commit}")" = "$SHA" ] || fallo "origin quedó con v1.0.27 en otro commit que el SHA mergeado"
 
 echo "# red transitoria"
 # El repo del despliegue lo comparte el daemon (fetcha seguido): un fetch puede chocar con un lock.
-reset; git -C "$S/origen.git" tag -d v1.0.26 >/dev/null 2>&1; rm -f "$S/fetch-fallo"
+reset; git -C "$S/origen.git" tag -d v1.0.27 >/dev/null 2>&1; rm -f "$S/fetch-fallo"
 FAKE_GIT_FETCH_FALLA=1 en_mac espera "un fetch que falla una vez se reintenta" 0 bash "$I"
-[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.26^{commit}")" = "$SHA" ] || fallo "no quedó la etiqueta tras el reintento"
+[ "$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.27^{commit}")" = "$SHA" ] || fallo "no quedó la etiqueta tras el reintento"
 
 # Sin respuesta de origin no se sabe si la etiqueta existe: peor que fallar es pisarla o duplicarla.
-reset; git -C "$S/origen.git" tag -d v1.0.26 >/dev/null 2>&1
+reset; git -C "$S/origen.git" tag -d v1.0.27 >/dev/null 2>&1
 FAKE_GIT_LSREMOTO_FALLA=1 en_mac espera "ls-remote caído no es etiqueta ausente" '!0' bash "$I"
-git -C "$S/origen.git" rev-parse -q --verify refs/tags/v1.0.26 >/dev/null && fallo "etiquetó sin poder consultar origin"
+git -C "$S/origen.git" rev-parse -q --verify refs/tags/v1.0.27 >/dev/null && fallo "etiquetó sin poder consultar origin"
 
 echo "# desinstalar"
 reset; en_mac bash "$I" >/dev/null 2>&1
@@ -187,25 +187,25 @@ FAKE_CAE=gwpc FAKE_PC_TAREA_RC=1 en_mac espera "sin ssh a la PC" '!0' bash "$D"
 echo "# marcha atrás"
 V="$RAIZ/ops/vuelve-a-la-anterior.sh"
 reset
-# v1.0.26 ya existe de las secciones de arriba sobre el mismo SHA: se borra para que la
+# v1.0.27 ya existe de las secciones de arriba sobre el mismo SHA: se borra para que la
 # entrega nueva la cree sobre un commit distinto (si no, describe no distingue las etiquetas).
-git -C "$S/origen.git" tag -d v1.0.26 >/dev/null
+git -C "$S/origen.git" tag -d v1.0.27 >/dev/null
 MOTOR_ETIQUETA=v1.0.23 en_mac espera "entrega anterior en v1.0.23" 0 bash "$I"
 unset MOTOR_ETIQUETA
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m avance && git -C "$S/trabajo" push -q origin HEAD:main
 touch "$S/mac/.cargado" "$S/mini/.cargado"
-en_mac espera "entrega nueva en v1.0.26" 0 bash "$I"
+en_mac espera "entrega nueva en v1.0.27" 0 bash "$I"
 for m in mac mini; do
   contiene "marca $m" "$S/$m/.motor/etiqueta-anterior" "v1.0.23"
-  [ "$(git -C "$S/$m/motor" describe --tags --exact-match)" = v1.0.26 ] || fallo "$m: no quedó en v1.0.26"
+  [ "$(git -C "$S/$m/motor" describe --tags --exact-match)" = v1.0.27 ] || fallo "$m: no quedó en v1.0.27"
 done
 contiene "marca pc" "$S/pc-etiqueta-anterior" "v1.0.23"
-[ "$(cat "$S/pc-tag")" = v1.0.26 ] || fallo "pc: no quedó en v1.0.26"
+[ "$(cat "$S/pc-tag")" = v1.0.27 ] || fallo "pc: no quedó en v1.0.27"
 
 # Sin marca la máquina no se mueve y no es error.
 rm "$S/mac/.motor/etiqueta-anterior"
 en_mac espera "marcha atrás en las tres" 0 bash "$V"
-[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.26 ] || fallo "mac: se movió sin marca"
+[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.27 ] || fallo "mac: se movió sin marca"
 [ "$(git -C "$S/mini/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mini: no volvió a v1.0.23"
 [ "$(cat "$S/pc-tag")" = v1.0.23 ] || fallo "pc: no volvió a v1.0.23"
 [ -e "$S/mac/.cargado" ] && [ -e "$S/mini/.cargado" ] || fallo "la marcha atrás descargó el servicio"
@@ -219,7 +219,7 @@ MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23" 0 bash "$I"
 unset MOTOR_ETIQUETA
 touch "$S/mac/.cargado" "$S/mini/.cargado"
 FAKE_CAE="gon@mini-fake" en_mac espera "entrega que falla en la Mini" '!0' bash "$I"
-[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.26 ] || fallo "mac: no quedó en v1.0.26"
+[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.27 ] || fallo "mac: no quedó en v1.0.27"
 [ "$(git -C "$S/mini/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mini: se movió pese al ssh caído"
 FAKE_CAE="gon@mini-fake" en_mac espera "marcha atrás con la Mini caída" '!0' bash "$V"
 contiene "dice cuál" "$S/salida" "mini"
@@ -246,12 +246,12 @@ en_su_etiqueta() { # en_su_etiqueta <caso> <etiqueta de antes de la entrega>
 # puede bajar a nadie a la marca de la entrega anterior.
 reset
 dos_entregas v1.0.22 v1.0.23
-git -C "$S/origen.git" tag -d v1.0.26 >/dev/null
-export MOTOR_ETIQUETA=v1.0.26
-FAKE_GIT_LSREMOTO_FALLA=1 en_mac espera "entrega v1.0.26 falla antes de tocar las máquinas" '!0' bash "$I"; unset FAKE_GIT_LSREMOTO_FALLA
+git -C "$S/origen.git" tag -d v1.0.27 >/dev/null
+export MOTOR_ETIQUETA=v1.0.27
+FAKE_GIT_LSREMOTO_FALLA=1 en_mac espera "entrega v1.0.27 falla antes de tocar las máquinas" '!0' bash "$I"; unset FAKE_GIT_LSREMOTO_FALLA
 en_su_etiqueta "precondición: la entrega no tocó las máquinas" v1.0.23
 en_mac espera "marcha atrás de una entrega que no tocó las máquinas" 0 bash "$V"
-contiene "dice que se queda" "$S/salida" "no está en v1.0.26; se queda"
+contiene "dice que se queda" "$S/salida" "no está en v1.0.27; se queda"
 en_su_etiqueta "entrega que no tocó las máquinas" v1.0.23
 unset MOTOR_ETIQUETA
 
