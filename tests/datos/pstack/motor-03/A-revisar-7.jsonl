@@ -1,0 +1,55 @@
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-1"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "cat /Users/dn/.motor/intentos/motor-03/A-revisar-7/brief.md"}}}, "tool_call_id": "recorte-5"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-9"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-10"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "git log --oneline -8 && git status --short && git diff main --stat"}}}, "tool_call_id": "recorte-11"}
+{"type": "tool_use", "part": {"tool": "skill", "state": {"input": {}}}, "tool_call_id": "recorte-15"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "git merge-base main HEAD && git log --oneline 0d7b239..HEAD && git diff 0d7b239..HEAD --stat"}}}, "tool_call_id": "recorte-16"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-20"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "echo \"MOTOR_RESULT=$MOTOR_RESULT\"; ls \"$MOTOR_RESULT\" 2>/dev/null && cat \"$MOTOR_RESULT\" 2>/dev/null"}}}, "tool_call_id": "recorte-21"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-25"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-26"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-27"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-28"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "cat ~/.cursor/rules/pstack-models.mdc 2>/dev/null || echo \"NO_RULES_FILE\""}}}, "tool_call_id": "recorte-29"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-33"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "git diff 0d7b239..HEAD -- motor/effects.py motor/aparte.py motor/plataforma/windows.py tests/__init__.py tests/test_diagnostico.py tests/test_github_despliegue.py tests/test_puro.py"}}}, "tool_call_id": "recorte-34"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "git diff 0d7b239..HEAD -- motor/__main__.py"}}}, "tool_call_id": "recorte-38"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-42"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "grep -n \"_cola\\|RECETA = \\|def _run\\|def deploy\\|def _deploy_data\" motor/effects.py | head -30"}}}, "tool_call_id": "recorte-46"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "grep -rn \"doctor(\" motor/ tests/ --include=\"*.py\" | grep -v \"def doctor\" | head -20; echo ---; grep -rn \"DSN\\|dsn\" motor/ --include=\"*.py\" | head -20; echo ---; grep -rn \"autocommit\\|isolation_level\" "}}}, "tool_call_id": "recorte-47"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "python3 -m unittest tests.test_efimeras 2>&1 | tail -15"}}}, "tool_call_id": "recorte-48"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-52"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-53"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "grep -rn \"CHECK (\" motor/ ops/ --include=\"*.py\" --include=\"*.sh\" | head; echo ---; grep -rni \"dsn\" . --include=\"*.py\" --include=\"*.toml\" --include=\"*.sh\" --include=\"*.md\" -l 2>/dev/null | head; echo -"}}}, "tool_call_id": "recorte-54"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "cat conf-ejemplo/reglas/revisor.md; echo ===; git diff main..HEAD -- motor/store.py | head -60"}}}, "tool_call_id": "recorte-57"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "grep -rn \"login\" motor/github.py motor/claves.py | head -25"}}}, "tool_call_id": "recorte-60"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "git diff main..HEAD -- motor/store.py"}}}, "tool_call_id": "recorte-61"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "python3 -c \"\nimport plistlib\nb = b'<?xml version=\\\"1.0\\\"?><plist><dict><key>a</key>'\ntry:\n    r = plistlib.loads(b)\n    print('loads ok:', repr(r))\nexcept Exception as e:\n    print('raises:', type(e)."}}}, "tool_call_id": "recorte-65"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "python3 -c \"\nimport plistlib, plistlib as pl\n# texto plano (receta cat > <<EOF)\nfor name, b in [\n    ('texto-plano', b'/tmp/fijo/run.sh\\n'),\n    ('sin-declaracion', b'<plist><dict><key>a</key><string>"}}}, "tool_call_id": "recorte-69"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "U=/private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/opencode/revprog\nrm -rf $U; mkdir -p $U/u/Library/LaunchAgents $U/h\nprintf '<?xml version=\"1.0\"?><plist><dict><key>a</key>' > $U/u/Library/La"}}}, "tool_call_id": "recorte-73"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "R=/private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/opencode/rev-old\nrm -rf $R\ngit clone -q /Users/dn/.motor/intentos/motor-03/A-revisar-7/revision $R\ncd $R\ngit checkout -q 0d7b239\ngit --git-di"}}}, "tool_call_id": "recorte-74"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "python3 -m unittest 2>&1 | tail -5"}}}, "tool_call_id": "recorte-75"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "python3 -m unittest 2>&1 | grep -E \"^(FAIL|ERROR):|^FAILED|^Ran|^OK\" "}}}, "tool_call_id": "recorte-79"}
+{"type": "tool_use", "part": {"tool": "execute", "state": {"input": {}}}, "tool_call_id": "recorte-80"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "git diff main..HEAD | grep -inE \"token-[a-z0-9]{20}|token-|xox[bap]-|AKIA[0-9A-Z]{16}|-----BEGIN (RSA|EC|OPENSSH|PGP)|api[_-]key *= *['\\\"][a-z0-9]{16,}|token *= *['\\\"][A-Za-z0-9_\\-]{20,}|password *= *"}}}, "tool_call_id": "recorte-81"}
+{"type": "tool_use", "part": {"tool": "write", "state": {"input": {}}}, "tool_call_id": "recorte-85"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "P=$(cat /private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/opencode/panel-prompt.txt)\nopencode run --auto -m opencode/claude-fable-5-1 \"$P\" > /private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000"}}}, "tool_call_id": "recorte-88"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "grep -n \"doctor\\|programadas\\|lee_tareas\" tests/test_doctor.py | head; echo ---; sed -n '95,115p' tests/test_doctor.py"}}}, "tool_call_id": "recorte-92"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-96"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-97"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-100"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-101"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-102"}
+{"type": "tool_use", "part": {"tool": "subagent", "state": {"input": {"description": "Revisor A bloque A motor-03"}}}, "tool_call_id": "recorte-106"}
+{"type": "tool_use", "part": {"tool": "subagent", "state": {"input": {"description": "Revisor D bloque A motor-03"}}}, "tool_call_id": "recorte-107"}
+{"type": "tool_use", "part": {"tool": "subagent", "state": {"input": {"description": "Revisor B bloque A motor-03"}}}, "tool_call_id": "recorte-108"}
+{"type": "tool_use", "part": {"tool": "subagent", "state": {"input": {"description": "Revisor C bloque A motor-03"}}}, "tool_call_id": "recorte-109"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "python3 -m unittest tests.test_motor_e2e.TestLlamadasAOtrosModelos 2>&1 | tail -30"}}}, "tool_call_id": "recorte-113"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "printenv | grep -i \"opencode\" | cut -d= -f1"}}}, "tool_call_id": "recorte-117"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "env -u OPENCODE -u OPENCODE_SESSION_ID -u AI_AGENT python3 -m unittest tests.test_motor_e2e.TestLlamadasAOtrosModelos 2>&1 | tail -4"}}}, "tool_call_id": "recorte-120"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "grep -rn \"desde dentro de una llamada\" --include=\"*.py\" --include=\"*.sh\" . | grep -v tests/ | head -5"}}}, "tool_call_id": "recorte-124"}
+{"type": "tool_use", "part": {"tool": "read", "state": {"input": {}}}, "tool_call_id": "recorte-127"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "cd /private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/opencode/rev-old\ngit status --short | head -3\npython3 -m unittest tests.test_motor_e2e.TestLlamadasAOtrosModelos 2>&1 | tail -4"}}}, "tool_call_id": "recorte-131"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "U=$(mktemp -d /private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/opencode/repro.XXXX)\nmkdir -p \"$U/u/Library/LaunchAgents\" \"$U/h\"\nprintf '<?xml version=\"1.0\"?><plist><dict><key>a</key>' > \"$U/u/"}}}, "tool_call_id": "recorte-135"}
+{"type": "tool_use", "part": {"tool": "write", "state": {"input": {}}}, "tool_call_id": "recorte-139"}
