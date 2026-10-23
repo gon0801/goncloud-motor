@@ -1,7 +1,6 @@
 """Datos de prueba sacados de registros reales de pstack, sin prompts.
 
 recorta <carpeta_intento> <carpeta_salida>
-juzga <carpeta_plan> <intento>=<cumple|falta>...
 """
 
 from __future__ import annotations
@@ -98,39 +97,12 @@ def recorta(carpeta_intento: Path, carpeta_salida: Path) -> None:
     )
 
 
-def juzga(carpeta_plan: Path, esperados: list[str]) -> int:
-    from motor import pstack as ps
-
-    mal = 0
-    for par in esperados:
-        intento, _, esperado = par.partition("=")
-        info = json.loads(
-            (carpeta_plan / intento / "pstack.json").read_text(encoding="utf-8")
-        )
-        fuente = primer_registro(info)
-        if fuente is None:
-            raise SystemExit(f"{intento}: ningún archivo de `registros` existe")
-        h = ps.huella(fuente.read_text(encoding="utf-8"), info["cli"], info.get("raiz"))
-        v = ps.juzga(h, ps.Exigencia.from_dict(info.get("exigencia") or {}))
-        salio = "cumple" if isinstance(v, ps.Cumple) else "falta"
-        print(
-            f"{intento} cumple"
-            if salio == "cumple"
-            else f"{intento} falta: {v.texto()}"
-        )
-        mal += salio != esperado
-    return 1 if mal else 0
-
-
 def main(argv: list[str]) -> int:
     if len(argv) == 3 and argv[0] == "recorta":
         recorta(Path(argv[1]), Path(argv[2]))
         return 0
-    if len(argv) >= 3 and argv[0] == "juzga":
-        return juzga(Path(argv[1]), argv[2:])
     print(
-        "uso: registros_reales.py recorta <carpeta_intento> <carpeta_salida>\n"
-        "     registros_reales.py juzga <carpeta_plan> <intento>=<cumple|falta>...",
+        "uso: registros_reales.py recorta <carpeta_intento> <carpeta_salida>",
         file=sys.stderr,
     )
     return 2
