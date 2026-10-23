@@ -604,7 +604,7 @@ humano: login pega las llaves
                 else ["/usr/bin", "/bin"]
             )
             try:
-                r = doctor(h)
+                r = doctor(h, programadas_sistema=False)
             finally:
                 os.environ["PATH"] = viejo
             self.assertTrue(r["rutas"]["sonnet"]["ejecutable"])

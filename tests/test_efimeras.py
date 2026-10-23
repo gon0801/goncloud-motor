@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import plistlib
@@ -12,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from motor import __main__ as cli
 from motor import efimeras
 from motor import machine as m
 from motor.conf import Maquina
@@ -329,6 +332,114 @@ class FuentesTest(unittest.TestCase):
         _, leidas, sin_leer, _ = efimeras.lee_tareas("mac", self.conf, sistema=False)
         self.assertEqual(leidas, [])
         self.assertIn("salió 3", sin_leer["echo no; exit 3"])
+
+
+class ProgramadasTest(unittest.TestCase):
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp(prefix="programadas-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.t, ignore_errors=True))
+        self.home = self.t / "motor-home"
+        self.home.mkdir()
+
+    def corre(self, lectura, *extra):
+        out = io.StringIO()
+        with (
+            mock.patch.object(efimeras, "lee_tareas", return_value=lectura),
+            contextlib.redirect_stdout(out),
+        ):
+            codigo = cli.main(["programadas", "--home", str(self.home), *extra])
+        return codigo, out.getvalue()
+
+    def test_sin_hallazgos_sale_0(self):
+        codigo, salida = self.corre(
+            ({"cron": CRON_LINEA}, ["crontab -l"], {}, {}), "--json"
+        )
+        d = json.loads(salida)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(d, {"leidas": ["crontab -l"], "sin_leer": [], "hallazgos": []})
+
+    def test_una_tarea_en_wt_sale_3_y_el_doctor_la_nombra(self):
+        tarea = f"python {self.home}/wt/demo/A/x.py"
+        lectura = (
+            {"ai.demo.plist": tarea, "otra": "echo hola"},
+            ["/LaunchAgents"],
+            {"schtasks": "pasó de 30 s"},
+            {},
+        )
+        codigo, salida = self.corre(lectura, "--json")
+        d = json.loads(salida)
+        self.assertEqual(codigo, 3)
+        self.assertEqual([h["tarea"] for h in d["hallazgos"]], ["ai.demo.plist"])
+        self.assertEqual(d["sin_leer"], ["schtasks: pasó de 30 s"])
+        texto = self.corre(lectura)[1]
+        self.assertIn("ai.demo.plist", texto)
+        conf = Path(__file__).resolve().parent.parent / "conf-ejemplo"
+        (self.home / "maquina.toml").write_text(f"nombre = 'mac'\nconf = '{conf}'\n")
+        with mock.patch.object(efimeras, "lee_tareas", return_value=lectura):
+            doc = cli.doctor(self.home)
+        self.assertEqual(
+            doc["programadas"],
+            {"en_carpetas_del_motor": 1, "tareas": ["ai.demo.plist"]},
+        )
+        self.assertTrue(any("ai.demo.plist" in p for p in doc["problemas"]))
+
+    def test_cada_carpeta_que_el_motor_borra_cuenta(self):
+        self.assertEqual(
+            efimeras.CARPETAS_DEL_MOTOR, ("tmp", "wt", "intentos", "pstack")
+        )
+        for carpeta in efimeras.CARPETAS_DEL_MOTOR:
+            lectura = ({"t": f"run {self.home}/{carpeta}/x"}, ["f"], {}, {})
+            self.assertEqual(self.corre(lectura)[0], 3, carpeta)
+
+    def test_sin_ninguna_fuente_legible_sale_4(self):
+        codigo, salida = self.corre(
+            ({}, [], {"crontab -l": "no pude correrlo"}, {}), "--json"
+        )
+        self.assertEqual(codigo, 4)
+        self.assertEqual(
+            json.loads(salida)["sin_leer"], ["crontab -l: no pude correrlo"]
+        )
+
+    def test_limpia_y_purga_usan_las_mismas_carpetas(self):
+        import inspect
+
+        from motor import effects
+
+        fuente = inspect.getsource(effects.Effects.limpia) + inspect.getsource(
+            effects.Effects.purga_registros
+        )
+        for nombre in ("TMP", "WT", "INTENTOS", "PSTACK"):
+            self.assertIn(f"efimeras.{nombre}", fuente)
+
+
+class ConfValidaTest(unittest.TestCase):
+    def conf(self, programadas: str) -> list[str]:
+        raiz = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / "conf"
+            __import__("shutil").copytree(raiz / "conf-ejemplo", d)
+            (d / "maquinas").mkdir()
+            (d / "maquinas" / "mac.toml").write_text('nombre = "mac"\nconf = "~/c"\n')
+            (d / "programadas.toml").write_text(programadas)
+            return cli.conf_valida(d)
+
+    def test_acepta_archivos_y_comandos_de_una_maquina(self):
+        self.assertEqual(
+            self.conf('[mac]\narchivos = ["~/x/*.plist"]\ncomandos = ["crontab -l"]\n'),
+            [],
+        )
+
+    def test_rechaza_una_seccion_que_no_es_una_maquina(self):
+        errores = "\n".join(self.conf('[otra]\ncomandos = ["ls"]\n'))
+        self.assertIn("[otra] no es el nombre de una máquina", errores)
+
+    def test_rechaza_una_clave_desconocida_y_listas_que_no_son_de_texto(self):
+        errores = "\n".join(
+            self.conf('[mac]\ncarpetas = ["x"]\narchivos = "x"\ncomandos = [1]\n')
+        )
+        self.assertIn("clave desconocida 'carpetas'", errores)
+        self.assertIn("archivos es una lista de texto", errores)
+        self.assertIn("comandos es una lista de texto", errores)
 
 
 class DespliegueEfimerasTest(unittest.TestCase):

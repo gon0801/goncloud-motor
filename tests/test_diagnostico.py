@@ -919,7 +919,7 @@ class AvisosColaTest(unittest.TestCase):
                 s = h / "secretos.env"
                 s.write_text("MOTOR_TELEGRAM_TOKEN=abc\n")
                 os.chmod(s, 0o600)
-            r = doctor(h)
+            r = doctor(h, programadas_sistema=False)
             return [p for p in r["problemas"] if p.startswith("avisos:")]
 
         self.assertEqual(len(corre(False, False)), 2)
