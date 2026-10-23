@@ -1,0 +1,15 @@
+{
+  "cli": "opencode",
+  "ruta": "glm",
+  "rc": 0,
+  "segundos": 158,
+  "raiz": "/var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-r6akv8y9/copia",
+  "fuente": "stdout",
+  "stdout_cola": "tack/skills/poteto-mode/SKILL.md`, `playbooks/investigation.md` y `README.md`). Ninguna herramienta la restauró, no fue un error de lectura mío. Si el motor esperaba registros contra la ruta `copia`, esos no existen por causa del entorno.\\n\\n```json\\n{\\\"sha\\\": null, \\\"resumen\\\": \\\"poteto-mode cargada por Read, playbook investigation abierto, subagente lanzó lectura de README.md (informe recibido), solo lectura sin cambios. Anomalía: la copia del brief desapareció del FS tras el primer listado; se usó la conf compartida equivalente.\\\"}\\n```\",\"time\":{\"start\":1792725377141,\"end\":1792725396329}}}\n",
+  "stderr_cola": "",
+  "version": "opencode v2.0.32",
+  "error": "",
+  "juicio": "Falta: no cargó la skill poteto-mode; no abrió ningún playbook de poteto-mode",
+  "en_carril": true,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

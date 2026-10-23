@@ -1,0 +1,15 @@
+{
+  "cli": "muse",
+  "ruta": "muse",
+  "rc": 0,
+  "segundos": 42,
+  "raiz": "/mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/copia",
+  "fuente": "(WSL) ~/.local/share/muse/sessions/AAAA/MM/DD/44a37c1b-41d3-4759-9886-d4c462af959f/session.jsonl",
+  "stdout_cola": "s/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/copia/pstack/skills/poteto-mode/playbooks/investigation.md). Copié sus pasos a la lista de tareas.\\n\\nthroughput checkpoint: n/a, read-only investigation\\n\\nLancé un subagente con la ruta absoluta de la skill. El subagente leyó [poteto-mode](/mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/copia/pstack/skills/poteto-mode/SKILL.md) y [README.md](/mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/corrida-muse/trabajo/README.md). Confirmó lectura de solo lectura, sin ediciones.\\n\\nOpening a PR queda como skip. Lo hace el motor.\"}}\n",
+  "stderr_cola": "muse: workspace root: /mnt/c/Users/ehven/AppData/Local/Temp/mide-pstack-tw_3trah/corrida-muse/trabajo (cwd default)\nmuse: workspace trust: trusted source=run-flag\n",
+  "version": "Muse Code 1.4.12 (1.4.12-R6909.1)",
+  "error": "",
+  "juicio": "Cumple",
+  "en_carril": false,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

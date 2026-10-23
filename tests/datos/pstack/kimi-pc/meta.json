@@ -1,0 +1,15 @@
+{
+  "cli": "kimi",
+  "ruta": "k3",
+  "rc": 0,
+  "segundos": 145,
+  "raiz": "C:\\Users\\ehven\\AppData\\Local\\Temp\\mide-pstack-tw_3trah\\copia",
+  "fuente": "stdout",
+  "stdout_cola": "ción de solo lectura del encargo. No hay contradicción ni contenido accionable.\\n\\n**Principios aplicados.** Guard the Context Window (el volcado del README lo hizo el subagente y yo recibí el resumen) y Prove It Works (verifiqué el estado real del entorno con `git rev-parse` y la variable `$MOTOR_RESULT` en vez de asumir que existían).\"}\n{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"session_8ae209c2-5588-4772-9b61-8f771e9a8537\",\"command\":\"kimi -r session_8ae209c2-5588-4772-9b61-8f771e9a8537\",\"content\":\"To resume this session: kimi -r session_8ae209c2-5588-4772-9b61-8f771e9a8537\"}\n",
+  "stderr_cola": "MOTOR_RESULT=<unset>\nno-git\n",
+  "version": "2.2.0",
+  "error": "",
+  "juicio": "Cumple",
+  "en_carril": true,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

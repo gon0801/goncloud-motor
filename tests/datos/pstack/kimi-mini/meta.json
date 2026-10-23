@@ -1,0 +1,15 @@
+{
+  "cli": "kimi",
+  "ruta": "k3",
+  "rc": 0,
+  "segundos": 120,
+  "raiz": "/var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-r6akv8y9/copia",
+  "fuente": "stdout",
+  "stdout_cola": "ecta.\\n\\nGotchas. El archivo advierte que no hay nada que cambiar aquí. Lo respeté. La entrega es exactamente el estado inicial de la rama.\\n\\n**Verificación.** El subagente leyó el archivo y yo lo releí después. Ambos coinciden con el contenido real, tres líneas en total. Ningún commit fue necesario porque el brief pedía no tocar nada.\"}\n{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"session_b56a478d-559b-4634-960a-47d05565a06a\",\"command\":\"kimi -r session_b56a478d-559b-4634-960a-47d05565a06a\",\"content\":\"To resume this session: kimi -r session_b56a478d-559b-4634-960a-47d05565a06a\"}\n",
+  "stderr_cola": "",
+  "version": "2.2.0",
+  "error": "",
+  "juicio": "Falta: no abrió ningún playbook de poteto-mode",
+  "en_carril": true,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

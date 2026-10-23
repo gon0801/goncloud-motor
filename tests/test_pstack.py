@@ -209,7 +209,7 @@ class TestFormatos(unittest.TestCase):
         h = ps.huella(
             claude(("Skill", {"skill": "poteto-mode"}), parent="toolu_1"), "claude"
         )
-        self.assertNotIn("poteto-mode", h.skills)
+        self.assertEqual(h.skills, ())
 
     def test_opencode_y_grok_cuentan_una_vez_la_llamada_repetida(self):
         dos = jl(*[{"tool_name": "todo_write", "tool_call_id": "t1", "args": {}}] * 2)
@@ -633,6 +633,178 @@ class TestBloqueantesDelRevisorMalformados(unittest.TestCase):
                 r, ev = self._collect(malo)
                 self.assertEqual(r["kind"], "veredicto_invalido")
                 self.assertEqual(ev, [])
+
+
+DATOS = Path(__file__).resolve().parent / "datos" / "pstack"
+MAQUINAS = ("mac", "mini", "pc")
+EXIGENCIA = ps.Exigencia(playbook=True, min_subagentes=1)
+SIN_ENTRAR = {
+    ("muse", "mac"): "missing meta credentials",
+    ("muse", "mini"): "missing meta credentials",
+}
+FALTA_REAL = {("opencode", "mini"): "no cargó la skill poteto-mode"}
+
+
+def _real(cli, maquina):
+    d = DATOS / f"{cli}-{maquina}"
+    return (
+        json.loads((d / "meta.json").read_text(encoding="utf-8")),
+        (d / "registro.jsonl").read_text(encoding="utf-8"),
+    )
+
+
+def _sin_carga(registro):
+    """El mismo registro real sin ningún evento que mencione poteto-mode."""
+    return "\n".join(
+        json.dumps(o)
+        for o in ps._objetos(registro)
+        if "poteto-mode" not in json.dumps(o)
+    )
+
+
+class TestRegistrosReales(unittest.TestCase):
+    """C.2: registros que ops/pstack/mide.sh trajo de cada CLI en cada máquina."""
+
+    def test_hay_un_registro_por_cli_y_maquina(self):
+        for cli in ps.FORMATOS:
+            for mq in MAQUINAS:
+                with self.subTest(cli=cli, maquina=mq):
+                    meta, registro = _real(cli, mq)
+                    self.assertEqual(meta["cli"], cli)
+                    self.assertTrue(registro.strip())
+
+    def test_huella_ve_la_carga_el_playbook_y_el_subagente_en_cada_cli_y_maquina(self):
+        for cli in ps.FORMATOS:
+            for mq in MAQUINAS:
+                if (cli, mq) in SIN_ENTRAR or (cli, mq) in FALTA_REAL:
+                    continue
+                with self.subTest(cli=cli, maquina=mq):
+                    meta, registro = _real(cli, mq)
+                    h = ps.huella(registro, cli, meta["raiz"])
+                    self.assertTrue(h.legible)
+                    self.assertIn("poteto-mode", h.skills)
+                    self.assertLess(h.poteto_en, ps.PUERTA_ACCIONES)
+                    self.assertIn("investigation", h.playbooks)
+                    self.assertGreaterEqual(len(h.subagentes), 1)
+                    self.assertEqual(ps.juzga(h, EXIGENCIA), ps.Cumple())
+
+    def test_un_cli_que_no_entra_a_la_maquina_lo_dice_con_el_motivo(self):
+        for (cli, mq), motivo in SIN_ENTRAR.items():
+            with self.subTest(cli=cli, maquina=mq):
+                meta, registro = _real(cli, mq)
+                self.assertIn(motivo, meta["stderr_cola"] + registro)
+                h = ps.huella(registro, cli, meta["raiz"])
+                self.assertIsInstance(ps.juzga(h, EXIGENCIA), ps.Falta)
+
+    def test_una_falta_real_se_juzga_como_falta(self):
+        for (cli, mq), texto in FALTA_REAL.items():
+            with self.subTest(cli=cli, maquina=mq):
+                meta, registro = _real(cli, mq)
+                v = ps.juzga(ps.huella(registro, cli, meta["raiz"]), EXIGENCIA)
+                self.assertIn(texto, v.texto())
+
+    def test_un_registro_real_sin_la_carga_da_falta(self):
+        for cli in ps.FORMATOS:
+            for mq in MAQUINAS:
+                with self.subTest(cli=cli, maquina=mq):
+                    meta, registro = _real(cli, mq)
+                    h = ps.huella(_sin_carga(registro), cli, meta["raiz"])
+                    if not h.legible:
+                        continue
+                    v = ps.juzga(h, EXIGENCIA)
+                    self.assertIsInstance(v, ps.Falta)
+                    self.assertIn("no cargó la skill poteto-mode", v.texto())
+
+    def test_formatos_marca_al_cli_que_no_tiene_herramienta_de_skills(self):
+        for cli, f in ps.FORMATOS.items():
+            with self.subTest(cli=cli):
+                self.assertEqual(bool(f.sin_skill), not f.skill)
+        self.assertIn("read_file", ps.FORMATOS["grok"].sin_skill)
+
+    def test_cargar_por_el_enlace_private_de_macos_cuenta(self):
+        raiz = "/var/folders/xx/T/copia"
+        for ruta in (
+            f"{raiz}/pstack/skills/poteto-mode/SKILL.md",
+            f"/private{raiz}/pstack/skills/poteto-mode/SKILL.md",
+        ):
+            with self.subTest(ruta=ruta):
+                h = ps.huella(claude(("Read", {"file_path": ruta})), "claude", raiz)
+                self.assertEqual(h.skills, ("poteto-mode",))
+
+    def test_ningun_cli_medido_vio_el_intento_del_motor(self):
+        for cli in ps.FORMATOS:
+            for mq in MAQUINAS:
+                with self.subTest(cli=cli, maquina=mq):
+                    self.assertNotIn("/.motor/intentos/", _real(cli, mq)[1])
+
+
+class TestMideEntorno(unittest.TestCase):
+    """mide.sh no le pasa a los CLI medidos nada del motor que los lanza."""
+
+    def _corre_mide(self, extra_env):
+        import re
+        import subprocess
+        import sys
+
+        repo = Path(__file__).resolve().parent.parent
+        sh = (repo / "ops" / "pstack" / "mide.sh").read_text(encoding="utf-8")
+        py = re.search(r"mide_py\(\) \{ cat <<'PY'\n(.*?)\nPY\n", sh, re.DOTALL).group(
+            1
+        )
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            conf, home, bin_ = t / "conf", t / "home", t / "bin"
+            for d in (conf / "pstack", conf / "pstack-motor", home / ".motor", bin_):
+                d.mkdir(parents=True)
+            (conf / "pstack" / "x").write_text("x")
+            (conf / "pstack-motor" / "x").write_text("x")
+            (conf / "rutas.toml").write_text(
+                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "-p", "{prompt}"]\n'
+            )
+            (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
+            (home / ".motor" / "maquina.toml").write_text(f'path_extra = ["{bin_}"]\n')
+            falso = bin_ / "claude"
+            falso.write_text(
+                '#!/bin/sh\n[ "$1" = --version ] && { echo 0; exit 0; }\nenv\npwd\n'
+            )
+            falso.chmod(0o755)
+            g = ["git", "-C", str(conf)]
+            subprocess.run(["git", "init", "-q", "-b", "main", str(conf)], check=True)
+            subprocess.run(g + ["add", "."], check=True)
+            subprocess.run(
+                g + ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"],
+                check=True,
+            )
+            env = dict(os.environ, HOME=str(home), **extra_env)
+            p = subprocess.run(
+                [sys.executable, "-I", "-", str(conf), "mac", "investigation", "60"],
+                input=py,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+                check=False,
+            )
+        linea = [x for x in p.stdout.splitlines() if x.startswith("MIDE-JSON:")][-1]
+        salida = json.loads(linea[len("MIDE-JSON:") :])
+        self.assertEqual(salida["error"], "")
+        return next(c for c in salida["corridas"] if c["cli"] == "claude")
+
+    def test_un_cli_medido_no_ve_variables_motor(self):
+        c = self._corre_mide(
+            {
+                "MOTOR_ATTEMPT_DIR": "/tmp/intento",
+                "MOTOR_RESULT": "/tmp/intento/result.json",
+                "MOTOR_OTRA": "1",
+            }
+        )
+        self.assertEqual(c["error"], "")
+        self.assertIn("HOME=", c["registro"])
+        self.assertNotIn("MOTOR_", c["registro"])
+
+    def test_corre_en_su_carpeta_temporal(self):
+        c = self._corre_mide({})
+        self.assertIn("mide-pstack-", c["registro"])
 
 
 if __name__ == "__main__":

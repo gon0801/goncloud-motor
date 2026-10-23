@@ -1,0 +1,15 @@
+{
+  "cli": "opencode",
+  "ruta": "glm",
+  "rc": 0,
+  "segundos": 82,
+  "raiz": "C:\\Users\\ehven\\AppData\\Local\\Temp\\mide-pstack-tw_3trah\\copia",
+  "fuente": "stdout",
+  "stdout_cola": " directorio y este reporte. Sin PR, sin despliegue, sin preguntas.\\n\\n```json\\n{\\\"sha\\\": null, \\\"resumen\\\": \\\"Encargo de medición ejecutado completo y sin cambios. Leídos motor.md y opencode.md. Cargada poteto-mode por ruta absoluta. Abierto el playbook investigation con sus pasos copiados. Lanzado subagente (sesión ses_e993f2f92ffeEjuZHwRVJ84Cj7) con la ruta de la skill; leyó README.md, que es un marcador de 3 líneas que dice que no hay nada que cambiar. Salida verificada con lectura propia. No es repo git, no hubo commit ni push.\\\"}\\n```\",\"time\":{\"start\":1792725301684,\"end\":1792725320788}}}\n",
+  "stderr_cola": "",
+  "version": "opencode v2.0.32",
+  "error": "",
+  "juicio": "Cumple",
+  "en_carril": true,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

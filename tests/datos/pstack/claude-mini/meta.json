@@ -1,0 +1,15 @@
+{
+  "cli": "claude",
+  "ruta": "sonnet",
+  "rc": 0,
+  "segundos": 17,
+  "raiz": "/var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-r6akv8y9/copia",
+  "fuente": "~/.claude/projects/<cwd>/2f2208af-8a06-4c09-9d9f-b171d498e2de.jsonl",
+  "stdout_cola": "ente:** lancé uno de solo lectura (Explore) con la ruta de la skill, y leyó `README.md`.\\n- **Qué dice el README:** tiene el título \\\"Carpeta de medición\\\" y una línea: \\\"No hay nada que cambiar aquí.\\\"\\n\\nThroughput checkpoint: n/a, investigación de solo lectura. No hay commits ni push, porque no cambió nada. El brief no pedía filas ni `$MOTOR_RESULT`, así que no escribí ese JSON.\",\"ttft_ms\":2038,\"type\":\"result\",\"duration_ms\":16399,\"uuid\":\"e48b1bed-57f2-47d4-b008-ca94c1e7f144\",\"ttft_stream_ms\":1240,\"time_to_request_ms\":353,\"first_content_frame_ms\":1241,\"queued_turn_count\":0,\"result_index\":0}\n",
+  "stderr_cola": "",
+  "version": "2.1.304 (Claude Code)",
+  "error": "",
+  "juicio": "Cumple",
+  "en_carril": true,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

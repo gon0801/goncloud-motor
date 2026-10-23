@@ -1,0 +1,15 @@
+{
+  "cli": "muse",
+  "ruta": "muse",
+  "rc": 1,
+  "segundos": 0,
+  "raiz": "/var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-r6akv8y9/copia",
+  "fuente": "~/.local/share/muse/sessions/AAAA/MM/DD/dc280d19-bc33-4793-b950-4a75e30e070c/session.jsonl",
+  "stdout_cola": "",
+  "stderr_cola": "missing meta credentials: run `muse login` or set META_API_KEY, or save credentials at /Users/gon/.config/muse/auth.json\n",
+  "version": "Muse Code 1.4.12 (1.4.12-R6909.1)",
+  "error": "",
+  "juicio": "Falta: no cargó la skill poteto-mode; no abrió ningún playbook de poteto-mode; lanzó 0 subagente(s) y se pedían al menos 1",
+  "en_carril": false,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

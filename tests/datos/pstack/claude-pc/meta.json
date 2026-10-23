@@ -1,0 +1,15 @@
+{
+  "cli": "claude",
+  "ruta": "sonnet",
+  "rc": 0,
+  "segundos": 43,
+  "raiz": "C:\\Users\\ehven\\AppData\\Local\\Temp\\mide-pstack-tw_3trah\\copia",
+  "fuente": "~/.claude/projects/<cwd>/bad42ac0-02d5-496d-8635-cb3bb8a3afd9.jsonl",
+  "stdout_cola": "wned\":1,\"requested\":{\"background\":0,\"foreground\":1,\"unset\":0},\"started_in_background\":0,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"Explore\":1}},\"safety_stops\":0,\"is_error\":false,\"num_turns\":17,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"\",\"ttft_ms\":3518,\"type\":\"result\",\"duration_ms\":38767,\"uuid\":\"61182aea-0445-4fa3-91df-a4525d09c113\",\"ttft_stream_ms\":2800,\"time_to_request_ms\":1349,\"first_content_frame_ms\":2800,\"queued_turn_count\":0,\"result_index\":0}\n",
+  "stderr_cola": "Warning: claude.ai MCP servers blocked by enterprise policy: claude.ai Microsoft 365, claude.ai Notion, claude.ai Shopify, claude.ai Google Drive, claude.ai Gmail\n",
+  "version": "2.1.303 (Claude Code)",
+  "error": "",
+  "juicio": "Cumple",
+  "en_carril": true,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

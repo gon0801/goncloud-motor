@@ -1,0 +1,15 @@
+{
+  "cli": "qwen",
+  "ruta": "qwen",
+  "rc": 0,
+  "segundos": 286,
+  "raiz": "C:\\Users\\ehven\\AppData\\Local\\Temp\\mide-pstack-tw_3trah\\copia",
+  "fuente": "stdout",
+  "stdout_cola": "0,\"durationMs\":58197,\"decisions\":{\"accept\":0,\"reject\":0,\"modify\":0,\"auto_accept\":1}},\"edit\":{\"count\":1,\"success\":1,\"fail\":0,\"durationMs\":14,\"decisions\":{\"accept\":0,\"reject\":0,\"modify\":0,\"auto_accept\":1}}}},\"files\":{\"totalLinesAdded\":6,\"totalLinesRemoved\":3},\"skills\":{\"totalCalls\":1,\"totalSuccess\":1,\"totalFail\":0,\"byName\":{\"agent-delegation\":{\"count\":1,\"success\":1,\"fail\":0}}},\"generation\":{\"timedRequests\":13,\"totalTtftMs\":40193,\"totalGenerationDurationMs\":241857,\"totalThroughputOutputTokens\":10010,\"last\":{\"model\":\"qwen3.8-max\",\"ttftMs\":2847,\"generationDurationMs\":67401,\"outputTokens\":2653}}}}]\n",
+  "stderr_cola": "Warning: running headless with --yolo / approval-mode=yolo and no sandbox. All tool calls (shell, write, edit) auto-execute at this process's privilege level. Configure tools.executionSandbox on Linux or a supported legacy sandbox via --sandbox / QWEN_SANDBOX, or set QWEN_CODE_SUPPRESS_YOLO_WARNING=1 to silence this notice.\n",
+  "version": "0.25.2",
+  "error": "",
+  "juicio": "Cumple",
+  "en_carril": false,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}

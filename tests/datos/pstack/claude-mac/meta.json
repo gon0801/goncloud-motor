@@ -1,0 +1,15 @@
+{
+  "cli": "claude",
+  "ruta": "sonnet",
+  "rc": 0,
+  "segundos": 25,
+  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-8qzm29st/copia",
+  "fuente": "~/.claude/projects/<cwd>/20f19c84-b65f-4f85-9d68-ad607fcea151.jsonl",
+  "stdout_cola": "n- **Subagente:** un `Explore` leyó `README.md` con la ruta de la skill en su prompt. Dice que son 3 líneas: el título \\\"Carpeta de medición\\\" y el texto \\\"No hay nada que cambiar aquí.\\\"\\n- **Playbook:** no copié sus pasos a una lista de tareas.\\n- **Entrega:** no escribí en `$MOTOR_RESULT`. El directorio no es un repo git y no hubo commits ni push, porque no cambié ningún archivo.\",\"ttft_ms\":3827,\"type\":\"result\",\"duration_ms\":4043,\"uuid\":\"414095b8-046f-4768-97e4-2293068b1e51\",\"ttft_stream_ms\":1545,\"time_to_request_ms\":522,\"first_content_frame_ms\":1546,\"queued_turn_count\":0,\"result_index\":1}\n",
+  "stderr_cola": "",
+  "version": "2.1.302 (Claude Code)",
+  "error": "",
+  "juicio": "Cumple",
+  "en_carril": true,
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134"
+}
