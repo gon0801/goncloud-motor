@@ -19,10 +19,10 @@ import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import claves, huella, plataforma, relevo
+from . import claves, efimeras, huella, plataforma, relevo
 from . import machine as m
 from . import pstack as ps
 from .conf import Conf, Maquina, RepoConf
@@ -86,6 +86,11 @@ class Contexto:
     gh: GitHubPort
     notifier: Notifier
     checks_cada_s: float = 60.0
+    # MOTOR_PROGRAMADAS_SISTEMA=0: el banco de pruebas no lee crontab, plist ni schtasks reales,
+    # tampoco en los subprocesos (daemon y aparte) que heredan el entorno.
+    programadas_sistema: bool = field(
+        default_factory=lambda: os.environ.get("MOTOR_PROGRAMADAS_SISTEMA") != "0"
+    )
 
 
 def _posix(cmd: str, bash: str = "") -> tuple:
@@ -1189,6 +1194,7 @@ Escribe en `$MOTOR_RESULT`:
             "huella": h_insumo,
             "huella_maquina": h_maquina,
             "deploy_marcados": {bid: sorted(shas) for bid, shas in marcados.items()},
+            "programadas_sistema": self.cx.programadas_sistema,
             "plan": plan.to_dict(),
             "repos": snap.repos,
             "merged": {bid: bv.merged for bid, bv in snap.blocks.items()},
@@ -1662,7 +1668,9 @@ Escribe en `$MOTOR_RESULT`:
         faltan: list[str] = []
         commit = bv.merged[-1]["commit"]
         w = self.cx.ws.copia(
-            block.repo, commit, self.cx.home / "tmp" / f"despliega-{plan.id}-{a.block}"
+            block.repo,
+            commit,
+            self.cx.home / efimeras.TMP / f"despliega-{plan.id}-{a.block}",
         )
         env = self.env_base(dict(rc.prueba_env))
         # La instalación no tiene .git; la copia (worktree) sí. Sin esto,
@@ -1696,14 +1704,22 @@ Escribe en `$MOTOR_RESULT`:
                         ok = False
                         pasos.append(_cola(p))
                         faltan += comandos_faltantes(p.stdout + p.stderr)
-                        rb = _run(
-                            f"bash {rollback}", w, env, tope, bash=self.cx.maquina.bash
-                        )
-                        pasos.append(f"rollback: salida {rb.returncode}")
-                        if rb.returncode != 0:
-                            pasos.append(_cola(rb))
+                        self._rollback(rollback, w, env, tope, pasos)
                         pasos.append(RECETA)
                         break
+                    # Lo que imprime un paso que sale 0 también cuenta: avisos como «la etiqueta ya existe».
+                    if cola := _cola(p):
+                        pasos.append(cola)
+                    if paso == desplegar:
+                        problemas, notas, malas = self._efimeras(w)
+                        pasos += notas
+                        if problemas:
+                            ok = False
+                            pasos += problemas
+                            self._rollback(rollback, w, env, tope, pasos)
+                            if malas and self._efimeras(w)[2]:
+                                pasos.append("La marcha atrás no la quitó.")
+                            break
                 detalle = "\n".join(pasos)
         return {
             "sha": a.sha,
@@ -1714,6 +1730,60 @@ Escribe en `$MOTOR_RESULT`:
             "huella": h_insumo,
             "huella_maquina": h_maquina,
         }
+
+    def _rollback(
+        self, rollback: str, w: Path, env: dict, tope: float, pasos: list
+    ) -> None:
+        rb = _run(f"bash {rollback}", w, env, tope, bash=self.cx.maquina.bash)
+        pasos.append(f"rollback: salida {rb.returncode}")
+        if cola := _cola(rb):
+            pasos.append(cola)
+
+    def _efimeras(self, w: Path) -> tuple[list[str], list[str], set[str]]:
+        """Tras desplegar: ¿alguna tarea programada apunta a la copia `w`, que el motor borra al
+        terminar? Devuelve (problemas que tumban el despliegue, notas para el detalle, tareas malas)."""
+        conf_dir = getattr(self.cx.conf, "dir", None)
+        try:
+            tareas, _, sin_leer, negados = efimeras.lee_tareas(
+                self.cx.maquina.nombre,
+                conf_dir,
+                self.cx.programadas_sistema,
+                bash=self.cx.maquina.bash,
+            )
+        except Exception as e:  # noqa: BLE001 - un error aquí no puede dejar el despliegue sin marcha atrás
+            return (
+                [
+                    f"No pude revisar las tareas programadas ({type(e).__name__}: {e}); "
+                    f"sin eso no puedo asegurar que la receta no dejó tareas apuntando a {w}."
+                ],
+                [],
+                set(),
+            )
+        home = Path.home()
+        sistema = (
+            set(efimeras.nombres_del_sistema(home))
+            if self.cx.programadas_sistema
+            else set()
+        )
+        problemas, notas = [], []
+        malas = set(efimeras.tareas_con(tareas, w, home))
+        for t in sorted(malas):
+            problemas.append(
+                f"La receta dejó {t} apuntando a {w}, una carpeta que el motor borra al terminar. "
+                "Instala lo que corre la tarea en una carpeta fija (por ejemplo ~/.local/share/<nombre>) "
+                "y apunta ahí."
+            )
+        for fuente, motivo in sin_leer.items():
+            if fuente in sistema:
+                problemas.append(
+                    f"No pude leer {fuente} ({motivo}); sin eso no puedo asegurar que la receta no dejó "
+                    f"tareas apuntando a {w}."
+                )
+            else:
+                notas.append(f"fuente extra sin leer: {fuente} ({motivo})")
+        for archivo, motivo in negados.items():
+            notas.append(f"archivo que no pude abrir: {archivo} ({motivo})")
+        return problemas, notas, malas
 
     def prove(self, plan: Plan, snap: m.Snapshot, a: m.Prove) -> None:
         self._aparte("prove", plan, snap, a)
@@ -1827,14 +1897,14 @@ Escribe en `$MOTOR_RESULT`:
                     ):
                         borradas.append(f"{bv.block.repo}:{rama}")
                 git("update-ref", "-d", f"refs/{rama}", cwd=d)
-            w = self.cx.home / "wt" / plan.id / bid
+            w = self.cx.home / efimeras.WT / plan.id / bid
             if w.exists():
                 git("worktree", "remove", "--force", str(w), cwd=d)
             git("branch", "-q", "-D", self.cx.ws.rama(plan.id, bid), cwd=d)
-        shutil.rmtree(self.cx.home / "wt" / plan.id, ignore_errors=True)
-        for x in (self.cx.home / "tmp").glob(f"*-{plan.id}-*"):
+        shutil.rmtree(self.cx.home / efimeras.WT / plan.id, ignore_errors=True)
+        for x in (self.cx.home / efimeras.TMP).glob(f"*-{plan.id}-*"):
             shutil.rmtree(x, ignore_errors=True)
-        for x in (self.cx.home / "intentos" / plan.id).glob("*/revision"):
+        for x in (self.cx.home / efimeras.INTENTOS / plan.id).glob("*/revision"):
             shutil.rmtree(x, ignore_errors=True)
         for d in espejos:
             git("worktree", "prune", cwd=d)
@@ -1847,7 +1917,7 @@ Escribe en `$MOTOR_RESULT`:
         y las copias de pstack que ningún intento usa hace ese mismo tiempo (menos la vigente)."""
         dias = float(self.cx.conf.tiempos.get("registros_dias", 14))
         vigente = self._pstack[1][0] if self._pstack and self._pstack[1] else ""
-        raiz = self.cx.home / "pstack"
+        raiz = self.cx.home / efimeras.PSTACK
         for x in raiz.iterdir() if raiz.is_dir() else ():
             try:
                 vieja = now - x.stat().st_mtime > dias * 86400
@@ -1865,7 +1935,7 @@ Escribe en `$MOTOR_RESULT`:
                 if ultima_carga.get(e.plan, 0) <= e.id:
                     limpios[e.plan] = e.ts
         for pid, ts in limpios.items():
-            carpeta = self.cx.home / "intentos" / pid
+            carpeta = self.cx.home / efimeras.INTENTOS / pid
             if now - ts > dias * 86400 and carpeta.exists():
                 shutil.rmtree(carpeta, ignore_errors=True)
 
