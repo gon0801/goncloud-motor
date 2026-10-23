@@ -852,6 +852,7 @@ class TestMide(unittest.TestCase):
         secretos="",
         tope=60,
     ):
+        import base64
         import subprocess
         import sys
 
@@ -899,6 +900,7 @@ class TestMide(unittest.TestCase):
                     "mac",
                     "investigation",
                     str(tope),
+                    base64.b64encode(rutas.encode()).decode(),
                 ],
                 input=_heredoc(1),
                 capture_output=True,
@@ -1059,6 +1061,31 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
                 s = self._corre_mide(**kw)
                 self.assertNotEqual(s["error"], "")
                 self.assertEqual(s["corridas"], [])
+
+    def test_sin_las_rutas_en_el_argv_no_mide_con_las_de_la_conf(self):
+        # Sin argv[5] no hay medición: caer al rutas.toml de la conf fue la causa raíz del
+        # --rutas ilegible que medía en silencio con las rutas de producción.
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as t:
+            conf = Path(t) / "conf"
+            (conf / "pstack").mkdir(parents=True)
+            (conf / "pstack-motor").mkdir()
+            (conf / "rutas.toml").write_text(
+                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "-p", "{prompt}"]\n'
+            )
+            (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
+            p = subprocess.run(
+                [sys.executable, "-I", "-", str(conf), "mac", "investigation", "60"],
+                input=_heredoc(1),
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("MIDE-JSON:", p.stdout)
 
 
 class TestLogMezclado(unittest.TestCase):
@@ -1278,6 +1305,36 @@ class TestMideDePuntaAPunta(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn(mensaje, r.stderr)
         self.assertEqual(lanzadas, [])
+
+    def test_rutas_una_carpeta_sale_2_sin_medir(self):
+        with tempfile.TemporaryDirectory() as t:
+            lanzadas, lanzados = [], []
+            r = self._corre(
+                "cumple", args=("--rutas", t), argv_log=lanzadas, lanzados=lanzados
+            )
+            mensaje = f"no puedo leer {t}"
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(mensaje, r.stderr)
+        self.assertEqual(lanzadas, [])
+        self.assertEqual(lanzados, [])
+
+    def test_rutas_sin_permiso_de_lectura_sale_2_sin_medir(self):
+        with tempfile.TemporaryDirectory() as t:
+            ilegible = Path(t) / "rutas.toml"
+            ilegible.write_text("[rutas]\n")
+            ilegible.chmod(0)
+            lanzadas, lanzados = [], []
+            r = self._corre(
+                "cumple",
+                args=("--rutas", str(ilegible)),
+                argv_log=lanzadas,
+                lanzados=lanzados,
+            )
+            mensaje = f"no puedo leer {ilegible}"
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(mensaje, r.stderr)
+        self.assertEqual(lanzadas, [])
+        self.assertEqual(lanzados, [])
 
     def test_juzga_sale_distinto_de_cero_si_el_cli_no_cargo_nada(self):
         r = self._corre("nada")

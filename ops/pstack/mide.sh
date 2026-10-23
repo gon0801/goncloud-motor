@@ -8,8 +8,9 @@
 # {result}, {pstack} y {sesion}), el entorno de la máquina con secretos y sin MOTOR_*, y el registro se
 # lee donde lo lee el motor. Los flags que hacen legible un registro van en el rutas.toml con que se
 # mide (ver --rutas).
-#   --rutas <archivo>   rutas.toml con el que se mide; por omisión conf-ejemplo/rutas.toml de este repo (las
-#             rutas que el bloque E copia a producción), no el rutas.toml de la conf de producción
+#   --rutas <archivo>   rutas.toml con el que se mide (uno que no se pueda leer sale 2); por omisión
+#             conf-ejemplo/rutas.toml de este repo (las rutas que el bloque E copia a producción), no
+#             el rutas.toml de la conf de producción
 #   --juzga   corre la medición en vivo, no toca tests/datos y sale 0 solo si `juzga` da Cumple para
 #             todos los CLI de los carriles (modelos.toml) en las tres máquinas
 set -uo pipefail
@@ -32,8 +33,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -s "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
-RUTAS_B64="$(base64 <"$rutas" | tr -d '\n')"
+[ -f "$rutas" ] && [ -r "$rutas" ] && [ -s "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
+RUTAS_B64="$(base64 <"$rutas" | tr -d '\n')" && [ -n "$RUTAS_B64" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
 
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
@@ -42,8 +43,10 @@ mide_py() { cat <<'PY'
 import base64, json, os, re, shutil, signal, string, subprocess, sys, tempfile, threading, time, tomllib, uuid
 from pathlib import Path
 
+if len(sys.argv) != 6:
+    raise SystemExit("uso: mide.py <conf> <maquina> <playbook> <tope> <rutas_b64>")
 conf_url, maquina, playbook, tope = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-RUTAS_B64 = sys.argv[5] if len(sys.argv) > 5 else ""
+RUTAS_B64 = sys.argv[5]
 WIN = os.name == "nt"
 HOME = Path.home()
 CLIS = ["claude", "kimi", "opencode", "grok", "muse", "qwen"]
@@ -135,13 +138,10 @@ try:
     if r.returncode:
         raise RuntimeError("no pude bajar origin/main de la conf: " + r.stderr.strip()[-300:])
     salida["conf_sha"] = corre(["git", "-C", str(clon), "rev-parse", "HEAD"], env=env).stdout.strip()
-    if RUTAS_B64:
-        try:
-            rutas = tomllib.loads(base64.b64decode(RUTAS_B64).decode("utf-8")).get("rutas", {})
-        except ValueError as e:
-            raise RuntimeError(f"no pude leer las rutas que mandó mide.sh: {e}") from None
-    else:
-        rutas = toml(clon / "rutas.toml").get("rutas", {})
+    try:
+        rutas = tomllib.loads(base64.b64decode(RUTAS_B64).decode("utf-8")).get("rutas", {})
+    except ValueError as e:
+        raise RuntimeError(f"no pude leer las rutas que mandó mide.sh: {e}") from None
     carriles = toml(clon / "modelos.toml").get("carriles", {})
     if not rutas:
         raise RuntimeError("rutas.toml no trae ninguna ruta")
