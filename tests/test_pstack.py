@@ -802,6 +802,17 @@ class TestMideEntorno(unittest.TestCase):
         self.assertIn("HOME=", c["registro"])
         self.assertNotIn("MOTOR_", c["registro"])
 
+    def test_la_opcion_juzga_existe_y_cualquier_otra_se_rechaza(self):
+        import subprocess
+
+        sh = Path(__file__).resolve().parent.parent / "ops" / "pstack" / "mide.sh"
+        self.assertIn("--juzga)", sh.read_text(encoding="utf-8"))
+        r = subprocess.run(
+            ["bash", str(sh), "--nada"], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("uso:", r.stderr)
+
     def test_corre_en_su_carpeta_temporal(self):
         c = self._corre_mide({})
         self.assertIn("mide-pstack-", c["registro"])
