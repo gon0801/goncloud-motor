@@ -156,14 +156,18 @@ def _lee_programadas(home: Path, sistema: bool = True):
         nombre, conf_dir, bash = "", None, ""
         if (home / "maquina.toml").exists():
             error = f"no pude leer maquina.toml: {e!r}"
-    lectura = efimeras.lee_tareas(nombre, conf_dir, sistema, home=home, bash=bash)
+    try:
+        lectura = efimeras.lee_tareas(nombre, conf_dir, sistema, bash=bash)
+    except Exception as e:  # noqa: BLE001 - un plist roto no puede dar exit 1: nada se pudo asegurar
+        lectura = ({}, [], {"lectura": f"{type(e).__name__}: {e}"}, {})
     if error:
         lectura[2]["maquina.toml"] = error
     tareas = lectura[0]
     hallazgos = []
+    usuario = Path.home()
     for carpeta in efimeras.CARPETAS_DEL_MOTOR:
         ruta = home / carpeta
-        for tarea in efimeras.tareas_con(tareas, ruta, home):
+        for tarea in efimeras.tareas_con(tareas, ruta, usuario):
             hallazgos.append({"tarea": tarea, "carpeta": str(ruta)})
     return lectura, hallazgos
 

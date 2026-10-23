@@ -1720,12 +1720,22 @@ Escribe en `$MOTOR_RESULT`:
         """Tras desplegar: ¿alguna tarea programada apunta a la copia `w`, que el motor borra al
         terminar? Devuelve (problemas que tumban el despliegue, notas para el detalle, tareas malas)."""
         conf_dir = getattr(self.cx.conf, "dir", None)
-        tareas, _, sin_leer, negados = efimeras.lee_tareas(
-            self.cx.maquina.nombre,
-            conf_dir,
-            self.cx.programadas_sistema,
-            bash=self.cx.maquina.bash,
-        )
+        try:
+            tareas, _, sin_leer, negados = efimeras.lee_tareas(
+                self.cx.maquina.nombre,
+                conf_dir,
+                self.cx.programadas_sistema,
+                bash=self.cx.maquina.bash,
+            )
+        except Exception as e:  # noqa: BLE001 - un error aquí no puede dejar el despliegue sin marcha atrás
+            return (
+                [
+                    f"No pude revisar las tareas programadas ({type(e).__name__}: {e}); "
+                    f"sin eso no puedo asegurar que la receta no dejó tareas apuntando a {w}."
+                ],
+                [],
+                set(),
+            )
         home = Path.home()
         sistema = (
             set(efimeras.nombres_del_sistema(home))

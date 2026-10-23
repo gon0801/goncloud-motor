@@ -265,6 +265,30 @@ class FuentesTest(unittest.TestCase):
             )
         )
 
+    def test_en_windows_schtasks_llega_a_git_bash_sin_conversion_de_rutas(self):
+        capturado = {}
+
+        def popen(argv, **kw):
+            capturado["argv"] = argv
+            raise OSError("no arranca")
+
+        with (
+            mock.patch.object(efimeras.os, "name", "nt"),
+            mock.patch.object(efimeras.subprocess, "Popen", popen),
+            mock.patch(
+                "motor.plataforma.windows.resuelve_bash",
+                return_value=r"C:\Git\bash.exe",
+            ),
+            mock.patch("motor.plataforma.windows.es_bash_de_wsl", return_value=False),
+        ):
+            _, _, sin_leer, _ = efimeras.lee_tareas(
+                "pc", None, home=HOME_PC, plataforma_="win32"
+            )
+        self.assertEqual(
+            capturado["argv"][-1], "MSYS_NO_PATHCONV=1 schtasks /query /fo csv /v"
+        )
+        self.assertIn("schtasks", sin_leer)
+
     def test_schtasks_sin_filas_queda_sin_leer(self):
         with mock.patch.object(
             efimeras, "ejecuta", return_value=_cp(1, "", "ERROR: algo")
@@ -418,6 +442,31 @@ class ProgramadasTest(unittest.TestCase):
             {"en_carpetas_del_motor": 1, "tareas": ["ai.demo.plist"]},
         )
         self.assertTrue(any("ai.demo.plist" in p for p in doc["problemas"]))
+
+    def test_lee_el_home_del_usuario_y_no_el_del_motor(self):
+        usuario = self.t / "usuario"
+        agents = usuario / "Library" / "LaunchAgents"
+        agents.mkdir(parents=True)
+        (agents / "ai.demo.plist").write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": "ai.demo",
+                    "ProgramArguments": ["python3", f"{self.home}/wt/demo/A/corre.py"],
+                }
+            )
+        )
+        out = io.StringIO()
+        with (
+            mock.patch.object(efimeras.Path, "home", return_value=usuario),
+            mock.patch.object(
+                efimeras, "ejecuta", return_value=_cp(1, "", "no crontab for x")
+            ),
+            mock.patch.object(efimeras.sys, "platform", "darwin"),
+            contextlib.redirect_stdout(out),
+        ):
+            codigo = cli.main(["programadas", "--home", str(self.home), "--json"])
+        self.assertEqual(codigo, 3, out.getvalue())
+        self.assertIn(str(agents / "ai.demo.plist"), out.getvalue())
 
     def test_cada_carpeta_que_el_motor_borra_cuenta(self):
         self.assertEqual(
@@ -665,6 +714,15 @@ class DespliegueEfimerasTest(unittest.TestCase):
         )
         self.assertFalse(r["ok"])
         self.assertNotIn("La marcha atrás no la quitó.", r["detalle"])
+
+    def test_un_plist_truncado_no_revienta_el_despliegue_y_hace_rollback(self):
+        (self.agents / "roto.plist").write_bytes(
+            b'<?xml version="1.0"?><plist><dict><key>a</key>'
+        )
+        r = self.corre(self.receta_que_deja(str(self.fijo)))
+        self.assertFalse(r["ok"])
+        self.assertTrue((self.w / "rollback-corrio").exists())
+        self.assertIn("No pude revisar las tareas programadas", r["detalle"])
 
     def test_la_misma_receta_apuntando_a_una_carpeta_fija_pasa(self):
         r = self.corre(self.receta_que_deja(str(self.fijo)))
