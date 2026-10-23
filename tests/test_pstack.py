@@ -388,22 +388,6 @@ class TestInstrucciones(unittest.TestCase):
                 "playbooks/bug-fix.md", ps.instrucciones(e, "claude", "/x")
             )
 
-    def test_el_aviso_del_playbook_va_primero(self):
-        t = ps.instrucciones(
-            ps.Exigencia(playbook=True),
-            "claude",
-            "/x/pstack/abc",
-            aviso_playbook="feature",
-        )
-        pasos = [x for x in t.splitlines() if x[:2] in ("1.", "2.")]
-        self.assertTrue(
-            pasos[0].startswith("1. No abriste el playbook; abre `feature` con Read")
-        )
-        self.assertIn(
-            "/x/pstack/abc/pstack/skills/poteto-mode/playbooks/feature.md", pasos[0]
-        )
-        self.assertNotIn("No abriste", ps.instrucciones(ps.Exigencia(), "claude", "/x"))
-
     def test_cli_sin_herramienta_de_skills_pide_leer_el_skill_md(self):
         t = ps.instrucciones(ps.Exigencia(), "grok", "/x")
         self.assertIn("una lectura de su `SKILL.md`", t)

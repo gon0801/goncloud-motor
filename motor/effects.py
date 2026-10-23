@@ -415,12 +415,7 @@ class Effects:
         (d / "pstack.json").write_text(texto, encoding="utf-8")
         return info
 
-    def _seccion_pstack(
-        self,
-        info: dict | None,
-        correccion: bool = False,
-        aviso_playbook: str | None = None,
-    ) -> str:
+    def _seccion_pstack(self, info: dict | None, correccion: bool = False) -> str:
         """Lo que el encargo lleva de pstack: motor.md, el mapa del CLI y "Cómo trabajas"."""
         if info is None:
             return ""
@@ -438,7 +433,6 @@ class Effects:
                 info["cli"],
                 str(raiz),
                 correccion,
-                aviso_playbook,
             )
         )
         return "\n".join(partes) + "\n"
@@ -484,10 +478,7 @@ class Effects:
         if estado == "no_verificable":
             self._avisa_no_verificable(info["cli"])
         if estado == "falta":
-            falta = {"kind": "sin_pstack", "detalle": veredicto.texto()}
-            if veredicto.faltas == ps.SOLO_PLAYBOOK:
-                falta["solo_playbook"] = True
-            return falta
+            return {"kind": "sin_pstack", "detalle": veredicto.texto()}
         return None
 
     @staticmethod
@@ -567,19 +558,9 @@ class Effects:
             marca_sesion.write_text(str(uuid.uuid4()), encoding="utf-8")
         sesion = marca_sesion.read_text(encoding="utf-8").strip()
         info_pstack = self._prepara_pstack(d, block.lane, a.role, ruta.cli, cwd, sesion)
-        correccion = a.role == "implementar" and bool(a.feedback)
-        mios = [x for x in snap.blocks[a.block].attempts if x.role == a.role]
-        regresa = (
-            bool(mios)
-            and mios[-1].modelo == a.modelo
-            and m.regresa_por_playbook(mios, len(mios) - 1)
+        seccion = self._seccion_pstack(
+            info_pstack, a.role == "implementar" and bool(a.feedback)
         )
-        aviso = (
-            ("bug-fix" if correccion or block.es_bug else "feature")
-            if regresa
-            else None
-        )
-        seccion = self._seccion_pstack(info_pstack, correccion, aviso)
         if a.role == "implementar":
             brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
         else:

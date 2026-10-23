@@ -717,29 +717,11 @@ def _sesion(
     return desde, racha
 
 
-def _solo_playbook(a: Attempt) -> bool:
-    return bool(
-        a.ended and a.ended.get("kind") == "sin_pstack" and a.ended.get("solo_playbook")
-    )
-
-
-def regresa_por_playbook(mios: list[Attempt], i: int) -> bool:
-    """El intento terminado `mios[i]` (mismo bloque y papel) es un regreso: solo le faltó abrir el
-    playbook y ningún intento anterior de su modelo terminó igual. Un regreso no avanza al siguiente
-    modelo ni gasta la racha de fallas: el mismo modelo tiene una segunda oportunidad."""
-    a = mios[i]
-    return _solo_playbook(a) and not any(
-        b.modelo == a.modelo and _solo_playbook(b) for b in mios[:i]
-    )
-
-
 def _avanzo_de(mios: list[Attempt], mo: str) -> bool:
     """Su último intento de este papel fue de este modelo y terminó en una falla que, por regla,
     pasa el encargo al siguiente (no a reintentar con el mismo). Cuota, freno y credenciales no:
     de esas se encarga el reloj (pausa o cuarentena de la cuenta)."""
     if not mios or mios[-1].modelo != mo or not mios[-1].ended:
-        return False
-    if regresa_por_playbook(mios, len(mios) - 1):
         return False
     falla = relevo.desde_kind(mios[-1].ended.get("kind", ""))
     return (
@@ -762,13 +744,6 @@ def _elige(
     for k, v in reservas.items():
         ocupados[k] = ocupados.get(k, 0) + v
     mios = [a for a in bv.attempts if a.role == role]
-    if (
-        mios
-        and mios[-1].ended
-        and mios[-1].modelo in ladder
-        and regresa_por_playbook(mios, len(mios) - 1)
-    ):  # segunda oportunidad: primero el mismo modelo; si no puede correr, sigue la escalera
-        ladder = (mios[-1].modelo, *(x for x in ladder if x != mios[-1].modelo))
     # Primera pasada: salta al que acaba de fallar si otro puede correr; si nadie, lo admite.
     for saltar in (True, False):
         mo = _elige_pasada(ladder, snap, policy, now, bv, role, ocupados, mios, saltar)
@@ -783,9 +758,6 @@ def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
     bloque falló por algo que el agente no controla (comando que falta, prueba real, despliegue)."""
     kind = a.ended.get("kind", "")
     if kind in ("entregado", "veredicto") or kind in NO_ES_FALLA:
-        return False
-    mios = [x for x in bv.attempts if x.role == a.role]
-    if regresa_por_playbook(mios, next(i for i, x in enumerate(mios) if x is a)):
         return False
     if (
         kind in relevo.PASAJERAS

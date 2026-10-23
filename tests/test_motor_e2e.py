@@ -1504,12 +1504,11 @@ class BancoPstack(Banco):
         antes=None,
         titulo="saludo",
         reglas_revision="Z=nada",  # el revisor falso no pide nada extra
-        playbook=False,
         **kw,
     ):
         self.home, self.plan = sandbox.create(
             self.tmp / "b",
-            pstack={"exigir": exigir, "clis": self.CLIS, "playbook": playbook},
+            pstack={"exigir": exigir, "clis": self.CLIS},
             modos={"sonnet": "ok", "glm": "ok", "opus": "ok", "k3": "ok", **modos},
             reglas_revision=reglas_revision,
             **kw,
@@ -1634,51 +1633,6 @@ class TestPstack(BancoPstack):
             )
         )
         self.assertEqual(h["estado"], "no_verificable")
-
-
-class TestRegresaPorPlaybook(BancoPstack):
-    def arranca_regreso(self, modos):
-        self.arranca_pstack(
-            True,
-            {"sonnet": "pstack_real:A-implementar-2", **modos},
-            playbook=True,
-            codigo=("sonnet", "opus"),
-        )
-
-    def brief(self, i: int) -> str:
-        return (self.intentos("implementar")[i] / "brief.md").read_text(
-            encoding="utf-8"
-        )
-
-    def test_solo_faltar_el_playbook_da_una_segunda_oportunidad_al_mismo_modelo(self):
-        self.arranca_regreso({"opus": "pstack_playbook"})
-        fines = self.fines("implementar")
-        self.assertEqual(
-            [o["kind"] for o in fines], ["sin_pstack", "sin_pstack", "entregado"]
-        )
-        self.assertEqual(
-            [bool(o.get("solo_playbook")) for o in fines], [True, True, False]
-        )
-        modelos = [
-            e.data["modelo"]
-            for e in eventos(self.home)
-            if e.kind == "AttemptStarted" and e.data["role"] == "implementar"
-        ]
-        self.assertEqual(modelos, ["sonnet", "sonnet", "opus"])
-        self.assertNotIn("No abriste el playbook", self.brief(0))
-        self.assertIn("No abriste el playbook", self.brief(1))
-        self.assertIn("abre `bug-fix` con Read", self.brief(1))
-        self.assertNotIn("No abriste el playbook", self.brief(2))
-
-    def test_la_prueba_existente_de_faltar_poteto_mode_sigue_sin_regreso(self):
-        self.arranca_pstack(True, {"sonnet": "pstack_no_primero", "opus": "pstack_ok"})
-        fines = self.fines("implementar")
-        self.assertEqual([o["kind"] for o in fines], ["sin_pstack", "entregado"])
-        self.assertNotIn("solo_playbook", fines[0])
-        self.assertNotIn(
-            "No abriste el playbook",
-            (self.intentos("implementar")[1] / "brief.md").read_text(encoding="utf-8"),
-        )
 
 
 FILA_BUG = (

@@ -710,9 +710,6 @@ def puerta(eventos_: list[Accion], n: int = PUERTA_ACCIONES) -> bool:
     return not any(SKILL_BASE in _cargas(a, "skill") for a in eventos_[:n])
 
 
-SOLO_PLAYBOOK = ("no abrió ningún playbook de poteto-mode",)
-
-
 def juzga(h: Huella, e: Exigencia) -> Cumple | Falta:
     if not h.legible:
         return Cumple(verificable=False)
@@ -736,15 +733,10 @@ def juzga(h: Huella, e: Exigencia) -> Cumple | Falta:
 
 
 def instrucciones(
-    e: Exigencia,
-    cli: str,
-    raiz: str = "{pstack}",
-    correccion: bool = False,
-    aviso_playbook: str | None = None,
+    e: Exigencia, cli: str, raiz: str = "{pstack}", correccion: bool = False
 ) -> str:
     """La sección "Cómo trabajas" del encargo. `raiz` es la carpeta de la copia fija de pstack.
-    `correccion`: el intento arregla lo que otro dejó mal; el playbook ya no se elige, es `bug-fix`.
-    `aviso_playbook`: el playbook que el intento anterior de este modelo no abrió; va primero."""
+    `correccion`: el intento arregla lo que otro dejó mal; el playbook ya no se elige, es `bug-fix`."""
     f = FORMATOS.get(cli)
     cargar = (
         f"la herramienta de skills de tu CLI ({', '.join(f'`{x}`' for x in f.skill)})"
@@ -782,12 +774,6 @@ def instrucciones(
     pasos.append(
         "El motor lee el registro de tus herramientas, no tu resumen: lo que solo digas no cuenta."
     )
-    if aviso_playbook:
-        pasos.insert(
-            0,
-            f"No abriste el playbook; abre `{aviso_playbook}` con Read antes de seguir "
-            f"(`{raiz}/pstack/skills/{SKILL_BASE}/playbooks/{aviso_playbook}.md`).",
-        )
     cuerpo = "\n".join(f"{i}. {p}" for i, p in enumerate(pasos, 1))
     return (
         f"## Cómo trabajas\nEste encargo se hace con pstack, en la copia fija `{raiz}`. "
