@@ -367,6 +367,11 @@ class GhGitHub:
     def _sin_proteccion(e: RuntimeError) -> bool:
         return "Branch not protected" in str(e)
 
+    @staticmethod
+    def _sin_funcion_en_el_plan(e: RuntimeError) -> bool:
+        # Repo privado en el plan gratis: GitHub no ofrece protección ni reglas (HTTP 403).
+        return "Upgrade to GitHub Pro" in str(e)
+
     def checks(self, repo, numero, sha, extra, relanzadas=()):
         n = self.nombre(repo)
         pr = self._vista(repo, numero)
@@ -380,7 +385,7 @@ class GhGitHub:
                 )
             )
         except RuntimeError as e:
-            if not self._sin_proteccion(e):
+            if not (self._sin_proteccion(e) or self._sin_funcion_en_el_plan(e)):
                 raise
             req = []
         try:
@@ -392,7 +397,7 @@ class GhGitHub:
                 )
             )
         except RuntimeError as e:
-            if not self._es_404(e):
+            if not (self._es_404(e) or self._sin_funcion_en_el_plan(e)):
                 raise
             reglas = []
         for pagina in reglas:
