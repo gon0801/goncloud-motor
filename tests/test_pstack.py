@@ -15,6 +15,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from motor import effects as ef
 from motor import machine as m
@@ -583,8 +584,9 @@ class TestGrokJson(unittest.TestCase):
             encoding="utf-8",
         )
         info = {"cli": "grok", "registros": [str(log)]}
-        os.environ["GROK_HOME"] = str(tmp / ".grok")
-        self.addCleanup(os.environ.pop, "GROK_HOME", None)
+        patcher = mock.patch.dict(os.environ, GROK_HOME=str(tmp / ".grok"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         regs = ef.Effects._registros_de(info)
         self.assertEqual(regs[0], str(ses / "updates.jsonl"))
         h = ps.huella(Path(regs[0]).read_text(encoding="utf-8"), "grok", RAIZ)
@@ -604,18 +606,26 @@ class TestGrokJson(unittest.TestCase):
             "aviso del CLI\n" + json.dumps(final, indent=2) + "\n{ otro aviso\n",
             encoding="utf-8",
         )
-        os.environ["GROK_HOME"] = str(tmp / ".grok")
-        self.addCleanup(os.environ.pop, "GROK_HOME", None)
+        patcher = mock.patch.dict(os.environ, GROK_HOME=str(tmp / ".grok"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         regs = ef.Effects._registros_de({"cli": "grok", "registros": [str(log)]})
         self.assertEqual(regs[0], str(ses / "updates.jsonl"))
 
     def test_objetos_lee_un_objeto_con_sangria_y_sigue_con_las_lineas_de_despues(self):
         texto = (
-            json.dumps({"a": {"b": 1}, "c": [1, 2]}, indent=2)
+            json.dumps(
+                {"a": {"b": 1}, "c": [1, 2], "subs": [{"sessionId": "anidado"}]},
+                indent=2,
+            )
             + '\n{"d": 2}\n{"roto": \n'
         )
         self.assertEqual(
-            list(ps._objetos(texto)), [{"a": {"b": 1}, "c": [1, 2]}, {"d": 2}]
+            list(ps._objetos(texto)),
+            [
+                {"a": {"b": 1}, "c": [1, 2], "subs": [{"sessionId": "anidado"}]},
+                {"d": 2},
+            ],
         )
 
 
@@ -1017,10 +1027,25 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
         (ses / "updates.jsonl").write_text(c["extras"][0]["texto"], encoding="utf-8")
         log = tmp / "log.txt"
         log.write_text(c["registro"], encoding="utf-8")
-        os.environ["GROK_HOME"] = str(tmp)
-        self.addCleanup(os.environ.pop, "GROK_HOME", None)
+        patcher = mock.patch.dict(os.environ, GROK_HOME=str(tmp))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         regs = ef.Effects._registros_de({"cli": "grok", "registros": [str(log)]})
         self.assertEqual(regs[0], str(ses / "updates.jsonl"))
+
+    def test_escribe_datos_conserva_la_carpeta_de_una_maquina_que_no_respondio(self):
+        ns = {"__name__": "agrega"}
+        exec(compile(_heredoc(2), "mide.sh:agrega", "exec"), ns)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "grok-mini" / "viejo").mkdir(parents=True)
+        (tmp / "grok-mac" / "viejo").mkdir(parents=True)
+        ns["escribe_datos"](
+            tmp, ["mac", "mini"], [("mac", {"cli": "grok", "registro": "x\n"}, "x\n")]
+        )
+        self.assertTrue((tmp / "grok-mini" / "viejo").exists())
+        self.assertFalse((tmp / "grok-mac" / "viejo").exists())
+        self.assertTrue((tmp / "grok-mac" / "meta.json").exists())
 
     def test_una_conf_que_no_se_puede_leer_es_un_error_no_una_medicion_vacia(self):
         casos = {
