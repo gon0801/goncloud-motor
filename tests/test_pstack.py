@@ -852,6 +852,7 @@ class TestMide(unittest.TestCase):
         secretos="",
         tope=60,
     ):
+        import base64
         import subprocess
         import sys
 
@@ -899,6 +900,7 @@ class TestMide(unittest.TestCase):
                     "mac",
                     "investigation",
                     str(tope),
+                    base64.b64encode(rutas.encode()).decode(),
                 ],
                 input=_heredoc(1),
                 capture_output=True,
@@ -1060,6 +1062,31 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
                 self.assertNotEqual(s["error"], "")
                 self.assertEqual(s["corridas"], [])
 
+    def test_sin_las_rutas_en_el_argv_no_mide_con_las_de_la_conf(self):
+        # Sin argv[5] no hay medición: caer al rutas.toml de la conf fue la causa raíz del
+        # --rutas ilegible que medía en silencio con las rutas de producción.
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as t:
+            conf = Path(t) / "conf"
+            (conf / "pstack").mkdir(parents=True)
+            (conf / "pstack-motor").mkdir()
+            (conf / "rutas.toml").write_text(
+                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "-p", "{prompt}"]\n'
+            )
+            (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
+            p = subprocess.run(
+                [sys.executable, "-I", "-", str(conf), "mac", "investigation", "60"],
+                input=_heredoc(1),
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("MIDE-JSON:", p.stdout)
+
 
 class TestLogMezclado(unittest.TestCase):
     """runwrap deja stdout y stderr juntos en log.txt: los avisos del CLI no rompen su registro."""
@@ -1111,6 +1138,7 @@ class TestLogMezclado(unittest.TestCase):
 
 FALSO_CLAUDE = r"""#!/bin/sh
 [ "$1" = --version ] && { echo 0; exit 0; }
+[ -n "$FALSO_ARGV" ] && echo "$*" >>"$FALSO_ARGV"
 for a; do p=$a; done
 brief=${p#Lee }; brief=${brief%% y ejec*}
 raiz=$(grep -o 'copia fija `[^`]*`' "$brief" | head -1 | cut -d'`' -f2)
@@ -1121,11 +1149,22 @@ tool Read "{\"file_path\":\"$raiz/pstack/skills/poteto-mode/playbooks/investigat
 tool Agent '{"subagent_type":"general-purpose"}'
 """
 
+# Cada CLI que mide.sh mide y no es claude sale de este falso: anota cómo lo lanzaron y muere,
+# para que la prueba no dependa de qué haya instalado en el PATH de esta máquina.
+FALSO_INERTE = '#!/bin/sh\necho "$0 $*" >>"$FALSO_LANZADOS"\nexit 1\n'
+
+
+def _clis():
+    """La lista CLIS de mide_py: los CLI que mide.sh mide siempre, haya carril o no."""
+    import re
+
+    return json.loads(re.search(r"(?m)^CLIS = (\[.*\])", _heredoc(1)).group(1))
+
 
 class TestMideDePuntaAPunta(unittest.TestCase):
     """C.3: `mide.sh --juzga` entero, con ssh y uv falsos que corren todo en esta máquina."""
 
-    def _corre(self, modo):
+    def _corre(self, modo, args=(), argv_log=None, lanzados=None):
         import subprocess
 
         with tempfile.TemporaryDirectory() as t:
@@ -1141,6 +1180,9 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
             (home / ".motor" / "maquina.toml").write_text(f'path_extra = ["{bin_}"]\n')
             (bin_ / "claude").write_text(FALSO_CLAUDE)
+            for cli in _clis():
+                if cli != "claude":
+                    (bin_ / cli).write_text(FALSO_INERTE)
             (bin_ / "ssh").write_text('#!/bin/sh\nshift 5\nexec bash -c "$*"\n')
             (bin_ / "uv").write_text('#!/bin/sh\nshift 4\nexec python3 "$@"\n')
             for f in bin_.iterdir():
@@ -1165,10 +1207,17 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 MOTOR_PC_UV=str(bin_ / "uv"),
                 MIDE_TOPE_S="60",
                 FALSO_MODO=modo,
+                FALSO_ARGV=str(t / "argv.log"),
+                FALSO_LANZADOS=str(t / "lanzados.log"),
             )
             antes = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
             r = subprocess.run(
-                ["bash", str(REPO / "ops" / "pstack" / "mide.sh"), "--juzga"],
+                [
+                    "bash",
+                    str(REPO / "ops" / "pstack" / "mide.sh"),
+                    "--juzga",
+                    *args,
+                ],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -1176,6 +1225,16 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 check=False,
             )
             despues = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
+            if argv_log is not None:
+                registro = t / "argv.log"
+                argv_log.extend(
+                    registro.read_text().splitlines() if registro.exists() else []
+                )
+            if lanzados is not None:
+                registro = t / "lanzados.log"
+                lanzados.extend(
+                    registro.read_text().splitlines() if registro.exists() else []
+                )
         self.assertEqual(antes, despues)
         return r
 
@@ -1185,6 +1244,97 @@ class TestMideDePuntaAPunta(unittest.TestCase):
         self.assertEqual(r.stdout.count("Cumple"), 3 + 1)
         for mq in MAQUINAS:
             self.assertRegex(r.stdout, rf"(?m)^{mq}\s+claude\s+Cumple$")
+
+    def test_mide_toma_por_omision_las_rutas_de_conf_ejemplo_y_no_las_de_la_conf(self):
+        lanzadas = []
+        r = self._corre("cumple", argv_log=lanzadas)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(lanzadas)
+        for linea in lanzadas:
+            self.assertIn("--session-id", linea)
+            self.assertIn("--output-format json", linea)
+
+    def test_rutas_cambia_el_archivo_con_el_que_se_mide(self):
+        with tempfile.TemporaryDirectory() as t:
+            otras = Path(t) / "otras.toml"
+            otras.write_text(
+                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "--solo-estas", "{prompt}"]\n'
+            )
+            lanzadas = []
+            self._corre("cumple", args=("--rutas", str(otras)), argv_log=lanzadas)
+        self.assertTrue(lanzadas)
+        for linea in lanzadas:
+            self.assertIn("--solo-estas", linea)
+            self.assertNotIn("--session-id", linea)
+
+    def test_rutas_con_un_archivo_que_no_existe_sale_2_sin_medir(self):
+        lanzadas, lanzados = [], []
+        r = self._corre(
+            "cumple",
+            args=("--rutas", "/no/existe.toml"),
+            argv_log=lanzadas,
+            lanzados=lanzados,
+        )
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no puedo leer /no/existe.toml", r.stderr)
+        self.assertEqual(lanzadas, [])
+        self.assertEqual(lanzados, [])
+
+    def test_los_cli_que_no_son_claude_se_miden_con_los_falsos_de_bin(self):
+        # Sin un falso por CLI en bin_, mide.sh lanzaría los CLI reales del PATH.
+        lanzados = []
+        r = self._corre("cumple", lanzados=lanzados)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(lanzados)
+        ceros = [x.split(" ", 1)[0] for x in lanzados]
+        padres = {str(Path(c).parent) for c in ceros}
+        self.assertEqual(len(padres), 1, lanzados)
+        nombres = {Path(c).name for c in ceros}
+        for cli in _clis():
+            if cli != "claude":
+                self.assertIn(cli, nombres)
+
+    def test_rutas_vacio_sale_2_sin_medir(self):
+        # Un --rutas legible pero vacío no puede medir en silencio con las rutas de la conf.
+        with tempfile.TemporaryDirectory() as t:
+            vacio = Path(t) / "vacio.toml"
+            vacio.write_text("")
+            lanzadas = []
+            r = self._corre("cumple", args=("--rutas", str(vacio)), argv_log=lanzadas)
+            mensaje = f"no puedo leer {vacio}"
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(mensaje, r.stderr)
+        self.assertEqual(lanzadas, [])
+
+    def test_rutas_una_carpeta_sale_2_sin_medir(self):
+        with tempfile.TemporaryDirectory() as t:
+            lanzadas, lanzados = [], []
+            r = self._corre(
+                "cumple", args=("--rutas", t), argv_log=lanzadas, lanzados=lanzados
+            )
+            mensaje = f"no puedo leer {t}"
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(mensaje, r.stderr)
+        self.assertEqual(lanzadas, [])
+        self.assertEqual(lanzados, [])
+
+    def test_rutas_sin_permiso_de_lectura_sale_2_sin_medir(self):
+        with tempfile.TemporaryDirectory() as t:
+            ilegible = Path(t) / "rutas.toml"
+            ilegible.write_text("[rutas]\n")
+            ilegible.chmod(0)
+            lanzadas, lanzados = [], []
+            r = self._corre(
+                "cumple",
+                args=("--rutas", str(ilegible)),
+                argv_log=lanzadas,
+                lanzados=lanzados,
+            )
+            mensaje = f"no puedo leer {ilegible}"
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(mensaje, r.stderr)
+        self.assertEqual(lanzadas, [])
+        self.assertEqual(lanzados, [])
 
     def test_juzga_sale_distinto_de_cero_si_el_cli_no_cargo_nada(self):
         r = self._corre("nada")

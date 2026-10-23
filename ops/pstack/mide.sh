@@ -6,7 +6,11 @@
 # registro de cada corrida a tests/datos/pstack/<cli>-<maquina>/. Las carpetas temporales se borran.
 # Cada CLI corre como lo lanza el motor: el argv de su ruta tal cual (solo se sustituyen {prompt}, {brief},
 # {result}, {pstack} y {sesion}), el entorno de la máquina con secretos y sin MOTOR_*, y el registro se
-# lee donde lo lee el motor. Los flags que hacen legible un registro van en rutas.toml de la conf.
+# lee donde lo lee el motor. Los flags que hacen legible un registro van en el rutas.toml con que se
+# mide (ver --rutas).
+#   --rutas <archivo>   rutas.toml con el que se mide (uno que no se pueda leer sale 2); por omisión
+#             conf-ejemplo/rutas.toml de este repo (las rutas que el bloque E copia a producción), no
+#             el rutas.toml de la conf de producción
 #   --juzga   corre la medición en vivo, no toca tests/datos y sale 0 solo si `juzga` da Cumple para
 #             todos los CLI de los carriles (modelos.toml) en las tres máquinas
 set -uo pipefail
@@ -20,21 +24,29 @@ PLAYBOOK="${MIDE_PLAYBOOK:-investigation}"
 TOPE_S="${MIDE_TOPE_S:-900}"
 
 juzga=0
-for a in "$@"; do
-  case "$a" in
+rutas="$repo/conf-ejemplo/rutas.toml"
+while [ $# -gt 0 ]; do
+  case "$1" in
     --juzga) juzga=1 ;;
-    *) echo "uso: ops/pstack/mide.sh [--juzga]" >&2; exit 2 ;;
+    --rutas) [ $# -ge 2 ] || { echo "--rutas pide un archivo" >&2; exit 2; }; rutas=$2; shift ;;
+    *) echo "uso: ops/pstack/mide.sh [--juzga] [--rutas <rutas.toml>]" >&2; exit 2 ;;
   esac
+  shift
 done
+[ -f "$rutas" ] && [ -r "$rutas" ] && [ -s "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
+RUTAS_B64="$(base64 <"$rutas" | tr -d '\n')" && [ -n "$RUTAS_B64" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
 
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
 
 mide_py() { cat <<'PY'
-import json, os, re, shutil, signal, string, subprocess, sys, tempfile, threading, time, tomllib, uuid
+import base64, json, os, re, shutil, signal, string, subprocess, sys, tempfile, threading, time, tomllib, uuid
 from pathlib import Path
 
+if len(sys.argv) != 6:
+    raise SystemExit("uso: mide.py <conf> <maquina> <playbook> <tope> <rutas_b64>")
 conf_url, maquina, playbook, tope = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+RUTAS_B64 = sys.argv[5]
 WIN = os.name == "nt"
 HOME = Path.home()
 CLIS = ["claude", "kimi", "opencode", "grok", "muse", "qwen"]
@@ -126,7 +138,10 @@ try:
     if r.returncode:
         raise RuntimeError("no pude bajar origin/main de la conf: " + r.stderr.strip()[-300:])
     salida["conf_sha"] = corre(["git", "-C", str(clon), "rev-parse", "HEAD"], env=env).stdout.strip()
-    rutas = toml(clon / "rutas.toml").get("rutas", {})
+    try:
+        rutas = tomllib.loads(base64.b64decode(RUTAS_B64).decode("utf-8")).get("rutas", {})
+    except ValueError as e:
+        raise RuntimeError(f"no pude leer las rutas que mandó mide.sh: {e}") from None
     carriles = toml(clon / "modelos.toml").get("carriles", {})
     if not rutas:
         raise RuntimeError("rutas.toml no trae ninguna ruta")
@@ -278,10 +293,10 @@ mide_en() {
   [ "$m" = mini ] && url=$CONF_URL_MINI
   case "$m" in
     pc)
-      ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python - $url $m $PLAYBOOK $TOPE_S" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
+      ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python - $url $m $PLAYBOOK $TOPE_S $RUTAS_B64" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
       ;;
     *)
-      local cmd="$py_posix; \$py - $url $m $PLAYBOOK $TOPE_S"
+      local cmd="$py_posix; \$py - $url $m $PLAYBOOK $TOPE_S $RUTAS_B64"
       if es_local "$m"; then
         bash -c "$cmd" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
       else
