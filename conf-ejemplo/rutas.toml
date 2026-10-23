@@ -8,25 +8,25 @@
 cuenta = "anthropic"
 max_parallel = 4
 cli = "claude"
-argv = ["claude", "-p", "--model", "sonnet", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]
+argv = ["claude", "-p", "--model", "sonnet", "--permission-mode", "bypassPermissions", "--output-format", "json", "--plugin-dir", "{pstack}/pstack", "--session-id", "{sesion}", "{prompt}"]
 
 [rutas.opus]
 cuenta = "anthropic"
 max_parallel = 4
 cli = "claude"
-argv = ["claude", "-p", "--model", "opus", "--permission-mode", "bypassPermissions", "--output-format", "json", "{prompt}"]
+argv = ["claude", "-p", "--model", "opus", "--permission-mode", "bypassPermissions", "--output-format", "json", "--plugin-dir", "{pstack}/pstack", "--session-id", "{sesion}", "{prompt}"]
 
 [rutas.k3]
 cuenta = "kimi"
 max_parallel = 4
 cli = "kimi"
-argv = ["kimi", "-p", "{prompt}", "--output-format", "stream-json"]   # -p ya corre sin preguntar; con --auto o --yolo falla
+argv = ["kimi", "-p", "{prompt}", "--output-format", "stream-json", "--skills-dir", "{pstack}/pstack/skills"]   # -p ya corre sin preguntar; con --auto o --yolo falla
 
 [rutas.glm]
 cuenta = "zai"
 max_parallel = 4
 cli = "opencode"
-argv = ["opencode", "run", "--auto", "-m", "zai-coding-plan/glm-5.3", "{prompt}"]
+argv = ["opencode", "run", "--auto", "-m", "zai-coding-plan/glm-5.3", "--format", "json", "{prompt}"]
 
 [rutas.grok]
 cuenta = "xai"

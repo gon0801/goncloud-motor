@@ -1,0 +1,20 @@
+{
+  "cli": "muse",
+  "ruta": "muse",
+  "plantilla": [
+    "muse",
+    "exec",
+    "--yolo",
+    "--json",
+    "--prompt-file",
+    "{brief}"
+  ],
+  "rc": 1,
+  "segundos": 0,
+  "raiz": "/var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k",
+  "version": "Muse Code 1.4.12 (1.4.12-R6909.1)",
+  "error": "",
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "missing meta credentials: run `muse login` or set META_API_KEY, or save credentials at /Users/gon/.config/muse/auth.json\n"
+}

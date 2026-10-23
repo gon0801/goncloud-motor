@@ -1,0 +1,20 @@
+{
+  "cli": "opencode",
+  "ruta": "glm",
+  "plantilla": [
+    "opencode",
+    "run",
+    "--auto",
+    "-m",
+    "zai-coding-plan/glm-5.3",
+    "{prompt}"
+  ],
+  "rc": 0,
+  "segundos": 328,
+  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy",
+  "version": "opencode v2.0.29",
+  "error": "",
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "porque el encargo no cambia nada.\n- Sin cambios, sin PR, sin despliegue. Nada quedó esperando a una persona.\n\n`{\"sha\": null, \"resumen\": \"Encargo de medición ejecutado completo y sin cambios. Cargué poteto-mode, how y unslop con la herramienta de skills, abrí el playbook investigation desde la copia fija y lancé un subagente poteto-agent (glm-5.3, sesión ses_e99150d18ffenQmrpF54qWGXZL, solo lectura) que leyó README.md. Verifiqué su explicación contra el archivo real. Sin commits; HEAD sigue en 9395273319c9ea8693c2b10378a4b369489dda72 y el árbol conserva las modificaciones previas del motor.\"}`\n"
+}

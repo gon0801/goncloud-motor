@@ -1,0 +1,20 @@
+{
+  "cli": "qwen",
+  "ruta": "qwen",
+  "plantilla": [
+    "qwen",
+    "--approval-mode",
+    "yolo",
+    "--output-format",
+    "json",
+    "{prompt}"
+  ],
+  "rc": 0,
+  "segundos": 868,
+  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy",
+  "version": "0.25.0",
+  "error": "",
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "cept\":1}},\"write_file\":{\"count\":2,\"success\":2,\"fail\":0,\"durationMs\":39,\"decisions\":{\"accept\":0,\"reject\":0,\"modify\":0,\"auto_accept\":2}},\"edit\":{\"count\":1,\"success\":1,\"fail\":0,\"durationMs\":20,\"decisions\":{\"accept\":0,\"reject\":0,\"modify\":0,\"auto_accept\":1}}}},\"files\":{\"totalLinesAdded\":32,\"totalLinesRemoved\":0},\"skills\":{\"totalCalls\":0,\"totalSuccess\":0,\"totalFail\":0,\"byName\":{}},\"generation\":{\"timedRequests\":19,\"totalTtftMs\":126761,\"totalGenerationDurationMs\":738753,\"totalThroughputOutputTokens\":34568,\"last\":{\"model\":\"qwen3.8-max\",\"ttftMs\":2933,\"generationDurationMs\":12290,\"outputTokens\":558}}}}]\n"
+}

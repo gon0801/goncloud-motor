@@ -136,10 +136,17 @@ def _bloques(o: dict) -> Llamadas:
     if not isinstance(contenido, list):
         return [], visto
     return [
-        (b.get("name", ""), _args(b.get("input")))
+        _desenvuelve(b.get("name", ""), _args(b.get("input")))
         for b in contenido
         if isinstance(b, dict) and b.get("type") == "tool_use"
     ], visto
+
+
+def _desenvuelve(nombre: str, args: dict) -> tuple[str, dict]:
+    """Qwen llama a sus herramientas diferidas con `tool_call {name, arguments}`: la acción es la de adentro."""
+    if nombre == "tool_call" and args.get("name"):
+        return str(args["name"]), _args(args.get("arguments"))
+    return nombre, args
 
 
 def _tool_calls(o: dict) -> Llamadas:
@@ -167,10 +174,21 @@ def _estado(o: dict) -> Llamadas:
 
 def _tool_name(o: dict) -> Llamadas:
     """Grok (`updates.jsonl` / `streaming-json`): una línea por herramienta con `tool_name`."""
-    visto = any(
+    u = (
+        (o.get("params") or {}).get("update")
+        if isinstance(o.get("params"), dict)
+        else None
+    )
+    visto = u is not None or any(
         k in o
         for k in ("tool_name", "tool_call", "update", "sessionUpdate", "toolCall")
     )  # el objeto final de `--output-format json` (hechos.md §4) no trae nada de esto
+    if isinstance(
+        u, dict
+    ):  # updates.jsonl: solo `tool_call` abre una acción; sus `tool_call_update` la repiten
+        if u.get("sessionUpdate") != "tool_call" or not u.get("title"):
+            return [], visto
+        return [(str(u["title"]), _args(u.get("rawInput")))], visto
     nombre = o.get("tool_name") or (o.get("tool_call") or {}).get("name")
     if not nombre:
         return [], visto
@@ -180,7 +198,38 @@ def _tool_name(o: dict) -> Llamadas:
 
 def _muse(o: dict) -> Llamadas:
     """Muse (`session.jsonl`): `assistant_tool_calls_committed` con la lista de llamadas {name, args}."""
-    visto = "type" in o or "event" in o
+    if (
+        "children" in o
+    ):  # session.jsonl envuelve algunas transacciones en un marco con `record_json`
+        out, visto = [], "retained_frame" in o
+        for c in o["children"]:
+            try:
+                hijo = json.loads(c.get("record_json", ""))
+            except (AttributeError, ValueError):
+                continue
+            if isinstance(hijo, dict):
+                llamadas_hijo, v = _muse(hijo)
+                out += llamadas_hijo
+                visto = visto or v
+        return out, visto
+    visto = "type" in o or "event" in o or "payload_type" in o
+    if o.get("payload_type") == "tool.result" and isinstance(o.get("payload"), dict):
+        # `muse exec --json`: solo el resultado de cada herramienta, con su nombre y, al leer, la ruta
+        p = o["payload"]
+        nombre = str((p.get("correlation_facts") or {}).get("tool_name", ""))
+        ruta = re.search(r"`(/[^`]+)`", str(p.get("text", "")))
+        return (
+            [(nombre, {"path": ruta.group(1), "name": ruta.group(1)} if ruta else {})]
+            if nombre
+            else []
+        ), visto
+    evento = (
+        (o.get("payload") or {}).get("event")
+        if isinstance(o.get("payload"), dict)
+        else None
+    )
+    if isinstance(evento, dict):
+        o = evento
     llamadas = o.get("calls") or o.get("tool_calls") or o.get("toolCalls")
     if llamadas is None and o.get("name"):
         llamadas = [o]
@@ -212,6 +261,10 @@ class Formato:
     arg_id: tuple[
         str, ...
     ] = ()  # el CLI repite la misma llamada con otro estado: se cuenta una vez
+    sin_skill: str = ""  # por qué este CLI no tiene herramienta de skills y carga leyendo el SKILL.md
+    sin_carga_en: tuple[
+        tuple[str, str], ...
+    ] = ()  # (máquina, motivo): en esa máquina el CLI no entra y no puede cargar skills
 
 
 FORMATOS: dict[str, Formato] = {
@@ -241,7 +294,7 @@ FORMATOS: dict[str, Formato] = {
         _estado,
         skill=("skill",),
         leer=("read",),
-        subagente=("task",),
+        subagente=("task", "subagent"),
         todos=("todowrite",),
         comando=("bash",),
     ),
@@ -249,6 +302,7 @@ FORMATOS: dict[str, Formato] = {
         "grok",
         "~/.grok/sessions/<cwd>/<sessionId>/updates.jsonl (grok no tiene herramienta de skills: cargar = read_file)",
         _tool_name,
+        sin_skill="grok no tiene herramienta de skills: carga poteto-mode leyendo su SKILL.md con read_file",
         skill=(),
         leer=("read_file",),
         subagente=("spawn_subagent",),
@@ -264,10 +318,14 @@ FORMATOS: dict[str, Formato] = {
         subagente=("subagent_spawn", "workflow"),
         todos=("write_todos",),
         comando=("bash", "run_command", "shell"),
+        sin_carga_en=(
+            ("mac", "missing meta credentials: falta `muse login` en la Mac"),
+            ("mini", "missing meta credentials: falta `muse login` en la Mini"),
+        ),
     ),
     "qwen": Formato(
         "qwen",
-        "log.txt con --output-format stream-json, o --json-file; su herramienta de skills aún no está medida",
+        "log.txt con --output-format stream-json, con la salida a un archivo (por una tubería corta a 64 KB); herramienta `skill`, subagentes por `tool_call{name:agent}`",
         _bloques,
         skill=("skill",),
         leer=("read_file", "read"),
@@ -281,13 +339,22 @@ _RUTA_SKILL = re.compile(r"([^/]+)/SKILL\.md$")
 _RUTA_PLAYBOOK = re.compile(rf"{SKILL_BASE}/playbooks/([^/]+)\.md$")
 
 
+def _sin_private(ruta: str) -> str:
+    """En macOS `/var`, `/tmp` y `/etc` son enlaces a `/private/...`: el agente lee por cualquiera de las dos."""
+    return (
+        ruta[len("/private") :]
+        if re.match(r"/private/(var|tmp|etc)(/|$)", ruta)
+        else ruta
+    )
+
+
 def _bajo_skills(ruta: str, raiz: str | None) -> str | None:
     """Lo que queda de `ruta` bajo `<raiz>/pstack/skills/`, o None si cae fuera de la copia fija
     (otra copia, la skill propia del agente, un archivo que él escribió)."""
     if not raiz:
         return None
-    base = posixpath.normpath(raiz.replace("\\", "/")) + "/pstack/skills/"
-    r = posixpath.normpath(ruta.replace("\\", "/"))
+    base = _sin_private(posixpath.normpath(raiz.replace("\\", "/"))) + "/pstack/skills/"
+    r = _sin_private(posixpath.normpath(ruta.replace("\\", "/")))
     if re.match(r"[A-Za-z]:", base):  # rutas de Windows: sin distinguir mayúsculas
         ok = r.lower().startswith(base.lower())
     else:
@@ -307,15 +374,34 @@ def _clasifica(
     h = herramienta.lower().rsplit(".", 1)[-1]
     if h in f.skill:
         nombre = next(
-            (str(args[k]) for k in ("skill", "name", "skill_name") if args.get(k)), ""
+            (
+                str(args[k])
+                for k in ("skill", "name", "skill_name", "id")
+                if args.get(k)
+            ),
+            "",
         )
+        if mm := _RUTA_SKILL.search(
+            nombre.replace("\\", "/")
+        ):  # muse: `read_skill` con la ruta del SKILL.md
+            if raiz and _bajo_skills(nombre.replace("\\", "/"), raiz) is None:
+                return Accion(
+                    "otra", "", n
+                )  # otra copia de la skill: no es la copia fija
+            nombre = mm.group(1)
         return Accion("skill", _nombre_skill(nombre), n)
     if h in f.leer:
         ruta = str(
             next(
                 (
                     args[k]
-                    for k in ("file_path", "path", "filePath", "absolute_path")
+                    for k in (
+                        "file_path",
+                        "path",
+                        "filePath",
+                        "absolute_path",
+                        "target_file",
+                    )
                     if args.get(k)
                 ),
                 "",
@@ -332,7 +418,7 @@ def _clasifica(
         tipo = next(
             (
                 str(args[k])
-                for k in ("subagent_type", "agent", "agent_type", "description")
+                for k in ("subagent_type", "agent", "agent_type", "role", "description")
                 if args.get(k)
             ),
             "subagente",
@@ -347,25 +433,36 @@ def _clasifica(
 
 
 def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
-    """Objetos JSON del registro: una línea por objeto, o un arreglo completo (qwen `--output-format json`)."""
+    """Objetos JSON del registro: uno por línea, con sangría en varias líneas (grok `--output-format json`),
+    o un arreglo completo (qwen `--output-format json`)."""
     texto = fuente if isinstance(fuente, str) else "\n".join(fuente)
-    t = texto.strip()
-    if t.startswith("["):
+    inicio = re.search(r"(?m)^\[", texto)
+    if inicio:  # el arreglo puede traer avisos del CLI (stderr) antes o después
         try:
-            for o in json.loads(t):
+            arreglo, _ = json.JSONDecoder().raw_decode(texto[inicio.start() :])
+            for o in arreglo:
                 if isinstance(o, dict):
                     yield o
             return
-        except ValueError:
+        except (ValueError, TypeError):
             pass
-    for linea in texto.splitlines():
-        linea = linea.strip()
+    lineas = texto.splitlines(keepends=True)
+    i, dec = 0, json.JSONDecoder()
+    while i < len(lineas):
+        linea = lineas[i].strip()
+        i += 1
         if linea[:1] != "{":
             continue  # avisos del CLI, salida de runwrap
         try:
             o = json.loads(linea)
         except ValueError:
-            continue
+            # un objeto con sangría ocupa varias líneas (`grok --output-format json`)
+            resto = "".join(lineas[i - 1 :]).lstrip()
+            try:
+                o, fin = dec.raw_decode(resto)
+            except ValueError:
+                continue
+            i += resto[:fin].count("\n")
         if isinstance(o, dict):
             yield o
 

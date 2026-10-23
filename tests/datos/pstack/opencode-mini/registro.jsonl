@@ -1,0 +1,132 @@
+[0m
+> build · glm-5.3
+[0m→ [0mRead /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-opencode-ut5duqip/brief.md
+> build · glm-5.3
+Leído el brief. Primero leo los archivos que exige el motor antes de actuar.
+[0m→ [0mRead /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack-motor/motor.md
+[0m→ [0mRead /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack-motor/opencode.md
+> build · glm-5.3
+Ahora cargo la skill `poteto-mode`. No está en el catálogo de skills de este CLI, así que según el mapa de opencode la leo por ruta absoluta.
+[0m→ [0mRead /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/skills/poteto-mode/SKILL.md
+> build · glm-5.3
+Skill poteto-mode cargada. Ahora abro el playbook `investigation`.
+[0m→ [0mRead /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/skills/poteto-mode/playbooks/investigation.md
+> build · glm-5.3
+Playbook abierto. Armo la lista de tareas con los pasos verbatim del playbook (poteto-mode lo exige) y localizo el README.md y los agentes disponibles.
+[0m$ [0mls /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/ && ls ~/.config/opencode/agent/ 2>/dev/null || echo "sin carpeta de agentes"
+pstack
+pstack-motor
+sin carpeta de agentes
+[0m✱ [0mGlob "**/README.md" [90min /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k · 3 matches[0m
+> build · glm-5.3
+No hay carpeta de agentes en `~/.config/opencode/agent/`, así que según el mapa de opencode uso el agente por omisión y paso la ruta de la skill en el prompt. El playbook enruta por la skill `how`; la leo antes de lanzar el subagente.
+[0m→ [0mRead /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/skills/how/SKILL.md
+> build · glm-5.3
+Es un caso simple según la skill `how`: un solo subagente explicador que explora y explica en una pasada. Leo su prompt de referencia.
+[0m→ [0mRead /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/skills/how/references/explainer-prompt.md
+> build · glm-5.3
+Todo listo para lanzar el subagente. Lista de tareas con los pasos verbatim del playbook:
+
+1. Route through the **how** skill. For motivation questions, also route through the **why** skill.
+2. Throughput checkpoint stays one line: `throughput checkpoint: n/a, read-only investigation`.
+3. Produce the `how`-shaped output (Overview / Key Concepts / How It Works / Where Things Live / Gotchas), or a recommendation with a tradeoffs table if the request is a decision between alternatives.
+4. Apply the **unslop** skill to the reply.
+
+Más los propios del encargo: cargar poteto-mode (hecho), abrir investigation (hecho), lanzar subagente que lea README.md con la ruta absoluta de la skill (ahora), no cambiar nada. La skill `how` califica esto como caso simple: un explicador en una pasada, sin exploradores, con el prompt construido desde `explainer-prompt.md` sin la sección de hallazgos. Lo lanzo en primer plano porque el playbook exige que presente su salida y no hay diff que vigilar al ser solo lectura.
+[0m✓ [0mExplicador lee README de pstack [90mGeneral Agent[0m
+> build · glm-5.3
+El subagente terminó. Soy dueño de lo que entrega, así que verifico sus afirmaciones medibles antes de presentar nada, y leo la skill `unslop` que el paso 4 del playbook exige aplicar a la respuesta.
+[0m→ [0mRead /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/skills/unslop/SKILL.md
+[0m$ [0mls /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/skills/poteto-mode/playbooks/ | wc -l; ls /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/agents/; ls /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/skills/ | wc -l; head -5 /var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k/pstack/README.md
+23
+comment-sicko.md
+poteto-agent.md
+      63
+# pstack
+
+i'm [poteto](https://x.com/poteto). i'm not a president or ceo, but i've worked with millions of lines of code at Meta, Netflix, and Cursor. i'm also on the react core team where i help build and maintain react compiler.
+
+there's a growing sense that ai writes too much slop code. i agree. i don't want to ship like a team of twenty slop artists. throughput without quality is not a goal i aspire to. if you want to go fast, go deep first.
+> build · glm-5.3
+Ejecutado el encargo completo. Todo fue solo lectura, no cambié nada.
+
+**Lo que hice, en orden.**
+
+1. Leí `motor.md` y `pstack-motor/opencode.md` de la copia fija.
+2. Cargué poteto-mode leyendo completo `pstack/skills/poteto-mode/SKILL.md`. No está en el catálogo de skills de este CLI, así que apliqué el fallback que el mapa de opencode da para ese caso.
+3. Abrí `pstack/skills/poteto-mode/playbooks/investigation.md` y copié sus pasos verbatim a mi lista de tareas.
+4. La skill `how` clasificó el caso como simple y pedí leer su template de explicador en `references/explainer-prompt.md`.
+5. Lancé el subagente (sesión `ses_e9915c2efffeFnzR2CsFskkh6U`, agente por omisión porque `~/.config/opencode/agent/` no existe) con la ruta absoluta de la skill en el prompt y la orden de leer `pstack/README.md`.
+6. Verifiqué yo mismo sus afirmaciones medibles antes de presentarlas.
+7. Apliqué `unslop` a esta respuesta.
+
+Estado de la lista, paso 1 hecho vía `how` (sin `why`, no es pregunta de motivación), paso 2 abajo, pasos 3 y 4 en lo que sigue.
+
+`throughput checkpoint: n/a, read-only investigation`
+
+**Investigación, qué es pstack y cómo se organiza.** Salida del explicador con ediciones ligeras. Yo verifiqué cada cifra medible que cita.
+
+### Overview
+
+pstack es un plugin de agentes de código. Su autor es poteto, ingeniero en Cursor y miembro del core team de React, y lo presenta como su respuesta al "slop code" que escribe la IA. La tesis del README es que el rendimiento sin calidad no sirve y que la meta es escribir menos código pero de mayor calidad, para lograr lo que llama "fearless parallelism". Es decir, poder lanzar varios agentes en paralelo y confiar en que cada uno aplica principios de ingeniería rigurosos (README.md, intro).
+
+En la práctica pstack empaqueta el flujo de trabajo del autor como skills invocables, playbooks paso a paso, definiciones de subagentes y 24 principios cortos. Funciona en Cursor con `/add-plugin pstack` y en Claude Code vía el marketplace de plugins, donde los comandos llevan prefijo, así que `/poteto-mode` se escribe `/pstack:poteto-mode` (README.md, sección "install").
+
+### Key Concepts
+
+- Skill. Un directorio bajo `skills/` con un `SKILL.md`, invocable como comando slash. El README tabula unas 31 skills y el archivo `ORIGEN` de esta copia declara 63 en total contando las de principios. Medido, el listado de `skills/` devuelve 63.
+- `/poteto-mode`. El punto de entrada por defecto. Lee tu petición, la casa con un playbook y dispara las otras skills según lo necesite cada paso (README.md, sección "usage").
+- Playbook. Un procedimiento con pasos literales bajo `skills/poteto-mode/playbooks/`. El README dice veintitrés y el listado de esa carpeta devuelve 23 archivos. Medido y confirmado.
+- Principio. 24 skills de una sola regla con prefijo `principle-`, agrupadas en core, architecture, verification, delegation y meta (README.md, sección "principles").
+- Subagentes. `poteto-agent` es el wrapper de delegación y lee poteto-mode completo antes de trabajar. `comment-sicko` es un revisor de comentarios de solo lectura (README.md). Medido, `agents/` tiene exactamente esos dos archivos.
+- Enrutado de modelos. `/setup-pstack` escribe qué modelo usa cada rol. El panel por defecto es opus 5.5 para juicio y prosa, grok para delegados de código (README.md, "get started").
+
+### How It Works
+
+El ciclo arranca con `/setup-pstack` para elegir presupuesto de razonamiento y modelos, y sigue con `/poteto-mode` al inicio de cada tarea que exija rigor. Para el usuario novel está `docs/guide/README.md`, que acompaña una primera tarea real de punta a punta, y `/poteto-help` para decidir qué skill usar.
+
+Cuando invocas `/poteto-mode`, el router hace tres cosas según el README. Casa la tarea con un playbook y abre una lista de tareas cuyos primeros items son los pasos del playbook copiados al pie de la letra. Encamina a las otras skills según se van necesitando, por ejemplo `how`, `architect`, `swarm`, `interrogate` o `unslop`. Y escribe respuestas sin relleno, enmarcadas para quien consume el trabajo y para quien lo mantiene. El `SKILL.md` de poteto-mode confirma esto y añade que un paso que decides no hacer se queda en la lista con un `skip: <motivo>` de una línea.
+
+Los 23 playbooks cubren desde investigación de solo lectura hasta aterrizaje de un stack de PRs. La tabla del README los agrupa en tres familias. Diagnóstico y construcción, con investigation, bug fix, perf, hillclimb, runtime y trace forensics, feature, refactoring, prototype y visual parity. Entrega, con babysit, shipping, opening a pr y los dos autopilot. Y sesiones largas, con autonomous run, orchestrate, session pickup, pause safely y multi-phase plan. Las familias son inferidas del explicador, no etiquetas del README.
+
+La delegación es central. Según el `SKILL.md` de poteto-mode, todo subagente dentro de un paso de playbook usa `subagent_type: "poteto-agent"`, corre en background, en modo readonly, con punteros a archivos y un modelo explícito por rol. El README añade que no se spawnea un `poteto-agent` para correr el playbook mismo, porque el chat que recibe `/poteto-mode` es el dueño del playbook y de la lista.
+
+Hay dos piezas de infraestructura multi-harness. Un adaptador en `docs/harness/claude-code.md` mapea los nombres de Cursor a Claude Code. Y la copia que instala Claude Code es un árbol generado desde `harness/pstack/` en el repo `cursor/plugins`, regenerado con `node scripts/generate-pstack-harness-trees.mjs`, porque el CI falla si queda desactualizada. El archivo `ORIGEN` de esta copia registra el commit `190d287...` de cursor/plugins como su fuente. Medido en ORIGEN.
+
+Tres secciones cierran el modelo mental. "Not shipped here" admite que poteto-mode referencia skills que no vienen en el paquete, como `/deslop` y `control-cli`/`control-ui` que viven en `cursor-team-kit`. "Why are there no planning skills" explica una decisión deliberada, el autor no cree en planificar porque el mejor spec es código. Y "Make it yours" describe la personalización, con `/automate-me` minando tus transcripts para draftear tu propio `<nombre>-mode`.
+
+### Where Things Live
+
+- `README.md` es el manifiesto, la instalación, el uso y las tablas de skills, playbooks y principios.
+- `skills/` contiene un directorio por skill. `skills/poteto-mode/` es el router, con sus 23 playbooks en `skills/poteto-mode/playbooks/`.
+- `agents/` tiene `poteto-agent.md` y `comment-sicko.md`.
+- `docs/` tiene `guide/` con el tutorial de primera tarea y `harness/` con el adaptador de Claude Code.
+- `plugin.json` y `.claude-plugin/` son el empaquetado. Inferido de sus nombres, el README no los describe.
+- `ORIGEN` registra el origen de esta copia. No aparece en el README.
+
+### Gotchas
+
+- En Claude Code todo lleva prefijo y `/setup-pstack` escribe en `~/.claude/rules/pstack-models.md`. Los pasos que dependen de funciones solo de Cursor se saltan con una nota.
+- Los modelos quedan clavados en el tiempo. Una regla escrita antes de un cambio de default sigue fijando el default viejo. Hay que borrar las líneas de rol y correr `/setup-pstack` de nuevo.
+- Skills referenciadas que no están en el paquete. `/deslop`, `control-cli` y `control-ui` requieren `cursor-team-kit` aparte.
+- Tres skills solo corren si las tecleas tú, `poteto-help`, `in-your-own-words` y `sharpen`. El resto las dispara poteto-mode.
+- En Cursor, option+enter convierte el skill en un custom mode persistente. Enter plano lo adjunta a un solo mensaje y el modo se apaga al siguiente turno.
+- Las peticiones de estado de PR van al playbook babysit y no al `/autopilot` built-in de Cursor, aunque las descripciones coincidan.
+- Sustituir `poteto-agent` por `generalPurpose` rompe el contrato, porque se salta la lectura completa de poteto-mode.
+- Esta copia es un snapshot del commit `190d287...` de cursor/plugins, no un checkout de trabajo.
+
+Pregunta abierta, una. El conteo de 63 skills de `ORIGEN` contra las 31 tabuladas en el README no está contrastado archivo por archivo. La diferencia explicaría los 24 principios más subskills no listadas. Inferido.
+
+**Verificación.** Repetí yo mismo las mediciones del subagente. Los 23 playbooks, los 63 directorios de skills, los dos archivos de `agents/` y la intro del README coinciden con lo que reportó. El resto de sus citas llevan archivo y sección nombrados.
+
+**Defaults aplicados y skips.**
+
+- Subagente con el agente por omisión, no `poteto-agent`, porque `~/.config/opencode/agent/` no existe. Lo exige el mapa de opencode para ese caso. La ruta absoluta de la skill fue en el prompt.
+- Subagente en primer plano, no en background como pide poteto-mode por defecto, porque el playbook exige presentar su salida y no había diff que vigilar al ser solo lectura.
+- Skill cargada con `Read` por ruta absoluta, no con la herramienta `skill`, porque poteto-mode no está en el catálogo de este CLI.
+- Sin commit ni push. El brief dice "no cambies nada", no hay filas con `Acepta` y el directorio de trabajo no es un repo git. Skip, lo hace el motor.
+- Principios citados, ninguno. No leí ninguna hoja `principle-*` esta sesión y poteto-mode solo permite citar las leídas.
+
+```json
+{"sha": null, "resumen": "Investigación de solo lectura completada. Cargada poteto-mode, abierto el playbook investigation, lanzado un subagente que leyó pstack/README.md con la ruta absoluta de la skill en el prompt. Entregada la salida how-shaped verificada. Sin cambios, sin commit, sin PR."}
+```

@@ -1,0 +1,19 @@
+{
+  "cli": "kimi",
+  "ruta": "k3",
+  "plantilla": [
+    "kimi",
+    "-p",
+    "{prompt}",
+    "--output-format",
+    "stream-json"
+  ],
+  "rc": 0,
+  "segundos": 123,
+  "raiz": "C:\\Users\\ehven\\AppData\\Local\\Temp\\mide-pstack-copia-bpm2sje4",
+  "version": "2.2.0",
+  "error": "",
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "e solo del nombre de la ruta temporal y del encargo.\\n\\n**Principios aplicados**\\n\\nGuard the Context Window guió delegar la lectura al subagente y quedarme con su síntesis. Never Block on the Human y la regla 3 del motor guiaron decidir sin preguntar. Prove It Works guió verificar el alcance del directorio en lugar de asumir contenido.\"}\n{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"session_0d2c037d-fa45-4f88-9b1c-9b8597764b7d\",\"command\":\"kimi -r session_0d2c037d-fa45-4f88-9b1c-9b8597764b7d\",\"content\":\"To resume this session: kimi -r session_0d2c037d-fa45-4f88-9b1c-9b8597764b7d\"}\n"
+}
