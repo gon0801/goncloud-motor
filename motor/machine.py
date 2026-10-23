@@ -785,7 +785,8 @@ def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
     if kind in ("entregado", "veredicto") or kind in NO_ES_FALLA:
         return False
     mios = [x for x in bv.attempts if x.role == a.role]
-    if regresa_por_playbook(mios, next(i for i, x in enumerate(mios) if x is a)):
+    i = next((i for i, x in enumerate(mios) if x is a), None)
+    if i is not None and regresa_por_playbook(mios, i):
         return False
     if (
         kind in relevo.PASAJERAS

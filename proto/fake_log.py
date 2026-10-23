@@ -9,6 +9,7 @@ Lo usan fake_agent.py y fake_reviewer.py cuando su modo empieza con `pstack`:
   pstack_playbook      carga poteto-mode y abre un playbook, con Read
   pstack_real:<intento>  repite el registro de tests/datos/pstack-terminal/<intento>, con su raíz cambiada
                        por la copia fija que dice el encargo
+  pstack_real_pausa:<intento>  igual, y al entregar deja la cuenta en pausa (lo hace fake_agent.py)
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ def _raiz(encargo: str) -> str:
 def emite(modo: str, primera: bool, encargo: str = "") -> None:
     """Imprime el registro que dejaría el agente según `modo` (ver arriba)."""
     print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
-    if modo.startswith("pstack_real:"):
+    if modo.startswith(("pstack_real:", "pstack_real_pausa:")):
         carpeta = DATOS / modo.split(":", 1)[1]
         antes = json.loads((carpeta / "meta.json").read_text("utf-8"))["raiz"]
         texto = (carpeta / "registro.jsonl").read_text("utf-8")

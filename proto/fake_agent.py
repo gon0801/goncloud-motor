@@ -32,9 +32,11 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 
@@ -184,6 +186,33 @@ def main() -> int:
     if repro:
         resultado["repro"] = repro
     Path(os.environ["MOTOR_RESULT"]).write_text(json.dumps(resultado))
+    if modo.startswith("pstack_real_pausa:"):
+        # su cuenta queda en pausa al entregar: un regreso no podría repetir con ella
+        d = Path(os.environ["MOTOR_RESULT"]).parent
+        home = d.parents[2]
+        conf = Path(tomllib.loads((home / "maquina.toml").read_text())["conf"])
+        cuenta = tomllib.loads((conf / "rutas.toml").read_text())["rutas"][
+            os.environ["MOTOR_MODEL"]
+        ]["cuenta"]
+        db = sqlite3.connect(home / "motor.db", isolation_level=None, timeout=30)
+        db.execute(
+            "INSERT INTO events (ts, plan, block, kind, data) VALUES (?,?,?,?,?)",
+            (
+                time.time(),
+                d.parent.name,
+                "",
+                "Cooldown",
+                json.dumps(
+                    {
+                        "cuenta": cuenta,
+                        "hasta": time.time() + 3600,
+                        "modelo": os.environ["MOTOR_MODEL"],
+                    },
+                    sort_keys=True,
+                ),
+            ),
+        )
+        db.close()
     print("listo")
     if modo == "entrega_y_sigue":
         for i in range(600):
