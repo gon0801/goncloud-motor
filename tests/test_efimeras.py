@@ -218,6 +218,12 @@ class FuentesTest(unittest.TestCase):
         self.assertEqual(list(tareas.values()), [CRON_LINEA])
         self.assertIn(efimeras.CRONTAB, leidas)
 
+    def test_el_nombre_de_una_tarea_de_crontab_recorta_la_linea(self):
+        tareas, _, _, _ = self.mac(crontab=_cp(0, f"{CRON_LINEA}\n"))
+        (nombre,) = tareas
+        self.assertTrue(nombre.startswith("crontab:1 "))
+        self.assertIn(CRON_LINEA[:40], nombre)
+
     def test_crontab_que_falla_de_verdad_queda_sin_leer(self):
         _, leidas, sin_leer, _ = self.mac(crontab=_cp(2, "", "crontab: boom"))
         self.assertNotIn(efimeras.CRONTAB, leidas)

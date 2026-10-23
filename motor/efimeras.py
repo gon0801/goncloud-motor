@@ -187,7 +187,7 @@ def _lee_crontab(tareas, leidas, sin_leer, bash) -> None:
             if x.strip() and not x.lstrip().startswith("#")
         ]
         for i, linea in enumerate(lineas, 1):
-            tareas[f"crontab:{i}"] = linea
+            tareas[f"crontab:{i} {linea[:60]}"] = linea
     elif "no crontab for" in salida:
         leidas.append(CRONTAB)
     else:
