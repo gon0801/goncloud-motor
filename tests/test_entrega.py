@@ -1,4 +1,4 @@
-"""Una entrega válida cierra al agente. Una que no lo es, no."""
+"""Una entrega válida cierra al agente. Una que no lo es, no. Nadie la pisa después."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ import time
 import unittest
 from pathlib import Path
 
+from motor import machine as m
 from motor import runwrap
+from motor.daemon import Daemon
+from motor.plan import parse_plan
 
 FIXTURE = (
     Path(__file__).resolve().parent / "datos" / "entrega" / "result-2026-10-22.json"
@@ -177,6 +180,75 @@ class CierreTest(unittest.TestCase):
         self.assertFalse(malo["cerrado_tras_resultado"])
         self.assertLess(dura_mal, 10)
         self.assertGreaterEqual(dura_mal, 2.5)
+
+    def recoge(self, carpeta: Path, sha: str) -> dict:
+        proto = Path(__file__).resolve().parent.parent / "proto"
+        if str(proto) not in sys.path:
+            sys.path.insert(0, str(proto))
+        import sandbox
+
+        home, plan_md = sandbox.create(self.t / "banco")
+        daemon = Daemon(home)
+        self.addCleanup(daemon._candado.close)
+        plan = parse_plan(plan_md.read_text(encoding="utf-8")).to_dict()
+        daemon.store.append("demo", "", "PlanLoaded", {"plan": plan, "por": "t"})
+        daemon.fx.cx.ws.punta = lambda repo, rama, sha=sha: sha
+        att = m.Attempt(
+            n=1,
+            role="implementar",
+            modelo="glm",
+            started=0.0,
+            proc={},
+            dir=str(carpeta),
+        )
+        cargado = daemon.plans()[0]
+        return daemon.fx.collect(cargado, daemon._fold(cargado), "A", att)
+
+    def test_un_hijo_pisa_result_y_el_motor_toma_la_entrega(self):
+        work = self.prepara(push=True)
+        hijo = self.t / "hijo.py"
+        hijo.write_text(
+            "import json, os, pathlib, time\n"
+            "d = pathlib.Path(os.environ['MOTOR_ATTEMPT_DIR'])\n"
+            "for _ in range(100):\n"
+            "    if (d / 'entrega.json').exists():\n"
+            "        break\n"
+            "    time.sleep(0.05)\n"
+            "else:\n"
+            "    raise SystemExit(2)\n"
+            "(d / 'result.json').write_text(json.dumps({'sha': None}))\n",
+            encoding="utf-8",
+        )
+        o, dura = self.corre(
+            "import json, os, pathlib, subprocess, sys, time\n"
+            "d = pathlib.Path(os.environ['MOTOR_ATTEMPT_DIR'])\n"
+            "sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()\n"
+            "(d / 'result.json').write_text(json.dumps({'sha': sha, 'resumen': 'listo'}))\n"
+            f"subprocess.Popen([sys.executable, {str(hijo)!r}])\n"
+            "time.sleep(30)\n",
+            "--entrega-rama",
+            RAMA,
+            cwd=work,
+        )
+        intento = self.t / "intento"
+        sha = _git("rev-parse", "HEAD", cwd=work).stdout.strip()
+        self.assertTrue(o["cerrado_tras_resultado"])
+        self.assertLess(dura, 15)
+        self.assertEqual(json.loads((intento / "entrega.json").read_text())["sha"], sha)
+        self.assertIsNone(json.loads((intento / "result.json").read_text())["sha"])
+        self.assertIsNone(
+            json.loads((intento / "result.ajeno.json").read_text())["sha"]
+        )
+        out = self.recoge(intento, sha)
+        self.assertEqual(out["kind"], "entregado")
+        self.assertEqual(out["sha"], sha)
+
+    def test_sin_entrega_valida_termina_sin_resultado(self):
+        o, _ = self.corre("import time\ntime.sleep(0.2)\n")
+        intento = self.t / "intento"
+        self.assertFalse(o["cerrado_tras_resultado"])
+        self.assertFalse((intento / "entrega.json").exists())
+        self.assertEqual(self.recoge(intento, "c" * 40)["kind"], "sin_resultado")
 
 
 if __name__ == "__main__":

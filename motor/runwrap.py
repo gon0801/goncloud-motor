@@ -8,8 +8,10 @@
 - Falta de avance: ni el log ni la carpeta cambian en `--sin-avance` s -> se detiene.
 - Ya entregó: si escribió una entrega válida (`motor.entrega`) y en `--cierre` s no vuelve a
   tocar nada, se cierra y cuenta como terminado. Un `result.json` que no es entrega válida no
-  lo cierra: sigue trabajando. Grok dejaba su resultado y el proceso no salía; a los 45 min se
-  mataba "sin avance" y la entrega se perdía (INGESTA 01, bloque D, dos veces).
+  lo cierra: sigue trabajando. La primera entrega válida se copia a `entrega.json`. Un
+  `result.json` posterior queda en `result.ajeno.json` y no la reemplaza. Grok dejaba su
+  resultado y el proceso no salía; a los 45 min se mataba "sin avance" y la entrega se perdía
+  (INGESTA 01, bloque D, dos veces).
 - Con `--wip-rama`: cada `--wip-cada` s y al terminar, sube una foto del trabajo a medias
   (ver workspace.foto_wip). Un corte de luz pierde a lo mucho esos segundos.
 - Con `--puerta N`: lee el registro del agente mientras corre; si llega a la acción N sin haber cargado
@@ -182,7 +184,6 @@ def main(argv: list[str] | None = None) -> int:
         ultimo = (log.stat().st_size, _mtime_arbol(cwd))
         ultimo_cambio = ultimo_escaneo = time.time()
         timed_out = no_progress = cerrado = False
-        resultado = d / "result.json"
         espera = entrega.Espera(rama=a.entrega_rama, sha=a.entrega_sha)
         foto_lock = threading.Lock()
         foto_stop = threading.Event()
@@ -213,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                 ahora = (log.stat().st_size, _mtime_arbol(cwd))
                 if ahora != ultimo:
                     ultimo, ultimo_cambio = ahora, time.time()
-            entrego = espera.momento(resultado, cwd)
+            entrego = espera.vigila(d, cwd)
             if (
                 entrego >= inicio
                 and time.time() - max(entrego, ultimo_cambio) > a.cierre
@@ -228,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             if timed_out or no_progress:
                 matar_grupo(p)
                 break
+    espera.vigila(d, cwd)
     if a.home and a.cuenta:
         llamadas.quita(Path(a.home), clave)
     if a.wip_rama:

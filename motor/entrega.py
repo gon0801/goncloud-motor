@@ -9,10 +9,14 @@ del encargo. Un sha que solo está en la copia local no cuenta.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
 from .workspace import git
+
+ENTREGA = "entrega.json"
+AJENO = "result.ajeno.json"
 
 
 def bloqueado(res: object) -> str:
@@ -54,6 +58,18 @@ def resultado_invalido(res: object, revisando: bool) -> str:
     if not isinstance(notas, list) or not all(isinstance(n, str) for n in notas):
         return falta("notas", "una lista de textos")
     return ""
+
+
+def ruta(d: Path) -> Path:
+    """`entrega.json` si ya se congeló una entrega válida; si no, `result.json`."""
+    fija = d / ENTREGA
+    return fija if fija.is_file() else d / "result.json"
+
+
+def _escribe(destino: Path, data: bytes) -> None:
+    tmp = destino.with_name(destino.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, destino)
 
 
 def es_valida(
@@ -108,11 +124,39 @@ class Espera:
             res, revisando=self.revisando, sha_encargo=self.sha, punta=punta
         )
 
-    def momento(self, resultado: Path, cwd: Path) -> float:
-        """mtime de `result.json` si es entrega válida; 0 si no hay, o no lo es."""
+    def vigila(self, d: Path, cwd: Path) -> float:
+        """mtime de la entrega válida ya congelada, o 0 si todavía no hay.
+
+        La primera entrega válida se copia a `entrega.json`. Un `result.json` que
+        llega después se guarda como `result.ajeno.json` y no la reemplaza.
+        """
+        resultado = d / "result.json"
+        fija = d / ENTREGA
         try:
             data = resultado.read_bytes()
-            cuando = resultado.stat().st_mtime
+        except OSError:
+            data = None
+        if fija.is_file():
+            try:
+                previa = fija.read_bytes()
+            except OSError:
+                previa = b""
+            if data is not None and data != previa:
+                ajeno = d / AJENO
+                try:
+                    ya = ajeno.read_bytes()
+                except OSError:
+                    ya = None
+                if ya != data:
+                    _escribe(ajeno, data)
+            try:
+                return fija.stat().st_mtime
+            except OSError:
+                return 0.0
+        if data is None or not self.acepta(data, cwd):
+            return 0.0
+        _escribe(fija, data)
+        try:
+            return fija.stat().st_mtime
         except OSError:
             return 0.0
-        return cuando if self.acepta(data, cwd) else 0.0

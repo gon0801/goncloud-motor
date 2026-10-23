@@ -833,7 +833,7 @@ Escribe en `$MOTOR_RESULT`:
         revisando = att.role == "revisar"
         malo = "sin_resultado" if not revisando else "veredicto_invalido"
         try:
-            res = json.loads((d / "result.json").read_text(encoding="utf-8"))
+            res = json.loads(entrega.ruta(d).read_text(encoding="utf-8"))
         except OSError:
             return {
                 "kind": "sin_resultado",
@@ -969,7 +969,7 @@ Escribe en `$MOTOR_RESULT`:
     def _entrego(self, plan: Plan, block_id: str, d: Path) -> bool:
         """Hay una entrega válida. El sha del implementador es la punta remota de su rama."""
         try:
-            res = json.loads((d / "result.json").read_text(encoding="utf-8"))
+            res = json.loads(entrega.ruta(d).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return False
         punta = ""
