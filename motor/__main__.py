@@ -147,7 +147,10 @@ def _estado(home: Path) -> list[dict]:
 
 def _lee_programadas(home: Path, sistema: bool = True):
     """(lectura de efimeras.lee_tareas, hallazgos): las tareas que contienen una carpeta del motor."""
-    home = home.expanduser().resolve()
+    # Sin resolve(): una tarea guarda la ruta tal como se escribió; resolver un enlace del home
+    # (/var -> /private/var en macOS) haría que nunca matchee.
+    home = Path(os.path.abspath(os.path.expanduser(home)))
+    usuario = Path.home()
     error = ""
     try:
         mq = load_maquina(home)
@@ -157,14 +160,15 @@ def _lee_programadas(home: Path, sistema: bool = True):
         if (home / "maquina.toml").exists():
             error = f"no pude leer maquina.toml: {e!r}"
     try:
-        lectura = efimeras.lee_tareas(nombre, conf_dir, sistema, bash=bash)
+        lectura = efimeras.lee_tareas(
+            nombre, conf_dir, sistema, home=usuario, bash=bash
+        )
     except Exception as e:  # noqa: BLE001 - un plist roto no puede dar exit 1: nada se pudo asegurar
         lectura = ({}, [], {"lectura": f"{type(e).__name__}: {e}"}, {})
     if error:
         lectura[2]["maquina.toml"] = error
     tareas = lectura[0]
     hallazgos = []
-    usuario = Path.home()
     for carpeta in efimeras.CARPETAS_DEL_MOTOR:
         ruta = home / carpeta
         for tarea in efimeras.tareas_con(tareas, ruta, usuario):

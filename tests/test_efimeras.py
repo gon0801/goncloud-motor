@@ -468,6 +468,19 @@ class ProgramadasTest(unittest.TestCase):
         self.assertEqual(codigo, 3, out.getvalue())
         self.assertIn(str(agents / "ai.demo.plist"), out.getvalue())
 
+    def test_home_detras_de_un_enlace_se_compara_como_se_escribio(self):
+        # Una tarea guarda la ruta como se escribió; si el home pasa por un enlace
+        # (mktemp en /var en macOS), resolverlo hace que nunca matchee.
+        real = self.t / "real-home"
+        real.mkdir()
+        enlace = self.t / "enlace-home"
+        enlace.symlink_to(real, target_is_directory=True)
+        lectura = ({"ai.demo": f"python3 {enlace}/wt/demo/A/corre.py"}, ["f"], {}, {})
+        with mock.patch.object(efimeras, "lee_tareas", return_value=lectura):
+            out, codigo = cli.programadas(enlace)
+        self.assertEqual(codigo, 3)
+        self.assertEqual([h["tarea"] for h in out["hallazgos"]], ["ai.demo"])
+
     def test_cada_carpeta_que_el_motor_borra_cuenta(self):
         self.assertEqual(
             efimeras.CARPETAS_DEL_MOTOR,
