@@ -6,9 +6,10 @@
 
 - stdin cerrado y grupo de procesos propio: ningún prompt de permiso puede colgarlo.
 - Falta de avance: ni el log ni la carpeta cambian en `--sin-avance` s -> se detiene.
-- Ya entregó: si el agente escribió `result.json` y en `--cierre` s no vuelve a tocar nada, se
-  cierra y cuenta como terminado. Grok dejaba su resultado y el proceso no salía; a los 45 min
-  se mataba "sin avance" y la entrega se perdía (INGESTA 01, bloque D, dos veces).
+- Ya entregó: si escribió una entrega válida (`motor.entrega`) y en `--cierre` s no vuelve a
+  tocar nada, se cierra y cuenta como terminado. Un `result.json` que no es entrega válida no
+  lo cierra: sigue trabajando. Grok dejaba su resultado y el proceso no salía; a los 45 min se
+  mataba "sin avance" y la entrega se perdía (INGESTA 01, bloque D, dos veces).
 - Con `--wip-rama`: cada `--wip-cada` s y al terminar, sube una foto del trabajo a medias
   (ver workspace.foto_wip). Un corte de luz pierde a lo mucho esos segundos.
 - Con `--puerta N`: lee el registro del agente mientras corre; si llega a la acción N sin haber cargado
@@ -31,7 +32,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import llamadas, plataforma
+from . import entrega, llamadas, plataforma
 from . import pstack as ps
 from .plataforma import contener, kwargs_grupo, matar_grupo
 from .workspace import foto_wip
@@ -137,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--registro", action="append", default=[])
     ap.add_argument("--home", default="")
     ap.add_argument("--cuenta", default="")
+    ap.add_argument("--entrega-rama", default="", help="rama del bloque en origin")
+    ap.add_argument("--entrega-sha", default="", help="sha del encargo, papel revisor")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
@@ -180,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         ultimo_cambio = ultimo_escaneo = time.time()
         timed_out = no_progress = cerrado = False
         resultado = d / "result.json"
+        espera = entrega.Espera(rama=a.entrega_rama, sha=a.entrega_sha)
         foto_lock = threading.Lock()
         foto_stop = threading.Event()
 
@@ -209,10 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                 ahora = (log.stat().st_size, _mtime_arbol(cwd))
                 if ahora != ultimo:
                     ultimo, ultimo_cambio = ahora, time.time()
-            try:
-                entrego = resultado.stat().st_mtime
-            except OSError:
-                entrego = 0.0
+            entrego = espera.momento(resultado, cwd)
             if (
                 entrego >= inicio
                 and time.time() - max(entrego, ultimo_cambio) > a.cierre
