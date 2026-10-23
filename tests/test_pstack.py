@@ -590,6 +590,34 @@ class TestGrokJson(unittest.TestCase):
         h = ps.huella(Path(regs[0]).read_text(encoding="utf-8"), "grok", RAIZ)
         self.assertEqual(h.skills, ("poteto-mode",))
 
+    def test_grok_json_con_sangria_en_varias_lineas_tambien_encuentra_la_sesion(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ses = tmp / ".grok" / "sessions" / "-w" / "s2"
+        ses.mkdir(parents=True)
+        (ses / "updates.jsonl").write_text(
+            jl({"tool_name": "read_file", "args": {"path": SKILL}}), encoding="utf-8"
+        )
+        final = {"text": "listo", "sessionId": "s2", "usage": {"a": 1, "b": [1, 2]}}
+        log = tmp / "log.txt"
+        log.write_text(
+            "aviso del CLI\n" + json.dumps(final, indent=2) + "\n{ otro aviso\n",
+            encoding="utf-8",
+        )
+        os.environ["GROK_HOME"] = str(tmp / ".grok")
+        self.addCleanup(os.environ.pop, "GROK_HOME", None)
+        regs = ef.Effects._registros_de({"cli": "grok", "registros": [str(log)]})
+        self.assertEqual(regs[0], str(ses / "updates.jsonl"))
+
+    def test_objetos_lee_un_objeto_con_sangria_y_sigue_con_las_lineas_de_despues(self):
+        texto = (
+            json.dumps({"a": {"b": 1}, "c": [1, 2]}, indent=2)
+            + '\n{"d": 2}\n{"roto": \n'
+        )
+        self.assertEqual(
+            list(ps._objetos(texto)), [{"a": {"b": 1}, "c": [1, 2]}, {"d": 2}]
+        )
+
 
 class TestBloqueantesDelRevisorMalformados(unittest.TestCase):
     """B.4: el revisor es entrada externa; un bloqueante raro no debe tumbar `collect`."""
@@ -657,6 +685,8 @@ NO_VERIFICABLE_POR_RUTA = {
 SIN_ENTRAR = {
     (cli, mq): motivo for cli, f in ps.FORMATOS.items() for mq, motivo in f.sin_carga_en
 }
+
+
 SIN_TERMINAR = {("grok", "pc"): "pasó el tope de 900s"}
 SIN_CUMPLIR = {**NO_VERIFICABLE_POR_RUTA, **SIN_ENTRAR, **SIN_TERMINAR}
 

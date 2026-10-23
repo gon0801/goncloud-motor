@@ -433,7 +433,8 @@ def _clasifica(
 
 
 def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
-    """Objetos JSON del registro: una línea por objeto, o un arreglo completo (qwen `--output-format json`)."""
+    """Objetos JSON del registro: uno por línea, con sangría en varias líneas (grok `--output-format json`),
+    o un arreglo completo (qwen `--output-format json`)."""
     texto = fuente if isinstance(fuente, str) else "\n".join(fuente)
     inicio = re.search(r"(?m)^\[", texto)
     if inicio:  # el arreglo puede traer avisos del CLI (stderr) antes o después
@@ -445,14 +446,23 @@ def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
             return
         except (ValueError, TypeError):
             pass
-    for linea in texto.splitlines():
-        linea = linea.strip()
+    lineas = texto.splitlines(keepends=True)
+    i, dec = 0, json.JSONDecoder()
+    while i < len(lineas):
+        linea = lineas[i].strip()
+        i += 1
         if linea[:1] != "{":
             continue  # avisos del CLI, salida de runwrap
         try:
             o = json.loads(linea)
         except ValueError:
-            continue
+            # un objeto con sangría ocupa varias líneas (`grok --output-format json`)
+            resto = "".join(lineas[i - 1 :]).lstrip()
+            try:
+                o, fin = dec.raw_decode(resto)
+            except ValueError:
+                continue
+            i += resto[:fin].count("\n")
         if isinstance(o, dict):
             yield o
 
