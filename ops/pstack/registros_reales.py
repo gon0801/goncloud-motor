@@ -7,7 +7,6 @@ juzga <carpeta_plan> <intento>=<cumple|falta>...
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -15,24 +14,10 @@ RAIZ_REPO = Path(__file__).resolve().parents[2]
 if str(RAIZ_REPO) not in sys.path:
     sys.path.insert(0, str(RAIZ_REPO))
 
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+from motor import pstack as ps  # noqa: E402
+
 _CAMPO = {"Read": "file_path", "Skill": "skill", "Bash": "command"}
 _META = ("intento", "cli", "lane", "role", "raiz", "exigencia")
-
-
-def sin_cuerpos_heredoc(comando: str) -> str:
-    salida: list[str] = []
-    cierre: str | None = None
-    for linea in comando.split("\n"):
-        if cierre is not None:
-            if linea.strip() == cierre:
-                salida.append(linea)
-                cierre = None
-            continue
-        salida.append(linea)
-        if m := _HEREDOC.search(linea):
-            cierre = m.group(2)
-    return "\n".join(salida)
 
 
 def reduce_input(nombre: str, args: dict, raiz: str) -> dict:
@@ -42,7 +27,7 @@ def reduce_input(nombre: str, args: dict, raiz: str) -> dict:
         )
     if nombre == "Bash":
         cmd = str(args.get("command", ""))
-        return {"command": sin_cuerpos_heredoc(cmd) if raiz and raiz in cmd else "true"}
+        return {"command": ps.sin_heredocs(cmd) if raiz and raiz in cmd else "true"}
     campo = _CAMPO.get(nombre)
     return {campo: args[campo]} if campo and campo in args else {}
 
@@ -99,8 +84,6 @@ def recorta(carpeta_intento: Path, carpeta_salida: Path) -> None:
 
 
 def juzga(carpeta_plan: Path, esperados: list[str]) -> int:
-    from motor import pstack as ps
-
     mal = 0
     for par in esperados:
         intento, _, esperado = par.partition("=")

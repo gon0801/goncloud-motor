@@ -1720,6 +1720,70 @@ class TestLecturaPorTerminal(unittest.TestCase):
         )
         self.assertEqual(self.lee(f"echo hola; cat {sk} | head"), ())
 
+    def test_salida_de_grupo_bucle_o_if_desviada_no_cuenta(self):
+        sk = f"{SK}/interrogate/SKILL.md"
+        for cmd in (
+            f"{{ cat {sk}; }} > /tmp/p.md",
+            f"for i in 1; do cat {sk}; done | wc -l",
+            f"if true; then cat {sk}; fi >/dev/null",
+            f"(cat {sk}) 2>&1 > /tmp/p.md",
+            f"x=$(cat {sk})",
+        ):
+            self.assertEqual(self.lee(cmd), (), cmd)
+
+    def test_grupo_bucle_o_if_a_la_terminal_cuenta(self):
+        sk = f"{SK}/interrogate/SKILL.md"
+        esperado = (("skill", "interrogate"),)
+        for cmd in (
+            f"{{ cat {sk}; }}",
+            f"{{ cat {sk}; }} 2>/dev/null",
+            f"for i in 1; do cat {sk}; done",
+            f"if true; then cat {sk}; fi",
+            f"(cd /tmp && cat {sk})",
+        ):
+            self.assertEqual(self.lee(cmd), esperado, cmd)
+
+    def test_ruta_con_variable_sin_valor_o_glob_no_cuenta(self):
+        pb = f"{SK}/poteto-mode/playbooks"
+        sk = f"{SK}/interrogate/SKILL.md"
+        for cmd in (
+            f"cat {pb}/$x.md",
+            f"for x in a b; do cat {pb}/$x.md; done",
+            f"P={R}; for P in /tmp/o; do cat $P/pstack/skills/interrogate/SKILL.md; done",
+            f"head -1 {pb}/*.md",
+            f"cat {pb}/?.md",
+            f"cat {pb}/[a-z].md",
+            f"cat {pb}/{{a,b}}.md",
+            "read P; cat $P/pstack/skills/interrogate/SKILL.md",
+        ):
+            self.assertEqual(self.lee(cmd), (), cmd)
+        self.assertEqual(
+            self.lee(
+                f"P={R}; for x in 1; do cat $P/pstack/skills/interrogate/SKILL.md; done"
+            ),
+            (("skill", "interrogate"),),
+        )
+        self.assertEqual(self.lee(f"cat {sk}"), (("skill", "interrogate"),))
+
+    def test_comentarios(self):
+        sk = f"{SK}/interrogate/SKILL.md"
+        esperado = (("skill", "interrogate"),)
+        self.assertEqual(self.lee(f"cat {sk}  # let's read it"), esperado)
+        self.assertEqual(self.lee(f"# don't\ncat {sk}"), esperado)
+        self.assertEqual(self.lee(f"echo hi # ; cat {sk}"), ())
+
+    def test_heredocs_raros(self):
+        sk = f"{SK}/interrogate/SKILL.md"
+        esperado = (("skill", "interrogate"),)
+        self.assertEqual(self.lee(f"cat <<\\EOF\ncat {sk}\nEOF\n"), ())
+        self.assertEqual(self.lee(f'grep -rn "<<EOF" motor/\ncat {sk}'), esperado)
+        self.assertEqual(self.lee(f'tr a b <<< "hola"\ncat {sk}'), esperado)
+        self.assertEqual(self.lee(f"cat <<-EOF\n\tcat {sk}\n\tEOF\ncat {sk}"), esperado)
+        self.assertEqual(self.lee(f"cat <<EOF\ncat {sk}\n  EOF\ncat {sk}\nEOF\n"), ())
+        self.assertEqual(
+            self.lee(f"cat <<A <<B\ncat {sk}\nA\ncat {sk}\nB\ncat {sk}"), esperado
+        )
+
     def test_puerta_no_corta_a_quien_cargo_poteto_con_cat(self):
         raiz = "/Users/dn/.motor/pstack/abc123"
         ev = ps.eventos(
