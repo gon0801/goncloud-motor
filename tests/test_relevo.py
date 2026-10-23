@@ -376,6 +376,12 @@ class RegresaPorPlaybookTest(unittest.TestCase):
         ) + _intento("sonnet", "sin_pstack", 2, self.t - 10, solo_playbook=True)
         self.assertEqual(_quien(evs, self.t), "glm")
 
+    def test_el_regreso_de_un_modelo_que_no_va_primero_vuelve_a_el(self):
+        evs = _intento("sonnet", "sin_pstack", 1, self.t - 20) + _intento(
+            "glm", "sin_pstack", 2, self.t - 10, solo_playbook=True
+        )
+        self.assertEqual(_quien(evs, self.t), "glm")
+
     def test_el_regreso_no_gasta_la_racha_de_fallas(self):
         from motor.plan import parse_plan
 
