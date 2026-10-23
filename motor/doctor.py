@@ -17,7 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import fallas, plataforma
+from . import fallas, plataforma, senal
 from .conf import ConfError, Maquina, Ruta, load_conf, load_maquina
 from .plataforma.windows import argv_windows, env_minimo_windows, lanzamiento_wsl
 from .servicio import PATH_SERVICIO
@@ -44,6 +44,7 @@ def entorno_del_servicio(mq: Maquina, ruta: Ruta, result: Path) -> dict[str, str
         **dict(mq.env),
         **dict(mq.secretos),
     }
+    base.pop(senal.VARIABLE, None)
     de_ruta = {k: string.Template(v).safe_substitute(base) for k, v in ruta.env}
     return {
         **base,

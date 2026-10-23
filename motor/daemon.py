@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import claves, huella, llamadas
 from . import machine as m
-from . import plataforma, version
+from . import plataforma, senal, version
 from .conf import (
     RepoConf,
     load_conf,
@@ -116,6 +116,8 @@ class Daemon:
             else conf.tiempos.get("checks_cada_s", 60.0),
         )
         self.fx = Effects(self.cx)
+        self.senal = senal.Senal(home, lambda: self.cx.conf.tiempos)
+        self.cx.avance = self.senal.avanzo
         self._sha_arranque = version.sha_actual()
         self._sin_dormir: bool | None = (
             None  # None: aplicar en el primer tick (también tras un reinicio)
@@ -413,6 +415,12 @@ class Daemon:
         self._llamadas_fuera = None
         return todo_hecho and bool(planes)
 
+    def _n_planes(self) -> int:
+        try:
+            return len(self.plans())
+        except Exception:  # noqa: BLE001  contar planes nunca tumba al motor
+            return 0
+
     def _fase(self, accion: str, fn, now: float, plan_id: str = "") -> bool:
         """Una fase del tick que revienta se anota como EffectFailed y el tick sigue con lo demás."""
         try:
@@ -641,6 +649,16 @@ class Daemon:
 
     def run(self, intervalo: float, hasta_terminar: bool, tope_s: float = 0) -> int:
         inicio = time.time()
+        self.senal.avanzo(self._n_planes())
+        self.senal.arranca()
+        try:
+            return self._vueltas(intervalo, hasta_terminar, tope_s, inicio)
+        finally:
+            self.senal.para()
+
+    def _vueltas(
+        self, intervalo: float, hasta_terminar: bool, tope_s: float, inicio: float
+    ) -> int:
         while True:
             try:
                 terminado = self.tick()
@@ -651,6 +669,7 @@ class Daemon:
                     flush=True,
                 )
                 terminado = False
+            self.senal.avanzo(self._n_planes())
             try:
                 self.avisa_version_faltante()
                 cambio = version.sha_actual() != self._sha_arranque
