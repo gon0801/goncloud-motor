@@ -1013,5 +1013,292 @@ class TestLogMezclado(unittest.TestCase):
         self.assertEqual(ps.huella(registro, "muse").skills, ("poteto-mode",))
 
 
+FALSO_CLAUDE = r"""#!/bin/sh
+[ "$1" = --version ] && { echo 0; exit 0; }
+for a; do p=$a; done
+brief=${p#Lee }; brief=${brief%% y ejec*}
+raiz=$(grep -o 'copia fija `[^`]*`' "$brief" | head -1 | cut -d'`' -f2)
+[ "$FALSO_MODO" = nada ] && { echo '{"type":"result","result":"listo"}'; exit 0; }
+tool() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"%s","input":%s}]}}\n' "$1" "$2"; }
+tool Skill '{"skill":"poteto-mode"}'
+tool Read "{\"file_path\":\"$raiz/pstack/skills/poteto-mode/playbooks/investigation.md\"}"
+tool Agent '{"subagent_type":"general-purpose"}'
+"""
+
+
+class TestMideDePuntaAPunta(unittest.TestCase):
+    """C.3: `mide.sh --juzga` entero, con ssh y uv falsos que corren todo en esta máquina."""
+
+    def _corre(self, modo):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            conf, home, bin_ = t / "conf", t / "home", t / "bin"
+            for d in (conf / "pstack", conf / "pstack-motor", home / ".motor", bin_):
+                d.mkdir(parents=True)
+            (conf / "pstack" / "x").write_text("x")
+            (conf / "pstack-motor" / "x").write_text("x")
+            (conf / "rutas.toml").write_text(
+                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "-p", "{prompt}"]\n'
+            )
+            (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
+            (home / ".motor" / "maquina.toml").write_text(f'path_extra = ["{bin_}"]\n')
+            (bin_ / "claude").write_text(FALSO_CLAUDE)
+            (bin_ / "ssh").write_text('#!/bin/sh\nshift 5\nexec bash -c "$*"\n')
+            (bin_ / "uv").write_text('#!/bin/sh\nshift 4\nexec python3 "$@"\n')
+            for f in bin_.iterdir():
+                f.chmod(0o755)
+            g = ["git", "-C", str(conf)]
+            subprocess.run(["git", "init", "-q", "-b", "main", str(conf)], check=True)
+            subprocess.run(g + ["add", "."], check=True)
+            subprocess.run(
+                g + ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"],
+                check=True,
+            )
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if k != "CLAUDE_CONFIG_DIR" and not k.startswith("MOTOR_")
+            }
+            env.update(
+                HOME=str(home),
+                PATH=f"{bin_}:{env['PATH']}",
+                MOTOR_CONF_URL=str(conf),
+                MOTOR_CONF_URL_MINI=str(conf),
+                MOTOR_PC_UV=str(bin_ / "uv"),
+                MIDE_TOPE_S="60",
+                FALSO_MODO=modo,
+            )
+            antes = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
+            r = subprocess.run(
+                ["bash", str(REPO / "ops" / "pstack" / "mide.sh"), "--juzga"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=300,
+                check=False,
+            )
+            despues = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
+        self.assertEqual(antes, despues)
+        return r
+
+    def test_juzga_sale_cero_cuando_el_cli_del_carril_cumple_en_las_tres(self):
+        r = self._corre("cumple")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.count("Cumple"), 3 + 1)
+        for mq in MAQUINAS:
+            self.assertRegex(r.stdout, rf"(?m)^{mq}\s+claude\s+Cumple$")
+
+    def test_juzga_sale_distinto_de_cero_si_el_cli_no_cargo_nada(self):
+        r = self._corre("nada")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("NO cumple", r.stderr)
+        self.assertNotIn("Cumple en las tres máquinas", r.stdout)
+
+
+def _corrida(cli, registro, error="", raiz=RAIZ):
+    return {
+        "cli": cli,
+        "registro": registro,
+        "extras": [],
+        "raiz": raiz,
+        "error": error,
+    }
+
+
+def _salida(maquina, corridas, carriles=("claude", "opencode"), error=""):
+    r = {
+        "maquina": maquina,
+        "conf_sha": "abc",
+        "carriles": list(carriles),
+        "corridas": corridas,
+        "error": error,
+    }
+    return {"out": "MIDE-JSON:" + json.dumps(r) + "\n", "err": "", "rc": "0"}
+
+
+def _cumple(cli):
+    f, skill, leer, sub, _todos, _cmd = CASOS[cli]
+    return f(skill, leer, sub)
+
+
+class TestJuzgaDeMide(unittest.TestCase):
+    """C.3: lo que decide --juzga es una función pura de las salidas de las tres máquinas."""
+
+    @classmethod
+    def setUpClass(cls):
+        ns = {"__name__": "agrega"}
+        exec(compile(_heredoc(2), "mide.sh:agrega", "exec"), ns)
+        cls.agrega = staticmethod(ns["agrega"])
+        cls.juicio = staticmethod(ns["juicio_de"])
+
+    def _todas(self, cambia=None, carriles=("claude",)):
+        salidas = {}
+        for mq in MAQUINAS:
+            corridas = [_corrida("claude", _cumple("claude"))]
+            if cambia:
+                corridas = cambia(mq, corridas)
+            salidas[mq] = _salida(mq, corridas, carriles=carriles)
+        return salidas
+
+    def test_todos_los_cli_de_los_carriles_cumplen_no_deja_problemas(self):
+        filas, problemas, _ = self.agrega(self._todas(), list(MAQUINAS))
+        self.assertEqual(problemas, [])
+        self.assertEqual(len(filas), 3)
+        self.assertTrue(all("Cumple" in f for f in filas))
+
+    def test_un_cli_de_carril_con_falta_es_problema(self):
+        def cambia(mq, corridas):
+            if mq == "mini":
+                corridas[0] = _corrida("claude", claude(("Bash", {"command": "ls"})))
+            return corridas
+
+        _, problemas, _ = self.agrega(self._todas(cambia), list(MAQUINAS))
+        self.assertEqual(len(problemas), 1)
+        self.assertIn("mini/claude: Falta", problemas[0])
+
+    def test_un_cli_de_carril_no_verificable_es_problema(self):
+        def cambia(mq, corridas):
+            corridas[0] = _corrida("claude", '{"type":"result","result":"listo"}')
+            return corridas
+
+        _, problemas, _ = self.agrega(self._todas(cambia), list(MAQUINAS))
+        self.assertEqual(len(problemas), 3)
+        self.assertIn("NO VERIFICABLE", problemas[0])
+
+    def test_una_maquina_sin_mide_json_es_problema(self):
+        salidas = self._todas()
+        salidas["pc"] = {"out": "", "err": "ssh: timeout", "rc": "255"}
+        _, problemas, _ = self.agrega(salidas, list(MAQUINAS))
+        self.assertEqual(len(problemas), 1)
+        self.assertIn("pc: no respondió", problemas[0])
+
+    def test_un_cli_de_carril_sin_corrida_es_problema(self):
+        def cambia(mq, corridas):
+            return [] if mq == "pc" else corridas
+
+        _, problemas, _ = self.agrega(self._todas(cambia), list(MAQUINAS))
+        self.assertEqual(problemas, ["pc/claude: sin medición"])
+
+    def test_una_corrida_con_error_es_problema_aunque_su_registro_cumpla(self):
+        def cambia(mq, corridas):
+            corridas[0] = _corrida(
+                "claude", _cumple("claude"), error="pasó el tope de 900s"
+            )
+            return corridas
+
+        _, problemas, _ = self.agrega(self._todas(cambia), list(MAQUINAS))
+        self.assertEqual(len(problemas), 3)
+        self.assertIn("pasó el tope", problemas[0])
+
+    def test_carriles_vacios_no_son_cumple(self):
+        salidas = {mq: _salida(mq, [], carriles=()) for mq in MAQUINAS}
+        filas, problemas, _ = self.agrega(salidas, list(MAQUINAS))
+        self.assertEqual(filas, [])
+        self.assertTrue(problemas)
+
+    def test_si_una_maquina_trae_carriles_vacios_es_problema(self):
+        salidas = self._todas()
+        salidas["mac"] = _salida(
+            "mac", [_corrida("claude", _cumple("claude"))], carriles=()
+        )
+        _, problemas, _ = self.agrega(salidas, list(MAQUINAS))
+        self.assertTrue(any("mac" in p and "carriles" in p for p in problemas))
+
+    def test_un_error_de_la_medicion_es_problema(self):
+        salidas = self._todas()
+        salidas["mini"] = _salida(
+            "mini", [], error="RuntimeError: no pude leer modelos.toml"
+        )
+        _, problemas, _ = self.agrega(salidas, list(MAQUINAS))
+        self.assertIn("mini: RuntimeError: no pude leer modelos.toml", problemas)
+
+    def test_un_cli_fuera_de_los_carriles_con_falta_solo_se_reporta(self):
+        def cambia(mq, corridas):
+            return corridas + [_corrida("qwen", claude(("Bash", {"command": "ls"})))]
+
+        filas, problemas, _ = self.agrega(self._todas(cambia), list(MAQUINAS))
+        self.assertEqual(problemas, [])
+        self.assertEqual(len(filas), 6)
+
+    def test_el_registro_guardado_conserva_las_llamadas_aunque_recorte_los_textos(self):
+        ns = {"__name__": "agrega"}
+        exec(compile(_heredoc(2), "mide.sh:agrega", "exec"), ns)
+        f, skill, leer, sub, _t, _c = CASOS["qwen"]
+        arreglo = [json.loads(x) for x in f(skill, leer, sub).splitlines()]
+        arreglo.append({"type": "user", "texto": "x" * 5000})
+        crudo = json.dumps(arreglo) + "\n\nWarning: yolo\n"
+        corto = ns["registro_corto"](crudo)
+        self.assertLess(len(corto), len(crudo))
+        h = ps.huella(corto, "qwen", RAIZ)
+        self.assertEqual(h.skills, ("poteto-mode",))
+        self.assertEqual(len(h.subagentes), 1)
+
+    def test_el_primer_registro_legible_es_el_que_lee_el_motor(self):
+        c = _corrida("claude", '{"type":"result","result":"listo"}')
+        c["extras"] = [{"fuente": "transcript", "texto": _cumple("claude")}]
+        estado, h, fuente, _ = self.juicio(c)
+        self.assertEqual((estado, fuente), ("Cumple", "transcript"))
+        c["extras"] = []
+        self.assertEqual(self.juicio(c)[0], "NO VERIFICABLE")
+
+    def test_el_script_sale_distinto_de_cero_sin_medir_nada(self):
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            for mq in MAQUINAS:
+                (d / f"{mq}.out").write_text(_salida(mq, [], carriles=())["out"])
+                (d / f"{mq}.err").write_text("")
+                (d / f"{mq}.rc").write_text("0")
+            p = subprocess.run(
+                [sys.executable, "-I", "-", str(d), str(REPO), "mac mini pc", "1"],
+                input=_heredoc(2),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(p.returncode, 1)
+        self.assertNotIn("Cumple en las tres máquinas", p.stdout)
+
+    def test_el_script_sale_cero_solo_si_todo_cumple(self):
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            for mq, s in self._todas().items():
+                (d / f"{mq}.out").write_text(s["out"])
+                (d / f"{mq}.err").write_text("")
+                (d / f"{mq}.rc").write_text("0")
+            p = subprocess.run(
+                [sys.executable, "-I", "-", str(d), str(REPO), "mac mini pc", "1"],
+                input=_heredoc(2),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("Cumple en las tres máquinas", p.stdout)
+
+    def test_la_opcion_juzga_existe_y_cualquier_otra_se_rechaza(self):
+        import subprocess
+
+        sh = REPO / "ops" / "pstack" / "mide.sh"
+        r = subprocess.run(
+            ["bash", str(sh), "--nada"], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("uso:", r.stderr)
+
+    def test_mide_juzga_no_escribe_en_tests_datos(self):
+        cola = _heredoc(2).split('if __name__ == "__main__":')[-1]
+        juzga, no_juzga = cola.split("    else:\n")
+        self.assertNotIn("escribe_datos", juzga)
+        self.assertIn("escribe_datos", no_juzga)
+
+
 if __name__ == "__main__":
     unittest.main()
