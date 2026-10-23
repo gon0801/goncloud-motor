@@ -372,129 +372,94 @@ def _nombre_skill(x: str) -> str:
     ]  # `pstack:poteto-mode` y `poteto-mode` cuentan igual
 
 
-_HEREDOC = re.compile(
-    r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|\\?([^\s;&|()<>'\"\\]+))"
-)
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _ASIGNA = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _VARIABLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
-_SIN_RESOLVER = re.compile(r"[$*?\[{`]")
+_SALIDA_A_OTRO_LADO = re.compile(r"(?:1|&)?>")
+_ENTRADA = re.compile(r"\d*<")
 _LECTORES = ("cat", "sed", "head")
-_PUNTUACION = "();<>|&"
-_OPERADORES = (
-    "&>>",
-    "<<<",
-    "&>",
-    ">>",
-    ">|",
-    ">&",
-    "<&",
-    "<<",
-    "&&",
-    "||",
-    "|&",
-    ";;",
-    "|",
-    "&",
-    ";",
-    "(",
-    ")",
-    "<",
-    ">",
+_PALABRAS_DE_CONTROL = (
+    "do",
+    "then",
+    "else",
+    "elif",
+    "if",
+    "while",
+    "until",
+    "!",
+    "{",
+    "time",
 )
-_SEPARADORES = ("&&", "||", "&", "|", "|&", ";", ";;")
-_TUBERIAS = ("|", "|&")
-_PREFIJOS = ("do", "then", "else", "elif", "!", "time")
-_ABRE = ("{", "if", "for", "select", "while", "until", "case")
-_CIERRA = ("}", "fi", "done", "esac")
 
 
-def sin_heredocs(comando: str, plano: bool = False) -> str:
-    """`comando` sin los cuerpos de sus heredocs (se queda la línea de apertura y la que cierra).
-    Con `plano`, además quita los comentarios, junta las líneas con `\\` y vuelve `;` cada salto
-    de línea fuera de comillas, para que una sola pasada de `shlex` lo lea."""
+def _sin_heredocs(comando: str) -> str:
     salida: list[str] = []
-    pendientes: list[tuple[str, bool]] = []
+    cierre: str | None = None
+    for linea in comando.split("\n"):
+        if cierre is not None:
+            if linea.strip() == cierre:
+                salida.append(linea)
+                cierre = None
+            continue
+        salida.append(linea)
+        if m := _HEREDOC.search(linea):
+            cierre = m.group(2)
+    return "\n".join(salida)
+
+
+def _simples(comando: str) -> list[tuple[str, bool]] | None:
+    """Parte `comando` en comandos simples, respetando comillas: (texto, ¿su salida va por tubería?).
+    None si unas comillas no cierran."""
+    partes: list[tuple[str, bool]] = []
+    buf: list[str] = []
     q = ""
     i, n = 0, len(comando)
+
+    def corta(tuberia: bool = False) -> None:
+        partes.append(("".join(buf), tuberia))
+        buf.clear()
+
     while i < n:
         c = comando[i]
         sig = comando[i + 1] if i + 1 < n else ""
         if q:
+            buf.append(c)
             if c == "\\" and q == '"' and sig:
-                if sig != "\n" or not plano:
-                    salida.append(c + sig)
-                i += 2
-                continue
-            if c == q:
+                buf.append(sig)
+                i += 1
+            elif c == q:
                 q = ""
-            salida.append(c)
-            i += 1
         elif c == "\\" and sig:
-            if sig != "\n" or not plano:
-                salida.append(c + sig)
-            i += 2
+            buf.append(c + sig)
+            i += 1
         elif c in "'\"":
             q = c
-            salida.append(c)
+            buf.append(c)
+        elif c in "\n;":
+            corta()
+        elif c == "&" and sig == "&":
+            corta()
             i += 1
-        elif c == "#" and (i == 0 or comando[i - 1] in " \t\n;&|(){"):
-            fin = comando.find("\n", i)
-            fin = n if fin < 0 else fin
-            if not plano:
-                salida.append(comando[i:fin])
-            i = fin
-        elif c == "\n":
-            salida.append(" ; " if plano else c)
+        elif c == "&" and (sig == ">" or (buf and buf[-1][-1:] in "<>")):
+            buf.append(c)
+        elif c == "&":
+            corta()
+        elif c == "|" and sig == "|":
+            corta()
             i += 1
-            for cierre, tabs in pendientes:
-                while i < n:
-                    fin = comando.find("\n", i)
-                    fin = n if fin < 0 else fin
-                    linea = comando[i:fin]
-                    i = min(fin + 1, n)
-                    if (linea.lstrip("\t") if tabs else linea) == cierre:
-                        salida.append(linea)
-                        if fin < n:
-                            salida.append(" ; " if plano else "\n")
-                        break
-            pendientes.clear()
-        elif (
-            c == "<"
-            and sig == "<"
-            and comando[i + 2 : i + 3] != "<"
-            and comando[i - 1 : i] != "<"
-        ):
-            m = _HEREDOC.match(comando, i)
-            if m is None:
-                salida.append(c)
+        elif c == "|" and buf and buf[-1][-1:] == ">":
+            buf.append(c)
+        elif c == "|":
+            corta(True)
+            if sig == "&":
                 i += 1
-                continue
-            pendientes.append(
-                (m.group(2) or m.group(3) or m.group(4), bool(m.group(1)))
-            )
-            salida.append(m.group(0))
-            i = m.end()
         else:
-            salida.append(c)
-            i += 1
-    return "".join(salida)
-
-
-def _palabras(texto: str) -> list[str]:
-    """Palabras y operadores de `texto` (ya plano); ValueError si unas comillas no cierran."""
-    lex = shlex.shlex(texto, posix=True, punctuation_chars=True)
-    lex.whitespace_split = True
-    lex.commenters = ""
-    palabras: list[str] = []
-    for tok in lex:
-        if not tok or any(ch not in _PUNTUACION for ch in tok):
-            palabras.append(tok)
-            continue
-        while tok:
-            op = next((o for o in _OPERADORES if tok.startswith(o)), tok[0])
-            palabras.append(op)
-            tok = tok[len(op) :]
-    return palabras
+            buf.append(c)
+        i += 1
+    if q:
+        return None
+    corta()
+    return partes
 
 
 def _expande(palabra: str, variables: dict[str, str]) -> str:
@@ -509,12 +474,12 @@ def _argumentos(palabras: list[str]) -> list[str] | None:
     i = 0
     while i < len(palabras):
         w = palabras[i]
-        if w in ("&>", "&>>"):
+        if _SALIDA_A_OTRO_LADO.match(w):
             return None
-        if w in (">", ">>", ">|", ">&", "<", "<<", "<<<", "<&"):
-            fd = args.pop() if args and args[-1].isdigit() else None
-            if w[0] == ">" and fd in (None, "1"):
-                return None
+        if _ENTRADA.match(w):
+            i += 1 if re.fullmatch(r"\d*<+-?", w) is None else 2
+            continue
+        if re.fullmatch(r"\d+>>?", w):
             i += 2
             continue
         args.append(w)
@@ -522,123 +487,61 @@ def _argumentos(palabras: list[str]) -> list[str] | None:
     return args
 
 
-@dataclass
-class _Marco:
-    lecturas: list[tuple[str, str]] = field(default_factory=list)
-    capturado: bool = False
-    guardado: list[str] = field(default_factory=list)
-
-
 def lecturas_de_terminal(comando: str, raiz: str | None) -> tuple[tuple[str, str], ...]:
     """Las skills y playbooks de la copia fija (`<raiz>/pstack/skills/`) que `comando` lee con
     `cat`, `sed` o `head`, en orden, como ("skill", nombre) y ("playbook", nombre).
-    No cuenta lo que no es un comando (cuerpos de heredoc, comentarios), lo que escribe o desvía su
-    salida o la manda por tubería (también la de un grupo, bucle o `if` entero), `sed -i`, rutas
-    relativas o de otra copia, ni rutas con una variable sin valor o un glob."""
+    No cuenta lo que no es un comando (cuerpos de heredoc), lo que escribe o desvía su salida,
+    lo que va por tubería, `sed -i`, ni rutas relativas o de otra copia."""
     if not raiz or not comando:
         return ()
-    try:
-        palabras = _palabras(sin_heredocs(comando, plano=True))
-    except ValueError:
+    simples = _simples(_sin_heredocs(comando))
+    if simples is None:
         return ()
     variables: dict[str, str] = {}
-    marcos = [_Marco()]
-    cmd: list[str] = []
-    grupo: list[tuple[str, str]] | None = None
-
-    def evalua(w: list[str]) -> None:
+    lee: list[tuple[str, str]] = []
+    for texto, tuberia in simples:
+        try:
+            palabras = shlex.split(texto)
+        except ValueError:
+            return ()
+        while palabras and palabras[0] in _PALABRAS_DE_CONTROL:
+            palabras.pop(0)
         asignaciones = []
-        while w and _ASIGNA.match(w[0]):
-            asignaciones.append(w.pop(0))
-        if not w:
-            nuevas = asignaciones
-        elif w[0] == "export" and not asignaciones:
-            nuevas = [x for x in w[1:] if _ASIGNA.match(x)]
+        while palabras and _ASIGNA.match(palabras[0]):
+            asignaciones.append(palabras.pop(0))
+        if not palabras:
+            palabras_asignadas = asignaciones
+        elif palabras[0] == "export" and not asignaciones:
+            palabras_asignadas = [w for w in palabras[1:] if _ASIGNA.match(w)]
         else:
-            nuevas = []
-        for x in nuevas:
-            nombre, valor = x.split("=", 1)
+            palabras_asignadas = []
+        for w in palabras_asignadas:
+            nombre, valor = w.split("=", 1)
             variables[nombre] = _expande(valor, variables)
-        if w and w[0] in ("for", "select") and len(w) > 1:
-            variables.pop(w[1], None)
-        if w and w[0] == "read":
-            for x in w[1:]:
-                variables.pop(x, None)
-        if nuevas or not w:
-            return
-        w = [_expande(x, variables) for x in w]
-        if w[0] not in _LECTORES:
-            return
-        args = _argumentos(w[1:])
+        if palabras_asignadas or not palabras or tuberia:
+            continue
+        palabras = [_expande(w, variables) for w in palabras]
+        if palabras[0] not in _LECTORES:
+            continue
+        args = _argumentos(palabras[1:])
         if args is None:
-            return
-        if w[0] == "sed" and any(
+            continue
+        if palabras[0] == "sed" and any(
             a == "--in-place"
             or a.startswith("--in-place=")
             or re.match(r"-[A-Za-z]*i", a)
             for a in args
         ):
-            return
+            continue
         for a in args:
-            if _SIN_RESOLVER.search(a):
-                continue
             rel = _bajo_skills(a, raiz)
             if rel is None:
                 continue
             if m := _RUTA_PLAYBOOK.fullmatch(rel):
-                marcos[-1].lecturas.append(("playbook", m.group(1)))
+                lee.append(("playbook", m.group(1)))
             elif m := _RUTA_SKILL.fullmatch(rel):
-                marcos[-1].lecturas.append(("skill", m.group(1)))
-
-    def termina(tuberia: bool) -> None:
-        nonlocal cmd, grupo
-        if grupo is not None:
-            if not tuberia and _argumentos(cmd) is not None:
-                marcos[-1].lecturas.extend(grupo)
-            grupo = None
-        elif not tuberia:
-            evalua(cmd)
-        cmd = []
-
-    def cierra_marco() -> _Marco | None:
-        if len(marcos) == 1:
-            return None
-        return marcos.pop()
-
-    previa = ""
-    for tok in palabras:
-        if tok in _SEPARADORES:
-            termina(tok in _TUBERIAS)
-        elif tok == "(":
-            sustitucion = bool(cmd) and (cmd[-1].endswith("$") or previa in ("<", ">"))
-            marcos.append(_Marco(capturado=sustitucion, guardado=cmd))
-            cmd = []
-        elif tok == ")":
-            termina(False)
-            m = cierra_marco()
-            if m is not None:
-                cmd = m.guardado
-                if not m.capturado:
-                    grupo = m.lecturas
-        elif cmd or grupo is not None:
-            cmd.append(tok)
-        elif tok in _PREFIJOS:
-            pass
-        elif tok in _ABRE:
-            marcos.append(_Marco())
-            cmd = [tok] if tok in ("for", "select", "case") else []
-        elif tok in _CIERRA:
-            m = cierra_marco()
-            grupo = m.lecturas if m is not None else None
-            cmd = []
-        else:
-            cmd.append(tok)
-        previa = tok
-    termina(False)
-    while len(marcos) > 1:
-        m = marcos.pop()
-        marcos[-1].lecturas.extend(m.lecturas)
-    return tuple(marcos[0].lecturas)
+                lee.append(("skill", m.group(1)))
+    return tuple(lee)
 
 
 def _clasifica(
