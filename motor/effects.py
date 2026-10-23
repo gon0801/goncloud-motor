@@ -1693,8 +1693,7 @@ Escribe en `$MOTOR_RESULT`:
                             ok = False
                             pasos += problemas
                             self._rollback(rollback, w, env, tope, pasos)
-                            siguen = self._efimeras(w)[2]
-                            if malas & siguen:
+                            if malas and self._efimeras(w)[2]:
                                 pasos.append("La marcha atrás no la quitó.")
                             break
                 detalle = "\n".join(pasos)
@@ -1713,8 +1712,8 @@ Escribe en `$MOTOR_RESULT`:
     ) -> None:
         rb = _run(f"bash {rollback}", w, env, tope, bash=self.cx.maquina.bash)
         pasos.append(f"rollback: salida {rb.returncode}")
-        if rb.returncode != 0:
-            pasos.append(_cola(rb))
+        if cola := _cola(rb):
+            pasos.append(cola)
 
     def _efimeras(self, w: Path) -> tuple[list[str], list[str], set[str]]:
         """Tras desplegar: ¿alguna tarea programada apunta a la copia `w`, que el motor borra al

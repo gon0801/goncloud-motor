@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from xml.parsers.expat import ExpatError
 
 import tomllib
 
@@ -85,13 +84,7 @@ def _cadenas(x: object) -> list[str]:
 def _texto_plist(datos: bytes) -> str:
     try:
         return "\n".join(_cadenas(plistlib.loads(datos)))
-    except (
-        plistlib.InvalidFileException,
-        ExpatError,
-        ValueError,
-        OSError,
-        SyntaxError,
-    ):
+    except Exception:  # noqa: BLE001 - un plist ajeno que plistlib no entiende se lee como texto crudo
         return datos.decode("utf-8", errors="replace")
 
 

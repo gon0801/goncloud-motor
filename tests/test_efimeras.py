@@ -768,6 +768,40 @@ class DespliegueEfimerasTest(unittest.TestCase):
         texto = next(v for k, v in tareas.items() if k.endswith("roto.plist"))
         self.assertTrue(efimeras.contiene(texto, "/x/wt/y", home))
 
+    def test_un_plist_ajeno_con_fecha_mal_formada_no_tumba_la_lectura(self):
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, True)
+        carpeta = home / "Library" / "LaunchAgents"
+        carpeta.mkdir(parents=True)
+        (carpeta / "fecha.plist").write_bytes(
+            b'<?xml version="1.0"?><plist><dict><key>d</key><date>mal</date></dict></plist>'
+        )
+        tareas, leidas, sin_leer, _ = efimeras.lee_tareas(
+            "", None, home=home, plataforma_="darwin", bash="/bin/bash"
+        )
+        self.assertIn(str(carpeta), leidas)
+        self.assertNotIn(str(carpeta), sin_leer)
+        self.assertTrue(any(k.endswith("fecha.plist") for k in tareas))
+
+    def test_un_plist_ajeno_con_fecha_mal_formada_no_tumba_el_despliegue(self):
+        (self.agents / "fecha.plist").write_bytes(
+            b'<?xml version="1.0"?><plist><dict><key>d</key><date>mal</date></dict></plist>'
+        )
+        r = self.corre(self.receta_que_deja(str(self.fijo)))
+        self.assertTrue(r["ok"], r["detalle"])
+        self.assertFalse((self.w / "rollback-corrio").exists())
+
+    def test_si_el_rollback_renumera_el_crontab_igual_dice_que_la_tarea_sigue(self):
+        mala = f"0 * * * * {self.w}/run.sh"
+        lecturas = [
+            ({f"crontab:2 {mala}": mala}, ["crontab -l"], {}, {}),
+            ({f"crontab:1 {mala}": mala}, ["crontab -l"], {}, {}),
+        ]
+        with mock.patch.object(efimeras, "lee_tareas", side_effect=lecturas):
+            r = self.corre(self.receta_que_deja(str(self.fijo)))
+        self.assertFalse(r["ok"])
+        self.assertIn("La marcha atrás no la quitó.", r["detalle"])
+
     def test_la_misma_receta_apuntando_a_una_carpeta_fija_pasa(self):
         r = self.corre(self.receta_que_deja(str(self.fijo)))
         self.assertTrue(r["ok"], r["detalle"])
