@@ -239,12 +239,7 @@ def _briefs(conf_dir: Path, tmp: Path) -> dict[str, tuple[str, dict]]:
         d = tmp / f"intento-{role}"
         d.mkdir(exist_ok=True)
         info = fx._prepara_pstack(d, "gate", role, "claude", cwd, "s1", a.correccion)
-        seccion = fx._seccion_pstack(info)
-        if role == "implementar":
-            brief = fx._brief_implementar(plan, block, a, cwd, rc, seccion)
-        else:
-            brief = fx._brief_revisar(plan, block, a, rc, seccion)
-        briefs[role] = (brief + fx._anexo_guias(info), info)
+        briefs[role] = (fx._encargo(plan, block, a, cwd, rc, info), info)
     return briefs
 
 

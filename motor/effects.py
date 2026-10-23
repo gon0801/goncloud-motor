@@ -554,6 +554,17 @@ class Effects:
         )
 
     # ------------------------------------------------------------------ intentos
+    def _encargo(
+        self, plan: Plan, block, a: m.StartAttempt, cwd, rc, info_pstack
+    ) -> str:
+        """El brief completo de un intento: encargo, cómo se entrega y, al final, el anexo de guías."""
+        seccion = self._seccion_pstack(info_pstack)
+        if a.role == "implementar":
+            brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
+        else:
+            brief = self._brief_revisar(plan, block, a, rc, seccion)
+        return brief + self._anexo_guias(info_pstack)
+
     def start_attempt(self, plan: Plan, snap: m.Snapshot, a: m.StartAttempt) -> None:
         d = self.attempt_dir(plan.id, a.block, a.role, a.n)
         if (d / "started").exists():
@@ -594,12 +605,7 @@ class Effects:
         info_pstack = self._prepara_pstack(
             d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion
         )
-        seccion = self._seccion_pstack(info_pstack)
-        if a.role == "implementar":
-            brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
-        else:
-            brief = self._brief_revisar(plan, block, a, rc, seccion)
-        brief += self._anexo_guias(info_pstack)
+        brief = self._encargo(plan, block, a, cwd, rc, info_pstack)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
         kb = max(1, round(len(brief.encode("utf-8")) / 1024))
