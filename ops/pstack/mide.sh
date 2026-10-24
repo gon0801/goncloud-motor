@@ -31,19 +31,20 @@ TOPE_S="${MIDE_TOPE_S:-900}"
 juzga=0
 encargo=0
 cli_encargo=claude
+cli_dado=0
 rutas="$repo/conf-ejemplo/rutas.toml"
 while [ $# -gt 0 ]; do
   case "$1" in
     --juzga) juzga=1 ;;
     --encargo) encargo=1 ;;
-    --cli) [ $# -ge 2 ] || { echo "--cli pide un CLI" >&2; exit 2; }; cli_encargo=$2; shift ;;
+    --cli) [ $# -ge 2 ] || { echo "--cli pide un CLI" >&2; exit 2; }; cli_encargo=$2; cli_dado=1; shift ;;
     --rutas) [ $# -ge 2 ] || { echo "--rutas pide un archivo" >&2; exit 2; }; rutas=$2; shift ;;
     *) echo "uso: ops/pstack/mide.sh [--juzga | --encargo [--cli <cli>]] [--rutas <rutas.toml>]" >&2; exit 2 ;;
   esac
   shift
 done
 
-[ "$encargo" = 1 ] || [ "$cli_encargo" = claude ] || { echo "--cli solo va con --encargo" >&2; exit 2; }
+[ "$encargo" = 1 ] || [ "$cli_dado" = 0 ] || { echo "--cli solo va con --encargo" >&2; exit 2; }
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
 
@@ -244,10 +245,12 @@ try:
         trabajo = corrida / "trabajo"
         trabajo.mkdir()
         (trabajo / "README.md").write_text("# Carpeta de medición\n\nNo hay nada que cambiar aquí.\n", encoding="utf-8")
+        texto = encargo(cli)
         brief = corrida / "brief.md"
-        brief.write_text(encargo(cli), encoding="utf-8")
+        brief.write_text(texto, encoding="utf-8")
         brief_c = ruta_wsl(str(brief)) if cli in wsl else str(brief)
-        prompt = DATOS["clis"][cli]["prompt"].replace(DATOS["marca_brief"], brief_c)
+        kb = max(1, round(len(texto.encode("utf-8")) / 1024))  # el KB del encargo escrito aquí, como prompt_de_encargo
+        prompt = DATOS["clis"][cli]["prompt"].replace(DATOS["marca_brief"], brief_c).replace(DATOS["marca_kb"], str(kb))
         sid = str(uuid.uuid4())
         try:
             argv = argv_de(cli, ruta, prompt, brief_c, ruta_wsl(str(corrida / "result.json")) if cli in wsl else str(corrida / "result.json"), sid)

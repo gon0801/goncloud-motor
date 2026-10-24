@@ -24,6 +24,7 @@ from motor import llamadas  # noqa: E402
 from motor import machine as m  # noqa: E402
 from motor import pstack as ps  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
+from motor.effects import prompt_de_encargo  # noqa: E402
 from motor.notify import lint_plain  # noqa: E402
 from motor.plan import Plan  # noqa: E402
 from motor.store import Store  # noqa: E402
@@ -1719,12 +1720,22 @@ class TestPstack(BancoPstack):
             min_subagentes={"gate.implementar": 1},
         )
         for rol in ("implementar", "revisar"):
-            brief = (self.intentos(rol)[0] / "brief.md").read_text(encoding="utf-8")
+            d = self.intentos(rol)[0]
+            brief = (d / "brief.md").read_text(encoding="utf-8")
             self.assertIn("REGLA-DEL-MOTOR", brief, "motor.md va en el encargo")
             self.assertIn("Mapa de claude.", brief, "y el mapa del CLI")
             self.assertIn("## Cómo trabajas", brief)
             self.assertIn("## Anexo: tus guías", brief, "las guías van completas")
             self.comprueba_anexo(rol, brief)
+            modelo = "sonnet" if rol == "implementar" else "opus"
+            anotado = (self.tmp / "b" / "fake-state" / f"prompt-{modelo}").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(
+                anotado,
+                prompt_de_encargo(str(d / "brief.md"), brief),
+                f"{rol}: se lanza con el prompt compartido y la ruta del brief",
+            )
         h = json.loads(
             (self.intentos("implementar")[0] / "huella.json").read_text(
                 encoding="utf-8"

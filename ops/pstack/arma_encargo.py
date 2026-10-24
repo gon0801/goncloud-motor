@@ -26,6 +26,7 @@ PLAN = (
     f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| A.1 | {TAREA} | true |\n"
 )
 MARCA_BRIEF = "@@BRIEF@@"
+MARCA_KB = "@@KB@@"
 
 
 def arma(repo: str, conf_dir: str, home: str):
@@ -94,9 +95,11 @@ def main(argv: list[str]) -> int:
     for cli in ps.FORMATOS:
         _, info, brief = encargo(cli)
         raiz = info["raiz"]
+        # el KB lo calcula cada máquina con el encargo que escribe allí (la ruta cambia el tamaño);
+        # la plantilla es la misma que usa `prompt_de_encargo`
         clis[cli] = {
             "encargo": brief,
-            "prompt": ef.prompt_de_encargo(MARCA_BRIEF, brief),
+            "prompt": ef.PLANTILLA_PROMPT.format(ruta=MARCA_BRIEF, kb=MARCA_KB),
         }
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
@@ -108,6 +111,7 @@ def main(argv: list[str]) -> int:
         "carriles": {k: list(v) for k, v in conf.carriles.items()},
         "raiz": raiz,
         "marca_brief": MARCA_BRIEF,
+        "marca_kb": MARCA_KB,
         "tar": base64.b64encode(buf.getvalue()).decode("ascii"),
         "clis": clis,
     }

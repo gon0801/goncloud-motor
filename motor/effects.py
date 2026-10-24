@@ -244,14 +244,18 @@ def _texto_guia(f: Path) -> str:
     return f.read_text(encoding="utf-8").strip()
 
 
+PLANTILLA_PROMPT = (
+    "Lee el encargo completo en {ruta} ({kb} KB) con tu herramienta de lectura de archivos, "
+    "no con `cat`, y ejecútalo completo sin preguntar nada."
+)
+
+
 def prompt_de_encargo(ruta: str, brief: str) -> str:
     """Lo que se le dice al CLI al lanzarlo: lee el encargo de `ruta` (con su tamaño) y ejecútalo.
-    Lo usan `start_attempt` y ops/pstack/mide.sh, para medir con el mismo prompt que el motor."""
+    Lo usan `start_attempt` y ops/pstack/mide.sh, para medir con el mismo prompt que el motor.
+    El KB sale de los bytes del brief, no de sus caracteres."""
     kb = max(1, round(len(brief.encode("utf-8")) / 1024))
-    return (
-        f"Lee el encargo completo en {ruta} ({kb} KB) con tu herramienta "
-        "de lectura de archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
-    )
+    return PLANTILLA_PROMPT.format(ruta=ruta, kb=kb)
 
 
 def errores_pstack(d: Path, conf) -> list[str]:

@@ -71,6 +71,11 @@ def main() -> int:
     marca.parent.mkdir(parents=True, exist_ok=True)
     primera = not marca.exists()
     marca.write_text("1")
+    # con qué prompt lo lanzó el motor, si la ruta lo pasa (lo comprueba el e2e de pstack)
+    if "--prompt" in sys.argv:
+        (marca.parent / f"prompt-{os.environ['MOTOR_MODEL']}").write_text(
+            sys.argv[sys.argv.index("--prompt") + 1]
+        )
     if os.environ.get("FAKE_LLAVE"):  # variable que puso la ruta (sale de secretos.env)
         (marca.parent / f"llave-{os.environ['MOTOR_MODEL']}").write_text(
             os.environ["FAKE_LLAVE"]

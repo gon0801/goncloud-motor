@@ -12,15 +12,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 from motor import effects as ef
-from motor import machine as m
 from motor import pstack as ps
-from motor.conf import RepoConf, load_conf
-from motor.plan import parse_plan
 
 from .test_guias import _conf_falsa
 
@@ -38,37 +33,11 @@ def _modulo_arma():
 
 
 def encargo_del_motor(conf_dir: Path, casa: Path, cli: str) -> tuple[str, str]:
-    """(encargo, raiz de la copia fija) tal como `start_attempt` armaría el de la medición: del
-    plan de `arma_encargo` en adelante lo arma el motor, sin pasar por el script."""
-    conf = load_conf(conf_dir)
-    celda = conf.pstack.exigencia("gate", "implementar")
-    conf = replace(
-        conf,
-        pstack=replace(
-            conf.pstack,
-            exigencias={
-                **conf.pstack.exigencias,
-                ("gate", "implementar"): replace(celda, min_subagentes=2),
-            },
-        ),
-    )
-    fx = ef.Effects(
-        SimpleNamespace(
-            home=casa,
-            conf=conf,
-            ws=SimpleNamespace(rama=lambda p, b: f"motor/{p}/{b}"),
-        )
-    )
-    trabajo = casa / "trabajo"
-    trabajo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=trabajo, check=True)
-    plan = parse_plan(_modulo_arma().PLAN)
-    d = casa / f"intento-{cli}"
-    d.mkdir(parents=True, exist_ok=True)
-    a = m.StartAttempt("A", "implementar", "sonnet", 1, "a" * 40, (), False)
-    info = fx._prepara_pstack(d, "gate", "implementar", cli, trabajo, "mide", False)
-    rc = RepoConf.parse('[repo]\nprincipal = "main"\n')
-    return fx._encargo(plan, plan.block("A"), a, trabajo, rc, info), info["raiz"]
+    """(encargo, raiz de la copia fija) tal como lo arma `arma_encargo.arma`: el mismo código que
+    usa mide.sh, sin pasar por el script."""
+    encargo, _ = _modulo_arma().arma(str(REPO), str(conf_dir), str(casa))
+    _, info, brief = encargo(cli)
+    return brief, info["raiz"]
 
 
 class TestMide(unittest.TestCase):
@@ -85,7 +54,9 @@ class TestMide(unittest.TestCase):
 
     def test_encargo_es_el_del_motor_byte_por_byte_y_el_prompt_el_compartido(self):
         datos = REPO / "tests" / "datos" / "pstack"
-        antes = sorted(str(p) for p in datos.rglob("*"))
+        antes = {
+            str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in datos.rglob("*")
+        }
         r = subprocess.run(
             ["bash", str(MIDE_SH), "--encargo"],
             capture_output=True,
@@ -95,7 +66,14 @@ class TestMide(unittest.TestCase):
             check=False,
         )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(antes, sorted(str(p) for p in datos.rglob("*")))
+        self.assertEqual(
+            antes,
+            {
+                str(p): (p.stat().st_size, p.stat().st_mtime_ns)
+                for p in datos.rglob("*")
+            },
+            "--encargo no reescribe nada de tests/datos",
+        )
         marca_encargo, marca_prompt = "=== encargo ===\n", "=== prompt ===\n"
         self.assertTrue(r.stdout.startswith(marca_encargo))
         encargo, prompt = r.stdout[len(marca_encargo) :].split(marca_prompt)
@@ -119,15 +97,33 @@ class TestMide(unittest.TestCase):
         self.assertIn(esperado, r.stdout)
 
     def test_cli_sin_encargo_sale_2(self):
+        for cli in ("kimi", "claude"):
+            with self.subTest(cli=cli):
+                r = subprocess.run(
+                    ["bash", str(MIDE_SH), "--cli", cli],
+                    capture_output=True,
+                    text=True,
+                    env=self.env,
+                    timeout=120,
+                    check=False,
+                )
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("--cli solo va con --encargo", r.stderr)
+
+    def test_conf_rota_dice_que_no_pudo_arma_el_encargo(self):
+        conf = self.tmp / "conf-rota"
+        conf.mkdir()
+        (conf / "modelos.toml").write_text("[carriles\n", encoding="utf-8")
         r = subprocess.run(
-            ["bash", str(MIDE_SH), "--cli", "kimi"],
+            ["bash", str(MIDE_SH)],
             capture_output=True,
             text=True,
-            env=self.env,
+            env={**self.env, "MOTOR_CONF_REAL": str(conf)},
             timeout=120,
             check=False,
         )
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no pude armar el encargo", r.stderr)
 
     def test_los_datos_que_viajan_traen_el_encargo_del_motor_de_cada_cli(self):
         r = subprocess.run(
@@ -156,7 +152,18 @@ class TestMide(unittest.TestCase):
                 self.assertEqual(datos["raiz"], raiz)
                 self.assertEqual(
                     x["prompt"],
-                    ef.prompt_de_encargo(datos["marca_brief"], esperado),
+                    ef.PLANTILLA_PROMPT.format(
+                        ruta=datos["marca_brief"], kb=datos["marca_kb"]
+                    ),
+                    "viaja la plantilla compartida con las marcas, no un prompt cerrado",
+                )
+                kb = max(1, round(len(esperado.encode("utf-8")) / 1024))
+                self.assertEqual(
+                    x["prompt"]
+                    .replace(datos["marca_brief"], "/x/b.md")
+                    .replace(datos["marca_kb"], str(kb)),
+                    ef.prompt_de_encargo("/x/b.md", esperado),
+                    "cada máquina, al sustituir sus marcas, reproduce el prompt del motor",
                 )
                 self.assertIn("al menos 2 subagente(s)", x["encargo"])
 
@@ -179,6 +186,12 @@ class TestPromptCompartido(unittest.TestCase):
         self.assertIn("/x/brief.md (2 KB)", p)
         self.assertIn("herramienta de lectura de archivos, no con `cat`", p)
         self.assertIn("ejecútalo completo sin preguntar nada", p)
+
+    def test_el_tamano_en_kb_cuenta_bytes_no_caracteres(self):
+        p = ef.prompt_de_encargo(
+            "/x/brief.md", "ñ" * 2048
+        )  # 4096 bytes, 2048 caracteres
+        self.assertIn("/x/brief.md (4 KB)", p)
 
     def test_start_attempt_lanza_con_el_prompt_de_la_funcion_compartida(self):
         arbol = ast.parse((REPO / "motor" / "effects.py").read_text(encoding="utf-8"))

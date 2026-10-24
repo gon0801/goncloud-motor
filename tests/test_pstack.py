@@ -770,10 +770,7 @@ class TestMide(unittest.TestCase):
             with tarfile.open(fileobj=buf, mode="w:gz") as tf:
                 for n in ("pstack", "pstack-motor"):
                     tf.add(conf / n, arcname=n)
-            prompt = (
-                "Lee el encargo completo en @@BRIEF@@ (1 KB) con tu herramienta de lectura de "
-                "archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
-            )
+            prompt = ef.PLANTILLA_PROMPT.format(ruta="@@BRIEF@@", kb="@@KB@@")
             datos = {
                 "conf_sha": "abc1234",
                 "carriles": {
@@ -781,6 +778,7 @@ class TestMide(unittest.TestCase):
                 },
                 "raiz": "/RAIZ-LOCAL",
                 "marca_brief": "@@BRIEF@@",
+                "marca_kb": "@@KB@@",
                 "tar": base64.b64encode(buf.getvalue()).decode(),
                 "clis": {
                     cli: {"encargo": f"# encargo {cli}\n", "prompt": prompt}
@@ -837,6 +835,8 @@ class TestMide(unittest.TestCase):
         self.assertEqual(len(args), 2)
         self.assertEqual(args[0], "-p")
         self.assertIn("ejecútalo completo sin preguntar nada", args[1])
+        self.assertIn("(1 KB)", args[1], "el KB es el del encargo que se escribió aquí")
+        self.assertNotIn("@@", args[1], "las marcas se sustituyen antes de lanzar")
 
     def test_los_marcadores_pstack_y_sesion_se_sustituyen_y_el_transcript_se_lee(self):
         rutas = (
