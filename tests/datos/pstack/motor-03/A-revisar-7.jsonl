@@ -32,7 +32,7 @@
 {"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "python3 -m unittest 2>&1 | tail -5"}}}, "tool_call_id": "recorte-75"}
 {"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "python3 -m unittest 2>&1 | grep -E \"^(FAIL|ERROR):|^FAILED|^Ran|^OK\" "}}}, "tool_call_id": "recorte-79"}
 {"type": "tool_use", "part": {"tool": "execute", "state": {"input": {}}}, "tool_call_id": "recorte-80"}
-{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "git diff main..HEAD | grep -inE \"token-[a-z0-9]{20}|token-|xox[bap]-|AKIA[0-9A-Z]{16}|-----BEGIN (RSA|EC|OPENSSH|PGP)|api[_-]key *= *['\\\"][a-z0-9]{16,}|token *= *['\\\"][A-Za-z0-9_\\-]{20,}|password *= *"}}}, "tool_call_id": "recorte-81"}
+{"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "git diff main..HEAD | grep -inE \"<secreto>[a-z0-9]{20}|<secreto>|xox[bap]-|AKIA[0-9A-Z]{16}|<secreto> (RSA|EC|OPENSSH|PGP)|api[_-]key *= *['\\\"][a-z0-9]{16,}|token *= *['\\\"][A-Za-z0-9_\\-]{20,}|password"}}}, "tool_call_id": "recorte-81"}
 {"type": "tool_use", "part": {"tool": "write", "state": {"input": {}}}, "tool_call_id": "recorte-85"}
 {"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "P=$(cat /private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/opencode/panel-prompt.txt)\nopencode run --auto -m opencode/claude-fable-5-1 \"$P\" > /private/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000"}}}, "tool_call_id": "recorte-88"}
 {"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "grep -n \"doctor\\|programadas\\|lee_tareas\" tests/test_doctor.py | head; echo ---; sed -n '95,115p' tests/test_doctor.py"}}}, "tool_call_id": "recorte-92"}
