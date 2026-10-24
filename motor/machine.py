@@ -190,8 +190,16 @@ class BlockView:
         return ""
 
     def autores(self) -> set[str]:
-        """Todo modelo que trabajó el código del bloque (aunque su intento terminara a medias)."""
-        return {a.modelo for a in self.implement_attempts()}
+        """Todo modelo que trabajó el código del bloque (aunque su intento terminara a medias). Uno que
+        ni tocó la carpeta (sin lugar, sin credenciales, un CLI que no arrancó) no cuenta, salvo que
+        haya entregado; un resultado sin `toco_carpeta` cuenta."""
+        return {
+            a.modelo
+            for a in self.implement_attempts()
+            if a.ended is None
+            or a.ended.get("kind") == "entregado"
+            or a.ended.get("toco_carpeta") is not False
+        }
 
     def last_implement_outcome(self) -> dict | None:
         imp = self.implement_attempts()
