@@ -17,10 +17,15 @@ aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLAN="${MOTOR_CANARIO_PLAN:-$aqui/plan.md}"
 TOPE_S="${MOTOR_CANARIO_TOPE_S:-10800}"
 SONDEO_S="${MOTOR_CANARIO_SONDEO_S:-60}"
-if ! CANARIO_MAQUINAS="$(maquinas_canario)"; then
-  echo "me niego: no pude identificar las máquinas del canario" >&2
-  exit 2
-fi
+fin_ident=$((SECONDS + TOPE_S))
+while :; do
+  if CANARIO_MAQUINAS="$(maquinas_canario)"; then break; fi
+  if [ "$SECONDS" -ge "$fin_ident" ]; then
+    echo "me niego: no pude identificar las máquinas del canario" >&2
+    exit 2
+  fi
+  sleep "$SONDEO_S"
+done
 if [ -z "$(printf '%s' "$CANARIO_MAQUINAS" | tr -d '[:space:]')" ]; then
   echo "me niego: no queda ninguna máquina que reiniciar" >&2
   exit 2

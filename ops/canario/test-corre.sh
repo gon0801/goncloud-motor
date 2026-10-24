@@ -117,7 +117,7 @@ contiene "dice que no identifico" "$S/salida" "no pude identificar"
 [ "$(cuenta_reinicios)" = 0 ] || fallo "reinicio tras un fallo al identificar"
 [ "$(cuenta "$FAKE_LOG" 'oc-forja.sh')" = 0 ] && [ "$(cuenta "$FAKE_LOG" 'hermes chat')" = 0 ] || fallo "entrego tras un fallo al identificar"
 [ ! -e "$MOTOR_CANARIO_ESTADO" ] || fallo "creo estado tras un fallo al identificar"
-espera "fallo al identificar en verifica: se niega" 2 bash "$RAIZ/ops/canario/verifica.sh"
+espera "fallo al identificar en verifica: se niega" 2 env MOTOR_CANARIO_TOPE_S=1 MOTOR_CANARIO_SONDEO_S=1 bash "$RAIZ/ops/canario/verifica.sh"
 [ "$(cuenta_reinicios)" = 0 ] || fallo "verifica reinicio tras un fallo al identificar"
 
 nuevo

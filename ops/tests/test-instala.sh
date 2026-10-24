@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ops/instala-todo.sh y ops/desinstala-todo.sh de verdad (git, bash y el motor reales) contra repos
-# locales, un HOME de mentira por máquina y un ssh falso: la Mini corre su script en su HOME falso;
-# la PC solo registra lo que se le pide. Exige ≠0 cuando el remoto falla y 0 cuando todo está bien.
+# locales, un HOME de mentira por máquina y un ssh falso: la Mac y la Mini corren su script en su
+# HOME falso; la PC solo registra lo que se le pide. Exige ≠0 cuando el remoto falla y 0 cuando todo está bien.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
@@ -23,7 +23,7 @@ export MOTOR_REPO_URL="$S/origen.git" MOTOR_CONF_URL="$S/conf.git" MOTOR_INSTALA
 export MOTOR_SSH_MAC=mac MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_LAUNCHD_DIR="$S/launchd"
 mkdir -p "$S/launchd"
 
-# --- ssh falso: la Mini corre de verdad en su HOME falso; la PC solo registra.
+# --- ssh falso: la Mac y la Mini corren de verdad en su HOME falso; la PC solo registra.
 cat >"$S/bin/ssh" <<'FAKE'
 #!/usr/bin/env bash
 while [ "$1" = -o ]; do shift 2; done

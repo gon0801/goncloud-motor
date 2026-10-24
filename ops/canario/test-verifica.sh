@@ -15,7 +15,7 @@ cat >"$S/bin/ssh" <<'FAKE'
 while [ "$1" = -o ]; do shift 2; done
 host=$1; shift
 echo "$host :: $*" >>"$FAKE_LOG"
-case "$*" in *hostname*) if [ "$host" = gwpc ]; then printf '%s\n' "${FAKE_NOMBRE_PC:-pc-falsa}"; else printf '%s\n' "${FAKE_NOMBRE_MINI:-mini-falsa}"; fi; exit 0 ;; esac
+case "$*" in *hostname*) if [ "$host" = gwpc ] && [ -n "${FAKE_HOSTNAME_CAE_PC:-}" ]; then exit 255; fi; if [ "$host" = gwpc ] && [ -n "${FAKE_HOSTNAME_FALLA_UNA_PC:-}" ] && [ ! -e "$S/hostname-pc-fallo" ]; then : >"$S/hostname-pc-fallo"; exit 255; fi; if [ "$host" = gwpc ]; then printf '%s\n' "${FAKE_NOMBRE_PC:-pc-falsa}"; else printf '%s\n' "${FAKE_NOMBRE_MINI:-mini-falsa}"; fi; exit 0 ;; esac
 case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac
 if [ "$host" = gwpc ]; then
   resto="${*#*python - }"
@@ -74,7 +74,7 @@ if e("pendiente") == "1":
 PY
 }
 
-bien() { home "$S/mini/.motor"; home "$S/pc/.motor"; unset FAKE_CAE; }
+bien() { home "$S/mini/.motor"; home "$S/pc/.motor"; unset FAKE_CAE FAKE_HOSTNAME_CAE_PC FAKE_HOSTNAME_FALLA_UNA_PC FAKE_NOMBRE_MINI FAKE_NOMBRE_PC; rm -f "$S/hostname-pc-fallo"; : >"$FAKE_LOG"; }
 
 bien; espera "todo en regla en las dos" 0 bash "$V"
 contiene "lo dice" "$S/salida" "aprobada"
@@ -132,5 +132,25 @@ contiene "dice cuál" "$S/salida" "claw (Mini): el motor no tiene el plan"
 bien; FAKE_CAE="gwpc" espera "la PC no contesta (reiniciándose)" '!0' bash "$V"
 contiene "dice cuál" "$S/salida" "Hermi (PC): no contestó"
 
+bien; export FAKE_HOSTNAME_FALLA_UNA_PC=1
+espera "hostname de pc falla una vez y verifica sigue" 0 bash "$V"
+contiene "lo dice" "$S/salida" "aprobada"
+[ "$(grep -c 'gwpc :: hostname' "$FAKE_LOG" || true)" -ge 2 ] || fallo "verifica no reintentó el hostname de la PC"
+
+bien; export FAKE_HOSTNAME_CAE_PC=1
+espera "hostname de pc no vuelve: verifica se niega al agotar el tope" 2 env MOTOR_CANARIO_TOPE_S=1 MOTOR_CANARIO_SONDEO_S=1 bash "$V"
+contiene "dice que no identifico" "$S/salida" "no pude identificar"
+
+bien; export FAKE_NOMBRE_MINI="$(hostname)"
+espera "desde la mini verifica solo mira la pc" 0 bash "$V"
+contiene "lo dice" "$S/salida" "aprobada"
+
+bien; export FAKE_NOMBRE_PC="$(hostname)"
+espera "desde la pc verifica solo mira la mini" 0 bash "$V"
+contiene "lo dice" "$S/salida" "aprobada"
+
+bien; export FAKE_NOMBRE_MINI="$(hostname)" FAKE_NOMBRE_PC="$(hostname)"
+espera "sin ninguna máquina verifica se niega" 2 bash "$V"
+contiene "dice que se niega" "$S/salida" "me niego: no queda ninguna máquina que reiniciar"
 
 termina
