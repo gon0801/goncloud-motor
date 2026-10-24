@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -114,6 +115,23 @@ class SenalTest(Banco):
             ),
             self.kuma.pedidos[:2],
         )
+
+    def test_la_direccion_con_query_de_kuma_manda_un_solo_status_y_un_solo_msg(self):
+        self.secretos(f"{self.kuma.url}?status=up&msg=OK&ping=")
+        s = senal.Senal(self.home, lambda: {})
+        s.avanzo(2)
+        self.assertTrue(s.una_vez())
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(self.kuma.pedidos[0][1]).query,
+            keep_blank_values=True,
+        )
+        self.assertEqual(query, {"status": ["up"], "msg": ["2 planes"]})
+
+    def test_el_hilo_de_senal_no_frena_la_salida_del_proceso(self):
+        s = senal.Senal(self.home, lambda: {})
+        s.arranca()
+        self.addCleanup(s.para)
+        self.assertTrue(s._hilo.daemon)
 
     def test_sin_la_direccion_no_hace_nada(self):
         self.secretos(None)

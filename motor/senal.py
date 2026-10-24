@@ -10,7 +10,6 @@ from __future__ import annotations
 import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -90,10 +89,10 @@ class Senal:
             return False
 
     def _manda(self, url: str) -> None:
-        sep = "&" if "?" in url else "?"
+        base = urllib.parse.urlsplit(url)._replace(query="", fragment="").geturl()
         msg = urllib.parse.quote(f"{self._planes} planes")
         abre = urllib.request.build_opener(_SinRedireccion).open
-        with abre(f"{url}{sep}status=up&msg={msg}", timeout=TOPE_GET_S) as r:
+        with abre(f"{base}?status=up&msg={msg}", timeout=TOPE_GET_S) as r:
             r.read(1024)
 
     def _anota(self, tipo: str) -> None:
