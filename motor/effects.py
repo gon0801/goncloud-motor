@@ -842,6 +842,14 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             c["toco_carpeta"] = o["toco_carpeta"]
         return c
 
+    @staticmethod
+    def _veredicto_entregado(att: m.Attempt, d: Path) -> bool:
+        try:
+            datos = (d / entrega.ENTREGA).read_bytes()
+        except OSError:
+            return False
+        return entrega.Espera(sha=att.sha).acepta(datos, d)
+
     def _juzga_intento(
         self,
         plan: Plan,
@@ -851,7 +859,9 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         d: Path,
         o: dict,
     ) -> dict:
-        if att.role == "implementar" and self._entrego(plan, block_id, d):
+        if (att.role == "implementar" and self._entrego(plan, block_id, d)) or (
+            att.role == "revisar" and self._veredicto_entregado(att, d)
+        ):
             c = {
                 "kind": "terminado"
             }  # dejó su entrega: lo que pasó después con el proceso no la borra

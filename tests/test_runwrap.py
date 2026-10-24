@@ -12,7 +12,14 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from motor import runwrap
+RAIZ = Path(__file__).resolve().parent.parent
+sys.path[:0] = [str(RAIZ), str(RAIZ / "proto")]
+import sandbox  # noqa: E402
+
+from motor import machine as m  # noqa: E402
+from motor import runwrap  # noqa: E402
+from motor.daemon import Daemon  # noqa: E402
+from motor.plan import parse_plan  # noqa: E402
 
 
 class CierreTrasResultadoTest(unittest.TestCase):
@@ -32,7 +39,14 @@ class CierreTrasResultadoTest(unittest.TestCase):
         (t / "sesion.jsonl").write_text("")
         (t / "sesion").mkdir()
         (d / "pstack.json").write_text(
-            json.dumps({"registros": [str(t / "sesion.jsonl")]})
+            json.dumps(
+                {
+                    "cli": "kimi",
+                    "exigir": False,
+                    "exigencia": {},
+                    "registros": [str(t / "sesion.jsonl")],
+                }
+            )
         )
         inicio = time.time()
         runwrap.main(
@@ -100,24 +114,58 @@ class CierreTrasResultadoTest(unittest.TestCase):
             (d / "outcome.json").stat().st_mtime - fin, 1.0
         )  # da tiempo de leer lo que contestó el panel
 
+    def collect_de(self, script: str, sin_avance: float):
+        """Corre el agente bajo runwrap y pasa su intento por `Effects.collect` del daemon."""
+        _, _, d = self.corre_en(script, sin_avance=sin_avance, extra=self.REVISOR)
+        home, plan_md = sandbox.create(d.parent / "banco")
+        daemon = Daemon(home)
+        daemon.store.append(
+            "demo",
+            "",
+            "PlanLoaded",
+            {"plan": parse_plan(plan_md.read_text()).to_dict(), "por": "t"},
+        )
+        att = m.Attempt(
+            n=1,
+            role="revisar",
+            modelo="glm",
+            started=0.0,
+            proc={},
+            dir=str(d),
+            sha="abc",
+        )
+        plan = daemon.plans()[0]
+        return daemon.fx.collect(plan, daemon._fold(plan), "A", att), d
+
     def test_llamada_abierta_con_shim_vivo_no_se_pierde_por_sin_avance(self):
         """Un shim colgado retiene el cierre, pero la entrega válida ya está: no se corta como sin_avance."""
-        _, _, d = self.corre_en(
+        salida, d = self.collect_de(
             self.PRELUDIO + "veredicto('APROBADO')\n"
             "(d / 'llamadas').mkdir()\n"
             "(d / 'llamadas' / 'x.json').write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
             "time.sleep(60)\n",
             sin_avance=3,
-            extra=self.REVISOR,
         )
-        o = json.loads((d / "outcome.json").read_text())
-        self.assertEqual(
-            (o["cerrado_tras_resultado"], o["no_progress"], o["timed_out"], o["exit"]),
-            (True, False, False, 0),
-        )
+        self.assertEqual(salida.get("kind"), "veredicto", salida)
         self.assertEqual(
             json.loads((d / "entrega.json").read_text())["veredicto"], "APROBADO"
         )
+
+    def test_veredicto_entregado_y_salida_distinta_de_cero_no_se_pierde(self):
+        """Mientras el cierre se retiene, el CLI sale con un API Error: el veredicto válido sigue valiendo."""
+        salida, d = self.collect_de(
+            self.PRELUDIO + "veredicto('APROBADO')\n"
+            "fin = time.time() + 3\n"
+            "while time.time() < fin:\n"
+            "    sesion.open('a').write('l\\n')\n"
+            "    time.sleep(0.3)\n"
+            "print('API Error: 529 overloaded')\n"
+            "raise SystemExit(1)\n",
+            sin_avance=30,
+        )
+        o = json.loads((d / "outcome.json").read_text())
+        self.assertEqual(o["exit"], 1)
+        self.assertEqual(salida.get("kind"), "veredicto", salida)
 
     def test_el_shim_registra_su_pid_mientras_corre(self):
         t = Path(tempfile.mkdtemp(prefix="runwrap-shim-"))

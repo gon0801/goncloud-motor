@@ -105,7 +105,7 @@ def _huella_pstack(d: Path) -> tuple[dict[str, tuple[int, int]], bool]:
         if not (isinstance(rec, dict) and "fin" in rec and rec["fin"] is None):
             continue
         pid = rec.get("pid")
-        if not isinstance(pid, int) or plataforma.pid_vivo(pid):
+        if not isinstance(pid, int) or pid <= 0 or plataforma.pid_vivo(pid):
             abierta = True
     return huella, abierta
 
@@ -188,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         ultimo_cambio = ultimo_escaneo = time.time()
         huella_p, _ = _huella_pstack(d)
         ultimo_cambio_p = 0.0
+        abierta_antes = False
         timed_out = no_progress = cerrado = False
         espera = entrega.Espera(rama=a.entrega_rama, sha=a.entrega_sha)
         foto_lock = threading.Lock()
@@ -215,10 +216,9 @@ def main(argv: list[str] | None = None) -> int:
                     ultimo, ultimo_cambio = ahora, time.time()
             entrego = espera.vigila(d, cwd)
             nueva_p, llamada_abierta = _huella_pstack(d)
-            if nueva_p != huella_p:
+            if nueva_p != huella_p or llamada_abierta or abierta_antes:
                 huella_p, ultimo_cambio_p = nueva_p, time.time()
-            if llamada_abierta:
-                ultimo_cambio_p = time.time()
+            abierta_antes = llamada_abierta
             if (
                 entrego >= inicio
                 and time.time() - max(entrego, ultimo_cambio, ultimo_cambio_p)
@@ -232,9 +232,6 @@ def main(argv: list[str] | None = None) -> int:
             elif time.time() - ultimo_cambio > a.sin_avance:
                 no_progress = True
             if timed_out or no_progress:
-                if entrego >= inicio:
-                    cerrado = True
-                    timed_out = no_progress = False
                 matar_grupo(p)
                 break
     espera.vigila(d, cwd)
