@@ -12,7 +12,9 @@
   cuenta como avance cualquier cambio en sus `registros` y en los de los subagentes de la
   sesión (`<sesion>/subagents/*.jsonl`), y no cierra mientras una llamada de `llamadas/`
   tenga `fin` nulo y su shim siga vivo (una abierta cuenta como avance: el cierre llega `--cierre` s
-  después de llenarse `fin`). Grok dejaba su
+  después de llenarse `fin`). Esas fuentes solo retienen el cierre: si `--sin-avance` o `--timeout`
+  vencen con una entrega válida ya congelada, termina como cerrado, nunca como corte, para que el
+  veredicto no se pierda. Grok dejaba su
   resultado y el proceso no salía; a los 45 min se mataba "sin avance" y la entrega se perdía
   (INGESTA 01, bloque D, dos veces).
 - Con `--wip-rama`: cada `--wip-cada` s y al terminar, sube una foto del trabajo a medias
@@ -219,7 +221,6 @@ def main(argv: list[str] | None = None) -> int:
                 ultimo_cambio_p = time.time()
             if (
                 entrego >= inicio
-                and not llamada_abierta
                 and time.time() - max(entrego, ultimo_cambio, ultimo_cambio_p)
                 > a.cierre
             ):
@@ -231,6 +232,9 @@ def main(argv: list[str] | None = None) -> int:
             elif time.time() - ultimo_cambio > a.sin_avance:
                 no_progress = True
             if timed_out or no_progress:
+                if entrego >= inicio:
+                    cerrado = True
+                    timed_out = no_progress = False
                 matar_grupo(p)
                 break
     espera.vigila(d, cwd)

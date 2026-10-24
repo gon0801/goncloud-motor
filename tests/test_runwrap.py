@@ -81,24 +81,75 @@ class CierreTrasResultadoTest(unittest.TestCase):
             "    time.sleep(0.3)\n",
             extra=self.REVISOR,
         )
-        self.assertIs(o["cerrado_tras_resultado"], False)
+        self.assertEqual((o["cerrado_tras_resultado"], o["exit"]), (False, 0))
 
     def test_llamada_sin_fin_impide_el_cierre_hasta_que_se_llena(self):
         o, _, d = self.corre_en(
             self.PRELUDIO + "veredicto('APROBADO')\n"
             "(d / 'llamadas').mkdir()\n"
             "f = d / 'llamadas' / 'x.json'\n"
-            "f.write_text(json.dumps({'fin': None}))\n"
+            "f.write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
             "time.sleep(4)\n"
-            "f.write_text(json.dumps({'fin': time.time()}))\n"
+            "f.write_text(json.dumps({'fin': time.time(), 'pid': os.getpid()}))\n"
             "time.sleep(60)\n",
-            extra=self.REVISOR + ("--cierre", "3"),
+            extra=self.REVISOR,
         )
         self.assertIs(o["cerrado_tras_resultado"], True)
         fin = json.loads((d / "llamadas" / "x.json").read_text())["fin"]
         self.assertGreaterEqual(
-            (d / "outcome.json").stat().st_mtime - fin, 2.5
+            (d / "outcome.json").stat().st_mtime - fin, 1.0
         )  # da tiempo de leer lo que contestó el panel
+
+    def test_llamada_abierta_con_shim_vivo_no_se_pierde_por_sin_avance(self):
+        """Un shim colgado retiene el cierre, pero la entrega válida ya está: no se corta como sin_avance."""
+        _, _, d = self.corre_en(
+            self.PRELUDIO + "veredicto('APROBADO')\n"
+            "(d / 'llamadas').mkdir()\n"
+            "(d / 'llamadas' / 'x.json').write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
+            "time.sleep(60)\n",
+            sin_avance=3,
+            extra=self.REVISOR,
+        )
+        o = json.loads((d / "outcome.json").read_text())
+        self.assertEqual(
+            (o["cerrado_tras_resultado"], o["no_progress"], o["timed_out"], o["exit"]),
+            (True, False, False, 0),
+        )
+        self.assertEqual(
+            json.loads((d / "entrega.json").read_text())["veredicto"], "APROBADO"
+        )
+
+    def test_el_shim_registra_su_pid_mientras_corre(self):
+        t = Path(tempfile.mkdtemp(prefix="runwrap-shim-"))
+        d, home, bin_ = t / "intento", t / "home", t / "bin"
+        for c in (d, home, bin_):
+            c.mkdir()
+        (d / "cupos.json").write_text(
+            json.dumps({"home": str(home), "rutas": {}, "topes": {}})
+        )
+        real = bin_ / "kimi"
+        real.write_text(
+            '#!/bin/sh\ncat "$MOTOR_ATTEMPT_DIR"/llamadas/*.json > "$MOTOR_ATTEMPT_DIR"/visto.json\n'
+        )
+        real.chmod(0o755)
+        guard = Path(runwrap.__file__).parent / "shims" / "llamada_guard.py"
+        env = {
+            **os.environ,
+            "MOTOR_ATTEMPT_DIR": str(d),
+            "PATH": str(bin_) + os.pathsep + os.environ["PATH"],
+        }
+        env.pop("MOTOR_LLAMADA", None)
+        r = subprocess.run(
+            [sys.executable, str(guard), "kimi"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        visto = d / "visto.json"
+        self.assertTrue(visto.is_file(), r.stderr)
+        rec = json.loads(visto.read_text())
+        self.assertIsInstance(rec["pid"], int)
+        self.assertIsNone(rec["fin"])
 
     def test_llamada_con_shim_muerto_no_impide_el_cierre(self):
         muerto = subprocess.Popen([sys.executable, "-c", "pass"])
