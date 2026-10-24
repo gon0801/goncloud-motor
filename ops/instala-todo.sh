@@ -2,8 +2,8 @@
 # Instala el motor en la Mac, la Mini y la PC: etiqueta (la de ops/lib.sh por omisión) sobre el SHA mergeado, y en cada máquina
 # ~/motor (en esa etiqueta), ~/motor-conf, ~/.motor/maquina.toml e ~/.motor/instalar-servicio.txt.
 # No pide sudo: lo que sí lo necesita queda escrito en instalar-servicio.txt para la persona.
-# Antes de tocar ~/motor en ninguna, el código de la etiqueta valida la conf que va a quedar en cada máquina:
-# si la rechaza en alguna, no cambia el código en ninguna.
+# El código de la etiqueta valida la conf que va a quedar en cada máquina antes del checkout
+# de la etiqueta: si la rechaza en alguna, no se hace ese checkout en ninguna.
 # Sale != 0 si alguna máquina falla (las demás se intentan igual y se dice cuál falló).
 set -uo pipefail
 export LC_ALL=C

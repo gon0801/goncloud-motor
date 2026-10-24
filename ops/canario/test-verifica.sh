@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ops/canario/verifica.sh con estados falsos: homes de mentira con el registro real del motor y un ssh
-# falso que corre ahí el resumen. Sale 0 solo con todo en regla en las dos máquinas; ≠0 y diciendo
+# falso que corre ahí el resumen. Sale 0 solo con todo en regla en las máquinas seleccionadas del
+# canario (Mini y PC menos la máquina en la que corre; nunca la Mac); ≠0 y diciendo
 # qué falta cuando algo no está (sin PR, sin merge, corte tratado como falla, aviso sin llegar...).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../tests/lib-prueba.sh"
@@ -137,15 +138,26 @@ espera "hostname de pc falla una vez y verifica sigue" 0 bash "$V"
 contiene "lo dice" "$S/salida" "aprobada"
 [ "$(grep -c 'gwpc :: hostname' "$FAKE_LOG" || true)" -ge 2 ] || fallo "verifica no reintentó el hostname de la PC"
 
+bien; home "$S/mini/.motor" sin_terminado=1; home "$S/pc/.motor" sin_terminado=1; export FAKE_HOSTNAME_FALLA_UNA_PC=1
+inicio="$(python3 -c 'import time; print(time.time())')"
+MOTOR_CANARIO_TOPE_S=10 MOTOR_CANARIO_SONDEO_S=5 bash "$V" >"$S/salida" 2>&1; rc_tope=$?
+transcurrido="$(python3 -c 'import time, sys; print(time.time() - float(sys.argv[1]))' "$inicio")"
+if [ "$rc_tope" -ne 0 ] && python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) <= 12.5 else 1)' "$transcurrido"; then
+  echo "  ok: el tope es total entre identificar y verificar"
+else
+  fallo "el tope es total entre identificar y verificar: rc=$rc_tope transcurrido=${transcurrido}s tope=10s"
+  sed 's/^/    | /' "$S/salida" >&2
+fi
+
 bien; export FAKE_HOSTNAME_CAE_PC=1
 espera "hostname de pc no vuelve: verifica se niega al agotar el tope" 2 env MOTOR_CANARIO_TOPE_S=1 MOTOR_CANARIO_SONDEO_S=1 bash "$V"
 contiene "dice que no identifico" "$S/salida" "no pude identificar"
 
-bien; export FAKE_NOMBRE_MINI="$(hostname)"
+bien; home "$S/mini/.motor" sin_corte=1; export FAKE_NOMBRE_MINI="$(hostname)"
 espera "desde la mini verifica solo mira la pc" 0 bash "$V"
 contiene "lo dice" "$S/salida" "aprobada"
 
-bien; export FAKE_NOMBRE_PC="$(hostname)"
+bien; home "$S/pc/.motor" sin_corte=1; export FAKE_NOMBRE_PC="$(hostname)"
 espera "desde la pc verifica solo mira la mini" 0 bash "$V"
 contiene "lo dice" "$S/salida" "aprobada"
 

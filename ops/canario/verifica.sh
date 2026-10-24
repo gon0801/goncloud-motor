@@ -141,7 +141,7 @@ sys.exit(0)
 PY
 }
 
-fin=$((SECONDS + TOPE_S))
+fin=$fin_ident
 while :; do
   for m in $CANARIO_MAQUINAS; do toma "$m" & done
   wait
