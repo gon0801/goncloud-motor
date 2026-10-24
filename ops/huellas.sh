@@ -3,19 +3,83 @@
 # Sale 0 solo si las tres huellas coinciden y conf y máquina están ok.
 #   --servicio  además exige el servicio cargado (LaunchDaemon / tarea programada)
 #   --rutas     además `doctor --como-servicio`: al menos un modelo por papel responde
+#   --caminos   solo los 15 caminos ssh entre las tres máquinas, goncloud y GitHub
 set -uo pipefail
 export LC_ALL=C
 aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$aqui/lib.sh"
 
-servicio=0 rutas=0
+servicio=0 rutas=0 caminos=0
 for a in "$@"; do
   case "$a" in
     --servicio) servicio=1 ;;
     --rutas) rutas=1 ;;
-    *) echo "uso: ops/huellas.sh [--servicio] [--rutas]" >&2; exit 2 ;;
+    --caminos) caminos=1 ;;
+    *) echo "uso: ops/huellas.sh [--servicio] [--rutas] [--caminos]" >&2; exit 2 ;;
   esac
 done
+
+d="$(mktemp -d)"
+trap 'rm -rf "$d"' EXIT
+
+CAMINO_USUARIO=""
+intenta_whoami() {
+  local origen=$1 dest=$2 nombre=$3 salida rc
+  salida="$(corre "$origen" "ssh -n -o BatchMode=yes $dest whoami" "ssh -n -o BatchMode=yes $dest whoami" 2>"$d/camino.err")"
+  rc=$?
+  CAMINO_USUARIO="$(printf '%s' "$salida" | tr -d '\r' | tr -d '[:space:]')"
+  [ "$rc" = 0 ] && [ -n "$CAMINO_USUARIO" ] || return 1
+  if [ "$nombre" = goncloud ] && [ "$CAMINO_USUARIO" != root ]; then
+    return 1
+  fi
+  return 0
+}
+
+intenta_github() {
+  local origen=$1 rc err
+  corre "$origen" "ssh -n -T git@github.com" "ssh -n -T git@github.com" >"$d/github.out" 2>"$d/github.err"
+  rc=$?
+  err="$(tr -d '\r' <"$d/github.err")"
+  [ "$rc" = 1 ] || return 1
+  case "$err" in *"Hi "*"!"*) return 0 ;; *) return 1 ;; esac
+}
+
+comprueba_caminos() {
+  local origen destino dest_ssh
+  : >"$d/caminos.problemas"
+  for origen in $MAQUINAS; do
+    for destino in mac mini pc goncloud; do
+      case "$destino" in
+        mac) dest_ssh="$(host_de mac)" ;;
+        mini) dest_ssh="$(host_de mini)" ;;
+        pc) dest_ssh="$(host_de pc)" ;;
+        goncloud) dest_ssh="${MOTOR_SSH_SERVIDOR:-goncloud}" ;;
+      esac
+      CAMINO_USUARIO=""
+      if ! reintenta 3 intenta_whoami "$origen" "$dest_ssh" "$destino"; then
+        if [ "$destino" = goncloud ] && [ -n "$CAMINO_USUARIO" ]; then
+          echo "$origen entra a goncloud como $CAMINO_USUARIO" >>"$d/caminos.problemas"
+        else
+          echo "$origen no entra a $destino" >>"$d/caminos.problemas"
+        fi
+      fi
+    done
+    if ! reintenta 3 intenta_github "$origen"; then
+      echo "$origen no entra a github" >>"$d/caminos.problemas"
+    fi
+  done
+}
+
+if [ "$caminos" = 1 ]; then
+  comprueba_caminos
+  if [ -s "$d/caminos.problemas" ]; then
+    echo "Caminos con problema:" >&2
+    sed 's/^/  - /' "$d/caminos.problemas" >&2
+    exit 1
+  fi
+  echo "Los 15 caminos están sanos."
+  exit 0
+fi
 
 # El sha que debe correr el daemon: el del despliegue; fuera de uno, el HEAD de esta copia.
 sha_esperado="${MOTOR_SHA:-}"
@@ -38,9 +102,6 @@ elif [ -z "$sha_etiqueta" ]; then
 elif [ "$sha_etiqueta" != "$sha_esperado" ]; then
   problema_etiqueta="la etiqueta $ETIQUETA apunta a ${sha_etiqueta:0:12} y el despliegue es ${sha_esperado:0:12}"
 fi
-
-d="$(mktemp -d)"
-trap 'rm -rf "$d"' EXIT
 
 posix='export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; if python3 -c "import tomllib" 2>/dev/null; then py=python3; else py="uv run --python 3.12 python"; fi; cd "$HOME/motor" && PYTHONPATH=. $py -m motor'
 pc="cd /d %USERPROFILE%\\motor && $PC_UV run --python 3.12 python -m motor"
@@ -68,6 +129,8 @@ huella() {
   fi
 }
 
+comprueba_caminos
+
 for m in $MAQUINAS; do huella "$m" & done
 wait
 
@@ -94,6 +157,9 @@ def lee(m, n):
 problemas, filas, huellas = [], [], {}
 if problema_etiqueta:
     problemas.append(problema_etiqueta)
+_caminos = d / "caminos.problemas"
+if _caminos.exists():
+    problemas += [l.strip() for l in _caminos.read_text(errors="replace").splitlines() if l.strip()]
 for m in maquinas:
     ver, p1 = lee(m, "version")
     doc, p2 = lee(m, "doctor")
