@@ -19,8 +19,12 @@ SONDEO_S="${MOTOR_CANARIO_SONDEO_S:-20}"
 TOPE_ENTREGA_S="${MOTOR_CANARIO_TOPE_ENTREGA_S:-600}"
 TOPE_BLOQUE_S="${MOTOR_CANARIO_TOPE_BLOQUE_S:-7200}"
 TOPE_SERVICIO_S="${MOTOR_CANARIO_TOPE_SERVICIO_S:-600}"
-# Solo estas dos. La Mac (el lead) no está en la lista y el guardián de abajo lo refuerza.
-CANARIO_MAQUINAS="mini pc"
+# Mini y PC menos la máquina en la que corre (nunca la Mac): la lista sale de maquinas_canario.
+CANARIO_MAQUINAS="$(maquinas_canario)"
+if [ -z "$(printf '%s' "$CANARIO_MAQUINAS" | tr -d '[:space:]')" ]; then
+  echo "me niego: no queda ninguna máquina que reiniciar" >&2
+  exit 2
+fi
 
 [ -f "$PLAN" ] || { echo "no encuentro el plan: $PLAN" >&2; exit 2; }
 python3 -I - "$PLAN" <<'PY' || exit 2
@@ -31,15 +35,6 @@ PLAN_ID="$(sed -n 's/^plan: *//p' "$PLAN" | head -1)"
 mkdir -p "$ESTADO"
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
-
-# Nunca la Mac: ni por nombre ni porque el host de alguna apunte a esta misma máquina.
-for m in $CANARIO_MAQUINAS; do
-  h="$(host_de "$m")"
-  case "$h" in
-    ""|localhost|127.*|::1|"$(hostname)"|"$(hostname -s)"|"$(whoami)@localhost")
-      echo "me niego: el host de $m ($h) es esta máquina y la Mac no se reinicia" >&2; exit 2 ;;
-  esac
-done
 
 marca() { case "$1" in mini) echo claw ;; pc) echo Hermi ;; esac; }
 
@@ -116,8 +111,8 @@ entrega() { # entrega <m>: manda plan.md + mensaje por tar y le habla al agente 
   else
     mensaje "$m" '$HOME/canario/plan.md' "$posix" '$HOME/.motor' "$nombre" >"$d/$m.envio/mensaje.txt"
     tar -c -C "$d/$m.envio" plan.md mensaje.txt |
-      ssh_a "$(host_de mini)" "$(printf '%q ' bash -c 'mkdir -p "$HOME/canario" && tar -x -C "$HOME/canario"')" || return 3
-    ssh_a "$(host_de mini)" "$(printf '%q ' bash -c '"$HOME/oc-forja.sh" agent --message-file "$HOME/canario/mensaje.txt" --json --timeout 900')" >"$d/$m.canal" 2>&1
+      ssh_a "$(host_de "$m")" "$(printf '%q ' bash -c 'mkdir -p "$HOME/canario" && tar -x -C "$HOME/canario"')" || return 3
+    ssh_a "$(host_de "$m")" "$(printf '%q ' bash -c '"$HOME/oc-forja.sh" agent --message-file "$HOME/canario/mensaje.txt" --json --timeout 900')" >"$d/$m.canal" 2>&1
   fi
   return 0
 }
@@ -134,7 +129,7 @@ cortes_de() { # cortes_de <m>: cuántos cortes (reinicios a media corrida) anot�
   if [ "$1" = pc ]; then
     ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python - %USERPROFILE%\\.motor $PLAN_ID \"\" \"\"" <"$aqui/resumen.py" 2>/dev/null
   else
-    ssh_a "$(host_de mini)" "$(printf '%q ' bash -c "$py \"\$HOME/.motor\" $PLAN_ID \"\" \"\"")" <"$aqui/resumen.py" 2>/dev/null
+    ssh_a "$(host_de "$1")" "$(printf '%q ' bash -c "$py \"\$HOME/.motor\" $PLAN_ID \"\" \"\"")" <"$aqui/resumen.py" 2>/dev/null
   fi | tr -d '\r' | python3 -I -c 'import json,sys; l=sys.stdin.read().splitlines(); print(json.loads(l[-1]).get("cortes", 0) if l else 0)' 2>/dev/null || echo 0
 }
 
@@ -143,14 +138,14 @@ servicio_arriba() { # servicio_arriba <m>
 }
 
 puede_reiniciar() { # la Mini necesita `sudo -n` sin contraseña; en la PC `shutdown` va sin más
-  [ "$1" = pc ] || ssh_a "$(host_de mini)" "sudo -n -l shutdown" >/dev/null 2>&1
+  [ "$1" = pc ] || ssh_a "$(host_de "$1")" "sudo -n -l shutdown" >/dev/null 2>&1
 }
 
 reinicia() { # reinicia <m>: la orden de reinicio de esa máquina; el ssh se corta al caer, no importa el código
   if [ "$1" = pc ]; then
     ssh_a "$(host_de pc)" "shutdown /r /t 0"
   else
-    ssh_a "$(host_de mini)" "sudo -n shutdown -r now"
+    ssh_a "$(host_de "$1")" "sudo -n shutdown -r now"
   fi
 }
 
@@ -209,4 +204,4 @@ for m in $CANARIO_MAQUINAS; do
 done
 for p in "${pids[@]}"; do wait "$p" || fallas=$((fallas + 1)); done
 if [ "$fallas" -gt 0 ]; then echo "$fallas máquina(s) no quedaron reiniciadas a media corrida" >&2; exit 1; fi
-echo "claw y Hermi reiniciadas a media corrida; sigue ops/canario/verifica.sh"
+echo "reiniciadas a media corrida: $CANARIO_MAQUINAS; sigue ops/canario/verifica.sh"

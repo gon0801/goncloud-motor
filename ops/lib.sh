@@ -63,6 +63,20 @@ corre() {
   fi
 }
 
+# maquinas_canario: mini y pc menos la máquina en la que corre el script (nunca la Mac).
+# Para saber cuál es, pide por ssh el hostname de cada una y lo compara con el local.
+maquinas_canario() {
+  local m remoto propio
+  propio="$(hostname 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
+  for m in mini pc; do
+    remoto="$(corre "$m" hostname hostname 2>/dev/null | tr -d '\r' | tr -d '[:space:]')" || remoto=""
+    if [ -n "$propio" ] && [ "$remoto" = "$propio" ]; then
+      continue
+    fi
+    printf '%s\n' "$m"
+  done
+}
+
 # info_daemon <m>: "<pid> <epoch de arranque>" del proceso motor daemon (no del supervisor); != 0 si no hay.
 info_daemon() {
   local m=$1 out pid inicio

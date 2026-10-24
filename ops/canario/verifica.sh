@@ -16,7 +16,11 @@ aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLAN="${MOTOR_CANARIO_PLAN:-$aqui/plan.md}"
 TOPE_S="${MOTOR_CANARIO_TOPE_S:-10800}"
 SONDEO_S="${MOTOR_CANARIO_SONDEO_S:-60}"
-CANARIO_MAQUINAS="mini pc"
+CANARIO_MAQUINAS="$(maquinas_canario)"
+if [ -z "$(printf '%s' "$CANARIO_MAQUINAS" | tr -d '[:space:]')" ]; then
+  echo "me niego: no queda ninguna máquina que reiniciar" >&2
+  exit 2
+fi
 
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
@@ -44,7 +48,7 @@ toma() {
   if [ "$m" = pc ]; then
     ssh_a "$(host_de pc)" "$pc_py %USERPROFILE%\\.motor $PLAN_ID \"$CODIGO\" \"$HUMANO\"" <"$aqui/resumen.py" 2>"$d/$m.err" | tr -d '\r' >"$d/$m.json"
   else
-    ssh_a "$(host_de mini)" "$(printf '%q ' bash -c "$py \"\$HOME/.motor\" $PLAN_ID \"$CODIGO\" \"$HUMANO\"")" <"$aqui/resumen.py" 2>"$d/$m.err" >"$d/$m.json"
+    ssh_a "$(host_de "$m")" "$(printf '%q ' bash -c "$py \"\$HOME/.motor\" $PLAN_ID \"$CODIGO\" \"$HUMANO\"")" <"$aqui/resumen.py" 2>"$d/$m.err" >"$d/$m.json"
   fi
 }
 

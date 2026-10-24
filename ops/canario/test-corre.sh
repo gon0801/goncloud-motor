@@ -16,6 +16,7 @@ while [ "$1" = -o ]; do shift 2; done
 host=$1; shift
 args="${*//\\ / }"   # la Mini recibe el comando escapado con printf %q
 echo "$host :: $args" >>"$FAKE_LOG"
+case "$args" in *hostname*) if [ "$host" = gwpc ]; then printf '%s\n' "${FAKE_NOMBRE_PC:-pc-falsa}"; else printf '%s\n' "${FAKE_NOMBRE_MINI:-mini-falsa}"; fi; exit 0 ;; esac
 f="$E/$host"
 case "$args" in
   "tar -x"*|*"tar -x -C"*) cat >/dev/null ;;
@@ -39,7 +40,7 @@ chmod +x "$S/bin/ssh"
 nuevo() { # estado limpio: nada entregado, sin marcas de reinicio
   rm -rf "$E" "$S/marcas"; mkdir -p "$E"; : >"$FAKE_LOG"
   export MOTOR_CANARIO_ESTADO="$S/marcas"
-  unset FAKE_CORTES FAKE_SERVICIO_RC FAKE_AGENTE_MUDO FAKE_ENTREGA_MUDA FAKE_SUDO_RC FAKE_FASE
+  unset FAKE_CORTES FAKE_SERVICIO_RC FAKE_AGENTE_MUDO FAKE_ENTREGA_MUDA FAKE_SUDO_RC FAKE_FASE FAKE_NOMBRE_MINI FAKE_NOMBRE_PC
 }
 cuenta() { grep -cF -- "$2" "$1" || true; }
 cuenta_reinicios() { grep -cE 'shutdown -r now|shutdown /r' "$FAKE_LOG" || true; } # los dos reinicios; no cuenta el `sudo -n -l shutdown`
@@ -96,9 +97,19 @@ nuevo; echo a_medias >"$E/gon@mini-fake"; echo a_medias >"$E/gwpc"
 espera "el plan ya está en el motor: no se entrega de nuevo" 0 bash "$C"
 [ "$(cuenta "$FAKE_LOG" 'oc-forja.sh')" = 0 ] || fallo "re-entregó un plan que el motor ya tenía"
 
-nuevo
-espera "si el host de la Mini es esta máquina, se niega" '!0' env MOTOR_SSH_MINI=localhost bash "$C"
-[ "$(cuenta_reinicios)" = 0 ] || fallo "reinició con un host que es esta máquina"
+nuevo; export FAKE_NOMBRE_MINI="$(hostname)"
+espera "desde la mini el canario solo reinicia la pc" 0 bash "$C"
+[ "$(cuenta "$FAKE_LOG" 'shutdown -r now')" = 0 ] && [ "$(cuenta "$FAKE_LOG" 'shutdown /r')" = 1 ] || fallo "desde la Mini no reinició solo la PC"
+
+nuevo; export FAKE_NOMBRE_PC="$(hostname)$(printf '\r')"
+espera "el hostname de cmd con retorno de carro" 0 bash "$C"
+[ "$(cuenta "$FAKE_LOG" 'shutdown -r now')" = 1 ] && [ "$(cuenta "$FAKE_LOG" 'shutdown /r')" = 0 ] || fallo "con retorno de carro no reinició solo la Mini"
+
+nuevo; export FAKE_NOMBRE_MINI="$(hostname)" FAKE_NOMBRE_PC="$(hostname)"
+espera "si no queda ninguna el canario se niega" 2 bash "$C"
+contiene "dice que se niega" "$S/salida" "me niego: no queda ninguna máquina que reiniciar"
+[ "$(cuenta_reinicios)" = 0 ] || fallo "reinició cuando no quedaba ninguna"
+[ "$(cuenta "$FAKE_LOG" 'oc-forja.sh')" = 0 ] && [ "$(cuenta "$FAKE_LOG" 'hermes chat')" = 0 ] || fallo "tocó una máquina cuando no quedaba ninguna"
 
 nuevo
 espera "plan inexistente" '!0' env MOTOR_CANARIO_PLAN="$S/no-existe.md" bash "$C"

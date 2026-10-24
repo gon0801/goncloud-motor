@@ -4,7 +4,7 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
-export MOTOR_MAC_SSH=mac@fake MOTOR_SSH_MINI=mini@fake MOTOR_SSH_PC=gwpc
+export MOTOR_SSH_MAC=mac@fake MOTOR_SSH_MINI=mini@fake MOTOR_SSH_PC=gwpc
 R="$S/resp"
 
 cat >"$S/bin/ssh" <<'FAKE'

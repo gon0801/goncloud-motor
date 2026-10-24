@@ -15,6 +15,7 @@ cat >"$S/bin/ssh" <<'FAKE'
 while [ "$1" = -o ]; do shift 2; done
 host=$1; shift
 echo "$host :: $*" >>"$FAKE_LOG"
+case "$*" in *hostname*) if [ "$host" = gwpc ]; then printf '%s\n' "${FAKE_NOMBRE_PC:-pc-falsa}"; else printf '%s\n' "${FAKE_NOMBRE_MINI:-mini-falsa}"; fi; exit 0 ;; esac
 case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac
 if [ "$host" = gwpc ]; then
   resto="${*#*python - }"

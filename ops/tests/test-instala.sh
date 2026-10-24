@@ -20,12 +20,7 @@ git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m conf
 git clone -q --bare "$S/conf-src" "$S/conf.git"
 
 export MOTOR_REPO_URL="$S/origen.git" MOTOR_CONF_URL="$S/conf.git" MOTOR_INSTALA_RAIZ="$S/trabajo"
-export MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_LAUNCHD_DIR="$S/launchd"
-# La Mini clona por sus propias URLs (en la realidad, su alias de ssh github-claw; acá, otro
-# nombre del mismo repo para ver en el log cuál usó).
-ln -s origen.git "$S/origen-mini.git"
-ln -s conf.git "$S/conf-mini.git"
-export MOTOR_REPO_URL_MINI="$S/origen-mini.git" MOTOR_CONF_URL_MINI="$S/conf-mini.git"
+export MOTOR_SSH_MAC=mac MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_LAUNCHD_DIR="$S/launchd"
 mkdir -p "$S/launchd"
 
 # --- ssh falso: la Mini corre de verdad en su HOME falso; la PC solo registra.
@@ -77,7 +72,12 @@ if [ "$host" = gwpc ]; then
   esac
   exit 0
 fi
-HOME="$S/mini" bash -c "$*"
+case "$*" in *hostname*) hostname; exit 0 ;; esac
+if [ "$host" = mac ]; then
+  HOME="$S/mac" bash -c "$*"
+else
+  HOME="$S/mini" bash -c "$*"
+fi
 FAKE
 # sudo y launchctl falsos: instalar no debe llamar a sudo jamás; desinstalar lo usa con -n.
 cat >"$S/bin/sudo" <<'FAKE'
@@ -144,13 +144,26 @@ contiene "txt de la PC" "$S/pc.txt" "motor instala --maquina pc"
 contiene "txt de la PC" "$S/pc.txt" "schtasks /create"
 contiene "la PC usa la etiqueta" "$FAKE_LOG" "refs/tags/$TAG"
 contiene "la PC clona la conf" "$FAKE_LOG" "motor-conf"
-contiene "la Mini clona por su URL" "$FAKE_LOG" "mini $TAG $S/origen-mini.git $S/conf-mini.git"
 contiene "la PC enlaza la conf" "$FAKE_LOG" "mklink /j"
 grep -qE 'dev/goncloud-motor|\.motor-arranque' "$FAKE_LOG" && fallo "tocó ~/dev/goncloud-motor o ~/.motor-arranque"
 [ -e "$S/mac/dev" ] || [ -e "$S/mac/.motor-arranque" ] && fallo "creó carpetas ajenas en la Mac"
 for m in mac mini; do [ ! -e "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: anotó etiqueta-anterior en una instalación nueva"; done
 [ ! -e "$S/pc-etiqueta-anterior" ] || fallo "pc: anotó etiqueta-anterior en una instalación nueva"
 
+reset
+en_mac espera "la Mac se instala por ssh" 0 bash "$I"
+grep -q "^mac ::" "$FAKE_LOG" || fallo "la Mac no se instaló por ssh: no está mac en el log"
+[ -d "$S/mac/motor/.git" ] || fallo "la Mac no quedó instalada en $S/mac/motor"
+
+reset
+en_mac espera "instala para el origin de la mini" 0 bash "$I"
+git -C "$S/mini/motor" remote set-url origin "$S/origen-viejo.git"
+git -C "$S/mini/motor-conf" remote set-url origin "$S/conf-viejo.git"
+en_mac espera "el origin de la mini pasa a la direccion comun" 0 bash "$I"
+[ "$(git -C "$S/mini/motor" remote get-url origin)" = "$MOTOR_REPO_URL" ] || fallo "el origin de ~/motor de la Mini no quedó en REPO_URL"
+[ "$(git -C "$S/mini/motor-conf" remote get-url origin)" = "$MOTOR_CONF_URL" ] || fallo "el origin de ~/motor-conf de la Mini no quedó en CONF_URL"
+
+reset
 en_mac espera "segunda corrida (actualiza, no reclona)" 0 bash "$I"
 # La etiqueta no cambió: la marca de la marcha atrás no se toca.
 for m in mac mini; do [ ! -e "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: anotó etiqueta-anterior sin cambio de etiqueta"; done

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mide, con registros reales, qué hace cada CLI de modelos con la copia fija de pstack.
-# Corre en la Mac (local), la Mini (ssh) y la PC (ssh; Muse dentro de WSL). Aquí se baja `origin/main`
+# Corre en las tres máquinas por ssh (en la PC, Muse dentro de WSL). Aquí se baja `origin/main`
 # de goncloud-motor-conf (o se usa la carpeta de MOTOR_CONF_REAL) y se arma el encargo de cada CLI con
 # el código del motor (`Effects._encargo`, con su anexo de guías) y el prompt de `prompt_de_encargo`; a
 # cada máquina viaja la copia fija (`pstack/` y `pstack-motor/`) con esos encargos. Allá se lanza cada CLI
@@ -305,11 +305,7 @@ mide_en() {
       ;;
     *)
       local cmd="$py_posix; \$py - $m $TOPE_S $RUTAS_B64"
-      if es_local "$m"; then
-        bash -c "$cmd" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
-      else
-        ssh_a "$(host_de "$m")" "$(printf '%q ' bash -c "$cmd")" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
-      fi
+      ssh_a "$(host_de "$m")" "$(printf '%q ' bash -c "$cmd")" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
       ;;
   esac
   echo $? >"$d/$m.rc"
