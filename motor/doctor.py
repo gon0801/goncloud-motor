@@ -14,11 +14,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import fallas, plataforma, senal
-from .conf import ConfError, Maquina, Ruta, load_conf, load_maquina
+from .conf import ConfError, Maquina, Ruta, argv_de_ruta, load_conf, load_maquina
+from .effects import materializa_pstack
 from .plataforma.windows import argv_windows, env_minimo_windows, lanzamiento_wsl
 from .servicio import PATH_SERVICIO
 
@@ -55,8 +57,30 @@ def entorno_del_servicio(mq: Maquina, ruta: Ruta, result: Path) -> dict[str, str
     }
 
 
-def prueba_de_ruta(mq: Maquina, ruta: Ruta, espera_s: float = ESPERA_S) -> dict:
-    """Corre el encargo de prueba de una ruta. `responde` = salió bien dentro del plazo y dijo algo."""
+def prueba_de_ruta(
+    mq: Maquina,
+    ruta: Ruta,
+    espera_s: float = ESPERA_S,
+    pstack: str | BaseException = "",
+) -> dict:
+    """Corre el encargo de prueba de una ruta. `responde` = salió bien dentro del plazo y dijo algo.
+    Si algo truena al armar o lanzar la llamada, esa ruta no responde y el doctor sigue con las demás."""
+    try:
+        return _prueba(mq, ruta, espera_s, pstack)
+    except Exception as e:  # noqa: BLE001  una ruta que no se puede ni armar no tumba al doctor
+        return {
+            "responde": False,
+            "segundos": 0.0,
+            "kind": "falla",
+            "motivo": f"no pude armar la llamada: {type(e).__name__}",
+        }
+
+
+def _prueba(
+    mq: Maquina, ruta: Ruta, espera_s: float, pstack: str | BaseException
+) -> dict:
+    if isinstance(pstack, BaseException):
+        raise pstack
     inicio = time.time()
     # ignore_cleanup_errors: en Windows un hijo (p. ej. por WSL) puede seguir ocupando la carpeta al
     # terminar y el borrado tumbaba todo el doctor (MOTOR 01, PC). Se deja la carpeta y se sigue.
@@ -66,10 +90,14 @@ def prueba_de_ruta(mq: Maquina, ruta: Ruta, espera_s: float = ESPERA_S) -> dict:
         d = Path(t)
         brief, result = d / "brief.md", d / "result.json"
         brief.write_text(ENCARGO + "\n", encoding="utf-8")
-        argv = [
-            x.format(brief=str(brief), prompt=ENCARGO, result=str(result))
-            for x in ruta.argv
-        ]
+        argv = argv_de_ruta(
+            ruta,
+            brief=str(brief),
+            prompt=ENCARGO,
+            result=str(result),
+            pstack=pstack,
+            sesion=str(uuid.uuid4()),
+        )
         env = entorno_del_servicio(mq, ruta, result)
         if ruta.cli in mq.wsl:
             argv, env = lanzamiento_wsl(argv, env, timeout=espera_s)
@@ -136,12 +164,20 @@ def como_servicio(home: Path, espera_s: float = ESPERA_S) -> dict:
     except (ConfError, OSError, KeyError) as e:
         return {"ok": False, "problemas": [str(e)], "rutas": {}}
     modelos = list(conf.rutas)
+    pstack: str | BaseException = ""
+    if conf.pstack is not None and conf.dir is not None:
+        try:
+            copia = materializa_pstack(conf.dir, home / "pstack")
+            pstack = str(copia[1]) if copia else ""
+        except Exception as e:  # noqa: BLE001  cada ruta lo cuenta como "no pude armar la llamada"
+            pstack = e
     with ThreadPoolExecutor(max_workers=max(1, len(modelos))) as pool:
         pruebas = dict(
             zip(
                 modelos,
                 pool.map(
-                    lambda mo: prueba_de_ruta(mq, conf.rutas[mo], espera_s), modelos
+                    lambda mo: prueba_de_ruta(mq, conf.rutas[mo], espera_s, pstack),
+                    modelos,
                 ),
             )
         )

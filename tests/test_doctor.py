@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from motor.doctor import como_servicio, entorno_del_servicio
@@ -80,6 +81,69 @@ class Banco(unittest.TestCase):
         sec.chmod(0o600)
         os.environ["SOLO_EN_MI_TERMINAL"] = "1"
         self.addCleanup(os.environ.pop, "SOLO_EN_MI_TERMINAL", None)
+
+
+IMPRIME = """
+import json, os, sys
+open(sys.argv[1], "w").write(json.dumps(sys.argv[2:]))
+open(os.environ["MOTOR_RESULT"], "w").write(json.dumps({"ok": True}))
+print("OK")
+"""
+
+
+class DatosDeRutaTest(Banco):
+    def ruta(self, nombre: str, codigo: str, *datos: str) -> str:
+        script = self.t / f"{nombre}.py"
+        script.write_text(codigo)
+        argv = [PY, str(script), str(self.t / f"{nombre}.recibido"), *datos, "{brief}"]
+        return (
+            f'[rutas.{nombre}]\ncuenta = "{nombre}"\ncli = "{nombre}"\n'
+            f"argv = {json.dumps(argv)}\n"
+        )
+
+    def arma(self, rutas: list[str], modelos: list[str]):
+        conf = self.t / "conf"
+        (conf / "papeles.toml").write_text(
+            '[papeles]\nimplementar = "uno"\nrevisar = "uno"\n'
+        )
+        (conf / "modelos.toml").write_text(f"[carriles]\nuno = {json.dumps(modelos)}\n")
+        (conf / "rutas.toml").write_text("\n".join(rutas))
+        (conf / "pstack.toml").write_text('[pstack]\ncommit = "a"\n')
+        (conf / "pstack" / "skills").mkdir(parents=True)
+        (conf / "pstack" / "skills" / "x.md").write_text("x")
+        (self.home / "maquina.toml").write_text(
+            f'nombre = "Mac (prueba)"\nconf = "{conf}"\n'
+        )
+
+    def recibido(self, nombre: str) -> list[str]:
+        return json.loads((self.t / f"{nombre}.recibido").read_text())
+
+    def test_pstack_y_sesion_llegan_a_la_ruta(self):
+        """Antes truenaba con KeyError: 'pstack' en toda ruta que lo usa (sonnet, opus, k3, deepseek)."""
+        self.arma(
+            [self.ruta("nueva", IMPRIME, "--p", "{pstack}", "--s", "{sesion}")],
+            ["nueva"],
+        )
+        r = como_servicio(self.home, espera_s=20)
+        self.assertTrue(r["rutas"]["nueva"]["responde"], r)
+        _, pstack, _, sesion, _ = self.recibido("nueva")
+        copia = Path(pstack)
+        self.assertTrue((copia / "pstack" / "skills" / "x.md").is_file(), copia)
+        self.assertEqual(copia.parent, self.home / "pstack")
+        self.assertEqual(str(uuid.UUID(sesion)), sesion)
+
+    def test_una_ruta_que_truena_no_tumba_a_las_otras(self):
+        self.arma(
+            [self.ruta("buena", IMPRIME), self.ruta("rota", IMPRIME, "{otra}")],
+            ["buena", "rota"],
+        )
+        r = como_servicio(self.home, espera_s=20)
+        self.assertTrue(r["rutas"]["buena"]["responde"], r)
+        self.assertFalse(r["rutas"]["rota"]["responde"], r)
+        self.assertEqual(
+            r["rutas"]["rota"]["motivo"], "no pude armar la llamada: KeyError"
+        )
+        self.assertTrue(r["ok"], "el papel tiene al menos una ruta que responde")
 
 
 class ComoServicioTest(Banco):

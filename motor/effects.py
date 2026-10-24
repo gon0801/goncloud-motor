@@ -26,7 +26,7 @@ from pathlib import Path
 from . import claves, efimeras, entrega, huella, plataforma, relevo, senal
 from . import machine as m
 from . import pstack as ps
-from .conf import Conf, Maquina, RepoConf
+from .conf import Conf, Maquina, RepoConf, argv_de_ruta
 from .fallas import PROVEEDORES
 from .guias import guias
 from .github import (
@@ -618,16 +618,14 @@ class Effects:
             f"Lee el encargo completo en {d / 'brief.md'} ({kb} KB) con tu herramienta "
             "de lectura de archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
         )
-        argv = [
-            x.format(
-                brief=str(d / "brief.md"),
-                prompt=prompt,
-                result=str(result),
-                pstack=info_pstack["raiz"] if info_pstack else "",
-                sesion=sesion,
-            )
-            for x in ruta.argv
-        ]
+        argv = argv_de_ruta(
+            ruta,
+            brief=str(d / "brief.md"),
+            prompt=prompt,
+            result=str(result),
+            pstack=info_pstack["raiz"] if info_pstack else "",
+            sesion=sesion,
+        )
         base = self.env_base()
         de_ruta = {k: string.Template(v).safe_substitute(base) for k, v in ruta.env}
         env = self.env_base(
