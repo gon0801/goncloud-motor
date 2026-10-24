@@ -63,7 +63,6 @@ class Accion:
 
     tipo: str  # subagente | comando | otra
     nombre: str = ""  # tipo de subagente o comando
-    n: int = 0  # 1, 2, 3... entre las acciones del agente principal
 
 
 @dataclass(frozen=True)
@@ -290,17 +289,7 @@ FORMATOS: dict[str, Formato] = {
 }
 
 
-def _subagentes(args: dict) -> int:
-    """Cuántos subagentes lanza esta llamada: en Kimi, `AgentSwarm` vale uno por elemento de `items`."""
-    items = args.get("items")
-    if isinstance(items, list) and items:
-        return len(items)
-    if isinstance(items, int) and not isinstance(items, bool) and items > 0:
-        return items  # recorta_registro guarda solo el conteo
-    return 1
-
-
-def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> list[Accion]:
+def _clasifica(f: Formato, herramienta: str, args: dict) -> list[Accion]:
     h = herramienta.lower().rsplit(".", 1)[-1]
     if h in f.subagente:
         tipo = next(
@@ -311,11 +300,17 @@ def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> list[Accion]
             ),
             "subagente",
         )
-        return [Accion("subagente", tipo, n + i) for i in range(_subagentes(args))]
+        # AgentSwarm: un subagente por elemento de `items`; sin lista no lanza a nadie
+        if h == "agentswarm":
+            items = args.get("items")
+            cuantos = len(items) if isinstance(items, list) else 0
+        else:
+            cuantos = 1
+        return [Accion("subagente", tipo) for _ in range(cuantos)]
     if h in f.comando:
         cmd = next((str(args[k]) for k in ("command", "cmd") if args.get(k)), "")
-        return [Accion("comando", cmd, n)]
-    return [Accion("otra", "", n)]
+        return [Accion("comando", cmd)]
+    return [Accion("otra")]
 
 
 def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
@@ -353,10 +348,14 @@ def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
             yield o
 
 
-def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bool]:
-    """(acciones del agente principal en orden, ¿el registro se pudo leer?). Lo usa `huella`."""
+def _llamadas(
+    fuente: str | Iterable[str], formato: str
+) -> tuple[list[tuple[str, dict]], bool]:
+    """Las (herramienta, args) de cada llamada del agente principal, en orden, y si el registro se
+    pudo leer. Una llamada que el CLI repite con otro estado (mismo id) va una vez. La usan
+    `eventos` y el recorte del registro, para contar igual."""
     f = FORMATOS[formato]
-    acciones: list[Accion] = []
+    pares: list[tuple[str, dict]] = []
     legible = False
     vistos: set[str] = set()
     for o in _objetos(fuente):
@@ -367,8 +366,17 @@ def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bo
             if ident in vistos:
                 continue
             vistos.add(ident)
-        for herramienta, args in llamadas:
-            acciones.extend(_clasifica(f, herramienta, args, len(acciones) + 1))
+        pares += llamadas
+    return pares, legible
+
+
+def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bool]:
+    """(acciones del agente principal en orden, ¿el registro se pudo leer?). Lo usa `huella`."""
+    pares, legible = _llamadas(fuente, formato)
+    f = FORMATOS[formato]
+    acciones: list[Accion] = []
+    for herramienta, args in pares:
+        acciones.extend(_clasifica(f, herramienta, args))
     return acciones, legible
 
 
@@ -409,10 +417,15 @@ def instrucciones(e: Exigencia, cli: str) -> str:
         "encargo. Las rutas que una guía menciona son relativas a la carpeta de esa guía.",
     ]
     if e.min_subagentes:
-        pasos.append(
+        linea = (
             f"Lanza al menos {e.min_subagentes} subagente(s) con la herramienta de subagentes de "
-            "tu CLI. En Kimi, cada elemento de `items` de `AgentSwarm` cuenta como un subagente."
+            "tu CLI."
         )
+        if cli == "kimi":
+            linea += (
+                " Cada elemento de `items` de `AgentSwarm` cuenta como un subagente."
+            )
+        pasos.append(linea)
     pasos.append(
         "El motor juzga lo que haces, no lo que lees: lo que solo digas no cuenta."
     )

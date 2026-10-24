@@ -27,6 +27,11 @@ def main() -> int:
     bloque, sha = m.group(1), m.group(2)
     marca = Path(os.environ["FAKE_STATE"]) / f"rev-{os.environ['MOTOR_MODEL']}"
     marca.parent.mkdir(parents=True, exist_ok=True)
+    # con qué prompt lo lanzó el motor, si la ruta lo pasa (lo comprueba el e2e de pstack)
+    if "--prompt" in sys.argv:
+        (marca.parent / f"prompt-{os.environ['MOTOR_MODEL']}").write_text(
+            sys.argv[sys.argv.index("--prompt") + 1]
+        )
     if modo.startswith(
         "pstack"
     ):  # deja en el registro los subagentes que lanzó (fake_log.py)

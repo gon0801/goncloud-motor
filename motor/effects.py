@@ -239,6 +239,25 @@ def materializa_pstack(conf_dir: Path, raiz: Path) -> tuple[str, Path] | None:
     return id_, destino
 
 
+def _texto_guia(f: Path) -> str:
+    """El texto de una guía tal como el anexo del encargo lo pega."""
+    return f.read_text(encoding="utf-8").strip()
+
+
+PLANTILLA_PROMPT = (
+    "Lee el encargo completo en {ruta} ({kb} KB) con tu herramienta de lectura de archivos, "
+    "no con `cat`, y ejecútalo completo sin preguntar nada."
+)
+
+
+def prompt_de_encargo(ruta: str, brief: str) -> str:
+    """Lo que se le dice al CLI al lanzarlo: lee el encargo de `ruta` (con su tamaño) y ejecútalo.
+    Lo usan `start_attempt` y ops/pstack/mide.sh, para medir con el mismo prompt que el motor.
+    El KB sale de los bytes del brief, no de sus caracteres."""
+    kb = max(1, round(len(brief.encode("utf-8")) / 1024))
+    return PLANTILLA_PROMPT.format(ruta=ruta, kb=kb)
+
+
 def errores_pstack(d: Path, conf) -> list[str]:
     """Para `motor conf valida`: pstack.toml tiene que coincidir con la copia fija que lleva la conf."""
     pc = conf.pstack
@@ -276,19 +295,18 @@ def errores_pstack(d: Path, conf) -> list[str]:
             if (lane, papel) not in pc.exigencias:
                 errores.append(f"pstack.toml: falta la exigencia de {papel} en {lane}")
     clis = dict.fromkeys(r.cli for r in conf.rutas.values())
-    vistas: set[str] = set()
+    piden: dict[str, list[str]] = {}
     for (lane, papel), e in pc.exigencias.items():
         for cli in clis:
             for correccion in (False, True):
                 for g in guias(e, cli, correccion):
-                    if g in vistas:
-                        continue
-                    vistas.add(g)
-                    if not (d / g).is_file():
-                        errores.append(
-                            f"pstack.toml: la exigencia de {papel} en {lane} pide la guía {g}, "
-                            "que no está en la copia"
-                        )
+                    quien = f"{papel} en {lane}"
+                    if not (d / g).is_file() and quien not in piden.setdefault(g, []):
+                        piden[g].append(quien)
+    for g, quienes in piden.items():
+        errores.append(
+            f"pstack.toml: la guía {g} no está en la copia; la piden: {', '.join(quienes)}"
+        )
     for r in conf.rutas.values():
         if r.cli not in ps.FORMATOS:
             errores.append(f"ruta {r.modelo}: no sé leer el registro del CLI {r.cli}")
@@ -391,6 +409,22 @@ class Effects:
         self._pstack = (conf.sha, copia)
         return copia
 
+    def _guias_del_intento(self, lane: str, role: str, cli: str, correccion: bool):
+        """(conf pstack, copia fija, exigencia, guías) de un intento; None si la conf no usa pstack.
+        Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo."""
+        pc, copia = self.cx.conf.pstack, self.asegura_pstack()
+        if pc is None or copia is None:
+            return None
+        e = pc.exigencia(lane, role)
+        lista = guias(e, cli, correccion)
+        raiz = copia[1]
+        for rel in lista:
+            if not (raiz / rel).is_file():
+                raise FileNotFoundError(
+                    f"falta la guía {rel} en la copia fija {raiz}: el intento no se lanza"
+                )
+        return pc, copia, e, lista
+
     def _prepara_pstack(
         self,
         d: Path,
@@ -400,21 +434,17 @@ class Effects:
         cwd: Path,
         sesion: str,
         correccion: bool,
+        guias_del=None,
     ) -> dict | None:
         """Fija lo que este intento exige y dónde se lee su registro; lo guarda en `pstack.json`.
         `collect` juzga contra esto, no contra la conf de entonces: la conf puede cambiar a medias.
-        Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo."""
-        pc, copia = self.cx.conf.pstack, self.asegura_pstack()
-        if pc is None or copia is None:
+        Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo.
+        `guias_del` es el chequeo ya hecho (`_guias_del_intento`), para no repetirlo."""
+        if guias_del is None:
+            guias_del = self._guias_del_intento(lane, role, cli, correccion)
+        if guias_del is None:
             return None
-        arbol, raiz = copia
-        e = pc.exigencia(lane, role)
-        lista = guias(e, cli, correccion)
-        for rel in lista:
-            if not (raiz / rel).is_file():
-                raise FileNotFoundError(
-                    f"falta la guía {rel} en la copia fija {raiz}: el intento no se lanza"
-                )
+        pc, (arbol, raiz), e, lista = guias_del
         registros = []
         if cli == "claude":  # el transcript de la sesión que fijamos con --session-id
             base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
@@ -438,7 +468,8 @@ class Effects:
             "sesion": sesion,
             "registros": [*registros, str(d / "log.txt")],
             "guias": [
-                {"ruta": rel, "bytes": (raiz / rel).stat().st_size} for rel in lista
+                {"ruta": rel, "bytes": len(_texto_guia(raiz / rel).encode("utf-8"))}
+                for rel in lista
             ],
         }
         texto = json.dumps(info, ensure_ascii=False)
@@ -470,9 +501,7 @@ class Effects:
         partes = ["## Anexo: tus guías\n"]
         for g in info["guias"]:
             f = raiz / g["ruta"]
-            partes.append(
-                f"### {g['ruta']}\n`{f}`\n\n{f.read_text(encoding='utf-8').strip()}\n"
-            )
+            partes.append(f"### {g['ruta']}\n`{f}`\n\n{_texto_guia(f)}\n")
         return "\n".join(partes) + "\n"
 
     def _juzga_pstack(self, d: Path) -> dict | None:
@@ -584,10 +613,11 @@ class Effects:
                     ukey=claves.intento_iniciado(plan.id, a.block, a.role, a.n),
                 )
             return
-        d.mkdir(parents=True, exist_ok=True)
         block = plan.block(a.block)
-        rc = self.repo_conf(snap, block.repo)
         ruta = self.cx.conf.rutas[a.modelo]
+        guias_del = self._guias_del_intento(block.lane, a.role, ruta.cli, a.correccion)
+        d.mkdir(parents=True, exist_ok=True)
+        rc = self.repo_conf(snap, block.repo)
         if a.role == "implementar":
             cwd = self.cx.ws.prepara(block.repo, plan.id, block.id, rc.principal)
             wip = [
@@ -609,16 +639,12 @@ class Effects:
             marca_sesion.write_text(str(uuid.uuid4()), encoding="utf-8")
         sesion = marca_sesion.read_text(encoding="utf-8").strip()
         info_pstack = self._prepara_pstack(
-            d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion
+            d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion, guias_del
         )
         brief = self._encargo(plan, block, a, cwd, rc, info_pstack)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
-        kb = max(1, round(len(brief.encode("utf-8")) / 1024))
-        prompt = (
-            f"Lee el encargo completo en {d / 'brief.md'} ({kb} KB) con tu herramienta "
-            "de lectura de archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
-        )
+        prompt = prompt_de_encargo(str(d / "brief.md"), brief)
         argv = argv_de_ruta(
             ruta,
             brief=str(d / "brief.md"),

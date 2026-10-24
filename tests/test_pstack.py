@@ -7,11 +7,18 @@ herramienta de subagentes del CLI vale uno, y en Kimi `AgentSwarm` vale uno por 
 
 from __future__ import annotations
 
+import base64
+import io
+import contextlib
 import json
 import os
 import shutil
+import subprocess
+import sys
+import tarfile
 import tempfile
 import time
+import tomllib
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +32,8 @@ from motor import relevo
 from motor.__main__ import conf_valida
 from motor.conf import load_conf
 from motor.plan import Plan, parse_plan
+
+from .test_guias import _conf_falsa
 
 
 def jl(*objs) -> str:
@@ -141,21 +150,28 @@ class TestFormatos(unittest.TestCase):
                 self.assertEqual(h.acciones, 2)
 
     def test_un_agentswarm_de_kimi_vale_uno_por_elemento_de_items(self):
-        h = ps.huella(
-            kimi(
-                (
-                    "AgentSwarm",
-                    {
-                        "prompt_template": "revisa {{item}}",
-                        "items": ["a.py", "b.py", "c.py"],
-                    },
-                )
-            ),
-            "kimi",
+        def cuenta(args):
+            return len(ps.huella(kimi(("AgentSwarm", args)), "kimi").subagentes)
+
+        self.assertEqual(
+            cuenta({"prompt_template": "revisa {{item}}", "items": ["a", "b", "c"]}), 3
         )
-        self.assertEqual(len(h.subagentes), 3)
-        h = ps.huella(kimi(("AgentSwarm", {"items": 2})), "kimi")
-        self.assertEqual(len(h.subagentes), 2, "recorta_registro guarda solo el conteo")
+        self.assertEqual(cuenta({"items": [{}, {}]}), 2)
+
+    def test_un_agentswarm_sin_items_lanza_a_nadie(self):
+        def cuenta(args):
+            return len(ps.huella(kimi(("AgentSwarm", args)), "kimi").subagentes)
+
+        self.assertEqual(cuenta({"items": []}), 0)
+        self.assertEqual(cuenta({"resume_agent_ids": ["a1"]}), 0)
+        self.assertEqual(cuenta({"items": 2}), 0, "un número no es una lista")
+        self.assertEqual(cuenta({"items": "a,b"}), 0)
+
+    def test_un_agent_de_claude_cuenta_uno_aunque_traiga_items(self):
+        h = ps.huella(
+            claude(("Agent", {"subagent_type": "x", "items": ["a", "b"]})), "claude"
+        )
+        self.assertEqual(len(h.subagentes), 1)
 
     def test_las_llamadas_de_un_subagente_no_son_del_agente(self):
         h = ps.huella(
@@ -266,6 +282,10 @@ class TestInstrucciones(unittest.TestCase):
         t = ps.instrucciones(ps.Exigencia(min_subagentes=2), "kimi")
         self.assertIn("al menos 2 subagente(s)", t)
         self.assertIn("AgentSwarm", t)
+        for cli in ("claude", "opencode", "grok", "muse", "qwen"):
+            c = ps.instrucciones(ps.Exigencia(min_subagentes=2), cli)
+            self.assertIn("al menos 2 subagente(s)", c)
+            self.assertNotIn("AgentSwarm", c, cli)
         self.assertNotIn("subagente", ps.instrucciones(ps.Exigencia(), "kimi"))
 
 
@@ -718,10 +738,6 @@ class TestMide(unittest.TestCase):
         secretos="",
         tope=60,
     ):
-        import base64
-        import subprocess
-        import sys
-
         falsos = falsos or {"claude": "env\npwd"}
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
@@ -743,13 +759,6 @@ class TestMide(unittest.TestCase):
             for cli, cuerpo in falsos.items():
                 (bin_ / cli).write_text(FALSO % cuerpo)
                 (bin_ / cli).chmod(0o755)
-            g = ["git", "-C", str(conf)]
-            subprocess.run(["git", "init", "-q", "-b", "main", str(conf)], check=True)
-            subprocess.run(g + ["add", "."], check=True)
-            subprocess.run(
-                g + ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"],
-                check=True,
-            )
             env = {
                 k: v
                 for k, v in os.environ.items()
@@ -757,26 +766,36 @@ class TestMide(unittest.TestCase):
                 and not k.startswith("MOTOR_")
             }
             env.update(HOME=str(home), TMPDIR=str(tmpdir), **(extra_env or {}))
-            instr = base64.b64encode(
-                json.dumps(
-                    {
-                        cli: ps.instrucciones(ps.Exigencia(min_subagentes=2), cli)
-                        for cli in ps.FORMATOS
-                    }
-                ).encode()
-            ).decode()
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+                for n in ("pstack", "pstack-motor"):
+                    tf.add(conf / n, arcname=n)
+            prompt = ef.PLANTILLA_PROMPT.format(ruta="@@BRIEF@@", kb="@@KB@@")
+            datos = {
+                "conf_sha": "abc1234",
+                "carriles": {
+                    k: list(v) for k, v in tomllib.loads(modelos)["carriles"].items()
+                },
+                "raiz": "/RAIZ-LOCAL",
+                "marca_brief": "@@BRIEF@@",
+                "marca_kb": "@@KB@@",
+                "tar": base64.b64encode(buf.getvalue()).decode(),
+                "clis": {
+                    cli: {"encargo": f"# encargo {cli}\n", "prompt": prompt}
+                    for cli in ps.FORMATOS
+                },
+            }
+            cabeza = base64.b64encode(json.dumps(datos).encode()).decode()
             p = subprocess.run(
                 [
                     sys.executable,
                     "-I",
                     "-",
-                    str(conf),
                     "mac",
                     str(tope),
                     base64.b64encode(rutas.encode()).decode(),
-                    instr,
                 ],
-                input=_heredoc(1),
+                input=f'DATOS_B64 = "{cabeza}"\n' + _heredoc(1),
                 capture_output=True,
                 text=True,
                 env=env,
@@ -816,6 +835,8 @@ class TestMide(unittest.TestCase):
         self.assertEqual(len(args), 2)
         self.assertEqual(args[0], "-p")
         self.assertIn("ejecútalo completo sin preguntar nada", args[1])
+        self.assertIn("(1 KB)", args[1], "el KB es el del encargo que se escribió aquí")
+        self.assertNotIn("@@", args[1], "las marcas se sustituyen antes de lanzar")
 
     def test_los_marcadores_pstack_y_sesion_se_sustituyen_y_el_transcript_se_lee(self):
         rutas = (
@@ -952,7 +973,6 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
 
     def test_una_conf_que_no_se_puede_leer_es_un_error_no_una_medicion_vacia(self):
         casos = {
-            "modelos ilegible": dict(modelos="[carriles\n"),
             "carriles vacíos": dict(modelos="[carriles]\n"),
             "modelo sin ruta": dict(modelos='[carriles]\ncodigo = ["otro"]\n'),
             "rutas vacías": dict(rutas=""),
@@ -966,25 +986,14 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
     def test_sin_las_rutas_en_el_argv_no_mide_con_las_de_la_conf(self):
         # Sin las rutas en el argv no hay medición: caer al rutas.toml de la conf fue la causa
         # raíz del --rutas ilegible que medía en silencio con las rutas de producción.
-        import subprocess
-        import sys
-
-        with tempfile.TemporaryDirectory() as t:
-            conf = Path(t) / "conf"
-            (conf / "pstack").mkdir(parents=True)
-            (conf / "pstack-motor").mkdir()
-            (conf / "rutas.toml").write_text(
-                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "-p", "{prompt}"]\n'
-            )
-            (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
-            p = subprocess.run(
-                [sys.executable, "-I", "-", str(conf), "mac", "60"],
-                input=_heredoc(1),
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
+        p = subprocess.run(
+            [sys.executable, "-I", "-", "mac", "60"],
+            input=_heredoc(1),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
         self.assertNotEqual(p.returncode, 0)
         self.assertNotIn("MIDE-JSON:", p.stdout)
 
@@ -1028,6 +1037,11 @@ class TestLogMezclado(unittest.TestCase):
 FALSO_CLAUDE = r"""#!/bin/sh
 [ "$1" = --version ] && { echo 0; exit 0; }
 [ -n "$FALSO_ARGV" ] && echo "$*" >>"$FALSO_ARGV"
+if [ -n "$FALSO_BRIEFS" ]; then
+  for ultimo; do :; done
+  ruta=$(printf '%s' "$ultimo" | sed -n 's/^Lee el encargo completo en \(.*\) ([0-9]* KB) con .*/\1/p')
+  [ -f "$ruta" ] && cp "$ruta" "$FALSO_BRIEFS/$$.md"
+fi
 [ "$FALSO_MODO" = nada ] && { echo '{"type":"result","result":"listo"}'; exit 0; }
 tool() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"%s","input":%s}]}}\n' "$1" "$2"; }
 tool Agent '{"subagent_type":"general-purpose","description":"uno"}'
@@ -1049,20 +1063,29 @@ def _clis():
 class TestMideDePuntaAPunta(unittest.TestCase):
     """C.3: `mide.sh --juzga` entero, con ssh y uv falsos que corren todo en esta máquina."""
 
-    def _corre(self, modo, args=(), argv_log=None, lanzados=None):
+    def _corre(
+        self,
+        modo,
+        args=(),
+        argv_log=None,
+        lanzados=None,
+        briefs=None,
+        base=None,
+        mide_home=None,
+    ):
         import subprocess
 
-        with tempfile.TemporaryDirectory() as t:
+        with (
+            contextlib.nullcontext(base) if base else tempfile.TemporaryDirectory() as t
+        ):
             t = Path(t)
-            conf, home, bin_ = t / "conf", t / "home", t / "bin"
-            for d in (conf / "pstack", conf / "pstack-motor", home / ".motor", bin_):
-                d.mkdir(parents=True)
-            (conf / "pstack" / "x").write_text("x")
-            (conf / "pstack-motor" / "x").write_text("x")
-            (conf / "rutas.toml").write_text(
-                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "-p", "{prompt}"]\n'
+            home, bin_ = t / "home", t / "bin"
+            conf = _conf_falsa(t)
+            (conf / "modelos.toml").write_text(
+                '[carriles]\ncodigo = ["sonnet"]\nrevisar = ["sonnet"]\n'
             )
-            (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
+            for d in (home / ".motor", bin_):
+                d.mkdir(parents=True)
             (home / ".motor" / "maquina.toml").write_text(f'path_extra = ["{bin_}"]\n')
             (bin_ / "claude").write_text(FALSO_CLAUDE)
             for cli in _clis():
@@ -1072,13 +1095,6 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             (bin_ / "uv").write_text('#!/bin/sh\nshift 4\nexec python3 "$@"\n')
             for f in bin_.iterdir():
                 f.chmod(0o755)
-            g = ["git", "-C", str(conf)]
-            subprocess.run(["git", "init", "-q", "-b", "main", str(conf)], check=True)
-            subprocess.run(g + ["add", "."], check=True)
-            subprocess.run(
-                g + ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"],
-                check=True,
-            )
             env = {
                 k: v
                 for k, v in os.environ.items()
@@ -1087,14 +1103,16 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             env.update(
                 HOME=str(home),
                 PATH=f"{bin_}:{env['PATH']}",
-                MOTOR_CONF_URL=str(conf),
-                MOTOR_CONF_URL_MINI=str(conf),
+                MOTOR_CONF_REAL=str(conf),
                 MOTOR_PC_UV=str(bin_ / "uv"),
                 MIDE_TOPE_S="60",
                 FALSO_MODO=modo,
                 FALSO_ARGV=str(t / "argv.log"),
                 FALSO_LANZADOS=str(t / "lanzados.log"),
+                FALSO_BRIEFS=str(t / "briefs"),
+                MIDE_HOME=str(mide_home or t / "casa"),
             )
+            (t / "briefs").mkdir()
             antes = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
             r = subprocess.run(
                 [
@@ -1115,6 +1133,11 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 argv_log.extend(
                     registro.read_text().splitlines() if registro.exists() else []
                 )
+            if briefs is not None:
+                briefs.extend(
+                    p.read_text(encoding="utf-8")
+                    for p in sorted((t / "briefs").glob("*.md"))
+                )
             if lanzados is not None:
                 registro = t / "lanzados.log"
                 lanzados.extend(
@@ -1129,6 +1152,44 @@ class TestMideDePuntaAPunta(unittest.TestCase):
         self.assertEqual(r.stdout.count("Cumple"), 3 + 1)
         for mq in MAQUINAS:
             self.assertRegex(r.stdout, rf"(?m)^{mq}\s+claude\s+Cumple$")
+
+    def test_el_remoto_escribe_el_encargo_del_motor_con_la_raiz_cambiada_y_el_prompt_sin_marca(
+        self,
+    ):
+        import re
+
+        from .test_mide import encargo_del_motor
+
+        with tempfile.TemporaryDirectory() as base:
+            base = Path(base)
+            # Una casa de ruta larga: el encargo que viaja (con esta raíz) y el brief que escribe
+            # el remoto (con la copia corta) caen en KB distintos, así que el KB del prompt tiene
+            # que salir del brief remoto, no del encargo local.
+            casa = base / "casa" / ("ruta-larga-" + "x" * 188)
+            casa.mkdir(parents=True)
+            briefs, lanzadas = [], []
+            r = self._corre(
+                "cumple", argv_log=lanzadas, briefs=briefs, base=base, mide_home=casa
+            )
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            esperado, raiz = encargo_del_motor(base / "conf", casa, "claude")
+        self.assertEqual(len(briefs), 3)
+        for brief in briefs:
+            copia = re.search(
+                r"`([^`\n]+)/pstack/skills/poteto-mode/SKILL\.md`", brief
+            ).group(1)
+            self.assertIn("mide-pstack-copia-", copia)
+            self.assertNotIn(raiz, brief)
+            self.assertEqual(brief, esperado.replace(raiz, copia))
+        self.assertEqual(len(lanzadas), 3)
+        for linea in lanzadas:
+            self.assertNotIn("@@BRIEF@@", linea)
+            ruta = re.search(r"Lee el encargo completo en (\S+) \(", linea).group(1)
+            # el KB sale del brief que el remoto escribió, no del encargo con la raíz local
+            self.assertTrue(
+                any(ef.prompt_de_encargo(ruta, brief) in linea for brief in briefs),
+                linea,
+            )
 
     def test_mide_toma_por_omision_las_rutas_de_conf_ejemplo_y_no_las_de_la_conf(self):
         lanzadas = []
