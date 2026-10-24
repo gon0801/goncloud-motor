@@ -17,6 +17,14 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 SKILL_BASE = "poteto-mode"
+CLAVES_CELDA = ("skills", "skill", "playbook", "todos", "min_subagentes", "puerta")
+CLAVES_PSTACK = ("commit", "exigir")
+
+
+class ConfError(ValueError):
+    """Una conf que no se puede usar. Vive aquí para que `pstack` y `conf` lo compartan sin ciclo."""
+
+
 LANES = ("fast", "gate", "release")
 PAPELES = ("implementar", "revisar")
 
@@ -427,7 +435,13 @@ class PstackConf:
         return self.exigencias.get((lane, papel), Exigencia())
 
 
-def _celda(raw: dict) -> Exigencia:
+def _celda(raw: dict, nombre: str = "") -> Exigencia:
+    for k in raw:
+        if k not in CLAVES_CELDA:
+            raise ConfError(
+                f"pstack.toml {nombre or 'celda'}: clave desconocida {k!r}; "
+                f"las válidas son {', '.join(CLAVES_CELDA)}"
+            )
     skills = raw.get("skills", raw.get("skill", [SKILL_BASE]))
     if isinstance(skills, str):
         skills = [skills]
@@ -443,19 +457,25 @@ def _celda(raw: dict) -> Exigencia:
 def parse_conf(raw: dict) -> PstackConf:
     """`pstack.toml` ya leído -> PstackConf. [exigencia.<carril>.<papel>] (o <papel>.<carril>)."""
     p = raw.get("pstack", {})
+    for k in p:
+        if k not in CLAVES_PSTACK:
+            raise ConfError(
+                f"pstack.toml [pstack]: clave desconocida {k!r}; "
+                f"las válidas son {', '.join(CLAVES_PSTACK)}"
+            )
     if not isinstance(p.get("exigir", False), bool):
-        raise ValueError("pstack.toml [pstack] exigir debe ser true o false")
+        raise ConfError("pstack.toml [pstack] exigir debe ser true o false")
     celdas: dict[tuple[str, str], Exigencia] = {}
     for k1, sub in (raw.get("exigencia") or {}).items():
         if not isinstance(sub, dict):
-            raise ValueError(f"pstack.toml [exigencia.{k1}] debe ser una tabla")
+            raise ConfError(f"pstack.toml [exigencia.{k1}] debe ser una tabla")
         for k2, celda in sub.items():
             lane, papel = (k1, k2) if k1 in LANES else (k2, k1)
             if lane not in LANES or papel not in PAPELES or not isinstance(celda, dict):
-                raise ValueError(
+                raise ConfError(
                     f"pstack.toml [exigencia.{k1}.{k2}]: carril {LANES} y papel {PAPELES}"
                 )
-            celdas[(lane, papel)] = _celda(celda)
+            celdas[(lane, papel)] = _celda(celda, f"[exigencia.{k1}.{k2}]")
     return PstackConf(
         commit=str(p.get("commit", "")),
         exigir=bool(p.get("exigir", False)),

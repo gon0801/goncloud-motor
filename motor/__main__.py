@@ -33,7 +33,14 @@ from pathlib import Path
 
 from . import efimeras, huella, senal
 from . import machine as m
-from .conf import ConfError, load_conf, load_maquina, valida_maquina
+from .conf import (
+    DATOS_DE_RUTA,
+    ConfError,
+    datos_desconocidos,
+    load_conf,
+    load_maquina,
+    valida_maquina,
+)
 from .plan import PlanError, parse_plan, revisa_sin_quien
 from .workspace import SECRETO as SECRETO_CONF
 
@@ -245,8 +252,6 @@ def doctor(home: Path, programadas_sistema: bool = True) -> dict:
 
 
 def _errores_programadas(d: Path) -> list[str]:
-    import tomllib
-
     f = d / efimeras.ARCHIVO_EXTRAS
     if not f.exists():
         return []
@@ -266,42 +271,75 @@ def _errores_programadas(d: Path) -> list[str]:
     return efimeras.valida_programadas(raw, maquinas - {""})
 
 
-def conf_valida(d: Path) -> list[str]:
-    """Lo que tiene que cumplir la conf compartida antes de llegar a las tres máquinas."""
-    import tomllib
+def _falla(paso: str, e: Exception) -> str:
+    """Una frase con el motivo; sin el tipo si ya es un error de conf con mensaje."""
+    if isinstance(e, ConfError):
+        return f"{paso}: {e}"
+    return f"{paso}: {type(e).__name__}: {e}"
 
+
+def _construye(d: Path) -> list[str]:
+    """Lo mismo que construye el daemon al cargar la conf: si algo truena, es un error con mensaje."""
     try:
         conf = load_conf(d)
-    except (ConfError, OSError, KeyError, tomllib.TOMLDecodeError) as e:
-        return [f"conf: {e}"]
+    except Exception as e:  # noqa: BLE001  cualquier excepción de una conf mala es un mensaje, no un traceback
+        return [_falla("conf", e)]
     errores = []
+    try:
+        m.Policy.from_conf(conf)
+    except Exception as e:  # noqa: BLE001
+        errores.append(_falla("conf (políticas)", e))
     for mo, r in conf.rutas.items():
+        if malos := datos_desconocidos(r.argv):
+            errores.append(
+                f"ruta {mo}: la línea usa {', '.join('{' + x + '}' for x in malos)}, que no es un dato del motor "
+                f"({', '.join(DATOS_DE_RUTA)})"
+            )
         if not any("{prompt}" in x or "{brief}" in x for x in r.argv):
             errores.append(
                 f"ruta {mo}: el comando no recibe el encargo ({{prompt}} o {{brief}})"
             )
     for papel in conf.papeles:
-        if not conf.escalera(papel):
-            errores.append(f"papel {papel}: sin modelos")
+        try:
+            if not conf.escalera(papel):
+                errores.append(f"papel {papel}: sin modelos")
+        except Exception as e:  # noqa: BLE001
+            errores.append(_falla(f"papel {papel}", e))
     from .effects import errores_pstack
 
-    errores += errores_pstack(d, conf)
-    errores += _errores_programadas(d)
-    for f in (
-        sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []
+    for paso, fn in (
+        ("pstack", lambda: errores_pstack(d, conf)),
+        (efimeras.ARCHIVO_EXTRAS, lambda: _errores_programadas(d)),
     ):
         try:
-            valida_maquina(tomllib.loads(f.read_text(encoding="utf-8")))
-        except (ConfError, tomllib.TOMLDecodeError) as e:
-            errores.append(f"maquinas/{f.name}: {e}")
-    if SECRETO_CONF.search(
-        "\n".join(
-            p.read_text(errors="replace", encoding="utf-8") for p in d.rglob("*.toml")
-        )
-    ):
-        errores.append(
-            "hay algo con forma de llave en la conf; las llaves van en secretos.env de cada máquina"
-        )
+            errores += fn()
+        except Exception as e:  # noqa: BLE001
+            errores.append(_falla(paso, e))
+    return errores
+
+
+def conf_valida(d: Path) -> list[str]:
+    """Lo que tiene que cumplir la conf compartida antes de llegar a las tres máquinas."""
+    errores = _construye(d)
+    try:
+        for f in (
+            sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []
+        ):
+            try:
+                valida_maquina(tomllib.loads(f.read_text(encoding="utf-8")))
+            except (ConfError, OSError, tomllib.TOMLDecodeError) as e:
+                errores.append(f"maquinas/{f.name}: {e}")
+        if SECRETO_CONF.search(
+            "\n".join(
+                p.read_text(errors="replace", encoding="utf-8")
+                for p in d.rglob("*.toml")
+            )
+        ):
+            errores.append(
+                "hay algo con forma de llave en la conf; las llaves van en secretos.env de cada máquina"
+            )
+    except Exception as e:  # noqa: BLE001
+        errores.append(_falla("conf", e))
     return errores
 
 
