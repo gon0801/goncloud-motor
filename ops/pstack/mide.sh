@@ -43,87 +43,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+[ "$encargo" = 1 ] || [ "$cli_encargo" = claude ] || { echo "--cli solo va con --encargo" >&2; exit 2; }
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
 
-# El encargo de cada CLI sale de `Effects._encargo` y su prompt de `prompt_de_encargo`: aquí no se
-# escribe a mano ningún título del encargo. Con `datos` deja en stdout lo que viaja a las máquinas;
-# con `imprime`, el encargo y el prompt de un CLI.
-arma_py() { cat <<'PYENC'
-import base64, io, json, sys, tarfile
-from dataclasses import replace
-from pathlib import Path
-from types import SimpleNamespace
-import subprocess
-
-repo, conf_dir, home, modo = sys.argv[1:5]
-sys.path.insert(0, repo)
-from motor import effects as ef, machine as m, pstack as ps
-from motor.conf import RepoConf, load_conf
-from motor.plan import parse_plan
-
-TAREA = "Lanza dos subagentes y pídeles que lean README.md. No cambies nada."
-PLAN = (
-    "# Medición\nautopiloto: motor\nplan: mide\nrepo: git@github.com:x/mide.git\n\n"
-    "## Bloque A — medir\nlane: gate\nprueba-real: true\n"
-    f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| A.1 | {TAREA} | true |\n"
-)
-MARCA_BRIEF = "@@BRIEF@@"
-
-conf = load_conf(Path(conf_dir))
-if conf.pstack is None:
-    raise SystemExit("la conf no trae pstack.toml: no hay nada que medir")
-celda = conf.pstack.exigencia("gate", "implementar")
-exigencias = {**conf.pstack.exigencias, ("gate", "implementar"): replace(celda, min_subagentes=2)}
-conf = replace(conf, pstack=replace(conf.pstack, exigencias=exigencias))
-home = Path(home)
-fx = ef.Effects(SimpleNamespace(home=home, conf=conf, ws=SimpleNamespace(rama=lambda p, b: f"motor/{p}/{b}")))
-plan = parse_plan(PLAN)
-block = plan.block("A")
-rc = RepoConf.parse('[repo]\nprincipal = "main"\n')
-trabajo = home / "trabajo"
-trabajo.mkdir(parents=True, exist_ok=True)
-subprocess.run(["git", "init", "-q"], cwd=trabajo, check=True)
-a = m.StartAttempt("A", "implementar", "sonnet", 1, "a" * 40, (), False)
-
-
-def arma(cli):
-    d = home / f"intento-{cli}"
-    d.mkdir(parents=True, exist_ok=True)
-    info = fx._prepara_pstack(d, "gate", "implementar", cli, trabajo, "mide", a.correccion)
-    return d, info, fx._encargo(plan, block, a, trabajo, rc, info)
-
-
-if modo == "imprime":
-    cli = sys.argv[5]
-    if cli not in ps.FORMATOS:
-        raise SystemExit(f"cli desconocido: {cli} (hay {', '.join(ps.FORMATOS)})")
-    d, info, brief = arma(cli)
-    (d / "brief.md").write_text(brief, encoding="utf-8")
-    sys.stdout.write("=== encargo ===\n" + brief + "=== prompt ===\n" + ef.prompt_de_encargo(str(d / "brief.md"), brief) + "\n")
-    raise SystemExit(0)
-
-clis, raiz = {}, ""
-for cli in ps.FORMATOS:
-    _, info, brief = arma(cli)
-    raiz = info["raiz"]
-    clis[cli] = {"encargo": brief, "prompt": ef.prompt_de_encargo(MARCA_BRIEF, brief)}
-buf = io.BytesIO()
-with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-    for n in ("pstack", "pstack-motor"):
-        if (Path(raiz) / n).is_dir():
-            tf.add(Path(raiz) / n, arcname=n)
-datos = {
-    "conf_sha": conf.sha,
-    "carriles": {k: list(v) for k, v in conf.carriles.items()},
-    "raiz": raiz,
-    "marca_brief": MARCA_BRIEF,
-    "tar": base64.b64encode(buf.getvalue()).decode("ascii"),
-    "clis": clis,
-}
-sys.stdout.write(base64.b64encode(json.dumps(datos, ensure_ascii=False).encode("utf-8")).decode("ascii"))
-PYENC
-}
+arma_py="$aqui/arma_encargo.py"
 
 if [ -n "${MOTOR_CONF_REAL:-}" ]; then
   conf="$MOTOR_CONF_REAL"
@@ -134,16 +58,15 @@ else
 fi
 casa="${MIDE_HOME:-$d/casa}"
 mkdir -p "$casa"
-arma_py >"$d/arma.py"
 
 if [ "$encargo" = 1 ]; then
-  python3 -I "$d/arma.py" "$repo" "$conf" "$casa" imprime "$cli_encargo"
+  python3 -I "$arma_py" "$repo" "$conf" "$casa" imprime "$cli_encargo"
   exit $?
 fi
 
 [ -f "$rutas" ] && [ -r "$rutas" ] && [ -s "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
 RUTAS_B64="$(base64 <"$rutas" | tr -d '\n')" && [ -n "$RUTAS_B64" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
-python3 -I "$d/arma.py" "$repo" "$conf" "$casa" datos >"$d/datos.b64" && [ -s "$d/datos.b64" ] || { echo "no pude armar el encargo" >&2; exit 2; }
+python3 -I "$arma_py" "$repo" "$conf" "$casa" datos >"$d/datos.b64" && [ -s "$d/datos.b64" ] || { echo "no pude armar el encargo" >&2; exit 2; }
 
 mide_py() { cat <<'PY'
 import base64, io, json, os, re, shutil, signal, string, subprocess, sys, tarfile, tempfile, threading, time, tomllib, uuid
@@ -158,7 +81,6 @@ WIN = os.name == "nt"
 HOME = Path.home()
 CLIS = ["claude", "kimi", "opencode", "grok", "muse", "qwen"]
 PREFERIDA = {"claude": "sonnet", "kimi": "k3", "opencode": "glm", "grok": "grok", "muse": "muse", "qwen": "qwen"}
-TAREA = "Lanza dos subagentes y pídeles que lean README.md. No cambies nada."
 
 
 def corre(argv, **kw):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+import contextlib
 import json
 import os
 import shutil
@@ -1036,6 +1037,11 @@ class TestLogMezclado(unittest.TestCase):
 FALSO_CLAUDE = r"""#!/bin/sh
 [ "$1" = --version ] && { echo 0; exit 0; }
 [ -n "$FALSO_ARGV" ] && echo "$*" >>"$FALSO_ARGV"
+if [ -n "$FALSO_BRIEFS" ]; then
+  for ultimo; do :; done
+  ruta=$(printf '%s' "$ultimo" | sed -n 's/^Lee el encargo completo en \(.*\) ([0-9]* KB) con .*/\1/p')
+  [ -f "$ruta" ] && cp "$ruta" "$FALSO_BRIEFS/$$.md"
+fi
 [ "$FALSO_MODO" = nada ] && { echo '{"type":"result","result":"listo"}'; exit 0; }
 tool() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"%s","input":%s}]}}\n' "$1" "$2"; }
 tool Agent '{"subagent_type":"general-purpose","description":"uno"}'
@@ -1057,10 +1063,20 @@ def _clis():
 class TestMideDePuntaAPunta(unittest.TestCase):
     """C.3: `mide.sh --juzga` entero, con ssh y uv falsos que corren todo en esta máquina."""
 
-    def _corre(self, modo, args=(), argv_log=None, lanzados=None):
+    def _corre(
+        self,
+        modo,
+        args=(),
+        argv_log=None,
+        lanzados=None,
+        briefs=None,
+        base=None,
+    ):
         import subprocess
 
-        with tempfile.TemporaryDirectory() as t:
+        with (
+            contextlib.nullcontext(base) if base else tempfile.TemporaryDirectory() as t
+        ):
             t = Path(t)
             home, bin_ = t / "home", t / "bin"
             conf = _conf_falsa(t)
@@ -1092,7 +1108,10 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 FALSO_MODO=modo,
                 FALSO_ARGV=str(t / "argv.log"),
                 FALSO_LANZADOS=str(t / "lanzados.log"),
+                FALSO_BRIEFS=str(t / "briefs"),
+                MIDE_HOME=str(t / "casa"),
             )
+            (t / "briefs").mkdir()
             antes = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
             r = subprocess.run(
                 [
@@ -1113,6 +1132,11 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 argv_log.extend(
                     registro.read_text().splitlines() if registro.exists() else []
                 )
+            if briefs is not None:
+                briefs.extend(
+                    p.read_text(encoding="utf-8")
+                    for p in sorted((t / "briefs").glob("*.md"))
+                )
             if lanzados is not None:
                 registro = t / "lanzados.log"
                 lanzados.extend(
@@ -1127,6 +1151,33 @@ class TestMideDePuntaAPunta(unittest.TestCase):
         self.assertEqual(r.stdout.count("Cumple"), 3 + 1)
         for mq in MAQUINAS:
             self.assertRegex(r.stdout, rf"(?m)^{mq}\s+claude\s+Cumple$")
+
+    def test_el_remoto_escribe_el_encargo_del_motor_con_la_raiz_cambiada_y_el_prompt_sin_marca(
+        self,
+    ):
+        import re
+
+        from .test_mide import encargo_del_motor
+
+        with tempfile.TemporaryDirectory() as base:
+            base = Path(base)
+            briefs, lanzadas = [], []
+            r = self._corre("cumple", argv_log=lanzadas, briefs=briefs, base=base)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            esperado, raiz = encargo_del_motor(base / "conf", base / "casa", "claude")
+        self.assertEqual(len(briefs), 3)
+        for brief in briefs:
+            copia = re.search(
+                r"`([^`\n]+)/pstack/skills/poteto-mode/SKILL\.md`", brief
+            ).group(1)
+            self.assertIn("mide-pstack-copia-", copia)
+            self.assertNotIn(raiz, brief)
+            self.assertEqual(brief, esperado.replace(raiz, copia))
+        self.assertEqual(len(lanzadas), 3)
+        for linea in lanzadas:
+            self.assertNotIn("@@BRIEF@@", linea)
+            ruta = re.search(r"Lee el encargo completo en (\S+) \(", linea).group(1)
+            self.assertIn(ef.prompt_de_encargo(ruta, esperado), linea)
 
     def test_mide_toma_por_omision_las_rutas_de_conf_ejemplo_y_no_las_de_la_conf(self):
         lanzadas = []
