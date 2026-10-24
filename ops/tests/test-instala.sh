@@ -378,12 +378,12 @@ unset MOTOR_ETIQUETA
 # La entrega falla en una máquina sin tocarla (ssh caído) y la máquina ya responde en la
 # marcha atrás: se queda en su etiqueta, no baja a la marca vieja.
 reset
-dos_entregas v1.0.31 v1.0.32
-export MOTOR_ETIQUETA=v1.0.33
-FAKE_CAE="gon@mini-fake" en_mac espera "entrega v1.0.33 falla en la Mini" '!0' bash "$I"; unset FAKE_CAE
-[ "$(tag_en mini)" = v1.0.32 ] || fallo "precondición: la Mini debía seguir en v1.0.32"
+dos_entregas v1.0.32 v1.0.33
+export MOTOR_ETIQUETA=v1.0.34
+FAKE_CAE="gon@mini-fake" en_mac espera "entrega v1.0.34 falla en la Mini" '!0' bash "$I"; unset FAKE_CAE
+[ "$(tag_en mini)" = v1.0.33 ] || fallo "precondición: la Mini debía seguir en v1.0.33"
 en_mac espera "marcha atrás con la Mini de vuelta" 0 bash "$V"
-en_su_etiqueta "entrega que no tocó la Mini" v1.0.32
+en_su_etiqueta "entrega que no tocó la Mini" v1.0.33
 unset MOTOR_ETIQUETA
 
 # La instalación se niega porque $TAG ya está publicada en otro commit (una entrega buena la
