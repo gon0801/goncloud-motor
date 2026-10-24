@@ -41,17 +41,47 @@ def _comprueba(d: Path) -> tuple[int, str]:
     return rc, salida.getvalue()
 
 
+# Ejemplos escritos aquí, armados por partes e independientes de `rr.SECRETOS`: si alguien
+# quita una forma o la cambia de largo, esta prueba lo ve. (ejemplo, es_secreto)
+EJEMPLOS = (
+    ("ghp" + "_" + "a1B2" * 9, True),
+    ("github" + "_pat_" + "a1B2" * 9, True),
+    ("123456789" + ":" + "aB3_-" * 7, True),
+    ("1234567890" + ":" + "aB3_-" * 7, True),
+    ("12345678" + ":" + "aB3_-" * 7, True),
+    ("sk" + "-" + "a" * 16, True),
+    ("sk" + "-" + "a" * 15, False),
+    ("task" + "-" + "a" * 16, False),
+    ("AKIA" + "ABCD1234" * 2, True),
+    ("-----" + "BEGIN PRIVATE KEY", True),
+)
+
+
 class TestSecretos(unittest.TestCase):
     def test_cada_forma_de_secreto_sale_de_cada_campo_que_se_guarda(self):
-        for patron, ejemplo in rr.SECRETOS:
-            self.assertRegex(ejemplo, patron, "el ejemplo cumple su propia forma")
+        for ejemplo, es_secreto in EJEMPLOS:
             for campo in CAMPOS:
-                with self.subTest(forma=patron.pattern, campo=campo):
+                with self.subTest(ejemplo=ejemplo, campo=campo):
                     registro = _claude(("Agent", {campo: f"antes {ejemplo} después"}))
                     salida = rr.recorta(registro, "claude")
-                    self.assertIsNone(patron.search(salida))
-                    self.assertIn("<secreto>", salida)
+                    self.assertEqual(ejemplo not in salida, es_secreto)
+                    self.assertEqual("<secreto>" in salida, es_secreto)
                     self.assertIn("Agent", salida, "la llamada se conserva")
+
+    def test_los_ejemplos_de_la_lista_cumplen_su_forma(self):
+        for patron, ejemplo in rr.SECRETOS:
+            self.assertRegex(ejemplo, patron)
+
+    def test_una_clave_pegada_a_otra_sale_entera(self):
+        pegadas = "AKIA" + "ABCD1234" * 2 + "sk" + "-" + "a" * 16
+        salida = rr.recorta(_claude(("Bash", {"command": pegadas})), "claude")
+        self.assertNotIn("sk" + "-", salida)
+        self.assertNotIn("AKIA", salida)
+
+    def test_la_limpieza_entra_en_listas_y_dicts(self):
+        ejemplo = "ghp" + "_" + "a1B2" * 9
+        limpio = rr.limpia({"a": [ejemplo, {"b": ejemplo}]})
+        self.assertEqual(limpio, {"a": ["<secreto>", {"b": "<secreto>"}]})
 
     def test_task_notification_no_es_un_secreto(self):
         salida = rr.recorta(
@@ -61,10 +91,10 @@ class TestSecretos(unittest.TestCase):
         self.assertIn("task-notification-abcdefghijklmnop", salida)
 
     def test_el_comando_se_limpia_antes_de_cortarlo(self):
-        ejemplo = rr.SECRETOS[0][1]
-        comando = "x" * (rr.TOPE_COMANDO - 3) + ejemplo
+        telegram = "123456789" + ":" + "aB3_-" * 7
+        comando = "x" * (rr.TOPE_COMANDO - 6) + telegram
         salida = rr.recorta(_claude(("Bash", {"command": comando})), "claude")
-        self.assertNotIn("ghp_", salida)
+        self.assertNotIn("123456", salida)
 
     def test_items_queda_como_una_lista_de_vacios(self):
         salida = rr.recorta(_claude(("Agent", {"items": ["a", "b", "c"]})), "claude")
@@ -122,6 +152,14 @@ class TestComprueba(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("/no/existe.jsonl", texto)
 
+    def test_un_recorte_que_falta_se_nombra_y_sigue_con_los_demas(self):
+        original = self._dos_agentes("uno", "dos")
+        d = self._dir(original, rr.recorta(original, "claude"))
+        (d / "r.jsonl").unlink()
+        rc, texto = _comprueba(d)
+        self.assertEqual(rc, 1)
+        self.assertIn("r.jsonl", texto)
+
     def test_una_ruta_con_tilde_se_lee(self):
         original = self._dos_agentes("uno", "dos")
         with tempfile.TemporaryDirectory() as home:
@@ -132,7 +170,7 @@ class TestComprueba(unittest.TestCase):
         self.assertEqual(rc, 0, texto)
 
     def test_el_original_con_secreto_cuadra_con_su_recorte_limpio(self):
-        ejemplo = rr.SECRETOS[0][1]
+        ejemplo = "ghp" + "_" + "a1B2" * 9
         original = _claude(("Agent", {"description": f"usa {ejemplo}"}))
         d = self._dir(original, rr.recorta(original, "claude"))
         self.assertEqual(_comprueba(d)[0], 0)

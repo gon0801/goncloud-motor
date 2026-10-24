@@ -47,8 +47,13 @@ def limpia(v):
     """Cambia por `<secreto>` toda forma de `SECRETOS` en un valor que se guarda (str, lista o dict).
     Los agentes pegan regexes de detección y credenciales en sus comandos."""
     if isinstance(v, str):
-        for patron, _ in SECRETOS:
-            v = patron.sub(SECRETO, v)
+        previo = None
+        while (
+            previo != v
+        ):  # una clave pegada a otra: la segunda pasada limpia lo que la primera destapó
+            previo = v
+            for patron, _ in SECRETOS:
+                v = patron.sub(SECRETO, v)
         return v
     if isinstance(v, list):
         return [limpia(x) for x in v]
@@ -163,7 +168,12 @@ def comprueba(d: Path) -> int:
             mal += 1
             continue
         esperado = subagentes(texto, cli, limpiar=True)
-        guardado = subagentes(salida.read_text(encoding="utf-8"), cli)
+        try:
+            guardado = subagentes(salida.read_text(encoding="utf-8"), cli)
+        except OSError as e:
+            print(f"{f['salida']}: falta el recorte {salida}: {e}")
+            mal += 1
+            continue
         de_nuevo = subagentes(recorta(texto, cli), cli)
         if not (esperado == guardado == de_nuevo):
             print(
