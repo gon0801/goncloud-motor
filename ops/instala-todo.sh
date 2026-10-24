@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instala el motor en la Mac, la Mini y la PC: etiqueta (v1.0.27 por omisión) sobre el SHA mergeado, y en cada máquina
+# Instala el motor en la Mac, la Mini y la PC: etiqueta (la de ops/lib.sh por omisión) sobre el SHA mergeado, y en cada máquina
 # ~/motor (en esa etiqueta), ~/motor-conf, ~/.motor/maquina.toml e ~/.motor/instalar-servicio.txt.
 # No pide sudo: lo que sí lo necesita queda escrito en instalar-servicio.txt para la persona.
 # Sale != 0 si alguna máquina falla (las demás se intentan igual y se dice cuál falló).
@@ -29,19 +29,25 @@ if ! git -C "$raiz" merge-base --is-ancestor "$sha" "origin/$rama"; then
   echo "el SHA ${sha:0:12} no está mergeado en origin/$rama: no se etiqueta" >&2
   exit 3
 fi
-if ! etiqueta_remota="$(reintenta 3 git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA")"; then
+niega_otro_commit() {
+  echo "la etiqueta $ETIQUETA ya existe en ${1:0:7} y esta instalación es ${sha:0:7}: sube la etiqueta en ops/lib.sh" >&2
+  exit 3
+}
+if ! sha_etiqueta="$(reintenta 3 sha_publicado "$raiz")"; then
   # Sin respuesta no se sabe si la etiqueta existe: peor que fallar es pisarla o duplicarla.
   echo "no pude consultar las etiquetas de origin" >&2
   exit 3
 fi
-if [ -n "$etiqueta_remota" ]; then
+if [ -n "$sha_etiqueta" ]; then
+  [ "$sha_etiqueta" = "$sha" ] || niega_otro_commit "$sha_etiqueta"
   echo "etiqueta $ETIQUETA ya existe en origin: se respeta"
 else
   # Se empuja el SHA verificado, no la etiqueta local: una etiqueta local vieja publicaría otro commit.
   if ! reintenta 3 git -C "$raiz" push -q origin "$sha:refs/tags/$ETIQUETA"; then
-    # Si otro la creó mientras tanto, igual vale: lo que importa es que la etiqueta exista.
-    git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA" | grep -q . \
+    # Si otro la creó mientras tanto, vale solo si apunta a este commit.
+    sha_etiqueta="$(sha_publicado "$raiz")" && [ -n "$sha_etiqueta" ] \
       || { echo "no pude empujar $ETIQUETA" >&2; exit 3; }
+    [ "$sha_etiqueta" = "$sha" ] || niega_otro_commit "$sha_etiqueta"
     echo "etiqueta $ETIQUETA la creó otro mientras tanto: se respeta"
   else
     echo "etiqueta $ETIQUETA creada en ${sha:0:12}"

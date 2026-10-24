@@ -12,13 +12,13 @@ fallos=0
 
 fallo() { echo "  FALLA: $*" >&2; fallos=$((fallos + 1)); }
 
-# espera <nombre> <0|!0> comando... : corre el comando y compara el código de salida.
+# espera <nombre> <código|!0> comando... : corre el comando; un número exige ese código exacto, !0 cualquiera distinto de 0.
 espera() {
   local nombre=$1 quiero=$2 rc
   shift 2
   "$@" >"$S/salida" 2>&1
   rc=$?
-  if { [ "$quiero" = 0 ] && [ $rc -ne 0 ]; } || { [ "$quiero" != 0 ] && [ $rc -eq 0 ]; }; then
+  if { [ "$quiero" = '!0' ] && [ $rc -eq 0 ]; } || { [ "$quiero" != '!0' ] && [ "$rc" != "$quiero" ]; }; then
     fallo "$nombre: salió $rc y se esperaba $quiero"
     sed 's/^/    | /' "$S/salida" >&2
   else
