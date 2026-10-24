@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instala el motor en la Mac, la Mini y la PC: etiqueta (v1.0.27 por omisión) sobre el SHA mergeado, y en cada máquina
+# Instala el motor en la Mac, la Mini y la PC: etiqueta (la de ops/lib.sh por omisión) sobre el SHA mergeado, y en cada máquina
 # ~/motor (en esa etiqueta), ~/motor-conf, ~/.motor/maquina.toml e ~/.motor/instalar-servicio.txt.
 # No pide sudo: lo que sí lo necesita queda escrito en instalar-servicio.txt para la persona.
 # Sale != 0 si alguna máquina falla (las demás se intentan igual y se dice cuál falló).
@@ -29,12 +29,18 @@ if ! git -C "$raiz" merge-base --is-ancestor "$sha" "origin/$rama"; then
   echo "el SHA ${sha:0:12} no está mergeado en origin/$rama: no se etiqueta" >&2
   exit 3
 fi
-if ! etiqueta_remota="$(reintenta 3 git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA")"; then
+if ! etiqueta_remota="$(reintenta 3 git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA" "refs/tags/$ETIQUETA^{}")"; then
   # Sin respuesta no se sabe si la etiqueta existe: peor que fallar es pisarla o duplicarla.
   echo "no pude consultar las etiquetas de origin" >&2
   exit 3
 fi
 if [ -n "$etiqueta_remota" ]; then
+  # La última línea es el commit al que apunta (ls-remote pone el ^{} de una anotada al final).
+  sha_etiqueta="$(printf '%s\n' "$etiqueta_remota" | tail -n 1 | cut -f1)"
+  if [ "$sha_etiqueta" != "$sha" ]; then
+    echo "la etiqueta $ETIQUETA ya existe en ${sha_etiqueta:0:7} y esta instalación es ${sha:0:7}: sube la etiqueta en ops/lib.sh" >&2
+    exit 3
+  fi
   echo "etiqueta $ETIQUETA ya existe en origin: se respeta"
 else
   # Se empuja el SHA verificado, no la etiqueta local: una etiqueta local vieja publicaría otro commit.
