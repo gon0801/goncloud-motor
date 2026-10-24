@@ -367,8 +367,6 @@ def _sin_donde_volver(motivo: str) -> int:
 def _recupera_conf(home: Path) -> tuple[int | None, tuple[str, list[str]] | None]:
     """Antes de crear el Daemon: si la conf compartida no carga, vuelve a la última buena.
     Devuelve (código de salida si no hay a dónde volver, (sha malo, errores) si se volvió)."""
-    from .workspace import git
-
     try:
         load_maquina(home)
     except Exception as e:  # noqa: BLE001  maquina.toml y secretos.env no vienen de la conf compartida
@@ -381,6 +379,21 @@ def _recupera_conf(home: Path) -> tuple[int | None, tuple[str, list[str]] | None
     except Exception as e:  # noqa: BLE001
         error = _falla("conf", e)
     d = load_maquina(home).conf
+    if not (d / ".git").exists():
+        return _sin_donde_volver(
+            f"la conf no carga y {d} no es un clon de git, no hay a dónde volver: {error}"
+        ), None
+    try:
+        return _vuelve_a_la_buena(home, d, error)
+    except Exception as e:  # noqa: BLE001  git o disco fallan: sin dónde volver, no un traceback en bucle
+        return _sin_donde_volver(
+            f"la conf no carga y no pude volver a la buena ({type(e).__name__}: {e}): {error}"
+        ), None
+
+
+def _vuelve_a_la_buena(home: Path, d: Path, error: str):
+    from .workspace import git
+
     buena = home / "conf-buena"
     sha = buena.read_text(encoding="utf-8").strip() if buena.is_file() else ""
     if not sha:
@@ -388,7 +401,7 @@ def _recupera_conf(home: Path) -> tuple[int | None, tuple[str, list[str]] | None
             f"la conf no carga y no hay conf-buena a dónde volver: {error}"
         ), None
     malo = git("rev-parse", "HEAD", cwd=d).stdout.strip()
-    sucio = git("status", "--porcelain", cwd=d).stdout.strip()
+    sucio = git("status", "--porcelain", "--untracked-files=no", cwd=d).stdout.strip()
     if sucio:
         return _sin_donde_volver(
             f"la conf no carga y tiene cambios sin commitear, no la toco: {error}"

@@ -167,7 +167,7 @@ class Daemon:
         if errores:
             self.avisa_conf_rechazada(nueva, errores)
             return
-        if git("merge", "-q", "--ff-only", f"origin/{rama}", cwd=d).returncode != 0:
+        if git("merge", "-q", "--ff-only", nueva, cwd=d).returncode != 0:
             return  # la copia de esta máquina tiene cambios propios: no se pisa
 
     @staticmethod

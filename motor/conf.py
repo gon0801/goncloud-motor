@@ -127,6 +127,15 @@ def _max_parallel(modelo: str, r: dict) -> int:
     return v
 
 
+def _argv(modelo: str, r: dict) -> tuple[str, ...]:
+    v = r["argv"]
+    if not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+        raise ConfError(
+            f"rutas.toml [rutas.{modelo}] argv tiene que ser una lista de textos (vino {v!r})"
+        )
+    return tuple(v)
+
+
 def _git_sha(d: Path) -> str:
     r = subprocess.run(
         ["git", "-C", str(d), "rev-parse", "HEAD"],
@@ -153,7 +162,7 @@ def load_conf(d: Path) -> Conf:
             modelo=m,
             cuenta=r["cuenta"],
             cli=r["cli"],
-            argv=tuple(r["argv"]),
+            argv=_argv(m, r),
             max_parallel=_max_parallel(m, r),
             env=tuple(sorted(r.get("env", {}).items())),
         )

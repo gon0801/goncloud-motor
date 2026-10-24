@@ -93,6 +93,14 @@ class ConfValidaTest(unittest.TestCase):
         extra = '[rutas.b]\ncuenta = "y"\ncli = "b"\nmax_parallel = "x"\nargv = ["b", "{prompt}"]\n'
         self.assertRechaza("[rutas.b] max_parallel", rutas_extra="\n" + extra)
 
+    def test_max_parallel_cero(self):
+        extra = '[rutas.b]\ncuenta = "y"\ncli = "b"\nmax_parallel = 0\nargv = ["b", "{prompt}"]\n'
+        self.assertRechaza("[rutas.b] max_parallel", rutas_extra="\n" + extra)
+
+    def test_argv_con_algo_que_no_es_texto(self):
+        extra = '[rutas.b]\ncuenta = "y"\ncli = "b"\nargv = ["b", "{prompt}", 5]\n'
+        self.assertRechaza("[rutas.b] argv", rutas_extra="\n" + extra)
+
     def test_celda_con_clave_desconocida_nombra_clave_y_celda(self):
         self.assertRechaza(
             "[exigencia.gate.implementar]",
@@ -219,14 +227,26 @@ class TraeConfTest(Banco):
     def test_commit_con_conf_mala_no_llega_al_disco_ni_da_effectfailed(self):
         d = Daemon(self.home)
         buena = git("rev-parse", "HEAD", cwd=self.conf)
+        validadas: list[tuple[Path, str]] = []
+        real = cli.conf_valida
+
+        def espia(carpeta):
+            validadas.append((Path(carpeta), git("rev-parse", "HEAD", cwd=self.conf)))
+            return real(carpeta)
+
         otro = self.t / "otro"
         git("clone", "-q", str(self.origen), str(otro), cwd=self.t)
         (otro / "general.toml").write_text('[tiempos]\ntimeout_s = "abc"\n')
         git("commit", "-qam", "mala", cwd=otro)
         git("push", "-q", "origin", "HEAD:main", cwd=otro)
         ahora = time.time()
-        for i in range(4):
-            d.tick(ahora + i * 5)
+        with mock.patch.object(cli, "conf_valida", espia):
+            for i in range(4):
+                d.tick(ahora + i * 5)
+        self.assertTrue(validadas, "la conf nueva se validó")
+        for carpeta, head in validadas:
+            self.assertNotEqual(carpeta.resolve(), self.conf.resolve())
+            self.assertEqual(head, buena, "se validó antes de mover la conf")
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.conf), buena)
         self.assertEqual(git("status", "--porcelain", cwd=self.conf), "")
         self.assertEqual(len(self.eventos("ConfRechazada")), 1)
@@ -271,6 +291,7 @@ class ArranqueConMalaConfTest(Banco):
         self.deja_conf_buena()
         buena = (self.home / CONF_BUENA).read_text().strip()
         mala = self.rompe_conf()
+        git("remote", "set-url", "origin", str(self.t / "no-existe.git"), cwd=self.conf)
         codigo, err = self.arranca()
         self.assertEqual(codigo, SALIDA_POR_TOPE, err)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.conf), buena)
@@ -296,6 +317,24 @@ class ArranqueConMalaConfTest(Banco):
         codigo, err = self.arranca()
         self.assertEqual(codigo, 1)
         self.assertIn("timeout_s", (self.conf / "general.toml").read_text())
+        self.assertNotIn("Traceback", err)
+
+    def test_archivos_sin_trackear_no_impiden_volver(self):
+        self.deja_conf_buena()
+        buena = (self.home / CONF_BUENA).read_text().strip()
+        self.rompe_conf()
+        (self.conf / "notas.txt").write_text("mías")
+        codigo, err = self.arranca()
+        self.assertEqual(codigo, SALIDA_POR_TOPE, err)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.conf), buena)
+        self.assertTrue((self.conf / "notas.txt").exists())
+
+    def test_carpeta_de_conf_que_no_existe_espera_y_sale_sin_traceback(self):
+        self.deja_conf_buena()
+        self.maquina(f'nombre = "x"\nconf = "{self.t / "no-existe"}"\n')
+        codigo, err = self.arranca()
+        self.assertEqual(codigo, 1)
+        self.dormir.assert_called_once_with(cli.ESPERA_CONF_S)
         self.assertNotIn("Traceback", err)
 
     def test_conf_buena_que_tampoco_carga_espera_y_sale(self):
