@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -83,7 +84,7 @@ class CierreTrasResultadoTest(unittest.TestCase):
         self.assertIs(o["cerrado_tras_resultado"], False)
 
     def test_llamada_sin_fin_impide_el_cierre_hasta_que_se_llena(self):
-        o, dura = self.corre(
+        o, _, d = self.corre_en(
             self.PRELUDIO + "veredicto('APROBADO')\n"
             "(d / 'llamadas').mkdir()\n"
             "f = d / 'llamadas' / 'x.json'\n"
@@ -91,10 +92,40 @@ class CierreTrasResultadoTest(unittest.TestCase):
             "time.sleep(4)\n"
             "f.write_text(json.dumps({'fin': time.time()}))\n"
             "time.sleep(60)\n",
+            extra=self.REVISOR + ("--cierre", "3"),
+        )
+        self.assertIs(o["cerrado_tras_resultado"], True)
+        fin = json.loads((d / "llamadas" / "x.json").read_text())["fin"]
+        self.assertGreaterEqual(
+            (d / "outcome.json").stat().st_mtime - fin, 2.5
+        )  # da tiempo de leer lo que contestó el panel
+
+    def test_llamada_con_shim_muerto_no_impide_el_cierre(self):
+        muerto = subprocess.Popen([sys.executable, "-c", "pass"])
+        muerto.wait()
+        o, dura = self.corre(
+            self.PRELUDIO + "veredicto('APROBADO')\n"
+            "(d / 'llamadas').mkdir()\n"
+            f"(d / 'llamadas' / 'x.json').write_text(json.dumps({{'fin': None, 'pid': {muerto.pid}}}))\n"
+            "time.sleep(60)\n",
             extra=self.REVISOR,
         )
         self.assertIs(o["cerrado_tras_resultado"], True)
-        self.assertGreaterEqual(dura, 4)
+        self.assertLess(dura, 20)
+
+    def test_solo_los_subagentes_escriben_y_impiden_el_cierre(self):
+        o, _ = self.corre(
+            self.PRELUDIO + "sub = sesion.with_suffix('') / 'subagents'\n"
+            "sub.mkdir()\n"
+            "(sub / 'x.jsonl').write_text('a\\n')\n"
+            "veredicto('APROBADO')\n"
+            "fin = time.time() + 4\n"
+            "while time.time() < fin:\n"
+            "    (sub / 'x.jsonl').open('a').write('l\\n')\n"
+            "    time.sleep(0.3)\n",
+            extra=self.REVISOR,
+        )
+        self.assertIs(o["cerrado_tras_resultado"], False)
 
     def test_resultado_quieto_sin_nada_mas_se_cierra_con_pstack_json(self):
         o, dura = self.corre(

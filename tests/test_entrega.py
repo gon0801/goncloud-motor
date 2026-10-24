@@ -269,6 +269,9 @@ class CierreTest(unittest.TestCase):
         espera.vigila(d, self.t)
         self.assertEqual((d / "entrega.json").read_text(), cambios)
         self.assertIsNone(json.loads((d / "result.ajeno.json").read_text())["sha"])
+        (d / "result.json").write_text(_veredicto("otro-sha"))
+        espera.vigila(d, self.t)
+        self.assertEqual((d / "entrega.json").read_text(), cambios)
 
     def test_sin_entrega_valida_termina_sin_resultado(self):
         o, _ = self.corre("import time\ntime.sleep(0.2)\n")

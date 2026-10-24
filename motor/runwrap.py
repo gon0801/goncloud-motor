@@ -11,7 +11,8 @@
   `result.json` que no es válido queda en `result.ajeno.json`. Con `pstack.json`, también
   cuenta como avance cualquier cambio en sus `registros` y en los de los subagentes de la
   sesión (`<sesion>/subagents/*.jsonl`), y no cierra mientras una llamada de `llamadas/`
-  tenga `fin` nulo. Grok dejaba su
+  tenga `fin` nulo y su shim siga vivo (una abierta cuenta como avance: el cierre llega `--cierre` s
+  después de llenarse `fin`). Grok dejaba su
   resultado y el proceso no salía; a los 45 min se mataba "sin avance" y la entrega se perdía
   (INGESTA 01, bloque D, dos veces).
 - Con `--wip-rama`: cada `--wip-cada` s y al terminar, sube una foto del trabajo a medias
@@ -69,7 +70,7 @@ def _huella_arbol(raiz: Path) -> dict[str, tuple[int, int]]:
 
 
 def _huella_pstack(d: Path) -> tuple[dict[str, tuple[int, int]], bool]:
-    """(archivo -> (mtime en ns, tamaño), hay una llamada sin `fin`) según el `pstack.json` del intento.
+    """(archivo -> (mtime en ns, tamaño), hay una llamada sin `fin` cuyo shim sigue vivo) según el `pstack.json` del intento.
     Se mira cada archivo, no su carpeta: agregar líneas a un archivo no mueve la hora de la carpeta."""
     try:
         registros = json.loads((d / "pstack.json").read_text(encoding="utf-8"))[
@@ -99,7 +100,10 @@ def _huella_pstack(d: Path) -> tuple[dict[str, tuple[int, int]], bool]:
             rec = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(rec, dict) and "fin" in rec and rec["fin"] is None:
+        if not (isinstance(rec, dict) and "fin" in rec and rec["fin"] is None):
+            continue
+        pid = rec.get("pid")
+        if not isinstance(pid, int) or plataforma.pid_vivo(pid):
             abierta = True
     return huella, abierta
 
@@ -211,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
             nueva_p, llamada_abierta = _huella_pstack(d)
             if nueva_p != huella_p:
                 huella_p, ultimo_cambio_p = nueva_p, time.time()
+            if llamada_abierta:
+                ultimo_cambio_p = time.time()
             if (
                 entrego >= inicio
                 and not llamada_abierta
