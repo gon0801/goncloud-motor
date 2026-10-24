@@ -65,12 +65,18 @@ corre() {
 
 # maquinas_canario: mini y pc menos la máquina en la que corre el script (nunca la Mac).
 # Para saber cuál es, pide por ssh el hostname de cada una y lo compara con el local.
+# Si el hostname local o el de alguna máquina falla o sale vacío, sale != 0 y no imprime
+# ninguna lista usable: quien llama debe negarse antes de tocar nada.
 maquinas_canario() {
-  local m remoto propio
-  propio="$(hostname 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
+  local m remoto_crudo remoto propio_crudo propio
+  propio_crudo="$(hostname 2>/dev/null)" || return 1
+  propio="$(printf '%s' "$propio_crudo" | tr -d '\r' | tr -d '[:space:]')"
+  [ -n "$propio" ] || return 1
   for m in mini pc; do
-    remoto="$(corre "$m" hostname hostname 2>/dev/null | tr -d '\r' | tr -d '[:space:]')" || remoto=""
-    if [ -n "$propio" ] && [ "$remoto" = "$propio" ]; then
+    remoto_crudo="$(corre "$m" hostname hostname 2>/dev/null)" || return 1
+    remoto="$(printf '%s' "$remoto_crudo" | tr -d '\r' | tr -d '[:space:]')"
+    [ -n "$remoto" ] || return 1
+    if [ "$remoto" = "$propio" ]; then
       continue
     fi
     printf '%s\n' "$m"

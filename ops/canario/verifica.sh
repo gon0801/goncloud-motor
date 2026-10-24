@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Espera el final de la prueba de fuego (tope de 3 h) y sale 0 solo si, en CADA máquina (claw/Mini y
-# Hermi/PC), el plan canario terminó; hay un PR y un merge por bloque de código (un Merged `ya_en_base`
+# Espera el final de la prueba de fuego (tope de 3 h) y sale 0 solo si, en CADA máquina del
+# canario (Mini y PC menos la máquina en la que corre; nunca la Mac), el plan canario
+# terminó; hay un PR y un merge por bloque de código (un Merged `ya_en_base`
 # solo vale si la otra máquina sí hizo el PR y el merge de ese bloque) y su prueba real;
 # el paso humano quedó hecho; el reinicio quedó anotado como corte (no como falla); y llegaron por
 # el bot de esa marca el aviso de cada bloque, el de «retomé» y el de «terminé». La Mac no cuenta.
@@ -16,7 +17,10 @@ aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLAN="${MOTOR_CANARIO_PLAN:-$aqui/plan.md}"
 TOPE_S="${MOTOR_CANARIO_TOPE_S:-10800}"
 SONDEO_S="${MOTOR_CANARIO_SONDEO_S:-60}"
-CANARIO_MAQUINAS="$(maquinas_canario)"
+if ! CANARIO_MAQUINAS="$(maquinas_canario)"; then
+  echo "me niego: no pude identificar las máquinas del canario" >&2
+  exit 2
+fi
 if [ -z "$(printf '%s' "$CANARIO_MAQUINAS" | tr -d '[:space:]')" ]; then
   echo "me niego: no queda ninguna máquina que reiniciar" >&2
   exit 2
@@ -24,6 +28,12 @@ fi
 
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
+
+nombres_canario=""
+for m in $CANARIO_MAQUINAS; do
+  case "$m" in mini) _n=claw ;; pc) _n=Hermi ;; *) _n=$m ;; esac
+  nombres_canario="${nombres_canario:+$nombres_canario y }$_n"
+done
 
 # Los bloques del plan: ids de código y ids de paso humano (del mismo analizador que usa el motor).
 listas="$(PYTHONPATH="$aqui/../.." python3 -I - "$PLAN" <<'PY'
@@ -135,10 +145,10 @@ while :; do
   case $rc in
     0)
       if [ -n "$falta" ]; then
-        echo "Prueba de fuego aprobada: claw y Hermi terminaron el plan, con el corte anotado y los avisos recibidos."
+        echo "Prueba de fuego aprobada: $nombres_canario terminaron el plan, con el corte anotado y los avisos recibidos."
         echo "$falta"
       else
-        echo "Prueba de fuego aprobada: claw y Hermi terminaron el plan, con un PR y un merge por bloque, el corte anotado y los avisos recibidos."
+        echo "Prueba de fuego aprobada: $nombres_canario terminaron el plan, con un PR y un merge por bloque, el corte anotado y los avisos recibidos."
       fi
       exit 0 ;;
     3) echo "La prueba de fuego FALLÓ de forma definitiva:" >&2; echo "$falta" >&2; exit 1 ;;

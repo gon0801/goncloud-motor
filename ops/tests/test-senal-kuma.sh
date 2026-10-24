@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ops/senal-kuma.sh, senal-kuma-checklist.sh y senal-kuma-rollback.sh con ssh y docker falsos y una
 # base SQLite con las tablas reales de Kuma (kuma-esquema.sql). La Mini corre su script en un HOME
-# falso; la PC corre el PowerShell de verdad (pwsh) con un USERPROFILE falso.
+# falso; con pwsh, la PC corre el PowerShell de verdad con un USERPROFILE falso; sin pwsh,
+# un sustituto en Python prueba todo menos la escritura de la PC.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 

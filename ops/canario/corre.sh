@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Prueba de fuego (MOTOR 01, bloque I): le entrega ops/canario/plan.md a claw (OpenClaw, Mini) y a
-# Hermi (Hermes, PC) por su canal normal -un turno de agente con la skill `motor`- y, cuando el
-# motor de cada una lleva un bloque a medias, reinicia ESA máquina, solo después de ver su servicio
-# arriba. Nunca reinicia la Mac. Cada máquina se reinicia una sola vez (marca en $ESTADO), así que
+# Prueba de fuego (MOTOR 01, bloque I): le entrega ops/canario/plan.md a cada máquina del
+# canario (Mini y PC menos la máquina en la que corre; nunca la Mac) por su canal normal
+# -un turno de agente con la skill `motor`- y, cuando el motor de cada una lleva un bloque
+# a medias, reinicia ESA máquina, solo después de ver su servicio arriba. Cada máquina se
+# reinicia una sola vez (marca en $ESTADO), así que
 # repetir el script no vuelve a reiniciar nada. Después, `ops/canario/verifica.sh` espera el final.
 #   MOTOR_CANARIO_PLAN        el plan a entregar (por omisión, plan.md de esta carpeta)
 #   MOTOR_CANARIO_ESTADO      carpeta de marcas de reinicio (por omisión ~/.motor-arranque/canario)
@@ -20,7 +21,10 @@ TOPE_ENTREGA_S="${MOTOR_CANARIO_TOPE_ENTREGA_S:-600}"
 TOPE_BLOQUE_S="${MOTOR_CANARIO_TOPE_BLOQUE_S:-7200}"
 TOPE_SERVICIO_S="${MOTOR_CANARIO_TOPE_SERVICIO_S:-600}"
 # Mini y PC menos la máquina en la que corre (nunca la Mac): la lista sale de maquinas_canario.
-CANARIO_MAQUINAS="$(maquinas_canario)"
+if ! CANARIO_MAQUINAS="$(maquinas_canario)"; then
+  echo "me niego: no pude identificar las máquinas del canario" >&2
+  exit 2
+fi
 if [ -z "$(printf '%s' "$CANARIO_MAQUINAS" | tr -d '[:space:]')" ]; then
   echo "me niego: no queda ninguna máquina que reiniciar" >&2
   exit 2
