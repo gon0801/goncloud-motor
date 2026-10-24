@@ -50,6 +50,16 @@ vuelve_pc() {
   echo "pc: motor de vuelta en $anterior"
 }
 
+# Una instalación que se negó (la etiqueta ya estaba publicada en otro commit) no instaló nada:
+# las máquinas en $ETIQUETA vienen de una entrega buena, y bajarlas sería deshacerla.
+raiz="${MOTOR_INSTALA_RAIZ:-$(cd "$aqui/.." && pwd)}"
+entrega="${MOTOR_SHA:-$(git -C "$raiz" rev-parse HEAD 2>/dev/null)}"
+publicado="$(sha_publicado "$raiz" 2>/dev/null)" || publicado=""
+if [ -n "$publicado" ] && [ -n "$entrega" ] && [ "$publicado" != "$entrega" ]; then
+  echo "la etiqueta $ETIQUETA está en ${publicado:0:7} y esta entrega es ${entrega:0:7}: no instaló nada, nadie se mueve"
+  exit 0
+fi
+
 fallaron=""
 for m in $MAQUINAS; do
   echo "== $m"
