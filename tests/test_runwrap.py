@@ -98,21 +98,41 @@ class CierreTrasResultadoTest(unittest.TestCase):
         self.assertEqual((o["cerrado_tras_resultado"], o["exit"]), (False, 0))
 
     def test_llamada_sin_fin_impide_el_cierre_hasta_que_se_llena(self):
-        o, _, d = self.corre_en(
-            self.PRELUDIO + "veredicto('APROBADO')\n"
-            "(d / 'llamadas').mkdir()\n"
-            "f = d / 'llamadas' / 'x.json'\n"
-            "f.write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
-            "time.sleep(4)\n"
-            "f.write_text(json.dumps({'fin': time.time(), 'pid': os.getpid()}))\n"
-            "time.sleep(60)\n",
-            extra=self.REVISOR,
-        )
+        """El paso de abierta a cerrada cuenta como avance: el cierre llega `--cierre` s después de la
+        primera vuelta que ve `fin` lleno. La vuelta de runwrap se estira a 1 s: sin `abierta_antes`,
+        el cierre salta en la vuelta siguiente a la última que vio la llamada abierta y cae antes de
+        `fin` + `--cierre` sin importar la carga de la máquina."""
+        real = time.sleep
+        with unittest.mock.patch.object(
+            runwrap.time, "sleep", lambda s: real(1.0 if s == 0.2 else s)
+        ):
+            o, _, d = self.corre_en(
+                self.PRELUDIO + "veredicto('APROBADO')\n"
+                "(d / 'llamadas').mkdir()\n"
+                "f = d / 'llamadas' / 'x.json'\n"
+                "f.write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
+                "time.sleep(4)\n"
+                "f.write_text(json.dumps({'fin': time.time(), 'pid': os.getpid()}))\n"
+                "time.sleep(60)\n",
+                extra=self.REVISOR,
+            )
         self.assertIs(o["cerrado_tras_resultado"], True)
         fin = json.loads((d / "llamadas" / "x.json").read_text())["fin"]
         self.assertGreaterEqual(
             (d / "outcome.json").stat().st_mtime - fin, 1.0
         )  # da tiempo de leer lo que contestó el panel
+
+    def test_pid_invalido_en_la_llamada_no_cosecha_al_agente(self):
+        """Un registro con pid -1 nunca llega a `pid_vivo`: sin la guarda, su `waitpid(-1)`
+        recogería al agente y el outcome diría `exit 0` habiendo salido con 3."""
+        o, _ = self.corre(
+            self.PRELUDIO + "veredicto('APROBADO')\n"
+            "(d / 'llamadas').mkdir()\n"
+            "(d / 'llamadas' / 'x.json').write_text(json.dumps({'fin': None, 'pid': -1}))\n"
+            "raise SystemExit(3)\n",
+            extra=self.REVISOR,
+        )
+        self.assertEqual(o["exit"], 3)
 
     def collect_de(self, script: str, sin_avance: float):
         """Corre el agente bajo runwrap y pasa su intento por `Effects.collect` del daemon."""
@@ -135,11 +155,12 @@ class CierreTrasResultadoTest(unittest.TestCase):
             sha="abc",
         )
         plan = daemon.plans()[0]
-        return daemon.fx.collect(plan, daemon._fold(plan), "A", att), d
+        return daemon.fx.collect(plan, daemon._fold(plan), "A", att), d, daemon
 
     def test_llamada_abierta_con_shim_vivo_no_se_pierde_por_sin_avance(self):
-        """Un shim colgado retiene el cierre, pero la entrega válida ya está: no se corta como sin_avance."""
-        salida, d = self.collect_de(
+        """Un shim colgado retiene el cierre hasta que `--sin-avance` corta de verdad; la entrega
+        válida ya está congelada y `collect` la rescata como veredicto."""
+        salida, d, _ = self.collect_de(
             self.PRELUDIO + "veredicto('APROBADO')\n"
             "(d / 'llamadas').mkdir()\n"
             "(d / 'llamadas' / 'x.json').write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
@@ -147,13 +168,38 @@ class CierreTrasResultadoTest(unittest.TestCase):
             sin_avance=3,
         )
         self.assertEqual(salida.get("kind"), "veredicto", salida)
+        o = json.loads((d / "outcome.json").read_text())
+        self.assertEqual((o["no_progress"], o["cerrado_tras_resultado"]), (True, False))
         self.assertEqual(
             json.loads((d / "entrega.json").read_text())["veredicto"], "APROBADO"
         )
 
+    def test_el_rescate_le_entrega_json_no_un_result_pisado(self):
+        """B.1 con B.2: `result.json` pisado con algo inválido después de congelar la entrega no
+        tumba el veredicto; el rescate lee `entrega.json`, no `result.json`."""
+        salida, d, _ = self.collect_de(
+            self.PRELUDIO + "veredicto('APROBADO')\n"
+            "(d / 'llamadas').mkdir()\n"
+            "(d / 'llamadas' / 'x.json').write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
+            "for _ in range(100):\n"
+            "    if (d / 'entrega.json').exists():\n"
+            "        break\n"
+            "    time.sleep(0.05)\n"
+            "else:\n"
+            "    raise SystemExit(2)\n"
+            "(d / 'result.json').write_text(json.dumps({'sha': None}))\n"
+            "time.sleep(60)\n",
+            sin_avance=3,
+        )
+        self.assertEqual(salida.get("kind"), "veredicto", salida)
+        self.assertEqual(
+            json.loads((d / "entrega.json").read_text())["veredicto"], "APROBADO"
+        )
+        self.assertIsNone(json.loads((d / "result.ajeno.json").read_text())["sha"])
+
     def test_veredicto_entregado_y_salida_distinta_de_cero_no_se_pierde(self):
         """Mientras el cierre se retiene, el CLI sale con un API Error: el veredicto válido sigue valiendo."""
-        salida, d = self.collect_de(
+        salida, d, _ = self.collect_de(
             self.PRELUDIO + "veredicto('APROBADO')\n"
             "fin = time.time() + 3\n"
             "while time.time() < fin:\n"
@@ -166,6 +212,18 @@ class CierreTrasResultadoTest(unittest.TestCase):
         o = json.loads((d / "outcome.json").read_text())
         self.assertEqual(o["exit"], 1)
         self.assertEqual(salida.get("kind"), "veredicto", salida)
+
+    def test_revisor_sin_entrega_que_sale_por_cuota_anota_el_cooldown(self):
+        """El lado negativo del rescate: sin entrega congelada no hay `terminado` que lo salte, y
+        el corte por cuota sigue anotando el `Cooldown` de la cuenta."""
+        salida, _, daemon = self.collect_de(
+            'print("You\'ve hit your usage limit")\nraise SystemExit(1)\n',
+            sin_avance=30,
+        )
+        self.assertEqual(salida.get("kind"), "cuota", salida)
+        self.assertTrue(
+            any(e.kind == "Cooldown" for e in daemon.store.events("demo")), salida
+        )
 
     def test_el_shim_registra_su_pid_mientras_corre(self):
         t = Path(tempfile.mkdtemp(prefix="runwrap-shim-"))

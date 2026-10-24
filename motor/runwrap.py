@@ -11,10 +11,12 @@
   `result.json` que no es válido queda en `result.ajeno.json`. Con `pstack.json`, también
   cuenta como avance cualquier cambio en sus `registros` y en los de los subagentes de la
   sesión (`<sesion>/subagents/*.jsonl`), y no cierra mientras una llamada de `llamadas/`
-  tenga `fin` nulo y su shim siga vivo (una abierta cuenta como avance: el cierre llega `--cierre` s
-  después de llenarse `fin`). Esas fuentes solo retienen el cierre: si `--sin-avance` o `--timeout`
-  vencen con una entrega válida ya congelada, termina como cerrado, nunca como corte, para que el
-  veredicto no se pierda. Grok dejaba su
+  tenga `fin` nulo: con pid, si su shim sigue vivo; sin pid o con pid inválido, siempre
+  (una abierta cuenta como avance: el cierre llega `--cierre` s después de llenarse `fin`).
+  Esas fuentes solo retienen el cierre: si `--sin-avance` o `--timeout` vencen con una
+  entrega válida ya congelada, el corte se anota tal cual en `outcome.json` y es
+  `effects._juzga_intento` el que rescata la entrega congelada, para que el veredicto no se
+  pierda. Grok dejaba su
   resultado y el proceso no salía; a los 45 min se mataba "sin avance" y la entrega se perdía
   (INGESTA 01, bloque D, dos veces).
 - Con `--wip-rama`: cada `--wip-cada` s y al terminar, sube una foto del trabajo a medias
@@ -72,7 +74,8 @@ def _huella_arbol(raiz: Path) -> dict[str, tuple[int, int]]:
 
 
 def _huella_pstack(d: Path) -> tuple[dict[str, tuple[int, int]], bool]:
-    """(archivo -> (mtime en ns, tamaño), hay una llamada sin `fin` cuyo shim sigue vivo) según el `pstack.json` del intento.
+    """(archivo -> (mtime en ns, tamaño), hay una llamada sin `fin`: sin pid o con pid inválido
+    cuenta siempre; con pid, solo si su shim sigue vivo) según el `pstack.json` del intento.
     Se mira cada archivo, no su carpeta: agregar líneas a un archivo no mueve la hora de la carpeta."""
     try:
         registros = json.loads((d / "pstack.json").read_text(encoding="utf-8"))[
