@@ -238,6 +238,107 @@ class MachineTest(unittest.TestCase):
         )
 
 
+class AutoresTest(unittest.TestCase):
+    """Un intento que no llegó a tocar el código no saca a su modelo de la revisión."""
+
+    def vista(self, *intentos: tuple[str, dict]) -> m.BlockView:
+        evs = []
+        for n, (modelo, fin) in enumerate(intentos, 1):
+            evs.append(
+                ev(
+                    "AttemptStarted",
+                    "A",
+                    {
+                        "n": n,
+                        "role": "implementar",
+                        "modelo": modelo,
+                        "proc": {},
+                        "dir": "d",
+                    },
+                )
+            )
+            if fin is not None:
+                evs.append(
+                    ev(
+                        "AttemptEnded",
+                        "A",
+                        {"n": n, "role": "implementar", "outcome": fin},
+                    )
+                )
+        return m.fold(parse_plan(PLAN), evs).blocks["A"]
+
+    def test_el_caso_de_motor_03_b_deja_revisor_y_no_es_opus(self):
+        """Sonnet, k3 y grok terminaron en segundos sin tocar nada; glm entregó; opus está agotado y el
+        plan no trae `revisa:`. Antes todos eran autores y no quedaba nadie que revisara."""
+        now = time.time()
+        sin_tocar = {"kind": "falla", "toco_carpeta": False}
+        evs = []
+        for n, mo in enumerate(("sonnet", "k3", "grok"), 1):
+            evs += [
+                ev(
+                    "AttemptStarted",
+                    "A",
+                    {
+                        "n": n,
+                        "role": "implementar",
+                        "modelo": mo,
+                        "proc": {},
+                        "dir": "d",
+                    },
+                ),
+                ev(
+                    "AttemptEnded",
+                    "A",
+                    {"n": n, "role": "implementar", "outcome": sin_tocar},
+                ),
+            ]
+        evs += entregado(modelo="glm", n=4)
+        evs += [
+            ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
+            ev("PrOpened", "A", {"numero": 1}),
+            ev("Cooldown", "", {"cuenta": "anthropic", "hasta": now + 3600}),
+        ]
+        p = m.Policy(
+            implementadores=("sonnet", "k3", "glm", "grok"),
+            revisores=("opus", "k3", "glm", "grok"),
+            cuenta={
+                "sonnet": "anthropic",
+                "opus": "anthropic",
+                "k3": "kimi",
+                "glm": "zai",
+                "grok": "xai",
+            },
+            max_parallel={c: 4 for c in ("anthropic", "kimi", "zai", "xai")},
+            agentes_por_maquina=4,
+        )
+        snap = m.fold(parse_plan(PLAN), evs)
+        self.assertEqual(snap.blocks["A"].autores(), {"glm"})
+        revisando = [
+            a.modelo
+            for a in m.decide(snap, p, now)
+            if isinstance(a, m.StartAttempt) and a.role == "revisar"
+        ]
+        self.assertTrue(revisando)
+        self.assertNotIn("opus", revisando)
+
+    def test_el_que_toco_la_carpeta_y_se_corto_sigue_siendo_autor(self):
+        bv = self.vista(("glm", {"kind": "tiempo", "toco_carpeta": True}))
+        self.assertEqual(bv.autores(), {"glm"})
+
+    def test_el_que_entrego_sin_tocar_esa_carpeta_sigue_siendo_autor(self):
+        bv = self.vista(
+            ("glm", {"kind": "entregado", "sha": "a" * 40, "toco_carpeta": False})
+        )
+        self.assertEqual(bv.autores(), {"glm"})
+
+    def test_un_resultado_viejo_sin_el_campo_sigue_siendo_autor(self):
+        bv = self.vista(("glm", {"kind": "tiempo"}))
+        self.assertEqual(bv.autores(), {"glm"})
+
+    def test_el_que_sigue_corriendo_es_autor(self):
+        self.assertEqual(self.vista(("glm", None)).autores(), {"glm"})
+
+
 class PedidoDeModelosTest(unittest.TestCase):
     """David: "haz este plan con DeepSeek como revisor y Qwen como implementer" (2026-10-20)."""
 

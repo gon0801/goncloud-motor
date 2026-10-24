@@ -3,7 +3,7 @@
     fake_cli.py <nombre> [args...]
 
 Imprime una respuesta y cuenta cuántos agentes y llamadas vivos ve en el libro de cuentas del motor.
-Con FAKE_ANIDA=1 intenta, desde dentro de esta llamada, llamar a otro CLI de modelos (debe rechazarse).
+Anota si heredó MOTOR_RESULT (y, si lo tiene, pisa la entrega). Con FAKE_ANIDA=1 intenta, desde dentro de esta llamada, llamar a otro CLI de modelos (debe rechazarse).
 """
 
 from __future__ import annotations
@@ -30,6 +30,10 @@ def main() -> int:
             for f in (home / "llamadas").glob("llamada-*.json")
         ]
         print("libro:" + ",".join(sorted(f"{r['tipo']}/{r['cuenta']}" for r in vivos)))
+    resultado = os.environ.get("MOTOR_RESULT")
+    print(f"result:{'visto' if resultado else 'no'}")
+    if resultado:  # un modelo llamado que escribe la entrega del agente principal
+        Path(resultado).write_text('{"sha": "envenenado"}', encoding="utf-8")
     if os.environ.get("FAKE_ANIDA"):
         r = subprocess.run(
             [shutil.which("claude") or "claude", "-p", "hola"],

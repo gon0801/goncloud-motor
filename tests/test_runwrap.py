@@ -52,6 +52,30 @@ class CierreTrasResultadoTest(unittest.TestCase):
         o, _ = self.corre("import time; time.sleep(60)", sin_avance=2)
         self.assertEqual((o["no_progress"], o["cerrado_tras_resultado"]), (True, False))
 
+    def test_agente_que_no_escribe_nada_no_toco_la_carpeta(self):
+        o, _ = self.corre("print('nada')")
+        self.assertIs(o["toco_carpeta"], False)
+
+    def test_un_cambio_de_un_segundo_cuenta_aunque_salga_antes_del_escaneo(self):
+        o, dura = self.corre("open('nuevo.txt', 'w').write('x')")
+        self.assertLess(dura, 2)
+        self.assertIs(o["toco_carpeta"], True)
+
+    def test_sin_shims_quita_toda_carpeta_con_llamada_guard(self):
+        t = Path(tempfile.mkdtemp(prefix="runwrap-shims-"))
+        ajena, otra = t / "shims-de-otro-motor", t / "bin"
+        for c in (ajena, otra):
+            c.mkdir()
+        (ajena / "llamada_guard.py").write_text("")
+        for c in (ajena, otra):
+            f = c / "claude"
+            f.write_text("#!/bin/sh\n")
+            f.chmod(0o755)
+        cmd = runwrap._sin_shims(
+            ["claude"], {"PATH": os.pathsep.join([str(ajena), str(otra)])}
+        )
+        self.assertEqual(cmd, [str(otra / "claude")])
+
     def test_mtime_salta_carpetas_pesadas(self):
         t = Path(tempfile.mkdtemp(prefix="runwrap-mtime-"))
         (t / "real.txt").write_text("x")

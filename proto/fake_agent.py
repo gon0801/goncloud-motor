@@ -9,6 +9,10 @@ Modos (cada uno es una falla del catálogo):
   stdin           lee de la terminal antes de trabajar (como un prompt de permiso)
   cuelga          no hace nada y no muestra avance
   rompe_primero   la primera entrega rompe las pruebas automáticas; la siguiente lo arregla
+  entorno         trabaja normal y anota su entorno y lo que contestó una llamada a `kimi` (fake_entorno.py)
+  sin_lugar       la primera vez sale 3 con el rechazo de "esa cuenta no tiene lugar", sin tocar nada
+  toca_y_sale     la primera vez deja un archivo en la carpeta y sale 1 sin entregar
+  panel_tras_entrega  como `panel`, pero la llamada a `kimi` va después de escribir la entrega
   pstack_*        trabaja normal y deja un registro con N subagentes lanzados (ver fake_log.py)
   panel*          llama a `kimi` por el shim del motor y guarda lo que contestó (panel_anida: la llamada
                   intenta, desde dentro, llamar a otro CLI)
@@ -44,6 +48,19 @@ def git(*a: str) -> subprocess.CompletedProcess:
     )
 
 
+def panel() -> None:
+    """Pide una segunda opinión a otro CLI de modelos, por el shim del motor."""
+    r = subprocess.run(
+        [shutil.which("kimi") or "kimi", "--model", "k3", "-p", "hola"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    (
+        Path(os.environ["FAKE_STATE"]) / f"panel-{os.environ['MOTOR_MODEL']}.json"
+    ).write_text(json.dumps({"rc": r.returncode, "out": r.stdout, "err": r.stderr}))
+
+
 def main() -> int:
     modo = sys.argv[sys.argv.index("--modo") + 1]
     brief = Path(sys.argv[sys.argv.index("--prompt-file") + 1]).read_text()
@@ -66,24 +83,25 @@ def main() -> int:
 
         emite(modo, primera)
 
-    if modo.startswith(
-        "panel"
-    ):  # pide una segunda opinión a otro CLI de modelos, por el shim del motor
-        r = subprocess.run(
-            [shutil.which("kimi") or "kimi", "--model", "k3", "-p", "hola"],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-        )
-        (
-            Path(os.environ["FAKE_STATE"]) / f"panel-{os.environ['MOTOR_MODEL']}.json"
-        ).write_text(json.dumps({"rc": r.returncode, "out": r.stdout, "err": r.stderr}))
+    if modo.startswith("panel") and modo != "panel_tras_entrega":
+        panel()
+    if modo == "entorno":
+        from fake_entorno import anota
+
+        anota()
 
     if modo == "cuota_primero" and primera:
         reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
         print(f"Error: 429 Too Many Requests: weekly limit reached, resets at {reset}")
+        return 1
+    if modo == "sin_lugar" and primera:
+        print("esa cuenta no tiene lugar ahora; usa otro modelo")
+        return 3
+    if modo == "toca_y_sale" and primera:
+        Path("toco.txt").write_text("algo\n")
+        print("se cayó a medias")
         return 1
     if modo == "stdin":
         print(
@@ -184,6 +202,8 @@ def main() -> int:
     if repro:
         resultado["repro"] = repro
     Path(os.environ["MOTOR_RESULT"]).write_text(json.dumps(resultado))
+    if modo == "panel_tras_entrega":
+        panel()
     print("listo")
     if modo == "entrega_y_sigue":
         for i in range(600):
