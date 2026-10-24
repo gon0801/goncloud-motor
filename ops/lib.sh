@@ -2,8 +2,7 @@
 # Lo común de ops/*.sh: las tres máquinas y cómo hablarles. Se carga con `.`, no se ejecuta.
 # Las tres máquinas se tratan igual: todo va por ssh, también hacia la máquina en la que corre
 # el script, que entra a sí misma por ssh. Así el mismo script hace lo mismo en las tres.
-# Estos scripts viven en el repo del motor, pero nunca tocan ~/dev/goncloud-motor ni ~/.motor-arranque
-# (ahí corre el motor de arranque): solo ~/motor, ~/motor-conf y ~/.motor de cada máquina.
+# Estos scripts viven en el repo del motor y cargan esta base común.
 
 MAQUINAS="mac mini pc"
 REPO_URL="${MOTOR_REPO_URL:-git@github.com:gon0801/goncloud-motor.git}"
