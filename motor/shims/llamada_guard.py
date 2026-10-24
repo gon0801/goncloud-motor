@@ -47,6 +47,7 @@ def main() -> int:
     intento = os.environ.get("MOTOR_ATTEMPT_DIR", "")
     cupos_f = Path(intento) / "cupos.json"
     entorno = {**os.environ, "MOTOR_LLAMADA": "1"}
+    entorno.pop("MOTOR_RESULT", None)  # solo el agente principal escribe la entrega
     if not (intento and cupos_f.is_file()):
         return subprocess.call(
             [real, *args], env=entorno
