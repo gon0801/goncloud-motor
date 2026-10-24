@@ -50,6 +50,7 @@ EJEMPLOS = (
     ("1234567890" + ":" + "aB3_-" * 7, True),
     ("12345678" + ":" + "aB3_-" * 7, True),
     ("sk" + "-" + "a" * 16, True),
+    ("sk" + "-proj-" + "aB3_-" * 4, True),
     ("sk" + "-" + "a" * 15, False),
     ("task" + "-" + "a" * 16, False),
     ("AKIA" + "ABCD1234" * 2, True),
@@ -64,8 +65,14 @@ class TestSecretos(unittest.TestCase):
                 with self.subTest(ejemplo=ejemplo, campo=campo):
                     registro = _claude(("Agent", {campo: f"antes {ejemplo} después"}))
                     salida = rr.recorta(registro, "claude")
-                    self.assertEqual(ejemplo not in salida, es_secreto)
-                    self.assertEqual("<secreto>" in salida, es_secreto)
+                    # el secreto sale entero: un regex que tape solo el prefijo deja el cuerpo
+                    cola = " PRIVATE KEY" if ejemplo.startswith("-----") else ""
+                    esperado = (
+                        f"antes <secreto>{cola} después"
+                        if es_secreto
+                        else f"antes {ejemplo} después"
+                    )
+                    self.assertIn(esperado, salida)
                     self.assertIn("Agent", salida, "la llamada se conserva")
 
     def test_los_ejemplos_de_la_lista_cumplen_su_forma(self):
@@ -174,6 +181,17 @@ class TestComprueba(unittest.TestCase):
         original = _claude(("Agent", {"description": f"usa {ejemplo}"}))
         d = self._dir(original, rr.recorta(original, "claude"))
         self.assertEqual(_comprueba(d)[0], 0)
+
+    def test_el_re_recorte_se_compara_aunque_el_guardado_cuadre(self):
+        original = self._dos_agentes("uno", "dos")
+        d = self._dir(original, rr.recorta(original, "claude"))
+        con_menos = rr.recorta(
+            _claude(("Agent", {"subagent_type": "x", "description": "uno"})), "claude"
+        )
+        with mock.patch.object(rr, "recorta", return_value=con_menos):
+            rc, texto = _comprueba(d)
+        self.assertEqual(rc, 1, texto)
+        self.assertIn("re-recorte 1", texto)
 
 
 if __name__ == "__main__":

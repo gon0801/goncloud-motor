@@ -300,9 +300,8 @@ def _clasifica(f: Formato, herramienta: str, args: dict) -> list[Accion]:
             ),
             "subagente",
         )
-        if (
-            h == "agentswarm"
-        ):  # un subagente por elemento de `items`; sin lista no lanza a nadie
+        # AgentSwarm: un subagente por elemento de `items`; sin lista no lanza a nadie
+        if h == "agentswarm":
             items = args.get("items")
             cuantos = len(items) if isinstance(items, list) else 0
         else:
@@ -349,10 +348,14 @@ def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
             yield o
 
 
-def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bool]:
-    """(acciones del agente principal en orden, ¿el registro se pudo leer?). Lo usa `huella`."""
+def _llamadas(
+    fuente: str | Iterable[str], formato: str
+) -> tuple[list[tuple[str, dict]], bool]:
+    """Las (herramienta, args) de cada llamada del agente principal, en orden, y si el registro se
+    pudo leer. Una llamada que el CLI repite con otro estado (mismo id) va una vez. La usan
+    `eventos` y el recorte del registro, para contar igual."""
     f = FORMATOS[formato]
-    acciones: list[Accion] = []
+    pares: list[tuple[str, dict]] = []
     legible = False
     vistos: set[str] = set()
     for o in _objetos(fuente):
@@ -363,8 +366,17 @@ def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bo
             if ident in vistos:
                 continue
             vistos.add(ident)
-        for herramienta, args in llamadas:
-            acciones.extend(_clasifica(f, herramienta, args))
+        pares += llamadas
+    return pares, legible
+
+
+def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bool]:
+    """(acciones del agente principal en orden, ¿el registro se pudo leer?). Lo usa `huella`."""
+    pares, legible = _llamadas(fuente, formato)
+    f = FORMATOS[formato]
+    acciones: list[Accion] = []
+    for herramienta, args in pares:
+        acciones.extend(_clasifica(f, herramienta, args))
     return acciones, legible
 
 

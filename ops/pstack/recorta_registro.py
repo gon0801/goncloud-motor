@@ -48,9 +48,8 @@ def limpia(v):
     Los agentes pegan regexes de detección y credenciales en sus comandos."""
     if isinstance(v, str):
         previo = None
-        while (
-            previo != v
-        ):  # una clave pegada a otra: la segunda pasada limpia lo que la primera destapó
+        # una clave pegada a otra: la segunda pasada limpia lo que la primera destapó
+        while previo != v:
             previo = v
             for patron, _ in SECRETOS:
                 v = patron.sub(SECRETO, v)
@@ -135,20 +134,14 @@ def recorta(texto: str, cli: str) -> str:
 
 def subagentes(texto: str, cli: str, limpiar: bool = False) -> list[tuple[str, str]]:
     """(herramienta, descripción) de cada subagente del registro, en orden y con las mismas reglas
-    de conteo que `huella`. `limpiar` aplica la limpieza a la descripción de un original."""
+    de conteo que `huella` (mismo generador de llamadas). `limpiar` aplica la limpieza a la
+    descripción de un original."""
     f = ps.FORMATOS[cli]
-    out, vistos = [], set()
-    for o in ps._objetos(texto):
-        llamadas, _ = f.extrae(o)
-        ident = str(o.get("tool_call_id") or o.get("callID") or "")
-        if ident and llamadas:
-            if ident in vistos:
-                continue
-            vistos.add(ident)
-        for herramienta, args in llamadas:
-            n = sum(a.tipo == "subagente" for a in ps._clasifica(f, herramienta, args))
-            desc = args.get("description") or ""
-            out += [(herramienta, limpia(desc) if limpiar else desc)] * n
+    out = []
+    for herramienta, args in ps._llamadas(texto, cli)[0]:
+        n = sum(a.tipo == "subagente" for a in ps._clasifica(f, herramienta, args))
+        desc = args.get("description") or ""
+        out += [(herramienta, limpia(desc) if limpiar else desc)] * n
     return out
 
 
@@ -196,7 +189,7 @@ def comprueba(d: Path) -> int:
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--comprueba"]:
         if len(argv) != 2:
-            print(__doc__.strip().splitlines()[4], file=sys.stderr)
+            print(__doc__.strip().splitlines()[3], file=sys.stderr)
             return 2
         return comprueba(Path(argv[1]))
     if len(argv) != 3:
