@@ -125,10 +125,16 @@ class Espera:
         )
 
     def vigila(self, d: Path, cwd: Path) -> float:
-        """mtime de la entrega válida ya congelada, o 0 si todavía no hay.
+        """mtime de la última entrega válida ya congelada, o 0 si todavía no hay.
 
-        La primera entrega válida se copia a `entrega.json`. Un `result.json` que
-        llega después se guarda como `result.ajeno.json` y no la reemplaza.
+        La primera entrega válida se copia a `entrega.json`. Un `result.json` válido y
+        distinto de la congelada la reemplaza (temporal y `os.replace`): el revisor puede
+        corregir su veredicto hasta que el motor lo cierra. Uno que no es válido nunca
+        reemplaza al válido y queda en `result.ajeno.json`.
+
+        Riesgo aceptado: un subagente del propio CLI del revisor hereda su entorno y podría
+        escribir un veredicto válido. Trabaja para ese revisor, y el motor no puede saber qué
+        proceso escribió el archivo.
         """
         resultado = d / "result.json"
         fija = d / ENTREGA
@@ -142,13 +148,16 @@ class Espera:
             except OSError:
                 previa = b""
             if data is not None and data != previa:
-                ajeno = d / AJENO
-                try:
-                    ya = ajeno.read_bytes()
-                except OSError:
-                    ya = None
-                if ya != data:
-                    _escribe(ajeno, data)
+                if self.acepta(data, cwd):
+                    _escribe(fija, data)
+                else:
+                    ajeno = d / AJENO
+                    try:
+                        ya = ajeno.read_bytes()
+                    except OSError:
+                        ya = None
+                    if ya != data:
+                        _escribe(ajeno, data)
             try:
                 return fija.stat().st_mtime
             except OSError:

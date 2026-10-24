@@ -104,6 +104,19 @@ class CierreTrasResultadoTest(unittest.TestCase):
         self.assertIs(o["cerrado_tras_resultado"], True)
         self.assertLess(dura, 20)
 
+    def test_el_veredicto_final_reemplaza_al_provisional(self):
+        _, _, d = self.corre_en(
+            self.PRELUDIO + "veredicto('APROBADO')\n"
+            "fin = time.time() + 4\n"
+            "while time.time() < fin:\n"
+            "    sesion.open('a').write('l\\n')\n"
+            "    time.sleep(0.3)\n"
+            "veredicto('CAMBIOS', ['falla'])\n",
+            extra=self.REVISOR,
+        )
+        final = json.loads((d / "entrega.json").read_text())
+        self.assertEqual(final["veredicto"], "CAMBIOS")
+
     def test_sin_resultado_sigue_esperando_al_agente(self):
         o, _ = self.corre("import time; time.sleep(3)")
         self.assertEqual((o["exit"], o["cerrado_tras_resultado"]), (0, False))
