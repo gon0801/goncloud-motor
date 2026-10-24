@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Mide, con registros reales, qué hace cada CLI de modelos con la copia fija de pstack.
-# Corre en la Mac (local), la Mini (ssh) y la PC (ssh; Muse dentro de WSL). En cada máquina baja
-# `origin/main` de goncloud-motor-conf a una carpeta temporal, copia ahí `pstack/` y `pstack-motor/`
-# (la copia fija), lanza cada CLI con su ruta real de rutas.toml y el encargo mínimo (lanzar dos
-# subagentes que lean README.md, con la sección "Cómo trabajas" de pstack.instrucciones), y trae el
-# registro de cada corrida a tests/datos/pstack/<cli>-<maquina>/. Las carpetas temporales se borran.
+# Corre en la Mac (local), la Mini (ssh) y la PC (ssh; Muse dentro de WSL). Aquí se baja `origin/main`
+# de goncloud-motor-conf (o se usa la carpeta de MOTOR_CONF_REAL) y se arma el encargo de cada CLI con
+# el código del motor (`Effects._encargo`, con su anexo de guías) y el prompt de `prompt_de_encargo`; a
+# cada máquina viaja la copia fija (`pstack/` y `pstack-motor/`) con esos encargos. Allá se lanza cada CLI
+# con su ruta real de rutas.toml, y el registro de cada corrida vuelve a tests/datos/pstack/<cli>-<maquina>/.
+# Las carpetas temporales se borran.
 # Cada CLI corre como lo lanza el motor: el argv de su ruta tal cual (solo se sustituyen {prompt}, {brief},
 # {result}, {pstack} y {sesion}), el entorno de la máquina con secretos y sin MOTOR_*, y el registro se
 # lee donde lo lee el motor. Los flags que hacen legible un registro van en el rutas.toml con que se
@@ -13,8 +14,12 @@
 #   --rutas <archivo>   rutas.toml con el que se mide (uno que no se pueda leer sale 2); por omisión
 #             conf-ejemplo/rutas.toml de este repo (las rutas que el bloque E copia a producción), no
 #             el rutas.toml de la conf de producción
+#   --encargo imprime el encargo y el prompt de una corrida (de `--cli`, por omisión claude) y sale 0,
+#             sin lanzar ningún CLI ni tocar tests/datos
 #   --juzga   corre la medición en vivo, no toca tests/datos y sale 0 solo si `juzga` da Cumple para
 #             todos los CLI de los carriles (modelos.toml) en las tres máquinas
+#   MOTOR_CONF_REAL=<carpeta>   la conf con la que se mide, en lugar de bajar origin/main
+#   MIDE_HOME=<carpeta>         donde se arma el encargo (por omisión una temporal)
 set -uo pipefail
 export LC_ALL=C
 aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,41 +29,131 @@ repo="$(cd "$aqui/../.." && pwd)"
 TOPE_S="${MIDE_TOPE_S:-900}"
 
 juzga=0
+encargo=0
+cli_encargo=claude
 rutas="$repo/conf-ejemplo/rutas.toml"
 while [ $# -gt 0 ]; do
   case "$1" in
     --juzga) juzga=1 ;;
+    --encargo) encargo=1 ;;
+    --cli) [ $# -ge 2 ] || { echo "--cli pide un CLI" >&2; exit 2; }; cli_encargo=$2; shift ;;
     --rutas) [ $# -ge 2 ] || { echo "--rutas pide un archivo" >&2; exit 2; }; rutas=$2; shift ;;
-    *) echo "uso: ops/pstack/mide.sh [--juzga] [--rutas <rutas.toml>]" >&2; exit 2 ;;
+    *) echo "uso: ops/pstack/mide.sh [--juzga | --encargo [--cli <cli>]] [--rutas <rutas.toml>]" >&2; exit 2 ;;
   esac
   shift
 done
-[ -f "$rutas" ] && [ -r "$rutas" ] && [ -s "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
-RUTAS_B64="$(base64 <"$rutas" | tr -d '\n')" && [ -n "$RUTAS_B64" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
-
-# La sección "Cómo trabajas" es la misma que lleva un encargo real: sale de pstack.instrucciones.
-INSTR_B64="$(python3 -I - "$repo" <<'PY' | base64 | tr -d '\n'
-import json, sys
-sys.path.insert(0, sys.argv[1])
-from motor import pstack as ps
-
-e = ps.Exigencia(min_subagentes=2)
-print(json.dumps({cli: ps.instrucciones(e, cli) for cli in ps.FORMATOS}, ensure_ascii=False))
-PY
-)" && [ -n "$INSTR_B64" ] || { echo "no pude armar las instrucciones" >&2; exit 2; }
 
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
 
+# El encargo de cada CLI sale de `Effects._encargo` y su prompt de `prompt_de_encargo`: aquí no se
+# escribe a mano ningún título del encargo. Con `datos` deja en stdout lo que viaja a las máquinas;
+# con `imprime`, el encargo y el prompt de un CLI.
+arma_py() { cat <<'PYENC'
+import base64, io, json, sys, tarfile
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+import subprocess
+
+repo, conf_dir, home, modo = sys.argv[1:5]
+sys.path.insert(0, repo)
+from motor import effects as ef, machine as m, pstack as ps
+from motor.conf import RepoConf, load_conf
+from motor.plan import parse_plan
+
+TAREA = "Lanza dos subagentes y pídeles que lean README.md. No cambies nada."
+PLAN = (
+    "# Medición\nautopiloto: motor\nplan: mide\nrepo: git@github.com:x/mide.git\n\n"
+    "## Bloque A — medir\nlane: gate\nprueba-real: true\n"
+    f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| A.1 | {TAREA} | true |\n"
+)
+MARCA_BRIEF = "@@BRIEF@@"
+
+conf = load_conf(Path(conf_dir))
+if conf.pstack is None:
+    raise SystemExit("la conf no trae pstack.toml: no hay nada que medir")
+celda = conf.pstack.exigencia("gate", "implementar")
+exigencias = {**conf.pstack.exigencias, ("gate", "implementar"): replace(celda, min_subagentes=2)}
+conf = replace(conf, pstack=replace(conf.pstack, exigencias=exigencias))
+home = Path(home)
+fx = ef.Effects(SimpleNamespace(home=home, conf=conf, ws=SimpleNamespace(rama=lambda p, b: f"motor/{p}/{b}")))
+plan = parse_plan(PLAN)
+block = plan.block("A")
+rc = RepoConf.parse('[repo]\nprincipal = "main"\n')
+trabajo = home / "trabajo"
+trabajo.mkdir(parents=True, exist_ok=True)
+subprocess.run(["git", "init", "-q"], cwd=trabajo, check=True)
+a = m.StartAttempt("A", "implementar", "sonnet", 1, "a" * 40, (), False)
+
+
+def arma(cli):
+    d = home / f"intento-{cli}"
+    d.mkdir(parents=True, exist_ok=True)
+    info = fx._prepara_pstack(d, "gate", "implementar", cli, trabajo, "mide", a.correccion)
+    return d, info, fx._encargo(plan, block, a, trabajo, rc, info)
+
+
+if modo == "imprime":
+    cli = sys.argv[5]
+    if cli not in ps.FORMATOS:
+        raise SystemExit(f"cli desconocido: {cli} (hay {', '.join(ps.FORMATOS)})")
+    d, info, brief = arma(cli)
+    (d / "brief.md").write_text(brief, encoding="utf-8")
+    sys.stdout.write("=== encargo ===\n" + brief + "=== prompt ===\n" + ef.prompt_de_encargo(str(d / "brief.md"), brief) + "\n")
+    raise SystemExit(0)
+
+clis, raiz = {}, ""
+for cli in ps.FORMATOS:
+    _, info, brief = arma(cli)
+    raiz = info["raiz"]
+    clis[cli] = {"encargo": brief, "prompt": ef.prompt_de_encargo(MARCA_BRIEF, brief)}
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    for n in ("pstack", "pstack-motor"):
+        if (Path(raiz) / n).is_dir():
+            tf.add(Path(raiz) / n, arcname=n)
+datos = {
+    "conf_sha": conf.sha,
+    "carriles": {k: list(v) for k, v in conf.carriles.items()},
+    "raiz": raiz,
+    "marca_brief": MARCA_BRIEF,
+    "tar": base64.b64encode(buf.getvalue()).decode("ascii"),
+    "clis": clis,
+}
+sys.stdout.write(base64.b64encode(json.dumps(datos, ensure_ascii=False).encode("utf-8")).decode("ascii"))
+PYENC
+}
+
+if [ -n "${MOTOR_CONF_REAL:-}" ]; then
+  conf="$MOTOR_CONF_REAL"
+  [ -d "$conf" ] || { echo "MOTOR_CONF_REAL no es una carpeta: $conf" >&2; exit 2; }
+else
+  git clone --quiet --depth 1 --branch main "$CONF_URL" "$d/conf" || { echo "no pude bajar origin/main de la conf" >&2; exit 2; }
+  conf="$d/conf"
+fi
+casa="${MIDE_HOME:-$d/casa}"
+mkdir -p "$casa"
+arma_py >"$d/arma.py"
+
+if [ "$encargo" = 1 ]; then
+  python3 -I "$d/arma.py" "$repo" "$conf" "$casa" imprime "$cli_encargo"
+  exit $?
+fi
+
+[ -f "$rutas" ] && [ -r "$rutas" ] && [ -s "$rutas" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
+RUTAS_B64="$(base64 <"$rutas" | tr -d '\n')" && [ -n "$RUTAS_B64" ] || { echo "no puedo leer $rutas" >&2; exit 2; }
+python3 -I "$d/arma.py" "$repo" "$conf" "$casa" datos >"$d/datos.b64" && [ -s "$d/datos.b64" ] || { echo "no pude armar el encargo" >&2; exit 2; }
+
 mide_py() { cat <<'PY'
-import base64, json, os, re, shutil, signal, string, subprocess, sys, tempfile, threading, time, tomllib, uuid
+import base64, io, json, os, re, shutil, signal, string, subprocess, sys, tarfile, tempfile, threading, time, tomllib, uuid
 from pathlib import Path
 
-if len(sys.argv) != 6:
-    raise SystemExit("uso: mide.py <conf> <maquina> <tope> <rutas_b64> <instr_b64>")
-conf_url, maquina, tope = sys.argv[1], sys.argv[2], int(sys.argv[3])
-RUTAS_B64 = sys.argv[4]
-INSTR = json.loads(base64.b64decode(sys.argv[5]).decode("utf-8"))
+if len(sys.argv) != 4:
+    raise SystemExit("uso: mide.py <maquina> <tope> <rutas_b64> (con DATOS_B64 arriba del script)")
+maquina, tope = sys.argv[1], int(sys.argv[2])
+RUTAS_B64 = sys.argv[3]
+DATOS = json.loads(base64.b64decode(DATOS_B64).decode("utf-8"))
 WIN = os.name == "nt"
 HOME = Path.home()
 CLIS = ["claude", "kimi", "opencode", "grok", "muse", "qwen"]
@@ -142,16 +237,12 @@ try:
     env["PATH"] = os.pathsep.join([*mq.get("path_extra", []), env.get("PATH", "")])
     wsl = set(mq.get("wsl", []))
 
-    clon = temporal("mide-pstack-conf-")
-    r = corre(["git", "clone", "--quiet", "--depth", "1", "--branch", "main", conf_url, str(clon)], env=env)
-    if r.returncode:
-        raise RuntimeError("no pude bajar origin/main de la conf: " + r.stderr.strip()[-300:])
-    salida["conf_sha"] = corre(["git", "-C", str(clon), "rev-parse", "HEAD"], env=env).stdout.strip()
+    salida["conf_sha"] = DATOS["conf_sha"]
     try:
         rutas = tomllib.loads(base64.b64decode(RUTAS_B64).decode("utf-8")).get("rutas", {})
     except ValueError as e:
         raise RuntimeError(f"no pude leer las rutas que mandó mide.sh: {e}") from None
-    carriles = toml(clon / "modelos.toml").get("carriles", {})
+    carriles = DATOS["carriles"]
     if not rutas:
         raise RuntimeError("rutas.toml no trae ninguna ruta")
     modelos = {m for ms in carriles.values() for m in ms}
@@ -162,21 +253,18 @@ try:
         raise RuntimeError("modelos.toml pone en un carril a " + ", ".join(sin_ruta) + " y rutas.toml no los trae")
     salida["carriles"] = sorted({rutas[m]["cli"] for m in modelos})
     copia = temporal("mide-pstack-copia-")
-    for n in ("pstack", "pstack-motor"):
-        shutil.copytree(clon / n, copia / n)
-    shutil.rmtree(clon, ignore_errors=True)
+    with tarfile.open(fileobj=io.BytesIO(base64.b64decode(DATOS["tar"])), mode="r:gz") as tf:
+        try:
+            tf.extractall(copia, filter="data")
+        except TypeError:  # Python sin filtros de tar
+            tf.extractall(copia)
 
     def raiz_de(cli):
         return ruta_wsl(str(copia)) if cli in wsl else str(copia)
 
     def encargo(cli):
-        partes = [f"# Encargo de medición · {cli}\n\n{TAREA}\n"]
-        for titulo, f in (("Lo que manda el motor sobre pstack", "motor.md"), (f"Mapa de {cli}", f"{cli}.md")):
-            p = copia / "pstack-motor" / f
-            if p.is_file():
-                partes.append(f"## {titulo}\n{p.read_text(encoding='utf-8').strip()}\n")
-        partes.append(INSTR[cli])
-        return "\n".join(partes)
+        """El encargo que armó el motor, con la copia fija en la ruta que tiene aquí."""
+        return DATOS["clis"][cli]["encargo"].replace(DATOS["raiz"], raiz_de(cli))
 
     def entorno_de(cli, ruta):
         """Lo mismo que Efectos.env_base + el `env` de la ruta (con ${VAR}), sin nada MOTOR_*."""
@@ -237,7 +325,7 @@ try:
         brief = corrida / "brief.md"
         brief.write_text(encargo(cli), encoding="utf-8")
         brief_c = ruta_wsl(str(brief)) if cli in wsl else str(brief)
-        prompt = f"Lee {brief_c} y ejecútalo completo sin preguntar nada."
+        prompt = DATOS["clis"][cli]["prompt"].replace(DATOS["marca_brief"], brief_c)
         sid = str(uuid.uuid4())
         try:
             argv = argv_de(cli, ruta, prompt, brief_c, ruta_wsl(str(corrida / "result.json")) if cli in wsl else str(corrida / "result.json"), sid)
@@ -279,20 +367,19 @@ sys.stdout.buffer.write(("MIDE-JSON:" + json.dumps(salida, ensure_ascii=True) + 
 PY
 }
 
-mide_py >"$d/mide.py"
+{ printf 'DATOS_B64 = "%s"\n' "$(cat "$d/datos.b64")"; mide_py; } >"$d/mide.py"
 
 posix_path='export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"'
 py_posix="$posix_path; if python3 -c 'import tomllib' 2>/dev/null; then py=python3; else py='uv run --python 3.12 python'; fi"
 
 mide_en() {
-  local m=$1 url=$CONF_URL
-  [ "$m" = mini ] && url=$CONF_URL_MINI
+  local m=$1
   case "$m" in
     pc)
-      ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python - $url $m $TOPE_S $RUTAS_B64 $INSTR_B64" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
+      ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python - $m $TOPE_S $RUTAS_B64" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
       ;;
     *)
-      local cmd="$py_posix; \$py - $url $m $TOPE_S $RUTAS_B64 $INSTR_B64"
+      local cmd="$py_posix; \$py - $m $TOPE_S $RUTAS_B64"
       if es_local "$m"; then
         bash -c "$cmd" <"$d/mide.py" >"$d/$m.out" 2>"$d/$m.err"
       else

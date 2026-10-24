@@ -7,11 +7,17 @@ herramienta de subagentes del CLI vale uno, y en Kimi `AgentSwarm` vale uno por 
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import shutil
+import subprocess
+import sys
+import tarfile
 import tempfile
 import time
+import tomllib
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +31,8 @@ from motor import relevo
 from motor.__main__ import conf_valida
 from motor.conf import load_conf
 from motor.plan import Plan, parse_plan
+
+from .test_guias import _conf_falsa
 
 
 def jl(*objs) -> str:
@@ -729,10 +737,6 @@ class TestMide(unittest.TestCase):
         secretos="",
         tope=60,
     ):
-        import base64
-        import subprocess
-        import sys
-
         falsos = falsos or {"claude": "env\npwd"}
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
@@ -754,13 +758,6 @@ class TestMide(unittest.TestCase):
             for cli, cuerpo in falsos.items():
                 (bin_ / cli).write_text(FALSO % cuerpo)
                 (bin_ / cli).chmod(0o755)
-            g = ["git", "-C", str(conf)]
-            subprocess.run(["git", "init", "-q", "-b", "main", str(conf)], check=True)
-            subprocess.run(g + ["add", "."], check=True)
-            subprocess.run(
-                g + ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"],
-                check=True,
-            )
             env = {
                 k: v
                 for k, v in os.environ.items()
@@ -768,26 +765,38 @@ class TestMide(unittest.TestCase):
                 and not k.startswith("MOTOR_")
             }
             env.update(HOME=str(home), TMPDIR=str(tmpdir), **(extra_env or {}))
-            instr = base64.b64encode(
-                json.dumps(
-                    {
-                        cli: ps.instrucciones(ps.Exigencia(min_subagentes=2), cli)
-                        for cli in ps.FORMATOS
-                    }
-                ).encode()
-            ).decode()
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+                for n in ("pstack", "pstack-motor"):
+                    tf.add(conf / n, arcname=n)
+            prompt = (
+                "Lee el encargo completo en @@BRIEF@@ (1 KB) con tu herramienta de lectura de "
+                "archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
+            )
+            datos = {
+                "conf_sha": "abc1234",
+                "carriles": {
+                    k: list(v) for k, v in tomllib.loads(modelos)["carriles"].items()
+                },
+                "raiz": "/RAIZ-LOCAL",
+                "marca_brief": "@@BRIEF@@",
+                "tar": base64.b64encode(buf.getvalue()).decode(),
+                "clis": {
+                    cli: {"encargo": f"# encargo {cli}\n", "prompt": prompt}
+                    for cli in ps.FORMATOS
+                },
+            }
+            cabeza = base64.b64encode(json.dumps(datos).encode()).decode()
             p = subprocess.run(
                 [
                     sys.executable,
                     "-I",
                     "-",
-                    str(conf),
                     "mac",
                     str(tope),
                     base64.b64encode(rutas.encode()).decode(),
-                    instr,
                 ],
-                input=_heredoc(1),
+                input=f'DATOS_B64 = "{cabeza}"\n' + _heredoc(1),
                 capture_output=True,
                 text=True,
                 env=env,
@@ -963,7 +972,6 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
 
     def test_una_conf_que_no_se_puede_leer_es_un_error_no_una_medicion_vacia(self):
         casos = {
-            "modelos ilegible": dict(modelos="[carriles\n"),
             "carriles vacíos": dict(modelos="[carriles]\n"),
             "modelo sin ruta": dict(modelos='[carriles]\ncodigo = ["otro"]\n'),
             "rutas vacías": dict(rutas=""),
@@ -977,25 +985,14 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
     def test_sin_las_rutas_en_el_argv_no_mide_con_las_de_la_conf(self):
         # Sin las rutas en el argv no hay medición: caer al rutas.toml de la conf fue la causa
         # raíz del --rutas ilegible que medía en silencio con las rutas de producción.
-        import subprocess
-        import sys
-
-        with tempfile.TemporaryDirectory() as t:
-            conf = Path(t) / "conf"
-            (conf / "pstack").mkdir(parents=True)
-            (conf / "pstack-motor").mkdir()
-            (conf / "rutas.toml").write_text(
-                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "-p", "{prompt}"]\n'
-            )
-            (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
-            p = subprocess.run(
-                [sys.executable, "-I", "-", str(conf), "mac", "60"],
-                input=_heredoc(1),
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
+        p = subprocess.run(
+            [sys.executable, "-I", "-", "mac", "60"],
+            input=_heredoc(1),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
         self.assertNotEqual(p.returncode, 0)
         self.assertNotIn("MIDE-JSON:", p.stdout)
 
@@ -1065,15 +1062,13 @@ class TestMideDePuntaAPunta(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
-            conf, home, bin_ = t / "conf", t / "home", t / "bin"
-            for d in (conf / "pstack", conf / "pstack-motor", home / ".motor", bin_):
-                d.mkdir(parents=True)
-            (conf / "pstack" / "x").write_text("x")
-            (conf / "pstack-motor" / "x").write_text("x")
-            (conf / "rutas.toml").write_text(
-                '[rutas.sonnet]\ncli = "claude"\nargv = ["claude", "-p", "{prompt}"]\n'
+            home, bin_ = t / "home", t / "bin"
+            conf = _conf_falsa(t)
+            (conf / "modelos.toml").write_text(
+                '[carriles]\ncodigo = ["sonnet"]\nrevisar = ["sonnet"]\n'
             )
-            (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
+            for d in (home / ".motor", bin_):
+                d.mkdir(parents=True)
             (home / ".motor" / "maquina.toml").write_text(f'path_extra = ["{bin_}"]\n')
             (bin_ / "claude").write_text(FALSO_CLAUDE)
             for cli in _clis():
@@ -1083,13 +1078,6 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             (bin_ / "uv").write_text('#!/bin/sh\nshift 4\nexec python3 "$@"\n')
             for f in bin_.iterdir():
                 f.chmod(0o755)
-            g = ["git", "-C", str(conf)]
-            subprocess.run(["git", "init", "-q", "-b", "main", str(conf)], check=True)
-            subprocess.run(g + ["add", "."], check=True)
-            subprocess.run(
-                g + ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"],
-                check=True,
-            )
             env = {
                 k: v
                 for k, v in os.environ.items()
@@ -1098,8 +1086,7 @@ class TestMideDePuntaAPunta(unittest.TestCase):
             env.update(
                 HOME=str(home),
                 PATH=f"{bin_}:{env['PATH']}",
-                MOTOR_CONF_URL=str(conf),
-                MOTOR_CONF_URL_MINI=str(conf),
+                MOTOR_CONF_REAL=str(conf),
                 MOTOR_PC_UV=str(bin_ / "uv"),
                 MIDE_TOPE_S="60",
                 FALSO_MODO=modo,

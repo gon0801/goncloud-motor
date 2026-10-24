@@ -244,6 +244,16 @@ def _texto_guia(f: Path) -> str:
     return f.read_text(encoding="utf-8").strip()
 
 
+def prompt_de_encargo(ruta: str, brief: str) -> str:
+    """Lo que se le dice al CLI al lanzarlo: lee el encargo de `ruta` (con su tamaño) y ejecútalo.
+    Lo usan `start_attempt` y ops/pstack/mide.sh, para medir con el mismo prompt que el motor."""
+    kb = max(1, round(len(brief.encode("utf-8")) / 1024))
+    return (
+        f"Lee el encargo completo en {ruta} ({kb} KB) con tu herramienta "
+        "de lectura de archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
+    )
+
+
 def errores_pstack(d: Path, conf) -> list[str]:
     """Para `motor conf valida`: pstack.toml tiene que coincidir con la copia fija que lleva la conf."""
     pc = conf.pstack
@@ -627,11 +637,7 @@ class Effects:
         brief = self._encargo(plan, block, a, cwd, rc, info_pstack)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
-        kb = max(1, round(len(brief.encode("utf-8")) / 1024))
-        prompt = (
-            f"Lee el encargo completo en {d / 'brief.md'} ({kb} KB) con tu herramienta "
-            "de lectura de archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
-        )
+        prompt = prompt_de_encargo(str(d / "brief.md"), brief)
         argv = argv_de_ruta(
             ruta,
             brief=str(d / "brief.md"),
