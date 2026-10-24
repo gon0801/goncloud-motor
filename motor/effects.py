@@ -430,11 +430,14 @@ class Effects:
         cwd: Path,
         sesion: str,
         correccion: bool,
+        guias_del=None,
     ) -> dict | None:
         """Fija lo que este intento exige y dónde se lee su registro; lo guarda en `pstack.json`.
         `collect` juzga contra esto, no contra la conf de entonces: la conf puede cambiar a medias.
-        Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo."""
-        guias_del = self._guias_del_intento(lane, role, cli, correccion)
+        Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo.
+        `guias_del` es el chequeo ya hecho (`_guias_del_intento`), para no repetirlo."""
+        if guias_del is None:
+            guias_del = self._guias_del_intento(lane, role, cli, correccion)
         if guias_del is None:
             return None
         pc, (arbol, raiz), e, lista = guias_del
@@ -608,7 +611,7 @@ class Effects:
             return
         block = plan.block(a.block)
         ruta = self.cx.conf.rutas[a.modelo]
-        self._guias_del_intento(block.lane, a.role, ruta.cli, a.correccion)
+        guias_del = self._guias_del_intento(block.lane, a.role, ruta.cli, a.correccion)
         d.mkdir(parents=True, exist_ok=True)
         rc = self.repo_conf(snap, block.repo)
         if a.role == "implementar":
@@ -632,7 +635,7 @@ class Effects:
             marca_sesion.write_text(str(uuid.uuid4()), encoding="utf-8")
         sesion = marca_sesion.read_text(encoding="utf-8").strip()
         info_pstack = self._prepara_pstack(
-            d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion
+            d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion, guias_del
         )
         brief = self._encargo(plan, block, a, cwd, rc, info_pstack)
         (d / "brief.md").write_text(brief, encoding="utf-8")

@@ -254,9 +254,14 @@ class GuiaFaltanteTest(unittest.TestCase):
         self.conf_dir = _conf_falsa(self.tmp)
         os.remove(self.conf_dir / FEATURE)
         self.ws = mock.MagicMock()
+        # `policy` tiene que estar: si el chequeo temprano de guías se perdiera, el intento
+        # llega hasta `_prepara_pstack` y lo matan las aserciones, no un AttributeError.
         self.fx = ef.Effects(
             SimpleNamespace(
-                home=self.tmp / "home", conf=load_conf(self.conf_dir), ws=self.ws
+                home=self.tmp / "home",
+                conf=load_conf(self.conf_dir),
+                ws=self.ws,
+                policy=SimpleNamespace(wip_cada_s=300),
             )
         )
 
@@ -265,7 +270,9 @@ class GuiaFaltanteTest(unittest.TestCase):
             with self.subTest(role=role):
                 a = m.StartAttempt("A", role, "sonnet", 1, "a" * 40, (), False)
                 with self.assertRaises(FileNotFoundError) as cm:
-                    self.fx.start_attempt(parse_plan(PLAN), None, a)
+                    self.fx.start_attempt(
+                        parse_plan(PLAN), SimpleNamespace(repos={}), a
+                    )
                 self.assertIn(FEATURE, str(cm.exception))
                 self.ws.prepara.assert_not_called()
                 self.ws.copia.assert_not_called()
@@ -276,7 +283,7 @@ class GuiaFaltanteTest(unittest.TestCase):
         os.remove(self.conf_dir / BUGFIX)
         a = m.StartAttempt("A", "implementar", "sonnet", 1, "a" * 40, (), True)
         with self.assertRaises(FileNotFoundError) as cm:
-            self.fx.start_attempt(parse_plan(PLAN), None, a)
+            self.fx.start_attempt(parse_plan(PLAN), SimpleNamespace(repos={}), a)
         self.assertIn(BUGFIX, str(cm.exception))
         self.ws.prepara.assert_not_called()
         self.ws.copia.assert_not_called()
