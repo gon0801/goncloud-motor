@@ -51,13 +51,17 @@ if [ "$host" = gwpc ]; then
     "type "*"etiqueta-anterior"*) [ -f "$S/pc-etiqueta-anterior" ] && { cat "$S/pc-etiqueta-anterior"; exit 0; } || exit 1 ;;
     "echo "*"etiqueta-anterior"*) v="${*#echo }"; echo "${v%%>*}" >"$S/pc-etiqueta-anterior" ;;
     # cmd.exe: sin paréntesis, `& mkdir` es parte del cuerpo del if y no corre si la carpeta no existe.
-    "(if exist "*") & mkdir "*"\\codigo "*"\\conf") touch "$S/pc-codigo-creado" ;;
+    "(if exist "*") & mkdir "*"\\codigo "*"\\conf") rm -f "$S/pc-extraido-"*; touch "$S/pc-codigo-creado" ;;
     "if exist "*" & mkdir "*) ;;
-    "git -C %USERPROFILE%\\motor archive refs/tags/"*" | tar -x -C %TEMP%\\motor-valida-"*"\\codigo" | "git -C %USERPROFILE%\\motor-conf archive origin/HEAD | tar -x -C %TEMP%\\motor-valida-"*"\\conf")
-      [ -e "$S/pc-codigo-creado" ] || { echo "tar: could not chdir" >&2; exit 1; } ;;
-    "if not exist "*"maquinas"*"pc.toml exit /b 1") [ -z "${FAKE_PC_SIN_TOML:-}" ] || exit 1 ;;
-    "cd /d %TEMP%\\motor-valida-"*"\\codigo && "*" conf valida %TEMP%\\motor-valida-"*"\\conf") exit "${FAKE_PC_VALIDA_RC:-0}" ;;
-    "cd /d %USERPROFILE%\\motor && "*" conf valida %USERPROFILE%\\motor-conf") exit "${FAKE_PC_VALIDA_RC:-0}" ;;
+    "git -C %USERPROFILE%\\motor archive refs/tags/"*" | tar -x -C %TEMP%\\motor-valida-"*"\\codigo")
+      [ -e "$S/pc-codigo-creado" ] || { echo "tar: could not chdir" >&2; exit 1; }; touch "$S/pc-extraido-codigo" ;;
+    "git -C %USERPROFILE%\\motor-conf archive origin/HEAD | tar -x -C %TEMP%\\motor-valida-"*"\\conf")
+      [ -e "$S/pc-codigo-creado" ] || { echo "tar: could not chdir" >&2; exit 1; }; touch "$S/pc-extraido-conf" ;;
+    "if not exist %TEMP%\\motor-valida-"*"\\conf\\maquinas\\pc.toml exit /b 1") [ -z "${FAKE_PC_SIN_TOML:-}" ] || exit 1 ;;
+    "cd /d %TEMP%\\motor-valida-"*"\\codigo && "*" conf valida %TEMP%\\motor-valida-"*"\\conf")
+      [ -e "$S/pc-extraido-codigo" ] && [ -e "$S/pc-extraido-conf" ] || { echo "No module named motor" >&2; exit 1; }
+      exit "${FAKE_PC_VALIDA_RC:-0}" ;;
+    "cd /d %USERPROFILE%\\motor && "*" conf valida %USERPROFILE%\\motor-conf") ;;
     "if exist "*"\\.git (git "* | "schtasks /end"* | "schtasks /delete"*) ok_pc ;;
     "if not exist "* | "copy /y "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
     *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
@@ -184,6 +188,7 @@ base_y_codigo_nuevo() {
 
 echo "# conf que el código nuevo rechaza"
 base_y_codigo_nuevo "antes de la conf rota"
+git -C "$S/trabajo" -c user.name=t -c user.email=t@t revert --no-edit HEAD >/dev/null && git -C "$S/trabajo" push -q origin HEAD:main && git -C "$S/trabajo" checkout -q --detach HEAD~1
 touch "$S/conf-src/solo-el-nuevo-rechaza"
 git -C "$S/conf-src" add -A && git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m rota
 git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main
@@ -192,6 +197,7 @@ contiene "dice quién la rechaza" "$S/salida" "rechaza la conf"
 contiene "dice que nada cambió" "$S/salida" "No se cambió el código en ninguna máquina"
 contiene "la PC valida" "$FAKE_LOG" "conf valida"
 nada_se_movio "conf rota"
+git -C "$S/trabajo" checkout -q --detach origin/main
 conf_buena
 
 # El veredicto de `conf valida` en la PC cuenta: si lo rechaza, nadie cambia.
