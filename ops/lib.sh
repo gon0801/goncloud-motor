@@ -7,7 +7,7 @@
 MAQUINAS="mac mini pc"
 REPO_URL="${MOTOR_REPO_URL:-git@github.com:gon0801/goncloud-motor.git}"
 CONF_URL="${MOTOR_CONF_URL:-git@github.com:gon0801/goncloud-motor-conf.git}"
-ETIQUETA="${MOTOR_ETIQUETA:-v1.0.31}"   # v1.0.0 quedó en un commit sin los arreglos del 2026-10-20
+ETIQUETA="${MOTOR_ETIQUETA:-v1.0.32}"   # v1.0.0 quedó en un commit sin los arreglos del 2026-10-20
 PC_USUARIO="${MOTOR_PC_USUARIO:-ehven}"
 PC_UV="${MOTOR_PC_UV:-C:\\Users\\ehven\\.local\\bin\\uv.exe}"
 TAREA_PC="GoncloudMotor"
