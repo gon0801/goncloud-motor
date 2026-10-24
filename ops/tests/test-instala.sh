@@ -47,6 +47,13 @@ if [ "$host" = gwpc ]; then
     # Estado de mentira de la PC: la etiqueta que tiene ~/motor y la marca de la marcha atrás.
     *"describe --tags --exact-match"*) [ -f "$S/pc-tag" ] && { cat "$S/pc-tag"; exit 0; } || exit 1 ;;
     *"tag --points-at HEAD"*) [ -f "$S/pc-tag" ] && printf '%s\r\n' "$(cat "$S/pc-tag")"; exit 0 ;;
+    # La marcha atrás por SHA: el commit de la PC se simula traduciendo pc-tag contra origen.git.
+    "git -C "*" rev-parse HEAD")
+      [ -f "$S/pc-tag" ] || exit 1
+      sha_pc="$(git -C "$S/origen.git" rev-parse "refs/tags/$(cat "$S/pc-tag")^{commit}" 2>/dev/null)" || exit 1
+      printf '%s\r\n' "$sha_pc" ;;
+    *"rev-parse -q --verify refs/tags/"*)
+      git -C "$S/origen.git" rev-parse -q --verify "refs/tags/${*##*refs/tags/}^{commit}" >/dev/null 2>&1 ;;
     *"checkout -q --detach refs/tags/"*) echo "${*##*refs/tags/}" >"$S/pc-tag" ;;
     "type "*"etiqueta-anterior"*) [ -f "$S/pc-etiqueta-anterior" ] && { cat "$S/pc-etiqueta-anterior"; exit 0; } || exit 1 ;;
     "echo "*"etiqueta-anterior"*) v="${*#echo }"; echo "${v%%>*}" >"$S/pc-etiqueta-anterior" ;;
@@ -63,6 +70,8 @@ if [ "$host" = gwpc ]; then
       exit "${FAKE_PC_VALIDA_RC:-0}" ;;
     "cd /d %USERPROFILE%\\motor && "*" conf valida %USERPROFILE%\\motor-conf") ;;
     "if exist "*"\\.git (git "* | "schtasks /end"* | "schtasks /delete"*) ok_pc ;;
+    "git -C "*" fetch -q --tags --force origin")
+      [ -z "${FAKE_GIT_ORIGIN_CAIDO:-}" ] || { echo "fatal: no pude conectar (origin caído)" >&2; exit 1; } ;;
     "if not exist "* | "copy /y "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
     *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
   esac
@@ -88,10 +97,14 @@ FAKE
 chmod +x "$S/bin/"*
 
 # git de verdad, pero con fallas de red a pedido: el primer fetch falla si FAKE_GIT_FETCH_FALLA=1
-# (transitorio: un reintento lo absorbe) y todo ls-remote falla si FAKE_GIT_LSREMOTO_FALLA=1.
+# (transitorio: un reintento lo absorbe), todo ls-remote falla si FAKE_GIT_LSREMOTO_FALLA=1 y
+# todo fetch y ls-remote falla siempre que FAKE_GIT_ORIGIN_CAIDO=1.
 GIT_REAL="$(command -v git)"
 cat >"$S/bin/git" <<FAKE
 #!/usr/bin/env bash
+if [ -n "\${FAKE_GIT_ORIGIN_CAIDO:-}" ] && [ "\$1" = -C ] && { [ "\$3" = fetch ] || [ "\$3" = ls-remote ]; }; then
+  echo "fatal: no pude conectar (origin caído)" >&2; exit 128
+fi
 if [ -n "\${FAKE_GIT_FETCH_FALLA:-}" ] && [ "\$1" = -C ] && [ "\$3" = fetch ]; then
   if [ ! -e "$S/fetch-fallo" ]; then touch "$S/fetch-fallo"; echo "fatal: cannot lock ref" >&2; exit 128; fi
 fi
@@ -345,7 +358,7 @@ export MOTOR_ETIQUETA=$TAG
 FAKE_GIT_LSREMOTO_FALLA=1 en_mac espera "entrega $TAG falla antes de tocar las máquinas" '!0' bash "$I"; unset FAKE_GIT_LSREMOTO_FALLA
 en_su_etiqueta "precondición: la entrega no tocó las máquinas" v1.0.23
 en_mac espera "marcha atrás de una entrega que no tocó las máquinas" 0 bash "$V"
-contiene "dice que se queda" "$S/salida" "no está en $TAG; se queda"
+contiene "dice que se queda" "$S/salida" "no en el commit de la entrega"
 en_su_etiqueta "entrega que no tocó las máquinas" v1.0.23
 unset MOTOR_ETIQUETA
 
@@ -371,5 +384,48 @@ en_mac espera "entrega sin subir la etiqueta se niega" 3 bash "$I"
 MOTOR_SHA="$(git -C "$S/trabajo" rev-parse HEAD)" en_mac espera "marcha atrás de una entrega que se negó" 0 bash "$V"
 contiene "dice que nadie se mueve" "$S/salida" "nadie se mueve"
 en_su_etiqueta "entrega que se negó" "$TAG"
+
+# La instalación se niega (la etiqueta ya está publicada en otro commit) y la marcha atrás
+# corre con origin caído: nadie se mueve (revisión 2 de PSTACK 02 B).
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "entrega anterior v1.0.23 para la negativa con origin caído" 0 bash "$I"; unset MOTOR_ETIQUETA
+avanza "para-la-negativa-origin-caido"
+en_mac espera "entrega $TAG para la negativa con origin caído" 0 bash "$I"
+avanza "sin-subir-con-origin-caido"
+en_mac espera "entrega que se niega, con origin caído después" 3 bash "$I"
+FAKE_GIT_ORIGIN_CAIDO=1 MOTOR_SHA="$(git -C "$S/trabajo" rev-parse HEAD)" en_mac espera "marcha atrás con origin caído de una entrega que se negó" 0 bash "$V"
+contiene "dice que nadie se mueve" "$S/salida" "nadie se mueve"
+en_su_etiqueta "entrega que se negó con origin caído" "$TAG"
+
+# Con origin caído, una máquina en el commit de la entrega vuelve a su etiqueta anterior
+# con la copia local (se instaló antes): la marcha atrás no necesita origin.
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 para volver sin origin" 0 bash "$I"; unset MOTOR_ETIQUETA
+avanza "avance-para-volver-sin-origin"
+rm -f "$S"/n-*
+FAKE_CAE_DESPUES="gon@mini-fake" en_mac espera "entrega $TAG que falla en la Mini al instalar" '!0' bash "$I"
+[ "$(tag_en mac)" = $TAG ] || fallo "precondición: la Mac debía quedar en $TAG"
+[ "$(tag_en mini)" = v1.0.23 ] || fallo "precondición: la Mini debía seguir en v1.0.23"
+FAKE_GIT_ORIGIN_CAIDO=1 MOTOR_SHA="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")" en_mac espera "marcha atrás sin origin" 0 bash "$V"
+en_su_etiqueta "marcha atrás sin origin" v1.0.23
+
+# MOTOR_SHA manda sobre el HEAD de la raíz: la marcha atrás mueve a las máquinas que están
+# en el commit de MOTOR_SHA; un script que use el HEAD no mueve a nadie y este caso falla.
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 para MOTOR_SHA" 0 bash "$I"; unset MOTOR_ETIQUETA
+avanza "avance-para-motor-sha"
+en_mac espera "entrega $TAG para MOTOR_SHA" 0 bash "$I"
+avanza "head-que-no-es-la-entrega"
+MOTOR_SHA="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")" en_mac espera "marcha atrás con MOTOR_SHA distinto del HEAD" 0 bash "$V"
+en_su_etiqueta "marcha atrás con MOTOR_SHA" v1.0.23
+
+# La etiqueta anterior puede no estar en la copia local de una máquina: se trae de origin.
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 para traer la etiqueta de origin" 0 bash "$I"; unset MOTOR_ETIQUETA
+avanza "avance-para-traer-de-origin"
+en_mac espera "entrega $TAG para traer la etiqueta de origin" 0 bash "$I"
+git -C "$S/mac/motor" tag -d v1.0.23 >/dev/null
+MOTOR_SHA="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")" en_mac espera "marcha atrás trayendo la etiqueta de origin" 0 bash "$V"
+en_su_etiqueta "marcha atrás trayendo de origin" v1.0.23
 
 termina
