@@ -147,18 +147,27 @@ contiene "checklist sin señales" "$S/salida" "no tiene señal UP"
 latido "Motor de la Mini" 10
 espera "checklist con señal solo de la Mini falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
 contiene "checklist sin señal de la PC" "$S/salida" "de pc no tiene señal UP"
-latido "Motor de la PC" 400
-espera "checklist con señal de hace 400 s falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+latido "Motor de la PC" 200
+espera "checklist con señal de hace 200 s falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
 latido "Motor de la PC" 5 0
 espera "checklist con señal DOWN falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
-latido "Motor de la PC" 5
+latido "Motor de la PC" 170
 corre_y_guarda "checklist con las dos señales pasa" 0 bash "$RAIZ/ops/senal-kuma-checklist.sh"
+
+# La primera señal puede tardar: el checklist la espera en vez de rendirse en la primera mirada.
+python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM heartbeat WHERE monitor_id IN (SELECT id FROM monitor WHERE name = \"Motor de la PC\")"); c.commit()' "$S/kuma.db"
+( sleep 3; latido "Motor de la PC" 1 ) &
+corre_y_guarda "checklist espera la primera señal de la PC" 0 env MOTOR_KUMA_TOPE=15 bash "$RAIZ/ops/senal-kuma-checklist.sh"
 
 python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE notification SET active=0"); c.commit()' "$S/kuma.db"
 espera "checklist con el aviso apagado falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
 python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE notification SET active=1"); c.execute("UPDATE monitor SET active=0 WHERE name=\"Motor de la PC\""); c.commit()' "$S/kuma.db"
 espera "checklist con un monitor inactivo falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
-python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE monitor SET active=1 WHERE name=\"Motor de la PC\""); c.execute("DELETE FROM monitor_notification WHERE monitor_id IN (SELECT id FROM monitor WHERE name=\"Motor de la Mini\")"); c.commit()' "$S/kuma.db"
+python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE monitor SET active=1 WHERE name=\"Motor de la PC\""); c.execute("UPDATE monitor_notification SET notification_id = (SELECT id FROM notification WHERE name = \"Telegram\") WHERE monitor_id IN (SELECT id FROM monitor WHERE name=\"Motor de la Mini\")"); c.commit()' "$S/kuma.db"
+espera "checklist con la Mini en otro aviso falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+contiene "checklist otro aviso" "$S/salida" "mini no está conectado a un aviso Server Alerts activo"
+python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE monitor_notification SET notification_id = (SELECT id FROM notification WHERE name = \"Server Alerts\") WHERE monitor_id IN (SELECT id FROM monitor WHERE name=\"Motor de la Mini\")"); c.commit()' "$S/kuma.db"
+python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM monitor_notification WHERE monitor_id IN (SELECT id FROM monitor WHERE name=\"Motor de la Mini\")"); c.commit()' "$S/kuma.db"
 espera "checklist con un monitor sin aviso falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
 FAKE_KUMA_CORRE=false espera "checklist con Kuma caído falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
 contiene "checklist Kuma caído" "$S/salida" "Kuma no corre"
