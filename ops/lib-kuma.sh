@@ -39,9 +39,9 @@ if (\$accion -eq 'poner') { \$tok = [Console]::In.ReadLine(); if (-not \$tok) { 
 \$t = "\${f}.nuevo"
 New-Item -ItemType Directory -Force -Path \$dir | Out-Null
 \$lineas = @()
-if (Test-Path -LiteralPath \$f) { \$lineas = @(Get-Content -LiteralPath \$f | Where-Object { \$_ -notmatch '^\s*MOTOR_KUMA_URL=' }) }
+if (Test-Path -LiteralPath \$f) { \$lineas = @(Get-Content -LiteralPath \$f -Encoding UTF8 | Where-Object { \$_ -notmatch '^\s*MOTOR_KUMA_URL=' }) }
 if (\$accion -eq 'poner') { \$lineas += ('MOTOR_KUMA_URL=$KUMA_PUSH_BASE' + \$tok) }
-Set-Content -LiteralPath \$t -Value \$lineas -Encoding Ascii
+[IO.File]::WriteAllLines(\$t, [string[]]\$lineas)
 Move-Item -LiteralPath \$t -Destination \$f -Force
 SCRIPT
 }

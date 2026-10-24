@@ -30,6 +30,7 @@ SIN_COPIAR = {
     "interval",
     "retry_interval",
     "maxretries",
+    "created_date",
 }
 ALFABETO = string.ascii_letters + string.digits
 
@@ -54,6 +55,7 @@ def respaldar(db: Path) -> None:
     finally:
         copia.close()
         origen.close()
+    parcial.chmod(0o600)
     parcial.replace(destino)
 
 
@@ -145,7 +147,8 @@ def alta(db: Path) -> None:
             tokens[clave] = asegurar_monitor(con, nombre, aviso, base)
         con.execute("COMMIT")
     except BaseException:
-        con.execute("ROLLBACK")
+        if con.in_transaction:
+            con.execute("ROLLBACK")
         raise
     finally:
         con.close()
@@ -166,7 +169,8 @@ def baja(db: Path) -> None:
         )
         con.execute("COMMIT")
     except BaseException:
-        con.execute("ROLLBACK")
+        if con.in_transaction:
+            con.execute("ROLLBACK")
         raise
     finally:
         con.close()
