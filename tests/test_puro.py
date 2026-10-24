@@ -1327,5 +1327,50 @@ class CorreccionTest(unittest.TestCase):
         self.assertFalse(a.correccion)
 
 
+class FeedbackRevisorTest(unittest.TestCase):
+    """Un revisor que terminó por algo que su sucesor no puede corregir no le deja feedback."""
+
+    def siguiente_revisor(self, fin: dict):
+        eventos = entregado() + [
+            ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
+            ev("PrOpened", "A", {"numero": 7}),
+            ev(
+                "AttemptStarted",
+                "A",
+                {"n": 1, "role": "revisar", "modelo": "opus", "proc": {}, "dir": "d"},
+            ),
+            ev(
+                "AttemptEnded",
+                "A",
+                {"n": 1, "role": "revisar", "outcome": fin},
+            ),
+        ]
+        s = m.fold(parse_plan(PLAN), eventos)
+        return next(
+            a
+            for a in m.decide(s, pol(), time.time())
+            if isinstance(a, m.StartAttempt) and a.role == "revisar"
+        )
+
+    def test_un_fin_que_el_siguiente_revisor_no_puede_corregir_no_se_le_pasa(self):
+        for kind in sorted(m.FINES_AJENOS_AL_REVISOR):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    self.siguiente_revisor({"kind": kind, "detalle": "x"}).feedback, ()
+                )
+        self.assertEqual(
+            m.FINES_AJENOS_AL_REVISOR,
+            {"cuota", "rate_limit", "auth", "corte", "perdido", "interrumpido"},
+        )
+
+    def test_un_veredicto_invalido_si_se_le_pasa(self):
+        a = self.siguiente_revisor(
+            {"kind": "veredicto_invalido", "detalle": "falta el sha"}
+        )
+        self.assertEqual(len(a.feedback), 1)
+        self.assertIn("veredicto_invalido", a.feedback[0])
+        self.assertIn("falta el sha", a.feedback[0])
+
+
 if __name__ == "__main__":
     unittest.main()

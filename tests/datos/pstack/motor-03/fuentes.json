@@ -2,46 +2,46 @@
   {
     "salida": "A-revisar-1.jsonl",
     "cli": "claude",
-    "origen": "/Users/dn/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-1-revision/1500586b-07f9-483d-97b4-2874dfdb754d.jsonl"
+    "origen": "~/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-1-revision/1500586b-07f9-483d-97b4-2874dfdb754d.jsonl"
   },
   {
     "salida": "A-revisar-2.jsonl",
     "cli": "kimi",
-    "origen": "/Users/dn/.motor/intentos/motor-03/A-revisar-2/log.txt"
+    "origen": "~/.motor/intentos/motor-03/A-revisar-2/log.txt"
   },
   {
     "salida": "A-revisar-3.jsonl",
     "cli": "claude",
-    "origen": "/Users/dn/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-3-revision/c27c8cbf-1e6c-4a60-bf88-c46cd5d213f0.jsonl"
+    "origen": "~/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-3-revision/c27c8cbf-1e6c-4a60-bf88-c46cd5d213f0.jsonl"
   },
   {
     "salida": "A-revisar-4.jsonl",
     "cli": "opencode",
-    "origen": "/Users/dn/.motor/intentos/motor-03/A-revisar-4/log.txt"
+    "origen": "~/.motor/intentos/motor-03/A-revisar-4/log.txt"
   },
   {
     "salida": "A-revisar-5.jsonl",
     "cli": "claude",
-    "origen": "/Users/dn/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-5-revision/68a72f19-7786-49b5-8f73-6e44e85a7565.jsonl"
+    "origen": "~/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-5-revision/68a72f19-7786-49b5-8f73-6e44e85a7565.jsonl"
   },
   {
     "salida": "A-revisar-6.jsonl",
     "cli": "claude",
-    "origen": "/Users/dn/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-6-revision/c2849d5a-ac62-4b04-97df-fdcffb9dd85c.jsonl"
+    "origen": "~/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-6-revision/c2849d5a-ac62-4b04-97df-fdcffb9dd85c.jsonl"
   },
   {
     "salida": "A-revisar-7.jsonl",
     "cli": "opencode",
-    "origen": "/Users/dn/.motor/intentos/motor-03/A-revisar-7/log.txt"
+    "origen": "~/.motor/intentos/motor-03/A-revisar-7/log.txt"
   },
   {
     "salida": "A-revisar-8.jsonl",
     "cli": "claude",
-    "origen": "/Users/dn/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-8-revision/663679f1-7ce7-4312-846d-a160f69064d6.jsonl"
+    "origen": "~/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-8-revision/663679f1-7ce7-4312-846d-a160f69064d6.jsonl"
   },
   {
     "salida": "A-revisar-9.jsonl",
     "cli": "claude",
-    "origen": "/Users/dn/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-9-revision/6c55f5a4-4473-4a8e-8c61-5d48bc286d65.jsonl"
+    "origen": "~/.claude/projects/-Users-dn--motor-intentos-motor-03-A-revisar-9-revision/6c55f5a4-4473-4a8e-8c61-5d48bc286d65.jsonl"
   }
 ]

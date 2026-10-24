@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from motor import effects as ef
 from motor import machine as m
@@ -196,7 +198,7 @@ def _conf_falsa(tmp: Path) -> Path:
     (sk / "playbooks" / "bug-fix.md").write_text("# playbook bug-fix\n")
     it = conf / "pstack" / "skills" / "interrogate"
     it.mkdir()
-    (it / "SKILL.md").write_text("# interrogate\nrevisa en serio\n")
+    (it / "SKILL.md").write_text("# interrogate\nrevisa en serio, con ñ\n")
     arnes = conf / "pstack" / "docs" / "harness"
     arnes.mkdir(parents=True)
     (arnes / "claude-code.md").write_text("# adaptador de Claude Code\n")
@@ -243,6 +245,58 @@ def _briefs(conf_dir: Path, tmp: Path) -> dict[str, tuple[str, dict]]:
     return briefs
 
 
+class GuiaFaltanteTest(unittest.TestCase):
+    """C.4: con una guía faltante el intento no se lanza y la copia de trabajo no se toca."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pstack-falta-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.conf_dir = _conf_falsa(self.tmp)
+        os.remove(self.conf_dir / FEATURE)
+        self.ws = mock.MagicMock()
+        # `policy` tiene que estar: si el chequeo temprano de guías se perdiera, el intento
+        # llega hasta `_prepara_pstack` y lo matan las aserciones, no un AttributeError.
+        self.fx = ef.Effects(
+            SimpleNamespace(
+                home=self.tmp / "home",
+                conf=load_conf(self.conf_dir),
+                ws=self.ws,
+                policy=SimpleNamespace(wip_cada_s=300),
+            )
+        )
+
+    def test_start_attempt_no_toca_la_copia_de_trabajo_y_el_error_nombra_la_guia(self):
+        for role in ("implementar", "revisar"):
+            with self.subTest(role=role):
+                a = m.StartAttempt("A", role, "sonnet", 1, "a" * 40, (), False)
+                with self.assertRaises(FileNotFoundError) as cm:
+                    self.fx.start_attempt(
+                        parse_plan(PLAN), SimpleNamespace(repos={}), a
+                    )
+                self.assertIn(FEATURE, str(cm.exception))
+                self.ws.prepara.assert_not_called()
+                self.ws.copia.assert_not_called()
+                self.assertFalse(self.fx.attempt_dir("demo", "A", role, 1).exists())
+                self.assertFalse((self.tmp / "home" / "intentos").exists())
+
+    def test_en_una_correccion_tampoco_se_toca_la_copia_si_falta_bug_fix(self):
+        os.remove(self.conf_dir / BUGFIX)
+        a = m.StartAttempt("A", "implementar", "sonnet", 1, "a" * 40, (), True)
+        with self.assertRaises(FileNotFoundError) as cm:
+            self.fx.start_attempt(parse_plan(PLAN), SimpleNamespace(repos={}), a)
+        self.assertIn(BUGFIX, str(cm.exception))
+        self.ws.prepara.assert_not_called()
+        self.ws.copia.assert_not_called()
+        self.assertFalse((self.tmp / "home" / "intentos").exists())
+
+    def test_errores_pstack_nombra_cada_papel_y_carril_que_pide_la_guia_faltante(self):
+        errores = ef.errores_pstack(self.conf_dir, load_conf(self.conf_dir))
+        faltante = [e for e in errores if FEATURE in e]
+        self.assertEqual(len(faltante), 1, errores)
+        for quien in ("implementar en gate", "revisar en gate", "implementar en fast"):
+            self.assertIn(quien, faltante[0])
+
+
 class TestEncargo(unittest.TestCase):
     """A.2: el encargo lleva las guías completas en «## Anexo: tus guías», al final."""
 
@@ -258,7 +312,11 @@ class TestEncargo(unittest.TestCase):
         anexo_impl = impl.index("\n## Anexo: tus guías\n")
         anexo_rev = rev.index("\n## Anexo: tus guías\n")
         self.assertLess(impl.index("## Cómo se entrega"), anexo_impl)
-        self.assertLess(rev.index("MOTOR_RESULT"), anexo_rev)
+        formato = re.search(r'(?m)^\{"sha"', rev)
+        self.assertIsNotNone(
+            formato, "el revisor trae el bloque del formato del resultado"
+        )
+        self.assertLess(formato.start(), anexo_rev)
 
     def test_ningun_encargo_habla_de_cargar_ni_de_detenerse(self):
         for brief, _ in self.briefs.values():
@@ -269,7 +327,7 @@ class TestEncargo(unittest.TestCase):
         for brief, info in self.briefs.values():
             raiz = Path(info["raiz"])
             for g in info["guias"]:
-                self.assertIn(f"### {g['ruta']}", brief)
+                self.assertIn(f"\n### {g['ruta']}\n", brief)
                 self.assertIn(str(raiz / g["ruta"]), brief)
                 self.assertIn(
                     (raiz / g["ruta"]).read_text(encoding="utf-8").strip(), brief
@@ -284,7 +342,12 @@ class TestEncargo(unittest.TestCase):
         self.assertEqual(
             guardado["guias"],
             [
-                {"ruta": g, "bytes": (raiz / g).stat().st_size}
+                {
+                    "ruta": g,
+                    "bytes": len(
+                        (raiz / g).read_text(encoding="utf-8").strip().encode()
+                    ),
+                }
                 for g in guias(GATE_REV, "claude", False)
             ],
         )

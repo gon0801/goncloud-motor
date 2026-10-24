@@ -921,13 +921,20 @@ def _mismo_bloqueante_dos_veces(bv: BlockView) -> bool:
     return len(textos) >= 2 and textos[-1] == textos[-2] and bool(textos[-1])
 
 
+# Cómo termina un revisor sin que su prompt tenga la culpa: otro revisor con las mismas
+# instrucciones no lo puede corregir, así que no se le cuenta.
+FINES_AJENOS_AL_REVISOR = frozenset(
+    {"cuota", "rate_limit", "auth", "corte", "perdido", "interrumpido"}
+)
+
+
 def _feedback_revisor(bv: BlockView) -> tuple[str, ...]:
     """Por qué terminó el revisor anterior, si no fue con veredicto: el siguiente lo sabe y lo corrige."""
     revs = [a for a in bv.attempts if a.role == "revisar"]
     if not revs or not revs[-1].ended:
         return ()
     o = revs[-1].ended
-    if o.get("kind") == "veredicto":
+    if o.get("kind") == "veredicto" or o.get("kind") in FINES_AJENOS_AL_REVISOR:
         return ()
     return (
         f"El revisor anterior terminó por: {o.get('kind')} ({str(o.get('detalle', ''))[:300]}).",

@@ -182,7 +182,7 @@ PROD_DIR = "{Path(prod).as_posix()}"
         )
         rutas.append(
             f'[rutas.{mo}]\ncuenta = "{cuentas.get(mo, mo)}"\ncli = "{(pstack or {}).get("clis", {}).get(mo, mo)}"\nmax_parallel = 2\n'
-            f'argv = ["{Path(PY).as_posix()}", "{(PROTO / script).as_posix()}", "--modo", "{modos.get(mo, "ok")}"{extra}, "--prompt-file", "{{brief}}"]\n'
+            f'argv = ["{Path(PY).as_posix()}", "{(PROTO / script).as_posix()}", "--modo", "{modos.get(mo, "ok")}"{extra}, "--prompt", "{{prompt}}", "--prompt-file", "{{brief}}"]\n'
         )
     (conf / "rutas.toml").write_text("\n".join(rutas))
     (conf / "general.toml").write_text(f"""[tiempos]
