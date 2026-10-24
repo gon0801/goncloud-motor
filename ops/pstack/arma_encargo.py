@@ -20,10 +20,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 TAREA = "Lanza dos subagentes y pídeles que lean README.md. No cambies nada."
+# El relleno acerca el encargo medido al tamaño de los reales y hace que sus bytes y sus
+# caracteres no redondeen al mismo KB: el prompt de cada máquina tiene que salir de los bytes
+# del brief que escribió allí, no de sus caracteres ni del encargo con la raíz local.
+RELLENO = "ñ" * 450
 PLAN = (
     "# Medición\nautopiloto: motor\nplan: mide\nrepo: git@github.com:x/mide.git\n\n"
     "## Bloque A — medir\nlane: gate\nprueba-real: true\n"
     f"| Fila | Contenido | Acepta |\n| --- | --- | --- |\n| A.1 | {TAREA} | true |\n"
+    f"| A.2 | Relleno para el tamaño del encargo: {RELLENO} | true |\n"
 )
 MARCA_BRIEF = "@@BRIEF@@"
 MARCA_KB = "@@KB@@"

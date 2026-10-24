@@ -1071,6 +1071,7 @@ class TestMideDePuntaAPunta(unittest.TestCase):
         lanzados=None,
         briefs=None,
         base=None,
+        mide_home=None,
     ):
         import subprocess
 
@@ -1109,7 +1110,7 @@ class TestMideDePuntaAPunta(unittest.TestCase):
                 FALSO_ARGV=str(t / "argv.log"),
                 FALSO_LANZADOS=str(t / "lanzados.log"),
                 FALSO_BRIEFS=str(t / "briefs"),
-                MIDE_HOME=str(t / "casa"),
+                MIDE_HOME=str(mide_home or t / "casa"),
             )
             (t / "briefs").mkdir()
             antes = sorted((REPO / "tests" / "datos" / "pstack").rglob("*"))
@@ -1161,10 +1162,17 @@ class TestMideDePuntaAPunta(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as base:
             base = Path(base)
+            # Una casa de ruta larga: el encargo que viaja (con esta raíz) y el brief que escribe
+            # el remoto (con la copia corta) caen en KB distintos, así que el KB del prompt tiene
+            # que salir del brief remoto, no del encargo local.
+            casa = base / "casa" / ("ruta-larga-" + "x" * 188)
+            casa.mkdir(parents=True)
             briefs, lanzadas = [], []
-            r = self._corre("cumple", argv_log=lanzadas, briefs=briefs, base=base)
+            r = self._corre(
+                "cumple", argv_log=lanzadas, briefs=briefs, base=base, mide_home=casa
+            )
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            esperado, raiz = encargo_del_motor(base / "conf", base / "casa", "claude")
+            esperado, raiz = encargo_del_motor(base / "conf", casa, "claude")
         self.assertEqual(len(briefs), 3)
         for brief in briefs:
             copia = re.search(
@@ -1177,7 +1185,11 @@ class TestMideDePuntaAPunta(unittest.TestCase):
         for linea in lanzadas:
             self.assertNotIn("@@BRIEF@@", linea)
             ruta = re.search(r"Lee el encargo completo en (\S+) \(", linea).group(1)
-            self.assertIn(ef.prompt_de_encargo(ruta, esperado), linea)
+            # el KB sale del brief que el remoto escribió, no del encargo con la raíz local
+            self.assertTrue(
+                any(ef.prompt_de_encargo(ruta, brief) in linea for brief in briefs),
+                linea,
+            )
 
     def test_mide_toma_por_omision_las_rutas_de_conf_ejemplo_y_no_las_de_la_conf(self):
         lanzadas = []

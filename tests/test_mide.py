@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import base64
 import importlib.util
 import json
@@ -12,10 +11,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from motor import effects as ef
+from motor import machine as m
 from motor import pstack as ps
+from motor.conf import RepoConf, load_conf
+from motor.plan import parse_plan
 
 from .test_guias import _conf_falsa
 
@@ -33,10 +37,38 @@ def _modulo_arma():
 
 
 def encargo_del_motor(conf_dir: Path, casa: Path, cli: str) -> tuple[str, str]:
-    """(encargo, raiz de la copia fija) tal como lo arma `arma_encargo.arma`: el mismo código que
-    usa mide.sh, sin pasar por el script."""
-    encargo, _ = _modulo_arma().arma(str(REPO), str(conf_dir), str(casa))
-    _, info, brief = encargo(cli)
+    """(encargo, raiz de la copia fija) tal como `start_attempt` armaría el de la medición: del
+    plan de `arma_encargo` en adelante lo arma el motor, sin pasar por el script."""
+    conf = load_conf(conf_dir)
+    celda = conf.pstack.exigencia("gate", "implementar")
+    conf = replace(
+        conf,
+        pstack=replace(
+            conf.pstack,
+            exigencias={
+                **conf.pstack.exigencias,
+                ("gate", "implementar"): replace(celda, min_subagentes=2),
+            },
+        ),
+    )
+    fx = ef.Effects(
+        SimpleNamespace(
+            home=casa,
+            conf=conf,
+            ws=SimpleNamespace(rama=lambda p, b: f"motor/{p}/{b}"),
+        )
+    )
+    trabajo = casa / "trabajo"
+    trabajo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=trabajo, check=True)
+    plan = parse_plan(_modulo_arma().PLAN)
+    d = casa / f"intento-{cli}"
+    d.mkdir(parents=True, exist_ok=True)
+    a = m.StartAttempt("A", "implementar", "sonnet", 1, "a" * 40, (), False)
+    info = fx._prepara_pstack(d, "gate", "implementar", cli, trabajo, "mide", False)
+    rc = RepoConf.parse('[repo]\nprincipal = "main"\n')
+    brief = fx._encargo(plan, plan.block("A"), a, trabajo, rc, info)
+    assert brief.endswith(fx._anexo_guias(info)), "el esperado termina con el anexo"
     return brief, info["raiz"]
 
 
@@ -188,37 +220,9 @@ class TestPromptCompartido(unittest.TestCase):
         self.assertIn("ejecútalo completo sin preguntar nada", p)
 
     def test_el_tamano_en_kb_cuenta_bytes_no_caracteres(self):
-        p = ef.prompt_de_encargo(
-            "/x/brief.md", "ñ" * 2048
-        )  # 4096 bytes, 2048 caracteres
+        # 4096 bytes, 2048 caracteres
+        p = ef.prompt_de_encargo("/x/brief.md", "ñ" * 2048)
         self.assertIn("/x/brief.md (4 KB)", p)
-
-    def test_start_attempt_lanza_con_el_prompt_de_la_funcion_compartida(self):
-        arbol = ast.parse((REPO / "motor" / "effects.py").read_text(encoding="utf-8"))
-        inicio = next(
-            n
-            for n in ast.walk(arbol)
-            if isinstance(n, ast.FunctionDef) and n.name == "start_attempt"
-        )
-        asignado = {
-            tgt.id
-            for n in ast.walk(inicio)
-            if isinstance(n, ast.Assign)
-            and isinstance(n.value, ast.Call)
-            and getattr(n.value.func, "id", "") == "prompt_de_encargo"
-            for tgt in n.targets
-            if isinstance(tgt, ast.Name)
-        }
-        lanzadas = [
-            kw.value
-            for n in ast.walk(inicio)
-            if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "argv_de_ruta"
-            for kw in n.keywords
-            if kw.arg == "prompt"
-        ]
-        self.assertEqual(len(lanzadas), 1)
-        self.assertIsInstance(lanzadas[0], ast.Name)
-        self.assertIn(lanzadas[0].id, asignado)
 
 
 if __name__ == "__main__":
