@@ -1,4 +1,4 @@
-"""Una entrega válida cierra al agente. Una que no lo es, no. Nadie la pisa después."""
+"""Una entrega válida cierra al agente. Una que no lo es, no la pisa; otra válida sí la reemplaza."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import time
 import unittest
 from pathlib import Path
 
+from motor import entrega
 from motor import machine as m
 from motor import runwrap
 from motor.daemon import Daemon
@@ -242,6 +243,35 @@ class CierreTest(unittest.TestCase):
         out = self.recoge(intento, sha)
         self.assertEqual(out["kind"], "entregado")
         self.assertEqual(out["sha"], sha)
+
+    def test_la_ultima_entrega_valida_reemplaza_a_la_congelada(self):
+        d = self.t / "intento"
+        d.mkdir()
+        espera = entrega.Espera(sha=ENCARGO)
+        cambios = json.dumps(
+            {
+                "sha": ENCARGO,
+                "veredicto": "CAMBIOS",
+                "bloqueantes": [{"texto": "falla", "repro": "false"}],
+                "notas": [],
+            }
+        )
+        (d / "result.json").write_text(_veredicto(ENCARGO))
+        self.assertGreater(espera.vigila(d, self.t), 0)
+        self.assertEqual(
+            json.loads((d / "entrega.json").read_text())["veredicto"], "APROBADO"
+        )
+        (d / "result.json").write_text(cambios)
+        espera.vigila(d, self.t)
+        self.assertEqual((d / "entrega.json").read_text(), cambios)
+        self.assertFalse((d / "result.ajeno.json").exists())
+        (d / "result.json").write_text(json.dumps({"sha": None}))
+        espera.vigila(d, self.t)
+        self.assertEqual((d / "entrega.json").read_text(), cambios)
+        self.assertIsNone(json.loads((d / "result.ajeno.json").read_text())["sha"])
+        (d / "result.json").write_text(_veredicto("otro-sha"))
+        espera.vigila(d, self.t)
+        self.assertEqual((d / "entrega.json").read_text(), cambios)
 
     def test_sin_entrega_valida_termina_sin_resultado(self):
         o, _ = self.corre("import time\ntime.sleep(0.2)\n")

@@ -821,6 +821,7 @@ de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás v
 Escribe en `$MOTOR_RESULT`:
 {{"sha": "{a.sha}", "veredicto": "APROBADO" | "CAMBIOS",
   "bloqueantes": [{{"texto": "...", "repro": "comando", "arreglo": "..."}}], "notas": ["..."]}}
+Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un veredicto provisional: el motor no te cierra mientras tus subagentes o tus llamadas a otros modelos sigan trabajando.
 """
 
     def _proveedor(self, modelo: str) -> str:
@@ -867,6 +868,14 @@ Escribe en `$MOTOR_RESULT`:
             c["toco_carpeta"] = o["toco_carpeta"]
         return c
 
+    @staticmethod
+    def _veredicto_entregado(att: m.Attempt, d: Path) -> bool:
+        try:
+            datos = (d / entrega.ENTREGA).read_bytes()
+        except OSError:
+            return False
+        return entrega.Espera(sha=att.sha).acepta(datos, d)
+
     def _juzga_intento(
         self,
         plan: Plan,
@@ -876,7 +885,9 @@ Escribe en `$MOTOR_RESULT`:
         d: Path,
         o: dict,
     ) -> dict:
-        if att.role == "implementar" and self._entrego(plan, block_id, d):
+        if (att.role == "implementar" and self._entrego(plan, block_id, d)) or (
+            att.role == "revisar" and self._veredicto_entregado(att, d)
+        ):
             c = {
                 "kind": "terminado"
             }  # dejó su entrega: lo que pasó después con el proceso no la borra

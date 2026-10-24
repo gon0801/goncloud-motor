@@ -80,6 +80,7 @@ def main() -> int:
         "cuenta": cuenta,
         "cli": cli,
         "inicio": inicio,
+        "pid": os.getpid(),
         "fin": None,
     }
     (reg / f"{clave}.json").write_text(json.dumps(rec), encoding="utf-8")
