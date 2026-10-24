@@ -17,6 +17,28 @@ for a in "$@"; do
   esac
 done
 
+# El sha que debe correr el daemon: el del despliegue; fuera de uno, el HEAD de esta copia.
+sha_esperado="${MOTOR_SHA:-}"
+[ -n "$sha_esperado" ] || sha_esperado="$(git -C "$aqui/.." rev-parse HEAD 2>/dev/null)" || sha_esperado=""
+if [ -z "$sha_esperado" ]; then
+  echo 'falta MOTOR_SHA: corre MOTOR_SHA=$(git rev-parse HEAD) bash ops/huellas.sh' >&2
+  exit 2
+fi
+tope_daemon="${MOTOR_TOPE_DAEMON:-180}"
+case $tope_daemon in
+  '' | *[!0-9]*) echo "MOTOR_TOPE_DAEMON debe ser un número de segundos, no '$tope_daemon'" >&2; exit 2 ;;
+esac
+
+# La etiqueta del despliegue tiene que apuntar a ese commit: instala-todo.sh respeta una que ya existía.
+problema_etiqueta=""
+if ! sha_etiqueta="$(reintenta 3 sha_publicado "$aqui/..")"; then
+  problema_etiqueta="no pude consultar la etiqueta $ETIQUETA en origin"
+elif [ -z "$sha_etiqueta" ]; then
+  problema_etiqueta="la etiqueta $ETIQUETA no existe en origin"
+elif [ "$sha_etiqueta" != "$sha_esperado" ]; then
+  problema_etiqueta="la etiqueta $ETIQUETA apunta a ${sha_etiqueta:0:12} y el despliegue es ${sha_esperado:0:12}"
+fi
+
 d="$(mktemp -d)"
 trap 'rm -rf "$d"' EXIT
 
@@ -35,6 +57,9 @@ huella() {
   local m=$1
   toma "$m" version "$posix version --json" "$pc version --json"
   toma "$m" doctor "$posix doctor --home \"\$HOME/.motor\" --json" "$pc doctor --home %USERPROFILE%\\.motor --json"
+  toma "$m" programadas "$posix programadas --home \"\$HOME/.motor\" --json" "$pc programadas --home %USERPROFILE%\\.motor --json"
+  espera_daemon_en_sha "$m" "$sha_esperado" "$tope_daemon"
+  echo $? >"$d/$m.daemon.rc"
   if [ "$servicio" = 1 ]; then
     toma "$m" servicio "launchctl print system/$SERVICIO_MAC" "schtasks /query /tn $TAREA_PC"
   fi
@@ -46,11 +71,12 @@ huella() {
 for m in $MAQUINAS; do huella "$m" & done
 wait
 
-python3 -I - "$d" "$MAQUINAS" "$servicio" "$rutas" <<'PY'
+python3 -I - "$d" "$MAQUINAS" "$servicio" "$rutas" "$sha_esperado" "$tope_daemon" "$problema_etiqueta" <<'PY'
 import json, sys
 from pathlib import Path
 
 d, maquinas, servicio, rutas = Path(sys.argv[1]), sys.argv[2].split(), sys.argv[3] == "1", sys.argv[4] == "1"
+sha_esperado, tope, problema_etiqueta = sys.argv[5], sys.argv[6], sys.argv[7]
 
 
 def lee(m, n):
@@ -66,6 +92,8 @@ def lee(m, n):
 
 
 problemas, filas, huellas = [], [], {}
+if problema_etiqueta:
+    problemas.append(problema_etiqueta)
 for m in maquinas:
     ver, p1 = lee(m, "version")
     doc, p2 = lee(m, "doctor")
@@ -84,6 +112,15 @@ for m in maquinas:
         estado.append("maquina.toml MAL")
     else:
         estado.append("doctor ok")
+    if (d / f"{m}.daemon.rc").read_text().strip() != "0":
+        problemas.append(f"{m}: el motor daemon no arrancó con el código de {sha_esperado[:12]} en {tope} s")
+        estado.append("daemon NO")
+    else:
+        estado.append("daemon ok")
+    prog, p = lee(m, "programadas")
+    if prog is None or not prog.get("leidas"):
+        problemas.append(f"{m}: programadas: {p or 'no leyó ninguna tarea programada'}")
+        estado.append("programadas MAL")
     if servicio:
         rc = (d / f"{m}.servicio.rc").read_text(errors="replace").strip()
         if rc != "0":

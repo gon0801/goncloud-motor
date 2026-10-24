@@ -42,31 +42,10 @@ ultimo_cambio() { # ultimo_cambio <m>: epoch del último reflog de ~/motor
   corre "$1" 'git -C "$HOME/motor" reflog -1 --date=unix --format=%gd 2>/dev/null' "git -C %USERPROFILE%\\motor reflog -1 --date=unix --format=%gd" 2>/dev/null | tr -dc '0-9'
 }
 
-daemon_info() { # daemon_info <m>: "<pid> <epoch de arranque>" del motor daemon, no del supervisor
-  local m=$1 out pid inicio
-  if [ "$m" = pc ]; then
-    out="$(corre pc x "powershell -NoProfile -NonInteractive -Command \"Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -like '*motor daemon*--home*' -and \$_.Name -like 'python*' } | Select-Object -First 1 | ForEach-Object { \$_.ProcessId.ToString() + ' ' + ([DateTimeOffset]\$_.CreationDate).ToUnixTimeSeconds().ToString() }\"" 2>/dev/null)" || return 1
-    out="$(printf '%s\n' "$out" | tr -d '\r' | grep -E '^[0-9]+ [0-9]+$' | head -n 1)"
-    [ -n "$out" ] || return 1
-    printf '%s\n' "$out"
-    return 0
-  fi
-  pid="$(corre "$m" 'pgrep -a -f "[m]otor daemon --home $HOME/.motor( |$)" | head -n 1' x 2>/dev/null | awk '{print $1}' | tr -d '[:space:]')"
-  [ -n "$pid" ] || return 1
-  inicio="$(corre "$m" "ps -o lstart= -p $pid" x 2>/dev/null)"
-  inicio="$(printf '%s' "$inicio" | python3 -c 'import sys,datetime
-s=" ".join(sys.stdin.read().split())
-try:
-    print(int(datetime.datetime.strptime(s, "%a %b %d %H:%M:%S %Y").timestamp()))
-except Exception:
-    sys.exit(1)' 2>/dev/null)" || return 1
-  [ -n "$inicio" ] || return 1
-  printf '%s %s\n' "$pid" "$inicio"
-}
 
 pid_daemon() { # pid_daemon <m>
   local info
-  info="$(daemon_info "$1")" || return 1
+  info="$(info_daemon "$1")" || return 1
   printf '%s\n' "${info%% *}"
 }
 
@@ -90,7 +69,7 @@ espera_daemon_en_etiqueta() { # espera_daemon_en_etiqueta <m>
   while [ "$SECONDS" -lt "$hasta" ]; do
     vista="$(etiqueta_de "$m")"
     if [ "$vista" = "$ETIQUETA" ]; then
-      info="$(daemon_info "$m" 2>/dev/null)" || info=""
+      info="$(info_daemon "$m" 2>/dev/null)" || info=""
       pid="${info%% *}"
       inicio="${info##* }"
       cambio="$(ultimo_cambio "$m")"

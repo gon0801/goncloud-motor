@@ -35,7 +35,11 @@ while [ "$1" = -o ]; do shift 2; done
 host=$1; shift
 echo "$host :: $*" >>"$FAKE_LOG"
 case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac
+# FAKE_CAE_DESPUES: el host contesta la primera llamada (la validación) y cae desde la segunda (la instalación).
+n=$(( $(cat "$S/n-$host" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$S/n-$host"
+case " ${FAKE_CAE_DESPUES:-} " in *" $host "*) [ "$n" -le 1 ] || { echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; } ;; esac
 if [ "$host" = gwpc ]; then
+  ok_pc() { [ -z "${FAKE_PC_FALLA:-}" ] || { echo "git: no pude" >&2; exit 1; }; }
   case "$*" in
     "tar -x"*) cat >"$S/pc-recibido.tar" ;;
     "schtasks /query"*) exit "${FAKE_PC_TAREA_RC:-0}" ;;
@@ -46,7 +50,21 @@ if [ "$host" = gwpc ]; then
     *"checkout -q --detach refs/tags/"*) echo "${*##*refs/tags/}" >"$S/pc-tag" ;;
     "type "*"etiqueta-anterior"*) [ -f "$S/pc-etiqueta-anterior" ] && { cat "$S/pc-etiqueta-anterior"; exit 0; } || exit 1 ;;
     "echo "*"etiqueta-anterior"*) v="${*#echo }"; echo "${v%%>*}" >"$S/pc-etiqueta-anterior" ;;
-    *) [ -z "${FAKE_PC_FALLA:-}" ] || { echo "git: no pude" >&2; exit 1; } ;;
+    # cmd.exe: sin paréntesis, `& mkdir` es parte del cuerpo del if y no corre si la carpeta no existe.
+    "(if exist "*") & mkdir "*"\\codigo "*"\\conf") rm -f "$S/pc-extraido-"*; touch "$S/pc-codigo-creado" ;;
+    "if exist "*" & mkdir "*) ;;
+    "git -C %USERPROFILE%\\motor archive refs/tags/"*" | tar -x -C %TEMP%\\motor-valida-"*"\\codigo")
+      [ -e "$S/pc-codigo-creado" ] || { echo "tar: could not chdir" >&2; exit 1; }; touch "$S/pc-extraido-codigo" ;;
+    "git -C %USERPROFILE%\\motor-conf archive origin/HEAD | tar -x -C %TEMP%\\motor-valida-"*"\\conf")
+      [ -e "$S/pc-codigo-creado" ] || { echo "tar: could not chdir" >&2; exit 1; }; touch "$S/pc-extraido-conf" ;;
+    "if not exist %TEMP%\\motor-valida-"*"\\conf\\maquinas\\pc.toml exit /b 1") [ -z "${FAKE_PC_SIN_TOML:-}" ] || exit 1 ;;
+    "cd /d %TEMP%\\motor-valida-"*"\\codigo && "*" conf valida %TEMP%\\motor-valida-"*"\\conf")
+      [ -e "$S/pc-extraido-codigo" ] && [ -e "$S/pc-extraido-conf" ] || { echo "No module named motor" >&2; exit 1; }
+      exit "${FAKE_PC_VALIDA_RC:-0}" ;;
+    "cd /d %USERPROFILE%\\motor && "*" conf valida %USERPROFILE%\\motor-conf") ;;
+    "if exist "*"\\.git (git "* | "schtasks /end"* | "schtasks /delete"*) ok_pc ;;
+    "if not exist "* | "copy /y "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
+    *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
   esac
   exit 0
 fi
@@ -84,7 +102,7 @@ exec $GIT_REAL "\$@"
 FAKE
 chmod +x "$S/bin/git"
 
-reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-etiqueta-anterior" "$S/launchd"/*; mkdir -p "$S/mac" "$S/mini"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_PC_FALLA FAKE_SUDO_FALLA FAKE_PC_TAREA_RC MOTOR_ETIQUETA; }
+reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-codigo-creado" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-etiqueta-anterior" "$S/launchd"/*; mkdir -p "$S/mac" "$S/mini"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_SUDO_FALLA FAKE_PC_TAREA_RC MOTOR_ETIQUETA; }
 TAG="$(unset MOTOR_ETIQUETA; . "$RAIZ/ops/lib.sh"; echo "$ETIQUETA")"
 I="$RAIZ/ops/instala-todo.sh"
 D="$RAIZ/ops/desinstala-todo.sh"
@@ -139,11 +157,82 @@ en_mac espera "etiqueta en otro commit" 3 bash "$I"
 contiene "dice cómo arreglarlo" "$S/salida" "sube la etiqueta en ops/lib.sh"
 [ ! -e "$S/mac/motor" ] && [ ! -e "$S/mini/motor" ] && ! grep -q . "$FAKE_LOG" || fallo "tocó alguna máquina con la etiqueta en otro commit"
 
+avanza() { git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1" && git -C "$S/trabajo" push -q origin HEAD:main; }
+tag_en() { git -C "$S/$1/motor" describe --tags --exact-match 2>/dev/null; }
+# El árbol de v1.0.23 y el de la etiqueta nueva son el mismo: para distinguir código nuevo de viejo, el commit
+# nuevo cambia `conf valida` para que rechace una conf que el viejo acepta (un archivo marca).
+rechaza_la_marca() {
+  python3 - "$S/trabajo/motor/__main__.py" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+a = "    errores = _construye(d)\n"
+assert s.count(a) == 1
+open(p, "w").write(s.replace(a, a + "    if (d / 'solo-el-nuevo-rechaza').exists():\n        errores.append('solo-el-nuevo-rechaza')\n"))
+PY
+  git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q -am "el código nuevo rechaza la marca" && git -C "$S/trabajo" push -q origin HEAD:main
+}
+conf_buena() { git -C "$S/conf-src" reset -q --hard "$BUENA" && git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main; }
+nada_se_movio() { # nada_se_movio <caso>
+  for m in mac mini; do [ "$(tag_en $m)" = v1.0.23 ] || fallo "$1: $m cambió de etiqueta (quedó en $(tag_en $m))"; done
+  [ "$(cat "$S/pc-tag")" = v1.0.23 ] || fallo "$1: pc cambió de etiqueta"
+  grep -q "detach refs/tags/$TAG" "$FAKE_LOG" && fallo "$1: la PC cambió a $TAG"
+}
+base_y_codigo_nuevo() {
+  reset
+  MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 $1" 0 bash "$I"
+  unset MOTOR_ETIQUETA
+  rechaza_la_marca
+  BUENA="$(git -C "$S/conf-src" rev-parse HEAD)"
+}
+
+echo "# conf que el código nuevo rechaza"
+base_y_codigo_nuevo "antes de la conf rota"
+git -C "$S/trabajo" -c user.name=t -c user.email=t@t revert --no-edit HEAD >/dev/null && git -C "$S/trabajo" push -q origin HEAD:main && git -C "$S/trabajo" checkout -q --detach HEAD~1
+touch "$S/conf-src/solo-el-nuevo-rechaza"
+git -C "$S/conf-src" add -A && git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m rota
+git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main
+en_mac espera "conf rechazada por el código nuevo" '!0' bash "$I"
+contiene "dice quién la rechaza" "$S/salida" "rechaza la conf"
+contiene "dice que nada cambió" "$S/salida" "No se cambió el código en ninguna máquina"
+contiene "la PC valida" "$FAKE_LOG" "conf valida"
+nada_se_movio "conf rota"
+git -C "$S/trabajo" checkout -q --detach origin/main
+conf_buena
+
+# El veredicto de `conf valida` en la PC cuenta: si lo rechaza, nadie cambia.
+reset; MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 para el veredicto de la PC" 0 bash "$I"; unset MOTOR_ETIQUETA
+avanza "la-etiqueta-nueva-en-otro-commit"
+FAKE_PC_VALIDA_RC=1 en_mac espera "la PC rechaza la conf" '!0' bash "$I"
+contiene "dice que la PC la rechaza" "$S/salida" "pc: el código de $TAG rechaza la conf"
+nada_se_movio "la PC rechaza la conf"
+FAKE_PC_SIN_TOML=1 en_mac espera "la conf no trae maquinas/pc.toml" '!0' bash "$I"
+contiene "dice cuál falta" "$S/salida" "maquinas/pc.toml"
+nada_se_movio "falta pc.toml"
+contiene "la PC arma la carpeta temporal con paréntesis" "$FAKE_LOG" "(if exist %TEMP%"
+
+git -C "$S/conf-src" rm -q maquinas/mini.toml && git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m sin-mini
+git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main
+en_mac espera "la conf no trae maquinas/mini.toml" '!0' bash "$I"
+contiene "dice cuál falta" "$S/salida" "maquinas/mini.toml"
+nada_se_movio "falta mini.toml"
+conf_buena
+
+# Una máquina sin ssh al validar es lo mismo que una que rechaza: nadie cambia.
+FAKE_CAE="gon@mini-fake" en_mac espera "la Mini sin ssh al validar" '!0' bash "$I"
+contiene "dice cuál" "$S/salida" "mini"
+nada_se_movio "Mini sin ssh"
+FAKE_CAE=gwpc en_mac espera "la PC sin ssh al validar" '!0' bash "$I"
+contiene "dice que nada cambió" "$S/salida" "No se cambió el código en ninguna máquina"
+nada_se_movio "PC sin ssh"
+FAKE_PC_FALLA=1 en_mac espera "la PC no puede validar" '!0' bash "$I"
+nada_se_movio "la PC no puede validar"
+
 echo "# instalar con fallas"
 reset
-FAKE_CAE="gon@mini-fake" en_mac espera "ssh a la Mini falla" '!0' bash "$I"
+FAKE_CAE_DESPUES="gon@mini-fake" en_mac espera "ssh a la Mini cae al instalar" '!0' bash "$I"
 contiene "dice cuál" "$S/salida" "mini"
-[ -d "$S/mac/motor/.git" ] || fallo "la Mac debía instalarse aunque la Mini fallara"
+[ -d "$S/mac/motor/.git" ] || fallo "la Mac debía instalarse aunque la Mini cayera al instalar"
 reset
 FAKE_PC_FALLA=1 en_mac espera "el remoto de la PC falla" '!0' bash "$I"
 contiene "dice cuál" "$S/salida" "pc"
@@ -225,7 +314,8 @@ MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23" 0 bash "$I"
 unset MOTOR_ETIQUETA
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m avance2 && git -C "$S/trabajo" push -q origin HEAD:main
 touch "$S/mac/.cargado" "$S/mini/.cargado"
-FAKE_CAE="gon@mini-fake" en_mac espera "entrega que falla en la Mini" '!0' bash "$I"
+rm -f "$S"/n-*
+FAKE_CAE_DESPUES="gon@mini-fake" en_mac espera "entrega que falla en la Mini" '!0' bash "$I"
 [ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = $TAG ] || fallo "mac: no quedó en $TAG"
 [ "$(git -C "$S/mini/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mini: se movió pese al ssh caído"
 FAKE_CAE="gon@mini-fake" en_mac espera "marcha atrás con la Mini caída" '!0' bash "$V"
@@ -236,8 +326,6 @@ contiene "dice cuál" "$S/salida" "mini"
 grep -q "schtasks /delete" "$FAKE_LOG" && fallo "la marcha atrás borró la tarea de la PC"
 [ ! -e "$S/sudo.log" ] || fallo "la marcha atrás llamó a sudo"
 
-avanza() { git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1" && git -C "$S/trabajo" push -q origin HEAD:main; }
-tag_en() { git -C "$S/$1/motor" describe --tags --exact-match 2>/dev/null; }
 dos_entregas() { # deja las tres en $2, con la marca en $1 (como tras dos entregas buenas)
   MOTOR_ETIQUETA=$1 en_mac espera "entrega $1" 0 bash "$I"; unset MOTOR_ETIQUETA
   avanza "$2"
