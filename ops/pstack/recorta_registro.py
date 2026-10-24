@@ -107,9 +107,8 @@ def _evento(cli: str, llamadas: list[tuple[str, dict]], ident: str) -> dict:
                 ]
             },
         }
-    if (
-        ident
-    ):  # el CLI repite la misma llamada con otro estado: la huella la cuenta una vez
+    # el CLI repite la misma llamada con otro estado: la huella la cuenta una vez
+    if ident:
         o["tool_call_id"] = ident
     return o
 

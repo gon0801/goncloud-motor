@@ -46,11 +46,13 @@ def _comprueba(d: Path) -> tuple[int, str]:
 EJEMPLOS = (
     ("ghp" + "_" + "a1B2" * 9, True),
     ("github" + "_pat_" + "a1B2" * 9, True),
+    ("github" + "_pat_" + "1A" * 11 + "_" + "a1B" * 19 + "c1", True),
     ("123456789" + ":" + "aB3_-" * 7, True),
     ("1234567890" + ":" + "aB3_-" * 7, True),
     ("12345678" + ":" + "aB3_-" * 7, True),
     ("sk" + "-" + "a" * 16, True),
     ("sk" + "-proj-" + "aB3_-" * 4, True),
+    ("sk" + "-ant-api03-" + "aB3_-" * 19 + "AA", True),
     ("sk" + "-" + "a" * 15, False),
     ("task" + "-" + "a" * 16, False),
     ("AKIA" + "ABCD1234" * 2, True),
