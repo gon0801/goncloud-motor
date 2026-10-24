@@ -98,24 +98,30 @@ class CierreTrasResultadoTest(unittest.TestCase):
         self.assertEqual((o["cerrado_tras_resultado"], o["exit"]), (False, 0))
 
     def test_llamada_sin_fin_impide_el_cierre_hasta_que_se_llena(self):
-        """El paso de abierta a cerrada cuenta como avance: el cierre llega `--cierre` s después de
-        la primera vuelta que ve `fin` lleno, y esa vuelta se mide por su propio reloj, no por la
-        hora de `fin`. La vuelta de runwrap se estira a 1 s y cada una se anota al arrancar; el
-        agente llena `fin` a mitad de vuelta (4,5 s después de que el motor congeló su entrega,
-        que marca una vuelta). Sin `abierta_antes`, `ultimo_cambio_p` queda una vuelta atrás y el
-        cierre salta en la misma vuelta que ve `fin` lleno, a menos de 1 s de ella; al código
-        bueno le falta una vuelta entera, 1 s o más, sea cual sea la fase en que `fin` caiga."""
+        """El paso de abierta a cerrada cuenta como avance: el cierre llega `--cierre` s después
+        de la primera lectura de `llamadas/` que ve `fin` lleno, y esa lectura se mide por su
+        propia hora, no por la de `fin`, que puede caer en cualquier punto de la vuelta. La
+        vuelta de runwrap se estira a 1 s y cada lectura anota su hora y si vio la llamada
+        abierta; el agente llena `fin` 4,5 s después de que el motor congeló su entrega, que
+        marca una vuelta. El código bueno fija `ultimo_cambio_p` después de esa lectura y cierra
+        una vuelta entera más tarde; sin `abierta_antes`, el cierre salta en la misma vuelta que
+        ve `fin` lleno, a menos de 1 s de esa lectura."""
         real = time.sleep
-        vueltas = []
+        real_huella = runwrap._huella_pstack
+        lecturas = []
 
         def vuelta_de_1s(s):
-            if s != 0.2:
-                real(s)
-                return
-            real(1.0)
-            vueltas.append(time.time())
+            real(1.0 if s == 0.2 else s)
 
-        with unittest.mock.patch.object(runwrap.time, "sleep", vuelta_de_1s):
+        def huella_anotada(d):
+            huella = real_huella(d)
+            lecturas.append((time.time(), huella[1]))
+            return huella
+
+        with (
+            unittest.mock.patch.object(runwrap.time, "sleep", vuelta_de_1s),
+            unittest.mock.patch.object(runwrap, "_huella_pstack", huella_anotada),
+        ):
             o, _, d = self.corre_en(
                 self.PRELUDIO + "veredicto('APROBADO')\n"
                 "(d / 'llamadas').mkdir()\n"
@@ -135,8 +141,13 @@ class CierreTrasResultadoTest(unittest.TestCase):
                 extra=self.REVISOR,
             )
         self.assertIs(o["cerrado_tras_resultado"], True)
+        self.assertGreaterEqual(
+            min(b - a for (a, _), (b, _) in zip(lecturas, lecturas[1:])), 1.0
+        )  # la vuelta quedó estirada: si runwrap deja de dormir 0,2 s, esto suena
         fin = json.loads((d / "llamadas" / "x.json").read_text())["fin"]
-        primera = min(v for v in vueltas if v > fin)
+        cerradas = [t for t, abierta in lecturas if t > fin and not abierta]
+        self.assertTrue(cerradas)  # el cierre pasó por una lectura con `fin` lleno
+        primera = min(cerradas)
         self.assertGreaterEqual(
             (d / "outcome.json").stat().st_mtime - primera, 1.0
         )  # da tiempo de leer lo que contestó el panel
