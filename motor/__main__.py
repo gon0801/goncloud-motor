@@ -31,7 +31,7 @@ import tomllib
 import uuid
 from pathlib import Path
 
-from . import efimeras, huella
+from . import efimeras, huella, senal
 from . import machine as m
 from .conf import ConfError, load_conf, load_maquina, valida_maquina
 from .plan import PlanError, parse_plan, revisa_sin_quien
@@ -220,6 +220,9 @@ def doctor(home: Path, programadas_sistema: bool = True) -> dict:
     if not conf.avisos.get("chat"):
         out["ok"] = False
         out["problemas"].append("avisos: falta el chat de Telegram ([avisos] chat)")
+    out["senal"] = "señal a Kuma: " + (
+        "configurada" if dict(mq.secretos).get(senal.VARIABLE) else "sin configurar"
+    )
     prog, codigo = programadas(home, programadas_sistema)
     if programadas_sistema:
         del_sistema = set(efimeras.nombres_del_sistema(Path.home()))

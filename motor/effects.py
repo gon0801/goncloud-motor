@@ -19,10 +19,11 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import claves, efimeras, entrega, huella, plataforma, relevo
+from . import claves, efimeras, entrega, huella, plataforma, relevo, senal
 from . import machine as m
 from . import pstack as ps
 from .conf import Conf, Maquina, RepoConf
@@ -87,6 +88,7 @@ class Contexto:
     gh: GitHubPort
     notifier: Notifier
     checks_cada_s: float = 60.0
+    avance: Callable[[], None] = lambda: None
     # MOTOR_PROGRAMADAS_SISTEMA=0: el banco de pruebas no lee crontab, plist ni schtasks reales,
     # tampoco en los subprocesos (daemon y aparte) que heredan el entorno.
     programadas_sistema: bool = field(
@@ -326,6 +328,7 @@ class Effects:
             "MOTOR_RAIZ": str(RAIZ),
             **(extra or {}),
         }
+        env.pop(senal.VARIABLE, None)
         if mq.path_extra:
             env["PATH"] = os.pathsep.join([*mq.path_extra, env.get("PATH", "")])
         return con_python(env)
@@ -1040,9 +1043,16 @@ Escribe en `$MOTOR_RESULT`:
             block.repo, sha, self.cx.home / "tmp" / f"{nombre}-{plan.id}-{block.id}"
         )
         tope = float(self.cx.conf.tiempos.get("repro_tope_s", 300))
-        return _run(
-            cmd, w, self.env_base(dict(rc.prueba_env)), tope, bash=self.cx.maquina.bash
-        )
+        try:
+            return _run(
+                cmd,
+                w,
+                self.env_base(dict(rc.prueba_env)),
+                tope,
+                bash=self.cx.maquina.bash,
+            )
+        finally:
+            self.cx.avance()
 
     def _comprueba_repro(
         self, plan: Plan, snap: m.Snapshot, block, res: dict, punta: str
