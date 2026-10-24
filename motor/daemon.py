@@ -116,7 +116,8 @@ class Daemon:
             else conf.tiempos.get("checks_cada_s", 60.0),
         )
         self.fx = Effects(self.cx)
-        self.senal = senal.Senal(home, lambda: self.cx.conf.tiempos)
+        cx = self.cx  # la lambda no puede capturar self: sería un ciclo y el candado esperaría al recolector
+        self.senal = senal.Senal(home, lambda: cx.conf.tiempos)
         self.cx.avance = self.senal.avanzo
         self._sha_arranque = version.sha_actual()
         self._sin_dormir: bool | None = (

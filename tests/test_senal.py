@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 import urllib.parse
+import weakref
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -132,6 +133,18 @@ class SenalTest(Banco):
         s.arranca()
         self.addCleanup(s.para)
         self.assertTrue(s._hilo.daemon)
+
+    def test_un_daemon_descartado_suelta_su_candado_sin_esperar_al_recolector(self):
+        """El daemon no puede quedar en un ciclo: `entrega` y los tests lo descartan sin cerrarlo y
+        el siguiente sobre el mismo home falla con OtroMotor hasta que corra el recolector."""
+        self.d._candado.close()
+        self.d._candado = type("Nada", (), {"close": lambda s: None})()
+        d = Daemon(self.home)
+        ref = weakref.ref(d)
+        del d
+        self.assertIsNone(ref(), "el Daemon sigue vivo: hay un ciclo que lo retiene")
+        otro = Daemon(self.home)
+        otro._candado.close()
 
     def test_sin_la_direccion_no_hace_nada(self):
         self.secretos(None)
