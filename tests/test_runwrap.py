@@ -98,10 +98,11 @@ class CierreTrasResultadoTest(unittest.TestCase):
         self.assertEqual((o["cerrado_tras_resultado"], o["exit"]), (False, 0))
 
     def test_llamada_sin_fin_impide_el_cierre_hasta_que_se_llena(self):
-        """El paso de abierta a cerrada cuenta como avance: el cierre llega `--cierre` s después de la
-        primera vuelta que ve `fin` lleno. La vuelta de runwrap se estira a 1 s: sin `abierta_antes`,
-        el cierre salta en la vuelta siguiente a la última que vio la llamada abierta y cae antes de
-        `fin` + `--cierre` sin importar la carga de la máquina."""
+        """El paso de abierta a cerrada cuenta como avance: el cierre llega `--cierre` s después de
+        la primera vuelta que ve `fin` lleno. La vuelta de runwrap se estira a 1 s y el agente llena
+        `fin` a mitad de vuelta (4,5 s después de que el motor congeló su entrega, que marca una
+        vuelta): sin `abierta_antes` el cierre salta en la vuelta siguiente a la última abierta,
+        medio segundo antes de `fin` + `--cierre`, sin importar la carga de la máquina."""
         real = time.sleep
         with unittest.mock.patch.object(
             runwrap.time, "sleep", lambda s: real(1.0 if s == 0.2 else s)
@@ -110,8 +111,16 @@ class CierreTrasResultadoTest(unittest.TestCase):
                 self.PRELUDIO + "veredicto('APROBADO')\n"
                 "(d / 'llamadas').mkdir()\n"
                 "f = d / 'llamadas' / 'x.json'\n"
+                "for _ in range(2000):\n"
+                "    if (d / 'entrega.json').exists():\n"
+                "        break\n"
+                "    time.sleep(0.005)\n"
+                "else:\n"
+                "    raise SystemExit(2)\n"
+                "base = time.time()\n"
                 "f.write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
-                "time.sleep(4)\n"
+                "while time.time() < base + 4.5:\n"
+                "    time.sleep(0.02)\n"
                 "f.write_text(json.dumps({'fin': time.time(), 'pid': os.getpid()}))\n"
                 "time.sleep(60)\n",
                 extra=self.REVISOR,
