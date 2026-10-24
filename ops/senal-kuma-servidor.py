@@ -10,6 +10,7 @@ y se reinicia con `docker restart`, nunca `docker stop`.
 """
 
 import datetime
+import os
 import secrets
 import sqlite3
 import string
@@ -104,6 +105,7 @@ def asegurar_monitor(
     ).fetchone()
     token = (fila["push_token"] if fila else None) or token_nuevo()
     ajustes = {
+        "type": "push",
         "active": 1,
         "interval": 300,
         "retry_interval": 60,
@@ -196,5 +198,6 @@ def estado(db: Path) -> None:
 
 
 if __name__ == "__main__":
+    os.umask(0o077)
     db, modo = Path(sys.argv[1]), sys.argv[2]
     {"alta": alta, "baja": baja, "estado": estado}[modo](db)

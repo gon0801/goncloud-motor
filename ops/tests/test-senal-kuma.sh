@@ -19,7 +19,7 @@ echo "docker $*" >>"$FAKE_LOG"
 case "$1" in
   restart) exit 0 ;;
   inspect) echo "${FAKE_KUMA_CORRE:-true}"; exit 0 ;;
-  *) echo "docker: no se espera '$1'" >&2; exit 1 ;;
+  *) echo "docker: no se espera '$*'" >>"$FAKE_LOG"; echo "docker: no se espera '$*'" >&2; exit 1 ;;
 esac
 FAKE
 cat >"$S/bin/ssh" <<'FAKE'
@@ -27,17 +27,29 @@ cat >"$S/bin/ssh" <<'FAKE'
 while [ "$1" = -o ]; do shift 2; done
 host=$1; shift
 echo "$host :: $*" >>"$FAKE_LOG"
-doctor() { # doctor <archivo>: lo que diría `motor doctor --json` según secretos.env
-  if grep -q '^MOTOR_KUMA_URL=.' "$1" 2>/dev/null; then echo '{"senal": "señal a Kuma: configurada"}'; else echo '{"senal": "señal a Kuma: sin configurar"}'; fi
+doctor() { # doctor <archivo> <ansi|utf8>: lo que diría `motor doctor --json` según secretos.env.
+  # ansi: la PC real escribe la ñ en su página ANSI (cp1252, medido en MOTOR 01), salvo con -X utf8.
+  local json
+  if grep -q '^MOTOR_KUMA_URL=.' "$1" 2>/dev/null; then json='{"senal": "señal a Kuma: configurada"}'; else json='{"senal": "señal a Kuma: sin configurar"}'; fi
+  if [ "$2" = ansi ]; then
+    printf '%s\n' "$json" | python3 -I -c 'import sys; sys.stdout.buffer.write(sys.stdin.read().encode("cp1252"))'
+  else
+    printf '%s\n' "$json"
+  fi
 }
 case "$host" in
   goncloud) exec bash -c "$*" ;;
   gon@mini-fake)
-    case "$*" in *doctor*) cat >/dev/null; doctor "$HOME_MINI/.motor/secretos.env"; exit 0 ;; esac
+    case "$*" in *doctor*) cat >/dev/null; doctor "$HOME_MINI/.motor/secretos.env" utf8; exit 0 ;; esac
     HOME="$HOME_MINI" exec bash -c "$*" ;;
   gwpc)
     case "$*" in
-      *doctor*) doctor "$HOME_PC/.motor/secretos.env"; exit 0 ;;
+      *doctor*)
+        case "$*" in
+          *"-X utf8"*) doctor "$HOME_PC/.motor/secretos.env" utf8 ;;
+          *) doctor "$HOME_PC/.motor/secretos.env" ansi ;;
+        esac
+        exit 0 ;;
       "powershell "*)
         python3 -I -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode("utf-16-le"))' "${*##* }" >>"$FAKE_LOG"
         USERPROFILE="$HOME_PC" exec pwsh ${1#powershell } ;;
@@ -53,7 +65,9 @@ crea_base() {
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1])
 con.executescript(open(sys.argv[2]).read())
-con.execute("INSERT INTO notification (id, name, active, user_id, is_default, config) VALUES (1, 'Server Alerts', 1, 1, 1, '{}')")
+# Dos avisos activos y con id distinto: con uno solo, conectar al aviso equivocado no puede fallar.
+con.execute("INSERT INTO notification (id, name, active, user_id, is_default, config) VALUES (0, 'Telegram', 1, 1, 1, '{}')")
+con.execute("INSERT INTO notification (id, name, active, user_id, is_default, config) VALUES (1, 'Server Alerts', 1, 1, 0, '{}')")
 con.execute(
     "INSERT INTO monitor (id, name, user_id, type, interval, retry_interval, maxretries, push_token, accepted_statuscodes_json, timeout, description) "
     "VALUES (26, 'backup orbit', 1, 'push', 90000, 3600, 1, 'ORBITTOKENDEPRUEBA', '[\"200-299\"]', 48, 'copiame')"
@@ -76,6 +90,9 @@ un_reinicio() { # un_reinicio <etapa> <cuenta antes>
   [ "$(( $(reinicios) - $2 ))" = 1 ] || fallo "$1: la corrida del servidor debe reiniciar Kuma exactamente una vez"
 }
 tokens() { sql "SELECT push_token FROM monitor WHERE name IN ('Motor de la Mini','Motor de la PC') ORDER BY name"; }
+respaldo_de_antes() { # respaldo_de_antes <etiqueta>: el respaldo del día sigue siendo el de antes de los cambios
+  [ "$(python3 -I -c 'import sqlite3,glob,sys; print(sqlite3.connect(glob.glob(sys.argv[1])[0]).execute("select count(*) from monitor").fetchone()[0])' "$S/kuma.db.antes-motor-03-*")" = 1 ] || fallo "$1: el respaldo de antes de motor-03 se pisó con los cambios"
+}
 
 crea_base
 printf 'MOTOR_TELEGRAM_TOKEN=abc\n# nota\nMOTOR_KUMA_URL=http://viejo/api/push/VIEJO\nMOTOR_X=1' >"$HOME_MINI/.motor/secretos.env"
@@ -90,7 +107,7 @@ corre_y_guarda "primera corrida" 0 bash "$RAIZ/ops/senal-kuma.sh"
 [ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la Mini','Motor de la PC') AND type='push' AND user_id=1 AND timeout=48 AND description='copiame' AND accepted_statuscodes_json='[\"200-299\"]'")" = 2 ] || fallo "primera: los monitores nuevos deben copiar los campos de 'backup orbit'"
 [ "$(sql "SELECT push_token FROM monitor WHERE id=26")" = ORBITTOKENDEPRUEBA ] || fallo "primera: no debe tocar 'backup orbit'"
 compgen -G "$S/kuma.db.antes-motor-03-*" >/dev/null || fallo "primera: falta el respaldo kuma.db.antes-motor-03-<fecha>"
-[ "$(python3 -I -c 'import sqlite3,glob,sys; print(sqlite3.connect(glob.glob(sys.argv[1])[0]).execute("select count(*) from monitor").fetchone()[0])' "$S/kuma.db.antes-motor-03-*")" = 1 ] || fallo "primera: el respaldo debe ser de antes de los cambios"
+respaldo_de_antes "primera"
 un_reinicio primera "$r0"
 tokens_1="$(tokens)"
 
@@ -122,6 +139,7 @@ un_reinicio segunda "$r0"
 [ "$(sql "SELECT count(*) FROM monitor WHERE type='push'")" = 3 ] || fallo "segunda: no debe duplicar monitores"
 [ "$(sql "SELECT count(*) FROM monitor_notification")" = 3 ] || fallo "segunda: no debe duplicar monitor_notification"
 [ "$(find "$S" -maxdepth 1 -name 'kuma.db.antes-motor-03-*' | wc -l | tr -d ' ')" = 1 ] || fallo "segunda: el respaldo es uno por día"
+respaldo_de_antes "segunda"
 verifica_archivos "segunda"
 
 espera "checklist sin señales falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
@@ -162,6 +180,7 @@ grep -q MOTOR_KUMA_URL "$HOME_MINI/.motor/secretos.env" "$HOME_PC/.motor/secreto
 grep -q '^MOTOR_X=1' "$HOME_MINI/.motor/secretos.env" || fallo "rollback: la Mini perdió otra línea"
 grep -q 'MOTOR_N=ñandú' "$HOME_PC/.motor/secretos.env" || fallo "rollback: la PC perdió los caracteres no ASCII"
 [ "$(stat -f %Lp "$HOME_MINI/.motor/secretos.env" 2>/dev/null || stat -c %a "$HOME_MINI/.motor/secretos.env")" = 600 ] || fallo "rollback: secretos.env de la Mini debe seguir en 600"
+respaldo_de_antes "rollback"
 
 r0=$(reinicios)
 corre_y_guarda "otra corrida después del rollback" 0 bash "$RAIZ/ops/senal-kuma.sh"
@@ -169,10 +188,20 @@ un_reinicio "tras rollback" "$r0"
 [ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la Mini','Motor de la PC') AND active=1")" = 2 ] || fallo "tras rollback: los monitores deben volver a activarse"
 [ "$(tokens)" = "$tokens_1" ] || fallo "tras rollback: debe reusar los tokens"
 [ "$(sql "SELECT count(*) FROM monitor")" = 3 ] || fallo "tras rollback: no debe duplicar monitores"
+respaldo_de_antes "tras rollback"
 verifica_archivos "tras rollback"
 
 grep -q 'docker restart uptime-kuma' "$FAKE_LOG" || fallo "falta docker restart uptime-kuma"
 grep -Eq 'docker (stop|kill|rm)' "$FAKE_LOG" && fallo "nunca se llama docker stop"
+grep -q 'docker: no se espera' "$FAKE_LOG" && fallo "docker recibió un subcomando inesperado"
+
+# Sin -X utf8 la PC contesta en cp1252: la lectura con respaldo lo tiene que tolerar igual.
+(
+  export LC_ALL=C
+  . "$RAIZ/ops/lib.sh" && . "$RAIZ/ops/lib-kuma.sh" &&
+    pc_motor="cd /d %USERPROFILE%\\motor && $PC_UV run --python 3.12 python -m motor" &&
+    senal_configurada pc
+) || fallo "la señal se debe poder leer aunque la PC conteste en cp1252"
 
 for t in $tokens_1; do
   grep -qF "$t" "$TODO" && fallo "una salida contiene el token $t"

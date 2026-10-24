@@ -58,15 +58,22 @@ linea_en() {
 }
 
 posix_motor='export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; if python3 -c "import tomllib" 2>/dev/null; then py=python3; else py="uv run --python 3.12 python"; fi; cd "$HOME/motor" && PYTHONPATH=. $py -m motor'
-pc_motor="cd /d %USERPROFILE%\\motor && $PC_UV run --python 3.12 python -m motor"
+# -X utf8: sin él, el Python de la PC escribe su salida por ssh en la página ANSI y la ñ llega como 0xF1.
+pc_motor="cd /d %USERPROFILE%\\motor && $PC_UV run --python 3.12 python -X utf8 -m motor"
 
-# senal_configurada <m>: 0 si `motor doctor --json` de esa máquina dice SENAL_OK.
+# senal_configurada <m>: 0 si `motor doctor --json` de esa máquina dice SENAL_OK. La salida se lee como
+# bytes y se decodifica utf-8 con respaldo cp1252: la PC escribe la ñ en su página ANSI (medido en MOTOR 01).
 senal_configurada() {
   local m=$1 salida
   salida="$(corre "$m" "$posix_motor doctor --home \"\$HOME/.motor\" --json" "$pc_motor doctor --home %USERPROFILE%\\.motor --json" </dev/null 2>/dev/null | tr -d '\r')" || true
   printf '%s' "$salida" | python3 -I -c 'import json,sys
 try:
-    sys.exit(0 if json.load(sys.stdin).get("senal") == sys.argv[1] else 1)
+    datos = sys.stdin.buffer.read()
+    try:
+        texto = datos.decode("utf-8")
+    except UnicodeDecodeError:
+        texto = datos.decode("cp1252")
+    sys.exit(0 if json.loads(texto).get("senal") == sys.argv[1] else 1)
 except ValueError:
     sys.exit(1)' "$SENAL_OK"
 }
