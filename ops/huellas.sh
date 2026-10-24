@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Huellas del motor en las tres máquinas: `motor version`, sha de la conf y `motor doctor --json`.
-# Sale 0 solo si las tres huellas coinciden y conf y máquina están ok.
+# Sin --caminos, sale 0 solo si las tres huellas coinciden, conf y máquina están ok y los
+# 15 caminos ssh están sanos. Con --caminos, solo comprueba esos 15 caminos.
 #   --servicio  además exige el servicio cargado (LaunchDaemon / tarea programada)
 #   --rutas     además `doctor --como-servicio`: al menos un modelo por papel responde
 #   --caminos   solo los 15 caminos ssh entre las tres máquinas, goncloud y GitHub

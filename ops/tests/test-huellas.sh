@@ -22,6 +22,7 @@ case "$*" in
     elif [[ "$*" == *mac@fake* ]]; then _d=mac;
     elif [[ "$*" == *mini@fake* ]]; then _d=mini;
     else _d=pc; fi
+    printf '%s:%s\n' "$_o" "$_d" >>"$S/caminos.log"
     if [ "${FAKE_CAMINO_CAE:-}" = "$_o:$_d" ]; then echo "ssh: connect to host $_d port 22: Connection refused" >&2; exit 255; fi
     if [ "${FAKE_CAMINO_BACHE:-}" = "$_o:$_d" ]; then
       _n=$(( $(cat "$r.camino-$_o-$_d.n" 2>/dev/null || echo 0) + 1 )); echo "$_n" >"$r.camino-$_o-$_d.n"
@@ -176,21 +177,49 @@ sano; mkdir -p "$S/suelto/ops" && cp "$RAIZ/ops/huellas.sh" "$RAIZ/ops/lib.sh" "
 espera "sin MOTOR_SHA y fuera de git" 2 env -u MOTOR_SHA bash "$S/suelto/ops/huellas.sh"
 contiene "dice cómo darlo" "$S/salida" 'falta MOTOR_SHA: corre MOTOR_SHA=$(git rev-parse HEAD) bash ops/huellas.sh'
 
+conteo_camino() { grep -c "$1" "$S/caminos.log" 2>/dev/null || true; }
+
+caso_mini_no_entra_pc() {
+  : >"$S/caminos.log"
+  if bash "$H"; then return 1; fi
+  [ "$(conteo_camino '^mini:pc$')" = 3 ]
+}
 sano; export FAKE_CAMINO_CAE="mini:pc"
-espera "mini no entra a pc" '!0' bash "$H"
+espera "mini no entra a pc" 0 caso_mini_no_entra_pc
 contiene "lo nombra" "$S/salida" "mini no entra a pc"
 
 sano; export FAKE_CAMINO_GONCLOUD_USUARIO_MINI=claw
 espera "goncloud contesta claw desde la mini" '!0' bash "$H"
 contiene "lo nombra" "$S/salida" "mini entra a goncloud como claw"
 
-sano; espera "github saluda por stderr con salida 1" 0 bash "$H"
+caso_github() {
+  : >"$S/caminos.log"
+  bash "$H" || return 1
+  [ "$(conteo_camino ':github$')" = 3 ]
+}
+sano; espera "github saluda por stderr con salida 1" 0 caso_github
 
-sano; espera "la pc como destino contesta con retorno de carro" 0 bash "$H"
+caso_pc_destino() {
+  : >"$S/caminos.log"
+  bash "$H" || return 1
+  [ "$(conteo_camino ':pc$')" = 3 ]
+}
+sano; espera "la pc como destino contesta con retorno de carro" 0 caso_pc_destino
 
+caso_bache() {
+  : >"$S/caminos.log"
+  bash "$H" || return 1
+  [ "$(conteo_camino '^mac:mini$')" = 2 ] || return 1
+  [ "$(cat "$R/mac@fake.camino-mac-mini.n" 2>/dev/null)" = 2 ]
+}
 sano; export FAKE_CAMINO_BACHE="mac:mini"
-espera "un bache suelto se reintenta" 0 bash "$H"
+espera "un bache suelto se reintenta" 0 caso_bache
 
-sano; espera "los 15 caminos sanos con --caminos" 0 env -u MOTOR_SHA MOTOR_ETIQUETA=no-existe bash "$H" --caminos
+caso_15_caminos() {
+  : >"$S/caminos.log"
+  env -u MOTOR_SHA MOTOR_ETIQUETA=no-existe bash "$H" --caminos || return 1
+  [ "$(wc -l <"$S/caminos.log" | tr -d ' ')" = 15 ]
+}
+sano; espera "los 15 caminos sanos con --caminos" 0 caso_15_caminos
 
 termina
