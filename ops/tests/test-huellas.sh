@@ -19,7 +19,8 @@ case "$*" in
   *lstart*) echo "Mon Oct 19 10:00:00 2026" ;;
   *Get-CimInstance*) cat "$r.pgrep" ;;
   *getmtime*|*LastWriteTime*) cat "$r.mtime" ;;
-  *rev-parse*) cat "$r.codigo" ;;
+  *rev-parse*) n=$(( $(cat "$r.n" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$r.n"
+    if [ -f "$r.codigo.despues" ] && [ "$n" -gt 2 ]; then cat "$r.codigo.despues"; else cat "$r.codigo"; fi ;;
   *programadas*) cat "$r.programadas" ;;
   *como-servicio*) cat "$r.rutas"; exit "$(cat "$r.rutas.rc" 2>/dev/null || echo 0)" ;;
   *doctor*) cat "$r.doctor"; exit "$(cat "$r.doctor.rc" 2>/dev/null || echo 0)" ;;
@@ -140,6 +141,14 @@ espera "programadas que no es JSON" '!0' bash "$H"
 
 sano
 espera "sin MOTOR_SHA dentro de una copia git usa su HEAD" 0 env -u MOTOR_SHA bash "$H"
+sano; echo "$SHA_VIEJO" >"$R/mini@fake.codigo"
+espera "sin MOTOR_SHA el daemon se compara con el HEAD" '!0' env -u MOTOR_SHA bash "$H"
+contiene "nombra el HEAD" "$S/salida" "mini: el motor daemon no arrancó con el código de ${SHA_BUENO:0:12}"
+git -C "$S/fx" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tres
+sano; espera "sin MOTOR_SHA con el HEAD adelante de la etiqueta" '!0' env -u MOTOR_SHA bash "$H"
+git -C "$S/fx" reset -q --hard "$SHA_BUENO"
+sano; echo "$SHA_VIEJO" >"$R/mini@fake.codigo"; echo "$SHA_BUENO" >"$R/mini@fake.codigo.despues"
+MOTOR_TOPE_DAEMON=30 espera "el daemon llega al sha después de unas vueltas" 0 bash "$H"
 sano
 MOTOR_SHA="$SHA_VIEJO" espera "MOTOR_SHA de un commit anterior al que corre el daemon" '!0' bash "$H"
 contiene "dice cuál" "$S/salida" "el motor daemon no arrancó"
