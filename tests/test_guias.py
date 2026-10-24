@@ -16,6 +16,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from motor import effects as ef
 from motor import machine as m
@@ -242,6 +243,41 @@ def _briefs(conf_dir: Path, tmp: Path) -> dict[str, tuple[str, dict]]:
         info = fx._prepara_pstack(d, "gate", role, "claude", cwd, "s1", a.correccion)
         briefs[role] = (fx._encargo(plan, block, a, cwd, rc, info), info)
     return briefs
+
+
+class GuiaFaltanteTest(unittest.TestCase):
+    """C.4: con una guía faltante el intento no se lanza y la copia de trabajo no se toca."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="pstack-falta-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.conf_dir = _conf_falsa(self.tmp)
+        os.remove(self.conf_dir / FEATURE)
+        self.ws = mock.MagicMock()
+        self.fx = ef.Effects(
+            SimpleNamespace(
+                home=self.tmp / "home", conf=load_conf(self.conf_dir), ws=self.ws
+            )
+        )
+
+    def test_start_attempt_no_toca_la_copia_de_trabajo_y_el_error_nombra_la_guia(self):
+        for role in ("implementar", "revisar"):
+            with self.subTest(role=role):
+                a = m.StartAttempt("A", role, "sonnet", 1, "a" * 40, (), False)
+                with self.assertRaises(FileNotFoundError) as cm:
+                    self.fx.start_attempt(parse_plan(PLAN), None, a)
+                self.assertIn(FEATURE, str(cm.exception))
+                self.ws.prepara.assert_not_called()
+                self.ws.copia.assert_not_called()
+                self.assertFalse(self.fx.attempt_dir("demo", "A", role, 1).exists())
+                self.assertFalse((self.tmp / "home" / "intentos").exists())
+
+    def test_errores_pstack_nombra_cada_papel_y_carril_que_pide_la_guia_faltante(self):
+        errores = ef.errores_pstack(self.conf_dir, load_conf(self.conf_dir))
+        faltante = [e for e in errores if FEATURE in e]
+        self.assertEqual(len(faltante), 1, errores)
+        for quien in ("implementar en gate", "revisar en gate", "implementar en fast"):
+            self.assertIn(quien, faltante[0])
 
 
 class TestEncargo(unittest.TestCase):

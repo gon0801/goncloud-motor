@@ -281,19 +281,18 @@ def errores_pstack(d: Path, conf) -> list[str]:
             if (lane, papel) not in pc.exigencias:
                 errores.append(f"pstack.toml: falta la exigencia de {papel} en {lane}")
     clis = dict.fromkeys(r.cli for r in conf.rutas.values())
-    vistas: set[str] = set()
+    piden: dict[str, list[str]] = {}
     for (lane, papel), e in pc.exigencias.items():
         for cli in clis:
             for correccion in (False, True):
                 for g in guias(e, cli, correccion):
-                    if g in vistas:
-                        continue
-                    vistas.add(g)
-                    if not (d / g).is_file():
-                        errores.append(
-                            f"pstack.toml: la exigencia de {papel} en {lane} pide la guía {g}, "
-                            "que no está en la copia"
-                        )
+                    quien = f"{papel} en {lane}"
+                    if not (d / g).is_file() and quien not in piden.setdefault(g, []):
+                        piden[g].append(quien)
+    for g, quienes in piden.items():
+        errores.append(
+            f"pstack.toml: la guía {g} no está en la copia; la piden: {', '.join(quienes)}"
+        )
     for r in conf.rutas.values():
         if r.cli not in ps.FORMATOS:
             errores.append(f"ruta {r.modelo}: no sé leer el registro del CLI {r.cli}")
@@ -396,6 +395,22 @@ class Effects:
         self._pstack = (conf.sha, copia)
         return copia
 
+    def _guias_del_intento(self, lane: str, role: str, cli: str, correccion: bool):
+        """(conf pstack, copia fija, exigencia, guías) de un intento; None si la conf no usa pstack.
+        Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo."""
+        pc, copia = self.cx.conf.pstack, self.asegura_pstack()
+        if pc is None or copia is None:
+            return None
+        e = pc.exigencia(lane, role)
+        lista = guias(e, cli, correccion)
+        raiz = copia[1]
+        for rel in lista:
+            if not (raiz / rel).is_file():
+                raise FileNotFoundError(
+                    f"falta la guía {rel} en la copia fija {raiz}: el intento no se lanza"
+                )
+        return pc, copia, e, lista
+
     def _prepara_pstack(
         self,
         d: Path,
@@ -409,17 +424,10 @@ class Effects:
         """Fija lo que este intento exige y dónde se lee su registro; lo guarda en `pstack.json`.
         `collect` juzga contra esto, no contra la conf de entonces: la conf puede cambiar a medias.
         Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo."""
-        pc, copia = self.cx.conf.pstack, self.asegura_pstack()
-        if pc is None or copia is None:
+        guias_del = self._guias_del_intento(lane, role, cli, correccion)
+        if guias_del is None:
             return None
-        arbol, raiz = copia
-        e = pc.exigencia(lane, role)
-        lista = guias(e, cli, correccion)
-        for rel in lista:
-            if not (raiz / rel).is_file():
-                raise FileNotFoundError(
-                    f"falta la guía {rel} en la copia fija {raiz}: el intento no se lanza"
-                )
+        pc, (arbol, raiz), e, lista = guias_del
         registros = []
         if cli == "claude":  # el transcript de la sesión que fijamos con --session-id
             base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
@@ -588,10 +596,11 @@ class Effects:
                     ukey=claves.intento_iniciado(plan.id, a.block, a.role, a.n),
                 )
             return
-        d.mkdir(parents=True, exist_ok=True)
         block = plan.block(a.block)
-        rc = self.repo_conf(snap, block.repo)
         ruta = self.cx.conf.rutas[a.modelo]
+        self._guias_del_intento(block.lane, a.role, ruta.cli, a.correccion)
+        d.mkdir(parents=True, exist_ok=True)
+        rc = self.repo_conf(snap, block.repo)
         if a.role == "implementar":
             cwd = self.cx.ws.prepara(block.repo, plan.id, block.id, rc.principal)
             wip = [
