@@ -329,6 +329,7 @@ class Effects:
             **(extra or {}),
         }
         env.pop(senal.VARIABLE, None)
+        env.pop("MOTOR_LLAMADA", None)  # un agente nunca arranca dentro de una llamada
         if mq.path_extra:
             env["PATH"] = os.pathsep.join([*mq.path_extra, env.get("PATH", "")])
         return con_python(env)
@@ -660,27 +661,23 @@ class Effects:
             }
         )
         (d / "cupos.json").write_text(cupos, encoding="utf-8")
-        cmd = [
-            sys.executable,
-            "-m",
-            "motor.runwrap",
-            "--home",
-            str(self.cx.home),
-            "--cuenta",
-            ruta.cuenta,
-            "--dir",
-            str(d),
-            "--cwd",
-            str(cwd),
-            "--timeout",
-            str(self.cx.policy.timeout_s),
-            "--sin-avance",
-            str(self.cx.policy.sin_avance_s),
-            *wip,
-            *espera,
-            "--",
-            *argv,
-        ]
+        cmd, cwd_runwrap = comando_runwrap(
+            d,
+            cwd,
+            [
+                "--home",
+                str(self.cx.home),
+                "--cuenta",
+                ruta.cuenta,
+                "--timeout",
+                str(self.cx.policy.timeout_s),
+                "--sin-avance",
+                str(self.cx.policy.sin_avance_s),
+                *wip,
+                *espera,
+            ],
+            argv,
+        )
         datos = {
             "n": a.n,
             "role": a.role,
@@ -695,7 +692,9 @@ class Effects:
         # la marca va antes de lanzar: si el daemon cae entre las dos cosas, el intento no se duplica
         # (sin `proc` se da por perdido y se relanza); con el pid, la marca se completa
         _escribe_marca(d / "started", datos)
-        datos["proc"] = plataforma.lanzar_separado(cmd, cwd, env, d / "runwrap.log")
+        datos["proc"] = plataforma.lanzar_separado(
+            cmd, cwd_runwrap, env, d / "runwrap.log"
+        )
         _escribe_marca(d / "started", datos)
         self.cx.store.append(
             plan.id,
@@ -837,6 +836,20 @@ Escribe en `$MOTOR_RESULT`:
                     "detalle": "el proceso desapareció sin dejar resultado",
                 }
         o = json.loads(oc.read_text(encoding="utf-8"))
+        c = self._juzga_intento(plan, snap, block_id, att, d, o)
+        if "toco_carpeta" in o:
+            c["toco_carpeta"] = o["toco_carpeta"]
+        return c
+
+    def _juzga_intento(
+        self,
+        plan: Plan,
+        snap: m.Snapshot,
+        block_id: str,
+        att: m.Attempt,
+        d: Path,
+        o: dict,
+    ) -> dict:
         if att.role == "implementar" and self._entrego(plan, block_id, d):
             c = {
                 "kind": "terminado"
@@ -1978,6 +1991,29 @@ Escribe en `$MOTOR_RESULT`:
             {"key": a.key, "texto": texto},
             ukey=claves.aviso_encolado(plan.id, a.key),
         )
+
+
+def comando_runwrap(
+    d: Path, cwd: Path, opciones: list[str], argv: list[str]
+) -> tuple[list[str], Path]:
+    """(comando, carpeta de lanzamiento) del vigilante de un agente. Sale siempre del motor instalado:
+    se lanza desde la carpeta del intento (no desde la copia del repo, que puede traer su propio
+    `motor/`) y con `-P`, para que ni esa carpeta ni nada local se cuele en `sys.path`. El agente
+    trabaja en `cwd`, que runwrap recibe en `--cwd`."""
+    cmd = [
+        sys.executable,
+        "-P",
+        "-m",
+        "motor.runwrap",
+        "--dir",
+        str(d),
+        "--cwd",
+        str(cwd),
+        *opciones,
+        "--",
+        *argv,
+    ]
+    return cmd, d
 
 
 def _escribe_marca(ruta: Path, datos: dict) -> None:

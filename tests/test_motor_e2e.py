@@ -86,8 +86,10 @@ class Banco(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="motor-e2e-"))
 
-    def arranca(self, login=True, **kw) -> Path:
+    def arranca(self, login=True, antes=None, **kw) -> Path:
         self.home, self.plan = sandbox.create(self.tmp / "b", **kw)
+        if antes:
+            antes()
         r = motor(
             "entrega",
             str(self.plan),
@@ -103,6 +105,33 @@ class Banco(unittest.TestCase):
         if login:
             (self.home / "login-hecho").write_text("ok")
         return self.home
+
+    def cli_falsos(self):
+        """Carpeta con `kimi` y `claude` falsos (lo que hay detrás de los shims) en el PATH de la máquina."""
+        binario = self.tmp / "clis"
+        binario.mkdir()
+        for nombre in ("kimi", "claude"):
+            f = binario / nombre
+            f.write_text(
+                f'#!/bin/sh\nexec "{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} "$@"\n'
+            )
+            f.chmod(0o755)
+            (binario / f"{nombre}.cmd").write_text(  # en Windows solo corren los .cmd
+                f'@"{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} %*\r\n',
+                encoding="utf-8",
+            )
+        return binario
+
+    def maquina(self, extra_env: str = ""):
+        texto = (self.home / "maquina.toml").read_text(encoding="utf-8")
+        (self.home / "maquina.toml").write_text(
+            texto.replace(
+                "[env]",
+                f'path_extra = ["{self.cli_falsos().as_posix()}"]\n[env]\n{extra_env}',
+                1,
+            ),
+            encoding="utf-8",
+        )
 
     def termina(self, p: subprocess.Popen | None = None, env: dict | None = None):
         p = p or daemon(self.home, env)
@@ -1256,6 +1285,130 @@ class TestFallas(Banco):
         self.assertTrue(ok)
 
 
+SENUELO = (
+    "import sys\n"
+    "from pathlib import Path\n"
+    "Path(sys.argv[sys.argv.index('--dir') + 1], 'señuelo').write_text('x')\n"
+    "sys.exit(9)\n"
+)
+
+
+class TestVigilanteInstalado(Banco):
+    """El vigilante de cada agente es el del motor instalado, no uno que traiga el repo del plan ni la
+    carpeta del intento."""
+
+    def corre(self, modos: dict, senuelos: bool = False):
+        def antes():
+            self.maquina()
+            if senuelos:
+                self.senuelo_en_el_repo()
+                for rol in ("implementar", "revisar"):
+                    self.senuelo_en(self.home / "intentos" / "demo" / f"A-{rol}-1")
+
+        self.arranca(
+            antes=antes,
+            modos={"sonnet": "ok", "glm": "ok", "opus": "ok", "k3": "ok", **modos},
+            reglas_revision="Z=nada",
+        )
+        base = self.plan.read_text().split("## Bloque A")[0]
+        self.plan.write_text(
+            base
+            + "## Bloque A — saludo\nlane: gate\naviso: ya saluda\nprueba-real: true\n"
+            + "| Fila | Contenido | Acepta |\n| --- | --- | --- |\n"
+            + "| A.1 | escribe: saludo.txt=hola | test -f saludo.txt |\n",
+            encoding="utf-8",
+        )
+        r = motor(
+            "entrega",
+            str(self.plan),
+            "--home",
+            str(self.home),
+            "--json",
+            "--espera",
+            "0",
+        )
+        self.assertEqual(
+            json.loads(r.stdout)["estado"], "encolado", r.stdout + r.stderr
+        )
+        self.termina()
+
+    def senuelo_en(self, carpeta: Path):
+        (carpeta / "motor").mkdir(parents=True)
+        (carpeta / "motor" / "__init__.py").write_text("")
+        (carpeta / "motor" / "runwrap.py").write_text(SENUELO)
+
+    def senuelo_en_el_repo(self):
+        plan = self.plan.read_text(encoding="utf-8")
+        bare = plan.split("repo: ")[1].splitlines()[0]
+        clon = self.tmp / "clon-senuelo"
+        subprocess.run(["git", "clone", "-q", bare, str(clon)], check=True)
+        self.senuelo_en(clon)
+        for a in (
+            ["add", "-A"],
+            ["commit", "-q", "-m", "señuelo"],
+            ["push", "-q", "origin", "main"],
+        ):
+            subprocess.run(
+                ["git", "-c", "user.name=s", "-c", "user.email=s@l", *a],
+                cwd=clon,
+                check=True,
+            )
+
+    def anotado(self, modelo: str) -> dict:
+        return json.loads(
+            (self.tmp / "b" / "fake-state" / f"entorno-{modelo}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def fines(self, rol: str) -> list[dict]:
+        return [
+            e.data["outcome"]
+            for e in eventos(self.home)
+            if e.kind == "AttemptEnded" and e.data["role"] == rol
+        ]
+
+    def test_el_vigilante_es_el_instalado_aunque_el_repo_y_el_intento_traigan_otro(
+        self,
+    ):
+        self.corre({"sonnet": "entorno", "opus": "entorno"}, senuelos=True)
+        for rol in ("implementar", "revisar"):
+            for d in sorted((self.home / "intentos" / "demo").glob(f"A-{rol}-*")):
+                self.assertFalse(
+                    (d / "señuelo").exists(), f"{d.name}: corrió el runwrap señuelo"
+                )
+        for modelo, rol in (("sonnet", "implementar"), ("opus", "revisar")):
+            visto = self.anotado(modelo)
+            self.assertIsNone(
+                visto["MOTOR_LLAMADA"], f"{modelo}: arrancó dentro de una llamada"
+            )
+            self.assertEqual(
+                [(r["tipo"], r["cuenta"]) for r in visto["libro"]],
+                [("agente", "anthropic")],
+                f"{modelo}: mientras corría, una sola entrada en el libro de cuentas, la suya",
+            )
+            self.assertEqual(
+                visto["rc"], 0, "la llamada a otro modelo pasó por el shim"
+            )
+            self.assertIn("kimi-respuesta", visto["out"])
+            d = sorted((self.home / "intentos" / "demo").glob(f"A-{rol}-*"))[0]
+            [ll] = [
+                json.loads(f.read_text(encoding="utf-8"))
+                for f in (d / "llamadas").glob("*.json")
+            ]
+            self.assertEqual((ll["cuenta"], ll["cli"]), ("kimi", "kimi"))
+
+    def test_un_intento_que_sale_sin_lugar_y_sin_tocar_nada_lo_dice(self):
+        self.corre({"sonnet": "sin_lugar"})
+        self.assertIs(self.fines("implementar")[0]["toco_carpeta"], False)
+
+    def test_un_intento_que_toco_la_carpeta_y_salio_con_error_lo_dice(self):
+        self.corre({"sonnet": "toca_y_sale"})
+        primero = self.fines("implementar")[0]
+        self.assertNotEqual(primero["kind"], "entregado")
+        self.assertIs(primero["toco_carpeta"], True)
+
+
 class TestApagon(Banco):
     def test_corte_de_luz_a_la_mitad_retoma_sin_perder_trabajo(self):
         self._apagon(privado=True)
@@ -1792,33 +1945,6 @@ class TestPanelDelRevisor(BancoPstack):
 class TestLlamadasAOtrosModelos(BancoPstack):
     """B.3: el agente llama a otro CLI de modelos por el shim del motor."""
 
-    def cli_falsos(self):
-        """Carpeta con `kimi` y `claude` falsos (lo que hay detrás de los shims) en el PATH de la máquina."""
-        binario = self.tmp / "clis"
-        binario.mkdir()
-        for nombre in ("kimi", "claude"):
-            f = binario / nombre
-            f.write_text(
-                f'#!/bin/sh\nexec "{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} "$@"\n'
-            )
-            f.chmod(0o755)
-            (binario / f"{nombre}.cmd").write_text(  # en Windows solo corren los .cmd
-                f'@"{sys.executable}" "{RAIZ / "proto" / "fake_cli.py"}" {nombre} %*\r\n',
-                encoding="utf-8",
-            )
-        return binario
-
-    def maquina(self, extra_env: str = ""):
-        texto = (self.home / "maquina.toml").read_text(encoding="utf-8")
-        (self.home / "maquina.toml").write_text(
-            texto.replace(
-                "[env]",
-                f'path_extra = ["{self.cli_falsos().as_posix()}"]\n[env]\n{extra_env}',
-                1,
-            ),
-            encoding="utf-8",
-        )
-
     def panel(self) -> dict:
         return json.loads(
             (self.tmp / "b" / "fake-state" / "panel-sonnet.json").read_text(
@@ -1855,6 +1981,24 @@ class TestLlamadasAOtrosModelos(BancoPstack):
             list((self.home / "llamadas").glob("*.json")),
             [],
             "al terminar no queda nada vivo",
+        )
+
+    def test_la_llamada_a_otro_modelo_no_puede_escribir_la_entrega_del_agente(self):
+        self.arranca_pstack(
+            False,
+            {"sonnet": "panel_tras_entrega", "opus": "ok"},
+            antes=lambda: self.maquina(),
+        )
+        self.assertIn(
+            "result:no", self.panel()["out"], "el modelo llamado no ve MOTOR_RESULT"
+        )
+        entrega = json.loads(
+            (self.intentos("implementar")[0] / "result.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            entrega["resumen"], "hecho", "la entrega del agente quedó intacta"
         )
 
     def test_con_la_cuenta_llena_se_rechaza(self):

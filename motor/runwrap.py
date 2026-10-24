@@ -35,9 +35,6 @@ from . import entrega, llamadas, plataforma
 from .plataforma import contener, kwargs_grupo, matar_grupo
 from .workspace import foto_wip
 
-SHIMS = Path(__file__).resolve().parent / "shims"
-
-
 _SALTA = {".git", ".venv", "node_modules", "__pycache__"}
 
 
@@ -53,12 +50,29 @@ def _mtime_arbol(raiz: Path) -> float:
     return m
 
 
+def _huella_arbol(raiz: Path) -> dict[str, tuple[int, int]]:
+    """Archivo -> (mtime en ns, tamaño): con dos fotos se ve si algo cambió, aunque haya sido en 1 s."""
+    huella: dict[str, tuple[int, int]] = {}
+    for dirpath, dirnames, filenames in os.walk(raiz):
+        dirnames[:] = [d for d in dirnames if d not in _SALTA]
+        for f in filenames:
+            ruta = os.path.join(dirpath, f)
+            try:
+                st = os.stat(ruta)
+            except OSError:
+                continue
+            huella[os.path.relpath(ruta, raiz)] = (st.st_mtime_ns, st.st_size)
+    return huella
+
+
 def _sin_shims(cmd: list[str], env: dict) -> list[str]:
-    """El agente se lanza con su CLI real: con los shims primero en el PATH, `claude` caería en el shim."""
+    """El agente se lanza con su CLI real: con los shims primero en el PATH, `claude` caería en el shim.
+    Se quita toda carpeta de shims del motor, no solo la de este runwrap: el agente hereda el PATH
+    del motor instalado."""
     path = os.pathsep.join(
         p
         for p in env.get("PATH", "").split(os.pathsep)
-        if os.path.abspath(p or ".") != str(SHIMS)
+        if not os.path.isfile(os.path.join(p or ".", "llamada_guard.py"))
     )
     env_real = {**env, "PATH": path}
     if (
@@ -95,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     d, cwd = Path(a.dir), Path(a.cwd)
     log = d / "log.txt"
     fotos: list[str] = []
+    antes = _huella_arbol(cwd)
     inicio = time.time()
     with open(log, "ab") as out:
         env_agente = {**os.environ, "MOTOR_ATTEMPT_DIR": str(d)}
@@ -182,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         "tail": log.read_text(errors="replace", encoding="utf-8")[-2000:],
         "fotos": fotos[-5:],
         "segundos": round(time.time() - inicio, 1),
+        "toco_carpeta": _huella_arbol(cwd) != antes,
     }
     tmp = d / "outcome.json.tmp"
     tmp.write_text(json.dumps(outcome, ensure_ascii=False), encoding="utf-8")
