@@ -198,7 +198,7 @@ def _conf_falsa(tmp: Path) -> Path:
     (sk / "playbooks" / "bug-fix.md").write_text("# playbook bug-fix\n")
     it = conf / "pstack" / "skills" / "interrogate"
     it.mkdir()
-    (it / "SKILL.md").write_text("# interrogate\nrevisa en serio\n")
+    (it / "SKILL.md").write_text("# interrogate\nrevisa en serio, con ñ\n")
     arnes = conf / "pstack" / "docs" / "harness"
     arnes.mkdir(parents=True)
     (arnes / "claude-code.md").write_text("# adaptador de Claude Code\n")
