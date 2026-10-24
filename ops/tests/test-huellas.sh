@@ -218,7 +218,12 @@ espera "un bache suelto se reintenta" 0 caso_bache
 caso_15_caminos() {
   : >"$S/caminos.log"
   env -u MOTOR_SHA MOTOR_ETIQUETA=no-existe bash "$H" --caminos || return 1
-  [ "$(wc -l <"$S/caminos.log" | tr -d ' ')" = 15 ]
+  local esperado="$S/caminos-esperados.log" o d
+  : >"$esperado"
+  for o in mac mini pc; do for d in mac mini pc goncloud github; do printf '%s:%s\n' "$o" "$d" >>"$esperado"; done; done
+  sort -o "$S/caminos.log" "$S/caminos.log"
+  sort -o "$esperado" "$esperado"
+  cmp -s "$esperado" "$S/caminos.log"
 }
 sano; espera "los 15 caminos sanos con --caminos" 0 caso_15_caminos
 
