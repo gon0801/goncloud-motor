@@ -132,9 +132,10 @@ class Espera:
         corregir su veredicto hasta que el motor lo cierra. Uno que no es válido nunca
         reemplaza al válido y queda en `result.ajeno.json`.
 
-        Riesgo aceptado: un subagente del propio CLI del revisor hereda su entorno y podría
-        escribir un veredicto válido. Trabaja para ese revisor, y el motor no puede saber qué
-        proceso escribió el archivo.
+        Riesgo aceptado: un subagente del propio CLI del revisor hereda su entorno, y los CLIs de
+        otros modelos que llama (el shim solo les quita `MOTOR_RESULT`) heredan `MOTOR_ATTEMPT_DIR`.
+        Cualquiera de ellos podría escribir un veredicto válido. Trabajan para ese revisor, y el
+        motor no puede saber qué proceso escribió el archivo.
         """
         resultado = d / "result.json"
         fija = d / ENTREGA

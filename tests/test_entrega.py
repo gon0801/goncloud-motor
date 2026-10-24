@@ -1,4 +1,4 @@
-"""Una entrega válida cierra al agente. Una que no lo es, no. Nadie la pisa después."""
+"""Una entrega válida cierra al agente. Una que no lo es, no la pisa; otra válida sí la reemplaza."""
 
 from __future__ import annotations
 
