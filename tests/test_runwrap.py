@@ -99,14 +99,23 @@ class CierreTrasResultadoTest(unittest.TestCase):
 
     def test_llamada_sin_fin_impide_el_cierre_hasta_que_se_llena(self):
         """El paso de abierta a cerrada cuenta como avance: el cierre llega `--cierre` s después de
-        la primera vuelta que ve `fin` lleno. La vuelta de runwrap se estira a 1 s y el agente llena
-        `fin` a mitad de vuelta (4,5 s después de que el motor congeló su entrega, que marca una
-        vuelta): sin `abierta_antes` el cierre salta en la vuelta siguiente a la última abierta,
-        medio segundo antes de `fin` + `--cierre`, sin importar la carga de la máquina."""
+        la primera vuelta que ve `fin` lleno, y esa vuelta se mide por su propio reloj, no por la
+        hora de `fin`. La vuelta de runwrap se estira a 1 s y cada una se anota al arrancar; el
+        agente llena `fin` a mitad de vuelta (4,5 s después de que el motor congeló su entrega,
+        que marca una vuelta). Sin `abierta_antes`, `ultimo_cambio_p` queda una vuelta atrás y el
+        cierre salta en la misma vuelta que ve `fin` lleno, a menos de 1 s de ella; al código
+        bueno le falta una vuelta entera, 1 s o más, sea cual sea la fase en que `fin` caiga."""
         real = time.sleep
-        with unittest.mock.patch.object(
-            runwrap.time, "sleep", lambda s: real(1.0 if s == 0.2 else s)
-        ):
+        vueltas = []
+
+        def vuelta_de_1s(s):
+            if s != 0.2:
+                real(s)
+                return
+            real(1.0)
+            vueltas.append(time.time())
+
+        with unittest.mock.patch.object(runwrap.time, "sleep", vuelta_de_1s):
             o, _, d = self.corre_en(
                 self.PRELUDIO + "veredicto('APROBADO')\n"
                 "(d / 'llamadas').mkdir()\n"
@@ -127,8 +136,9 @@ class CierreTrasResultadoTest(unittest.TestCase):
             )
         self.assertIs(o["cerrado_tras_resultado"], True)
         fin = json.loads((d / "llamadas" / "x.json").read_text())["fin"]
+        primera = min(v for v in vueltas if v > fin)
         self.assertGreaterEqual(
-            (d / "outcome.json").stat().st_mtime - fin, 1.0
+            (d / "outcome.json").stat().st_mtime - primera, 1.0
         )  # da tiempo de leer lo que contestó el panel
 
     def test_pid_invalido_en_la_llamada_no_cosecha_al_agente(self):

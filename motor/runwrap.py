@@ -15,10 +15,9 @@
   (una abierta cuenta como avance: el cierre llega `--cierre` s después de llenarse `fin`).
   Esas fuentes solo retienen el cierre: si `--sin-avance` o `--timeout` vencen con una
   entrega válida ya congelada, el corte se anota tal cual en `outcome.json` y es
-  `effects._juzga_intento` el que rescata la entrega congelada, para que el veredicto no se
-  pierda. Grok dejaba su
-  resultado y el proceso no salía; a los 45 min se mataba "sin avance" y la entrega se perdía
-  (INGESTA 01, bloque D, dos veces).
+  `effects._juzga_intento` el que rescata la entrega congelada, para que el veredicto no
+  se pierda. Grok dejaba su resultado y el proceso no salía; a los 45 min se mataba "sin
+  avance" y la entrega se perdía (INGESTA 01, bloque D, dos veces).
 - Con `--wip-rama`: cada `--wip-cada` s y al terminar, sube una foto del trabajo a medias
   (ver workspace.foto_wip). Un corte de luz pierde a lo mucho esos segundos.
 - Con `--home` y `--cuenta`: anota al agente en el libro de cuentas (motor/llamadas.py), para que
