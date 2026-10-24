@@ -1780,7 +1780,7 @@ class TestPstack(BancoPstack):
         self.assertTrue(info["guias"])
         desde = 0
         for g in info["guias"]:
-            titulo = f"### {g['ruta']}\n"
+            titulo = f"\n### {g['ruta']}\n"
             i = anexo.find(titulo, desde)
             self.assertGreaterEqual(i, 0, f"{rol}: falta el título de {g['ruta']}")
             desde = i + len(titulo)

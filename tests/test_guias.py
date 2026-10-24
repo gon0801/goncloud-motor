@@ -327,7 +327,7 @@ class TestEncargo(unittest.TestCase):
         for brief, info in self.briefs.values():
             raiz = Path(info["raiz"])
             for g in info["guias"]:
-                self.assertIn(f"### {g['ruta']}", brief)
+                self.assertIn(f"\n### {g['ruta']}\n", brief)
                 self.assertIn(str(raiz / g["ruta"]), brief)
                 self.assertIn(
                     (raiz / g["ruta"]).read_text(encoding="utf-8").strip(), brief
