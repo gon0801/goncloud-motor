@@ -28,7 +28,7 @@ case "$*" in
       _n=$(( $(cat "$r.camino-$_o-$_d.n" 2>/dev/null || echo 0) + 1 )); echo "$_n" >"$r.camino-$_o-$_d.n"
       if [ "$_n" = 1 ]; then echo "ssh: connection reset" >&2; exit 255; fi
     fi
-    if [ "$_d" = github ]; then echo "Hi gon0801! You have successfully authenticated, but GitHub does not provide shell access." >&2; exit 1; fi
+    if [ "$_d" = github ]; then printf 'Hi gon0801! You have successfully authenticated, but GitHub does not provide shell access.\r\n' >&2; exit 1; fi
     if [ "$_d" = goncloud ]; then
       if [ "$_o" = mini ] && [ -n "${FAKE_CAMINO_GONCLOUD_USUARIO_MINI:-}" ]; then echo "$FAKE_CAMINO_GONCLOUD_USUARIO_MINI"; else echo root; fi
     elif [ "$_d" = pc ]; then printf 'gon-pc\\ehven\r\n'
@@ -217,7 +217,10 @@ espera "un bache suelto se reintenta" 0 caso_bache
 
 caso_15_caminos() {
   : >"$S/caminos.log"
+  : >"$FAKE_LOG"
   env -u MOTOR_SHA MOTOR_ETIQUETA=no-existe bash "$H" --caminos || return 1
+  [ "$(grep -c '' "$FAKE_LOG")" = 15 ] || return 1
+  [ "$(grep -c -E 'whoami|git@github\.com' "$FAKE_LOG")" = 15 ] || return 1
   local esperado="$S/caminos-esperados.log" o d
   : >"$esperado"
   for o in mac mini pc; do for d in mac mini pc goncloud github; do printf '%s:%s\n' "$o" "$d" >>"$esperado"; done; done
