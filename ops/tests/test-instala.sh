@@ -139,6 +139,31 @@ en_mac espera "etiqueta en otro commit" 3 bash "$I"
 contiene "dice cómo arreglarlo" "$S/salida" "sube la etiqueta en ops/lib.sh"
 [ ! -e "$S/mac/motor" ] && [ ! -e "$S/mini/motor" ] && ! grep -q . "$FAKE_LOG" || fallo "tocó alguna máquina con la etiqueta en otro commit"
 
+avanza() { git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1" && git -C "$S/trabajo" push -q origin HEAD:main; }
+tag_en() { git -C "$S/$1/motor" describe --tags --exact-match 2>/dev/null; }
+echo "# conf que el código nuevo rechaza"
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 antes de la conf rota" 0 bash "$I"
+unset MOTOR_ETIQUETA
+git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m nuevo && git -C "$S/trabajo" push -q origin HEAD:main
+BUENA="$(git -C "$S/conf-src" rev-parse HEAD)"
+printf 'nombre = \n' >"$S/conf-src/maquinas/mini.toml"
+git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -am rota
+git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main
+en_mac espera "conf rechazada por el código nuevo" '!0' bash "$I"
+contiene "dice quién la rechaza" "$S/salida" "rechaza la conf"
+contiene "dice que nada cambió" "$S/salida" "No se cambió el código en ninguna máquina"
+for m in mac mini; do [ "$(tag_en $m)" = v1.0.23 ] || fallo "$m: cambió de etiqueta con la conf rota (quedó en $(tag_en $m))"; done
+[ "$(cat "$S/pc-tag")" = v1.0.23 ] || fallo "pc: cambió de etiqueta con la conf rota"
+grep -q "detach refs/tags/$TAG" "$FAKE_LOG" && fallo "la PC cambió a $TAG con la conf rota"
+git -C "$S/conf-src" reset -q --hard "$BUENA" && git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 con la PC caída al validar" 0 bash "$I"
+unset MOTOR_ETIQUETA
+git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m nuevo2 && git -C "$S/trabajo" push -q origin HEAD:main
+FAKE_PC_FALLA=1 en_mac espera "la PC no puede validar" '!0' bash "$I"
+[ "$(tag_en mini)" = v1.0.23 ] && [ "$(cat "$S/pc-tag")" = v1.0.23 ] || fallo "se movió una máquina aunque la PC no validó"
+
 echo "# instalar con fallas"
 reset
 FAKE_CAE="gon@mini-fake" en_mac espera "ssh a la Mini falla" '!0' bash "$I"
@@ -236,8 +261,6 @@ contiene "dice cuál" "$S/salida" "mini"
 grep -q "schtasks /delete" "$FAKE_LOG" && fallo "la marcha atrás borró la tarea de la PC"
 [ ! -e "$S/sudo.log" ] || fallo "la marcha atrás llamó a sudo"
 
-avanza() { git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1" && git -C "$S/trabajo" push -q origin HEAD:main; }
-tag_en() { git -C "$S/$1/motor" describe --tags --exact-match 2>/dev/null; }
 dos_entregas() { # deja las tres en $2, con la marca en $1 (como tras dos entregas buenas)
   MOTOR_ETIQUETA=$1 en_mac espera "entrega $1" 0 bash "$I"; unset MOTOR_ETIQUETA
   avanza "$2"
