@@ -63,7 +63,6 @@ class Accion:
 
     tipo: str  # subagente | comando | otra
     nombre: str = ""  # tipo de subagente o comando
-    n: int = 0  # 1, 2, 3... entre las acciones del agente principal
 
 
 @dataclass(frozen=True)
@@ -290,7 +289,7 @@ FORMATOS: dict[str, Formato] = {
 }
 
 
-def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> list[Accion]:
+def _clasifica(f: Formato, herramienta: str, args: dict) -> list[Accion]:
     h = herramienta.lower().rsplit(".", 1)[-1]
     if h in f.subagente:
         tipo = next(
@@ -308,11 +307,11 @@ def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> list[Accion]
             cuantos = len(items) if isinstance(items, list) else 0
         else:
             cuantos = 1
-        return [Accion("subagente", tipo, n + i) for i in range(cuantos)]
+        return [Accion("subagente", tipo) for _ in range(cuantos)]
     if h in f.comando:
         cmd = next((str(args[k]) for k in ("command", "cmd") if args.get(k)), "")
-        return [Accion("comando", cmd, n)]
-    return [Accion("otra", "", n)]
+        return [Accion("comando", cmd)]
+    return [Accion("otra")]
 
 
 def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
@@ -365,7 +364,7 @@ def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bo
                 continue
             vistos.add(ident)
         for herramienta, args in llamadas:
-            acciones.extend(_clasifica(f, herramienta, args, len(acciones) + 1))
+            acciones.extend(_clasifica(f, herramienta, args))
     return acciones, legible
 
 
@@ -406,10 +405,15 @@ def instrucciones(e: Exigencia, cli: str) -> str:
         "encargo. Las rutas que una guía menciona son relativas a la carpeta de esa guía.",
     ]
     if e.min_subagentes:
-        pasos.append(
+        linea = (
             f"Lanza al menos {e.min_subagentes} subagente(s) con la herramienta de subagentes de "
-            "tu CLI. En Kimi, cada elemento de `items` de `AgentSwarm` cuenta como un subagente."
+            "tu CLI."
         )
+        if cli == "kimi":
+            linea += (
+                " Cada elemento de `items` de `AgentSwarm` cuenta como un subagente."
+            )
+        pasos.append(linea)
     pasos.append(
         "El motor juzga lo que haces, no lo que lees: lo que solo digas no cuenta."
     )

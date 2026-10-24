@@ -273,6 +273,10 @@ class TestInstrucciones(unittest.TestCase):
         t = ps.instrucciones(ps.Exigencia(min_subagentes=2), "kimi")
         self.assertIn("al menos 2 subagente(s)", t)
         self.assertIn("AgentSwarm", t)
+        for cli in ("claude", "opencode", "grok", "muse", "qwen"):
+            c = ps.instrucciones(ps.Exigencia(min_subagentes=2), cli)
+            self.assertIn("al menos 2 subagente(s)", c)
+            self.assertNotIn("AgentSwarm", c, cli)
         self.assertNotIn("subagente", ps.instrucciones(ps.Exigencia(), "kimi"))
 
 

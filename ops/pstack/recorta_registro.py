@@ -141,9 +141,7 @@ def subagentes(texto: str, cli: str, limpiar: bool = False) -> list[tuple[str, s
                 continue
             vistos.add(ident)
         for herramienta, args in llamadas:
-            n = sum(
-                a.tipo == "subagente" for a in ps._clasifica(f, herramienta, args, 0)
-            )
+            n = sum(a.tipo == "subagente" for a in ps._clasifica(f, herramienta, args))
             desc = args.get("description") or ""
             out += [(herramienta, limpia(desc) if limpiar else desc)] * n
     return out
