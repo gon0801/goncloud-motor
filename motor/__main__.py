@@ -343,6 +343,75 @@ def conf_valida(d: Path) -> list[str]:
     return errores
 
 
+ESPERA_CONF_S = 60
+
+
+def _carga_conf(home: Path) -> Path:
+    """La carpeta de la conf compartida, ya cargada y con sus políticas armadas, o la excepción."""
+    d = load_maquina(home).conf
+    m.Policy.from_conf(load_conf(d))
+    return d
+
+
+def _espera(s: float) -> None:
+    time.sleep(s)
+
+
+def _sin_donde_volver(motivo: str) -> int:
+    """Deja el error en el log, espera y sale: así el supervisor no relanza un motor roto cada pocos segundos."""
+    print(f"motor: {motivo}", file=sys.stderr, flush=True)
+    _espera(ESPERA_CONF_S)
+    return 1
+
+
+def _recupera_conf(home: Path) -> tuple[int | None, tuple[str, list[str]] | None]:
+    """Antes de crear el Daemon: si la conf compartida no carga, vuelve a la última buena.
+    Devuelve (código de salida si no hay a dónde volver, (sha malo, errores) si se volvió)."""
+    from .workspace import git
+
+    try:
+        load_maquina(home)
+    except Exception as e:  # noqa: BLE001  maquina.toml y secretos.env no vienen de la conf compartida
+        return _sin_donde_volver(
+            f"no pude leer maquina.toml o secretos.env, no hay a dónde volver: {type(e).__name__}: {e}"
+        ), None
+    try:
+        _carga_conf(home)
+        return None, None
+    except Exception as e:  # noqa: BLE001
+        error = _falla("conf", e)
+    d = load_maquina(home).conf
+    buena = home / "conf-buena"
+    sha = buena.read_text(encoding="utf-8").strip() if buena.is_file() else ""
+    if not sha:
+        return _sin_donde_volver(
+            f"la conf no carga y no hay conf-buena a dónde volver: {error}"
+        ), None
+    malo = git("rev-parse", "HEAD", cwd=d).stdout.strip()
+    sucio = git("status", "--porcelain", cwd=d).stdout.strip()
+    if sucio:
+        return _sin_donde_volver(
+            f"la conf no carga y tiene cambios sin commitear, no la toco: {error}"
+        ), None
+    if git("reset", "-q", "--hard", sha, cwd=d).returncode != 0:
+        return _sin_donde_volver(
+            f"la conf no carga y no pude volver a {sha[:12]}: {error}"
+        ), None
+    try:
+        _carga_conf(home)
+    except Exception as e:  # noqa: BLE001
+        git("reset", "-q", "--hard", malo, cwd=d)
+        return _sin_donde_volver(
+            f"la conf buena {sha[:12]} tampoco carga: {_falla('conf', e)}"
+        ), None
+    print(
+        f"motor: la conf no cargaba ({error}); volví a la última buena {sha[:12]}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return None, (malo, [error])
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="motor")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -532,11 +601,16 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "daemon":
         from .daemon import Daemon, OtroMotor
 
+        salida, vuelta = _recupera_conf(a.home)
+        if salida is not None:
+            return salida
         try:
             d = Daemon(a.home, a.checks_cada)
         except OtroMotor as e:
             print(f"motor: {e}", file=sys.stderr)
             return 1
+        if vuelta:
+            d.avisa_conf_rechazada(*vuelta)
         return d.run(a.intervalo, a.hasta_terminar, a.tope)
     if a.cmd == "servicio":
         from .servicio import supervisor

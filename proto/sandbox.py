@@ -189,7 +189,7 @@ PROD_DIR = "{Path(prod).as_posix()}"
 timeout_s = {timeout}
 sin_avance_s = {sin_avance}
 wip_cada_s = {wip_cada}
-checks_cada_s = 0
+checks_cada_s = 0.001
 cooldown_default_s = 7200
 aviso_lento_s = 21600
 [avisos]

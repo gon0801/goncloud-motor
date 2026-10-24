@@ -10,10 +10,13 @@ existe antes de repetirse, y los agentes corren aparte (runwrap).
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -39,6 +42,7 @@ from .workspace import Workspace, git
 
 
 ESPERA_TRAS_FALLA_S = 300
+CONF_BUENA = "conf-buena"
 
 
 def _bloque(a: m.Action) -> str:
@@ -131,6 +135,7 @@ class Daemon:
             tuple[str, str, str], int
         ] = {}  # fallas ya anotadas por (plan, bloque, acción): numera su clave
         self._rachas = self._rachas_abiertas()
+        self.guarda_conf_buena()
 
     def trae_conf(self, now: float) -> None:
         """La conf compartida llega sola: cada `conf_cada_s` (15 min) se trae de su repo. Solo se
@@ -156,29 +161,63 @@ class Daemon:
             or git("merge-base", "--is-ancestor", nueva, antes, cwd=d).returncode == 0
         ):
             return
-        if git("merge", "-q", "--ff-only", f"origin/{rama}", cwd=d).returncode != 0:
-            return  # la copia de esta máquina tiene cambios propios: no se pisa
         from .__main__ import conf_valida
 
-        errores = conf_valida(d)
+        errores = self._valida_en_copia(d, nueva, conf_valida)
         if errores:
-            git("reset", "-q", "--hard", antes, cwd=d)
-            if self.store.append(
-                "",
-                "",
-                "ConfRechazada",
-                {"sha": nueva, "errores": errores[:5]},
-                ukey=claves.conf_rechazada(nueva),
-            ):
-                self.cx.notifier.encola(
-                    f"confmala:{nueva[:12]}",
-                    render("conf_mala", {}, self.maquina.nombre, "Motor de planes"),
-                )
+            self.avisa_conf_rechazada(nueva, errores)
+            return
+        if git("merge", "-q", "--ff-only", f"origin/{rama}", cwd=d).returncode != 0:
+            return  # la copia de esta máquina tiene cambios propios: no se pisa
+
+    @staticmethod
+    def _valida_en_copia(d: Path, sha: str, valida) -> list[str]:
+        """Valida `sha` en una copia temporal (`git archive`): la conf en disco no se toca hasta que pase."""
+        with tempfile.TemporaryDirectory(prefix="motor-conf-") as t:
+            r = subprocess.run(
+                ["git", "archive", "--format=tar", sha],
+                cwd=d,
+                capture_output=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+            if r.returncode != 0:
+                return [f"no pude sacar la conf {sha[:12]} para validarla"]
+            try:
+                with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
+                    tf.extractall(t, filter="data")
+                return valida(Path(t))
+            except Exception as e:  # noqa: BLE001  una conf que no se puede ni leer se rechaza con su motivo
+                return [f"conf: {type(e).__name__}: {e}"]
+
+    def avisa_conf_rechazada(self, sha: str, errores: list[str]) -> None:
+        """Anota la conf mala y avisa una vez por sha (la clave es el sha)."""
+        if self.store.append(
+            "",
+            "",
+            "ConfRechazada",
+            {"sha": sha, "errores": errores[:5]},
+            ukey=claves.conf_rechazada(sha),
+        ):
+            self.cx.notifier.encola(
+                f"confmala:{sha[:12]}",
+                render("conf_mala", {}, self.maquina.nombre, "Motor de planes"),
+            )
+
+    def guarda_conf_buena(self) -> None:
+        """El sha de la última conf que cargó bien: a donde vuelve el arranque si la siguiente no carga."""
+        sha = self.cx.conf.sha
+        if sha == "sin-git":
+            return
+        tmp = self.home / ".conf-buena.tmp"
+        tmp.write_text(sha, encoding="utf-8")
+        os.replace(tmp, self.home / CONF_BUENA)
 
     def recargar_conf(self) -> None:
         conf = load_conf(self.maquina.conf)
         if conf.sha != self.cx.conf.sha:
             self.cx.conf, self.cx.policy = conf, m.Policy.from_conf(conf)
+            self.guarda_conf_buena()
 
     def pide_otra_version(self) -> str:
         """Si la conf fija una versión o un commit distinto del que corre, la frase de la diferencia."""
