@@ -2,8 +2,8 @@
 # Instala el motor en la Mac, la Mini y la PC: etiqueta (la de ops/lib.sh por omisión) sobre el SHA mergeado, y en cada máquina
 # ~/motor (en esa etiqueta), ~/motor-conf, ~/.motor/maquina.toml e ~/.motor/instalar-servicio.txt.
 # No pide sudo: lo que sí lo necesita queda escrito en instalar-servicio.txt para la persona.
-# Antes de tocar ~/motor en ninguna, el código de la etiqueta valida la conf que va a quedar en cada máquina:
-# si la rechaza en alguna, no cambia el código en ninguna.
+# El código de la etiqueta valida la conf que va a quedar en cada máquina antes del checkout
+# de la etiqueta: si la rechaza en alguna, no se hace ese checkout en ninguna.
 # Sale != 0 si alguna máquina falla (las demás se intentan igual y se dice cuál falló).
 set -uo pipefail
 export LC_ALL=C
@@ -50,9 +50,8 @@ fi
 # Sale 4 si ese código rechaza la conf; 255 es una máquina sin ssh; cualquier otro código es una
 # validación que no pudo cerrarse. Ninguno de los tres deja cambiar el código en ninguna máquina.
 valida_posix() {
-  local m=$1 repo_url=$REPO_URL conf_url=$CONF_URL
-  if [ "$m" = mini ]; then repo_url=$REPO_URL_MINI conf_url=$CONF_URL_MINI; fi
-  en_posix "$m" "$m" "$ETIQUETA" "$repo_url" "$conf_url" <<'REMOTO'
+  local m=$1
+  en_posix "$m" "$m" "$ETIQUETA" "$REPO_URL" "$CONF_URL" <<'REMOTO'
 set -euo pipefail
 m=$1 etiqueta=$2 repo=$3 confurl=$4
 motor="$HOME/motor" conf="$HOME/motor-conf"
@@ -60,8 +59,8 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 if python3 -c 'import tomllib' 2>/dev/null; then py="python3"; else py="uv run --python 3.12 python"; fi
 t="$(mktemp -d)"
 trap 'rm -rf "$t"' EXIT
-if [ -d "$motor/.git" ]; then git -C "$motor" fetch -q --tags --force origin; src="$motor"; else git clone -q --no-checkout "$repo" "$t/src"; src="$t/src"; fi
-if [ -d "$conf/.git" ]; then git -C "$conf" fetch -q origin; csrc="$conf"; else git clone -q --no-checkout "$confurl" "$t/csrc"; csrc="$t/csrc"; fi
+if [ -d "$motor/.git" ]; then git -C "$motor" remote set-url origin "$repo"; git -C "$motor" fetch -q --tags --force origin; src="$motor"; else git clone -q --no-checkout "$repo" "$t/src"; src="$t/src"; fi
+if [ -d "$conf/.git" ]; then git -C "$conf" remote set-url origin "$confurl"; git -C "$conf" fetch -q origin; csrc="$conf"; else git clone -q --no-checkout "$confurl" "$t/csrc"; csrc="$t/csrc"; fi
 mkdir "$t/codigo" "$t/conf"
 git -C "$src" archive "refs/tags/$etiqueta" | tar -x -C "$t/codigo"
 git -C "$csrc" archive origin/HEAD | tar -x -C "$t/conf"
@@ -76,7 +75,9 @@ REMOTO
 valida_pc() {
   local u='%USERPROFILE%' t="%TEMP%\\motor-valida-$$" rc=0 h
   h="$(host_de pc)"
+  ssh_a "$h" "if exist $u\\motor\\.git (git -C $u\\motor remote set-url origin $REPO_URL)" || return $?
   ssh_a "$h" "if exist $u\\motor\\.git (git -C $u\\motor fetch -q --tags --force origin) else (git clone -q $REPO_URL $u\\motor)" || return $?
+  ssh_a "$h" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf remote set-url origin $CONF_URL)" || return $?
   ssh_a "$h" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf fetch -q origin) else (git clone -q $CONF_URL $u\\motor-conf)" || return $?
   # Los paréntesis cierran el if: en cmd.exe un `& mkdir` sin ellos es parte de su cuerpo y no corre si $t no existe.
   ssh_a "$h" "(if exist $t rmdir /s /q $t) & mkdir $t\\codigo $t\\conf" || return $?
@@ -97,9 +98,8 @@ valida_pc() {
 
 # 2. Mac y Mini: un script POSIX que corre allá.
 instala_posix() {
-  local m=$1 repo_url=$REPO_URL conf_url=$CONF_URL
-  if [ "$m" = mini ]; then repo_url=$REPO_URL_MINI conf_url=$CONF_URL_MINI; fi
-  en_posix "$m" "$m" "$ETIQUETA" "$repo_url" "$conf_url" <<'REMOTO'
+  local m=$1
+  en_posix "$m" "$m" "$ETIQUETA" "$REPO_URL" "$CONF_URL" <<'REMOTO'
 set -euo pipefail
 m=$1 etiqueta=$2 repo=$3 confurl=$4
 motor="$HOME/motor" conf="$HOME/motor-conf" home="$HOME/.motor"
@@ -107,7 +107,7 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 # El motor pide Python 3.11+ (tomllib): si el python3 del sistema es viejo (la Mini trae 3.9), uv pone uno.
 if python3 -c 'import tomllib' 2>/dev/null; then py="python3"; else py="uv run --python 3.12 python"; fi
 
-if [ -d "$motor/.git" ]; then git -C "$motor" fetch -q --tags --force origin; else git clone -q "$repo" "$motor"; fi
+if [ -d "$motor/.git" ]; then git -C "$motor" remote set-url origin "$repo"; git -C "$motor" fetch -q --tags --force origin; else git clone -q "$repo" "$motor"; fi
 # La marcha atrás (ops/vuelve-a-la-anterior.sh) lee esta marca: la etiqueta que la máquina
 # tenía antes de la entrega. Se anota solo cuando la etiqueta cambia; en una instalación
 # nueva no hay etiqueta anterior que anotar.
@@ -117,7 +117,7 @@ if [ -n "$anterior" ] && [ "$anterior" != "$etiqueta" ]; then
   echo "$anterior" >"$home/etiqueta-anterior"
 fi
 git -C "$motor" checkout -q --detach "refs/tags/$etiqueta"
-if [ -d "$conf/.git" ]; then git -C "$conf" fetch -q origin; else git clone -q "$confurl" "$conf"; fi
+if [ -d "$conf/.git" ]; then git -C "$conf" remote set-url origin "$confurl"; git -C "$conf" fetch -q origin; else git clone -q "$confurl" "$conf"; fi
 git -C "$conf" checkout -q --detach origin/HEAD
 
 mkdir -p "$home"
@@ -151,6 +151,7 @@ REMOTO
 # 3. PC: cmd.exe por ssh (mismo uv que ops/prueba-pc.sh).
 instala_pc() {
   local u='%USERPROFILE%' tmp anterior
+  ssh_a "$(host_de pc)" "if exist $u\\motor\\.git (git -C $u\\motor remote set-url origin $REPO_URL)" || return 1
   ssh_a "$(host_de pc)" "if exist $u\\motor\\.git (git -C $u\\motor fetch -q --tags --force origin) else (git clone -q $REPO_URL $u\\motor)" || return 1
   # Marca para la marcha atrás: la etiqueta que la PC tenía antes, solo cuando cambia.
   # En una instalación nueva (o sobre una rama, no una etiqueta) no hay nada que anotar.
@@ -159,6 +160,7 @@ instala_pc() {
     ssh_a "$(host_de pc)" "echo $anterior> $u\\.motor\\etiqueta-anterior" || return 1
   fi
   ssh_a "$(host_de pc)" "git -C $u\\motor checkout -q --detach refs/tags/$ETIQUETA" || return 1
+  ssh_a "$(host_de pc)" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf remote set-url origin $CONF_URL)" || return 1
   ssh_a "$(host_de pc)" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf fetch -q origin) else (git clone -q $CONF_URL $u\\motor-conf)" || return 1
   ssh_a "$(host_de pc)" "git -C $u\\motor-conf checkout -q --detach origin/HEAD" || return 1
   ssh_a "$(host_de pc)" "if not exist $u\\.motor mkdir $u\\.motor" || return 1

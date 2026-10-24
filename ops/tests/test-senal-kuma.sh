@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
 # ops/senal-kuma.sh, senal-kuma-checklist.sh y senal-kuma-rollback.sh con ssh y docker falsos y una
 # base SQLite con las tablas reales de Kuma (kuma-esquema.sql). La Mini corre su script en un HOME
-# falso; la PC corre el PowerShell de verdad (pwsh) con un USERPROFILE falso.
+# falso; con pwsh, la PC corre el PowerShell de verdad con un USERPROFILE falso; sin pwsh,
+# un sustituto en Python prueba todo menos la escritura de la PC.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
-command -v pwsh >/dev/null || { echo "falta pwsh para probar la escritura de la PC" >&2; exit 2; }
-export MOTOR_MAC_SSH="" MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_SSH_SERVIDOR=goncloud
+export MOTOR_SSH_MAC=mac MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_SSH_SERVIDOR=goncloud
 export MOTOR_KUMA_DB="$S/kuma.db" MOTOR_ESPERA_PASO=1 MOTOR_KUMA_TOPE=2
 export HOME_MINI="$S/mini" HOME_PC="$S/pc"
 mkdir -p "$HOME_MINI/.motor" "$HOME_PC/.motor"
+cat >"$S/escribe-pc.py" <<'PYEOF'
+import sys
+from pathlib import Path
+f, accion, base = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+tok = sys.stdin.readline().strip() if accion == "poner" else ""
+lineas = f.read_text(encoding="utf-8").splitlines() if f.exists() else []
+lineas = [l for l in lineas if not l.lstrip().startswith("MOTOR_KUMA_URL=")]
+if accion == "poner":
+    lineas.append("MOTOR_KUMA_URL=" + base + tok)
+f.parent.mkdir(parents=True, exist_ok=True)
+f.write_text("\n".join(lineas) + ("\n" if lineas else ""), encoding="utf-8")
+PYEOF
 TODO="$S/todo.out"
 : >"$TODO"
 
@@ -51,6 +63,12 @@ case "$host" in
         esac
         exit 0 ;;
       "powershell "*)
+        if ! command -v pwsh >/dev/null 2>&1; then
+          _script="$(printf '%s' "${*##* }" | python3 -I -c 'import base64,sys; print(base64.b64decode(sys.stdin.read()).decode("utf-16-le"))')"
+          _accion="$(printf '%s\n' "$_script" | sed -n "s/.*accion = '\([^']*\)'.*/\1/p" | head -1)"
+          _base="$(printf '%s\n' "$_script" | sed -n "s/.*MOTOR_KUMA_URL=\([^']*\)'.*/\1/p" | grep -F http | head -1)"
+          exec python3 -I "$S/escribe-pc.py" "$HOME_PC/.motor/secretos.env" "$_accion" "$_base"
+        fi
         python3 -I -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode("utf-16-le"))' "${*##* }" >>"$FAKE_LOG"
         USERPROFILE="$HOME_PC" exec pwsh ${1#powershell } ;;
     esac
@@ -218,4 +236,5 @@ for t in $tokens_1; do
 done
 grep -q "VIEJO" "$TODO" && fallo "una salida contiene un valor de secretos.env"
 
+command -v pwsh >/dev/null 2>&1 || echo "sin pwsh: no probé la escritura de la PC"
 termina

@@ -4,7 +4,7 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
-export MOTOR_MAC_SSH=mac@fake MOTOR_SSH_MINI=mini@fake MOTOR_SSH_PC=gwpc
+export MOTOR_SSH_MAC=mac@fake MOTOR_SSH_MINI=mini@fake MOTOR_SSH_PC=gwpc
 R="$S/resp"
 
 cat >"$S/bin/ssh" <<'FAKE'
@@ -15,6 +15,25 @@ echo "$host :: $*" >>"$FAKE_LOG"
 case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac
 r="$S/resp/$host"
 case "$*" in
+  *whoami*|*"git@github.com"*)
+    case "$host" in mac@fake) _o=mac ;; mini@fake) _o=mini ;; gwpc) _o=pc ;; *) _o=$host ;; esac
+    if [[ "$*" == *"git@github.com"* ]]; then _d=github;
+    elif [[ "$*" == *goncloud* ]]; then _d=goncloud;
+    elif [[ "$*" == *mac@fake* ]]; then _d=mac;
+    elif [[ "$*" == *mini@fake* ]]; then _d=mini;
+    else _d=pc; fi
+    printf '%s:%s\n' "$_o" "$_d" >>"$S/caminos.log"
+    if [ "${FAKE_CAMINO_CAE:-}" = "$_o:$_d" ]; then echo "ssh: connect to host $_d port 22: Connection refused" >&2; exit 255; fi
+    if [ "${FAKE_CAMINO_BACHE:-}" = "$_o:$_d" ]; then
+      _n=$(( $(cat "$r.camino-$_o-$_d.n" 2>/dev/null || echo 0) + 1 )); echo "$_n" >"$r.camino-$_o-$_d.n"
+      if [ "$_n" = 1 ]; then echo "ssh: connection reset" >&2; exit 255; fi
+    fi
+    if [ "$_d" = github ]; then printf 'Hi gon0801! You have successfully authenticated, but GitHub does not provide shell access.\r\n' >&2; exit 1; fi
+    if [ "$_d" = goncloud ]; then
+      if [ "$_o" = mini ] && [ -n "${FAKE_CAMINO_GONCLOUD_USUARIO_MINI:-}" ]; then echo "$FAKE_CAMINO_GONCLOUD_USUARIO_MINI"; else echo root; fi
+    elif [ "$_d" = pc ]; then printf 'gon-pc\\ehven\r\n'
+    else echo gon; fi
+    exit 0 ;;
   *pgrep*) cat "$r.pgrep" ;;
   *lstart*) echo "Mon Oct 19 10:00:00 2026" ;;
   *Get-CimInstance*) cat "$r.pgrep" ;;
@@ -46,7 +65,7 @@ sano() {
     echo '{"leidas": ["launchd"], "sin_leer": [], "hallazgos": []}' >"$R/$h.programadas"
     echo "{\"ok\": true, \"maquina\": \"$m\", \"problemas\": [], \"rutas\": {\"opus\": {\"responde\": true}, \"kimi\": {\"responde\": false}}}" >"$R/$h.rutas"
   done
-  unset FAKE_CAE
+  unset FAKE_CAE FAKE_CAMINO_CAE FAKE_CAMINO_BACHE FAKE_CAMINO_GONCLOUD_USUARIO_MINI
 }
 
 # Una copia git del repo con su origin: la etiqueta de ops/lib.sh y el HEAD que debe correr el daemon.
@@ -157,5 +176,58 @@ contiene "dice cuál" "$S/salida" "MOTOR_TOPE_DAEMON"
 sano; mkdir -p "$S/suelto/ops" && cp "$RAIZ/ops/huellas.sh" "$RAIZ/ops/lib.sh" "$S/suelto/ops/"
 espera "sin MOTOR_SHA y fuera de git" 2 env -u MOTOR_SHA bash "$S/suelto/ops/huellas.sh"
 contiene "dice cómo darlo" "$S/salida" 'falta MOTOR_SHA: corre MOTOR_SHA=$(git rev-parse HEAD) bash ops/huellas.sh'
+
+conteo_camino() { grep -c "$1" "$S/caminos.log" 2>/dev/null || true; }
+
+caso_mini_no_entra_pc() {
+  : >"$S/caminos.log"
+  if bash "$H"; then return 1; fi
+  [ "$(conteo_camino '^mini:pc$')" = 3 ]
+}
+sano; export FAKE_CAMINO_CAE="mini:pc"
+espera "mini no entra a pc" 0 caso_mini_no_entra_pc
+contiene "lo nombra" "$S/salida" "mini no entra a pc"
+
+sano; export FAKE_CAMINO_GONCLOUD_USUARIO_MINI=claw
+espera "goncloud contesta claw desde la mini" '!0' bash "$H"
+contiene "lo nombra" "$S/salida" "mini entra a goncloud como claw"
+
+caso_github() {
+  : >"$S/caminos.log"
+  bash "$H" || return 1
+  [ "$(conteo_camino ':github$')" = 3 ]
+}
+sano; espera "github saluda por stderr con salida 1" 0 caso_github
+
+caso_pc_destino() {
+  : >"$S/caminos.log"
+  bash "$H" || return 1
+  [ "$(conteo_camino ':pc$')" = 3 ]
+}
+sano; espera "la pc como destino contesta con retorno de carro" 0 caso_pc_destino
+
+caso_bache() {
+  : >"$S/caminos.log"
+  bash "$H" || return 1
+  [ "$(conteo_camino '^mac:mini$')" = 2 ] || return 1
+  [ "$(cat "$R/mac@fake.camino-mac-mini.n" 2>/dev/null)" = 2 ]
+}
+sano; export FAKE_CAMINO_BACHE="mac:mini"
+espera "un bache suelto se reintenta" 0 caso_bache
+
+caso_15_caminos() {
+  : >"$S/caminos.log"
+  : >"$FAKE_LOG"
+  env -u MOTOR_SHA MOTOR_ETIQUETA=no-existe bash "$H" --caminos || return 1
+  [ "$(grep -c '' "$FAKE_LOG")" = 15 ] || return 1
+  [ "$(grep -c -E 'whoami|git@github\.com' "$FAKE_LOG")" = 15 ] || return 1
+  local esperado="$S/caminos-esperados.log" o d
+  : >"$esperado"
+  for o in mac mini pc; do for d in mac mini pc goncloud github; do printf '%s:%s\n' "$o" "$d" >>"$esperado"; done; done
+  sort -o "$S/caminos.log" "$S/caminos.log"
+  sort -o "$esperado" "$esperado"
+  cmp -s "$esperado" "$S/caminos.log"
+}
+sano; espera "los 15 caminos sanos con --caminos" 0 caso_15_caminos
 
 termina

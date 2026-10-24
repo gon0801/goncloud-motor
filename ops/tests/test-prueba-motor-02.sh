@@ -6,8 +6,16 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
 . "$RAIZ/ops/lib.sh"
-export HOME="$S/home" MOTOR_MAC_SSH="" MOTOR_PRUEBA_ESPERA_S=1
+export HOME="$S/home" MOTOR_SSH_MAC=mac MOTOR_PRUEBA_ESPERA_S=1
 mkdir -p "$HOME/.motor"
+cat >"$S/bin/ssh" <<'FAKE'
+#!/usr/bin/env bash
+while [ "$1" = -o ]; do shift 2; done
+host=$1; shift
+echo "$host :: $*" >>"$FAKE_LOG"
+HOME="$S/home" bash -c "$*"
+FAKE
+chmod +x "$S/bin/ssh"
 cp "$RAIZ/ops/lib.sh" "$S/"
 sed '/^for m in /,$d' "$RAIZ/ops/prueba-motor-02.sh" >"$S/p.sh"
 
