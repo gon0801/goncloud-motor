@@ -303,6 +303,24 @@ class ArranqueConMalaConfTest(Banco):
         self.assertEqual(codigo, SALIDA_POR_TOPE)
         self.assertEqual(len(self.eventos("ConfRechazada")), 1, "una sola vez")
 
+    def test_maquina_con_env_que_no_es_texto_espera_y_sale(self):
+        (self.home / "maquina.toml").write_text(
+            f'nombre = "x"\nconf = "{self.conf}"\n\n[env]\nA = 1\n'
+        )
+        codigo, err = self.arranca()
+        self.assertEqual(codigo, 1)
+        self.dormir.assert_called_once_with(cli.ESPERA_CONF_S)
+        self.assertIn("[env]", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_fallo_al_armar_el_daemon_espera_y_sale(self):
+        with mock.patch("motor.daemon.Daemon", side_effect=TypeError("boom")):
+            codigo, err = self.arranca()
+        self.assertEqual(codigo, 1)
+        self.dormir.assert_called_once_with(cli.ESPERA_CONF_S)
+        self.assertIn("boom", err)
+        self.assertNotIn("Traceback", err)
+
     def test_sin_conf_buena_espera_y_sale_sin_traceback(self):
         self.rompe_conf()
         codigo, err = self.arranca()

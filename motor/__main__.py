@@ -622,6 +622,8 @@ def main(argv: list[str] | None = None) -> int:
         except OtroMotor as e:
             print(f"motor: {e}", file=sys.stderr)
             return 1
+        except Exception as e:  # noqa: BLE001  un fallo al armar el Daemon no debe relanzarse cada pocos segundos
+            return _sin_donde_volver(f"no pude armar el motor: {_falla('motor', e)}")
         if vuelta:
             d.avisa_conf_rechazada(*vuelta)
         return d.run(a.intervalo, a.hasta_terminar, a.tope)

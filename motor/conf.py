@@ -282,6 +282,18 @@ def valida_maquina(raw: dict) -> None:
         raise ConfError(
             '"tiene" es una lista de nombres: tiene = ["ssh-goncloud", ...]'
         )
+    env = raw.get("env", {})
+    if not (
+        isinstance(env, dict)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+    ):
+        raise ConfError('[env] lleva textos entre comillas: CLAVE = "valor"')
+    for clave in ("path_extra", "wsl", "buzones"):
+        v = raw.get(clave, [])
+        if not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            raise ConfError(f'"{clave}" es una lista de textos: {clave} = ["...", ...]')
+    if not isinstance(raw.get("github", "real"), str):
+        raise ConfError('"github" es un texto: github = "real"')
     malas = set(raw) & _PROHIBIDAS
     if malas:
         raise ConfError(
