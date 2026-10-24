@@ -34,6 +34,10 @@ def main() -> int:
 
         emite(modo, not marca.exists())
         marca.write_text("1")
+    if modo == "entorno":
+        from fake_entorno import anota
+
+        anota()
     if modo == "cuota_primero" and not marca.exists():
         marca.write_text("1")
         reset = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=3)).strftime(
