@@ -29,25 +29,25 @@ if ! git -C "$raiz" merge-base --is-ancestor "$sha" "origin/$rama"; then
   echo "el SHA ${sha:0:12} no está mergeado en origin/$rama: no se etiqueta" >&2
   exit 3
 fi
-if ! etiqueta_remota="$(reintenta 3 git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA" "refs/tags/$ETIQUETA^{}")"; then
+niega_otro_commit() {
+  echo "la etiqueta $ETIQUETA ya existe en ${1:0:7} y esta instalación es ${sha:0:7}: sube la etiqueta en ops/lib.sh" >&2
+  exit 3
+}
+if ! sha_etiqueta="$(reintenta 3 sha_publicado "$raiz")"; then
   # Sin respuesta no se sabe si la etiqueta existe: peor que fallar es pisarla o duplicarla.
   echo "no pude consultar las etiquetas de origin" >&2
   exit 3
 fi
-if [ -n "$etiqueta_remota" ]; then
-  # La última línea es el commit al que apunta (ls-remote pone el ^{} de una anotada al final).
-  sha_etiqueta="$(printf '%s\n' "$etiqueta_remota" | tail -n 1 | cut -f1)"
-  if [ "$sha_etiqueta" != "$sha" ]; then
-    echo "la etiqueta $ETIQUETA ya existe en ${sha_etiqueta:0:7} y esta instalación es ${sha:0:7}: sube la etiqueta en ops/lib.sh" >&2
-    exit 3
-  fi
+if [ -n "$sha_etiqueta" ]; then
+  [ "$sha_etiqueta" = "$sha" ] || niega_otro_commit "$sha_etiqueta"
   echo "etiqueta $ETIQUETA ya existe en origin: se respeta"
 else
   # Se empuja el SHA verificado, no la etiqueta local: una etiqueta local vieja publicaría otro commit.
   if ! reintenta 3 git -C "$raiz" push -q origin "$sha:refs/tags/$ETIQUETA"; then
-    # Si otro la creó mientras tanto, igual vale: lo que importa es que la etiqueta exista.
-    git -C "$raiz" ls-remote --tags origin "refs/tags/$ETIQUETA" | grep -q . \
+    # Si otro la creó mientras tanto, vale solo si apunta a este commit.
+    sha_etiqueta="$(sha_publicado "$raiz")" && [ -n "$sha_etiqueta" ] \
       || { echo "no pude empujar $ETIQUETA" >&2; exit 3; }
+    [ "$sha_etiqueta" = "$sha" ] || niega_otro_commit "$sha_etiqueta"
     echo "etiqueta $ETIQUETA la creó otro mientras tanto: se respeta"
   else
     echo "etiqueta $ETIQUETA creada en ${sha:0:12}"

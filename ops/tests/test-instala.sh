@@ -127,21 +127,20 @@ for m in mac mini; do [ ! -e "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: an
 
 # main avanzó con la etiqueta ya publicada: no se mueve y la instalación se niega
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m otro && git -C "$S/trabajo" push -q origin HEAD:main
-en_mac espera "la etiqueta existente se respeta" 3 bash "$I"
+en_mac espera "etiqueta publicada con main adelantado se niega" 3 bash "$I"
 [ "$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")" = "$SHA" ] || fallo "la etiqueta existente se movió"
 for m in mac mini; do [ "$(git -C "$S/$m/motor" rev-parse HEAD)" = "$SHA" ] || fallo "$m: ~/motor dejó la etiqueta cuando main avanzó"; done
 
 # La etiqueta ya publicada en otro commit que el que se instala: sale 3 y no toca ninguna máquina.
-reset; git -C "$S/origen.git" tag -d $TAG >/dev/null 2>&1
+reset
 git -C "$S/trabajo" fetch -q origin && git -C "$S/trabajo" checkout -q --detach origin/main
-git -C "$S/trabajo" push -q origin "HEAD~1:refs/tags/$TAG" 2>/dev/null || git -C "$S/trabajo" push -q origin "$(git -C "$S/trabajo" rev-parse HEAD~1):refs/tags/$TAG"
+git -C "$S/trabajo" push -q origin "HEAD~1:refs/tags/$TAG"
 en_mac espera "etiqueta en otro commit" 3 bash "$I"
 contiene "dice cómo arreglarlo" "$S/salida" "sube la etiqueta en ops/lib.sh"
 [ ! -e "$S/mac/motor" ] && [ ! -e "$S/mini/motor" ] && ! grep -q . "$FAKE_LOG" || fallo "tocó alguna máquina con la etiqueta en otro commit"
-git -C "$S/origen.git" tag -d $TAG >/dev/null
 
 echo "# instalar con fallas"
-reset; git -C "$S/origen.git" tag -d $TAG >/dev/null
+reset
 FAKE_CAE="gon@mini-fake" en_mac espera "ssh a la Mini falla" '!0' bash "$I"
 contiene "dice cuál" "$S/salida" "mini"
 [ -d "$S/mac/motor/.git" ] || fallo "la Mac debía instalarse aunque la Mini fallara"
@@ -149,7 +148,7 @@ reset
 FAKE_PC_FALLA=1 en_mac espera "el remoto de la PC falla" '!0' bash "$I"
 contiene "dice cuál" "$S/salida" "pc"
 
-reset; git -C "$S/origen.git" tag -d $TAG >/dev/null
+reset
 git -C "$S/trabajo" checkout -q --detach HEAD
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m sin-mergear
 en_mac espera "SHA sin mergear no se etiqueta" '!0' bash "$I"
@@ -157,7 +156,7 @@ git -C "$S/origen.git" rev-parse -q --verify refs/tags/$TAG >/dev/null && fallo 
 git -C "$S/trabajo" reset -q --hard origin/main
 
 # una $TAG local (no está en origin) sobre un commit sin mergear no debe publicarse
-reset; git -C "$S/origen.git" tag -d $TAG >/dev/null 2>&1
+reset
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m viejo-sin-mergear
 git -C "$S/trabajo" tag -f $TAG >/dev/null
 git -C "$S/trabajo" reset -q --hard origin/main
@@ -167,12 +166,12 @@ en_mac espera "etiqueta local vieja no se publica" 0 bash "$I"
 
 echo "# red transitoria"
 # El repo del despliegue lo comparte el daemon (fetcha seguido): un fetch puede chocar con un lock.
-reset; git -C "$S/origen.git" tag -d $TAG >/dev/null 2>&1; rm -f "$S/fetch-fallo"
+reset; rm -f "$S/fetch-fallo"
 FAKE_GIT_FETCH_FALLA=1 en_mac espera "un fetch que falla una vez se reintenta" 0 bash "$I"
 [ "$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")" = "$SHA" ] || fallo "no quedó la etiqueta tras el reintento"
 
 # Sin respuesta de origin no se sabe si la etiqueta existe: peor que fallar es pisarla o duplicarla.
-reset; git -C "$S/origen.git" tag -d $TAG >/dev/null 2>&1
+reset
 FAKE_GIT_LSREMOTO_FALLA=1 en_mac espera "ls-remote caído no es etiqueta ausente" '!0' bash "$I"
 git -C "$S/origen.git" rev-parse -q --verify refs/tags/$TAG >/dev/null && fallo "etiquetó sin poder consultar origin"
 
@@ -197,9 +196,6 @@ FAKE_CAE=gwpc FAKE_PC_TAREA_RC=1 en_mac espera "sin ssh a la PC" '!0' bash "$D"
 echo "# marcha atrás"
 V="$RAIZ/ops/vuelve-a-la-anterior.sh"
 reset
-# $TAG ya existe de las secciones de arriba sobre el mismo SHA: se borra para que la
-# entrega nueva la cree sobre un commit distinto (si no, describe no distingue las etiquetas).
-git -C "$S/origen.git" tag -d $TAG >/dev/null
 MOTOR_ETIQUETA=v1.0.23 en_mac espera "entrega anterior en v1.0.23" 0 bash "$I"
 unset MOTOR_ETIQUETA
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m avance && git -C "$S/trabajo" push -q origin HEAD:main
@@ -257,7 +253,6 @@ en_su_etiqueta() { # en_su_etiqueta <caso> <etiqueta de antes de la entrega>
 # puede bajar a nadie a la marca de la entrega anterior.
 reset
 dos_entregas v1.0.22 v1.0.23
-git -C "$S/origen.git" tag -d $TAG >/dev/null
 export MOTOR_ETIQUETA=$TAG
 FAKE_GIT_LSREMOTO_FALLA=1 en_mac espera "entrega $TAG falla antes de tocar las máquinas" '!0' bash "$I"; unset FAKE_GIT_LSREMOTO_FALLA
 en_su_etiqueta "precondición: la entrega no tocó las máquinas" v1.0.23
@@ -276,5 +271,17 @@ FAKE_CAE="gon@mini-fake" en_mac espera "entrega v1.0.32 falla en la Mini" '!0' b
 en_mac espera "marcha atrás con la Mini de vuelta" 0 bash "$V"
 en_su_etiqueta "entrega que no tocó la Mini" v1.0.31
 unset MOTOR_ETIQUETA
+
+# La instalación se niega porque $TAG ya está publicada en otro commit (una entrega buena la
+# dejó en las tres) y el motor corre la marcha atrás con MOTOR_SHA: nadie baja de $TAG.
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "entrega anterior v1.0.23 para la negativa" 0 bash "$I"
+avanza "para-la-etiqueta"
+en_mac espera "entrega $TAG para la negativa" 0 bash "$I"
+avanza "sin-subir-la-etiqueta"
+en_mac espera "entrega sin subir la etiqueta se niega" 3 bash "$I"
+MOTOR_SHA="$(git -C "$S/trabajo" rev-parse HEAD)" en_mac espera "marcha atrás de una entrega que se negó" 0 bash "$V"
+contiene "dice que nadie se mueve" "$S/salida" "nadie se mueve"
+en_su_etiqueta "entrega que se negó" "$TAG"
 
 termina

@@ -25,6 +25,14 @@ host_de() {
   esac
 }
 
+# sha_publicado <raiz>: el commit al que apunta $ETIQUETA en origin (vacío si no existe); sale != 0
+# si origin no responde. La última línea manda: ls-remote pone el ^{} de una anotada al final.
+sha_publicado() {
+  local salida
+  salida="$(git -C "$1" ls-remote --tags origin "refs/tags/$ETIQUETA" "refs/tags/$ETIQUETA^{}")" || return 1
+  printf '%s\n' "$salida" | tail -n 1 | cut -f1
+}
+
 ssh_a() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$@"; }
 
 es_local() { [ "$1" = mac ] && [ -z "${MOTOR_MAC_SSH:-}" ]; }
