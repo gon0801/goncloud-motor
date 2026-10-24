@@ -25,10 +25,13 @@ if [ -z "$sha_esperado" ]; then
   exit 2
 fi
 tope_daemon="${MOTOR_TOPE_DAEMON:-180}"
+case $tope_daemon in
+  '' | *[!0-9]*) echo "MOTOR_TOPE_DAEMON debe ser un número de segundos, no '$tope_daemon'" >&2; exit 2 ;;
+esac
 
 # La etiqueta del despliegue tiene que apuntar a ese commit: instala-todo.sh respeta una que ya existía.
 problema_etiqueta=""
-if ! sha_etiqueta="$(sha_publicado "$aqui/..")"; then
+if ! sha_etiqueta="$(reintenta 3 sha_publicado "$aqui/..")"; then
   problema_etiqueta="no pude consultar la etiqueta $ETIQUETA en origin"
 elif [ -z "$sha_etiqueta" ]; then
   problema_etiqueta="la etiqueta $ETIQUETA no existe en origin"

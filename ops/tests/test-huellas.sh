@@ -140,6 +140,11 @@ espera "programadas que no es JSON" '!0' bash "$H"
 
 sano
 espera "sin MOTOR_SHA dentro de una copia git usa su HEAD" 0 env -u MOTOR_SHA bash "$H"
+sano
+MOTOR_SHA="$SHA_VIEJO" espera "MOTOR_SHA de un commit anterior al que corre el daemon" '!0' bash "$H"
+contiene "dice cuál" "$S/salida" "el motor daemon no arrancó"
+MOTOR_TOPE_DAEMON=mucho espera "tope del daemon que no es número" 2 bash "$H"
+contiene "dice cuál" "$S/salida" "MOTOR_TOPE_DAEMON"
 sano; mkdir -p "$S/suelto/ops" && cp "$RAIZ/ops/huellas.sh" "$RAIZ/ops/lib.sh" "$S/suelto/ops/"
 espera "sin MOTOR_SHA y fuera de git" 2 env -u MOTOR_SHA bash "$S/suelto/ops/huellas.sh"
 contiene "dice cómo darlo" "$S/salida" 'falta MOTOR_SHA: corre MOTOR_SHA=$(git rev-parse HEAD) bash ops/huellas.sh'
