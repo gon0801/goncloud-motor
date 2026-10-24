@@ -141,21 +141,28 @@ class TestFormatos(unittest.TestCase):
                 self.assertEqual(h.acciones, 2)
 
     def test_un_agentswarm_de_kimi_vale_uno_por_elemento_de_items(self):
-        h = ps.huella(
-            kimi(
-                (
-                    "AgentSwarm",
-                    {
-                        "prompt_template": "revisa {{item}}",
-                        "items": ["a.py", "b.py", "c.py"],
-                    },
-                )
-            ),
-            "kimi",
+        def cuenta(args):
+            return len(ps.huella(kimi(("AgentSwarm", args)), "kimi").subagentes)
+
+        self.assertEqual(
+            cuenta({"prompt_template": "revisa {{item}}", "items": ["a", "b", "c"]}), 3
         )
-        self.assertEqual(len(h.subagentes), 3)
-        h = ps.huella(kimi(("AgentSwarm", {"items": 2})), "kimi")
-        self.assertEqual(len(h.subagentes), 2, "recorta_registro guarda solo el conteo")
+        self.assertEqual(cuenta({"items": [{}, {}]}), 2)
+
+    def test_un_agentswarm_sin_items_lanza_a_nadie(self):
+        def cuenta(args):
+            return len(ps.huella(kimi(("AgentSwarm", args)), "kimi").subagentes)
+
+        self.assertEqual(cuenta({"items": []}), 0)
+        self.assertEqual(cuenta({"resume_agent_ids": ["a1"]}), 0)
+        self.assertEqual(cuenta({"items": 2}), 0, "un número no es una lista")
+        self.assertEqual(cuenta({"items": "a,b"}), 0)
+
+    def test_un_agent_de_claude_cuenta_uno_aunque_traiga_items(self):
+        h = ps.huella(
+            claude(("Agent", {"subagent_type": "x", "items": ["a", "b"]})), "claude"
+        )
+        self.assertEqual(len(h.subagentes), 1)
 
     def test_las_llamadas_de_un_subagente_no_son_del_agente(self):
         h = ps.huella(

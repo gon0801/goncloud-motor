@@ -5,7 +5,7 @@
     recorta_registro.py --comprueba <dir>
 
 Del registro quedan el nombre de cada herramienta y estas claves de su entrada: `subagent_type`,
-`description`, `model`, `items` (solo cuántos son), `file_path` y `command` (cortado a 200
+`description`, `model`, `items` (una lista con un `{}` por elemento), `file_path` y `command` (cortado a 200
 caracteres). Salen los prompts, los mensajes del usuario, las respuestas de las herramientas y el
 texto y el razonamiento del agente. La salida conserva el formato del CLI, para que `huella` la
 lea igual que el original.
@@ -38,7 +38,7 @@ def _sanea(v):
 
 
 def reduce_args(args: dict) -> dict:
-    """Solo las claves que identifican la llamada; `items` pasa a ser cuántos son."""
+    """Solo las claves que identifican la llamada; `items` queda como un `{}` por elemento."""
     out = {}
     for k in CLAVES:
         if k not in args or args[k] in (None, ""):
@@ -47,9 +47,7 @@ def reduce_args(args: dict) -> dict:
         out[k] = v[:TOPE_COMANDO] if k == "command" and isinstance(v, str) else v
     items = args.get("items")
     if isinstance(items, list):
-        out["items"] = len(items)
-    elif isinstance(items, int) and not isinstance(items, bool):
-        out["items"] = items
+        out["items"] = [{} for _ in items]
     return out
 
 

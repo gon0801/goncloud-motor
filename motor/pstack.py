@@ -290,16 +290,6 @@ FORMATOS: dict[str, Formato] = {
 }
 
 
-def _subagentes(args: dict) -> int:
-    """Cuántos subagentes lanza esta llamada: en Kimi, `AgentSwarm` vale uno por elemento de `items`."""
-    items = args.get("items")
-    if isinstance(items, list) and items:
-        return len(items)
-    if isinstance(items, int) and not isinstance(items, bool) and items > 0:
-        return items  # recorta_registro guarda solo el conteo
-    return 1
-
-
 def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> list[Accion]:
     h = herramienta.lower().rsplit(".", 1)[-1]
     if h in f.subagente:
@@ -311,7 +301,14 @@ def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> list[Accion]
             ),
             "subagente",
         )
-        return [Accion("subagente", tipo, n + i) for i in range(_subagentes(args))]
+        if (
+            h == "agentswarm"
+        ):  # un subagente por elemento de `items`; sin lista no lanza a nadie
+            items = args.get("items")
+            cuantos = len(items) if isinstance(items, list) else 0
+        else:
+            cuantos = 1
+        return [Accion("subagente", tipo, n + i) for i in range(cuantos)]
     if h in f.comando:
         cmd = next((str(args[k]) for k in ("command", "cmd") if args.get(k)), "")
         return [Accion("comando", cmd, n)]
