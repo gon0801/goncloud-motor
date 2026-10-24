@@ -33,7 +33,14 @@ from pathlib import Path
 
 from . import efimeras, huella, senal
 from . import machine as m
-from .conf import ConfError, load_conf, load_maquina, valida_maquina
+from .conf import (
+    DATOS_DE_RUTA,
+    ConfError,
+    datos_desconocidos,
+    load_conf,
+    load_maquina,
+    valida_maquina,
+)
 from .plan import PlanError, parse_plan, revisa_sin_quien
 from .workspace import SECRETO as SECRETO_CONF
 
@@ -245,8 +252,6 @@ def doctor(home: Path, programadas_sistema: bool = True) -> dict:
 
 
 def _errores_programadas(d: Path) -> list[str]:
-    import tomllib
-
     f = d / efimeras.ARCHIVO_EXTRAS
     if not f.exists():
         return []
@@ -266,43 +271,158 @@ def _errores_programadas(d: Path) -> list[str]:
     return efimeras.valida_programadas(raw, maquinas - {""})
 
 
-def conf_valida(d: Path) -> list[str]:
-    """Lo que tiene que cumplir la conf compartida antes de llegar a las tres máquinas."""
-    import tomllib
+def _falla(paso: str, e: Exception) -> str:
+    """Una frase con el motivo; sin el tipo si ya es un error de conf con mensaje."""
+    if isinstance(e, ConfError):
+        return f"{paso}: {e}"
+    return f"{paso}: {type(e).__name__}: {e}"
 
+
+def _construye(d: Path) -> list[str]:
+    """Lo mismo que construye el daemon al cargar la conf: si algo truena, es un error con mensaje."""
     try:
         conf = load_conf(d)
-    except (ConfError, OSError, KeyError, tomllib.TOMLDecodeError) as e:
-        return [f"conf: {e}"]
+    except Exception as e:  # noqa: BLE001  cualquier excepción de una conf mala es un mensaje, no un traceback
+        return [_falla("conf", e)]
     errores = []
+    try:
+        m.Policy.from_conf(conf)
+    except Exception as e:  # noqa: BLE001
+        errores.append(_falla("conf (políticas)", e))
     for mo, r in conf.rutas.items():
+        if malos := datos_desconocidos(r.argv):
+            errores.append(
+                f"ruta {mo}: la línea usa {', '.join('{' + x + '}' for x in malos)}, que no es un dato del motor "
+                f"({', '.join(DATOS_DE_RUTA)})"
+            )
         if not any("{prompt}" in x or "{brief}" in x for x in r.argv):
             errores.append(
                 f"ruta {mo}: el comando no recibe el encargo ({{prompt}} o {{brief}})"
             )
     for papel in conf.papeles:
-        if not conf.escalera(papel):
-            errores.append(f"papel {papel}: sin modelos")
+        try:
+            if not conf.escalera(papel):
+                errores.append(f"papel {papel}: sin modelos")
+        except Exception as e:  # noqa: BLE001
+            errores.append(_falla(f"papel {papel}", e))
     from .effects import errores_pstack
 
-    errores += errores_pstack(d, conf)
-    errores += _errores_programadas(d)
-    for f in (
-        sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []
+    for paso, fn in (
+        ("pstack", lambda: errores_pstack(d, conf)),
+        (efimeras.ARCHIVO_EXTRAS, lambda: _errores_programadas(d)),
     ):
         try:
-            valida_maquina(tomllib.loads(f.read_text(encoding="utf-8")))
-        except (ConfError, tomllib.TOMLDecodeError) as e:
-            errores.append(f"maquinas/{f.name}: {e}")
-    if SECRETO_CONF.search(
-        "\n".join(
-            p.read_text(errors="replace", encoding="utf-8") for p in d.rglob("*.toml")
-        )
-    ):
-        errores.append(
-            "hay algo con forma de llave en la conf; las llaves van en secretos.env de cada máquina"
-        )
+            errores += fn()
+        except Exception as e:  # noqa: BLE001
+            errores.append(_falla(paso, e))
     return errores
+
+
+def conf_valida(d: Path) -> list[str]:
+    """Lo que tiene que cumplir la conf compartida antes de llegar a las tres máquinas."""
+    errores = _construye(d)
+    try:
+        for f in (
+            sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []
+        ):
+            try:
+                valida_maquina(tomllib.loads(f.read_text(encoding="utf-8")))
+            except (ConfError, OSError, tomllib.TOMLDecodeError) as e:
+                errores.append(f"maquinas/{f.name}: {e}")
+        if SECRETO_CONF.search(
+            "\n".join(
+                p.read_text(errors="replace", encoding="utf-8")
+                for p in d.rglob("*.toml")
+            )
+        ):
+            errores.append(
+                "hay algo con forma de llave en la conf; las llaves van en secretos.env de cada máquina"
+            )
+    except Exception as e:  # noqa: BLE001
+        errores.append(_falla("conf", e))
+    return errores
+
+
+ESPERA_CONF_S = 60
+
+
+def _carga_conf(home: Path) -> Path:
+    """La carpeta de la conf compartida, ya cargada y con sus políticas armadas, o la excepción."""
+    d = load_maquina(home).conf
+    m.Policy.from_conf(load_conf(d))
+    return d
+
+
+def _espera(s: float) -> None:
+    time.sleep(s)
+
+
+def _sin_donde_volver(motivo: str) -> int:
+    """Deja el error en el log, espera y sale: así el supervisor no relanza un motor roto cada pocos segundos."""
+    print(f"motor: {motivo}", file=sys.stderr, flush=True)
+    _espera(ESPERA_CONF_S)
+    return 1
+
+
+def _recupera_conf(home: Path) -> tuple[int | None, tuple[str, list[str]] | None]:
+    """Antes de crear el Daemon: si la conf compartida no carga, vuelve a la última buena.
+    Devuelve (código de salida si no hay a dónde volver, (sha malo, errores) si se volvió)."""
+    try:
+        load_maquina(home)
+    except Exception as e:  # noqa: BLE001  maquina.toml y secretos.env no vienen de la conf compartida
+        return _sin_donde_volver(
+            f"no pude leer maquina.toml o secretos.env, no hay a dónde volver: {type(e).__name__}: {e}"
+        ), None
+    try:
+        _carga_conf(home)
+        return None, None
+    except Exception as e:  # noqa: BLE001
+        error = _falla("conf", e)
+    d = load_maquina(home).conf
+    if not (d / ".git").exists():
+        return _sin_donde_volver(
+            f"la conf no carga y {d} no es un clon de git, no hay a dónde volver: {error}"
+        ), None
+    try:
+        return _vuelve_a_la_buena(home, d, error)
+    except Exception as e:  # noqa: BLE001  git o disco fallan: sin dónde volver, no un traceback en bucle
+        return _sin_donde_volver(
+            f"la conf no carga y no pude volver a la buena ({type(e).__name__}: {e}): {error}"
+        ), None
+
+
+def _vuelve_a_la_buena(home: Path, d: Path, error: str):
+    from .workspace import git
+
+    buena = home / "conf-buena"
+    sha = buena.read_text(encoding="utf-8").strip() if buena.is_file() else ""
+    if not sha:
+        return _sin_donde_volver(
+            f"la conf no carga y no hay conf-buena a dónde volver: {error}"
+        ), None
+    malo = git("rev-parse", "HEAD", cwd=d).stdout.strip()
+    sucio = git("status", "--porcelain", "--untracked-files=no", cwd=d).stdout.strip()
+    if sucio:
+        return _sin_donde_volver(
+            f"la conf no carga y tiene cambios sin commitear, no la toco: {error}"
+        ), None
+    if git("reset", "-q", "--hard", sha, cwd=d).returncode != 0:
+        return _sin_donde_volver(
+            f"la conf no carga y no pude volver a {sha[:12]}: {error}"
+        ), None
+    try:
+        _carga_conf(home)
+    except Exception as e:  # noqa: BLE001
+        git("reset", "-q", "--hard", malo, cwd=d)
+        return _sin_donde_volver(
+            f"la conf buena {sha[:12]} tampoco carga: {_falla('conf', e)}"
+        ), None
+    print(
+        f"motor: la conf no cargaba ({error}); volví a la última buena {sha[:12]}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return None, (malo, [error])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -494,11 +614,18 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "daemon":
         from .daemon import Daemon, OtroMotor
 
+        salida, vuelta = _recupera_conf(a.home)
+        if salida is not None:
+            return salida
         try:
             d = Daemon(a.home, a.checks_cada)
         except OtroMotor as e:
             print(f"motor: {e}", file=sys.stderr)
             return 1
+        except Exception as e:  # noqa: BLE001  un fallo al armar el Daemon no debe relanzarse cada pocos segundos
+            return _sin_donde_volver(f"no pude armar el motor: {_falla('motor', e)}")
+        if vuelta:
+            d.avisa_conf_rechazada(*vuelta)
         return d.run(a.intervalo, a.hasta_terminar, a.tope)
     if a.cmd == "servicio":
         from .servicio import supervisor

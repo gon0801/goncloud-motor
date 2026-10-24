@@ -365,12 +365,46 @@ class WslTest(unittest.TestCase):
     def test_doctor_y_start_attempt_usan_el_mismo_constructor(self):
         import inspect
 
-        from motor import doctor, effects
+        from motor import effects
 
-        self.assertIn("lanzamiento_wsl", inspect.getsource(doctor.prueba_de_ruta))
         self.assertIn(
             "lanzamiento_wsl", inspect.getsource(effects.Effects.start_attempt)
         )
+
+    def test_doctor_lanza_por_wsl_las_rutas_de_maquina_toml(self):
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        from motor import doctor
+
+        t = Path(tempfile.mkdtemp(prefix="motor-wsl-"))
+        home, conf = t / "home", t / "conf"
+        home.mkdir()
+        conf.mkdir()
+        (conf / "papeles.toml").write_text(
+            '[papeles]\nimplementar = "u"\nrevisar = "u"\n'
+        )
+        (conf / "modelos.toml").write_text('[carriles]\nu = ["a"]\n')
+        (conf / "rutas.toml").write_text(
+            f'[rutas.a]\ncuenta = "a"\ncli = "falso"\nargv = {json.dumps([sys.executable, "-c", "pass", "{brief}"])}\n'
+        )
+        subprocess.run(["git", "init", "-q"], cwd=conf, check=True)
+        (home / "maquina.toml").write_text(
+            f'nombre = "x"\nconf = "{conf}"\nwsl = ["falso"]\n'
+        )
+        vistos = []
+
+        def espia(argv, env, **kw):
+            vistos.append(argv)
+            return argv, env
+
+        with mock.patch.object(doctor, "lanzamiento_wsl", espia):
+            doctor.como_servicio(home, espera_s=5)
+        self.assertEqual(len(vistos), 1, vistos)
+        self.assertEqual(vistos[0][0], sys.executable)
 
     def test_copia_guarda_ruta_relativa_en_git(self):
         import tempfile

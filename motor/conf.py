@@ -10,19 +10,23 @@
 
 from __future__ import annotations
 
+import math
 import os
 import stat
+import string
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import tomllib
 
-from .pstack import PstackConf, parse_conf
+from .pstack import ConfError, PstackConf, parse_conf
 
-
-class ConfError(ValueError):
-    pass
+DATOS_DE_RUTA = ("brief", "prompt", "result", "pstack", "sesion")
+CUENTAS_DE_TIEMPOS = {
+    "agentes_por_maquina": 0,
+    "repeticiones_max": 1,
+}  # clave -> mínimo
 
 
 # --------------------------------------------------------------------------- compartida
@@ -35,7 +39,7 @@ class Ruta:
     modelo: str
     cuenta: str
     cli: str
-    argv: tuple[str, ...]  # plantilla: {brief} {prompt} {result}
+    argv: tuple[str, ...]  # plantilla: DATOS_DE_RUTA
     max_parallel: int = 1  # por cuenta y máquina se suma en machine._ocupados
     env: tuple[
         tuple[str, str], ...
@@ -65,6 +69,73 @@ class Conf:
         return self.rutas[modelo].cuenta
 
 
+def datos_desconocidos(argv) -> list[str]:
+    """Los datos que la línea de una ruta usa y no son de DATOS_DE_RUTA ('?' si la llave está mal escrita)."""
+    malos: list[str] = []
+    for x in argv:
+        try:
+            campos = [c for _, c, _, _ in string.Formatter().parse(x) if c is not None]
+        except ValueError:
+            malos.append("?")
+            continue
+        for c in campos:
+            nombre = c.split(".")[0].split("[")[0]
+            if nombre not in DATOS_DE_RUTA and nombre not in malos:
+                malos.append(nombre)
+    return malos
+
+
+def argv_de_ruta(
+    ruta: Ruta, *, brief: str, prompt: str, result: str, pstack: str, sesion: str
+) -> list[str]:
+    """La línea de una ruta con los cinco datos que pone el motor: el único lugar donde se llenan."""
+    datos = dict(
+        zip(DATOS_DE_RUTA, (brief, prompt, result, pstack, sesion), strict=True)
+    )
+    return [x.format(**datos) for x in ruta.argv]
+
+
+def _valida_tiempos(tiempos) -> None:
+    if not isinstance(tiempos, dict):
+        raise ConfError("[tiempos] tiene que ser una tabla de valores")
+    for k, v in tiempos.items():
+        es_numero = isinstance(v, int | float) and not isinstance(v, bool)
+        if k in CUENTAS_DE_TIEMPOS:
+            minimo = CUENTAS_DE_TIEMPOS[k]
+            if not (isinstance(v, int) and not isinstance(v, bool) and v >= minimo):
+                raise ConfError(
+                    f"[tiempos] {k} tiene que ser un número entero "
+                    + ("mayor que 0" if minimo else "mayor o igual a 0")
+                    + f" (vino {v!r})"
+                )
+        elif not es_numero or not math.isfinite(v):
+            raise ConfError(
+                f"[tiempos] {k} tiene que ser un número finito (vino {v!r})"
+            )
+        elif k.endswith("_s") and v <= 0:
+            raise ConfError(
+                f"[tiempos] {k} tiene que ser un número mayor que 0 (vino {v!r})"
+            )
+
+
+def _max_parallel(modelo: str, r: dict) -> int:
+    v = r.get("max_parallel", 1)
+    if not (isinstance(v, int) and not isinstance(v, bool) and v > 0):
+        raise ConfError(
+            f"rutas.toml [rutas.{modelo}] max_parallel tiene que ser un entero mayor que 0 (vino {v!r})"
+        )
+    return v
+
+
+def _argv(modelo: str, r: dict) -> tuple[str, ...]:
+    v = r["argv"]
+    if not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+        raise ConfError(
+            f"rutas.toml [rutas.{modelo}] argv tiene que ser una lista de textos (vino {v!r})"
+        )
+    return tuple(v)
+
+
 def _git_sha(d: Path) -> str:
     r = subprocess.run(
         ["git", "-C", str(d), "rev-parse", "HEAD"],
@@ -91,8 +162,8 @@ def load_conf(d: Path) -> Conf:
             modelo=m,
             cuenta=r["cuenta"],
             cli=r["cli"],
-            argv=tuple(r["argv"]),
-            max_parallel=int(r.get("max_parallel", 1)),
+            argv=_argv(m, r),
+            max_parallel=_max_parallel(m, r),
             env=tuple(sorted(r.get("env", {}).items())),
         )
         for m, r in raw_rutas.items()
@@ -102,6 +173,7 @@ def load_conf(d: Path) -> Conf:
         if (d / "general.toml").exists()
         else {}
     )
+    _valida_tiempos(general.get("tiempos", {}))
     errores = []
     fijada = general.get("motor", {})
     for k, v in fijada.items():
@@ -210,6 +282,18 @@ def valida_maquina(raw: dict) -> None:
         raise ConfError(
             '"tiene" es una lista de nombres: tiene = ["ssh-goncloud", ...]'
         )
+    env = raw.get("env", {})
+    if not (
+        isinstance(env, dict)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+    ):
+        raise ConfError('[env] lleva textos entre comillas: CLAVE = "valor"')
+    for clave in ("path_extra", "wsl", "buzones"):
+        v = raw.get(clave, [])
+        if not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            raise ConfError(f'"{clave}" es una lista de textos: {clave} = ["...", ...]')
+    if not isinstance(raw.get("github", "real"), str):
+        raise ConfError('"github" es un texto: github = "real"')
     malas = set(raw) & _PROHIBIDAS
     if malas:
         raise ConfError(
