@@ -142,7 +142,7 @@ bien; home "$S/mini/.motor" sin_terminado=1; home "$S/pc/.motor" sin_terminado=1
 inicio="$(python3 -c 'import time; print(time.time())')"
 MOTOR_CANARIO_TOPE_S=10 MOTOR_CANARIO_SONDEO_S=5 bash "$V" >"$S/salida" 2>&1; rc_tope=$?
 transcurrido="$(python3 -c 'import time, sys; print(time.time() - float(sys.argv[1]))' "$inicio")"
-if [ "$rc_tope" -ne 0 ] && python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) <= 12.5 else 1)' "$transcurrido"; then
+if [ "$rc_tope" -ne 0 ] && [ "$(grep -c 'gwpc :: hostname' "$FAKE_LOG" || true)" -ge 2 ] && python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) <= 12.5 else 1)' "$transcurrido"; then
   echo "  ok: el tope es total entre identificar y verificar"
 else
   fallo "el tope es total entre identificar y verificar: rc=$rc_tope transcurrido=${transcurrido}s tope=10s"
