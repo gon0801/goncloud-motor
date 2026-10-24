@@ -51,12 +51,13 @@ if [ "$host" = gwpc ]; then
     "type "*"etiqueta-anterior"*) [ -f "$S/pc-etiqueta-anterior" ] && { cat "$S/pc-etiqueta-anterior"; exit 0; } || exit 1 ;;
     "echo "*"etiqueta-anterior"*) v="${*#echo }"; echo "${v%%>*}" >"$S/pc-etiqueta-anterior" ;;
     # cmd.exe: sin paréntesis, `& mkdir` es parte del cuerpo del if y no corre si la carpeta no existe.
-    "(if exist "*") & mkdir "*) touch "$S/pc-codigo-creado" ;;
+    "(if exist "*") & mkdir "*"\\codigo "*"\\conf") touch "$S/pc-codigo-creado" ;;
     "if exist "*" & mkdir "*) ;;
-    *"archive refs/tags/"*"| tar -x -C "* | *"archive origin/HEAD | tar -x -C "*)
+    "git -C %USERPROFILE%\\motor archive refs/tags/"*" | tar -x -C %TEMP%\\motor-valida-"*"\\codigo" | "git -C %USERPROFILE%\\motor-conf archive origin/HEAD | tar -x -C %TEMP%\\motor-valida-"*"\\conf")
       [ -e "$S/pc-codigo-creado" ] || { echo "tar: could not chdir" >&2; exit 1; } ;;
     "if not exist "*"maquinas"*"pc.toml exit /b 1") [ -z "${FAKE_PC_SIN_TOML:-}" ] || exit 1 ;;
-    *"conf valida"*) exit "${FAKE_PC_VALIDA_RC:-0}" ;;
+    "cd /d %TEMP%\\motor-valida-"*"\\codigo && "*" conf valida %TEMP%\\motor-valida-"*"\\conf") exit "${FAKE_PC_VALIDA_RC:-0}" ;;
+    "cd /d %USERPROFILE%\\motor && "*" conf valida %USERPROFILE%\\motor-conf") exit "${FAKE_PC_VALIDA_RC:-0}" ;;
     "if exist "*"\\.git (git "* | "schtasks /end"* | "schtasks /delete"*) ok_pc ;;
     "if not exist "* | "copy /y "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
     *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
@@ -195,6 +196,7 @@ conf_buena
 
 # El veredicto de `conf valida` en la PC cuenta: si lo rechaza, nadie cambia.
 reset; MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 para el veredicto de la PC" 0 bash "$I"; unset MOTOR_ETIQUETA
+avanza "la-etiqueta-nueva-en-otro-commit"
 FAKE_PC_VALIDA_RC=1 en_mac espera "la PC rechaza la conf" '!0' bash "$I"
 contiene "dice que la PC la rechaza" "$S/salida" "pc: el código de $TAG rechaza la conf"
 nada_se_movio "la PC rechaza la conf"
