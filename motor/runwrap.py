@@ -7,8 +7,11 @@
 - Falta de avance: ni el log ni la carpeta cambian en `--sin-avance` s -> se detiene.
 - Ya entregó: si escribió una entrega válida (`motor.entrega`) y en `--cierre` s no vuelve a
   tocar nada, se cierra y cuenta como terminado. Un `result.json` que no es entrega válida no
-  lo cierra: sigue trabajando. La primera entrega válida se copia a `entrega.json`. Un
-  `result.json` posterior queda en `result.ajeno.json` y no la reemplaza. Grok dejaba su
+  lo cierra: sigue trabajando. La última entrega válida se copia a `entrega.json`; un
+  `result.json` que no es válido queda en `result.ajeno.json`. Con `pstack.json`, también
+  cuenta como avance cualquier cambio en sus `registros` y en los de los subagentes de la
+  sesión (`<sesion>/subagents/*.jsonl`), y no cierra mientras una llamada de `llamadas/`
+  tenga `fin` nulo. Grok dejaba su
   resultado y el proceso no salía; a los 45 min se mataba "sin avance" y la entrega se perdía
   (INGESTA 01, bloque D, dos veces).
 - Con `--wip-rama`: cada `--wip-cada` s y al terminar, sube una foto del trabajo a medias
@@ -63,6 +66,42 @@ def _huella_arbol(raiz: Path) -> dict[str, tuple[int, int]]:
                 continue
             huella[os.path.relpath(ruta, raiz)] = (st.st_mtime_ns, st.st_size)
     return huella
+
+
+def _huella_pstack(d: Path) -> tuple[dict[str, tuple[int, int]], bool]:
+    """(archivo -> (mtime en ns, tamaño), hay una llamada sin `fin`) según el `pstack.json` del intento.
+    Se mira cada archivo, no su carpeta: agregar líneas a un archivo no mueve la hora de la carpeta."""
+    try:
+        registros = json.loads((d / "pstack.json").read_text(encoding="utf-8"))[
+            "registros"
+        ]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}, False
+    archivos: list[str] = []
+    for r in registros if isinstance(registros, list) else []:
+        if not isinstance(r, str):
+            continue
+        archivos.append(r)
+        sesion = r[: -len(".jsonl")] if r.endswith(".jsonl") else ""
+        if sesion:
+            for dirpath, _, nombres in os.walk(sesion):
+                archivos.extend(os.path.join(dirpath, n) for n in nombres)
+    huella: dict[str, tuple[int, int]] = {}
+    for ruta in archivos:
+        try:
+            st = os.stat(ruta)
+        except OSError:
+            continue
+        huella[ruta] = (st.st_mtime_ns, st.st_size)
+    abierta = False
+    for f in (d / "llamadas").glob("*.json"):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and "fin" in rec and rec["fin"] is None:
+            abierta = True
+    return huella, abierta
 
 
 def _sin_shims(cmd: list[str], env: dict) -> list[str]:
@@ -141,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         ultimo = (log.stat().st_size, _mtime_arbol(cwd))
         ultimo_cambio = ultimo_escaneo = time.time()
+        huella_p, _ = _huella_pstack(d)
+        ultimo_cambio_p = 0.0
         timed_out = no_progress = cerrado = False
         espera = entrega.Espera(rama=a.entrega_rama, sha=a.entrega_sha)
         foto_lock = threading.Lock()
@@ -167,9 +208,14 @@ def main(argv: list[str] | None = None) -> int:
                 if ahora != ultimo:
                     ultimo, ultimo_cambio = ahora, time.time()
             entrego = espera.vigila(d, cwd)
+            nueva_p, llamada_abierta = _huella_pstack(d)
+            if nueva_p != huella_p:
+                huella_p, ultimo_cambio_p = nueva_p, time.time()
             if (
                 entrego >= inicio
-                and time.time() - max(entrego, ultimo_cambio) > a.cierre
+                and not llamada_abierta
+                and time.time() - max(entrego, ultimo_cambio, ultimo_cambio_p)
+                > a.cierre
             ):
                 cerrado = True
                 matar_grupo(p)
