@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import claves, efimeras, huella, plataforma, relevo
+from . import claves, efimeras, entrega, huella, plataforma, relevo
 from . import machine as m
 from . import pstack as ps
 from .conf import Conf, Maquina, RepoConf
@@ -594,9 +594,11 @@ class Effects:
             ]
             if not snap.repos.get(block.repo, {}).get("privado", False):
                 wip.append("--wip-local")  # repo público: lo de a medias no se publica
+            espera = ["--entrega-rama", self.cx.ws.rama(plan.id, block.id)]
         else:
             cwd = self.cx.ws.copia(block.repo, a.sha, d / "revision")
             wip = []
+            espera = ["--entrega-sha", a.sha]
         # un uuid por intento: el CLI lo usa como id de sesión y así el motor sabe qué registro leer
         marca_sesion = d / "sesion"
         if not marca_sesion.exists():
@@ -674,6 +676,7 @@ class Effects:
             "--sin-avance",
             str(self.cx.policy.sin_avance_s),
             *wip,
+            *espera,
             "--",
             *argv,
         ]
@@ -871,7 +874,7 @@ Escribe en `$MOTOR_RESULT`:
         revisando = att.role == "revisar"
         malo = "sin_resultado" if not revisando else "veredicto_invalido"
         try:
-            res = json.loads((d / "result.json").read_text(encoding="utf-8"))
+            res = json.loads(entrega.ruta(d).read_text(encoding="utf-8"))
         except OSError:
             return {
                 "kind": "sin_resultado",
@@ -879,13 +882,13 @@ Escribe en `$MOTOR_RESULT`:
             }
         except ValueError:
             return {"kind": malo, "detalle": "result.json no es JSON válido"}
-        if not revisando and (motivo := _bloqueado(res)):
+        if not revisando and (motivo := entrega.bloqueado(res)):
             return {
                 "kind": "bloqueado",
                 "detalle": motivo,
                 "huella_maquina": huella.de_maquina(self.cx.maquina),
             }
-        if motivo := _resultado_invalido(res, revisando):
+        if motivo := entrega.resultado_invalido(res, revisando):
             return {"kind": malo, "detalle": motivo}
         block = plan.block(block_id)
         if revisando:
@@ -1005,19 +1008,16 @@ Escribe en `$MOTOR_RESULT`:
         )
 
     def _entrego(self, plan: Plan, block_id: str, d: Path) -> bool:
-        """Hay un `result.json` válido cuyo SHA es la punta remota de la rama del bloque."""
+        """Hay una entrega válida. El sha del implementador es la punta remota de su rama."""
         try:
-            res = json.loads((d / "result.json").read_text(encoding="utf-8"))
+            res = json.loads(entrega.ruta(d).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return False
-        if _resultado_invalido(res, False):
-            return False
-        sha = res["sha"]
-        if len(sha) < 7:
-            return False
-        block = plan.block(block_id)
-        punta = self.cx.ws.punta(block.repo, self.cx.ws.rama(plan.id, block_id))
-        return bool(punta) and punta.startswith(sha)
+        punta = ""
+        if not entrega.bloqueado(res) and not entrega.resultado_invalido(res, False):
+            block = plan.block(block_id)
+            punta = self.cx.ws.punta(block.repo, self.cx.ws.rama(plan.id, block_id))
+        return entrega.es_valida(res, revisando=False, punta=punta)
 
     def _mata_intento(self, d: Path, proc: dict | None) -> None:
         """Detiene lo que quede de un intento perdido (agente y supervisor) antes de relanzar en la
@@ -1976,47 +1976,6 @@ def _escribe_marca(ruta: Path, datos: dict) -> None:
     tmp = ruta.with_name(ruta.name + ".tmp")
     tmp.write_text(json.dumps(datos), encoding="utf-8")
     os.replace(tmp, ruta)
-
-
-def _bloqueado(res: object) -> str:
-    """El motivo si el agente dijo que no es el código del bloque lo que falla; vacío si no."""
-    motivo = res.get("bloqueado") if isinstance(res, dict) else None
-    return motivo.strip()[:500] if isinstance(motivo, str) else ""
-
-
-def _resultado_invalido(res: object, revisando: bool) -> str:
-    """Frontera de `result.json`: el motivo exacto si no cumple la forma, vacío si cumple."""
-    if not isinstance(res, dict):
-        return f"result.json no es un objeto (es {type(res).__name__})"
-
-    def falta(clave: str, tipo: str) -> str:
-        return f"result.json: '{clave}' tiene que ser {tipo}"
-
-    if not isinstance(res.get("sha"), str):
-        return falta("sha", "texto")
-    if not revisando:
-        return "" if isinstance(res.get("resumen"), str) else falta("resumen", "texto")
-    if res.get("veredicto") not in ("APROBADO", "CAMBIOS"):
-        return "result.json: 'veredicto' tiene que ser APROBADO o CAMBIOS"
-    bloqueantes = res.get("bloqueantes")
-    if not isinstance(bloqueantes, list):
-        return falta("bloqueantes", "una lista")
-    for i, b in enumerate(bloqueantes):
-        if not isinstance(b, dict):
-            return f"result.json: bloqueantes[{i}] tiene que ser un objeto con 'texto'"
-        for clave, obligatoria in (
-            ("texto", True),
-            ("repro", False),
-            ("arreglo", False),
-        ):
-            if clave in b and not isinstance(b[clave], str):
-                return f"result.json: bloqueantes[{i}].{clave} tiene que ser texto"
-            if obligatoria and clave not in b:
-                return f"result.json: bloqueantes[{i}] no trae 'texto'"
-    notas = res.get("notas")
-    if not isinstance(notas, list) or not all(isinstance(n, str) for n in notas):
-        return falta("notas", "una lista de textos")
-    return ""
 
 
 def _iso_a_epoch(iso: str | None) -> float:
