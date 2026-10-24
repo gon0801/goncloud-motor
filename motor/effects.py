@@ -239,6 +239,11 @@ def materializa_pstack(conf_dir: Path, raiz: Path) -> tuple[str, Path] | None:
     return id_, destino
 
 
+def _texto_guia(f: Path) -> str:
+    """El texto de una guía tal como el anexo del encargo lo pega."""
+    return f.read_text(encoding="utf-8").strip()
+
+
 def errores_pstack(d: Path, conf) -> list[str]:
     """Para `motor conf valida`: pstack.toml tiene que coincidir con la copia fija que lleva la conf."""
     pc = conf.pstack
@@ -438,7 +443,8 @@ class Effects:
             "sesion": sesion,
             "registros": [*registros, str(d / "log.txt")],
             "guias": [
-                {"ruta": rel, "bytes": (raiz / rel).stat().st_size} for rel in lista
+                {"ruta": rel, "bytes": len(_texto_guia(raiz / rel).encode("utf-8"))}
+                for rel in lista
             ],
         }
         texto = json.dumps(info, ensure_ascii=False)
@@ -470,9 +476,7 @@ class Effects:
         partes = ["## Anexo: tus guías\n"]
         for g in info["guias"]:
             f = raiz / g["ruta"]
-            partes.append(
-                f"### {g['ruta']}\n`{f}`\n\n{f.read_text(encoding='utf-8').strip()}\n"
-            )
+            partes.append(f"### {g['ruta']}\n`{f}`\n\n{_texto_guia(f)}\n")
         return "\n".join(partes) + "\n"
 
     def _juzga_pstack(self, d: Path) -> dict | None:

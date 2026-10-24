@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -258,7 +259,11 @@ class TestEncargo(unittest.TestCase):
         anexo_impl = impl.index("\n## Anexo: tus guías\n")
         anexo_rev = rev.index("\n## Anexo: tus guías\n")
         self.assertLess(impl.index("## Cómo se entrega"), anexo_impl)
-        self.assertLess(rev.index("MOTOR_RESULT"), anexo_rev)
+        formato = re.search(r'(?m)^\{"sha"', rev)
+        self.assertIsNotNone(
+            formato, "el revisor trae el bloque del formato del resultado"
+        )
+        self.assertLess(formato.start(), anexo_rev)
 
     def test_ningun_encargo_habla_de_cargar_ni_de_detenerse(self):
         for brief, _ in self.briefs.values():
@@ -284,7 +289,12 @@ class TestEncargo(unittest.TestCase):
         self.assertEqual(
             guardado["guias"],
             [
-                {"ruta": g, "bytes": (raiz / g).stat().st_size}
+                {
+                    "ruta": g,
+                    "bytes": len(
+                        (raiz / g).read_text(encoding="utf-8").strip().encode()
+                    ),
+                }
                 for g in guias(GATE_REV, "claude", False)
             ],
         )
