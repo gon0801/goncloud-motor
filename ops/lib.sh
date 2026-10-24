@@ -33,6 +33,17 @@ sha_publicado() {
   printf '%s\n' "$salida" | tail -n 1 | cut -f1
 }
 
+# reintenta <veces> <comando...>: lo de red choca con locks o baches; un fallo suelto no debe tumbar nada.
+reintenta() {
+  local n=$1 i
+  shift
+  for i in $(seq "$n"); do
+    "$@" && return 0
+    [ "$i" -lt "$n" ] && sleep 2
+  done
+  return 1
+}
+
 ssh_a() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$@"; }
 
 es_local() { [ "$1" = mac ] && [ -z "${MOTOR_MAC_SSH:-}" ]; }

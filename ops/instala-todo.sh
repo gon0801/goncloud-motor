@@ -15,16 +15,6 @@ rama="${MOTOR_RAMA:-main}"
 # 1. La etiqueta, sobre un SHA que ya está en la rama principal (nunca sobre algo sin mergear).
 # Lo de red se reintenta: este repo lo comparte el daemon, que fetcha seguido, y un fetch o un
 # push puede chocar con otro proceso (lock) o con un bache de red. Eso no debe tumbar el despliegue.
-reintenta() { # reintenta <veces> <comando...>
-  local n=$1 i
-  shift
-  for i in $(seq "$n"); do
-    "$@" && return 0
-    [ "$i" -lt "$n" ] && sleep 2
-  done
-  return 1
-}
-
 reintenta 3 git -C "$raiz" fetch -q --force --tags origin || { echo "no pude traer origin" >&2; exit 3; }
 sha="$(git -C "$raiz" rev-parse HEAD)" || exit 3
 if ! git -C "$raiz" merge-base --is-ancestor "$sha" "origin/$rama"; then
@@ -57,8 +47,8 @@ else
 fi
 
 # 1b. Validación previa: el código NUEVO (una copia temporal de la etiqueta) contra la conf que va a quedar.
-# Sale 4 si ese código rechaza la conf; 255 es una máquina sin ssh (se salta y se dice); cualquier otro
-# código es una validación que no pudo cerrarse y tampoco deja cambiar nada.
+# Sale 4 si ese código rechaza la conf; 255 es una máquina sin ssh; cualquier otro código es una
+# validación que no pudo cerrarse. Ninguno de los tres deja cambiar el código en ninguna máquina.
 valida_posix() {
   local m=$1 repo_url=$REPO_URL conf_url=$CONF_URL
   if [ "$m" = mini ]; then repo_url=$REPO_URL_MINI conf_url=$CONF_URL_MINI; fi
@@ -75,6 +65,7 @@ if [ -d "$conf/.git" ]; then git -C "$conf" fetch -q origin; csrc="$conf"; else 
 mkdir "$t/codigo" "$t/conf"
 git -C "$src" archive "refs/tags/$etiqueta" | tar -x -C "$t/codigo"
 git -C "$csrc" archive origin/HEAD | tar -x -C "$t/conf"
+[ -f "$t/conf/maquinas/$m.toml" ] || { echo "$m: la conf no trae maquinas/$m.toml" >&2; exit 4; }
 if ! (cd "$t/codigo" && PYTHONPATH=. $py -m motor conf valida "$t/conf" >&2); then
   echo "$m: el código de $etiqueta rechaza la conf que va a quedar" >&2
   exit 4
@@ -83,19 +74,24 @@ REMOTO
 }
 
 valida_pc() {
-  local u='%USERPROFILE%' t="%TEMP%\\motor-valida-$$" rc=0
-  ssh_a "$(host_de pc)" "if exist $u\\motor\\.git (git -C $u\\motor fetch -q --tags --force origin) else (git clone -q $REPO_URL $u\\motor)" || return 1
-  ssh_a "$(host_de pc)" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf fetch -q origin) else (git clone -q $CONF_URL $u\\motor-conf)" || return 1
-  ssh_a "$(host_de pc)" "if exist $t rmdir /s /q $t & mkdir $t\\codigo $t\\conf" || return 1
-  ssh_a "$(host_de pc)" "git -C $u\\motor archive refs/tags/$ETIQUETA | tar -x -C $t\\codigo" || rc=1
-  [ $rc = 0 ] && { ssh_a "$(host_de pc)" "git -C $u\\motor-conf archive origin/HEAD | tar -x -C $t\\conf" || rc=1; }
+  local u='%USERPROFILE%' t="%TEMP%\\motor-valida-$$" rc=0 h
+  h="$(host_de pc)"
+  ssh_a "$h" "if exist $u\\motor\\.git (git -C $u\\motor fetch -q --tags --force origin) else (git clone -q $REPO_URL $u\\motor)" || return $?
+  ssh_a "$h" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf fetch -q origin) else (git clone -q $CONF_URL $u\\motor-conf)" || return $?
+  # Los paréntesis cierran el if: en cmd.exe un `& mkdir` sin ellos es parte de su cuerpo y no corre si $t no existe.
+  ssh_a "$h" "(if exist $t rmdir /s /q $t) & mkdir $t\\codigo $t\\conf" || return $?
+  ssh_a "$h" "git -C $u\\motor archive refs/tags/$ETIQUETA | tar -x -C $t\\codigo" || rc=$?
+  [ $rc = 0 ] && { ssh_a "$h" "git -C $u\\motor-conf archive origin/HEAD | tar -x -C $t\\conf" || rc=$?; }
   if [ $rc = 0 ]; then
-    ssh_a "$(host_de pc)" "cd /d $t\\codigo && $PC_UV run --python 3.12 python -m motor conf valida $t\\conf" >&2 || {
+    ssh_a "$h" "if not exist $t\\conf\\maquinas\\pc.toml exit /b 1" || { echo "pc: la conf no trae maquinas/pc.toml" >&2; rc=4; }
+  fi
+  if [ $rc = 0 ]; then
+    ssh_a "$h" "cd /d $t\\codigo && $PC_UV run --python 3.12 python -m motor conf valida $t\\conf" >&2 || {
       echo "pc: el código de $ETIQUETA rechaza la conf que va a quedar" >&2
       rc=4
     }
   fi
-  ssh_a "$(host_de pc)" "rmdir /s /q $t" >/dev/null 2>&1
+  ssh_a "$h" "rmdir /s /q $t" >/dev/null 2>&1
   return $rc
 }
 
@@ -190,7 +186,7 @@ for m in $MAQUINAS; do
   if [ "$m" = pc ]; then valida_pc; else valida_posix "$m"; fi
   case $? in
     0) listas="$listas $m" ;;
-    255) echo "FALLÓ $m: sin ssh" >&2; fallaron="$fallaron $m" ;;
+    255) echo "FALLÓ $m: sin ssh" >&2; rechazaron="$rechazaron $m" ;;
     *) rechazaron="$rechazaron $m" ;;
   esac
 done
