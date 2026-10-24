@@ -293,8 +293,12 @@ class SecretoTest(Banco):
 
     def test_un_agente_no_ve_la_variable(self):
         self.secretos(self.kuma.url)
+        self.d._candado.close()
+        self.d = Daemon(self.home)
+        self.addCleanup(self.d._candado.close)
         mq = load_maquina(self.home)
         self.assertIn("MOTOR_KUMA_URL", dict(mq.secretos))
+        self.assertIn("MOTOR_KUMA_URL", dict(self.d.cx.maquina.secretos))
         self.assertNotIn("MOTOR_KUMA_URL", self.d.fx.env_base())
         with unittest_env(MOTOR_KUMA_URL=self.kuma.url):
             self.assertNotIn("MOTOR_KUMA_URL", self.d.fx.env_base())
