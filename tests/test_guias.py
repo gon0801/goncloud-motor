@@ -260,6 +260,15 @@ class TestEncargo(unittest.TestCase):
         self.assertLess(impl.index("## Cómo se entrega"), anexo_impl)
         self.assertLess(rev.index("MOTOR_RESULT"), anexo_rev)
 
+    def test_solo_el_encargo_de_revisar_pide_un_unico_veredicto_final(self):
+        frase = (
+            "Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un "
+            "veredicto provisional: el motor no te cierra mientras tus subagentes o tus "
+            "llamadas a otros modelos sigan trabajando."
+        )
+        self.assertIn(frase, self.briefs["revisar"][0])
+        self.assertNotIn("veredicto provisional", self.briefs["implementar"][0])
+
     def test_ningun_encargo_habla_de_cargar_ni_de_detenerse(self):
         for brief, _ in self.briefs.values():
             for prohibido in ("antes de tu acción", "ábrelo", "te detiene"):

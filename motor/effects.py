@@ -792,6 +792,7 @@ Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal
 
 {antes}{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
 de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás va en `notas`.
+Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un veredicto provisional: el motor no te cierra mientras tus subagentes o tus llamadas a otros modelos sigan trabajando.
 Escribe en `$MOTOR_RESULT`:
 {{"sha": "{a.sha}", "veredicto": "APROBADO" | "CAMBIOS",
   "bloqueantes": [{{"texto": "...", "repro": "comando", "arreglo": "..."}}], "notas": ["..."]}}
