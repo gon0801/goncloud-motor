@@ -15,6 +15,12 @@ echo "$host :: $*" >>"$FAKE_LOG"
 case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac
 r="$S/resp/$host"
 case "$*" in
+  *pgrep*) cat "$r.pgrep" ;;
+  *lstart*) echo "Mon Oct 19 10:00:00 2026" ;;
+  *Get-CimInstance*) cat "$r.pgrep" ;;
+  *getmtime*|*LastWriteTime*) cat "$r.mtime" ;;
+  *rev-parse*) cat "$r.codigo" ;;
+  *programadas*) cat "$r.programadas" ;;
   *como-servicio*) cat "$r.rutas"; exit "$(cat "$r.rutas.rc" 2>/dev/null || echo 0)" ;;
   *doctor*) cat "$r.doctor"; exit "$(cat "$r.doctor.rc" 2>/dev/null || echo 0)" ;;
   *version*json*) cat "$r.version" ;;
@@ -32,11 +38,33 @@ sano() {
     h=${par%%:*} m=${par##*:}
     echo '{"version": "0.1.0", "sha": "aaaaaaaaaaaa1111"}' >"$R/$h.version"
     echo "{\"ok\": true, \"problemas\": [], \"rutas\": {}, \"maquina\": \"$m\", \"conf_sha\": \"cccccccccccc2222\"}" >"$R/$h.doctor"
+    echo '4242 1792404000' >"$R/$h.pgrep"
+    [ "$h" = gwpc ] || echo '4242 /usr/bin/python3 -m motor daemon --home /h' >"$R/$h.pgrep"
+    echo 0 >"$R/$h.mtime"
+    echo "$SHA_BUENO" >"$R/$h.codigo"
+    echo '{"leidas": ["launchd"], "sin_leer": [], "hallazgos": []}' >"$R/$h.programadas"
     echo "{\"ok\": true, \"maquina\": \"$m\", \"problemas\": [], \"rutas\": {\"opus\": {\"responde\": true}, \"kimi\": {\"responde\": false}}}" >"$R/$h.rutas"
   done
   unset FAKE_CAE
 }
-H="$RAIZ/ops/huellas.sh"
+
+# Una copia git del repo con su origin: la etiqueta de ops/lib.sh y el HEAD que debe correr el daemon.
+mkdir -p "$S/fx"
+cp -R "$RAIZ/ops" "$S/fx/ops"
+git init -q -b main "$S/fx"
+git -C "$S/fx" add -A
+git -C "$S/fx" -c user.name=t -c user.email=t@t commit -q -m uno
+SHA_BUENO="$(git -C "$S/fx" rev-parse HEAD)"
+git -C "$S/fx" -c user.name=t -c user.email=t@t commit -q --allow-empty -m dos
+SHA_VIEJO="$SHA_BUENO"
+SHA_BUENO="$(git -C "$S/fx" rev-parse HEAD)"
+git init -q --bare -b main "$S/fx-origen.git"
+git -C "$S/fx" remote add origin "$S/fx-origen.git"
+git -C "$S/fx" push -q origin main
+TAG="$(unset MOTOR_ETIQUETA; . "$RAIZ/ops/lib.sh"; echo "$ETIQUETA")"
+git -C "$S/fx" push -q origin "$SHA_BUENO:refs/tags/$TAG"
+H="$S/fx/ops/huellas.sh"
+export MOTOR_SHA="$SHA_BUENO" MOTOR_TOPE_DAEMON=2 MOTOR_ESPERA_PASO=1
 
 sano; espera "todo coincide" 0 bash "$H"
 sano; espera "todo coincide con --servicio --rutas" 0 bash "$H" --servicio --rutas
@@ -86,5 +114,34 @@ sano; echo '{"ok": true, "maquina": "mac", "problemas": [], "rutas": {}}' >"$R/m
 espera "--rutas sin ningún modelo que responda" '!0' bash "$H" --rutas
 
 espera "argumento desconocido" '!0' bash "$H" --nada
+
+sano; echo "$SHA_VIEJO" >"$R/mini@fake.codigo"
+espera "el daemon sigue en el commit anterior" '!0' bash "$H"
+contiene "dice cuál" "$S/salida" "mini: el motor daemon no arrancó"
+
+sano; echo 99999999999 >"$R/gwpc.mtime"
+espera "el daemon nació antes de que se pusiera el código" '!0' bash "$H"
+contiene "dice cuál" "$S/salida" "pc: el motor daemon no arrancó"
+
+sano; : >"$R/mac@fake.pgrep"
+espera "no hay proceso motor daemon" '!0' bash "$H"
+
+sano; git -C "$S/fx" push -q -f origin "$SHA_VIEJO:refs/tags/$TAG"
+espera "la etiqueta apunta a otro sha" '!0' bash "$H"
+contiene "dice la etiqueta" "$S/salida" "la etiqueta $TAG apunta a"
+git -C "$S/fx" push -q -f origin "$SHA_BUENO:refs/tags/$TAG"
+
+sano; echo '{"leidas": [], "sin_leer": ["launchd: negado"], "hallazgos": []}' >"$R/mini@fake.programadas"
+espera "programadas sin ninguna tarea leída" '!0' bash "$H"
+contiene "dice programadas" "$S/salida" "mini: programadas"
+
+sano; echo 'no es json' >"$R/mac@fake.programadas"
+espera "programadas que no es JSON" '!0' bash "$H"
+
+sano
+espera "sin MOTOR_SHA dentro de una copia git usa su HEAD" 0 env -u MOTOR_SHA bash "$H"
+sano; mkdir -p "$S/suelto/ops" && cp "$RAIZ/ops/huellas.sh" "$RAIZ/ops/lib.sh" "$S/suelto/ops/"
+espera "sin MOTOR_SHA y fuera de git" 2 env -u MOTOR_SHA bash "$S/suelto/ops/huellas.sh"
+contiene "dice cómo darlo" "$S/salida" 'falta MOTOR_SHA: corre MOTOR_SHA=$(git rev-parse HEAD) bash ops/huellas.sh'
 
 termina
