@@ -44,7 +44,7 @@ reintenta() {
 
 ssh_a() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$@"; }
 
-# en_posix <mac|mini> args... : el script de stdin corre allá con `bash -s -- args`.
+# en_posix <mac|mini|pc> args... : el script de stdin corre allá con `bash -s -- args`.
 en_posix() {
   local m=$1 cmd
   shift

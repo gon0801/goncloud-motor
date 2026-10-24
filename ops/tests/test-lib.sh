@@ -48,9 +48,11 @@ espera "desde pc todo va por ssh" 0 desde pc
 
 pasa_stdin() {
   export HOME="$S/home-mac"
+  : >"$FAKE_LOG"
   : >"$S/stdin.log"
   rm -f "$S/testigo-stdin"
-  printf 'touch %s\nMARCA-STDIN-123\n' "$S/testigo-stdin" | en_posix mini || return 1
+  printf 'touch %s\nMARCA-STDIN-123\n' "$S/testigo-stdin" | en_posix mac || return 1
+  grep -q '^mac ::' "$FAKE_LOG" || return 1
   grep -qF "MARCA-STDIN-123" "$S/stdin.log" || return 1
   [ ! -e "$S/testigo-stdin" ] || return 1
 }
