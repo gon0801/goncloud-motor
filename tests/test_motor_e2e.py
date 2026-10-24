@@ -21,6 +21,7 @@ import sandbox  # noqa: E402
 
 from motor import llamadas  # noqa: E402
 from motor import machine as m  # noqa: E402
+from motor import pstack as ps  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.notify import lint_plain  # noqa: E402
 from motor.plan import Plan  # noqa: E402
@@ -375,7 +376,7 @@ class TestEntregaSegura(Banco):
         d.fx.start_attempt(
             plan,
             m.fold(plan, d.store.events("demo")),
-            m.StartAttempt("A", "implementar", "glm", 1, "", ()),
+            m.StartAttempt("A", "implementar", "glm", 1, "", (), False),
         )
         anotados = [e for e in d.store.events("demo") if e.kind == "AttemptStarted"]
         self.assertEqual(
@@ -1504,11 +1505,16 @@ class BancoPstack(Banco):
         antes=None,
         titulo="saludo",
         reglas_revision="Z=nada",  # el revisor falso no pide nada extra
+        min_subagentes: dict | None = None,
         **kw,
     ):
         self.home, self.plan = sandbox.create(
             self.tmp / "b",
-            pstack={"exigir": exigir, "clis": self.CLIS},
+            pstack={
+                "exigir": exigir,
+                "clis": self.CLIS,
+                "min_subagentes": min_subagentes or {},
+            },
             modos={"sonnet": "ok", "glm": "ok", "opus": "ok", "k3": "ok", **modos},
             reglas_revision=reglas_revision,
             **kw,
@@ -1553,19 +1559,24 @@ class TestPstack(BancoPstack):
     def test_sin_exigir_el_encargo_lleva_pstack_y_se_guarda_la_huella_sin_rechazar(
         self,
     ):
-        self.arranca_pstack(False, {"sonnet": "pstack_no", "opus": "pstack_ok"})
+        self.arranca_pstack(
+            False,
+            {"sonnet": "pstack_no", "opus": "pstack_ok"},
+            min_subagentes={"gate.implementar": 1},
+        )
         for rol in ("implementar", "revisar"):
             brief = (self.intentos(rol)[0] / "brief.md").read_text(encoding="utf-8")
             self.assertIn("REGLA-DEL-MOTOR", brief, "motor.md va en el encargo")
             self.assertIn("Mapa de claude.", brief, "y el mapa del CLI")
             self.assertIn("## Cómo trabajas", brief)
+            self.assertIn("## Anexo: tus guías", brief, "las guías van completas")
         h = json.loads(
             (self.intentos("implementar")[0] / "huella.json").read_text(
                 encoding="utf-8"
             )
         )
         self.assertEqual((h["estado"], h["exigir"]), ("falta", False))
-        self.assertEqual(h["faltas"], ["no cargó la skill poteto-mode"])
+        self.assertEqual(h["faltas"], ["lanzó 0 subagente(s) y se pedían al menos 1"])
         h = json.loads(
             (self.intentos("revisar")[0] / "huella.json").read_text(encoding="utf-8")
         )
@@ -1580,16 +1591,26 @@ class TestPstack(BancoPstack):
         self.assertEqual(copia.parent, self.home / "pstack")
         self.assertTrue((copia / "pstack/skills/poteto-mode/SKILL.md").is_file())
         self.assertTrue((copia / "pstack-motor/motor.md").is_file())
+        self.assertTrue(
+            info["guias"] and all({"ruta", "bytes"} <= set(g) for g in info["guias"]),
+            "pstack.json guarda la lista de guías del anexo y su tamaño",
+        )
 
     def test_exigir_rechaza_con_sin_pstack_y_el_siguiente_intento_sabe_por_que(self):
-        self.arranca_pstack(True, {"sonnet": "pstack_no_primero", "opus": "pstack_ok"})
+        self.arranca_pstack(
+            True,
+            {"sonnet": "pstack_falla_primero", "opus": "pstack_ok"},
+            min_subagentes={"gate.implementar": 1},
+        )
         fines = self.fines("implementar")
         self.assertEqual([o["kind"] for o in fines], ["sin_pstack", "entregado"])
-        self.assertEqual(fines[0]["detalle"], "no cargó la skill poteto-mode")
+        self.assertEqual(
+            fines[0]["detalle"], "lanzó 0 subagente(s) y se pedían al menos 1"
+        )
         brief2 = (self.intentos("implementar")[1] / "brief.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("sin_pstack (no cargó la skill poteto-mode)", brief2)
+        self.assertIn("sin_pstack (lanzó 0 subagente(s)", brief2)
         raices = {
             json.loads((d / "pstack.json").read_text())["raiz"]
             for d in self.intentos("implementar")
@@ -1600,7 +1621,9 @@ class TestPstack(BancoPstack):
 
     def test_sin_pstack_cuenta_como_falla_del_modelo_y_entra_el_relevo(self):
         self.arranca_pstack(
-            True, {"sonnet": "pstack_no", "glm": "pstack_ok", "opus": "pstack_ok"}
+            True,
+            {"sonnet": "pstack_no", "glm": "pstack_ok", "opus": "pstack_ok"},
+            min_subagentes={"gate.implementar": 1},
         )
         modelos = [
             e.data["modelo"]
@@ -1717,34 +1740,53 @@ class TestResultadosNoSoloCarga(BancoPstack):
         self.assertEqual(self.reviews()[-1]["veredicto"], "APROBADO", "tras el arreglo")
 
 
-class TestPuertaEnVivo(BancoPstack):
-    def test_corta_al_agente_que_llega_a_la_accion_6_sin_poteto_mode(self):
-        self.arranca_pstack(
-            True, {"sonnet": "pstack_lento", "glm": "pstack_ok", "opus": "pstack_ok"}
-        )
-        d = self.intentos("implementar")[0]
-        o = json.loads((d / "outcome.json").read_text(encoding="utf-8"))
-        self.assertIn("no cargó poteto-mode en sus primeras 6 acciones", o["puerta"])
-        self.assertLess(
-            o["segundos"],
-            12,
-            "lo cortó en vivo: el agente falso tardaba 18 s en acabar",
-        )
-        self.assertFalse((d / "result.json").exists(), "no llegó a entregar")
-        fin = self.fines("implementar")[0]
-        self.assertEqual(fin["kind"], "sin_pstack")
-        self.assertIn("primeras 6 acciones", fin["detalle"])
-        self.assertEqual(self.fines("implementar")[-1]["kind"], "entregado")
+class TestPanelDelRevisor(BancoPstack):
+    """El revisor también rinde cuentas: el juez cuenta sus subagentes y el siguiente sabe por qué."""
 
-    def test_sin_exigir_no_hay_puerta(self):
-        self.arranca_pstack(False, {"sonnet": "pstack_lento", "opus": "pstack_ok"})
-        o = json.loads(
-            (self.intentos("implementar")[0] / "outcome.json").read_text(
-                encoding="utf-8"
-            )
+    def test_revisor_con_menos_subagentes_termina_sin_pstack_y_el_siguiente_lo_sabe(
+        self,
+    ):
+        self.arranca_pstack(
+            True,
+            {"opus": "pstack_uno", "k3": "pstack_ok"},
+            min_subagentes={"gate.revisar": 2},
         )
-        self.assertNotIn("puerta", o)
-        self.assertEqual([x["kind"] for x in self.fines("implementar")], ["entregado"])
+        fines = self.fines("revisar")
+        self.assertEqual(fines[0]["kind"], "sin_pstack")
+        self.assertIn(
+            "lanzó 1 subagente(s) y se pedían al menos 2", fines[0]["detalle"]
+        )
+        self.assertEqual(fines[-1]["kind"], "veredicto")
+        self.assertGreaterEqual(len(self.intentos("revisar")), 2)
+        brief2 = (self.intentos("revisar")[1] / "brief.md").read_text(encoding="utf-8")
+        self.assertIn("lanzó 1 subagente(s)", brief2, "el siguiente encargo lo dice")
+        h = json.loads(
+            (self.intentos("revisar")[-1] / "huella.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(h["estado"], "cumple", "k3 (kimi) con 2 subagentes cumple")
+
+    def test_revisor_con_los_subagentes_pedidos_pasa(self):
+        self.arranca_pstack(
+            True, {"opus": "pstack_ok"}, min_subagentes={"gate.revisar": 2}
+        )
+        self.assertEqual([o["kind"] for o in self.fines("revisar")], ["veredicto"])
+
+    def test_un_pstack_json_viejo_se_juzga_sin_tronar(self):
+        viejo = {
+            "skills": ["poteto-mode"],
+            "playbook": True,
+            "todos": True,
+            "min_subagentes": 1,
+            "puerta": 6,
+        }
+        e = ps.Exigencia.from_dict(viejo)
+        self.assertEqual(e.min_subagentes, 1)
+        h = ps.huella(
+            '{"type":"assistant","message":{"content":'
+            '[{"type":"tool_use","name":"Agent","input":{"description":"x"}}]}}\n',
+            "claude",
+        )
+        self.assertEqual(ps.juzga(h, e), ps.Cumple())
 
 
 class TestLlamadasAOtrosModelos(BancoPstack):

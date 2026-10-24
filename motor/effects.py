@@ -27,6 +27,7 @@ from . import machine as m
 from . import pstack as ps
 from .conf import Conf, Maquina, RepoConf
 from .fallas import PROVEEDORES
+from .guias import guias
 from .github import (
     Borrador,
     Conflicto,
@@ -272,13 +273,20 @@ def errores_pstack(d: Path, conf) -> list[str]:
         for lane in ps.LANES:
             if (lane, papel) not in pc.exigencias:
                 errores.append(f"pstack.toml: falta la exigencia de {papel} en {lane}")
+    clis = dict.fromkeys(r.cli for r in conf.rutas.values())
+    vistas: set[str] = set()
     for (lane, papel), e in pc.exigencias.items():
-        for sk in e.skills:
-            if not (copia / "skills" / sk / "SKILL.md").is_file():
-                errores.append(
-                    f"pstack.toml: la exigencia de {papel} en {lane} pide la skill {sk}, "
-                    "que no está en la copia"
-                )
+        for cli in clis:
+            for correccion in (False, True):
+                for g in guias(e, cli, correccion):
+                    if g in vistas:
+                        continue
+                    vistas.add(g)
+                    if not (d / g).is_file():
+                        errores.append(
+                            f"pstack.toml: la exigencia de {papel} en {lane} pide la guía {g}, "
+                            "que no está en la copia"
+                        )
     for r in conf.rutas.values():
         if r.cli not in ps.FORMATOS:
             errores.append(f"ruta {r.modelo}: no sé leer el registro del CLI {r.cli}")
@@ -380,14 +388,29 @@ class Effects:
         return copia
 
     def _prepara_pstack(
-        self, d: Path, lane: str, role: str, cli: str, cwd: Path, sesion: str
+        self,
+        d: Path,
+        lane: str,
+        role: str,
+        cli: str,
+        cwd: Path,
+        sesion: str,
+        correccion: bool,
     ) -> dict | None:
         """Fija lo que este intento exige y dónde se lee su registro; lo guarda en `pstack.json`.
-        `collect` juzga contra esto, no contra la conf de entonces: la conf puede cambiar a medias."""
+        `collect` juzga contra esto, no contra la conf de entonces: la conf puede cambiar a medias.
+        Si falta una guía en la copia fija, el intento no se lanza: el error nombra el archivo."""
         pc, copia = self.cx.conf.pstack, self.asegura_pstack()
         if pc is None or copia is None:
             return None
         arbol, raiz = copia
+        e = pc.exigencia(lane, role)
+        lista = guias(e, cli, correccion)
+        for rel in lista:
+            if not (raiz / rel).is_file():
+                raise FileNotFoundError(
+                    f"falta la guía {rel} en la copia fija {raiz}: el intento no se lanza"
+                )
         registros = []
         if cli == "claude":  # el transcript de la sesión que fijamos con --session-id
             base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
@@ -405,11 +428,14 @@ class Effects:
             "lane": lane,
             "role": role,
             "exigir": pc.exigir,
-            "exigencia": pc.exigencia(lane, role).to_dict(),
+            "exigencia": e.to_dict(),
             "arbol": arbol,
             "raiz": str(raiz),
             "sesion": sesion,
             "registros": [*registros, str(d / "log.txt")],
+            "guias": [
+                {"ruta": rel, "bytes": (raiz / rel).stat().st_size} for rel in lista
+            ],
         }
         texto = json.dumps(info, ensure_ascii=False)
         (d / "pstack.json").write_text(texto, encoding="utf-8")
@@ -428,10 +454,21 @@ class Effects:
             if f.is_file():
                 partes.append(f"## {titulo}\n{f.read_text(encoding='utf-8').strip()}\n")
         partes.append(
-            ps.instrucciones(
-                ps.Exigencia.from_dict(info["exigencia"]), info["cli"], str(raiz)
-            )
+            ps.instrucciones(ps.Exigencia.from_dict(info["exigencia"]), info["cli"])
         )
+        return "\n".join(partes) + "\n"
+
+    def _anexo_guias(self, info: dict | None) -> str:
+        """Las guías completas al final del encargo: un título por archivo y su ruta absoluta."""
+        if info is None:
+            return ""
+        raiz = Path(info["raiz"])
+        partes = ["## Anexo: tus guías\n"]
+        for g in info["guias"]:
+            f = raiz / g["ruta"]
+            partes.append(
+                f"### {g['ruta']}\n`{f}`\n\n{f.read_text(encoding='utf-8').strip()}\n"
+            )
         return "\n".join(partes) + "\n"
 
     def _juzga_pstack(self, d: Path) -> dict | None:
@@ -448,7 +485,7 @@ class Effects:
                 texto = Path(r).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            h = ps.huella(texto, info["cli"], info["raiz"])
+            h = ps.huella(texto, info["cli"])
             fuente = r
             if h.legible:
                 break
@@ -517,6 +554,17 @@ class Effects:
         )
 
     # ------------------------------------------------------------------ intentos
+    def _encargo(
+        self, plan: Plan, block, a: m.StartAttempt, cwd, rc, info_pstack
+    ) -> str:
+        """El brief completo de un intento: encargo, cómo se entrega y, al final, el anexo de guías."""
+        seccion = self._seccion_pstack(info_pstack)
+        if a.role == "implementar":
+            brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
+        else:
+            brief = self._brief_revisar(plan, block, a, rc, seccion)
+        return brief + self._anexo_guias(info_pstack)
+
     def start_attempt(self, plan: Plan, snap: m.Snapshot, a: m.StartAttempt) -> None:
         d = self.attempt_dir(plan.id, a.block, a.role, a.n)
         if (d / "started").exists():
@@ -556,15 +604,17 @@ class Effects:
         if not marca_sesion.exists():
             marca_sesion.write_text(str(uuid.uuid4()), encoding="utf-8")
         sesion = marca_sesion.read_text(encoding="utf-8").strip()
-        info_pstack = self._prepara_pstack(d, block.lane, a.role, ruta.cli, cwd, sesion)
-        seccion = self._seccion_pstack(info_pstack)
-        if a.role == "implementar":
-            brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
-        else:
-            brief = self._brief_revisar(plan, block, a, rc, seccion)
+        info_pstack = self._prepara_pstack(
+            d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion
+        )
+        brief = self._encargo(plan, block, a, cwd, rc, info_pstack)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
-        prompt = f"Lee {d / 'brief.md'} y ejecútalo completo sin preguntar nada."
+        kb = max(1, round(len(brief.encode("utf-8")) / 1024))
+        prompt = (
+            f"Lee el encargo completo en {d / 'brief.md'} ({kb} KB) con tu herramienta "
+            "de lectura de archivos, no con `cat`, y ejecútalo completo sin preguntar nada."
+        )
         argv = [
             x.format(
                 brief=str(d / "brief.md"),
@@ -609,19 +659,6 @@ class Effects:
             }
         )
         (d / "cupos.json").write_text(cupos, encoding="utf-8")
-        puerta: list[str] = []
-        if (
-            info_pstack and info_pstack["exigir"]
-        ):  # la puerta en vivo es parte de exigir
-            puerta = [
-                "--puerta",
-                str(info_pstack["exigencia"]["puerta"]),
-                "--cli",
-                ruta.cli,
-                "--raiz",
-                info_pstack["raiz"],
-                *[x for r in info_pstack["registros"] for x in ("--registro", r)],
-            ]
         cmd = [
             sys.executable,
             "-m",
@@ -630,7 +667,6 @@ class Effects:
             str(self.cx.home),
             "--cuenta",
             ruta.cuenta,
-            *puerta,
             "--dir",
             str(d),
             "--cwd",
@@ -740,6 +776,13 @@ avisa y espera una nota, un plan corregido o una máquina corregida.
             + (f" | Acepta: `{r.acepta}`" if r.acepta else "")
             for r in block.rows
         )
+        antes = ""
+        if a.feedback:
+            antes = (
+                "## Qué pasó antes (corrígelo primero)\n"
+                + "\n".join(f"- {x}" for x in a.feedback)
+                + "\n\n"
+            )
         return f"""{self.cx.conf.reglas_revisor}
 # Revisión {plan.id} · bloque {block.id} · SHA {a.sha}
 
@@ -747,7 +790,7 @@ Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal
 
 {filas}
 
-{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
+{antes}{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
 de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás va en `notas`.
 Escribe en `$MOTOR_RESULT`:
 {{"sha": "{a.sha}", "veredicto": "APROBADO" | "CAMBIOS",
@@ -793,8 +836,6 @@ Escribe en `$MOTOR_RESULT`:
                     "detalle": "el proceso desapareció sin dejar resultado",
                 }
         o = json.loads(oc.read_text(encoding="utf-8"))
-        if o.get("puerta"):  # runwrap lo cortó en vivo: no cargó poteto-mode a tiempo
-            return {"kind": "sin_pstack", "detalle": o["puerta"]}
         if att.role == "implementar" and self._entrego(plan, block_id, d):
             c = {
                 "kind": "terminado"

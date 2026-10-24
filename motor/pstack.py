@@ -1,26 +1,22 @@
-"""El motor pide y comprueba poteto-mode. Todo lo de "usar pstack" que no toca disco ni procesos.
+"""El motor pide y comprueba pstack. Todo lo de "usar pstack" que no toca disco ni procesos.
 
 - `huella(fuente, formato)`: qué hizo el agente, sacado de SU registro (nunca de su resultado).
-- `juzga(huella, exigencia)`: `Cumple` o `Falta` con lo que faltó en lenguaje llano.
-- `puerta(eventos, n)`: ¿hay que cortar al agente porque a la acción n aún no cargó poteto-mode?
+- `juzga(huella, exigencia)`: `Cumple` o `Falta` con lo que faltó en lenguaje llano. Lo único que
+  se juzga es mecánico y visible en cualquier registro: cuántos subagentes lanzó.
 - `instrucciones(exigencia, cli)`: la sección "Cómo trabajas" del encargo; sale de la misma
   exigencia que luego juzga, así lo que se pide y lo que se comprueba no se separan.
-- `FORMATOS`: una fila por CLI con el aspecto, en su registro, de cargar una skill, lanzar un
-  subagente y correr un comando. La fuente del registro de cada CLI: docs/arena/pstack/hechos.md §4.
+- `FORMATOS`: una fila por CLI con el aspecto, en su registro, de lanzar un subagente y correr un
+  comando. La fuente del registro de cada CLI: docs/arena/pstack/hechos.md §4.
 """
 
 from __future__ import annotations
 
 import json
-import posixpath
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 SKILL_BASE = "poteto-mode"
-PUERTA_ACCIONES = (
-    6  # poteto-mode se carga antes de la acción 6 (decisión de David, 2026-10-21)
-)
 LANES = ("fast", "gate", "release")
 PAPELES = ("implementar", "revisar")
 
@@ -34,27 +30,22 @@ class Exigencia:
 
     skills: tuple[str, ...] = (SKILL_BASE,)
     playbook: bool = False
-    todos: bool = False
     min_subagentes: int = 0
-    puerta: int = PUERTA_ACCIONES
 
     def to_dict(self) -> dict:
         return {
             "skills": list(self.skills),
             "playbook": self.playbook,
-            "todos": self.todos,
             "min_subagentes": self.min_subagentes,
-            "puerta": self.puerta,
         }
 
     @staticmethod
     def from_dict(d: dict) -> Exigencia:
+        """Acepta un `pstack.json` viejo (con `puerta` o `todos`) sin tronar: se ignoran."""
         return Exigencia(
             skills=tuple(d.get("skills", (SKILL_BASE,))),
             playbook=bool(d.get("playbook", False)),
-            todos=bool(d.get("todos", False)),
             min_subagentes=int(d.get("min_subagentes", 0)),
-            puerta=int(d.get("puerta", PUERTA_ACCIONES)),
         )
 
 
@@ -62,31 +53,23 @@ class Exigencia:
 class Accion:
     """Una llamada de herramienta del agente principal, ya sin el formato de su CLI."""
 
-    tipo: str  # skill | playbook | todos | subagente | comando | otra
-    nombre: str = ""  # skill sin prefijo, playbook, tipo de subagente o comando
+    tipo: str  # subagente | comando | otra
+    nombre: str = ""  # tipo de subagente o comando
     n: int = 0  # 1, 2, 3... entre las acciones del agente principal
 
 
 @dataclass(frozen=True)
 class Huella:
-    skills: tuple[str, ...] = ()
-    playbooks: tuple[str, ...] = ()
-    todos: int = 0
     subagentes: tuple[str, ...] = ()
     comandos: tuple[str, ...] = ()
     acciones: int = 0
-    poteto_en: int | None = None  # número de la acción que cargó poteto-mode
     legible: bool = True  # False: el registro no se pudo leer ("no verificable")
 
     def to_dict(self) -> dict:
         return {
-            "skills": list(self.skills),
-            "playbooks": list(self.playbooks),
-            "todos": self.todos,
             "subagentes": list(self.subagentes),
             "comandos": list(self.comandos)[:200],
             "acciones": self.acciones,
-            "poteto_en": self.poteto_en,
             "legible": self.legible,
         }
 
@@ -214,15 +197,10 @@ def _muse(o: dict) -> Llamadas:
         return out, visto
     visto = "type" in o or "event" in o or "payload_type" in o
     if o.get("payload_type") == "tool.result" and isinstance(o.get("payload"), dict):
-        # `muse exec --json`: solo el resultado de cada herramienta, con su nombre y, al leer, la ruta
+        # `muse exec --json`: solo el resultado de cada herramienta, con su nombre
         p = o["payload"]
         nombre = str((p.get("correlation_facts") or {}).get("tool_name", ""))
-        ruta = re.search(r"`(/[^`]+)`", str(p.get("text", "")))
-        return (
-            [(nombre, {"path": ruta.group(1), "name": ruta.group(1)} if ruta else {})]
-            if nombre
-            else []
-        ), visto
+        return ([(nombre, {})] if nombre else []), visto
     evento = (
         (o.get("payload") or {}).get("event")
         if isinstance(o.get("payload"), dict)
@@ -251,20 +229,11 @@ class Formato:
     cli: str
     fuente: str  # dónde está su registro (hechos.md §4)
     extrae: Callable[[dict], Llamadas]
-    skill: tuple[str, ...]  # herramientas que cargan una skill por nombre
-    leer: tuple[
-        str, ...
-    ]  # herramientas que leen un archivo (cargar = leer su SKILL.md)
     subagente: tuple[str, ...]
-    todos: tuple[str, ...]
     comando: tuple[str, ...]
     arg_id: tuple[
         str, ...
     ] = ()  # el CLI repite la misma llamada con otro estado: se cuenta una vez
-    sin_skill: str = ""  # por qué este CLI no tiene herramienta de skills y carga leyendo el SKILL.md
-    sin_carga_en: tuple[
-        tuple[str, str], ...
-    ] = ()  # (máquina, motivo): en esa máquina el CLI no entra y no puede cargar skills
 
 
 FORMATOS: dict[str, Formato] = {
@@ -272,148 +241,59 @@ FORMATOS: dict[str, Formato] = {
         "claude",
         "transcript ~/.claude/projects/<cwd>/<sesion>.jsonl (con --session-id) o log.txt en stream-json",
         _bloques,
-        skill=("skill",),
-        leer=("read",),
         subagente=("agent", "task"),
-        todos=("todowrite",),
         comando=("bash",),
     ),
     "kimi": Formato(
         "kimi",
         "log.txt con --output-format stream-json (copia en ~/.kimi-code/sessions/<wd>/<sesion>/agents/main/wire.jsonl)",
         _tool_calls,
-        skill=("skill",),
-        leer=("read", "readfile"),
         subagente=("agent", "agentswarm"),
-        todos=("settodolist",),
         comando=("bash", "shell"),
     ),
     "opencode": Formato(
         "opencode",
         "log.txt con `opencode run --format json`",
         _estado,
-        skill=("skill",),
-        leer=("read",),
         subagente=("task", "subagent"),
-        todos=("todowrite",),
         comando=("bash",),
     ),
     "grok": Formato(
         "grok",
-        "~/.grok/sessions/<cwd>/<sessionId>/updates.jsonl (grok no tiene herramienta de skills: cargar = read_file)",
+        "~/.grok/sessions/<cwd>/<sessionId>/updates.jsonl",
         _tool_name,
-        sin_skill="grok no tiene herramienta de skills: carga poteto-mode leyendo su SKILL.md con read_file",
-        skill=(),
-        leer=("read_file",),
         subagente=("spawn_subagent",),
-        todos=("todo_write",),
         comando=("run_terminal_command",),
     ),
     "muse": Formato(
         "muse",
         "~/.local/share/muse/sessions/AAAA/MM/DD/<id>/session.jsonl (o `muse exec --json` en log.txt)",
         _muse,
-        skill=("read_skill",),
-        leer=("read_file", "read"),
         subagente=("subagent_spawn", "workflow"),
-        todos=("write_todos",),
         comando=("bash", "run_command", "shell"),
-        sin_carga_en=(
-            ("mac", "missing meta credentials: falta `muse login` en la Mac"),
-            ("mini", "missing meta credentials: falta `muse login` en la Mini"),
-        ),
     ),
     "qwen": Formato(
         "qwen",
-        "log.txt con --output-format stream-json, con la salida a un archivo (por una tubería corta a 64 KB); herramienta `skill`, subagentes por `tool_call{name:agent}`",
+        "log.txt con --output-format stream-json, con la salida a un archivo (por una tubería corta a 64 KB); subagentes por `tool_call{name:agent}`",
         _bloques,
-        skill=("skill",),
-        leer=("read_file", "read"),
         subagente=("task", "agent"),
-        todos=("todo_write", "todowrite"),
         comando=("run_shell_command", "bash"),
     ),
 }
 
-_RUTA_SKILL = re.compile(r"([^/]+)/SKILL\.md$")
-_RUTA_PLAYBOOK = re.compile(rf"{SKILL_BASE}/playbooks/([^/]+)\.md$")
+
+def _subagentes(args: dict) -> int:
+    """Cuántos subagentes lanza esta llamada: en Kimi, `AgentSwarm` vale uno por elemento de `items`."""
+    items = args.get("items")
+    if isinstance(items, list) and items:
+        return len(items)
+    if isinstance(items, int) and not isinstance(items, bool) and items > 0:
+        return items  # recorta_registro guarda solo el conteo
+    return 1
 
 
-def _sin_private(ruta: str) -> str:
-    """En macOS `/var`, `/tmp` y `/etc` son enlaces a `/private/...`: el agente lee por cualquiera de las dos."""
-    return (
-        ruta[len("/private") :]
-        if re.match(r"/private/(var|tmp|etc)(/|$)", ruta)
-        else ruta
-    )
-
-
-def _bajo_skills(ruta: str, raiz: str | None) -> str | None:
-    """Lo que queda de `ruta` bajo `<raiz>/pstack/skills/`, o None si cae fuera de la copia fija
-    (otra copia, la skill propia del agente, un archivo que él escribió)."""
-    if not raiz:
-        return None
-    base = _sin_private(posixpath.normpath(raiz.replace("\\", "/"))) + "/pstack/skills/"
-    r = _sin_private(posixpath.normpath(ruta.replace("\\", "/")))
-    if re.match(r"[A-Za-z]:", base):  # rutas de Windows: sin distinguir mayúsculas
-        ok = r.lower().startswith(base.lower())
-    else:
-        ok = r.startswith(base)
-    return r[len(base) :] if ok else None
-
-
-def _nombre_skill(x: str) -> str:
-    return x.strip().rsplit(":", 1)[
-        -1
-    ]  # `pstack:poteto-mode` y `poteto-mode` cuentan igual
-
-
-def _clasifica(
-    f: Formato, herramienta: str, args: dict, n: int, raiz: str | None = None
-) -> Accion:
+def _clasifica(f: Formato, herramienta: str, args: dict, n: int) -> list[Accion]:
     h = herramienta.lower().rsplit(".", 1)[-1]
-    if h in f.skill:
-        nombre = next(
-            (
-                str(args[k])
-                for k in ("skill", "name", "skill_name", "id")
-                if args.get(k)
-            ),
-            "",
-        )
-        if mm := _RUTA_SKILL.search(
-            nombre.replace("\\", "/")
-        ):  # muse: `read_skill` con la ruta del SKILL.md
-            if raiz and _bajo_skills(nombre.replace("\\", "/"), raiz) is None:
-                return Accion(
-                    "otra", "", n
-                )  # otra copia de la skill: no es la copia fija
-            nombre = mm.group(1)
-        return Accion("skill", _nombre_skill(nombre), n)
-    if h in f.leer:
-        ruta = str(
-            next(
-                (
-                    args[k]
-                    for k in (
-                        "file_path",
-                        "path",
-                        "filePath",
-                        "absolute_path",
-                        "target_file",
-                    )
-                    if args.get(k)
-                ),
-                "",
-            )
-        ).replace("\\", "/")
-        rel = _bajo_skills(ruta, raiz)
-        if rel is not None:
-            if mm := _RUTA_PLAYBOOK.fullmatch(rel):
-                return Accion("playbook", mm.group(1), n)
-            if mm := _RUTA_SKILL.fullmatch(rel):
-                return Accion("skill", mm.group(1), n)
-        return Accion("otra", "", n)
     if h in f.subagente:
         tipo = next(
             (
@@ -423,13 +303,11 @@ def _clasifica(
             ),
             "subagente",
         )
-        return Accion("subagente", tipo, n)
-    if h in f.todos:
-        return Accion("todos", "", n)
+        return [Accion("subagente", tipo, n + i) for i in range(_subagentes(args))]
     if h in f.comando:
         cmd = next((str(args[k]) for k in ("command", "cmd") if args.get(k)), "")
-        return Accion("comando", cmd, n)
-    return Accion("otra", "", n)
+        return [Accion("comando", cmd, n)]
+    return [Accion("otra", "", n)]
 
 
 def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
@@ -467,12 +345,8 @@ def _objetos(fuente: str | Iterable[str]) -> Iterable[dict]:
             yield o
 
 
-def eventos(
-    fuente: str | Iterable[str], formato: str, raiz: str | None = None
-) -> tuple[list[Accion], bool]:
-    """(acciones del agente principal en orden, ¿el registro se pudo leer?). Lo usan `huella` y la
-    puerta en vivo de runwrap.
-    Leer un `SKILL.md` solo cuenta como cargar la skill si está bajo `<raiz>/pstack/skills/` (la copia fija)."""
+def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bool]:
+    """(acciones del agente principal en orden, ¿el registro se pudo leer?). Lo usa `huella`."""
     f = FORMATOS[formato]
     acciones: list[Accion] = []
     legible = False
@@ -486,103 +360,56 @@ def eventos(
                 continue
             vistos.add(ident)
         for herramienta, args in llamadas:
-            acciones.append(_clasifica(f, herramienta, args, len(acciones) + 1, raiz))
+            acciones.extend(_clasifica(f, herramienta, args, len(acciones) + 1))
     return acciones, legible
 
 
-def huella(
-    fuente: str | Iterable[str] | None, formato: str, raiz: str | None = None
-) -> Huella:
+def huella(fuente: str | Iterable[str] | None, formato: str) -> Huella:
     """Lo que el agente hizo según su registro. Sin registro, o con uno que no se entiende: `legible=False`."""
     if not fuente or formato not in FORMATOS:
         return Huella(legible=False)
-    acciones, legible = eventos(fuente, formato, raiz)
+    acciones, legible = eventos(fuente, formato)
     if not legible:
         return Huella(legible=False)
-    skills = tuple(dict.fromkeys(a.nombre for a in acciones if a.tipo == "skill"))
     return Huella(
-        skills=skills,
-        playbooks=tuple(
-            dict.fromkeys(a.nombre for a in acciones if a.tipo == "playbook")
-        ),
-        todos=sum(a.tipo == "todos" for a in acciones),
         subagentes=tuple(a.nombre for a in acciones if a.tipo == "subagente"),
         comandos=tuple(a.nombre for a in acciones if a.tipo == "comando"),
         acciones=len(acciones),
-        poteto_en=next(
-            (a.n for a in acciones if a.tipo == "skill" and a.nombre == SKILL_BASE),
-            None,
-        ),
     )
 
 
 # --------------------------------------------------------------------------- juicio
 
 
-def puerta(eventos_: list[Accion], n: int = PUERTA_ACCIONES) -> bool:
-    """True si hay que cortar: el agente ya hizo `n` acciones y entre ellas no cargó poteto-mode."""
-    if n <= 0 or len(eventos_) < n:
-        return False
-    return not any(a.tipo == "skill" and a.nombre == SKILL_BASE for a in eventos_[:n])
-
-
 def juzga(h: Huella, e: Exigencia) -> Cumple | Falta:
     if not h.legible:
         return Cumple(verificable=False)
-    faltas: list[str] = []
-    for s in e.skills:
-        if s not in h.skills:
-            faltas.append(f"no cargó la skill {s}")
-    if SKILL_BASE in h.skills and e.puerta and (h.poteto_en or 0) > e.puerta:
-        faltas.append(
-            f"cargó poteto-mode en su acción {h.poteto_en}; debía cargarla antes de la acción {e.puerta}"
-        )
-    if e.playbook and not h.playbooks:
-        faltas.append("no abrió ningún playbook de poteto-mode")
-    if e.todos and not h.todos:
-        faltas.append("no usó su lista de tareas")
     if len(h.subagentes) < e.min_subagentes:
-        faltas.append(
-            f"lanzó {len(h.subagentes)} subagente(s) y se pedían al menos {e.min_subagentes}"
-        )
-    return Falta(tuple(faltas)) if faltas else Cumple()
-
-
-def instrucciones(e: Exigencia, cli: str, raiz: str = "{pstack}") -> str:
-    """La sección "Cómo trabajas" del encargo. `raiz` es la carpeta de la copia fija de pstack."""
-    f = FORMATOS.get(cli)
-    cargar = (
-        f"la herramienta de skills de tu CLI ({', '.join(f'`{x}`' for x in f.skill)})"
-        if f and f.skill
-        else "una lectura de su `SKILL.md`"
-    )
-    pasos = [
-        f"Carga la skill `{SKILL_BASE}` antes de tu acción número {e.puerta}: con {cargar} "
-        f"o leyendo `{raiz}/pstack/skills/{SKILL_BASE}/SKILL.md`. Si no la cargas, el motor te detiene."
-    ]
-    for s in e.skills:
-        if s != SKILL_BASE:
-            pasos.append(
-                f"Carga y sigue completa la skill `{s}` (`{raiz}/pstack/skills/{s}/SKILL.md`)."
+        return Falta(
+            (
+                f"lanzó {len(h.subagentes)} subagente(s) y se pedían al menos {e.min_subagentes}",
             )
-    if e.playbook:
-        pasos.append(
-            f"Elige un playbook de `{SKILL_BASE}` y ábrelo (`{raiz}/pstack/skills/{SKILL_BASE}/playbooks/`)."
         )
-    if e.todos:
-        pasos.append("Lleva tu lista de tareas con la herramienta de tareas de tu CLI.")
+    return Cumple()
+
+
+def instrucciones(e: Exigencia, cli: str) -> str:
+    """La sección "Cómo trabajas" del encargo; sale de la misma exigencia que luego juzga.
+    No pide cargar ni abrir nada: las guías van completas en el anexo del encargo."""
+    pasos = [
+        "Las guías que pide este intento van completas en «## Anexo: tus guías», al final del "
+        "encargo. Las rutas que una guía menciona son relativas a la carpeta de esa guía.",
+    ]
     if e.min_subagentes:
         pasos.append(
-            f"Lanza al menos {e.min_subagentes} subagente(s) reales de tu CLI cuando el playbook lo pida."
+            f"Lanza al menos {e.min_subagentes} subagente(s) con la herramienta de subagentes de "
+            "tu CLI. En Kimi, cada elemento de `items` de `AgentSwarm` cuenta como un subagente."
         )
     pasos.append(
-        "El motor lee el registro de tus herramientas, no tu resumen: lo que solo digas no cuenta."
+        "El motor juzga lo que haces, no lo que lees: lo que solo digas no cuenta."
     )
     cuerpo = "\n".join(f"{i}. {p}" for i, p in enumerate(pasos, 1))
-    return (
-        f"## Cómo trabajas\nEste encargo se hace con pstack, en la copia fija `{raiz}`. "
-        f"Antes lee `{raiz}/pstack-motor/motor.md` y `{raiz}/pstack-motor/{cli}.md`.\n{cuerpo}\n"
-    )
+    return f"## Cómo trabajas\nEste encargo se hace con pstack.\n{cuerpo}\n"
 
 
 # --------------------------------------------------------------------------- conf (pstack.toml)
@@ -609,9 +436,7 @@ def _celda(raw: dict) -> Exigencia:
     return Exigencia(
         skills=tuple(skills),
         playbook=bool(raw.get("playbook", False)),
-        todos=bool(raw.get("todos", False)),
         min_subagentes=int(raw.get("min_subagentes", 0)),
-        puerta=int(raw.get("puerta", PUERTA_ACCIONES)),
     )
 
 

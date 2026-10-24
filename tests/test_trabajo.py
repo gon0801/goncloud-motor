@@ -440,7 +440,9 @@ class ProcesosTest(unittest.TestCase):
         snap = m.fold(self.plan, self.d.store.events("demo"))
         with mock.patch("motor.effects.plataforma.lanzar_separado", lanza):
             self.d.fx.start_attempt(
-                self.plan, snap, m.StartAttempt("A", "implementar", "glm", 1, "", ())
+                self.plan,
+                snap,
+                m.StartAttempt("A", "implementar", "glm", 1, "", (), False),
             )
         self.assertTrue(visto["marca"], "la marca existe antes de lanzar")
         marca = json.loads(
@@ -456,7 +458,7 @@ class ProcesosTest(unittest.TestCase):
         self,
     ):
         snap = m.fold(self.plan, self.d.store.events("demo"))
-        a = m.StartAttempt("A", "implementar", "glm", 1, "", ())
+        a = m.StartAttempt("A", "implementar", "glm", 1, "", (), False)
         with mock.patch(
             "motor.effects.plataforma.lanzar_separado", side_effect=OSError("cae")
         ):
@@ -517,7 +519,6 @@ class ProcesosTest(unittest.TestCase):
             (carpeta / "outcome.json").write_text(
                 json.dumps(
                     {
-                        "puerta": "no cargó poteto-mode",
                         "exit": 0,
                         "timed_out": False,
                         "no_progress": False,
@@ -530,7 +531,7 @@ class ProcesosTest(unittest.TestCase):
         with mock.patch("motor.effects.plataforma.estado_proc", estado):
             res = self.collect(att)
         self.assertEqual(
-            res["kind"], "sin_pstack", "se leyó el resultado, no se dio por perdido"
+            res["kind"], "sin_resultado", "se leyó el resultado, no se dio por perdido"
         )
 
 

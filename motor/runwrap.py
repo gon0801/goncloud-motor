@@ -1,8 +1,7 @@
 """Corre UN agente sin ventana y deja su resultado en disco. Vive aparte del daemon.
 
     python -m motor.runwrap --dir <intento> --cwd <carpeta> --timeout S --sin-avance S
-        [--wip-rama <rama> --wip-cada S]
-        [--puerta N --cli CLI --raiz COPIA --registro RUTA...] [--home H --cuenta C] -- <argv del agente...>
+        [--wip-rama <rama> --wip-cada S] [--home H --cuenta C] -- <argv del agente...>
 
 - stdin cerrado y grupo de procesos propio: ningún prompt de permiso puede colgarlo.
 - Falta de avance: ni el log ni la carpeta cambian en `--sin-avance` s -> se detiene.
@@ -14,10 +13,8 @@
   (INGESTA 01, bloque D, dos veces).
 - Con `--wip-rama`: cada `--wip-cada` s y al terminar, sube una foto del trabajo a medias
   (ver workspace.foto_wip). Un corte de luz pierde a lo mucho esos segundos.
-- Con `--puerta N`: lee el registro del agente mientras corre; si llega a la acción N sin haber cargado
-  poteto-mode, lo detiene y deja `puerta` en `outcome.json` (motor/pstack.py decide).
-- Con `--home` y `--cuenta`: anota al agente en el libro de cuentas (motor/llamadas.py), para que los
-  shims de los CLIs de modelos cuenten su lugar en los topes.
+- Con `--home` y `--cuenta`: anota al agente en el libro de cuentas (motor/llamadas.py), para que
+  los shims de los CLIs de modelos cuenten su lugar en los topes.
 - Escribe `outcome.json` con rename atómico. Si el daemon muere, este proceso sigue; si la
   máquina se apaga, el daemon nuevo ve un arranque distinto y lo marca "corte".
 """
@@ -35,7 +32,6 @@ import time
 from pathlib import Path
 
 from . import entrega, llamadas, plataforma
-from . import pstack as ps
 from .plataforma import contener, kwargs_grupo, matar_grupo
 from .workspace import foto_wip
 
@@ -55,51 +51,6 @@ def _mtime_arbol(raiz: Path) -> float:
             except OSError:
                 pass
     return m
-
-
-class PuertaEnVivo:
-    """Lee el registro del agente a medida que crece y dice cuándo hay que cortarlo."""
-
-    def __init__(self, cli: str, n: int, fuentes: list[Path], raiz: str = ""):
-        self.cli, self.n, self.fuentes, self.raiz = cli, n, fuentes, raiz
-        self.decidida = cli not in ps.FORMATOS or n <= 0
-        self._leido: dict[Path, int] = {}
-        self._lineas: dict[Path, list[str]] = {}
-
-    def _nuevas(self, f: Path) -> None:
-        try:
-            with open(f, "rb") as fh:
-                fh.seek(self._leido.get(f, 0))
-                datos = fh.read()
-        except OSError:
-            return
-        # solo líneas completas: la última puede venir a medias
-        completo = datos[: datos.rfind(b"\n") + 1]
-        self._leido[f] = self._leido.get(f, 0) + len(completo)
-        self._lineas.setdefault(f, []).extend(
-            completo.decode("utf-8", errors="replace").splitlines()
-        )
-
-    def revisa(self) -> str:
-        """El motivo del corte, o "" si no hay que cortar (todavía o nunca)."""
-        if self.decidida:
-            return ""
-        for f in self.fuentes:
-            self._nuevas(f)
-            acciones, legible = ps.eventos(self._lineas.get(f, []), self.cli, self.raiz)
-            if not legible:
-                continue
-            if ps.puerta(acciones, self.n):
-                return (
-                    f"no cargó poteto-mode en sus primeras {self.n} acciones; "
-                    "el motor lo detuvo para no gastar cuota"
-                )
-            if len(acciones) >= self.n or any(
-                a.tipo == "skill" and a.nombre == ps.SKILL_BASE for a in acciones
-            ):
-                self.decidida = True  # ya cumplió, o ya no hay nada que mirar
-            return ""
-        return ""
 
 
 def _sin_shims(cmd: list[str], env: dict) -> list[str]:
@@ -134,10 +85,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="repo público: la foto no sale de esta máquina",
     )
-    ap.add_argument("--puerta", type=int, default=0)
-    ap.add_argument("--cli", default="")
-    ap.add_argument("--raiz", default="", help="raíz de la copia fija de pstack")
-    ap.add_argument("--registro", action="append", default=[])
     ap.add_argument("--home", default="")
     ap.add_argument("--cuenta", default="")
     ap.add_argument("--entrega-rama", default="", help="rama del bloque en origin")
@@ -177,10 +124,6 @@ def main(argv: list[str] | None = None) -> int:
                     "inicio": inicio,
                 },
             )
-        puerta = PuertaEnVivo(
-            a.cli, a.puerta, [Path(x) for x in a.registro] or [log], a.raiz
-        )
-        motivo_puerta, ultima_puerta = "", 0.0
         ultimo = (log.stat().st_size, _mtime_arbol(cwd))
         ultimo_cambio = ultimo_escaneo = time.time()
         timed_out = no_progress = cerrado = False
@@ -203,12 +146,6 @@ def main(argv: list[str] | None = None) -> int:
             threading.Thread(target=_fotos_periodicas, daemon=True).start()
         while p.poll() is None:
             time.sleep(0.2)
-            if not puerta.decidida and time.time() - ultima_puerta >= 1.0:
-                ultima_puerta = time.time()
-                motivo_puerta = puerta.revisa()
-                if motivo_puerta:
-                    matar_grupo(p)
-                    break
             if time.time() - ultimo_escaneo >= 10:
                 ultimo_escaneo = time.time()
                 ahora = (log.stat().st_size, _mtime_arbol(cwd))
@@ -245,7 +182,6 @@ def main(argv: list[str] | None = None) -> int:
         "tail": log.read_text(errors="replace", encoding="utf-8")[-2000:],
         "fotos": fotos[-5:],
         "segundos": round(time.time() - inicio, 1),
-        **({"puerta": motivo_puerta} if motivo_puerta else {}),
     }
     tmp = d / "outcome.json.tmp"
     tmp.write_text(json.dumps(outcome, ensure_ascii=False), encoding="utf-8")

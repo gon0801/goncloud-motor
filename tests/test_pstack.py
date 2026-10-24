@@ -1,7 +1,8 @@
-"""B.1: huella, juicio, puerta e instrucciones, con un registro de ejemplo por CLI.
+"""B.1: huella, juicio e instrucciones, con un registro de ejemplo por CLI.
 
 Los registros imitan la forma que `docs/arena/pstack/hechos.md` §4 midió en cada CLI. El bloque C los
-reemplaza por registros reales de cada máquina.
+reemplaza por registros reales de cada máquina. El juez solo cuenta subagentes: una llamada a la
+herramienta de subagentes del CLI vale uno, y en Kimi `AgentSwarm` vale uno por elemento de `items`.
 """
 
 from __future__ import annotations
@@ -24,10 +25,6 @@ from motor import relevo
 from motor.__main__ import conf_valida
 from motor.conf import load_conf
 from motor.plan import Plan, parse_plan
-
-SKILL = "/Users/dn/.motor/pstack/abc123/pstack/skills/poteto-mode/SKILL.md"
-RAIZ = "/Users/dn/.motor/pstack/abc123"
-PLAYBOOK = "/Users/dn/.motor/pstack/abc123/pstack/skills/poteto-mode/playbooks/docs.md"
 
 
 def jl(*objs) -> str:
@@ -93,54 +90,36 @@ def muse(*llamadas) -> str:
     )
 
 
-# por CLI: (fábrica, cargar skill, leer archivo, subagente, lista de tareas, comando)
+# por CLI: (fábrica, subagente, comando)
 CASOS = {
     "claude": (
         claude,
-        ("Skill", {"skill": "pstack:poteto-mode"}),
-        ("Read", {"file_path": PLAYBOOK}),
         ("Agent", {"subagent_type": "poteto-agent"}),
-        ("TodoWrite", {"todos": []}),
         ("Bash", {"command": "git status"}),
     ),
     "kimi": (
         kimi,
-        ("Skill", {"skill": "poteto-mode"}),
-        ("Read", {"path": PLAYBOOK}),
         ("Agent", {"subagent_type": "poteto-agent"}),
-        ("SetTodoList", {}),
         ("Bash", {"command": "git status"}),
     ),
     "opencode": (
         opencode,
-        ("skill", {"name": "poteto-mode"}),
-        ("read", {"filePath": PLAYBOOK}),
         ("task", {"subagent_type": "poteto-agent"}),
-        ("todowrite", {}),
         ("bash", {"command": "git status"}),
     ),
     "grok": (
         grok,
-        ("read_file", {"path": SKILL}),
-        ("read_file", {"path": PLAYBOOK}),
         ("spawn_subagent", {"agent": "poteto-agent"}),
-        ("todo_write", {}),
         ("run_terminal_command", {"command": "git status"}),
     ),
     "muse": (
         muse,
-        ("read_skill", {"name": "poteto-mode"}),
-        ("read_file", {"path": PLAYBOOK}),
         ("subagent_spawn", {"subagent_type": "poteto-agent"}),
-        ("write_todos", {}),
         ("bash", {"command": "git status"}),
     ),
     "qwen": (
         claude,
-        ("Read", {"file_path": SKILL}),
-        ("read_file", {"file_path": PLAYBOOK}),
         ("task", {"subagent_type": "poteto-agent"}),
-        ("todo_write", {}),
         ("run_shell_command", {"command": "git status"}),
     ),
 }
@@ -152,69 +131,43 @@ class TestFormatos(unittest.TestCase):
             set(ps.FORMATOS), {"claude", "kimi", "opencode", "grok", "muse", "qwen"}
         )
 
-    def test_huella_ve_skill_playbook_lista_subagente_y_comando_en_cada_cli(self):
-        for cli, (fab, cargar, playbook, sub, todos, cmd) in CASOS.items():
+    def test_huella_cuenta_el_subagente_y_el_comando_en_cada_cli(self):
+        for cli, (fab, sub, cmd) in CASOS.items():
             with self.subTest(cli=cli):
-                h = ps.huella(fab(cargar, playbook, todos, sub, cmd), cli, RAIZ)
+                h = ps.huella(fab(sub, cmd), cli)
                 self.assertTrue(h.legible)
-                self.assertIn("poteto-mode", h.skills)
-                self.assertEqual(h.poteto_en, 1)
-                self.assertEqual(h.playbooks, ("docs",))
-                self.assertEqual(h.todos, 1)
                 self.assertEqual(h.subagentes, ("poteto-agent",))
                 self.assertEqual(h.comandos, ("git status",))
-                self.assertEqual(h.acciones, 5)
+                self.assertEqual(h.acciones, 2)
 
-    def test_sin_cargar_poteto_mode_da_falta_en_cada_cli(self):
-        for cli, (fab, cargar, playbook, sub, todos, cmd) in CASOS.items():
-            with self.subTest(cli=cli):
-                h = ps.huella(fab(cmd, todos, sub), cli)
-                r = ps.juzga(h, ps.Exigencia())
-                self.assertIsInstance(r, ps.Falta)
-                self.assertIn("no cargó la skill poteto-mode", r.faltas)
-
-    def test_cargar_leyendo_el_skill_md_cuenta_igual_que_la_herramienta(self):
+    def test_un_agentswarm_de_kimi_vale_uno_por_elemento_de_items(self):
         h = ps.huella(
-            claude(("Read", {"file_path": SKILL})), "claude", RAIZ
-        )  # Claude también puede cargar con Read
-        self.assertEqual(h.skills, ("poteto-mode",))
-        h = ps.huella(
-            claude(("Read", {"file_path": SKILL.replace("/", "\\")})), "claude", RAIZ
+            kimi(
+                (
+                    "AgentSwarm",
+                    {
+                        "prompt_template": "revisa {{item}}",
+                        "items": ["a.py", "b.py", "c.py"],
+                    },
+                )
+            ),
+            "kimi",
         )
-        self.assertEqual(h.skills, ("poteto-mode",), "rutas de Windows")
-
-    def test_leer_un_skill_md_fuera_de_la_copia_fija_no_cuenta(self):
-        fuera = [
-            "/tmp/hecha-por-el-agente/poteto-mode/SKILL.md",
-            "/Users/dn/.claude/skills/poteto-mode/SKILL.md",
-            "/Users/dn/.motor/pstack/otra/pstack/skills/poteto-mode/SKILL.md",
-            RAIZ + "/pstack/skills/../../../x/poteto-mode/SKILL.md",
-        ]
-        for ruta in fuera:
-            with self.subTest(ruta=ruta):
-                log = claude(("Read", {"file_path": ruta}))
-                for raiz in (RAIZ, None):
-                    h = ps.huella(log, "claude", raiz)
-                    self.assertIsNone(h.poteto_en)
-                    self.assertIsInstance(ps.juzga(h, ps.Exigencia()), ps.Falta)
-        self.assertTrue(
-            ps.puerta(
-                ps.eventos(
-                    claude(*[("Read", {"file_path": fuera[0]})] * 6), "claude", RAIZ
-                )[0],
-                6,
-            )
-        )
+        self.assertEqual(len(h.subagentes), 3)
+        h = ps.huella(kimi(("AgentSwarm", {"items": 2})), "kimi")
+        self.assertEqual(len(h.subagentes), 2, "recorta_registro guarda solo el conteo")
 
     def test_las_llamadas_de_un_subagente_no_son_del_agente(self):
         h = ps.huella(
-            claude(("Skill", {"skill": "poteto-mode"}), parent="toolu_1"), "claude"
+            claude(("Agent", {"subagent_type": "x"}), parent="toolu_1"), "claude"
         )
-        self.assertEqual(h.skills, ())
+        self.assertEqual(h.subagentes, ())
 
     def test_opencode_y_grok_cuentan_una_vez_la_llamada_repetida(self):
-        dos = jl(*[{"tool_name": "todo_write", "tool_call_id": "t1", "args": {}}] * 2)
-        self.assertEqual(ps.huella(dos, "grok").todos, 1)
+        dos = jl(
+            *[{"tool_name": "spawn_subagent", "tool_call_id": "t1", "args": {}}] * 2
+        )
+        self.assertEqual(len(ps.huella(dos, "grok").subagentes), 1)
 
     def test_qwen_json_completo_en_un_arreglo(self):
         arreglo = json.dumps(
@@ -226,8 +179,8 @@ class TestFormatos(unittest.TestCase):
                         "content": [
                             {
                                 "type": "tool_use",
-                                "name": "Skill",
-                                "input": {"skill": "poteto-mode"},
+                                "name": "task",
+                                "input": {"subagent_type": "x"},
                             }
                         ]
                     },
@@ -235,7 +188,7 @@ class TestFormatos(unittest.TestCase):
             ],
             indent=2,
         )
-        self.assertEqual(ps.huella(arreglo, "qwen").skills, ("poteto-mode",))
+        self.assertEqual(len(ps.huella(arreglo, "qwen").subagentes), 1)
 
 
 class TestNoVerificable(unittest.TestCase):
@@ -266,114 +219,54 @@ class TestNoVerificable(unittest.TestCase):
                 "total_cost_usd": 0.1,
             }
         )
-        h = ps.huella(final, "grok", RAIZ)
+        h = ps.huella(final, "grok")
         self.assertFalse(h.legible)
         self.assertEqual(ps.juzga(h, ps.Exigencia()), ps.Cumple(verificable=False))
 
-    def test_registro_legible_sin_acciones_si_falta(self):
+    def test_registro_legible_sin_subagentes_si_faltan(self):
         h = ps.huella(jl({"type": "system"}), "claude")
         self.assertTrue(h.legible)
-        self.assertIsInstance(ps.juzga(h, ps.Exigencia()), ps.Falta)
+        self.assertIsInstance(ps.juzga(h, ps.Exigencia(min_subagentes=1)), ps.Falta)
 
 
 class TestJuzga(unittest.TestCase):
-    def h(self, *llamadas):
-        return ps.huella(claude(*llamadas), "claude", RAIZ)
-
-    def test_cumple(self):
-        h = self.h(
-            ("Skill", {"skill": "poteto-mode"}),
-            ("Skill", {"skill": "interrogate"}),
-            ("Read", {"file_path": PLAYBOOK}),
-            ("TodoWrite", {}),
-            ("Agent", {"subagent_type": "x"}),
+    def test_cumple_con_los_subagentes_pedidos(self):
+        h = ps.huella(
+            claude(("Agent", {"subagent_type": "x"}), ("Agent", {"description": "y"})),
+            "claude",
         )
-        e = ps.Exigencia(
-            skills=("poteto-mode", "interrogate"),
-            playbook=True,
-            todos=True,
-            min_subagentes=1,
-        )
-        self.assertEqual(ps.juzga(h, e), ps.Cumple())
+        self.assertEqual(ps.juzga(h, ps.Exigencia(min_subagentes=2)), ps.Cumple())
 
-    def test_falta_lista_todo_en_llano(self):
-        h = self.h(("Bash", {"command": "ls"}))
-        e = ps.Exigencia(
-            skills=("poteto-mode", "interrogate"),
-            playbook=True,
-            todos=True,
-            min_subagentes=2,
-        )
-        r = ps.juzga(h, e)
-        self.assertIsInstance(r, ps.Falta)
-        self.assertEqual(
-            r.faltas,
-            (
-                "no cargó la skill poteto-mode",
-                "no cargó la skill interrogate",
-                "no abrió ningún playbook de poteto-mode",
-                "no usó su lista de tareas",
-                "lanzó 0 subagente(s) y se pedían al menos 2",
-            ),
-        )
+    def test_falta_dice_cuantos_lanzo_y_cuantos_se_pedian(self):
+        h = ps.huella(claude(("Bash", {"command": "ls"})), "claude")
+        r = ps.juzga(h, ps.Exigencia(min_subagentes=2))
+        self.assertEqual(r, ps.Falta(("lanzó 0 subagente(s) y se pedían al menos 2",)))
 
-    def test_cargarla_tarde_es_falta(self):
-        h = self.h(
-            *[("Bash", {"command": "ls"})] * 7, ("Skill", {"skill": "poteto-mode"})
-        )
-        r = ps.juzga(h, ps.Exigencia())
-        self.assertIsInstance(r, ps.Falta)
-        self.assertIn("acción 8", r.faltas[0])
-
-
-class TestPuerta(unittest.TestCase):
-    def acciones(self, *llamadas):
-        return ps.eventos(claude(*llamadas), "claude", RAIZ)[0]
-
-    def test_corta_si_a_la_accion_6_no_cargo_poteto_mode(self):
-        ev = self.acciones(*[("Bash", {"command": "ls"})] * 6)
-        self.assertTrue(ps.puerta(ev, 6))
-
-    def test_no_corta_antes_de_la_accion_6(self):
-        self.assertFalse(
-            ps.puerta(self.acciones(*[("Bash", {"command": "ls"})] * 5), 6)
-        )
-
-    def test_no_corta_si_la_cargo_a_tiempo(self):
-        ev = self.acciones(
-            *[("Bash", {"command": "ls"})] * 5, ("Skill", {"skill": "poteto-mode"})
-        )
-        self.assertFalse(ps.puerta(ev, 6))
-        self.assertFalse(
-            ps.puerta(self.acciones(*[("Bash", {"command": "ls"})] * 9), 0)
-        )
+    def test_sin_exigencia_de_subagentes_cualquier_registro_legible_cumple(self):
+        h = ps.huella(claude(("Bash", {"command": "ls"})), "claude")
+        self.assertEqual(ps.juzga(h, ps.Exigencia()), ps.Cumple())
 
 
 class TestInstrucciones(unittest.TestCase):
-    def test_la_seccion_sale_de_la_misma_exigencia_que_juzga(self):
-        e = ps.Exigencia(
-            skills=("poteto-mode", "interrogate"),
-            playbook=True,
-            todos=True,
-            min_subagentes=2,
-        )
-        t = ps.instrucciones(e, "claude", "/x/pstack/abc")
+    def test_no_pide_cargar_nada_las_guias_van_en_el_anexo(self):
+        t = ps.instrucciones(ps.Exigencia(), "claude")
         self.assertTrue(t.startswith("## Cómo trabajas"))
-        for esperado in (
-            "antes de tu acción número 6",
-            "`interrogate`",
-            "playbook",
-            "lista de tareas",
-            "al menos 2 subagente",
-            "/x/pstack/abc/pstack-motor/claude.md",
-            "no tu resumen",
+        self.assertIn("## Anexo: tus guías", t)
+        self.assertIn("relativas a la carpeta de esa guía", t)
+        self.assertIn("juzga lo que haces, no lo que lees", t)
+        for prohibido in (
+            "antes de tu acción",
+            "ábrelo",
+            "te detiene",
+            "Carga la skill",
         ):
-            self.assertIn(esperado, t)
+            self.assertNotIn(prohibido, t)
 
-    def test_cli_sin_herramienta_de_skills_pide_leer_el_skill_md(self):
-        t = ps.instrucciones(ps.Exigencia(), "grok", "/x")
-        self.assertIn("una lectura de su `SKILL.md`", t)
-        self.assertNotIn("playbook", t)
+    def test_con_subagentes_dice_cuantos_y_como_cuenta_agentswarm_en_kimi(self):
+        t = ps.instrucciones(ps.Exigencia(min_subagentes=2), "kimi")
+        self.assertIn("al menos 2 subagente(s)", t)
+        self.assertIn("AgentSwarm", t)
+        self.assertNotIn("subagente", ps.instrucciones(ps.Exigencia(), "kimi"))
 
 
 class TestConf(unittest.TestCase):
@@ -418,6 +311,9 @@ class TestCopiaFija(unittest.TestCase):
         (self.conf / "pstack" / "skills" / "interrogate").mkdir()
         (self.conf / "pstack" / "skills" / "interrogate" / "SKILL.md").write_text("i\n")
         (self.conf / "pstack" / "ORIGEN").write_text("origen: x abc1234567\n")
+        arnes = self.conf / "pstack" / "docs" / "harness"
+        arnes.mkdir(parents=True)
+        (arnes / "claude-code.md").write_text("adaptador\n")
         (self.conf / "pstack-motor").mkdir()
         (self.conf / "pstack-motor" / "motor.md").write_text("m\n")
         self.raiz = self.tmp / "home" / "pstack"
@@ -573,8 +469,8 @@ class TestGrokJson(unittest.TestCase):
         ses.mkdir(parents=True)
         (ses / "updates.jsonl").write_text(
             jl(
-                {"tool_name": "read_file", "args": {"path": SKILL}},
-                {"tool_name": "todo_write", "args": {}},
+                {"tool_name": "spawn_subagent", "args": {"agent": "a"}},
+                {"tool_name": "spawn_subagent", "args": {"agent": "b"}},
             ),
             encoding="utf-8",
         )
@@ -589,8 +485,8 @@ class TestGrokJson(unittest.TestCase):
         self.addCleanup(patcher.stop)
         regs = ef.Effects._registros_de(info)
         self.assertEqual(regs[0], str(ses / "updates.jsonl"))
-        h = ps.huella(Path(regs[0]).read_text(encoding="utf-8"), "grok", RAIZ)
-        self.assertEqual(h.skills, ("poteto-mode",))
+        h = ps.huella(Path(regs[0]).read_text(encoding="utf-8"), "grok")
+        self.assertEqual(h.subagentes, ("a", "b"))
 
     def test_grok_json_con_sangria_en_varias_lineas_tambien_encuentra_la_sesion(self):
         tmp = Path(tempfile.mkdtemp())
@@ -598,7 +494,8 @@ class TestGrokJson(unittest.TestCase):
         ses = tmp / ".grok" / "sessions" / "-w" / "s2"
         ses.mkdir(parents=True)
         (ses / "updates.jsonl").write_text(
-            jl({"tool_name": "read_file", "args": {"path": SKILL}}), encoding="utf-8"
+            jl({"tool_name": "spawn_subagent", "args": {"agent": "a"}}),
+            encoding="utf-8",
         )
         final = {"text": "listo", "sessionId": "s2", "usage": {"a": 1, "b": [1, 2]}}
         log = tmp / "log.txt"
@@ -675,7 +572,7 @@ class TestBloqueantesDelRevisorMalformados(unittest.TestCase):
 
 DATOS = Path(__file__).resolve().parent / "datos" / "pstack"
 MAQUINAS = ("mac", "mini", "pc")
-EXIGENCIA = ps.Exigencia(playbook=True, min_subagentes=1)
+EXIGENCIA = ps.Exigencia(min_subagentes=1)
 # Lo que `huella` ve con los registros que mide.sh trajo de rutas.toml de origin/main de la conf. Estas
 # rutas todavía no llevan los flags que hacen legible el registro de claude y opencode (los trae
 # conf-ejemplo/rutas.toml): con ellos la medición dio Cumple en la Mac. Cuando la conf los tenga,
@@ -693,12 +590,11 @@ NO_VERIFICABLE_POR_RUTA = {
     for mq in MAQUINAS
 }
 SIN_ENTRAR = {
-    (cli, mq): motivo for cli, f in ps.FORMATOS.items() for mq, motivo in f.sin_carga_en
+    ("muse", "mac"): "missing meta credentials: falta `muse login` en la Mac",
+    ("muse", "mini"): "missing meta credentials: falta `muse login` en la Mini",
 }
-
-
 SIN_TERMINAR = {("grok", "pc"): "pasó el tope de 900s"}
-SIN_CUMPLIR = {**NO_VERIFICABLE_POR_RUTA, **SIN_ENTRAR, **SIN_TERMINAR}
+SIN_REGISTRO = {**NO_VERIFICABLE_POR_RUTA, **SIN_ENTRAR, **SIN_TERMINAR}
 
 
 def _real(cli, maquina):
@@ -709,12 +605,15 @@ def _real(cli, maquina):
     )
 
 
-def _sin_carga(registro):
-    """El mismo registro real sin ningún evento que mencione poteto-mode."""
+def _sin_subagentes(registro, cli):
+    """El mismo registro real sin los eventos que lanzan un subagente."""
+    f = ps.FORMATOS[cli]
     return "\n".join(
-        json.dumps(o)
+        json.dumps(o, ensure_ascii=False)
         for o in ps._objetos(registro)
-        if "poteto-mode" not in json.dumps(o)
+        if not any(
+            n.lower().rsplit(".", 1)[-1] in f.subagente for n, _ in f.extrae(o)[0]
+        )
     )
 
 
@@ -736,29 +635,26 @@ class TestRegistrosReales(unittest.TestCase):
             shas.add(meta["conf_sha"])
         self.assertEqual(len(shas), 1, "los registros son de confs distintas")
 
-    def test_huella_ve_la_carga_el_playbook_y_el_subagente_en_cada_cli_y_maquina(self):
+    def test_huella_ve_el_subagente_en_cada_cli_y_maquina(self):
         for cli, mq in self._cada():
-            if (cli, mq) in SIN_CUMPLIR:
+            if (cli, mq) in SIN_REGISTRO:
                 continue
-            meta, registro = _real(cli, mq)
-            h = ps.huella(registro, cli, meta["raiz"])
+            _, registro = _real(cli, mq)
+            h = ps.huella(registro, cli)
             self.assertTrue(h.legible)
-            self.assertIn("poteto-mode", h.skills)
-            self.assertLess(h.poteto_en, ps.PUERTA_ACCIONES)
-            self.assertIn("investigation", h.playbooks)
             self.assertGreaterEqual(len(h.subagentes), 1)
             self.assertEqual(ps.juzga(h, EXIGENCIA), ps.Cumple())
 
-    def test_un_registro_real_sin_la_carga_da_falta(self):
+    def test_un_registro_real_sin_subagentes_da_falta(self):
         for cli, mq in self._cada():
-            if (cli, mq) in SIN_CUMPLIR:
+            if (cli, mq) in SIN_REGISTRO:
                 continue
-            meta, registro = _real(cli, mq)
-            h = ps.huella(_sin_carga(registro), cli, meta["raiz"])
+            _, registro = _real(cli, mq)
+            h = ps.huella(_sin_subagentes(registro, cli), cli)
             self.assertTrue(h.legible, "un lector roto no puede saltarse la prueba")
             v = ps.juzga(h, EXIGENCIA)
             self.assertIsInstance(v, ps.Falta)
-            self.assertIn("no cargó la skill poteto-mode", v.texto())
+            self.assertIn("lanzó 0 subagente(s)", v.texto())
 
     def test_un_cli_sin_flag_de_registro_en_su_ruta_no_se_puede_verificar_y_lo_dice(
         self,
@@ -768,18 +664,17 @@ class TestRegistrosReales(unittest.TestCase):
                 meta, registro = _real(cli, mq)
                 self.assertNotIn(FLAG_QUE_FALTA[cli], meta["plantilla"], motivo)
                 self.assertEqual(meta["rc"], 0)
-                h = ps.huella(registro, cli, meta["raiz"])
+                h = ps.huella(registro, cli)
                 self.assertFalse(h.legible, motivo)
                 self.assertEqual(ps.juzga(h, EXIGENCIA), ps.Cumple(verificable=False))
 
     def test_un_cli_que_no_entra_a_la_maquina_lo_dice_con_el_motivo(self):
-        self.assertEqual(set(SIN_ENTRAR), {("muse", "mac"), ("muse", "mini")})
         for (cli, mq), motivo in SIN_ENTRAR.items():
             with self.subTest(cli=cli, maquina=mq):
                 meta, registro = _real(cli, mq)
                 self.assertIn(motivo.split(":")[0], meta["registro_cola"] + registro)
                 self.assertNotEqual(meta["rc"], 0)
-                h = ps.huella(registro, cli, meta["raiz"])
+                h = ps.huella(registro, cli)
                 self.assertNotEqual(ps.juzga(h, EXIGENCIA), ps.Cumple())
 
     def test_un_cli_que_pasa_el_tope_queda_sin_registro_y_no_cumple(self):
@@ -787,37 +682,8 @@ class TestRegistrosReales(unittest.TestCase):
             with self.subTest(cli=cli, maquina=mq):
                 meta, registro = _real(cli, mq)
                 self.assertIn(motivo, meta["error"])
-                h = ps.huella(registro, cli, meta["raiz"])
+                h = ps.huella(registro, cli)
                 self.assertNotEqual(ps.juzga(h, EXIGENCIA), ps.Cumple())
-
-    def test_formatos_marca_al_cli_que_no_tiene_herramienta_de_skills(self):
-        for cli, f in ps.FORMATOS.items():
-            with self.subTest(cli=cli):
-                self.assertEqual(bool(f.sin_skill), not f.skill)
-        self.assertIn("read_file", ps.FORMATOS["grok"].sin_skill)
-
-    def test_formatos_marca_donde_un_cli_no_puede_cargar_skills_en_una_maquina(self):
-        marcados = {
-            (cli, mq) for cli, f in ps.FORMATOS.items() for mq, _ in f.sin_carga_en
-        }
-        self.assertEqual(marcados, {("muse", "mac"), ("muse", "mini")})
-        self.assertTrue(
-            all(
-                mq in MAQUINAS
-                for cli, f in ps.FORMATOS.items()
-                for mq, _ in f.sin_carga_en
-            )
-        )
-
-    def test_cargar_por_el_enlace_private_de_macos_cuenta(self):
-        raiz = "/var/folders/xx/T/copia"
-        for ruta in (
-            f"{raiz}/pstack/skills/poteto-mode/SKILL.md",
-            f"/private{raiz}/pstack/skills/poteto-mode/SKILL.md",
-        ):
-            with self.subTest(ruta=ruta):
-                h = ps.huella(claude(("Read", {"file_path": ruta})), "claude", raiz)
-                self.assertEqual(h.skills, ("poteto-mode",))
 
     def test_ningun_cli_medido_vio_el_intento_del_motor(self):
         for cli, mq in self._cada():
@@ -891,6 +757,14 @@ class TestMide(unittest.TestCase):
                 and not k.startswith("MOTOR_")
             }
             env.update(HOME=str(home), TMPDIR=str(tmpdir), **(extra_env or {}))
+            instr = base64.b64encode(
+                json.dumps(
+                    {
+                        cli: ps.instrucciones(ps.Exigencia(min_subagentes=2), cli)
+                        for cli in ps.FORMATOS
+                    }
+                ).encode()
+            ).decode()
             p = subprocess.run(
                 [
                     sys.executable,
@@ -898,9 +772,9 @@ class TestMide(unittest.TestCase):
                     "-",
                     str(conf),
                     "mac",
-                    "investigation",
                     str(tope),
                     base64.b64encode(rutas.encode()).decode(),
+                    instr,
                 ],
                 input=_heredoc(1),
                 capture_output=True,
@@ -1025,10 +899,8 @@ class TestMide(unittest.TestCase):
 
     def _grok_falso(self):
         return r"""
-raiz=$(grep -o 'copia fija `[^`]*`' "$2" | head -1 | cut -d'`' -f2)
 sid=s-$$; d="$HOME/.grok/sessions/x/$sid"; mkdir -p "$d"
-printf '{"tool_name":"read_file","args":{"path":"%s"}}\n' "$raiz/pstack/skills/poteto-mode/SKILL.md" "$raiz/pstack/skills/poteto-mode/playbooks/investigation.md" >"$d/updates.jsonl"
-echo '{"tool_name":"spawn_subagent","args":{"agent":"general-purpose"}}' >>"$d/updates.jsonl"
+printf '{"tool_name":"spawn_subagent","args":{"agent":"a"}}\n{"tool_name":"spawn_subagent","args":{"agent":"b"}}\n' >"$d/updates.jsonl"
 printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$sid"
 """
 
@@ -1092,8 +964,8 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
                 self.assertEqual(s["corridas"], [])
 
     def test_sin_las_rutas_en_el_argv_no_mide_con_las_de_la_conf(self):
-        # Sin argv[5] no hay medición: caer al rutas.toml de la conf fue la causa raíz del
-        # --rutas ilegible que medía en silencio con las rutas de producción.
+        # Sin las rutas en el argv no hay medición: caer al rutas.toml de la conf fue la causa
+        # raíz del --rutas ilegible que medía en silencio con las rutas de producción.
         import subprocess
         import sys
 
@@ -1106,7 +978,7 @@ printf '{\n  "text": "listo",\n  "sessionId": "%s",\n  "num_turns": 3\n}\n' "$si
             )
             (conf / "modelos.toml").write_text('[carriles]\ncodigo = ["sonnet"]\n')
             p = subprocess.run(
-                [sys.executable, "-I", "-", str(conf), "mac", "investigation", "60"],
+                [sys.executable, "-I", "-", str(conf), "mac", "60"],
                 input=_heredoc(1),
                 capture_output=True,
                 text=True,
@@ -1121,18 +993,17 @@ class TestLogMezclado(unittest.TestCase):
     """runwrap deja stdout y stderr juntos en log.txt: los avisos del CLI no rompen su registro."""
 
     def test_qwen_json_completo_con_avisos_antes_y_despues(self):
-        f, skill, leer, sub, _t, _c = CASOS["qwen"]
+        f, sub, cmd = CASOS["qwen"]
         arreglo = json.dumps(
-            [json.loads(x) for x in f(skill, leer, sub).splitlines()], indent=2
+            [json.loads(x) for x in f(sub, cmd).splitlines()], indent=2
         )
         for registro in (
             arreglo + "\n\nWarning: running headless with --yolo\n",
             "aviso previo\n" + arreglo + "\nWarning: yolo\n",
         ):
             with self.subTest(registro=registro[:20]):
-                h = ps.huella(registro, "qwen", RAIZ)
+                h = ps.huella(registro, "qwen")
                 self.assertTrue(h.legible)
-                self.assertEqual(h.skills, ("poteto-mode",))
                 self.assertEqual(len(h.subagentes), 1)
 
     def test_muse_exec_json_deja_solo_resultados_de_herramienta(self):
@@ -1146,36 +1017,21 @@ class TestLogMezclado(unittest.TestCase):
             }
 
         registro = jl(
-            resultado("read_file", f"Read text file `{SKILL}`.\n1|---"),
-            resultado("read_file", f"Read text file `{PLAYBOOK}`.\n1|# x"),
+            resultado("read_file", "Read text file `/x/README.md`.\n1|---"),
             resultado("subagent_spawn", '{"status":"accepted"}'),
         )
-        h = ps.huella(registro, "muse", RAIZ)
-        self.assertEqual(h.skills, ("poteto-mode",))
-        self.assertEqual(h.playbooks, ("docs",))
+        h = ps.huella(registro, "muse")
         self.assertEqual(len(h.subagentes), 1)
-        self.assertEqual(
-            ps.juzga(h, ps.Exigencia(playbook=True, min_subagentes=1)), ps.Cumple()
-        )
-
-    def test_muse_read_skill_de_otra_copia_no_cuenta_como_la_copia_fija(self):
-        otra = "/Users/dn/.agents/pstack-oficial/pstack/skills/poteto-mode/SKILL.md"
-        registro = muse(("read_skill", {"name": otra}))
-        self.assertEqual(ps.huella(registro, "muse", RAIZ).skills, ())
-        self.assertEqual(ps.huella(registro, "muse").skills, ("poteto-mode",))
+        self.assertEqual(ps.juzga(h, ps.Exigencia(min_subagentes=1)), ps.Cumple())
 
 
 FALSO_CLAUDE = r"""#!/bin/sh
 [ "$1" = --version ] && { echo 0; exit 0; }
 [ -n "$FALSO_ARGV" ] && echo "$*" >>"$FALSO_ARGV"
-for a; do p=$a; done
-brief=${p#Lee }; brief=${brief%% y ejec*}
-raiz=$(grep -o 'copia fija `[^`]*`' "$brief" | head -1 | cut -d'`' -f2)
 [ "$FALSO_MODO" = nada ] && { echo '{"type":"result","result":"listo"}'; exit 0; }
 tool() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"%s","input":%s}]}}\n' "$1" "$2"; }
-tool Skill '{"skill":"poteto-mode"}'
-tool Read "{\"file_path\":\"$raiz/pstack/skills/poteto-mode/playbooks/investigation.md\"}"
-tool Agent '{"subagent_type":"general-purpose"}'
+tool Agent '{"subagent_type":"general-purpose","description":"uno"}'
+tool Agent '{"subagent_type":"general-purpose","description":"dos"}'
 """
 
 # Cada CLI que mide.sh mide y no es claude sale de este falso: anota cómo lo lanzaron y muere,
@@ -1365,19 +1221,18 @@ class TestMideDePuntaAPunta(unittest.TestCase):
         self.assertEqual(lanzadas, [])
         self.assertEqual(lanzados, [])
 
-    def test_juzga_sale_distinto_de_cero_si_el_cli_no_cargo_nada(self):
+    def test_juzga_sale_distinto_de_cero_si_el_cli_no_lanza_subagentes(self):
         r = self._corre("nada")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("NO cumple", r.stderr)
         self.assertNotIn("Cumple en las tres máquinas", r.stdout)
 
 
-def _corrida(cli, registro, error="", raiz=RAIZ):
+def _corrida(cli, registro, error=""):
     return {
         "cli": cli,
         "registro": registro,
         "extras": [],
-        "raiz": raiz,
         "error": error,
     }
 
@@ -1394,8 +1249,8 @@ def _salida(maquina, corridas, carriles=("claude", "opencode"), error=""):
 
 
 def _cumple(cli):
-    f, skill, leer, sub, _todos, _cmd = CASOS[cli]
-    return f(skill, leer, sub)
+    f, sub, _cmd = CASOS[cli]
+    return f(sub, sub)
 
 
 class TestJuzgaDeMide(unittest.TestCase):
@@ -1509,15 +1364,15 @@ class TestJuzgaDeMide(unittest.TestCase):
     def test_el_registro_guardado_conserva_las_llamadas_aunque_recorte_los_textos(self):
         ns = {"__name__": "agrega"}
         exec(compile(_heredoc(2), "mide.sh:agrega", "exec"), ns)
-        f, skill, leer, sub, _t, _c = CASOS["qwen"]
-        arreglo = [json.loads(x) for x in f(skill, leer, sub).splitlines()]
+        f, sub, cmd = CASOS["qwen"]
+        arreglo = [json.loads(x) for x in f(sub, cmd).splitlines()]
         arreglo.append({"type": "user", "texto": "x" * 5000})
         crudo = json.dumps(arreglo) + "\n\nWarning: yolo\n"
         corto = ns["registro_corto"](crudo)
         self.assertLess(len(corto), len(crudo))
-        h = ps.huella(corto, "qwen", RAIZ)
-        self.assertEqual(h.skills, ("poteto-mode",))
+        h = ps.huella(corto, "qwen")
         self.assertEqual(len(h.subagentes), 1)
+        self.assertEqual(h.comandos, ("git status",))
 
     def test_el_primer_registro_legible_es_el_que_lee_el_motor(self):
         c = _corrida("claude", '{"type":"result","result":"listo"}')

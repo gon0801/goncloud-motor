@@ -29,7 +29,7 @@ def main() -> int:
     marca.parent.mkdir(parents=True, exist_ok=True)
     if modo.startswith(
         "pstack"
-    ):  # deja en el registro lo que hizo con poteto-mode (fake_log.py)
+    ):  # deja en el registro los subagentes que lanzó (fake_log.py)
         from fake_log import emite
 
         emite(modo, not marca.exists())

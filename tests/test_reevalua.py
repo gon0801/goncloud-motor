@@ -1234,7 +1234,7 @@ class BloqueadoTest(Banco):
         brief = d.fx._brief_implementar(
             plan,
             plan.block("A"),
-            m.StartAttempt("A", "implementar", "glm", 1, "", ()),
+            m.StartAttempt("A", "implementar", "glm", 1, "", (), False),
             self.tmp,
             RepoConf.parse(""),
         )

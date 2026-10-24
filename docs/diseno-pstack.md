@@ -46,16 +46,21 @@ pedirla en un plan grande.
   mergea PRs, solo commit y push; no hay pausas ni preguntas; desplegar es del motor) y un mapa por CLI.
 - `pstack.toml`: el commit fijo y la tabla `[exigencia]` por carril × papel (skill, playbook,
   subagentes mínimos, skills extra como `interrogate` para revisar en código).
-- `motor/pstack.py` (puro): `huella(log, formato)`, `juzga(huella, exigencia)`, `puerta(...)` (corta
-  en vivo si a la acción N no cargó poteto-mode) e `instrucciones(exigencia, cli)` (la sección "Cómo
-  trabajas" del encargo). La tabla `FORMATOS` dice cómo se ve cada acción en el registro de cada CLI,
-  con fixtures reales medidos.
+- `motor/guias.py` (puro): `guias(exigencia, cli, correccion)` decide qué archivos de la copia fija
+  lleva el encargo (el playbook de bug si el bloque es de bug o hubo una revisión no aprobada; el
+  `SKILL.md` de cada skill; el adaptador de Claude). `effects` los pone completos al final del
+  encargo, en «## Anexo: tus guías», y si falta uno el intento no se lanza.
+- `motor/pstack.py` (puro): `huella(log, formato)` y `juzga(huella, exigencia)`. El juez solo cuenta
+  lo que cualquier registro muestra igual: cuántos subagentes lanzó el agente (una llamada a la
+  herramienta de subagentes vale uno; en Kimi, `AgentSwarm` vale uno por elemento de `items`). Ya no
+  hay puerta en vivo ni se juzga qué leyó: las guías van en el encargo y el motor mide lo que el
+  agente hace. `instrucciones(exigencia, cli)` escribe la sección "Cómo trabajas" del encargo.
 - `effects`: materializa la copia por id de árbol (inmutable mientras dura un intento), pasa
   `{pstack}` y `{sesion}` a las rutas (`--plugin-dir`, `--skills-dir`, sesión fija para leer el
-  transcript correcto), escribe el encargo, y en `collect` juzga la huella: si falta algo, kind
-  `sin_pstack` con la lista en llano; cuenta como falla del modelo (relevo a las 2).
-- `runwrap`: aplica la puerta en vivo; pone en el PATH del agente shims de los CLIs de modelos que
-  dejan pasar la llamada contada (lugar en los topes, cuota de la cuenta, profundidad 1).
+  transcript correcto), escribe el encargo, y en `collect` juzga la huella: si faltan subagentes,
+  kind `sin_pstack` con el conteo en llano; cuenta como falla del modelo (relevo a las 2).
+- `runwrap`: pone en el PATH del agente shims de los CLIs de modelos que dejan pasar la llamada
+  contada (lugar en los topes, cuota de la cuenta, profundidad 1).
 
 ## Plan
 

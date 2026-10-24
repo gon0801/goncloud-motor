@@ -9,7 +9,7 @@ Modos (cada uno es una falla del catálogo):
   stdin           lee de la terminal antes de trabajar (como un prompt de permiso)
   cuelga          no hace nada y no muestra avance
   rompe_primero   la primera entrega rompe las pruebas automáticas; la siguiente lo arregla
-  pstack_*        trabaja normal y deja un registro con o sin poteto-mode (ver fake_log.py)
+  pstack_*        trabaja normal y deja un registro con N subagentes lanzados (ver fake_log.py)
   panel*          llama a `kimi` por el shim del motor y guarda lo que contestó (panel_anida: la llamada
                   intenta, desde dentro, llamar a otro CLI)
   repro_malo_primero / repro_roto_primero / sin_repro_primero
@@ -61,7 +61,7 @@ def main() -> int:
 
     if modo.startswith(
         "pstack"
-    ):  # deja en el registro lo que hizo con poteto-mode (fake_log.py)
+    ):  # deja en el registro los subagentes que lanzó (fake_log.py)
         from fake_log import emite
 
         emite(modo, primera)
