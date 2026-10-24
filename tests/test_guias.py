@@ -272,6 +272,16 @@ class GuiaFaltanteTest(unittest.TestCase):
                 self.assertFalse(self.fx.attempt_dir("demo", "A", role, 1).exists())
                 self.assertFalse((self.tmp / "home" / "intentos").exists())
 
+    def test_en_una_correccion_tampoco_se_toca_la_copia_si_falta_bug_fix(self):
+        os.remove(self.conf_dir / BUGFIX)
+        a = m.StartAttempt("A", "implementar", "sonnet", 1, "a" * 40, (), True)
+        with self.assertRaises(FileNotFoundError) as cm:
+            self.fx.start_attempt(parse_plan(PLAN), None, a)
+        self.assertIn(BUGFIX, str(cm.exception))
+        self.ws.prepara.assert_not_called()
+        self.ws.copia.assert_not_called()
+        self.assertFalse((self.tmp / "home" / "intentos").exists())
+
     def test_errores_pstack_nombra_cada_papel_y_carril_que_pide_la_guia_faltante(self):
         errores = ef.errores_pstack(self.conf_dir, load_conf(self.conf_dir))
         faltante = [e for e in errores if FEATURE in e]
