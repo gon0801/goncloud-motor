@@ -23,6 +23,20 @@ for senal in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
 def emitir(objeto):
     print(json.dumps(objeto), flush=True)
 
+def canales_de_error(stderr, stdout):
+    partes = [stderr]
+    for linea in stdout.splitlines():
+        bruto = linea.strip()
+        if not bruto.startswith("{"):
+            continue
+        try:
+            ev = json.loads(bruto)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") in ("error", "turn.failed"):
+            partes.append(bruto)
+    return "\n".join(partes).lower()
+
 entrada = json.loads(sys.stdin.readline())
 with tempfile.TemporaryDirectory(prefix="motor-sol-") as temporal:
     raiz = pathlib.Path(temporal)
@@ -52,13 +66,13 @@ with tempfile.TemporaryDirectory(prefix="motor-sol-") as temporal:
         "No escribas rutas del Mini, son inaccesibles desde este Mac.\n")
     proceso = None
     try:
-        with prompt.open() as fuente, (raiz / "codex.log").open("w+") as log:
+        with prompt.open() as fuente, (raiz / "codex.out").open("w+") as salida, (raiz / "codex.err").open("w+") as err:
             proceso = subprocess.Popen([
-                "/opt/homebrew/bin/codex", "exec", "--model", "gpt-5.6-sol",
+                "/opt/homebrew/bin/codex", "exec", "--json", "--model", "gpt-5.6-sol",
                 "-c", 'model_reasoning_effort="medium"', "--sandbox", "read-only",
                 "--skip-git-repo-check", "--output-schema", str(schema),
                 "--output-last-message", str(final), "-"],
-                cwd=checkout, stdin=fuente, stdout=log, stderr=subprocess.STDOUT,
+                cwd=checkout, stdin=fuente, stdout=salida, stderr=err,
                 start_new_session=True,
                 env={**os.environ, "PATH": "/opt/homebrew/bin:" + os.environ.get("PATH", "")})
             while proceso.poll() is None:
@@ -66,8 +80,9 @@ with tempfile.TemporaryDirectory(prefix="motor-sol-") as temporal:
                 if select.select([sys.stdin], [], [], 5)[0] and not os.read(0, 1):
                     raise RuntimeError("Se cerro la conexion SSH")
             if proceso.returncode:
-                log.seek(0)
-                fallo = log.read().lower()
+                err.seek(0)
+                salida.seek(0)
+                fallo = canales_de_error(err.read(), salida.read())
                 categoria = "desconocido"
                 patrones = {
                     "modelo_no_disponible": ("model is disabled", "model_not_found", "model is not supported", "not included in your", "does not have access to model"),
