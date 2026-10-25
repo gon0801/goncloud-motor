@@ -1389,6 +1389,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             if e.kind == terminal_kind
             and e.block == a.block
             and e.data.get("sha") == a.sha
+            and huella.vigente(e.data, h_insumo, h_maquina)
         ]
         if starteds:
             ultimo = starteds[-1]
