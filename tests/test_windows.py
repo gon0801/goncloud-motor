@@ -76,11 +76,14 @@ class WindowsTest(unittest.TestCase):
             **windows.kwargs_grupo(),
         )
         self.pids.append(p.pid)
-        proc = {"pid": p.pid, "boot_id": plataforma.boot_id()}
-        self.assertEqual(plataforma.estado_proc(proc), "vivo")
-        self.assertEqual(
-            plataforma.estado_proc({**proc, "boot_id": "otro-arranque"}), "corte"
-        )
+        # el reinicio se simula con MOTOR_BOOT_ID: una marca inventada de otra clase (p. ej.
+        # "otro-arranque" contra la fecha real de la PC) no cuenta como arranque distinto
+        with mock.patch.dict(os.environ, {"MOTOR_BOOT_ID": "arranque-1"}):
+            proc = {"pid": p.pid, "boot_id": plataforma.boot_id()}
+            self.assertEqual(plataforma.estado_proc(proc), "vivo")
+            os.environ["MOTOR_BOOT_ID"] = "arranque-2"
+            self.assertEqual(plataforma.estado_proc(proc), "corte")
+            os.environ["MOTOR_BOOT_ID"] = "arranque-1"
         windows.matar_grupo(p)
         self.assertTrue(self._esperar(lambda: plataforma.estado_proc(proc) == "muerto"))
 
