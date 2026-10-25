@@ -25,10 +25,12 @@ Formato (compatible con las tablas de Orbit, más campos por bloque):
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 
 LANES = ("fast", "gate", "release")
 HUMAN_KINDS = ("login", "2fa", "captcha", "pago")
+PRUEBAS = ("dinero", "datos", "instala", "falla")
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ class Block:
         str, ...
     ] = ()  # checks que el plan exige además de la protección de la rama
     tipo: str = ""  # "bug" si el bloque arregla un bug
+    pruebas: str = ""  # dinero | datos | instala | falla; vacío = sin marca
 
     @property
     def es_bug(self) -> bool:
@@ -107,6 +110,7 @@ class Plan:
                 "human": b.human.__dict__ if b.human else None,
                 "checks": list(b.checks),
                 "tipo": b.tipo,
+                "pruebas": b.pruebas,
             }
 
         return {
@@ -135,6 +139,7 @@ class Plan:
                     human=Human(**b["human"]) if b["human"] else None,
                     checks=tuple(b.get("checks", ())),
                     tipo=b.get("tipo", ""),
+                    pruebas=b.get("pruebas", ""),
                 )
             )
         return Plan(
@@ -175,13 +180,17 @@ def cambios_de(antes: Block, ahora: Block) -> list[Cambio]:
     out += [Cambio("fila", f"se quitó la fila {i}") for i in viejas if i not in nuevas]
     if antes.titulo != ahora.titulo:
         out.append(Cambio("bloque", f"lo que entrega ahora es: {ahora.titulo}"))
-    if (antes.lane, antes.release, antes.checks) != (
+    if (antes.lane, antes.release, antes.checks, antes.pruebas) != (
         ahora.lane,
         ahora.release,
         ahora.checks,
+        ahora.pruebas,
     ):
         out.append(
-            Cambio("bloque", "cambió el carril, la receta de despliegue o los checks")
+            Cambio(
+                "bloque",
+                "cambió el carril, la receta de despliegue, los checks o la marca de pruebas",
+            )
         )
     if antes.prueba_real != ahora.prueba_real:
         out.append(
@@ -269,6 +278,27 @@ def _celdas(linea: str) -> list[str]:
 def _id_malo(valor: str) -> bool:
     """Los ids acaban en nombres de rama y de carpeta: nada que git o el disco lean distinto."""
     return not _ID.match(valor) or valor.endswith(".lock") or ".." in valor
+
+
+def _entra_por_ssh(comando: str) -> bool:
+    """El ejecutable de algún tramo es `ssh`, sin distinguir mayúsculas ni extensión de Windows."""
+    for tramo in re.split(r"&&|\|\||[;|]", comando):
+        try:
+            partes = shlex.split(tramo)
+        except ValueError:
+            partes = tramo.split()
+        for p in partes:
+            if "=" in p and not p.startswith("="):
+                continue
+            prog = p.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            for ext in (".exe", ".bat", ".cmd", ".com"):
+                if prog.endswith(ext):
+                    prog = prog[: -len(ext)]
+                    break
+            if prog == "ssh":
+                return True
+            break
+    return False
 
 
 def _modelos(valor: str) -> tuple[str, ...]:
@@ -409,6 +439,19 @@ def parse_plan(
                 release = Release(
                     partes["desplegar"], partes["checklist"], partes["rollback"]
                 )
+        if lane == "fast" and release is not None:
+            errores.append(
+                f"bloque {d.id}: un bloque fast no lleva 'despliegue:'"
+            )
+        pruebas = f.get("pruebas", "").strip().lower()
+        if pruebas and pruebas not in PRUEBAS:
+            errores.append(
+                f"bloque {d.id}: pruebas debe ser una de {PRUEBAS}, no {pruebas!r}"
+            )
+        if lane == "fast" and _entra_por_ssh(f.get("prueba-real", "")):
+            errores.append(
+                f"bloque {d.id}: un bloque fast no lleva 'prueba-real' que entre por ssh a otra máquina"
+            )
         repo = f.get("repo", repo_plan)
         if not repo:
             errores.append(
@@ -452,6 +495,7 @@ def parse_plan(
                     x.strip() for x in f.get("checks", "").split(",") if x.strip()
                 ),
                 tipo=f.get("tipo", "").strip().lower(),
+                pruebas=pruebas,
             )
         )
 

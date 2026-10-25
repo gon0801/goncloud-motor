@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -45,6 +46,9 @@ class ChecksVerdict:
     )
     corridas: tuple = ()  # {"nombre", "run_id", "url", "status", "conclusion"} de cada check run
     corridas_fallidas: tuple = ()  # las corridas terminadas en rojo, con su url y run_id
+
+
+_MARCA_SHA = re.compile(r"ai-review:sha=([0-9a-fA-F]{7,64})")
 
 
 def _run_id(r: dict) -> str:
@@ -100,9 +104,10 @@ def veredicto(
         efectivas = [
             r for r in runs if not _salto_del_borrador(r, listo_desde, relanzadas_set)
         ]
-        corriendo = any(r.get("status") != "completed" for r in efectivas) or any(
-            e.get("state") == "pending" for e in estados
-        )
+        corriendo = any(
+            r.get("status") != "completed" or r.get("conclusion") is None
+            for r in efectivas
+        ) or any(e.get("state") == "pending" for e in estados)
         hay = bool(efectivas or estados)
         fallas_sin = tuple(
             dict.fromkeys(
@@ -135,7 +140,9 @@ def veredicto(
                 fallas.append(c)
             else:
                 faltan.append(c)
-        elif any(r["status"] != "completed" for r in partes):
+        elif any(
+            r["status"] != "completed" or r.get("conclusion") is None for r in partes
+        ):
             faltan.append(c)
         elif any(
             r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
@@ -148,7 +155,10 @@ def veredicto(
         faltan=tuple(faltan),
         fallas=tuple(fallas),
         github_termino=bool(runs or estados)
-        and all(r["status"] == "completed" for r in runs)
+        and all(
+            r["status"] == "completed" and r.get("conclusion") is not None
+            for r in runs
+        )
         and all(e.get("state") != "pending" for e in estados),
         corridas=corridas,
         corridas_fallidas=fallidas,
@@ -232,6 +242,12 @@ class GitHubPort(Protocol):
     def relanzar_corrida(self, repo: str, run_id: str) -> None: ...
     def relanzar_fallidas(self, repo: str, run_id: str) -> None: ...
     def log_fallido(self, repo: str, run_id: str) -> str: ...
+    def comentarios_deepseek(
+        self, repo: str, numero: int, sha: str = ""
+    ) -> list[dict]: ...
+    def disparar_workflow(
+        self, repo: str, workflow: str, inputs: dict
+    ) -> None: ...
 
 
 # --------------------------------------------------------------------------- real
@@ -456,6 +472,48 @@ class GhGitHub:
             return ""
         return "\n".join(texto.splitlines()[-80:])
 
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        """Comentarios de DeepSeek (ai-review) ya publicados en ese PR, para ese SHA si lo nombran."""
+        n = self.nombre(repo)
+        out = []
+        for ruta in (f"repos/{n}/issues/{numero}/comments", f"repos/{n}/pulls/{numero}/comments"):
+            try:
+                paginas = self._paginas(
+                    self._gh("api", ruta + "?per_page=100", "--paginate")
+                )
+            except RuntimeError:
+                continue
+            for pagina in paginas:
+                items = pagina if isinstance(pagina, list) else pagina.get("comments", []) if isinstance(pagina, dict) else []
+                for c in items if isinstance(items, list) else []:
+                    if not isinstance(c, dict):
+                        continue
+                    body = str(c.get("body") or "")
+                    autor = str((c.get("user") or {}).get("login") or "")
+                    if not (
+                        "deepseek" in body.lower()
+                        or "deepseek" in autor.lower()
+                        or "ai-review" in body.lower()
+                    ):
+                        continue
+                    marca = _MARCA_SHA.search(body)
+                    real = (
+                        marca.group(1)
+                        if marca
+                        else str(c.get("commit_id") or c.get("original_commit_id") or "")
+                    )
+                    if sha and real != sha:
+                        continue
+                    out.append({"texto": body, "autor": autor, "sha": real})
+        return out
+
+    def disparar_workflow(self, repo, workflow, inputs):
+        n = self.nombre(repo)
+        args = ["workflow", "run", workflow, "-R", n]
+        for k, v in inputs.items():
+            args += ["-f", f"{k}={v}"]
+        self._gh(*args)
+
     def _listo_desde(self, n: str, numero: int) -> str:
         """Hora (de GitHub) en que el PR dejó el borrador por última vez; "" si nunca fue borrador."""
         horas = self._gh(
@@ -667,6 +725,33 @@ class FakeGitHub:
 
     def log_fallido(self, repo, run_id) -> str:
         return ""
+
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        s = self._cargar()
+        pr = self._pr(s, repo, numero)
+        out = []
+        for clave in ("comentarios_deepseek", "comentarios", "deepseek"):
+            for c in pr.get(clave, []) or []:
+                if isinstance(c, str):
+                    out.append({"texto": c, "autor": "DeepSeek", "sha": sha})
+                    continue
+                texto = str(c.get("texto") or c.get("body") or c.get("text") or "")
+                if not texto:
+                    continue
+                csha = str(c.get("sha") or c.get("commit_id") or "")
+                if sha and csha and csha != sha:
+                    continue
+                out.append(
+                    {"texto": texto, "autor": str(c.get("autor") or "DeepSeek"), "sha": csha or sha}
+                )
+        return out
+
+    def disparar_workflow(self, repo, workflow, inputs):
+        s = self._cargar()
+        s.setdefault("ai_review", []).append(
+            {"repo": repo, "workflow": workflow, "inputs": dict(inputs)}
+        )
+        self._guardar(s)
 
     def merge(self, repo, numero, sha, metodo, mensaje):
         s = self._cargar()

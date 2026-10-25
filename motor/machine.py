@@ -128,11 +128,16 @@ class Attempt:
     cambios: list[str] = field(
         default_factory=list
     )  # notas y cambios del plan que llegaron mientras corría: el motor lo detiene
+    exento_maquina: bool = False  # terminó en sin_cambios justo tras una falla de máquina: no gasta escalera
+    plan_cambiado: bool = (
+        False  # este intento responde a una revision del plan anterior
+    )
 
 
 @dataclass
 class BlockView:
     block: Block
+    revision_plan: int = 0
     attempts: list[Attempt] = field(default_factory=list)
     verified: dict[str, dict] = field(default_factory=dict)
     pr: dict | None = None
@@ -165,6 +170,9 @@ class BlockView:
         default_factory=set
     )  # SHAs cuya verificación ya no vale (cambió su Acepta o la máquina) y no se ha repetido
     checks_ts: dict[str, float] = field(default_factory=dict)
+    verified_ts: dict[str, float] = field(default_factory=dict)
+    nota_ts: float = 0.0
+    pruebas_sin_marca: tuple[str, ...] = ()
     relanzadas_saltadas: set[str] = field(default_factory=set)
     politica_bloquea: dict[str, dict] = field(default_factory=dict)
     temporales: dict[str, tuple[float, float]] = field(
@@ -203,7 +211,22 @@ class BlockView:
 
     def last_implement_outcome(self) -> dict | None:
         imp = self.implement_attempts()
-        return imp[-1].ended if imp else None
+        if not imp:
+            return None
+        a = imp[-1]
+        if self.reentrega_por_plan(a):
+            return {**a.ended, "kind": "entregado", "sha": a.sha}
+        return a.ended
+
+    def reentrega_por_plan(self, a: Attempt) -> bool:
+        """El plan corregido permite revisar otra vez la entrega conocida, sin exigir otro commit."""
+        return bool(
+            a.plan_cambiado
+            and a.ended
+            and a.ended.get("kind") == "sin_cambios"
+            and a.sha
+            and a.sha == self.head()
+        )
 
     def entrega_ts(self, sha: str) -> float:
         return max(
@@ -211,14 +234,20 @@ class BlockView:
                 a.ended_at
                 for a in self.implement_attempts()
                 if a.ended
-                and a.ended.get("kind") == "entregado"
-                and a.ended.get("sha") == sha
+                and (
+                    (a.ended.get("kind") == "entregado" and a.ended.get("sha") == sha)
+                    or (self.reentrega_por_plan(a) and a.sha == sha)
+                )
             ),
             default=0.0,
         )
 
     def review_for(self, sha: str) -> dict | None:
-        rs = [r for r in self.reviews if r["sha"] == sha]
+        rs = [
+            r
+            for r in self.reviews
+            if r["sha"] == sha and r.get("revision_plan", 0) == self.revision_plan
+        ]
         return rs[-1] if rs else None
 
     def merged_sha(self) -> str:
@@ -230,7 +259,11 @@ class BlockView:
         if r is None:
             return None
         nuevas = self.implement_attempts()[r["desde"] :]
-        if any(a.ended and a.ended.get("kind") == "entregado" for a in nuevas):
+        if any(
+            a.ended
+            and (a.ended.get("kind") == "entregado" or self.reentrega_por_plan(a))
+            for a in nuevas
+        ):
             return None
         return r
 
@@ -264,6 +297,7 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
     limpio = any(e.kind == "Limpiado" for e in events)
     version, cargas, previo = 0, 0, None
     huerfanos: dict[tuple[str, int, str], Attempt] = {}
+    ultimos: dict[tuple[str, str], dict] = {}  # (bloque, campo) -> último resultado visto hasta aquí
     crudo_merged: dict[str, str] = {}  # bloque -> SHA del último Merged
     crudo_probados: dict[
         str, set[str]
@@ -284,6 +318,8 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                     continue
                 todos = cambios_de(antes, b)
                 cambios = [c for c in todos if c.tipo != "bloque"]
+                if cambios:
+                    blocks[b.id].revision_plan += 1
                 hecho = crudo_merged.get(b.id, "") in crudo_probados.get(b.id, ())
                 if cambios and hecho:
                     blocks[b.id].reabierto = {
@@ -319,6 +355,10 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         elif bv is None:
             continue
         elif e.kind == "AttemptStarted":
+            ultima_revision = next(
+                (r for r in reversed(bv.reviews) if r["sha"] == d.get("sha", "")),
+                None,
+            )
             bv.attempts.append(
                 Attempt(
                     n=d["n"],
@@ -328,12 +368,52 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                     proc=d.get("proc") or {},
                     dir=d["dir"],
                     sha=d.get("sha", ""),
+                    plan_cambiado=bool(
+                        d["role"] == "implementar"
+                        and ultima_revision is not None
+                        and ultima_revision.get("revision_plan", 0) < bv.revision_plan
+                    ),
                 )
             )
         elif e.kind == "AttemptEnded":
             for a in bv.attempts:
                 if a.n == d["n"] and a.role == d["role"] and a.ended is None:
                     a.ended, a.ended_at = d["outcome"], e.ts
+                    if (
+                        a.role == "implementar"
+                        and d["outcome"].get("kind") == "sin_cambios"
+                    ):
+                        head = bv.head()
+                        v = ultimos.get((e.block, "verified"))
+                        p = ultimos.get((e.block, "proved"))
+                        dep = ultimos.get((e.block, "deployed"))
+                        mg = crudo_merged.get(e.block, "")
+                        a.exento_maquina = bool(
+                            (v and v.get("sha") == head and _es_falla_maquina(v))
+                            or (
+                                mg
+                                and mg == head
+                                and p
+                                and p.get("sha") == mg
+                                and not p.get("ok")
+                                and p.get("codigo") != 75
+                            )
+                            or (
+                                mg
+                                and mg == head
+                                and dep
+                                and dep.get("sha") == mg
+                                and not dep.get("ok")
+                                and dep.get("codigo") != 75
+                            )
+                        )
+                    if (
+                        a.role == "implementar"
+                        and d["outcome"].get("kind") == "entregado"
+                    ):
+                        bv.pruebas_sin_marca = tuple(
+                            d["outcome"].get("pruebas_sin_marca") or ()
+                        )
                     if a.role == "implementar":
                         bv.bloqueo = (
                             {
@@ -346,13 +426,14 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                             else None
                         )
         elif e.kind in RESULTADOS:
+            ultimos[(e.block, RESULTADOS[e.kind])] = d
             resultados.append((bv, e))
             if e.kind == "Proved" and d.get("ok"):
                 crudo_probados.setdefault(e.block, set()).add(d["sha"])
         elif e.kind == "PrOpened":
             bv.pr = d
         elif e.kind == "Reviewed":
-            bv.reviews.append(d)
+            bv.reviews.append({**d, "revision_plan": bv.revision_plan})
         elif e.kind == "MarkedReady":
             bv.ready.add(d["sha"])
             bv.listo_desde.setdefault(d["sha"], e.ts)
@@ -400,6 +481,7 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         elif e.kind == "Note":
             bv.notes.append(d["texto"])
             bv.hecho_ts = e.ts
+            bv.nota_ts = e.ts
             for a in bv.attempts:
                 if a.role == "implementar" and a.ended is None:
                     a.cambios.append(f"llegó una nota: {d['texto']}")
@@ -413,6 +495,8 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         campo = RESULTADOS[e.kind]
         if huella.vigente(e.data, huella.insumo_de(campo, bv.block, repos), maquina):
             getattr(bv, campo)[e.data["sha"]] = e.data
+            if campo == "verified":
+                bv.verified_ts[e.data["sha"]] = e.ts
             bv.hecho_ts = max(bv.hecho_ts, e.ts)
             clave_t = f"{campo}:{e.data['sha']}"
             if e.data.get("codigo") == 75 and not e.data.get("ok"):
@@ -499,15 +583,23 @@ def estado(snap: Snapshot, bid: str) -> Estado:
             )
         return Estado.PROBAR
     last = bv.last_implement_outcome()
-    if not head or (last and last.get("kind") != "entregado"):
-        return Estado.ARREGLAR
-    v = bv.verified.get(head)
+    v = bv.verified.get(head) if head else None
+    if not (v and v.get("ok")):
+        if not head or (last and last.get("kind") != "entregado"):
+            return Estado.ARREGLAR
     if v is None:
         return Estado.VERIFICAR
     if not v["ok"]:
         return Estado.ARREGLAR
     if bv.pr is None:
         return Estado.PR
+    if b.lane == "fast":
+        c = bv.checks.get(head)
+        if c is not None and not c.get("green"):
+            if bv.entrega_ts(head) > bv.checks_ts.get(head, 0.0):
+                return Estado.MERGE  # reentrega del mismo SHA: se vuelve a intentar el merge
+            return Estado.ARREGLAR  # el merge fue rechazado: fast salta los checks, no este arreglo
+        return Estado.MERGE
     r = bv.review_for(head)
     if r is None:
         return Estado.REVISAR
@@ -648,6 +740,15 @@ def merge_gate(bv: BlockView) -> MergeTicket | str:
         return "la entrega no está verificada"
     if bv.pr is None:
         return "sin PR"
+    if bv.block.lane == "fast":
+        c = bv.checks.get(head)
+        if (
+            c is not None
+            and not c.get("green")
+            and bv.entrega_ts(head) <= bv.checks_ts.get(head, 0.0)
+        ):
+            return "el merge fue rechazado sobre ese SHA"
+        return MergeTicket(block=bv.block.id, sha=head, pr=int(bv.pr["numero"]))
     r = bv.review_for(head)
     if r is None or not _aprobado(r):
         return "sin veredicto APROBADO sobre ese SHA"
@@ -761,11 +862,48 @@ def _elige(
     return None
 
 
+_PATRONES_MAQUINA = (
+    "command not found",
+    "is not recognized",
+    "No module named",
+    "ModuleNotFoundError",
+    "cannot import name 'tomllib'",
+    "Could not resolve host",
+    "Permission denied (publickey)",
+)
+
+REVERIFICA_CADA_S = 600.0
+
+
+def _es_falla_maquina(d: dict | None) -> bool:
+    """El resultado falló porque no puede correr en esta máquina, no por el código."""
+    if not d or d.get("ok"):
+        return False
+    if d.get("falta_comando"):
+        return True
+    if d.get("codigo") in (126, 127):
+        return True
+    detalle = str(d.get("detalle", ""))
+    return any(p in detalle for p in _PATRONES_MAQUINA)
+
+
+def _toca_reverificar(bv: BlockView, now: float) -> bool:
+    """Mismo SHA, sin agente: al llegar una nota o cada 10 minutos si la previa ya puede pasar."""
+    head = bv.head()
+    v = bv.verified.get(head) if head else None
+    if not _es_falla_maquina(v):
+        return False
+    ts = bv.verified_ts.get(head, 0.0)
+    return bv.nota_ts > ts or (ts > 0 and now - ts >= REVERIFICA_CADA_S)
+
+
 def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
     """¿Este intento terminado gasta la escalera del modelo? No: entregar, un apagón, lo que resuelve el
     reloj (cuota, freno, sesión), las fallas pasajeras (tienen su pausa) y un `sin_cambios` cuando el
     bloque falló por algo que el agente no controla (comando que falta, prueba real, despliegue)."""
     kind = a.ended.get("kind", "")
+    if bv.reentrega_por_plan(a):
+        return False
     if kind in ("entregado", "veredicto") or kind in NO_ES_FALLA:
         return False
     if (
@@ -773,7 +911,9 @@ def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
         or relevo.desde_kind(kind) in relevo.LAS_RESUELVE_EL_RELOJ
     ):
         return False
-    return not (kind == "sin_cambios" and _fuera_de_control(bv))
+    return not (
+        kind == "sin_cambios" and (a.exento_maquina or _fuera_de_control(bv))
+    )
 
 
 def espera_hecho(bv: BlockView, role: str) -> bool:
@@ -795,7 +935,7 @@ def espera_hecho(bv: BlockView, role: str) -> bool:
 def _fuera_de_control(bv: BlockView) -> bool:
     head, merged = bv.head(), bv.merged_sha()
     return bool(
-        (bv.verified.get(head) or {}).get("falta_comando")
+        _es_falla_maquina(bv.verified.get(head))
         or (
             merged == head
             and merged in bv.proved
@@ -823,6 +963,14 @@ def faltan_comandos(bv: BlockView) -> tuple[str, list[str]]:
     for paso, r in pasos:
         if r and not r.get("ok") and r.get("falta_comando"):
             return paso, list(r["falta_comando"])
+        if r and _es_falla_maquina(r):
+            detalle = str(r.get("detalle", ""))
+            encontrados = [
+                x
+                for x in ("tomllib",)
+                if x in detalle
+            ]
+            return paso, encontrados or ["la máquina"]
     return "", []
 
 
@@ -986,7 +1134,9 @@ def decide(
             if n.key not in bv.notices | snap.plan_notices | ya:
                 ya.add(n.key)
                 acciones.append(n)
-        if e in (Estado.ARREGLAR, Estado.REVISAR) and not (
+        if e is Estado.ARREGLAR and _toca_reverificar(bv, now):
+            acciones.append(Verify(bid, bv.head()))
+        elif e in (Estado.ARREGLAR, Estado.REVISAR) and not (
             e is Estado.ARREGLAR and espera_cambio(bv)
         ):
             role = "implementar" if e is Estado.ARREGLAR else "revisar"
@@ -1040,7 +1190,15 @@ def decide(
                         bid,
                         "entregado",
                         (
-                            ("aviso", b.aviso),
+                            (
+                                "aviso",
+                                b.aviso
+                                + (
+                                    ". Agregó archivos de prueba sin la marca de pruebas"
+                                    if bv.pruebas_sin_marca
+                                    else ""
+                                ),
+                            ),
                             ("n", str(hechos)),
                             ("total", str(len(snap.blocks))),
                             (
