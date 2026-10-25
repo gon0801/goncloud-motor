@@ -23,6 +23,17 @@ from motor.plan import parse_plan  # noqa: E402
 
 
 class CierreTrasResultadoTest(unittest.TestCase):
+    def test_cursor_sin_sesion_conserva_el_error_del_proveedor(self):
+        from motor.fallas import clasifica
+
+        o, _, _ = self.corre_en(
+            "import sys\n"
+            "sys.stderr.write(\"Error: Authentication required. Please run 'agent login' first.\\n\")\n"
+            "sys.exit(1)\n"
+        )
+        fallo = clasifica("cursor-agent", o["tail"], o.get("stderr_tail", ""))
+        self.assertEqual(fallo["kind"], "auth")
+
     def corre(
         self, script: str, sin_avance: float = 30, extra: tuple[str, ...] = ()
     ) -> tuple[dict, float]:
