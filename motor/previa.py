@@ -6,6 +6,7 @@ puede correr en esta máquina. Las `prueba-real` no se corren: pueden tocar máq
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shlex
@@ -115,6 +116,29 @@ def _primer_programa(comando: str) -> str:
     return ""
 
 
+@contextlib.contextmanager
+def _entorno_proceso(maquina: Maquina | None):
+    """El entorno de la máquina también para git: alias y `path_extra` (como en el daemon)."""
+    if maquina is None:
+        yield
+        return
+    guardado = {k: os.environ.get(k) for k, _ in maquina.env}
+    guardado["PATH"] = os.environ.get("PATH")
+    os.environ.update(dict(maquina.env))
+    if maquina.path_extra:
+        os.environ["PATH"] = os.pathsep.join(
+            [*maquina.path_extra, os.environ.get("PATH", "")]
+        )
+    try:
+        yield
+    finally:
+        for k, v in guardado.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def corre_previa(
     plan: Plan, home: Path | None = None, maquina: Maquina | None = None
 ) -> list[str]:
@@ -124,6 +148,13 @@ def corre_previa(
             maquina = load_maquina(home)
         except Exception:  # noqa: BLE001 - sin máquina legible se usa el entorno actual
             maquina = None
+    with _entorno_proceso(maquina):
+        return _corre_previa(plan, home, maquina)
+
+
+def _corre_previa(
+    plan: Plan, home: Path | None, maquina: Maquina | None
+) -> list[str]:
     errores: list[str] = []
     with tempfile.TemporaryDirectory(prefix="motor-previa-") as td:
         base_home = home or Path(td)
