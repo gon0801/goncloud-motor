@@ -11,7 +11,8 @@ from unittest.mock import patch
 from motor import huella
 from motor import machine as m
 from motor.effects import Effects
-from motor.formato import puede_volver
+from motor.formato import activa, puede_volver
+from motor.github import Borrador
 from motor.plan import parse_plan
 from motor.store import Store
 from tests.test_puro import PLAN
@@ -232,6 +233,24 @@ class RecuperaEfectosTest(unittest.TestCase):
         )
         self.assertEqual(git("-C", str(instalado), "rev-parse", "HEAD"), viejo)
         self.assertTrue((self.home / "herramientas/sol_remoto.py").exists())
+
+    def test_reintento_de_merge_cortado_no_autoriza_escritor_anterior(self):
+        activa(self.home)
+        fx = Effects(NS(store=self.store, gh=NS(marcar_listo=lambda *a: None)))
+        fx._ya_mergeado = lambda *a: False
+        snap = m.fold(self.plan, [])
+        pedido = m.Merge(m.MergeTicket("A", SHA, 7))
+        fx.cx.gh.merge = lambda *a: (_ for _ in ()).throw(
+            Borrador("Pull Request is still a draft")
+        )
+        fx.merge(self.plan, snap, pedido)
+        fx.cx.gh.merge = lambda *a: (_ for _ in ()).throw(
+            SystemExit("corte durante reintento")
+        )
+        with self.assertRaises(SystemExit):
+            fx.merge(self.plan, snap, pedido)
+        permite, motivo = puede_volver(self.home, self.store.events())
+        self.assertFalse(permite, motivo)
 
 
 if __name__ == "__main__":

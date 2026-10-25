@@ -2253,6 +2253,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             self._avisa_incierto(plan, snap, t.block, ident)
             return
         self._confirma_intencion(plan, t.block, "merge", f"{t.sha}:{t.pr}", f"merge:{t.sha}:{t.pr}")
+        if ultimo == "no_aplicado":
+            self._efecto(plan, t.block, ident, "incierto", "reintento reservado tras no_aplicado")
         try:
             pr = self.cx.gh.merge(
                 block.repo,
