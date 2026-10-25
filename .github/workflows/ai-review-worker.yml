@@ -52,8 +52,9 @@ jobs:
         with:
           # Historia completa: con profundidad 1 la base del PR queda como raíz
           # superficial y git merge-base falla en cuanto main avanza tras el fork.
+          # Repo privado: las credenciales quedan para los git fetch de abajo.
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
       - name: checkout del CLI confiable del repo central
         uses: actions/checkout@v4
         with:
