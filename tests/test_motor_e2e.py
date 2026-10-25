@@ -453,19 +453,22 @@ class TestEntregaSegura(Banco):
         r = motor(
             "entrega", str(malo), "--home", str(self.home), "--json", "--espera", "0"
         )
-        cmd = json.loads(r.stdout)["cmd_id"]
+        respuesta = json.loads(r.stdout)
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(respuesta["estado"], "rechazado")
+        self.assertTrue(respuesta["errores"])
+        self.assertFalse(list((self.home / "inbox").glob("*.json")))
         d = Daemon(self.home)
         d.ingest_inbox()
         self.assertEqual(
             d.plans(), [], "un plan con un repo inexistente no queda cargado"
         )
-        recibo = [
+        cargas = [
             e
             for e in Store(self.home / "motor.db").events()
-            if e.kind == "CommandReceived"
+            if e.kind == "PlanLoaded"
         ]
-        self.assertEqual(recibo[0].data["cmd_id"], cmd)
-        self.assertTrue(recibo[0].data["resultado"].startswith("rechazado"))
+        self.assertFalse(cargas)
 
     def test_hecho_antes_de_tiempo_se_rechaza_y_un_efecto_que_revienta_no_tumba_al_motor(
         self,
