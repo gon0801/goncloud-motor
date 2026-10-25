@@ -1353,11 +1353,12 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             and e.block == a.block
             and e.data.get("sha") == a.sha
         ]
+        eventos = self.cx.store.events(plan.id)
         reverificar = False
         if kind == "verify":
             previos = [
                 e
-                for e in self.cx.store.events(plan.id)
+                for e in eventos
                 if e.kind == "Verified"
                 and e.block == a.block
                 and e.data.get("sha") == a.sha
@@ -1366,7 +1367,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 ultima_nota = max(
                     (
                         e.ts
-                        for e in self.cx.store.events(plan.id)
+                        for e in eventos
                         if e.kind == "Note" and e.block == a.block
                     ),
                     default=0.0,
@@ -1374,8 +1375,16 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 reverificar = ultima_nota > previos[-1].ts or (
                     time.time() - previos[-1].ts >= m.REVERIFICA_CADA_S
                 )
-        if starteds and not reverificar:
+        terminales = [
+            e
+            for e in eventos
+            if e.kind == terminal_kind
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+        ]
+        if starteds:
             ultimo = starteds[-1]
+            pendiente = not terminales or ultimo.id > terminales[-1].id
             d = Path(ultimo.data["dir"]) if ultimo.data.get("dir") else None
             if d is not None:
                 oc = d / "outcome.json"
@@ -1385,8 +1394,11 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         oc.replace(d / "outcome-error.json")
                         raise RuntimeError(str(payload["error"]))
                     datos = payload.get("data") or {}
+                    if not pendiente and not reverificar:
+                        return
                     if (
-                        datos.get("sha") == a.sha
+                        pendiente
+                        and datos.get("sha") == a.sha
                         and datos.get("huella", h_insumo) == h_insumo
                         and datos.get("huella_maquina", h_maquina) == h_maquina
                     ):
@@ -1444,6 +1456,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         if anotado or datos.get("codigo") != 75:
                             return
                 else:
+                    if not pendiente and not reverificar:
+                        return
                     proc = ultimo.data.get("proc") or {}
                     if proc and plataforma.estado_proc(proc) == "vivo":
                         return
@@ -1530,6 +1544,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             block.repo, a.sha, self.cx.home / "tmp" / f"verifica-{plan.id}-{a.block}"
         )
         fallas, faltan = [], []
+        codigos: list[int] = []
         h_insumo, h_maquina = self._huellas("verified", block, snap)
         tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
         for r in block.rows:
@@ -1542,16 +1557,19 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     bash=self.cx.maquina.bash,
                 )
                 if p.returncode != 0:
+                    codigos.append(p.returncode)
                     fallas.append(
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
                     )
                     from .previa import faltantes_de_salida
 
                     faltan += faltantes_de_salida(p.stdout + p.stderr, p.returncode)
+        codigo = next((c for c in codigos if c in (126, 127)), codigos[0] if codigos else 0)
         return {
             "sha": a.sha,
             "ok": not fallas,
             "detalle": "\n".join(fallas),
+            "codigo": codigo,
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,
@@ -2060,7 +2078,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     if p.returncode != 0:
                         # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
                         # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
-                        ok = False
+                        ok, codigo = False, p.returncode
                         pasos.append(_cola(p))
                         from .previa import faltantes_de_salida
 

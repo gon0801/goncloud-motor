@@ -128,6 +128,7 @@ class Attempt:
     cambios: list[str] = field(
         default_factory=list
     )  # notas y cambios del plan que llegaron mientras corría: el motor lo detiene
+    exento_maquina: bool = False  # terminó en sin_cambios justo tras una falla de máquina: no gasta escalera
 
 
 @dataclass
@@ -267,6 +268,7 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
     limpio = any(e.kind == "Limpiado" for e in events)
     version, cargas, previo = 0, 0, None
     huerfanos: dict[tuple[str, int, str], Attempt] = {}
+    ultimos: dict[tuple[str, str], dict] = {}  # (bloque, campo) -> último resultado visto hasta aquí
     crudo_merged: dict[str, str] = {}  # bloque -> SHA del último Merged
     crudo_probados: dict[
         str, set[str]
@@ -337,6 +339,34 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             for a in bv.attempts:
                 if a.n == d["n"] and a.role == d["role"] and a.ended is None:
                     a.ended, a.ended_at = d["outcome"], e.ts
+                    if (
+                        a.role == "implementar"
+                        and d["outcome"].get("kind") == "sin_cambios"
+                    ):
+                        head = bv.head()
+                        v = ultimos.get((e.block, "verified"))
+                        p = ultimos.get((e.block, "proved"))
+                        dep = ultimos.get((e.block, "deployed"))
+                        mg = crudo_merged.get(e.block, "")
+                        a.exento_maquina = bool(
+                            (v and v.get("sha") == head and _es_falla_maquina(v))
+                            or (
+                                mg
+                                and mg == head
+                                and p
+                                and p.get("sha") == mg
+                                and not p.get("ok")
+                                and p.get("codigo") != 75
+                            )
+                            or (
+                                mg
+                                and mg == head
+                                and dep
+                                and dep.get("sha") == mg
+                                and not dep.get("ok")
+                                and dep.get("codigo") != 75
+                            )
+                        )
                     if a.role == "implementar" and d["outcome"].get(
                         "pruebas_sin_marca"
                     ):
@@ -353,6 +383,7 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                             else None
                         )
         elif e.kind in RESULTADOS:
+            ultimos[(e.block, RESULTADOS[e.kind])] = d
             resultados.append((bv, e))
             if e.kind == "Proved" and d.get("ok"):
                 crudo_probados.setdefault(e.block, set()).add(d["sha"])
@@ -823,7 +854,9 @@ def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
         or relevo.desde_kind(kind) in relevo.LAS_RESUELVE_EL_RELOJ
     ):
         return False
-    return not (kind == "sin_cambios" and _fuera_de_control(bv))
+    return not (
+        kind == "sin_cambios" and (a.exento_maquina or _fuera_de_control(bv))
+    )
 
 
 def espera_hecho(bv: BlockView, role: str) -> bool:
