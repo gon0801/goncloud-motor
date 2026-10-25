@@ -65,6 +65,10 @@ def verificado(
     return base if not vez else f"{base}:v{vez}"
 
 
+def deepseek_disparado(plan: str, block: str, sha: str) -> str:
+    return f"deepseek:{plan}:{block}:{sha}"
+
+
 def pr_abierto(plan: str, block: str, numero: int) -> str:
     return f"pr:{plan}:{block}:{numero}"  # tras un merge, el arreglo abre otro PR
 
@@ -175,6 +179,7 @@ POR_TIPO = {
     "Cooldown": cooldown,
     "Reviewed": revisado,
     "Verified": verificado,
+    "DeepSeekDisparado": deepseek_disparado,
     "PrOpened": pr_abierto,
     "MarkedReady": marcado_listo,
     "PrCerrado": pr_cerrado,

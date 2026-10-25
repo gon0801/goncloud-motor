@@ -232,6 +232,12 @@ class GitHubPort(Protocol):
     def relanzar_corrida(self, repo: str, run_id: str) -> None: ...
     def relanzar_fallidas(self, repo: str, run_id: str) -> None: ...
     def log_fallido(self, repo: str, run_id: str) -> str: ...
+    def comentarios_deepseek(
+        self, repo: str, numero: int, sha: str = ""
+    ) -> list[dict]: ...
+    def disparar_workflow(
+        self, repo: str, workflow: str, inputs: dict
+    ) -> None: ...
 
 
 # --------------------------------------------------------------------------- real
@@ -456,6 +462,44 @@ class GhGitHub:
             return ""
         return "\n".join(texto.splitlines()[-80:])
 
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        """Comentarios de DeepSeek (ai-review) ya publicados en ese PR, para ese SHA si lo nombran."""
+        n = self.nombre(repo)
+        out = []
+        for ruta in (f"repos/{n}/issues/{numero}/comments", f"repos/{n}/pulls/{numero}/comments"):
+            try:
+                paginas = self._paginas(
+                    self._gh("api", ruta + "?per_page=100", "--paginate")
+                )
+            except RuntimeError:
+                continue
+            for pagina in paginas:
+                items = pagina if isinstance(pagina, list) else pagina.get("comments", []) if isinstance(pagina, dict) else []
+                for c in items if isinstance(items, list) else []:
+                    if not isinstance(c, dict):
+                        continue
+                    body = str(c.get("body") or "")
+                    autor = str((c.get("user") or {}).get("login") or "")
+                    if not (
+                        "deepseek" in body.lower()
+                        or "deepseek" in autor.lower()
+                        or "ai-review" in body.lower()
+                        or "github-actions" in autor.lower()
+                    ):
+                        continue
+                    csha = str(c.get("commit_id") or c.get("original_commit_id") or "")
+                    if sha and csha and csha != sha:
+                        continue
+                    out.append({"texto": body, "autor": autor, "sha": csha or sha})
+        return out
+
+    def disparar_workflow(self, repo, workflow, inputs):
+        n = self.nombre(repo)
+        args = ["workflow", "run", workflow, "-R", n]
+        for k, v in inputs.items():
+            args += ["-f", f"{k}={v}"]
+        self._gh(*args)
+
     def _listo_desde(self, n: str, numero: int) -> str:
         """Hora (de GitHub) en que el PR dejó el borrador por última vez; "" si nunca fue borrador."""
         horas = self._gh(
@@ -667,6 +711,33 @@ class FakeGitHub:
 
     def log_fallido(self, repo, run_id) -> str:
         return ""
+
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        s = self._cargar()
+        pr = self._pr(s, repo, numero)
+        out = []
+        for clave in ("comentarios_deepseek", "comentarios", "deepseek"):
+            for c in pr.get(clave, []) or []:
+                if isinstance(c, str):
+                    out.append({"texto": c, "autor": "DeepSeek", "sha": sha})
+                    continue
+                texto = str(c.get("texto") or c.get("body") or c.get("text") or "")
+                if not texto:
+                    continue
+                csha = str(c.get("sha") or c.get("commit_id") or "")
+                if sha and csha and csha != sha:
+                    continue
+                out.append(
+                    {"texto": texto, "autor": str(c.get("autor") or "DeepSeek"), "sha": csha or sha}
+                )
+        return out
+
+    def disparar_workflow(self, repo, workflow, inputs):
+        s = self._cargar()
+        s.setdefault("ai_review", []).append(
+            {"repo": repo, "workflow": workflow, "inputs": dict(inputs)}
+        )
+        self._guardar(s)
 
     def merge(self, repo, numero, sha, metodo, mensaje):
         s = self._cargar()

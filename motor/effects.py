@@ -101,6 +101,34 @@ def texto_pruebas(block, revisar: bool = False) -> str:
     return "No escribas pruebas nuevas: basta comprobar que corre."
 
 
+def inputs_de_workflow(texto: str) -> list[tuple[str, bool]]:
+    """(nombre, obligatorio) de los inputs de `workflow_dispatch` de un workflow."""
+    out: list[tuple[str, bool]] = []
+    en_dispatch = en_inputs = False
+    actual: str | None = None
+    for linea in texto.splitlines():
+        if re.match(r"^\s*workflow_dispatch\s*:", linea):
+            en_dispatch = True
+            continue
+        if en_dispatch and re.match(r"^\s+inputs\s*:", linea):
+            en_inputs = True
+            continue
+        if en_inputs:
+            m = re.match(r"^\s{6}([A-Za-z_][\w-]*)\s*:\s*$", linea)
+            if m:
+                actual = m.group(1)
+                out.append((actual, False))
+                continue
+            m = re.match(r"^\s+required\s*:\s*true\s*$", linea)
+            if m and actual:
+                out[-1] = (actual, True)
+                continue
+            if linea.strip() and not linea.startswith("        "):
+                if not re.match(r"^\s{4}\S", linea):
+                    break
+    return out
+
+
 def es_archivo_prueba(ruta: str) -> bool:
     partes = [p.lower() for p in ruta.replace("\\", "/").split("/") if p]
     if not partes:
@@ -627,14 +655,17 @@ class Effects:
 
     # ------------------------------------------------------------------ intentos
     def _encargo(
-        self, plan: Plan, block, a: m.StartAttempt, cwd, rc, info_pstack
+        self, plan: Plan, block, a: m.StartAttempt, cwd, rc, info_pstack, snap=None
     ) -> str:
         """El brief completo de un intento: encargo, cómo se entrega y, al final, el anexo de guías."""
         seccion = self._seccion_pstack(info_pstack)
         if a.role == "implementar":
             brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
         else:
-            brief = self._brief_revisar(plan, block, a, rc, seccion)
+            comentarios = (
+                self._comentarios_deepseek(snap, block, a.sha) if snap else []
+            )
+            brief = self._brief_revisar(plan, block, a, rc, seccion, comentarios)
         return brief + self._anexo_guias(info_pstack)
 
     def start_attempt(self, plan: Plan, snap: m.Snapshot, a: m.StartAttempt) -> None:
@@ -680,7 +711,7 @@ class Effects:
         info_pstack = self._prepara_pstack(
             d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion, guias_del
         )
-        brief = self._encargo(plan, block, a, cwd, rc, info_pstack)
+        brief = self._encargo(plan, block, a, cwd, rc, info_pstack, snap)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
         prompt = prompt_de_encargo(str(d / "brief.md"), brief)
@@ -839,12 +870,39 @@ avisa y espera una nota, un plan corregido o una máquina corregida.
         a: m.StartAttempt,
         rc: RepoConf,
         seccion_pstack: str = "",
+        comentarios_deepseek=(),
     ) -> str:
         filas = "\n".join(
             f"- {r.id}: {r.contenido}"
             + (f" | Acepta: `{r.acepta}`" if r.acepta else "")
             for r in block.rows
         )
+        if not comentarios_deepseek:
+            try:
+                prs = [
+                    e
+                    for e in self.cx.store.events(plan.id)
+                    if e.kind == "PrOpened" and e.block == block.id
+                ]
+                fn = getattr(self.cx.gh, "comentarios_deepseek", None)
+                if prs and fn is not None:
+                    comentarios_deepseek = list(
+                        fn(block.repo, int(prs[-1].data["numero"]), a.sha) or []
+                    )
+            except Exception:  # noqa: BLE001 - sin comentarios se revisa igual
+                comentarios_deepseek = ()
+        deepseek = ""
+        if comentarios_deepseek:
+            lineas = "\n".join(
+                f"- {c.get('texto', c) if isinstance(c, dict) else c}"
+                for c in comentarios_deepseek
+            )
+            deepseek = (
+                "\n## Comentarios de DeepSeek para este SHA\n"
+                "DeepSeek ya publicó estos comentarios para este SHA. Son sugerencias: "
+                "nunca frenan nada por sí solos. Decide con la regla de siempre.\n"
+                f"{lineas}\n"
+            )
         antes = ""
         if a.feedback:
             antes = (
@@ -860,7 +918,7 @@ Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal
 {filas}
 
 {texto_pruebas(block, revisar=True)}
-
+{deepseek}
 {antes}{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
 de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás va en `notas`.
 Escribe en `$MOTOR_RESULT`:
@@ -1448,6 +1506,81 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "huella_maquina": h_maquina,
         }
 
+    def _comentarios_deepseek(self, snap: m.Snapshot, block, sha: str) -> list:
+        """Comentarios de DeepSeek ya publicados para ese SHA. Sin ellos, se revisa igual."""
+        bv = snap.blocks.get(block.id) if snap else None
+        if bv is None or not bv.pr:
+            return []
+        fn = getattr(self.cx.gh, "comentarios_deepseek", None)
+        if fn is None:
+            return []
+        try:
+            return list(fn(block.repo, int(bv.pr["numero"]), sha) or [])
+        except Exception:  # noqa: BLE001 - DeepSeek nunca frena la revisión
+            return []
+
+    def _dispara_deepseek(
+        self, plan: Plan, snap: m.Snapshot, block, numero: int, sha: str
+    ) -> None:
+        """Dispara la revisión de DeepSeek de este PR. Un SHA ya disparado no se repite."""
+        try:
+            if any(
+                e.kind == "DeepSeekDisparado"
+                and e.block == block.id
+                and e.data.get("sha") == sha
+                for e in self.cx.store.events(plan.id)
+            ):
+                return
+            fn = getattr(self.cx.gh, "disparar_workflow", None)
+            if fn is None:
+                return
+            espejo = self.cx.ws.espejo(block.repo)
+            worker = git(
+                "show", f"{sha}:.github/workflows/ai-review-worker.yml", cwd=espejo
+            )
+            if worker.returncode != 0:
+                return
+            publish = git(
+                "show", f"{sha}:.github/workflows/ai-review-publish.yml", cwd=espejo
+            )
+            if publish.returncode == 0:
+                archivo, texto = "ai-review-publish.yml", publish.stdout
+            else:
+                archivo, texto = "ai-review-worker.yml", worker.stdout
+            rc = self.repo_conf(snap, block.repo)
+            base = git(
+                "rev-parse", f"origin/{rc.principal}", cwd=espejo
+            ).stdout.strip()
+            previos = sum(
+                1
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "DeepSeekDisparado" and e.block == block.id
+            )
+            valores = {
+                "pr_number": str(numero),
+                "head_sha": sha,
+                "base_sha": base,
+                "request_id": str(1000 + previos + 1),
+                "coordinator_run_id": str(numero),
+                "finding_identity": "current",
+            }
+            inputs = {}
+            for nombre, obligatorio in inputs_de_workflow(texto):
+                if nombre in valores and (obligatorio or nombre == "pr_number"):
+                    inputs[nombre] = valores[nombre]
+                elif obligatorio:
+                    inputs[nombre] = valores.get(nombre, "motor")
+            fn(block.repo, archivo, inputs)
+            self.cx.store.append(
+                plan.id,
+                block.id,
+                "DeepSeekDisparado",
+                {"sha": sha, "pr": numero, "workflow": archivo, "inputs": inputs},
+                ukey=claves.deepseek_disparado(plan.id, block.id, sha),
+            )
+        except Exception:  # noqa: BLE001 - DeepSeek es una sugerencia, nunca frena
+            return
+
     def open_pr(self, plan: Plan, snap: m.Snapshot, a: m.OpenPr) -> None:
         block = plan.block(a.block)
         rc = self.repo_conf(snap, block.repo)
@@ -1478,6 +1611,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             {"numero": pr.numero, "rama": pr.rama},
             ukey=claves.pr_abierto(plan.id, a.block, pr.numero),
         )
+        self._dispara_deepseek(plan, snap, block, pr.numero, a.sha)
 
     def mark_ready(self, plan: Plan, snap: m.Snapshot, a: m.MarkReady) -> None:
         bv = snap.blocks[a.block]
