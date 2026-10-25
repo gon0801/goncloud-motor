@@ -409,6 +409,14 @@ def parse_plan(
                 release = Release(
                     partes["desplegar"], partes["checklist"], partes["rollback"]
                 )
+        if lane == "fast" and release is not None:
+            errores.append(
+                f"bloque {d.id}: un bloque fast no lleva 'despliegue:'"
+            )
+        if lane == "fast" and re.search(r"\bssh\b", f.get("prueba-real", "")):
+            errores.append(
+                f"bloque {d.id}: un bloque fast no lleva 'prueba-real' que entre por ssh a otra máquina"
+            )
         repo = f.get("repo", repo_plan)
         if not repo:
             errores.append(

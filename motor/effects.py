@@ -1694,6 +1694,15 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         rc = self.repo_conf(snap, block.repo)
         if self._ya_mergeado(plan, snap, t.block, t.sha):
             return
+        if block.lane == "fast":
+            self.cx.gh.marcar_listo(block.repo, t.pr)
+            self.cx.store.append(
+                plan.id,
+                t.block,
+                "MarkedReady",
+                {"sha": t.sha},
+                ukey=claves.marcado_listo(plan.id, t.block, t.sha),
+            )
         try:
             pr = self.cx.gh.merge(
                 block.repo,
