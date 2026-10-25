@@ -367,10 +367,13 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                                 and dep.get("codigo") != 75
                             )
                         )
-                    if a.role == "implementar" and d["outcome"].get(
-                        "pruebas_sin_marca"
+                    if (
+                        a.role == "implementar"
+                        and d["outcome"].get("kind") == "entregado"
                     ):
-                        bv.pruebas_sin_marca = tuple(d["outcome"]["pruebas_sin_marca"])
+                        bv.pruebas_sin_marca = tuple(
+                            d["outcome"].get("pruebas_sin_marca") or ()
+                        )
                     if a.role == "implementar":
                         bv.bloqueo = (
                             {

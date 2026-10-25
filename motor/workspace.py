@@ -144,7 +144,7 @@ class Workspace:
                 raise RuntimeError(f"no se pudo clonar {repo}: {r.stderr[-300:]}")
         git("config", "worktree.useRelativePaths", "true", cwd=d)
         git("worktree", "repair", "--relative-paths", cwd=d)
-        git(
+        r = git(
             "fetch",
             "-q",
             "--prune",
@@ -152,6 +152,10 @@ class Workspace:
             "+refs/heads/*:refs/remotes/origin/*",
             cwd=d,
         )
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"no se pudo actualizar {repo}: {r.stderr.strip()[-300:]}"
+            )
         return d
 
     def punta(self, repo: str, rama: str) -> str:

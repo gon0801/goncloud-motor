@@ -905,8 +905,8 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
 Si una Acepta falla por la máquina (falta un paquete, un programa o la versión de Python), arréglalo tú en esta máquina con el método que ya usa (pip del Python del motor, npm, brew, uv) y sigue; no esperes una nota.
 
 ## Si lo que falla no es el código del bloque
-Si lo que falla es la máquina, una Acepta que no puede pasar aquí o un servicio externo, no lo
-arregles por tu cuenta ni cambies el plan o la máquina. Escribe en `$MOTOR_RESULT`
+Si lo que falla es un servicio externo o una decisión que solo puede tomar una persona, no lo
+arregles por tu cuenta ni cambies el plan. Escribe en `$MOTOR_RESULT`
 `{{"bloqueado": "<motivo en una frase>"}}` y termina. El motor no le pasa el bloque a otro agente:
 avisa y espera una nota, un plan corregido o una máquina corregida.
 
@@ -927,14 +927,14 @@ avisa y espera una nota, un plan corregido o una máquina corregida.
         a: m.StartAttempt,
         rc: RepoConf,
         seccion_pstack: str = "",
-        comentarios_deepseek=(),
+        comentarios_deepseek=None,
     ) -> str:
         filas = "\n".join(
             f"- {r.id}: {r.contenido}"
             + (f" | Acepta: `{r.acepta}`" if r.acepta else "")
             for r in block.rows
         )
-        if not comentarios_deepseek:
+        if comentarios_deepseek is None:
             try:
                 prs = [
                     e
@@ -1172,7 +1172,9 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     "merge-base", f"origin/{rc2.principal}", punta, cwd=espejo
                 ).stdout.strip()
                 if base:
-                    diff = git("diff", "--name-only", base, punta, cwd=espejo).stdout
+                    diff = git(
+                        "diff", "--name-only", "--diff-filter=A", base, punta, cwd=espejo
+                    ).stdout
                     nuevas = [x for x in diff.splitlines() if es_archivo_prueba(x)]
                     if nuevas:
                         entregado["pruebas_sin_marca"] = nuevas

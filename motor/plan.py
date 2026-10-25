@@ -187,7 +187,10 @@ def cambios_de(antes: Block, ahora: Block) -> list[Cambio]:
         ahora.pruebas,
     ):
         out.append(
-            Cambio("bloque", "cambió el carril, la receta de despliegue o los checks")
+            Cambio(
+                "bloque",
+                "cambió el carril, la receta de despliegue, los checks o la marca de pruebas",
+            )
         )
     if antes.prueba_real != ahora.prueba_real:
         out.append(
