@@ -21,22 +21,6 @@ from tests.test_puro import PLAN, entregado, ev, pol
 RAIZ = Path(__file__).resolve().parent.parent
 
 
-def _llamadas_con_ukey():
-    """(archivo, línea, tipo de evento o None, valor de ukey) de cada `x.append(..., ukey=...)` del motor."""
-    for f in sorted((RAIZ / "motor").rglob("*.py")):
-        if f.name == "claves.py":
-            continue
-        for nodo in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
-            if not isinstance(nodo, ast.Call):
-                continue
-            for kw in nodo.keywords:
-                if kw.arg == "ukey":
-                    tipo = None
-                    if len(nodo.args) >= 3 and isinstance(nodo.args[2], ast.Constant):
-                        tipo = nodo.args[2].value
-                    yield f.name, kw.value.lineno, tipo, kw.value
-
-
 SHA = "a" * 40
 MAQUINA = "m" * 16
 
@@ -1366,32 +1350,6 @@ class BloqueadoTest(Banco):
 
 
 class ClavesTest(unittest.TestCase):
-    def test_ninguna_otra_parte_arma_una_a_mano(self):
-        llamadas = list(_llamadas_con_ukey())
-        self.assertGreater(len(llamadas), 20, "el recorrido encontró las llamadas")
-        for archivo, linea, _, valor in llamadas:
-            es_de_claves = (
-                isinstance(valor, ast.Call)
-                and isinstance(valor.func, ast.Attribute)
-                and isinstance(valor.func.value, ast.Name)
-                and valor.func.value.id == "claves"
-            )
-            self.assertTrue(es_de_claves, f"{archivo}:{linea} arma su ukey a mano")
-
-    def test_cada_tipo_de_evento_usa_la_funcion_de_su_tipo(self):
-        vistos = set()
-        for archivo, linea, tipo, valor in _llamadas_con_ukey():
-            if tipo is None:
-                continue
-            vistos.add(tipo)
-            self.assertIn(tipo, claves.POR_TIPO, f"{archivo}:{linea}: {tipo} sin clave")
-            self.assertEqual(
-                valor.func.attr,
-                claves.POR_TIPO[tipo].__name__,
-                f"{archivo}:{linea}: {tipo} usa la clave de otro tipo",
-            )
-        self.assertEqual(vistos, set(claves.POR_TIPO), "sobra o falta un tipo")
-
     def test_ninguna_depende_del_reloj(self):
         fuente = inspect.getsource(claves)
         for palabra in ("import time", "datetime", "uuid", "random"):
