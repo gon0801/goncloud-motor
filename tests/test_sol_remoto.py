@@ -9,7 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+from motor.fallas import clasifica
 
 
 class SolRemotoTest(unittest.TestCase):
@@ -121,18 +123,28 @@ class SolRemotoTest(unittest.TestCase):
                         ("auth", "Authentication required", "Authentication required"),
                         ("cuota", "quota exceeded", "quota exceeded"),
                         (
+                            "cuota",
+                            "quota exceeded resets at 2026-10-26T03:04:05Z",
+                            "resets at 2026-10-26T03:04:05Z",
+                        ),
+                        (
+                            "rate_limit",
+                            "Rate limit reached; retry after 5 seconds",
+                            "retry after 5 seconds",
+                        ),
+                        (
                             "modelo_no_disponible",
                             "model is disabled for this account",
                             "model is disabled for this account",
                         ),
                         ("transitorio", "connection error", "connection error"),
                         (
-                            "desconocido",
+                            "falla",
                             "Falla no clasificada",
                             "Codex termino con codigo 9",
                         ),
                     ):
-                        with self.subTest(error=categoria):
+                        with self.subTest(error=original):
                             control.write_text(
                                 json.dumps(
                                     {"_error": original + " secreto-nunca-publicar"}
@@ -152,6 +164,16 @@ class SolRemotoTest(unittest.TestCase):
                             self.assertNotIn(
                                 "secreto-nunca-publicar", stderr.getvalue()
                             )
+                            visto = clasifica("codex", "", stderr.getvalue())
+                            if categoria == "rate_limit":
+                                self.assertEqual(visto["kind"], "rate_limit")
+                                self.assertEqual(visto["retry_after_s"], 5.0)
+                            if seguro.startswith("resets at "):
+                                self.assertEqual(visto["kind"], "cuota")
+                                self.assertEqual(
+                                    visto["reset_at"],
+                                    seguro.removeprefix("resets at "),
+                                )
                             self.assertFalse(resultado.exists())
             finally:
                 os.chdir(anterior)
@@ -166,6 +188,149 @@ class SolRemotoTest(unittest.TestCase):
             self.assertIn("read-only", leido["args"])
             self.assertIn('model_reasoning_effort="medium"', leido["args"])
             self.assertEqual(leido["schema"]["properties"]["sha"]["const"], sha)
+
+    def test_el_helper_conserva_el_kind_de_clasifica(self):
+        ruta = Path(__file__).resolve().parents[1] / "ops" / "sol_remoto.py"
+        spec = importlib.util.spec_from_file_location("sol_remoto_kind", ruta)
+        sol = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sol)
+        secreto = "secreto-nunca-publicar"
+        mensaje = (
+            "The 'gpt-5.6-sol' model is not supported when using Codex "
+            "with a ChatGPT account."
+        )
+        interno = json.dumps(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": mensaje,
+                    "code": "model_not_found",
+                },
+            }
+        )
+        veneno = "\n".join(
+            (
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": "quota exceeded",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "error", "message": "quota exceeded"},
+                    }
+                ),
+            )
+        )
+        modelo = "\n".join(
+            (
+                veneno,
+                json.dumps({"type": "error", "message": interno}),
+                json.dumps({"type": "turn.failed", "error": {"message": interno}}),
+            )
+        )
+        casos = (
+            (
+                "Rate limit reached; retry after 5 seconds " + secreto,
+                veneno,
+                "Rate limit reached; retry after 5 seconds " + secreto,
+            ),
+            (
+                "Too many requests retry after 5",
+                "",
+                "Too many requests retry after 5",
+            ),
+            ("invalid_api_key", "", "invalid_api_key"),
+            ("usage limit reached", "", "usage limit reached"),
+            (
+                "quota exceeded resets at 2026-10-26T03:04:05Z",
+                "",
+                "quota exceeded resets at 2026-10-26T03:04:05Z",
+            ),
+            ("Reading additional input from stdin\n", modelo, mensaje),
+        )
+        for stderr, stdout, oracle in casos:
+            with self.subTest(oracle=oracle):
+                error = self._error_remoto(sol, stderr, stdout)
+                esperado = clasifica("codex", "", oracle)
+                self.assertEqual(error["categoria"], esperado["kind"])
+                self.assertEqual(error["codigo"], 1)
+                self.assertTrue(
+                    {"categoria", "codigo"}
+                    <= set(error)
+                    <= {"categoria", "codigo", "retry_after_s", "reset_at"}
+                )
+                if esperado.get("retry_after_s") is not None:
+                    self.assertEqual(error["retry_after_s"], esperado["retry_after_s"])
+                else:
+                    self.assertNotIn("retry_after_s", error)
+                if esperado.get("reset_at"):
+                    self.assertEqual(error["reset_at"], esperado["reset_at"])
+                else:
+                    self.assertNotIn("reset_at", error)
+                bruto = json.dumps(error)
+                self.assertNotIn(secreto, bruto)
+                self.assertNotIn(mensaje, bruto)
+                self.assertNotIn("model_not_found", bruto)
+                for linea in stderr.splitlines():
+                    if linea.strip():
+                        self.assertNotIn(linea.strip(), bruto)
+
+    def _error_remoto(self, sol, stderr, stdout):
+        class P:
+            def __init__(self, s):
+                self.s = s
+
+            def __truediv__(self, n):
+                return P(self.s + "/" + n)
+
+            def __str__(self):
+                return self.s
+
+            def mkdir(self):
+                pass
+
+            def write_text(self, s):
+                pass
+
+            def open(self, *a):
+                if self.s.endswith("codex.err"):
+                    return io.StringIO(stderr)
+                if self.s.endswith("codex.out"):
+                    return io.StringIO(stdout)
+                return io.StringIO("")
+
+        proc = SimpleNamespace(
+            returncode=1, pid=123, poll=lambda: 1, wait=lambda **k: 1
+        )
+        out = io.StringIO()
+        entrada = json.dumps({"sha": "a" * 40, "archive": "", "prompt": "review"}) + "\n"
+        with (
+            patch(
+                "tempfile.TemporaryDirectory",
+                return_value=contextlib.nullcontext("/memory"),
+            ),
+            patch("pathlib.Path", P),
+            patch("tarfile.open", return_value=MagicMock()),
+            patch("subprocess.Popen", return_value=proc),
+            patch("os.killpg"),
+            patch("signal.signal"),
+            patch("sys.stdin", io.StringIO(entrada)),
+            contextlib.redirect_stdout(out),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                exec(sol.REMOTO, {})
+        self.assertEqual(ctx.exception.code, 1)
+        evento = json.loads(out.getvalue())
+        self.assertEqual(set(evento), {"error"})
+        return evento["error"]
 
 
 if __name__ == "__main__":

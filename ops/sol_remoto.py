@@ -5,6 +5,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -23,6 +24,26 @@ for senal in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
 def emitir(objeto):
     print(json.dumps(objeto), flush=True)
 
+def textos_de_error(obj, acum):
+    if isinstance(obj, str):
+        s = obj.strip()
+        if s[:1] in "{[":
+            try:
+                anidado = json.loads(s)
+            except ValueError:
+                acum.append(s)
+            else:
+                textos_de_error(anidado, acum)
+            return
+        if s:
+            acum.append(s)
+    elif isinstance(obj, dict):
+        for valor in obj.values():
+            textos_de_error(valor, acum)
+    elif isinstance(obj, list):
+        for valor in obj:
+            textos_de_error(valor, acum)
+
 def canales_de_error(stderr, stdout):
     partes = [stderr]
     for linea in stdout.splitlines():
@@ -34,8 +55,18 @@ def canales_de_error(stderr, stdout):
         except ValueError:
             continue
         if isinstance(ev, dict) and ev.get("type") in ("error", "turn.failed"):
-            partes.append(bruto)
-    return "\n".join(partes).lower()
+            acum = []
+            textos_de_error(ev, acum)
+            partes.append("\n".join(acum))
+    return "\n".join(partes)
+
+def clasifica_codex(texto):
+    try:
+        from motor.fallas import clasifica
+    except ImportError:
+        sys.path.insert(0, os.path.expanduser("~/motor"))
+        from motor.fallas import clasifica
+    return clasifica("codex", "", texto)
 
 entrada = json.loads(sys.stdin.readline())
 with tempfile.TemporaryDirectory(prefix="motor-sol-") as temporal:
@@ -82,19 +113,15 @@ with tempfile.TemporaryDirectory(prefix="motor-sol-") as temporal:
             if proceso.returncode:
                 err.seek(0)
                 salida.seek(0)
-                fallo = canales_de_error(err.read(), salida.read())
-                categoria = "desconocido"
-                patrones = {
-                    "modelo_no_disponible": ("model is disabled", "model_not_found", "model is not supported", "not included in your", "does not have access to model"),
-                    "auth": ("authentication required", "unauthorized", "invalid api key", "not logged in", "token expired", "please log in"),
-                    "cuota": ("quota exceeded", "insufficient_quota", "usage limit", "usage_limit_reached", "rate limit", "out of credits"),
-                    "transitorio": ("connection error", "connection reset", "timed out", "timeout", "network error", "temporarily unavailable"),
-                }
-                for tipo, palabras in patrones.items():
-                    if any(palabra in fallo for palabra in palabras):
-                        categoria = tipo
-                        break
-                emitir({"error": {"categoria": categoria, "codigo": proceso.returncode}})
+                fallo = clasifica_codex(canales_de_error(err.read(), salida.read()))
+                error = {"categoria": fallo["kind"], "codigo": proceso.returncode}
+                pausa = fallo.get("retry_after_s")
+                if type(pausa) is int or type(pausa) is float:
+                    error["retry_after_s"] = pausa
+                reinicio = fallo.get("reset_at")
+                if isinstance(reinicio, str) and reinicio:
+                    error["reset_at"] = reinicio
+                emitir({"error": error})
                 raise SystemExit(proceso.returncode)
             emitir({"resultado": json.loads(final.read_text())})
     finally:
@@ -136,6 +163,57 @@ def validar(resultado, sha):
         for b in resultado["bloqueantes"]
     ):
         raise ValueError("Bloqueantes remotos invalidos")
+
+
+MENSAJES = {
+    "auth": "Authentication required",
+    "cuota": "quota exceeded",
+    "rate_limit": "rate limit reached",
+    "modelo_no_disponible": "model is disabled for this account",
+    "transitorio": "connection error",
+    "falla": "Codex termino con codigo",
+}
+_RESET_AT = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z?")
+
+
+def _segundos(pausa):
+    if pausa == int(pausa):
+        return str(int(pausa))
+    return format(pausa, "f").rstrip("0").rstrip(".")
+
+
+def error_publico(error):
+    if (
+        not isinstance(error, dict)
+        or not {"categoria", "codigo"}
+        <= set(error)
+        <= {"categoria", "codigo", "retry_after_s", "reset_at"}
+        or error["categoria"] not in MENSAJES
+        or type(error["codigo"]) is not int
+    ):
+        raise ValueError("Error remoto invalido")
+    pausa = error.get("retry_after_s")
+    if "retry_after_s" in error and (
+        type(pausa) not in (int, float)
+        or pausa != pausa
+        or pausa < 0
+        or pausa == float("inf")
+    ):
+        raise ValueError("Error remoto invalido")
+    reinicio = error.get("reset_at")
+    if "reset_at" in error and (
+        not isinstance(reinicio, str) or _RESET_AT.fullmatch(reinicio) is None
+    ):
+        raise ValueError("Error remoto invalido")
+    categoria = error["categoria"]
+    texto = MENSAJES[categoria]
+    if categoria == "falla":
+        texto += " " + str(error["codigo"])
+    if categoria in ("cuota", "rate_limit") and "retry_after_s" in error:
+        texto += "; retry after " + _segundos(pausa) + " seconds"
+    if categoria == "cuota" and "reset_at" in error:
+        texto += "; resets at " + reinicio
+    return categoria + ": " + texto
 
 
 def main(argv=None):
@@ -191,25 +269,7 @@ def main(argv=None):
                 raise ValueError("Evento SSH inesperado")
         codigo = proceso.wait()
         if error is not None:
-            mensajes = {
-                "auth": "Authentication required",
-                "cuota": "quota exceeded",
-                "modelo_no_disponible": "model is disabled for this account",
-                "transitorio": "connection error",
-                "desconocido": "Codex termino con codigo",
-            }
-            if (
-                not isinstance(error, dict)
-                or set(error) != {"categoria", "codigo"}
-                or error["categoria"] not in mensajes
-                or type(error["codigo"]) is not int
-            ):
-                raise ValueError("Error remoto invalido")
-            categoria = error["categoria"]
-            texto = mensajes[categoria]
-            if categoria == "desconocido":
-                texto += " " + str(error["codigo"])
-            print(categoria + ": " + texto, file=sys.stderr, flush=True)
+            print(error_publico(error), file=sys.stderr, flush=True)
             raise RuntimeError("Fallo del proveedor remoto; no se guarda un veredicto")
         if codigo != 0:
             raise RuntimeError("Fallo SSH o Codex remoto; no se guarda un veredicto")
