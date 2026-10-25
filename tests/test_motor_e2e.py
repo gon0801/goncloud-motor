@@ -1111,14 +1111,22 @@ class TestDespliegueQueSePasa(Banco):
             ),
             encoding="utf-8",
         )
-        motor(
-            "entrega",
-            str(self.plan),
-            "--home",
-            str(self.home),
-            "--json",
-            "--espera",
-            "0",
+        # Ya tomado por la bandeja: la previa de `motor entrega` lo rechazaría antes,
+        # pero un plan ya en el motor igual anota el comando que falta al verificar.
+        from motor.plan import parse_plan
+
+        inbox = self.home / "inbox"
+        inbox.mkdir(exist_ok=True)
+        (inbox / "cmd-comando.json").write_text(
+            json.dumps(
+                {
+                    "cmd_id": "cmd-comando",
+                    "tipo": "plan",
+                    "plan": parse_plan(self.plan.read_text(encoding="utf-8")).to_dict(),
+                    "por": "",
+                }
+            ),
+            encoding="utf-8",
         )
         p = daemon(self.home)
         self.assertTrue(

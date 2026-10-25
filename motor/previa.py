@@ -187,12 +187,7 @@ def _corre_previa(
                         block.repo, sha, Path(td) / f"copia-{block.id}"
                     )
                     copias[block.id] = copia
-                except Exception as e:  # noqa: BLE001 - no se pudo ni preparar la copia
-                    for r in block.rows:
-                        if r.acepta:
-                            errores.append(
-                                f"{r.id}: no pude correr la previa en este repo ({e})"
-                            )
+                except Exception:  # noqa: BLE001 - sin copia no hay previa: lo rechaza el motor al tomarlo
                     continue
                 env = _entorno(maquina, rc.prueba_env)
                 for r in block.rows:
