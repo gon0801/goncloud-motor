@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -45,6 +46,9 @@ class ChecksVerdict:
     )
     corridas: tuple = ()  # {"nombre", "run_id", "url", "status", "conclusion"} de cada check run
     corridas_fallidas: tuple = ()  # las corridas terminadas en rojo, con su url y run_id
+
+
+_MARCA_SHA = re.compile(r"ai-review:sha=([0-9a-fA-F]{7,64})")
 
 
 def _run_id(r: dict) -> str:
@@ -484,13 +488,17 @@ class GhGitHub:
                         "deepseek" in body.lower()
                         or "deepseek" in autor.lower()
                         or "ai-review" in body.lower()
-                        or "github-actions" in autor.lower()
                     ):
                         continue
-                    csha = str(c.get("commit_id") or c.get("original_commit_id") or "")
-                    if sha and csha and csha != sha:
+                    marca = _MARCA_SHA.search(body)
+                    real = (
+                        marca.group(1)
+                        if marca
+                        else str(c.get("commit_id") or c.get("original_commit_id") or "")
+                    )
+                    if sha and real != sha:
                         continue
-                    out.append({"texto": body, "autor": autor, "sha": csha or sha})
+                    out.append({"texto": body, "autor": autor, "sha": real})
         return out
 
     def disparar_workflow(self, repo, workflow, inputs):

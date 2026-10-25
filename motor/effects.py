@@ -762,6 +762,12 @@ class Effects:
         info_pstack = self._prepara_pstack(
             d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion, guias_del
         )
+        if a.role == "revisar":
+            bv = snap.blocks.get(a.block) if snap else None
+            if bv is not None and bv.pr:
+                self._dispara_deepseek(
+                    plan, snap, block, int(bv.pr["numero"]), a.sha
+                )
         brief = self._encargo(plan, block, a, cwd, rc, info_pstack, snap)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
@@ -1535,6 +1541,11 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             )
 
     def verify(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> None:
+        bv = snap.blocks.get(a.block) if snap else None
+        if bv is not None and bv.pr:
+            self._dispara_deepseek(
+                plan, snap, plan.block(a.block), int(bv.pr["numero"]), a.sha
+            )
         self._aparte("verify", plan, snap, a)
 
     def _verify_data(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> dict:
