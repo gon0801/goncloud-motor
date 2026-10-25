@@ -1051,6 +1051,44 @@ class DespliegueTest(unittest.TestCase):
         self.assertEqual(d.causa, Causa.SALIDA_75)
         self.assertTrue(d.atorado)
 
+    def test_receta_nueva_sobre_el_mismo_sha_terminado_vuelve_a_desplegar(self):
+        from motor import huella
+        from tests.test_puro import ev, entregado
+
+        viejo = parse_plan(PLAN_RELEASE)
+        nuevo = parse_plan(
+            PLAN_RELEASE.replace("desplegar=ops/d.sh", "desplegar=ops/nueva.sh")
+        )
+        events = [ev("PlanLoaded", "", {"plan": viejo.to_dict()})] + entregado(sha=SHA)
+        for kind, field in (
+            ("Verified", "verified"),
+            ("Deployed", "deployed"),
+            ("Proved", "proved"),
+        ):
+            if kind == "Deployed":
+                events.append(ev("Merged", "A", {"sha": SHA, "commit": SHA}))
+            events.append(
+                ev(
+                    kind,
+                    "A",
+                    {
+                        "sha": SHA,
+                        "ok": True,
+                        "huella": huella.insumo_de(field, viejo.block("A"), {}),
+                    },
+                )
+            )
+        hecho = m.fold(viejo, events)
+        self.assertIs(m.estado(hecho, "A"), m.Estado.HECHO)
+        events.append(ev("PlanLoaded", "", {"plan": nuevo.to_dict()}))
+        snap = m.fold(nuevo, events)
+        self.assertIs(m.estado(snap, "A"), m.Estado.DESPLEGAR)
+        acciones = m.decide(snap, pol(), time.time())
+        self.assertIn(m.Deploy("A", SHA), acciones)
+        self.assertFalse(
+            any(isinstance(a, m.Notify) and a.template == "entregado" for a in acciones)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

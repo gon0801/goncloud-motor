@@ -610,6 +610,7 @@ def estado(snap: Snapshot, bid: str) -> Estado:
         and (bv.reabierto is None or bv.head() == m)
         and not bv.aclarar
         and bv.running_productivo() is None
+        and (b.lane != "release" or bv.deployed.get(m, {}).get("ok"))
     ):
         return Estado.HECHO
     if any(estado(snap, dep) is not Estado.HECHO for dep in b.depende):
