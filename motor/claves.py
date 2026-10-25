@@ -59,9 +59,10 @@ def _con_huella(base: str, huella: str, maquina: str) -> str:
 
 
 def verificado(
-    plan: str, block: str, sha: str, huella: str = "", maquina: str = ""
+    plan: str, block: str, sha: str, huella: str = "", maquina: str = "", vez: int = 0
 ) -> str:
-    return _con_huella(f"verified:{plan}:{block}:{sha}", huella, maquina)
+    base = _con_huella(f"verified:{plan}:{block}:{sha}", huella, maquina)
+    return base if not vez else f"{base}:v{vez}"
 
 
 def pr_abierto(plan: str, block: str, numero: int) -> str:

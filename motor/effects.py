@@ -773,6 +773,8 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
 ## Lo que quedó sin commitear de un intento anterior
 {pendientes or "(nada)"}
 
+Si una Acepta falla por la máquina (falta un paquete, un programa o la versión de Python), arréglalo tú en esta máquina con el método que ya usa (pip del Python del motor, npm, brew, uv) y sigue; no esperes una nota.
+
 ## Si lo que falla no es el código del bloque
 Si lo que falla es la máquina, una Acepta que no puede pasar aquí o un servicio externo, no lo
 arregles por tu cuenta ni cambies el plan o la máquina. Escribe en `$MOTOR_RESULT`
@@ -1184,7 +1186,28 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             and e.block == a.block
             and e.data.get("sha") == a.sha
         ]
-        if starteds:
+        reverificar = False
+        if kind == "verify":
+            previos = [
+                e
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "Verified"
+                and e.block == a.block
+                and e.data.get("sha") == a.sha
+            ]
+            if previos and m._es_falla_maquina(previos[-1].data):
+                ultima_nota = max(
+                    (
+                        e.ts
+                        for e in self.cx.store.events(plan.id)
+                        if e.kind == "Note" and e.block == a.block
+                    ),
+                    default=0.0,
+                )
+                reverificar = ultima_nota > previos[-1].ts or (
+                    time.time() - previos[-1].ts >= m.REVERIFICA_CADA_S
+                )
+        if starteds and not reverificar:
             ultimo = starteds[-1]
             d = Path(ultimo.data["dir"]) if ultimo.data.get("dir") else None
             if d is not None:
@@ -1207,7 +1230,14 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                                 "Verified",
                                 datos,
                                 ukey=claves.verificado(
-                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                    plan.id,
+                                    a.block,
+                                    a.sha,
+                                    h_insumo,
+                                    h_maquina,
+                                    vez=int(ultimo.data.get("n", 0))
+                                    if int(ultimo.data.get("n", 0)) > 1
+                                    else 0,
                                 ),
                             )
                         elif terminal_kind == "Deployed":
@@ -1348,7 +1378,9 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     fallas.append(
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
                     )
-                    faltan += comandos_faltantes(p.stdout + p.stderr)
+                    from .previa import faltantes_de_salida
+
+                    faltan += faltantes_de_salida(p.stdout + p.stderr, p.returncode)
         return {
             "sha": a.sha,
             "ok": not fallas,
@@ -1778,7 +1810,11 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
                         ok = False
                         pasos.append(_cola(p))
-                        faltan += comandos_faltantes(p.stdout + p.stderr)
+                        from .previa import faltantes_de_salida
+
+                        faltan += faltantes_de_salida(
+                            p.stdout + p.stderr, p.returncode
+                        )
                         self._rollback(rollback, w, env, tope, pasos)
                         pasos.append(RECETA)
                         break
@@ -1888,7 +1924,9 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             if codigo == 75:
                 detalle = f"no es el código; reintenta luego: {detalle}"
             if not ok:
-                faltan = comandos_faltantes(p.stdout + p.stderr)
+                from .previa import faltantes_de_salida
+
+                faltan = faltantes_de_salida(p.stdout + p.stderr, p.returncode)
         else:
             ok, detalle, codigo = True, "el bloque no declara prueba real", 0
         return {

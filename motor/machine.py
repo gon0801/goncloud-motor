@@ -165,6 +165,8 @@ class BlockView:
         default_factory=set
     )  # SHAs cuya verificación ya no vale (cambió su Acepta o la máquina) y no se ha repetido
     checks_ts: dict[str, float] = field(default_factory=dict)
+    verified_ts: dict[str, float] = field(default_factory=dict)
+    nota_ts: float = 0.0
     relanzadas_saltadas: set[str] = field(default_factory=set)
     politica_bloquea: dict[str, dict] = field(default_factory=dict)
     temporales: dict[str, tuple[float, float]] = field(
@@ -400,6 +402,7 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         elif e.kind == "Note":
             bv.notes.append(d["texto"])
             bv.hecho_ts = e.ts
+            bv.nota_ts = e.ts
             for a in bv.attempts:
                 if a.role == "implementar" and a.ended is None:
                     a.cambios.append(f"llegó una nota: {d['texto']}")
@@ -413,6 +416,8 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         campo = RESULTADOS[e.kind]
         if huella.vigente(e.data, huella.insumo_de(campo, bv.block, repos), maquina):
             getattr(bv, campo)[e.data["sha"]] = e.data
+            if campo == "verified":
+                bv.verified_ts[e.data["sha"]] = e.ts
             bv.hecho_ts = max(bv.hecho_ts, e.ts)
             clave_t = f"{campo}:{e.data['sha']}"
             if e.data.get("codigo") == 75 and not e.data.get("ok"):
@@ -499,9 +504,10 @@ def estado(snap: Snapshot, bid: str) -> Estado:
             )
         return Estado.PROBAR
     last = bv.last_implement_outcome()
-    if not head or (last and last.get("kind") != "entregado"):
-        return Estado.ARREGLAR
-    v = bv.verified.get(head)
+    v = bv.verified.get(head) if head else None
+    if not (v and v.get("ok")):
+        if not head or (last and last.get("kind") != "entregado"):
+            return Estado.ARREGLAR
     if v is None:
         return Estado.VERIFICAR
     if not v["ok"]:
@@ -761,6 +767,41 @@ def _elige(
     return None
 
 
+_PATRONES_MAQUINA = (
+    "command not found",
+    "is not recognized",
+    "No module named",
+    "ModuleNotFoundError",
+    "cannot import name 'tomllib'",
+    "Could not resolve host",
+    "Permission denied (publickey)",
+)
+
+REVERIFICA_CADA_S = 600.0
+
+
+def _es_falla_maquina(d: dict | None) -> bool:
+    """El resultado falló porque no puede correr en esta máquina, no por el código."""
+    if not d or d.get("ok"):
+        return False
+    if d.get("falta_comando"):
+        return True
+    if d.get("codigo") in (126, 127):
+        return True
+    detalle = str(d.get("detalle", ""))
+    return any(p in detalle for p in _PATRONES_MAQUINA)
+
+
+def _toca_reverificar(bv: BlockView, now: float) -> bool:
+    """Mismo SHA, sin agente: al llegar una nota o cada 10 minutos si la previa ya puede pasar."""
+    head = bv.head()
+    v = bv.verified.get(head) if head else None
+    if not _es_falla_maquina(v):
+        return False
+    ts = bv.verified_ts.get(head, 0.0)
+    return bv.nota_ts > ts or (ts > 0 and now - ts >= REVERIFICA_CADA_S)
+
+
 def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
     """¿Este intento terminado gasta la escalera del modelo? No: entregar, un apagón, lo que resuelve el
     reloj (cuota, freno, sesión), las fallas pasajeras (tienen su pausa) y un `sin_cambios` cuando el
@@ -795,7 +836,7 @@ def espera_hecho(bv: BlockView, role: str) -> bool:
 def _fuera_de_control(bv: BlockView) -> bool:
     head, merged = bv.head(), bv.merged_sha()
     return bool(
-        (bv.verified.get(head) or {}).get("falta_comando")
+        _es_falla_maquina(bv.verified.get(head))
         or (
             merged == head
             and merged in bv.proved
@@ -823,6 +864,14 @@ def faltan_comandos(bv: BlockView) -> tuple[str, list[str]]:
     for paso, r in pasos:
         if r and not r.get("ok") and r.get("falta_comando"):
             return paso, list(r["falta_comando"])
+        if r and _es_falla_maquina(r):
+            detalle = str(r.get("detalle", ""))
+            encontrados = [
+                x
+                for x in ("tomllib",)
+                if x in detalle
+            ]
+            return paso, encontrados or ["la máquina"]
     return "", []
 
 
@@ -986,7 +1035,9 @@ def decide(
             if n.key not in bv.notices | snap.plan_notices | ya:
                 ya.add(n.key)
                 acciones.append(n)
-        if e in (Estado.ARREGLAR, Estado.REVISAR) and not (
+        if e is Estado.ARREGLAR and _toca_reverificar(bv, now):
+            acciones.append(Verify(bid, bv.head()))
+        elif e in (Estado.ARREGLAR, Estado.REVISAR) and not (
             e is Estado.ARREGLAR and espera_cambio(bv)
         ):
             role = "implementar" if e is Estado.ARREGLAR else "revisar"

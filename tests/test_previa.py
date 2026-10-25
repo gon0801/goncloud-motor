@@ -35,6 +35,119 @@ def _motor(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+class MaquinaArregladaTest(unittest.TestCase):
+    def test_maquina_arreglada_se_reverifica_sin_agotar(self):
+        from motor import huella
+        from motor import machine as m
+        from motor.store import Event
+        from tests.test_puro import PLAN, entregado, ev, pol
+
+        sha = "a" * 40
+        plan = __import__("motor.plan", fromlist=["parse_plan"]).parse_plan(PLAN)
+        base = 1_700_000_000.0
+
+        def evento(i, kind, block, data):
+            return Event(i, base + i, "demo", block, kind, data)
+
+        evs = entregado()
+        evs = [
+            evento(
+                i + 1,
+                e.kind,
+                e.block,
+                e.data,
+            )
+            for i, e in enumerate(evs)
+        ]
+        evs.append(
+            evento(
+                10,
+                "Verified",
+                "A",
+                {
+                    "sha": sha,
+                    "ok": False,
+                    "detalle": "cannot import name 'tomllib'",
+                    "falta_comando": ["tomllib"],
+                    "huella": huella.insumo_de("verified", plan.block("A"), {}),
+                    "huella_maquina": "m" * 16,
+                },
+            )
+        )
+        for n in (2, 3):
+            evs.append(
+                evento(
+                    10 + n * 2,
+                    "AttemptStarted",
+                    "A",
+                    {
+                        "n": n,
+                        "role": "implementar",
+                        "modelo": "glm",
+                        "proc": {},
+                        "dir": "d",
+                        "sha": sha,
+                    },
+                )
+            )
+            evs.append(
+                evento(
+                    11 + n * 2,
+                    "AttemptEnded",
+                    "A",
+                    {
+                        "n": n,
+                        "role": "implementar",
+                        "outcome": {"kind": "sin_cambios", "detalle": "lo mismo"},
+                    },
+                )
+            )
+        snap = m.fold(plan, evs, "m" * 16)
+        bv = snap.blocks["A"]
+        sin = [a for a in bv.attempts if a.ended and a.ended.get("kind") == "sin_cambios"]
+        self.assertEqual(len(sin), 2)
+        self.assertTrue(all(not m._cuenta_falla(a, bv) for a in sin))
+        self.assertNotEqual(
+            m.bloqueo(snap, pol(), base + 100, bv, "implementar", "glm", pol().implementadores)[0],
+            "agotado",
+        )
+        acciones = [a for a in m.decide(snap, pol(), base + 700) if not isinstance(a, m.Notify) and getattr(a, "block", "") == "A"]
+        self.assertIn(m.Verify("A", sha), acciones)
+        self.assertNotIn("StartAttempt", [type(a).__name__ for a in acciones])
+
+        con_nota = evs + [evento(30, "Note", "A", {"texto": "máquina arreglada"})]
+        snap_nota = m.fold(plan, con_nota, "m" * 16)
+        acciones_nota = [
+            a
+            for a in m.decide(snap_nota, pol(), base + 40)
+            if not isinstance(a, m.Notify) and getattr(a, "block", "") == "A"
+        ]
+        self.assertIn(m.Verify("A", sha), acciones_nota)
+
+        arreglada = con_nota + [
+            evento(
+                31,
+                "Verified",
+                "A",
+                {
+                    "sha": sha,
+                    "ok": True,
+                    "detalle": "",
+                    "falta_comando": [],
+                    "huella": huella.insumo_de("verified", plan.block("A"), {}),
+                    "huella_maquina": "m" * 16,
+                },
+            )
+        ]
+        snap_ok = m.fold(plan, arreglada, "m" * 16)
+        acciones_ok = [
+            a
+            for a in m.decide(snap_ok, pol(), base + 50)
+            if not isinstance(a, m.Notify) and getattr(a, "block", "") == "A"
+        ]
+        self.assertEqual(acciones_ok, [m.OpenPr("A", sha)])
+
+
 class PreviaTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="previa-"))
