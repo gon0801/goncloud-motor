@@ -104,7 +104,7 @@ def _prueba(
         if os.name == "nt":
             argv = argv_windows(argv, env)
         try:
-            p = subprocess.Popen(
+            p = plataforma.popen_grupo(
                 argv,
                 cwd=d,
                 env=env,
@@ -113,7 +113,6 @@ def _prueba(
                 stderr=subprocess.STDOUT,
                 text=True,
                 errors="replace",
-                **plataforma.kwargs_grupo(),
             )
         except OSError as e:
             return {

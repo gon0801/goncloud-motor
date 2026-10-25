@@ -105,14 +105,13 @@ def ejecuta(
     else:
         argv, shell, exe = cmd, True, "/bin/bash"
     with tempfile.TemporaryFile() as o, tempfile.TemporaryFile() as e:
-        p = subprocess.Popen(
+        p = plataforma.popen_grupo(
             argv,
             shell=shell,
             executable=exe,
             stdin=subprocess.DEVNULL,
             stdout=o,
             stderr=e,
-            **plataforma.kwargs_grupo(),
         )
         try:
             p.wait(timeout=tope)

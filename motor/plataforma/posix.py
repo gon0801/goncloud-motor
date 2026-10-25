@@ -58,6 +58,10 @@ def kwargs_grupo() -> dict:
     return {"start_new_session": True}
 
 
+def popen_grupo(*args, **kwargs) -> subprocess.Popen:
+    return subprocess.Popen(*args, **{**kwargs, **kwargs_grupo()})
+
+
 def pid_vivo(pid: int) -> bool:
     try:
         os.kill(pid, 0)

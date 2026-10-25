@@ -12,6 +12,8 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 from motor.plataforma import windows
 
@@ -205,6 +207,61 @@ class WindowsTest(unittest.TestCase):
         argv = windows.argv_wsl(distro, ["sh", "-c", "exit 7"], timeout=30)
         r = _run(argv, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 7, r.stderr)
+
+
+class PopenGrupoTest(unittest.TestCase):
+    """Corre en cualquier sistema (Popen va mockeado). Falla ya vista en producción en la PC:
+    el Job del servicio niega CREATE_BREAKAWAY_FROM_JOB y CreateProcess devuelve WinError 5."""
+
+    def test_reintenta_sin_breakaway_cuando_el_job_lo_niega(self):
+        ok = SimpleNamespace(pid=4321)
+        with mock.patch.object(
+            windows.subprocess,
+            "Popen",
+            side_effect=[PermissionError(5, "Access is denied"), ok],
+        ) as popen:
+            r = windows.popen_grupo(["agente"], cwd="/tmp/ag")
+        self.assertIs(r, ok)
+        self.assertEqual(popen.call_count, 2)
+        primera, segunda = (c.kwargs["creationflags"] for c in popen.call_args_list)
+        self.assertEqual(primera, windows.flags_creacion())
+        self.assertTrue(primera & windows.CREATE_BREAKAWAY_FROM_JOB)
+        self.assertEqual(segunda, primera & ~windows.CREATE_BREAKAWAY_FROM_JOB)
+        self.assertFalse(segunda & windows.CREATE_BREAKAWAY_FROM_JOB)
+        self.assertTrue(segunda & windows.CREATE_NEW_PROCESS_GROUP)
+        self.assertTrue(segunda & windows.CREATE_NO_WINDOW)
+        self.assertEqual(
+            popen.call_args_list[0].args, popen.call_args_list[1].args
+        )
+        k0 = {
+            k: v
+            for k, v in popen.call_args_list[0].kwargs.items()
+            if k != "creationflags"
+        }
+        k1 = {
+            k: v
+            for k, v in popen.call_args_list[1].kwargs.items()
+            if k != "creationflags"
+        }
+        self.assertEqual(k0, k1)
+        self.assertEqual(k0, {"cwd": "/tmp/ag"})
+
+    def test_arranque_normal_mantiene_las_flags(self):
+        ok = SimpleNamespace(pid=111)
+        with mock.patch.object(windows.subprocess, "Popen", return_value=ok) as popen:
+            r = windows.popen_grupo(["agente"], cwd="/tmp/ag")
+        self.assertIs(r, ok)
+        popen.assert_called_once_with(
+            ["agente"], creationflags=windows.flags_creacion(), cwd="/tmp/ag"
+        )
+
+    def test_error_que_no_es_permiso_se_propaga(self):
+        with mock.patch.object(
+            windows.subprocess, "Popen", side_effect=FileNotFoundError("no está")
+        ) as popen:
+            with self.assertRaises(FileNotFoundError):
+                windows.popen_grupo(["agente"])
+        self.assertEqual(popen.call_count, 1)
 
 
 if __name__ == "__main__":

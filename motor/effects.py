@@ -253,7 +253,7 @@ def _run(
     argv, shell, exe = _posix(cmd, bash)
     env = con_python_de_comando(env)
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
-        p = subprocess.Popen(
+        p = plataforma.popen_grupo(
             argv,
             cwd=cwd,
             env=env,
@@ -262,7 +262,6 @@ def _run(
             stdin=subprocess.DEVNULL,
             shell=shell,
             executable=exe,
-            **plataforma.kwargs_grupo(),
         )
         try:
             p.wait(timeout=timeout)

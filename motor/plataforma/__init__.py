@@ -7,7 +7,8 @@
   compara la hora de inicio que guardó `lanzar_separado`.
 - `matar_proc()`: termina el grupo de un pid, solo si sigue siendo el proceso que se lanzó.
 - `candado()`: candado exclusivo de un archivo (un solo daemon por home).
-- `kwargs_grupo()` / `contener()` / `matar_grupo()`: para que runwrap pueda detener al agente y a sus hijos.
+- `kwargs_grupo()` / `popen_grupo()` / `contener()` / `matar_grupo()`: para lanzar con grupo
+  propio y poder detener al agente junto a sus hijos.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ if os.name == "nt":  # pragma: no cover - se prueba en la PC
         matar_grupo,
         matar_grupo_pid,
         pid_vivo,
+        popen_grupo,
     )
 else:
     from .posix import (
@@ -35,6 +37,7 @@ else:
         matar_grupo,
         matar_grupo_pid,
         pid_vivo,
+        popen_grupo,
     )
 
 import subprocess
@@ -82,14 +85,13 @@ def boot_id() -> str:
 
 def lanzar_separado(cmd: list[str], cwd: Path, env: dict, log: Path) -> dict:
     with open(log, "ab") as out:
-        p = subprocess.Popen(
+        p = popen_grupo(
             cmd,
             cwd=cwd,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=subprocess.STDOUT,
-            **kwargs_grupo(),
         )
     return {"pid": p.pid, "boot_id": boot_id(), "inicio": hora_inicio(p.pid)}
 
@@ -137,6 +139,7 @@ __all__ = [
     "matar_proc",
     "candado",
     "kwargs_grupo",
+    "popen_grupo",
     "contener",
     "matar_grupo",
 ]

@@ -3,8 +3,8 @@ Job object con "matar al cerrar" para el árbol del agente, terminación del ár
 shims .cmd de npm, grupo de procesos propio que se separa del Job del servicio y el guardián
 que corre dentro de WSL (un Job de Windows no contiene procesos de Linux).
 
-En la Mac se prueban las partes puras (`resolve_shim`, `flags_creacion`, `tarea_xml`,
-`argv_wsl`, `GUARDIAN_WSL`); lo demás lo prueba `tests/test_windows.py` en la PC
+En la Mac se prueban las partes puras (`resolve_shim`, `flags_creacion`, `popen_grupo`,
+`tarea_xml`, `argv_wsl`, `GUARDIAN_WSL`); lo demás lo prueba `tests/test_windows.py` en la PC
 (`ops/prueba-pc.sh`).
 """
 
@@ -405,6 +405,20 @@ def boot_id_sistema(consulta=None) -> str:
 
 def kwargs_grupo() -> dict:  # pragma: no cover
     return {"creationflags": flags_creacion()}
+
+
+def popen_grupo(*args, **kwargs) -> subprocess.Popen:
+    """Popen con las flags de grupo propio. El servicio corre dentro de un Job que puede negar
+    la separación (CreateProcess devuelve WinError 5); en ese caso reintenta el MISMO spawn sin
+    CREATE_BREAKAWAY_FROM_JOB, conservando el grupo propio y CREATE_NO_WINDOW."""
+    kwargs["creationflags"] = flags = kwargs.get("creationflags", flags_creacion())
+    try:
+        return subprocess.Popen(*args, **kwargs)
+    except PermissionError:
+        if not flags & CREATE_BREAKAWAY_FROM_JOB:
+            raise
+        kwargs["creationflags"] = flags & ~CREATE_BREAKAWAY_FROM_JOB
+        return subprocess.Popen(*args, **kwargs)
 
 
 def pid_vivo(pid: int) -> bool:  # pragma: no cover

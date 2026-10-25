@@ -39,7 +39,7 @@ import time
 from pathlib import Path
 
 from . import entrega, llamadas, plataforma
-from .plataforma import contener, kwargs_grupo, matar_grupo
+from .plataforma import contener, matar_grupo, popen_grupo
 from .workspace import foto_wip
 
 _SALTA = {".git", ".venv", "node_modules", "__pycache__"}
@@ -162,14 +162,13 @@ def main(argv: list[str] | None = None) -> int:
     with open(log, "ab") as out, open(errores, "ab") as err:
         env_agente = {**os.environ, "MOTOR_ATTEMPT_DIR": str(d)}
         cmd = _sin_shims(cmd, env_agente)
-        p = subprocess.Popen(
+        p = popen_grupo(
             cmd,
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=err,
             env=env_agente,
-            **kwargs_grupo(),
         )
         contener(p)
         # la hora de inicio va primero: con agent.pid presente ya hay con qué confirmar que sigue siendo él
