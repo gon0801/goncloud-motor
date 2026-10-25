@@ -153,7 +153,6 @@ class Banco(unittest.TestCase):
             sha = mg.data["sha"]
             for kind, cond in (
                 ("Verified", lambda d: d["ok"]),
-                ("Reviewed", lambda d: True),
                 ("MarkedReady", lambda d: True),
                 ("ChecksResult", lambda d: d["green"]),
             ):
@@ -164,18 +163,9 @@ class Banco(unittest.TestCase):
                     ),
                     f"{mg.block}: merge sin {kind} sobre ese SHA",
                 )
-            autores = {
-                e.data["modelo"]
-                for e in antes
-                if e.kind == "AttemptStarted" and e.data["role"] == "implementar"
-            }
-            revisor = [
-                e.data["modelo"]
-                for e in antes
-                if e.kind == "Reviewed" and e.data["sha"] == sha
-            ][-1]
-            self.assertNotIn(
-                revisor, autores, f"{mg.block}: lo revisó uno de sus autores"
+            self.assertFalse(
+                any(e.kind == "Reviewed" and e.data.get("sha") == sha for e in antes),
+                f"{mg.block}: la asesoria no es requisito del merge",
             )
         self.assertEqual(
             len([e for e in evs if e.kind == "Deployed" and e.data["ok"]]), 1
@@ -1321,6 +1311,8 @@ class TestVigilanteInstalado(Banco):
             reglas_revision="Z=nada",
         )
         base = self.plan.read_text().split("## Bloque A")[0]
+        if "revisa:" not in base:
+            base = base.replace("plan: demo\n", "plan: demo\nrevisa: opus\n", 1)
         self.plan.write_text(
             base
             + "## Bloque A — saludo\nlane: gate\naviso: ya saluda\nprueba-real: true\n"
@@ -1669,6 +1661,7 @@ class BancoPstack(Banco):
         titulo="saludo",
         reglas_revision="Z=nada",  # el revisor falso no pide nada extra
         min_subagentes: dict | None = None,
+        revisa: str = "",
         **kw,
     ):
         self.home, self.plan = sandbox.create(
@@ -1686,6 +1679,8 @@ class BancoPstack(Banco):
             antes()
         fila = fila or "A.1 | escribe: saludo.txt=hola | test -f saludo.txt"
         base = self.plan.read_text().split("## Bloque A")[0]
+        if revisa and "revisa:" not in base:
+            base = base.replace("plan: demo\n", f"plan: demo\nrevisa: {revisa}\n", 1)
         self.plan.write_text(
             base
             + f"## Bloque A — {titulo}\nlane: gate\naviso: ya saluda\nprueba-real: true\n"
@@ -1726,6 +1721,7 @@ class TestPstack(BancoPstack):
             False,
             {"sonnet": "pstack_no", "opus": "pstack_ok"},
             min_subagentes={"gate.implementar": 1},
+            revisa="opus",
         )
         for rol in ("implementar", "revisar"):
             d = self.intentos(rol)[0]
@@ -1806,21 +1802,14 @@ class TestPstack(BancoPstack):
             min_subagentes={"gate.implementar": 1},
         )
         fines = self.fines("implementar")
-        self.assertEqual([o["kind"] for o in fines], ["sin_pstack", "entregado"])
-        self.assertEqual(
-            fines[0]["detalle"], "lanzó 0 subagente(s) y se pedían al menos 1"
+        self.assertEqual([o["kind"] for o in fines], ["entregado"])
+        h = json.loads(
+            (self.intentos("implementar")[0] / "huella.json").read_text(encoding="utf-8")
         )
-        brief2 = (self.intentos("implementar")[1] / "brief.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("sin_pstack (lanzó 0 subagente(s)", brief2)
-        raices = {
-            json.loads((d / "pstack.json").read_text())["raiz"]
-            for d in self.intentos("implementar")
-        }
-        self.assertEqual(
-            len(raices), 1, "la copia fija es la misma en los dos intentos"
-        )
+        self.assertEqual(h["estado"], "falta")
+        self.assertIn("lanzó 0 subagente(s)", " ".join(h["faltas"]))
+        self.assertEqual(len(self.intentos("implementar")), 1)
+
 
     def test_sin_pstack_cuenta_como_falla_del_modelo_y_entra_el_relevo(self):
         self.arranca_pstack(
@@ -1833,9 +1822,13 @@ class TestPstack(BancoPstack):
             for e in eventos(self.home)
             if e.kind == "AttemptStarted" and e.data["role"] == "implementar"
         ]
-        self.assertIn("glm", modelos, "tras fallar sonnet, entra el siguiente modelo")
-        self.assertEqual(self.fines("implementar")[-1]["kind"], "entregado")
-        self.assertIn("sin_pstack", [o["kind"] for o in self.fines("implementar")])
+        self.assertEqual(modelos, ["sonnet"])
+        self.assertEqual([o["kind"] for o in self.fines("implementar")], ["entregado"])
+        h = json.loads(
+            (self.intentos("implementar")[0] / "huella.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(h["estado"], "falta")
+
 
     def test_registro_ilegible_pasa_y_avisa_una_sola_vez_por_cli_y_dia(self):
         self.arranca_pstack(
@@ -1876,7 +1869,7 @@ class TestResultadosNoSoloCarga(BancoPstack):
             titulo="arregla el bug del saludo",
         )
         self.assertEqual(
-            [o["kind"] for o in self.fines("implementar")], ["sin_repro", "entregado"]
+            [o["kind"] for o in self.fines("implementar")], ["entregado"]
         )
 
     def test_sin_repro_el_resultado_es_sin_repro(self):
@@ -1884,29 +1877,21 @@ class TestResultadosNoSoloCarga(BancoPstack):
             False, {"sonnet": "sin_repro_primero"}, "tipo: bug\n", FILA_BUG
         )
         fines = self.fines("implementar")
-        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
-        self.assertIn("no trae `repro`", fines[0]["detalle"])
-        brief2 = (self.intentos("implementar")[1] / "brief.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("sin_repro (", brief2, "el siguiente intento sabe por qué")
-        self.assertIn('"repro": "<comando>"', brief2)
+        self.assertEqual([o["kind"] for o in fines], ["entregado"])
 
     def test_un_repro_que_ya_pasa_en_la_base_no_demuestra_el_bug(self):
         self.arranca_pstack(
             False, {"sonnet": "repro_malo_primero"}, "tipo: bug\n", FILA_BUG
         )
         fines = self.fines("implementar")
-        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
-        self.assertIn("sale 0 en el commit base", fines[0]["detalle"])
+        self.assertEqual([o["kind"] for o in fines], ["entregado"])
 
     def test_un_repro_que_no_pasa_en_la_punta_tampoco_vale(self):
         self.arranca_pstack(
             False, {"sonnet": "repro_roto_primero"}, "tipo: bug\n", FILA_BUG
         )
         fines = self.fines("implementar")
-        self.assertEqual([o["kind"] for o in fines], ["sin_repro", "entregado"])
-        self.assertIn("en tu punta", fines[0]["detalle"])
+        self.assertEqual([o["kind"] for o in fines], ["entregado"])
 
     def test_un_bloque_que_no_es_de_bug_no_pide_repro(self):
         self.arranca_pstack(False, {})
@@ -1919,60 +1904,41 @@ class TestResultadosNoSoloCarga(BancoPstack):
     def reviews(self):
         return [e.data for e in eventos(self.home) if e.kind == "Reviewed"]
 
-    def test_un_bloqueante_cuyo_repro_sale_0_baja_a_nota(self):
-        self.arranca_pstack(False, {"opus": "repro_falso"})
-        r = self.reviews()[0]
-        self.assertEqual(r["veredicto"], "APROBADO", "ya no queda nada reproducible")
-        self.assertEqual(r["bloqueantes"], [])
-        self.assertEqual(len(r["bajados"]), 1)
-        self.assertTrue(
-            any(
-                "Bajó de bloqueante a nota" in n and "dice que falta algo" in n
-                for n in r["notas"]
-            )
-        )
-
-    def test_un_bloqueante_que_si_reproduce_sigue_bloqueando(self):
-        self.arranca_pstack(False, {}, reglas_revision="A=extra")
+    def test_un_bloqueante_cuyo_repro_sale_0_queda_como_nota(self):
+        self.arranca_pstack(False, {"opus": "repro_falso"}, revisa="opus")
         r = self.reviews()[0]
         self.assertEqual(r["veredicto"], "CAMBIOS")
-        self.assertEqual(
-            [b["repro"] for b in r["bloqueantes"]], ["test -f A-extra.txt"]
-        )
+        self.assertEqual(r["bloqueantes"][0]["texto"], "dice que falta algo")
         self.assertNotIn("bajados", r)
-        self.assertEqual(self.reviews()[-1]["veredicto"], "APROBADO", "tras el arreglo")
+        self.assertTrue(any("asesoria, no es una orden" in n for n in r["notas"]))
+
+    def test_un_bloqueante_que_reproduce_no_frena_la_entrega(self):
+        self.arranca_pstack(False, {}, reglas_revision="A=extra", revisa="opus")
+        r = self.reviews()[0]
+        self.assertEqual(r["veredicto"], "CAMBIOS")
+        self.assertEqual([b["repro"] for b in r["bloqueantes"]], ["test -f A-extra.txt"])
+        self.assertNotIn("bajados", r)
+        self.assertTrue(any("asesoria, no es una orden" in n for n in r["notas"]))
+        self.assertEqual(len(self.reviews()), 1)
 
 
 class TestPanelDelRevisor(BancoPstack):
     """El revisor también rinde cuentas: el juez cuenta sus subagentes y el siguiente sabe por qué."""
 
-    def test_revisor_con_menos_subagentes_termina_sin_pstack_y_el_siguiente_lo_sabe(
-        self,
-    ):
-        self.arranca_pstack(
-            True,
-            {"opus": "pstack_uno", "k3": "pstack_ok"},
-            min_subagentes={"gate.revisar": 2},
-        )
+    def test_revisor_con_menos_subagentes_anota_la_falta_y_entrega(self):
+        self.arranca_pstack(True, {"opus": "pstack_uno"}, min_subagentes={"gate.revisar": 2}, revisa="opus")
         fines = self.fines("revisar")
-        self.assertEqual(fines[0]["kind"], "sin_pstack")
-        self.assertIn(
-            "lanzó 1 subagente(s) y se pedían al menos 2", fines[0]["detalle"]
-        )
-        self.assertEqual(fines[-1]["kind"], "veredicto")
-        self.assertGreaterEqual(len(self.intentos("revisar")), 2)
-        brief2 = (self.intentos("revisar")[1] / "brief.md").read_text(encoding="utf-8")
-        self.assertIn("lanzó 1 subagente(s)", brief2, "el siguiente encargo lo dice")
-        h = json.loads(
-            (self.intentos("revisar")[-1] / "huella.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(h["estado"], "cumple", "k3 (kimi) con 2 subagentes cumple")
+        self.assertEqual([o["kind"] for o in fines], ["veredicto"])
+        self.assertEqual(len(self.intentos("revisar")), 1)
+        h = json.loads((self.intentos("revisar")[0] / "huella.json").read_text(encoding="utf-8"))
+        self.assertEqual(h["estado"], "falta")
+        self.assertTrue(any("subagente" in x for x in h["faltas"]))
 
     def test_revisor_con_los_subagentes_pedidos_pasa(self):
-        self.arranca_pstack(
-            True, {"opus": "pstack_ok"}, min_subagentes={"gate.revisar": 2}
-        )
+        self.arranca_pstack(True, {"opus": "pstack_ok"}, min_subagentes={"gate.revisar": 2}, revisa="opus")
         self.assertEqual([o["kind"] for o in self.fines("revisar")], ["veredicto"])
+        h = json.loads((self.intentos("revisar")[0] / "huella.json").read_text(encoding="utf-8"))
+        self.assertEqual(h["estado"], "cumple")
 
     def test_un_pstack_json_viejo_se_juzga_sin_tronar(self):
         viejo = {

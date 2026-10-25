@@ -297,7 +297,8 @@ class ReevaluaTest(Banco):
     def _espera(self, plan, evs, paso):
         snap, acs = acciones(plan, evs)
         self.assertIs(m.estado(snap, "A"), m.Estado.ARREGLAR)
-        self.assertNotIn("StartAttempt", tipos(acs), "el bloque no vuelve al agente")
+        reps = [a for a in de_a(acs) if isinstance(a, m.StartAttempt)]
+        self.assertEqual([(a.role, a.modalidad) for a in reps], [("implementar", "reparar")])
         d = diagnostico(snap, "A", pol(), 1e10)
         self.assertIs(d.causa, Causa.FALTA_COMANDO)
         self.assertTrue(d.atorado)
@@ -313,6 +314,14 @@ class ReevaluaTest(Banco):
             [],
             "avisa una vez",
         )
+
+        cerrada = despues + [
+            ev("AttemptStarted", "A", {"n": 1, "role": "implementar", "modelo": "glm", "proc": {}, "dir": "d", "modalidad": "reparar"}),
+            ev("AttemptEnded", "A", {"n": 1, "role": "implementar", "outcome": {"kind": "sin_cambios"}}),
+        ]
+        snap2, acs2 = acciones(plan, cerrada)
+        self.assertEqual([a for a in de_a(acs2) if isinstance(a, m.StartAttempt)], [])
+        self.assertFalse(any(m._cuenta_falla(a, snap2.blocks["A"]) for a in snap2.blocks["A"].attempts))
 
     def test_la_prueba_real_que_pide_un_comando_que_falta_no_vuelve_al_agente(self):
         plan = plan_con(prueba="sin-este-comando --x")
@@ -340,7 +349,8 @@ class ReevaluaTest(Banco):
     def test_el_bloque_espera_a_que_cambie_el_plan_o_la_maquina(self):
         plan = plan_con(prueba="sin-este-comando")
         evs = self._merged(plan, "proved", False, falta_comando=["sin-este-comando"])
-        self.assertNotIn("StartAttempt", tipos(acciones(plan, evs)[1]))
+        primero = [a for a in de_a(acciones(plan, evs)[1]) if isinstance(a, m.StartAttempt)]
+        self.assertEqual([a.modalidad for a in primero], ["reparar"])
         corregido = plan_con(prueba="true")
         snap, acs = acciones(corregido, evs)
         self.assertEqual(tipos(acs), ["Prove"], "el plan corregido prueba el mismo SHA")
@@ -514,14 +524,11 @@ class ReevaluaTest(Banco):
             "DeployStarted",
             {"sha": sha, "dir": str(aparte_viejo), "proc": {}, "n": 1},
         )
-        self._espera_aparte(
-            lambda: d.fx.deploy(plan, m.fold(plan, evs), m.Deploy("A", sha)),
-            "Deployed",
-        )
-        (r,) = self.eventos("Deployed")
-        self.assertTrue(r.data["ok"])
-        self.assertNotIn("ya estaba desplegado", r.data["detalle"])
-        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "nuevo")
+        d.fx.deploy(plan, m.fold(plan, evs), m.Deploy("A", sha))
+        self.assertEqual(self.eventos("Deployed"), [])
+        efectos = [e for e in d.store.events("demo") if e.kind == "EfectoObservado"]
+        self.assertEqual(efectos[-1].data["resultado"], "incierto")
+        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "viejo")
 
     def test_prove_que_pasa_no_trae_comandos_faltantes(self):
         d, plan, sha, snap = self._fx_con_mergeado(self.plan)

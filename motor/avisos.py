@@ -90,15 +90,17 @@ def _resumen(
         if d.atorado:
             atorados.append(f"«{titulo}» ({d.motivo})")
             continue
-        run = bv.running()
+        run = bv.running_productivo()
+        asesor = next((a for a in bv.attempts if a.ended is None and a.role == "revisar"), None)
         if run:
-            que = "reviso" if run.role == "revisar" else "trabajo en"
             frase = (
-                f"{que} «{titulo}» ({NOMBRES.get(run.modelo, run.modelo.capitalize())}, "
+                f"trabajo en «{titulo}» ({NOMBRES.get(run.modelo, run.modelo.capitalize())}, "
                 f"{_dura(now - run.started)})"
             )
-            falla = dg.por_que(bv) if run.role == "implementar" else ""
+            falla = dg.por_que(bv)
             partes.append(frase + (f" porque {falla}" if falla else ""))
+        elif asesor:
+            partes.append(f"«{titulo}»: {d.motivo}. Un asesor la mira y eso no frena la entrega.")
         else:
             partes.append(f"«{titulo}»: {d.motivo}")
     ahora = (

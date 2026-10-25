@@ -34,6 +34,15 @@ fi
 if ! git -C "$motor" rev-parse -q --verify "refs/tags/$etiqueta" >/dev/null; then
   git -C "$motor" fetch -q --tags --force origin
 fi
+if ! git -C "$motor" cat-file -e "refs/tags/$etiqueta:motor/formato.py" 2>/dev/null; then
+  if [ -f "$HOME/.motor/formato" ]; then
+    if python3 -c "import tomllib" 2>/dev/null; then py="python3"; else py="uv run --python 3.12 python"; fi
+    if ! (cd "$motor" && PYTHONPATH=. $py -m motor formato --home "$HOME/.motor"); then
+      echo "$m: hay una intencion sin cerrar; no cambio a una etiqueta que no la entiende" >&2
+      exit 1
+    fi
+  fi
+fi
 git -C "$motor" checkout -q --detach "refs/tags/$etiqueta"
 echo "$m: motor $(git -C "$motor" rev-parse --short=12 HEAD) de vuelta en $etiqueta"
 REMOTO
@@ -58,6 +67,12 @@ vuelve_pc() {
   fi
   if ! ssh_a "$h" "git -C $u\\motor rev-parse -q --verify refs/tags/$anterior" >/dev/null; then
     ssh_a "$h" "git -C $u\\motor fetch -q --tags --force origin" || return 1
+  fi
+  if ! ssh_a "$h" "git -C $u\\motor cat-file -e refs/tags/$anterior:motor/formato.py"; then
+    marca="$(ssh_a "$h" "if exist $u\\.motor\\formato echo si" | tr -d "[:space:]")"
+    if [ "$marca" = si ]; then
+      ssh_a "$h" "cd /d $u\\motor && $PC_UV run --python 3.12 python -m motor formato --home $u\\.motor" || return 1
+    fi
   fi
   ssh_a "$h" "git -C $u\\motor checkout -q --detach refs/tags/$anterior" || return 1
   echo "pc: motor de vuelta en $anterior"

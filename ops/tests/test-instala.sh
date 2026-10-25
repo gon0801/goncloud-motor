@@ -68,6 +68,9 @@ if [ "$host" = gwpc ]; then
     "git -C "*" fetch -q --tags --force origin")
       [ -z "${FAKE_GIT_ORIGIN_CAIDO:-}" ] || { echo "fatal: no pude conectar (origin caído)" >&2; exit 1; } ;;
     "if not exist "* | "copy /y "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
+    *"cat-file -e refs/tags/"*":motor/formato.py"*) exit 0 ;;
+    *"if exist"*"formato echo si"*) if [ -f "$S/pc-formato" ]; then echo si; else echo no; fi ;;
+    *"-m motor formato"*) if [ -f "$S/pc-formato-bloquea" ]; then exit 1; fi ;;
     *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
   esac
   exit 0

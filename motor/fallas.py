@@ -14,8 +14,29 @@ stderr, que es el canal de error del proveedor, el número suelto sí vale.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 PROVEEDORES = ("claude", "kimi", "opencode", "grok", "muse", "qwen", "deepseek")
+
+@dataclass(frozen=True)
+class OrigenProveedor:
+    proveedor: str
+    cuenta: str = ""
+    ruta: str = ""
+    intento: str = ""
+    secuencia: int = 0
+    reset_at: str = ""
+@dataclass(frozen=True)
+class CuotaAgotada:
+    origen: OrigenProveedor
+@dataclass(frozen=True)
+class FrenoCorto:
+    origen: OrigenProveedor
+@dataclass(frozen=True)
+class SinCanalFiable:
+    proveedor: str
+    motivo: str
+CANAL_EN_VIVO = {"kimi": SinCanalFiable("kimi", "el CLI solo entrega el resultado final; no hay senal de cuota en vivo")}
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 

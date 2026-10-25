@@ -167,6 +167,15 @@ def efecto_ok(plan: str, block: str, accion: str, n: int) -> str:
     return f"ok:{plan}:{block}:{accion}:{n}"
 
 
+
+def intencion(plan: str, ident: str) -> str:
+    return f"intencion:{plan}:{ident}"
+
+
+def efecto_observado(plan: str, ident: str, resultado: str) -> str:
+    return f"efecto:{plan}:{ident}:{resultado}"
+
+
 POR_TIPO = {
     "PlanLoaded": plan_cargado,
     "CommandReceived": comando,
@@ -198,4 +207,6 @@ POR_TIPO = {
     "NoticeQueued": aviso_encolado,
     "EffectFailed": falla_de_efecto,
     "EffectOk": efecto_ok,
+    "Intencion": intencion,
+    "EfectoObservado": efecto_observado,
 }
