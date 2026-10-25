@@ -1,5 +1,8 @@
 from __future__ import annotations
+import json
+import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +14,7 @@ from motor.formato import activa, puede_volver
 from motor.machine import _es_falla_maquina
 from motor.previa import faltantes_de_salida
 from motor.store import Store
-from tests.test_puro import PLAN, ev, parse_plan
+from tests.test_puro import PLAN, entregado, ev, parse_plan, pol
 
 def _criterio(cid, receta, conducta):
     return Criterio(cid, "v", "fila", "comportamiento", conducta, (), receta, "acepta", None, "A")
@@ -75,3 +78,113 @@ class MergeNoRepiteTest(unittest.TestCase):
         snap = m.fold(plan, [ev("Verified", "A", {"sha": sha, "ok": True}), ev("PrOpened", "A", {"numero": 7})])
         fx.merge(plan, snap, m.Merge(m.MergeTicket("A", sha, 7)))
         self.assertEqual(llamadas, [])
+
+
+class AclararLlegaADecideTest(unittest.TestCase):
+    """Un Aclarar juzgado no vuelve a ser una nota: decide arranca antes del efecto."""
+
+    def _reviewed(self, bloqueantes):
+        d = Path(tempfile.mkdtemp(prefix="m08-acl-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        sha = "a" * 40
+        (d / "outcome.json").write_text(
+            json.dumps({"exit": 0, "timed_out": False, "no_progress": False, "tail": ""})
+        )
+        (d / "result.json").write_text(
+            json.dumps(
+                {
+                    "sha": sha,
+                    "veredicto": "CAMBIOS",
+                    "notas": [],
+                    "bloqueantes": bloqueantes,
+                }
+            )
+        )
+        eventos = []
+        fx = Effects(SimpleNamespace(store=SimpleNamespace(append=lambda *a, **k: eventos.append(a))))
+        fx._proveedor = lambda mod: ""
+        r = fx.collect(
+            SimpleNamespace(id="demo", block=lambda b: SimpleNamespace(id=b)),
+            None,
+            "A",
+            SimpleNamespace(dir=str(d), role="revisar", sha=sha, modelo="opus", n=1),
+        )
+        self.assertEqual(r["kind"], "veredicto")
+        reviewed = next(a[3] for a in eventos if a[2] == "Reviewed")
+        return sha, reviewed
+
+    def _listo_para_merge(self, sha, reviewed):
+        return entregado(sha=sha) + [
+            ev("Verified", "A", {"sha": sha, "ok": True}),
+            ev("PrOpened", "A", {"numero": 7}),
+            ev("MarkedReady", "A", {"sha": sha}),
+            ev("ChecksResult", "A", {"sha": sha, "green": True}),
+            ev("Reviewed", "A", reviewed),
+        ]
+
+    def test_el_peligro_abre_aclarar_antes_del_merge(self):
+        sha, reviewed = self._reviewed(
+            [
+                {
+                    "texto": "en produccion expone token",
+                    "repro": "test ! -f token",
+                    "arreglo": "quitarlo",
+                },
+                {"texto": "estilo", "repro": ""},
+            ]
+        )
+        self.assertTrue(reviewed.get("aclarar"))
+        self.assertEqual(
+            reviewed["aclarar"][0]["mandato"],
+            "caso concreto pertinente que la receta vigente no cubre",
+        )
+        self.assertNotIn("token", " ".join(reviewed["notas"]))
+        self.assertTrue(any("asesoria, no es una orden" in n for n in reviewed["notas"]))
+        ahora = time.time()
+        acciones = m.decide(m.fold(parse_plan(PLAN), self._listo_para_merge(sha, reviewed)), pol(), ahora)
+        arranques = [
+            a for a in acciones if isinstance(a, m.StartAttempt) and a.block == "A"
+        ]
+        self.assertEqual([a.modalidad for a in arranques], ["aclarar"])
+        self.assertEqual(arranques[0].role, "implementar")
+        self.assertTrue(any("Aclarar:" in x for x in arranques[0].feedback))
+        self.assertFalse(any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in acciones))
+        despues = self._listo_para_merge(sha, reviewed) + [
+            ev(
+                "AttemptStarted",
+                "A",
+                {
+                    "n": 2,
+                    "role": "implementar",
+                    "modelo": "sonnet",
+                    "proc": {},
+                    "dir": "d2",
+                    "sha": sha,
+                    "modalidad": "aclarar",
+                },
+            ),
+            ev(
+                "AttemptEnded",
+                "A",
+                {"n": 2, "role": "implementar", "outcome": {"kind": "sin_cambios"}},
+            ),
+        ]
+        siguientes = m.decide(m.fold(parse_plan(PLAN), despues), pol(), ahora)
+        self.assertTrue(any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in siguientes))
+        self.assertFalse(
+            any(isinstance(a, m.StartAttempt) and a.block == "A" and a.modalidad == "aclarar" for a in siguientes)
+        )
+
+    def test_una_nota_no_abre_aclarar(self):
+        sha, reviewed = self._reviewed([{"texto": "estilo", "repro": ""}])
+        self.assertNotIn("aclarar", reviewed)
+        acciones = m.decide(
+            m.fold(parse_plan(PLAN), self._listo_para_merge(sha, reviewed)),
+            pol(),
+            time.time(),
+        )
+        self.assertFalse(
+            any(isinstance(a, m.StartAttempt) and a.block == "A" and a.modalidad == "aclarar" for a in acciones)
+        )
+        self.assertTrue(any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in acciones))
+

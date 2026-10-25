@@ -578,8 +578,9 @@ class TestBloqueantesDelRevisorMalformados(unittest.TestCase):
         self.assertEqual(r["kind"], "veredicto")
         self.assertNotIn("bajados", ev[0][3])
         notas = ev[0][3]["notas"]
-        self.assertEqual(len(notas), 2)
-        self.assertTrue(all("asesoria, no es una orden" in n for n in notas))
+        self.assertEqual(len(notas), 1)
+        self.assertIn("asesoria, no es una orden", notas[0])
+        self.assertEqual(ev[0][3]["aclarar"][0]["escenario"], "a")
 
     def test_repro_null_y_bloqueante_no_objeto_son_veredicto_invalido(self):
         for malo in (

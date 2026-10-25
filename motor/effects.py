@@ -1106,6 +1106,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 {**b, "repro": b.get("repro", "")} for b in res["bloqueantes"]
             ]
             notas = list(res["notas"])
+            aclarar = []
             from .criterios import (
                 Aclarar,
                 Expediente,
@@ -1130,24 +1131,34 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     ),
                     exp,
                 )
-                if isinstance(juicio, Nota):
-                    motivo = juicio.motivo
-                elif isinstance(juicio, Aclarar):
-                    motivo = juicio.mandato
-                else:
-                    motivo = "queda como nota"
+                if isinstance(juicio, Aclarar):
+                    aclarar.append(
+                        {
+                            "id": f"{att.sha}:{i}",
+                            "criterios": list(juicio.criterios),
+                            "mandato": juicio.mandato,
+                            "bloque": juicio.alcance.bloque,
+                            "criterio": juicio.alcance.criterio,
+                            "escenario": juicio.alcance.escenario,
+                        }
+                    )
+                    continue
+                motivo = juicio.motivo if isinstance(juicio, Nota) else "queda como nota"
                 notas.append(f"asesoria, no es una orden: {motivo}")
+            datos = {
+                "sha": att.sha,
+                "veredicto": veredicto,
+                "modelo": att.modelo,
+                "bloqueantes": bloqueantes,
+                "notas": notas,
+            }
+            if aclarar:
+                datos["aclarar"] = aclarar
             self.cx.store.append(
                 plan.id,
                 block_id,
                 "Reviewed",
-                {
-                    "sha": att.sha,
-                    "veredicto": veredicto,
-                    "modelo": att.modelo,
-                    "bloqueantes": bloqueantes,
-                    "notas": notas,
-                },
+                datos,
                 ukey=claves.revisado(att.dir),
             )
             return {"kind": "veredicto"}

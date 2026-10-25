@@ -189,6 +189,7 @@ class BlockView:
         None  # {"version", "cambios", "agente", "desde"}: una versión nueva del plan tocó un bloque ya hecho
     )
     resoluciones: tuple = ()  # Corregido | Aclarado proyectados; no salen de la prosa del asesor
+    aclarar: list = field(default_factory=list)  # juicios Aclarar aún sin StartAttempt
 
     def implement_attempts(self) -> list[Attempt]:
         return [a for a in self.attempts if a.role == "implementar"]
@@ -389,6 +390,8 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                     modalidad=str(d.get("modalidad") or "implementar"),
                 )
             )
+            if str(d.get("modalidad") or "") == "aclarar":
+                bv.aclarar.clear()  # este arranque cubre lo que ya estaba juzgado
         elif e.kind == "AttemptEnded":
             for a in bv.attempts:
                 if a.n == d["n"] and a.role == d["role"] and a.ended is None:
@@ -448,6 +451,9 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             bv.pr = d
         elif e.kind == "Reviewed":
             bv.reviews.append({**d, "revision_plan": bv.revision_plan})
+            for item in d.get("aclarar") or []:
+                if isinstance(item, dict) and str(item.get("mandato") or "").strip():
+                    bv.aclarar.append(item)
         elif e.kind == "MarkedReady":
             bv.ready.add(d["sha"])
             bv.listo_desde.setdefault(d["sha"], e.ts)
@@ -1092,6 +1098,42 @@ def _asesor_abierto(bv: BlockView) -> Attempt | None:
     return next((a for a in bv.attempts if a.ended is None and a.role == "revisar"), None)
 
 
+# Estados cuyo siguiente paso es un efecto. Aclarar se atiende antes que ese efecto.
+_CON_EFECTO = frozenset(
+    {
+        Estado.ARREGLAR,
+        Estado.VERIFICAR,
+        Estado.PR,
+        Estado.LISTO,
+        Estado.CHECKS,
+        Estado.MERGE,
+        Estado.DESPLEGAR,
+        Estado.PROBAR,
+        Estado.HECHO,
+    }
+)
+
+
+def _aclarar_en_curso(bv: BlockView) -> bool:
+    return any(
+        a.ended is None and a.role == "implementar" and a.modalidad == "aclarar"
+        for a in bv.attempts
+    )
+
+
+def _feedback_aclarar(bv: BlockView) -> tuple[str, ...]:
+    lineas = []
+    for item in bv.aclarar:
+        if not isinstance(item, dict):
+            continue
+        mandato = str(item.get("mandato") or "").strip()
+        if not mandato:
+            continue
+        escenario = str(item.get("escenario") or "").strip()
+        lineas.append(f"Aclarar: {mandato}" + (f" ({escenario})" if escenario else ""))
+    return tuple(lineas)
+
+
 def _lanza(
     acciones: list,
     reservas: dict[str, int],
@@ -1171,7 +1213,14 @@ def decide(
             if n.key not in bv.notices | snap.plan_notices | ya:
                 ya.add(n.key)
                 acciones.append(n)
-        if e is Estado.ARREGLAR and _toca_reverificar(bv, now):
+        if bv.aclarar and run is None and not _aclarar_en_curso(bv) and e in _CON_EFECTO:
+            _lanza(
+                acciones, reservas, snap, policy, now, bv, bid,
+                "implementar", "aclarar", _feedback_aclarar(bv), False,
+            )
+        elif _aclarar_en_curso(bv):
+            pass  # el arranque ya salió: el efecto de después espera a que termine
+        elif e is Estado.ARREGLAR and _toca_reverificar(bv, now):
             acciones.append(Verify(bid, bv.head()))
         elif e is Estado.ARREGLAR and _reparacion_pendiente(bv):
             _lanza(

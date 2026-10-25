@@ -1904,13 +1904,21 @@ class TestResultadosNoSoloCarga(BancoPstack):
     def reviews(self):
         return [e.data for e in eventos(self.home) if e.kind == "Reviewed"]
 
-    def test_un_bloqueante_cuyo_repro_sale_0_queda_como_nota(self):
+    def test_un_bloqueante_cuyo_repro_sale_0_abre_aclarar(self):
         self.arranca_pstack(False, {"opus": "repro_falso"}, revisa="opus")
         r = self.reviews()[0]
         self.assertEqual(r["veredicto"], "CAMBIOS")
         self.assertEqual(r["bloqueantes"][0]["texto"], "dice que falta algo")
         self.assertNotIn("bajados", r)
-        self.assertTrue(any("asesoria, no es una orden" in n for n in r["notas"]))
+        self.assertTrue(r.get("aclarar"))
+        self.assertIn(
+            "aclarar",
+            [
+                e.data.get("modalidad")
+                for e in eventos(self.home)
+                if e.kind == "AttemptStarted"
+            ],
+        )
 
     def test_un_bloqueante_que_reproduce_no_frena_la_entrega(self):
         self.arranca_pstack(False, {}, reglas_revision="A=extra", revisa="opus")
@@ -1918,7 +1926,15 @@ class TestResultadosNoSoloCarga(BancoPstack):
         self.assertEqual(r["veredicto"], "CAMBIOS")
         self.assertEqual([b["repro"] for b in r["bloqueantes"]], ["test -f A-extra.txt"])
         self.assertNotIn("bajados", r)
-        self.assertTrue(any("asesoria, no es una orden" in n for n in r["notas"]))
+        self.assertTrue(r.get("aclarar"))
+        self.assertIn(
+            "aclarar",
+            [
+                e.data.get("modalidad")
+                for e in eventos(self.home)
+                if e.kind == "AttemptStarted"
+            ],
+        )
         self.assertEqual(len(self.reviews()), 1)
 
 
