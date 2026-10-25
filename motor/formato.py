@@ -54,9 +54,7 @@ def activa(home: Path) -> None:
         return
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name("formato.tmp")
-    tmp.write_text(
-        json.dumps({"version": VERSION, "nombre": NOMBRE}, ensure_ascii=False), encoding="utf-8"
-    )
+    tmp.write_text(json.dumps({"version": VERSION, "nombre": NOMBRE}, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, p)
 
 
