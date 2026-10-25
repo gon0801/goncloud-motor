@@ -431,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("valida")
     s.add_argument("plan", type=Path)
     s.add_argument("--home", type=Path)
+    s.add_argument("--previa", action="store_true")
     s = sub.add_parser("entrega")
     s.add_argument("plan", type=Path)
     s.add_argument("--home", type=Path, required=True)
@@ -518,6 +519,22 @@ def main(argv: list[str] | None = None) -> int:
                 for x in errores:
                     print(f"  - {x}")
             return 2
+        if a.cmd == "entrega" or getattr(a, "previa", False):
+            from .previa import corre_previa
+
+            errores_previa = corre_previa(plan, a.home)
+            if errores_previa:
+                if getattr(a, "json", False):
+                    print(
+                        json.dumps(
+                            {"estado": "rechazado", "errores": errores_previa},
+                            ensure_ascii=False,
+                        )
+                    )
+                else:
+                    for x in errores_previa:
+                        print(x)
+                return 2
         if a.cmd == "valida":
             print(
                 f"ok  {plan.id}: {len(plan.blocks)} bloques "
