@@ -25,6 +25,7 @@ Formato (compatible con las tablas de Orbit, más campos por bloque):
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 
 LANES = ("fast", "gate", "release")
@@ -276,6 +277,27 @@ def _id_malo(valor: str) -> bool:
     return not _ID.match(valor) or valor.endswith(".lock") or ".." in valor
 
 
+def _entra_por_ssh(comando: str) -> bool:
+    """El ejecutable de algún tramo es `ssh`, sin distinguir mayúsculas ni extensión de Windows."""
+    for tramo in re.split(r"&&|\|\||[;|]", comando):
+        try:
+            partes = shlex.split(tramo)
+        except ValueError:
+            partes = tramo.split()
+        for p in partes:
+            if "=" in p and not p.startswith("="):
+                continue
+            prog = p.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            for ext in (".exe", ".bat", ".cmd", ".com"):
+                if prog.endswith(ext):
+                    prog = prog[: -len(ext)]
+                    break
+            if prog == "ssh":
+                return True
+            break
+    return False
+
+
 def _modelos(valor: str) -> tuple[str, ...]:
     return tuple(
         dict.fromkeys(x.strip().lower() for x in valor.split(",") if x.strip())
@@ -423,7 +445,7 @@ def parse_plan(
             errores.append(
                 f"bloque {d.id}: pruebas debe ser una de {PRUEBAS}, no {pruebas!r}"
             )
-        if lane == "fast" and re.search(r"\bssh\b", f.get("prueba-real", "")):
+        if lane == "fast" and _entra_por_ssh(f.get("prueba-real", "")):
             errores.append(
                 f"bloque {d.id}: un bloque fast no lleva 'prueba-real' que entre por ssh a otra máquina"
             )

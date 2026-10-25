@@ -551,6 +551,11 @@ def estado(snap: Snapshot, bid: str) -> Estado:
     if bv.pr is None:
         return Estado.PR
     if b.lane == "fast":
+        c = bv.checks.get(head)
+        if c is not None and not c.get("green"):
+            if bv.entrega_ts(head) > bv.checks_ts.get(head, 0.0):
+                return Estado.MERGE  # reentrega del mismo SHA: se vuelve a intentar el merge
+            return Estado.ARREGLAR  # el merge fue rechazado: fast salta los checks, no este arreglo
         return Estado.MERGE
     r = bv.review_for(head)
     if r is None:
@@ -693,6 +698,13 @@ def merge_gate(bv: BlockView) -> MergeTicket | str:
     if bv.pr is None:
         return "sin PR"
     if bv.block.lane == "fast":
+        c = bv.checks.get(head)
+        if (
+            c is not None
+            and not c.get("green")
+            and bv.entrega_ts(head) <= bv.checks_ts.get(head, 0.0)
+        ):
+            return "el merge fue rechazado sobre ese SHA"
         return MergeTicket(block=bv.block.id, sha=head, pr=int(bv.pr["numero"]))
     r = bv.review_for(head)
     if r is None or not _aprobado(r):
