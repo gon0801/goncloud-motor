@@ -32,7 +32,8 @@ echo "$host :: $*" >>"$FAKE_LOG"
 case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac
 # FAKE_CAE_DESPUES: el host contesta la primera llamada (la validación) y cae desde la segunda (la instalación).
 n=$(( $(cat "$S/n-$host" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$S/n-$host"
-case " ${FAKE_CAE_DESPUES:-} " in *" $host "*) [ "$n" -le 1 ] || { echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; } ;; esac
+# La primera llamada guarda la revisión y la segunda valida. Caer "al instalar" es la tercera.
+case " ${FAKE_CAE_DESPUES:-} " in *" $host "*) [ "$n" -le 2 ] || { echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; } ;; esac
 if [ "$host" = gwpc ]; then
   ok_pc() { [ -z "${FAKE_PC_FALLA:-}" ] || { echo "git: no pude" >&2; exit 1; }; }
   case "$*" in
@@ -42,14 +43,35 @@ if [ "$host" = gwpc ]; then
     # Estado de mentira de la PC: la etiqueta que tiene ~/motor y la marca de la marcha atrás.
     *"describe --tags --exact-match"*) [ -f "$S/pc-tag" ] && { cat "$S/pc-tag"; exit 0; } || exit 1 ;;
     *"tag --points-at HEAD"*) [ -f "$S/pc-tag" ] && printf '%s\r\n' "$(cat "$S/pc-tag")"; exit 0 ;;
-    # La marcha atrás por SHA: el commit de la PC se simula traduciendo pc-tag contra origen.git.
-    "git -C "*" rev-parse HEAD")
-      [ -f "$S/pc-tag" ] || exit 1
-      sha_pc="$(git -C "$S/origen.git" rev-parse "refs/tags/$(cat "$S/pc-tag")^{commit}" 2>/dev/null)" || exit 1
+    # La marcha atrás guarda el SHA, no el nombre de la etiqueta. pc-tag sigue siendo el nombre.
+    *"rev-parse HEAD")
+      if [ ! -f "$S/pc-tag" ]; then
+        case "$*" in *"if exist"*) exit 0 ;; *) exit 1 ;; esac
+      fi
+      nombre="$(tr -d '[:space:]' <"$S/pc-tag")"
+      if ! sha_pc="$(git -C "$S/origen.git" rev-parse -q --verify "refs/tags/${nombre}^{commit}" 2>/dev/null)"; then
+        sha_pc="$(git -C "$S/origen.git" rev-parse -q --verify "${nombre}^{commit}")" || exit 1
+      fi
       printf '%s\r\n' "$sha_pc" ;;
-    *"rev-parse -q --verify refs/tags/"*)
-      git -C "$S/origen.git" rev-parse -q --verify "refs/tags/${*##*refs/tags/}^{commit}" >/dev/null 2>&1 ;;
-    *"checkout -q --detach refs/tags/"*) echo "${*##*refs/tags/}" >"$S/pc-tag" ;;
+    *"rev-parse"*"--verify "*)
+      arg="${*##*--verify }"
+      arg="${arg%% *}"
+      arg="${arg#refs/tags/}"
+      if ! sha_pc="$(git -C "$S/origen.git" rev-parse -q --verify "refs/tags/${arg}^{commit}" 2>/dev/null)"; then
+        sha_pc="$(git -C "$S/origen.git" rev-parse -q --verify "${arg}^{commit}")" || exit 1
+      fi
+      printf '%s\r\n' "$sha_pc" ;;
+    *"\\motor checkout -q --detach "*)
+      rev="${*##*--detach }"
+      rev="${rev%% *}"
+      rev="${rev#refs/tags/}"
+      if git -C "$S/origen.git" rev-parse -q --verify "refs/tags/${rev}^{commit}" >/dev/null 2>&1; then
+        printf '%s\n' "$rev" >"$S/pc-tag"
+      else
+        tag="$(git -C "$S/origen.git" describe --tags --exact-match "$rev" 2>/dev/null || true)"
+        printf '%s\n' "${tag:-$rev}" >"$S/pc-tag"
+      fi ;;
+    "type nul >"*"etiqueta-anterior.tmp"*) : >"$S/pc-etiqueta-anterior" ;;
     "type "*"etiqueta-anterior"*) [ -f "$S/pc-etiqueta-anterior" ] && { cat "$S/pc-etiqueta-anterior"; exit 0; } || exit 1 ;;
     "echo "*"etiqueta-anterior"*) v="${*#echo }"; echo "${v%%>*}" >"$S/pc-etiqueta-anterior" ;;
     # cmd.exe: sin paréntesis, `& mkdir` es parte del cuerpo del if y no corre si la carpeta no existe.
@@ -68,9 +90,14 @@ if [ "$host" = gwpc ]; then
     "git -C "*" fetch -q --tags --force origin")
       [ -z "${FAKE_GIT_ORIGIN_CAIDO:-}" ] || { echo "fatal: no pude conectar (origin caído)" >&2; exit 1; } ;;
     "if not exist "* | "copy /y "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
-    *"cat-file -e refs/tags/"*":motor/formato.py"*) [ -z "${FAKE_PC_SIN_FORMATO:-}" ] || exit 1 ;;
+    *"cat-file -e "*"motor/formato.py")
+      [ -z "${FAKE_PC_SIN_FORMATO:-}" ] || exit 1
+      spec="${*##*cat-file -e }"
+      spec="${spec%% *}"
+      git -C "$S/origen.git" cat-file -e "$spec" ;;
     *"if exist"*"formato echo si"*) if [ -f "$S/pc-formato" ]; then echo si; else echo no; fi ;;
     *"-m motor formato"*) if [ -f "$S/pc-formato-bloquea" ]; then exit 1; fi ;;
+    *sol_remoto.py*) ;;
     *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
   esac
   exit 0
@@ -150,8 +177,10 @@ contiene "la PC clona la conf" "$FAKE_LOG" "motor-conf"
 contiene "la PC enlaza la conf" "$FAKE_LOG" "mklink /j"
 grep -qE 'dev/goncloud-motor|\.motor-arranque' "$FAKE_LOG" && fallo "tocó ~/dev/goncloud-motor o ~/.motor-arranque"
 [ -e "$S/mac/dev" ] || [ -e "$S/mac/.motor-arranque" ] && fallo "creó carpetas ajenas en la Mac"
-for m in mac mini; do [ ! -e "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: anotó etiqueta-anterior en una instalación nueva"; done
-[ ! -e "$S/pc-etiqueta-anterior" ] || fallo "pc: anotó etiqueta-anterior en una instalación nueva"
+for m in mac mini; do
+  [ -f "$S/$m/.motor/etiqueta-anterior" ] && [ ! -s "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: una instalación nueva debía dejar la marca vacía"
+done
+[ -f "$S/pc-etiqueta-anterior" ] && [ ! -s "$S/pc-etiqueta-anterior" ] || fallo "pc: una instalación nueva debía dejar la marca vacía"
 
 reset
 en_mac espera "la Mac se instala por ssh" 0 bash "$I"
@@ -168,9 +197,11 @@ en_mac espera "el origin de la mini pasa a la direccion comun" 0 bash "$I"
 
 reset
 en_mac espera "segunda corrida (actualiza, no reclona)" 0 bash "$I"
-# La etiqueta no cambió: la marca de la marcha atrás no se toca.
-for m in mac mini; do [ ! -e "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: anotó etiqueta-anterior sin cambio de etiqueta"; done
-[ ! -e "$S/pc-etiqueta-anterior" ] || fallo "pc: anotó etiqueta-anterior sin cambio de etiqueta"
+# Instalación nueva: la marca existe y está vacía. No hay revisión anterior.
+for m in mac mini; do
+  [ -f "$S/$m/.motor/etiqueta-anterior" ] && [ ! -s "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: una instalación nueva debía dejar la marca vacía"
+done
+[ -f "$S/pc-etiqueta-anterior" ] && [ ! -s "$S/pc-etiqueta-anterior" ] || fallo "pc: una instalación nueva debía dejar la marca vacía"
 
 # main avanzó con la etiqueta ya publicada: no se mueve y la instalación se niega
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m otro && git -C "$S/trabajo" push -q origin HEAD:main
@@ -184,7 +215,7 @@ git -C "$S/trabajo" fetch -q origin && git -C "$S/trabajo" checkout -q --detach 
 git -C "$S/trabajo" push -q origin "HEAD~1:refs/tags/$TAG"
 en_mac espera "etiqueta en otro commit" 3 bash "$I"
 contiene "dice cómo arreglarlo" "$S/salida" "sube la etiqueta en ops/lib.sh"
-[ ! -e "$S/mac/motor" ] && [ ! -e "$S/mini/motor" ] && ! grep -q . "$FAKE_LOG" || fallo "tocó alguna máquina con la etiqueta en otro commit"
+[ ! -e "$S/mac/motor" ] && [ ! -e "$S/mini/motor" ] && [ ! -e "$S/pc-tag" ] || fallo "tocó alguna máquina con la etiqueta en otro commit"
 
 avanza() { git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1" && git -C "$S/trabajo" push -q origin HEAD:main; }
 tag_en() { git -C "$S/$1/motor" describe --tags --exact-match 2>/dev/null; }
@@ -252,7 +283,7 @@ FAKE_CAE="gon@mini-fake" en_mac espera "la Mini sin ssh al validar" '!0' bash "$
 contiene "dice cuál" "$S/salida" "mini"
 nada_se_movio "Mini sin ssh"
 FAKE_CAE=gwpc en_mac espera "la PC sin ssh al validar" '!0' bash "$I"
-contiene "dice que nada cambió" "$S/salida" "No se cambió el código en ninguna máquina"
+contiene "dice que no tocó código" "$S/salida" "reintenta sin tocar codigo"
 nada_se_movio "PC sin ssh"
 FAKE_PC_FALLA=1 en_mac espera "la PC no puede validar" '!0' bash "$I"
 nada_se_movio "la PC no puede validar"
@@ -322,11 +353,12 @@ unset MOTOR_ETIQUETA
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m avance && git -C "$S/trabajo" push -q origin HEAD:main
 touch "$S/mac/.cargado" "$S/mini/.cargado"
 en_mac espera "entrega nueva en $TAG" 0 bash "$I"
+sha_vieja="$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.23^{commit}")"
 for m in mac mini; do
-  contiene "marca $m" "$S/$m/.motor/etiqueta-anterior" "v1.0.23"
+  contiene "marca $m" "$S/$m/.motor/etiqueta-anterior" "$sha_vieja"
   [ "$(git -C "$S/$m/motor" describe --tags --exact-match)" = $TAG ] || fallo "$m: no quedó en $TAG"
 done
-contiene "marca pc" "$S/pc-etiqueta-anterior" "v1.0.23"
+contiene "marca pc" "$S/pc-etiqueta-anterior" "$sha_vieja"
 [ "$(cat "$S/pc-tag")" = $TAG ] || fallo "pc: no quedó en $TAG"
 
 # Sin marca la máquina no se mueve y no es error.
@@ -443,8 +475,33 @@ reset
 MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 para traer la etiqueta de origin" 0 bash "$I"; unset MOTOR_ETIQUETA
 avanza "avance-para-traer-de-origin"
 en_mac espera "entrega $TAG para traer la etiqueta de origin" 0 bash "$I"
+printf '%s' v1.0.23 >"$S/mac/.motor/etiqueta-anterior"
 git -C "$S/mac/motor" tag -d v1.0.23 >/dev/null
 MOTOR_SHA="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")" en_mac espera "marcha atrás trayendo la etiqueta de origin" 0 bash "$V"
 en_su_etiqueta "marcha atrás trayendo de origin" v1.0.23
+
+# Con el marcador de formato v2 y los efectos resueltos, la marcha atrás a un código
+# que no trae motor/formato.py mueve las tres y deja el marcador.
+reset
+git -C "$S/trabajo" checkout -q -B main "$SHA"
+git -C "$S/trabajo" push -q -f origin HEAD:main
+git -C "$S/trabajo" rm -q motor/formato.py
+git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q -m "sin formato.py"
+git -C "$S/trabajo" push -q origin HEAD:main
+MOTOR_ETIQUETA=v-sin-formato en_mac espera "base sin formato.py" 0 bash "$I"
+unset MOTOR_ETIQUETA
+sin="$(git -C "$S/origen.git" rev-parse "refs/tags/v-sin-formato^{commit}")"
+git -C "$S/trabajo" checkout -q --detach HEAD~1
+en_mac espera "entrega con formato.py" 0 bash "$I"
+printf '%s\n' '{"version":2,"nombre":"motor08"}' >"$S/mac/.motor/formato"
+cp "$S/mac/.motor/formato" "$S/mini/.motor/formato"
+touch "$S/pc-formato"
+en_mac espera "reversa del formato v2" 0 bash "$V"
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$sin" ] || fallo "mac no volvió al código sin formato.py"
+[ "$(git -C "$S/mini/motor" rev-parse HEAD)" = "$sin" ] || fallo "mini no volvió al código sin formato.py"
+[ "$(tr -d '[:space:]' <"$S/pc-tag")" = v-sin-formato ] || fallo "pc no volvió a v-sin-formato"
+git -C "$S/mac/motor" cat-file -e "HEAD:motor/formato.py" 2>/dev/null && fallo "mac volvió a un árbol que todavía tiene formato.py"
+[ -s "$S/mac/.motor/formato" ] && [ -s "$S/mini/.motor/formato" ] || fallo "la reversa borró el marcador de formato"
+[ -f "$S/pc-formato" ] || fallo "la reversa borró el marcador de la PC"
 
 termina
