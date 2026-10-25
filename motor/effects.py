@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import string
 import subprocess
@@ -59,6 +60,68 @@ def con_python(env: dict, en_windows: bool | None = None) -> dict:
     ruta = env.get("PATH", "")
     if not shutil.which("python", path=ruta) and shutil.which("python3", path=ruta):
         env["PATH"] = os.pathsep.join([str(RAIZ / "motor" / "shims" / "python"), ruta])
+    return env
+
+
+def _dir_shims_python() -> Path:
+    """Carpeta con `python` y `python3` que ejecutan el Python del motor (`sys.executable`)."""
+    clave = hashlib.sha256(os.path.realpath(sys.executable).encode()).hexdigest()[:12]
+    d = Path(tempfile.gettempdir()) / f"motor-python-{clave}"
+    contenido = f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        for nombre in ("python", "python3"):
+            f = d / nombre
+            if f.is_symlink() and os.path.realpath(f) == os.path.realpath(
+                sys.executable
+            ):
+                continue
+            try:
+                if f.is_symlink() or f.exists():
+                    f.unlink()
+                f.symlink_to(sys.executable)
+                continue
+            except OSError:
+                pass
+            try:
+                actual = f.read_text(encoding="utf-8")
+            except OSError:
+                actual = ""
+            if actual != contenido:
+                tmp = d / f".{nombre}.tmp"
+                tmp.write_text(contenido, encoding="utf-8")
+                tmp.chmod(0o755)
+                os.replace(tmp, f)
+            else:
+                os.chmod(f, 0o755)
+    except OSError:
+        return Path(sys.executable).parent
+    return d
+
+
+def entorno_maquina(maquina, extra: dict | None = None) -> dict:
+    """El único entorno de la máquina: previa y verificación salen de aquí."""
+    env = {**os.environ}
+    if maquina is not None:
+        env.update(dict(getattr(maquina, "env", ()) or ()))
+        env.update(dict(getattr(maquina, "secretos", ()) or ()))
+    env["MOTOR_RAIZ"] = str(RAIZ)
+    if extra:
+        env.update(dict(extra))
+    env.pop(senal.VARIABLE, None)
+    env.pop("MOTOR_LLAMADA", None)
+    if os.name == "nt":
+        return con_python(env)
+    path_extra = (
+        tuple(getattr(maquina, "path_extra", ()) or ()) if maquina is not None else ()
+    )
+    partes = [
+        str(_dir_shims_python()),
+        str(RAIZ / "motor" / "shims"),
+        *path_extra,
+        env.get("PATH", ""),
+    ]
+    env["PATH"] = os.pathsep.join(p for p in partes if p)
     return env
 
 
@@ -405,19 +468,7 @@ class Effects:
 
     # ------------------------------------------------------------------ entorno
     def env_base(self, extra: dict | None = None) -> dict:
-        mq = self.cx.maquina
-        env = {
-            **os.environ,
-            **dict(mq.env),
-            **dict(mq.secretos),
-            "MOTOR_RAIZ": str(RAIZ),
-            **(extra or {}),
-        }
-        env.pop(senal.VARIABLE, None)
-        env.pop("MOTOR_LLAMADA", None)  # un agente nunca arranca dentro de una llamada
-        if mq.path_extra:
-            env["PATH"] = os.pathsep.join([*mq.path_extra, env.get("PATH", "")])
-        return con_python(env)
+        return entorno_maquina(self.cx.maquina, extra)
 
     def repo_conf(self, snap: m.Snapshot, repo: str) -> RepoConf:
         return RepoConf.parse(snap.repos.get(repo, {}).get("texto", ""))

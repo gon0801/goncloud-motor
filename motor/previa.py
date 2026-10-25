@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 from .conf import Maquina, RepoConf, load_maquina
-from .effects import _run, comandos_faltantes, con_python
+from .effects import _run, comandos_faltantes, entorno_maquina
 from .plan import Plan
 from .workspace import Workspace, git
 
@@ -23,6 +23,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 TOPE_PREVIA_S = 120.0
 
 _MODULO = re.compile(r"No module named ['\"]([^'\"]+)['\"]")
+_MODULO_SIN_COMILLAS = re.compile(r"No module named\s+([\w.]+)")
 _PATRONES = (
     ("Could not resolve host", "no se puede resolver el host (Could not resolve host)"),
     (
@@ -37,6 +38,10 @@ def faltantes_de_salida(salida: str, codigo: int = 0) -> list[str]:
     """Lo que falta en la máquina según una salida, sin repetir los patrones del shell."""
     faltan = comandos_faltantes(salida)
     faltan += _MODULO.findall(salida)
+    if "No module named" in salida and not _MODULO.search(salida):
+        m = _MODULO_SIN_COMILLAS.search(salida)
+        if m:
+            faltan.append(m.group(1))
     if "cannot import name 'tomllib'" in salida or 'cannot import name "tomllib"' in salida:
         faltan.append("tomllib")
     if codigo in (126, 127) and not faltan:
@@ -52,6 +57,11 @@ def causa_de_salida(codigo: int, salida: str) -> str | None:
         return "falta tomllib en el Python del motor (ese Python es anterior a 3.11)"
     if m := _MODULO.search(salida):
         return f"falta el módulo {m.group(1)} en el Python del motor"
+    if "No module named" in salida:
+        m = _MODULO_SIN_COMILLAS.search(salida)
+        if m:
+            return f"falta el módulo {m.group(1)} en el Python del motor"
+        return "falta un módulo en el Python del motor (No module named)"
     if "ModuleNotFoundError" in salida:
         return "falta un módulo en el Python del motor (ModuleNotFoundError)"
     for patron, causa in _PATRONES:
@@ -90,18 +100,7 @@ def archivo_ignorado(copia: Path, acepta: str) -> str | None:
 
 
 def _entorno(maquina: Maquina | None, prueba_env=()) -> dict:
-    env = {**os.environ}
-    if maquina is not None:
-        env.update(dict(maquina.env))
-        env.update(dict(maquina.secretos))
-        if maquina.path_extra:
-            env["PATH"] = os.pathsep.join([*maquina.path_extra, env.get("PATH", "")])
-    env["MOTOR_RAIZ"] = str(RAIZ)
-    env.update(dict(prueba_env))
-    env["PATH"] = os.pathsep.join(
-        [str(RAIZ / "motor" / "shims"), str(RAIZ / "motor" / "shims" / "python"), env.get("PATH", "")]
-    )
-    return con_python(env)
+    return entorno_maquina(maquina, dict(prueba_env))
 
 
 def _primer_programa(comando: str) -> str:
@@ -164,7 +163,7 @@ def _corre_previa(
             for block in plan.blocks:
                 try:
                     espejo = ws.espejo(block.repo)
-                    principal = (
+                    detectada = (
                         git(
                             "symbolic-ref",
                             "--short",
@@ -173,21 +172,46 @@ def _corre_previa(
                         )
                         .stdout.strip()
                         .removeprefix("origin/")
-                        or "main"
                     )
+                    principal = detectada or "main"
                     sha, texto = ws.leer_en_base(block.repo, principal, ".motor.toml")
-                    rc = RepoConf.parse(texto)
-                    if rc.principal != principal:
-                        principal = rc.principal
-                        sha, texto = ws.leer_en_base(block.repo, principal, ".motor.toml")
+                    if texto.strip():
                         rc = RepoConf.parse(texto)
+                        if rc.principal != principal:
+                            principal = rc.principal
+                            sha, texto = ws.leer_en_base(
+                                block.repo, principal, ".motor.toml"
+                            )
+                            rc = (
+                                RepoConf.parse(texto)
+                                if texto.strip()
+                                else RepoConf(principal=principal)
+                            )
+                    else:
+                        rc = RepoConf(principal=principal)
                     if not sha:
-                        sha = git("rev-parse", f"origin/{principal}", cwd=espejo).stdout.strip()
+                        r = git("rev-parse", f"origin/{principal}", cwd=espejo)
+                        if r.returncode != 0 or not r.stdout.strip():
+                            raise RuntimeError(
+                                f"no se pudo leer la punta de la rama principal {principal}"
+                            )
+                        sha = r.stdout.strip()
                     copia = ws.copia(
                         block.repo, sha, Path(td) / f"copia-{block.id}"
                     )
                     copias[block.id] = copia
-                except Exception:  # noqa: BLE001 - sin copia no hay previa: lo rechaza el motor al tomarlo
+                except Exception as e:  # noqa: BLE001 - sin copia no hay previa válida
+                    detalle = str(e).strip().splitlines()[-1] if str(e).strip() else type(e).__name__
+                    if block.rows:
+                        for r in block.rows:
+                            if r.acepta:
+                                errores.append(
+                                    f"{r.id}: no se pudo preparar la copia de la rama principal para la previa ({detalle})"
+                                )
+                    else:
+                        errores.append(
+                            f"{block.id}: no se pudo preparar la copia de la rama principal para la previa ({detalle})"
+                        )
                     continue
                 env = _entorno(maquina, rc.prueba_env)
                 for r in block.rows:
