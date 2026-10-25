@@ -135,9 +135,14 @@ def main(argv=None):
         "archive": base64.b64encode(archive).decode(),
         "prompt": args.brief.read_text(encoding="utf-8"),
     }
+    ssh = (
+        str(Path(os.environ["ProgramFiles"]) / "Git" / "usr" / "bin" / "ssh.exe")
+        if os.name == "nt"
+        else "ssh"
+    )
     proceso = subprocess.Popen(
         [
-            "ssh",
+            ssh,
             "-T",
             "-oBatchMode=yes",
             "-oConnectTimeout=10",

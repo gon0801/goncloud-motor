@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -55,13 +56,21 @@ class SolRemotoTest(unittest.TestCase):
             prompt = f"Revisa 'comillas' y `touch {intruso}` y $(touch {intruso}).\nGuia real."
             brief.write_text(prompt)
             popen = subprocess.Popen
+            ssh_windows = str(raiz / "Git" / "usr" / "bin" / "ssh.exe")
+            ssh_esperado = ssh_windows
 
             def ssh_falso(args, **kwargs):
-                if args[0] != "ssh":
+                if args[0] not in ("ssh", ssh_windows):
                     return popen(args, **kwargs)
                 self.assertEqual(
                     args[:5],
-                    ["ssh", "-T", "-oBatchMode=yes", "-oConnectTimeout=10", "mac"],
+                    [
+                        ssh_esperado,
+                        "-T",
+                        "-oBatchMode=yes",
+                        "-oConnectTimeout=10",
+                        "mac",
+                    ],
                 )
                 self.assertNotIn(prompt, args[-1])
                 remoto = shlex.split(args[-1])
@@ -92,7 +101,17 @@ class SolRemotoTest(unittest.TestCase):
                 os.chdir(repo)
                 with patch.object(sol.subprocess, "Popen", side_effect=ssh_falso):
                     control.write_text(json.dumps(esperado))
-                    sol.main(["--brief", str(brief), "--result", str(resultado)])
+                    with patch.object(
+                        sol,
+                        "os",
+                        SimpleNamespace(
+                            name="nt",
+                            environ={"ProgramFiles": str(raiz)},
+                            replace=os.replace,
+                        ),
+                    ):
+                        sol.main(["--brief", str(brief), "--result", str(resultado)])
+                    ssh_esperado = "ssh"
                     self.assertEqual(json.loads(resultado.read_text()), esperado)
                     control.write_text(json.dumps({**esperado, "sha": "0" * 40}))
                     with self.assertRaises((ValueError, RuntimeError)):
