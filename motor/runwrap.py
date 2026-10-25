@@ -155,10 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
     d, cwd = Path(a.dir), Path(a.cwd)
     log = d / "log.txt"
+    errores = d / "stderr.txt"
     fotos: list[str] = []
     antes = _huella_arbol(cwd)
     inicio = time.time()
-    with open(log, "ab") as out:
+    with open(log, "ab") as out, open(errores, "ab") as err:
         env_agente = {**os.environ, "MOTOR_ATTEMPT_DIR": str(d)}
         cmd = _sin_shims(cmd, env_agente)
         p = subprocess.Popen(
@@ -166,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=out,
-            stderr=subprocess.STDOUT,
+            stderr=err,
             env=env_agente,
             **kwargs_grupo(),
         )
@@ -186,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                     "inicio": inicio,
                 },
             )
-        ultimo = (log.stat().st_size, _mtime_arbol(cwd))
+        ultimo = (log.stat().st_size, errores.stat().st_size, _mtime_arbol(cwd))
         ultimo_cambio = ultimo_escaneo = time.time()
         huella_p, _ = _huella_pstack(d)
         ultimo_cambio_p = 0.0
@@ -213,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(0.2)
             if time.time() - ultimo_escaneo >= 10:
                 ultimo_escaneo = time.time()
-                ahora = (log.stat().st_size, _mtime_arbol(cwd))
+                ahora = (log.stat().st_size, errores.stat().st_size, _mtime_arbol(cwd))
                 if ahora != ultimo:
                     ultimo, ultimo_cambio = ahora, time.time()
             entrego = espera.vigila(d, cwd)
@@ -250,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         "timed_out": timed_out,
         "no_progress": no_progress,
         "tail": log.read_text(errors="replace", encoding="utf-8")[-2000:],
+        "stderr_tail": errores.read_text(errors="replace", encoding="utf-8")[-2000:],
         "fotos": fotos[-5:],
         "segundos": round(time.time() - inicio, 1),
         "toco_carpeta": _huella_arbol(cwd) != antes,

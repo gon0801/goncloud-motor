@@ -14,8 +14,29 @@ stderr, que es el canal de error del proveedor, el número suelto sí vale.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 PROVEEDORES = ("claude", "kimi", "opencode", "grok", "muse", "qwen", "deepseek")
+
+@dataclass(frozen=True)
+class OrigenProveedor:
+    proveedor: str
+    cuenta: str = ""
+    ruta: str = ""
+    intento: str = ""
+    secuencia: int = 0
+    reset_at: str = ""
+@dataclass(frozen=True)
+class CuotaAgotada:
+    origen: OrigenProveedor
+@dataclass(frozen=True)
+class FrenoCorto:
+    origen: OrigenProveedor
+@dataclass(frozen=True)
+class SinCanalFiable:
+    proveedor: str
+    motivo: str
+CANAL_EN_VIVO = {"kimi": SinCanalFiable("kimi", "el CLI solo entrega el resultado final; no hay senal de cuota en vivo")}
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -141,6 +162,12 @@ _PROPIOS: dict[str, tuple[tuple[re.Pattern, str], ...]] = {
     "grok": ((re.compile(r"not signed in|grok login", re.I), "auth"),),
     "muse": ((re.compile(r"missing meta credentials|muse login", re.I), "auth"),),
     "qwen": ((re.compile(r"no auth type is selected|--auth-type", re.I), "auth"),),
+    "cursor-agent": (
+        (
+            re.compile(r"ActionRequiredError: .*not included in your weekly usage", re.I),
+            "modelo_no_disponible",
+        ),
+    ),
 }
 
 

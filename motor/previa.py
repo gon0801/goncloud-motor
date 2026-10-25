@@ -1,4 +1,4 @@
-"""Prueba previa de un plan: cada Acepta sobre la punta de la rama principal de su repo.
+"""Previa estructural de un plan. No ejecuta la Acepta ni la prueba real.
 
 Una Acepta que falla porque el arreglo aún no existe está bien. Solo es rechazo si no
 puede correr en esta máquina. Las `prueba-real` no se corren: pueden tocar máquinas.
@@ -22,8 +22,6 @@ from .workspace import Workspace, git
 RAIZ = Path(__file__).resolve().parent.parent
 TOPE_PREVIA_S = 120.0
 
-_MODULO = re.compile(r"No module named ['\"]([^'\"]+)['\"]")
-_MODULO_SIN_COMILLAS = re.compile(r"No module named\s+([\w.]+)")
 _PATRONES = (
     ("Could not resolve host", "no se puede resolver el host (Could not resolve host)"),
     (
@@ -37,11 +35,6 @@ _PATRONES = (
 def faltantes_de_salida(salida: str, codigo: int = 0) -> list[str]:
     """Lo que falta en la máquina según una salida, sin repetir los patrones del shell."""
     faltan = comandos_faltantes(salida)
-    faltan += _MODULO.findall(salida)
-    if "No module named" in salida and not _MODULO.search(salida):
-        m = _MODULO_SIN_COMILLAS.search(salida)
-        if m:
-            faltan.append(m.group(1))
     if "cannot import name 'tomllib'" in salida or 'cannot import name "tomllib"' in salida:
         faltan.append("tomllib")
     if codigo in (126, 127) and not faltan:
@@ -55,15 +48,6 @@ def causa_de_salida(codigo: int, salida: str) -> str | None:
     """La causa de «no puede correr aquí», o None si la salida es una falla del código."""
     if "cannot import name 'tomllib'" in salida or 'cannot import name "tomllib"' in salida:
         return "falta tomllib en el Python del motor (ese Python es anterior a 3.11)"
-    if m := _MODULO.search(salida):
-        return f"falta el módulo {m.group(1)} en el Python del motor"
-    if "No module named" in salida:
-        m = _MODULO_SIN_COMILLAS.search(salida)
-        if m:
-            return f"falta el módulo {m.group(1)} en el Python del motor"
-        return "falta un módulo en el Python del motor (No module named)"
-    if "ModuleNotFoundError" in salida:
-        return "falta un módulo en el Python del motor (ModuleNotFoundError)"
     for patron, causa in _PATRONES:
         if patron in salida:
             return causa
@@ -227,28 +211,6 @@ def _corre_previa(
                             f"{r.id}: nombra el archivo ignorado {ign} (git check-ignore)"
                         )
                         continue
-                    p = _run(
-                        r.acepta,
-                        copia,
-                        env,
-                        TOPE_PREVIA_S,
-                        bash=maquina.bash if maquina else "",
-                    )
-                    if causa := causa_de_salida(p.returncode, p.stdout + p.stderr):
-                        errores.append(f"{r.id}: {causa}")
-                if block.prueba_real:
-                    prog = _primer_programa(block.prueba_real)
-                    if prog:
-                        existe = (
-                            (copia / prog).exists()
-                            if "/" in prog
-                            else bool(shutil.which(prog, path=env.get("PATH", "")))
-                            or prog in ("test", "true", "false", "echo", "cd")
-                        )
-                        if not existe:
-                            errores.append(
-                                f"{block.id}: la prueba real usa {prog}, que no está en esta máquina"
-                            )
         finally:
             for block in plan.blocks:
                 copia = copias.get(block.id)

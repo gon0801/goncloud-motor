@@ -61,7 +61,7 @@ class ReentregaTest(unittest.TestCase):
                 ),
             ]
         snap = m.fold(corregido, eventos)
-        self.assertIs(m.estado(snap, "A"), m.Estado.REVISAR)
+        self.assertIs(m.estado(snap, "A"), m.Estado.LISTO)
         self.assertFalse(
             any(m._cuenta_falla(a, snap.blocks["A"]) for a in snap.blocks["A"].attempts)
         )
@@ -81,7 +81,7 @@ class ReentregaTest(unittest.TestCase):
             if not (e.kind == "PlanLoaded" and e.data["version"] == 2)
         ]
         snap = m.fold(anterior, sin_correccion)
-        self.assertIs(m.estado(snap, "A"), m.Estado.ARREGLAR)
+        self.assertIs(m.estado(snap, "A"), m.Estado.LISTO)
         self.assertTrue(
             m._cuenta_falla(snap.blocks["A"].attempts[-1], snap.blocks["A"])
         )
@@ -152,7 +152,7 @@ class UnionExternaTest(Banco):
         ]
         for e in eventos:
             d.store.append(plan.id, e.block, e.kind, e.data)
-        self.assertIs(m.estado(d._fold(plan), "A"), m.Estado.ARREGLAR)
+        self.assertIs(m.estado(d._fold(plan), "A"), m.Estado.LISTO)
         pruebas = []
         d.fx.prove = lambda p, s, a: pruebas.append((s, a))
         vista = PrView(19, rama, "main", False, punta, "mergeado", unido)

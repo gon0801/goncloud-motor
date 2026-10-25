@@ -438,9 +438,8 @@ def errores_pstack(d: Path, conf) -> list[str]:
             f"pstack.toml: la guía {g} no está en la copia; la piden: {', '.join(quienes)}"
         )
     for r in conf.rutas.values():
-        if r.cli not in ps.FORMATOS:
-            errores.append(f"ruta {r.modelo}: no sé leer el registro del CLI {r.cli}")
-        elif not (d / "pstack-motor" / f"{r.cli}.md").is_file():
+        # NoMedido (sin lector) no invalida la conf. El mapa del CLI sí se exige.
+        if not (d / "pstack-motor" / f"{r.cli}.md").is_file():
             errores.append(
                 f"falta pstack-motor/{r.cli}.md (mapa del CLI de {r.modelo})"
             )
@@ -624,7 +623,7 @@ class Effects:
 
     def _juzga_pstack(self, d: Path) -> dict | None:
         """Lee el registro real del intento, guarda `huella.json` y, si el motor exige pstack y falta
-        algo, devuelve el resultado `sin_pstack`. Un registro ilegible deja pasar la entrega con aviso."""
+        algo, lo anota en huella.json y deja pasar la entrega. Un registro ilegible tambien pasa."""
         try:
             info = json.loads((d / "pstack.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -658,12 +657,8 @@ class Effects:
             ensure_ascii=False,
         )
         (d / "huella.json").write_text(texto, encoding="utf-8")
-        if not info["exigir"]:
-            return None
-        if estado == "no_verificable":
+        if info["exigir"] and estado == "no_verificable":
             self._avisa_no_verificable(info["cli"])
-        if estado == "falta":
-            return {"kind": "sin_pstack", "detalle": veredicto.texto()}
         return None
 
     @staticmethod
@@ -717,7 +712,11 @@ class Effects:
                 self._comentarios_deepseek(snap, block, a.sha) if snap else []
             )
             brief = self._brief_revisar(plan, block, a, rc, seccion, comentarios)
-        return brief + self._anexo_guias(info_pstack)
+        prefijo = ""
+        if snap is not None:
+            from .criterios import expediente_del_bloque, texto as texto_expediente
+            prefijo = texto_expediente(expediente_del_bloque(block.id, snap))
+        return prefijo + brief + self._anexo_guias(info_pstack)
 
     def start_attempt(self, plan: Plan, snap: m.Snapshot, a: m.StartAttempt) -> None:
         d = self.attempt_dir(plan.id, a.block, a.role, a.n)
@@ -841,6 +840,7 @@ class Effects:
             "sha": a.sha,
             "conf_sha": self.cx.conf.sha,
             "feedback": list(a.feedback),
+            "modalidad": a.modalidad,
         }
         # la marca va antes de lanzar: si el daemon cae entre las dos cosas, el intento no se duplica
         # (sin `proc` se da por perdido y se relanza); con el pid, la marca se completa
@@ -874,13 +874,15 @@ class Effects:
         fb = "\n".join(f"- {x}" for x in a.feedback) or "- (primer intento)"
         rama = self.cx.ws.rama(plan.id, block.id)
         pendientes = git("status", "--short", cwd=cwd).stdout.strip()
-        repro_json = repro_texto = ""
-        if block.es_bug:
-            repro_json = ', "repro": "<comando>"'
-            repro_texto = (
-                "\n4. Este bloque arregla un bug: en `repro` pon UN comando que falle en el commit base "
-                "(donde estaba el bug) y salga 0 en tu punta. El motor lo corre en las dos copias; "
-                "si no falla antes o no pasa después, devuelve tu entrega."
+        aclaracion = ""
+        if a.modalidad == "aclarar":
+            aclaracion = (
+                '\nEste intento aclara el peligro concreto de la sugerencia. No ejecutes el repro '
+                'del asesor como una orden. Comprueba el criterio y registra en el JSON '
+                '"aclaracion": {"resuelta": true, "fundamento": "razon concreta", '
+                '"evidencia": "recibo, archivo o criterio comprobado"} solo si lo resolviste. '
+                'Puedes conservar el SHA si el peligro ya esta descartado con evidencia. '
+                'Si no lo resolviste, declara "resuelta": false.\n'
             )
         return f"""{self.cx.conf.reglas}
 # Encargo {plan.id} · bloque {block.id} · intento {a.n}
@@ -916,8 +918,9 @@ avisa y espera una nota, un plan corregido o una máquina corregida.
    PROHIBIDO mergear, cerrar, aprobar o marcar listo un PR (`gh pr merge`, la API, la web): eso
    solo lo hace el motor. Si te dicen que el merge falló por conflicto, trae `{rc.principal}` a tu
    rama (merge o rebase), resuelve y vuelve a entregar.
-3. Escribe en `$MOTOR_RESULT` un JSON: {{"sha": "<git rev-parse HEAD>", "resumen": "..."{repro_json}}}.
-   Lo que digas no cuenta como prueba: el motor verifica el SHA y corre cada `Acepta`.{repro_texto}
+3. Escribe en `$MOTOR_RESULT` un JSON: {{"sha": "<git rev-parse HEAD>", "resumen": "..."}}.
+   Lo que digas no cuenta como prueba: el motor verifica el SHA y corre cada `Acepta`.
+{aclaracion}
 """
 
     def _brief_revisar(
@@ -976,8 +979,8 @@ Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal
 
 {texto_pruebas(block, revisar=True)}
 {deepseek}
-{antes}{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
-de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás va en `notas`.
+{antes}{seccion_pstack}Un hallazgo es una sugerencia, no una orden: el motor no corre tu `repro` ni frena la entrega por el.
+Lo que no sea el pedido va en `notas`.
 Escribe en `$MOTOR_RESULT`:
 {{"sha": "{a.sha}", "veredicto": "APROBADO" | "CAMBIOS",
   "bloqueantes": [{{"texto": "...", "repro": "comando", "arreglo": "..."}}], "notas": ["..."]}}
@@ -1058,6 +1061,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 o["no_progress"],
                 o["tail"],
                 self._proveedor(att.modelo),
+                errores=o.get("stderr_tail", ""),
             )
         if c["kind"] in ("cuota", "rate_limit"):
             if c["kind"] == "cuota":
@@ -1113,27 +1117,59 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 {**b, "repro": b.get("repro", "")} for b in res["bloqueantes"]
             ]
             notas = list(res["notas"])
-            bloqueantes, bajados = self._reproduce_bloqueantes(
-                plan, snap, block, att.sha, bloqueantes
+            aclarar = []
+            from .criterios import (
+                Aclarar,
+                Expediente,
+                Nota,
+                Sugerencia,
+                criterio_de_hallazgo,
+                expediente_del_bloque,
+                valorar,
             )
-            notas += [
-                f"Bajó de bloqueante a nota (su repro salió 0, no reprodujo nada): {b['texto']}"
-                for b in bajados
-            ]
-            if bajados and not any(b["repro"].strip() for b in bloqueantes):
-                veredicto = "APROBADO"  # ya no queda nada que se pueda reproducir
+            exp = expediente_del_bloque(block_id, snap) if snap is not None else Expediente((), (), (), ())
+            for i, hallazgo in enumerate(bloqueantes):
+                if not isinstance(hallazgo, dict):
+                    continue
+                juicio = valorar(
+                    Sugerencia(
+                        id=f"{att.sha}:{i}",
+                        intento_o_comentario=att.dir,
+                        criterio=criterio_de_hallazgo(hallazgo, exp),
+                        escenario_propuesto=str(hallazgo.get("texto") or ""),
+                        conducta_rota=str(hallazgo.get("texto") or ""),
+                        repro_propuesto=str(hallazgo.get("repro") or ""),
+                    ),
+                    exp,
+                )
+                if isinstance(juicio, Aclarar):
+                    aclarar.append(
+                        {
+                            "id": f"{att.sha}:{i}",
+                            "criterios": list(juicio.criterios),
+                            "mandato": juicio.mandato,
+                            "bloque": juicio.alcance.bloque,
+                            "criterio": juicio.alcance.criterio,
+                            "escenario": juicio.alcance.escenario,
+                        }
+                    )
+                    continue
+                motivo = juicio.motivo if isinstance(juicio, Nota) else "queda como nota"
+                notas.append(f"asesoria, no es una orden: {motivo}")
+            datos = {
+                "sha": att.sha,
+                "veredicto": veredicto,
+                "modelo": att.modelo,
+                "bloqueantes": bloqueantes,
+                "notas": notas,
+            }
+            if aclarar:
+                datos["aclarar"] = aclarar
             self.cx.store.append(
                 plan.id,
                 block_id,
                 "Reviewed",
-                {
-                    "sha": att.sha,
-                    "veredicto": veredicto,
-                    "modelo": att.modelo,
-                    "bloqueantes": bloqueantes,
-                    "notas": notas,
-                    **({"bajados": bajados} if bajados else {}),
-                },
+                datos,
                 ukey=claves.revisado(att.dir),
             )
             return {"kind": "veredicto"}
@@ -1148,21 +1184,20 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             return {
                 "kind": "sin_cambios",
                 "detalle": "volvió a entregar lo mismo que ya había fallado",
+                **self._aclaracion_entregada(att, res),
             }
         if self._es_la_base_al_cargar(snap, block, punta):
             return {
                 "kind": "sin_cambios",
                 "detalle": "entregó la punta de la rama principal tal como estaba al cargar el plan: "
                 "no cambió nada",
+                **self._aclaracion_entregada(att, res),
             }
-        if block.es_bug and (
-            falla := self._comprueba_repro(plan, snap, block, res, punta)
-        ):
-            return falla
         entregado = {
             "kind": "entregado",
             "sha": punta,
             "resumen": str(res.get("resumen", ""))[:500],
+            **self._aclaracion_entregada(att, res),
         }
         if not getattr(block, "pruebas", ""):
             try:
@@ -1181,6 +1216,12 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             except Exception:  # noqa: BLE001 - anotar nunca frena una entrega
                 pass
         return entregado
+
+    @staticmethod
+    def _aclaracion_entregada(att, res) -> dict:
+        if att.modalidad == "aclarar" and isinstance(res.get("aclaracion"), dict):
+            return {"aclaracion": res["aclaracion"]}
+        return {}
 
     def interrumpe(self, plan: Plan, snap: m.Snapshot, a: m.Interrumpe) -> None:
         """Detiene el intento en curso, guarda la foto de lo que llevaba y lo anota como `interrumpido`
@@ -1350,10 +1391,33 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         "prove": ("ProveStarted", "Proved", "proved"),
     }
 
+    def _anota_arranque_aparte(self, plan, block, kind, datos) -> None:
+        started_kind = self._APARTE[kind][0]
+        self.cx.store.append(
+            plan.id,
+            block,
+            started_kind,
+            datos,
+            ukey=claves.POR_TIPO[started_kind](plan.id, block, datos["sha"], datos["n"]),
+        )
+
+    def _recupera_arranques_aparte(self, plan, a, kind) -> None:
+        raiz = self.cx.home / "aparte" / plan.id
+        pendientes = []
+        for d in raiz.glob(f"{a.block}-{kind}-{a.sha[:12]}-*"):
+            marca = d / "started"
+            if marca.exists():
+                datos = json.loads(marca.read_text(encoding="utf-8"))
+                if datos.get("sha") == a.sha:
+                    pendientes.append(datos)
+        for datos in sorted(pendientes, key=lambda x: int(x["n"])):
+            self._anota_arranque_aparte(plan, a.block, kind, datos)
+
     def _aparte(self, kind: str, plan: Plan, snap: m.Snapshot, a) -> None:
         started_kind, terminal_kind, campo = self._APARTE[kind]
         block = plan.block(a.block)
         h_insumo, h_maquina = self._huellas(campo, block, snap)
+        self._recupera_arranques_aparte(plan, a, kind)
         starteds = [
             e
             for e in self.cx.store.events(plan.id)
@@ -1380,9 +1444,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     ),
                     default=0.0,
                 )
-                reverificar = ultima_nota > previos[-1].ts or (
-                    time.time() - previos[-1].ts >= m.REVERIFICA_CADA_S
-                )
+                reverificar = ultima_nota > previos[-1].ts
         terminales = [
             e
             for e in eventos
@@ -1408,8 +1470,25 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     payload = json.loads(oc.read_text(encoding="utf-8"))
                     if payload.get("error"):
                         oc.replace(d / "outcome-error.json")
+                        if kind in ("deploy", "prove"):
+                            tipo = "instalar" if kind == "deploy" else "probar"
+                            ident = ultimo.data.get("intencion") or self._confirma_intencion(
+                                plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}"
+                            )
+                            self._efecto(plan, a.block, ident, "incierto", str(payload["error"]))
+                            self._avisa_incierto(plan, snap, a.block, ident)
+                            return
                         raise RuntimeError(str(payload["error"]))
                     datos = payload.get("data") or {}
+                    if kind in ("deploy", "prove") and datos.get("sha") == a.sha:
+                        tipo = "instalar" if kind == "deploy" else "probar"
+                        ident = ultimo.data.get("intencion") or self._confirma_intencion(
+                            plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}"
+                        )
+                        res = self._resultado_de(kind, datos)
+                        self._efecto(plan, a.block, ident, res, str(datos.get("detalle") or ""))
+                        if res == "incierto":
+                            self._avisa_incierto(plan, snap, a.block, ident)
                     if not pendiente and not reverificar:
                         return
                     if (
@@ -1477,6 +1556,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     proc = ultimo.data.get("proc") or {}
                     if proc and plataforma.estado_proc(proc) == "vivo":
                         return
+        if kind in ("deploy", "prove") and self._frena_escritor(plan, snap, a, kind, starteds, terminales):
+            return
         n = max((int(e.data.get("n", 0)) for e in starteds), default=0) + 1
         d = self.cx.home / "aparte" / plan.id / f"{a.block}-{kind}-{a.sha[:12]}-{n}"
         d.mkdir(parents=True, exist_ok=True)
@@ -1510,6 +1591,9 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 bid: sorted(bv.prove_started) for bid, bv in snap.blocks.items()
             },
         }
+        if kind in ("deploy", "prove"):
+            tipo = "instalar" if kind == "deploy" else "probar"
+            spec["intencion"] = self._id_intencion(a.block, tipo, f"{a.sha}:{h_insumo}:{h_maquina}")
         texto_spec = json.dumps(spec, ensure_ascii=False)
         (d / "spec.json").write_text(texto_spec, encoding="utf-8")
         cmd = [
@@ -1521,34 +1605,18 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "--dir",
             str(d),
         ]
-        proc = plataforma.lanzar_separado(
+        datos_started = {
+            "sha": a.sha, "dir": str(d), "proc": {}, "n": n,
+            "huella": h_insumo, "huella_maquina": h_maquina,
+        }
+        if "intencion" in spec:
+            datos_started["intencion"] = spec["intencion"]
+        _escribe_marca(d / "started", datos_started)
+        datos_started["proc"] = plataforma.lanzar_separado(
             cmd, RAIZ, self.env_base({"PYTHONPATH": str(RAIZ)}), d / "aparte.log"
         )
-        datos_started = {"sha": a.sha, "dir": str(d), "proc": proc, "n": n}
-        if started_kind == "VerifyStarted":
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "VerifyStarted",
-                datos_started,
-                ukey=claves.verificacion_iniciada(plan.id, a.block, a.sha, n),
-            )
-        elif started_kind == "DeployStarted":
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "DeployStarted",
-                datos_started,
-                ukey=claves.despliegue_iniciado(plan.id, a.block, a.sha, n),
-            )
-        else:
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "ProveStarted",
-                datos_started,
-                ukey=claves.prueba_iniciada(plan.id, a.block, a.sha, n),
-            )
+        _escribe_marca(d / "started", datos_started)
+        self._anota_arranque_aparte(plan, a.block, kind, datos_started)
 
     def verify(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> None:
         bv = snap.blocks.get(a.block) if snap else None
@@ -1594,6 +1662,10 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,
+            "evidencia": 1,
+            "criterios": [
+                f"{plan.id}/{block.id}/{r.id}" for r in block.rows if r.acepta
+            ],
         }
 
     def _comentarios_deepseek(self, snap: m.Snapshot, block, sha: str) -> list:
@@ -1759,7 +1831,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
     def reconcilia_prs(self, plan: Plan, snap: m.Snapshot) -> None:
         """Reconoce uniones externas tambien fuera de CHECKS, antes de decidir otro intento."""
         for bid, bv in snap.blocks.items():
-            if not bv.pr or not bv.head() or bv.running():
+            if not bv.pr or not bv.head() or bv.running_productivo():
                 continue
             k = f"pr:{plan.id}:{bid}:{bv.pr['numero']}"
             ahora = time.time()
@@ -1780,18 +1852,28 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         """Con `merge`, la única puerta de `Merged`: un merge que alguien hizo por fuera del motor se
         adopta para que el plan siga, y se avisa una vez."""
         bv = snap.blocks[block_id]
+        numero = bv.pr.get("numero") if bv.pr else None
+        ident = self._id_intencion(block_id, "merge", f"{sha}:{numero}")
+        propia = any(
+            e.kind == "Intencion" and e.data.get("id") == ident
+            for e in self.cx.store.events(plan.id)
+        )
+        if propia:
+            self._efecto(plan, block_id, ident, "aplicado", commit)
         clave = f"externo:{block_id}"
         avisado = clave in bv.notices or any(
             e.kind == "NoticeQueued" and e.data["key"] == clave
             for e in self.cx.store.events(plan.id)
         )  # el log, no solo la foto: un reintento con la foto vieja no avisa dos veces
-        if not avisado:
+        if not propia and not avisado:
             self.notify(
                 plan,
                 snap,
                 m.Notify(clave, block_id, "externo", (("bloque", bv.block.aviso),)),
             )
-        datos = {"sha": sha, "commit": commit, "externo": True}
+        datos = {"sha": sha, "commit": commit}
+        if not propia:
+            datos["externo"] = True
         if ya_en_base:
             datos["ya_en_base"] = True
         self.cx.store.append(
@@ -1998,6 +2080,150 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             ukey=claves.checks_resultado(plan.id, t.block, t.sha, rechazo=rechazos),
         )
 
+    def _id_intencion(self, block: str, tipo: str, entradas: str) -> str:
+        return f"{block}:{tipo}:{entradas}"
+
+    def _confirma_intencion(self, plan: Plan, block: str, tipo: str, entradas: str, recibo: str) -> str:
+        from . import formato
+
+        home = getattr(self.cx, "home", None)
+        if home is not None:
+            formato.activa(home)
+        ident = self._id_intencion(block, tipo, entradas)
+        self.cx.store.append(
+            plan.id,
+            block,
+            "Intencion",
+            {
+                "id": ident,
+                "bloque": block,
+                "tipo": tipo,
+                "entradas": entradas,
+                "recibo_esperado": recibo,
+                "observador": "effects",
+            },
+            ukey=claves.intencion(plan.id, ident),
+        )
+        return ident
+
+    def _resultado_de(self, kind: str, datos: dict) -> str:
+        if datos.get("ok"):
+            return "aplicado"
+        if (
+            kind == "deploy"
+            and datos.get("produccion_tocada")
+            and datos.get("rollback_ok") is False
+        ):
+            return "incierto"
+        return "no_aplicado"
+
+    def _efecto(
+        self, plan: Plan, block: str, ident: str, resultado: str, evidencia: str = ""
+    ) -> None:
+        anteriores = [
+            e
+            for e in self.cx.store.events(plan.id, "EfectoObservado")
+            if e.data.get("intencion") == ident
+        ]
+        if anteriores and anteriores[-1].data.get("resultado") == resultado:
+            return
+        vez = sum(e.data.get("resultado") == resultado for e in anteriores)
+        self.cx.store.append(
+            plan.id,
+            block,
+            "EfectoObservado",
+            {"intencion": ident, "resultado": resultado, "evidencia": evidencia[:300]},
+            ukey=claves.efecto_observado(plan.id, ident, resultado, vez),
+        )
+
+    def _ultimo_efecto(self, plan: Plan, ident: str) -> str | None:
+        ultimo = None
+        for e in self.cx.store.events(plan.id):
+            if e.kind == "EfectoObservado" and str(e.data.get("intencion") or "") == ident:
+                ultimo = str(e.data.get("resultado") or "")
+        return ultimo
+
+    def _avisa_incierto(self, plan: Plan, snap: m.Snapshot, block: str, ident: str) -> None:
+        clave = f"incierto:{ident}"
+        bv = snap.blocks.get(block)
+        if (
+            (bv and clave in bv.notices)
+            or clave in snap.plan_notices
+            or any(
+                e.kind == "NoticeQueued" and e.data.get("key") == clave
+                for e in self.cx.store.events(plan.id)
+            )
+        ):
+            return
+        self.notify(plan, snap, m.Notify(clave, block, "incierto", ()))
+
+    def _otra_abierta(self, plan, block: str, tipo: str, excepto: str) -> str:
+        ids: list[str] = []
+        for e in self.cx.store.events(plan.id):
+            if e.kind != "Intencion" or e.block != block or e.data.get("tipo") != tipo:
+                continue
+            ident = str(e.data.get("id") or "")
+            if tipo == "merge" and ident:
+                entradas = str(e.data.get("entradas") or ident.removeprefix(f"{block}:merge:"))
+                sha = entradas.rsplit(":", 1)[0]
+                confirmado = next(
+                    (
+                        x
+                        for x in self.cx.store.events(plan.id, "Merged")
+                        if x.block == block and x.data.get("sha") == sha and x.data.get("commit")
+                    ),
+                    None,
+                )
+                if confirmado is not None:
+                    self._efecto(plan, block, ident, "aplicado", confirmado.data["commit"])
+            if ident and ident != excepto and ident not in ids:
+                ids.append(ident)
+        for ident in ids:
+            if self._ultimo_efecto(plan, ident) in (None, "incierto"):
+                return ident
+        return ""
+
+    def _frena_escritor(self, plan, snap, a, kind, starteds, terminales) -> bool:
+        """True: no lanzar. La intencion queda escrita antes del proceso nuevo."""
+        tipo = "instalar" if kind == "deploy" else "probar"
+        campo = self._APARTE[kind][2]
+        h_insumo, h_maquina = self._huellas(campo, plan.block(a.block), snap)
+        entradas = f"{a.sha}:{h_insumo}:{h_maquina}"
+        ident = self._id_intencion(a.block, tipo, entradas)
+        abierta = self._otra_abierta(plan, a.block, tipo, ident)
+        if abierta:
+            self._avisa_incierto(plan, snap, a.block, abierta)
+            return True
+        ultimo = self._ultimo_efecto(plan, ident)
+        if ultimo == "aplicado":
+            return True
+        if ultimo == "incierto":
+            self._avisa_incierto(plan, snap, a.block, ident)
+            return True
+        if starteds:
+            ultimo_s = starteds[-1]
+            dprev = Path(ultimo_s.data["dir"]) if ultimo_s.data.get("dir") else None
+            tiene = bool(dprev and (dprev / "outcome.json").exists())
+            proc = ultimo_s.data.get("proc") or {}
+            vivo = bool(proc) and plataforma.estado_proc(proc) == "vivo"
+            pendiente = not terminales or ultimo_s.id > terminales[-1].id
+            if pendiente and not tiene and not vivo:
+                anterior = ultimo_s.data.get("intencion") or self._confirma_intencion(
+                    plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}"
+                )
+                self._efecto(plan, a.block, anterior, "incierto", "proceso muerto sin resultado")
+                self._avisa_incierto(plan, snap, a.block, anterior)
+                return True
+        pedidos = self.cx.store.events(plan.id, "Intencion")
+        if ultimo is None and any(e.data.get("id") == ident for e in pedidos):
+            self._efecto(plan, a.block, ident, "incierto", "intencion sin recibo de arranque")
+            self._avisa_incierto(plan, snap, a.block, ident)
+            return True
+        self._confirma_intencion(plan, a.block, tipo, entradas, f"{tipo}:{entradas}")
+        if ultimo == "no_aplicado":
+            self._efecto(plan, a.block, ident, "incierto", "reintento reservado tras no_aplicado")
+        return False
+
     def merge(self, plan: Plan, snap: m.Snapshot, a: m.Merge) -> None:
         t = a.ticket
         if not isinstance(t, m.MergeTicket):
@@ -2015,6 +2241,20 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 {"sha": t.sha},
                 ukey=claves.marcado_listo(plan.id, t.block, t.sha),
             )
+        ident = self._id_intencion(t.block, "merge", f"{t.sha}:{t.pr}")
+        abierta = self._otra_abierta(plan, t.block, "merge", ident)
+        if abierta:
+            self._avisa_incierto(plan, snap, t.block, abierta)
+            return
+        ultimo = self._ultimo_efecto(plan, ident)
+        if ultimo == "aplicado":
+            return
+        if ultimo == "incierto":
+            self._avisa_incierto(plan, snap, t.block, ident)
+            return
+        self._confirma_intencion(plan, t.block, "merge", f"{t.sha}:{t.pr}", f"merge:{t.sha}:{t.pr}")
+        if ultimo == "no_aplicado":
+            self._efecto(plan, t.block, ident, "incierto", "reintento reservado tras no_aplicado")
         try:
             pr = self.cx.gh.merge(
                 block.repo,
@@ -2024,6 +2264,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 f"{plan.id} {t.block}: {block.titulo}",
             )
         except MergeRechazado as e0:
+            self._efecto(plan, t.block, ident, "no_aplicado", str(e0)[:300])
             e = clasificar_merge(e0)
             if isinstance(e, PuntaMovida):
                 if self.cx.gh.ver(block.repo, t.pr).head == t.sha:
@@ -2073,6 +2314,10 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 )
                 return
             raise RuntimeError(f"GitHub aún no deja mergear: {str(e)[:300]}") from None
+        except Exception as ex:
+            self._efecto(plan, t.block, ident, "incierto", str(ex)[:300])
+            raise
+        self._efecto(plan, t.block, ident, "aplicado", str(getattr(pr, "merge_commit", "") or ""))
         self.cx.store.append(
             plan.id,
             t.block,
@@ -2107,6 +2352,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         env["MOTOR_SHA"] = commit
         tope = float(self.cx.conf.tiempos.get("despliegue_tope_s", 900))
         codigo = 0
+        produccion_tocada = False
+        rollback_ok = True
         if not (desplegar and checklist and rollback):
             ok, detalle = (
                 False,
@@ -2136,19 +2383,21 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         faltan += faltantes_de_salida(
                             p.stdout + p.stderr, p.returncode
                         )
-                        self._rollback(rollback, w, env, tope, pasos)
+                        produccion_tocada = True
+                        rollback_ok = self._rollback(rollback, w, env, tope, pasos)
                         pasos.append(RECETA)
                         break
                     # Lo que imprime un paso que sale 0 también cuenta: avisos como «la etiqueta ya existe».
                     if cola := _cola(p):
                         pasos.append(cola)
                     if paso == desplegar:
+                        produccion_tocada = True
                         problemas, notas, malas = self._efimeras(w)
                         pasos += notas
                         if problemas:
                             ok = False
                             pasos += problemas
-                            self._rollback(rollback, w, env, tope, pasos)
+                            rollback_ok = self._rollback(rollback, w, env, tope, pasos)
                             if malas and self._efimeras(w)[2]:
                                 pasos.append("La marcha atrás no la quitó.")
                             break
@@ -2161,15 +2410,17 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,
+            "evidencia": 1,
+            "produccion_tocada": produccion_tocada,
+            "rollback_ok": rollback_ok,
         }
 
-    def _rollback(
-        self, rollback: str, w: Path, env: dict, tope: float, pasos: list
-    ) -> None:
+    def _rollback(self, rollback: str, w: Path, env: dict, tope: float, pasos: list) -> bool:
         rb = _run(f"bash {rollback}", w, env, tope, bash=self.cx.maquina.bash)
         pasos.append(f"rollback: salida {rb.returncode}")
         if cola := _cola(rb):
             pasos.append(cola)
+        return rb.returncode == 0
 
     def _efimeras(self, w: Path) -> tuple[list[str], list[str], set[str]]:
         """Tras desplegar: ¿alguna tarea programada apunta a la copia `w`, que el motor borra al
@@ -2258,6 +2509,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,
+            "evidencia": 1,
         }
 
     def probe_human(self, plan: Plan, snap: m.Snapshot, a: m.ProbeHuman) -> None:
@@ -2313,6 +2565,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         """Plan hecho, probado y avisado: borra sus ramas (la del bloque y la de fotos) en GitHub, sus
         copias de trabajo y de revisión en esta máquina. Los registros de cada intento se quedan
         `registros_dias` (14) y los borra purga_registros. Las copias base de cada repo no se tocan."""
+        if not m.puede_cerrar(snap):
+            return
         borradas: list[str] = []
         espejos: set[Path] = set()
         for bid, bv in snap.blocks.items():

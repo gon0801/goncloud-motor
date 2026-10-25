@@ -289,6 +289,15 @@ def _sin_agente(
             True,
             f"{tipo}; el último intento terminó en sin_cambios",
         )
+    if all(c == "aclaracion" for c, _ in est.values()):
+        return Diagnostico(
+            Causa.BLOQUEADO,
+            "la aclaracion sigue pendiente; los agentes no aportaron una resolucion con evidencia; "
+            "espero un dato nuevo o una nota",
+            f"atorado:{bid}:aclaracion:{bv.aclarar[0].id}",
+            True,
+            "la respuesta necesita fundamento y evidencia de la resolucion",
+        )
     vivos = {mo: v for mo, v in est.items() if v[0] != "agotado"}
     if not vivos:
         return Diagnostico(
@@ -359,6 +368,8 @@ def sesiones_caidas(
 
 
 def _toca(bv: m.BlockView) -> str:
+    if bv.aclarar:
+        return "toca aclarar un caso pendiente con fundamento y evidencia"
     falla = por_que(bv)
     return f"toca arreglarla porque {falla}" if falla else "toca hacerla"
 
@@ -379,9 +390,6 @@ def por_que(bv: m.BlockView) -> str:
         if str(c.get("detalle", "")).startswith("el merge falló"):
             return "GitHub no dejó integrarlo; hay que traer lo último de la rama principal"
         return "las pruebas automáticas de GitHub salieron en rojo"
-    r = bv.review_for(head) if head else None
-    if r and not m._aprobado(r):
-        return "el revisor pidió cambios"
     v = bv.verified.get(head) if head else None
     if v and not v["ok"]:
         return "falló la verificación de las filas"
@@ -436,13 +444,6 @@ def _lineas(bv: m.BlockView) -> list[str]:
         v = bv.verified.get(head)
         if v and not v["ok"]:
             out.append(f"La verificación falló: {v.get('detalle', '')[:800]}")
-        r = bv.review_for(head)
-        if r and not m._aprobado(r):
-            for blq in m._bloqueantes(r):
-                out.append(
-                    f"BLOQUEANTE: {blq['texto']} | repro: {blq['repro']}"
-                    + (f" | arreglo: {blq['arreglo']}" if blq.get("arreglo") else "")
-                )
         c = bv.checks.get(head)
         if c and not c["green"]:
             out.append(f"Pruebas automáticas en rojo: {c.get('detalle', '')}")

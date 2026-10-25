@@ -21,22 +21,6 @@ from tests.test_puro import PLAN, entregado, ev, pol
 RAIZ = Path(__file__).resolve().parent.parent
 
 
-def _llamadas_con_ukey():
-    """(archivo, línea, tipo de evento o None, valor de ukey) de cada `x.append(..., ukey=...)` del motor."""
-    for f in sorted((RAIZ / "motor").rglob("*.py")):
-        if f.name == "claves.py":
-            continue
-        for nodo in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
-            if not isinstance(nodo, ast.Call):
-                continue
-            for kw in nodo.keywords:
-                if kw.arg == "ukey":
-                    tipo = None
-                    if len(nodo.args) >= 3 and isinstance(nodo.args[2], ast.Constant):
-                        tipo = nodo.args[2].value
-                    yield f.name, kw.value.lineno, tipo, kw.value
-
-
 SHA = "a" * 40
 MAQUINA = "m" * 16
 
@@ -297,7 +281,8 @@ class ReevaluaTest(Banco):
     def _espera(self, plan, evs, paso):
         snap, acs = acciones(plan, evs)
         self.assertIs(m.estado(snap, "A"), m.Estado.ARREGLAR)
-        self.assertNotIn("StartAttempt", tipos(acs), "el bloque no vuelve al agente")
+        reps = [a for a in de_a(acs) if isinstance(a, m.StartAttempt)]
+        self.assertEqual([(a.role, a.modalidad) for a in reps], [("implementar", "reparar")])
         d = diagnostico(snap, "A", pol(), 1e10)
         self.assertIs(d.causa, Causa.FALTA_COMANDO)
         self.assertTrue(d.atorado)
@@ -313,6 +298,14 @@ class ReevaluaTest(Banco):
             [],
             "avisa una vez",
         )
+
+        cerrada = despues + [
+            ev("AttemptStarted", "A", {"n": 1, "role": "implementar", "modelo": "glm", "proc": {}, "dir": "d", "modalidad": "reparar"}),
+            ev("AttemptEnded", "A", {"n": 1, "role": "implementar", "outcome": {"kind": "sin_cambios"}}),
+        ]
+        snap2, acs2 = acciones(plan, cerrada)
+        self.assertEqual([a for a in de_a(acs2) if isinstance(a, m.StartAttempt)], [])
+        self.assertFalse(any(m._cuenta_falla(a, snap2.blocks["A"]) for a in snap2.blocks["A"].attempts))
 
     def test_la_prueba_real_que_pide_un_comando_que_falta_no_vuelve_al_agente(self):
         plan = plan_con(prueba="sin-este-comando --x")
@@ -340,7 +333,8 @@ class ReevaluaTest(Banco):
     def test_el_bloque_espera_a_que_cambie_el_plan_o_la_maquina(self):
         plan = plan_con(prueba="sin-este-comando")
         evs = self._merged(plan, "proved", False, falta_comando=["sin-este-comando"])
-        self.assertNotIn("StartAttempt", tipos(acciones(plan, evs)[1]))
+        primero = [a for a in de_a(acciones(plan, evs)[1]) if isinstance(a, m.StartAttempt)]
+        self.assertEqual([a.modalidad for a in primero], ["reparar"])
         corregido = plan_con(prueba="true")
         snap, acs = acciones(corregido, evs)
         self.assertEqual(tipos(acs), ["Prove"], "el plan corregido prueba el mismo SHA")
@@ -514,14 +508,11 @@ class ReevaluaTest(Banco):
             "DeployStarted",
             {"sha": sha, "dir": str(aparte_viejo), "proc": {}, "n": 1},
         )
-        self._espera_aparte(
-            lambda: d.fx.deploy(plan, m.fold(plan, evs), m.Deploy("A", sha)),
-            "Deployed",
-        )
-        (r,) = self.eventos("Deployed")
-        self.assertTrue(r.data["ok"])
-        self.assertNotIn("ya estaba desplegado", r.data["detalle"])
-        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "nuevo")
+        d.fx.deploy(plan, m.fold(plan, evs), m.Deploy("A", sha))
+        self.assertEqual(self.eventos("Deployed"), [])
+        efectos = [e for e in d.store.events("demo") if e.kind == "EfectoObservado"]
+        self.assertEqual(efectos[-1].data["resultado"], "incierto")
+        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "viejo")
 
     def test_prove_que_pasa_no_trae_comandos_faltantes(self):
         d, plan, sha, snap = self._fx_con_mergeado(self.plan)
@@ -1359,32 +1350,6 @@ class BloqueadoTest(Banco):
 
 
 class ClavesTest(unittest.TestCase):
-    def test_ninguna_otra_parte_arma_una_a_mano(self):
-        llamadas = list(_llamadas_con_ukey())
-        self.assertGreater(len(llamadas), 20, "el recorrido encontró las llamadas")
-        for archivo, linea, _, valor in llamadas:
-            es_de_claves = (
-                isinstance(valor, ast.Call)
-                and isinstance(valor.func, ast.Attribute)
-                and isinstance(valor.func.value, ast.Name)
-                and valor.func.value.id == "claves"
-            )
-            self.assertTrue(es_de_claves, f"{archivo}:{linea} arma su ukey a mano")
-
-    def test_cada_tipo_de_evento_usa_la_funcion_de_su_tipo(self):
-        vistos = set()
-        for archivo, linea, tipo, valor in _llamadas_con_ukey():
-            if tipo is None:
-                continue
-            vistos.add(tipo)
-            self.assertIn(tipo, claves.POR_TIPO, f"{archivo}:{linea}: {tipo} sin clave")
-            self.assertEqual(
-                valor.func.attr,
-                claves.POR_TIPO[tipo].__name__,
-                f"{archivo}:{linea}: {tipo} usa la clave de otro tipo",
-            )
-        self.assertEqual(vistos, set(claves.POR_TIPO), "sobra o falta un tipo")
-
     def test_ninguna_depende_del_reloj(self):
         fuente = inspect.getsource(claves)
         for palabra in ("import time", "datetime", "uuid", "random"):

@@ -440,9 +440,35 @@ class TestCopiaFija(unittest.TestCase):
         self.conf_cargada(commit="9999999999")
         self.assertTrue(any("otro" in x for x in conf_valida(self.conf)))
 
+    def test_cursor_agent_sin_lector_no_invalida_la_conf(self):
+        # Producción 2026-10-25: la ruta sol cargaba y podía lanzarse, y `conf valida`
+        # la rechazaba solo con "no sé leer el registro del CLI cursor-agent".
+        self.conf_cargada()
+        (self.conf / "rutas.toml").write_text(
+            (self.conf / "rutas.toml").read_text()
+            + "\n".join(
+                [
+                    "",
+                    "[rutas.sol]",
+                    'cuenta = "cursor"',
+                    "max_parallel = 2",
+                    'cli = "cursor-agent"',
+                    'argv = ["cursor-agent", "-p", "--model", "gpt-5.6-sol-medium", "-f", "--output-format", "json", "{prompt}"]',
+                    "",
+                ]
+            )
+        )
+        (self.conf / "pstack-motor" / "cursor-agent.md").write_text("mapa\n")
+        self.assertEqual(conf_valida(self.conf), [])
+        veredicto = ps.juzga(
+            ps.huella('{"type": "result"}', "cursor-agent"),
+            ps.Exigencia(min_subagentes=2),
+        )
+        self.assertEqual(veredicto, ps.Cumple(verificable=False))
+
     def test_sin_pstack_cuenta_como_falla_del_modelo(self):
         self.assertEqual(relevo.desde_kind("sin_pstack"), relevo.Falla.TASK_FAILURE)
-        self.assertNotIn("sin_pstack", m.NO_ES_FALLA)
+        self.assertIn("sin_pstack", m.NO_ES_FALLA)
 
 
 class TestBloqueDeBug(unittest.TestCase):
@@ -478,7 +504,7 @@ lane: gate
 
     def test_sin_repro_cuenta_como_falla_del_modelo(self):
         self.assertEqual(relevo.desde_kind("sin_repro"), relevo.Falla.TASK_FAILURE)
-        self.assertNotIn("sin_repro", m.NO_ES_FALLA)
+        self.assertIn("sin_repro", m.NO_ES_FALLA)
 
 
 class TestGrokJson(unittest.TestCase):
@@ -576,7 +602,11 @@ class TestBloqueantesDelRevisorMalformados(unittest.TestCase):
     def test_bloqueante_sin_repro_no_revienta(self):
         r, ev = self._collect([dict(texto="a", repro="true"), dict(texto="b")])
         self.assertEqual(r["kind"], "veredicto")
-        self.assertEqual(len(ev[0][3]["bajados"]), 1)
+        self.assertNotIn("bajados", ev[0][3])
+        notas = ev[0][3]["notas"]
+        self.assertEqual(len(notas), 1)
+        self.assertIn("asesoria, no es una orden", notas[0])
+        self.assertEqual(ev[0][3]["aclarar"][0]["escenario"], "a")
 
     def test_repro_null_y_bloqueante_no_objeto_son_veredicto_invalido(self):
         for malo in (

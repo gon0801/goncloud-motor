@@ -14,7 +14,7 @@ Formato (compatible con las tablas de Orbit, más campos por bloque):
     prueba-real: test -f x          # se corre contra producción después del merge/deploy
     repo: <url>                     # opcional: este bloque va en otro repo
     despliegue: desplegar=ruta checklist=ruta rollback=ruta   # opcional: si no, la receta del .motor.toml del repo
-    tipo: bug                       # opcional: un bloque de bug entrega un `repro` (ver effects.collect)
+    tipo: bug                       # opcional: un bloque de bug no exige un comando de reproduccion
     humano: login Entra a Seller Central y acepta el permiso  # paso que solo David puede hacer
     sonda-humano: test -f ~/.login-ok                          # opcional: detecta el paso hecho
     | Fila | Contenido | Acepta |

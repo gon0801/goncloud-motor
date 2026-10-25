@@ -161,14 +161,10 @@ class MachineTest(unittest.TestCase):
             ev("PrOpened", "A", {"numero": 1}),
             ev("Cooldown", "", {"cuenta": "anthropic", "hasta": now + 3600}),
         ]
-        rev = [
-            a
-            for a in m.decide(self.snap(eventos), pol(), now)
-            if isinstance(a, m.StartAttempt) and a.role == "revisar"
-        ]
-        self.assertEqual(
-            rev[0].modelo, "k3"
-        )  # opus en cuota (cuenta anthropic), glm es autor
+        acciones = m.decide(self.snap(eventos), pol(), now)
+        rev = [a for a in acciones if isinstance(a, m.StartAttempt) and a.role == "revisar"]
+        self.assertEqual(rev, [])
+        self.assertTrue(any(isinstance(a, m.MarkReady) for a in acciones))
         self.assertNotIn("glm", m.revisores_para(self.snap(eventos).blocks["A"], pol()))
 
     def test_un_corte_de_luz_no_cuenta_como_falla(self):
@@ -318,8 +314,8 @@ class AutoresTest(unittest.TestCase):
             for a in m.decide(snap, p, now)
             if isinstance(a, m.StartAttempt) and a.role == "revisar"
         ]
-        self.assertTrue(revisando)
-        self.assertNotIn("opus", revisando)
+        self.assertEqual(revisando, [])
+        self.assertTrue(any(isinstance(a, m.MarkReady) for a in m.decide(snap, p, now)))
 
     def test_el_que_toco_la_carpeta_y_se_corto_sigue_siendo_autor(self):
         bv = self.vista(("glm", {"kind": "tiempo", "toco_carpeta": True}))
@@ -766,7 +762,24 @@ class AvanceCadaHoraTest(unittest.TestCase):
     def test_plan_terminado_no_manda_resumen(self):
         now = time.time()
         p = parse_plan(PLAN)
-        s = m.fold(p, self.eventos(3, now))
+        s = m.fold(
+            p,
+            self.eventos(3, now)
+            + [
+                Event(
+                    3,
+                    now,
+                    "demo",
+                    "A",
+                    "AttemptEnded",
+                    {
+                        "n": 1,
+                        "role": "implementar",
+                        "outcome": {"kind": "entregado", "sha": "a" * 40},
+                    },
+                )
+            ],
+        )
         for bv in s.blocks.values():
             bv.merged.append({"sha": "a" * 40, "commit": "c"})
             bv.proved["a" * 40] = {"ok": True}
@@ -1265,7 +1278,7 @@ class CorreccionTest(unittest.TestCase):
 
     def test_una_revision_no_aprobada_lo_vuelve_correccion(self):
         eventos = entregado() + [
-            ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
+            ev("Verified", "A", {"sha": "a" * 40, "ok": False}),
             ev("PrOpened", "A", {"numero": 7}),
             ev(
                 "Reviewed",
@@ -1345,7 +1358,12 @@ class FeedbackRevisorTest(unittest.TestCase):
                 {"n": 1, "role": "revisar", "outcome": fin},
             ),
         ]
-        s = m.fold(parse_plan(PLAN), eventos)
+        pedido = PLAN.replace(
+            "repo: git@github.com:x/app.git\n",
+            "repo: git@github.com:x/app.git\nrevisa: opus, k3\n",
+            1,
+        )
+        s = m.fold(parse_plan(pedido), eventos)
         return next(
             a
             for a in m.decide(s, pol(), time.time())
