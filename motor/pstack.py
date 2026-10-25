@@ -289,6 +289,24 @@ FORMATOS: dict[str, Formato] = {
 }
 
 
+@dataclass(frozen=True)
+class NoMedido:
+    """El CLI se lanza, pero su registro no tiene lector.
+
+    No invalida la conf. `huella` lo deja no verificable, y eso no es falla del modelo.
+    """
+
+    cli: str
+
+
+def lector(cli: str) -> Formato | NoMedido:
+    """El lector del registro de `cli`, o `NoMedido` si no hay uno."""
+    encontrado = FORMATOS.get(cli)
+    if encontrado is None:
+        return NoMedido(cli)
+    return encontrado
+
+
 def _clasifica(f: Formato, herramienta: str, args: dict) -> list[Accion]:
     h = herramienta.lower().rsplit(".", 1)[-1]
     if h in f.subagente:
@@ -381,8 +399,9 @@ def eventos(fuente: str | Iterable[str], formato: str) -> tuple[list[Accion], bo
 
 
 def huella(fuente: str | Iterable[str] | None, formato: str) -> Huella:
-    """Lo que el agente hizo según su registro. Sin registro, o con uno que no se entiende: `legible=False`."""
-    if not fuente or formato not in FORMATOS:
+    """Lo que el agente hizo según su registro. Sin registro, con uno que no se entiende, o con un
+    formato `NoMedido` (sin lector): `legible=False`. Eso no es falla del modelo."""
+    if not fuente or isinstance(lector(formato), NoMedido):
         return Huella(legible=False)
     acciones, legible = eventos(fuente, formato)
     if not legible:

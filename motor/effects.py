@@ -438,9 +438,8 @@ def errores_pstack(d: Path, conf) -> list[str]:
             f"pstack.toml: la guía {g} no está en la copia; la piden: {', '.join(quienes)}"
         )
     for r in conf.rutas.values():
-        if r.cli not in ps.FORMATOS:
-            errores.append(f"ruta {r.modelo}: no sé leer el registro del CLI {r.cli}")
-        elif not (d / "pstack-motor" / f"{r.cli}.md").is_file():
+        # NoMedido (sin lector) no invalida la conf. El mapa del CLI sí se exige.
+        if not (d / "pstack-motor" / f"{r.cli}.md").is_file():
             errores.append(
                 f"falta pstack-motor/{r.cli}.md (mapa del CLI de {r.modelo})"
             )
