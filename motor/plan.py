@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 
 LANES = ("fast", "gate", "release")
 HUMAN_KINDS = ("login", "2fa", "captcha", "pago")
+PRUEBAS = ("dinero", "datos", "instala", "falla")
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class Block:
         str, ...
     ] = ()  # checks que el plan exige además de la protección de la rama
     tipo: str = ""  # "bug" si el bloque arregla un bug
+    pruebas: str = ""  # dinero | datos | instala | falla; vacío = sin marca
 
     @property
     def es_bug(self) -> bool:
@@ -107,6 +109,7 @@ class Plan:
                 "human": b.human.__dict__ if b.human else None,
                 "checks": list(b.checks),
                 "tipo": b.tipo,
+                "pruebas": b.pruebas,
             }
 
         return {
@@ -135,6 +138,7 @@ class Plan:
                     human=Human(**b["human"]) if b["human"] else None,
                     checks=tuple(b.get("checks", ())),
                     tipo=b.get("tipo", ""),
+                    pruebas=b.get("pruebas", ""),
                 )
             )
         return Plan(
@@ -175,10 +179,11 @@ def cambios_de(antes: Block, ahora: Block) -> list[Cambio]:
     out += [Cambio("fila", f"se quitó la fila {i}") for i in viejas if i not in nuevas]
     if antes.titulo != ahora.titulo:
         out.append(Cambio("bloque", f"lo que entrega ahora es: {ahora.titulo}"))
-    if (antes.lane, antes.release, antes.checks) != (
+    if (antes.lane, antes.release, antes.checks, antes.pruebas) != (
         ahora.lane,
         ahora.release,
         ahora.checks,
+        ahora.pruebas,
     ):
         out.append(
             Cambio("bloque", "cambió el carril, la receta de despliegue o los checks")
@@ -413,6 +418,11 @@ def parse_plan(
             errores.append(
                 f"bloque {d.id}: un bloque fast no lleva 'despliegue:'"
             )
+        pruebas = f.get("pruebas", "").strip().lower()
+        if pruebas and pruebas not in PRUEBAS:
+            errores.append(
+                f"bloque {d.id}: pruebas debe ser una de {PRUEBAS}, no {pruebas!r}"
+            )
         if lane == "fast" and re.search(r"\bssh\b", f.get("prueba-real", "")):
             errores.append(
                 f"bloque {d.id}: un bloque fast no lleva 'prueba-real' que entre por ssh a otra máquina"
@@ -460,6 +470,7 @@ def parse_plan(
                     x.strip() for x in f.get("checks", "").split(",") if x.strip()
                 ),
                 tipo=f.get("tipo", "").strip().lower(),
+                pruebas=pruebas,
             )
         )
 

@@ -77,6 +77,45 @@ def comandos_faltantes(salida: str) -> list[str]:
     return sorted({a or b for a, b in _FALTA.findall(salida)})
 
 
+CASOS_PRUEBAS = {
+    "dinero": "dinero (pujas, precios, presupuestos o cobros)",
+    "datos": "datos (escribir datos de producción)",
+    "instala": "instala (instalar, borrar o deshacer en las máquinas)",
+    "falla": "falla (una falla que ya pasó en producción)",
+}
+
+
+def texto_pruebas(block, revisar: bool = False) -> str:
+    marca = getattr(block, "pruebas", "")
+    if marca:
+        caso = CASOS_PRUEBAS.get(marca, marca)
+        if revisar:
+            return (
+                f"Marca de pruebas: este bloque lleva `pruebas: {marca}`, el caso {caso}; va UNA prueba."
+            )
+        return (
+            f"Marca de pruebas: este bloque lleva `pruebas: {marca}`, el caso {caso}. Escribe UNA prueba."
+        )
+    if revisar:
+        return "No pidas pruebas nuevas; lo que falte va en notas."
+    return "No escribas pruebas nuevas: basta comprobar que corre."
+
+
+def es_archivo_prueba(ruta: str) -> bool:
+    partes = [p.lower() for p in ruta.replace("\\", "/").split("/") if p]
+    if not partes:
+        return False
+    nombre = partes[-1]
+    return (
+        any(p in ("tests", "test", "__tests__") for p in partes[:-1])
+        or nombre.startswith("test_")
+        or nombre.startswith("test")
+        and nombre.endswith(".py")
+        or "_test." in nombre
+        or ".test." in nombre
+    )
+
+
 @dataclass
 class Contexto:
     home: Path
@@ -767,6 +806,8 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
 
 {filas}
 
+{texto_pruebas(block)}
+
 ## Qué pasó antes (corrígelo primero)
 {fb}
 
@@ -817,6 +858,8 @@ avisa y espera una nota, un plan corregido o una máquina corregida.
 Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal}`). Revisa contra lo pedido:
 
 {filas}
+
+{texto_pruebas(block, revisar=True)}
 
 {antes}{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
 de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás va en `notas`.
@@ -1001,11 +1044,26 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             falla := self._comprueba_repro(plan, snap, block, res, punta)
         ):
             return falla
-        return {
+        entregado = {
             "kind": "entregado",
             "sha": punta,
             "resumen": str(res.get("resumen", ""))[:500],
         }
+        if not getattr(block, "pruebas", ""):
+            try:
+                rc2 = self.repo_conf(snap, block.repo)
+                espejo = self.cx.ws.espejo(block.repo)
+                base = git(
+                    "merge-base", f"origin/{rc2.principal}", punta, cwd=espejo
+                ).stdout.strip()
+                if base:
+                    diff = git("diff", "--name-only", base, punta, cwd=espejo).stdout
+                    nuevas = [x for x in diff.splitlines() if es_archivo_prueba(x)]
+                    if nuevas:
+                        entregado["pruebas_sin_marca"] = nuevas
+            except Exception:  # noqa: BLE001 - anotar nunca frena una entrega
+                pass
+        return entregado
 
     def interrumpe(self, plan: Plan, snap: m.Snapshot, a: m.Interrumpe) -> None:
         """Detiene el intento en curso, guarda la foto de lo que llevaba y lo anota como `interrumpido`

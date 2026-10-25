@@ -167,6 +167,7 @@ class BlockView:
     checks_ts: dict[str, float] = field(default_factory=dict)
     verified_ts: dict[str, float] = field(default_factory=dict)
     nota_ts: float = 0.0
+    pruebas_sin_marca: tuple[str, ...] = ()
     relanzadas_saltadas: set[str] = field(default_factory=set)
     politica_bloquea: dict[str, dict] = field(default_factory=dict)
     temporales: dict[str, tuple[float, float]] = field(
@@ -336,6 +337,10 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             for a in bv.attempts:
                 if a.n == d["n"] and a.role == d["role"] and a.ended is None:
                     a.ended, a.ended_at = d["outcome"], e.ts
+                    if a.role == "implementar" and d["outcome"].get(
+                        "pruebas_sin_marca"
+                    ):
+                        bv.pruebas_sin_marca = tuple(d["outcome"]["pruebas_sin_marca"])
                     if a.role == "implementar":
                         bv.bloqueo = (
                             {
@@ -1095,7 +1100,15 @@ def decide(
                         bid,
                         "entregado",
                         (
-                            ("aviso", b.aviso),
+                            (
+                                "aviso",
+                                b.aviso
+                                + (
+                                    ". Agregó archivos de prueba sin la marca de pruebas"
+                                    if bv.pruebas_sin_marca
+                                    else ""
+                                ),
+                            ),
                             ("n", str(hechos)),
                             ("total", str(len(snap.blocks))),
                             (
