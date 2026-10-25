@@ -485,6 +485,13 @@ class Daemon:
             self._falla_fase(plan.id, "fold", e, now)
             return False
         try:
+            self._fase(
+                "reconcilia_prs",
+                lambda: self.fx.reconcilia_prs(plan, snap),
+                now,
+                plan.id,
+            )
+            snap = self._fold(plan)
             cd_fuera, int_fuera = self._cuentas_fuera(planes, plan)
             acciones = list(
                 m.decide(

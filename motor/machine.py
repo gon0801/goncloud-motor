@@ -128,11 +128,15 @@ class Attempt:
     cambios: list[str] = field(
         default_factory=list
     )  # notas y cambios del plan que llegaron mientras corría: el motor lo detiene
+    plan_cambiado: bool = (
+        False  # este intento responde a una revision del plan anterior
+    )
 
 
 @dataclass
 class BlockView:
     block: Block
+    revision_plan: int = 0
     attempts: list[Attempt] = field(default_factory=list)
     verified: dict[str, dict] = field(default_factory=dict)
     pr: dict | None = None
@@ -203,7 +207,22 @@ class BlockView:
 
     def last_implement_outcome(self) -> dict | None:
         imp = self.implement_attempts()
-        return imp[-1].ended if imp else None
+        if not imp:
+            return None
+        a = imp[-1]
+        if self.reentrega_por_plan(a):
+            return {**a.ended, "kind": "entregado", "sha": a.sha}
+        return a.ended
+
+    def reentrega_por_plan(self, a: Attempt) -> bool:
+        """El plan corregido permite revisar otra vez la entrega conocida, sin exigir otro commit."""
+        return bool(
+            a.plan_cambiado
+            and a.ended
+            and a.ended.get("kind") == "sin_cambios"
+            and a.sha
+            and a.sha == self.head()
+        )
 
     def entrega_ts(self, sha: str) -> float:
         return max(
@@ -211,14 +230,20 @@ class BlockView:
                 a.ended_at
                 for a in self.implement_attempts()
                 if a.ended
-                and a.ended.get("kind") == "entregado"
-                and a.ended.get("sha") == sha
+                and (
+                    (a.ended.get("kind") == "entregado" and a.ended.get("sha") == sha)
+                    or (self.reentrega_por_plan(a) and a.sha == sha)
+                )
             ),
             default=0.0,
         )
 
     def review_for(self, sha: str) -> dict | None:
-        rs = [r for r in self.reviews if r["sha"] == sha]
+        rs = [
+            r
+            for r in self.reviews
+            if r["sha"] == sha and r.get("revision_plan", 0) == self.revision_plan
+        ]
         return rs[-1] if rs else None
 
     def merged_sha(self) -> str:
@@ -230,7 +255,11 @@ class BlockView:
         if r is None:
             return None
         nuevas = self.implement_attempts()[r["desde"] :]
-        if any(a.ended and a.ended.get("kind") == "entregado" for a in nuevas):
+        if any(
+            a.ended
+            and (a.ended.get("kind") == "entregado" or self.reentrega_por_plan(a))
+            for a in nuevas
+        ):
             return None
         return r
 
@@ -284,6 +313,8 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                     continue
                 todos = cambios_de(antes, b)
                 cambios = [c for c in todos if c.tipo != "bloque"]
+                if cambios:
+                    blocks[b.id].revision_plan += 1
                 hecho = crudo_merged.get(b.id, "") in crudo_probados.get(b.id, ())
                 if cambios and hecho:
                     blocks[b.id].reabierto = {
@@ -319,6 +350,10 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         elif bv is None:
             continue
         elif e.kind == "AttemptStarted":
+            ultima_revision = next(
+                (r for r in reversed(bv.reviews) if r["sha"] == d.get("sha", "")),
+                None,
+            )
             bv.attempts.append(
                 Attempt(
                     n=d["n"],
@@ -328,6 +363,11 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                     proc=d.get("proc") or {},
                     dir=d["dir"],
                     sha=d.get("sha", ""),
+                    plan_cambiado=bool(
+                        d["role"] == "implementar"
+                        and ultima_revision is not None
+                        and ultima_revision.get("revision_plan", 0) < bv.revision_plan
+                    ),
                 )
             )
         elif e.kind == "AttemptEnded":
@@ -352,7 +392,7 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         elif e.kind == "PrOpened":
             bv.pr = d
         elif e.kind == "Reviewed":
-            bv.reviews.append(d)
+            bv.reviews.append({**d, "revision_plan": bv.revision_plan})
         elif e.kind == "MarkedReady":
             bv.ready.add(d["sha"])
             bv.listo_desde.setdefault(d["sha"], e.ts)
@@ -766,6 +806,8 @@ def _cuenta_falla(a: Attempt, bv: BlockView) -> bool:
     reloj (cuota, freno, sesión), las fallas pasajeras (tienen su pausa) y un `sin_cambios` cuando el
     bloque falló por algo que el agente no controla (comando que falta, prueba real, despliegue)."""
     kind = a.ended.get("kind", "")
+    if bv.reentrega_por_plan(a):
+        return False
     if kind in ("entregado", "veredicto") or kind in NO_ES_FALLA:
         return False
     if (
