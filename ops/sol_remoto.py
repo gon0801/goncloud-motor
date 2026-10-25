@@ -133,7 +133,7 @@ def main(argv=None):
     entrada = {
         "sha": sha,
         "archive": base64.b64encode(archive).decode(),
-        "prompt": args.brief.read_text(),
+        "prompt": args.brief.read_text(encoding="utf-8"),
     }
     proceso = subprocess.Popen(
         [
