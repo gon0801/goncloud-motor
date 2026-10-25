@@ -139,7 +139,9 @@ humano: login pega las llaves
                 60,
             )
         ]
-        self.assertCausa(diag(evs), Causa.REVISANDO)
+        d = diag(evs)
+        self.assertCausa(d, Causa.PASO_DEL_MOTOR)
+        self.assertEqual(d.motivo, "la marco lista en GitHub")
 
     def test_paso_del_motor(self):
         d = diag(entregado())
@@ -165,13 +167,15 @@ humano: login pega las llaves
             )
         ]
         d = diag(evs)
-        self.assertCausa(d, Causa.REHACER)
-        self.assertEqual(d.motivo, "toca arreglarla porque el revisor pidió cambios")
-        self.assertIn("BLOQUEANTE: t", d.detalle)
+        self.assertCausa(d, Causa.PASO_DEL_MOTOR)
+        self.assertEqual(d.motivo, "la marco lista en GitHub")
+        self.assertNotIn("BLOQUEANTE", d.detalle)
 
     def test_por_revisar(self):
         evs = hasta_pr()[:-1]
-        self.assertCausa(diag(evs), Causa.POR_REVISAR)
+        d = diag(evs)
+        self.assertCausa(d, Causa.PASO_DEL_MOTOR)
+        self.assertEqual(d.motivo, "la marco lista en GitHub")
 
     def test_turno(self):
         pol1 = m.Policy(
@@ -961,14 +965,8 @@ class AvisosColaTest(unittest.TestCase):
             for a in m.decide(snap, pol(), NOW)
             if isinstance(a, m.StartAttempt) and a.block == "A"
         ]
-        self.assertEqual(len(ini), 1)
-        fb = " | ".join(ini[0].feedback)
-        self.assertIn("Nota del revisor (no bloquea): renombra esta variable", fb)
-        self.assertIn("Nota del revisor (no bloquea): falta un comentario", fb)
-        self.assertIn("BLOQUEANTE: t", fb)
-        self.assertIn(
-            "el revisor pidió cambios", fb, "el motivo del diagnóstico va primero"
-        )
+        self.assertEqual(ini, [])
+        self.assertTrue(any(isinstance(a, m.MarkReady) and a.block == "A" for a in m.decide(snap, pol(), NOW)))
 
 
 if __name__ == "__main__":

@@ -96,6 +96,9 @@ class Daemon:
             os.environ["PATH"] = os.pathsep.join(
                 [*self.maquina.path_extra, os.environ.get("PATH", "")]
             )
+        from .formato import admite_escritor
+
+        admite_escritor(home)
         self.store = Store(home / "motor.db")
         conf = load_conf(self.maquina.conf)
         av = conf.avisos
@@ -403,26 +406,24 @@ class Daemon:
     def ingest_attempts(self, plan: Plan) -> None:
         snap = self._fold(plan)
         for bid, bv in snap.blocks.items():
-            att = bv.running()
-            if att is None:
-                continue
-            out = self.fx.collect(plan, snap, bid, att)
-            if out is None:
-                continue
-            self.store.append(
-                plan.id,
-                bid,
-                "AttemptEnded",
-                {"n": att.n, "role": att.role, "outcome": out},
-                ukey=claves.intento_terminado(plan.id, bid, att.role, att.n),
-            )
-            if out["kind"] == "corte":
-                key = f"retome:{plataforma.boot_id()}"
-                if not any(
-                    e.kind == "NoticeQueued" and e.data["key"] == key
-                    for e in self.store.events(plan.id)
-                ):
-                    self.fx.notify(plan, snap, m.Notify(key, "", "retome", ()))
+            for att in [a for a in bv.attempts if a.ended is None]:
+                out = self.fx.collect(plan, snap, bid, att)
+                if out is None:
+                    continue
+                self.store.append(
+                    plan.id,
+                    bid,
+                    "AttemptEnded",
+                    {"n": att.n, "role": att.role, "outcome": out},
+                    ukey=claves.intento_terminado(plan.id, bid, att.role, att.n),
+                )
+                if out["kind"] == "corte":
+                    key = f"retome:{plataforma.boot_id()}"
+                    if not any(
+                        e.kind == "NoticeQueued" and e.data["key"] == key
+                        for e in self.store.events(plan.id)
+                    ):
+                        self.fx.notify(plan, snap, m.Notify(key, "", "retome", ()))
 
     def tick(self, now: float | None = None) -> bool:
         now = now if now is not None else time.time()

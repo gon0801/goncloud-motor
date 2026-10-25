@@ -92,6 +92,8 @@ class GhGrabado(GhGitHub):
                 raise self.proteccion
             return self.proteccion
         if "/rules/branches/" in a[1]:
+            if isinstance(self.reglas, Exception):
+                raise self.reglas
             return self.reglas
         if "/check-runs" in a[1]:
             return self.runs
@@ -139,8 +141,8 @@ class ChecksTest(unittest.TestCase):
             },
         )
         v = gh.checks("o/r", 7, SHA, ())
-        self.assertFalse(v.terminal)
-        self.assertFalse(v.green)
+        self.assertTrue(v.terminal)
+        self.assertTrue(v.green)
 
     def test_sin_requeridos_un_estado_en_rojo_es_falla(self):
         gh = GhGrabado(
@@ -153,7 +155,8 @@ class ChecksTest(unittest.TestCase):
         )
         v = gh.checks("o/r", 7, SHA, ())
         self.assertTrue(v.terminal)
-        self.assertEqual(v.fallas, ("viejo",))
+        self.assertTrue(v.green)
+        self.assertEqual(v.fallas, ())
 
     def test_proteccion_con_otro_error_es_falla_del_efecto(self):
         gh = GhGrabado(proteccion=RuntimeError("gh api: HTTP 500: boom"))
@@ -164,6 +167,28 @@ class ChecksTest(unittest.TestCase):
         gh = GhGrabado(proteccion=RuntimeError("gh: Not Found (HTTP 404)"))
         with self.assertRaises(RuntimeError):
             gh.checks("o/r", 7, SHA, ())
+
+
+    def test_reglas_404_generico_no_es_politica_vacia(self):
+        gh = GhGrabado(
+            proteccion=RuntimeError("HTTP 404: Branch not protected"),
+            reglas=RuntimeError("gh: Not Found (HTTP 404)"),
+        )
+        with self.assertRaises(RuntimeError):
+            gh.checks("o/r", 7, SHA, ())
+
+
+
+    def test_reglas_piden_github_pro_y_quedan_vacias(self):
+        gh = GhGrabado(
+            proteccion=RuntimeError("HTTP 404: Branch not protected"),
+            reglas=RuntimeError("Upgrade to GitHub Pro"),
+            runs="[]",
+        )
+        v = gh.checks("o/r", 7, SHA, ())
+        self.assertTrue(v.green)
+        self.assertTrue(v.terminal)
+
 
     def test_sin_requeridos_salto_en_borrador_no_es_verde(self):
         salto = {
@@ -176,8 +201,8 @@ class ChecksTest(unittest.TestCase):
             "details_url": "https://github.com/o/r/actions/runs/1",
         }
         v = veredicto(SHA, (), [salto], "2026-10-21T21:00:00Z")
-        self.assertFalse(v.green)
-        self.assertFalse(v.terminal)
+        self.assertTrue(v.green)
+        self.assertTrue(v.terminal)
 
     def test_las_reglas_de_la_rama_aportan_requeridos(self):
         reglas = json.dumps(
@@ -225,11 +250,12 @@ class ChecksTest(unittest.TestCase):
 
     def test_veredicto_sin_requeridos_exige_que_todo_termine_y_pase(self):
         v = veredicto(SHA, (), [_run("ci", status="in_progress", conclusion=None)])
-        self.assertFalse(v.terminal)
+        self.assertTrue(v.terminal)
+        self.assertTrue(v.green)
         v = veredicto(SHA, (), [_run("ci", conclusion="failure")])
         self.assertTrue(v.terminal)
-        self.assertFalse(v.green)
-        self.assertEqual(v.corridas_fallidas[0]["run_id"], "1")
+        self.assertTrue(v.green)
+        self.assertEqual(v.corridas_fallidas, ())
 
     def _fx(self, gh):
         t = Path(tempfile.mkdtemp(prefix="h-checks-"))
@@ -244,6 +270,8 @@ class ChecksTest(unittest.TestCase):
         snap = m.fold(plan, store.events(plan.id))
         snap.blocks["A"].pr = {"numero": 7}
         return snap
+
+
 
     def test_saltada_en_borrador_se_relanza_una_sola_vez_tras_30_min(self):
         from motor.github import ChecksVerdict, PrView
@@ -836,6 +864,31 @@ class DespliegueTest(unittest.TestCase):
         texto = PLAN_RELEASE.replace("checklist=ops/c.sh", "checklist=")
         with self.assertRaises(PlanError):
             parse_plan(texto)
+
+    def test_desplegar_toca_prod_y_rollback_falla_queda_incierto(self):
+        fx, plan, snap, corre, t = self._fx(
+            {
+                "d.sh": "echo tocado > prod.txt\nexit 1\n",
+                "c.sh": "true\n",
+                "r.sh": "exit 1\n",
+            }
+        )
+        r = corre(plan, snap, m.Deploy("A", SHA))
+        w = fx.cx.ws.base / "copia-1"
+        self.assertTrue((w / "prod.txt").exists())
+        self.assertTrue(r["produccion_tocada"])
+        self.assertFalse(r["rollback_ok"])
+        self.assertFalse(r["ok"])
+        ident = fx._confirma_intencion(plan, "A", "instalar", SHA, f"instalar:{SHA}")
+        fx._efecto(plan, "A", ident, fx._resultado_de("deploy", r), str(r.get("detalle") or ""))
+        self.assertEqual(
+            [
+                e.data["resultado"]
+                for e in fx.cx.store.events("demo")
+                if e.kind == "EfectoObservado"
+            ][-1],
+            "incierto",
+        )
 
     def test_75_no_hace_rollback_ni_culpa(self):
         fx, plan, snap, corre, t = self._fx(

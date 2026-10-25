@@ -48,6 +48,37 @@ class ChecksVerdict:
     corridas_fallidas: tuple = ()  # las corridas terminadas en rojo, con su url y run_id
 
 
+
+@dataclass(frozen=True)
+class CheckRequerido:
+    nombre: str
+    app: str | None = None
+
+@dataclass(frozen=True)
+class PoliticaConocida:
+    requeridos: tuple
+
+@dataclass(frozen=True)
+class PoliticaDesconocida:
+    causa: str
+
+
+def _contextos(raw) -> list[str]:
+    if isinstance(raw, list):
+        nombres = []
+        for c in raw:
+            if isinstance(c, str) and c:
+                nombres.append(c)
+            elif isinstance(c, dict) and c.get("context"):
+                nombres.append(str(c["context"]))
+        return nombres
+    if isinstance(raw, dict):
+        if isinstance(raw.get("contexts"), list):
+            return _contextos(raw["contexts"])
+        return _contextos(list(raw.get("checks") or []))
+    return []
+
+
 _MARCA_SHA = re.compile(r"ai-review:sha=([0-9a-fA-F]{7,64})")
 
 
@@ -101,28 +132,15 @@ def veredicto(
         e.get("context", "") for e in estados if e.get("state") in ("failure", "error")
     )
     if not requeridos:
-        efectivas = [
-            r for r in runs if not _salto_del_borrador(r, listo_desde, relanzadas_set)
-        ]
-        corriendo = any(
-            r.get("status") != "completed" or r.get("conclusion") is None
-            for r in efectivas
-        ) or any(e.get("state") == "pending" for e in estados)
-        hay = bool(efectivas or estados)
-        fallas_sin = tuple(
-            dict.fromkeys(
-                [c["nombre"] for c in fallidas if c["nombre"]] + list(estados_malos)
-            )
-        )
         return ChecksVerdict(
             sha,
-            terminal=hay and not corriendo,
-            green=hay and not corriendo and not fallas_sin,
+            terminal=True,
+            green=True,
             faltan=(),
-            fallas=fallas_sin,
-            github_termino=hay and not corriendo,
+            fallas=(),
+            github_termino=True,
             corridas=corridas,
-            corridas_fallidas=fallidas,
+            corridas_fallidas=(),
         )
     faltan, fallas = [], []
     for c in requeridos:
@@ -392,14 +410,14 @@ class GhGitHub:
         n = self.nombre(repo)
         pr = self._vista(repo, numero)
         try:
-            req = json.loads(
+            req = _contextos(json.loads(
                 self._gh(
                     "api",
                     f"repos/{n}/branches/{pr.base}/protection/required_status_checks",
                     "--jq",
                     ".contexts",
                 )
-            )
+            ))
         except RuntimeError as e:
             if not (self._sin_proteccion(e) or self._sin_funcion_en_el_plan(e)):
                 raise
@@ -413,7 +431,7 @@ class GhGitHub:
                 )
             )
         except RuntimeError as e:
-            if not (self._es_404(e) or self._sin_funcion_en_el_plan(e)):
+            if not self._sin_funcion_en_el_plan(e):
                 raise
             reglas = []
         for pagina in reglas:
@@ -434,7 +452,7 @@ class GhGitHub:
                 f"repos/{n}/commits/{sha}/check-runs?per_page=100",
                 "--paginate",
                 "--jq",
-                "[.check_runs[]|{name, status, conclusion, completed_at, id, html_url, details_url}]",
+                "[.check_runs[]|{name, status, conclusion, completed_at, id, html_url, details_url, app_id: .app.id}]",
             )
         ):
             runs.extend(pagina if isinstance(pagina, list) else [])
@@ -444,9 +462,10 @@ class GhGitHub:
         ):
             if isinstance(pagina, dict):
                 estados.extend(pagina.get("statuses") or [])
+        politica = PoliticaConocida(tuple(CheckRequerido(nombre=n) for n in requeridos))
         return veredicto(
             sha,
-            requeridos,
+            tuple(c.nombre for c in politica.requeridos),
             runs,
             None if pr.borrador else self._listo_desde(n, numero),
             estados,

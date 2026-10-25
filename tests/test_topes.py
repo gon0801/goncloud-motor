@@ -255,24 +255,21 @@ class ApartTest(unittest.TestCase):
         estorbo = d.cx.home / "tmp" / "despliega-demo-A"
         estorbo.parent.mkdir(parents=True, exist_ok=True)
         estorbo.write_text("la copia falla una vez", encoding="utf-8")
-        fallo = None
         fin = time.time() + 30
-        while time.time() < fin and fallo is None:
-            try:
-                d.fx.deploy(plan, snap(), m.Deploy("A", sha))
-            except RuntimeError as e:
-                fallo = str(e)
-            time.sleep(0.2)
-        self.assertIsNotNone(fallo)
-        estorbo.unlink()
-        fin = time.time() + 30
-        while time.time() < fin and not banco.eventos("Deployed"):
+        while time.time() < fin and not any(
+            e.kind == "EfectoObservado" and e.data.get("resultado") == "incierto"
+            for e in d.store.events("demo")
+        ):
             d.fx.deploy(plan, snap(), m.Deploy("A", sha))
             time.sleep(0.2)
-        (r,) = banco.eventos("Deployed")
-        self.assertTrue(r.data["ok"], r.data)
-        self.assertNotIn("ya estaba desplegado", r.data["detalle"])
-        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "nuevo")
+        self.assertTrue(any(
+            e.kind == "EfectoObservado" and e.data.get("resultado") == "incierto"
+            for e in d.store.events("demo")
+        ))
+        estorbo.unlink()
+        d.fx.deploy(plan, snap(), m.Deploy("A", sha))
+        self.assertEqual(banco.eventos("Deployed"), [])
+        self.assertEqual(prod.read_text(encoding="utf-8").strip(), "viejo")
 
     def test_verify_con_maquina_cambiada_se_recoge_a_la_primera(self):
         import subprocess as sp

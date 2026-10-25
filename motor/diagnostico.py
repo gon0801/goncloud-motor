@@ -379,9 +379,6 @@ def por_que(bv: m.BlockView) -> str:
         if str(c.get("detalle", "")).startswith("el merge falló"):
             return "GitHub no dejó integrarlo; hay que traer lo último de la rama principal"
         return "las pruebas automáticas de GitHub salieron en rojo"
-    r = bv.review_for(head) if head else None
-    if r and not m._aprobado(r):
-        return "el revisor pidió cambios"
     v = bv.verified.get(head) if head else None
     if v and not v["ok"]:
         return "falló la verificación de las filas"
@@ -436,13 +433,6 @@ def _lineas(bv: m.BlockView) -> list[str]:
         v = bv.verified.get(head)
         if v and not v["ok"]:
             out.append(f"La verificación falló: {v.get('detalle', '')[:800]}")
-        r = bv.review_for(head)
-        if r and not m._aprobado(r):
-            for blq in m._bloqueantes(r):
-                out.append(
-                    f"BLOQUEANTE: {blq['texto']} | repro: {blq['repro']}"
-                    + (f" | arreglo: {blq['arreglo']}" if blq.get("arreglo") else "")
-                )
         c = bv.checks.get(head)
         if c and not c["green"]:
             out.append(f"Pruebas automáticas en rojo: {c.get('detalle', '')}")

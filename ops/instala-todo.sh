@@ -116,6 +116,15 @@ if [ -n "$anterior" ] && [ "$anterior" != "$etiqueta" ]; then
   mkdir -p "$home"
   echo "$anterior" >"$home/etiqueta-anterior"
 fi
+if ! git -C "$motor" cat-file -e "refs/tags/$etiqueta:motor/formato.py" 2>/dev/null; then
+  if [ -f "$HOME/.motor/formato" ]; then
+    if python3 -c "import tomllib" 2>/dev/null; then py="python3"; else py="uv run --python 3.12 python"; fi
+    if ! (cd "$motor" && PYTHONPATH=. $py -m motor formato --home "$HOME/.motor"); then
+      echo "$m: hay una intencion sin cerrar; no cambio a una etiqueta que no la entiende" >&2
+      exit 1
+    fi
+  fi
+fi
 git -C "$motor" checkout -q --detach "refs/tags/$etiqueta"
 if [ -d "$conf/.git" ]; then git -C "$conf" remote set-url origin "$confurl"; git -C "$conf" fetch -q origin; else git clone -q "$confurl" "$conf"; fi
 git -C "$conf" checkout -q --detach origin/HEAD
@@ -158,6 +167,14 @@ instala_pc() {
   anterior="$(ssh_a "$(host_de pc)" "git -C $u\\motor describe --tags --exact-match 2>nul" 2>/dev/null | tr -d '[:space:]')" || anterior=""
   if [ -n "$anterior" ] && [ "$anterior" != "$ETIQUETA" ]; then
     ssh_a "$(host_de pc)" "echo $anterior> $u\\.motor\\etiqueta-anterior" || return 1
+  fi
+  if ! ssh_a "$(host_de pc)" "git -C $u\\motor cat-file -e refs/tags/$ETIQUETA:motor/formato.py"; then
+    if ! marca="$(ssh_a "$(host_de pc)" "if exist $u\\.motor\\formato echo si" | tr -d "[:space:]")"; then
+      return 1
+    fi
+    if [ "$marca" = si ]; then
+      ssh_a "$(host_de pc)" "cd /d $u\\motor && $PC_UV run --python 3.12 python -m motor formato --home $u\\.motor" || return 1
+    fi
   fi
   ssh_a "$(host_de pc)" "git -C $u\\motor checkout -q --detach refs/tags/$ETIQUETA" || return 1
   ssh_a "$(host_de pc)" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf remote set-url origin $CONF_URL)" || return 1

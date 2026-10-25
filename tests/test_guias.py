@@ -67,8 +67,8 @@ def pol() -> m.Policy:
     )
 
 
-def arranque(eventos: list[Event], role: str = "implementar") -> m.StartAttempt:
-    s = m.fold(parse_plan(PLAN), eventos)
+def arranque(eventos: list[Event], role: str = "implementar", plan: str = PLAN) -> m.StartAttempt:
+    s = m.fold(parse_plan(plan), eventos)
     for a in m.decide(s, pol(), time.time()):
         if isinstance(a, m.StartAttempt) and a.role == role:
             return a
@@ -109,7 +109,9 @@ class TestGuias(unittest.TestCase):
     def test_con_una_revision_no_aprobada_abre_bug_fix(self):
         a = arranque(
             [
-                *revisable(),
+                *entregado(),
+                ev("Verified", {"sha": "a" * 40, "ok": False}),
+                ev("PrOpened", {"numero": 7}),
                 ev(
                     "Reviewed",
                     {
@@ -157,7 +159,8 @@ class TestGuias(unittest.TestCase):
         self.assertEqual(guias(GATE_IMPL, "kimi", a.correccion)[0], FEATURE)
 
     def test_revisar_en_gate_lleva_interrogate(self):
-        a = arranque(revisable(), "revisar")
+        plan = PLAN.replace("repo: git@github.com:x/app.git\n", "repo: git@github.com:x/app.git\nrevisa: opus\n", 1)
+        a = arranque(revisable(), "revisar", plan)
         g = guias(GATE_REV, "claude", a.correccion)
         self.assertIn(INTERROGATE, g)
         self.assertLess(g.index(INTERROGATE), g.index(BASE))

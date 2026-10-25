@@ -131,7 +131,7 @@ def _estado(home: Path) -> list[dict]:
         snap = m.fold(plan, store.events(plan.id), maquina)
         bloques = []
         for bid, bv in snap.blocks.items():
-            run = bv.running()
+            run = bv.running_productivo() or bv.running()
             bloques.append(
                 {
                     "bloque": bid,
@@ -472,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--usuario", required=True)
     s.add_argument("--home", required=True)
     s.add_argument("--imprime", action="store_true")
+    s = sub.add_parser("formato")
+    s.add_argument("--home", type=Path, required=True)
     s = sub.add_parser("daemon")
     s.add_argument("--home", type=Path, required=True)
     s.add_argument("--intervalo", type=float, default=10.0)
@@ -628,8 +630,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if a.cmd == "formato":
+        from .formato import puede_volver
+        from .store import Store
+        db = a.home / "motor.db"
+        eventos = list(Store.solo_lectura(db).events()) if db.exists() else []
+        ok, motivo = puede_volver(a.home, eventos)
+        print(motivo)
+        return 0 if ok else 1
     if a.cmd == "daemon":
         from .daemon import Daemon, OtroMotor
+        from .formato import FormatoIncompatible
 
         salida, vuelta = _recupera_conf(a.home)
         if salida is not None:
@@ -637,6 +648,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             d = Daemon(a.home, a.checks_cada)
         except OtroMotor as e:
+            print(f"motor: {e}", file=sys.stderr)
+            return 1
+        except FormatoIncompatible as e:
             print(f"motor: {e}", file=sys.stderr)
             return 1
         except Exception as e:  # noqa: BLE001  un fallo al armar el Daemon no debe relanzarse cada pocos segundos
