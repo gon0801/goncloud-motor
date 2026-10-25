@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import string
 import subprocess
@@ -62,6 +63,68 @@ def con_python(env: dict, en_windows: bool | None = None) -> dict:
     return env
 
 
+def _dir_shims_python() -> Path:
+    """Carpeta con `python` y `python3` que ejecutan el Python del motor (`sys.executable`)."""
+    clave = hashlib.sha256(os.path.realpath(sys.executable).encode()).hexdigest()[:12]
+    d = Path(tempfile.gettempdir()) / f"motor-python-{clave}"
+    contenido = f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        for nombre in ("python", "python3"):
+            f = d / nombre
+            if f.is_symlink() and os.path.realpath(f) == os.path.realpath(
+                sys.executable
+            ):
+                continue
+            try:
+                if f.is_symlink() or f.exists():
+                    f.unlink()
+                f.symlink_to(sys.executable)
+                continue
+            except OSError:
+                pass
+            try:
+                actual = f.read_text(encoding="utf-8")
+            except OSError:
+                actual = ""
+            if actual != contenido:
+                tmp = d / f".{nombre}.tmp"
+                tmp.write_text(contenido, encoding="utf-8")
+                tmp.chmod(0o755)
+                os.replace(tmp, f)
+            else:
+                os.chmod(f, 0o755)
+    except OSError:
+        return Path(sys.executable).parent
+    return d
+
+
+def entorno_maquina(maquina, extra: dict | None = None) -> dict:
+    """El único entorno de la máquina: previa y verificación salen de aquí."""
+    env = {**os.environ}
+    if maquina is not None:
+        env.update(dict(getattr(maquina, "env", ()) or ()))
+        env.update(dict(getattr(maquina, "secretos", ()) or ()))
+    env["MOTOR_RAIZ"] = str(RAIZ)
+    if extra:
+        env.update(dict(extra))
+    env.pop(senal.VARIABLE, None)
+    env.pop("MOTOR_LLAMADA", None)
+    if os.name == "nt":
+        return con_python(env)
+    path_extra = (
+        tuple(getattr(maquina, "path_extra", ()) or ()) if maquina is not None else ()
+    )
+    partes = [
+        str(_dir_shims_python()),
+        str(RAIZ / "motor" / "shims"),
+        *path_extra,
+        env.get("PATH", ""),
+    ]
+    env["PATH"] = os.pathsep.join(p for p in partes if p)
+    return env
+
+
 def con_python_de_comando(env: dict, en_windows: bool | None = None) -> dict:
     if en_windows is None:
         en_windows = os.name == "nt"
@@ -75,6 +138,73 @@ def con_python_de_comando(env: dict, en_windows: bool | None = None) -> dict:
 def comandos_faltantes(salida: str) -> list[str]:
     """Comandos que la máquina no tiene, según lo que dijo el shell (bash o cmd de Windows)."""
     return sorted({a or b for a, b in _FALTA.findall(salida)})
+
+
+CASOS_PRUEBAS = {
+    "dinero": "dinero (pujas, precios, presupuestos o cobros)",
+    "datos": "datos (escribir datos de producción)",
+    "instala": "instala (instalar, borrar o deshacer en las máquinas)",
+    "falla": "falla (una falla que ya pasó en producción)",
+}
+
+
+def texto_pruebas(block, revisar: bool = False) -> str:
+    marca = getattr(block, "pruebas", "")
+    if marca:
+        caso = CASOS_PRUEBAS.get(marca, marca)
+        if revisar:
+            return (
+                f"Marca de pruebas: este bloque lleva `pruebas: {marca}`, el caso {caso}; va UNA prueba."
+            )
+        return (
+            f"Marca de pruebas: este bloque lleva `pruebas: {marca}`, el caso {caso}. Escribe UNA prueba."
+        )
+    if revisar:
+        return "No pidas pruebas nuevas; lo que falte va en notas."
+    return "No escribas pruebas nuevas: basta comprobar que corre."
+
+
+def inputs_de_workflow(texto: str) -> list[tuple[str, bool]]:
+    """(nombre, obligatorio) de los inputs de `workflow_dispatch` de un workflow."""
+    out: list[tuple[str, bool]] = []
+    en_dispatch = en_inputs = False
+    actual: str | None = None
+    for linea in texto.splitlines():
+        if re.match(r"^\s*workflow_dispatch\s*:", linea):
+            en_dispatch = True
+            continue
+        if en_dispatch and re.match(r"^\s+inputs\s*:", linea):
+            en_inputs = True
+            continue
+        if en_inputs:
+            m = re.match(r"^\s{6}([A-Za-z_][\w-]*)\s*:\s*$", linea)
+            if m:
+                actual = m.group(1)
+                out.append((actual, False))
+                continue
+            m = re.match(r"^\s+required\s*:\s*true\s*$", linea)
+            if m and actual:
+                out[-1] = (actual, True)
+                continue
+            if linea.strip() and not linea.startswith("        "):
+                if not re.match(r"^\s{4}\S", linea):
+                    break
+    return out
+
+
+def es_archivo_prueba(ruta: str) -> bool:
+    partes = [p.lower() for p in ruta.replace("\\", "/").split("/") if p]
+    if not partes:
+        return False
+    nombre = partes[-1]
+    return (
+        any(p in ("tests", "test", "__tests__") for p in partes[:-1])
+        or nombre.startswith("test_")
+        or nombre.startswith("test")
+        and nombre.endswith(".py")
+        or "_test." in nombre
+        or ".test." in nombre
+    )
 
 
 @dataclass
@@ -338,19 +468,7 @@ class Effects:
 
     # ------------------------------------------------------------------ entorno
     def env_base(self, extra: dict | None = None) -> dict:
-        mq = self.cx.maquina
-        env = {
-            **os.environ,
-            **dict(mq.env),
-            **dict(mq.secretos),
-            "MOTOR_RAIZ": str(RAIZ),
-            **(extra or {}),
-        }
-        env.pop(senal.VARIABLE, None)
-        env.pop("MOTOR_LLAMADA", None)  # un agente nunca arranca dentro de una llamada
-        if mq.path_extra:
-            env["PATH"] = os.pathsep.join([*mq.path_extra, env.get("PATH", "")])
-        return con_python(env)
+        return entorno_maquina(self.cx.maquina, extra)
 
     def repo_conf(self, snap: m.Snapshot, repo: str) -> RepoConf:
         return RepoConf.parse(snap.repos.get(repo, {}).get("texto", ""))
@@ -588,14 +706,17 @@ class Effects:
 
     # ------------------------------------------------------------------ intentos
     def _encargo(
-        self, plan: Plan, block, a: m.StartAttempt, cwd, rc, info_pstack
+        self, plan: Plan, block, a: m.StartAttempt, cwd, rc, info_pstack, snap=None
     ) -> str:
         """El brief completo de un intento: encargo, cómo se entrega y, al final, el anexo de guías."""
         seccion = self._seccion_pstack(info_pstack)
         if a.role == "implementar":
             brief = self._brief_implementar(plan, block, a, cwd, rc, seccion)
         else:
-            brief = self._brief_revisar(plan, block, a, rc, seccion)
+            comentarios = (
+                self._comentarios_deepseek(snap, block, a.sha) if snap else []
+            )
+            brief = self._brief_revisar(plan, block, a, rc, seccion, comentarios)
         return brief + self._anexo_guias(info_pstack)
 
     def start_attempt(self, plan: Plan, snap: m.Snapshot, a: m.StartAttempt) -> None:
@@ -641,7 +762,13 @@ class Effects:
         info_pstack = self._prepara_pstack(
             d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion, guias_del
         )
-        brief = self._encargo(plan, block, a, cwd, rc, info_pstack)
+        if a.role == "revisar":
+            bv = snap.blocks.get(a.block) if snap else None
+            if bv is not None and bv.pr:
+                self._dispara_deepseek(
+                    plan, snap, block, int(bv.pr["numero"]), a.sha
+                )
+        brief = self._encargo(plan, block, a, cwd, rc, info_pstack, snap)
         (d / "brief.md").write_text(brief, encoding="utf-8")
         result = d / "result.json"
         prompt = prompt_de_encargo(str(d / "brief.md"), brief)
@@ -767,15 +894,19 @@ Si algo no te deja seguir, intenta otra forma; si de verdad solo una persona pue
 
 {filas}
 
+{texto_pruebas(block)}
+
 ## Qué pasó antes (corrígelo primero)
 {fb}
 
 ## Lo que quedó sin commitear de un intento anterior
 {pendientes or "(nada)"}
 
+Si una Acepta falla por la máquina (falta un paquete, un programa o la versión de Python), arréglalo tú en esta máquina con el método que ya usa (pip del Python del motor, npm, brew, uv) y sigue; no esperes una nota.
+
 ## Si lo que falla no es el código del bloque
-Si lo que falla es la máquina, una Acepta que no puede pasar aquí o un servicio externo, no lo
-arregles por tu cuenta ni cambies el plan o la máquina. Escribe en `$MOTOR_RESULT`
+Si lo que falla es un servicio externo o una decisión que solo puede tomar una persona, no lo
+arregles por tu cuenta ni cambies el plan. Escribe en `$MOTOR_RESULT`
 `{{"bloqueado": "<motivo en una frase>"}}` y termina. El motor no le pasa el bloque a otro agente:
 avisa y espera una nota, un plan corregido o una máquina corregida.
 
@@ -796,12 +927,39 @@ avisa y espera una nota, un plan corregido o una máquina corregida.
         a: m.StartAttempt,
         rc: RepoConf,
         seccion_pstack: str = "",
+        comentarios_deepseek=None,
     ) -> str:
         filas = "\n".join(
             f"- {r.id}: {r.contenido}"
             + (f" | Acepta: `{r.acepta}`" if r.acepta else "")
             for r in block.rows
         )
+        if comentarios_deepseek is None:
+            try:
+                prs = [
+                    e
+                    for e in self.cx.store.events(plan.id)
+                    if e.kind == "PrOpened" and e.block == block.id
+                ]
+                fn = getattr(self.cx.gh, "comentarios_deepseek", None)
+                if prs and fn is not None:
+                    comentarios_deepseek = list(
+                        fn(block.repo, int(prs[-1].data["numero"]), a.sha) or []
+                    )
+            except Exception:  # noqa: BLE001 - sin comentarios se revisa igual
+                comentarios_deepseek = ()
+        deepseek = ""
+        if comentarios_deepseek:
+            lineas = "\n".join(
+                f"- {c.get('texto', c) if isinstance(c, dict) else c}"
+                for c in comentarios_deepseek
+            )
+            deepseek = (
+                "\n## Comentarios de DeepSeek para este SHA\n"
+                "DeepSeek ya publicó estos comentarios para este SHA. Son sugerencias: "
+                "nunca frenan nada por sí solos. Decide con la regla de siempre.\n"
+                f"{lineas}\n"
+            )
         antes = ""
         if a.feedback:
             antes = (
@@ -816,6 +974,8 @@ Estás en una copia de solo lectura de ese SHA (diferencia contra `{rc.principal
 
 {filas}
 
+{texto_pruebas(block, revisar=True)}
+{deepseek}
 {antes}{seccion_pstack}Un hallazgo bloquea solo si trae el comando que lo reproduce (`repro`). El motor lo corre en una copia
 de este SHA: si sale 0, no reprodujo nada y el hallazgo baja a nota. Lo demás va en `notas`.
 Escribe en `$MOTOR_RESULT`:
@@ -999,11 +1159,28 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             falla := self._comprueba_repro(plan, snap, block, res, punta)
         ):
             return falla
-        return {
+        entregado = {
             "kind": "entregado",
             "sha": punta,
             "resumen": str(res.get("resumen", ""))[:500],
         }
+        if not getattr(block, "pruebas", ""):
+            try:
+                rc2 = self.repo_conf(snap, block.repo)
+                espejo = self.cx.ws.espejo(block.repo)
+                base = git(
+                    "merge-base", f"origin/{rc2.principal}", punta, cwd=espejo
+                ).stdout.strip()
+                if base:
+                    diff = git(
+                        "diff", "--name-only", "--diff-filter=A", base, punta, cwd=espejo
+                    ).stdout
+                    nuevas = [x for x in diff.splitlines() if es_archivo_prueba(x)]
+                    if nuevas:
+                        entregado["pruebas_sin_marca"] = nuevas
+            except Exception:  # noqa: BLE001 - anotar nunca frena una entrega
+                pass
+        return entregado
 
     def interrumpe(self, plan: Plan, snap: m.Snapshot, a: m.Interrumpe) -> None:
         """Detiene el intento en curso, guarda la foto de lo que llevaba y lo anota como `interrumpido`
@@ -1184,8 +1361,46 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             and e.block == a.block
             and e.data.get("sha") == a.sha
         ]
+        eventos = self.cx.store.events(plan.id)
+        reverificar = False
+        if kind == "verify":
+            previos = [
+                e
+                for e in eventos
+                if e.kind == "Verified"
+                and e.block == a.block
+                and e.data.get("sha") == a.sha
+            ]
+            if previos and m._es_falla_maquina(previos[-1].data):
+                ultima_nota = max(
+                    (
+                        e.ts
+                        for e in eventos
+                        if e.kind == "Note" and e.block == a.block
+                    ),
+                    default=0.0,
+                )
+                reverificar = ultima_nota > previos[-1].ts or (
+                    time.time() - previos[-1].ts >= m.REVERIFICA_CADA_S
+                )
+        terminales = [
+            e
+            for e in eventos
+            if e.kind == terminal_kind
+            and e.block == a.block
+            and e.data.get("sha") == a.sha
+            and huella.vigente(e.data, h_insumo, h_maquina)
+        ]
+        if (
+            kind in ("deploy", "prove")
+            and terminales
+            and terminales[-1].data.get("codigo") == 75
+            and not terminales[-1].data.get("ok")
+        ):
+            reverificar = True  # el planificador ya aplica la espera de 15 minutos
         if starteds:
             ultimo = starteds[-1]
+            pendiente = not terminales or ultimo.id > terminales[-1].id
             d = Path(ultimo.data["dir"]) if ultimo.data.get("dir") else None
             if d is not None:
                 oc = d / "outcome.json"
@@ -1195,8 +1410,11 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         oc.replace(d / "outcome-error.json")
                         raise RuntimeError(str(payload["error"]))
                     datos = payload.get("data") or {}
+                    if not pendiente and not reverificar:
+                        return
                     if (
-                        datos.get("sha") == a.sha
+                        pendiente
+                        and datos.get("sha") == a.sha
                         and datos.get("huella", h_insumo) == h_insumo
                         and datos.get("huella_maquina", h_maquina) == h_maquina
                     ):
@@ -1207,7 +1425,14 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                                 "Verified",
                                 datos,
                                 ukey=claves.verificado(
-                                    plan.id, a.block, a.sha, h_insumo, h_maquina
+                                    plan.id,
+                                    a.block,
+                                    a.sha,
+                                    h_insumo,
+                                    h_maquina,
+                                    vez=int(ultimo.data.get("n", 0))
+                                    if int(ultimo.data.get("n", 0)) > 1
+                                    else 0,
                                 ),
                             )
                         elif terminal_kind == "Deployed":
@@ -1247,6 +1472,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         if anotado or datos.get("codigo") != 75:
                             return
                 else:
+                    if not pendiente and not reverificar:
+                        return
                     proc = ultimo.data.get("proc") or {}
                     if proc and plataforma.estado_proc(proc) == "vivo":
                         return
@@ -1324,6 +1551,11 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             )
 
     def verify(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> None:
+        bv = snap.blocks.get(a.block) if snap else None
+        if bv is not None and bv.pr:
+            self._dispara_deepseek(
+                plan, snap, plan.block(a.block), int(bv.pr["numero"]), a.sha
+            )
         self._aparte("verify", plan, snap, a)
 
     def _verify_data(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> dict:
@@ -1333,6 +1565,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             block.repo, a.sha, self.cx.home / "tmp" / f"verifica-{plan.id}-{a.block}"
         )
         fallas, faltan = [], []
+        codigos: list[int] = []
         h_insumo, h_maquina = self._huellas("verified", block, snap)
         tope = float(self.cx.conf.tiempos.get("verifica_tope_s", 1800))
         for r in block.rows:
@@ -1345,18 +1578,98 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     bash=self.cx.maquina.bash,
                 )
                 if p.returncode != 0:
+                    codigos.append(p.returncode)
                     fallas.append(
                         f"{r.id}: `{r.acepta}` salió {p.returncode}: {(p.stdout + p.stderr)[-300:]}"
                     )
-                    faltan += comandos_faltantes(p.stdout + p.stderr)
+                    from .previa import faltantes_de_salida
+
+                    faltan += faltantes_de_salida(p.stdout + p.stderr, p.returncode)
+        codigo = next((c for c in codigos if c in (126, 127)), codigos[0] if codigos else 0)
         return {
             "sha": a.sha,
             "ok": not fallas,
             "detalle": "\n".join(fallas),
+            "codigo": codigo,
             "falta_comando": sorted(set(faltan)),
             "huella": h_insumo,
             "huella_maquina": h_maquina,
         }
+
+    def _comentarios_deepseek(self, snap: m.Snapshot, block, sha: str) -> list:
+        """Comentarios de DeepSeek ya publicados para ese SHA. Sin ellos, se revisa igual."""
+        bv = snap.blocks.get(block.id) if snap else None
+        if bv is None or not bv.pr:
+            return []
+        fn = getattr(self.cx.gh, "comentarios_deepseek", None)
+        if fn is None:
+            return []
+        try:
+            return list(fn(block.repo, int(bv.pr["numero"]), sha) or [])
+        except Exception:  # noqa: BLE001 - DeepSeek nunca frena la revisión
+            return []
+
+    def _dispara_deepseek(
+        self, plan: Plan, snap: m.Snapshot, block, numero: int, sha: str
+    ) -> None:
+        """Dispara la revisión de DeepSeek de este PR. Un SHA ya disparado no se repite."""
+        try:
+            if any(
+                e.kind == "DeepSeekDisparado"
+                and e.block == block.id
+                and e.data.get("sha") == sha
+                for e in self.cx.store.events(plan.id)
+            ):
+                return
+            fn = getattr(self.cx.gh, "disparar_workflow", None)
+            if fn is None:
+                return
+            espejo = self.cx.ws.espejo(block.repo)
+            worker = git(
+                "show", f"{sha}:.github/workflows/ai-review-worker.yml", cwd=espejo
+            )
+            if worker.returncode != 0:
+                return
+            publish = git(
+                "show", f"{sha}:.github/workflows/ai-review-publish.yml", cwd=espejo
+            )
+            if publish.returncode == 0:
+                archivo, texto = "ai-review-publish.yml", publish.stdout
+            else:
+                archivo, texto = "ai-review-worker.yml", worker.stdout
+            rc = self.repo_conf(snap, block.repo)
+            base = git(
+                "rev-parse", f"origin/{rc.principal}", cwd=espejo
+            ).stdout.strip()
+            previos = sum(
+                1
+                for e in self.cx.store.events(plan.id)
+                if e.kind == "DeepSeekDisparado" and e.block == block.id
+            )
+            valores = {
+                "pr_number": str(numero),
+                "head_sha": sha,
+                "base_sha": base,
+                "request_id": str(1000 + previos + 1),
+                "coordinator_run_id": str(numero),
+                "finding_identity": "current",
+            }
+            inputs = {}
+            for nombre, obligatorio in inputs_de_workflow(texto):
+                if nombre in valores and (obligatorio or nombre == "pr_number"):
+                    inputs[nombre] = valores[nombre]
+                elif obligatorio:
+                    inputs[nombre] = valores.get(nombre, "motor")
+            fn(block.repo, archivo, inputs)
+            self.cx.store.append(
+                plan.id,
+                block.id,
+                "DeepSeekDisparado",
+                {"sha": sha, "pr": numero, "workflow": archivo, "inputs": inputs},
+                ukey=claves.deepseek_disparado(plan.id, block.id, sha),
+            )
+        except Exception:  # noqa: BLE001 - DeepSeek es una sugerencia, nunca frena
+            return
 
     def open_pr(self, plan: Plan, snap: m.Snapshot, a: m.OpenPr) -> None:
         block = plan.block(a.block)
@@ -1388,6 +1701,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             {"numero": pr.numero, "rama": pr.rama},
             ukey=claves.pr_abierto(plan.id, a.block, pr.numero),
         )
+        self._dispara_deepseek(plan, snap, block, pr.numero, a.sha)
 
     def mark_ready(self, plan: Plan, snap: m.Snapshot, a: m.MarkReady) -> None:
         bv = snap.blocks[a.block]
@@ -1410,7 +1724,25 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         v = self.cx.gh.ver(block.repo, numero)
         if v.estado == "abierto":
             return False
-        if v.estado != "mergeado" or v.head != sha:
+        mismo_contenido = v.head == sha
+        if v.estado == "mergeado" and not mismo_contenido:
+            d = self.cx.ws.espejo(block.repo)
+            original = git("rev-parse", "--verify", f"{sha}^{{tree}}", cwd=d)
+            if original.returncode == 0:
+                punta = git("rev-parse", "--verify", f"{v.head}^{{tree}}", cwd=d)
+                if punta.returncode != 0:
+                    # GitHub puede borrar la rama al unir: pedir el commit conservado por el PR.
+                    r = git("fetch", "-q", "origin", v.head, cwd=d)
+                    if r.returncode != 0:
+                        raise RuntimeError(
+                            f"no pude comprobar el contenido del PR {numero}: {r.stderr[-300:]}"
+                        )
+                    punta = git("rev-parse", "--verify", f"{v.head}^{{tree}}", cwd=d)
+                mismo_contenido = (
+                    punta.returncode == 0
+                    and original.stdout.strip() == punta.stdout.strip()
+                )
+        if v.estado != "mergeado" or not mismo_contenido:
             # cerrado, o mergeado con OTRO contenido (MOTOR 01, bloque F: se adoptaba el merge viejo y
             # se desplegaba otra vez el código con el error): ese PR ya no sirve, se abre uno nuevo
             self.cx.store.append(
@@ -1423,6 +1755,18 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             return True
         self.adopta_externo(plan, snap, block_id, sha, v.merge_commit)
         return True
+
+    def reconcilia_prs(self, plan: Plan, snap: m.Snapshot) -> None:
+        """Reconoce uniones externas tambien fuera de CHECKS, antes de decidir otro intento."""
+        for bid, bv in snap.blocks.items():
+            if not bv.pr or not bv.head() or bv.running():
+                continue
+            k = f"pr:{plan.id}:{bid}:{bv.pr['numero']}"
+            ahora = time.time()
+            if ahora - self._ultimo_poll.get(k, 0) < self.cx.checks_cada_s:
+                continue
+            self._ya_mergeado(plan, snap, bid, bv.head())
+            self._ultimo_poll[k] = ahora
 
     def adopta_externo(
         self,
@@ -1662,6 +2006,15 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         rc = self.repo_conf(snap, block.repo)
         if self._ya_mergeado(plan, snap, t.block, t.sha):
             return
+        if block.lane == "fast":
+            self.cx.gh.marcar_listo(block.repo, t.pr)
+            self.cx.store.append(
+                plan.id,
+                t.block,
+                "MarkedReady",
+                {"sha": t.sha},
+                ukey=claves.marcado_listo(plan.id, t.block, t.sha),
+            )
         try:
             pr = self.cx.gh.merge(
                 block.repo,
@@ -1776,9 +2129,13 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     if p.returncode != 0:
                         # Sin la salida el agente solo veía "salida 1" y no sabía qué arreglar
                         # (INGESTA 01: desplegar.sh pedía un SHA como argumento que el motor no da).
-                        ok = False
+                        ok, codigo = False, p.returncode
                         pasos.append(_cola(p))
-                        faltan += comandos_faltantes(p.stdout + p.stderr)
+                        from .previa import faltantes_de_salida
+
+                        faltan += faltantes_de_salida(
+                            p.stdout + p.stderr, p.returncode
+                        )
                         self._rollback(rollback, w, env, tope, pasos)
                         pasos.append(RECETA)
                         break
@@ -1888,7 +2245,9 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             if codigo == 75:
                 detalle = f"no es el código; reintenta luego: {detalle}"
             if not ok:
-                faltan = comandos_faltantes(p.stdout + p.stderr)
+                from .previa import faltantes_de_salida
+
+                faltan = faltantes_de_salida(p.stdout + p.stderr, p.returncode)
         else:
             ok, detalle, codigo = True, "el bloque no declara prueba real", 0
         return {

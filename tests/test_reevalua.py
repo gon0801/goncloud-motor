@@ -1228,22 +1228,6 @@ class BloqueadoTest(Banco):
         plan = d.plans()[0]
         return d.fx.collect(plan, d._fold(plan), "A", att)
 
-    def test_el_encargo_le_dice_que_no_arregle_lo_que_no_es_el_codigo(self):
-        d = self.daemon()
-        plan = Plan.from_dict(self.plan)
-        brief = d.fx._brief_implementar(
-            plan,
-            plan.block("A"),
-            m.StartAttempt("A", "implementar", "glm", 1, "", (), False),
-            self.tmp,
-            RepoConf.parse(""),
-        )
-        self.assertIn(
-            "la máquina, una Acepta que no puede pasar aquí o un servicio externo",
-            brief,
-        )
-        self.assertIn('{"bloqueado": "<motivo en una frase>"}', brief)
-
     def test_el_resultado_bloqueado_termina_el_intento_con_su_motivo(self):
         out = self.collect({"bloqueado": f"  {MOTIVO}  "})
         self.assertEqual(out["kind"], "bloqueado")

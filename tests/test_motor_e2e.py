@@ -6,6 +6,7 @@ import http.server
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -418,16 +419,9 @@ class TestEntregaSegura(Banco):
         """MOTOR 01: claw entregó INGESTA 01, se fue con "encolado" y el motor de la Mini lo rechazó
         sin que nadie se enterara."""
         self.home, self.plan = sandbox.create(self.tmp / "b")
-        malo = self.tmp / "malo.md"
-        malo.write_text(
-            self.plan.read_text(encoding="utf-8").replace(
-                "repo: ", "repo: /no/existe/x.git\n#", 1
-            ),
-            encoding="utf-8",
-        )
-        motor(
+        r = motor(
             "entrega",
-            str(malo),
+            str(self.plan),
             "--home",
             str(self.home),
             "--json",
@@ -436,6 +430,9 @@ class TestEntregaSegura(Banco):
             "--por",
             "claw",
         )
+        self.assertEqual(json.loads(r.stdout)["estado"], "encolado")
+        # La previa paso, pero el repo desaparece antes de que el daemon tome el plan.
+        shutil.rmtree(self.tmp / "b" / "app.git")
         Daemon(self.home).ingest_inbox()
         avisos = list((self.home / "avisos" / "pendientes").glob("*rechazo*"))
         self.assertEqual(len(avisos), 1)
@@ -453,19 +450,22 @@ class TestEntregaSegura(Banco):
         r = motor(
             "entrega", str(malo), "--home", str(self.home), "--json", "--espera", "0"
         )
-        cmd = json.loads(r.stdout)["cmd_id"]
+        respuesta = json.loads(r.stdout)
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(respuesta["estado"], "rechazado")
+        self.assertTrue(respuesta["errores"])
+        self.assertFalse(list((self.home / "inbox").glob("*.json")))
         d = Daemon(self.home)
         d.ingest_inbox()
         self.assertEqual(
             d.plans(), [], "un plan con un repo inexistente no queda cargado"
         )
-        recibo = [
+        cargas = [
             e
             for e in Store(self.home / "motor.db").events()
-            if e.kind == "CommandReceived"
+            if e.kind == "PlanLoaded"
         ]
-        self.assertEqual(recibo[0].data["cmd_id"], cmd)
-        self.assertTrue(recibo[0].data["resultado"].startswith("rechazado"))
+        self.assertFalse(cargas)
 
     def test_hecho_antes_de_tiempo_se_rechaza_y_un_efecto_que_revienta_no_tumba_al_motor(
         self,
@@ -1111,14 +1111,22 @@ class TestDespliegueQueSePasa(Banco):
             ),
             encoding="utf-8",
         )
-        motor(
-            "entrega",
-            str(self.plan),
-            "--home",
-            str(self.home),
-            "--json",
-            "--espera",
-            "0",
+        # Ya tomado por la bandeja: la previa de `motor entrega` lo rechazaría antes,
+        # pero un plan ya en el motor igual anota el comando que falta al verificar.
+        from motor.plan import parse_plan
+
+        inbox = self.home / "inbox"
+        inbox.mkdir(exist_ok=True)
+        (inbox / "cmd-comando.json").write_text(
+            json.dumps(
+                {
+                    "cmd_id": "cmd-comando",
+                    "tipo": "plan",
+                    "plan": parse_plan(self.plan.read_text(encoding="utf-8")).to_dict(),
+                    "por": "",
+                }
+            ),
+            encoding="utf-8",
         )
         p = daemon(self.home)
         self.assertTrue(
