@@ -289,6 +289,15 @@ def _sin_agente(
             True,
             f"{tipo}; el último intento terminó en sin_cambios",
         )
+    if all(c == "aclaracion" for c, _ in est.values()):
+        return Diagnostico(
+            Causa.BLOQUEADO,
+            "la aclaracion sigue pendiente; los agentes no aportaron una resolucion con evidencia; "
+            "espero un dato nuevo o una nota",
+            f"atorado:{bid}:aclaracion:{bv.aclarar[0].id}",
+            True,
+            "la respuesta necesita fundamento y evidencia de la resolucion",
+        )
     vivos = {mo: v for mo, v in est.items() if v[0] != "agotado"}
     if not vivos:
         return Diagnostico(
@@ -359,6 +368,8 @@ def sesiones_caidas(
 
 
 def _toca(bv: m.BlockView) -> str:
+    if bv.aclarar:
+        return "toca aclarar un caso pendiente con fundamento y evidencia"
     falla = por_que(bv)
     return f"toca arreglarla porque {falla}" if falla else "toca hacerla"
 

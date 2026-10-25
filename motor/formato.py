@@ -54,7 +54,9 @@ def activa(home: Path) -> None:
         return
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name("formato.tmp")
-    tmp.write_text(json.dumps({"version": VERSION, "nombre": NOMBRE}, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(
+        json.dumps({"version": VERSION, "nombre": NOMBRE}, ensure_ascii=False), encoding="utf-8"
+    )
     os.replace(tmp, p)
 
 
@@ -81,10 +83,10 @@ def _junta(e, ultimo: dict, pedidos: list) -> None:
     kind = getattr(e, "kind", "")
     payload = getattr(e, "data", {}) or {}
     if kind == "Intencion":
-        ident = str(payload.get("id") or "")
-        if ident and ident not in pedidos:
+        ident = (getattr(e, "plan", ""), str(payload.get("id") or ""))
+        if ident[1] and ident not in pedidos:
             pedidos.append(ident)
     elif kind == "EfectoObservado":
-        ident = str(payload.get("intencion") or "")
-        if ident:
+        ident = (getattr(e, "plan", ""), str(payload.get("intencion") or ""))
+        if ident[1]:
             ultimo[ident] = str(payload.get("resultado") or "")

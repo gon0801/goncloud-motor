@@ -136,6 +136,14 @@ class Attempt:
     )
     revision_plan: int = 0  # mandato vigente cuando arranco; las rondas no cruzan una correccion
     modalidad: str = "implementar"  # implementar | reparar | diagnosticar | aclarar
+    aclaraciones: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Aclaracion:
+    id: str
+    sha: str
+    juicio: dict
 
 
 @dataclass
@@ -189,7 +197,7 @@ class BlockView:
         None  # {"version", "cambios", "agente", "desde"}: una versión nueva del plan tocó un bloque ya hecho
     )
     resoluciones: tuple = ()  # Corregido | Aclarado proyectados; no salen de la prosa del asesor
-    aclarar: list = field(default_factory=list)  # juicios Aclarar aún sin StartAttempt
+    aclarar: list[Aclaracion] = field(default_factory=list)
 
     def implement_attempts(self) -> list[Attempt]:
         return [a for a in self.attempts if a.role == "implementar"]
@@ -388,14 +396,29 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                     ),
                     revision_plan=bv.revision_plan,
                     modalidad=str(d.get("modalidad") or "implementar"),
+                    aclaraciones=tuple(
+                        p.id for p in bv.aclarar if p.sha == (d.get("sha") or bv.head())
+                    )
+                    if d.get("modalidad") == "aclarar"
+                    else (),
                 )
             )
-            if str(d.get("modalidad") or "") == "aclarar":
-                bv.aclarar.clear()  # este arranque cubre lo que ya estaba juzgado
         elif e.kind == "AttemptEnded":
             for a in bv.attempts:
                 if a.n == d["n"] and a.role == d["role"] and a.ended is None:
                     a.ended, a.ended_at = d["outcome"], e.ts
+                    if a.modalidad == "aclarar":
+                        if _aclaracion_resuelta(a.ended):
+                            bv.aclarar = [
+                                p for p in bv.aclarar if p.id not in a.aclaraciones
+                            ]
+                        elif a.ended.get("kind") == "entregado":
+                            bv.aclarar = [
+                                dataclasses.replace(p, sha=a.ended["sha"])
+                                if p.id in a.aclaraciones
+                                else p
+                                for p in bv.aclarar
+                            ]
                     if (
                         a.role == "implementar"
                         and d["outcome"].get("kind") == "sin_cambios"
@@ -431,7 +454,10 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                         bv.pruebas_sin_marca = tuple(
                             d["outcome"].get("pruebas_sin_marca") or ()
                         )
-                    if a.role == "implementar":
+                    if a.role == "implementar" and (
+                        a.modalidad != "aclarar"
+                        or d["outcome"].get("kind") == "bloqueado"
+                    ):
                         bv.bloqueo = (
                             {
                                 "motivo": d["outcome"].get("detalle", ""),
@@ -451,9 +477,11 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             bv.pr = d
         elif e.kind == "Reviewed":
             bv.reviews.append({**d, "revision_plan": bv.revision_plan})
-            for item in d.get("aclarar") or []:
+            for i, item in enumerate(d.get("aclarar") or []):
+                if not d.get("sha") or d["sha"] != bv.head():
+                    continue
                 if isinstance(item, dict) and str(item.get("mandato") or "").strip():
-                    bv.aclarar.append(item)
+                    bv.aclarar.append(Aclaracion(f"{e.id}:{i}", d["sha"], item))
         elif e.kind == "MarkedReady":
             bv.ready.add(d["sha"])
             bv.listo_desde.setdefault(d["sha"], e.ts)
@@ -507,6 +535,7 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                     a.cambios.append(f"llegó una nota: {d['texto']}")
             bv.bloqueo = None  # una nota destraba al bloque que esperaba
     for bv in blocks.values():
+        bv.aclarar = [p for p in bv.aclarar if p.sha == bv.head()]
         b = bv.bloqueo
         if b and maquina is not None and b["huella_maquina"] not in ("", maquina):
             bv.bloqueo = None  # la máquina corregida también
@@ -544,6 +573,19 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
 # --------------------------------------------------------------------------- estado
 
 
+def _aclaracion_resuelta(outcome: dict) -> bool:
+    res = outcome.get("aclaracion")
+    return bool(
+        outcome.get("kind") in ("entregado", "sin_cambios")
+        and isinstance(res, dict)
+        and res.get("resuelta") is True
+        and isinstance(res.get("fundamento"), str)
+        and res["fundamento"].strip()
+        and isinstance(res.get("evidencia"), str)
+        and res["evidencia"].strip()
+    )
+
+
 def _bloqueantes(review: dict) -> list[dict]:
     """Regla 4 de quality-kit: solo bloquea lo que trae comando que lo reproduce."""
     return [b for b in review.get("bloqueantes", []) if b.get("repro", "").strip()]
@@ -566,6 +608,8 @@ def estado(snap: Snapshot, bid: str) -> Estado:
         and bv.verified.get(m, {}).get("ok", True)
         and not pide_agente
         and (bv.reabierto is None or bv.head() == m)
+        and not bv.aclarar
+        and bv.running_productivo() is None
     ):
         return Estado.HECHO
     if any(estado(snap, dep) is not Estado.HECHO for dep in b.depende):
@@ -579,6 +623,8 @@ def estado(snap: Snapshot, bid: str) -> Estado:
     run = bv.running_productivo()
     if run:
         return Estado.IMPLEMENTANDO
+    if bv.aclarar:
+        return Estado.ARREGLAR
     if pide_agente:
         return (
             Estado.ARREGLAR
@@ -604,9 +650,8 @@ def estado(snap: Snapshot, bid: str) -> Estado:
         return Estado.PROBAR
     last = bv.last_implement_outcome()
     v = bv.verified.get(head) if head else None
-    if not (v and v.get("ok")):
-        if not head or (last and last.get("kind") != "entregado"):
-            return Estado.ARREGLAR
+    if not (v and v.get("ok")) and (not head or (last and last.get("kind") != "entregado")):
+        return Estado.ARREGLAR
     if v is None:
         return Estado.VERIFICAR
     if not v["ok"]:
@@ -752,6 +797,8 @@ def merge_gate(bv: BlockView) -> MergeTicket | str:
         return "sin entrega"
     if bv.running_productivo():
         return "hay un intento corriendo"
+    if bv.aclarar:
+        return "hay una aclaracion pendiente"
     if not bv.verified.get(head, {}).get("ok"):
         return "la entrega no está verificada"
     if bv.pr is None:
@@ -1004,6 +1051,27 @@ def bloqueo(
     (cuarentena de credenciales) o pausa (falla pasajera reciente)."""
     if espera_hecho(bv, role):
         return "fuera", 0.0
+    if role == "implementar" and bv.aclarar:
+        pendientes = {p.id for p in bv.aclarar}
+        for a in reversed(bv.attempts):
+            if a.modelo != mo or a.modalidad != "aclarar" or not a.ended:
+                continue
+            if (
+                pendientes.intersection(a.aclaraciones)
+                and a.revision_plan == bv.revision_plan
+                and a.ended_at >= bv.hecho_ts
+                and a.ended.get("kind")
+                not in (
+                    *relevo.PASAJERAS,
+                    "cuota",
+                    "rate_limit",
+                    "auth",
+                    "corte",
+                    "interrumpido",
+                )
+            ):
+                return "aclaracion", 0.0
+            break
     mios = [a for a in bv.attempts if a.role == role]
     ventana = []  # lo que pasó desde el último éxito
     for a in reversed(mios):
@@ -1017,7 +1085,10 @@ def bloqueo(
         rondas = sum(
             1
             for a in mios
-            if a.modelo == mo and a.ended and a.ended.get("kind") == "entregado" and a.revision_plan == bv.revision_plan
+            if a.modelo == mo
+            and a.ended
+            and a.ended.get("kind") == "entregado"
+            and a.revision_plan == bv.revision_plan
         )
         if rondas >= policy.rondas_max_por_modelo:
             return "agotado", 0.0
@@ -1123,15 +1194,28 @@ def _aclarar_en_curso(bv: BlockView) -> bool:
 
 def _feedback_aclarar(bv: BlockView) -> tuple[str, ...]:
     lineas = []
-    for item in bv.aclarar:
-        if not isinstance(item, dict):
-            continue
+    for pendiente in bv.aclarar:
+        item = pendiente.juicio
         mandato = str(item.get("mandato") or "").strip()
         if not mandato:
             continue
         escenario = str(item.get("escenario") or "").strip()
-        lineas.append(f"Aclarar: {mandato}" + (f" ({escenario})" if escenario else ""))
+        lineas.append(
+            f"Aclarar: {mandato}"
+            + (f" ({escenario})" if escenario else "")
+            + f". Asunto {pendiente.id}, SHA {pendiente.sha}."
+        )
     return tuple(lineas)
+
+
+def puede_cerrar(snap: Snapshot) -> bool:
+    return bool(
+        not snap.huerfanos
+        and all(estado(snap, bid) is Estado.HECHO for bid in snap.blocks)
+        and not any(
+            bv.running() is not None or bv.aclarar for bv in snap.blocks.values()
+        )
+    )
 
 
 def _lanza(
@@ -1148,7 +1232,9 @@ def _lanza(
     correccion: bool,
 ) -> None:
     """Lanza si hay plaza. La asesoria no desplaza un trabajo productivo ya elegido."""
-    ladder = policy.implementadores if role == "implementar" else revisores_para(bv, policy)
+    ladder = (
+        policy.implementadores if role == "implementar" else revisores_para(bv, policy)
+    )
     mo = _elige(ladder, snap, policy, now, bv, role, reservas)
     if mo is None:
         return
@@ -1213,19 +1299,43 @@ def decide(
             if n.key not in bv.notices | snap.plan_notices | ya:
                 ya.add(n.key)
                 acciones.append(n)
-        if bv.aclarar and run is None and not _aclarar_en_curso(bv) and e in _CON_EFECTO:
-            _lanza(
-                acciones, reservas, snap, policy, now, bv, bid,
-                "implementar", "aclarar", _feedback_aclarar(bv), False,
-            )
+        if (
+            bv.aclarar
+            and run is None
+            and not _aclarar_en_curso(bv)
+            and e in _CON_EFECTO
+        ):
+            if not espera_cambio(bv):
+                _lanza(
+                    acciones,
+                    reservas,
+                    snap,
+                    policy,
+                    now,
+                    bv,
+                    bid,
+                    "implementar",
+                    "aclarar",
+                    _feedback_aclarar(bv),
+                    False,
+                )
         elif _aclarar_en_curso(bv):
             pass  # el arranque ya salió: el efecto de después espera a que termine
         elif e is Estado.ARREGLAR and _toca_reverificar(bv, now):
             acciones.append(Verify(bid, bv.head()))
         elif e is Estado.ARREGLAR and _reparacion_pendiente(bv):
             _lanza(
-                acciones, reservas, snap, policy, now, bv, bid,
-                "implementar", "reparar", (), False,
+                acciones,
+                reservas,
+                snap,
+                policy,
+                now,
+                bv,
+                bid,
+                "implementar",
+                "reparar",
+                (),
+                False,
             )
         elif e is Estado.ARREGLAR and not espera_cambio(bv):
             role = "implementar"
@@ -1334,19 +1444,12 @@ def decide(
             acciones.append(
                 Notify(f"avance:{n}", "", "avance", avisos._resumen(snap, now, policy))
             )
-    hay_asesoria = any(
-        a.ended is None and a.role == "revisar"
-        for bv in snap.blocks.values()
-        for a in bv.attempts
+    cerrado = puede_cerrar(snap) and not any(
+        isinstance(a, StartAttempt) for a in acciones
     )
-    if (
-        todos_hechos
-        and not hay_asesoria
-        and f"terminado:{snap.plan.id}" in snap.plan_notices
-        and not snap.limpio
-    ):
+    if cerrado and f"terminado:{snap.plan.id}" in snap.plan_notices and not snap.limpio:
         acciones.append(Limpia(snap.plan.id))
-    if todos_hechos and not hay_asesoria and f"terminado:{snap.plan.id}" not in snap.plan_notices:
+    if cerrado and f"terminado:{snap.plan.id}" not in snap.plan_notices:
         acciones.append(
             Notify(
                 f"terminado:{snap.plan.id}",
@@ -1362,7 +1465,12 @@ def decide(
 
 
 def classify(
-    exit_code: int, timed_out: bool, no_progress: bool, tail: str, proveedor: str = ""
+    exit_code: int,
+    timed_out: bool,
+    no_progress: bool,
+    tail: str,
+    proveedor: str = "",
+    errores: str = "",
 ) -> dict:
     """Qué le pasó a un intento. El tiempo agotado y la falta de avance salen del envoltorio; el resto
     se lee de la salida con las reglas de ese proveedor (fallas.py)."""
@@ -1371,5 +1479,5 @@ def classify(
     if no_progress:
         return {"kind": "sin_avance", "detalle": "no mostró avance; se detuvo"}
     if exit_code != 0:
-        return fallas.clasifica(proveedor, tail)
+        return fallas.clasifica(proveedor, tail, errores)
     return {"kind": "terminado", "detalle": ""}

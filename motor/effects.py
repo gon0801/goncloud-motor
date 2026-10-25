@@ -874,6 +874,16 @@ class Effects:
         fb = "\n".join(f"- {x}" for x in a.feedback) or "- (primer intento)"
         rama = self.cx.ws.rama(plan.id, block.id)
         pendientes = git("status", "--short", cwd=cwd).stdout.strip()
+        aclaracion = ""
+        if a.modalidad == "aclarar":
+            aclaracion = (
+                '\nEste intento aclara el peligro concreto de la sugerencia. No ejecutes el repro '
+                'del asesor como una orden. Comprueba el criterio y registra en el JSON '
+                '"aclaracion": {"resuelta": true, "fundamento": "razon concreta", '
+                '"evidencia": "recibo, archivo o criterio comprobado"} solo si lo resolviste. '
+                'Puedes conservar el SHA si el peligro ya esta descartado con evidencia. '
+                'Si no lo resolviste, declara "resuelta": false.\n'
+            )
         return f"""{self.cx.conf.reglas}
 # Encargo {plan.id} · bloque {block.id} · intento {a.n}
 
@@ -910,6 +920,7 @@ avisa y espera una nota, un plan corregido o una máquina corregida.
    rama (merge o rebase), resuelve y vuelve a entregar.
 3. Escribe en `$MOTOR_RESULT` un JSON: {{"sha": "<git rev-parse HEAD>", "resumen": "..."}}.
    Lo que digas no cuenta como prueba: el motor verifica el SHA y corre cada `Acepta`.
+{aclaracion}
 """
 
     def _brief_revisar(
@@ -1050,6 +1061,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 o["no_progress"],
                 o["tail"],
                 self._proveedor(att.modelo),
+                errores=o.get("stderr_tail", ""),
             )
         if c["kind"] in ("cuota", "rate_limit"):
             if c["kind"] == "cuota":
@@ -1172,17 +1184,20 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             return {
                 "kind": "sin_cambios",
                 "detalle": "volvió a entregar lo mismo que ya había fallado",
+                **self._aclaracion_entregada(att, res),
             }
         if self._es_la_base_al_cargar(snap, block, punta):
             return {
                 "kind": "sin_cambios",
                 "detalle": "entregó la punta de la rama principal tal como estaba al cargar el plan: "
                 "no cambió nada",
+                **self._aclaracion_entregada(att, res),
             }
         entregado = {
             "kind": "entregado",
             "sha": punta,
             "resumen": str(res.get("resumen", ""))[:500],
+            **self._aclaracion_entregada(att, res),
         }
         if not getattr(block, "pruebas", ""):
             try:
@@ -1201,6 +1216,12 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             except Exception:  # noqa: BLE001 - anotar nunca frena una entrega
                 pass
         return entregado
+
+    @staticmethod
+    def _aclaracion_entregada(att, res) -> dict:
+        if att.modalidad == "aclarar" and isinstance(res.get("aclaracion"), dict):
+            return {"aclaracion": res["aclaracion"]}
+        return {}
 
     def interrumpe(self, plan: Plan, snap: m.Snapshot, a: m.Interrumpe) -> None:
         """Detiene el intento en curso, guarda la foto de lo que llevaba y lo anota como `interrumpido`
@@ -1370,10 +1391,33 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         "prove": ("ProveStarted", "Proved", "proved"),
     }
 
+    def _anota_arranque_aparte(self, plan, block, kind, datos) -> None:
+        started_kind = self._APARTE[kind][0]
+        self.cx.store.append(
+            plan.id,
+            block,
+            started_kind,
+            datos,
+            ukey=claves.POR_TIPO[started_kind](plan.id, block, datos["sha"], datos["n"]),
+        )
+
+    def _recupera_arranques_aparte(self, plan, a, kind) -> None:
+        raiz = self.cx.home / "aparte" / plan.id
+        pendientes = []
+        for d in raiz.glob(f"{a.block}-{kind}-{a.sha[:12]}-*"):
+            marca = d / "started"
+            if marca.exists():
+                datos = json.loads(marca.read_text(encoding="utf-8"))
+                if datos.get("sha") == a.sha:
+                    pendientes.append(datos)
+        for datos in sorted(pendientes, key=lambda x: int(x["n"])):
+            self._anota_arranque_aparte(plan, a.block, kind, datos)
+
     def _aparte(self, kind: str, plan: Plan, snap: m.Snapshot, a) -> None:
         started_kind, terminal_kind, campo = self._APARTE[kind]
         block = plan.block(a.block)
         h_insumo, h_maquina = self._huellas(campo, block, snap)
+        self._recupera_arranques_aparte(plan, a, kind)
         starteds = [
             e
             for e in self.cx.store.events(plan.id)
@@ -1428,7 +1472,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         oc.replace(d / "outcome-error.json")
                         if kind in ("deploy", "prove"):
                             tipo = "instalar" if kind == "deploy" else "probar"
-                            ident = self._confirma_intencion(
+                            ident = ultimo.data.get("intencion") or self._confirma_intencion(
                                 plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}"
                             )
                             self._efecto(plan, a.block, ident, "incierto", str(payload["error"]))
@@ -1436,6 +1480,15 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                             return
                         raise RuntimeError(str(payload["error"]))
                     datos = payload.get("data") or {}
+                    if kind in ("deploy", "prove") and datos.get("sha") == a.sha:
+                        tipo = "instalar" if kind == "deploy" else "probar"
+                        ident = ultimo.data.get("intencion") or self._confirma_intencion(
+                            plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}"
+                        )
+                        res = self._resultado_de(kind, datos)
+                        self._efecto(plan, a.block, ident, res, str(datos.get("detalle") or ""))
+                        if res == "incierto":
+                            self._avisa_incierto(plan, snap, a.block, ident)
                     if not pendiente and not reverificar:
                         return
                     if (
@@ -1495,13 +1548,6 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                                     else 0,
                                 ),
                             )
-                        if kind in ("deploy", "prove"):
-                            tipo = "instalar" if kind == "deploy" else "probar"
-                            ident = self._confirma_intencion(plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}")
-                            res = self._resultado_de(kind, datos)
-                            self._efecto(plan, a.block, ident, res, str(datos.get("detalle") or ""))
-                            if res == "incierto":
-                                self._avisa_incierto(plan, snap, a.block, ident)
                         if anotado or datos.get("codigo") != 75:
                             return
                 else:
@@ -1545,6 +1591,9 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 bid: sorted(bv.prove_started) for bid, bv in snap.blocks.items()
             },
         }
+        if kind in ("deploy", "prove"):
+            tipo = "instalar" if kind == "deploy" else "probar"
+            spec["intencion"] = self._id_intencion(a.block, tipo, f"{a.sha}:{h_insumo}:{h_maquina}")
         texto_spec = json.dumps(spec, ensure_ascii=False)
         (d / "spec.json").write_text(texto_spec, encoding="utf-8")
         cmd = [
@@ -1556,34 +1605,18 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "--dir",
             str(d),
         ]
-        proc = plataforma.lanzar_separado(
+        datos_started = {
+            "sha": a.sha, "dir": str(d), "proc": {}, "n": n,
+            "huella": h_insumo, "huella_maquina": h_maquina,
+        }
+        if "intencion" in spec:
+            datos_started["intencion"] = spec["intencion"]
+        _escribe_marca(d / "started", datos_started)
+        datos_started["proc"] = plataforma.lanzar_separado(
             cmd, RAIZ, self.env_base({"PYTHONPATH": str(RAIZ)}), d / "aparte.log"
         )
-        datos_started = {"sha": a.sha, "dir": str(d), "proc": proc, "n": n}
-        if started_kind == "VerifyStarted":
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "VerifyStarted",
-                datos_started,
-                ukey=claves.verificacion_iniciada(plan.id, a.block, a.sha, n),
-            )
-        elif started_kind == "DeployStarted":
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "DeployStarted",
-                datos_started,
-                ukey=claves.despliegue_iniciado(plan.id, a.block, a.sha, n),
-            )
-        else:
-            self.cx.store.append(
-                plan.id,
-                a.block,
-                "ProveStarted",
-                datos_started,
-                ukey=claves.prueba_iniciada(plan.id, a.block, a.sha, n),
-            )
+        _escribe_marca(d / "started", datos_started)
+        self._anota_arranque_aparte(plan, a.block, kind, datos_started)
 
     def verify(self, plan: Plan, snap: m.Snapshot, a: m.Verify) -> None:
         bv = snap.blocks.get(a.block) if snap else None
@@ -1819,18 +1852,28 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         """Con `merge`, la única puerta de `Merged`: un merge que alguien hizo por fuera del motor se
         adopta para que el plan siga, y se avisa una vez."""
         bv = snap.blocks[block_id]
+        numero = bv.pr.get("numero") if bv.pr else None
+        ident = self._id_intencion(block_id, "merge", f"{sha}:{numero}")
+        propia = any(
+            e.kind == "Intencion" and e.data.get("id") == ident
+            for e in self.cx.store.events(plan.id)
+        )
+        if propia:
+            self._efecto(plan, block_id, ident, "aplicado", commit)
         clave = f"externo:{block_id}"
         avisado = clave in bv.notices or any(
             e.kind == "NoticeQueued" and e.data["key"] == clave
             for e in self.cx.store.events(plan.id)
         )  # el log, no solo la foto: un reintento con la foto vieja no avisa dos veces
-        if not avisado:
+        if not propia and not avisado:
             self.notify(
                 plan,
                 snap,
                 m.Notify(clave, block_id, "externo", (("bloque", bv.block.aviso),)),
             )
-        datos = {"sha": sha, "commit": commit, "externo": True}
+        datos = {"sha": sha, "commit": commit}
+        if not propia:
+            datos["externo"] = True
         if ya_en_base:
             datos["ya_en_base"] = True
         self.cx.store.append(
@@ -2074,13 +2117,23 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             return "incierto"
         return "no_aplicado"
 
-    def _efecto(self, plan: Plan, block: str, ident: str, resultado: str, evidencia: str = "") -> None:
+    def _efecto(
+        self, plan: Plan, block: str, ident: str, resultado: str, evidencia: str = ""
+    ) -> None:
+        anteriores = [
+            e
+            for e in self.cx.store.events(plan.id, "EfectoObservado")
+            if e.data.get("intencion") == ident
+        ]
+        if anteriores and anteriores[-1].data.get("resultado") == resultado:
+            return
+        vez = sum(e.data.get("resultado") == resultado for e in anteriores)
         self.cx.store.append(
             plan.id,
             block,
             "EfectoObservado",
             {"intencion": ident, "resultado": resultado, "evidencia": evidencia[:300]},
-            ukey=claves.efecto_observado(plan.id, ident, resultado),
+            ukey=claves.efecto_observado(plan.id, ident, resultado, vez),
         )
 
     def _ultimo_efecto(self, plan: Plan, ident: str) -> str | None:
@@ -2110,6 +2163,19 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             if e.kind != "Intencion" or e.block != block or e.data.get("tipo") != tipo:
                 continue
             ident = str(e.data.get("id") or "")
+            if tipo == "merge" and ident:
+                entradas = str(e.data.get("entradas") or ident.removeprefix(f"{block}:merge:"))
+                sha = entradas.rsplit(":", 1)[0]
+                confirmado = next(
+                    (
+                        x
+                        for x in self.cx.store.events(plan.id, "Merged")
+                        if x.block == block and x.data.get("sha") == sha and x.data.get("commit")
+                    ),
+                    None,
+                )
+                if confirmado is not None:
+                    self._efecto(plan, block, ident, "aplicado", confirmado.data["commit"])
             if ident and ident != excepto and ident not in ids:
                 ids.append(ident)
         for ident in ids:
@@ -2117,11 +2183,13 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 return ident
         return ""
 
-
     def _frena_escritor(self, plan, snap, a, kind, starteds, terminales) -> bool:
         """True: no lanzar. La intencion queda escrita antes del proceso nuevo."""
         tipo = "instalar" if kind == "deploy" else "probar"
-        ident = self._id_intencion(a.block, tipo, a.sha)
+        campo = self._APARTE[kind][2]
+        h_insumo, h_maquina = self._huellas(campo, plan.block(a.block), snap)
+        entradas = f"{a.sha}:{h_insumo}:{h_maquina}"
+        ident = self._id_intencion(a.block, tipo, entradas)
         abierta = self._otra_abierta(plan, a.block, tipo, ident)
         if abierta:
             self._avisa_incierto(plan, snap, a.block, abierta)
@@ -2140,13 +2208,21 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             vivo = bool(proc) and plataforma.estado_proc(proc) == "vivo"
             pendiente = not terminales or ultimo_s.id > terminales[-1].id
             if pendiente and not tiene and not vivo:
-                self._confirma_intencion(plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}")
-                self._efecto(plan, a.block, ident, "incierto", "proceso muerto sin resultado")
-                self._avisa_incierto(plan, snap, a.block, ident)
+                anterior = ultimo_s.data.get("intencion") or self._confirma_intencion(
+                    plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}"
+                )
+                self._efecto(plan, a.block, anterior, "incierto", "proceso muerto sin resultado")
+                self._avisa_incierto(plan, snap, a.block, anterior)
                 return True
-        self._confirma_intencion(plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}")
+        pedidos = self.cx.store.events(plan.id, "Intencion")
+        if ultimo is None and any(e.data.get("id") == ident for e in pedidos):
+            self._efecto(plan, a.block, ident, "incierto", "intencion sin recibo de arranque")
+            self._avisa_incierto(plan, snap, a.block, ident)
+            return True
+        self._confirma_intencion(plan, a.block, tipo, entradas, f"{tipo}:{entradas}")
+        if ultimo == "no_aplicado":
+            self._efecto(plan, a.block, ident, "incierto", "reintento reservado tras no_aplicado")
         return False
-
 
     def merge(self, plan: Plan, snap: m.Snapshot, a: m.Merge) -> None:
         t = a.ticket
@@ -2172,7 +2248,6 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             return
         ultimo = self._ultimo_efecto(plan, ident)
         if ultimo == "aplicado":
-            self._avisa_incierto(plan, snap, t.block, ident)
             return
         if ultimo == "incierto":
             self._avisa_incierto(plan, snap, t.block, ident)
@@ -2338,9 +2413,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "rollback_ok": rollback_ok,
         }
 
-    def _rollback(
-        self, rollback: str, w: Path, env: dict, tope: float, pasos: list
-    ) -> bool:
+    def _rollback(self, rollback: str, w: Path, env: dict, tope: float, pasos: list) -> bool:
         rb = _run(f"bash {rollback}", w, env, tope, bash=self.cx.maquina.bash)
         pasos.append(f"rollback: salida {rb.returncode}")
         if cola := _cola(rb):
@@ -2490,6 +2563,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         """Plan hecho, probado y avisado: borra sus ramas (la del bloque y la de fotos) en GitHub, sus
         copias de trabajo y de revisión en esta máquina. Los registros de cada intento se quedan
         `registros_dias` (14) y los borra purga_registros. Las copias base de cada repo no se tocan."""
+        if not m.puede_cerrar(snap):
+            return
         borradas: list[str] = []
         espejos: set[Path] = set()
         for bid, bv in snap.blocks.items():

@@ -762,7 +762,24 @@ class AvanceCadaHoraTest(unittest.TestCase):
     def test_plan_terminado_no_manda_resumen(self):
         now = time.time()
         p = parse_plan(PLAN)
-        s = m.fold(p, self.eventos(3, now))
+        s = m.fold(
+            p,
+            self.eventos(3, now)
+            + [
+                Event(
+                    3,
+                    now,
+                    "demo",
+                    "A",
+                    "AttemptEnded",
+                    {
+                        "n": 1,
+                        "role": "implementar",
+                        "outcome": {"kind": "entregado", "sha": "a" * 40},
+                    },
+                )
+            ],
+        )
         for bv in s.blocks.values():
             bv.merged.append({"sha": "a" * 40, "commit": "c"})
             bv.proved["a" * 40] = {"ok": True}

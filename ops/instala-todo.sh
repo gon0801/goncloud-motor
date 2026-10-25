@@ -12,6 +12,32 @@ aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 raiz="${MOTOR_INSTALA_RAIZ:-$(cd "$aqui/.." && pwd)}"
 rama="${MOTOR_RAMA:-main}"
 
+guarda_anterior() {
+  local m=$1 anterior u='%USERPROFILE%'
+  if [ "$m" = pc ]; then
+    anterior="$(ssh_a "$(host_de pc)" "if exist $u\\motor\\.git git -C $u\\motor rev-parse HEAD" | tr -d '[:space:]')" || return 1
+    ssh_a "$(host_de pc)" "if not exist $u\\.motor mkdir $u\\.motor" || return 1
+    if [ -n "$anterior" ]; then
+      ssh_a "$(host_de pc)" "echo $anterior> $u\\.motor\\etiqueta-anterior.tmp && move /y $u\\.motor\\etiqueta-anterior.tmp $u\\.motor\\etiqueta-anterior" >/dev/null
+    else
+      ssh_a "$(host_de pc)" "type nul > $u\\.motor\\etiqueta-anterior.tmp && move /y $u\\.motor\\etiqueta-anterior.tmp $u\\.motor\\etiqueta-anterior" >/dev/null
+    fi
+    return $?
+  fi
+  en_posix "$m" <<'REMOTO'
+set -euo pipefail
+anterior=""
+if [ -d "$HOME/motor/.git" ]; then anterior="$(git -C "$HOME/motor" rev-parse HEAD)"; fi
+mkdir -p "$HOME/.motor"
+printf '%s' "$anterior" >"$HOME/.motor/etiqueta-anterior.tmp"
+mv "$HOME/.motor/etiqueta-anterior.tmp" "$HOME/.motor/etiqueta-anterior"
+REMOTO
+}
+
+for m in $MAQUINAS; do
+  guarda_anterior "$m" || { echo "$m: no pude guardar la revision anterior; reintenta sin tocar codigo" >&2; exit 75; }
+done
+
 # 1. La etiqueta, sobre un SHA que ya está en la rama principal (nunca sobre algo sin mergear).
 # Lo de red se reintenta: este repo lo comparte el daemon, que fetcha seguido, y un fetch o un
 # push puede chocar con otro proceso (lock) o con un bache de red. Eso no debe tumbar el despliegue.
@@ -108,14 +134,6 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 if python3 -c 'import tomllib' 2>/dev/null; then py="python3"; else py="uv run --python 3.12 python"; fi
 
 if [ -d "$motor/.git" ]; then git -C "$motor" remote set-url origin "$repo"; git -C "$motor" fetch -q --tags --force origin; else git clone -q "$repo" "$motor"; fi
-# La marcha atrás (ops/vuelve-a-la-anterior.sh) lee esta marca: la etiqueta que la máquina
-# tenía antes de la entrega. Se anota solo cuando la etiqueta cambia; en una instalación
-# nueva no hay etiqueta anterior que anotar.
-anterior="$(git -C "$motor" describe --tags --exact-match 2>/dev/null || true)"
-if [ -n "$anterior" ] && [ "$anterior" != "$etiqueta" ]; then
-  mkdir -p "$home"
-  echo "$anterior" >"$home/etiqueta-anterior"
-fi
 if ! git -C "$motor" cat-file -e "refs/tags/$etiqueta:motor/formato.py" 2>/dev/null; then
   if [ -f "$HOME/.motor/formato" ]; then
     if python3 -c "import tomllib" 2>/dev/null; then py="python3"; else py="uv run --python 3.12 python"; fi
@@ -126,6 +144,9 @@ if ! git -C "$motor" cat-file -e "refs/tags/$etiqueta:motor/formato.py" 2>/dev/n
   fi
 fi
 git -C "$motor" checkout -q --detach "refs/tags/$etiqueta"
+if [ -f "$motor/ops/sol_remoto.py" ]; then
+  $py -c 'import os, shutil; from pathlib import Path; h = Path.home(); d = h / ".motor/herramientas"; d.mkdir(parents=True, exist_ok=True); t = d / "sol_remoto.py.tmp"; shutil.copy2(h / "motor/ops/sol_remoto.py", t); os.replace(t, d / "sol_remoto.py")'
+fi
 if [ -d "$conf/.git" ]; then git -C "$conf" remote set-url origin "$confurl"; git -C "$conf" fetch -q origin; else git clone -q "$confurl" "$conf"; fi
 git -C "$conf" checkout -q --detach origin/HEAD
 
@@ -159,15 +180,9 @@ REMOTO
 
 # 3. PC: cmd.exe por ssh (mismo uv que ops/prueba-pc.sh).
 instala_pc() {
-  local u='%USERPROFILE%' tmp anterior
+  local u='%USERPROFILE%' tmp
   ssh_a "$(host_de pc)" "if exist $u\\motor\\.git (git -C $u\\motor remote set-url origin $REPO_URL)" || return 1
   ssh_a "$(host_de pc)" "if exist $u\\motor\\.git (git -C $u\\motor fetch -q --tags --force origin) else (git clone -q $REPO_URL $u\\motor)" || return 1
-  # Marca para la marcha atrás: la etiqueta que la PC tenía antes, solo cuando cambia.
-  # En una instalación nueva (o sobre una rama, no una etiqueta) no hay nada que anotar.
-  anterior="$(ssh_a "$(host_de pc)" "git -C $u\\motor describe --tags --exact-match 2>nul" 2>/dev/null | tr -d '[:space:]')" || anterior=""
-  if [ -n "$anterior" ] && [ "$anterior" != "$ETIQUETA" ]; then
-    ssh_a "$(host_de pc)" "echo $anterior> $u\\.motor\\etiqueta-anterior" || return 1
-  fi
   if ! ssh_a "$(host_de pc)" "git -C $u\\motor cat-file -e refs/tags/$ETIQUETA:motor/formato.py"; then
     if ! marca="$(ssh_a "$(host_de pc)" "if exist $u\\.motor\\formato echo si" | tr -d "[:space:]")"; then
       return 1
@@ -177,6 +192,7 @@ instala_pc() {
     fi
   fi
   ssh_a "$(host_de pc)" "git -C $u\\motor checkout -q --detach refs/tags/$ETIQUETA" || return 1
+  ssh_a "$(host_de pc)" "if exist $u\\motor\\ops\\sol_remoto.py $PC_UV run --python 3.12 python -c \"import os, shutil; from pathlib import Path; h = Path.home(); d = h / '.motor/herramientas'; d.mkdir(parents=True, exist_ok=True); t = d / 'sol_remoto.py.tmp'; shutil.copy2(h / 'motor/ops/sol_remoto.py', t); os.replace(t, d / 'sol_remoto.py')\"" || return 1
   ssh_a "$(host_de pc)" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf remote set-url origin $CONF_URL)" || return 1
   ssh_a "$(host_de pc)" "if exist $u\\motor-conf\\.git (git -C $u\\motor-conf fetch -q origin) else (git clone -q $CONF_URL $u\\motor-conf)" || return 1
   ssh_a "$(host_de pc)" "git -C $u\\motor-conf checkout -q --detach origin/HEAD" || return 1

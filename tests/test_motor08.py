@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 import shutil
 import tempfile
@@ -6,6 +7,8 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
+
 from motor import claves
 from motor import machine as m
 from motor.criterios import Aclarar, Criterio, Expediente, Nota, Sugerencia, valorar
@@ -15,6 +18,7 @@ from motor.machine import _es_falla_maquina
 from motor.previa import faltantes_de_salida
 from motor.store import Store
 from tests.test_puro import PLAN, entregado, ev, parse_plan, pol
+
 
 def _criterio(cid, receta, conducta):
     return Criterio(cid, "v", "fila", "comportamiento", conducta, (), receta, "acepta", None, "A")
@@ -88,7 +92,9 @@ class AclararLlegaADecideTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         sha = "a" * 40
         (d / "outcome.json").write_text(
-            json.dumps({"exit": 0, "timed_out": False, "no_progress": False, "tail": ""})
+            json.dumps(
+                {"exit": 0, "timed_out": False, "no_progress": False, "tail": ""}
+            )
         )
         (d / "result.json").write_text(
             json.dumps(
@@ -101,7 +107,11 @@ class AclararLlegaADecideTest(unittest.TestCase):
             )
         )
         eventos = []
-        fx = Effects(SimpleNamespace(store=SimpleNamespace(append=lambda *a, **k: eventos.append(a))))
+        fx = Effects(
+            SimpleNamespace(
+                store=SimpleNamespace(append=lambda *a, **k: eventos.append(a))
+            )
+        )
         fx._proveedor = lambda mod: ""
         r = fx.collect(
             SimpleNamespace(id="demo", block=lambda b: SimpleNamespace(id=b)),
@@ -139,17 +149,72 @@ class AclararLlegaADecideTest(unittest.TestCase):
             "caso concreto pertinente que la receta vigente no cubre",
         )
         self.assertNotIn("token", " ".join(reviewed["notas"]))
-        self.assertTrue(any("asesoria, no es una orden" in n for n in reviewed["notas"]))
+        self.assertTrue(
+            any("asesoria, no es una orden" in n for n in reviewed["notas"])
+        )
         ahora = time.time()
-        acciones = m.decide(m.fold(parse_plan(PLAN), self._listo_para_merge(sha, reviewed)), pol(), ahora)
+        acciones = m.decide(
+            m.fold(parse_plan(PLAN), self._listo_para_merge(sha, reviewed)),
+            pol(),
+            ahora,
+        )
         arranques = [
             a for a in acciones if isinstance(a, m.StartAttempt) and a.block == "A"
         ]
         self.assertEqual([a.modalidad for a in arranques], ["aclarar"])
         self.assertEqual(arranques[0].role, "implementar")
         self.assertTrue(any("Aclarar:" in x for x in arranques[0].feedback))
-        self.assertFalse(any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in acciones))
-        despues = self._listo_para_merge(sha, reviewed) + [
+        self.assertFalse(
+            any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in acciones)
+        )
+        base = self._listo_para_merge(sha, reviewed)
+        inicio = ev(
+            "AttemptStarted",
+            "A",
+            {
+                "n": 2,
+                "role": "implementar",
+                "modelo": "sonnet",
+                "proc": {},
+                "dir": "d2",
+                "sha": sha,
+                "modalidad": "aclarar",
+            },
+        )
+        for kind in ("cuota", "auth", "perdido", "error", "sin_resultado"):
+            with self.subTest(kind=kind):
+                falla = ev(
+                    "AttemptEnded",
+                    "A",
+                    {
+                        "n": 2,
+                        "role": "implementar",
+                        "outcome": {"kind": kind},
+                    },
+                )
+                snap = m.fold(parse_plan(PLAN), base + [inicio, falla])
+                self.assertTrue(snap.blocks["A"].aclarar)
+                self.assertFalse(
+                    m._cuenta_falla(snap.blocks["A"].attempts[-1], snap.blocks["A"])
+                )
+                siguientes = m.decide(snap, pol(), ahora)
+                self.assertFalse(
+                    any(
+                        isinstance(a, m.Merge) and a.ticket.block == "A"
+                        for a in siguientes
+                    )
+                )
+                self.assertIsInstance(m.merge_gate(snap.blocks["A"]), str)
+                recuperado = m.decide(snap, pol(), falla.ts + 4000)
+                self.assertTrue(
+                    any(
+                        isinstance(a, m.StartAttempt)
+                        and a.block == "A"
+                        and a.modalidad == "aclarar"
+                        for a in recuperado
+                    )
+                )
+        despues = base + [
             ev(
                 "AttemptStarted",
                 "A",
@@ -166,13 +231,74 @@ class AclararLlegaADecideTest(unittest.TestCase):
             ev(
                 "AttemptEnded",
                 "A",
-                {"n": 2, "role": "implementar", "outcome": {"kind": "sin_cambios"}},
+                {
+                    "n": 2,
+                    "role": "implementar",
+                    "outcome": {
+                        "kind": "sin_cambios",
+                        "aclaracion": {
+                            "resuelta": True,
+                            "fundamento": "la excepcion vigente cubre el caso",
+                            "evidencia": "criterio A.1",
+                        },
+                    },
+                },
             ),
         ]
-        siguientes = m.decide(m.fold(parse_plan(PLAN), despues), pol(), ahora)
-        self.assertTrue(any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in siguientes))
+        sin_evidencia = ev(
+            "AttemptEnded",
+            "A",
+            {
+                "n": 2,
+                "role": "implementar",
+                "outcome": {"kind": "sin_cambios"},
+            },
+        )
+        snap = m.fold(parse_plan(PLAN), base + [inicio, sin_evidencia])
+        self.assertTrue(snap.blocks["A"].aclarar)
         self.assertFalse(
-            any(isinstance(a, m.StartAttempt) and a.block == "A" and a.modalidad == "aclarar" for a in siguientes)
+            any(
+                isinstance(a, m.Merge) and a.ticket.block == "A"
+                for a in m.decide(snap, pol(), ahora)
+            )
+        )
+        self.assertEqual(
+            m.bloqueo(
+                snap,
+                pol(),
+                ahora,
+                snap.blocks["A"],
+                "implementar",
+                "sonnet",
+                pol().implementadores,
+            )[0],
+            "aclaracion",
+        )
+        nota = ev("Note", "A", {"texto": "criterio aclarado en el plan"})
+        snap = m.fold(parse_plan(PLAN), base + [inicio, sin_evidencia, nota])
+        self.assertEqual(
+            m.bloqueo(
+                snap,
+                pol(),
+                ahora,
+                snap.blocks["A"],
+                "implementar",
+                "sonnet",
+                pol().implementadores,
+            )[0],
+            "",
+        )
+        siguientes = m.decide(m.fold(parse_plan(PLAN), despues), pol(), ahora)
+        self.assertTrue(
+            any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in siguientes)
+        )
+        self.assertFalse(
+            any(
+                isinstance(a, m.StartAttempt)
+                and a.block == "A"
+                and a.modalidad == "aclarar"
+                for a in siguientes
+            )
         )
 
     def test_una_nota_no_abre_aclarar(self):
@@ -184,7 +310,120 @@ class AclararLlegaADecideTest(unittest.TestCase):
             time.time(),
         )
         self.assertFalse(
-            any(isinstance(a, m.StartAttempt) and a.block == "A" and a.modalidad == "aclarar" for a in acciones)
+            any(
+                isinstance(a, m.StartAttempt)
+                and a.block == "A"
+                and a.modalidad == "aclarar"
+                for a in acciones
+            )
         )
-        self.assertTrue(any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in acciones))
+        self.assertTrue(
+            any(isinstance(a, m.Merge) and a.ticket.block == "A" for a in acciones)
+        )
 
+    def test_no_borra_el_trabajo_de_un_aclarador_vivo(self):
+        plan = parse_plan(PLAN.split("## Bloque C")[0])
+        sha = "a" * 40
+        reviewed = {
+            "sha": sha,
+            "veredicto": "CAMBIOS",
+            "bloqueantes": [],
+            "aclarar": [{"id": "peligro", "mandato": "comprobar el peligro"}],
+        }
+        base = entregado(sha=sha) + [
+            ev("Verified", "A", {"sha": sha, "ok": True}),
+            ev("Merged", "A", {"sha": sha, "commit": sha}),
+            ev("Proved", "A", {"sha": sha, "ok": True}),
+        ]
+        pendiente = ev("Reviewed", "A", reviewed)
+        with self.subTest(caso="revision_vieja"):
+            vieja = ev("Reviewed", "A", {**reviewed, "sha": "b" * 40})
+            snap = m.fold(plan, base + [vieja])
+            acciones = m.decide(snap, pol(), time.time())
+            self.assertFalse(snap.blocks["A"].aclarar)
+            self.assertFalse(any(isinstance(a, m.StartAttempt) for a in acciones))
+        with self.subTest(caso="arranque_y_cierre"):
+            snap = m.fold(plan, base + [pendiente])
+            acciones = m.decide(snap, pol(), time.time())
+            self.assertTrue(
+                any(
+                    isinstance(a, m.StartAttempt) and a.modalidad == "aclarar"
+                    for a in acciones
+                )
+            )
+            self.assertFalse(
+                any(
+                    isinstance(a, m.Notify) and a.template in ("entregado", "terminado")
+                    for a in acciones
+                )
+            )
+        activo = base + [
+            pendiente,
+            ev(
+                "AttemptStarted",
+                "A",
+                {
+                    "n": 2,
+                    "role": "implementar",
+                    "modelo": "sonnet",
+                    "proc": {},
+                    "dir": "d2",
+                    "sha": sha,
+                    "modalidad": "aclarar",
+                },
+            ),
+            ev("NoticeQueued", "", {"key": "terminado:demo"}),
+        ]
+        snap = m.fold(plan, activo)
+        with self.subTest(caso="limpieza_con_consumidor"):
+            self.assertNotEqual(m.estado(snap, "A"), m.Estado.HECHO)
+            self.assertFalse(
+                any(isinstance(a, m.Limpia) for a in m.decide(snap, pol(), time.time()))
+            )
+        with (
+            self.subTest(caso="efecto_no_borra"),
+            tempfile.TemporaryDirectory(prefix="m08-no-borra-") as tmp,
+        ):
+            home = Path(tmp)
+            trabajo = home / "wt" / "demo" / "A"
+            trabajo.mkdir(parents=True)
+            archivo = trabajo / "trabajo.txt"
+            archivo.write_text("trabajo del aclarador")
+            ws = SimpleNamespace(
+                espejo=lambda repo: home,
+                rama=lambda *a: "rama",
+                rama_wip=lambda *a: "foto",
+            )
+            fx = Effects(
+                SimpleNamespace(
+                    home=home, ws=ws, store=SimpleNamespace(append=lambda *a, **k: None)
+                )
+            )
+            with patch(
+                "motor.effects.git",
+                return_value=SimpleNamespace(stdout="", returncode=0),
+            ):
+                fx.limpia(plan, snap, m.Limpia(plan.id))
+            self.assertTrue(archivo.exists())
+        fin = ev(
+            "AttemptEnded",
+            "A",
+            {
+                "n": 2,
+                "role": "implementar",
+                "outcome": {
+                    "kind": "sin_cambios",
+                    "aclaracion": {
+                        "resuelta": True,
+                        "fundamento": "la excepcion vigente cubre el caso",
+                        "evidencia": "criterio A.1",
+                    },
+                },
+            },
+        )
+        with self.subTest(caso="resuelto_permite_limpiar"):
+            snap = m.fold(plan, activo + [fin])
+            self.assertEqual(m.estado(snap, "A"), m.Estado.HECHO)
+            self.assertTrue(
+                any(isinstance(a, m.Limpia) for a in m.decide(snap, pol(), time.time()))
+            )

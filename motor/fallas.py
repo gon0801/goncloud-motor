@@ -162,6 +162,12 @@ _PROPIOS: dict[str, tuple[tuple[re.Pattern, str], ...]] = {
     "grok": ((re.compile(r"not signed in|grok login", re.I), "auth"),),
     "muse": ((re.compile(r"missing meta credentials|muse login", re.I), "auth"),),
     "qwen": ((re.compile(r"no auth type is selected|--auth-type", re.I), "auth"),),
+    "cursor-agent": (
+        (
+            re.compile(r"ActionRequiredError: .*not included in your weekly usage", re.I),
+            "modelo_no_disponible",
+        ),
+    ),
 }
 
 

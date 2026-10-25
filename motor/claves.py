@@ -167,13 +167,13 @@ def efecto_ok(plan: str, block: str, accion: str, n: int) -> str:
     return f"ok:{plan}:{block}:{accion}:{n}"
 
 
-
 def intencion(plan: str, ident: str) -> str:
     return f"intencion:{plan}:{ident}"
 
 
-def efecto_observado(plan: str, ident: str, resultado: str) -> str:
-    return f"efecto:{plan}:{ident}:{resultado}"
+def efecto_observado(plan: str, ident: str, resultado: str, vez: int = 0) -> str:
+    base = f"efecto:{plan}:{ident}:{resultado}"
+    return base if not vez else f"{base}:v{vez}"
 
 
 POR_TIPO = {

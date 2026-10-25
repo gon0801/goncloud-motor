@@ -26,13 +26,22 @@ class CierreTrasResultadoTest(unittest.TestCase):
     def test_cursor_sin_sesion_conserva_el_error_del_proveedor(self):
         from motor.fallas import clasifica
 
-        o, _, _ = self.corre_en(
-            "import sys\n"
-            "sys.stderr.write(\"Error: Authentication required. Please run 'agent login' first.\\n\")\n"
-            "sys.exit(1)\n"
-        )
-        fallo = clasifica("cursor-agent", o["tail"], o.get("stderr_tail", ""))
-        self.assertEqual(fallo["kind"], "auth")
+        for error, esperado in (
+            ("Error: Authentication required. Please run 'agent login' first.", "auth"),
+            (
+                "ActionRequiredError: GPT-5.6 Sol is not included in your weekly usage "
+                "Buy credits or switch to a Grok model to continue.",
+                "modelo_no_disponible",
+            ),
+        ):
+            with self.subTest(causa=esperado):
+                o, _, _ = self.corre_en(
+                    "import sys\n"
+                    f"sys.stderr.write({error!r})\n"
+                    "sys.exit(1)\n"
+                )
+                fallo = clasifica("cursor-agent", o["tail"], o.get("stderr_tail", ""))
+                self.assertEqual(fallo["kind"], esperado)
 
     def corre(
         self, script: str, sin_avance: float = 30, extra: tuple[str, ...] = ()
