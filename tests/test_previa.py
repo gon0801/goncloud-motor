@@ -31,6 +31,7 @@ def _motor(*args: str) -> subprocess.CompletedProcess:
         env=ENV,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=180,
     )
 
