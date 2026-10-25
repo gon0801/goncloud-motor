@@ -104,9 +104,10 @@ def veredicto(
         efectivas = [
             r for r in runs if not _salto_del_borrador(r, listo_desde, relanzadas_set)
         ]
-        corriendo = any(r.get("status") != "completed" for r in efectivas) or any(
-            e.get("state") == "pending" for e in estados
-        )
+        corriendo = any(
+            r.get("status") != "completed" or r.get("conclusion") is None
+            for r in efectivas
+        ) or any(e.get("state") == "pending" for e in estados)
         hay = bool(efectivas or estados)
         fallas_sin = tuple(
             dict.fromkeys(
@@ -139,7 +140,9 @@ def veredicto(
                 fallas.append(c)
             else:
                 faltan.append(c)
-        elif any(r["status"] != "completed" for r in partes):
+        elif any(
+            r["status"] != "completed" or r.get("conclusion") is None for r in partes
+        ):
             faltan.append(c)
         elif any(
             r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
@@ -152,7 +155,10 @@ def veredicto(
         faltan=tuple(faltan),
         fallas=tuple(fallas),
         github_termino=bool(runs or estados)
-        and all(r["status"] == "completed" for r in runs)
+        and all(
+            r["status"] == "completed" and r.get("conclusion") is not None
+            for r in runs
+        )
         and all(e.get("state") != "pending" for e in estados),
         corridas=corridas,
         corridas_fallidas=fallidas,
