@@ -1106,7 +1106,15 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 {**b, "repro": b.get("repro", "")} for b in res["bloqueantes"]
             ]
             notas = list(res["notas"])
-            from .criterios import Expediente, Nota, Sugerencia, expediente_del_bloque, valorar
+            from .criterios import (
+                Aclarar,
+                Expediente,
+                Nota,
+                Sugerencia,
+                criterio_de_hallazgo,
+                expediente_del_bloque,
+                valorar,
+            )
             exp = expediente_del_bloque(block_id, snap) if snap is not None else Expediente((), (), (), ())
             for i, hallazgo in enumerate(bloqueantes):
                 if not isinstance(hallazgo, dict):
@@ -1115,14 +1123,19 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     Sugerencia(
                         id=f"{att.sha}:{i}",
                         intento_o_comentario=att.dir,
-                        criterio=None,
+                        criterio=criterio_de_hallazgo(hallazgo, exp),
                         escenario_propuesto=str(hallazgo.get("texto") or ""),
                         conducta_rota=str(hallazgo.get("texto") or ""),
                         repro_propuesto=str(hallazgo.get("repro") or ""),
                     ),
                     exp,
                 )
-                motivo = juicio.motivo if isinstance(juicio, Nota) else "queda como nota"
+                if isinstance(juicio, Nota):
+                    motivo = juicio.motivo
+                elif isinstance(juicio, Aclarar):
+                    motivo = juicio.mandato
+                else:
+                    motivo = "queda como nota"
                 notas.append(f"asesoria, no es una orden: {motivo}")
             self.cx.store.append(
                 plan.id,
@@ -1475,8 +1488,10 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         if kind in ("deploy", "prove"):
                             tipo = "instalar" if kind == "deploy" else "probar"
                             ident = self._confirma_intencion(plan, a.block, tipo, a.sha, f"{tipo}:{a.sha}")
-                            res = "aplicado" if datos.get("ok") else "no_aplicado"
+                            res = self._resultado_de(kind, datos)
                             self._efecto(plan, a.block, ident, res, str(datos.get("detalle") or ""))
+                            if res == "incierto":
+                                self._avisa_incierto(plan, snap, a.block, ident)
                         if anotado or datos.get("codigo") != 75:
                             return
                 else:
@@ -2038,6 +2053,17 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         )
         return ident
 
+    def _resultado_de(self, kind: str, datos: dict) -> str:
+        if datos.get("ok"):
+            return "aplicado"
+        if (
+            kind == "deploy"
+            and datos.get("produccion_tocada")
+            and datos.get("rollback_ok") is False
+        ):
+            return "incierto"
+        return "no_aplicado"
+
     def _efecto(self, plan: Plan, block: str, ident: str, resultado: str, evidencia: str = "") -> None:
         self.cx.store.append(
             plan.id,
@@ -2055,7 +2081,18 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         return ultimo
 
     def _avisa_incierto(self, plan: Plan, snap: m.Snapshot, block: str, ident: str) -> None:
-        self.notify(plan, snap, m.Notify(f"incierto:{ident}", block, "incierto", ()))
+        clave = f"incierto:{ident}"
+        bv = snap.blocks.get(block)
+        if (
+            (bv and clave in bv.notices)
+            or clave in snap.plan_notices
+            or any(
+                e.kind == "NoticeQueued" and e.data.get("key") == clave
+                for e in self.cx.store.events(plan.id)
+            )
+        ):
+            return
+        self.notify(plan, snap, m.Notify(clave, block, "incierto", ()))
 
     def _otra_abierta(self, plan, block: str, tipo: str, excepto: str) -> str:
         ids: list[str] = []
@@ -2228,6 +2265,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         env["MOTOR_SHA"] = commit
         tope = float(self.cx.conf.tiempos.get("despliegue_tope_s", 900))
         codigo = 0
+        produccion_tocada = False
+        rollback_ok = True
         if not (desplegar and checklist and rollback):
             ok, detalle = (
                 False,
@@ -2257,19 +2296,21 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         faltan += faltantes_de_salida(
                             p.stdout + p.stderr, p.returncode
                         )
-                        self._rollback(rollback, w, env, tope, pasos)
+                        produccion_tocada = True
+                        rollback_ok = self._rollback(rollback, w, env, tope, pasos)
                         pasos.append(RECETA)
                         break
                     # Lo que imprime un paso que sale 0 también cuenta: avisos como «la etiqueta ya existe».
                     if cola := _cola(p):
                         pasos.append(cola)
                     if paso == desplegar:
+                        produccion_tocada = True
                         problemas, notas, malas = self._efimeras(w)
                         pasos += notas
                         if problemas:
                             ok = False
                             pasos += problemas
-                            self._rollback(rollback, w, env, tope, pasos)
+                            rollback_ok = self._rollback(rollback, w, env, tope, pasos)
                             if malas and self._efimeras(w)[2]:
                                 pasos.append("La marcha atrás no la quitó.")
                             break
@@ -2283,15 +2324,18 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "huella": h_insumo,
             "huella_maquina": h_maquina,
             "evidencia": 1,
+            "produccion_tocada": produccion_tocada,
+            "rollback_ok": rollback_ok,
         }
 
     def _rollback(
         self, rollback: str, w: Path, env: dict, tope: float, pasos: list
-    ) -> None:
+    ) -> bool:
         rb = _run(f"bash {rollback}", w, env, tope, bash=self.cx.maquina.bash)
         pasos.append(f"rollback: salida {rb.returncode}")
         if cola := _cola(rb):
             pasos.append(cola)
+        return rb.returncode == 0
 
     def _efimeras(self, w: Path) -> tuple[list[str], list[str], set[str]]:
         """Tras desplegar: ¿alguna tarea programada apunta a la copia `w`, que el motor borra al

@@ -169,7 +169,9 @@ instala_pc() {
     ssh_a "$(host_de pc)" "echo $anterior> $u\\.motor\\etiqueta-anterior" || return 1
   fi
   if ! ssh_a "$(host_de pc)" "git -C $u\\motor cat-file -e refs/tags/$ETIQUETA:motor/formato.py"; then
-    marca="$(ssh_a "$(host_de pc)" "if exist $u\\.motor\\formato echo si" | tr -d "[:space:]")"
+    if ! marca="$(ssh_a "$(host_de pc)" "if exist $u\\.motor\\formato echo si" | tr -d "[:space:]")"; then
+      return 1
+    fi
     if [ "$marca" = si ]; then
       ssh_a "$(host_de pc)" "cd /d $u\\motor && $PC_UV run --python 3.12 python -m motor formato --home $u\\.motor" || return 1
     fi

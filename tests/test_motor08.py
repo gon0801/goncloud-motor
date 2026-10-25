@@ -26,6 +26,12 @@ class ValorarTest(unittest.TestCase):
         j = valorar(s, exp)
         self.assertIsInstance(j, Aclarar)
         self.assertEqual(set(j.criterios), {"A.1", "A.2"})
+    def test_peligro_sin_criterio_pide_aclarar(self):
+        j = valorar(
+            Sugerencia("s", "revisor", None, "produccion", "expone token", "test ! -f token"),
+            Expediente((), (), (), ()),
+        )
+        self.assertIsInstance(j, Aclarar)
 class E:
     def __init__(self, kind, data):
         self.kind, self.data = kind, data
@@ -40,6 +46,8 @@ class FormatoTest(unittest.TestCase):
         self.assertIn("i1", motivo)
         dudoso = E("EfectoObservado", {"intencion": "i1", "resultado": "incierto"})
         self.assertFalse(puede_volver(home, [pedido, dudoso])[0])
+        vacio = E("EfectoObservado", {"intencion": "i1", "resultado": ""})
+        self.assertFalse(puede_volver(home, [pedido, vacio])[0])
         hecho = E("EfectoObservado", {"intencion": "i1", "resultado": "aplicado"})
         self.assertTrue(puede_volver(home, [pedido, dudoso, hecho])[0])
 class ModuloTest(unittest.TestCase):

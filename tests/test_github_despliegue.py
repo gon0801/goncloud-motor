@@ -865,6 +865,31 @@ class DespliegueTest(unittest.TestCase):
         with self.assertRaises(PlanError):
             parse_plan(texto)
 
+    def test_desplegar_toca_prod_y_rollback_falla_queda_incierto(self):
+        fx, plan, snap, corre, t = self._fx(
+            {
+                "d.sh": "echo tocado > prod.txt\nexit 1\n",
+                "c.sh": "true\n",
+                "r.sh": "exit 1\n",
+            }
+        )
+        r = corre(plan, snap, m.Deploy("A", SHA))
+        w = fx.cx.ws.base / "copia-1"
+        self.assertTrue((w / "prod.txt").exists())
+        self.assertTrue(r["produccion_tocada"])
+        self.assertFalse(r["rollback_ok"])
+        self.assertFalse(r["ok"])
+        ident = fx._confirma_intencion(plan, "A", "instalar", SHA, f"instalar:{SHA}")
+        fx._efecto(plan, "A", ident, fx._resultado_de("deploy", r), str(r.get("detalle") or ""))
+        self.assertEqual(
+            [
+                e.data["resultado"]
+                for e in fx.cx.store.events("demo")
+                if e.kind == "EfectoObservado"
+            ][-1],
+            "incierto",
+        )
+
     def test_75_no_hace_rollback_ni_culpa(self):
         fx, plan, snap, corre, t = self._fx(
             {

@@ -72,8 +72,8 @@ def puede_volver(home: Path, eventos) -> tuple[bool, str]:
         res = ultimo.get(ident)
         if res is None:
             return False, f"la intencion {ident} no tiene efecto observado"
-        if res == "incierto":
-            return False, f"la intencion {ident} quedo incierta"
+        if res not in {"aplicado", "no_aplicado"}:
+            return False, f"la intencion {ident} quedo {res or 'sin resultado'}"
     return True, "efectos resueltos"
 
 

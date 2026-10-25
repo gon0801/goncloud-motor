@@ -69,7 +69,9 @@ vuelve_pc() {
     ssh_a "$h" "git -C $u\\motor fetch -q --tags --force origin" || return 1
   fi
   if ! ssh_a "$h" "git -C $u\\motor cat-file -e refs/tags/$anterior:motor/formato.py"; then
-    marca="$(ssh_a "$h" "if exist $u\\.motor\\formato echo si" | tr -d "[:space:]")"
+    if ! marca="$(ssh_a "$h" "if exist $u\\.motor\\formato echo si" | tr -d "[:space:]")"; then
+      return 1
+    fi
     if [ "$marca" = si ]; then
       ssh_a "$h" "cd /d $u\\motor && $PC_UV run --python 3.12 python -m motor formato --home $u\\.motor" || return 1
     fi

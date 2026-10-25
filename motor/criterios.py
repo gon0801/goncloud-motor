@@ -194,38 +194,77 @@ def _alcance(criterio: Criterio, escenario: str = "") -> Alcance:
     )
 
 
+def _peligro(sugerencia: Sugerencia) -> bool:
+    bajo = " ".join(
+        (sugerencia.escenario_propuesto, sugerencia.conducta_rota, sugerencia.repro_propuesto)
+    ).lower()
+    return any(p in bajo for p in _SECRETOS)
+
+
+def _caso_concreto(sugerencia: Sugerencia) -> bool:
+    return bool(
+        sugerencia.escenario_propuesto.strip()
+        and sugerencia.conducta_rota.strip()
+        and sugerencia.repro_propuesto.strip()
+    )
+
+
+def criterio_de_hallazgo(hallazgo: dict, expediente: Expediente) -> str | None:
+    """El criterio que el hallazgo cita, si está en el expediente. No adivina."""
+    cid = hallazgo.get("criterio")
+    if not isinstance(cid, str) or not cid.strip():
+        return None
+    cid = cid.strip()
+    return cid if any(c.id == cid for c in expediente.criterios) else None
+
+
 def valorar(sugerencia: Sugerencia, expediente: Expediente) -> Nota | Medir | Aclarar:
     """Sin hecho nuevo no reabre. No ejecuta el repro ni fabrica un Incumple."""
-    if sugerencia.criterio is None or not sugerencia.conducta_rota.strip():
+    if not sugerencia.conducta_rota.strip():
         return Nota("sin criterio o sin conducta rota: queda como nota")
-    crit = next((c for c in expediente.criterios if c.id == sugerencia.criterio), None)
-    if crit is None:
-        return Nota("criterio desconocido: queda como nota")
-    for med in expediente.mediciones:
-        mismo = med.clave.alcance.criterio == crit.id
-        if mismo and isinstance(med.resultado, Cumple):
-            return Nota("hecho nuevo: ya hay un Cumple vigente de ese criterio")
-    for res in expediente.resoluciones:
-        if isinstance(res, Corregido) and res.alcance.criterio == crit.id:
-            return Nota("hecho nuevo: ese criterio ya quedo corregido")
-        if isinstance(res, Aclarado) and res.alcance.criterio == crit.id:
-            return Nota("hecho nuevo: ese criterio ya quedo aclarado")
-    pedido = sugerencia.repro_propuesto.strip()
-    if pedido and pedido != crit.receta.strip():
-        return Nota("la receta propuesta no es la del criterio: no se ejecuta")
-    chocan = [
-        c
-        for c in expediente.criterios
-        if c.receta == crit.receta and c.conducta != crit.conducta and c.id != crit.id
-    ]
-    if chocan:
-        ids = tuple(c.id for c in (crit, *chocan))
-        return Aclarar(
-            criterios=ids,
-            mandato="dos criterios con la misma receta piden conductas distintas",
-            alcance=_alcance(crit, sugerencia.escenario_propuesto),
-        )
-    return Medir(criterio=crit, alcance=_alcance(crit, sugerencia.escenario_propuesto))
+    crit = None
+    if sugerencia.criterio is not None:
+        crit = next((c for c in expediente.criterios if c.id == sugerencia.criterio), None)
+        if crit is None:
+            return Nota("criterio desconocido: queda como nota")
+    elif not (_caso_concreto(sugerencia) or _peligro(sugerencia)):
+        return Nota("sin criterio o sin conducta rota: queda como nota")
+    if crit is not None:
+        for med in expediente.mediciones:
+            mismo = med.clave.alcance.criterio == crit.id
+            if mismo and isinstance(med.resultado, Cumple):
+                return Nota("hecho nuevo: ya hay un Cumple vigente de ese criterio")
+        for res in expediente.resoluciones:
+            if isinstance(res, Corregido) and res.alcance.criterio == crit.id:
+                return Nota("hecho nuevo: ese criterio ya quedo corregido")
+            if isinstance(res, Aclarado) and res.alcance.criterio == crit.id:
+                return Nota("hecho nuevo: ese criterio ya quedo aclarado")
+        pedido = sugerencia.repro_propuesto.strip()
+        if pedido and pedido != crit.receta.strip():
+            return Nota("la receta propuesta no es la del criterio: no se ejecuta")
+        chocan = [
+            c
+            for c in expediente.criterios
+            if c.receta == crit.receta and c.conducta != crit.conducta and c.id != crit.id
+        ]
+        if chocan:
+            ids = tuple(c.id for c in (crit, *chocan))
+            return Aclarar(
+                criterios=ids,
+                mandato="dos criterios con la misma receta piden conductas distintas",
+                alcance=_alcance(crit, sugerencia.escenario_propuesto),
+            )
+        return Medir(criterio=crit, alcance=_alcance(crit, sugerencia.escenario_propuesto))
+    return Aclarar(
+        criterios=tuple(c.id for c in expediente.criterios),
+        mandato="caso concreto pertinente que la receta vigente no cubre",
+        alcance=Alcance(
+            bloque=expediente.criterios[0].bloque if expediente.criterios else "",
+            criterio="",
+            escenario=sugerencia.escenario_propuesto,
+            destino="",
+        ),
+    )
 
 
 def _medicion(c: Criterio, head: str, visto: dict) -> Medicion:
@@ -268,7 +307,7 @@ def expediente_del_bloque(bloque: str, snapshot) -> Expediente:
     visto = bv.verified.get(head) if head else None
     if visto is not None:
         mediciones = [_medicion(c, head, visto) for c in criterios]
-    sugerencias = _sugerencias(bv)
+    sugerencias = _sugerencias(bv, criterios)
     return Expediente(
         criterios=criterios,
         mediciones=tuple(mediciones),
@@ -277,7 +316,8 @@ def expediente_del_bloque(bloque: str, snapshot) -> Expediente:
     )
 
 
-def _sugerencias(bv) -> list[Sugerencia]:
+def _sugerencias(bv, criterios: tuple[Criterio, ...] = ()) -> list[Sugerencia]:
+    exp = Expediente(criterios, (), (), ())
     out = []
     for rev in bv.reviews:
         for i, hallazgo in enumerate(rev.get("bloqueantes") or []):
@@ -287,7 +327,7 @@ def _sugerencias(bv) -> list[Sugerencia]:
                 Sugerencia(
                     id=f"{rev.get('sha', '')}:{i}",
                     intento_o_comentario=str(rev.get("modelo") or ""),
-                    criterio=None,
+                    criterio=criterio_de_hallazgo(hallazgo, exp),
                     escenario_propuesto=str(hallazgo.get("texto") or ""),
                     conducta_rota=str(hallazgo.get("texto") or ""),
                     repro_propuesto=str(hallazgo.get("repro") or ""),

@@ -68,7 +68,7 @@ if [ "$host" = gwpc ]; then
     "git -C "*" fetch -q --tags --force origin")
       [ -z "${FAKE_GIT_ORIGIN_CAIDO:-}" ] || { echo "fatal: no pude conectar (origin caído)" >&2; exit 1; } ;;
     "if not exist "* | "copy /y "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
-    *"cat-file -e refs/tags/"*":motor/formato.py"*) exit 0 ;;
+    *"cat-file -e refs/tags/"*":motor/formato.py"*) [ -z "${FAKE_PC_SIN_FORMATO:-}" ] || exit 1 ;;
     *"if exist"*"formato echo si"*) if [ -f "$S/pc-formato" ]; then echo si; else echo no; fi ;;
     *"-m motor formato"*) if [ -f "$S/pc-formato-bloquea" ]; then exit 1; fi ;;
     *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
@@ -118,7 +118,7 @@ exec $GIT_REAL "\$@"
 FAKE
 chmod +x "$S/bin/git"
 
-reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-codigo-creado" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-etiqueta-anterior" "$S/launchd"/*; mkdir -p "$S/mac" "$S/mini"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_SUDO_FALLA FAKE_PC_TAREA_RC MOTOR_ETIQUETA; }
+reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-codigo-creado" "$S/pc-formato" "$S/pc-formato-bloquea" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-etiqueta-anterior" "$S/launchd"/*; mkdir -p "$S/mac" "$S/mini"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_PC_SIN_FORMATO FAKE_SUDO_FALLA FAKE_PC_TAREA_RC MOTOR_ETIQUETA; }
 TAG="$(unset MOTOR_ETIQUETA; . "$RAIZ/ops/lib.sh"; echo "$ETIQUETA")"
 I="$RAIZ/ops/instala-todo.sh"
 D="$RAIZ/ops/desinstala-todo.sh"
@@ -265,6 +265,9 @@ contiene "dice cuál" "$S/salida" "mini"
 reset
 FAKE_PC_FALLA=1 en_mac espera "el remoto de la PC falla" '!0' bash "$I"
 contiene "dice cuál" "$S/salida" "pc"
+reset
+touch "$S/pc-formato" "$S/pc-formato-bloquea"
+FAKE_PC_SIN_FORMATO=1 en_mac espera "la PC rechaza una etiqueta sin motor/formato.py" '!0' bash "$I"
 
 reset
 git -C "$S/trabajo" checkout -q --detach HEAD
