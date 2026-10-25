@@ -6,6 +6,7 @@ import http.server
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -418,16 +419,9 @@ class TestEntregaSegura(Banco):
         """MOTOR 01: claw entregó INGESTA 01, se fue con "encolado" y el motor de la Mini lo rechazó
         sin que nadie se enterara."""
         self.home, self.plan = sandbox.create(self.tmp / "b")
-        malo = self.tmp / "malo.md"
-        malo.write_text(
-            self.plan.read_text(encoding="utf-8").replace(
-                "repo: ", "repo: /no/existe/x.git\n#", 1
-            ),
-            encoding="utf-8",
-        )
-        motor(
+        r = motor(
             "entrega",
-            str(malo),
+            str(self.plan),
             "--home",
             str(self.home),
             "--json",
@@ -436,6 +430,9 @@ class TestEntregaSegura(Banco):
             "--por",
             "claw",
         )
+        self.assertEqual(json.loads(r.stdout)["estado"], "encolado")
+        # La previa paso, pero el repo desaparece antes de que el daemon tome el plan.
+        shutil.rmtree(self.tmp / "b" / "app.git")
         Daemon(self.home).ingest_inbox()
         avisos = list((self.home / "avisos" / "pendientes").glob("*rechazo*"))
         self.assertEqual(len(avisos), 1)
