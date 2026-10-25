@@ -1391,6 +1391,13 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             and e.data.get("sha") == a.sha
             and huella.vigente(e.data, h_insumo, h_maquina)
         ]
+        if (
+            kind in ("deploy", "prove")
+            and terminales
+            and terminales[-1].data.get("codigo") == 75
+            and not terminales[-1].data.get("ok")
+        ):
+            reverificar = True  # el planificador ya aplica la espera de 15 minutos
         if starteds:
             ultimo = starteds[-1]
             pendiente = not terminales or ultimo.id > terminales[-1].id
