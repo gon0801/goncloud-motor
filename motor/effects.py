@@ -1716,7 +1716,25 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         v = self.cx.gh.ver(block.repo, numero)
         if v.estado == "abierto":
             return False
-        if v.estado != "mergeado" or v.head != sha:
+        mismo_contenido = v.head == sha
+        if v.estado == "mergeado" and not mismo_contenido:
+            d = self.cx.ws.espejo(block.repo)
+            original = git("rev-parse", "--verify", f"{sha}^{{tree}}", cwd=d)
+            if original.returncode == 0:
+                punta = git("rev-parse", "--verify", f"{v.head}^{{tree}}", cwd=d)
+                if punta.returncode != 0:
+                    # GitHub puede borrar la rama al unir: pedir el commit conservado por el PR.
+                    r = git("fetch", "-q", "origin", v.head, cwd=d)
+                    if r.returncode != 0:
+                        raise RuntimeError(
+                            f"no pude comprobar el contenido del PR {numero}: {r.stderr[-300:]}"
+                        )
+                    punta = git("rev-parse", "--verify", f"{v.head}^{{tree}}", cwd=d)
+                mismo_contenido = (
+                    punta.returncode == 0
+                    and original.stdout.strip() == punta.stdout.strip()
+                )
+        if v.estado != "mergeado" or not mismo_contenido:
             # cerrado, o mergeado con OTRO contenido (MOTOR 01, bloque F: se adoptaba el merge viejo y
             # se desplegaba otra vez el código con el error): ese PR ya no sirve, se abre uno nuevo
             self.cx.store.append(
@@ -1729,6 +1747,18 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             return True
         self.adopta_externo(plan, snap, block_id, sha, v.merge_commit)
         return True
+
+    def reconcilia_prs(self, plan: Plan, snap: m.Snapshot) -> None:
+        """Reconoce uniones externas tambien fuera de CHECKS, antes de decidir otro intento."""
+        for bid, bv in snap.blocks.items():
+            if not bv.pr or not bv.head() or bv.running():
+                continue
+            k = f"pr:{plan.id}:{bid}:{bv.pr['numero']}"
+            ahora = time.time()
+            if ahora - self._ultimo_poll.get(k, 0) < self.cx.checks_cada_s:
+                continue
+            self._ya_mergeado(plan, snap, bid, bv.head())
+            self._ultimo_poll[k] = ahora
 
     def adopta_externo(
         self,
