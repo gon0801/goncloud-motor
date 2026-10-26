@@ -16,11 +16,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 CREATE_NO_WINDOW = 0x08000000
+CREATE_SUSPENDED = 0x00000004
 DETACHED_PROCESS = 0x00000008
 
 
@@ -425,6 +427,65 @@ def pid_vivo(pid: int) -> bool:  # pragma: no cover
     return bool(ok) and code.value == 259  # STILL_ACTIVE
 
 
+def sincroniza_directorio(path) -> None:  # pragma: no cover
+    """Deja durable el directorio. os.open(O_RDONLY) falla con PermissionError 13.
+
+    Hace falta FILE_FLAG_BACKUP_SEMANTICS y acceso de escritura. Con solo lectura
+    el handle abre y FlushFileBuffers responde WinError 5. Ese error sube si también
+    falla el acceso de escritura.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel.FlushFileBuffers.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    invalido = wintypes.HANDLE(-1).value
+
+    def abre(acceso: int):
+        handle = kernel.CreateFileW(
+            os.fspath(path),
+            acceso,
+            0x1 | 0x2 | 0x4,
+            None,
+            3,
+            0x02000000,
+            None,
+        )
+        if handle is None or handle == invalido:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return handle
+
+    ultimo = None
+    for acceso in (0x40000000, 0xC0000000):
+        try:
+            handle = abre(acceso)
+        except OSError as e:
+            ultimo = e
+            continue
+        try:
+            if not kernel.FlushFileBuffers(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return
+        finally:
+            kernel.CloseHandle(handle)
+    if ultimo is not None:
+        raise ultimo
+    raise OSError("no pude abrir el directorio para sincronizarlo")
+
+
 def hora_inicio(pid: int) -> str:  # pragma: no cover
     """Hora de creación del proceso (FILETIME como texto, "" si no existe). Distingue un pid reusado."""
     import ctypes
@@ -448,7 +509,330 @@ def hora_inicio(pid: int) -> str:  # pragma: no cover
     return str((ft[0].dwHighDateTime << 32) | ft[0].dwLowDateTime)
 
 
-def matar_grupo_pid(pid: int) -> None:  # pragma: no cover
+def _consulta_pid(pid: int) -> str:  # pragma: no cover
+    """`vivo`, `muerto` o `incierto`. Un acceso denegado no es una muerte."""
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    h = k.OpenProcess(0x1000, False, pid)
+    if not h:
+        return "muerto" if ctypes.get_last_error() == 87 else "incierto"
+    code = wintypes.DWORD()
+    ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+    k.CloseHandle(h)
+    if not ok:
+        return "incierto"
+    return "vivo" if code.value == 259 else "muerto"
+
+
+def _reanudar(pid: int) -> None:  # pragma: no cover
+    """Suelta el hilo que CreateProcess dejó suspendido. Si no puede, el proceso no sigue vivo."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Hilo(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", ctypes.c_long),
+            ("tpDeltaPri", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(Hilo)]
+    k.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(Hilo)]
+    k.OpenThread.restype = wintypes.HANDLE
+    k.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.ResumeThread.argtypes = [wintypes.HANDLE]
+    k.ResumeThread.restype = wintypes.DWORD
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    snap = k.CreateToolhelp32Snapshot(0x00000004, 0)
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        raise OSError("no pude ver los hilos para reanudar")
+    ent = Hilo()
+    ent.dwSize = ctypes.sizeof(Hilo)
+    ok = k.Thread32First(snap, ctypes.byref(ent))
+    n = 0
+    try:
+        while ok:
+            if ent.th32OwnerProcessID == pid:
+                h = k.OpenThread(0x0002, False, ent.th32ThreadID)
+                if h:
+                    r = k.ResumeThread(h)
+                    k.CloseHandle(h)
+                    if r != 0xFFFFFFFF:
+                        n += 1
+            ok = k.Thread32Next(snap, ctypes.byref(ent))
+    finally:
+        k.CloseHandle(snap)
+    if n == 0:
+        raise OSError("no pude reanudar el proceso suspendido")
+
+
+def _terminar(p: subprocess.Popen) -> None:  # pragma: no cover
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    try:
+        k.TerminateProcess(int(p._handle), 1)
+    except OSError:
+        pass
+    try:
+        p.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _flags(breakaway: bool, suspended: bool) -> int:
+    flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+    if breakaway:
+        flags |= CREATE_BREAKAWAY_FROM_JOB
+    if suspended:
+        flags |= CREATE_SUSPENDED
+    return flags
+
+
+def crear_proceso(cmd, propiedad, **kwargs):  # pragma: no cover
+    """Crea el proceso. Solo un comando contenido, y solo con `winerror == 5`, se reintenta sin `BREAKAWAY`.
+
+    Un trabajador separado que no puede salir del Job no se crea: el entorno queda rechazado.
+    Un comando contenido queda suspendido hasta `liberar`, y solo si ya está en su Job.
+    """
+    from . import ProcesoCreado, Propiedad
+
+    opciones = dict(kwargs)
+    opciones.pop("creationflags", None)
+    suspender = propiedad == Propiedad.COMANDO_CONTENIDO
+    try:
+        p = subprocess.Popen(cmd, creationflags=_flags(True, suspender), **opciones)
+        separacion = "breakaway"
+    except OSError as e:
+        if getattr(e, "winerror", None) != 5:
+            raise
+        if not suspender:
+            raise OSError(
+                getattr(e, "errno", None),
+                "el entorno no deja separar el trabajador del Job",
+            ) from e
+        p = subprocess.Popen(cmd, creationflags=_flags(False, suspender), **opciones)
+        separacion = "sin_breakaway"
+    if not suspender:
+        return ProcesoCreado(p, separacion, "")
+    nombre = "Local\\goncloud-motor-" + uuid.uuid4().hex
+    try:
+        job = JobMatarAlCerrar(nombre)
+        job.asignar(p)
+    except OSError as e:
+        _terminar(p)
+        raise OSError(
+            getattr(e, "errno", None),
+            f"no pude contener el arbol: winerror {getattr(e, 'winerror', None)}",
+        ) from e
+    _jobs[p.pid] = job
+
+    def _liberar(proceso: subprocess.Popen = p) -> None:
+        try:
+            _reanudar(proceso.pid)
+        except OSError:
+            _terminar(proceso)
+            raise
+
+    p._motor_liberar = _liberar
+    return ProcesoCreado(p, separacion, nombre)
+
+
+def _pids_job(handle) -> list[int] | None:  # pragma: no cover
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        wintypes.INT,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    k.QueryInformationJobObject.restype = wintypes.BOOL
+    capacidad = 16
+    for _ in range(6):
+
+        class Lista(ctypes.Structure):
+            _fields_ = [
+                ("asignados", wintypes.DWORD),
+                ("en_lista", wintypes.DWORD),
+                ("pids", ctypes.c_size_t * capacidad),
+            ]
+
+        info = Lista()
+        if k.QueryInformationJobObject(
+            handle, 3, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            return [int(info.pids[i]) for i in range(int(info.en_lista))]
+        if ctypes.get_last_error() != 234:
+            return None
+        capacidad *= 4
+    return None
+
+
+def _abrir_job(nombre: str):  # pragma: no cover
+    """(handle | None, 'ok' | 'ausente' | 'incierto'). El nombre que ya no existe no es un error de acceso."""
+    import ctypes
+    from ctypes import wintypes
+
+    if not nombre:
+        return None, "ausente"
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenJobObjectW.restype = wintypes.HANDLE
+    k.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    h = k.OpenJobObjectW(0x0004 | 0x0008, False, nombre)
+    if h:
+        return h, "ok"
+    return None, "ausente" if ctypes.get_last_error() in (2, 3) else "incierto"
+
+
+def _descendientes(pid: int) -> list[int] | None:  # pragma: no cover
+    import ctypes
+    from ctypes import wintypes
+
+    class Proc(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_void_p),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Proc)]
+    k.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Proc)]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    snap = k.CreateToolhelp32Snapshot(0x00000002, 0)
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return None
+    ent = Proc()
+    ent.dwSize = ctypes.sizeof(Proc)
+    padres: dict[int, int] = {}
+    ok = k.Process32FirstW(snap, ctypes.byref(ent))
+    try:
+        while ok:
+            padres[int(ent.th32ProcessID)] = int(ent.th32ParentProcessID)
+            ok = k.Process32NextW(snap, ctypes.byref(ent))
+    finally:
+        k.CloseHandle(snap)
+    if not padres:
+        return None
+    hijos = []
+    for candidato, padre in padres.items():
+        visto = {candidato}
+        actual = padre
+        for _ in range(32):
+            if actual == pid:
+                hijos.append(candidato)
+                break
+            if actual in visto or actual == 0:
+                break
+            visto.add(actual)
+            if actual not in padres:
+                break
+            actual = padres[actual]
+    return hijos
+
+
+def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no cover
+    """`vivo`, `ausente` o `incierto`. Un error al mirar el Job o el árbol no es ausencia."""
+    if not inicio or pid <= 0:
+        return "incierto"
+    estado = _consulta_pid(pid)
+    if estado == "incierto":
+        return "incierto"
+    if estado == "vivo":
+        actual = hora_inicio(pid)
+        if not actual or actual != inicio:
+            return "incierto"
+        return "vivo"
+    propio = _jobs.get(pid)
+    if propio is not None and propio._h:
+        pids = propio.pids()
+        if pids is None:
+            return "incierto"
+        return "vivo" if pids else "ausente"
+    handle, visto = _abrir_job(job)
+    if visto == "incierto":
+        return "incierto"
+    if handle:
+        try:
+            pids = _pids_job(handle)
+        finally:
+            import ctypes
+
+            ctypes.WinDLL("kernel32").CloseHandle(handle)
+        if pids is None:
+            return "incierto"
+        return "vivo" if pids else "ausente"
+    hijos = _descendientes(pid)
+    if hijos is None:
+        return "incierto"
+    return "vivo" if hijos else "ausente"
+
+
+def cerrar_huerfanos(pid: int, inicio: str, job: str = "") -> None:  # pragma: no cover
+    """Termina descendientes cuando el líder ya no es el proceso lanzado. No mata a ciegas."""
+    if not inicio or pid <= 1:
+        return
+    estado = _consulta_pid(pid)
+    if estado != "muerto":
+        if estado == "vivo" and hora_inicio(pid) == inicio:
+            return
+        if estado != "muerto":
+            return
+    propio = _jobs.pop(pid, None)
+    if propio is not None:
+        propio.cerrar()
+        return
+    handle, visto = _abrir_job(job)
+    if handle:
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.TerminateJobObject(handle, 1)
+        k.CloseHandle(handle)
+        return
+    if visto == "incierto":
+        return
+    for hijo in _descendientes(pid) or ():
+        subprocess.run(
+            ["taskkill", "/PID", str(hijo), "/T", "/F"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+        )
+
+
+def matar_grupo_pid(pid: int, inicio: str = "") -> None:  # pragma: no cover
     """Termina el árbol de `pid` (taskkill /T /F)."""
     subprocess.run(
         ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -474,7 +858,7 @@ class JobMatarAlCerrar:  # pragma: no cover
     """Job Object con JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: al cerrar el handle (o al morir quien
     lo tiene) Windows mata a todo el árbol asignado."""
 
-    def __init__(self) -> None:
+    def __init__(self, nombre: str | None = None, *, matar_al_cerrar: bool = True) -> None:
         import ctypes
         from ctypes import wintypes
 
@@ -526,20 +910,27 @@ class JobMatarAlCerrar:  # pragma: no cover
             wintypes.DWORD,
         ]
         k.CloseHandle.argtypes = [wintypes.HANDLE]
-        self._h = k.CreateJobObjectW(None, None)
+        self.nombre = nombre or ""
+        self._h = k.CreateJobObjectW(None, nombre)
         if not self._h:
             raise ctypes.WinError(ctypes.get_last_error())
-        lim = Extendido()
-        lim.basico.flags = 0x00002000  # KILL_ON_JOB_CLOSE
-        if not k.SetInformationJobObject(
-            self._h, 9, ctypes.byref(lim), ctypes.sizeof(lim)
-        ):
-            self.cerrar()
-            raise ctypes.WinError(ctypes.get_last_error())
+        if matar_al_cerrar:
+            lim = Extendido()
+            lim.basico.flags = 0x00002000  # KILL_ON_JOB_CLOSE
+            if not k.SetInformationJobObject(
+                self._h, 9, ctypes.byref(lim), ctypes.sizeof(lim)
+            ):
+                self.cerrar()
+                raise ctypes.WinError(ctypes.get_last_error())
 
     def asignar(self, p: subprocess.Popen) -> None:
         if not self._k.AssignProcessToJobObject(self._h, int(p._handle)):
             raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def pids(self) -> list[int] | None:
+        if not self._h:
+            return None
+        return _pids_job(self._h)
 
     def cerrar(self) -> None:
         if self._h:

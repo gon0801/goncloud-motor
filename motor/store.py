@@ -23,6 +23,16 @@ class Event:
     data: dict
 
 
+@dataclass(frozen=True)
+class Committed:
+    ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class AlreadyCommitted:
+    ids: tuple[int, ...]
+
+
 class Store:
     @classmethod
     def solo_lectura(cls, path: Path) -> Store:
@@ -34,7 +44,12 @@ class Store:
         return s
 
     def __init__(self, path: Path):
+        path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        from .formato import activa, admite_escritor
+
+        admite_escritor(path.parent)
+        activa(path.parent)
         self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute(
@@ -50,6 +65,10 @@ class Store:
         self.db.execute(
             "CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events "
             "BEGIN SELECT RAISE(ABORT, 'append-only'); END"
+        )
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS batches ("
+            " command_id TEXT PRIMARY KEY, ids TEXT NOT NULL)"
         )
 
     def append(
@@ -78,6 +97,67 @@ class Store:
             return True
         except sqlite3.IntegrityError:
             return False
+
+    def append_batch(self, command_id: str, events: list[dict]) -> Committed | AlreadyCommitted:
+        """Una transacción. El mismo `command_id` devuelve los ids ya escritos.
+
+        Una colisión de `ukey` que no es ese comando aborta el lote entero.
+        """
+        if not command_id:
+            raise ValueError("append_batch necesita command_id")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT ids FROM batches WHERE command_id = ?", (command_id,)
+            ).fetchone()
+            if row:
+                self.db.execute("ROLLBACK")
+                return AlreadyCommitted(tuple(json.loads(row[0])))
+            ids: list[int] = []
+            for ev in events:
+                cur = self.db.execute(
+                    "INSERT INTO events (ts, plan, block, kind, data, ukey) VALUES (?,?,?,?,?,?)",
+                    (
+                        ev.get("ts", time.time()),
+                        ev["plan"],
+                        ev.get("block", ""),
+                        ev["kind"],
+                        json.dumps(ev["data"], ensure_ascii=False, sort_keys=True),
+                        ev.get("ukey"),
+                    ),
+                )
+                ids.append(int(cur.lastrowid))
+            self.db.execute(
+                "INSERT INTO batches (command_id, ids) VALUES (?, ?)",
+                (command_id, json.dumps(ids)),
+            )
+            self.db.execute("COMMIT")
+            return Committed(tuple(ids))
+        except Exception:
+            try:
+                self.db.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+
+    def decision(self, command_id: str) -> str | None:
+        """El resultado guardado con ese comando, o None si el lote no existe."""
+        row = self.db.execute(
+            "SELECT ids FROM batches WHERE command_id = ?", (command_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        ids = json.loads(row[0])
+        if not ids:
+            return ""
+        marks = ",".join("?" for _ in ids)
+        found = self.db.execute(
+            f"SELECT data FROM events WHERE id IN ({marks}) AND kind = 'CommandReceived'",
+            tuple(ids),
+        ).fetchall()
+        if not found:
+            return ""
+        return str(json.loads(found[-1][0]).get("resultado", ""))
 
     def events(
         self, plan: str | None = None, kind: str | tuple[str, ...] | None = None

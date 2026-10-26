@@ -197,6 +197,28 @@ def como_servicio(home: Path, espera_s: float = ESPERA_S) -> dict:
             out["problemas"].append(
                 f"ningún modelo del papel {papel} responde como servicio"
             )
+    from .notify import salud
+    from .store import Store
+
+    eventos = []
+    db = home / "motor.db"
+    if db.exists():
+        try:
+            eventos = Store.solo_lectura(db).events(
+                kind=("NoticeQueued", "NoticeRequested")
+            )
+        except Exception:  # noqa: BLE001  una base ilegible no es una entrega
+            eventos = []
+    out["avisos"] = salud(home, eventos)
+    if out["avisos"]["causa"]:
+        out["problemas"].append(f"avisos: {out['avisos']['causa']}")
+    if out["avisos"]["fallidos"]:
+        out["ok"] = False
+        out["problemas"].append(f"avisos: {out['avisos']['fallidos']} fallidos")
+    if out["avisos"]["desconocidos"]:
+        out["problemas"].append(
+            f"avisos: {len(out['avisos']['desconocidos'])} desconocidos"
+        )
     return out
 
 

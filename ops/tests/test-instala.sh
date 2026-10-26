@@ -5,11 +5,29 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
-# --- repos locales: origen (el motor mergeado en main) y conf
+# --- repos locales: el origen desechable es el candidato B–E, no solo el commit base.
 git -C "$RAIZ" rev-parse HEAD >/dev/null || exit 2
+rm -rf "$S/semilla"
+git clone -q "$RAIZ" "$S/semilla"
+git -C "$RAIZ" diff --binary >"$S/candidato.diff"
+if [ -s "$S/candidato.diff" ]; then
+  git -C "$S/semilla" apply --whitespace=nowarn "$S/candidato.diff" || exit 2
+fi
+while IFS= read -r -d '' f; do
+  mkdir -p "$S/semilla/$(dirname "$f")"
+  cp "$RAIZ/$f" "$S/semilla/$f"
+done < <(git -C "$RAIZ" ls-files --others --exclude-standard -z)
+git -C "$S/semilla" add -A
+if ! git -C "$S/semilla" diff --cached --quiet; then
+  git -C "$S/semilla" -c user.name=t -c user.email=t@t commit -q -m "candidato B-E" || exit 2
+fi
 git init -q --bare -b main "$S/origen.git"
-git -C "$RAIZ" push -q "$S/origen.git" HEAD:refs/heads/main || exit 2
+git -C "$S/semilla" push -q "$S/origen.git" HEAD:refs/heads/main || exit 2
 SHA="$(git -C "$S/origen.git" rev-parse main)"
+# Base previa a MOTOR 09: la comprobación debe servir también después del commit/merge.
+PADRE="$(git -C "$S/semilla" rev-parse '1b37d63dfbc7157ffa42b5680505ed8e8962f4a1^{commit}')"
+[ "$(git -C "$S/semilla" show 'HEAD:motor/formato.py' | sed -n 's/^VERSION = //p')" = 3 ] || exit 2
+[ "$(git -C "$S/semilla" show "$PADRE:motor/formato.py" | sed -n 's/^VERSION = //p')" = 2 ] || exit 2
 git clone -q "$S/origen.git" "$S/trabajo"
 git init -q -b main "$S/conf-src"
 cp -R "$RAIZ/conf-ejemplo/." "$S/conf-src/"
@@ -30,12 +48,21 @@ while [ "$1" = -o ]; do shift 2; done
 host=$1; shift
 echo "$host :: $*" >>"$FAKE_LOG"
 case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac
-# FAKE_CAE_DESPUES: el host contesta la primera llamada (la validación) y cae desde la segunda (la instalación).
-n=$(( $(cat "$S/n-$host" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$S/n-$host"
-# La primera llamada guarda la revisión y la segunda valida. Caer "al instalar" es la tercera.
-case " ${FAKE_CAE_DESPUES:-} " in *" $host "*) [ "$n" -le 2 ] || { echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; } ;; esac
+# FAKE_CAE_DESPUES: contesta la lectura y la validación; cae en la instalación (FASE_INSTALA).
+case " ${FAKE_CAE_DESPUES:-} " in
+  *" $host "*) case "$*" in *FASE_INSTALA*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac ;;
+esac
 if [ "$host" = gwpc ]; then
   ok_pc() { [ -z "${FAKE_PC_FALLA:-}" ] || { echo "git: no pude" >&2; exit 1; }; }
+  if [[ "$*" == *'python -c "'* && "$*" != *sol_remoto* ]]; then
+    cmd="$*"
+    tmp="${cmd#*python -c \"}"
+    code="${tmp%%\"*}"
+    rest="${tmp#*\"}"
+    # shellcheck disable=SC2086
+    HOME="$S/pc-home" USERPROFILE="$S/pc-home" python3 -c "$code" $rest
+    exit $?
+  fi
   case "$*" in
     "tar -x"*) cat >"$S/pc-recibido.tar" ;;
     "schtasks /query"*) exit "${FAKE_PC_TAREA_RC:-0}" ;;
@@ -45,6 +72,12 @@ if [ "$host" = gwpc ]; then
     *"tag --points-at HEAD"*) [ -f "$S/pc-tag" ] && printf '%s\r\n' "$(cat "$S/pc-tag")"; exit 0 ;;
     # La marcha atrás guarda el SHA, no el nombre de la etiqueta. pc-tag sigue siendo el nombre.
     *"rev-parse HEAD")
+      if [ -n "${FAKE_PC_REVPARSE_RC:-}" ]; then exit "$FAKE_PC_REVPARSE_RC"; fi
+      case "$*" in
+        *motor-conf*)
+          if [ -s "$S/pc-conf-sha" ]; then tr -d '[:space:]' <"$S/pc-conf-sha"; printf '\r\n'; exit 0; fi
+          case "$*" in *"if exist"*) exit 0 ;; *) exit 1 ;; esac ;;
+      esac
       if [ ! -f "$S/pc-tag" ]; then
         case "$*" in *"if exist"*) exit 0 ;; *) exit 1 ;; esac
       fi
@@ -54,6 +87,7 @@ if [ "$host" = gwpc ]; then
       fi
       printf '%s\r\n' "$sha_pc" ;;
     *"rev-parse"*"--verify "*)
+      if [ -n "${FAKE_PC_OBJETO_TRAS_FETCH:-}" ] && [ ! -f "$S/pc-fetch-hecho" ]; then exit 1; fi
       arg="${*##*--verify }"
       arg="${arg%% *}"
       arg="${arg#refs/tags/}"
@@ -61,6 +95,12 @@ if [ "$host" = gwpc ]; then
         sha_pc="$(git -C "$S/origen.git" rev-parse -q --verify "${arg}^{commit}")" || exit 1
       fi
       printf '%s\r\n' "$sha_pc" ;;
+    *"motor-conf checkout -q --detach "*)
+      rev="${*##*--detach }"
+      rev="${rev%% *}"
+      printf '%s\n' "$rev" >"$S/pc-conf-sha"
+      mkdir -p "$S/pc-home/motor-conf/maquinas"
+      git -C "$S/conf.git" show "$rev:maquinas/pc.toml" >"$S/pc-home/motor-conf/maquinas/pc.toml" || exit 1 ;;
     *"\\motor checkout -q --detach "*)
       rev="${*##*--detach }"
       rev="${rev%% *}"
@@ -75,11 +115,17 @@ if [ "$host" = gwpc ]; then
     "type "*"etiqueta-anterior"*) [ -f "$S/pc-etiqueta-anterior" ] && { cat "$S/pc-etiqueta-anterior"; exit 0; } || exit 1 ;;
     "echo "*"etiqueta-anterior"*) v="${*#echo }"; echo "${v%%>*}" >"$S/pc-etiqueta-anterior" ;;
     # cmd.exe: sin paréntesis, `& mkdir` es parte del cuerpo del if y no corre si la carpeta no existe.
-    "(if exist "*") & mkdir "*"\\codigo "*"\\conf") rm -f "$S/pc-extraido-"*; touch "$S/pc-codigo-creado" ;;
+    *"if exist %TEMP%\\motor-valida-"*" & mkdir "*) rm -f "$S/pc-extraido-"*; touch "$S/pc-codigo-creado" ;;
     "if exist "*" & mkdir "*) ;;
-    "git -C %USERPROFILE%\\motor archive refs/tags/"*" | tar -x -C %TEMP%\\motor-valida-"*"\\codigo")
+    "git clone -q "*)
+      ok_pc
+      case "$*" in
+        *%TEMP%\\motor-valida-*) ;;
+        *) echo "clone fuera del temporal: $*" >&2; exit 1 ;;
+      esac ;;
+    *"\\src archive refs/tags/"*" | tar -x -C "*)
       [ -e "$S/pc-codigo-creado" ] || { echo "tar: could not chdir" >&2; exit 1; }; touch "$S/pc-extraido-codigo" ;;
-    "git -C %USERPROFILE%\\motor-conf archive origin/HEAD | tar -x -C %TEMP%\\motor-valida-"*"\\conf")
+    *"\\csrc archive "*)
       [ -e "$S/pc-codigo-creado" ] || { echo "tar: could not chdir" >&2; exit 1; }; touch "$S/pc-extraido-conf" ;;
     "if not exist %TEMP%\\motor-valida-"*"\\conf\\maquinas\\pc.toml exit /b 1") [ -z "${FAKE_PC_SIN_TOML:-}" ] || exit 1 ;;
     "cd /d %TEMP%\\motor-valida-"*"\\codigo && "*" conf valida %TEMP%\\motor-valida-"*"\\conf")
@@ -88,14 +134,31 @@ if [ "$host" = gwpc ]; then
     "cd /d %USERPROFILE%\\motor && "*" conf valida %USERPROFILE%\\motor-conf") ;;
     "if exist "*"\\.git (git "* | "schtasks /end"* | "schtasks /delete"*) ok_pc ;;
     "git -C "*" fetch -q --tags --force origin")
-      [ -z "${FAKE_GIT_ORIGIN_CAIDO:-}" ] || { echo "fatal: no pude conectar (origin caído)" >&2; exit 1; } ;;
-    "if not exist "* | "copy /y "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
+      [ -z "${FAKE_GIT_ORIGIN_CAIDO:-}" ] || { echo "fatal: no pude conectar (origin caído)" >&2; exit 1; }
+      touch "$S/pc-fetch-hecho" ;;
+    *"copy /y "*maquina.toml*)
+      mkdir -p "$S/pc-home/.motor"
+      cp "$S/pc-home/motor-conf/maquinas/pc.toml" "$S/pc-home/.motor/maquina.toml" || exit 1 ;;
+    *"mklink /j "*)
+      mkdir -p "$S/pc-home/.motor" "$S/pc-home/motor-conf"
+      rm -f "$S/pc-home/.motor/conf"
+      ln -sfn "$S/pc-home/motor-conf" "$S/pc-home/.motor/conf" ;;
+    "if not exist "* | "rmdir /s /q "* | "git -C "*" checkout -q --detach origin/HEAD" | "git -C "*" fetch -q --tags --force origin") ;;
+    *"cat-file -e "*":maquinas/"*)
+      spec="${*##*cat-file -e }"
+      spec="${spec%% *}"
+      git -C "$S/conf.git" cat-file -e "$spec" ;;
     *"cat-file -e "*"motor/formato.py")
       [ -z "${FAKE_PC_SIN_FORMATO:-}" ] || exit 1
+      if [ -n "${FAKE_PC_OBJETO_TRAS_FETCH:-}" ] && [ ! -f "$S/pc-fetch-hecho" ]; then exit 1; fi
       spec="${*##*cat-file -e }"
       spec="${spec%% *}"
       git -C "$S/origen.git" cat-file -e "$spec" ;;
     *"if exist"*"formato echo si"*) if [ -f "$S/pc-formato" ]; then echo si; else echo no; fi ;;
+    *"if exist"*"\\formato (type "*)
+      if [ ! -f "$S/pc-formato" ]; then exit 1; fi
+      if [ -s "$S/pc-formato" ]; then cat "$S/pc-formato"; fi
+      exit 0 ;;
     *"-m motor formato"*) if [ -f "$S/pc-formato-bloquea" ]; then exit 1; fi ;;
     *sol_remoto.py*) ;;
     *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
@@ -141,11 +204,16 @@ fi
 if [ -n "\${FAKE_GIT_LSREMOTO_FALLA:-}" ] && [ "\$1" = -C ] && [ "\$3" = ls-remote ]; then
   echo "fatal: no pude conectar" >&2; exit 128
 fi
+if [ -n "\${FAKE_GIT_CHECKOUT_FALLA_EN:-}" ] && [ "\$1" = -C ] && [ "\$3" = checkout ]; then
+  n=\$(( \$(cat "$S/checkout-n" 2>/dev/null || echo 0) + 1 ))
+  echo "\$n" >"$S/checkout-n"
+  if [ "\$n" = "\${FAKE_GIT_CHECKOUT_FALLA_EN}" ]; then echo "fatal: checkout cortado" >&2; exit 128; fi
+fi
 exec $GIT_REAL "\$@"
 FAKE
 chmod +x "$S/bin/git"
 
-reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-codigo-creado" "$S/pc-formato" "$S/pc-formato-bloquea" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-etiqueta-anterior" "$S/launchd"/*; mkdir -p "$S/mac" "$S/mini"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_PC_SIN_FORMATO FAKE_SUDO_FALLA FAKE_PC_TAREA_RC MOTOR_ETIQUETA; }
+reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-home" "$S/pc-codigo-creado" "$S/pc-formato" "$S/pc-formato-bloquea" "$S/pc-fetch-hecho" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-conf-sha" "$S/pc-etiqueta-anterior" "$S/pc-instalacion.json" "$S/pc-instalacion-pendiente.json" "$S/checkout-n" "$S/launchd"/*; mkdir -p "$S/mac/.local/bin" "$S/mini/.local/bin"; ln -sfn "$S/bin/git" "$S/mac/.local/bin/git"; ln -sfn "$S/bin/git" "$S/mini/.local/bin/git"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_PC_SIN_FORMATO FAKE_PC_REVPARSE_RC FAKE_PC_OBJETO_TRAS_FETCH FAKE_SUDO_FALLA FAKE_PC_TAREA_RC FAKE_GIT_CHECKOUT_FALLA_EN MOTOR_ETIQUETA MOTOR_SHA; }
 TAG="$(unset MOTOR_ETIQUETA; . "$RAIZ/ops/lib.sh"; echo "$ETIQUETA")"
 I="$RAIZ/ops/instala-todo.sh"
 D="$RAIZ/ops/desinstala-todo.sh"
@@ -181,6 +249,12 @@ for m in mac mini; do
   [ -f "$S/$m/.motor/etiqueta-anterior" ] && [ ! -s "$S/$m/.motor/etiqueta-anterior" ] || fallo "$m: una instalación nueva debía dejar la marca vacía"
 done
 [ -f "$S/pc-etiqueta-anterior" ] && [ ! -s "$S/pc-etiqueta-anterior" ] || fallo "pc: una instalación nueva debía dejar la marca vacía"
+grep -q MOTOR09_ "$FAKE_LOG" && fallo "el log de la PC usa un prefijo que cmd.exe rechaza"
+grep -qF '%TEMP%\motor-valida-' "$FAKE_LOG" || fallo "la PC no validó en %TEMP%"
+primero="$(grep 'git clone -q' "$FAKE_LOG" | head -1)"
+case "$primero" in *motor-valida-*) ;; *) fallo "la primera copia de la PC no fue el temporal de validación: $primero" ;; esac
+[ -s "$S/pc-home/.motor/instalacion.json" ] || fallo "la PC no escribió el recibo"
+[ ! -e "$S/pc-home/.motor/instalacion-pendiente.json" ] || fallo "la PC dejó el intento abierto"
 
 reset
 en_mac espera "la Mac se instala por ssh" 0 bash "$I"
@@ -297,7 +371,9 @@ reset
 FAKE_PC_FALLA=1 en_mac espera "el remoto de la PC falla" '!0' bash "$I"
 contiene "dice cuál" "$S/salida" "pc"
 reset
-touch "$S/pc-formato" "$S/pc-formato-bloquea"
+mkdir -p "$S/pc-home/.motor"
+: >"$S/pc-home/.motor/formato"
+touch "$S/pc-formato-bloquea"
 FAKE_PC_SIN_FORMATO=1 en_mac espera "la PC rechaza una etiqueta sin motor/formato.py" '!0' bash "$I"
 
 reset
@@ -361,10 +437,10 @@ done
 contiene "marca pc" "$S/pc-etiqueta-anterior" "$sha_vieja"
 [ "$(cat "$S/pc-tag")" = $TAG ] || fallo "pc: no quedó en $TAG"
 
-# Sin marca la máquina no se mueve y no es error.
+# etiqueta-anterior no es fuente. Borrarla no frena la reversa si el recibo tiene el origen.
 rm "$S/mac/.motor/etiqueta-anterior"
 en_mac espera "marcha atrás en las tres" 0 bash "$V"
-[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = $TAG ] || fallo "mac: se movió sin marca"
+[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mac: el recibo no mandó sobre la marca borrada"
 [ "$(git -C "$S/mini/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mini: no volvió a v1.0.23"
 [ "$(cat "$S/pc-tag")" = v1.0.23 ] || fallo "pc: no volvió a v1.0.23"
 [ -e "$S/mac/.cargado" ] && [ -e "$S/mini/.cargado" ] || fallo "la marcha atrás descargó el servicio"
@@ -475,7 +551,9 @@ reset
 MOTOR_ETIQUETA=v1.0.23 en_mac espera "base v1.0.23 para traer la etiqueta de origin" 0 bash "$I"; unset MOTOR_ETIQUETA
 avanza "avance-para-traer-de-origin"
 en_mac espera "entrega $TAG para traer la etiqueta de origin" 0 bash "$I"
-printf '%s' v1.0.23 >"$S/mac/.motor/etiqueta-anterior"
+# El recibo pide el nombre de la etiqueta, que no está en la copia local. La marca miente.
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")); d["anterior"]["codigo"]="v1.0.23"; json.dump(d, open(p,"w",encoding="utf-8"))' "$S/mac/.motor/instalacion.json"
+printf '%s' no-es-esta >"$S/mac/.motor/etiqueta-anterior"
 git -C "$S/mac/motor" tag -d v1.0.23 >/dev/null
 MOTOR_SHA="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")" en_mac espera "marcha atrás trayendo la etiqueta de origin" 0 bash "$V"
 en_su_etiqueta "marcha atrás trayendo de origin" v1.0.23
@@ -495,13 +573,268 @@ git -C "$S/trabajo" checkout -q --detach HEAD~1
 en_mac espera "entrega con formato.py" 0 bash "$I"
 printf '%s\n' '{"version":2,"nombre":"motor08"}' >"$S/mac/.motor/formato"
 cp "$S/mac/.motor/formato" "$S/mini/.motor/formato"
-touch "$S/pc-formato"
+mkdir -p "$S/pc-home/.motor"
+cp "$S/mac/.motor/formato" "$S/pc-home/.motor/formato"
+cp "$S/pc-home/.motor/formato" "$S/pc-formato-antes"
 en_mac espera "reversa del formato v2" 0 bash "$V"
 [ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$sin" ] || fallo "mac no volvió al código sin formato.py"
 [ "$(git -C "$S/mini/motor" rev-parse HEAD)" = "$sin" ] || fallo "mini no volvió al código sin formato.py"
 [ "$(tr -d '[:space:]' <"$S/pc-tag")" = v-sin-formato ] || fallo "pc no volvió a v-sin-formato"
 git -C "$S/mac/motor" cat-file -e "HEAD:motor/formato.py" 2>/dev/null && fallo "mac volvió a un árbol que todavía tiene formato.py"
 [ -s "$S/mac/.motor/formato" ] && [ -s "$S/mini/.motor/formato" ] || fallo "la reversa borró el marcador de formato"
-[ -f "$S/pc-formato" ] || fallo "la reversa borró el marcador de la PC"
+cmp -s "$S/pc-formato-antes" "$S/pc-home/.motor/formato" || fallo "la reversa borró el marcador de la PC"
+
+echo "# fase E: recibo, misma versión, rechazo y parcial"
+# La reversa del formato dejó trabajo detached y origin/main en el commit sin formato.py.
+git -C "$S/trabajo" checkout -q -B main "$SHA"
+git -C "$S/trabajo" push -q -f origin HEAD:main
+campo_json() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); print(eval(sys.argv[2]))' "$1" "$2"; }
+
+reset
+en_mac espera "máquina desconocida" 2 bash "$I" --maquina luna
+vieja_conf="$(git -C "$S/conf-src" rev-parse HEAD)"
+printf 'nombre = "mac-nueva"\nconf = "~/motor-conf"\n' >"$S/conf-src/maquinas/mac.toml"
+git -C "$S/conf-src" add -A && git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m mueve
+git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main
+en_mac espera "solo la Mac con la conf fijada" 0 bash "$I" --maquina mac --conf-sha "$vieja_conf"
+[ "$(git -C "$S/mac/motor-conf" rev-parse HEAD)" = "$vieja_conf" ] || fallo "la Mac siguió la rama de conf"
+grep -q 'mac-nueva' "$S/mac/.motor/maquina.toml" && fallo "la Mac instaló la conf que se movió"
+[ ! -d "$S/mini/motor" ] || fallo "--maquina mac también instaló la Mini"
+[ ! -s "$S/mac/.motor/instalacion-pendiente.json" ] && [ -s "$S/mac/.motor/instalacion.json" ] || fallo "la Mac no cerró el recibo"
+conf_buena
+
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base para la misma versión" 0 bash "$I"
+unset MOTOR_ETIQUETA
+avanza "misma-version"
+en_mac espera "entrega que deja un anterior real" 0 bash "$I"
+sha_vieja="$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.23^{commit}")"
+sha_nueva="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")"
+ant_antes="$(cat "$S/mac/.motor/etiqueta-anterior")"
+rec_antes="$(campo_json "$S/mac/.motor/instalacion.json" 'd["anterior"]["codigo"]')"
+echo 'TOKEN=super-secreto-motor09' >"$S/mac/.motor/secretos.env"
+en_mac espera "reinstalar la misma versión" 0 bash "$I"
+[ "$(cat "$S/mac/.motor/etiqueta-anterior")" = "$ant_antes" ] || fallo "reinstalar pisó etiqueta-anterior"
+[ "$(campo_json "$S/mac/.motor/instalacion.json" 'd["anterior"]["codigo"]')" = "$rec_antes" ] || fallo "reinstalar pisó el anterior del recibo"
+[ "$rec_antes" = "$sha_vieja" ] || fallo "el anterior real no es la versión previa"
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$sha_nueva" ] || fallo "la misma versión movió el código"
+[ ! -e "$S/mac/.motor/instalacion-pendiente.json" ] || fallo "la misma versión dejó un intento pendiente"
+grep -q super-secreto-motor09 "$S/mac/.motor/instalacion.json" && fallo "el recibo guardó un secreto"
+contiene "dice que ya estaba" "$S/salida" "el anterior no cambia"
+
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base antes del rechazo" 0 bash "$I"
+unset MOTOR_ETIQUETA
+git -C "$S/conf-src" rm -q maquinas/mac.toml
+git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m sin-mac
+git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main
+en_mac espera "rechazo antes de mutar" '!0' bash "$I"
+contiene "no cambió el código" "$S/salida" "No se cambió el código en ninguna máquina"
+[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "el rechazo movió la Mac"
+[ ! -e "$S/mac/.motor/instalacion-pendiente.json" ] || fallo "el rechazo dejó un intento pendiente"
+conf_buena
+
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base del parcial" 0 bash "$I"
+unset MOTOR_ETIQUETA
+avanza "parcial"
+sha_vieja="$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.23^{commit}")"
+cp "$S/mac/.motor/maquina.toml" "$S/toml-preparcial"
+rm -f "$S/checkout-n"
+FAKE_GIT_CHECKOUT_FALLA_EN=2 en_mac espera "cae después de anotar el origen" '!0' bash "$I"
+unset FAKE_GIT_CHECKOUT_FALLA_EN
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")" ] || fallo "el parcial no llegó a cambiar el código"
+[ "$(campo_json "$S/mac/.motor/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$sha_vieja" ] || fallo "el parcial anotó el destino como origen"
+[ "$(cat "$S/mac/.motor/etiqueta-anterior")" = "" ] || [ ! -s "$S/mac/.motor/etiqueta-anterior" ] || fallo "el parcial publicó el anterior antes de terminar"
+intento_parcial="$(campo_json "$S/mac/.motor/instalacion-pendiente.json" 'd["intento"]')"
+printf 'nombre = "destino-parcial"\nconf = "~/motor-conf"\n' >"$S/mac/.motor/maquina.toml"
+rm -f "$S/checkout-n"
+en_mac espera "el reintento conserva el origen" 0 bash "$I"
+cmp -s "$S/toml-preparcial" "$S/mac/.motor/privado/maquina-$intento_parcial.toml" || fallo "el reintento reemplazó el TOML de origen por el parcial"
+[ "$(cat "$S/mac/.motor/etiqueta-anterior")" = "$sha_vieja" ] || fallo "el reintento tomó el código a medias como anterior"
+[ "$(campo_json "$S/mac/.motor/instalacion.json" 'd["anterior"]["codigo"]')" = "$sha_vieja" ] || fallo "el recibo completo no conserva el origen"
+[ ! -e "$S/mac/.motor/instalacion-pendiente.json" ] || fallo "el reintento dejó el intento abierto"
+[ "$(campo_json "$S/mac/.motor/instalacion.json" 'd["etapa"]')" = completo ] || fallo "el recibo se cerró sin etapa completo"
+
+reset
+git -C "$S/trabajo" checkout -q -B main "$PADRE"
+git -C "$S/trabajo" push -q -f origin HEAD:main
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base formato 2" 0 bash "$I"
+unset MOTOR_ETIQUETA
+git -C "$S/trabajo" checkout -q -B main "$SHA"
+git -C "$S/trabajo" push -q origin HEAD:main
+en_mac espera "entrega formato 3" 0 bash "$I"
+printf '%s\n' '{"version":3,"nombre":"motor09"}' >"$S/mac/.motor/formato"
+printf '%s\n' '{"version":1,"generation":"gen","request_id":"req","created_at":"2026-10-25T00:00:00Z","reason":"prueba"}' >"$S/mac/.motor/mantenimiento.json"
+echo eventos-viejos >"$S/mac/.motor/motor.db"
+echo 'TOKEN=super-secreto-motor09' >"$S/mac/.motor/secretos.env"
+cp "$S/mac/.motor/formato" "$S/mac/.formato-antes"
+cp "$S/mac/.motor/mantenimiento.json" "$S/mac/.retencion-antes"
+cp "$S/mac/.motor/motor.db" "$S/mac/.db-antes"
+sha_fmt="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")"
+MOTOR_SHA="$sha_fmt" en_mac espera "la reversa no rebaja formato 3" '!0' bash "$V" --maquina mac
+contiene "dice la etapa" "$S/salida" "etapa formato"
+contiene "dice el límite del código" "$S/salida" "habla hasta 2"
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$sha_fmt" ] || fallo "la reversa rechazada movió el código"
+[ ! -e "$S/mac/.motor/reversa-pendiente.json" ] || fallo "el rechazo de formato dejó una reversa pendiente"
+cmp -s "$S/mac/.motor/formato" "$S/mac/.formato-antes" || fallo "la reversa rebajó o borró el marcador"
+cmp -s "$S/mac/.motor/mantenimiento.json" "$S/mac/.retencion-antes" || fallo "la reversa tocó la retención"
+cmp -s "$S/mac/.motor/motor.db" "$S/mac/.db-antes" || fallo "la reversa borró eventos"
+grep -q super-secreto-motor09 "$S/mac/.motor/instalacion.json" && fallo "el recibo de la entrega guardó el secreto"
+contiene "sigue retenida" "$S/salida" "sigue retenida"
+
+reset
+en_mac espera "base de la pareja" 0 bash "$I"
+codigo_b="$(git -C "$S/mac/motor" rev-parse HEAD)"
+conf_f1="$(git -C "$S/mac/motor-conf" rev-parse HEAD)"
+# El origen efectivo puede ser local, distinto del TOML versionado y del enlace usual.
+printf 'nombre = "mac-personalizada"\nconf = "~/motor-conf"\n' >"$S/mac/.motor/maquina.toml"
+mkdir -p "$S/mac/conf-local"
+ln -sfn "$S/mac/conf-local" "$S/mac/.motor/conf"
+cp "$S/mac/.motor/maquina.toml" "$S/toml-f1"
+printf 'nombre = "mac-f2"\nconf = "~/motor-conf"\n' >"$S/conf-src/maquinas/mac.toml"
+git -C "$S/conf-src" add -A && git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m f2
+git -C "$S/conf-src" push -q -f "$S/conf.git" HEAD:refs/heads/main
+en_mac espera "el mismo código con otra conf" 0 bash "$I"
+[ "$(campo_json "$S/mac/.motor/instalacion.json" 'd["anterior"]["codigo"]')" = "$codigo_b" ] || fallo "cambiar la conf guardó otro código como origen"
+[ "$(campo_json "$S/mac/.motor/instalacion.json" 'd["anterior"]["conf"]')" = "$conf_f1" ] || fallo "cambiar la conf no guardó la conf que estaba instalada"
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$codigo_b" ] || fallo "cambiar la conf movió el código"
+grep -q mac-f2 "$S/mac/.motor/maquina.toml" || fallo "la conf nueva no quedó en maquina.toml"
+printf '%s\n' '{"generation":"sonda"}' >"$S/mac/.motor/mantenimiento.json"
+intento_local="$(campo_json "$S/mac/.motor/instalacion.json" 'd["intento"]')"
+cp "$S/mac/.motor/privado/maquina-$intento_local.toml" "$S/backup-local"
+printf 'origen dañado\n' >"$S/mac/.motor/privado/maquina-$intento_local.toml"
+MOTOR_SHA="$codigo_b" en_mac espera "reversa rechaza copia privada dañada" '!0' bash "$V" --maquina mac
+grep -q mac-f2 "$S/mac/.motor/maquina.toml" || fallo "el rechazo cambió el TOML efectivo"
+[ "$(git -C "$S/mac/motor-conf" rev-parse HEAD)" != "$conf_f1" ] || fallo "el rechazo cambió la conf"
+cp "$S/backup-local" "$S/mac/.motor/privado/maquina-$intento_local.toml"
+MOTOR_SHA="$codigo_b" en_mac espera "reversa de solo la conf" 0 bash "$V" --maquina mac
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$codigo_b" ] || fallo "la reversa de la conf movió el código"
+[ "$(git -C "$S/mac/motor-conf" rev-parse HEAD)" = "$conf_f1" ] || fallo "la reversa no volvió el repo de conf"
+cmp -s "$S/toml-f1" "$S/mac/.motor/maquina.toml" || fallo "la reversa dejó el maquina.toml de la conf nueva"
+[ "$(readlink "$S/mac/.motor/conf")" = "$S/mac/conf-local" ] || fallo "la reversa no restauró el enlace local anterior"
+[ -f "$S/mac/.motor/mantenimiento.json" ] || fallo "la reversa de la conf borró la retención"
+[ ! -e "$S/mac/.motor/reversa-pendiente.json" ] || fallo "la reversa completa dejó el pendiente"
+conf_buena
+
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base de la reversa parcial" 0 bash "$I"
+unset MOTOR_ETIQUETA
+avanza "reversa-parcial"
+en_mac espera "entrega para cortar la reversa" 0 bash "$I"
+entrega="$(git -C "$S/mac/motor" rev-parse HEAD)"
+printf '%s\n' '{"generation":"sonda"}' >"$S/mac/.motor/mantenimiento.json"
+cp "$S/mac/.motor/mantenimiento.json" "$S/retencion-parcial"
+printf 'nombre = "sucio"\n' >"$S/mac/.motor/maquina.toml"
+rm -f "$S/checkout-n"
+FAKE_GIT_CHECKOUT_FALLA_EN=2 MOTOR_SHA="$entrega" en_mac espera "la reversa cae a medias" '!0' bash "$V" --maquina mac
+unset FAKE_GIT_CHECKOUT_FALLA_EN
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" != "$entrega" ] || fallo "el corte no llegó a mover el código"
+[ "$(campo_json "$S/mac/.motor/reversa-pendiente.json" 'd["etapa"]')" = conf ] || fallo "el corte no anotó la etapa"
+[ -n "$(campo_json "$S/mac/.motor/reversa-pendiente.json" 'd["causa"]')" ] || fallo "el corte no anotó la causa"
+[ "$(campo_json "$S/mac/.motor/reversa-pendiente.json" 'd["entrega"]')" = "$entrega" ] || fallo "el corte anotó otra entrega"
+cmp -s "$S/mac/.motor/mantenimiento.json" "$S/retencion-parcial" || fallo "el corte tocó la retención"
+rm -f "$S/checkout-n"
+MOTOR_SHA="$entrega" en_mac espera "la misma reversa continúa" 0 bash "$V" --maquina mac
+grep -q 'se queda' "$S/salida" && fallo "la continuación tomó el código ya movido como motivo para omitirla"
+[ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "la continuación no completó la reversa"
+cmp -s "$S/conf-src/maquinas/mac.toml" "$S/mac/.motor/maquina.toml" || fallo "la continuación no restauró maquina.toml"
+[ "$(readlink "$S/mac/.motor/conf")" = "$S/mac/motor-conf" ] || fallo "la continuación no restauró el enlace"
+cmp -s "$S/mac/.motor/mantenimiento.json" "$S/retencion-parcial" || fallo "la continuación tocó la retención"
+[ ! -e "$S/mac/.motor/reversa-pendiente.json" ] || fallo "la continuación dejó la reversa abierta"
+
+echo "# bloqueos de la revisión"
+reset
+en_mac espera "base antes del marcador invalido" 0 bash "$I" --maquina mac
+marca="$(git -C "$S/mac/motor" rev-parse HEAD)"
+rec="$(campo_json "$S/mac/.motor/instalacion.json" 'd["anterior"]["codigo"]')"
+printf '%s\n' '{"version":-2}' >"$S/mac/.motor/formato"
+en_mac espera "marcador -2 niega la instalación" '!0' bash "$I" --maquina mac
+contiene "el marcador invalido se niega" "$S/salida" "version invalida (-2)"
+contiene "no rebaja" "$S/salida" "no rebajo el marcador"
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$marca" ] || fallo "el marcador invalido movió el código"
+[ "$(campo_json "$S/mac/.motor/instalacion.json" 'd["anterior"]["codigo"]')" = "$rec" ] || fallo "el marcador invalido reescribió el origen"
+[ ! -e "$S/mac/.motor/instalacion-pendiente.json" ] || fallo "el marcador invalido dejó un intento"
+[ ! -e "$S/mac/.motor/reversa-pendiente.json" ] || fallo "el marcador invalido escribió una reversa"
+
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "base para la conf ausente" 0 bash "$I" --maquina mac
+unset MOTOR_ETIQUETA
+avanza "entrega-con-conf-anterior"
+en_mac espera "entrega que deja conf anterior" 0 bash "$I" --maquina mac
+entrega="$(git -C "$S/mac/motor" rev-parse HEAD)"
+cp "$S/mac/.motor/maquina.toml" "$S/toml-antes-conf"
+cp "$S/mac/.motor/instalacion.json" "$S/recibo-antes-conf"
+mv "$S/mac/motor-conf/.git" "$S/mac/motor-conf.git-fuera"
+MOTOR_SHA="$entrega" en_mac espera "reversa sin repo de conf" '!0' bash "$V" --maquina mac
+contiene "etapa conf" "$S/salida" "etapa conf"
+grep -q 'de vuelta' "$S/salida" && fallo "la reversa sin repo dijo que volvió"
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$entrega" ] || fallo "la reversa sin repo movió el código"
+cmp -s "$S/toml-antes-conf" "$S/mac/.motor/maquina.toml" || fallo "la reversa sin repo cambió maquina.toml"
+cmp -s "$S/recibo-antes-conf" "$S/mac/.motor/instalacion.json" || fallo "la reversa sin repo borró el recibo"
+[ ! -e "$S/mac/.motor/reversa-pendiente.json" ] || fallo "la reversa sin repo dejó una reversa pendiente"
+mv "$S/mac/motor-conf.git-fuera" "$S/mac/motor-conf/.git"
+
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "pc base de la misma pareja" 0 bash "$I" --maquina pc
+unset MOTOR_ETIQUETA
+avanza "pc-misma-pareja"
+en_mac espera "pc sube de pareja" 0 bash "$I" --maquina pc
+sha_vieja="$(git -C "$S/origen.git" rev-parse "refs/tags/v1.0.23^{commit}")"
+[ "$(tr -d '[:space:]' <"$S/pc-etiqueta-anterior")" = "$sha_vieja" ] || fallo "la PC no guardó el código anterior"
+ant_pc="$(cat "$S/pc-etiqueta-anterior")"
+rec_pc="$(campo_json "$S/pc-home/.motor/instalacion.json" 'd["anterior"]["codigo"]')"
+en_mac espera "pc misma pareja no toca el anterior" 0 bash "$I" --maquina pc
+[ "$(cat "$S/pc-etiqueta-anterior")" = "$ant_pc" ] || fallo "la misma pareja de la PC reescribió etiqueta-anterior"
+[ "$(campo_json "$S/pc-home/.motor/instalacion.json" 'd["anterior"]["codigo"]')" = "$rec_pc" ] || fallo "la misma pareja de la PC reescribió el recibo"
+contiene "la PC dice que ya estaba" "$S/salida" "el anterior no cambia"
+FAKE_PC_REVPARSE_RC=128 en_mac espera "rev-parse roto no reescribe el origen" '!0' bash "$I" --maquina pc
+unset FAKE_PC_REVPARSE_RC
+[ "$(cat "$S/pc-etiqueta-anterior")" = "$ant_pc" ] || fallo "un rev-parse roto reescribió etiqueta-anterior"
+[ "$(campo_json "$S/pc-home/.motor/instalacion.json" 'd["anterior"]["codigo"]')" = "$rec_pc" ] || fallo "un rev-parse roto reescribió el recibo"
+[ "$(cat "$S/pc-tag")" = "$TAG" ] || fallo "un rev-parse roto movió la etiqueta de la PC"
+contiene "no anota origen vacío" "$S/salida" "no pude guardar la revision anterior"
+
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "pc base del marcador ilegible" 0 bash "$I" --maquina pc
+unset MOTOR_ETIQUETA
+avanza "pc-marcador-ilegible"
+en_mac espera "pc entrega con marcador" 0 bash "$I" --maquina pc
+printf '%s\n' '{"version":3}' >"$S/pc-home/.motor/formato"
+chmod 000 "$S/pc-home/.motor/formato"
+entrega="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")"
+MOTOR_SHA="$entrega" en_mac espera "marcador de la PC ilegible niega la reversa" '!0' bash "$V" --maquina pc
+grep -q 'de vuelta' "$S/salida" && fallo "el marcador ilegible dijo que la PC volvió"
+[ "$(cat "$S/pc-tag")" = "$TAG" ] || fallo "el marcador ilegible movió el código de la PC"
+contiene "no lee el marcador" "$S/salida" "no pude leer el marcador"
+chmod 644 "$S/pc-home/.motor/formato" || true
+
+reset
+MOTOR_ETIQUETA=v1.0.23 en_mac espera "pc base del recibo ilegible" 0 bash "$I" --maquina pc
+unset MOTOR_ETIQUETA
+avanza "pc-recibo-ilegible"
+en_mac espera "pc entrega con recibo" 0 bash "$I" --maquina pc
+printf '%s\n' '{"anterior":{"codigo":"no-debe-usarse","conf":""}}' >"$S/pc-home/.motor/instalacion-pendiente.json"
+chmod 000 "$S/pc-home/.motor/instalacion-pendiente.json"
+entrega="$(git -C "$S/origen.git" rev-parse "refs/tags/$TAG^{commit}")"
+MOTOR_SHA="$entrega" en_mac espera "recibo pendiente ilegible niega la reversa" '!0' bash "$V" --maquina pc
+grep -q 'de vuelta' "$S/salida" && fallo "el recibo ilegible dijo que la PC volvió"
+[ "$(cat "$S/pc-tag")" = "$TAG" ] || fallo "el recibo ilegible movió el código de la PC"
+contiene "no usa el recibo completo" "$S/salida" "instalacion-pendiente.json"
+chmod 644 "$S/pc-home/.motor/instalacion-pendiente.json" || true
+
+reset
+en_mac espera "pc base formato 3" 0 bash "$I" --maquina pc
+avanza "otro-formato-3"
+MOTOR_ETIQUETA=v-fmt3b en_mac espera "pc segunda entrega formato 3" 0 bash "$I" --maquina pc
+unset MOTOR_ETIQUETA
+printf '%s\n' '{"version":3}' >"$S/pc-home/.motor/formato"
+entrega="$(git -C "$S/origen.git" rev-parse "refs/tags/v-fmt3b^{commit}")"
+rm -f "$S/pc-fetch-hecho"
+FAKE_PC_OBJETO_TRAS_FETCH=1 MOTOR_SHA="$entrega" en_mac espera "la PC trae el objeto antes de leer el formato" 0 bash "$V" --maquina pc
+unset FAKE_PC_OBJETO_TRAS_FETCH
+[ "$(cat "$S/pc-tag")" = "$TAG" ] || fallo "la PC no volvió al formato 3 que había que traer: $(cat "$S/pc-tag")"
+grep -q 'fetch -q --tags --force origin' "$FAKE_LOG" || fallo "la PC decidió el formato sin traer el objeto"
+[ -s "$S/pc-home/.motor/formato" ] || fallo "traer el objeto borró el marcador"
 
 termina

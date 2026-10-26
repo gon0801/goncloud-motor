@@ -234,6 +234,10 @@ class Comando:
             if not isinstance(plan, dict):
                 raise PlanError(["el mensaje no trae 'plan' como objeto"])
             return Comando(cmd_id, tipo, texto("id", plan, "el plan"), por, plan=plan)
+        if tipo == "liberar":
+            return Comando(cmd_id, tipo, "", por, texto=texto("generacion"))
+        if tipo in ("pausa", "reanuda", "cancela"):
+            return Comando(cmd_id, tipo, texto("plan"), por)
         if tipo not in ("nota", "hecho"):
             raise PlanError([f"tipo desconocido {tipo}"])
         plan_id = d.get("plan", "")
