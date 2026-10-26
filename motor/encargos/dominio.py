@@ -90,6 +90,9 @@ class Encargo:
     autoridad: bool = True
     sesion: str = ""
     herramientas_observables: bool = True
+    reserva: bool = False
+    rol: str = ""
+    generacion: int = 0
 
 
 def huella_entrega(
@@ -167,6 +170,24 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             procedimiento=e.procedimiento + (d["nota"],),
             hora=hora or e.hora,
         )
+    if kind == "reserva":
+        if e.proc is not None or e.reserva:
+            raise TransicionIlegal("ya hay un escritor")
+        if not e.intentos_nuevos or e.estado in _CERRADOS or e.estado == "esperando_reintento":
+            raise TransicionIlegal("no hay autorización para otro intento")
+        return replace(
+            e,
+            reserva=True,
+            rol=str(d.get("rol") or e.rol or "responsable"),
+            generacion=int(d.get("generacion") or (e.generacion + 1)),
+            estado="ejecutando" if e.estado == "recibido" else e.estado,
+            ultimo_hecho=e.ultimo_hecho or "intento reservado",
+            hora=hora or e.hora,
+        )
+    if kind == "reserva_cerrada":
+        return replace(e, reserva=False, rol="" if e.proc is None else e.rol, hora=hora or e.hora)
+    if kind == "concesion":
+        return replace(e, hora=hora or e.hora)
     if kind == "intento_abierto":
         if not e.intentos_nuevos or e.estado in _CERRADOS:
             raise TransicionIlegal("no hay autorización para otro intento")
@@ -174,6 +195,8 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             raise TransicionIlegal("ya hay un escritor")
         return replace(
             e,
+            reserva=False,
+            rol=str(d.get("rol") or e.rol),
             intento=d["id"],
             sesion=d.get("sesion") or e.sesion,
             proc=Proc(
@@ -535,7 +558,7 @@ def decision_proceso(
     if arbol == "incierto":
         return {"matar": False, "lanzar": False, "eventos": []}
     if arbol == "vivo":
-        if herramienta_viva or not herramientas_observables:
+        if herramienta_viva:
             return {"matar": False, "lanzar": False, "eventos": []}
         if sin_hecho_nuevo:
             return {
@@ -555,14 +578,21 @@ def decision_proceso(
         return {"matar": False, "lanzar": False, "eventos": []}
     eventos = []
     if e.proc is not None:
-        eventos.append({"kind": "intento_cerrado", "data": {"hora": hora}})
+        eventos.append(
+            {
+                "kind": "intento_cerrado",
+                "data": {"hora": hora, "pid": e.proc.pid, "inicio": e.proc.inicio},
+            }
+        )
     # Una parada quita intentos_nuevos. La caída de la autoridad quita escrituras
-    # y deja seguir el trabajo aislado.
+    # y deja seguir el trabajo aislado. La reserva ya comprometida no abre otro proceso.
+    revisar = e.estrategia == "revision_tecnica" and e.rol != "revisor"
     lanzar = (
         e.intentos_nuevos
         and e.estado in ("recibido", "ejecutando")
         and e.proc is None
-        and e.estrategia != "revision_tecnica"
+        and not e.reserva
+        and (e.estrategia != "revision_tecnica" or revisar)
     )
     return {"matar": False, "lanzar": lanzar and not eventos, "eventos": eventos}
 

@@ -70,12 +70,125 @@ def _evento_efecto(enc: Encargo, efecto_id: str, estado: str, **extra: str) -> d
         "destino": extra.get("destino") or (previo.destino if previo else ""),
         "operacion": extra.get("operacion") or (previo.operacion if previo else ""),
         "clave": extra.get("clave") or (previo.clave if previo else ""),
+        "cuerpo": extra.get("cuerpo") or "",
         "estado": estado,
         "recibo": extra.get("recibo") or "",
         "observacion": extra.get("observacion") or "",
         "hora": extra.get("hora") or "",
     }
     return {"kind": "efecto", "data": data}
+
+
+def _registrar_efecto(
+    registro: Registro,
+    encargo_id: str,
+    efecto_id: str,
+    estado: str,
+    operacion: str,
+    clave: str,
+    cuerpo: str,
+    hora: str,
+    destino: str,
+    recibo: str = "",
+    observacion: str = "",
+) -> str:
+    enc = registro.fold(encargo_id)
+    if enc is None:
+        return "ilegal"
+    evento = _evento_efecto(
+        enc,
+        efecto_id,
+        estado,
+        destino=destino,
+        operacion=operacion,
+        clave=clave,
+        cuerpo=cuerpo,
+        recibo=recibo,
+        observacion=observacion,
+        hora=hora,
+    )
+    ukey = f"efecto:{encargo_id}:{efecto_id}:{estado}"
+    resultado = registro.anotar(encargo_id, evento, ukey)
+    if resultado == "nuevo":
+        return "ok"
+    if resultado != "igual":
+        return resultado
+    prev = registro.por_ukey(ukey)
+    if not prev or prev["encargo"] != encargo_id:
+        return "ajena"
+    d = prev["data"]
+    mismo = (
+        d.get("id") == efecto_id
+        and d.get("operacion") == operacion
+        and d.get("clave") == clave
+        and d.get("estado") == estado
+        and d.get("cuerpo", cuerpo) == cuerpo
+    )
+    return "ok" if mismo else "ajena"
+
+
+def _concesiones(registro: Registro, recurso: str) -> list[tuple[str, dict]]:
+    rows = registro.db.execute(
+        "SELECT encargo, data FROM events WHERE kind = 'concesion' ORDER BY id"
+    ).fetchall()
+    salida = []
+    for encargo, data in rows:
+        try:
+            parsed = json.loads(data)
+        except ValueError:
+            continue
+        if parsed.get("recurso") == recurso:
+            salida.append((encargo, parsed))
+    return salida
+
+
+def _titular_suelta(registro: Registro, titular: Encargo, recurso: str) -> bool:
+    """Solo se transfiere un recurso cuyo ejecutor anterior ya no está y cuyo efecto quedó aplicado."""
+    from .sesion import observar
+
+    efecto = None
+    for item in titular.efectos:
+        if item.clave == recurso:
+            efecto = item
+    if efecto is not None and efecto.estado in ("intencion", "incierto"):
+        return False
+    if titular.reserva and titular.proc is None:
+        return False
+    if titular.proc is None:
+        return efecto is None or efecto.estado == "aplicado"
+    visto = observar(registro.base / "ejecucion" / titular.id, titular.proc.como_dict())
+    if visto != "ausente":
+        return False
+    return efecto is None or efecto.estado == "aplicado"
+
+
+def _conceder(registro: Registro, encargo_id: str, recurso: str, hora: str) -> str:
+    previas = _concesiones(registro, recurso)
+    generacion = 1
+    if previas:
+        titular_id, ultima = previas[-1]
+        if titular_id == encargo_id:
+            return "ok"
+        titular = registro.fold(titular_id)
+        if titular is None or not _titular_suelta(registro, titular, recurso):
+            return "ocupada"
+        generacion = int(ultima.get("generacion") or 1) + 1
+    ukey = f"concesion:{hashlib.sha256(recurso.encode()).hexdigest()[:16]}:{generacion}"
+    resultado = registro.anotar(
+        encargo_id,
+        {
+            "kind": "concesion",
+            "data": {"recurso": recurso, "generacion": generacion, "hora": hora},
+        },
+        ukey,
+    )
+    if resultado == "nuevo":
+        return "ok"
+    if resultado == "igual":
+        prev = registro.por_ukey(ukey)
+        if prev and prev["encargo"] == encargo_id and prev["data"].get("recurso") == recurso:
+            return "ok"
+    return "ocupada"
 
 
 def anotar_local(base: Path, linea: dict) -> None:
@@ -89,6 +202,28 @@ def anotar_local(base: Path, linea: dict) -> None:
 
 def autoridad_ausente(base: Path) -> bool:
     return (Path(base) / "autoridad.no").exists()
+
+
+def _autorizado(registro: Registro, enc: Encargo, autoridad: bool) -> bool:
+    if leer_parada_local(registro.base) or not autoridad:
+        return False
+    if not enc.escrituras or not enc.intentos_nuevos:
+        return False
+    return enc.estado not in ("deteniendo", "detenido", "cancelado", "terminado")
+
+
+def _rechazo(registro: Registro, encargo_id: str, efecto_id: str, clave: str, hora: str, motivo: str) -> dict:
+    anotar_local(
+        registro.base,
+        {
+            "encargo": encargo_id,
+            "efecto": efecto_id,
+            "clave": clave,
+            "motivo": motivo,
+            "hora": hora,
+        },
+    )
+    return {"rechazado": True, "motivo": motivo}
 
 
 def despachar(
@@ -107,89 +242,88 @@ def despachar(
         raise SinAutorizacion("no hay encargo")
     if autoridad is None:
         autoridad = not autoridad_ausente(registro.base)
-    if leer_parada_local(registro.base) or not autoridad or not enc.escrituras or not enc.intentos_nuevos:
-        anotar_local(
-            registro.base,
-            {
-                "encargo": encargo_id,
-                "efecto": efecto_id,
-                "clave": clave,
-                "motivo": "sin autorizacion de escritura",
-                "hora": hora,
-            },
-        )
-        return {"rechazado": True, "motivo": "sin autorizacion de escritura"}
+    # La consulta puede aceptar una parada. La autorización se vuelve a leer después.
+    consulta = destino.consultar(clave)
+    enc = registro.fold(encargo_id)
+    if enc is None:
+        raise SinAutorizacion("no hay encargo")
     previo = efecto_de(enc, efecto_id)
     if previo and previo.estado == "aplicado" and previo.recibo:
-        return {"ya_aplicado": True, "recibo": previo.recibo, "n": destino.consultar(clave).get("n")}
-    consulta = destino.consultar(clave)
+        return {"ya_aplicado": True, "recibo": previo.recibo, "n": consulta.get("n")}
     if consulta.get("estado") == "aplicado":
-        registro.anotar(
+        if _conceder(registro, encargo_id, clave, hora) != "ok":
+            return _rechazo(registro, encargo_id, efecto_id, clave, hora, "el recurso sigue concedido")
+        propio = _registrar_efecto(
+            registro,
             encargo_id,
-            _evento_efecto(
-                enc,
-                efecto_id,
-                "aplicado",
-                destino=str(destino.raiz),
-                operacion=operacion,
-                clave=clave,
-                recibo=consulta["recibo"],
-                observacion="conciliado contra el destino",
-                hora=hora,
-            ),
-            f"efecto:{efecto_id}:aplicado",
+            efecto_id,
+            "aplicado",
+            operacion,
+            clave,
+            cuerpo,
+            hora,
+            str(destino.raiz),
+            recibo=str(consulta.get("recibo") or ""),
+            observacion="conciliado contra el destino",
         )
+        if propio != "ok":
+            return _rechazo(registro, encargo_id, efecto_id, clave, hora, "el recibo no quedo registrado")
         return {"conciliado": True, "recibo": consulta["recibo"], "n": consulta.get("n")}
+    if not _autorizado(registro, enc, autoridad):
+        return _rechazo(registro, encargo_id, efecto_id, clave, hora, "sin autorizacion de escritura")
     if previo and previo.estado == "incierto" and consulta.get("estado") != "ausente":
         return {"incierto": True, "motivo": "el destino no confirma ni niega"}
-    if previo is None:
-        registro.anotar(
+    if _conceder(registro, encargo_id, clave, hora) != "ok":
+        return _rechazo(registro, encargo_id, efecto_id, clave, hora, "el recurso sigue concedido")
+    if previo is None or previo.estado != "intencion":
+        propio = _registrar_efecto(
+            registro,
             encargo_id,
-            _evento_efecto(
-                enc,
-                efecto_id,
-                "intencion",
-                destino=str(destino.raiz),
-                operacion=operacion,
-                clave=clave,
-                observacion="intención persistida",
-                hora=hora,
-            ),
-            f"efecto:{efecto_id}:intencion",
+            efecto_id,
+            "intencion",
+            operacion,
+            clave,
+            cuerpo,
+            hora,
+            str(destino.raiz),
+            observacion="intención persistida",
         )
+        if propio != "ok":
+            return _rechazo(registro, encargo_id, efecto_id, clave, hora, "la intencion no quedo registrada")
+    enc = registro.fold(encargo_id)
+    if enc is None or not _autorizado(registro, enc, autoridad):
+        return {"intencion": True, "enviado": False, "motivo": "parada aceptada antes del envio"}
     try:
         aplicado = destino.aplicar(clave, cuerpo)
     except RespuestaPerdida:
-        registro.anotar(
+        _registrar_efecto(
+            registro,
             encargo_id,
-            _evento_efecto(
-                enc,
-                efecto_id,
-                "incierto",
-                destino=str(destino.raiz),
-                operacion=operacion,
-                clave=clave,
-                observacion="la respuesta se perdió",
-                hora=hora,
-            ),
-            f"efecto:{efecto_id}:incierto",
+            efecto_id,
+            "incierto",
+            operacion,
+            clave,
+            cuerpo,
+            hora,
+            str(destino.raiz),
+            observacion="la respuesta se perdió",
         )
         return {"incierto": True}
-    registro.anotar(
+    propio = _registrar_efecto(
+        registro,
         encargo_id,
-        _evento_efecto(
-            enc,
-            efecto_id,
-            "aplicado",
-            destino=str(destino.raiz),
-            operacion=operacion,
-            clave=clave,
-            recibo=aplicado["recibo"],
-            observacion="recibo del destino",
-            hora=hora,
-        ),
-        f"efecto:{efecto_id}:aplicado",
+        efecto_id,
+        "aplicado",
+        operacion,
+        clave,
+        cuerpo,
+        hora,
+        str(destino.raiz),
+        recibo=aplicado["recibo"],
+        observacion="recibo del destino",
     )
+    if propio != "ok":
+        return {"intencion": True, "enviado": True, "recibo": aplicado["recibo"], "motivo": "el recibo no quedo registrado"}
     return {"recibo": aplicado["recibo"], "n": aplicado["n"]}
 
 

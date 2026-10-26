@@ -6,13 +6,17 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .dominio import Encargo, reducir
+from .dominio import Encargo, TransicionIlegal, reducir
 
 _VIVO = Path.home() / ".motor"
 
 
 class BaseProhibida(RuntimeError):
     pass
+
+
+def _estable(data: dict) -> dict:
+    return {k: v for k, v in data.items() if k != "hora"}
 
 
 def exigir_base(path: Path) -> Path:
@@ -49,15 +53,30 @@ class Registro:
         self.db.close()
 
     def append(self, encargo: str, kind: str, data: dict, ukey: str, ts: str) -> str:
+        """La decisión y el insert van en la misma transacción. `igual` solo si es el mismo hecho."""
         payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
         self.db.execute("BEGIN IMMEDIATE")
         try:
             row = self.db.execute(
-                "SELECT encargo, data FROM events WHERE ukey = ?", (ukey,)
+                "SELECT encargo, kind, data FROM events WHERE ukey = ?", (ukey,)
             ).fetchone()
             if row:
                 self.db.execute("ROLLBACK")
-                return "igual"
+                guardado = json.loads(row[2])
+                if row[0] == encargo and row[1] == kind and _estable(guardado) == _estable(data):
+                    return "igual"
+                return "ajena"
+            estado = None
+            for kind_prev, data_prev in self.db.execute(
+                "SELECT kind, data FROM events WHERE encargo = ? ORDER BY id",
+                (encargo,),
+            ):
+                estado = reducir(estado, {"kind": kind_prev, "data": json.loads(data_prev)})
+            try:
+                reducir(estado, {"kind": kind, "data": data})
+            except TransicionIlegal:
+                self.db.execute("ROLLBACK")
+                return "ilegal"
             self.db.execute(
                 "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
                 (ts, encargo, kind, payload, ukey),

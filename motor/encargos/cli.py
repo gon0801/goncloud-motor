@@ -254,10 +254,16 @@ def _lanzador(agente: str):
             str(prompt),
         ]
 
+    def ensayo(enc, prompt: Path, espacio: Path, sesion: str):
+        del enc, prompt, sesion
+        return ["/bin/bash", str(espacio / "trabajo.sh")]
+
     if agente == "sleep":
         return dormir
     if agente == "grok":
         return grok
+    if agente == "ensayo":
+        return ensayo
     return None
 
 
