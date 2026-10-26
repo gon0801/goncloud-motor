@@ -1,0 +1,2 @@
+ts	phase	decision	why	evidence	result
+2026-10-25T23:01:13Z	start	bounded Windows spawn retry and UTF-8 call-line fix	the brief authorizes the design and requires one commit per row	brief A.1-A.3; git 1b37d63	baseline windows skipped on macOS; test_puro red at formato.py:57
