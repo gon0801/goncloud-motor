@@ -7,3 +7,7 @@ ts	phase	decision	why	evidence	result
 2026-10-26T19:32:28Z	cierre	Un ensayo completo sobre el código final	Mac, Mini, PC y el agente tienen que quedar en el mismo informe	ops/evidencia/informe.json	24 pasos ok, salida 0
 2026-10-26T19:33:37Z	entrega	Dos commits de código antes de la evidencia	El núcleo tiene que poder revisarse aparte del script de ensayo	d8adcabe697968ea4c03800efd41b0eadde7d53d b27e9f07d4f50e13de85c596ffcf46e4b3fb6654	commits en feat/encargos-1-2
 2026-10-26T19:36:00Z	revision	No lancé otro modelo a leer esta bitácora	David pide la revisión cruzada solo cuando él la nombra. Este brief se la deja a Codex	docs/diseno-motor-encargos/brief-grok-1-2.md	pendiente de Codex
+2026-10-26T21:03:00Z	correccion	Un solo dueño corrigió los hallazgos de la revisión en este worktree	El ensayo de ecdee4f cerraba el encargo a mano y el supervisor no incorporaba el resultado	docs/diseno-motor-encargos/revision-fases-1-2.md	los ocho repros pasan sobre el código corregido
+2026-10-26T21:03:00Z	transporte	En Windows el ssh no termina si su salida es un pipe	Un archivo de entrada y otro de salida sí entregan el EOF y el proceso acaba	motor/encargos/transporte.py	la PC concilió con la Mini y la repetición quedó en n=1
+2026-10-26T21:03:00Z	windows	La PC no tiene jaula	No hay sandbox-exec y una prueba de procesos no cubre esa falta	ops/evidencia/informe.json	pendiente: el destino del ensayo quedó en la Mini
+2026-10-26T21:03:00Z	cierre	No lancé otro modelo	David pide la revisión cruzada solo cuando él la nombra	.audit/encargos-1-2.tsv	pendiente de Codex
