@@ -7,7 +7,7 @@ no es un resultado comprobado.
 from __future__ import annotations
 
 import hashlib
-import tomllib
+import socket
 from dataclasses import dataclass, replace
 
 ESTADOS = (
@@ -35,6 +35,7 @@ class Proc:
     inicio: str
     boot_id: str
     job: str = ""
+    host: str = ""
 
     def como_dict(self) -> dict:
         return {
@@ -42,6 +43,7 @@ class Proc:
             "inicio": self.inicio,
             "boot_id": self.boot_id,
             "job": self.job,
+            "host": self.host,
         }
 
 
@@ -94,6 +96,9 @@ class Encargo:
     reserva: bool = False
     rol: str = ""
     generacion: int = 0
+    conductor: str = ""
+    candidato: str = ""
+    host: str = ""
 
 
 def huella_entrega(
@@ -174,11 +179,18 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     if kind == "reserva":
         if e.proc is not None or e.reserva:
             raise TransicionIlegal("ya hay un escritor")
-        if not e.intentos_nuevos or e.estado in _CERRADOS or e.estado == "esperando_reintento":
+        if (
+            not e.intentos_nuevos
+            or e.estado in _CERRADOS
+            or e.estado == "esperando_reintento"
+        ):
             raise TransicionIlegal("no hay autorización para otro intento")
         return replace(
             e,
             reserva=True,
+            conductor=str(d.get("conductor") or e.conductor),
+            candidato=str(d.get("candidato") or ""),
+            host=str(d.get("host") or socket.gethostname()),
             rol=str(d.get("rol") or e.rol or "responsable"),
             generacion=int(d.get("generacion") or (e.generacion + 1)),
             estado="ejecutando" if e.estado == "recibido" else e.estado,
@@ -186,7 +198,11 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             hora=hora or e.hora,
         )
     if kind == "reserva_cerrada":
-        return replace(e, reserva=False, rol="" if e.proc is None else e.rol, hora=hora or e.hora)
+        return replace(e, reserva=False, candidato="", hora=hora or e.hora)
+    if kind == "conductor":
+        return replace(
+            e, conductor=d["token"], candidato="", host=d["host"], hora=hora or e.hora
+        )
     if kind == "concesion":
         return replace(e, hora=hora or e.hora)
     if kind == "intento_abierto":
@@ -205,6 +221,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
                 inicio=str(d["inicio"]),
                 boot_id=str(d.get("boot_id") or ""),
                 job=str(d.get("job") or ""),
+                host=str(d.get("host") or socket.gethostname()),
             ),
             herramientas_observables=bool(d.get("herramientas_observables", True)),
             hora=hora or e.hora,
@@ -233,13 +250,15 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             causa=d.get("causa") or e.causa,
         )
     if kind == "intento_cerrado":
-        return replace(e, proc=None, herramienta="")
+        return replace(e, proc=None, herramienta="", reserva=False)
     if kind == "arbol":
         return _arbol(e, d, hora)
     if kind == "comprobacion":
         return _comprobacion(e, d, hora)
     if kind == "afirmacion":
-        return replace(e, procedimiento=e.procedimiento + (f"afirmación: {d['texto']}",))
+        return replace(
+            e, procedimiento=e.procedimiento + (f"afirmación: {d['texto']}",)
+        )
     if kind == "efecto":
         return _efecto_evento(e, d, hora)
     if kind == "plazo":
@@ -344,7 +363,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
 
 
 def _arbol(e: Encargo, d: dict, hora: str) -> Encargo:
-    if d.get("observacion") != "ausente" or e.estado != "deteniendo":
+    if d.get("observacion") != "ausente" or e.estado != "deteniendo" or e.reserva:
         return e
     estado = "cancelado" if e.motivo == "cancelado" else "detenido"
     return replace(
@@ -367,7 +386,9 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
             raise TransicionIlegal("confirmado sin evidencia")
         evidencias = e.evidencia + (evidencia,)
         if e.estado in ("cancelado", "deteniendo", "detenido"):
-            return replace(e, evidencia=evidencias, hora=hora or e.hora, ultimo_hecho=evidencia)
+            return replace(
+                e, evidencia=evidencias, hora=hora or e.hora, ultimo_hecho=evidencia
+            )
         return replace(
             e,
             estado="terminado",
@@ -478,48 +499,6 @@ def vista(e: Encargo, recibo: str = "") -> dict:
     }
 
 
-def nombres_modelo(toml_text: str) -> tuple[str, ...]:
-    data = tomllib.loads(toml_text)
-    modelos = data.get("modelos")
-    if not isinstance(modelos, dict):
-        return ()
-    nombres = []
-    for tabla in modelos.values():
-        if isinstance(tabla, dict) and isinstance(tabla.get("nombre"), str):
-            nombres.append(tabla["nombre"])
-    return tuple(nombres)
-
-
-def producto_kimi_valido(toml_text: str) -> bool:
-    nombres = set(nombres_modelo(toml_text))
-    return {"kimi-code/k3", "kimi-code/k3.1-pro"} <= nombres
-
-
-def clasificar_motor06(salida: str, toml_text: str) -> dict:
-    """El grep que imprimió Invalid range end no es un defecto del producto."""
-    firma_producto = hashlib.sha256(toml_text.encode()).hexdigest()[:12]
-    if "Invalid range end" in salida or "invalid character range" in salida.lower():
-        return {
-            "clase": "instrumento",
-            "causa": "grep: Invalid range end",
-            "reparacion": "dejar el grep; comprobar las dos definiciones con el parser TOML",
-            "firma": f"grep-invalid-range|{firma_producto}",
-        }
-    if producto_kimi_valido(toml_text):
-        nombres = ", ".join(nombres_modelo(toml_text))
-        return {
-            "clase": "confirmado",
-            "evidencia": f"toml confirma {nombres}",
-            "firma": f"toml|{firma_producto}",
-        }
-    return {
-        "clase": "defecto",
-        "causa": "el parser TOML no encontró las dos definiciones de modelo",
-        "firma": f"toml-incompleto|{firma_producto}",
-        "reproduccion": "tomllib",
-    }
-
-
 def decision_fallo(e: Encargo) -> dict | None:
     """El mismo fallo, sin hechos nuevos, no se repite con la misma estrategia."""
     if e.repeticiones >= 2 and e.estrategia != "revision_tecnica":
@@ -553,7 +532,9 @@ def decision_proceso(
             return {
                 "matar": False,
                 "lanzar": False,
-                "eventos": [{"kind": "arbol", "data": {"observacion": "ausente", "hora": hora}}],
+                "eventos": [
+                    {"kind": "arbol", "data": {"observacion": "ausente", "hora": hora}}
+                ],
             }
         if arbol == "vivo":
             return {"matar": True, "lanzar": False, "eventos": []}
@@ -595,28 +576,30 @@ def decision_proceso(
         )
     # Una parada quita intentos_nuevos. La caída de la autoridad quita escrituras
     # y deja seguir el trabajo aislado. La reserva ya comprometida no abre otro proceso.
-    revisar = e.estrategia == "revision_tecnica" and e.rol != "revisor"
     lanzar = (
         e.intentos_nuevos
         and e.estado in ("recibido", "ejecutando")
         and e.proc is None
         and not e.reserva
-        and (e.estrategia != "revision_tecnica" or revisar)
     )
     return {"matar": False, "lanzar": lanzar and not eventos, "eventos": eventos}
 
 
 def prompt_de(e: Encargo) -> str:
     lineas = [
-        "Eres el responsable de este encargo. Sigue poteto-mode en este espacio. "
-        "No abras skills ni directorios ajenos: el pedido y los archivos de aquí alcanzan.",
+        (
+            "Eres el responsable de este encargo. Sigue poteto-mode en este espacio. "
+            "Carga la skill empaquetada del runtime y limita las herramientas al espacio concedido."
+        ),
         "El pedido original no se reescribe.",
         f"Pedido:\n{e.texto}",
     ]
     if e.restricciones:
         lineas.append("Restricciones:\n" + "\n".join(e.restricciones))
     if e.ajustes:
-        lineas.append("Ajustes incorporados con el trabajo detenido:\n" + "\n".join(e.ajustes))
+        lineas.append(
+            "Ajustes incorporados con el trabajo detenido:\n" + "\n".join(e.ajustes)
+        )
     if e.efectos:
         hechos = [f"{x.id} {x.estado} {x.recibo}".strip() for x in e.efectos]
         lineas.append("Efectos ya registrados:\n" + "\n".join(hechos))
@@ -629,6 +612,10 @@ def prompt_de(e: Encargo) -> str:
         )
     if e.preguntas:
         lineas.append("Preguntas pendientes:\n" + "\n".join(e.preguntas))
+    if e.causa or e.motivo:
+        lineas.append(
+            f"Última observación: {e.causa or e.motivo}\nSiguiente trabajo concreto: {e.siguiente}"
+        )
     lineas.append(
         "Comprueba el comportamiento pedido y deja la salida en evidencia-comportamiento.txt. "
         "No declares el encargo terminado: el supervisor mira el destino. "

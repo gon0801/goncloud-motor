@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 
 from .ciclo import (
-    ahora_iso,
     afirmar,
+    ahora_iso,
     barrer,
     consultar,
     corregir,
@@ -19,7 +19,6 @@ from .ciclo import (
     ordenar,
     parada_local,
     recibir,
-    reparar_motor06,
 )
 from .frontera import DestinoEnsayo, despachar
 from .registro import BaseProhibida, Registro, exigir_base
@@ -101,13 +100,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--umbral", type=float, default=30.0)
     s.add_argument("--agente", default="")
 
-    s = sub.add_parser("motor06")
-    s.add_argument("--base", type=Path, required=True)
-    s.add_argument("--encargo", required=True)
-    s.add_argument("--producto", type=Path, required=True)
-    s.add_argument("--salida", required=True)
-    s.add_argument("--efecto", required=True)
-
     s = sub.add_parser("encargos-aplicar")
     s.add_argument("--base", type=Path)
 
@@ -162,8 +154,10 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         return _json(consultar(reg, args.encargo))
     if args.cmd in ("parar", "continuar", "cancelar"):
         salida = ordenar(reg, args.encargo, args.cmd, args.clave, hora)
-        if args.cmd in ("parar", "cancelar") and not salida.get("retransmision") and not salida.get(
-            "rechazada"
+        if (
+            args.cmd in ("parar", "cancelar")
+            and not salida.get("retransmision")
+            and not salida.get("rechazada")
         ):
             recibo = salida["recibo"]
             fin = time.time() + 8
@@ -193,20 +187,15 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
             )
         )
     if args.cmd == "espera":
-        return _json(marcar_espera(reg, args.encargo, args.motivo, args.reanuda_en, hora))
+        return _json(
+            marcar_espera(reg, args.encargo, args.motivo, args.reanuda_en, hora)
+        )
     if args.cmd == "pregunta":
         return _json(marcar_pregunta(reg, args.encargo, args.texto, args.bloquea, hora))
     if args.cmd == "afirmacion":
         return _json(afirmar(reg, args.encargo, args.texto, hora))
     if args.cmd == "parada-local":
         return _json(parada_local(reg.base, args.clave, hora))
-    if args.cmd == "motor06":
-        destino = DestinoEnsayo(reg.base / "destino")
-        return _json(
-            reparar_motor06(
-                reg, args.encargo, args.producto, args.salida, args.efecto, destino, hora
-            )
-        )
     if args.cmd == "supervisor":
         return _supervisor(reg, args)
     print(f"comando desconocido: {args.cmd}", file=sys.stderr)
@@ -249,9 +238,31 @@ def _lanzador(agente: str):
             "24",
             "--disable-web-search",
             "--output-format",
-            "plain",
+            "streaming-json",
             "--prompt-file",
             str(prompt),
+        ]
+
+    def codex(enc, prompt: Path, espacio: Path, sesion: str):
+        del enc, sesion
+        return [
+            "codex",
+            "exec",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
+            "--json",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-m",
+            "gpt-6.1-sol",
+            "-c",
+            'model_reasoning_effort="xhigh"',
+            "--cd",
+            str(espacio),
+            "Lee el pedido y las instrucciones en "
+            + str(prompt)
+            + ". Ejecuta el trabajo autorizado.",
         ]
 
     def ensayo(enc, prompt: Path, espacio: Path, sesion: str):
@@ -262,6 +273,8 @@ def _lanzador(agente: str):
         return dormir
     if agente == "grok":
         return grok
+    if agente == "codex":
+        return codex
     if agente == "ensayo":
         return ensayo
     return None
@@ -292,23 +305,56 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
     op = msg.get("op")
     argv = [op or ""]
     if op == "encargar":
-        argv = [
-            "encargar",
-            "--base",
-            str(base),
-            "--clave",
-            msg["clave"],
-            "--texto",
-            msg.get("texto") or "",
-            "--director",
-            msg.get("director") or "remoto",
-        ]
-        for r in msg.get("restricciones") or []:
-            argv.extend(["--restriccion", r])
+        reg = Registro(base)
+        try:
+            return _json(
+                recibir(
+                    reg,
+                    msg.get("texto") or "",
+                    msg["clave"],
+                    ahora_iso(),
+                    director=msg.get("director") or "remoto",
+                    adjuntos=tuple(msg.get("adjuntos") or ()),
+                    restricciones=tuple(msg.get("restricciones") or ()),
+                    canal=msg.get("canal") or "",
+                )
+            )
+        finally:
+            reg.close()
     elif op == "ver":
         argv = ["ver", msg["encargo"], "--base", str(base)]
     elif op in ("parar", "continuar", "cancelar"):
         argv = [op, msg["encargo"], "--base", str(base), "--clave", msg["clave"]]
+    elif op == "resultado":
+        from .ciclo import recibir_resultado
+
+        reg = Registro(base)
+        try:
+            return _json(
+                recibir_resultado(
+                    reg,
+                    msg["encargo"],
+                    msg["token"],
+                    msg["host"],
+                    msg["pedido"],
+                    msg["observaciones"],
+                    msg["juicio"],
+                    ahora_iso(),
+                )
+            )
+        finally:
+            reg.close()
+    elif op in ("conceder", "cerrar-conductor"):
+        from .ciclo import cerrar_conductor, conceder_conductor
+
+        reg = Registro(base)
+        try:
+            funcion = conceder_conductor if op == "conceder" else cerrar_conductor
+            return _json(
+                funcion(reg, msg["encargo"], msg["token"], msg["host"], ahora_iso())
+            )
+        finally:
+            reg.close()
     elif op == "intento":
         from .ciclo import observar_intento
         from .dominio import TransicionIlegal
@@ -324,6 +370,8 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
                 boot_id=str(msg.get("boot_id") or ""),
                 job=str(msg.get("job") or ""),
                 sesion=str(msg.get("sesion") or ""),
+                token=str(msg.get("token") or ""),
+                host=str(msg.get("host") or ""),
             )
         except (TransicionIlegal, KeyError, TypeError, ValueError) as exc:
             print(json.dumps({"error": str(exc)}))

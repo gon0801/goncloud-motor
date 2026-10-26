@@ -41,8 +41,11 @@ class _Turno:
 
     def __enter__(self):
         _turno_hilo.acquire()
-        nivel = getattr(_turno_nivel, "n", 0)
-        _turno_nivel.n = nivel + 1
+        niveles = getattr(_turno_nivel, "bases", {})
+        self.clave = str(self.path.resolve())
+        nivel = niveles.get(self.clave, 0)
+        niveles[self.clave] = nivel + 1
+        _turno_nivel.bases = niveles
         if nivel == 0:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.fh = open(self.path, "a+", encoding="utf-8")
@@ -72,7 +75,7 @@ class _Turno:
                 fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
             self.fh.close()
             self.fh = None
-        _turno_nivel.n = max(0, getattr(_turno_nivel, "n", 1) - 1)
+        _turno_nivel.bases[self.clave] -= 1
         _turno_hilo.release()
 
 
@@ -105,19 +108,43 @@ class DestinoEnsayo:
             return {"estado": "ausente"}
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def aplicar(self, clave: str, cuerpo: str) -> dict:
+    def aplicar(self, clave: str, cuerpo: str, operacion: str = "") -> dict:
         with turno(self.raiz.parent):
             actual = self.consultar(clave)
             if actual.get("estado") == "aplicado":
+                if (
+                    actual.get("cuerpo") != cuerpo
+                    or actual.get("operacion", "") != operacion
+                ):
+                    return {
+                        "conflicto": True,
+                        "motivo": "la operacion existente tiene otro cuerpo",
+                    }
                 if self.perder:
                     self.perder = False
                     raise RespuestaPerdida(actual["recibo"])
                 return actual
             if self.vigente is not None and not self.vigente():
                 raise ParadaAntesDeEnviar()
-            recibo = "dst_" + hashlib.sha256(clave.encode()).hexdigest()[:16]
-            payload = {"estado": "aplicado", "recibo": recibo, "cuerpo": cuerpo, "n": 1}
-            _atomico(self.raiz / f"{_nombre(clave)}.json", json.dumps(payload, sort_keys=True))
+            recibo = (
+                "dst_"
+                + hashlib.sha256(
+                    f"{self.raiz.resolve()}:{operacion}:{clave}:{cuerpo}".encode()
+                ).hexdigest()[:16]
+            )
+            payload = {
+                "estado": "aplicado",
+                "recibo": recibo,
+                "cuerpo": cuerpo,
+                "n": 1,
+                "destino": str(self.raiz.resolve()),
+                "operacion": operacion,
+                "clave": clave,
+            }
+            _atomico(
+                self.raiz / f"{_nombre(clave)}.json",
+                json.dumps(payload, sort_keys=True),
+            )
             if self.perder:
                 self.perder = False
                 raise RespuestaPerdida(recibo)
@@ -186,6 +213,7 @@ def _registrar_efecto(
         d.get("id") == efecto_id
         and d.get("operacion") == operacion
         and d.get("clave") == clave
+        and d.get("destino") == destino
         and d.get("estado") == estado
         and d.get("cuerpo", cuerpo) == cuerpo
     )
@@ -213,7 +241,7 @@ def _titular_suelta(registro: Registro, titular: Encargo, recurso: str) -> bool:
 
     efecto = None
     for item in titular.efectos:
-        if item.clave == recurso:
+        if f"{item.destino}:{item.clave}" == recurso:
             efecto = item
     if efecto is not None and efecto.estado in ("intencion", "incierto"):
         return False
@@ -251,7 +279,11 @@ def _conceder(registro: Registro, encargo_id: str, recurso: str, hora: str) -> s
         return "ok"
     if resultado == "igual":
         prev = registro.por_ukey(ukey)
-        if prev and prev["encargo"] == encargo_id and prev["data"].get("recurso") == recurso:
+        if (
+            prev
+            and prev["encargo"] == encargo_id
+            and prev["data"].get("recurso") == recurso
+        ):
             return "ok"
     return "ocupada"
 
@@ -284,9 +316,12 @@ def _autorizado_ahora(registro: Registro, encargo_id: str, autoridad: bool) -> b
     return _autorizado(registro, enc, autoridad)
 
 
-def _mismo_efecto(previo, operacion: str, clave: str, cuerpo: str) -> bool:
+def _mismo_efecto(
+    previo, operacion: str, clave: str, cuerpo: str, destino: str
+) -> bool:
     return (
-        previo.operacion == operacion
+        previo.destino == destino
+        and previo.operacion == operacion
         and previo.clave == clave
         and (previo.cuerpo or "") == (cuerpo or "")
     )
@@ -306,6 +341,10 @@ def _efecto_en_autoridad(
     """
     from .transporte import cargar, operar
 
+    if not _autorizado_ahora(
+        registro, encargo_id, not autoridad_ausente(registro.base)
+    ):
+        raise ParadaAntesDeEnviar()
     if cargar(registro.base) is None:
         return None
     resp = operar(
@@ -335,7 +374,14 @@ def _efecto_en_autoridad(
     return {"recibo": recibo, "n": salida.get("n") or 1, "cuerpo": cuerpo}
 
 
-def _rechazo(registro: Registro, encargo_id: str, efecto_id: str, clave: str, hora: str, motivo: str) -> dict:
+def _rechazo(
+    registro: Registro,
+    encargo_id: str,
+    efecto_id: str,
+    clave: str,
+    hora: str,
+    motivo: str,
+) -> dict:
     anotar_local(
         registro.base,
         {
@@ -360,26 +406,85 @@ def despachar(
     hora: str,
     autoridad: bool | None = None,
 ) -> dict:
+    with turno(registro.base):
+        return _despachar(
+            registro,
+            encargo_id,
+            destino,
+            efecto_id,
+            operacion,
+            clave,
+            cuerpo,
+            hora,
+            autoridad,
+        )
+
+
+def _despachar(
+    registro: Registro,
+    encargo_id: str,
+    destino: DestinoEnsayo,
+    efecto_id: str,
+    operacion: str,
+    clave: str,
+    cuerpo: str,
+    hora: str,
+    autoridad: bool | None = None,
+) -> dict:
+    from .transporte import ConfigAutoridadInvalida, cargar
+
+    try:
+        cfg = cargar(registro.base)
+    except ConfigAutoridadInvalida as exc:
+        return _rechazo(registro, encargo_id, efecto_id, clave, hora, str(exc))
+    destino_id = str(destino.raiz.resolve())
+    if cfg is not None:
+        destino_id = "autoridad:" + json.dumps(
+            {k: cfg.get(k) for k in ("modo", "host", "base", "argv")}, sort_keys=True
+        )
+    recurso = f"{destino_id}:{clave}"
     enc = registro.fold(encargo_id)
     if enc is None:
         raise SinAutorizacion("no hay encargo")
     if autoridad is None:
         autoridad = not autoridad_ausente(registro.base)
     # La consulta puede aceptar una parada. La autorización se vuelve a leer después.
-    consulta = destino.consultar(clave)
+    consulta = destino.consultar(clave) if cfg is None else {"estado": "desconocido"}
     enc = registro.fold(encargo_id)
     if enc is None:
         raise SinAutorizacion("no hay encargo")
     previo = efecto_de(enc, efecto_id)
+    if previo and not _mismo_efecto(previo, operacion, clave, cuerpo, destino_id):
+        return {"conflicto": True, "motivo": "la identidad del efecto no coincide"}
     if previo and previo.estado == "aplicado" and previo.recibo:
-        if _mismo_efecto(previo, operacion, clave, cuerpo):
-            return {"ya_aplicado": True, "recibo": previo.recibo, "n": consulta.get("n")}
-        return {"conflicto": True, "motivo": "el efecto ya aplicado no coincide con esta operacion"}
+        if _mismo_efecto(previo, operacion, clave, cuerpo, destino_id):
+            return {
+                "ya_aplicado": True,
+                "recibo": previo.recibo,
+                "n": consulta.get("n"),
+            }
+        return {
+            "conflicto": True,
+            "motivo": "el efecto ya aplicado no coincide con esta operacion",
+        }
     if consulta.get("estado") == "aplicado":
-        if str(consulta.get("cuerpo") or "") != (cuerpo or ""):
-            return {"conflicto": True, "motivo": "el destino no tiene el contenido pedido"}
-        if _conceder(registro, encargo_id, clave, hora) != "ok":
-            return _rechazo(registro, encargo_id, efecto_id, clave, hora, "el recurso sigue concedido")
+        if (
+            str(consulta.get("cuerpo") or "") != (cuerpo or "")
+            or consulta.get("operacion", "") != operacion
+        ):
+            return {
+                "conflicto": True,
+                "motivo": "el destino no tiene el contenido pedido",
+            }
+        if _conceder(registro, encargo_id, recurso, hora) != "ok":
+            return _rechazo(
+                registro,
+                encargo_id,
+                efecto_id,
+                clave,
+                hora,
+                "el recurso sigue concedido",
+            )
         propio = _registrar_efecto(
             registro,
             encargo_id,
@@ -389,19 +494,44 @@ def despachar(
             clave,
             cuerpo,
             hora,
-            str(destino.raiz),
+            destino_id,
             recibo=str(consulta.get("recibo") or ""),
             observacion="conciliado contra el destino",
         )
         if propio != "ok":
-            return _rechazo(registro, encargo_id, efecto_id, clave, hora, "el recibo no quedo registrado")
-        return {"conciliado": True, "recibo": consulta["recibo"], "n": consulta.get("n")}
+            return _rechazo(
+                registro,
+                encargo_id,
+                efecto_id,
+                clave,
+                hora,
+                "el recibo no quedo registrado",
+            )
+        return {
+            "conciliado": True,
+            "recibo": consulta["recibo"],
+            "n": consulta.get("n"),
+        }
     if not _autorizado(registro, enc, autoridad):
-        return _rechazo(registro, encargo_id, efecto_id, clave, hora, "sin autorizacion de escritura")
-    if previo and previo.estado == "incierto" and consulta.get("estado") != "ausente":
+        return _rechazo(
+            registro,
+            encargo_id,
+            efecto_id,
+            clave,
+            hora,
+            "sin autorizacion de escritura",
+        )
+    if (
+        cfg is None
+        and previo
+        and previo.estado == "incierto"
+        and consulta.get("estado") != "ausente"
+    ):
         return {"incierto": True, "motivo": "el destino no confirma ni niega"}
-    if _conceder(registro, encargo_id, clave, hora) != "ok":
-        return _rechazo(registro, encargo_id, efecto_id, clave, hora, "el recurso sigue concedido")
+    if _conceder(registro, encargo_id, recurso, hora) != "ok":
+        return _rechazo(
+            registro, encargo_id, efecto_id, clave, hora, "el recurso sigue concedido"
+        )
     if previo is None or previo.estado != "intencion":
         propio = _registrar_efecto(
             registro,
@@ -412,25 +542,54 @@ def despachar(
             clave,
             cuerpo,
             hora,
-            str(destino.raiz),
+            destino_id,
             observacion="intención persistida",
         )
         if propio != "ok":
-            return _rechazo(registro, encargo_id, efecto_id, clave, hora, "la intencion no quedo registrada")
+            return _rechazo(
+                registro,
+                encargo_id,
+                efecto_id,
+                clave,
+                hora,
+                "la intencion no quedo registrada",
+            )
     enc = registro.fold(encargo_id)
     if enc is None or not _autorizado(registro, enc, autoridad):
-        return {"intencion": True, "enviado": False, "motivo": "parada aceptada antes del envio"}
+        return {
+            "intencion": True,
+            "enviado": False,
+            "motivo": "parada aceptada antes del envio",
+        }
     destino.vigente = lambda: _autorizado_ahora(registro, encargo_id, autoridad)
     try:
-        remoto = _efecto_en_autoridad(registro, encargo_id, efecto_id, operacion, clave, cuerpo)
+        remoto = _efecto_en_autoridad(
+            registro, encargo_id, efecto_id, operacion, clave, cuerpo
+        )
         if remoto is None:
-            aplicado = destino.aplicar(clave, cuerpo)
+            aplicado = destino.aplicar(clave, cuerpo, operacion)
         else:
             aplicado = remoto
     except ParadaAntesDeEnviar:
-        return {"intencion": True, "enviado": False, "motivo": "parada aceptada antes del envio"}
+        return {
+            "intencion": True,
+            "enviado": False,
+            "motivo": "parada aceptada antes del envio",
+        }
     except AutoridadInalcanzable as exc:
-        return {"intencion": True, "enviado": False, "motivo": str(exc)}
+        _registrar_efecto(
+            registro,
+            encargo_id,
+            efecto_id,
+            "incierto",
+            operacion,
+            clave,
+            cuerpo,
+            hora,
+            destino_id,
+            observacion="sin respuesta de la autoridad; conciliar por la misma identidad",
+        )
+        return {"incierto": True, "enviado": None, "motivo": str(exc)}
     except RespuestaPerdida:
         _registrar_efecto(
             registro,
@@ -441,7 +600,7 @@ def despachar(
             clave,
             cuerpo,
             hora,
-            str(destino.raiz),
+            destino_id,
             observacion="la respuesta se perdió",
         )
         return {"incierto": True}
@@ -462,16 +621,26 @@ def despachar(
         clave,
         cuerpo,
         hora,
-        str(destino.raiz),
+        destino_id,
         recibo=aplicado["recibo"],
         observacion="recibo del destino",
     )
     if propio != "ok":
-        return {"intencion": True, "enviado": True, "recibo": aplicado["recibo"], "motivo": "el recibo no quedo registrado"}
+        return {
+            "intencion": True,
+            "enviado": True,
+            "recibo": aplicado["recibo"],
+            "motivo": "el recibo no quedo registrado",
+        }
     return {"recibo": aplicado["recibo"], "n": aplicado["n"]}
 
 
 def activar_parada_local(base: Path, clave: str, hora: str) -> dict:
+    with turno(base):
+        return _activar_parada_local(base, clave, hora)
+
+
+def _activar_parada_local(base: Path, clave: str, hora: str) -> dict:
     """Impide trabajo en este host. No escribe el registro canónico ni autoriza escrituras."""
     path = Path(base) / "parada-local.json"
     if path.exists():
