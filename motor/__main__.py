@@ -623,7 +623,30 @@ def _vuelve_a_la_buena(home: Path, d: Path, error: str):
     return None, (malo, [error])
 
 
+_CMDS_ENCARGO = {
+    "encargar",
+    "ver",
+    "parar",
+    "continuar",
+    "cancelar",
+    "corregir",
+    "efecto",
+    "espera",
+    "pregunta",
+    "afirmacion",
+    "parada-local",
+    "supervisor",
+    "motor06",
+    "encargos-aplicar",
+}
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv_in = list(sys.argv[1:] if argv is None else argv)
+    if argv_in and argv_in[0] in _CMDS_ENCARGO:
+        from .encargos.cli import main as encargos_main
+
+        return encargos_main(argv_in)
     ap = argparse.ArgumentParser(prog="motor")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("valida")
