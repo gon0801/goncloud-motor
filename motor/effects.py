@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import string
 import subprocess
 import sys
@@ -40,7 +41,7 @@ from .github import (
     clasificar_merge,
 )
 from .notify import Notifier, render
-from .plan import HUMAN_KINDS, Plan
+from .plan import HUMAN_KINDS, Plan, PlanError
 from .plataforma.windows import argv_shell, lanzamiento_wsl, path_con_python_real
 from .store import Store
 from .workspace import Workspace, foto_wip, git
@@ -138,6 +139,160 @@ def con_python_de_comando(env: dict, en_windows: bool | None = None) -> dict:
 def comandos_faltantes(salida: str) -> list[str]:
     """Comandos que la máquina no tiene, según lo que dijo el shell (bash o cmd de Windows)."""
     return sorted({a or b for a, b in _FALTA.findall(salida)})
+
+
+def _marca_agente(att) -> tuple[dict | None, str]:
+    """Identidad del agente, o un fallo si las marcas están a medias o no se leen."""
+    d = getattr(att, "dir", None)
+    if not d:
+        return None, ""
+    base = Path(d)
+    pid_p = base / "agent.pid"
+    ini_p = base / "agent.inicio"
+    try:
+        hay_pid = pid_p.exists()
+        hay_ini = ini_p.exists()
+    except OSError as e:
+        raise OSError(e.errno, "no pude ver las marcas del agente") from e
+    if not hay_pid and not hay_ini:
+        return None, ""
+    if hay_pid != hay_ini:
+        return None, "parcial"
+    try:
+        pid = int(pid_p.read_text(encoding="utf-8").strip())
+        inicio = ini_p.read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return None, "ilegible"
+    if not pid or not inicio:
+        return None, "parcial"
+    proc = getattr(att, "proc", None) or {}
+    boot = proc.get("boot_id") or plataforma.boot_id()
+    job = ""
+    job_p = base / "agent.job"
+    try:
+        if job_p.exists():
+            job = job_p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None, "ilegible"
+    return {"pid": pid, "inicio": inicio, "boot_id": boot, "job": job}, ""
+
+
+def observar_arbol(att) -> str:
+    """`vivo`, `ausente` o `incierto`.
+
+    El supervisor y el agente son identidades distintas. El agente corre en otro grupo,
+    así que un supervisor muerto no demuestra el cierre si la marca del agente sigue
+    viva. Una marca a medias, ilegible o un pid que no se puede consultar deja la
+    observación incierta. Un `proc` vacío y sin marcas es un lanzamiento que no llegó
+    a existir.
+    """
+    proc = getattr(att, "proc", None) or {}
+    duda = False
+    identidades: list[dict] = []
+    if proc.get("pid") and proc.get("inicio"):
+        identidades.append(proc)
+    elif proc.get("pid") or proc.get("inicio"):
+        duda = True
+        if proc.get("pid"):
+            try:
+                plataforma.estado_proc(proc)
+            except (OSError, TypeError, ValueError):
+                return "incierto"
+    else:
+        # Un `proc` vacío es una reserva vieja o a medias. No es ausencia.
+        duda = True
+    try:
+        agente, fallo = _marca_agente(att)
+    except OSError:
+        return "incierto"
+    if fallo:
+        duda = True
+    elif agente is not None:
+        identidades.append(agente)
+    if not identidades and not duda:
+        return "ausente"
+    try:
+        estados = [plataforma.estado_proc(ident) for ident in identidades]
+    except (OSError, TypeError, ValueError):
+        return "incierto"
+    if any(estado == "vivo" for estado in estados):
+        return "vivo"
+    for ident, estado in zip(identidades, estados):
+        if estado == "corte":
+            continue
+        grupo = plataforma.presencia_grupo(
+            int(ident["pid"]),
+            str(ident.get("inicio") or ""),
+            str(ident.get("job") or ""),
+        )
+        if grupo == "vivo":
+            return "vivo"
+        if grupo == "incierto":
+            duda = True
+    if duda:
+        return "incierto"
+    return "ausente"
+
+
+def intento_vivo(att) -> bool:
+    return observar_arbol(att) == "vivo"
+
+
+def arbol_ausente(att) -> bool:
+    return observar_arbol(att) == "ausente"
+
+
+def _identidades(att) -> list[dict]:
+    proc = getattr(att, "proc", None) or {}
+    identidades = []
+    if proc.get("pid") and proc.get("inicio"):
+        identidades.append(proc)
+    try:
+        agente, fallo = _marca_agente(att)
+    except OSError:
+        return identidades
+    if agente is not None and not fallo:
+        identidades.append(agente)
+    return identidades
+
+
+def _senales(att) -> list[dict]:
+    """Identidades que siguen vivas y se pueden señalar. Una duda no autoriza un pid ajeno."""
+    proc = getattr(att, "proc", None) or {}
+    candidatos = []
+    if proc.get("pid") and proc.get("inicio"):
+        candidatos.append(proc)
+    try:
+        agente, fallo = _marca_agente(att)
+    except OSError:
+        agente, fallo = None, "ilegible"
+    if agente is not None and not fallo:
+        candidatos.append(agente)
+    vivos = []
+    for ident in candidatos:
+        try:
+            if plataforma.estado_proc(ident) == "vivo":
+                vivos.append(ident)
+        except (OSError, TypeError, ValueError):
+            continue
+    return vivos
+
+
+def _term_pid(pid: int) -> None:
+    """Pide el cierre de ese grupo. No escala a KILL y no usa SIGCONT."""
+    if os.name == "nt":
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
 
 
 CASOS_PRUEBAS = {
@@ -253,8 +408,9 @@ def _run(
     argv, shell, exe = _posix(cmd, bash)
     env = con_python_de_comando(env)
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
-        p = subprocess.Popen(
+        creado = plataforma.crear_proceso(
             argv,
+            plataforma.Propiedad.COMANDO_CONTENIDO,
             cwd=cwd,
             env=env,
             stdout=out_f,
@@ -262,8 +418,9 @@ def _run(
             stdin=subprocess.DEVNULL,
             shell=shell,
             executable=exe,
-            **plataforma.kwargs_grupo(),
         )
+        creado.liberar()
+        p = creado.proceso
         try:
             p.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -489,26 +646,40 @@ class Effects:
             texto = f'[repo]\nprincipal = "{principal}"\n'
         return sha, texto
 
-    def pin_repos(self, plan: Plan) -> None:
-        """Lee `.motor.toml` de la rama base de cada repo UNA vez y lo fija en el log."""
+    def prepara_repos(self, plan: Plan) -> list[dict]:
+        """Lee los pines fuera de SQLite. No publica eventos."""
+        pines = []
         for repo in dict.fromkeys(b.repo for b in plan.blocks):
-            if any(
-                e.kind == "RepoPinned" and e.data["repo"] == repo
-                for e in self.cx.store.events(plan.id)
-            ):
-                continue
-            sha, texto = self.conf_base(repo)
-            self.cx.store.append(
-                plan.id,
-                "",
-                "RepoPinned",
+            try:
+                self.cx.ws.espejo(repo)
+                sha, texto = self.conf_base(repo)
+            except (OSError, RuntimeError) as e:
+                linea = (str(e).splitlines() or ["no pude leer el repo"])[0][:240]
+                raise PlanError([f"no pude leer {repo}: {linea}"]) from e
+            pines.append(
                 {
                     "repo": repo,
                     "sha": sha,
                     "texto": texto,
-                    "privado": self.cx.gh.es_privado(repo),
-                },
-                ukey=claves.repo_fijado(plan.id, repo),
+                    "privado": bool(self.cx.gh.es_privado(repo)),
+                }
+            )
+        return pines
+
+    def pin_repos(self, plan: Plan) -> None:
+        """Fija en el log pines ya leídos. La aceptación de un plan usa un solo lote."""
+        for pin in self.prepara_repos(plan):
+            if any(
+                e.kind == "RepoPinned" and e.data["repo"] == pin["repo"]
+                for e in self.cx.store.events(plan.id)
+            ):
+                continue
+            self.cx.store.append(
+                plan.id,
+                "",
+                "RepoPinned",
+                pin,
+                ukey=claves.repo_fijado(plan.id, pin["repo"]),
             )
 
     def attempt_dir(self, plan: str, block: str, role: str, n: int) -> Path:
@@ -693,11 +864,19 @@ class Effects:
             return
         marca.parent.mkdir(parents=True, exist_ok=True)
         marca.write_text(dia, encoding="utf-8")
-        self.cx.notifier.encola(
-            f"pstack-ilegible:{cli}:{dia}",
+        notice_id = f"pstack:{cli}:{dia}"
+        texto = (
             f"En {self.cx.maquina.nombre}: no pude leer el registro de {cli}, así que no comprobé que "
-            "usara poteto-mode. Dejé pasar la entrega. Este aviso sale una vez al día por herramienta.",
+            "usara poteto-mode. Dejé pasar la entrega. Este aviso sale una vez al día por herramienta."
         )
+        self.cx.store.append(
+            "",
+            "",
+            "NoticeRequested",
+            {"notice_id": notice_id, "key": notice_id, "texto": texto},
+            ukey=f"notice:{notice_id}",
+        )
+        self.cx.notifier.materializa(notice_id, texto, notice_id)
 
     # ------------------------------------------------------------------ intentos
     def _encargo(
@@ -719,19 +898,26 @@ class Effects:
         return prefijo + brief + self._anexo_guias(info_pstack)
 
     def start_attempt(self, plan: Plan, snap: m.Snapshot, a: m.StartAttempt) -> None:
+        if not self._puede_lanzar(snap):
+            return
         d = self.attempt_dir(plan.id, a.block, a.role, a.n)
         if (d / "started").exists():
-            # se lanzó y el daemon cayó antes de anotar: no se duplica; se anota con la marca, así
-            # cuenta para los topes y su resultado se recoge (revisión de Grok a MOTOR 01)
-            datos = json.loads((d / "started").read_text(encoding="utf-8"))
-            if "n" in datos:
+            # La marca ya existe: se concilia. No se lanza otro agente por falta de pid.
+            datos = _lee_json(d / "started") or {}
+            estado, datos = _estado_marca(d, datos)
+            datos["estado"] = estado
+            _escribe_marca(d / "started", datos)
+            evento = evento_de_arranque(datos)
+            if evento is not None and "n" in evento:
                 self.cx.store.append(
                     plan.id,
                     a.block,
                     "AttemptStarted",
-                    datos,
+                    evento,
                     ukey=claves.intento_iniciado(plan.id, a.block, a.role, a.n),
                 )
+            return
+        if self._hay_otro_arbol(snap, a.block, a.role, a.n):
             return
         block = plan.block(a.block)
         ruta = self.cx.conf.rutas[a.modelo]
@@ -841,13 +1027,26 @@ class Effects:
             "conf_sha": self.cx.conf.sha,
             "feedback": list(a.feedback),
             "modalidad": a.modalidad,
+            "estado": "reservado",
+            "token": uuid.uuid4().hex,
         }
-        # la marca va antes de lanzar: si el daemon cae entre las dos cosas, el intento no se duplica
-        # (sin `proc` se da por perdido y se relanza); con el pid, la marca se completa
+        # La reserva queda antes de CreateProcess. Si el daemon cae ahí, no hay otro agente.
         _escribe_marca(d / "started", datos)
-        datos["proc"] = plataforma.lanzar_separado(
-            cmd, cwd_runwrap, env, d / "runwrap.log"
-        )
+        env["MOTOR_LAUNCH_TOKEN"] = datos["token"]
+        try:
+            datos["proc"] = plataforma.lanzar_separado(
+                cmd, cwd_runwrap, env, d / "runwrap.log"
+            )
+        except OSError as e:
+            datos["estado"] = "creacion_fallida"
+            datos["error"] = _falla_creacion(e)
+            _escribe_marca(d / "started", datos)
+            return
+        if not (datos["proc"].get("pid") and datos["proc"].get("inicio")):
+            datos["estado"] = "arranque_por_conciliar"
+            _escribe_marca(d / "started", datos)
+            return
+        datos["estado"] = "proceso_observado"
         _escribe_marca(d / "started", datos)
         self.cx.store.append(
             plan.id,
@@ -1000,27 +1199,46 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         d = Path(att.dir)
         oc = d / "outcome.json"
         if not oc.exists():
-            st = plataforma.estado_proc(att.proc) if att.proc else "muerto"
-            if st == "vivo":
-                if (
-                    time.time() - att.started
-                    <= self.cx.policy.timeout_s + HOLGURA_VIVO_S
-                ):
-                    return None
-                self._mata_intento(d, att.proc)
-                return {
-                    "kind": "perdido",
-                    "detalle": "sigue 'vivo' mucho después de su tope de tiempo; el motor lo detuvo",
-                }
+            obs = observar_arbol(att)
             if (
                 not oc.exists()
             ):  # pudo aparecer entre la primera lectura y la consulta del pid
-                if st == "corte":
+                proc = att.proc or {}
+                wrapper = bool(proc.get("pid") and proc.get("inicio"))
+                if obs == "vivo" and wrapper:
+                    if (
+                        time.time() - att.started
+                        <= self.cx.policy.timeout_s + HOLGURA_VIVO_S
+                    ):
+                        return None
+                    self._mata_intento(d, proc)
+                    if observar_arbol(att) != "ausente":
+                        return None
                     return {
-                        "kind": "corte",
-                        "detalle": "la máquina se apagó o reinició",
+                        "kind": "perdido",
+                        "detalle": "sigue 'vivo' mucho después de su tope de tiempo; el motor lo detuvo",
                     }
-                self._mata_intento(d, None)
+                if obs == "incierto":
+                    return None
+                if obs == "vivo":
+                    self._mata_intento(d, proc or None)
+                    if observar_arbol(att) != "ausente":
+                        return None
+                else:
+                    try:
+                        corte = (
+                            plataforma.estado_proc(proc) == "corte" if wrapper else False
+                        )
+                    except (OSError, TypeError, ValueError):
+                        return None
+                    if corte:
+                        return {
+                            "kind": "corte",
+                            "detalle": "la máquina se apagó o reinició",
+                        }
+                    self._mata_intento(d, proc or None)
+                    if observar_arbol(att) != "ausente":
+                        return None
                 return {
                     "kind": "perdido",
                     "detalle": "el proceso desapareció sin dejar resultado",
@@ -1048,6 +1266,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         d: Path,
         o: dict,
     ) -> dict:
+        if o.get("creacion_agente") == "fallida":
+            return _juicio_creacion(o)
         if (att.role == "implementar" and self._entrego(plan, block_id, d)) or (
             att.role == "revisar" and self._veredicto_entregado(att, d)
         ):
@@ -1238,15 +1458,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         if inicio is None:
             return
         self._mata_intento(Path(inicio["dir"]), inicio.get("proc") or None)
-        foto = ""
-        w = self.cx.home / "wt" / plan.id / a.block
-        if a.role == "implementar" and w.exists():
-            wip = self.cx.ws.rama_wip(plan.id, a.block)
-            privado = False
-            if a.block in snap.blocks:
-                repo = snap.blocks[a.block].block.repo
-                privado = bool(snap.repos.get(repo, {}).get("privado", False))
-            foto = foto_wip(w, wip, local=not privado)
+        foto = self.foto_de(plan, snap, a.block, a.role)
         self.cx.store.append(
             plan.id,
             a.block,
@@ -1288,17 +1500,94 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             punta = self.cx.ws.punta(block.repo, self.cx.ws.rama(plan.id, block_id))
         return entrega.es_valida(res, revisando=False, punta=punta)
 
+    def _hay_otro_arbol(self, snap: m.Snapshot, block: str, role: str, n: int) -> bool:
+        """Otro intento abierto del mismo papel cuyo árbol no está demostrado ausente."""
+        abiertos = []
+        bv = snap.blocks.get(block) if snap is not None else None
+        if bv is not None:
+            abiertos.extend(
+                a
+                for a in bv.attempts
+                if a.role == role and a.n != n and a.ended is None
+            )
+        for (bid, an, arole), att in getattr(snap, "huerfanos", ()) or ():
+            if bid == block and arole == role and an != n and att.ended is None:
+                abiertos.append(att)
+        return any(not arbol_ausente(a) for a in abiertos)
+
+    def _puede_lanzar(self, snap: m.Snapshot) -> bool:
+        """Retención del home o un plan que no está activo no arrancan agentes."""
+        if getattr(snap, "control", "Activo") != "Activo":
+            return False
+        home = getattr(self.cx, "home", None)
+        if home is None:
+            return True
+        from .control import leer
+
+        return leer(home) is None
+
+    def foto_de(self, plan: Plan, snap: m.Snapshot, block: str, role: str) -> str:
+        w = self.cx.home / "wt" / plan.id / block
+        if role != "implementar" or not w.exists():
+            return ""
+        privado = False
+        if block in snap.blocks:
+            repo = snap.blocks[block].block.repo
+            privado = bool(snap.repos.get(repo, {}).get("privado", False))
+        return foto_wip(w, self.cx.ws.rama_wip(plan.id, block), local=not privado)
+
+    def cerrar_arboles(self, intentos: list, plazo_s: float) -> list:
+        """SIGTERM a cada identidad viva, espera el plazo y recién entonces escala.
+
+        Devuelve los intentos que no están demostrados ausentes. No escribe eventos
+        y no envía SIGCONT. Una observación incierta vuelve en la lista.
+        """
+        for a in intentos:
+            for ident in _senales(a):
+                _term_pid(int(ident["pid"]))
+        limite = time.time() + max(0.0, plazo_s)
+        while time.time() < limite and any(intento_vivo(a) for a in intentos):
+            time.sleep(0.05)
+        for a in intentos:
+            for ident in _identidades(a):
+                pid = int(ident["pid"])
+                inicio = str(ident.get("inicio") or "")
+                try:
+                    sigue = plataforma.estado_proc(ident) == "vivo"
+                except (OSError, TypeError, ValueError):
+                    continue
+                if sigue:
+                    plataforma.matar_proc(pid, inicio)
+                elif (
+                    plataforma.presencia_grupo(pid, inicio, str(ident.get("job") or ""))
+                    == "vivo"
+                ):
+                    plataforma.cerrar_huerfanos(
+                        pid, inicio, str(ident.get("job") or "")
+                    )
+        return [a for a in intentos if not arbol_ausente(a)]
+
     def _mata_intento(self, d: Path, proc: dict | None) -> None:
         """Detiene lo que quede de un intento perdido (agente y supervisor) antes de relanzar en la
         misma carpeta. Solo mata un pid si sigue siendo el proceso que se lanzó (misma hora de inicio)."""
         if proc and proc.get("pid"):
             plataforma.matar_proc(int(proc["pid"]), proc.get("inicio", ""))
+            plataforma.cerrar_huerfanos(
+                int(proc["pid"]),
+                str(proc.get("inicio") or ""),
+                str(proc.get("job") or ""),
+            )
         try:
             pid = int((d / "agent.pid").read_text(encoding="utf-8").strip())
             inicio = (d / "agent.inicio").read_text(encoding="utf-8").strip()
         except (OSError, ValueError):
             return
+        try:
+            job = (d / "agent.job").read_text(encoding="utf-8").strip()
+        except OSError:
+            job = ""
         plataforma.matar_proc(pid, inicio)
+        plataforma.cerrar_huerfanos(pid, inicio, job)
 
     def _corre_en(
         self, plan: Plan, snap: m.Snapshot, block, sha: str, nombre: str, cmd: str
@@ -1406,12 +1695,41 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         pendientes = []
         for d in raiz.glob(f"{a.block}-{kind}-{a.sha[:12]}-*"):
             marca = d / "started"
-            if marca.exists():
-                datos = json.loads(marca.read_text(encoding="utf-8"))
-                if datos.get("sha") == a.sha:
-                    pendientes.append(datos)
+            if not marca.exists():
+                continue
+            crudo = _lee_json(marca) or {}
+            if crudo.get("sha") != a.sha:
+                continue
+            estado, datos = _estado_marca(d, crudo)
+            datos["estado"] = estado
+            _escribe_marca(marca, datos)
+            if evento_de_arranque(datos) is not None:
+                pendientes.append(datos)
         for datos in sorted(pendientes, key=lambda x: int(x["n"])):
             self._anota_arranque_aparte(plan, a.block, kind, datos)
+
+    def _arranque_aparte_abierto(self, plan, a, kind) -> bool:
+        """Una reserva o una ventana ambigua no abre otro proceso del mismo paso.
+
+        La creación fallida no gasta el paso: se puede volver a intentar. No se inventa
+        la causa de un `proc` viejo vacío.
+        """
+        raiz = self.cx.home / "aparte" / plan.id
+        if not raiz.is_dir():
+            return False
+        for d in raiz.glob(f"{a.block}-{kind}-{a.sha[:12]}-*"):
+            marca = d / "started"
+            crudo = _lee_json(marca)
+            if crudo is None:
+                return True
+            if crudo.get("sha") != a.sha:
+                continue
+            estado, datos = _estado_marca(d, crudo)
+            if datos != crudo:
+                _escribe_marca(marca, datos)
+            if estado in ("reservado", "arranque_por_conciliar"):
+                return True
+        return False
 
     def _aparte(self, kind: str, plan: Plan, snap: m.Snapshot, a) -> None:
         started_kind, terminal_kind, campo = self._APARTE[kind]
@@ -1558,6 +1876,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                         return
         if kind in ("deploy", "prove") and self._frena_escritor(plan, snap, a, kind, starteds, terminales):
             return
+        if self._arranque_aparte_abierto(plan, a, kind):
+            return
         n = max((int(e.data.get("n", 0)) for e in starteds), default=0) + 1
         d = self.cx.home / "aparte" / plan.id / f"{a.block}-{kind}-{a.sha[:12]}-{n}"
         d.mkdir(parents=True, exist_ok=True)
@@ -1606,15 +1926,40 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             str(d),
         ]
         datos_started = {
-            "sha": a.sha, "dir": str(d), "proc": {}, "n": n,
-            "huella": h_insumo, "huella_maquina": h_maquina,
+            "sha": a.sha,
+            "dir": str(d),
+            "proc": {},
+            "n": n,
+            "huella": h_insumo,
+            "huella_maquina": h_maquina,
+            "estado": "reservado",
+            "token": uuid.uuid4().hex,
         }
         if "intencion" in spec:
             datos_started["intencion"] = spec["intencion"]
         _escribe_marca(d / "started", datos_started)
-        datos_started["proc"] = plataforma.lanzar_separado(
-            cmd, RAIZ, self.env_base({"PYTHONPATH": str(RAIZ)}), d / "aparte.log"
-        )
+        try:
+            datos_started["proc"] = plataforma.lanzar_separado(
+                cmd,
+                RAIZ,
+                self.env_base(
+                    {
+                        "PYTHONPATH": str(RAIZ),
+                        "MOTOR_LAUNCH_TOKEN": datos_started["token"],
+                    }
+                ),
+                d / "aparte.log",
+            )
+        except OSError as e:
+            datos_started["estado"] = "creacion_fallida"
+            datos_started["error"] = _falla_creacion(e)
+            _escribe_marca(d / "started", datos_started)
+            return
+        if not (datos_started["proc"].get("pid") and datos_started["proc"].get("inicio")):
+            datos_started["estado"] = "arranque_por_conciliar"
+            _escribe_marca(d / "started", datos_started)
+            return
+        datos_started["estado"] = "proceso_observado"
         _escribe_marca(d / "started", datos_started)
         self._anota_arranque_aparte(plan, a.block, kind, datos_started)
 
@@ -1861,9 +2206,8 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         if propia:
             self._efecto(plan, block_id, ident, "aplicado", commit)
         clave = f"externo:{block_id}"
-        avisado = clave in bv.notices or any(
-            e.kind == "NoticeQueued" and e.data["key"] == clave
-            for e in self.cx.store.events(plan.id)
+        avisado = clave in bv.notices or _aviso_previo(
+            self.cx.store.events(plan.id), clave
         )  # el log, no solo la foto: un reintento con la foto vieja no avisa dos veces
         if not propia and not avisado:
             self.notify(
@@ -2149,10 +2493,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         if (
             (bv and clave in bv.notices)
             or clave in snap.plan_notices
-            or any(
-                e.kind == "NoticeQueued" and e.data.get("key") == clave
-                for e in self.cx.store.events(plan.id)
-            )
+            or _aviso_previo(self.cx.store.events(plan.id), clave)
         ):
             return
         self.notify(plan, snap, m.Notify(clave, block, "incierto", ()))
@@ -2633,14 +2974,16 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         texto = render(
             a.template, dict(a.campos), self.cx.maquina.nombre, plan.titulo or plan.id
         )
-        self.cx.notifier.encola(f"{plan.id}:{a.key}", texto)
-        self.cx.store.append(
+        notice_id = f"plan:{plan.id}:{a.key}"
+        if not self.cx.store.append(
             plan.id,
             a.block,
-            "NoticeQueued",
-            {"key": a.key, "texto": texto},
+            "NoticeRequested",
+            {"notice_id": notice_id, "key": a.key, "texto": texto},
             ukey=claves.aviso_encolado(plan.id, a.key),
-        )
+        ):
+            return  # un aviso histórico con la misma clave no se reenvía
+        self.cx.notifier.materializa(notice_id, texto, f"{plan.id}:{a.key}")
 
 
 def comando_runwrap(
@@ -2670,6 +3013,94 @@ def _escribe_marca(ruta: Path, datos: dict) -> None:
     tmp = ruta.with_name(ruta.name + ".tmp")
     tmp.write_text(json.dumps(datos), encoding="utf-8")
     os.replace(tmp, ruta)
+
+
+def _lee_json(ruta: Path) -> dict | None:
+    try:
+        data = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _falla_creacion(e: BaseException) -> dict:
+    return {
+        "tipo": type(e).__name__,
+        "winerror": getattr(e, "winerror", None),
+        "errno": getattr(e, "errno", None),
+        "mensaje": _sanea_causa(str(e)),
+    }
+
+
+def _sanea_causa(texto: str) -> str:
+    linea = (texto or "").splitlines()[0][:240]
+    return re.sub(r"/bot[^/\s]+", "/bot<oculto>", linea)
+
+
+def _juicio_creacion(o: dict) -> dict:
+    """El wrapper arrancó y el agente no. No es una falla del modelo ni un relevo."""
+    err = o.get("error") if isinstance(o.get("error"), dict) else {}
+    tipo = str(err.get("tipo") or "OSError")[:80]
+    return {
+        "kind": "creacion_fallida",
+        "detalle": f"no pude crear el agente: {tipo}",
+        "error": {
+            "tipo": tipo,
+            "winerror": err.get("winerror"),
+            "errno": err.get("errno"),
+            "mensaje": _sanea_causa(str(err.get("mensaje") or "")),
+        },
+    }
+
+
+def _aviso_previo(eventos, key: str) -> bool:
+    return any(
+        e.kind in ("NoticeQueued", "NoticeRequested") and e.data.get("key") == key
+        for e in eventos
+    )
+
+
+def evento_de_arranque(datos: dict) -> dict | None:
+    """`AttemptStarted` solo con un proceso observado. El resto no gasta un intento."""
+    estado = datos.get("estado")
+    proc = datos.get("proc") if isinstance(datos.get("proc"), dict) else {}
+    if estado in ("reservado", "creacion_fallida", "arranque_por_conciliar"):
+        return None
+    if not (proc.get("pid") and proc.get("inicio")):
+        return None
+    return datos
+
+
+def _estado_marca(d: Path, datos: dict) -> tuple[str, dict]:
+    """Concilia la marca con el wrapper y el resultado. No inventa la causa ni relanza."""
+    proc = datos.get("proc") if isinstance(datos.get("proc"), dict) else {}
+    estado = datos.get("estado")
+    if estado == "creacion_fallida":
+        return "creacion_fallida", datos
+    if proc.get("pid") and proc.get("inicio"):
+        return "proceso_observado", {**datos, "proc": proc, "estado": "proceso_observado"}
+    token = datos.get("token")
+    wrapper = _lee_json(d / "wrapper.json")
+    if (
+        wrapper
+        and wrapper.get("pid")
+        and wrapper.get("inicio")
+        and ((wrapper.get("token") == token) if token else wrapper.get("token") in ("", None))
+    ):
+        proc = {
+            "pid": wrapper["pid"],
+            "inicio": wrapper["inicio"],
+            "boot_id": wrapper.get("boot_id") or "",
+            "job": wrapper.get("job") or "",
+        }
+        return "proceso_observado", {**datos, "proc": proc, "estado": "proceso_observado"}
+    if estado is None and not proc:
+        return "arranque_por_conciliar", {**datos, "estado": "arranque_por_conciliar", "proc": {}}
+    return "arranque_por_conciliar", {
+        **datos,
+        "estado": "arranque_por_conciliar",
+        "proc": proc,
+    }
 
 
 def _iso_a_epoch(iso: str | None) -> float:

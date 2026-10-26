@@ -61,7 +61,7 @@ class RecuperaEfectosTest(unittest.TestCase):
                     }
                 )
             )
-            return {"pid": 42}
+            return {"pid": 42, "inicio": "2026-10-25T00:00:00+00:00", "boot_id": "boot-prueba"}
 
         with patch("motor.effects.plataforma.lanzar_separado", side_effect=lanzar) as lanzamientos:
             self.store.append = cae

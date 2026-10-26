@@ -160,13 +160,22 @@ def _atasco(
             )
     if bv.bloqueo is not None and e is Estado.ARREGLAR:
         n = len(bv.implement_attempts())
+        motivo = bv.bloqueo["motivo"]
+        if bv.bloqueo.get("origen") == "creacion":
+            frase = (
+                f"{motivo}; espero una nota, un plan corregido o una máquina corregida"
+            )
+        else:
+            frase = (
+                f"el agente dice que lo que falla no es el código: {motivo}; "
+                "espero una nota, un plan corregido o una máquina corregida"
+            )
         return Diagnostico(
             Causa.BLOQUEADO,
-            f"el agente dice que lo que falla no es el código: {bv.bloqueo['motivo']}; "
-            "espero una nota, un plan corregido o una máquina corregida",
+            frase,
             f"atorado:{bid}:bloqueado:{n}",
             True,
-            bv.bloqueo["motivo"],
+            motivo,
         )
     paso, falta = m.faltan_comandos(bv)
     if falta:
@@ -280,6 +289,17 @@ def _sin_agente(
                 Causa.TURNO, f"{toca}; espera su turno, los agentes están ocupados"
             )
         return Diagnostico(causa, toca, detalle=_tecnico(bv))
+    if all(c == "entorno" for c, _ in est.values()):
+        hechos = [a for a in bv.attempts if a.role == role and a.ended]
+        last = hechos[-1].ended if hechos else {}
+        motivo = str(last.get("detalle") or "no pude crear el agente")
+        return Diagnostico(
+            Causa.BLOQUEADO,
+            f"{motivo}; espero una nota, un plan corregido o una máquina corregida",
+            f"atorado:{bid}:creacion:{len(hechos)}",
+            True,
+            motivo,
+        )
     if all(c == "fuera" for c, _ in est.values()):
         tipo, que = _fuera(bv)
         return Diagnostico(
@@ -394,6 +414,8 @@ def por_que(bv: m.BlockView) -> str:
     if v and not v["ok"]:
         return "falló la verificación de las filas"
     last = bv.last_implement_outcome()
+    if last and last.get("kind") == "creacion_fallida":
+        return last.get("detalle") or "no pude crear el agente"
     if last and last.get("kind") == "corte":
         return "el intento anterior se cortó por un reinicio o apagón"
     if last and last.get("kind") == "interrumpido":

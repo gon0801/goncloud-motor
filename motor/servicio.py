@@ -58,6 +58,14 @@ def instalable(maquina: str, usuario: str, python: str, home: str, raiz: str) ->
 
 
 def supervisor(home: Path, intervalo: float = 10.0) -> int:
+    from .control import leer
+
+    hold = leer(home)
+    if hold is not None and hold.cause:
+        print(
+            f"motor: la retención no se puede leer ({hold.cause}); el daemon arranca igual",
+            file=sys.stderr,
+        )
     while True:
         inicio = time.time()
         r = subprocess.run(

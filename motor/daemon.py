@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -21,7 +22,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import claves, huella, llamadas
+from . import claves, control, huella, llamadas
 from . import machine as m
 from . import plataforma, senal, version
 from .conf import (
@@ -34,7 +35,7 @@ from .conf import (
 from .diagnostico import HUECO_EFECTO_S
 from .effects import Contexto, Effects
 from .github import para
-from .notify import Notifier, render
+from .notify import Notifier, base_url_valida, render
 from .plan import Comando, Plan, PlanError, modelos_desconocidos, revisa_sin_quien
 from .store import Store
 from .version import SALIDA_RELANZAR, info, pide_otra
@@ -42,7 +43,29 @@ from .workspace import Workspace, git
 
 
 ESPERA_TRAS_FALLA_S = 300
+PLAZO_CIERRE_S = 10
 CONF_BUENA = "conf-buena"
+_ORDENES = ("pausa", "reanuda", "cancela", "liberar")
+
+
+def _prioridad(path: Path) -> int:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 1
+    tipo = data.get("tipo") if isinstance(data, dict) else ""
+    return 0 if tipo in _ORDENES else 1
+
+
+def _abiertos(snap: m.Snapshot) -> list[tuple[str, m.Attempt]]:
+    out = []
+    for bid, bv in snap.blocks.items():
+        for att in bv.attempts:
+            if att.ended is None:
+                out.append((bid, att))
+    for (bid, _n, _role), att in snap.huerfanos:
+        out.append((bid, att))
+    return out
 
 
 def _bloque(a: m.Action) -> str:
@@ -78,6 +101,8 @@ def planes_de(store: Store) -> list[Plan]:
 class Daemon:
     def __init__(self, home: Path, checks_cada_s: float | None = None):
         self.home = home
+        self.retencion = control.leer(home)
+        self._cierre_desde: dict[str, float] = {}
         # un solo escritor de la base por home: dos daemons duplicarían lanzamientos y efectos
         self._candado = plataforma.candado(home / "motor.lock")
         if self._candado is None:
@@ -85,6 +110,10 @@ class Daemon:
                 f"ya hay un motor corriendo sobre {home} (candado {home / 'motor.lock'}); "
                 "un segundo no puede arrancar"
             )
+        from .formato import admite_escritor
+
+        admite_escritor(home)
+        self.store = Store(home / "motor.db")
         self.maquina = load_maquina(home)
         # El env de la máquina vale también para el propio motor (git, verificar, desplegar), no solo
         # para los agentes. MOTOR 01: la Mini entra a GitHub por el alias github-claw y su motor no
@@ -96,10 +125,6 @@ class Daemon:
             os.environ["PATH"] = os.pathsep.join(
                 [*self.maquina.path_extra, os.environ.get("PATH", "")]
             )
-        from .formato import admite_escritor
-
-        admite_escritor(home)
-        self.store = Store(home / "motor.db")
         conf = load_conf(self.maquina.conf)
         av = conf.avisos
         self.cx = Contexto(
@@ -123,6 +148,7 @@ class Daemon:
             else conf.tiempos.get("checks_cada_s", 60.0),
         )
         self.fx = Effects(self.cx)
+        self._recupera_avisos()
         cx = self.cx  # la lambda no puede capturar self: sería un ciclo y el candado esperaría al recolector
         self.senal = senal.Senal(home, lambda: cx.conf.tiempos)
         self.cx.avance = self.senal.avanzo
@@ -139,6 +165,43 @@ class Daemon:
         ] = {}  # fallas ya anotadas por (plan, bloque, acción): numera su clave
         self._rachas = self._rachas_abiertas()
         self.guarda_conf_buena()
+
+    def _aviso(
+        self,
+        command_id: str,
+        notice_id: str,
+        key: str,
+        texto: str,
+        extra: list[dict] | None = None,
+    ) -> bool:
+        """Guarda el hecho y la solicitud juntos. Un choque de clave vieja no reenvía el historial."""
+        eventos = list(extra or [])
+        eventos.append(
+            {
+                "plan": "",
+                "block": "",
+                "kind": "NoticeRequested",
+                "data": {"notice_id": notice_id, "key": key, "texto": texto},
+                "ukey": f"notice:{notice_id}",
+            }
+        )
+        try:
+            self.store.append_batch(command_id, eventos)
+        except sqlite3.IntegrityError:
+            return False
+        self.cx.notifier.materializa(notice_id, texto, key)
+        return True
+
+    def _recupera_avisos(self) -> None:
+        for e in self.store.events(kind="NoticeRequested"):
+            notice_id = str(e.data.get("notice_id") or "")
+            if not notice_id:
+                continue
+            self.cx.notifier.materializa(
+                notice_id,
+                str(e.data.get("texto") or ""),
+                str(e.data.get("key") or ""),
+            )
 
     def trae_conf(self, now: float) -> None:
         """La conf compartida llega sola: cada `conf_cada_s` (15 min) se trae de su repo. Solo se
@@ -195,17 +258,24 @@ class Daemon:
 
     def avisa_conf_rechazada(self, sha: str, errores: list[str]) -> None:
         """Anota la conf mala y avisa una vez por sha (la clave es el sha)."""
-        if self.store.append(
-            "",
-            "",
-            "ConfRechazada",
-            {"sha": sha, "errores": errores[:5]},
-            ukey=claves.conf_rechazada(sha),
-        ):
-            self.cx.notifier.encola(
-                f"confmala:{sha[:12]}",
-                render("conf_mala", {}, self.maquina.nombre, "Motor de planes"),
-            )
+        notice_id = f"conf:{sha}"
+        key = f"confmala:{sha[:12]}"
+        texto = render("conf_mala", {}, self.maquina.nombre, "Motor de planes")
+        self._aviso(
+            notice_id,
+            notice_id,
+            key,
+            texto,
+            [
+                {
+                    "plan": "",
+                    "block": "",
+                    "kind": "ConfRechazada",
+                    "data": {"sha": sha, "errores": errores[:5]},
+                    "ukey": claves.conf_rechazada(sha),
+                }
+            ],
+        )
 
     def guarda_conf_buena(self) -> None:
         """El sha de la última conf que cargó bien: a donde vuelve el arranque si la siguiente no carga."""
@@ -216,11 +286,29 @@ class Daemon:
         tmp.write_text(sha, encoding="utf-8")
         os.replace(tmp, self.home / CONF_BUENA)
 
+    def _arma_notifier(self, conf):
+        av = conf.avisos
+        return Notifier(
+            self.home,
+            av.get("base_url", "https://api.telegram.org"),
+            dict(self.maquina.secretos).get(
+                av.get("token_env", "MOTOR_TELEGRAM_TOKEN"), ""
+            ),
+            av.get("chat", ""),
+        )
+
     def recargar_conf(self) -> None:
         conf = load_conf(self.maquina.conf)
-        if conf.sha != self.cx.conf.sha:
-            self.cx.conf, self.cx.policy = conf, m.Policy.from_conf(conf)
-            self.guarda_conf_buena()
+        if conf.sha == self.cx.conf.sha:
+            return
+        policy = m.Policy.from_conf(conf)
+        notifier = self._arma_notifier(conf)
+        if not base_url_valida(notifier.base_url):
+            raise ValueError("avisos: url sin esquema")
+        self.cx.conf = conf
+        self.cx.policy = policy
+        self.cx.notifier = notifier
+        self.guarda_conf_buena()
 
     def pide_otra_version(self) -> str:
         """Si la conf fija una versión o un commit distinto del que corre, la frase de la diferencia."""
@@ -233,22 +321,27 @@ class Daemon:
             return
         fijada = self.cx.conf.motor
         pedida = fijada.get("version") or fijada.get("sha", "")[:12]
-        if self.store.append(
-            "",
-            "",
-            "VersionFaltante",
-            {"pedida": pedida},
-            ukey=claves.version_faltante(self.maquina.nombre, pedida),
-        ):
-            self.cx.notifier.encola(
-                f"version:{pedida}",
-                render(
-                    "version",
-                    {"version": pedida},
-                    self.maquina.nombre,
-                    "Motor de planes",
-                ),
-            )
+        notice_id = f"version:{pedida}"
+        self._aviso(
+            f"version:{self.maquina.nombre}:{pedida}",
+            notice_id,
+            notice_id,
+            render(
+                "version",
+                {"version": pedida},
+                self.maquina.nombre,
+                "Motor de planes",
+            ),
+            [
+                {
+                    "plan": "",
+                    "block": "",
+                    "kind": "VersionFaltante",
+                    "data": {"pedida": pedida},
+                    "ukey": claves.version_faltante(self.maquina.nombre, pedida),
+                }
+            ],
+        )
 
     def _fold(self, plan: Plan) -> m.Snapshot:
         return m.fold(plan, self.store.events(plan.id), huella.de_maquina(self.maquina))
@@ -273,30 +366,50 @@ class Daemon:
         hechos.mkdir(parents=True, exist_ok=True)
         archivos = sorted(
             (f for b in self._bandejas() for f in b.glob("*.json")),
-            key=lambda f: f.name,
+            key=lambda f: (_prioridad(f), f.name),
         )
         for f in archivos:
             try:
                 cmd = Comando.from_dict(json.loads(f.read_text(encoding="utf-8")))
-                resultado = self._procesa(cmd)
-                self.store.append(
-                    cmd.plan_id,
-                    "",
-                    "CommandReceived",
-                    {"cmd_id": cmd.cmd_id, "tipo": cmd.tipo, "resultado": resultado},
-                    ukey=claves.comando(cmd.cmd_id),
-                )
-                destino = hechos
             except Exception as e:  # noqa: BLE001  un archivo malo no frena a los demás de la bandeja
-                self._rechaza(f, e)
-                destino = malos
-            destino.mkdir(parents=True, exist_ok=True)
+                if self._rechaza(f, e):
+                    self._archiva(f, malos)
+                continue
+            destino = hechos
             try:
-                os.replace(f, destino / f.name)
-            except OSError:
-                pass  # se queda en la bandeja: lo hecho es idempotente (ukey) y el aviso no se repite
+                previo = self._ya_recibido(cmd.cmd_id)
+                if previo is not None:
+                    if not self._puede_archivar(cmd, previo):
+                        continue
+                    if str(previo).startswith("rechazado"):
+                        destino = malos
+                else:
+                    resultado = self._procesa(cmd)
+                    if resultado is None:
+                        continue
+                    if self._ya_recibido(cmd.cmd_id) is None:
+                        self.store.append(
+                            cmd.plan_id,
+                            "",
+                            "CommandReceived",
+                            {
+                                "cmd_id": cmd.cmd_id,
+                                "tipo": cmd.tipo,
+                                "resultado": resultado,
+                            },
+                            ukey=claves.comando(cmd.cmd_id),
+                        )
+            except sqlite3.Error:
+                continue  # el inbox sigue pendiente; no se fabrica un rechazo
+            except Exception as e:  # noqa: BLE001  una liberación a medias se reintenta
+                if cmd.tipo == "liberar" and self._liberacion_sigue(cmd):
+                    continue
+                if not self._rechaza(f, e):
+                    continue
+                destino = malos
+            self._archiva(f, destino)
 
-    def _rechaza(self, f: Path, e: Exception) -> None:
+    def _rechaza(self, f: Path, e: Exception) -> bool:
         """Quien entregó pudo irse con "encolado": el rechazo tiene que llegarle a David
         (MOTOR 01: INGESTA 01 se rechazó en la Mini y nadie se enteró)."""
         motivo = (str(e).strip() or type(e).__name__).splitlines()[0][:300]
@@ -310,29 +423,70 @@ class Daemon:
         plan = msg.get("plan") if isinstance(msg.get("plan"), dict) else {}
         titulo = str(plan.get("titulo") or plan.get("id") or "un plan")
         por = msg["por"] if isinstance(msg.get("por"), str) and msg["por"] else ""
-        nuevo = self.store.append(
-            "",
-            "",
-            "CommandReceived",
-            {
-                "cmd_id": cmd_id,
-                "tipo": str(msg.get("tipo", "")),
-                "resultado": f"rechazado: {motivo}",
-            },
-            ukey=claves.comando(cmd_id),
+        notice_id = f"cmd:{cmd_id}"
+        key = f"rechazo:{cmd_id}"
+        return self._aviso(
+            cmd_id,
+            notice_id,
+            key,
+            render(
+                "rechazado",
+                {"motivo": motivo, "por": por or "quien te lo dio"},
+                self.maquina.nombre,
+                titulo,
+            ),
+            [
+                {
+                    "plan": "",
+                    "block": "",
+                    "kind": "CommandReceived",
+                    "data": {
+                        "cmd_id": cmd_id,
+                        "tipo": str(msg.get("tipo", "")),
+                        "resultado": f"rechazado: {motivo}",
+                    },
+                    "ukey": claves.comando(cmd_id),
+                }
+            ],
         )
-        if nuevo:
-            self.cx.notifier.encola(
-                f"rechazo:{cmd_id}",
-                render(
-                    "rechazado",
-                    {"motivo": motivo, "por": por or "quien te lo dio"},
-                    self.maquina.nombre,
-                    titulo,
-                ),
-            )
 
-    def _procesa(self, cmd: Comando) -> str:
+    def _archiva(self, f: Path, destino: Path) -> None:
+        destino.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(f, destino / f.name)
+        except OSError:
+            pass  # se queda en la bandeja: lo hecho es idempotente (ukey) y el aviso no se repite
+
+    def _liberacion_sigue(self, cmd: Comando) -> bool:
+        """Falta el recibo, o el recibo ya está y la generación pedida sigue en disco."""
+        if self._ya_recibido(cmd.cmd_id) is None:
+            return True
+        hold = control.leer(self.home)
+        return (
+            hold is not None and not hold.cause and hold.generation == cmd.texto
+        )
+
+    def _puede_archivar(self, cmd: Comando, previo: str) -> bool:
+        """Una liberación ya decidida termina de borrar su generación antes de salir de la bandeja."""
+        if cmd.tipo != "liberar" or not str(previo).startswith("liberad"):
+            return True
+        if self._hay_arbol():
+            return False
+        self._termina_liberacion(cmd, control.leer(self.home))
+        self.retencion = control.leer(self.home)
+        return True
+
+    def _ya_recibido(self, cmd_id: str) -> str | None:
+        for e in self.store.events(kind="CommandReceived"):
+            if e.data.get("cmd_id") == cmd_id:
+                return str(e.data.get("resultado", ""))
+        return None
+
+    def _procesa(self, cmd: Comando) -> str | None:
+        if cmd.tipo in _ORDENES:
+            return self._orden(cmd)
+        if self._retenido():
+            return "rechazado: el home está en mantenimiento"
         if cmd.tipo == "hecho":
             return self._hecho(cmd.plan_id, cmd)
         if cmd.tipo == "nota":
@@ -349,11 +503,10 @@ class Daemon:
             plan, self.cx.conf.escalera("implementar")
         ):
             raise PlanError(malos)
-        for repo in dict.fromkeys(b.repo for b in plan.blocks):
-            self.cx.ws.espejo(
-                repo
-            )  # antes de cargarlo: un repo que no existe rechaza el plan
-            rc = RepoConf.parse(self.fx.conf_base(repo)[1])
+        pines = self.fx.prepara_repos(plan)
+        for pin in pines:
+            rc = RepoConf.parse(pin["texto"])
+            repo = pin["repo"]
             if faltan := requisitos_faltantes(rc.requiere, self.maquina.tiene):
                 raise PlanError([motivo_requiere(self.maquina.nombre, repo, faltan)])
             for b in plan.blocks:
@@ -376,17 +529,48 @@ class Daemon:
         version = max(
             (e.data.get("version", i) for i, e in enumerate(cargas, 1)), default=0
         )
+        eventos: list[dict] = []
+        ya = {
+            e.data.get("repo")
+            for e in self.store.events(plan.id)
+            if e.kind == "RepoPinned"
+        }
+        for pin in pines:
+            if pin["repo"] in ya:
+                continue
+            eventos.append(
+                {
+                    "plan": plan.id,
+                    "block": "",
+                    "kind": "RepoPinned",
+                    "data": pin,
+                    "ukey": claves.repo_fijado(plan.id, pin["repo"]),
+                }
+            )
         if not cargas or _huella(cargas[-1].data["plan"]) != _huella(cmd.plan):
             version += 1
-            self.store.append(
-                plan.id,
-                "",
-                "PlanLoaded",
-                {"plan": cmd.plan, "por": cmd.por, "version": version},
-                ukey=claves.plan_cargado(plan.id, version),
+            eventos.append(
+                {
+                    "plan": plan.id,
+                    "block": "",
+                    "kind": "PlanLoaded",
+                    "data": {"plan": cmd.plan, "por": cmd.por, "version": version},
+                    "ukey": claves.plan_cargado(plan.id, version),
+                }
             )
-        self.fx.pin_repos(plan)
-        return f"tomado (versión {version})"
+        resultado = f"tomado (versión {version})"
+        # Un plan tomado no manda Telegram: el aviso nuevo queda para rechazos y avisos de plan.
+        eventos.append(
+            {
+                "plan": plan.id,
+                "block": "",
+                "kind": "CommandReceived",
+                "data": {"cmd_id": cmd.cmd_id, "tipo": cmd.tipo, "resultado": resultado},
+                "ukey": claves.comando(cmd.cmd_id),
+            }
+        )
+        self.store.append_batch(cmd.cmd_id, eventos)
+        return resultado
 
     def _hecho(self, plan_id: str, cmd: Comando) -> str:
         plan = next((p for p in self.plans() if p.id == plan_id), None)
@@ -405,6 +589,8 @@ class Daemon:
 
     def ingest_attempts(self, plan: Plan) -> None:
         snap = self._fold(plan)
+        if snap.control != "Activo" or self._retenido():
+            return
         for bid, bv in snap.blocks.items():
             for att in [a for a in bv.attempts if a.ended is None]:
                 out = self.fx.collect(plan, snap, bid, att)
@@ -420,14 +606,17 @@ class Daemon:
                 if out["kind"] == "corte":
                     key = f"retome:{plataforma.boot_id()}"
                     if not any(
-                        e.kind == "NoticeQueued" and e.data["key"] == key
+                        e.kind in ("NoticeQueued", "NoticeRequested")
+                        and e.data.get("key") == key
                         for e in self.store.events(plan.id)
                     ):
                         self.fx.notify(plan, snap, m.Notify(key, "", "retome", ()))
 
     def tick(self, now: float | None = None) -> bool:
         now = now if now is not None else time.time()
-        self._fase("trae_conf", lambda: self.trae_conf(now), now)
+        self.retencion = control.leer(self.home)
+        if not self._retenido():
+            self._fase("trae_conf", lambda: self.trae_conf(now), now)
         self._fase("recargar_conf", self.recargar_conf, now)
         self._fase("ingest_inbox", self.ingest_inbox, now)
         todo_hecho = True
@@ -445,13 +634,15 @@ class Daemon:
                 continue
         for plan in planes:
             todo_hecho = self._tick_plan(plan, planes, now) and todo_hecho
-        self._fase(
-            "ajusta_sueno",
-            lambda: self.ajusta_sueno(self._hay_trabajo(planes), now),
-            now,
-        )
-        self._fase("purga_registros", lambda: self.fx.purga_registros(planes, now), now)
+        if not self._retenido():
+            self._fase(
+                "ajusta_sueno",
+                lambda: self.ajusta_sueno(self._hay_trabajo(planes), now),
+                now,
+            )
+        self._fase("recupera_avisos", self._recupera_avisos, now)
         self._fase("envia_pendientes", self.cx.notifier.envia_pendientes, now)
+        self._fase("purga_registros", lambda: self.fx.purga_registros(planes, now), now)
         self._folds_fuera = None
         self._llamadas_fuera = None
         return todo_hecho and bool(planes)
@@ -485,14 +676,17 @@ class Daemon:
         except Exception as e:  # noqa: BLE001
             self._falla_fase(plan.id, "fold", e, now)
             return False
+        if snap.control != "Activo" or self._retenido():
+            snap = self._cierra(plan, snap, now)
         try:
-            self._fase(
-                "reconcilia_prs",
-                lambda: self.fx.reconcilia_prs(plan, snap),
-                now,
-                plan.id,
-            )
-            snap = self._fold(plan)
+            if snap.control == "Activo" and not self._retenido():
+                self._fase(
+                    "reconcilia_prs",
+                    lambda: self.fx.reconcilia_prs(plan, snap),
+                    now,
+                    plan.id,
+                )
+                snap = self._fold(plan)
             cd_fuera, int_fuera = self._cuentas_fuera(planes, plan)
             acciones = list(
                 m.decide(
@@ -504,6 +698,8 @@ class Daemon:
                     int_fuera,
                 )
             )
+            if self._retenido() or snap.control != "Activo":
+                acciones = [a for a in acciones if isinstance(a, m.Interrumpe)]
         except Exception as e:  # noqa: BLE001
             self._falla_fase(plan.id, "decide", e, now)
             return False
@@ -678,7 +874,228 @@ class Daemon:
                 ),
             )
 
+    def _retenido(self) -> bool:
+        self.retencion = control.leer(self.home)
+        return self.retencion is not None
+
+    def _ev(self, plan_id: str, kind: str, data: dict, ukey: str) -> dict:
+        return {"plan": plan_id, "block": "", "kind": kind, "data": data, "ukey": ukey}
+
+    def _recibo(self, cmd: Comando, resultado: str, eventos: list[dict]) -> str:
+        previo = self.store.decision(cmd.cmd_id)
+        if previo is not None:
+            return previo
+        self.store.append_batch(
+            cmd.cmd_id,
+            [
+                *eventos,
+                {
+                    "plan": cmd.plan_id,
+                    "block": "",
+                    "kind": "CommandReceived",
+                    "data": {
+                        "cmd_id": cmd.cmd_id,
+                        "tipo": cmd.tipo,
+                        "resultado": resultado,
+                    },
+                    "ukey": claves.comando(cmd.cmd_id),
+                },
+            ],
+        )
+        return resultado
+
+    def _orden(self, cmd: Comando) -> str | None:
+        from .formato import activa
+
+        activa(self.home)
+        if cmd.tipo == "liberar":
+            return self._liberar(cmd)
+        plan = next((p for p in self.plans() if p.id == cmd.plan_id), None)
+        if plan is None:
+            return self._recibo(cmd, "rechazado: no conozco ese plan", [])
+        actual = self._fold(plan).control
+        if cmd.tipo == "pausa":
+            if actual in ("CancelacionSolicitada", "Cancelado"):
+                return self._recibo(cmd, "rechazado: un plan cancelado no se pausa", [])
+            if actual in ("PausaSolicitada", "Pausado"):
+                return self._recibo(cmd, "pausa: ya estaba pedida", [])
+            return self._recibo(
+                cmd,
+                "pausa solicitada",
+                [
+                    self._ev(
+                        plan.id,
+                        "PausaSolicitada",
+                        {"cmd_id": cmd.cmd_id, "motivo": "operador"},
+                        f"control:{plan.id}:PausaSolicitada:{cmd.cmd_id}",
+                    )
+                ],
+            )
+        if cmd.tipo == "reanuda":
+            if actual in ("CancelacionSolicitada", "Cancelado"):
+                return self._recibo(
+                    cmd, "rechazado: un plan cancelado no se reanuda", []
+                )
+            if actual == "Activo":
+                return self._recibo(cmd, "rechazado: el plan no está en pausa", [])
+            return self._recibo(
+                cmd,
+                "reanudado",
+                [
+                    self._ev(
+                        plan.id,
+                        "Reanudado",
+                        {"cmd_id": cmd.cmd_id, "motivo": "operador"},
+                        f"control:{plan.id}:Reanudado:{cmd.cmd_id}",
+                    )
+                ],
+            )
+        if actual == "Cancelado":
+            return self._recibo(cmd, "cancela: ya estaba cancelado", [])
+        return self._recibo(
+            cmd,
+            "cancelacion solicitada",
+            [
+                self._ev(
+                    plan.id,
+                    "CancelacionSolicitada",
+                    {"cmd_id": cmd.cmd_id, "motivo": "operador"},
+                    f"control:{plan.id}:CancelacionSolicitada:{cmd.cmd_id}",
+                )
+            ],
+        )
+
+    def _liberar(self, cmd: Comando) -> str | None:
+        decision = self.store.decision(cmd.cmd_id)
+        hold = control.leer(self.home)
+        if decision == "liberado":
+            if not self._puede_archivar(cmd, decision):
+                return None
+            return decision
+        if decision is not None:
+            return decision
+        if hold is None:
+            return self._recibo(cmd, "rechazado: no hay retención", [])
+        if hold.cause:
+            return self._recibo(cmd, f"rechazado: {hold.cause}", [])
+        if hold.generation != cmd.texto:
+            return self._recibo(cmd, "rechazado: la generación no es la vigente", [])
+        if self._hay_arbol():
+            return None
+        resultado = self._recibo(cmd, "liberado", [])
+        self._termina_liberacion(cmd, control.leer(self.home))
+        self.retencion = control.leer(self.home)
+        return resultado
+
+    def _termina_liberacion(self, cmd: Comando, hold) -> None:
+        """Borra solo la generación ya decidida. Un hold nuevo o corrupto se queda."""
+        if hold is None or hold.cause or hold.generation != cmd.texto:
+            return
+        control.liberar(self.home, cmd.texto, {"arboles": "ausentes"})
+
+    def _hay_arbol(self) -> bool:
+        from .effects import arbol_ausente
+
+        for plan in self.plans():
+            if any(not arbol_ausente(att) for _, att in _abiertos(self._fold(plan))):
+                return True
+        return False
+
+    def _plazo(self, plan_id: str, now: float) -> float:
+        pedido = 0.0
+        for ev in self.store.events(plan_id):
+            if ev.kind in ("PausaSolicitada", "CancelacionSolicitada") and ev.ts >= pedido:
+                pedido = ev.ts
+        if not pedido:
+            pedido = self._cierre_desde.setdefault(plan_id, now)
+        return max(0.0, PLAZO_CIERRE_S - (now - pedido))
+
+    def _cmd_de(self, plan_id: str, kind: str) -> str:
+        cmd = ""
+        for ev in self.store.events(plan_id):
+            if ev.kind == kind:
+                cmd = str(ev.data.get("cmd_id") or cmd)
+        return cmd or "operador"
+
+    def _foto(self, plan: Plan, snap: m.Snapshot, block: str, role: str) -> str:
+        try:
+            return self.fx.foto_de(plan, snap, block, role)
+        except Exception:  # noqa: BLE001  la foto no decide si el árbol ya murió
+            return ""
+
+    def _cierra(self, plan: Plan, snap: m.Snapshot, now: float) -> m.Snapshot:
+        from .effects import arbol_ausente
+
+        abiertos = _abiertos(snap)
+        if not abiertos and snap.control in ("Activo", "Pausado", "Cancelado"):
+            return snap
+        self.fx.cerrar_arboles(
+            [att for _, att in abiertos], self._plazo(plan.id, now)
+        )
+        muertos = [(bid, att) for bid, att in abiertos if arbol_ausente(att)]
+        eventos = [
+            {
+                "plan": plan.id,
+                "block": bid,
+                "kind": "AttemptEnded",
+                "data": {
+                    "n": att.n,
+                    "role": att.role,
+                    "outcome": {
+                        "kind": "interrumpido",
+                        "detalle": "operador",
+                        "motivo": "operador",
+                        "foto": self._foto(plan, snap, bid, att.role),
+                    },
+                },
+                "ukey": claves.intento_terminado(plan.id, bid, att.role, att.n),
+            }
+            for bid, att in muertos
+        ]
+        if eventos:
+            marca = ",".join(f"{bid}:{att.role}:{att.n}" for bid, att in muertos)
+            self.store.append_batch(f"cierre:{plan.id}:intentos:{marca}", eventos)
+            snap = self._fold(plan)
+        if any(not arbol_ausente(att) for _, att in _abiertos(snap)):
+            return snap
+        if snap.control == "PausaSolicitada":
+            cmd = self._cmd_de(plan.id, "PausaSolicitada")
+            self.store.append_batch(
+                f"cierre:{plan.id}:Pausado:{cmd}",
+                [
+                    self._ev(
+                        plan.id,
+                        "Pausado",
+                        {"cmd_id": cmd, "motivo": "operador"},
+                        f"control:{plan.id}:Pausado:{cmd}",
+                    )
+                ],
+            )
+            self._cierre_desde.pop(plan.id, None)
+            return self._fold(plan)
+        if snap.control == "CancelacionSolicitada":
+            cmd = self._cmd_de(plan.id, "CancelacionSolicitada")
+            self.store.append_batch(
+                f"cierre:{plan.id}:Cancelado:{cmd}",
+                [
+                    self._ev(
+                        plan.id,
+                        "Cancelado",
+                        {"cmd_id": cmd, "motivo": "operador"},
+                        f"control:{plan.id}:Cancelado:{cmd}",
+                    )
+                ],
+            )
+            self._cierre_desde.pop(plan.id, None)
+            return self._fold(plan)
+        self._cierre_desde.pop(plan.id, None)
+        return snap
+
     def execute(self, plan: Plan, snap: m.Snapshot, a: m.Action) -> None:
+        if (self._retenido() or snap.control != "Activo") and not isinstance(
+            a, m.Interrumpe
+        ):
+            return
         f = {
             m.StartAttempt: self.fx.start_attempt,
             m.Verify: self.fx.verify,
@@ -719,7 +1136,8 @@ class Daemon:
                 terminado = False
             self.senal.avanzo(self._n_planes())
             try:
-                self.avisa_version_faltante()
+                if not self._retenido():
+                    self.avisa_version_faltante()
                 cambio = version.sha_actual() != self._sha_arranque
             except Exception:  # noqa: BLE001  mirar la versión nunca tumba al motor
                 cambio = False

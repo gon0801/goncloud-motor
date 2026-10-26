@@ -6,6 +6,11 @@
     motor recibo <cmd_id> --home H [--json]
     motor hecho <plan> <bloque> --home H                    David terminó un paso humano
     motor nota <plan> <bloque> <texto> --home H
+    motor pausa <plan> --home H
+    motor reanuda <plan> --home H
+    motor cancela <plan> --home H
+    motor mantenimiento activar --home H [--motivo TEXTO]
+    motor mantenimiento liberar --home H --generacion G
     motor doctor --home H [--json]                          qué puede correr aquí, sin modelo
     motor doctor --home H --como-servicio [--espera S]      cada ruta con un encargo de prueba, en el entorno del servicio
     motor instala --maquina mac|mini|pc --usuario U --home H --imprime
@@ -61,7 +66,38 @@ def _encola(home: Path, msg: dict, buzon: Path | None = None) -> str:
     return cmd_id
 
 
+def _estado_recibo(resultado: str) -> str:
+    if resultado.startswith("rechazado"):
+        return "rechazado"
+    if resultado.startswith(("pausa", "reanud", "cancel", "liberad")):
+        return "aplicada"
+    return "tomado"
+
+
+def _en_bandeja(home: Path, cmd_id: str) -> bool:
+    inbox = home / "inbox"
+    if not inbox.is_dir():
+        return False
+    for f in inbox.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("cmd_id") == cmd_id:
+            return True
+    return False
+
+
 def _recibo(home: Path, cmd_id: str) -> dict:
+    local = home / "recibos" / f"{cmd_id}.json"
+    if local.is_file():
+        try:
+            data = json.loads(local.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        if isinstance(data, dict) and data.get("cmd_id") == cmd_id:
+            data.setdefault("aviso", _aviso_de(home, cmd_id))
+            return data
     if _db(home).exists():
         con = sqlite3.connect(f"file:{_db(home)}?mode=ro", uri=True)
         try:
@@ -72,18 +108,96 @@ def _recibo(home: Path, cmd_id: str) -> dict:
                 if d["cmd_id"] == cmd_id:
                     return {
                         "cmd_id": cmd_id,
-                        "estado": "tomado"
-                        if not d["resultado"].startswith("rechazado")
-                        else "rechazado",
+                        "estado": _estado_recibo(str(d["resultado"])),
                         "detalle": d["resultado"],
+                        "aviso": _aviso_de(home, cmd_id),
                     }
         finally:
             con.close()
+    if _en_bandeja(home, cmd_id):
+        return {
+            "cmd_id": cmd_id,
+            "estado": "encolado",
+            "detalle": "el motor lo toma en cuanto esté encendido",
+            "aviso": _aviso_de(home, cmd_id),
+        }
     return {
         "cmd_id": cmd_id,
-        "estado": "encolado",
-        "detalle": "el motor lo toma en cuanto esté encendido",
+        "estado": "desconocido",
+        "detalle": "no hay una orden con ese id",
+        "aviso": "sin_aviso",
     }
+
+
+def _guarda_recibo(home: Path, cmd_id: str, estado: str, detalle: str, extra: dict) -> None:
+    dest = home / "recibos"
+    dest.mkdir(parents=True, exist_ok=True)
+    payload = {"cmd_id": cmd_id, "estado": estado, "detalle": detalle, **extra}
+    tmp = dest / f".{cmd_id}.tmp"
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, dest / f"{cmd_id}.json")
+
+
+def _aviso_de(home: Path, cmd_id: str) -> str:
+    """Estado del aviso de esa orden. Sin archivo no se dice entregado."""
+    from .notify import estado_aviso
+
+    visto = estado_aviso(home, [f"cmd:{cmd_id}", f"rechazo:{cmd_id}"])
+    if visto:
+        return visto
+    if not _db(home).exists():
+        return "sin_aviso"
+    con = sqlite3.connect(f"file:{_db(home)}?mode=ro", uri=True)
+    try:
+        for (raw,) in con.execute(
+            "SELECT data FROM events WHERE kind = 'NoticeRequested'"
+        ):
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                continue
+            if data.get("notice_id") == f"cmd:{cmd_id}" or data.get("key") == f"rechazo:{cmd_id}":
+                return "desconocido"
+    except sqlite3.Error:
+        return "desconocido"
+    finally:
+        con.close()
+    return "sin_aviso"
+
+
+def _cuenta(path: Path) -> int:
+    if not path.is_dir():
+        return 0
+    return sum(1 for p in path.glob("*.txt") if p.is_file())
+
+
+def _avisos(home: Path) -> dict:
+    from .notify import salud
+    from .store import Store
+
+    eventos = []
+    if _db(home).exists():
+        try:
+            eventos = Store.solo_lectura(home / "motor.db").events(
+                kind=("NoticeQueued", "NoticeRequested")
+            )
+        except sqlite3.Error:
+            eventos = []
+    return salud(home, eventos)
+
+
+def _por_conciliar(eventos) -> list[str]:
+    ultimo: dict[str, str | None] = {}
+    for e in eventos:
+        if e.kind == "Intencion":
+            ident = str(e.data.get("id") or "")
+            if ident:
+                ultimo.setdefault(ident, None)
+        elif e.kind == "EfectoObservado":
+            ident = str(e.data.get("intencion") or "")
+            if ident:
+                ultimo[ident] = str(e.data.get("resultado") or "")
+    return [ident for ident, res in ultimo.items() if res in (None, "", "incierto")]
 
 
 def _valida(path: Path, home: Path | None):
@@ -106,13 +220,80 @@ def _valida(path: Path, home: Path | None):
     return plan
 
 
+def _retencion(home: Path) -> dict | None:
+    from .control import leer
+
+    hold = leer(home)
+    if hold is None:
+        return None
+    return {
+        "retenido": True,
+        "generacion": hold.generation,
+        "solicitud": hold.request_id,
+        "motivo": hold.reason,
+        "desde": hold.created_at,
+        "causa": hold.cause,
+    }
+
+
+def _arboles(snap, retenido: bool) -> list[dict]:
+    from .effects import observar_arbol
+
+    parada = retenido or snap.control in (
+        "PausaSolicitada",
+        "CancelacionSolicitada",
+    )
+    pares = [
+        (bid, att)
+        for bid, bv in snap.blocks.items()
+        for att in bv.attempts
+    ]
+    pares += [(bid, att) for (bid, _n, _role), att in snap.huerfanos]
+    out = []
+    for bid, att in pares:
+        if att.ended is not None:
+            continue
+        obs = observar_arbol(att)
+        if obs == "ausente" and not parada:
+            continue
+        out.append(
+            {
+                "bloque": bid,
+                "papel": att.role,
+                "n": att.n,
+                "pid": int((att.proc or {}).get("pid") or 0),
+                "vivo": obs == "vivo",
+                "observacion": obs,
+            }
+        )
+    return out
+
+
+def _resumen(retencion: dict, avisos: dict) -> dict:
+    return {
+        "plan": "",
+        "titulo": "",
+        "bloques": [],
+        "hecho": False,
+        "control": "",
+        "retencion": retencion,
+        "arboles_pendientes": [],
+        "efectos_por_conciliar": [],
+        "avisos": avisos,
+    }
+
+
 def _estado(home: Path) -> list[dict]:
     from .daemon import planes_de
     from .diagnostico import diagnostico
     from .store import Store
 
+    retencion = _retencion(home)
+    avisos = _avisos(home)
     if not (home / "motor.db").exists():
-        return []
+        if retencion is None:
+            return []
+        return [_resumen(retencion, avisos)]
     try:
         policy = m.Policy.from_conf(load_conf(load_maquina(home).conf))
     except (ConfError, OSError, KeyError):
@@ -147,8 +328,15 @@ def _estado(home: Path) -> list[dict]:
                 "titulo": plan.titulo,
                 "bloques": bloques,
                 "hecho": all(b["estado"] == "hecho" for b in bloques),
+                "control": snap.control,
+                "retencion": retencion,
+                "arboles_pendientes": _arboles(snap, retencion is not None),
+                "efectos_por_conciliar": _por_conciliar(store.events(plan.id)),
+                "avisos": avisos,
             }
         )
+    if not out and retencion is not None:
+        return [_resumen(retencion, avisos)]
     return out
 
 
@@ -227,6 +415,16 @@ def doctor(home: Path, programadas_sistema: bool = True) -> dict:
     if not conf.avisos.get("chat"):
         out["ok"] = False
         out["problemas"].append("avisos: falta el chat de Telegram ([avisos] chat)")
+    out["avisos"] = _avisos(home)
+    if out["avisos"]["causa"]:
+        out["problemas"].append(f"avisos: {out['avisos']['causa']}")
+    if out["avisos"]["fallidos"]:
+        out["ok"] = False
+        out["problemas"].append(f"avisos: {out['avisos']['fallidos']} fallidos")
+    if out["avisos"]["desconocidos"]:
+        out["problemas"].append(
+            f"avisos: {len(out['avisos']['desconocidos'])} desconocidos"
+        )
     out["senal"] = "señal a Kuma: " + (
         "configurada" if dict(mq.secretos).get(senal.VARIABLE) else "sin configurar"
     )
@@ -459,6 +657,18 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("bloque")
     s.add_argument("texto")
     s.add_argument("--home", type=Path, required=True)
+    for nombre in ("pausa", "reanuda", "cancela"):
+        s = sub.add_parser(nombre)
+        s.add_argument("plan")
+        s.add_argument("--home", type=Path, required=True)
+    s = sub.add_parser("mantenimiento")
+    acc = s.add_subparsers(dest="accion", required=True)
+    s = acc.add_parser("activar")
+    s.add_argument("--home", type=Path, required=True)
+    s.add_argument("--motivo", default="recuperacion")
+    s = acc.add_parser("liberar")
+    s.add_argument("--home", type=Path, required=True)
+    s.add_argument("--generacion", required=True)
     s = sub.add_parser("doctor")
     s.add_argument("--home", type=Path, required=True)
     s.add_argument("--json", action="store_true")
@@ -579,17 +789,48 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if a.cmd in ("pausa", "reanuda", "cancela"):
+        print(_encola(a.home, {"tipo": a.cmd, "plan": a.plan}))
+        return 0
+    if a.cmd == "mantenimiento":
+        if a.accion == "activar":
+            from .control import activar
+
+            solicitud = uuid.uuid4().hex
+            hold = activar(a.home, solicitud, a.motivo)
+            detalle = hold.cause or f"retenido {hold.generation}"
+            _guarda_recibo(
+                a.home,
+                solicitud,
+                "aplicada",
+                detalle,
+                {"generacion": hold.generation},
+            )
+            print(f"{detalle} (recibo {solicitud})")
+            return 0
+        print(_encola(a.home, {"tipo": "liberar", "generacion": a.generacion}))
+        return 0
     if a.cmd == "estado":
         est = _estado(a.home)
         if a.json:
             print(json.dumps(est, ensure_ascii=False))
         else:
             for p in est:
-                print(f"{p['plan']}: {p['titulo']}")
+                if not p["plan"]:
+                    continue
+                marca = ""
+                if p.get("control") not in (None, "", "Activo"):
+                    marca = f" [{p['control']}]"
+                print(f"{p['plan']}: {p['titulo']}{marca}")
                 for b in p["bloques"]:
                     print(
                         f"  {b['bloque']:<4} {b['estado']:<32} {b['agente']:<8} {b['motivo']}"
                     )
+            retenidos = [p["retencion"] for p in est if p.get("retencion")]
+            if retenidos:
+                r = retenidos[0]
+                causa = f" ({r['causa']})" if r.get("causa") else ""
+                print(f"retención {r['generacion']}{causa}")
         return 0
     if a.cmd == "doctor":
         if a.como_servicio:
@@ -639,11 +880,18 @@ def main(argv: list[str] | None = None) -> int:
         print(motivo)
         return 0 if ok else 1
     if a.cmd == "daemon":
+        from .control import leer
         from .daemon import Daemon, OtroMotor
         from .formato import FormatoIncompatible
 
+        hold = leer(a.home)
         salida, vuelta = _recupera_conf(a.home)
         if salida is not None:
+            if hold is not None:
+                print(
+                    "motor: el home sigue retenido; la configuración no alcanzó para arrancar el daemon",
+                    file=sys.stderr,
+                )
             return salida
         try:
             d = Daemon(a.home, a.checks_cada)

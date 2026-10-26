@@ -19,7 +19,7 @@ segunda arena con tres candidatos (`docs/arena/motor/`) y un juez independiente:
 5. OpenClaw y Hermes reparten las tareas chicas de solo lectura entre sus agentes. **Todo lo que
    cambie código va al motor.** Se retira la cadena fija de 7 pasos de Hermes.
 6. Mismos papeles, tabla de modelos y reglas en las dos marcas.
-7. Revisor: Claude. Si no está, **cualquier modelo que no trabajó el bloque.**
+7. Revisor: **cualquier modelo que no trabajó el bloque.**
 8. Avisos en lenguaje llano por el bot de la marca que corre el plan.
 9. Sirve para cualquier repo, no solo Orbit.
 
@@ -64,8 +64,9 @@ latidos que no hacen falta con un solo escritor.
 - **Un solo camino al merge.** `MergeTicket` exige que en el mismo SHA haya entrega verificada,
   PR, APROBADO del revisor, PR marcado listo y checks en verde. Después corre
   `gh pr merge --match-head-commit`.
-- **No existen los estados FALLADO ni PAUSADO.** Una falla lleva a reintento, relevo o arreglo.
-  Un corte de luz (cambió el `boot_id`) no cuenta como falla.
+- **Un bloque no tiene estado FALLADO.** Una falla lleva a reintento, relevo o arreglo.
+  Un corte de luz (cambió el `boot_id`) no cuenta como falla. El plan sí puede quedar en pausa
+  o cancelado. Eso vive en el registro y no lo borra una nota ni otra entrega del mismo plan.
 - **Cuota por cuenta** (Sonnet y Opus comparten Anthropic). La autoría y la exclusión del revisor
   van por modelo.
 - **runwrap.** Lanza al agente separado: stdin nulo, grupo propio, tope de tiempo y corte si no
@@ -154,3 +155,43 @@ G (retirar la cadena de Hermes) puede ir en cualquier momento.
   bloque, y llegan los avisos.
 
 Primer plan real después de I: INGESTA 01 de Orbit (PR #483).
+
+## MOTOR 09: control antes de seguir
+
+- La retención del home es `mantenimiento.json`, con generación e id de solicitud. Se lee antes
+  de la configuración y de recuperarla sola. Un archivo ilegible sigue retenido. Una liberación
+  vieja no borra una generación nueva. Solo el daemon compatible libera, y solo si nombra la
+  generación vigente y ya no hay árboles propios.
+- El control del plan es `Activo`, `PausaSolicitada`, `Pausado`, `CancelacionSolicitada` o
+  `Cancelado`. Sale de los eventos. `Cancelado` no vuelve con una nota ni con otra entrega.
+  Reanudar no levanta el mantenimiento del home y no manda `SIGCONT`.
+- El formato 3 se eleva bajo candado antes de escribir semántica nueva. No se rebaja. `Store`,
+  `aparte` y `runwrap` lo comprueban. El historial anterior se conserva.
+- `Store.append_batch` escribe una transición de control y su recibo en una sola transacción.
+  El mismo id de comando devuelve lo ya escrito.
+- Un efecto externo queda `aplicado`, `no_aplicado` o `incierto`. Una pausa no lo repite ni lo
+  da por deshecho. El revisor sigue siendo un modelo que no trabajó el bloque.
+- En Windows hay una sola creación. El trabajador separado sobrevive al daemon. El comando
+  contenido queda en un Job que mata el árbol al cerrarse, y solo corre después de entrar en
+  ese Job. Si crear el proceso devuelve `winerror` 5, un comando contenido se reintenta una
+  vez sin `CREATE_BREAKAWAY_FROM_JOB`. Un trabajador separado no nace en ese segundo intento.
+  El entorno queda rechazado y el agente no corre. Otro error no crea un segundo proceso.
+- La marca de arranque es `reservado`, `proceso_observado`, `creacion_fallida` o
+  `arranque_por_conciliar`. Solo un proceso observado publica `AttemptStarted`. Una reserva
+  ambigua o un `proc` viejo vacío no se relanza ni se explica con una causa inventada. Si no
+  se puede mirar el Job o el árbol, la observación sigue en `incierto`. Si el wrapper arrancó
+  y el agente no se pudo crear, el intento termina en `creacion_fallida` con la causa saneada.
+  Eso no pausa el modelo ni se lo pasa a otro. Una nota o un cambio de máquina permiten otro
+  intento.
+- Aceptar un plan lee los pines antes de abrir la transacción. En un solo lote entran los
+  pines nuevos, `PlanLoaded` si el texto cambió, y el recibo. El mismo `cmd_id` devuelve la
+  decisión ya guardada. Un fallo de la base deja el archivo en la bandeja y no inventa un
+  rechazo. Tomar un plan no manda un aviso nuevo.
+- Un aviso pedido queda como `NoticeRequested` con id estable. Se materializa al arrancar y
+  en cada tick. Los archivos viejos se adoptan; un `NoticeQueued` sin archivo queda
+  desconocido y no se reenvía. La entrega se confirma solo si el transporte responde 200 y
+  `ok` es exactamente verdadero. Red, 429 y 5xx siguen pendientes con una espera de a lo
+  más 15 minutos. Otro 4xx queda fallido, y un reintento usa el mismo id. Si el proceso
+  muere después de enviar y antes de archivar, el aviso puede salir otra vez. Una url de
+  avisos sin esquema `http` o `https` no se usa. La causa queda visible y no incluye el token
+  ni la url del bot. La recarga no sustituye el notifier si la url nueva no es válida.

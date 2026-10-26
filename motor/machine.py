@@ -109,6 +109,7 @@ NO_ES_FALLA = (
     "corte",
     "interrumpido",
     "bloqueado",
+    "creacion_fallida",
     "sin_pstack",
     "sin_repro",
 )  # un apagón, una orden del motor o lo que no es el código no son culpa del agente
@@ -191,7 +192,7 @@ class BlockView:
         default_factory=dict
     )  # "deployed:<sha>" | "proved:<sha>" -> (desde, último) de salidas 75 seguidas
     bloqueo: dict | None = (
-        None  # {"motivo", "huella_maquina"}: el agente dijo que no es el código; espera nota, plan o máquina
+        None  # {"motivo", "huella_maquina", "origen"}: espera nota, plan o máquina
     )
     reabierto: dict | None = (
         None  # {"version", "cambios", "agente", "desde"}: una versión nueva del plan tocó un bloque ya hecho
@@ -301,6 +302,7 @@ class Snapshot:
     limpio: bool = False  # ya se borraron sus ramas y copias de trabajo
     version: int = 0  # la del plan vigente: el de la última entrega
     huerfanos: tuple = ()  # intentos en curso de bloques que la versión vigente ya no tiene
+    control: str = "Activo"  # Activo | PausaSolicitada | Pausado | CancelacionSolicitada | Cancelado
 
 
 RESULTADOS = {"Verified": "verified", "Proved": "proved", "Deployed": "deployed"}
@@ -317,6 +319,7 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
     inicio = events[0].ts if events else 0.0
     limpio = any(e.kind == "Limpiado" for e in events)
     version, cargas, previo = 0, 0, None
+    control = "Activo"
     huerfanos: dict[tuple[str, int, str], Attempt] = {}
     ultimos: dict[tuple[str, str], dict] = {}  # (bloque, campo) -> último resultado visto hasta aquí
     crudo_merged: dict[str, str] = {}  # bloque -> SHA del último Merged
@@ -355,6 +358,14 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                     if a.role == "implementar" and a.ended is None and todos:
                         a.cambios += [f"el plan cambió: {c.texto}" for c in todos]
             previo = {b.id: b for b in ahora.blocks}
+        elif e.kind in (
+            "PausaSolicitada",
+            "Pausado",
+            "Reanudado",
+            "CancelacionSolicitada",
+            "Cancelado",
+        ):
+            control = _avanza_control(control, e.kind)
         elif bv is None and e.kind == "AttemptStarted":
             huerfanos[(e.block, d["n"], d["role"])] = Attempt(
                 n=d["n"],
@@ -371,8 +382,8 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
             cooldowns[d["cuenta"]] = max(cooldowns.get(d["cuenta"], 0), d["hasta"])
         elif e.kind == "RepoPinned":
             repos[d["repo"]] = d
-        elif e.kind == "NoticeQueued":
-            (bv.notices if bv else plan_notices).add(d["key"])
+        elif e.kind in ("NoticeQueued", "NoticeRequested"):
+            (bv.notices if bv else plan_notices).add(d.get("key") or d.get("notice_id") or "")
         elif bv is None:
             continue
         elif e.kind == "AttemptStarted":
@@ -456,18 +467,26 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                         )
                     if a.role == "implementar" and (
                         a.modalidad != "aclarar"
-                        or d["outcome"].get("kind") == "bloqueado"
+                        or d["outcome"].get("kind")
+                        in ("bloqueado", "creacion_fallida")
                     ):
-                        bv.bloqueo = (
-                            {
+                        kind = d["outcome"].get("kind")
+                        if kind == "bloqueado":
+                            bv.bloqueo = {
                                 "motivo": d["outcome"].get("detalle", ""),
                                 "huella_maquina": d["outcome"].get(
                                     "huella_maquina", ""
                                 ),
+                                "origen": "agente",
                             }
-                            if d["outcome"].get("kind") == "bloqueado"
-                            else None
-                        )
+                        elif kind == "creacion_fallida":
+                            bv.bloqueo = {
+                                "motivo": d["outcome"].get("detalle", ""),
+                                "huella_maquina": "",
+                                "origen": "creacion",
+                            }
+                        else:
+                            bv.bloqueo = None
         elif e.kind in RESULTADOS:
             ultimos[(e.block, RESULTADOS[e.kind])] = d
             resultados.append((bv, e))
@@ -567,7 +586,27 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
         limpio=limpio,
         version=version,
         huerfanos=tuple((k, a) for k, a in huerfanos.items()),
+        control=control,
     )
+
+
+def _avanza_control(actual: str, kind: str) -> str:
+    """Cancelado es terminal. Una nota o una carga de plan no pasan por aquí."""
+    if actual == "Cancelado":
+        return actual
+    if kind == "CancelacionSolicitada":
+        return "CancelacionSolicitada"
+    if kind == "Cancelado":
+        return "Cancelado"
+    if actual == "CancelacionSolicitada":
+        return actual
+    if kind == "PausaSolicitada":
+        return "PausaSolicitada"
+    if kind == "Pausado" and actual == "PausaSolicitada":
+        return "Pausado"
+    if kind == "Reanudado" and actual in ("PausaSolicitada", "Pausado"):
+        return "Activo"
+    return actual
 
 
 # --------------------------------------------------------------------------- estado
@@ -1052,6 +1091,15 @@ def bloqueo(
     (cuarentena de credenciales) o pausa (falla pasajera reciente)."""
     if espera_hecho(bv, role):
         return "fuera", 0.0
+    ultimo = next(
+        (a for a in reversed(bv.attempts) if a.role == role and a.ended), None
+    )
+    if (
+        ultimo
+        and ultimo.ended.get("kind") == "creacion_fallida"
+        and ultimo.ended_at >= bv.hecho_ts
+    ):
+        return "entorno", 0.0
     if role == "implementar" and bv.aclarar:
         pendientes = {p.id for p in bv.aclarar}
         for a in reversed(bv.attempts):
@@ -1140,7 +1188,15 @@ def _elige_pasada(
 # Cómo termina un revisor sin que su prompt tenga la culpa: otro revisor con las mismas
 # instrucciones no lo puede corregir, así que no se le cuenta.
 FINES_AJENOS_AL_REVISOR = frozenset(
-    {"cuota", "rate_limit", "auth", "corte", "perdido", "interrumpido"}
+    {
+        "cuota",
+        "rate_limit",
+        "auth",
+        "corte",
+        "perdido",
+        "interrumpido",
+        "creacion_fallida",
+    }
 )
 
 
@@ -1266,6 +1322,8 @@ def decide(
         snap = dataclasses.replace(
             snap, cooldowns=cd, intentos_fuera=tuple(intentos_fuera)
         )
+    if snap.control != "Activo":
+        return []
     from . import avisos, diagnostico  # se importan aquí: ambos dependen de este módulo
 
     policy = policy.para(snap.plan)

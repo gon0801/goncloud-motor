@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import enum
 import os
 
 if os.name == "nt":  # pragma: no cover - se prueba en la PC
@@ -19,26 +20,54 @@ if os.name == "nt":  # pragma: no cover - se prueba en la PC
         boot_id_sistema,
         candado_exclusivo,
         contener,
+        cerrar_huerfanos,
         hora_inicio,
         kwargs_grupo,
         matar_grupo,
         matar_grupo_pid,
         pid_vivo,
+        presencia_grupo,
+        sincroniza_directorio,
     )
 else:
     from .posix import (
         boot_id_sistema,
         candado_exclusivo,
+        cerrar_huerfanos,
         contener,
         hora_inicio,
         kwargs_grupo,
         matar_grupo,
         matar_grupo_pid,
         pid_vivo,
+        presencia_grupo,
+        sincroniza_directorio,
     )
 
 import subprocess
 from pathlib import Path
+
+
+class Propiedad(enum.Enum):
+    """TrabajadorSeparado sobrevive al daemon. ComandoContenido muere con quien lo lanzó."""
+
+    TRABAJADOR_SEPARADO = "trabajador_separado"
+    COMANDO_CONTENIDO = "comando_contenido"
+
+
+class ProcesoCreado:
+    def __init__(self, proceso: subprocess.Popen, separacion: str, job: str = ""):
+        self.proceso = proceso
+        self.separacion = separacion
+        self.job = job
+
+    def liberar(self) -> None:
+        """Arranca un comando contenido que se creó suspendido, ya con su Job."""
+        fn = getattr(self.proceso, "_motor_liberar", None)
+        if fn is None:
+            return
+        self.proceso._motor_liberar = None
+        fn()
 
 
 def _clase_marca(x) -> str:
@@ -80,18 +109,34 @@ def boot_id() -> str:
     return os.environ.get("MOTOR_BOOT_ID") or boot_id_sistema()
 
 
+def crear_proceso(cmd: list[str], propiedad: Propiedad, **kwargs) -> ProcesoCreado:
+    """Una sola política de creación. En Windows el reintento por permiso vive en ese módulo."""
+    if os.name == "nt":
+        from .windows import crear_proceso as _crear
+    else:
+        from .posix import crear_proceso as _crear
+    return _crear(cmd, propiedad, **kwargs)
+
+
 def lanzar_separado(cmd: list[str], cwd: Path, env: dict, log: Path) -> dict:
     with open(log, "ab") as out:
-        p = subprocess.Popen(
+        creado = crear_proceso(
             cmd,
+            Propiedad.TRABAJADOR_SEPARADO,
             cwd=cwd,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=subprocess.STDOUT,
-            **kwargs_grupo(),
         )
-    return {"pid": p.pid, "boot_id": boot_id(), "inicio": hora_inicio(p.pid)}
+    p = creado.proceso
+    return {
+        "pid": p.pid,
+        "boot_id": boot_id(),
+        "inicio": hora_inicio(p.pid),
+        "job": creado.job,
+        "separacion": creado.separacion,
+    }
 
 
 def estado_proc(proc: dict) -> str:
@@ -110,7 +155,7 @@ def matar_proc(pid: int, inicio: str) -> bool:
     toca nada: matar a ciegas por pid podría llevarse a un proceso ajeno."""
     if not inicio or not pid_vivo(pid) or hora_inicio(pid) != inicio:
         return False
-    matar_grupo_pid(pid)
+    matar_grupo_pid(pid, inicio)
     return True
 
 
@@ -130,7 +175,10 @@ def candado(ruta: Path):
 
 
 __all__ = [
+    "Propiedad",
+    "ProcesoCreado",
     "boot_id",
+    "crear_proceso",
     "lanzar_separado",
     "estado_proc",
     "hora_inicio",
@@ -139,4 +187,7 @@ __all__ = [
     "kwargs_grupo",
     "contener",
     "matar_grupo",
+    "sincroniza_directorio",
+    "presencia_grupo",
+    "cerrar_huerfanos",
 ]

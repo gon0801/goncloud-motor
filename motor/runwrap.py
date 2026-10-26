@@ -39,7 +39,7 @@ import time
 from pathlib import Path
 
 from . import entrega, llamadas, plataforma
-from .plataforma import contener, kwargs_grupo, matar_grupo
+from .plataforma import matar_grupo
 from .workspace import foto_wip
 
 _SALTA = {".git", ".venv", "node_modules", "__pycache__"}
@@ -132,6 +132,20 @@ def _sin_shims(cmd: list[str], env: dict) -> list[str]:
     return [real, *cmd[1:]] if real else cmd
 
 
+def _publica(ruta: Path, texto: str) -> None:
+    tmp = ruta.with_name(ruta.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(texto)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, ruta)
+
+
+def _outcome(d: Path, datos: dict) -> None:
+    _publica(d / "outcome.json", json.dumps(datos, ensure_ascii=False))
+    plataforma.sincroniza_directorio(d)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True)
@@ -153,112 +167,171 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
+    if a.home:
+        from .formato import FormatoIncompatible, activa, admite_escritor
+
+        try:
+            admite_escritor(Path(a.home))
+            activa(Path(a.home))
+        except FormatoIncompatible as e:
+            print(f"motor: {e}", file=sys.stderr)
+            return 1
     d, cwd = Path(a.dir), Path(a.cwd)
+    # Un segundo envoltorio del mismo intento no escribe resultado ni arranca otro agente.
+    candado = plataforma.candado(d / "intento.lock")
+    if candado is None:
+        return 0
     log = d / "log.txt"
     errores = d / "stderr.txt"
     fotos: list[str] = []
     antes = _huella_arbol(cwd)
     inicio = time.time()
+    _publica(
+        d / "wrapper.json",
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "inicio": plataforma.hora_inicio(os.getpid()),
+                "boot_id": plataforma.boot_id(),
+                "token": os.environ.get("MOTOR_LAUNCH_TOKEN", ""),
+                "job": "",
+            }
+        ),
+    )
+    plataforma.sincroniza_directorio(d)
+    fallo_creacion: BaseException | None = None
+    p = None
     with open(log, "ab") as out, open(errores, "ab") as err:
         env_agente = {**os.environ, "MOTOR_ATTEMPT_DIR": str(d)}
         cmd = _sin_shims(cmd, env_agente)
-        p = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=out,
-            stderr=err,
-            env=env_agente,
-            **kwargs_grupo(),
-        )
-        contener(p)
-        # la hora de inicio va primero: con agent.pid presente ya hay con qué confirmar que sigue siendo él
-        (d / "agent.inicio").write_text(plataforma.hora_inicio(p.pid), encoding="utf-8")
-        (d / "agent.pid").write_text(str(p.pid), encoding="utf-8")
-        clave = f"agente-{os.getpid()}"
-        if a.home and a.cuenta:
-            llamadas.registra(
-                Path(a.home),
-                clave,
+        try:
+            creado = plataforma.crear_proceso(
+                cmd,
+                plataforma.Propiedad.COMANDO_CONTENIDO,
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                env=env_agente,
+            )
+            p = creado.proceso
+            # Identidad antes de soltar el proceso: en Windows sigue suspendido, ya dentro del Job.
+            _publica(d / "agent.inicio", plataforma.hora_inicio(p.pid))
+            _publica(d / "agent.pid", str(p.pid))
+            if creado.job:
+                _publica(d / "agent.job", creado.job)
+            plataforma.sincroniza_directorio(d)
+            creado.liberar()
+        except OSError as e:
+            fallo_creacion = e
+        if fallo_creacion is None and p is not None:
+            clave = f"agente-{os.getpid()}"
+            if a.home and a.cuenta:
+                llamadas.registra(
+                    Path(a.home),
+                    clave,
+                    {
+                        "tipo": "agente",
+                        "cuenta": a.cuenta,
+                        "pid": os.getpid(),
+                        "inicio": inicio,
+                    },
+                )
+            ultimo = (log.stat().st_size, errores.stat().st_size, _mtime_arbol(cwd))
+            ultimo_cambio = ultimo_escaneo = time.time()
+            huella_p, _ = _huella_pstack(d)
+            ultimo_cambio_p = 0.0
+            abierta_antes = False
+            timed_out = no_progress = cerrado = False
+            espera = entrega.Espera(rama=a.entrega_rama, sha=a.entrega_sha)
+            foto_lock = threading.Lock()
+            foto_stop = threading.Event()
+
+            def _foto() -> None:
+                with foto_lock:
+                    try:
+                        fotos.append(foto_wip(cwd, a.wip_rama, a.wip_local))
+                    except Exception as e:  # noqa: BLE001
+                        fotos.append(f"error: {e}")
+
+            def _fotos_periodicas() -> None:
+                while not foto_stop.wait(a.wip_cada):
+                    _foto()
+
+            if a.wip_rama:
+                threading.Thread(target=_fotos_periodicas, daemon=True).start()
+            while p.poll() is None:
+                time.sleep(0.2)
+                if time.time() - ultimo_escaneo >= 10:
+                    ultimo_escaneo = time.time()
+                    ahora = (log.stat().st_size, errores.stat().st_size, _mtime_arbol(cwd))
+                    if ahora != ultimo:
+                        ultimo, ultimo_cambio = ahora, time.time()
+                entrego = espera.vigila(d, cwd)
+                nueva_p, llamada_abierta = _huella_pstack(d)
+                if nueva_p != huella_p or llamada_abierta or abierta_antes:
+                    huella_p, ultimo_cambio_p = nueva_p, time.time()
+                abierta_antes = llamada_abierta
+                if (
+                    entrego >= inicio
+                    and time.time() - max(entrego, ultimo_cambio, ultimo_cambio_p)
+                    > a.cierre
+                ):
+                    cerrado = True
+                    matar_grupo(p)
+                    break
+                if time.time() - inicio > a.timeout:
+                    timed_out = True
+                elif time.time() - ultimo_cambio > a.sin_avance:
+                    no_progress = True
+                if timed_out or no_progress:
+                    matar_grupo(p)
+                    break
+            espera.vigila(d, cwd)
+            if a.home and a.cuenta:
+                llamadas.quita(Path(a.home), clave)
+            if a.wip_rama:
+                foto_stop.set()
+                hilo_final = threading.Thread(target=_foto, daemon=True)
+                hilo_final.start()
+                hilo_final.join(timeout=5)
+            _outcome(
+                d,
                 {
-                    "tipo": "agente",
-                    "cuenta": a.cuenta,
-                    "pid": os.getpid(),
-                    "inicio": inicio,
+                    "exit": 0 if cerrado else p.returncode,
+                    "cerrado_tras_resultado": cerrado,
+                    "timed_out": timed_out,
+                    "no_progress": no_progress,
+                    "tail": log.read_text(errors="replace", encoding="utf-8")[-2000:],
+                    "stderr_tail": errores.read_text(errors="replace", encoding="utf-8")[-2000:],
+                    "fotos": fotos[-5:],
+                    "segundos": round(time.time() - inicio, 1),
+                    "toco_carpeta": _huella_arbol(cwd) != antes,
                 },
             )
-        ultimo = (log.stat().st_size, errores.stat().st_size, _mtime_arbol(cwd))
-        ultimo_cambio = ultimo_escaneo = time.time()
-        huella_p, _ = _huella_pstack(d)
-        ultimo_cambio_p = 0.0
-        abierta_antes = False
-        timed_out = no_progress = cerrado = False
-        espera = entrega.Espera(rama=a.entrega_rama, sha=a.entrega_sha)
-        foto_lock = threading.Lock()
-        foto_stop = threading.Event()
-
-        def _foto() -> None:
-            with foto_lock:
-                try:
-                    fotos.append(foto_wip(cwd, a.wip_rama, a.wip_local))
-                except Exception as e:  # noqa: BLE001
-                    fotos.append(f"error: {e}")
-
-        def _fotos_periodicas() -> None:
-            while not foto_stop.wait(a.wip_cada):
-                _foto()
-
-        if a.wip_rama:
-            threading.Thread(target=_fotos_periodicas, daemon=True).start()
-        while p.poll() is None:
-            time.sleep(0.2)
-            if time.time() - ultimo_escaneo >= 10:
-                ultimo_escaneo = time.time()
-                ahora = (log.stat().st_size, errores.stat().st_size, _mtime_arbol(cwd))
-                if ahora != ultimo:
-                    ultimo, ultimo_cambio = ahora, time.time()
-            entrego = espera.vigila(d, cwd)
-            nueva_p, llamada_abierta = _huella_pstack(d)
-            if nueva_p != huella_p or llamada_abierta or abierta_antes:
-                huella_p, ultimo_cambio_p = nueva_p, time.time()
-            abierta_antes = llamada_abierta
-            if (
-                entrego >= inicio
-                and time.time() - max(entrego, ultimo_cambio, ultimo_cambio_p)
-                > a.cierre
-            ):
-                cerrado = True
-                matar_grupo(p)
-                break
-            if time.time() - inicio > a.timeout:
-                timed_out = True
-            elif time.time() - ultimo_cambio > a.sin_avance:
-                no_progress = True
-            if timed_out or no_progress:
-                matar_grupo(p)
-                break
-    espera.vigila(d, cwd)
-    if a.home and a.cuenta:
-        llamadas.quita(Path(a.home), clave)
-    if a.wip_rama:
-        foto_stop.set()
-        hilo_final = threading.Thread(target=_foto, daemon=True)
-        hilo_final.start()
-        hilo_final.join(timeout=5)
-    outcome = {
-        "exit": 0 if cerrado else p.returncode,
-        "cerrado_tras_resultado": cerrado,
-        "timed_out": timed_out,
-        "no_progress": no_progress,
-        "tail": log.read_text(errors="replace", encoding="utf-8")[-2000:],
-        "stderr_tail": errores.read_text(errors="replace", encoding="utf-8")[-2000:],
-        "fotos": fotos[-5:],
-        "segundos": round(time.time() - inicio, 1),
-        "toco_carpeta": _huella_arbol(cwd) != antes,
-    }
-    tmp = d / "outcome.json.tmp"
-    tmp.write_text(json.dumps(outcome, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, d / "outcome.json")
+            return 0
+    linea = (str(fallo_creacion).splitlines() or ["no pude crear el agente"])[0][:240]
+    _outcome(
+        d,
+        {
+            "creacion_agente": "fallida",
+            "exit": None,
+            "cerrado_tras_resultado": False,
+            "timed_out": False,
+            "no_progress": False,
+            "tail": "",
+            "stderr_tail": linea,
+            "fotos": [],
+            "segundos": round(time.time() - inicio, 1),
+            "toco_carpeta": False,
+            "error": {
+                "tipo": type(fallo_creacion).__name__ if fallo_creacion else "OSError",
+                "winerror": getattr(fallo_creacion, "winerror", None),
+                "errno": getattr(fallo_creacion, "errno", None),
+                "mensaje": linea,
+            },
+        },
+    )
     return 0
 
 

@@ -17,6 +17,10 @@ from .workspace import Workspace
 
 
 def _contexto(home: Path) -> Contexto:
+    from .formato import activa, admite_escritor
+
+    admite_escritor(home)
+    activa(home)
     maquina = load_maquina(home)
     os.environ.update(dict(maquina.env))
     if maquina.path_extra:
