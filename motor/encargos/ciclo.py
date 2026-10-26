@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -31,7 +32,7 @@ from .frontera import (
     leer_parada_local,
 )
 from .registro import Registro
-from .sesion import cerrar, crecer_log, herramienta_en_curso, lanzar, observar
+from .sesion import _enjaular, cerrar, crecer_log, herramienta_en_curso, lanzar, observar
 
 _UMBRAL_S = 30
 
@@ -516,45 +517,52 @@ def _juicio_contiene(espacio: Path, nombre: str, esperado: str) -> dict:
 
 def _juicio_comando(espacio: Path, comando: str) -> dict:
     firma = "cmd:" + hashlib.sha256(comando.encode()).hexdigest()[:12]
+
+    def fallo(causa: str, reparacion: str) -> dict:
+        return {
+            "clase": "instrumento",
+            "causa": causa,
+            "reparacion": reparacion,
+            "firma": firma,
+        }
+
     try:
         argv = shlex.split(comando)
     except ValueError as exc:
-        return {
-            "clase": "instrumento",
-            "causa": str(exc),
-            "reparacion": "revisar el comando del pedido",
-            "firma": firma,
-        }
+        return fallo(str(exc), "revisar el comando del pedido")
     if not argv:
-        return {
-            "clase": "instrumento",
-            "causa": "comando vacio",
-            "reparacion": "escribir el comando",
-            "firma": firma,
-        }
+        return fallo("comando vacio", "escribir el comando")
+    exe = argv[0]
+    if "/" in exe:
+        candidato = Path(exe) if os.path.isabs(exe) else espacio / exe
+        if not candidato.is_file():
+            return fallo(f"no existe {exe}", "usar un comando que exista")
+        if not os.access(candidato, os.X_OK):
+            return fallo(f"no se pudo ejecutar {exe}", "usar un comando ejecutable")
+    elif shutil.which(exe) is None:
+        return fallo(f"no existe {exe}", "usar un comando que exista")
+    log = espacio.parent.parent / "ejecucion" / espacio.name / "comprobacion.log"
+    envuelto, aislamiento = _enjaular(argv, espacio, log)
+    if aislamiento != "jaula":
+        return fallo(
+            "la comprobacion no tiene jaula",
+            "correr la comprobacion con sandbox-exec en el espacio del encargo",
+        )
     try:
         corrida = subprocess.run(
-            argv,
+            envuelto,
             cwd=espacio,
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
         )
-    except FileNotFoundError:
-        return {
-            "clase": "instrumento",
-            "causa": f"no existe {argv[0]}",
-            "reparacion": "usar un comando que exista",
-            "firma": firma,
-        }
+    except OSError as exc:
+        if isinstance(exc, FileNotFoundError):
+            return fallo(f"no existe {exe}", "usar un comando que exista")
+        return fallo(f"no se pudo ejecutar {exe}", "usar un comando ejecutable")
     except subprocess.TimeoutExpired:
-        return {
-            "clase": "instrumento",
-            "causa": "la comprobacion no termino",
-            "reparacion": "acotar la comprobacion",
-            "firma": firma,
-        }
+        return fallo("la comprobacion no termino", "acotar la comprobacion")
     if corrida.returncode != 0:
         detalle = (corrida.stderr or corrida.stdout or "la comprobacion fallo").strip()
         return {"clase": "defecto", "causa": detalle[-400:], "firma": firma}
@@ -570,10 +578,13 @@ def _pedidos_efecto(espacio: Path) -> list[dict] | None:
     except (OSError, ValueError):
         return None
     if isinstance(datos, dict):
-        return [datos]
-    if isinstance(datos, list):
-        return [item for item in datos if isinstance(item, dict)]
-    return None
+        datos = [datos]
+    if not isinstance(datos, list):
+        return None
+    for item in datos:
+        if not isinstance(item, dict) or not str(item.get("id") or "").strip():
+            return None
+    return datos
 
 
 def _anotar_juicio(registro: Registro, enc: Encargo, juicio: dict, hora: str, serie: int) -> None:
@@ -581,6 +592,17 @@ def _anotar_juicio(registro: Registro, enc: Encargo, juicio: dict, hora: str, se
         enc.id,
         {"kind": "comprobacion", "data": {**juicio, "hora": hora}},
         f"comprobacion:{enc.id}:{juicio['clase']}:{juicio.get('firma') or juicio.get('motivo')}:{serie}",
+    )
+
+
+def _efecto_asentado(resultado: dict) -> bool:
+    if resultado.get("ya_aplicado") or resultado.get("conciliado"):
+        return True
+    return bool(
+        resultado.get("recibo")
+        and not resultado.get("incierto")
+        and not resultado.get("rechazado")
+        and not resultado.get("intencion")
     )
 
 
@@ -644,9 +666,7 @@ def _incorporar(registro: Registro, enc: Encargo, espacio: Path, hora: str) -> E
         return registro.fold(enc.id)
     destino = DestinoEnsayo(registro.base / "destino")
     for pedido in pedidos:
-        efecto_id = str(pedido.get("id") or "")
-        if not efecto_id:
-            continue
+        efecto_id = str(pedido.get("id") or "").strip()
         resultado = despachar(
             registro,
             enc.id,
@@ -657,6 +677,8 @@ def _incorporar(registro: Registro, enc: Encargo, espacio: Path, hora: str) -> E
             str(pedido.get("cuerpo") or ""),
             hora,
         )
+        if _efecto_asentado(resultado):
+            continue
         if resultado.get("rechazado") or resultado.get("enviado") is False:
             _anotar_juicio(
                 registro,
@@ -670,7 +692,7 @@ def _incorporar(registro: Registro, enc: Encargo, espacio: Path, hora: str) -> E
                 hora,
                 enc.repeticiones + 1,
             )
-            return registro.fold(enc.id)
+        return registro.fold(enc.id)
     for indice, juicio in enumerate(juicios, start=1):
         _anotar_juicio(registro, enc, juicio, hora, indice)
     return registro.fold(enc.id)
