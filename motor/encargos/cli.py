@@ -309,6 +309,29 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
         argv = ["ver", msg["encargo"], "--base", str(base)]
     elif op in ("parar", "continuar", "cancelar"):
         argv = [op, msg["encargo"], "--base", str(base), "--clave", msg["clave"]]
+    elif op == "intento":
+        from .ciclo import observar_intento
+        from .dominio import TransicionIlegal
+
+        reg = Registro(base)
+        try:
+            salida = observar_intento(
+                reg,
+                msg["encargo"],
+                int(msg["pid"]),
+                str(msg.get("inicio") or ""),
+                ahora_iso(),
+                boot_id=str(msg.get("boot_id") or ""),
+                job=str(msg.get("job") or ""),
+                sesion=str(msg.get("sesion") or ""),
+            )
+        except (TransicionIlegal, KeyError, TypeError, ValueError) as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        finally:
+            reg.close()
+        print(json.dumps(salida, ensure_ascii=False))
+        return 0
     elif op == "efecto":
         argv = [
             "efecto",

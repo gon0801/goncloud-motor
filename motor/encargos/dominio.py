@@ -54,6 +54,7 @@ class Efecto:
     estado: str
     recibo: str = ""
     observacion: str = ""
+    cuerpo: str = ""
 
 
 @dataclass(frozen=True)
@@ -279,6 +280,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         return replace(
             e,
             estrategia=d["estrategia"],
+            rol=str(d["rol"]) if d.get("rol") else e.rol,
             motivo=d["motivo"],
             siguiente=d["siguiente"],
             hora=hora or e.hora,
@@ -426,6 +428,7 @@ def _efecto_evento(e: Encargo, d: dict, hora: str) -> Encargo:
         estado=d["estado"],
         recibo=d.get("recibo") or "",
         observacion=d.get("observacion") or "",
+        cuerpo=str(d.get("cuerpo") or ""),
     )
     estado = e.estado
     motivo = e.motivo
@@ -535,12 +538,16 @@ def decision_fallo(e: Encargo) -> dict | None:
 def decision_proceso(
     e: Encargo,
     arbol: str,
-    herramienta_viva: bool,
+    herramienta_viva: bool | None,
     sin_hecho_nuevo: bool,
     herramientas_observables: bool,
     hora: str,
 ) -> dict:
-    """No mira el tamaño de un log. Un árbol incierto no autoriza otro escritor."""
+    """No mira el tamaño de un log. Un árbol incierto no autoriza otro escritor.
+
+    `herramienta_viva is None` significa que no hubo observación. No es lo mismo
+    que una herramienta vista y ya terminada.
+    """
     if e.estado == "deteniendo":
         if arbol == "ausente":
             return {
@@ -559,6 +566,8 @@ def decision_proceso(
         return {"matar": False, "lanzar": False, "eventos": []}
     if arbol == "vivo":
         if herramienta_viva:
+            return {"matar": False, "lanzar": False, "eventos": []}
+        if herramienta_viva is None and not herramientas_observables:
             return {"matar": False, "lanzar": False, "eventos": []}
         if sin_hecho_nuevo:
             return {

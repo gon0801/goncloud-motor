@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 from .dominio import Encargo, efecto_de
@@ -17,6 +18,66 @@ class RespuestaPerdida(RuntimeError):
 
 class SinAutorizacion(RuntimeError):
     pass
+
+
+class ParadaAntesDeEnviar(RuntimeError):
+    pass
+
+
+class AutoridadInalcanzable(RuntimeError):
+    pass
+
+
+_turno_hilo = threading.RLock()
+_turno_nivel = threading.local()
+
+
+class _Turno:
+    """Orden común entre parar y escribir. El mismo hilo puede volver a entrar."""
+
+    def __init__(self, base: Path):
+        self.path = Path(base) / "turno.lock"
+        self.fh = None
+
+    def __enter__(self):
+        _turno_hilo.acquire()
+        nivel = getattr(_turno_nivel, "n", 0)
+        _turno_nivel.n = nivel + 1
+        if nivel == 0:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.fh = open(self.path, "a+", encoding="utf-8")
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *args):
+        if self.fh is not None:
+            if os.name == "nt":
+                import msvcrt
+
+                try:
+                    self.fh.seek(0)
+                    msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            else:
+                import fcntl
+
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+            self.fh.close()
+            self.fh = None
+        _turno_nivel.n = max(0, getattr(_turno_nivel, "n", 1) - 1)
+        _turno_hilo.release()
+
+
+def turno(base: Path) -> _Turno:
+    return _Turno(base)
 
 
 def _atomico(path: Path, texto: str) -> None:
@@ -36,6 +97,7 @@ class DestinoEnsayo:
         self.raiz = Path(raiz)
         self.raiz.mkdir(parents=True, exist_ok=True)
         self.perder = False
+        self.vigente = None
 
     def consultar(self, clave: str) -> dict:
         path = self.raiz / f"{_nombre(clave)}.json"
@@ -44,19 +106,22 @@ class DestinoEnsayo:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def aplicar(self, clave: str, cuerpo: str) -> dict:
-        actual = self.consultar(clave)
-        if actual.get("estado") == "aplicado":
+        with turno(self.raiz.parent):
+            actual = self.consultar(clave)
+            if actual.get("estado") == "aplicado":
+                if self.perder:
+                    self.perder = False
+                    raise RespuestaPerdida(actual["recibo"])
+                return actual
+            if self.vigente is not None and not self.vigente():
+                raise ParadaAntesDeEnviar()
+            recibo = "dst_" + hashlib.sha256(clave.encode()).hexdigest()[:16]
+            payload = {"estado": "aplicado", "recibo": recibo, "cuerpo": cuerpo, "n": 1}
+            _atomico(self.raiz / f"{_nombre(clave)}.json", json.dumps(payload, sort_keys=True))
             if self.perder:
                 self.perder = False
-                raise RespuestaPerdida(actual["recibo"])
-            return actual
-        recibo = "dst_" + hashlib.sha256(clave.encode()).hexdigest()[:16]
-        payload = {"estado": "aplicado", "recibo": recibo, "cuerpo": cuerpo, "n": 1}
-        _atomico(self.raiz / f"{_nombre(clave)}.json", json.dumps(payload, sort_keys=True))
-        if self.perder:
-            self.perder = False
-            raise RespuestaPerdida(recibo)
-        return payload
+                raise RespuestaPerdida(recibo)
+            return payload
 
 
 def _nombre(clave: str) -> str:
@@ -212,6 +277,64 @@ def _autorizado(registro: Registro, enc: Encargo, autoridad: bool) -> bool:
     return enc.estado not in ("deteniendo", "detenido", "cancelado", "terminado")
 
 
+def _autorizado_ahora(registro: Registro, encargo_id: str, autoridad: bool) -> bool:
+    enc = registro.fold(encargo_id)
+    if enc is None:
+        return False
+    return _autorizado(registro, enc, autoridad)
+
+
+def _mismo_efecto(previo, operacion: str, clave: str, cuerpo: str) -> bool:
+    return (
+        previo.operacion == operacion
+        and previo.clave == clave
+        and (previo.cuerpo or "") == (cuerpo or "")
+    )
+
+
+def _efecto_en_autoridad(
+    registro: Registro,
+    encargo_id: str,
+    efecto_id: str,
+    operacion: str,
+    clave: str,
+    cuerpo: str,
+) -> dict | None:
+    """None: no hay autoridad configurada y el destino local sigue siendo el de ensayo.
+
+    Si hay autoridad, la escritura ocurre allá. Este host no toca su destino.
+    """
+    from .transporte import cargar, operar
+
+    if cargar(registro.base) is None:
+        return None
+    resp = operar(
+        registro.base,
+        {
+            "op": "efecto",
+            "encargo": encargo_id,
+            "id": efecto_id,
+            "operacion": operacion,
+            "clave_destino": clave,
+            "cuerpo": cuerpo,
+        },
+    )
+    if not resp.get("alcanzada"):
+        raise AutoridadInalcanzable(resp.get("motivo") or "autoridad inalcanzable")
+    salida = resp.get("salida") or {}
+    if (
+        salida.get("conflicto")
+        or salida.get("rechazado")
+        or salida.get("incierto")
+        or salida.get("enviado") is False
+    ):
+        return salida
+    recibo = salida.get("recibo")
+    if not recibo:
+        raise AutoridadInalcanzable("la autoridad no devolvio recibo")
+    return {"recibo": recibo, "n": salida.get("n") or 1, "cuerpo": cuerpo}
+
+
 def _rechazo(registro: Registro, encargo_id: str, efecto_id: str, clave: str, hora: str, motivo: str) -> dict:
     anotar_local(
         registro.base,
@@ -249,8 +372,12 @@ def despachar(
         raise SinAutorizacion("no hay encargo")
     previo = efecto_de(enc, efecto_id)
     if previo and previo.estado == "aplicado" and previo.recibo:
-        return {"ya_aplicado": True, "recibo": previo.recibo, "n": consulta.get("n")}
+        if _mismo_efecto(previo, operacion, clave, cuerpo):
+            return {"ya_aplicado": True, "recibo": previo.recibo, "n": consulta.get("n")}
+        return {"conflicto": True, "motivo": "el efecto ya aplicado no coincide con esta operacion"}
     if consulta.get("estado") == "aplicado":
+        if str(consulta.get("cuerpo") or "") != (cuerpo or ""):
+            return {"conflicto": True, "motivo": "el destino no tiene el contenido pedido"}
         if _conceder(registro, encargo_id, clave, hora) != "ok":
             return _rechazo(registro, encargo_id, efecto_id, clave, hora, "el recurso sigue concedido")
         propio = _registrar_efecto(
@@ -293,8 +420,17 @@ def despachar(
     enc = registro.fold(encargo_id)
     if enc is None or not _autorizado(registro, enc, autoridad):
         return {"intencion": True, "enviado": False, "motivo": "parada aceptada antes del envio"}
+    destino.vigente = lambda: _autorizado_ahora(registro, encargo_id, autoridad)
     try:
-        aplicado = destino.aplicar(clave, cuerpo)
+        remoto = _efecto_en_autoridad(registro, encargo_id, efecto_id, operacion, clave, cuerpo)
+        if remoto is None:
+            aplicado = destino.aplicar(clave, cuerpo)
+        else:
+            aplicado = remoto
+    except ParadaAntesDeEnviar:
+        return {"intencion": True, "enviado": False, "motivo": "parada aceptada antes del envio"}
+    except AutoridadInalcanzable as exc:
+        return {"intencion": True, "enviado": False, "motivo": str(exc)}
     except RespuestaPerdida:
         _registrar_efecto(
             registro,
@@ -309,6 +445,14 @@ def despachar(
             observacion="la respuesta se perdió",
         )
         return {"incierto": True}
+    if (
+        aplicado.get("conflicto")
+        or aplicado.get("rechazado")
+        or aplicado.get("incierto")
+        or aplicado.get("enviado") is False
+        or not aplicado.get("recibo")
+    ):
+        return aplicado
     propio = _registrar_efecto(
         registro,
         encargo_id,

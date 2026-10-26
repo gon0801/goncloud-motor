@@ -24,10 +24,11 @@ def observar(directorio: Path, proc: dict | None) -> str:
     return observar_arbol(Marca(directorio, proc))
 
 
-def herramienta_en_curso(directorio: Path) -> bool:
+def herramienta_en_curso(directorio: Path) -> bool | None:
+    """None: nadie escribió qué herramienta corre. False: el archivo ya la vio terminada."""
     path = Path(directorio) / "herramienta.json"
     if not path.exists():
-        return False
+        return None
     try:
         datos = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -53,20 +54,63 @@ def _base_de(cwd: Path) -> Path | None:
     return None
 
 
+_MARCAS_SECRETAS = (
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "_KEY",
+    "AWS_",
+    "OPENAI",
+    "ANTHROPIC",
+    "XAI_",
+)
+
+
+def _entorno(env: dict, espacio: Path) -> dict:
+    """El trabajador no hereda secretos del supervisor. TMPDIR queda en su espacio."""
+    limpio = {}
+    for clave, valor in env.items():
+        nombre = clave.upper()
+        if any(marca in nombre for marca in _MARCAS_SECRETAS):
+            continue
+        limpio[clave] = valor
+    limpio["TMPDIR"] = str(espacio)
+    limpio["PYTHONDONTWRITEBYTECODE"] = "1"
+    return limpio
+
+
+def _persistir_proc(directorio: Path, proc: dict) -> None:
+    directorio.mkdir(parents=True, exist_ok=True)
+    tmp = directorio / "proc.json.tmp"
+    tmp.write_text(json.dumps(proc), encoding="utf-8")
+    os.replace(tmp, directorio / "proc.json")
+
+
 def _enjaular(cmd: list[str], cwd: Path, log: Path) -> tuple[list[str], str]:
-    """Niega la escritura del destino y del registro. Sin sandbox-exec no hay jaula."""
+    """Niega escribir la base salvo el espacio de este encargo. Sin sandbox-exec no hay jaula."""
     sandbox = "/usr/bin/sandbox-exec"
     if not os.path.exists(sandbox):
         return cmd, "insuficiente"
     raiz = _base_de(cwd)
     if raiz is None:
         return cmd, "insuficiente"
+    espacio = Path(cwd).resolve()
     destino = raiz / "destino"
     destino.mkdir(parents=True, exist_ok=True)
+    base_real = os.path.realpath(raiz)
+    espacio_real = os.path.realpath(espacio)
     destino_real = os.path.realpath(destino)
     sqlite = os.path.realpath(raiz / "registro.sqlite")
+    log_real = os.path.realpath(log)
+    ejecucion = os.path.realpath(Path(log).parent)
     perfil = (
-        "(version 1)\n(allow default)\n"
+        "(version 1)\n"
+        "(allow default)\n"
+        f'(deny file-write* (subpath "{base_real}"))\n'
+        f'(allow file-write* (subpath "{espacio_real}"))\n'
+        f'(allow file-write* (subpath "{ejecucion}"))\n'
+        f'(allow file-write* (literal "{log_real}"))\n'
         f'(deny file-write* (subpath "{destino_real}"))\n'
         f'(deny file-write* (literal "{sqlite}"))\n'
         f'(deny file-write* (literal "{sqlite}-wal"))\n'
@@ -79,13 +123,16 @@ def _enjaular(cmd: list[str], cwd: Path, log: Path) -> tuple[list[str], str]:
 
 
 def lanzar(cmd: list[str], cwd: Path, log: Path, env: dict | None = None) -> dict:
+    log = Path(log)
     log.parent.mkdir(parents=True, exist_ok=True)
     envuelto, aislamiento = _enjaular(list(cmd), Path(cwd), log)
-    proc = plataforma.lanzar_separado(envuelto, cwd, env or os.environ.copy(), log)
+    proc = plataforma.lanzar_separado(envuelto, cwd, _entorno(env or os.environ.copy(), Path(cwd)), log)
     if not proc.get("inicio"):
         time.sleep(0.05)
         proc["inicio"] = plataforma.hora_inicio(int(proc["pid"]))
     proc["aislamiento"] = aislamiento
+    # La identidad queda en disco antes de volver. Una caída del supervisor ya no la pierde.
+    _persistir_proc(log.parent, proc)
     return proc
 
 

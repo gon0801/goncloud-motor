@@ -5,10 +5,72 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
 from .frontera import anotar_local
+
+
+def cargar(base: Path) -> dict | None:
+    """Configuración de la autoridad. Si apunta a esta misma base, no hay a quién llamar."""
+    path = Path(base) / "autoridad.json"
+    if not path.is_file():
+        return None
+    try:
+        datos = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(datos, dict):
+        return None
+    destino = datos.get("base")
+    if destino and Path(destino).expanduser().resolve() == Path(base).resolve():
+        return None
+    return datos
+
+
+def operar(base: Path, mensaje: dict, timeout: float = 30) -> dict:
+    """Manda una operación a la autoridad. Sin configuración, el llamador sigue en local."""
+    cfg = cargar(base)
+    if cfg is None:
+        return {"alcanzada": False, "local": True, "motivo": "sin autoridad configurada"}
+    if cfg.get("modo") == "local":
+        return _operar_local(cfg, mensaje, Path(base), timeout)
+    host = str(cfg.get("host") or "")
+    argv = list(cfg.get("argv") or [])
+    if not host or not argv:
+        anotar_local(base, {"op": mensaje.get("op"), "motivo": "autoridad inalcanzable", "error": "config incompleta"})
+        return {"alcanzada": False, "motivo": "config incompleta"}
+    return enviar(host, argv, mensaje, Path(base), cfg.get("puerto"), timeout)
+
+
+def _operar_local(cfg: dict, mensaje: dict, buzon: Path, timeout: float) -> dict:
+    py = str(cfg.get("python") or sys.executable)
+    base_aut = str(cfg.get("base") or "")
+    if not base_aut:
+        anotar_local(buzon, {"op": mensaje.get("op"), "motivo": "autoridad inalcanzable", "error": "falta la base"})
+        return {"alcanzada": False, "motivo": "falta la base"}
+    cmd = [py, "-B", "-m", "motor", "encargos-aplicar", "--base", base_aut]
+    env = os.environ.copy()
+    env["MOTOR_ENCARGO_BASE"] = base_aut
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if cfg.get("pythonpath"):
+        env["PYTHONPATH"] = str(cfg["pythonpath"])
+    try:
+        corrida = subprocess.run(
+            cmd,
+            input=json.dumps(mensaje),
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+            cwd=cfg.get("cwd") or None,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        anotar_local(buzon, {"op": mensaje.get("op"), "motivo": "autoridad inalcanzable", "error": str(exc)})
+        return {"alcanzada": False, "motivo": str(exc)}
+    return _respuesta(corrida.returncode, corrida.stdout or "", corrida.stderr or "", mensaje, buzon)
 
 
 def enviar(
