@@ -587,6 +587,40 @@ def main() -> int:
         }
         evidencia["dobles"].append(evidencia["poteto"]["doble"])
 
+        transporte_canal = base / "canal-transporte.py"
+        transporte_canal.write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "modo = sys.argv[1]\n"
+            "base = Path(os.environ['MOTOR_AVISO_BASE'])\n"
+            "canal = os.environ['MOTOR_AVISO_CANAL']\n"
+            "aid = os.environ['MOTOR_AVISO_ID'] or (sys.argv[2] if len(sys.argv) > 2 else '')\n"
+            "destino = base / 'canal-externo' / canal / aid\n"
+            "if modo == 'enviar':\n"
+            "    cuerpo = sys.stdin.read()\n"
+            "    destino.parent.mkdir(parents=True, exist_ok=True)\n"
+            "    if not destino.exists():\n"
+            "        destino.write_text(cuerpo, encoding='utf-8')\n"
+            "    print(json.dumps({'id': 'ext_' + aid}))\n"
+            "else:\n"
+            "    if destino.exists():\n"
+            "        print(json.dumps({'id': 'ext_' + aid}))\n"
+            "    else:\n"
+            "        print(json.dumps({'estado': 'ausente'}))\n",
+            encoding="utf-8",
+        )
+        (base / "canal.json").write_text(
+            json.dumps(
+                {
+                    nombre: {
+                        "comando": [sys.executable, str(transporte_canal), "enviar"],
+                        "conciliacion": [sys.executable, str(transporte_canal), "conciliar"],
+                    }
+                    for nombre in ("canal-hermes", "canal-claw", "canal-openbot")
+                }
+            ),
+            encoding="utf-8",
+        )
         _ejecutor_aviso, args_ejecutor_aviso = ejecutor_directo()
         aviso_id = motor(
             "director", "encargar", "--base", str(base), "--director", "hermes",
@@ -610,7 +644,10 @@ def main() -> int:
         )
         recuperado = motor("director", "avisar", "--base", str(base))
         aviso2 = next(item for item in recuperado["avisos"] if item["encargo"] == aviso_id)
-        exigir(aviso2["estado"] == "publicado" and aviso2["recibo"].startswith("pub_"), "el aviso no se recuperó")
+        exigir(aviso2["estado"] == "publicado" and aviso2["recibo"] == "ext_" + aviso2["id"], "el aviso no se concilió con recibo externo")
+        exigir(aviso2.get("alcance") == "externo", "el aviso recuperado no es externo")
+        externos = list((base / "canal-externo" / "canal-hermes").iterdir())
+        exigir(len(externos) == 1 and externos[0].read_text(encoding="utf-8") == "listo el resumen\n", "el transporte externo no recibió el aviso una sola vez")
         exigir(list(canal.iterdir()) == archivos, "recuperar el aviso duplicó el canal")
         exigir(entregas(base, aviso_id) == antes, "recuperar el aviso volvió a ejecutar la entrega")
         evidencia["aviso"] = {

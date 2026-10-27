@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -487,6 +488,124 @@ def _cuerpo_del_aviso(registro: Registro, encargo: str, evidencia: str) -> str |
     return evidencia
 
 
+def _config_canal(registro: Registro, canal: str) -> dict | None:
+    path = registro.base / "canal.json"
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"error": "canal.json ilegible"}
+    if not isinstance(doc, dict):
+        return None
+    cfg = doc.get(canal)
+    if not isinstance(cfg, dict) and isinstance(doc.get("canal"), dict):
+        cfg = doc["canal"]
+    if not isinstance(cfg, dict) and ("comando" in doc or "conciliacion" in doc):
+        cfg = doc
+    if not isinstance(cfg, dict) or not cfg:
+        return None
+    return cfg
+
+
+def _recibo_transporte(texto: str) -> str:
+    limpio = (texto or "").strip()
+    if not limpio:
+        return ""
+    try:
+        doc = json.loads(limpio)
+    except ValueError:
+        doc = None
+    if isinstance(doc, dict):
+        for campo in ("id", "recibo", "receipt"):
+            if doc.get(campo):
+                return str(doc[campo])
+        return ""
+    for linea in limpio.splitlines():
+        if linea.strip():
+            return linea.strip()
+    return ""
+
+
+def _ejecutar_transporte(
+    registro: Registro,
+    comando: list,
+    aviso: dict,
+    cuerpo: str,
+    con_id: bool = False,
+) -> tuple[str, str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "MOTOR_AVISO_ID": str(aviso.get("id") or ""),
+            "MOTOR_AVISO_ENCARGO": str(aviso.get("encargo") or ""),
+            "MOTOR_AVISO_CANAL": str(aviso.get("canal") or ""),
+            "MOTOR_AVISO_EVIDENCIA": str(aviso.get("evidencia") or ""),
+            "MOTOR_AVISO_BASE": str(registro.base),
+        }
+    )
+    argv = [str(x) for x in comando]
+    if con_id:
+        argv.append(str(aviso.get("id") or ""))
+    try:
+        hecho = subprocess.run(
+            argv,
+            input=cuerpo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "", str(exc)
+    if hecho.returncode != 0:
+        detalle = (hecho.stderr or hecho.stdout or "")[-200:]
+        return "", f"el transporte salio {hecho.returncode}: {detalle}"
+    recibo = _recibo_transporte(hecho.stdout or "")
+    if not recibo:
+        return "", "el transporte no devolvio recibo"
+    return recibo, ""
+
+
+def _conciliar_transporte(
+    registro: Registro, comando: list, aviso: dict, cuerpo: str
+) -> tuple[str, str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "MOTOR_AVISO_ID": str(aviso.get("id") or ""),
+            "MOTOR_AVISO_ENCARGO": str(aviso.get("encargo") or ""),
+            "MOTOR_AVISO_CANAL": str(aviso.get("canal") or ""),
+            "MOTOR_AVISO_EVIDENCIA": str(aviso.get("evidencia") or ""),
+            "MOTOR_AVISO_BASE": str(registro.base),
+        }
+    )
+    argv = [str(x) for x in comando] + [str(aviso.get("id") or "")]
+    try:
+        hecho = subprocess.run(
+            argv, input=cuerpo, capture_output=True, text=True, timeout=30, env=env
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "incierto", str(exc)
+    texto = (hecho.stdout or "").strip()
+    if texto:
+        try:
+            doc = json.loads(texto)
+        except ValueError:
+            doc = None
+        if isinstance(doc, dict):
+            for campo in ("id", "recibo", "receipt"):
+                if doc.get(campo):
+                    return "hallado", str(doc[campo])
+            if str(doc.get("estado") or "") in ("ausente", "no-encontrado", "not_found"):
+                return "ausente", ""
+            return "incierto", "la conciliacion no confirmo el aviso"
+        return "hallado", texto.splitlines()[0].strip()
+    if hecho.returncode != 0:
+        return "ausente", ""
+    return "incierto", "la conciliacion no devolvio recibo"
+
+
 def drenar(registro: Registro, cortar: str = "") -> dict:
     publicados = []
     for encargo in registro.ids():
@@ -509,15 +628,68 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
             continue
         canal_dir = registro.base / "canal" / nombre
         entrega = canal_dir / guardado["id"]
-        if cortar == "antes" and not entrega.exists():
-            guardado["estado"] = "pendiente"
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
         cuerpo = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
         if cuerpo is None:
             guardado["estado"] = "incierto"
             guardado["motivo"] = "no hay un resultado legible que concuerde con la evidencia"
+            _atomico(path, guardado)
+            publicados.append(guardado)
+            continue
+        cfg = _config_canal(registro, nombre)
+        if cfg and cfg.get("error"):
+            guardado["estado"] = "local-pendiente"
+            guardado["alcance"] = "local"
+            guardado["recibo"] = ""
+            guardado["motivo"] = str(cfg["error"])
+            _atomico(path, guardado)
+            publicados.append(guardado)
+            continue
+        comando = list(cfg.get("comando") or []) if cfg else []
+        conciliacion = list(cfg.get("conciliacion") or []) if cfg else []
+        if guardado.get("estado") == "incierto":
+            if not comando:
+                guardado["estado"] = "local-pendiente"
+                guardado["alcance"] = "local"
+                guardado["recibo"] = ""
+                guardado["motivo"] = "sin transporte configurado"
+                _atomico(path, guardado)
+                publicados.append(guardado)
+                continue
+            if not conciliacion:
+                guardado["motivo"] = "aviso incierto sin conciliacion; no se reenvia"
+                _atomico(path, guardado)
+                publicados.append(guardado)
+                continue
+            resultado_con, dato = _conciliar_transporte(
+                registro, conciliacion, guardado, cuerpo
+            )
+            if resultado_con == "hallado":
+                guardado["estado"] = "publicado"
+                guardado["alcance"] = "externo"
+                guardado["recibo"] = dato
+                guardado.pop("motivo", None)
+                _atomico(path, guardado)
+                publicados.append(guardado)
+                continue
+            if resultado_con == "incierto":
+                guardado["motivo"] = dato
+                _atomico(path, guardado)
+                publicados.append(guardado)
+                continue
+            recibo, error = _ejecutar_transporte(registro, comando, guardado, cuerpo)
+            if recibo:
+                guardado["estado"] = "publicado"
+                guardado["alcance"] = "externo"
+                guardado["recibo"] = recibo
+                guardado.pop("motivo", None)
+            else:
+                guardado["estado"] = "incierto"
+                guardado["motivo"] = error
+            _atomico(path, guardado)
+            publicados.append(guardado)
+            continue
+        if cortar == "antes" and not entrega.exists():
+            guardado["estado"] = "pendiente"
             _atomico(path, guardado)
             publicados.append(guardado)
             continue
@@ -526,19 +698,43 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
             temporal = entrega.with_suffix(".tmp")
             temporal.write_text(cuerpo, encoding="utf-8")
             temporal.replace(entrega)
-        if cortar == "despues" and not guardado.get("recibo"):
-            guardado["estado"] = "incierto"
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
         if entrega.read_text(encoding="utf-8") != cuerpo:
             guardado["estado"] = "incierto"
             guardado["motivo"] = "el canal tiene otro contenido y no se puede conciliar"
             _atomico(path, guardado)
             publicados.append(guardado)
             continue
-        guardado["estado"] = "publicado"
-        guardado["recibo"] = "pub_" + aviso["id"]
+        if cortar == "despues" and not guardado.get("recibo"):
+            if comando:
+                _ejecutar_transporte(registro, comando, guardado, cuerpo)
+                guardado["estado"] = "incierto"
+                guardado["alcance"] = "externo"
+                guardado["motivo"] = "envio hecho sin recibo; falta conciliar"
+            else:
+                guardado["estado"] = "local-pendiente"
+                guardado["alcance"] = "local"
+                guardado["recibo"] = ""
+            _atomico(path, guardado)
+            publicados.append(guardado)
+            continue
+        if not comando:
+            guardado["estado"] = "local-pendiente"
+            guardado["alcance"] = "local"
+            guardado["recibo"] = ""
+            _atomico(path, guardado)
+            publicados.append(guardado)
+            continue
+        recibo, error = _ejecutar_transporte(registro, comando, guardado, cuerpo)
+        if recibo:
+            guardado["estado"] = "publicado"
+            guardado["alcance"] = "externo"
+            guardado["recibo"] = recibo
+            guardado.pop("motivo", None)
+        else:
+            guardado["estado"] = "pendiente"
+            guardado["alcance"] = "externo"
+            guardado["recibo"] = ""
+            guardado["motivo"] = error
         _atomico(path, guardado)
         publicados.append(guardado)
     return {"avisos": publicados}

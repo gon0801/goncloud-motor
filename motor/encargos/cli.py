@@ -256,9 +256,16 @@ def _supervisor(reg: Registro, args) -> int:
                             f"ruta:{ident}:{len(reg.eventos(ident))}",
                         )
         habilitado = ruta or any(reg.fold(ident).agentes for ident in reg.ids())
-        return barrer(
+        salida = barrer(
             reg, hora, time.time(), lanzar if habilitado else None, umbral_s=args.umbral
         )
+        try:
+            from motor.integraciones.directores import drenar
+
+            drenar(reg)
+        except Exception:
+            pass
+        return salida
 
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))
