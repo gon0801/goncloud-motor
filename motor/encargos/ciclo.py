@@ -67,6 +67,7 @@ def recibir(
     adjuntos: tuple[str, ...] = (),
     restricciones: tuple[str, ...] = (),
     canal: str = "",
+    via: str = "durable",
 ) -> dict:
     huella = huella_entrega(texto, adjuntos, restricciones)
     ukey = f"entrega:{clave}"
@@ -91,6 +92,7 @@ def recibir(
             "adjuntos": list(adjuntos),
             "restricciones": list(restricciones),
             "canal": canal,
+            "via": via,
             "recibo": recibo,
             "hora": hora,
         },
@@ -98,7 +100,16 @@ def recibir(
         hora,
     )
     _espejo_entrega(
-        registro, encargo, texto, clave, hora, director, restricciones, adjuntos, canal
+        registro,
+        encargo,
+        texto,
+        clave,
+        hora,
+        director,
+        restricciones,
+        adjuntos,
+        canal,
+        via,
     )
     return vista(registro.fold(encargo), recibo)
 
@@ -797,7 +808,12 @@ def _lanzar_uno(
 
     with turno(registro.base):
         enc = registro.fold(enc.id) or enc
-        if enc.proc is not None or enc.reserva or leer_parada_local(registro.base):
+        if (
+            enc.via == "directa"
+            or enc.proc is not None
+            or enc.reserva
+            or leer_parada_local(registro.base)
+        ):
             return
         rol = enc.rol or "responsable"
         generacion = enc.generacion + 1
@@ -815,7 +831,12 @@ def _lanzar_uno(
         runtime = registro.base / "runtime" / enc.id / token
         runtime.mkdir(parents=True, exist_ok=True)
         sesion = str(uuid.uuid5(uuid.NAMESPACE_URL, enc.id + ":" + rol))
-        skill = Path.home() / ".agents" / "skills" / "poteto-mode" / "SKILL.md"
+        paquete = registro.base / "politica" / "poteto" / "SKILL.md"
+        skill = (
+            paquete
+            if paquete.is_file()
+            else Path.home() / ".agents" / "skills" / "poteto-mode" / "SKILL.md"
+        )
         contenido = prompt_de(enc)
         if skill.is_file():
             local_skill = runtime / "poteto-mode.md"
@@ -977,6 +998,7 @@ def _espejo_entrega(
     restricciones: tuple[str, ...],
     adjuntos: tuple[str, ...] = (),
     canal: str = "",
+    via: str = "durable",
 ) -> None:
     from .transporte import cargar, operar
 
@@ -992,6 +1014,7 @@ def _espejo_entrega(
             "restricciones": list(restricciones),
             "adjuntos": list(adjuntos),
             "canal": canal,
+            "via": via,
         },
     )
     _marcar_autoridad(

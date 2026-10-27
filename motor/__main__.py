@@ -642,6 +642,14 @@ _CMDS_ENCARGO = {
 
 def main(argv: list[str] | None = None) -> int:
     argv_in = list(sys.argv[1:] if argv is None else argv)
+    if argv_in and argv_in[0] == "flota":
+        from .flota.cli import main as flota_main
+
+        return flota_main(argv_in[1:])
+    if argv_in and argv_in[0] == "director":
+        from .integraciones.cli import main as director_main
+
+        return director_main(argv_in[1:])
     if argv_in and argv_in[0] in _CMDS_ENCARGO:
         from .encargos.cli import main as encargos_main
 

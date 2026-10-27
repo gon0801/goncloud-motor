@@ -110,6 +110,7 @@ class Encargo:
     agentes: tuple[str, ...] = ()
     agente: str = ""
     pausas: tuple[PausaAgente, ...] = ()
+    via: str = "durable"
 
 
 def huella_entrega(
@@ -150,6 +151,9 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     if kind == "entrega":
         if estado is not None:
             raise TransicionIlegal("el encargo ya existe")
+        via = d.get("via") or "durable"
+        if via not in ("directa", "durable"):
+            raise TransicionIlegal("via desconocida")
         return Encargo(
             id=d["id"],
             clave=d["clave"],
@@ -161,8 +165,13 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             canal=d.get("canal") or "",
             ultimo_hecho="pedido recibido",
             hora=hora,
-            siguiente="investigar y comprobar el pedido",
+            siguiente=(
+                "lo atienden los agentes del director"
+                if via == "directa"
+                else "investigar y comprobar el pedido"
+            ),
             pendientes=tuple(d.get("pendientes") or ("comprobar el pedido",)),
+            via=via,
         )
     if estado is None:
         raise TransicionIlegal("no hay encargo")
@@ -336,6 +345,48 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             and e.estado not in ("deteniendo", "detenido", "cancelado", "terminado")
         )
         return replace(e, autoridad=alcanzable, escrituras=puede)
+    if kind == "via":
+        via = d.get("via")
+        if via not in ("directa", "durable"):
+            raise TransicionIlegal("via desconocida")
+        if e.estado in ("cancelado", "terminado"):
+            raise TransicionIlegal("el encargo ya cerró")
+        if e.proc is not None or e.reserva:
+            raise TransicionIlegal("el ejecutor anterior sigue abierto")
+        if via == e.via:
+            return e
+        return replace(
+            e,
+            via=via,
+            hora=hora or e.hora,
+            ultimo_hecho="via durable" if via == "durable" else "via directa",
+            siguiente=(
+                "el supervisor puede tomar el encargo"
+                if via == "durable"
+                else "lo atienden los agentes del director"
+            ),
+        )
+    if kind == "resultado_directo":
+        if e.via != "directa":
+            raise TransicionIlegal("el resultado directo solo cierra la via directa")
+        if e.proc is not None or e.reserva:
+            raise TransicionIlegal("hay un escritor abierto")
+        if e.estado in ("cancelado", "terminado"):
+            raise TransicionIlegal("el encargo ya cerró")
+        evidencia = str(d.get("evidencia") or "")
+        if not evidencia:
+            raise TransicionIlegal("terminado sin evidencia")
+        return replace(
+            e,
+            estado="terminado",
+            evidencia=e.evidencia + (evidencia,),
+            intentos_nuevos=False,
+            escrituras=False,
+            ultimo_hecho="resultado directo comprobado",
+            siguiente="publicado al canal de origen",
+            hora=hora or e.hora,
+            motivo="",
+        )
     raise TransicionIlegal(f"evento desconocido: {kind}")
 
 
@@ -527,6 +578,10 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         "reanuda_en": e.reanuda_en,
         "estrategia": e.estrategia,
         "escrituras": e.escrituras,
+        "via": e.via,
+        "director": e.director,
+        "canal": e.canal,
+        "texto": e.texto,
     }
 
 

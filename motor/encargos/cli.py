@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--director", default="cli")
     s.add_argument("--restriccion", action="append", default=[])
     s.add_argument("--canal", default="")
+    s.add_argument("--via", choices=("directa", "durable"), default="durable")
 
     s = sub.add_parser("ver")
     s.add_argument("encargo")
@@ -155,6 +156,7 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
                 adjuntos=adjuntos,
                 restricciones=tuple(args.restriccion),
                 canal=args.canal,
+                via=args.via,
             )
         )
     if args.cmd == "ver":
@@ -397,6 +399,7 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
                     adjuntos=tuple(msg.get("adjuntos") or ()),
                     restricciones=tuple(msg.get("restricciones") or ()),
                     canal=msg.get("canal") or "",
+                    via=msg.get("via") or "durable",
                 )
             )
         finally:

@@ -1,0 +1,7 @@
+{
+  "runtime": "openbot",
+  "subagente": "openbot-cli",
+  "terminal": "local",
+  "skill": "SKILL.md",
+  "parada": false
+}

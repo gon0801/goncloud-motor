@@ -1,79 +1,45 @@
 ---
 name: motor
-description: Cómo repartir el trabajo que pide David. Lo que solo lee (investigar, contestar, revisar) lo hacen tus agentes; todo lo que cambie un repo, una configuración o producción se convierte en un plan y se lo entregas al motor de tu máquina. Misma skill para claw (OpenClaw, Mini) y Hermi (Hermes, PC).
+description: Cómo reparte el trabajo el director. Una tarea acotada la hacen sus agentes. El motor continúa el trabajo sin la conversación, coordina máquinas o sostiene una entrega de varias etapas. La vía que David nombra se respeta.
 ---
 
-# Repartir trabajo: tus agentes o el motor
+# Repartir el pedido
 
-## La regla (una sola pregunta)
+David manda texto o archivos. Eso es el pedido. No lo conviertas en bloques, campos Acepta ni comandos que haya que aprobar antes de empezar.
 
-**¿El pedido termina cambiando algo?** Un archivo de un repo, una configuración, un despliegue
-o una escritura en producción, aunque sea una línea.
+Si el pedido cabe en tus agentes y David no pidió continuidad, hazlo por la vía directa. Si debe seguir sin esta conversación, cruzar máquinas o entregar en etapas, usa la vía durable. Si David nombró la vía, usa esa.
 
-- **No** (investigar, buscar, contestar, revisar, resumir): lo repartes a tus agentes de
-  lectura (scout, reviewer, verifier) como hoy. Sin plan.
-- **Sí**: escribes un plan y se lo entregas al motor. Tú no lo implementas, no lo mergeas y
-  no despliegas. Ante la duda, plan.
-
-**Antes de entregar, ¿David pidió implementar?** Si te dio un plan o te pidió hacer el cambio,
-entrégalo directo. Si solo pidió investigar y de ahí salió que hay algo que cambiar, NO lo
-entregues: cuéntale en dos o tres frases qué encontraste y qué cambiarías, y pregúntale
-"¿quieres que lo implemente?". Solo con su sí lo entregas.
-
-Un pedido mixto se parte: lo de leer lo haces ya; lo de cambiar va al plan.
-
-## Cómo entregar un plan
-
-1. Escribe el plan con el formato de abajo en un archivo temporal.
-2. `motor valida <plan.md> --home <home>`: si dice que no está listo, corrige lo que diga y repite.
-3. `motor entrega <plan.md> --home <home> --json --por <tu nombre>`.
-   - `tomado (versión N)`: dile a David en una frase qué va a pasar ("Lo convertí en plan y ya
-     está corriendo; te aviso cuando esté probado"). Entregar otra vez un plan corregido (o uno
-     anterior) es una versión nueva: lo hecho sigue hecho, salvo los bloques cuyas filas, Acepta
-     o prueba real cambiaron, que se vuelven a hacer.
-   - `encolado`: el motor está reiniciando; lo toma solo. Díselo igual.
-   - `rechazado`: lee `errores`, corrige y entrega otra vez.
-4. Ya no tienes que darle seguimiento: el motor le avisa a David por tu mismo bot de Telegram
-   (cada aviso empieza con el nombre de la máquina) cuando entrega, si necesita su mano (login,
-   código, captcha, pago) o si se atora.
-
-## Cuando David pregunta "¿cómo va?"
-
-`motor estado --home <home> --json` y contesta en una o dos frases de usuario.
-
-## Cuando David dice "ya quedó" (un paso que solo él podía hacer)
-
-`motor hecho <plan> <bloque> --home <home>`.
-
-## Si David pide modelos ("con DeepSeek como revisor y Qwen como implementer")
-
-Pon en el encabezado `implementa: qwen` y `revisa: deepseek`. Cualquier combinación vale, con
-varios separados por coma en orden de relevo. Se usan solo los que pidió: si no tienen cuota, el
-plan espera a que vuelvan, no se cambia a otro. Si quiere respaldo, que lo nombre
-(`revisa: deepseek, opus`). Si `motor valida` dice "no conozco el modelo X", dile a David cuáles
-hay. Sin pedido, no pongas esas líneas: manda la tabla.
-
-## Formato del plan
-
-```
-# <título que entienda David>
-autopiloto: motor
-plan: <id-corto-sin-espacios>
-repo: <url del repo>
-implementa: <modelo>[, <modelo>...]   # solo si David lo pidió; si no, se omite y se usa la tabla
-revisa: <modelo>[, <modelo>...]       # ídem
-
-## Bloque A — <qué entrega, en palabras de David>
-lane: gate                       # gate = código; release = código que se despliega; fast = solo documentos
-depende: -                       # o los ids de bloques que van antes
-aviso: <frase llana para cuando esté listo>
-prueba-real: <comando de solo lectura que demuestra que funciona con datos reales>
-| Fila | Contenido | Acepta |
-| --- | --- | --- |
-| A.1 | <qué hacer, concreto> | <comando que sale 0 si quedó bien> |
+```sh
+python3 -B -m motor director encargar \
+  --via directa \
+  --director hermes \
+  --canal origen \
+  --clave mensaje-1 \
+  --base /tmp/ensayo \
+  --archivo pedido.txt
 ```
 
-Reglas del formato: cada bloque de código trae al menos un `Acepta` y una `prueba-real`; un
-paso que solo David puede hacer va en un bloque propio con `lane: fast`,
-`humano: login|2fa|captcha|pago <qué hacer>` y, si se puede detectar solo, `sonda-humano: <comando>`.
-Nada más le pide nada a David.
+`hermes`, `claw` y `openbot` son los directores. Al pasar de directa a durable, cierra la sesión anterior y conserva el mismo encargo.
+
+```sh
+python3 -B -m motor director cerrar-sesion ENCARGO --base /tmp/ensayo
+python3 -B -m motor director promover ENCARGO --base /tmp/ensayo --clave promover-1
+```
+
+Consultar, parar, continuar y cancelar retransmiten la misma clave.
+
+```sh
+python3 -B -m motor director ver ENCARGO --base /tmp/ensayo
+python3 -B -m motor director parar ENCARGO --base /tmp/ensayo --clave orden-1
+python3 -B -m motor director continuar ENCARGO --base /tmp/ensayo --clave orden-2
+```
+
+OpenBot no ofrece parada hasta que su comando la demuestre. Un timeout no cancela el trabajo.
+
+El resultado vuelve al canal de origen aunque este turno cierre. Si el aviso falla, se recupera el aviso. No se repite el encargo.
+
+```sh
+python3 -B -m motor director avisar --base /tmp/ensayo
+```
+
+La política de modelos y esfuerzos sale de la fuente común. No la edites a mano. Un respaldo por cuota no cambia la cadena deseada.
