@@ -207,6 +207,12 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             procedimiento=e.procedimiento + (d["nota"],),
             hora=hora or e.hora,
         )
+    if kind == "migracion":
+        return replace(
+            e,
+            procedimiento=e.procedimiento + (str(d.get("nota") or "migración"),),
+            hora=hora or e.hora,
+        )
     if kind == "reserva":
         if e.proc is not None or e.reserva:
             raise TransicionIlegal("ya hay un escritor")

@@ -879,5 +879,9 @@ def relay(
     return ordenar(registro, encargo, accion, clave, hora)
 
 
+def parar(registro: Registro, encargo: str, clave: str, hora: str) -> dict:
+    return ordenar(registro, encargo, "parar", clave, hora)
+
+
 def hora() -> str:
     return ahora_iso()
