@@ -203,21 +203,25 @@ def _plugins_hermes(
     director = manifiesto["director"]
     if Path(director).name != director:
         raise ValueError("nombre del director invalido")
-    _run(
-        [
-            *python,
-            "-c",
-            (
-                "import sys; sys.path.insert(0,sys.argv[1]); "
-                "from hermes_cli.profiles import create_profile,get_profile_dir; "
-                "p=get_profile_dir(sys.argv[2]); "
-                "None if p.exists() else create_profile(sys.argv[2],no_alias=True,description='Director de ensayo')"
-            ),
-            str(instalacion),
-            director,
-        ],
-        env=env,
-    )
+    bootstrap = """
+import runpy, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.profiles import create_profile, get_profile_dir
+from hermes_cli.default_soul import DEFAULT_SOUL_MD
+config, director = Path(sys.argv[3]), sys.argv[2]
+poteto = runpy.run_path(str(config / "plugins/goncloud-team/poteto.py"))
+soul = "\\n\\n".join((config / name).read_text(encoding="utf-8") for name in
+                     ("shared/CONTRACT.md", "shared/BUSINESS.md", "roles/" + director + ".md")) + "\\n\\n" + poteto["bloque"]()
+profile = get_profile_dir(director)
+if not profile.exists():
+    create_profile(director, no_alias=True, description="Director de ensayo", soul=soul)
+else:
+    target = profile / "SOUL.md"
+    if target.is_file() and target.read_text(encoding="utf-8") == DEFAULT_SOUL_MD:
+        target.write_text(soul, encoding="utf-8")
+"""
+    _run([*python, "-c", bootstrap, str(instalacion), director, str(config)], env=env)
     for plugin in manifiesto["plugins"]:
         nombre, revision, repo = plugin["name"], plugin["sha"], plugin["repo"]
         url = urllib.parse.urlsplit(repo)
@@ -245,6 +249,7 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict) -> None:
             "plugins",
             "shared",
             "skills",
+            "roles",
             "team.json",
             "director-plugins.json",
             "model-routing.source.json",
@@ -259,34 +264,33 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict) -> None:
         if nombre not in permitidos:
             raise ValueError("repositorio de configuracion desconocido")
         destino = gen / "config" / nombre
-        if not destino.exists():
-            repo = Path(spec["origen"])
-            archivos = _git(
-                repo,
-                "ls-tree",
-                "--name-only",
-                spec["revision"],
-                "--",
-                *permitidos[nombre],
-            ).splitlines()
-            destino.mkdir(parents=True)
-            if archivos:
-                with tempfile.TemporaryDirectory(
-                    prefix="flota-config-", dir=str(gen)
-                ) as tmp:
-                    paquete = Path(tmp) / "config.tar"
-                    _git(
-                        repo,
-                        "archive",
-                        "--format=tar",
-                        "--output=" + str(paquete),
-                        spec["revision"],
-                        "--",
-                        *archivos,
-                    )
-                    with tarfile.open(paquete) as entrada:
-                        entrada.extractall(destino, filter="data")
-            _atomico(destino / "source-revision.json", {"revision": spec["revision"]})
+        repo = Path(spec["origen"])
+        archivos = _git(
+            repo,
+            "ls-tree",
+            "--name-only",
+            spec["revision"],
+            "--",
+            *permitidos[nombre],
+        ).splitlines()
+        destino.mkdir(parents=True, exist_ok=True)
+        if archivos:
+            with tempfile.TemporaryDirectory(
+                prefix="flota-config-", dir=str(gen)
+            ) as tmp:
+                paquete = Path(tmp) / "config.tar"
+                _git(
+                    repo,
+                    "archive",
+                    "--format=tar",
+                    "--output=" + str(paquete),
+                    spec["revision"],
+                    "--",
+                    *archivos,
+                )
+                with tarfile.open(paquete) as entrada:
+                    entrada.extractall(destino, filter="data")
+        _atomico(destino / "source-revision.json", {"revision": spec["revision"]})
     hermes = gen / "config/hermes"
     runtime["config"] = {}
     if hermes.is_dir():
@@ -688,6 +692,7 @@ def comprobar_runtime(gen: Path) -> dict:
                 "--install-dir",
                 str(gen / "herramientas/hermes/src"),
                 "--check",
+                "--preserve-local-soul",
             ],
             env=_entorno_configuracion(gen, runtime),
         )

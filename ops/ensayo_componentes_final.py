@@ -44,7 +44,9 @@ def ejecutar(argv, *, cwd=None, entrada=None, timeout=3600):
     )
     if r.returncode:
         detalle = r.stderr.decode("utf-8", errors="replace")[-2000:]
-        raise RuntimeError(f"{Path(argv[0]).name} terminó con salida {r.returncode}: {detalle}")
+        raise RuntimeError(
+            f"{Path(argv[0]).name} terminó con salida {r.returncode}: {detalle}"
+        )
     return r.stdout.decode("utf-8", errors="replace").strip()
 
 
@@ -123,7 +125,7 @@ def npm_version(nombre, paquete, version):
     }
 
 
-def remoto(base, sha, instalar):
+def remoto(base, sha, instalar, preparadas=None):
     base = Path(base).resolve()
     esperado = Path(BASES["pc" if os.name == "nt" else "mini"]).resolve()
     if base != esperado:
@@ -227,7 +229,22 @@ def remoto(base, sha, instalar):
     opciones = ["--home", home, "--motor-origen", motor]
     for nombre in ("hermes", "claw", "conf"):
         opciones += ["--repo-" + nombre, repos[nombre]]
-    primera = cli("actualizar", *opciones, "--catalogo", catalogos["A"])
+    if preparadas:
+        from motor.flota.actualizaciones import comprobar_runtime
+
+        for identificador in preparadas:
+            if len(identificador) != 40 or any(
+                c not in "0123456789abcdef" for c in identificador
+            ):
+                raise ValueError("identidad de preparacion invalida")
+            comprobar_runtime(home / "generaciones" / identificador)
+        paso(
+            "preparaciones_previas_comprobadas",
+            {"generaciones": preparadas, "controlador": sha},
+        )
+        primera = cli("aplicar", "--home", home, "--destino", preparadas[0])
+    else:
+        primera = cli("actualizar", *opciones, "--catalogo", catalogos["A"])
     gen_a = asignar(home)
     paso("aplicar_A", primera)
     trabajador = base / "trabajador.py"
@@ -263,7 +280,11 @@ def remoto(base, sha, instalar):
                 raise RuntimeError("el trabajador no arrancó")
             time.sleep(0.05)
         assert antes.exists()
-        segunda = cli("actualizar", *opciones, "--catalogo", catalogos["B"])
+        segunda = (
+            cli("aplicar", "--home", home, "--destino", preparadas[1])
+            if preparadas
+            else cli("actualizar", *opciones, "--catalogo", catalogos["B"])
+        )
         assert segunda["accion"] == "ocupada" and asignar(home) == gen_a
         senal.touch()
         proceso.wait(timeout=30)
@@ -276,10 +297,41 @@ def remoto(base, sha, instalar):
         if proceso.poll() is None:
             plataforma.matar_proc(identidad)
         proceso.wait(timeout=15)
-    segunda = cli("actualizar", *opciones, "--catalogo", catalogos["B"])
+    segunda = (
+        cli("aplicar", "--home", home, "--destino", preparadas[1])
+        if preparadas
+        else cli("actualizar", *opciones, "--catalogo", catalogos["B"])
+    )
     gen_b = asignar(home)
     assert segunda["accion"] in ("aplicada", "igual") and gen_a != gen_b
     paso("aplicar_B", segunda)
+    if os.name == "nt":
+        plugin = home / "generaciones" / gen_a / "config/hermes/plugins/goncloud-team"
+        sys.path.insert(0, str(plugin))
+        from subscriptions.process import _resolve_windows_shim, run_cli
+
+        espacio = base / "prueba-plugin"
+        espacio.mkdir(exist_ok=True)
+        global_cli = subprocess.run(
+            _resolve_windows_shim(["codex", "--version"]),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        fijado = run_cli(
+            ["codex", "--version"],
+            "",
+            espacio,
+            30,
+            env_overlay={"MOTOR_GENERACION_RUTA": str(home / "generaciones" / gen_a)},
+        )
+        assert global_cli.returncode == fijado.returncode == 0
+        assert codex_a["version"] in fijado.stdout
+        assert codex_b["version"] in global_cli.stdout
+        paso(
+            "plugin_version_fijada",
+            {"global": global_cli.stdout.strip(), "generacion": fijado.stdout.strip()},
+        )
     mala = copy.deepcopy({"componentes": b, "no_disponibles": []})
     mala["componentes"][0]["integridad"] = (
         "sha512-" + base64.b64encode(bytes(64)).decode()
@@ -366,9 +418,10 @@ def main():
     ap.add_argument("--ejecutar", action="store_true")
     ap.add_argument("--remoto", action="store_true")
     ap.add_argument("--base")
+    ap.add_argument("--preparadas", nargs=2, metavar=("GENERACION_A", "GENERACION_B"))
     args = ap.parse_args()
     if args.remoto:
-        remoto(args.base, args.sha, args.ejecutar)
+        remoto(args.base, args.sha, args.ejecutar, args.preparadas)
         return
     if not args.host:
         ap.error("falta --host")
@@ -380,6 +433,7 @@ def main():
         + repr(
             [ruta, "--remoto", "--base", BASES[args.host], "--sha", args.sha]
             + (["--ejecutar"] if args.ejecutar else [])
+            + (["--preparadas", *args.preparadas] if args.preparadas else [])
         )
         + ";runpy.run_path("
         + repr(ruta)

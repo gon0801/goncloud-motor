@@ -50,7 +50,22 @@ def _run(
         raise RuntimeError(f"no se pudo ejecutar {Path(argv[0]).name}: {exc}") from exc
     if hecho.returncode:
         # No copiar salida de instaladores o entornos que puedan contener credenciales.
-        raise RuntimeError(f"fallo {Path(argv[0]).name} (salida {hecho.returncode})")
+        scripts = [
+            Path(arg).name
+            for arg in argv[1:]
+            if Path(arg).suffix in (".py", ".ps1", ".sh", ".js", ".mjs")
+        ]
+        etapa = (
+            scripts[0]
+            if scripts
+            else (argv[argv.index("-m") + 1] if "-m" in argv else "")
+        )
+        ultima = hecho.stderr.strip().splitlines()
+        tipo = ultima[-1].partition(":")[0] if ultima else ""
+        detalle = "; " + tipo if tipo.isidentifier() and tipo.endswith("Error") else ""
+        raise RuntimeError(
+            f"fallo {Path(argv[0]).name} [{etapa}] (salida {hecho.returncode}{detalle})"
+        )
     return hecho.stdout.strip()
 
 
