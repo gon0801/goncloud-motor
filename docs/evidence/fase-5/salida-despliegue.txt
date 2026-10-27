@@ -1,0 +1,8 @@
+Mini autoridad: servicio ai.goncloud.motor-encargos (LaunchAgent usuario gon) corriendo, supervisor sobre ~/.motor-encargos.
+Migracion Mini: 10 encargos (canario, ingesta-01, motor-05, motor-07, motor-08, motor-08-sol, shopify-token-01, shopify-token-02, sp-api-02, motor-06), todos detenidos sin escrituras tras el primer paso del supervisor.
+Migracion Mac a la autoridad: 15 encargos (14 planes + motor-06 compartido), identidades estables comprobadas en copia antes.
+Motor viejo Mini: retencion activada (admision cerrada), daemon sigue como lector historico.
+Motor viejo Mac: retencion activada, mismo criterio.
+Prueba de usuario desde Mac: encargo directa con ejecutor real, cerrar-sesion observo su muerte, promocion canonica a durable en Mini y ver canonico durable desde Mac.
+Claw-autoupdate Mini: desactivado con launchctl disable; su plist quedo en ~/.motor-resguardo/fase-5-20261028. El gateway de OpenClaw no se toco.
+Politica en PC: el ciclo de flota fallo en un instalador node (npm-cli salida 1) durante la preparacion de componentes. No se pauso vigia-modelos porque el reemplazo aun no corre. Estado seguro: el publicador viejo sigue como estaba.

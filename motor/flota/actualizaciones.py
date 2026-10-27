@@ -381,6 +381,27 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict) -> None:
             runtime["claw_modelos"] = str((destino / "modelos.json").relative_to(gen))
 
 
+def _preparar_componente(
+    doc: dict, destino: Path, gen: Path, home: Path
+) -> tuple[list[str], str, dict | None]:
+    if doc["tipo"] == "npm":
+        if destino.exists():
+            shutil.rmtree(destino)
+        artefacto = _descargar(doc, home / "artefactos")
+        argv = _instalar_npm(doc, artefacto, destino, home / "npm-cache")
+        respuesta = _run(
+            [*argv, "--version"], env=_entorno_generacion(gen), timeout=60
+        )
+        contrato = None
+    else:
+        contrato = _instalar_hermes(doc, destino)
+        argv = contrato["argv"]
+        respuesta = contrato["version"]
+    if not respuesta:
+        raise ValueError("el ejecutable no informa su version")
+    return argv, respuesta, contrato
+
+
 def _argv_real(gen: Path, argv: list[str]) -> list[str]:
     return [
         str(gen / arg) if not Path(arg).is_absolute() and (gen / arg).exists() else arg
@@ -500,27 +521,30 @@ def preparar(
         try:
             for doc in componentes:
                 destino = gen / "herramientas" / doc["nombre"]
-                if doc["tipo"] == "npm":
-                    if destino.exists():
-                        shutil.rmtree(destino)
-                    artefacto = _descargar(doc, home / "artefactos")
-                    argv = _instalar_npm(doc, artefacto, destino, home / "npm-cache")
-                else:
-                    contrato = _instalar_hermes(doc, destino)
-                    argv = contrato["argv"]
+                try:
+                    argv, respuesta, contrato = _preparar_componente(
+                        doc, destino, gen, home
+                    )
+                except (
+                    OSError,
+                    ValueError,
+                    RuntimeError,
+                    subprocess.SubprocessError,
+                ) as exc:
+                    shutil.rmtree(destino, ignore_errors=True)
+                    runtime["no_disponibles"].append(
+                        {
+                            "nombre": doc["nombre"],
+                            "estado": "pendiente",
+                            "motivo": str(exc)[:300],
+                        }
+                    )
+                    continue
+                if doc["nombre"] == "hermes" and contrato is not None:
                     runtime.setdefault("configuradores", {})["hermes"] = (
                         _utilidad_configuracion(gen, contrato)
                     )
                     runtime["env"]["PYTHONPATH"] = "herramientas/hermes/src"
-                respuesta = (
-                    contrato["version"]
-                    if doc["nombre"] == "hermes"
-                    else _run(
-                        [*argv, "--version"], env=_entorno_generacion(gen), timeout=60
-                    )
-                )
-                if not respuesta:
-                    raise ValueError("el ejecutable no informa su version")
                 # Las rutas de la generacion se resuelven al lanzar, nunca por PATH global.
                 runtime["lanzadores"][doc["nombre"]] = [
                     str(Path(a).relative_to(gen))
