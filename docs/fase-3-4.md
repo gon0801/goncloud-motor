@@ -1,6 +1,6 @@
 # Fases 3 y 4
 
-Muse implementó con Grok 4.7, por la suscripción de esta sesión. No hubo Cursor ni cambio a una API de pago. Los delegados salen con el mismo modelo, porque el lanzador no recibe otro. La revisión cruzada con otro modelo no se corrió. Codex revisa esta entrega.
+Muse implementó con Grok 4.7, por la suscripción de esta sesión. No hubo Cursor ni cambio a una API de pago. Los delegados salen con el mismo modelo, porque el lanzador no recibe otro. La primera revisión cruzada con Kimi quedó fuera del repo. Esta pasada cierra lo que esa revisión reprodujo. Codex revisa la entrega.
 
 No hay push, merge ni despliegue. Los actualizadores vivos siguen. El gateway de la PC no se reinició. No se migran encargos viejos ni se escribe en destinos de producción.
 
@@ -8,9 +8,9 @@ No hay push, merge ni despliegue. Los actualizadores vivos siguen. El gateway de
 
 | Repo | Worktree | Rama | Base | SHA de código |
 | --- | --- | --- | --- | --- |
-| goncloud-motor | `/Users/dn/dev/goncloud-motor-encargos-3-4` | `feat/encargos-3-4` | `2ea73cdebaf50e4ec41c636efa757f895c30c7ca` | `add95abc74b42b5330f93042a08e389b08bb6c73` |
+| goncloud-motor | `/Users/dn/dev/goncloud-motor-encargos-3-4` | `feat/encargos-3-4` | `2ea73cdebaf50e4ec41c636efa757f895c30c7ca` | `67e33d73c3b4ae6e1a0ee545780e8fbc51e5c30f` |
 | goncloud-hermes | `/Users/dn/dev/goncloud-hermes-encargos-3-4` | `feat/encargos-3-4` | `acb653bea54c3293e15c0fd3d4e8e8bfa93fa044` | `f3bef23dc591015aa159a0910c8ca0c14bd3e212` |
-| goncloud-motor-conf | `/Users/dn/dev/goncloud-motor-conf-encargos-3-4` | `feat/encargos-3-4` | `0f95b5ed8f78764d43eff2d57b0e8bec98578134` | `6b9e58f7c296d295ecd31b18462d695d273b4035` |
+| goncloud-motor-conf | `/Users/dn/dev/goncloud-motor-conf-encargos-3-4` | `feat/encargos-3-4` | `0f95b5ed8f78764d43eff2d57b0e8bec98578134` | `45f6187444ec2f2125229ab2690e96c4776eb51f` |
 
 El código comprobado de la fase 2 es `2ec01d4c046bd239770793109d2d7ae568db9a79`. La base de esta rama es el commit que documenta ese cierre. `goncloud-openclaw` se consume en `75d51353282f741c263592f9408e2c1731c0c3ab` y no se brancho. El contrato es `scripts/sistema_agentes/contrato.py`, por `PYTHONPATH`.
 
@@ -19,6 +19,13 @@ Commits del motor, en orden:
 - `f4133adca982f9ad6223c35de1dab44cc650072b` Controlar la flota por generaciones y revertir sin arrancar el motor nuevo
 - `54ca565aa3bc0eea83a919515cf2c99affccead0` Conectar directores, la vía del encargo y el paquete poteto
 - `add95abc74b42b5330f93042a08e389b08bb6c73` Recorrer las fases 3 y 4 en homes de ensayo
+- `855135dc966fce6fd87258a83eb70208fb6256f0` Poner skill en la raíz y proyectar el modelo de dirigir
+- `bd20404db45ed56e2ba9085aa7e80024665e348b` Publicar el texto del canal y conservar la vía elegida
+- `67e33d73c3b4ae6e1a0ee545780e8fbc51e5c30f` Comprobar que la reversa deja actual en la generación anterior
+
+Conf, después de `6b9e58f7c296d295ecd31b18462d695d273b4035`:
+
+- `45f6187444ec2f2125229ab2690e96c4776eb51f` Sembrar skill en la raíz del manifiesto
 
 Este informe es un commit posterior. Su SHA es `git rev-parse HEAD` en el worktree del motor.
 
@@ -28,17 +35,17 @@ Dependencias. El recorrido llama a `scripts/claw_models.py` y `scripts/configure
 
 El recorrido es `python3 ops/ensayo_fases_3_4.py` desde el worktree del motor. Salió 0. La evidencia es `docs/evidence/fase-3-4.json`. No trae `fallo`. `limpieza.procesos` quedó `[]`. La bitácora es `docs/evidence/encargos-3-4.tsv`.
 
-Pedido igual por Hermes y Claw. Directa `enc_58f942c5f36dd0bc` y `enc_5e3fcba50d2a264a`, con el mismo texto. Durable de Hermes `enc_15c0017fe57da863`. Plan externo de Claw `enc_951630d83fedc354`, igual al pedido. Promover con la sesión directa abierta devuelve `el ejecutor directo sigue abierto` y no crea `ejecucion/`. Después del cierre, el mismo id queda `durable`. Parar llega a `detenido`, continuar a `recibido`, cancelar a `cancelado`. Una fila `entrega`.
+Pedido igual por Hermes y Claw. Directa `enc_58f942c5f36dd0bc` y `enc_5e3fcba50d2a264a`, con el mismo texto. Durable de Hermes `enc_15c0017fe57da863`. Plan externo de Claw `enc_4125aac8e82bf82b`, igual al pedido. La retransmisión igual no marca conflicto. La misma clave con otra vía devuelve ese encargo, conserva `directa` y marca conflicto. Una ruta en `--canal` sale 1 y no escribe fuera de la base. Promover con la sesión directa abierta devuelve `el ejecutor directo sigue abierto` y no crea `ejecucion/`. Después del cierre, el mismo id queda `durable`. Parar llega a `detenido`, continuar a `recibido`, cancelar a `cancelado`. Una fila `entrega`.
 
 Poteto. El encargo `enc_ac36d67aaf29d2ef` escribió `poteto cargado` y quedó `detenido` antes del revisor. El agente `ensayo` ejecuta `espacio/trabajo.sh`. Es un doble. No acredita Hermes ni Claw.
 
-Aviso. `enc_0525ccad9faa7a0d` queda `incierto` si el canal se corta después de escribir. La pasada siguiente publica, deja un archivo y no suma otra entrega.
+Aviso. `enc_0525ccad9faa7a0d` queda `incierto` si el canal se corta después de escribir. El archivo ya tiene `listo el resumen`. La pasada siguiente publica, deja ese archivo y no suma otra entrega. El id del aviso sigue saliendo del hash. OpenBot publica `resumen de ensayo listo` en su canal.
 
 OpenBot. Entrega y consulta están. Parada, skills y publicación de sesión no. El timeout no cancela. `run --wait --timeout 2s --json` salió 4, con `state` `timed-out` y `status` `running`. El `status` posterior salió 0. `director parar` responde `OpenBot no tiene parada demostrada; el trabajo sigue`. El CLI es `node` más `/Applications/OpenBot.app/Contents/Resources/cli/openbot-cli.mjs`. El HTTP es un servidor local de ensayo. Doble declarado. No se llamó `set-model`, `set-account` ni `run` contra la app viva.
 
-Política. Nueve puestos. `dirigir` y `dirigir-claw` comparten cadena. `claw_models.py desired` coincide con y sin `--source`. El contrato `sistema-agentes.flota.v1` validó la proyección. La discrepancia medida dice que `codex --version` reporta `codex-cli 0.164.0` y la cadena de dirigir dice `anthropic/claude-opus-5-5 (high)`. Es el CLI real de esta Mac, no un proceso del plugin. Un respaldo de cuota en el manifiesto del home de ensayo no cambia el modelo 0 de dirigir.
+Política. Nueve puestos. `skill` queda en la raíz y `cargar()` ve `poteto-mode`. `dirigir` y `dirigir-claw` comparten cadena. La proyección usa el modelo de `dirigir`. Con un puesto `otro` delante, `flota.json` queda en `proveedor/dirigir`. `claw_models.py desired` coincide con y sin `--source`. El contrato `sistema-agentes.flota.v1` validó la proyección. La discrepancia medida dice que `codex --version` reporta `codex-cli 0.164.0` y la cadena de dirigir dice `anthropic/claude-opus-5-5 (high)`. Es el CLI real de esta Mac, no un proceso del plugin. Un respaldo de cuota en el manifiesto del home de ensayo no cambia el modelo 0 de dirigir. `motor flota observar --nombre demo` sin comando sale 1, sin traceback.
 
-Flota de ensayo, solo en la Mac. El trabajo activo conservó `96a17381a3622bb3b0ed41a9080065be615bd555`. La generación asignada después fue `33a9ae24eaca2640aa3d4b7bce194071a244089c`. La candidata inválida quedó `rechazada`. Un corte en `worktree` se recuperó a `completo`. La segunda recuperación imprimió `nada`. `ops/reversa_ensayo.sh` imprimió `revertido 33a9ae24eaca2640aa3d4b7bce194071a244089c`, no recreó la marca del motor roto y la segunda pasada imprimió `nada`.
+Flota de ensayo, solo en la Mac. El trabajo activo conservó `e501d9d6208055f1466567330a5163cbc8ce3b8f`. La generación asignada después fue `8779cde9e579f185de0339b1af82707ac0e1296a`. La candidata inválida quedó `rechazada`. Un corte en `worktree` se recuperó a `completo`. La segunda recuperación imprimió `nada`. `ops/reversa_ensayo.sh` imprimió `revertido 8779cde9e579f185de0339b1af82707ac0e1296a`, dejó `actual` en esa generación, no recreó la marca del motor roto y la segunda pasada salió 0 con `nada`. Esos SHA son de repos temporales ya borrados.
 
 ## Máquinas
 
@@ -46,7 +53,7 @@ Mac. Python 3.14.7. `codex-cli 0.164.0`. `grok 1.0.70 (f50904eaee6c) [stable]`. 
 
 Mini, SSH rc 0. `Gons-Mac-Mini-2.lan`. Python 3.9.6. OpenClaw 2026.10.7 (`157d8c2`). No se instaló nada. Python 3.9 no trae `tomllib`, así que el controlador de ensayo no corrió ahí.
 
-PC, SSH rc 0, límite 45 s. Python 3.14.7. Hermes Agent v0.22.5 (2026.9.24), stable, local `bf0203a794a0`, Python del install 3.14.9, OpenAI SDK 2.24.0, al día. El propio Hermes avisa que un `hermes update` anterior no reinició los gateways. No se reiniciaron. No se instaló nada.
+PC, SSH rc 0, límite 45 s. Python 3.14.7. Hermes Agent v0.22.5 (2026.9.24), stable, local `bf0203a794a0`, Python del install 3.14.9, OpenAI SDK 2.24.0, al día. En esta corrida el texto de SSH termina en `Up to date` y no trae el aviso de gateways. No se reiniciaron. No se instaló nada.
 
 ## Comandos
 
@@ -60,7 +67,7 @@ cd /Users/dn/dev/goncloud-motor-conf-encargos-3-4
 python3 -m unittest tests.test_rutas -q
 ```
 
-Resultados de esta corrida. Reversa y encargo: 6 tests, OK, 1.384 s. Al cerrar el intérprete avisó `ResourceWarning` de los subprocess 45391 y 45401. Un `ps` posterior ya no los mostró. Recorrido: exit 0. Skill y UTF-8: 2 tests, OK, 0.013 s. Rutas de conf: 4 tests, OK.
+Resultados de la pasada de arreglos. Reversa, encargo, skill y UTF-8: 8 tests, OK, 1.850 s. Al cerrar el intérprete avisó `ResourceWarning` de los subprocess 78906 y 78916. Un `ps` posterior ya no los mostró. Recorrido: exit 0. Rutas de conf no se volvieron a correr. El manifiesto no las toca.
 
 El test de fines ajenos falla y además lanza `StopIteration` cuando `kind` es `creacion_fallida`. `motor/machine.py` no está en este diff. Su último commit es `4e816c9`. Es un fallo previo.
 
