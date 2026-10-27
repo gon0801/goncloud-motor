@@ -26,6 +26,12 @@ def id_aviso(encargo: str, evidencia: str) -> str:
     return "av_" + hashlib.sha256(f"{encargo}:{evidencia}".encode()).hexdigest()[:16]
 
 
+def nombre_canal(canal: str) -> str:
+    if not canal or canal in {".", ".."} or "/" in canal or "\\" in canal or "\0" in canal:
+        raise ValueError("el canal es un nombre, no una ruta")
+    return canal
+
+
 def encargar(
     registro: Registro,
     texto: str,
@@ -36,6 +42,7 @@ def encargar(
     via: str,
     adjuntos: tuple[str, ...] = (),
 ) -> dict:
+    canal = nombre_canal(canal)
     salida = recibir(
         registro,
         texto,
@@ -152,6 +159,18 @@ def _aviso_de(enc) -> dict:
     }
 
 
+def _cuerpo_del_aviso(registro: Registro, encargo: str, evidencia: str) -> str | None:
+    destino = registro.base / "espacio" / encargo / "resultado.txt"
+    if destino.is_file():
+        cuerpo = destino.read_text(encoding="utf-8")
+        if hashlib.sha256(cuerpo.encode()).hexdigest() == evidencia:
+            return cuerpo
+        return None
+    if len(evidencia) == 64 and all(c in "0123456789abcdef" for c in evidencia):
+        return None
+    return evidencia
+
+
 def drenar(registro: Registro, cortar: str = "") -> dict:
     publicados = []
     for encargo in registro.ids():
@@ -161,27 +180,42 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
         aviso = _aviso_de(enc)
         path = registro.base / "avisos" / f"{aviso['id']}.json"
         guardado = _leer(path) or aviso
-        canal_dir = registro.base / "canal" / guardado["canal"]
-        entrega = canal_dir / guardado["id"]
         if guardado.get("estado") == "publicado" and guardado.get("recibo"):
             publicados.append(guardado)
             continue
+        try:
+            nombre = nombre_canal(str(guardado["canal"]))
+        except ValueError:
+            guardado["estado"] = "incierto"
+            guardado["motivo"] = "el canal no es un nombre"
+            _atomico(path, guardado)
+            publicados.append(guardado)
+            continue
+        canal_dir = registro.base / "canal" / nombre
+        entrega = canal_dir / guardado["id"]
         if cortar == "antes" and not entrega.exists():
             guardado["estado"] = "pendiente"
+            _atomico(path, guardado)
+            publicados.append(guardado)
+            continue
+        cuerpo = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
+        if cuerpo is None:
+            guardado["estado"] = "incierto"
+            guardado["motivo"] = "no hay un resultado legible que concuerde con la evidencia"
             _atomico(path, guardado)
             publicados.append(guardado)
             continue
         if not entrega.exists():
             canal_dir.mkdir(parents=True, exist_ok=True)
             temporal = entrega.with_suffix(".tmp")
-            temporal.write_text(aviso["evidencia"], encoding="utf-8")
+            temporal.write_text(cuerpo, encoding="utf-8")
             temporal.replace(entrega)
         if cortar == "despues" and not guardado.get("recibo"):
             guardado["estado"] = "incierto"
             _atomico(path, guardado)
             publicados.append(guardado)
             continue
-        if entrega.read_text(encoding="utf-8") != guardado["evidencia"]:
+        if entrega.read_text(encoding="utf-8") != cuerpo:
             guardado["estado"] = "incierto"
             guardado["motivo"] = "el canal tiene otro contenido y no se puede conciliar"
             _atomico(path, guardado)

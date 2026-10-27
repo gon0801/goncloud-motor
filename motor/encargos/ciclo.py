@@ -74,8 +74,14 @@ def recibir(
     prev = registro.por_ukey(ukey)
     if prev:
         enc = registro.fold(prev["encargo"])
-        salida = vista(enc, prev["data"]["recibo"])
-        if prev["data"]["huella"] != huella:
+        datos = prev["data"]
+        salida = vista(enc, datos["recibo"])
+        if (
+            datos["huella"] != huella
+            or datos.get("via", "durable") != via
+            or datos.get("canal", "") != canal
+            or datos.get("director", "") != director
+        ):
             salida["conflicto"] = True
         return salida
     encargo = id_encargo(clave, huella)
