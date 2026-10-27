@@ -19,6 +19,7 @@ NPM = {
     "grok": "@xai-official/grok",
     "qwen": "@qwen-code/qwen-code",
     "kimi": "@moonshot-ai/kimi-code",
+    "opencode": "opencode-ai",
 }
 HERMES = "https://github.com/NousResearch/hermes-agent.git"
 REGISTRY = "https://registry.npmjs.org/"
@@ -32,18 +33,21 @@ def _run(
     entrada: str | None = None,
     timeout: int = 900,
 ) -> str:
-    hecho = subprocess.run(
-        argv,
-        cwd=cwd,
-        env=env,
-        input=entrada,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        timeout=timeout,
-    )
+    try:
+        hecho = subprocess.run(
+            argv,
+            cwd=cwd,
+            env=env,
+            input=entrada,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=timeout,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"no se pudo ejecutar {Path(argv[0]).name}: {exc}") from exc
     if hecho.returncode:
         # No copiar salida de instaladores o entornos que puedan contener credenciales.
         raise RuntimeError(f"fallo {Path(argv[0]).name} (salida {hecho.returncode})")
@@ -294,8 +298,8 @@ def _runtime_hermes(destino: Path) -> dict:
         _run([str(bootstrap), "-c", consulta], cwd=codigo, env=env, timeout=60)
     )
     launcher = codigo / ".hermes/bin" / ("hermes.exe" if os.name == "nt" else "hermes")
-    if not launcher.is_file() or not Path(contrato["python"][0]).is_file():
-        raise RuntimeError("PM no publico un lanzador y entorno completos")
+    if not Path(contrato["python"][0]).is_file():
+        raise RuntimeError("PM no publico un entorno completo")
     for path in [*contrato["python"], contrato["site_packages"]]:
         candidato = Path(path)
         if (
@@ -303,11 +307,32 @@ def _runtime_hermes(destino: Path) -> dict:
             and destino.parents[1].resolve() not in candidato.resolve().parents
         ):
             raise ValueError("el entorno Hermes apunta fuera de la generacion")
+    argv = [*contrato["python"], "-m", "hermes_cli.main"]
+    env["PYTHONPATH"] = str(codigo)
+    version = _run([*argv, "--version"], env=env, timeout=60)
+    observacion = {"ruta": str(launcher), "estado": "ausente"}
+    if launcher.is_file():
+        try:
+            _run([str(launcher), "--version"], env=env, timeout=60)
+            observacion["estado"] = "comprobado"
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            causa = exc.__cause__ if isinstance(exc.__cause__, OSError) else exc
+            observacion.update({"estado": "no_disponible", "motivo": str(exc)[:300]})
+            if getattr(causa, "winerror", None) == 4551:
+                observacion.update(
+                    {
+                        "estado": "bloqueado",
+                        "winerror": 4551,
+                        "motivo": "AppControl no permite el lanzador exe; se usa la entrada oficial PM comprobada",
+                    }
+                )
     return {
-        "argv": [str(launcher)],
+        "argv": argv,
         "python": contrato["python"],
+        "version": version,
         "site_packages": contrato["site_packages"],
         "src": str(codigo),
+        "launcher": observacion,
     }
 
 

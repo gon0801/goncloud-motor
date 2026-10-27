@@ -223,7 +223,11 @@ def _supervisor(reg: Registro, args) -> int:
         if not enc.agentes:
             return None
         hora = ahora_iso()
-        disponibles = {agente for agente in enc.agentes if _disponible(agente)}
+        generacion = None
+        referencia = reg.base / "ejecucion" / enc.id / f"intento-{enc.generacion}-{enc.conductor}" / "generacion.json"
+        if referencia.is_file():
+            generacion = Path(json.loads(referencia.read_text(encoding="utf-8"))["ruta"])
+        disponibles = {agente for agente in enc.agentes if _disponible(agente, generacion)}
         agente = elegir(enc, hora, disponibles)
         if agente:
             return _lanzador(agente)(enc, prompt, espacio, sesion)
@@ -281,7 +285,7 @@ def _supervisor(reg: Registro, args) -> int:
         time.sleep(args.intervalo)
 
 
-def _disponible(agente: str) -> bool:
+def _disponible(agente: str, generacion: Path | None = None) -> bool:
     if agente in ("sleep", "ensayo"):
         return os.name != "nt" and Path("/usr/bin/sandbox-exec").is_file()
     if agente == "grok" and os.name == "nt":
@@ -291,7 +295,14 @@ def _disponible(agente: str) -> bool:
 
         if not disponible():
             return False
-    if not shutil.which(agente):
+    if generacion is not None and (generacion / "runtime.json").is_file():
+        from motor.flota.runtime import resolver_ejecutable
+
+        try:
+            resolver_ejecutable(generacion, [agente], requerido=True)
+        except (OSError, ValueError, TypeError):
+            return False
+    elif not shutil.which(agente):
         return False
     if os.name != "nt" and not Path("/usr/bin/sandbox-exec").is_file():
         return False

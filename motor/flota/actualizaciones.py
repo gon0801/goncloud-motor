@@ -507,8 +507,13 @@ def preparar(
                     runtime.setdefault("configuradores", {})["hermes"] = (
                         _utilidad_configuracion(gen, contrato)
                     )
-                respuesta = _run(
-                    [*argv, "--version"], env=_entorno_generacion(gen), timeout=60
+                    runtime["env"]["PYTHONPATH"] = "herramientas/hermes/src"
+                respuesta = (
+                    contrato["version"]
+                    if doc["nombre"] == "hermes"
+                    else _run(
+                        [*argv, "--version"], env=_entorno_generacion(gen), timeout=60
+                    )
                 )
                 if not respuesta:
                     raise ValueError("el ejecutable no informa su version")
@@ -523,6 +528,17 @@ def preparar(
                     "version": respuesta[:200],
                     "ejecutable": runtime["lanzadores"][doc["nombre"]],
                 }
+                if doc["nombre"] == "hermes":
+                    observacion = dict(contrato["launcher"])
+                    observacion["ruta"] = str(
+                        Path(observacion["ruta"]).relative_to(gen)
+                    )
+                    runtime["observaciones"]["hermes"].update(
+                        {
+                            "entrada": "pm.environments.venv_command + hermes_cli.main",
+                            "launcher": observacion,
+                        }
+                    )
             _copiar_config(gen, fuentes, runtime)
             runtime["archivos"] = {}
             comandos = list(runtime["lanzadores"].values())
@@ -648,9 +664,12 @@ def comprobar_runtime(gen: Path) -> dict:
     _comprobar_runtime(gen, recibo)
     runtime = json.loads((gen / "runtime.json").read_text(encoding="utf-8"))
     for nombre, argv in runtime["lanzadores"].items():
+        env = _entorno_generacion(gen)
+        if nombre == "hermes":
+            env["PYTHONPATH"] = str(gen / "herramientas/hermes/src")
         version = _run(
             [*_argv_real(gen, argv), "--version"],
-            env=_entorno_generacion(gen),
+            env=env,
             timeout=60,
         )
         if version[:200] != runtime["observaciones"][nombre]["version"]:

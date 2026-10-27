@@ -6,7 +6,7 @@ El controlador consulta el distribuidor oficial, fija una versión exacta y prep
 
 Las funciones públicas están en motor.flota.actualizaciones:
 
-- descubrir(componentes): consulta las versiones publicadas. Admite openclaw, codex, claude, grok, qwen, kimi y hermes. Devuelve componentes disponibles y capacidades cuyo canal no pudo comprobarse.
+- descubrir(componentes): consulta las versiones publicadas. Admite openclaw, codex, claude, grok, qwen, kimi, opencode y hermes. Devuelve componentes disponibles y capacidades cuyo canal no pudo comprobarse.
 - preparar(home, catalogo=None, motor_origen=None, repos=None): crea una candidata y la comprueba, sin activarla. Los repositorios hermes, claw y conf se descubren entre los checkouts vecinos o se reciben explícitamente por máquina.
 - actualizar: prepara y llama a control.aplicar. Si hay trabajo sobre la generación vigente, la candidata queda preparada y la activación responde ocupada.
 - comprobar_runtime(generacion): comprueba el recibo, hashes de ejecutables/configuración/skills, versiones realmente ejecutadas y configuración nativa de los directores presentes.
@@ -16,9 +16,9 @@ Un catálogo conservado permite reintentar las mismas versiones. No exige que Da
 
 ## Fuentes e integridad
 
-Los paquetes se consultan en registry.npmjs.org: openclaw, @openai/codex, @anthropic-ai/claude-code, @xai-official/grok, @qwen-code/qwen-code y @moonshot-ai/kimi-code. Se comprueba el SRI de cada tarball antes de invocar npm sobre un prefijo propio. El paquete instalado debe declarar el nombre y la versión esperados. Codex se vincula a su binario nativo compatible; no a node ni a un shim cmd.
+Los paquetes se consultan en registry.npmjs.org: openclaw, @openai/codex, @anthropic-ai/claude-code, @xai-official/grok, @qwen-code/qwen-code y @moonshot-ai/kimi-code y opencode-ai. Se comprueba el SRI de cada tarball antes de invocar npm sobre un prefijo propio. El paquete instalado debe declarar el nombre y la versión esperados. Codex se vincula a su binario nativo compatible; no a node ni a un shim cmd.
 
-Hermes se descubre en el release estable de github.com/NousResearch/hermes-agent. La referencia Git fija su revisión exacta. Se usa setup-hermes.sh --runtime-only o setup-hermes.ps1 -RuntimeOnly, según la máquina. El controlador consulta committed_venv y venv_command de pm.environments: no adivina una ruta .venv antigua. Para ejecutar Hermes conserva el lanzador oficial src/.hermes/bin/hermes[.exe]. PM mantiene sus propias comprobaciones de los artefactos fijados por Hermes.
+Hermes se descubre en el release estable de github.com/NousResearch/hermes-agent. La referencia Git fija su revisión exacta. Se usa setup-hermes.sh --runtime-only o setup-hermes.ps1 -RuntimeOnly, según la máquina. El controlador consulta committed_venv y venv_command de pm.environments: no adivina una ruta .venv antigua. Para ejecutar Hermes usa el comando publicado por PM seguido de -m hermes_cli.main, con PYTHONPATH limitado al código de esa generación. El lanzador src/.hermes/bin/hermes[.exe] queda observado como capacidad opcional: el ensayo nativo encontró un .exe rechazado por AppControl mientras la entrada oficial PM funcionaba. El controlador no cambia esa política ni genera otro .exe. PM mantiene sus propias comprobaciones de los artefactos fijados por Hermes.
 
 El configurador usa el intérprete del controlador con su PyYAML existente y el código/dependencias elegidos por PM, dentro del entorno de ensayo. Si PyYAML falta, prepara esa utilidad en herramientas/config-utils con uv --target y hashes publicados por PyPI; nunca instala paquetes dentro del entorno administrado de Hermes. La configuración registra versión, procedencia y rutas de esa utilidad. Un reintento conserva la instalación Hermes ya completada y consulta el contrato de PM antes de volver a invocar setup.
 
@@ -47,3 +47,9 @@ La reversa independiente requiere conservar conjuntamente ops/reversa_ensayo.sh,
 python3 -m unittest tests.test_actualizaciones_flota -q ejecuta instalación npm real sobre un tarball local declarado, rechazo de integridad incorrecta y aplicación/reversa de una candidata con recibos. Ese artefacto local no demuestra una publicación upstream; la comprobación real de cada distribuidor y host se registra por separado en la evidencia final.
 
 Fuentes primarias consultadas: [instalación de OpenClaw](https://docs.openclaw.ai/install), [validación de configuración](https://docs.openclaw.ai/cli/config), [instalación de Hermes](https://github.com/NousResearch/hermes-agent/blob/v0.22.5/website/docs/getting-started/installation.md) y [gestión de paquetes de Hermes](https://github.com/NousResearch/hermes-agent/blob/v0.22.5/website/docs/reference/package-management.md).
+
+## Ejecución desde la generación
+
+El supervisor comprueba la disponibilidad del ejecutable instalado en la generación, aunque no exista en el PATH global. El plugin de Hermes identifica su generación por ubicación o MOTOR_GENERACION_RUTA y resuelve los comandos en el mismo runtime. Mantiene los argumentos de modelo/esfuerzo y la autenticación local. Una ruta no preparada se informa como capacidad no disponible, sin lanzar silenciosamente el CLI global.
+
+Muse en WSL no se ofrece dentro de una generación mientras esa capacidad no esté preparada y comprobada. Fuera de las generaciones permanece el lanzador oficial protegido existente; no se altera Keychain ni el backend de credenciales. Esto no añade Muse como trabajador administrado de Windows.

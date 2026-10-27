@@ -27,12 +27,16 @@ def _ruta(generacion: Path, ruta: str) -> Path:
     return resultado
 
 
-def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> list[str]:
+def resolver_ejecutable(
+    generacion: Path, cmd: list[str], *, requerido: bool = False
+) -> list[str]:
     doc = cargar_runtime(generacion)
     nombre = Path(cmd[0]).stem.lower()
     prefijo = doc.get("lanzadores", {}).get(nombre)
     if prefijo is None:
-        return cmd
+        if requerido:
+            raise ValueError("la generacion no contiene el ejecutable solicitado")
+        return list(cmd)
     if (
         not isinstance(prefijo, list)
         or not prefijo
@@ -46,7 +50,13 @@ def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> li
         resuelto.append(argumento)
     if not Path(resuelto[0]).is_file():
         raise ValueError("falta el ejecutable de la generacion")
-    argumentos = list(cmd[1:])
+    return [*resuelto, *cmd[1:]]
+
+
+def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> list[str]:
+    nombre = Path(cmd[0]).stem.lower()
+    doc = cargar_runtime(generacion)
+    argumentos = resolver_ejecutable(generacion, cmd)
     politica = doc.get("politica")
     if politica and nombre == "grok":
         tabla = json.loads(_ruta(generacion, politica).read_text(encoding="utf-8"))
@@ -64,7 +74,7 @@ def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> li
                     else:
                         argumentos.extend([opciones[0], valor])
                 break
-    return [*resuelto, *argumentos]
+    return argumentos
 
 
 def copiar_poteto(generacion: Path | None, base: Path, runtime: Path) -> Path | None:
