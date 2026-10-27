@@ -36,6 +36,60 @@ def cabeza(home: Path) -> str:
     return _git(home / "motor", "rev-parse", "HEAD").stdout.strip()
 
 
+def _trabajos_sobre(home: Path, generacion: str) -> list[dict]:
+    carpeta = home / "trabajos"
+    if not carpeta.is_dir():
+        return []
+    ocupantes = []
+    for path in sorted(carpeta.glob("*.json")):
+        try:
+            doc = _leer(path)
+        except (OSError, ValueError):
+            continue
+        if doc and str(doc.get("generacion") or "") == generacion:
+            ocupantes.append(doc)
+    return ocupantes
+
+
+def _gen_integra(gen: Path, destino: str) -> bool:
+    if not gen.is_dir():
+        return False
+    try:
+        cabeza_gen = _git(gen, "rev-parse", "HEAD").stdout.strip()
+        if cabeza_gen != destino:
+            return False
+        estado = _git(gen, "status", "--porcelain", "--untracked-files=no").stdout
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return not estado.strip()
+
+
+def _asegurar_gen(home: Path, destino: str, gen: Path) -> bool:
+    if _gen_integra(gen, destino):
+        return True
+    if _trabajos_sobre(home, destino):
+        return False
+    motor = home / "motor"
+    subprocess.run(
+        ["git", "-C", str(motor), "worktree", "remove", "--force", str(gen)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if gen.exists():
+        shutil.rmtree(gen, ignore_errors=True)
+    subprocess.run(
+        ["git", "-C", str(motor), "worktree", "prune"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if gen.exists():
+        return False
+    _git(motor, "worktree", "add", "--detach", str(gen), destino)
+    return _gen_integra(gen, destino)
+
+
 def anotar_trabajo(home: Path, trabajo: str, generacion: str, herramienta: str) -> None:
     _atomico(
         home / "trabajos" / f"{trabajo}.json",
@@ -224,6 +278,13 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
     gen = home / "generaciones" / destino
     if not gen.exists():
         _git(motor, "worktree", "add", "--detach", str(gen), destino)
+    elif not _asegurar_gen(home, destino, gen):
+        (home / "instalacion-pendiente.json").unlink(missing_ok=True)
+        _atomico(
+            home / "candidata.json",
+            {"estado": "alterada", "destino": destino, "motivo": "candidata alterada"},
+        )
+        return {"accion": "rechazada", "vigente": anterior, "destino": destino, "motivo": "candidata alterada"}
     recibo["etapa"] = "codigo"
     _atomico(home / "instalacion-pendiente.json", recibo)
     if corte == "worktree":
@@ -237,6 +298,13 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
             {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo", "comprobador": comprobador},
         )
         return {"accion": "rechazada", "vigente": anterior, "destino": destino}
+    if destino != anterior and _trabajos_sobre(home, anterior):
+        return {
+            "accion": "ocupada",
+            "vigente": anterior,
+            "destino": destino,
+            "generacion_preparada": destino,
+        }
     _enlace(home, gen)
     recibo["etapa"] = "completo"
     recibo["causa"] = ""
@@ -274,6 +342,15 @@ def recuperar(home: Path) -> dict:
     destino = (pend.get("destino") or {}).get("codigo") or ""
     anterior = (pend.get("anterior") or {}).get("codigo") or ""
     gen = home / "generaciones" / destino
+    vigente_rec = asignar(home) if (home / "actual").is_symlink() else anterior
+    if destino and vigente_rec and destino != vigente_rec and _trabajos_sobre(home, vigente_rec):
+        return {"accion": "ocupada", "vigente": vigente_rec, "destino": destino, "generacion_preparada": destino}
+    if destino and gen.exists() and not _asegurar_gen(home, destino, gen):
+        _atomico(
+            home / "candidata.json",
+            {"estado": "alterada", "destino": destino, "motivo": "candidata alterada"},
+        )
+        return {"accion": "rechazada", "destino": destino, "motivo": "candidata alterada"}
     actual = home / "actual"
     apunta = False
     if gen.exists() and actual.is_symlink():
@@ -331,6 +408,79 @@ def anotar_respaldo(home: Path, politica: Politica, respaldo: dict) -> Politica:
     return cargada
 
 
+def _json_objeto(path: Path) -> dict:
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"JSON invalido en el paquete: {path.name}") from exc
+    if not isinstance(doc, dict):
+        raise ValueError(f"JSON no es un objeto en el paquete: {path.name}")
+    return doc
+
+
+def _localizar_paquete(paquete: Path) -> tuple[Path, list[Path]]:
+    paquete = Path(paquete)
+    if not paquete.is_dir():
+        raise ValueError("el paquete no trae SKILL.md")
+    declarados: list[str] = []
+    manifiesto = paquete / "poteto.v1.json"
+    if manifiesto.is_file():
+        doc = _json_objeto(manifiesto)
+        crudos = doc.get("files")
+        if isinstance(crudos, list):
+            for fila in crudos:
+                if isinstance(fila, dict) and isinstance(fila.get("path"), str):
+                    declarados.append(str(fila["path"]))
+    candidatos: list[Path] = []
+    for declarado in declarados:
+        ruta = Path(declarado)
+        if ruta.name == "SKILL.md" and "poteto-mode" in ruta.parts:
+            candidatos.append(ruta)
+    candidatos.extend(
+        [
+            Path("skills/poteto-mode/SKILL.md"),
+            Path("SKILL.md"),
+        ]
+    )
+    for declarado in declarados:
+        ruta = Path(declarado)
+        if ruta.name == "SKILL.md":
+            candidatos.append(ruta)
+    skill_rel = None
+    vistos: set[Path] = set()
+    for candidato in candidatos:
+        if candidato in vistos:
+            continue
+        vistos.add(candidato)
+        if (paquete / candidato).is_file():
+            skill_rel = candidato
+            break
+    if skill_rel is None:
+        raise ValueError("el paquete no trae SKILL.md")
+    if not (paquete / skill_rel).read_bytes().strip():
+        raise ValueError("la skill del paquete esta vacia")
+    runtimes = sorted(
+        (
+            path
+            for path in paquete.rglob("*.json")
+            if path.parent.name == "runtimes" and path.is_file()
+        ),
+        key=lambda p: p.relative_to(paquete).as_posix(),
+    )
+    if not runtimes:
+        runtimes = sorted(
+            (
+                path
+                for path in paquete.glob("*.json")
+                if path.name != "poteto.v1.json" and path.is_file()
+            ),
+            key=lambda p: p.name,
+        )
+    for runtime in runtimes:
+        _json_objeto(runtime)
+    return skill_rel, runtimes
+
+
 def publicar_proyeccion(home: Path, politica: Politica, paquete: Path) -> dict:
     import os
     import tempfile
@@ -346,18 +496,17 @@ def publicar_proyeccion(home: Path, politica: Politica, paquete: Path) -> dict:
         dirigir = [p for p in politica.puestos if p.funcion == "dirigir"]
         if not dirigir:
             raise ValueError("la proyección necesita el puesto dirigir")
-        if not (Path(paquete) / "SKILL.md").is_file():
-            raise ValueError("el paquete no trae SKILL.md")
+        skill_rel, runtime_paths = _localizar_paquete(Path(paquete))
         texto = json.dumps(tabla, ensure_ascii=False, indent=2) + "\n"
         (temporal / "model-routing.source.json").write_text(
             texto, encoding="utf-8"
         )
         poteto = temporal / "poteto"
         shutil.copytree(paquete, poteto)
-        digest = hashlib.sha256((poteto / "SKILL.md").read_bytes()).hexdigest()
+        digest = hashlib.sha256((poteto / skill_rel).read_bytes()).hexdigest()
         herramientas = hashlib.sha256()
-        for path in sorted((poteto / "runtimes").glob("*.json")):
-            herramientas.update(path.read_bytes())
+        for fuente in runtime_paths:
+            herramientas.update((poteto / fuente.relative_to(Path(paquete))).read_bytes())
         flota = {
             "schema": "sistema-agentes.flota.v1",
             "rootId": "flota-directores",

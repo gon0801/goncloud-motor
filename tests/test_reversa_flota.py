@@ -116,14 +116,19 @@ class ReversaFlota(unittest.TestCase):
     def test_el_trabajo_activo_conserva_su_generacion(self) -> None:
         aplicar(self.home, self.buena)
         anotar_trabajo(self.home, "uno", self.buena, "codex")
-        aplicar(self.home, self.nueva)
+        salida = aplicar(self.home, self.nueva)
+        self.assertEqual(salida["accion"], "ocupada")
         self.assertEqual(leer_trabajo(self.home, "uno")["generacion"], self.buena)
-        self.assertEqual(asignar(self.home), self.nueva)
+        self.assertEqual(asignar(self.home), self.buena)
         self.assertTrue((self.home / "generaciones" / self.buena).is_dir())
+        self.assertTrue((self.home / "generaciones" / self.nueva).is_dir())
         self.assertEqual(
             ((self.home / "generaciones" / self.buena) / "marca.txt").read_text(encoding="utf-8"),
             "buena\n",
         )
+        (self.home / "trabajos" / "uno.json").unlink()
+        self.assertEqual(aplicar(self.home, self.nueva)["accion"], "aplicada")
+        self.assertEqual(asignar(self.home), self.nueva)
 
     def test_recuperar_completa_lo_que_ya_quedo_comprobado(self) -> None:
         aplicar(self.home, self.buena)
