@@ -29,6 +29,9 @@ def cargar(base: Path) -> dict | None:
         ) from exc
     if not isinstance(datos, dict):
         raise ConfigAutoridadInvalida("autoridad.json debe ser un objeto")
+    ssh = datos.get("ssh")
+    if ssh is not None and (not isinstance(ssh, str) or not Path(ssh).is_absolute()):
+        raise ConfigAutoridadInvalida("ssh debe ser una ruta absoluta al cliente")
     destino = datos.get("base")
     if (
         datos.get("modo") == "local"
@@ -65,7 +68,28 @@ def operar(base: Path, mensaje: dict, timeout: float = 30) -> dict:
             },
         )
         return {"alcanzada": False, "motivo": "config incompleta"}
-    return enviar(host, argv, mensaje, Path(base), cfg.get("puerto"), timeout)
+    try:
+        cliente = _cliente_ssh(cfg.get("ssh"))
+    except OSError as exc:
+        anotar_local(base, {"op": mensaje.get("op"), "error": str(exc)})
+        return {"alcanzada": False, "motivo": str(exc)}
+    return enviar(host, argv, mensaje, Path(base), cfg.get("puerto"), timeout, cliente)
+
+
+def _cliente_ssh(explicito: str | None = None) -> str:
+    if explicito:
+        return explicito
+    if os.name == "nt":
+        for variable in ("ProgramFiles", "ProgramW6432"):
+            raiz = os.environ.get(variable)
+            if raiz:
+                cliente = Path(raiz) / "Git" / "usr" / "bin" / "ssh.exe"
+                if cliente.is_file():
+                    return str(cliente)
+        raise FileNotFoundError(
+            "transporte Windows requiere Git OpenSSH instalado o ssh absoluto compatible en autoridad.json"
+        )
+    return "ssh"
 
 
 def _operar_local(cfg: dict, mensaje: dict, buzon: Path, timeout: float) -> dict:
@@ -120,8 +144,9 @@ def enviar(
     buzon: Path,
     puerto: int | None = None,
     timeout: float = 30,
+    cliente: str = "ssh",
 ) -> dict:
-    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+    cmd = [cliente, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
     if puerto is not None:
         cmd.extend(["-p", str(puerto)])
     cmd.append(host)
@@ -155,8 +180,7 @@ def enviar(
 def _enviar_archivos(
     cmd: list[str], mensaje: dict, buzon: Path, timeout: float
 ) -> dict:
-    # ssh.exe en Windows no termina si su salida es un pipe, ni cierra el stdin de uno.
-    # Un archivo sí entrega EOF y el proceso acaba.
+    # Git OpenSSH recibe EOF con handles de archivo. Los pipes de Windows pueden colgarlo.
     buzon.mkdir(parents=True, exist_ok=True)
     marca = uuid.uuid4().hex[:12]
     entrada = buzon / f"envio-{marca}.json"
@@ -164,30 +188,34 @@ def _enviar_archivos(
     error = buzon / f"envio-{marca}.err"
     try:
         entrada.write_bytes(json.dumps(mensaje).encode("utf-8"))
-        orden = f"{subprocess.list2cmdline(cmd)} < {_comilla(entrada)} > {_comilla(salida)} 2> {_comilla(error)}"
-        proc = subprocess.Popen(orden, shell=True, stdin=subprocess.DEVNULL)
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        with (
+            entrada.open("rb") as inp,
+            salida.open("wb") as out,
+            error.open("wb") as err,
+        ):
+            proc = subprocess.Popen(cmd, stdin=inp, stdout=out, stderr=err)
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                pass
-            anotar_local(
-                buzon,
-                {
-                    "op": mensaje.get("op"),
-                    "motivo": "autoridad inalcanzable",
-                    "error": "TimeoutExpired",
-                },
-            )
-            return {"alcanzada": False, "motivo": "TimeoutExpired"}
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                anotar_local(
+                    buzon,
+                    {
+                        "op": mensaje.get("op"),
+                        "motivo": "autoridad inalcanzable",
+                        "error": "TimeoutExpired",
+                    },
+                )
+                return {"alcanzada": False, "motivo": "TimeoutExpired"}
         texto = (
             salida.read_text(encoding="utf-8", errors="replace")
             if salida.exists()
@@ -212,10 +240,6 @@ def _enviar_archivos(
     finally:
         for path in (entrada, salida, error):
             path.unlink(missing_ok=True)
-
-
-def _comilla(path: Path) -> str:
-    return '"' + str(path) + '"'
 
 
 def _respuesta(rc: int, texto: str, err: str, mensaje: dict, buzon: Path) -> dict:
