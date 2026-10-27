@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -162,6 +165,144 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(recuperar(self.home)["accion"], "revertido")
         self.assertEqual(asignar(self.home), self.buena)
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
+
+    def _encargo_con_trabajador(self, clave: str):
+        from motor.encargos.ciclo import ahora_iso, recibir
+        from motor.encargos.registro import Registro
+
+        aplicar(self.home, self.buena)
+        base = self.tmp / "base"
+        reg = Registro(base)
+        (base / "flota-home.json").write_text(
+            json.dumps({"home": str(self.home)}), encoding="utf-8"
+        )
+        hora = ahora_iso()
+        eid = recibir(reg, "reserva concurrente", clave, hora)["encargo"]
+        espacio = base / "espacio" / eid
+        espacio.mkdir(parents=True)
+        script = espacio / "trabajo.py"
+        marca = str(self.home / "actual" / "marca.txt")
+        script.write_text(
+            "from pathlib import Path\nimport time,json,os\n"
+            'while not Path("seguir").exists(): time.sleep(.02)\n'
+            'Path("observado.json").write_text(json.dumps({"marca":Path('
+            + repr(marca)
+            + ').read_text().strip(),"generacion":os.environ.get("MOTOR_GENERACION")}))\n',
+            encoding="utf-8",
+        )
+        return reg, base, eid, espacio, hora, script
+
+    def _esperar_visto(self, espacio: Path) -> dict:
+        (espacio / "seguir").touch()
+        for _ in range(100):
+            if (espacio / "observado.json").exists():
+                return json.loads((espacio / "observado.json").read_text(encoding="utf-8"))
+            time.sleep(0.05)
+        self.fail("el trabajador no observo su generacion")
+
+    def _cerrar_intento(self, base: Path, eid: str) -> None:
+        from motor.encargos.sesion import cerrar
+
+        for intento in (base / "ejecucion" / eid).glob("intento-*"):
+            proc = intento / "proc.json"
+            if proc.exists():
+                cerrar(intento, json.loads(proc.read_text(encoding="utf-8")))
+
+    def test_arranque_inyectado_en_el_enlace_conserva_su_generacion(self) -> None:
+        from motor.encargos.ciclo import _lanzar_uno
+        from motor.flota import control
+
+        reg, base, eid, espacio, hora, script = self._encargo_con_trabajador("r4-enlace")
+        original = control._enlace
+        try:
+            def antes_del_enlace(home, gen):
+                _lanzar_uno(
+                    reg,
+                    reg.fold(eid),
+                    base / "ejecucion" / eid,
+                    espacio,
+                    hora,
+                    lambda *args: [sys.executable, str(script)],
+                )
+                original(home, gen)
+
+            control._enlace = antes_del_enlace
+            salida = control.aplicar(self.home, self.nueva)
+            visto = self._esperar_visto(espacio)
+            self.assertEqual(salida["accion"], "ocupada")
+            self.assertEqual(salida["vigente"], self.buena)
+            self.assertTrue((self.home / "generaciones" / self.nueva).is_dir())
+            registrada = control.leer_trabajo(self.home, eid)["generacion"]
+            self.assertEqual(registrada, self.buena)
+            self.assertEqual(visto["generacion"], registrada)
+            self.assertEqual(visto["marca"], "buena")
+            self.assertEqual(asignar(self.home), self.buena)
+        finally:
+            control._enlace = original
+            self._cerrar_intento(base, eid)
+            reg.close()
+
+    def test_pausa_tras_asignar_registra_la_generacion_vigente(self) -> None:
+        from motor.encargos.ciclo import _lanzar_uno
+        from motor.flota import control
+
+        reg, base, eid, espacio, hora, script = self._encargo_con_trabajador("r4-pausa")
+        original = control.asignar
+        leida = threading.Event()
+        liberar = threading.Event()
+        errores: list[BaseException] = []
+        pausada = False
+
+        def asignar_pausado(home):
+            nonlocal pausada
+            gen = original(home)
+            if threading.current_thread().name == "lanzador-r4" and not pausada:
+                pausada = True
+                leida.set()
+                liberar.wait(10)
+            return gen
+
+        def lanzar():
+            from motor.encargos.registro import Registro
+
+            reg_hilo = Registro(base)
+            try:
+                _lanzar_uno(
+                    reg_hilo,
+                    reg_hilo.fold(eid),
+                    base / "ejecucion" / eid,
+                    espacio,
+                    hora,
+                    lambda *args: [sys.executable, str(script)],
+                )
+            except BaseException as exc:
+                errores.append(exc)
+            finally:
+                reg_hilo.close()
+
+        hilo = threading.Thread(target=lanzar, name="lanzador-r4")
+        try:
+            control.asignar = asignar_pausado
+            hilo.start()
+            self.assertTrue(leida.wait(10))
+            aplicada = control.aplicar(self.home, self.nueva)
+            liberar.set()
+            hilo.join(10)
+            self.assertFalse(hilo.is_alive())
+            self.assertEqual(errores, [])
+            self.assertEqual(aplicada["accion"], "aplicada")
+            visto = self._esperar_visto(espacio)
+            registrada = control.leer_trabajo(self.home, eid)["generacion"]
+            self.assertEqual(registrada, self.nueva)
+            self.assertEqual(visto["generacion"], registrada)
+            self.assertEqual(visto["marca"], "nueva")
+        finally:
+            liberar.set()
+            control.asignar = original
+            if hilo.is_alive():
+                hilo.join(10)
+            self._cerrar_intento(base, eid)
+            reg.close()
 
     def test_la_reversa_no_arranca_el_motor_nuevo(self) -> None:
         self.assertEqual(aplicar(self.home, self.buena)["accion"], "aplicada")
