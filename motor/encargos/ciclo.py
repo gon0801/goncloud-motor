@@ -872,6 +872,24 @@ def _lanzar_uno(
             )
         else:
             contenido += "\n\n" + instrucciones_responsable()
+        # Sólo observaciones de este encargo; la autoridad sigue fuera de la jaula.
+        copias_observadas = []
+        for fuente in sorted(raiz.glob("intento-*/observaciones*.json")):
+            copia = runtime / "observaciones" / fuente.parent.name / fuente.name
+            copia.parent.mkdir(parents=True, exist_ok=True)
+            _publica(copia, fuente.read_text(encoding="utf-8"))
+            contenido = contenido.replace(str(fuente), str(copia))
+            for nota in enc.procedimiento:
+                _, separador, referencia = nota.partition("observaciones del supervisor ")
+                if separador and Path(referencia).resolve() == fuente.resolve():
+                    contenido = contenido.replace(referencia, str(copia))
+            copias_observadas.append(str(copia))
+        if copias_observadas:
+            contenido += (
+                "\n\nLas observaciones disponibles estan copiadas en tu runtime privado:\n"
+                + "\n".join(copias_observadas)
+                + "\nUsa estas copias. No necesitas acceso al registro ni al directorio de autoridad."
+            )
         prompt = runtime / "prompt.md"
         flota_generacion = ""
         flota_ruta = ""

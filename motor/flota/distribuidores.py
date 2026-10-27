@@ -275,12 +275,56 @@ def _instalar_npm(doc: dict, artefacto: Path, destino: Path, cache: Path) -> lis
     return [str(ejecutable)]
 
 
-def _instalar_hermes(doc: dict, destino: Path) -> list[str]:
+def _runtime_hermes(destino: Path) -> dict:
+    codigo, store = destino / "src", destino / "tools"
+    facts = json.loads((store / "facts.json").read_text(encoding="utf-8"))
+    entry = (store / facts["packages"]["python"]["entry"]).resolve()
+    if store.resolve() not in entry.parents:
+        raise ValueError("Python de PM fuera de su almacen")
+    bootstrap = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    consulta = (
+        "import json; from pathlib import Path; "
+        "from pm.environments import committed_venv,venv_command,site_packages; "
+        "p=Path.cwd(); v=committed_venv(p); assert v is not None; "
+        "print(json.dumps({'python':venv_command(p,v),'site_packages':str(site_packages(v))}))"
+    )
+    env = _entorno_generacion(destino.parents[1])
+    env["PYTHONPATH"] = str(codigo)
+    contrato = json.loads(
+        _run([str(bootstrap), "-c", consulta], cwd=codigo, env=env, timeout=60)
+    )
+    launcher = codigo / ".hermes/bin" / ("hermes.exe" if os.name == "nt" else "hermes")
+    if not launcher.is_file() or not Path(contrato["python"][0]).is_file():
+        raise RuntimeError("PM no publico un lanzador y entorno completos")
+    for path in [*contrato["python"], contrato["site_packages"]]:
+        candidato = Path(path)
+        if (
+            candidato.is_absolute()
+            and destino.parents[1].resolve() not in candidato.resolve().parents
+        ):
+            raise ValueError("el entorno Hermes apunta fuera de la generacion")
+    return {
+        "argv": [str(launcher)],
+        "python": contrato["python"],
+        "site_packages": contrato["site_packages"],
+        "src": str(codigo),
+    }
+
+
+def _instalar_hermes(doc: dict, destino: Path) -> dict:
     codigo = destino / "src"
-    _run(["git", "clone", "--no-checkout", "--filter=blob:none", HERMES, str(codigo)])
-    _git(codigo, "checkout", "--detach", doc["revision"])
+    if not codigo.exists():
+        _run(
+            ["git", "clone", "--no-checkout", "--filter=blob:none", HERMES, str(codigo)]
+        )
+        _git(codigo, "checkout", "--detach", doc["revision"])
     if _git(codigo, "rev-parse", "HEAD") != doc["revision"]:
         raise ValueError("la revision Hermes preparada no coincide")
+    try:
+        return _runtime_hermes(destino)
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
+        # El instalador oficial recupera su propio journal y cache parcial.
+        pass
     env = _entorno_generacion(destino.parents[1])
     env["HERMES_RUNTIME_DIR"] = str(destino / "tools")
     if os.name == "nt":
@@ -297,18 +341,7 @@ def _instalar_hermes(doc: dict, destino: Path) -> list[str]:
     else:
         argv = ["bash", str(codigo / "setup-hermes.sh"), "--runtime-only"]
     _run(argv, cwd=codigo, env=env, timeout=1800)
-    sufijo = "Scripts/python.exe" if os.name == "nt" else "bin/python"
-    python = next(
-        (
-            codigo / nombre / sufijo
-            for nombre in (".venv", "venv")
-            if (codigo / nombre / sufijo).is_file()
-        ),
-        None,
-    )
-    if python is None:
-        raise RuntimeError("el instalador oficial Hermes no publico su interprete")
-    return [str(python), "-m", "hermes_cli.main"]
+    return _runtime_hermes(destino)
 
 
 def _entorno_generacion(gen: Path) -> dict:

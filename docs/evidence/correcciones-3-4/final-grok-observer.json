@@ -1,0 +1,288 @@
+{
+  "fuente": "trazas reales de dos encargos propios en Mini, sólo campos de protocolo; sin contenidos, firmas ni credenciales",
+  "trazas": [
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-8-6c8b078896c1432a8ffebb614277eeaf/log.txt",
+      "eventos": 41,
+      "llamadas": 13,
+      "terminales": 13,
+      "secuencia_antes": 0,
+      "secuencia_despues": 13,
+      "activas_finales": 0,
+      "comandos_con_rc": 1,
+      "rc_observados": [
+        1
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-11-4e8e3c400dcf4a679ec84e0451276b36/log.txt",
+      "eventos": 78,
+      "llamadas": 22,
+      "terminales": 22,
+      "secuencia_antes": 0,
+      "secuencia_despues": 22,
+      "activas_finales": 0,
+      "comandos_con_rc": 6,
+      "rc_observados": [
+        0
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-12-2f9b15480901429f91d684987f198989/log.txt",
+      "eventos": 76,
+      "llamadas": 24,
+      "terminales": 24,
+      "secuencia_antes": 0,
+      "secuencia_despues": 24,
+      "activas_finales": 0,
+      "comandos_con_rc": 2,
+      "rc_observados": [
+        0,
+        1
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-6-1a3fc411a7434a038d960b65e7b0cf13/log.txt",
+      "eventos": 36,
+      "llamadas": 12,
+      "terminales": 12,
+      "secuencia_antes": 0,
+      "secuencia_despues": 12,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-3-fcb518fd68fa4da9a53e7fe6a2e85b75/log.txt",
+      "eventos": 32,
+      "llamadas": 10,
+      "terminales": 10,
+      "secuencia_antes": 0,
+      "secuencia_despues": 10,
+      "activas_finales": 0,
+      "comandos_con_rc": 1,
+      "rc_observados": [
+        0
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-10-7700446f40fe4d0aa7eda62647148ed9/log.txt",
+      "eventos": 32,
+      "llamadas": 10,
+      "terminales": 10,
+      "secuencia_antes": 0,
+      "secuencia_despues": 10,
+      "activas_finales": 0,
+      "comandos_con_rc": 1,
+      "rc_observados": [
+        1
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-1-02e279b93cf64138948bedec2089da0a/log.txt",
+      "eventos": 12,
+      "llamadas": 4,
+      "terminales": 4,
+      "secuencia_antes": 0,
+      "secuencia_despues": 4,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-9-6b9a03a6089e482ab159090c582f5a7a/log.txt",
+      "eventos": 39,
+      "llamadas": 13,
+      "terminales": 13,
+      "secuencia_antes": 0,
+      "secuencia_despues": 13,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-7-6b8a06ad66d3403db23bc524ce835b00/log.txt",
+      "eventos": 36,
+      "llamadas": 12,
+      "terminales": 12,
+      "secuencia_antes": 0,
+      "secuencia_despues": 12,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-4-edfa96238a824016b579d9e1938513bf/log.txt",
+      "eventos": 36,
+      "llamadas": 12,
+      "terminales": 12,
+      "secuencia_antes": 0,
+      "secuencia_despues": 12,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-2-7db7eb3d7fe24be7a9abc5271947a25b/log.txt",
+      "eventos": 33,
+      "llamadas": 11,
+      "terminales": 11,
+      "secuencia_antes": 0,
+      "secuencia_despues": 11,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_62309c037bc14b39/intento-5-ecb88fcbbc734e71ba603120640931a5/log.txt",
+      "eventos": 40,
+      "llamadas": 12,
+      "terminales": 12,
+      "secuencia_antes": 0,
+      "secuencia_despues": 12,
+      "activas_finales": 0,
+      "comandos_con_rc": 2,
+      "rc_observados": [
+        1
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-8-b55c778579eb4b6cb9b67d3606cea5cd/log.txt",
+      "eventos": 36,
+      "llamadas": 12,
+      "terminales": 12,
+      "secuencia_antes": 0,
+      "secuencia_despues": 12,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-3-218f0edc75e2468ba2434922ead4cd1e/log.txt",
+      "eventos": 39,
+      "llamadas": 12,
+      "terminales": 12,
+      "secuencia_antes": 0,
+      "secuencia_despues": 12,
+      "activas_finales": 0,
+      "comandos_con_rc": 1,
+      "rc_observados": [
+        0
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-6-05d8de8a3e73438f909933d8a23b29b1/log.txt",
+      "eventos": 30,
+      "llamadas": 10,
+      "terminales": 10,
+      "secuencia_antes": 0,
+      "secuencia_despues": 10,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-4-7c1002690dfb44779db520a56f07175d/log.txt",
+      "eventos": 24,
+      "llamadas": 8,
+      "terminales": 8,
+      "secuencia_antes": 0,
+      "secuencia_despues": 8,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-1-2b8f51d7012a43babc0e0b31318061d9/log.txt",
+      "eventos": 12,
+      "llamadas": 4,
+      "terminales": 4,
+      "secuencia_antes": 0,
+      "secuencia_despues": 4,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-10-a88d07ae3615442ea3871a015d4fe616/log.txt",
+      "eventos": 95,
+      "llamadas": 31,
+      "terminales": 31,
+      "secuencia_antes": 0,
+      "secuencia_despues": 31,
+      "activas_finales": 0,
+      "comandos_con_rc": 1,
+      "rc_observados": [
+        1
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-11-2e111e434ec34c0bb1566291f7ad6a1d/log.txt",
+      "eventos": 56,
+      "llamadas": 18,
+      "terminales": 18,
+      "secuencia_antes": 0,
+      "secuencia_despues": 18,
+      "activas_finales": 0,
+      "comandos_con_rc": 1,
+      "rc_observados": [
+        0
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-7-30dccf236bc148bd850423ae2e4d7ddc/log.txt",
+      "eventos": 49,
+      "llamadas": 15,
+      "terminales": 15,
+      "secuencia_antes": 0,
+      "secuencia_despues": 15,
+      "activas_finales": 0,
+      "comandos_con_rc": 2,
+      "rc_observados": [
+        0,
+        1
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-2-8374022add9c498bb9889dc925c7e24b/log.txt",
+      "eventos": 27,
+      "llamadas": 9,
+      "terminales": 9,
+      "secuencia_antes": 0,
+      "secuencia_despues": 9,
+      "activas_finales": 0,
+      "comandos_con_rc": 0,
+      "rc_observados": []
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-5-c82c5eecd8e548368d8b0986619c787c/log.txt",
+      "eventos": 53,
+      "llamadas": 17,
+      "terminales": 17,
+      "secuencia_antes": 0,
+      "secuencia_despues": 17,
+      "activas_finales": 0,
+      "comandos_con_rc": 1,
+      "rc_observados": [
+        0
+      ]
+    },
+    {
+      "ruta": "/Users/gon/ensayo-final34/autoridad/ejecucion/enc_f50772f827d39a15/intento-9-fc36054d687040049da6c51e0ef28811/log.txt",
+      "eventos": 47,
+      "llamadas": 15,
+      "terminales": 15,
+      "secuencia_antes": 0,
+      "secuencia_despues": 15,
+      "activas_finales": 0,
+      "comandos_con_rc": 1,
+      "rc_observados": [
+        0
+      ]
+    }
+  ],
+  "progreso_sin_terminal": "5 eventos in_progress conservan herramienta activa, secuencia, hora y hecho del ultimo terminal",
+  "terminal": "completed cierra la llamada y avanza una vez; retransmision terminal no duplica",
+  "resultado": "OK",
+  "cancelacion": "cancelled cierra llamada y avanza una vez"
+}

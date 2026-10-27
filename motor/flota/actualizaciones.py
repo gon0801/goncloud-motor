@@ -15,13 +15,14 @@ from dataclasses import replace
 from pathlib import Path
 
 from .cerrojo import _cerrojo_flota
-from .control import _atomico, _trabajos_sobre, aplicar, asignar
+from .control import _atomico, _operacion_flota, _trabajos_sobre, aplicar, asignar
 from .distribuidores import (
     _descargar,
     _entorno_generacion,
     _git,
     _instalar_hermes,
     _instalar_npm,
+    _json_url,
     _run,
     _validar_componente,
     descubrir,
@@ -116,7 +117,86 @@ def _crear_generacion(
     return revision, gen
 
 
-def _plugins_hermes(config: Path, home: Path, python: str, instalacion: Path) -> None:
+def _utilidad_configuracion(gen: Path, contrato: dict) -> dict:
+    env = _entorno_generacion(gen)
+    util = {
+        "argv": [sys.executable],
+        "pythonpath": [contrato["src"], contrato["site_packages"]],
+    }
+    try:
+        version = _run(
+            [sys.executable, "-c", "import yaml; print(yaml.__version__)"],
+            env=env,
+            timeout=30,
+        )
+        util["pyyaml"] = {"version": version, "origen": "interprete del controlador"}
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        fuente = "https://pypi.org/pypi/PyYAML/json"
+        metadata = _json_url(fuente)
+        version = metadata["info"]["version"]
+        if not version or any(c.isspace() for c in version):
+            raise ValueError("version PyYAML invalida")
+        hashes = sorted(
+            {f["digests"]["sha256"] for f in metadata["urls"] if not f.get("yanked")}
+        )
+        if not hashes or any(
+            len(h) != 64 or any(c not in "0123456789abcdef" for c in h) for h in hashes
+        ):
+            raise ValueError("PyPI no publico integridad para PyYAML")
+        uv = shutil.which("uv")
+        if not uv:
+            raise RuntimeError(
+                "el configurador requiere PyYAML o uv para su utilidad aislada"
+            )
+        destino = gen / "herramientas/config-utils"
+        destino.mkdir(parents=True, exist_ok=True)
+        requisitos = destino / "requirements.txt"
+        requisitos.write_text(
+            "PyYAML=="
+            + version
+            + " "
+            + " ".join("--hash=sha256:" + h for h in hashes)
+            + "\n",
+            encoding="utf-8",
+        )
+        _run(
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--target",
+                str(destino),
+                "--index-url",
+                "https://pypi.org/simple",
+                "--require-hashes",
+                "-r",
+                str(requisitos),
+            ],
+            env=env,
+        )
+        util["pythonpath"].append(str(destino))
+        util["pyyaml"] = {
+            "version": version,
+            "fuente": fuente,
+            "sha256_distribuciones": hashes,
+        }
+    util["pythonpath"] = [str(Path(p).relative_to(gen)) for p in util["pythonpath"]]
+    return util
+
+
+def _entorno_configuracion(gen: Path, runtime: dict) -> dict:
+    env = _entorno_generacion(gen)
+    env["PYTHONPATH"] = os.pathsep.join(
+        str(gen / p) for p in runtime["configuradores"]["hermes"]["pythonpath"]
+    )
+    return env
+
+
+def _plugins_hermes(
+    config: Path, home: Path, python: list[str], instalacion: Path, env: dict
+) -> None:
     manifiesto = json.loads(
         (config / "director-plugins.json").read_text(encoding="utf-8")
     )
@@ -125,7 +205,7 @@ def _plugins_hermes(config: Path, home: Path, python: str, instalacion: Path) ->
         raise ValueError("nombre del director invalido")
     _run(
         [
-            python,
+            *python,
             "-c",
             (
                 "import sys; sys.path.insert(0,sys.argv[1]); "
@@ -136,7 +216,7 @@ def _plugins_hermes(config: Path, home: Path, python: str, instalacion: Path) ->
             str(instalacion),
             director,
         ],
-        env=_entorno_generacion(home.parents[1]),
+        env=env,
     )
     for plugin in manifiesto["plugins"]:
         nombre, revision, repo = plugin["name"], plugin["sha"], plugin["repo"]
@@ -230,11 +310,11 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict) -> None:
         _atomico(tabla, proyeccion)
         runtime["politica"] = str(tabla.relative_to(gen))
         if "hermes" in runtime["lanzadores"]:
-            python = _argv_real(gen, runtime["lanzadores"]["hermes"])[0]
+            python = _argv_real(gen, runtime["configuradores"]["hermes"]["argv"])
             script = hermes / "scripts/configure_team.py"
             home_hermes = gen / "perfiles/hermes"
             args = [
-                python,
+                *python,
                 str(script),
                 "--home",
                 str(home_hermes),
@@ -243,10 +323,14 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict) -> None:
                 "--preserve-local-soul",
             ]
             _plugins_hermes(
-                hermes, home_hermes, python, gen / "herramientas/hermes/src"
+                hermes,
+                home_hermes,
+                python,
+                gen / "herramientas/hermes/src",
+                _entorno_configuracion(gen, runtime),
             )
-            _run(args, env=_entorno_generacion(gen))
-            _run([*args, "--check"], env=_entorno_generacion(gen))
+            _run(args, env=_entorno_configuracion(gen, runtime))
+            _run([*args, "--check"], env=_entorno_configuracion(gen, runtime))
             runtime["config"]["hermes"] = str(home_hermes.relative_to(gen))
         if "openclaw" in runtime["lanzadores"]:
             destino = gen / "perfiles/claw"
@@ -300,6 +384,7 @@ def _argv_real(gen: Path, argv: list[str]) -> list[str]:
     ]
 
 
+@_operacion_flota
 def preparar(
     home: Path,
     catalogo: dict | None = None,
@@ -313,6 +398,16 @@ def preparar(
         or (home / "motor.db").exists()
     ):
         raise ValueError("la preparacion requiere un home de componentes propio")
+    from .compartida import leer_fuente
+
+    fuente = leer_fuente(home)
+    if fuente is not None:
+        aprobado = fuente["catalogo"]
+        if catalogo is not None and catalogo != aprobado:
+            raise ValueError(
+                "la replica aplica el catalogo publicado, sin cambiar versiones"
+            )
+        catalogo = aprobado
     motor_origen = (motor_origen or Path(__file__).resolve().parents[2]).resolve()
     catalogo = catalogo if catalogo is not None else descubrir()
     componentes = catalogo.get("componentes") or []
@@ -332,7 +427,7 @@ def preparar(
         Path((fuentes.get("conf") or {}).get("origen", "")) / "flota/manifesto.toml"
     )
     with _cerrojo_flota(home):
-        if (home / "motor").exists():
+        if fuente is None and (home / "motor").exists():
             anterior = home / "generaciones" / asignar(home) / "runtime.json"
             if anterior.is_file():
                 anteriores = json.loads(anterior.read_text(encoding="utf-8")).get(
@@ -401,13 +496,17 @@ def preparar(
         try:
             for doc in componentes:
                 destino = gen / "herramientas" / doc["nombre"]
-                if destino.exists():
-                    shutil.rmtree(destino)
                 if doc["tipo"] == "npm":
+                    if destino.exists():
+                        shutil.rmtree(destino)
                     artefacto = _descargar(doc, home / "artefactos")
                     argv = _instalar_npm(doc, artefacto, destino, home / "npm-cache")
                 else:
-                    argv = _instalar_hermes(doc, destino)
+                    contrato = _instalar_hermes(doc, destino)
+                    argv = contrato["argv"]
+                    runtime.setdefault("configuradores", {})["hermes"] = (
+                        _utilidad_configuracion(gen, contrato)
+                    )
                 respuesta = _run(
                     [*argv, "--version"], env=_entorno_generacion(gen), timeout=60
                 )
@@ -426,7 +525,11 @@ def preparar(
                 }
             _copiar_config(gen, fuentes, runtime)
             runtime["archivos"] = {}
-            for argv in runtime["lanzadores"].values():
+            comandos = list(runtime["lanzadores"].values())
+            comandos.extend(
+                c["argv"] for c in runtime.get("configuradores", {}).values()
+            )
+            for argv in comandos:
                 for arg in _argv_real(gen, argv):
                     ruta = Path(arg)
                     if ruta.is_absolute() and ruta.is_file():
@@ -448,7 +551,11 @@ def preparar(
                 "claw-routing.json",
                 "source-revision.json",
             }
-            for directorio in (gen / "config", gen / "perfiles"):
+            for directorio in (
+                gen / "config",
+                gen / "perfiles",
+                gen / "herramientas/config-utils",
+            ):
                 for ruta in sorted(directorio.rglob("*")):
                     if (
                         ruta.is_file()
@@ -552,10 +659,10 @@ def comprobar_runtime(gen: Path) -> dict:
             )
     config = runtime.get("config", {})
     if "hermes" in config:
-        python = _argv_real(gen, runtime["lanzadores"]["hermes"])[0]
+        python = _argv_real(gen, runtime["configuradores"]["hermes"]["argv"])
         _run(
             [
-                python,
+                *python,
                 str(gen / "config/hermes/scripts/configure_team.py"),
                 "--home",
                 str(gen / config["hermes"]),
@@ -563,7 +670,7 @@ def comprobar_runtime(gen: Path) -> dict:
                 str(gen / "herramientas/hermes/src"),
                 "--check",
             ],
-            env=_entorno_generacion(gen),
+            env=_entorno_configuracion(gen, runtime),
         )
     if "claw" in config:
         _comprobar_claw(gen, runtime)
@@ -582,7 +689,11 @@ def actualizar(
     return {**resultado, "preparacion": candidata}
 
 
+@_operacion_flota
 def estado(home: Path) -> dict:
+    from .compartida import leer_fuente
+
+    fuente = leer_fuente(home)
     if not (home / "motor").exists():
         return {"estado": "sin_instalacion", "componentes": []}
     generacion = asignar(home)
@@ -596,4 +707,27 @@ def estado(home: Path) -> dict:
         json.loads(p.read_text(encoding="utf-8"))
         for p in sorted((home / "preparaciones").glob("*.json"))
     ]
-    return {"generacion": generacion, "runtime": runtime, "preparaciones": recibos}
+    deseadas = (
+        {h.nombre: h.version for h in cargar(home / "manifiesto.toml").herramientas}
+        if (home / "manifiesto.toml").is_file()
+        else {}
+    )
+    aplicadas = {c["nombre"]: c["version"] for c in runtime.get("componentes", [])}
+    diferencias = [
+        {"componente": nombre, "deseada": version, "aplicada": aplicadas.get(nombre)}
+        for nombre, version in deseadas.items()
+        if aplicadas.get(nombre) != version
+    ]
+    return {
+        "generacion": generacion,
+        "runtime": runtime,
+        "preparaciones": recibos,
+        "fuente": {
+            "modo": "replica",
+            "origen": fuente["origen"],
+            "hash": fuente["hash"],
+        }
+        if fuente
+        else {"modo": "publicador"},
+        "diferencias": diferencias,
+    }

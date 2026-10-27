@@ -25,11 +25,58 @@ class Observacion:
         self.directorio = directorio
         self.abiertas: set[str] = set()
         self.secuencia = 0
+        self.hora = time.time()
+        self.hecho = ""
+        self.llamadas_grok: dict[str, dict] = {}
 
     def evento(self, data: dict) -> None:
         tipo = data.get("type")
         item = data.get("item") or {}
-        if tipo in ("item.started", "item.completed") and item.get("type") in (
+        avance = True
+        ejecucion = None
+        if tipo in ("tool_call", "tool_call_update"):
+            ident = data.get("toolCallId")
+            estado = data.get("status")
+            if not isinstance(ident, str) or not ident:
+                return
+            previo = self.llamadas_grok.get(ident) or {}
+            if tipo == "tool_call":
+                previo = {
+                    **previo,
+                    "nombre": data.get("toolName"),
+                }
+                estado = estado or "pending"
+            if estado not in (
+                "pending",
+                "in_progress",
+                "completed",
+                "failed",
+                "cancelled",
+                "canceled",
+            ):
+                return
+            if previo.get("estado") in ("completed", "failed", "cancelled", "canceled"):
+                return
+            terminal = estado in ("completed", "failed", "cancelled", "canceled")
+            self.llamadas_grok[ident] = {**previo, "estado": estado}
+            if terminal:
+                self.abiertas.discard(ident)
+                salida = data.get("rawOutput")
+                if (
+                    isinstance(salida, dict)
+                    and "exit_code" in salida
+                    and salida.get("command")
+                ):
+                    ejecucion = {
+                        "comando": salida["command"],
+                        "rc": salida["exit_code"],
+                        "salida": str(salida.get("output_for_prompt") or "")[-16000:],
+                    }
+            else:
+                self.abiertas.add(ident)
+            avance = terminal
+            hecho = f"{tipo} {previo.get('nombre') or ident} {estado}"
+        elif tipo in ("item.started", "item.completed") and item.get("type") in (
             "command_execution",
             "mcp_tool_call",
             "web_search",
@@ -51,20 +98,24 @@ class Observacion:
         else:
             return
         if tipo == "item.completed" and item.get("type") == "command_execution":
+            ejecucion = {
+                "comando": item.get("command"),
+                "rc": item.get("exit_code"),
+                "salida": (item.get("aggregated_output") or "")[-16000:],
+            }
+        if ejecucion is not None:
             with open(
                 self.directorio / "ejecuciones-runtime.jsonl", "a", encoding="utf-8"
             ) as f:
-                f.write(
-                    json.dumps(
-                        {
-                            "comando": item.get("command"),
-                            "rc": item.get("exit_code"),
-                            "salida": (item.get("aggregated_output") or "")[-16000:],
-                        }
-                    )
-                    + "\n"
-                )
-        self.secuencia += 1
+                f.write(json.dumps(ejecucion) + "\n")
+        if avance:
+            self.secuencia += 1
+            self.hora = time.time()
+            self.hecho = (
+                hecho
+                if tipo in ("tool_call", "tool_call_update")
+                else f"{tipo} {item.get('type') or ''}".strip()
+            )
         _publica(
             self.directorio / "herramienta.json",
             json.dumps(
@@ -72,8 +123,8 @@ class Observacion:
                     "observada": True,
                     "activas": sorted(self.abiertas),
                     "secuencia": self.secuencia,
-                    "hora": time.time(),
-                    "hecho": f"{tipo} {item.get('type') or ''}".strip(),
+                    "hora": self.hora,
+                    "hecho": self.hecho,
                 }
             ),
         )

@@ -108,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--manifiesto", type=Path)
         s.add_argument("--repo-hermes", type=Path)
 
+    s = sub.add_parser("publicar")
+    s.add_argument("--home", required=True, type=Path)
+    s.add_argument("--salida", required=True, type=Path)
+
+    s = sub.add_parser("sincronizar")
+    s.add_argument("--home", required=True, type=Path)
+    s.add_argument("--archivo", required=True, type=Path)
+
     args = ap.parse_args(argv)
     try:
         return _correr(args)
@@ -117,6 +125,19 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _correr(args) -> int:
+    if args.cmd in ("publicar", "sincronizar"):
+        from .compartida import exportar, importar
+
+        if args.cmd == "publicar":
+            return _json(exportar(args.home, args.salida))
+        if str(args.archivo) == "-":
+            import tempfile
+
+            with tempfile.TemporaryDirectory(prefix="flota-fuente-") as tmp:
+                archivo = Path(tmp) / "snapshot.json"
+                archivo.write_text(sys.stdin.read(), encoding="utf-8")
+                return _json(importar(args.home, archivo))
+        return _json(importar(args.home, args.archivo))
     if args.cmd in ("descubrir", "preparar", "actualizar", "estado"):
         from . import actualizaciones
         from .control import _atomico
@@ -132,6 +153,8 @@ def _correr(args) -> int:
             json.loads(args.catalogo.read_text(encoding="utf-8"))
             if args.catalogo is not None
             else actualizaciones.descubrir(args.componentes)
+            if args.componentes
+            else None
         )
         repos = {
             nombre: getattr(args, "repo_" + nombre)
@@ -150,9 +173,15 @@ def _correr(args) -> int:
         )
     if args.cmd in ("catalogos", "actualizar-modelos"):
         from .catalogos import descubrir_modelos, publicar_politica_modelos
+        from .compartida import leer_fuente
         from .control import _atomico
         from .manifiesto import proyectar_tabla
 
+        fuente = leer_fuente(args.home)
+        if fuente is not None and args.cmd == "actualizar-modelos":
+            raise ValueError(
+                "la replica conserva los modelos del publicador; puede consultar catalogos"
+            )
         manifiesto = args.manifiesto or args.home / "manifiesto.toml"
         if args.tabla is not None:
             tabla = json.loads(args.tabla.read_text(encoding="utf-8"))
