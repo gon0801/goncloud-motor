@@ -8,7 +8,9 @@ común v7 ya se publica desde PC y converge en Mini y Mac. Las skills
 vivas de los directores ya se reinstalaron en los perfiles que las
 reciben. La prueba final en ventana con David ya se hizo en Hermi y
 en Claw. Ningún paso dejó dos escritores activos sobre el mismo
-recurso.
+recurso. Después del cierre, David cambió una regla de fondo: cada
+máquina es independiente y tiene su propia libreta de encargos. Esa
+decisión ya se implementó y está al final de este documento.
 
 ## Integración
 
@@ -123,10 +125,25 @@ de Hermes es feat/hermes-team.
   máquinas son independientes y cada una tiene su propia libreta de
   encargos. Ver
   [decision-maquinas-independientes.md](decision-maquinas-independientes.md).
-  La autoridad única de Mini contradice esa regla y debe retirarse
-  en un paso nuevo. Ese paso no es parte de lo ya desplegado y queda
-  pendiente de implementar. Hoy PC publica la política y no tiene
-  servicio de encargos local. La Mac consulta a Mini como autoridad.
+  Esa decisión ya se implementó el 2026-10-27. La Mac tiene su
+  servicio local ai.goncloud.motor-encargos sobre
+  /Users/dn/.motor-encargos, corriendo con pid 17201. La PC tiene su
+  tarea GoncloudMotorEncargos sobre C:\Users\ehven\.motor-encargos,
+  en estado Running. Ninguna de las tres libretas tiene
+  autoridad.json. Cada una guarda solo lo suyo.
+- Prueba de independencia: la Mac recibió el encargo
+  enc_e63cdedf98598872 en su libreta, lo consultó y lo canceló en
+  local. La PC hizo lo mismo con enc_54f2fdf08cabe7da. Mini conservó
+  su libreta y sus 98 eventos sin cambios.
+- La base cliente de la Mac que apuntaba a Mini se conserva solo
+  como vía para entrar a Mini a consultar su historial. Ya no es la
+  ruta de los encargos de la Mac.
+- Límites honestos: el arranque tras reinicio se demostró en Mini.
+  En Mac y PC se instaló el mismo patrón de arranque por sesión y no
+  se reinició ninguna de las dos para esta prueba. La ejecución
+  durable con ejecutor sigue como quedó en Mini: la libreta recibe,
+  guarda, consulta y cancela en local, y la ejecución con ruta de
+  agente quedó demostrada en los ensayos de las rondas anteriores.
 - OpenBot sigue sin una parada propia demostrada. Un timeout no
   cancela su entrega. Esa capacidad no se le atribuye.
 - Por ese pendiente de decisión la fase 5 queda PARCIAL SEGURA. No
