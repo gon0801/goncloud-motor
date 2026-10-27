@@ -202,10 +202,12 @@ sin cuota y ambos directores corrieron con Grok autorizado.
   Mini y en PC. Aplicar la primera, ocupada con un trabajo vivo,
   aplicada sin trabajo, candidata mala rechazada conservando la
   vigente y reversa a la anterior. Mismo resultado en los dos hosts.
-- El recorrido equivalente de Claw desde sus herramientas no se
-  repitió en esta ronda. Su perfil de ensayo anterior se borró con su
-  login de Grok y no se pidió otro login. La elección de vía de Claw
-  sigue acreditada por los turnos de la ronda 3.
+- Claw ejecutó el mismo recorrido desde sus herramientas en la
+  Mini, en el perfil aislado clawr4 con Grok. Las herramientas
+  observadas fueron read, write y exec, sin fallos. Creó el archivo
+  directo, encargó el durable desde el plan externo, consultó, paró,
+  esperó el cierre del supervisor y continuó el mismo encargo en un
+  segundo turno. El perfil de ensayo se borró al cerrar.
 - El home de ensayo de Hermes quedó bloqueado por su gateway
   temporal y se puede borrar cuando salga solo.
 
