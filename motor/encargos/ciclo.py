@@ -515,30 +515,38 @@ def _edad(enc: Encargo, epoch: float) -> float:
     return epoch - visto
 
 
-def _pedidos_efecto(espacio: Path) -> list[dict] | None:
+def _pedidos_efecto(espacio: Path) -> list[dict]:
     path = espacio / "pedido-efecto.json"
     if not path.exists():
         return []
     try:
         datos = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"pedido-efecto.json no se puede leer: {exc}") from exc
     if isinstance(datos, dict):
         datos = [datos]
     if not isinstance(datos, list):
-        return None
-    for item in datos:
-        if not isinstance(item, dict) or not str(item.get("id") or "").strip():
-            return None
-    return [
-        {
-            "id": str(p["id"]),
-            "operacion": str(p.get("operacion") or "publicar"),
-            "clave": str(p.get("clave") or p["id"]),
-            "cuerpo": str(p.get("cuerpo") or ""),
-        }
-        for p in datos
-    ]
+        raise TypeError("pedido-efecto.json debe contener un objeto o una lista")
+    campos = ("id", "operacion", "clave", "cuerpo")
+    ids = set()
+    pedidos = []
+    for indice, item in enumerate(datos):
+        if not isinstance(item, dict):
+            raise TypeError(f"pedido-efecto.json[{indice}] debe ser un objeto")
+        invalidos = [
+            k for k in campos if not isinstance(item.get(k), str) or not item[k].strip()
+        ]
+        if invalidos:
+            raise ValueError(
+                f"pedido-efecto.json[{indice}] necesita texto no vacio en: "
+                + ", ".join(invalidos)
+                + "; conserva la identidad autorizada y expresa el texto en cuerpo"
+            )
+        if item["id"] in ids:
+            raise ValueError(f"pedido-efecto.json repite el id {item['id']}")
+        ids.add(item["id"])
+        pedidos.append({k: item[k] for k in campos})
+    return pedidos
 
 
 def _anotar_juicio(
@@ -663,7 +671,12 @@ def _incorporar(
     )
     huella = digest(observacion)
     juicio = leer_juicio(Path(referencia["resultado"]), observacion, huella, espacio)
-    pedidos = _pedidos_efecto(espacio)
+    try:
+        pedidos = _pedidos_efecto(espacio)
+        error_pedidos = ""
+    except (ValueError, TypeError) as exc:
+        pedidos = None
+        error_pedidos = str(exc)
     if juicio["clase"] == "confirmado" and pedidos:
         from .cierre import componer
 
@@ -681,8 +694,8 @@ def _incorporar(
             juicio = {
                 "clase": "instrumento",
                 "firma": huella,
-                "causa": "pedido-efecto.json ilegible",
-                "reparacion": "corregir solicitud interna del efecto",
+                "causa": error_pedidos,
+                "reparacion": "corregir id, operacion, clave y cuerpo de la solicitud interna; no obtener recibos desde el trabajador",
             }
         else:
             if juicio["clase"] == "producto_aprobado":
@@ -830,10 +843,12 @@ def _lanzar_uno(
                     "error_instrumento": "falta observacion del supervisor",
                 }
                 _publica(origen, json.dumps(observacion))
-            observacion = {
-                **observacion,
-                "solicitudes_efecto": _pedidos_efecto(espacio) or [],
-            }
+            observacion.pop("error_solicitudes_efecto", None)
+            try:
+                observacion["solicitudes_efecto"] = _pedidos_efecto(espacio)
+            except (ValueError, TypeError) as exc:
+                observacion["solicitudes_efecto"] = None
+                observacion["error_solicitudes_efecto"] = str(exc)
             origen = directorio / "observaciones-revision.json"
             _publica(origen, json.dumps(observacion, ensure_ascii=False))
             resultado = runtime / "resultado.json"

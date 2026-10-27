@@ -238,6 +238,11 @@ completo, el producto real y esas observaciones. Un rc=0 o una nota no demuestra
 Si falla el instrumento, arregla el procedimiento sin cambiar un producto valido ni repetir efectos.
 Una salida incompleta se recupera en este encargo. No pidas al usuario que escriba este protocolo.
 No cambies el objetivo ni despliegues. Las escrituras externas se piden en pedido-efecto.json.
+Su formato interno es {"id":"identidad-estable-del-efecto", "operacion":"publicar",
+"clave":"clave-autorizada-del-destino", "cuerpo":"texto-exacto-autorizado"}.
+Los cuatro campos son textos no vacios. Para varios efectos usa una lista de esos objetos,
+con IDs distintos. Conserva id, operacion, clave y cuerpo al reintentar o conciliar.
+El adaptador fija el destino de ensayo; no agregues credenciales ni rutas externas.
 Tu tarea es preparar el producto y la solicitud. No tienes acceso al registro ni al destino.
 El revisor puede aprobar el producto con efectos pendientes; el supervisor obtiene los recibos
 reales por el adaptador y compone el cierre. No conviertas la falta de esos recibos en una
@@ -261,6 +266,9 @@ Si el producto y sus comprobaciones cumplen y solo faltan efectos del adaptador 
 usa producto_aprobado y agrega efectos_pendientes con los IDs exactos de solicitudes_efecto.
 Eso autoriza al supervisor a mediar esas solicitudes; NO afirma que ya ocurrieron.
 El supervisor concilia sus recibos reales y compone el cierre sin modificar tu juicio.
+Si hay error_solicitudes_efecto, devuelve instrumento y pide reparar los campos indicados
+de pedido-efecto.json usando id estable, operacion, clave y cuerpo; no lo trates como
+ausencia de efectos ni pidas al responsable consultar el registro o el destino.
 No pidas al responsable acceso al registro, al destino ni sus credenciales para obtener recibos.
 Si el recibo de texto de ensayo no basta para comprobar un resultado solicitado, no lo apruebes
 como si bastara; explica la inspeccion adicional necesaria. Usa confirmado cuando no quede
@@ -290,6 +298,8 @@ def validar_juicio(d: dict, observacion: dict, huella: str) -> None:
         if campo in d and not isinstance(d[campo], str):
             raise ValueError(f"{campo} debe ser texto")
     if clase in ("confirmado", "producto_aprobado"):
+        if observacion.get("error_solicitudes_efecto"):
+            raise ValueError(observacion["error_solicitudes_efecto"])
         ejecuciones = observacion.get("ejecuciones") or []
         cobertura = d.get("cobertura") or []
         if not isinstance(ejecuciones, list) or not all(
