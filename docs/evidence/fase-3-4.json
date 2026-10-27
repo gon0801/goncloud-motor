@@ -51,7 +51,7 @@
     },
     "pc": {
       "rc": 0,
-      "texto": "Python 3.14.7\nHermes Agent v0.22.5 (2026.9.24) · stable · local bf0203a794a0\nInstall directory: C:\\Users\\ehven\\AppData\\Local\\hermes\\hermes-agent\nInstall method: git\nPython: 3.14.9\nOpenAI SDK: 2.24.0\nUp to date\n\n⚠ A previous `hermes update` pulled new code but did not restart running gateways.\n  Gateways may still be serving pre-update modules (mixed sys.modules).\n  Run `hermes update` or `hermes gateway restart`."
+      "texto": "Python 3.14.7\nHermes Agent v0.22.5 (2026.9.24) · stable · local bf0203a794a0\nInstall directory: C:\\Users\\ehven\\AppData\\Local\\hermes\\hermes-agent\nInstall method: git\nPython: 3.14.9\nOpenAI SDK: 2.24.0\nUp to date"
     }
   },
   "pedido": {
@@ -59,7 +59,7 @@
     "claw_directa": "enc_5e3fcba50d2a264a",
     "mismo_texto": true,
     "hermes_durable": "enc_15c0017fe57da863",
-    "claw_plan": "enc_951630d83fedc354",
+    "claw_plan": "enc_4125aac8e82bf82b",
     "plan_sin_acepta": true
   },
   "promover": {
@@ -110,18 +110,20 @@
   },
   "flota": {
     "aplicada": "aplicada",
-    "trabajo": "96a17381a3622bb3b0ed41a9080065be615bd555",
+    "trabajo": "e501d9d6208055f1466567330a5163cbc8ce3b8f",
     "segunda": "aplicada",
-    "asignada": "33a9ae24eaca2640aa3d4b7bce194071a244089c",
+    "asignada": "8779cde9e579f185de0339b1af82707ac0e1296a",
     "rechazada": "rechazada",
     "cortada": "cortado",
     "recuperada": "completo",
     "segunda_recuperacion": "nada",
-    "reversa": "revertido 33a9ae24eaca2640aa3d4b7bce194071a244089c",
+    "reversa": "revertido 8779cde9e579f185de0339b1af82707ac0e1296a",
     "reversa_otra": "nada",
+    "reversa_rc": 0,
+    "actual": "8779cde9e579f185de0339b1af82707ac0e1296a",
     "marca_reaparecio": false,
-    "cabeza": "33a9ae24eaca2640aa3d4b7bce194071a244089c",
-    "anterior": "33a9ae24eaca2640aa3d4b7bce194071a244089c"
+    "cabeza": "8779cde9e579f185de0339b1af82707ac0e1296a",
+    "anterior": "8779cde9e579f185de0339b1af82707ac0e1296a"
   },
   "limpieza": {
     "procesos": []

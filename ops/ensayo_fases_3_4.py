@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -349,10 +350,15 @@ def preparar_flota(home: Path) -> dict:
     exigir("revertido" in reversa.stdout, reversa.stdout)
     exigir(not marca.exists(), "la reversa arrancó el motor nuevo")
     exigir(git(motor_repo, "rev-parse", "HEAD") == nueva, "la reversa no volvió a la generación anterior")
+    exigir(
+        (home / "actual").resolve() == (home / "generaciones" / nueva).resolve(),
+        "la reversa no dejó actual en la generación anterior",
+    )
     segunda = correr(
         ["sh", str(RAIZ / "ops" / "reversa_ensayo.sh"), "--home", str(home)],
         env={"PATH": "/usr/bin:/bin:/opt/homebrew/bin"},
     )
+    exigir(segunda.returncode == 0, segunda.stderr or segunda.stdout)
     return {
         "aplicada": aplicada["accion"],
         "trabajo": trabajo["generacion"],
@@ -364,6 +370,8 @@ def preparar_flota(home: Path) -> dict:
         "segunda_recuperacion": nada["accion"],
         "reversa": reversa.stdout.strip(),
         "reversa_otra": segunda.stdout.strip(),
+        "reversa_rc": segunda.returncode,
+        "actual": (home / "actual").resolve().name,
         "marca_reaparecio": marca.exists(),
         "cabeza": git(motor_repo, "rev-parse", "HEAD"),
         "anterior": nueva,
@@ -420,6 +428,37 @@ def main() -> int:
             "--texto", PEDIDO,
         )
         exigir(repetido["encargo"] == hermes_directa["encargo"], "retransmitir creó otro encargo")
+        exigir("conflicto" not in repetido, "retransmitir igual avisó conflicto")
+        otra_via = motor(
+            "director", "encargar", "--base", str(base), "--director", "claw",
+            "--via", "durable", "--canal", "canal-claw", "--clave", "h-directa",
+            "--texto", PEDIDO,
+        )
+        exigir(otra_via["encargo"] == hermes_directa["encargo"], "otra vía creó otro encargo")
+        exigir(otra_via.get("conflicto") is True, "otra vía sobre la misma clave no avisó conflicto")
+        exigir(otra_via["via"] == "directa", "el conflicto cambió la vía guardada")
+        fuera = Path(tempfile.mkdtemp(prefix="canal-fuera-"))
+        try:
+            malo = correr(
+                [
+                    sys.executable, "-m", "motor", "director", "encargar",
+                    "--base", str(base), "--director", "hermes",
+                    "--via", "directa", "--canal", str(fuera), "--clave", "ruta-fuera",
+                    "--texto", PEDIDO,
+                ],
+                env=_ambiente(),
+            )
+            exigir(malo.returncode != 0, "un canal con ruta se aceptó")
+            exigir("Traceback" not in malo.stderr, malo.stderr)
+            exigir(list(fuera.iterdir()) == [], "el canal escribió fuera de la base")
+        finally:
+            shutil.rmtree(fuera, ignore_errors=True)
+        vacio = correr(
+            [sys.executable, "-m", "motor", "flota", "observar", "--nombre", "demo"],
+            env=_ambiente(),
+        )
+        exigir(vacio.returncode == 1 and "Traceback" not in vacio.stderr, vacio.stderr)
+        exigir("comando" in vacio.stderr, vacio.stderr)
         evidencia["pedido"] = {
             "hermes_directa": hermes_directa["encargo"],
             "claw_directa": claw_directa["encargo"],
@@ -545,6 +584,10 @@ def main() -> int:
         canal = base / "canal" / "canal-hermes"
         archivos = list(canal.iterdir()) if canal.exists() else []
         exigir(len(archivos) == 1 and aviso["estado"] == "incierto", "el corte no dejó el aviso pendiente de conciliar")
+        exigir(
+            archivos[0].read_text(encoding="utf-8") == "listo el resumen\n",
+            "el canal no publicó el resultado legible",
+        )
         recuperado = motor("director", "avisar", "--base", str(base))
         aviso2 = next(item for item in recuperado["avisos"] if item["encargo"] == aviso_id)
         exigir(aviso2["estado"] == "publicado" and aviso2["recibo"].startswith("pub_"), "el aviso no se recuperó")
@@ -606,6 +649,11 @@ def main() -> int:
         ob_aviso = next(item for item in publicado["avisos"] if item["encargo"] == ob["encargo"])
         parada = motor("director", "parar", ob["encargo"], "--base", str(base), "--clave", "parar-ob")
         exigir(parada.get("parada_ofrecida") is False, "parar de OpenBot se ofreció")
+        ob_archivos = list((base / "canal" / "canal-openbot").iterdir())
+        exigir(
+            len(ob_archivos) == 1 and ob_archivos[0].read_text(encoding="utf-8") == RESPUESTA + "\n",
+            "OpenBot no publicó el resultado legible",
+        )
         evidencia["openbot"] = {
             "capacidades": {k: caps[k] for k in ("entrega", "consulta", "parada", "timeout_cancela", "skills", "publicacion_de_sesion")},
             "timeout_rc": corrida.returncode,
@@ -625,6 +673,12 @@ def main() -> int:
             "--izquierda", "dirigir", "--derecha", "dirigir-claw",
         )
         exigir(comparar["iguales"] is True, "Hermes y Claw no comparten la cadena de dirigir")
+        manifiesto = tomllib.loads(salida.read_text(encoding="utf-8"))
+        exigir(manifiesto.get("skill") == ["poteto-mode"], "el manifiesto no guardó skill en la raíz")
+        exigir(
+            all("skill" not in fila for fila in manifiesto.get("puesto", []) + manifiesto.get("cuenta", [])),
+            "skill quedó dentro de una tabla",
+        )
         proy = motor(
             "flota", "proyectar", "--manifiesto", str(salida),
             "--paquete", str(RAIZ / "paquetes" / "poteto"), "--home", str(home),
@@ -647,6 +701,30 @@ def main() -> int:
         from sistema_agentes.contrato import validar
 
         flota = json.loads((home / "proyeccion" / "flota.json").read_text(encoding="utf-8"))
+        modelo_dirigir = origen["chains"]["dirigir"][0].split(" (", 1)[0]
+        exigir(flota["model"]["id"] == modelo_dirigir, "la proyección no tomó el modelo de dirigir")
+        trampa = home / "trampa.toml"
+        trampa.write_text(
+            'generacion = "v6"\n'
+            'skill = ["poteto-mode"]\n'
+            "\n"
+            "[[puesto]]\n"
+            'funcion = "otro"\n'
+            'modelo = ["proveedor/otro"]\n'
+            'esfuerzo = ["low"]\n'
+            "\n"
+            "[[puesto]]\n"
+            'funcion = "dirigir"\n'
+            'modelo = ["proveedor/dirigir"]\n'
+            'esfuerzo = ["high"]\n',
+            encoding="utf-8",
+        )
+        motor(
+            "flota", "proyectar", "--manifiesto", str(trampa),
+            "--paquete", str(RAIZ / "paquetes" / "poteto"), "--home", str(home / "trampa"),
+        )
+        flota_trampa = json.loads((home / "trampa" / "proyeccion" / "flota.json").read_text(encoding="utf-8"))
+        exigir(flota_trampa["model"]["id"] == "proveedor/dirigir", "la proyección tomó el primer puesto")
         hallazgos = validar(flota)
         exigir(hallazgos == [], "la proyección no cumple el contrato de flota: " + str(hallazgos))
         config_modelo = origen["chains"]["dirigir"][0]
@@ -687,9 +765,20 @@ def main() -> int:
         exigir(evidencia["flota"]["rechazada"] == "rechazada", "la candidata inválida se aplicó")
         exigir(evidencia["flota"]["recuperada"] == "completo", "la recuperación no completó lo comprobado")
         exigir(evidencia["flota"]["reversa_otra"] == "nada", "la segunda reversa no fue vacía")
+        exigir(evidencia["flota"]["reversa_rc"] == 0, "la segunda reversa no salió 0")
+        exigir(evidencia["flota"]["actual"] == evidencia["flota"]["anterior"], "actual no quedó en la generación anterior")
         exigir(evidencia["flota"]["marca_reaparecio"] is False, "la reversa arrancó el motor")
         return 0
-    except (Fallo, OSError, json.JSONDecodeError, KeyError, subprocess.CalledProcessError) as exc:
+    except (
+        Fallo,
+        OSError,
+        json.JSONDecodeError,
+        KeyError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        sqlite3.Error,
+        StopIteration,
+    ) as exc:
         evidencia["fallo"] = str(exc)
         return 1
     finally:

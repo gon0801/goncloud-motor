@@ -118,6 +118,12 @@ class ReversaFlota(unittest.TestCase):
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
 
     def test_la_reversa_no_arranca_el_motor_nuevo(self) -> None:
+        self.assertEqual(aplicar(self.home, self.buena)["accion"], "aplicada")
+        self.assertEqual(aplicar(self.home, self.nueva)["accion"], "aplicada")
+        self.assertEqual(
+            (self.home / "actual").resolve(),
+            (self.home / "generaciones" / self.nueva).resolve(),
+        )
         roto = self.home / "arranque-del-motor"
         _commit(
             self.motor,
@@ -165,6 +171,10 @@ class ReversaFlota(unittest.TestCase):
         self.assertIn("revertido", reversa.stdout)
         self.assertFalse(roto.exists())
         self.assertEqual(_git(self.motor, "rev-parse", "HEAD"), self.buena)
+        self.assertEqual(
+            (self.home / "actual").resolve(),
+            (self.home / "generaciones" / self.buena).resolve(),
+        )
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
         otra = subprocess.run(
             ["sh", str(REVERSA), "--home", str(self.home)],
