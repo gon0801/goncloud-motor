@@ -91,13 +91,13 @@ cadena v6 de dirigir. Se corrigió esa expectativa y ahora pasa completa.
 ## Dobles declarados y pendientes
 
 El ensayo de fases usa un agente de ensayo, un API HTTP local y comandos de
-canal por subproceso. Esos dobles prueban el código del motor. No acreditan
-un turno vivo de Hermes, de Claw ni de OpenBot con las skills nuevas, porque
-instalarlas en los perfiles vivos es activación de fase 5. Tampoco se
-demostró un modelo efectivo dentro de un plugin de un director vivo. Se
-observaron ejecutables y versiones reales, y eso no se presenta como
-observación del modelo usado. OpenBot sigue sin ofrecer parada. Un timeout
-suyo no cancela.
+canal por subproceso. Esos dobles prueban el código del motor. Los turnos
+vivos de Hermes, Claw y OpenBot con las skills nuevas se demuestran en la
+sección de recorridos de la ronda 3, con Grok como respaldo declarado por
+falta de cuota de Anthropic y ChatGPT. Instalar las skills en los perfiles
+vivos sigue siendo activación de fase 5. El modelo efectivo dentro de un
+plugin de un director vivo no se demostró. OpenBot sigue sin ofrecer
+parada. Un timeout suyo no cancela.
 
 ## Ronda 2. Correcciones a la segunda revisión
 
@@ -120,12 +120,8 @@ suyo no cancela.
 - Aplicar verifica que un worktree reutilizado corresponde a su SHA y
   está limpio. Los AGENTS.md de implementer, reviewer, adversary y
   verifier de Claw ya no ordenan motor valida ni motor entrega.
-- Recorrido real aislado intentado en Mini. El perfil propio ensayo34 de
-  OpenClaw cargó la skill nueva, pero el turno no corrió. El perfil
-  aislado no tiene una fuente de autenticación portable y no copié el
-  almacén de credenciales del perfil principal. El perfil de ensayo se
-  borró. Hermes en PC y OpenBot siguen en la misma clase de pendiente.
-  OpenBot no estaba corriendo en la Mac.
+- El primer intento aislado de OpenClaw no corrió por autenticación y
+  quedó superado por el recorrido real de la ronda 3.
 
 ## Ronda 3. Recorridos reales aislados intentados
 
