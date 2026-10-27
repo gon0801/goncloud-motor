@@ -119,10 +119,14 @@ de Hermes es feat/hermes-team.
 - PC: se borraron el home de ensayo .hermes-ensayo34d, los scripts
   temporales y las carpetas npm-p-* y prueba-* dentro de
   C:\Users\ehven\flota. El home estable del publicador quedó intacto.
-- Pendiente con dueño: instalar el servicio de encargos en PC solo
-  si David decide que PC tenga ese rol. Hoy PC publica la política y
-  no es autoridad de encargos. No es una falla. Es una decisión de
-  alcance que no se tomó.
+- Decisión posterior de David, ya tomada el 2026-10-27: las tres
+  máquinas son independientes y cada una tiene su propia libreta de
+  encargos. Ver
+  [decision-maquinas-independientes.md](decision-maquinas-independientes.md).
+  La autoridad única de Mini contradice esa regla y debe retirarse
+  en un paso nuevo. Ese paso no es parte de lo ya desplegado y queda
+  pendiente de implementar. Hoy PC publica la política y no tiene
+  servicio de encargos local. La Mac consulta a Mini como autoridad.
 - OpenBot sigue sin una parada propia demostrada. Un timeout no
   cancela su entrega. Esa capacidad no se le atribuye.
 - Por ese pendiente de decisión la fase 5 queda PARCIAL SEGURA. No
