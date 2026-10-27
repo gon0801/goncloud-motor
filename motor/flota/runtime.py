@@ -27,7 +27,7 @@ def _ruta(generacion: Path, ruta: str) -> Path:
     return resultado
 
 
-def vincular(generacion: Path, cmd: list[str]) -> list[str]:
+def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> list[str]:
     doc = cargar_runtime(generacion)
     nombre = Path(cmd[0]).stem.lower()
     prefijo = doc.get("lanzadores", {}).get(nombre)
@@ -46,7 +46,25 @@ def vincular(generacion: Path, cmd: list[str]) -> list[str]:
         resuelto.append(argumento)
     if not Path(resuelto[0]).is_file():
         raise ValueError("falta el ejecutable de la generacion")
-    return [*resuelto, *cmd[1:]]
+    argumentos = list(cmd[1:])
+    politica = doc.get("politica")
+    if politica and nombre == "grok":
+        tabla = json.loads(_ruta(generacion, politica).read_text(encoding="utf-8"))
+        for etiqueta in tabla.get("chains", {}).get(funcion, []):
+            ref, _, esfuerzo = etiqueta.partition(" (")
+            if ref.startswith("xai/"):
+                for opciones, valor in (
+                    (("--model", "-m"), ref.split("/", 1)[1]),
+                    (("--reasoning-effort", "--effort"), esfuerzo.rstrip(")")),
+                ):
+                    indices = [i for i, arg in enumerate(argumentos) if arg in opciones]
+                    if indices:
+                        for i in indices:
+                            argumentos[i + 1] = valor
+                    else:
+                        argumentos.extend([opciones[0], valor])
+                break
+    return [*resuelto, *argumentos]
 
 
 def copiar_poteto(generacion: Path | None, base: Path, runtime: Path) -> Path | None:

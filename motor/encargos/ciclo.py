@@ -952,7 +952,7 @@ def _lanzar_uno(
             cmd = lanzador(enc, prompt, espacio, sesion)
             agente_lanzado = Path(cmd[0]).stem.lower() if cmd else ""
             if cmd and gen_path is not None:
-                cmd = vincular(gen_path, cmd)
+                cmd = vincular(gen_path, cmd, funcion="planear" if rol == "revisor" else "codigo")
         except Exception:
             _liberar_flota()
             raise

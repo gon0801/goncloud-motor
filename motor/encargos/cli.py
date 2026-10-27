@@ -321,6 +321,10 @@ def _lanzador(agente: str):
         del enc
         return [
             "grok",
+            "--model",
+            "grok-4.7",
+            "--reasoning-effort",
+            "high",
             "--cwd",
             str(espacio),
             "--session-id",
