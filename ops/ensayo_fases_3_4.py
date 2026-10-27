@@ -722,9 +722,9 @@ def main() -> int:
         }
         evidencia["dobles"].append(evidencia["openbot"]["doble"])
 
-        salida = CONF / "flota" / "manifesto.toml"
+        salida = home / "sembrado" / "manifesto.toml"
         sembrado = motor(
-            "flota", "sembrar", "--tabla", str(TABLA), "--salida", str(salida), "--generacion", "v6",
+            "flota", "sembrar", "--tabla", str(TABLA), "--salida", str(salida), "--generacion", "v7",
         )
         comparar = motor(
             "flota", "comparar", "--manifiesto", str(salida),
