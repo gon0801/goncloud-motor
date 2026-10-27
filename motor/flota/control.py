@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 import sys
-import threading
-from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 
+from .cerrojo import _cerrojo_flota
 from .manifiesto import Politica, cargar, guardar, proyectar_tabla
 
 
@@ -18,56 +17,6 @@ def _atomico(path: Path, doc: dict) -> None:
     temporal = path.with_suffix(path.suffix + ".tmp")
     temporal.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporal.replace(path)
-
-
-_cerrojo_hilo = threading.RLock()
-_cerrojo_nivel = threading.local()
-
-
-@contextmanager
-def _cerrojo_flota(home: Path):
-    path = Path(home) / "flota.lock"
-    clave = str(path.resolve())
-    _cerrojo_hilo.acquire()
-    niveles = getattr(_cerrojo_nivel, "bases", {})
-    archivos = getattr(_cerrojo_nivel, "archivos", {})
-    _cerrojo_nivel.bases = niveles
-    _cerrojo_nivel.archivos = archivos
-    nivel = niveles.get(clave, 0)
-    niveles[clave] = nivel + 1
-    try:
-        if nivel == 0:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fh = open(path, "a+", encoding="utf-8")
-            archivos[clave] = fh
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        niveles[clave] -= 1
-        if niveles[clave] == 0:
-            fh = archivos.pop(clave, None)
-            if fh is not None:
-                if os.name == "nt":
-                    import msvcrt
-
-                    try:
-                        fh.seek(0)
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-                    except OSError:
-                        pass
-                else:
-                    import fcntl
-
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-                fh.close()
-        _cerrojo_hilo.release()
 
 
 def _leer(path: Path) -> dict | None:
@@ -301,6 +250,37 @@ def _anterior_real(home: Path) -> str:
     return cabeza(home)
 
 
+def _operacion_flota(funcion):
+    @wraps(funcion)
+    def ejecutar(home: Path, *args, **kwargs):
+        with _cerrojo_flota(home):
+            return funcion(home, *args, **kwargs)
+    return ejecutar
+
+
+def _cambiar_generacion(home: Path, destino: Path | None) -> bool:
+    actual = home / "actual"
+    previa = actual.resolve() if actual.is_symlink() else None
+    if previa == destino:
+        return True
+    vigente = asignar(home)
+    if _trabajos_sobre(home, vigente):
+        return False
+    if destino is None:
+        actual.unlink(missing_ok=True)
+    else:
+        _enlace(home, destino)
+    # Protege también llamadas reentrantes antes del enlace.
+    if _trabajos_sobre(home, vigente):
+        if previa is not None:
+            _poner_enlace(home, previa)
+        else:
+            actual.unlink(missing_ok=True)
+        return False
+    return True
+
+
+@_operacion_flota
 def revertir(home: Path) -> dict:
     pend_path = home / "instalacion-pendiente.json"
     inst_path = home / "instalacion.json"
@@ -335,6 +315,9 @@ def revertir(home: Path) -> dict:
     destino = str((recibo.get("destino") or {}).get("codigo") or "")
     if not anterior:
         return {"accion": "nada"}
+    previa = home / "generaciones" / anterior
+    if not _cambiar_generacion(home, previa if previa.exists() else None):
+        return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
     motor = home / "motor"
     if (motor / ".git").exists() or (motor / ".git").is_file():
         subprocess.run(
@@ -343,12 +326,6 @@ def revertir(home: Path) -> dict:
             capture_output=True,
             text=True,
         )
-    previa = home / "generaciones" / anterior
-    actual = home / "actual"
-    if previa.exists():
-        _enlace(home, previa)
-    elif actual.is_symlink():
-        actual.unlink()
     if usado == "instalacion":
         historial = home / "historial"
         historial.mkdir(parents=True, exist_ok=True)
@@ -364,6 +341,7 @@ def revertir(home: Path) -> dict:
     return {"accion": "revertido", "anterior": anterior, "generacion": anterior, "destino": destino}
 
 
+@_operacion_flota
 def aplicar(home: Path, destino: str, corte: str = "") -> dict:
     motor = home / "motor"
     anterior = _anterior_real(home)
@@ -410,30 +388,9 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
             {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo", "comprobador": comprobador},
         )
         return {"accion": "rechazada", "vigente": anterior, "destino": destino}
-    if destino != anterior:
-        with _cerrojo_flota(home):
-            if _trabajos_sobre(home, anterior):
-                return {
-                    "accion": "ocupada",
-                    "vigente": anterior,
-                    "destino": destino,
-                    "generacion_preparada": destino,
-                }
-            _enlace(home, gen)
-            if _trabajos_sobre(home, anterior):
-                previa = home / "generaciones" / anterior
-                if previa.exists():
-                    _poner_enlace(home, previa)
-                elif (home / "actual").is_symlink():
-                    (home / "actual").unlink()
-                return {
-                    "accion": "ocupada",
-                    "vigente": anterior,
-                    "destino": destino,
-                    "generacion_preparada": destino,
-                }
-    else:
-        _enlace(home, gen)
+    if not _cambiar_generacion(home, gen):
+        return {"accion": "ocupada", "vigente": asignar(home),
+                "destino": destino, "generacion_preparada": destino}
     recibo["etapa"] = "completo"
     recibo["causa"] = ""
     _atomico(home / "instalacion.json", recibo)
@@ -441,6 +398,7 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
     return {"accion": "aplicada", "generacion": destino, "anterior": anterior}
 
 
+@_operacion_flota
 def recuperar(home: Path) -> dict:
     pend_path = home / "instalacion-pendiente.json"
     pend = _leer(pend_path)
@@ -485,8 +443,8 @@ def recuperar(home: Path) -> dict:
         apunta = actual.resolve() == gen.resolve()
     rc, comprobador = _comprobar_detalle(gen) if gen.exists() else (1, "ninguno")
     if gen.exists() and rc == 0:
-        if not apunta:
-            _enlace(home, gen)
+        if not apunta and not _cambiar_generacion(home, gen):
+            return {"accion": "ocupada", "vigente": asignar(home), "destino": destino}
         pend["etapa"] = "completo"
         pend["causa"] = ""
         pend["comprobador"] = comprobador
@@ -496,10 +454,8 @@ def recuperar(home: Path) -> dict:
     if gen.exists() and rc != 0:
         if apunta and anterior:
             previa = home / "generaciones" / anterior
-            if previa.exists():
-                _enlace(home, previa)
-            else:
-                actual.unlink()
+            if not _cambiar_generacion(home, previa if previa.exists() else None):
+                return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
         pend_path.unlink(missing_ok=True)
         _atomico(
             home / "candidata.json",

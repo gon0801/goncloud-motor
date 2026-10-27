@@ -304,6 +304,50 @@ class ReversaFlota(unittest.TestCase):
             self._cerrar_intento(base, eid)
             reg.close()
 
+    def test_recuperar_y_revertir_respetan_un_trabajador_real(self) -> None:
+        from motor.encargos.ciclo import _lanzar_uno
+        from motor.flota.control import recuperar, revertir
+
+        for operacion in ("recuperar", "revertir", "script"):
+            with self.subTest(operacion=operacion):
+                # Cada recorrido termina sin procesos ni recibos pendientes.
+                reg, base, eid, espacio, hora, script = self._encargo_con_trabajador(operacion)
+                if operacion == "recuperar":
+                    aplicar(self.home, self.nueva, "worktree")
+                else:
+                    aplicar(self.home, self.nueva)
+                if operacion == "script":
+                    # La reversa observa con el runtime anterior, no con el roto.
+                    shutil.copytree(Path(__file__).resolve().parents[1] / "motor",
+                                    self.home / "generaciones" / self.buena / "motor",
+                                    ignore=shutil.ignore_patterns("__pycache__"))
+                try:
+                    _lanzar_uno(reg, reg.fold(eid), base / "ejecucion" / eid,
+                                espacio, hora, lambda *a, archivo=script: [sys.executable, str(archivo)])
+                    vigente = asignar(self.home)
+                    if operacion == "script":
+                        salida = subprocess.run(["sh", str(REVERSA), "--home", str(self.home)],
+                                                capture_output=True, text=True, check=True)
+                        self.assertIn("ocupada", salida.stdout)
+                    else:
+                        funcion = recuperar if operacion == "recuperar" else revertir
+                        self.assertEqual(funcion(self.home)["accion"], "ocupada")
+                    self.assertEqual(asignar(self.home), vigente)
+                    visto = self._esperar_visto(espacio)
+                    self.assertEqual(visto["generacion"], vigente)
+                    self.assertEqual(visto["marca"], "buena" if operacion == "recuperar" else "nueva")
+                finally:
+                    self._cerrar_intento(base, eid)
+                    reg.close()
+                if operacion == "script":
+                    salida = subprocess.run(["sh", str(REVERSA), "--home", str(self.home)],
+                                            capture_output=True, text=True, check=True)
+                    self.assertIn("revertido", salida.stdout)
+                else:
+                    self.assertIn(funcion(self.home)["accion"], ("completo", "revertido"))
+                # La próxima variante usa un registro nuevo.
+                shutil.rmtree(base)
+
     def test_la_reversa_no_arranca_el_motor_nuevo(self) -> None:
         self.assertEqual(aplicar(self.home, self.buena)["accion"], "aplicada")
         self.assertEqual(aplicar(self.home, self.nueva)["accion"], "aplicada")

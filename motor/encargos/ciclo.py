@@ -944,10 +944,9 @@ def _lanzar_uno(
                             flota_reservada = True
                             if _asignar_flota(home_path) == flota_generacion:
                                 break
-        except Exception:
-            flota_generacion = ""
-            flota_ruta = ""
-            flota_reservada = False
+        except Exception as exc:
+            _liberar_flota()
+            raise RuntimeError("no se pudo reservar la generacion de flota") from exc
         try:
             cmd = lanzador(enc, prompt, espacio, sesion)
         except Exception:
