@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from .manifiesto import Politica, cargar, guardar, proyectar_tabla
@@ -15,6 +18,56 @@ def _atomico(path: Path, doc: dict) -> None:
     temporal = path.with_suffix(path.suffix + ".tmp")
     temporal.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporal.replace(path)
+
+
+_cerrojo_hilo = threading.RLock()
+_cerrojo_nivel = threading.local()
+
+
+@contextmanager
+def _cerrojo_flota(home: Path):
+    path = Path(home) / "flota.lock"
+    clave = str(path.resolve())
+    _cerrojo_hilo.acquire()
+    niveles = getattr(_cerrojo_nivel, "bases", {})
+    archivos = getattr(_cerrojo_nivel, "archivos", {})
+    _cerrojo_nivel.bases = niveles
+    _cerrojo_nivel.archivos = archivos
+    nivel = niveles.get(clave, 0)
+    niveles[clave] = nivel + 1
+    try:
+        if nivel == 0:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fh = open(path, "a+", encoding="utf-8")
+            archivos[clave] = fh
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        niveles[clave] -= 1
+        if niveles[clave] == 0:
+            fh = archivos.pop(clave, None)
+            if fh is not None:
+                if os.name == "nt":
+                    import msvcrt
+
+                    try:
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    except OSError:
+                        pass
+                else:
+                    import fcntl
+
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+        _cerrojo_hilo.release()
 
 
 def _leer(path: Path) -> dict | None:
@@ -225,11 +278,15 @@ def _comprobar(gen: Path) -> int:
     return _comprobar_detalle(gen)[0]
 
 
-def _enlace(home: Path, gen: Path) -> None:
+def _poner_enlace(home: Path, gen: Path) -> None:
     actual = home / "actual"
     if actual.is_symlink() or actual.exists():
         actual.unlink()
     actual.symlink_to(gen, target_is_directory=True)
+
+
+def _enlace(home: Path, gen: Path) -> None:
+    _poner_enlace(home, gen)
 
 
 def _anterior_real(home: Path) -> str:
@@ -353,14 +410,30 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
             {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo", "comprobador": comprobador},
         )
         return {"accion": "rechazada", "vigente": anterior, "destino": destino}
-    if destino != anterior and _trabajos_sobre(home, anterior):
-        return {
-            "accion": "ocupada",
-            "vigente": anterior,
-            "destino": destino,
-            "generacion_preparada": destino,
-        }
-    _enlace(home, gen)
+    if destino != anterior:
+        with _cerrojo_flota(home):
+            if _trabajos_sobre(home, anterior):
+                return {
+                    "accion": "ocupada",
+                    "vigente": anterior,
+                    "destino": destino,
+                    "generacion_preparada": destino,
+                }
+            _enlace(home, gen)
+            if _trabajos_sobre(home, anterior):
+                previa = home / "generaciones" / anterior
+                if previa.exists():
+                    _poner_enlace(home, previa)
+                elif (home / "actual").is_symlink():
+                    (home / "actual").unlink()
+                return {
+                    "accion": "ocupada",
+                    "vigente": anterior,
+                    "destino": destino,
+                    "generacion_preparada": destino,
+                }
+    else:
+        _enlace(home, gen)
     recibo["etapa"] = "completo"
     recibo["causa"] = ""
     _atomico(home / "instalacion.json", recibo)

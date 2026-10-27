@@ -910,6 +910,7 @@ def _lanzar_uno(
                 flota_doc = json.loads(flota_home_path.read_text(encoding="utf-8"))
                 home_flota = str(flota_doc.get("home") or "")
                 if home_flota:
+                    from motor.flota.control import _cerrojo_flota
                     from motor.flota.control import anotar_trabajo as _anotar_flota
                     from motor.flota.control import asignar as _asignar_flota
 
@@ -917,22 +918,32 @@ def _lanzar_uno(
                     if not home_path.is_absolute():
                         home_path = registro.base / home_path
                     flota_generacion = _asignar_flota(home_path)
-                    flota_ruta = str(home_path / "generaciones" / flota_generacion)
-                    _publica(
-                        directorio / "generacion.json",
-                        json.dumps(
-                            {"generacion": flota_generacion, "ruta": flota_ruta},
-                            ensure_ascii=False,
-                        ),
-                    )
-                    _anotar_flota(
-                        home_path,
-                        enc.id,
-                        flota_generacion,
-                        enc.agente or rol,
-                        {"reserva": True, "directorio": str(directorio)},
-                    )
-                    flota_reservada = True
+                    while True:
+                        with _cerrojo_flota(home_path):
+                            flota_generacion = _asignar_flota(home_path)
+                            flota_ruta = str(
+                                home_path / "generaciones" / flota_generacion
+                            )
+                            _publica(
+                                directorio / "generacion.json",
+                                json.dumps(
+                                    {
+                                        "generacion": flota_generacion,
+                                        "ruta": flota_ruta,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
+                            _anotar_flota(
+                                home_path,
+                                enc.id,
+                                flota_generacion,
+                                enc.agente or rol,
+                                {"reserva": True, "directorio": str(directorio)},
+                            )
+                            flota_reservada = True
+                            if _asignar_flota(home_path) == flota_generacion:
+                                break
         except Exception:
             flota_generacion = ""
             flota_ruta = ""
