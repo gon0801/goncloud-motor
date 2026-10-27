@@ -1,0 +1,9 @@
+cerrar_sin_identidad: {'estado': 'sin-identidad', 'sesion': 'p1', 'director': 'hermes', 'encargo': 'enc_69c6ec2a04c81371', 'motivo': 'sin identidad del ejecutor; no se acredita el cierre'}
+promover_sin_cierre_observado: sin identidad del ejecutor; no se acredita el cierre
+resultado_sin_cierre: {'encargo': 'enc_45bbed96437f7daa', 'estado': 'recibido', 'agente': '', 'agentes_autorizados': [], 'ultimo_hecho': 'pedido recibido', 'hora': '2026-10-27T00:00:00Z', 'motivo': 'sin identidad del ejecutor; no se acredita el cierre', 'siguiente': 'lo atienden los agentes del director', 'preguntas': [], 'recibo': '', 'reanuda_en': '', 'estrategia': 'investigar', 'escrituras': True, 'via': 'directa', 'director': 'hermes', 'canal': 'canal', 'texto': 'otro', 'rechazada': True}
+F2 worker/autoridad via one: directa directa
+F2 worker/autoridad estado two: recibido recibido
+F5 rechazada: la proyección necesita el puesto dirigir
+F5 anterior_conservada: True
+F5 flota_conservada: True
+F7 existe_comprobador: False resultado: {'accion': 'aplicada', 'generacion': '5f7729a9a1164336949136e729d2342eb6114b04', 'anterior': '5f7729a9a1164336949136e729d2342eb6114b04'}

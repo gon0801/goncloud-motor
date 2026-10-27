@@ -1,0 +1,7 @@
+promover_con_ejecutor_vivo_rechaza: True el ejecutor directo sigue abierto
+cerrar_observa: cerrado None
+ejecutor_muerto_tras_cerrar: True
+F2 tras promover worker/autoridad: durable durable recibo: True
+retransmision promover: True durable
+sin identidad no cierra ni termina OK (esperado rechazo previo)
+done
