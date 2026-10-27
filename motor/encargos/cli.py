@@ -265,6 +265,12 @@ def _supervisor(reg: Registro, args) -> int:
             drenar(reg)
         except Exception:
             pass
+        try:
+            from motor.integraciones.directores import conciliar_autoridad
+
+            conciliar_autoridad(reg)
+        except Exception:
+            pass
         return salida
 
     if args.una_vez:

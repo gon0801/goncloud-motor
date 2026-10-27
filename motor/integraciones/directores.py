@@ -382,6 +382,48 @@ def conciliar_autoridad(registro: Registro) -> dict:
     return {"conciliados": conciliados, "pendientes": pendientes}
 
 
+def _tiene_pendiente(registro: Registro, encargo: str) -> bool:
+    carpeta = registro.base / "pendientes-autoridad"
+    if not carpeta.is_dir():
+        return False
+    for path in sorted(carpeta.glob("*.json")):
+        try:
+            mensaje = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if str(mensaje.get("encargo") or "") == encargo:
+            return True
+    return False
+
+
+def consultar_canonico(registro: Registro, encargo: str) -> dict:
+    if not _hay_autoridad(registro):
+        return consultar(registro, encargo)
+    if _tiene_pendiente(registro, encargo):
+        try:
+            conciliar_autoridad(registro)
+        except Exception:  # noqa: BLE001 consultar no cae por conciliar
+            pass
+    local = consultar(registro, encargo) if registro.fold(encargo) is not None else None
+    from motor.encargos.transporte import operar
+
+    try:
+        resp = operar(registro.base, {"op": "ver", "encargo": encargo})
+    except Exception:  # noqa: BLE001 sin respuesta canonica se muestra lo local
+        resp = {}
+    canon = resp.get("salida") if isinstance(resp, dict) else None
+    if not resp.get("alcanzada") or not isinstance(canon, dict) or canon.get("error"):
+        if local is not None:
+            return local
+        return consultar(registro, encargo)
+    if local is not None and canon == local:
+        return local
+    salida = dict(canon)
+    salida["fuente"] = "autoridad"
+    salida["autoridad"] = True
+    return salida
+
+
 def promover(registro: Registro, encargo: str, clave: str, hora: str) -> dict:
     enc = registro.fold(encargo)
     if enc is None:

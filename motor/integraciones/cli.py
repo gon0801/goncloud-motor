@@ -6,13 +6,13 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from motor.encargos.ciclo import consultar
 from motor.encargos.registro import Registro, exigir_base
 
 from .directores import (
     capacidades_openbot,
     cerrar_sesion,
     conciliar_autoridad,
+    consultar_canonico,
     drenar,
     encargar,
     guardar_capacidades,
@@ -159,7 +159,7 @@ def _correr(args) -> int:
             }
             return _json(registrar_identidad(reg, args.encargo, identidad))
         if args.cmd == "ver":
-            return _json(consultar(reg, args.encargo))
+            return _json(consultar_canonico(reg, args.encargo))
         if args.cmd in ("parar", "continuar", "cancelar"):
             return _json(relay(reg, args.encargo, args.cmd, args.clave, marca))
         if args.cmd == "promover":
