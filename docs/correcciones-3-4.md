@@ -185,6 +185,30 @@ sin cuota y ambos directores corrieron con Grok autorizado.
   vivos es activación de fase 5. Las instalaciones aisladas locales
   con el propio motor y su reversa están probadas desde la ronda 1.
 
+## Ronda 4. Carrera cerrada y recorridos desde el director
+
+- La carrera arranque contra actualización quedó cerrada con
+  revalidación posterior al enlace y asignación estabilizada antes de
+  lanzar. La reproducción REAL_R4 da ocupada y marca buena. La segunda
+  ventana, con pausa tras asignar y aplicación en otro hilo, queda
+  registrada en la generación que el trabajador lee. Hay dos pruebas
+  mantenidas nuevas de esos intercalados. Nueve pruebas OK en total.
+- Hermes ejecutó desde su propia terminal, en un home aislado con
+  Grok. Creó un archivo con su herramienta, encargó el durable desde
+  un plan externo, consultó, paró, esperó el cierre del supervisor y
+  continuó el mismo encargo con clave nueva. La clave repetida
+  devolvió el mismo rechazo guardado. Evidencia en salida-ronda-4.txt.
+- Actualización y reversa aisladas con el motor real se corrieron en
+  Mini y en PC. Aplicar la primera, ocupada con un trabajo vivo,
+  aplicada sin trabajo, candidata mala rechazada conservando la
+  vigente y reversa a la anterior. Mismo resultado en los dos hosts.
+- El recorrido equivalente de Claw desde sus herramientas no se
+  repitió en esta ronda. Su perfil de ensayo anterior se borró con su
+  login de Grok y no se pidió otro login. La elección de vía de Claw
+  sigue acreditada por los turnos de la ronda 3.
+- El home de ensayo de Hermes quedó bloqueado por su gateway
+  temporal y se puede borrar cuando salga solo.
+
 ## Receta de fase 5
 
 Activar por máquina en una ventana con los directores detenidos. Instalar la
