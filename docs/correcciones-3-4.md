@@ -137,14 +137,18 @@ suyo no cancela.
   contexto del perfil de ensayo, o autorizar copiar solo los perfiles de
   auth portables que el propio CLI sugiere. No se copiaron credenciales.
   El perfil de ensayo se borró.
-- Hermes en PC. Home propio .hermes-ensayo34. El runtime aislado se
-  preparó y vio Copilot por el gh nativo de la PC, sin copiar secretos.
-  La skill nueva se instaló en ese home. El turno falló antes del modelo
-  con Error storage_unavailable. Lo necesario del operador es inicializar
-  el almacenamiento de ese home con el setup del propio Hermes o autorizar
-  otro home de ensayo inicializado. El home quedó presente porque un
-  archivo sigue bloqueado. Es residuo propio en
-  C:\Users\ehven\.hermes-ensayo34 y se puede borrar cuando se libere.
+- Hermes en PC. Home propio de ensayo. El runtime aislado se preparó y
+  vio Copilot por el gh nativo de la PC, sin copiar secretos. La skill
+  nueva se instaló en ese home. El primer fallo fue storage_unavailable
+  por falta de config.yaml. Con hermes config set el turno llegó al
+  proveedor. Copilot rechazó con HTTP 400 los tres modelos intentados de
+  la tabla: claude-sonnet-5.5, claude-haiku-5.5 y gpt-6.1-sol. Es el
+  entitlement de esa cuenta, no el código. El Claude directo por SSH en
+  Mini dio el mismo Not logged in que el backend de Claw. Las
+  credenciales vivas están en la sesión gráfica y SSH no la desbloquea.
+  Los homes de ensayo quedaron bloqueados por su gateway temporal, que
+  sale solo a los 600 s. Son residuos propios en .hermes-ensayo34 y
+  .hermes-ensayo34d y se pueden borrar cuando se liberen.
 - OpenBot en Mac. El CLI real responde y list da exit 5. La app no está
   corriendo y no hay agente con Local scripts. Lo necesario del operador
   es abrir OpenBot y habilitar un agente de ensayo con Local scripts, o
