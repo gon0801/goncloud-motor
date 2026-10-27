@@ -12,6 +12,7 @@ from motor.encargos.registro import Registro, exigir_base
 from .directores import (
     capacidades_openbot,
     cerrar_sesion,
+    conciliar_autoridad,
     drenar,
     encargar,
     guardar_capacidades,
@@ -82,6 +83,9 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("avisar")
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--cortar", default="")
+
+    s = sub.add_parser("conciliar-autoridad")
+    s.add_argument("--base", type=Path, required=True)
 
     s = sub.add_parser("capacidades-openbot")
     s.add_argument("--base", type=Path, required=True)
@@ -166,6 +170,8 @@ def _correr(args) -> int:
             return _json(resultado_directo(reg, args.encargo, args.texto, marca))
         if args.cmd == "avisar":
             return _json(drenar(reg, args.cortar))
+        if args.cmd == "conciliar-autoridad":
+            return _json(conciliar_autoridad(reg))
     finally:
         reg.close()
     return 2

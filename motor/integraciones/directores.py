@@ -156,6 +156,206 @@ def cerrar_sesion(registro: Registro, encargo: str) -> dict:
     return actual
 
 
+def _hay_autoridad(registro: Registro) -> bool:
+    from motor.encargos.transporte import cargar
+
+    try:
+        return cargar(registro.base) is not None
+    except Exception:  # noqa: BLE001 hay config ilegible; no se aplica local
+        return True
+
+
+def _pendiente_path(registro: Registro, mensaje: dict) -> Path:
+    clave = str(mensaje.get("clave") or mensaje.get("evidencia") or "")
+    nombre = hashlib.sha256(
+        f"{mensaje.get('op')}:{mensaje.get('encargo')}:{clave}".encode()
+    ).hexdigest()[:24]
+    return registro.base / "pendientes-autoridad" / f"{nombre}.json"
+
+
+def _guardar_pendiente(registro: Registro, mensaje: dict) -> Path:
+    path = _pendiente_path(registro, mensaje)
+    _atomico(path, mensaje)
+    return path
+
+
+def _aplicar_promover_local(
+    registro: Registro, encargo: str, clave: str, hora: str
+) -> dict:
+    from motor.encargos.dominio import recibo_de
+
+    ukey = f"via:{encargo}:durable"
+    resultado = registro.anotar(
+        encargo,
+        {"kind": "via", "data": {"via": "durable", "hora": hora, "clave": clave}},
+        ukey,
+    )
+    salida = consultar(registro, encargo)
+    salida["recibo"] = recibo_de(ukey)
+    if resultado == "ajena":
+        salida["conflicto"] = True
+    elif resultado == "ilegal":
+        salida["rechazada"] = True
+        salida["motivo"] = "no pude pasar a durable"
+    elif resultado == "igual":
+        salida["retransmision"] = True
+    return salida
+
+
+def aplicar_promover_canonico(
+    registro: Registro, encargo: str, clave: str, hora: str
+) -> dict:
+    enc = registro.fold(encargo)
+    if enc is None:
+        return {"rechazada": True, "motivo": "no hay encargo", "encargo": encargo}
+    return _aplicar_promover_local(registro, encargo, clave, hora)
+
+
+def _asegurar_producto(
+    registro: Registro, encargo: str, texto: str
+) -> tuple[str | None, dict | None]:
+    espacio = registro.base / "espacio" / encargo
+    espacio.mkdir(parents=True, exist_ok=True)
+    destino = espacio / "resultado.txt"
+    if destino.exists():
+        cuerpo = destino.read_text(encoding="utf-8")
+        if cuerpo != texto:
+            salida = consultar(registro, encargo)
+            salida["conflicto"] = True
+            salida["motivo"] = "el resultado ya publicado es otro"
+            return None, salida
+        return cuerpo, None
+    temporal = destino.with_suffix(".txt.tmp")
+    temporal.write_text(texto, encoding="utf-8")
+    temporal.replace(destino)
+    return texto, None
+
+
+def _anotar_resultado_local(
+    registro: Registro, encargo: str, evidencia: str, hora: str
+) -> dict:
+    from motor.encargos.dominio import recibo_de
+
+    ukey = f"resultado-directo:{encargo}:{evidencia}"
+    resultado = registro.anotar(
+        encargo,
+        {
+            "kind": "resultado_directo",
+            "data": {"evidencia": evidencia, "hora": hora},
+        },
+        ukey,
+    )
+    salida = consultar(registro, encargo)
+    salida["evidencia"] = evidencia
+    salida["recibo"] = recibo_de(ukey)
+    if resultado == "igual":
+        salida["retransmision"] = True
+    elif resultado == "ilegal":
+        salida["rechazada"] = True
+        salida["motivo"] = "no pude cerrar la via directa"
+    elif resultado == "ajena":
+        salida["conflicto"] = True
+    return salida
+
+
+def aplicar_resultado_canonico(
+    registro: Registro,
+    encargo: str,
+    texto: str,
+    hora: str,
+    evidencia_dada: str = "",
+) -> dict:
+    enc = registro.fold(encargo)
+    if enc is None:
+        return {"rechazada": True, "motivo": "no hay encargo", "encargo": encargo}
+    cuerpo, conflicto = _asegurar_producto(registro, encargo, texto)
+    if conflicto is not None:
+        return conflicto
+    assert cuerpo is not None
+    evidencia = hashlib.sha256(cuerpo.encode()).hexdigest()
+    if evidencia_dada and evidencia_dada != evidencia:
+        salida = consultar(registro, encargo)
+        salida["conflicto"] = True
+        salida["motivo"] = "la evidencia no coincide con el producto"
+        return salida
+    return _anotar_resultado_local(registro, encargo, evidencia, hora)
+
+
+def _enviar_canonico(
+    registro: Registro, mensaje: dict
+) -> tuple[dict, Path]:
+    from motor.encargos.transporte import operar
+
+    path = _guardar_pendiente(registro, mensaje)
+    resp = operar(registro.base, mensaje)
+    return resp, path
+
+
+def conciliar_autoridad(registro: Registro) -> dict:
+    carpeta = registro.base / "pendientes-autoridad"
+    conciliados: list[dict] = []
+    pendientes: list[str] = []
+    if not carpeta.is_dir():
+        return {"conciliados": conciliados, "pendientes": pendientes}
+    if not _hay_autoridad(registro):
+        return {
+            "conciliados": conciliados,
+            "pendientes": [str(p) for p in sorted(carpeta.glob("*.json"))],
+        }
+    from motor.encargos.transporte import operar
+
+    for path in sorted(carpeta.glob("*.json")):
+        try:
+            mensaje = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pendientes.append(str(path))
+            continue
+        resp = operar(registro.base, mensaje)
+        if not resp.get("alcanzada"):
+            pendientes.append(str(path))
+            continue
+        salida_aut = resp.get("salida") or {}
+        encargo = str(mensaje.get("encargo") or "")
+        if salida_aut.get("rechazada") or salida_aut.get("conflicto") or salida_aut.get("error"):
+            path.unlink(missing_ok=True)
+            conciliados.append(
+                {"encargo": encargo, "op": mensaje.get("op"), "rechazada": True}
+            )
+            continue
+        if mensaje.get("op") == "promover":
+            salida = _aplicar_promover_local(
+                registro,
+                encargo,
+                str(mensaje.get("clave") or ""),
+                str(mensaje.get("hora") or ""),
+            )
+        elif mensaje.get("op") == "resultado_directo":
+            salida = aplicar_resultado_canonico(
+                registro,
+                encargo,
+                str(mensaje.get("texto") or ""),
+                str(mensaje.get("hora") or ""),
+                str(mensaje.get("evidencia") or ""),
+            )
+        else:
+            pendientes.append(str(path))
+            continue
+        if salida.get("conflicto"):
+            pendientes.append(str(path))
+            continue
+        path.unlink(missing_ok=True)
+        conciliados.append(
+            {
+                "encargo": encargo,
+                "op": mensaje.get("op"),
+                "recibo": salida.get("recibo") or salida_aut.get("recibo") or "",
+                "via": salida.get("via"),
+                "estado": salida.get("estado"),
+            }
+        )
+    return {"conciliados": conciliados, "pendientes": pendientes}
+
+
 def promover(registro: Registro, encargo: str, clave: str, hora: str) -> dict:
     enc = registro.fold(encargo)
     if enc is None:
@@ -176,18 +376,28 @@ def promover(registro: Registro, encargo: str, clave: str, hora: str) -> dict:
         salida["rechazada"] = True
         salida["motivo"] = "el ejecutor anterior sigue abierto"
         return salida
-    resultado = registro.anotar(
-        encargo,
-        {"kind": "via", "data": {"via": "durable", "hora": hora, "clave": clave}},
-        f"via:{encargo}:durable",
-    )
-    salida = consultar(registro, encargo)
-    if resultado == "ajena":
-        salida["conflicto"] = True
-    elif resultado == "ilegal":
-        salida["rechazada"] = True
-        salida["motivo"] = "no pude pasar a durable"
-    elif resultado == "igual":
+    if not _hay_autoridad(registro):
+        return _aplicar_promover_local(registro, encargo, clave, hora)
+    mensaje = {"op": "promover", "encargo": encargo, "clave": clave, "hora": hora}
+    resp, path = _enviar_canonico(registro, mensaje)
+    if not resp.get("alcanzada"):
+        salida = consultar(registro, encargo)
+        salida["pendiente_autoridad"] = True
+        salida["pendiente"] = str(path)
+        salida["motivo"] = resp.get("motivo") or "autoridad inalcanzable"
+        return salida
+    salida_aut = resp.get("salida") or {}
+    if salida_aut.get("rechazada") or salida_aut.get("conflicto") or salida_aut.get("error"):
+        path.unlink(missing_ok=True)
+        salida = consultar(registro, encargo)
+        for campo in ("rechazada", "conflicto", "error", "motivo"):
+            if salida_aut.get(campo):
+                salida[campo] = salida_aut[campo]
+        return salida
+    salida = _aplicar_promover_local(registro, encargo, clave, hora)
+    path.unlink(missing_ok=True)
+    salida["recibo_autoridad"] = salida_aut.get("recibo") or salida.get("recibo") or ""
+    if salida_aut.get("retransmision"):
         salida["retransmision"] = True
     return salida
 
@@ -213,37 +423,43 @@ def resultado_directo(
             else "falta el cierre observado de la sesion directa"
         )
         return salida
-    espacio = registro.base / "espacio" / encargo
-    espacio.mkdir(parents=True, exist_ok=True)
-    destino = espacio / "resultado.txt"
-    if destino.exists():
-        cuerpo = destino.read_text(encoding="utf-8")
-        if cuerpo != texto:
-            salida = consultar(registro, encargo)
-            salida["conflicto"] = True
-            salida["motivo"] = "el resultado ya publicado es otro"
-            return salida
-    else:
-        temporal = destino.with_suffix(".txt.tmp")
-        temporal.write_text(texto, encoding="utf-8")
-        temporal.replace(destino)
-        cuerpo = texto
+    cuerpo, conflicto = _asegurar_producto(registro, encargo, texto)
+    if conflicto is not None:
+        return conflicto
+    assert cuerpo is not None
     evidencia = hashlib.sha256(cuerpo.encode()).hexdigest()
-    resultado = registro.anotar(
-        encargo,
-        {
-            "kind": "resultado_directo",
-            "data": {"evidencia": evidencia, "hora": hora},
-        },
-        f"resultado-directo:{encargo}:{evidencia}",
-    )
-    salida = consultar(registro, encargo)
-    salida["evidencia"] = evidencia
-    if resultado == "igual":
+    if not _hay_autoridad(registro):
+        return _anotar_resultado_local(registro, encargo, evidencia, hora)
+    mensaje = {
+        "op": "resultado_directo",
+        "encargo": encargo,
+        "texto": texto,
+        "evidencia": evidencia,
+        "clave": f"resultado-directo:{encargo}:{evidencia}",
+        "hora": hora,
+    }
+    resp, path = _enviar_canonico(registro, mensaje)
+    if not resp.get("alcanzada"):
+        salida = consultar(registro, encargo)
+        salida["evidencia"] = evidencia
+        salida["pendiente_autoridad"] = True
+        salida["pendiente"] = str(path)
+        salida["motivo"] = resp.get("motivo") or "autoridad inalcanzable"
+        return salida
+    salida_aut = resp.get("salida") or {}
+    if salida_aut.get("rechazada") or salida_aut.get("conflicto") or salida_aut.get("error"):
+        path.unlink(missing_ok=True)
+        salida = consultar(registro, encargo)
+        salida["evidencia"] = evidencia
+        for campo in ("rechazada", "conflicto", "error", "motivo"):
+            if salida_aut.get(campo):
+                salida[campo] = salida_aut[campo]
+        return salida
+    salida = _anotar_resultado_local(registro, encargo, evidencia, hora)
+    path.unlink(missing_ok=True)
+    salida["recibo_autoridad"] = salida_aut.get("recibo") or salida.get("recibo") or ""
+    if salida_aut.get("retransmision"):
         salida["retransmision"] = True
-    elif resultado == "ilegal":
-        salida["rechazada"] = True
-        salida["motivo"] = "no pude cerrar la via directa"
     return salida
 
 

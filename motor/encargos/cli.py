@@ -404,6 +404,34 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
             )
         finally:
             reg.close()
+    elif op in ("promover", "resultado_directo"):
+        from motor.integraciones.directores import (
+            aplicar_promover_canonico,
+            aplicar_resultado_canonico,
+        )
+
+        reg = Registro(base)
+        try:
+            if op == "promover":
+                return _json(
+                    aplicar_promover_canonico(
+                        reg,
+                        msg["encargo"],
+                        msg.get("clave") or "",
+                        msg.get("hora") or ahora_iso(),
+                    )
+                )
+            return _json(
+                aplicar_resultado_canonico(
+                    reg,
+                    msg["encargo"],
+                    msg.get("texto") or "",
+                    msg.get("hora") or ahora_iso(),
+                    msg.get("evidencia") or "",
+                )
+            )
+        finally:
+            reg.close()
     elif op == "ver":
         argv = ["ver", msg["encargo"], "--base", str(base)]
     elif op in ("parar", "continuar", "cancelar"):
