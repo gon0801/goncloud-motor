@@ -155,13 +155,18 @@ suyo no cancela.
   antes sus modelos con HTTP 400 por entitlement. El home ensayo34
   se borró. El ensayo34d sigue bloqueado por su gateway temporal,
   que sale solo a los 600 s, y se puede borrar después.
-- OpenBot en Mac. El CLI real responde y list da exit 5. La app no está
-  corriendo y no hay agente con Local scripts. Lo necesario del operador
-  es abrir OpenBot y habilitar un agente de ensayo con Local scripts, o
-  autorizar arrancar la app. No se arrancó.
+- OpenBot en Mac. Recorrido real completado con la app corriendo y el
+  agente DG con Scripts locales activado. La entrega de ensayo con clave
+  estable terminó completed y respondió por la vía directa sin crear un
+  plan para el motor. La consulta con status devolvió el mismo turno.
+  La retransmisión con la misma clave devolvió el mismo deliveryId y
+  turnId, sin duplicar el trabajo. Evidencia en
+  evidence/correcciones-3-4/salida-openbot.txt. La parada sigue sin
+  ofrecerse porque no se demostró. Un timeout no cancela.
 
-Ninguno de los tres recorridos se declara completo. El código, las skills
-y la política ya entregados no dependen de estos turnos para revisarse.
+Los tres recorridos de directores quedaron completados con dobles
+declarados solo en el modelo de respaldo. Anthropic y ChatGPT estaban
+sin cuota y ambos directores corrieron con Grok autorizado.
 
 ## Receta de fase 5
 
