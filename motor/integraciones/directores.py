@@ -742,12 +742,23 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
             _atomico(path, guardado)
             publicados.append(guardado)
             continue
+        try:
+            intentos = int(guardado.get("intentos") or 0)
+        except (TypeError, ValueError):
+            intentos = 0
+        ya_enviado = guardado.get("estado") == "incierto" or intentos > 0
+        if ya_enviado:
+            guardado["estado"] = "incierto"
         cfg = _config_canal(registro, nombre)
         if cfg and cfg.get("error"):
-            guardado["estado"] = "local-pendiente"
-            guardado["alcance"] = "local"
-            guardado["recibo"] = ""
-            guardado["motivo"] = str(cfg["error"])
+            if ya_enviado:
+                guardado["estado"] = "incierto"
+                guardado["motivo"] = str(cfg["error"])
+            else:
+                guardado["estado"] = "local-pendiente"
+                guardado["alcance"] = "local"
+                guardado["recibo"] = ""
+                guardado["motivo"] = str(cfg["error"])
             _atomico(path, guardado)
             publicados.append(guardado)
             continue
@@ -755,10 +766,7 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
         conciliacion = list(cfg.get("conciliacion") or []) if cfg else []
         if guardado.get("estado") == "incierto":
             if not comando:
-                guardado["estado"] = "local-pendiente"
-                guardado["alcance"] = "local"
-                guardado["recibo"] = ""
-                guardado["motivo"] = "sin transporte configurado"
+                guardado["motivo"] = "sin transporte configurado; no se reenvia"
                 _atomico(path, guardado)
                 publicados.append(guardado)
                 continue
