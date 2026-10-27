@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import socket
 import sys
 import time
@@ -42,6 +41,10 @@ def observar(directorio: Path, proc: dict | None) -> str:
             return "vivo"
     except (OSError, ValueError, TypeError):
         pass
+    if os.name == "nt":
+        from motor.plataforma.jaula_windows import limpiar
+
+        limpiar(directorio)
     return estado
 
 
@@ -93,120 +96,11 @@ def _base_de(cwd: Path) -> Path | None:
     return None
 
 
-def _entorno(env: dict, espacio: Path) -> dict:
-    """El trabajador no hereda secretos del supervisor. TMPDIR queda en su espacio."""
-    permitidas = {
-        "PATH",
-        "SYSTEMROOT",
-        "WINDIR",
-        "COMSPEC",
-        "PATHEXT",
-        "LANG",
-        "TERM",
-        "TZ",
-    }
-    limpio = {
-        k: v
-        for k, v in env.items()
-        if k.upper() in permitidas or k.upper().startswith("LC_")
-    }
-    limpio["TMPDIR"] = str(espacio)
-    limpio["PYTHONDONTWRITEBYTECODE"] = "1"
-    return limpio
-
-
 def _persistir_proc(directorio: Path, proc: dict) -> None:
     directorio.mkdir(parents=True, exist_ok=True)
     tmp = directorio / "proc.json.tmp"
     tmp.write_text(json.dumps(proc), encoding="utf-8")
     os.replace(tmp, directorio / "proc.json")
-
-
-def _enjaular(
-    cmd: list[str],
-    cwd: Path,
-    log: Path,
-    runtime: Path | None = None,
-    lectura: bool = False,
-) -> tuple[list[str], str]:
-    sandbox = "/usr/bin/sandbox-exec"
-    if not os.path.exists(sandbox) or _base_de(cwd) is None:
-        return cmd, "insuficiente"
-    espacio = Path(cwd).resolve()
-    # El modelo puede leer las herramientas instaladas, pero no el HOME de producción.
-    perfil = [
-        "(version 1)",
-        "(allow default)",
-        "(deny file-write*)",
-        f"(deny file-read* (subpath {json.dumps(str(Path.home()))}))",
-        "(allow file-read-metadata)",
-    ]
-    for path in (
-        espacio,
-        Path(log).resolve(),
-        *([runtime.resolve()] if runtime else []),
-    ):
-        perfil.append(f"(allow file-read* (subpath {json.dumps(str(path))}))")
-    if not lectura:
-        perfil.append(f"(allow file-write* (subpath {json.dumps(str(espacio))}))")
-    if runtime:
-        perfil.append(
-            f"(allow file-write* (subpath {json.dumps(str(runtime.resolve()))}))"
-        )
-    for path in ("/dev/null", "/dev/tty"):
-        perfil.append(f'(allow file-write* (literal "{path}"))')
-    path = Path(log).parent / "jaula.sb"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(perfil), encoding="utf-8")
-    return [sandbox, "-f", str(path), *cmd], "jaula"
-
-
-def entorno_suscripcion(espacio: Path, runtime: Path, cmd: list[str]) -> dict:
-    runtime.mkdir(parents=True, exist_ok=True)
-    limpio = _entorno(os.environ.copy(), espacio)
-    limpio["HOME"] = str(runtime)
-    limpio["XDG_CONFIG_HOME"] = str(runtime / ".config")
-    temporal = runtime / "tmp"
-    temporal.mkdir(exist_ok=True)
-    limpio["TMPDIR"] = str(temporal)
-    limpio.pop("SSH_AUTH_SOCK", None)
-    limpio.pop("PYTHONPATH", None)
-    limpio.pop("MOTOR_HOME", None)
-    if any(Path(item).name == "codex" for item in cmd[:1]):
-        auth = (
-            Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-            / "auth.json"
-        )
-        destino = runtime / ".codex"
-        destino.mkdir(exist_ok=True)
-        if auth.is_file():
-            shutil.copyfile(auth, destino / "auth.json")
-            (destino / "auth.json").chmod(0o600)
-        limpio["CODEX_HOME"] = str(destino)
-    if any(Path(item).name == "grok" for item in cmd[:1]):
-        auth = Path.home() / ".grok" / "auth.json"
-        destino = runtime / ".grok"
-        destino.mkdir(exist_ok=True)
-        if auth.is_file():
-            shutil.copyfile(auth, destino / "auth.json")
-            (destino / "auth.json").chmod(0o600)
-    return limpio
-
-
-def lanzar(cmd: list[str], cwd: Path, log: Path, env: dict | None = None) -> dict:
-    log = Path(log)
-    log.parent.mkdir(parents=True, exist_ok=True)
-    envuelto, aislamiento = _enjaular(list(cmd), Path(cwd), log)
-    if aislamiento != "jaula":
-        raise RuntimeError(
-            "este host no aisla trabajadores; solo transporte y control nativos disponibles"
-        )
-    proc = plataforma.lanzar_separado(
-        envuelto, cwd, _entorno(env or os.environ.copy(), Path(cwd)), log
-    )
-    proc["aislamiento"] = aislamiento
-    _persistir_proc(log.parent, proc)
-    return proc
 
 
 def preparar_administrado(
@@ -220,18 +114,15 @@ def preparar_administrado(
 ) -> None:
     from motor.runwrap import _publica
 
-    env = entorno_suscripcion(cwd, runtime, cmd)
-    envuelto, aislamiento = _enjaular(
-        cmd, cwd, directorio / "log.txt", runtime, lectura=enc.rol == "revisor"
-    )
-    if aislamiento != "jaula":
-        raise RuntimeError(
-            "sin aislamiento efectivo; trabajador no habilitado en este host"
-        )
+    from .aislamiento import aislar
+
+    comando = aislar(cmd, cwd, runtime, lectura=enc.rol == "revisor", suscripcion=True)
     spec = {
-        "cmd": envuelto,
+        "cmd": comando.argv,
         "cwd": str(cwd),
-        "env": env,
+        "env": comando.entorno,
+        "aislamiento": comando.mecanismo,
+        "jaula": comando.jaula,
         "base": str(_base_de(cwd)),
         "encargo": enc.id,
         "token": enc.conductor,
@@ -256,7 +147,14 @@ def lanzar_administrado(directorio: Path, token: str) -> dict:
     proc = plataforma.lanzar_separado(
         argv, directorio, os.environ.copy(), directorio / "wrapper.log"
     )
-    proc.update({"aislamiento": "jaula", "host": socket.gethostname(), "token": token})
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    proc.update(
+        {
+            "aislamiento": spec["aislamiento"],
+            "host": socket.gethostname(),
+            "token": token,
+        }
+    )
     _persistir_proc(directorio, proc)
     return proc
 

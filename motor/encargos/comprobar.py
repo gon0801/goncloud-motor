@@ -43,7 +43,7 @@ def main(path: Path) -> int:
                 return 0
         os.environ["MOTOR_COMPROBADOR_GRUPO"] = str(os.getpid())
         observacion = observar_procedimiento(
-            Path(spec["cwd"]), Path(spec["directorio"])
+            Path(spec["cwd"]), Path(spec["directorio"]), path.parent
         )
         _publica(
             Path(spec["directorio"]) / "observaciones.json",

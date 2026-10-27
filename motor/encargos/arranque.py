@@ -90,6 +90,7 @@ def ejecutar(spec_path: Path) -> int:
         "boot_id": plataforma.boot_id(),
         "host": spec["host"],
         "token": spec["token"],
+        "aislamiento": spec["aislamiento"],
     }
     _publica(d / "wrapper.json", json.dumps(proc))
     plataforma.sincroniza_directorio(d)
@@ -140,9 +141,9 @@ def ejecutar(spec_path: Path) -> int:
                 "errors": "replace",
             }
             if os.name == "nt":
-                creado = plataforma.crear_proceso(
-                    spec["cmd"], plataforma.Propiedad.COMANDO_CONTENIDO, **opciones
-                )
+                from motor.plataforma.jaula_windows import crear
+
+                creado = crear(spec["cmd"], spec["jaula"], control=d, **opciones)
                 p = creado.proceso
             else:
                 # Hereda el grupo ya identificado del wrapper. No hay una ventana de hijo huérfano.

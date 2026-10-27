@@ -11,7 +11,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from .sesion import _enjaular, _entorno
+from .aislamiento import aislar
 
 
 def firma_producto(espacio: Path) -> str:
@@ -31,7 +31,7 @@ def firma_producto(espacio: Path) -> str:
     return h.hexdigest()
 
 
-def observar_procedimiento(espacio: Path, directorio: Path) -> dict:
+def observar_procedimiento(espacio: Path, directorio: Path, contenedor: Path) -> dict:
     path = espacio / "procedimiento.json"
     try:
         procedimiento = json.loads(path.read_text(encoding="utf-8"))
@@ -56,56 +56,74 @@ def observar_procedimiento(espacio: Path, directorio: Path) -> dict:
         }
     ejecuciones = []
     for i, c in enumerate(comandos):
-        log = directorio / f"comprobacion-{i}.log"
-        argv, aislamiento = _enjaular(c["argv"], espacio, log)
         observado = {"objetivo": c["objetivo"], "argv": c["argv"]}
-        if aislamiento != "jaula":
-            observado["error_instrumento"] = "host sin aislamiento efectivo"
-        else:
+        try:
+            from motor import plataforma
+            from motor.runwrap import _publica
+
+            from .frontera import leer_parada_local, turno
+            from .registro import Registro
+            from .sesion import _base_de, descendientes
+
+            comando = aislar(c["argv"], espacio, contenedor / f"runtime-{i}")
+            base = _base_de(espacio)
+            reg = Registro(base)
             try:
-                from motor import plataforma
+                with turno(base):
+                    enc = reg.fold(espacio.name)
+                    if (
+                        enc is None
+                        or not enc.intentos_nuevos
+                        or leer_parada_local(base)
+                    ):
+                        observado["error_instrumento"] = (
+                            "parada aceptada antes de comprobar"
+                        )
+                        ejecuciones.append(observado)
+                        break
+                    opciones = {
+                        "cwd": espacio,
+                        "env": comando.entorno,
+                        "stdin": subprocess.DEVNULL,
+                        "stdout": subprocess.PIPE,
+                        "stderr": subprocess.PIPE,
+                        "text": True,
+                        "encoding": "utf-8",
+                        "errors": "replace",
+                    }
+                    if os.name == "nt":
+                        from motor.plataforma.jaula_windows import crear
 
-                from .frontera import leer_parada_local, turno
-                from .registro import Registro
-                from .sesion import _base_de, descendientes
-
-                base = _base_de(espacio)
-                reg = Registro(base)
-                try:
-                    with turno(base):
-                        enc = reg.fold(espacio.name)
-                        if (
-                            enc is None
-                            or not enc.intentos_nuevos
-                            or leer_parada_local(base)
-                        ):
-                            observado["error_instrumento"] = (
-                                "parada aceptada antes de comprobar"
-                            )
-                            ejecuciones.append(observado)
-                            break
+                        creado = crear(
+                            comando.argv, comando.jaula, control=contenedor, **opciones
+                        )
+                        p = creado.proceso
+                        _publica(contenedor / "agent.pid", str(p.pid))
+                        _publica(
+                            contenedor / "agent.inicio", plataforma.hora_inicio(p.pid)
+                        )
+                        _publica(contenedor / "agent.job", creado.job)
+                        plataforma.sincroniza_directorio(contenedor)
+                        creado.liberar()
+                    else:
                         p = subprocess.Popen(
-                            argv,
-                            cwd=espacio,
-                            env=_entorno(os.environ.copy(), espacio),
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True,
+                            comando.argv, start_new_session=False, **opciones
                         )
-                    try:
-                        stdout, stderr = p.communicate(timeout=30)
-                        observado.update(
-                            rc=p.returncode,
-                            stdout=stdout[-16000:],
-                            stderr=stderr[-16000:],
-                        )
-                    except subprocess.TimeoutExpired:
+                try:
+                    stdout, stderr = p.communicate(timeout=30)
+                    observado.update(
+                        rc=p.returncode, stdout=stdout[-16000:], stderr=stderr[-16000:]
+                    )
+                except subprocess.TimeoutExpired:
+                    if os.name == "nt":
+                        plataforma.matar_grupo(p)
+                    else:
                         import signal
 
                         hijos = descendientes(p.pid) or []
-                        if os.name != "nt" and os.environ.get(
-                            "MOTOR_COMPROBADOR_GRUPO"
-                        ) == str(os.getpid()):
+                        if os.environ.get("MOTOR_COMPROBADOR_GRUPO") == str(
+                            os.getpid()
+                        ):
                             from motor.plataforma.posix import _miembros_grupo
 
                             for pid in _miembros_grupo(os.getpid()) or []:
@@ -126,14 +144,17 @@ def observar_procedimiento(espacio: Path, directorio: Path) -> dict:
                                 except ProcessLookupError:
                                     pass
                         p.kill()
-                        p.communicate()
-                        observado["error_instrumento"] = (
-                            "la comprobacion excedio 30 segundos; arbol cerrado"
-                        )
+                    p.communicate()
+                    observado["error_instrumento"] = (
+                        "la comprobacion excedio 30 segundos; arbol cerrado"
+                    )
                 finally:
-                    reg.close()
-            except OSError as exc:
-                observado["error_instrumento"] = str(exc)
+                    if os.name == "nt":
+                        plataforma.matar_grupo(p)
+            finally:
+                reg.close()
+        except (OSError, RuntimeError) as exc:
+            observado["error_instrumento"] = str(exc)
         ejecuciones.append(observado)
     runtime_path = directorio / "ejecuciones-runtime.jsonl"
     runtime = []
