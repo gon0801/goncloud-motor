@@ -72,7 +72,22 @@ def herramienta_en_curso(directorio: Path) -> bool | None:
         except (OSError, ValueError):
             return None
         actuales = descendientes(agente)
-        return None if actuales is None else bool(actuales)
+        if actuales is None:
+            return None
+        if os.name == "nt":
+            from motor.plataforma.jaula_windows import imagen_proceso
+
+            consola = (
+                Path(os.environ["SystemRoot"]) / "System32" / "conhost.exe"
+            ).resolve()
+            for ident in actuales:
+                imagen = imagen_proceso(ident["pid"], ident["inicio"])
+                if imagen is None:
+                    return None
+                if Path(imagen).resolve() != consola:
+                    return True
+            return False
+        return bool(actuales)
     pid = datos.get("pid")
     inicio = datos.get("inicio")
     if not pid or not inicio:

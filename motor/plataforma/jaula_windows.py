@@ -17,7 +17,32 @@ import uuid
 from ctypes import wintypes as w
 from pathlib import Path
 
-from .windows import JobMatarAlCerrar, _jobs
+from .windows import JobMatarAlCerrar, _jobs, hora_inicio
+
+
+def imagen_proceso(pid: int, inicio: str) -> str | None:  # pragma: no cover
+    k = c.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    k.OpenProcess.restype = w.HANDLE
+    k.QueryFullProcessImageNameW.argtypes = [
+        w.HANDLE,
+        w.DWORD,
+        w.LPWSTR,
+        c.POINTER(w.DWORD),
+    ]
+    k.QueryFullProcessImageNameW.restype = w.BOOL
+    k.CloseHandle.argtypes = [w.HANDLE]
+    handle = k.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        texto = c.create_unicode_buffer(32768)
+        tamano = w.DWORD(len(texto))
+        if not k.QueryFullProcessImageNameW(handle, 0, texto, c.byref(tamano)):
+            return None
+        return texto.value if hora_inicio(pid) == inicio else None
+    finally:
+        k.CloseHandle(handle)
 
 
 def disponible() -> bool:
