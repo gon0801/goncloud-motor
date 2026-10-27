@@ -129,14 +129,18 @@ suyo no cancela.
 
 ## Ronda 3. Recorridos reales aislados intentados
 
-- Claw en Mini. Perfil propio ensayo34b con config sin secretos y runtime
-  claude-cli para anthropic/claude-sonnet-5-5. El backend real arrancó el
-  proveedor y el modelo pedidos. El turno falló con Not logged in. La
-  sesión CLI de ese contexto aislado no hereda el login del gateway vivo.
-  Lo necesario del operador es un login interactivo de Claude en el
-  contexto del perfil de ensayo, o autorizar copiar solo los perfiles de
-  auth portables que el propio CLI sugiere. No se copiaron credenciales.
-  El perfil de ensayo se borró.
+- Claw en Mini. Recorrido real completado en perfil aislado propio
+  ensayo34d con la skill nueva. Claude quedó sin cuota semanal en la
+  Mini, así que el turno corrió con el respaldo autorizado xai/grok-4.7
+  y el login OAuth quedó solo en el perfil de ensayo. El modelo
+  observado por la traza fue xai/grok-4.7 con ruta terminal
+  xai/grok-4.7-build. La herramienta observada fue read. En una tarea
+  acotada de lectura el agente eligió la vía directa citando la sección
+  Qué vía usar de la skill. En un trabajo sin conversación y con plan
+  externo eligió la vía durable y entregó el plan tal cual, sin bloques
+  ni campos de aceptación. Evidencia en
+  evidence/correcciones-3-4/salida-claw-grok.txt. El perfil de ensayo
+  se borró. La política deseada v7 no cambió por usar el respaldo.
 - Hermes en PC. Home propio de ensayo. El runtime aislado se preparó y
   vio Copilot por el gh nativo de la PC, sin copiar secretos. La skill
   nueva se instaló en ese home. El primer fallo fue storage_unavailable
