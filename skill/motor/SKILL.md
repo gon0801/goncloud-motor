@@ -21,10 +21,14 @@ python3 -B -m motor director encargar \
 
 `hermes`, `claw` y `openbot` son los directores. Al pasar de directa a durable, cierra la sesión anterior y conserva el mismo encargo.
 
+En la vía directa, registra la identidad del ejecutor al encargar o con `registrar-sesion` (`--pid`, `--inicio`, `--boot-id`, `--host`, `--sesion`). Sin identidad no se acredita ningún cierre. `cerrar-sesion` detiene ese proceso y solo marca cerrado cuando lo observa ausente. Promover y el resultado directo exigen ese cierre observado. El resultado directo además exige el producto en `espacio/<encargo>/resultado.txt` que coincida con el texto entregado. El hash solo no acredita nada.
+
 ```sh
 python3 -B -m motor director cerrar-sesion ENCARGO --base /tmp/ensayo
 python3 -B -m motor director promover ENCARGO --base /tmp/ensayo --clave promover-1
 ```
+
+Si hay autoridad configurada, promover y el resultado directo se envían a ella antes de aplicarse aquí. Si no responde, quedan en `pendientes-autoridad/` y se concilian con `director conciliar-autoridad`. No se concede nada en local mientras tanto.
 
 Consultar, parar, continuar y cancelar retransmiten la misma clave.
 
@@ -37,6 +41,8 @@ python3 -B -m motor director continuar ENCARGO --base /tmp/ensayo --clave orden-
 OpenBot no ofrece parada hasta que su comando la demuestre. Un timeout no cancela el trabajo.
 
 El resultado vuelve al canal de origen aunque este turno cierre. Si el aviso falla, se recupera el aviso. No se repite el encargo.
+
+El transporte del canal vive en `canal.json` de la base, por canal, con `comando` y `conciliacion`. El recibo válido es el que devuelve ese comando. Sin transporte, el aviso queda `local-pendiente` con alcance local y sin recibo. Si un envío queda incierto, primero se concilia y solo se reenvía cuando la conciliación dice que no llegó.
 
 ```sh
 python3 -B -m motor director avisar --base /tmp/ensayo
