@@ -141,18 +141,20 @@ suyo no cancela.
   ni campos de aceptación. Evidencia en
   evidence/correcciones-3-4/salida-claw-grok.txt. El perfil de ensayo
   se borró. La política deseada v7 no cambió por usar el respaldo.
-- Hermes en PC. Home propio de ensayo. El runtime aislado se preparó y
-  vio Copilot por el gh nativo de la PC, sin copiar secretos. La skill
-  nueva se instaló en ese home. El primer fallo fue storage_unavailable
-  por falta de config.yaml. Con hermes config set el turno llegó al
-  proveedor. Copilot rechazó con HTTP 400 los tres modelos intentados de
-  la tabla: claude-sonnet-5.5, claude-haiku-5.5 y gpt-6.1-sol. Es el
-  entitlement de esa cuenta, no el código. El Claude directo por SSH en
-  Mini dio el mismo Not logged in que el backend de Claw. Las
-  credenciales vivas están en la sesión gráfica y SSH no la desbloquea.
-  Los homes de ensayo quedaron bloqueados por su gateway temporal, que
-  sale solo a los 600 s. Son residuos propios en .hermes-ensayo34 y
-  .hermes-ensayo34d y se pueden borrar cuando se liberen.
+- Hermes en PC. Recorrido real completado en home aislado propio
+  ensayo34d con la skill nueva instalada. Anthropic sin cuota semanal
+  y ChatGPT/Codex con límite de uso por 497 horas, así que el turno
+  corrió con xai-oauth y grok-4.7. La credencial de Grok ya existía en
+  el pool principal de Hermes de la misma PC y solo se copió su
+  entrada al home de ensayo, dentro de la misma máquina. En una tarea
+  acotada de lectura el agente eligió la vía directa citando la
+  sección Qué vía usar. En un trabajo sin conversación y con plan
+  externo eligió la vía durable y encargó el plan tal cual, sin
+  bloques ni campos de aceptación. Evidencia en
+  evidence/correcciones-3-4/salida-hermes-grok.txt. Copilot rechazó
+  antes sus modelos con HTTP 400 por entitlement. El home ensayo34
+  se borró. El ensayo34d sigue bloqueado por su gateway temporal,
+  que sale solo a los 600 s, y se puede borrar después.
 - OpenBot en Mac. El CLI real responde y list da exit 5. La app no está
   corriendo y no hay agente con Local scripts. Lo necesario del operador
   es abrir OpenBot y habilitar un agente de ensayo con Local scripts, o
