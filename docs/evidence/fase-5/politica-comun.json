@@ -1,0 +1,66 @@
+{
+  "fecha": "2026-10-27",
+  "alcance": "Paso 7 de fase 5. Sin secretos. El snapshot contiene política y catálogo, nunca tokens.",
+  "publicador": {
+    "host": "Gon-PC",
+    "entrada": "ops/flota_ciclo.py --home C:\\Users\\ehven\\flota --motor-origen C:\\Users\\ehven\\motor-sucesor --repo-hermes C:\\Users\\ehven\\goncloud-hermes-sucesor --repo-claw C:\\Users\\ehven\\goncloud-motor-conf --repo-conf C:\\Users\\ehven\\goncloud-motor-conf --salida C:\\Users\\ehven\\flota\\publicada.json --json",
+    "snapshot": "C:\\Users\\ehven\\flota\\publicada.json",
+    "generacion_politica": "v7",
+    "schema": "goncloud.flota.compartida.v1",
+    "sha256_manifiesto": "89daac5faa519f125100386e3ce1519a1825a841195c69b4762e3ec08a85ffd5",
+    "snapshot_sha256": "3001f285d1ac63935ff92286d11c781ad3eecdf6f7d5f187bdb9adbadff3421d",
+    "generacion_herramientas_preparada": "c97f05faf55bd8fc44b361ad0bfa9ac93c2f47f7",
+    "preparaciones_rechazadas_previas": [
+      "8b9faa0a4a6b34381ec9929f9e3b110859002b21: fallo node npm; resuelto marcando el componente que no instala como pendiente (PR goncloud-motor#86)",
+      "c0a397bd51a3748b2bd971e2f17c5ee2f3954322: poteto.py ausente porque el repo Hermes local de PC estaba en una rama vieja; se clonó el repo integrado en C:\\Users\\ehven\\goncloud-hermes-sucesor"
+    ],
+    "snapshot_sha256_inicial": "3001f285d1ac63935ff92286d11c781ad3eecdf6f7d5f187bdb9adbadff3421d",
+    "snapshot_sha256_tras_primer_ciclo_programado": "f4e65d9fc98047cccc5af0c6e0a620088d179494326d0388183e27aca3ecf5a3",
+    "nota_hash": "El manifiesto de política v7 no cambió entre snapshots (sha256 89daac5f...). El snapshot_sha256 cambió por orden del catálogo y canales marcados no comprobados en esa corrida; las versiones de componentes son las mismas."
+  },
+  "replicas": [
+    {
+      "host": "Mac",
+      "home_flota": "/Users/dn/flota",
+      "snapshot_recibido": "/Users/dn/flota/snapshot.json",
+      "entrada": "python3 /Users/dn/motor-sucesor/ops/flota_ciclo.py --home /Users/dn/flota --replica /Users/dn/flota/snapshot.json --json",
+      "resultado": "aplicada",
+      "generacion_herramientas": "bddd4ee55f2ebee39edbb88d1dda8b6ad41047a0",
+      "fuente_hash": "f4e65d9fc98047cccc5af0c6e0a620088d179494326d0388183e27aca3ecf5a3",
+      "manifiesto_sha256_prefijo": "89daac5faa519f12"
+    },
+    {
+      "host": "Mini",
+      "home_flota": "/Users/gon/flota",
+      "snapshot_recibido": "/Users/gon/flota/snapshot.json",
+      "entrada": "PATH=/Users/gon/.openclaw/tools/node-v24.22.1/bin:/Users/gon/.local/bin:$PATH /Users/gon/.local/bin/python3 /Users/gon/motor-sucesor/ops/flota_ciclo.py --home /Users/gon/flota --replica /Users/gon/flota/snapshot.json --json",
+      "interprete": "/Users/gon/.local/bin/python3 3.12.15; el python3 del sistema es 3.9.6 y no tiene tomllib",
+      "resultado": "aplicada",
+      "generacion_herramientas": "bddd4ee55f2ebee39edbb88d1dda8b6ad41047a0",
+      "fuente_hash": "f4e65d9fc98047cccc5af0c6e0a620088d179494326d0388183e27aca3ecf5a3",
+      "manifiesto_sha256_prefijo": "89daac5faa519f12"
+    }
+  ],
+  "cron_pc": {
+    "perfil_hermes": "claw",
+    "vigia_modelos": {
+      "id": "d710c8527b7f",
+      "schedule": "35 8 * * *",
+      "script": "model_watch.py",
+      "definicion_guardada": "C:\\Users\\ehven\\.motor-resguardo\\fase-5-20261028\\cron-claw-antes.txt (fuera del repo)",
+      "estado": "pausado con hermes -p claw cron pause d710c8527b7f, después de verificar snapshot, réplicas y primer ciclo del controlador",
+      "reversa": "hermes -p claw cron resume d710c8527b7f"
+    },
+    "controlador": {
+      "id": "b7d546da8335",
+      "nombre": "flota-controlador",
+      "schedule": "35 8 * * *",
+      "script": "C:\\Users\\ehven\\AppData\\Local\\hermes\\profiles\\claw\\scripts\\flota_controlador.py",
+      "modo": "no-agent, stdout entregado en local",
+      "estado": "activo; primer ciclo disparado con cron run b7d546da8335 terminó completed ok el 2026-10-27 13:18:54 -07:00 (ejecución 161fc21c2294481293c6776d974efd05)",
+      "reversa": "hermes -p claw cron pause b7d546da8335 y luego resume de vigia-modelos; nunca dejar ambos activos"
+    },
+    "un_solo_escritor": "Confirmado en cron list posterior: vigia-modelos [paused], flota-controlador [active]. Lista guardada en C:\\Users\\ehven\\.motor-resguardo\\fase-5-20261028\\cron-claw-despues.txt"
+  },
+  "autoridad_encargos": "Mini sigue siendo la autoridad de encargos en ~/.motor-encargos. La política común no mueve esa autoridad."
+}

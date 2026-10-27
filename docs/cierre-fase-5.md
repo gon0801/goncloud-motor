@@ -4,8 +4,9 @@
 
 PARCIAL SEGURO. La integración se mergeó en los cuatro repos y el sucesor
 quedó corriendo en la autoridad con los encargos trasladados. La política
-común y las instrucciones vivas de los directores quedan pendientes con su
-causa registrada. Ningún paso dejó dos escritores activos sobre el mismo
+común v7 ya se publica desde PC y converge en Mini y Mac. Las
+instrucciones vivas de los directores quedan pendientes con su causa
+registrada. Ningún paso dejó dos escritores activos sobre el mismo
 recurso.
 
 ## Integración
@@ -16,6 +17,7 @@ recurso.
 | goncloud-hermes | [#94](https://github.com/gon0801/goncloud-hermes/pull/94) | 8e5fb050fd3b |
 | goncloud-openclaw | [#371](https://github.com/gon0801/goncloud-openclaw/pull/371) | 1daa415466cf |
 | goncloud-motor-conf | [#28](https://github.com/gon0801/goncloud-motor-conf/pull/28) | ab9dc8fe9da0 |
+| goncloud-motor (fix) | [#86](https://github.com/gon0801/goncloud-motor/pull/86) | 71e8e313fb0a |
 
 La revisión independiente aprobó los cuatro antes del merge. Los gates
 rojos fueron falsos positivos de gitleaks sobre ids y rutas de la
@@ -46,11 +48,17 @@ de Hermes es feat/hermes-team.
   quince, todos detenidos y sin escrituras. MOTOR 06 quedó como encargo
   detenido con sus bloques B y C pendientes. Los PR 26 y 27 no se
   reaplicaron.
-- 7. Política común y réplicas. PENDIENTE. El ciclo de flota en PC falló
-  en un instalador node durante la preparación de componentes. No se
-  pausó vigia-modelos porque el reemplazo todavía no corre. Cuando el
-  ciclo corra, se pausa el cron d710c8527b7f y se crea la entrada única
-  del controlador por el mismo mecanismo de cron de Hermes.
+- 7. Política común y réplicas. REALIZADO. Ver
+  [evidence/fase-5/politica-comun.json](evidence/fase-5/politica-comun.json).
+  El publicador de PC generó el snapshot v7 (manifiesto con sha256
+  89daac5f). Las réplicas de Mini y Mac lo importaron y aplicaron la
+  misma generación de herramientas bddd4ee5, con fuente Gon-PC. Los
+  fallos previos venían de un instalador node y de un repo Hermes
+  local en una rama vieja. Ambos se corrigieron antes de activar el
+  reemplazo. Se creó el cron único
+  flota-controlador b7d546da8335 en el perfil claw, su primer ciclo
+  disparado terminó ok y apenas entonces se pausó vigia-modelos
+  d710c8527b7f por el subcomando nativo. Queda un solo escritor.
 - 8. Sistema viejo, directores y retiro. PARCIAL. La admisión del motor
   viejo se cerró con retención en Mac y Mini. Su daemon sigue solo como
   lector histórico. El claw-autoupdate de Mini quedó desactivado con su
@@ -73,15 +81,29 @@ de Hermes es feat/hermes-team.
   su propio comando de mantenimiento.
 - Claw-autoupdate: launchctl enable gui/501/ai.goncloud.claw-autoupdate
   y bootstrap con el plist guardado en el resguardo.
-- Política: como vigia-modelos nunca se pausó, no hay reversa que
-  aplicar en PC todavía.
+- Política en PC: pausa el controlador y reactiva el vigía. Nunca
+  dejes ambos activos. Corre
+  `hermes -p claw cron pause b7d546da8335` y luego
+  `hermes -p claw cron resume d710c8527b7f`. La definición previa del
+  cron quedó guardada fuera del repo en el resguardo de PC.
+- Réplicas: borra el home de flota de cada réplica o revierte su
+  generación con `ops/reversa_ensayo.py --home <home-flota>`. Esa
+  reversa no toca los encargos ni la autoridad de Mini.
 
 ## Residuos y pendientes con dueño
 
-- PC: home de flota parcialmente preparado en C:\Users\ehven\flota. Es
-  del ensayo de despliegue y se conserva hasta que el ciclo corra.
+- PC: el home C:\Users\ehven\flota ya es la instalación estable del
+  publicador. No es un residuo. Quedan carpetas de ensayo previas en
+  ese mismo home y se conservan como evidencia del fallo corregido.
 - Mini: /Users/gon/ensayo-flota-r4 y la copia del historial Mac en
-  /Users/gon/copia-mac. Son productos de ensayo declarados.
-- El siguiente paso con dueño es corregir el instalador node que el
-  ciclo de flota invoca en PC, o declarar ese componente pendiente en
-  el propio ciclo, y después ejecutar el paso 7 completo.
+  /Users/gon/copia-mac. Son productos de ensayo declarados y se
+  conservan. El home estable de la réplica es /Users/gon/flota.
+- Mac: el home estable de la réplica es /Users/dn/flota.
+- Pendientes con dueño: reinstalar las skills vivas en los perfiles
+  de producción de Hermes y Claw, instalar el servicio de encargos
+  en PC si se decide que PC sea autoridad secundaria, demostrar el
+  arranque tras un reinicio completo sin sesión iniciada en Mini, y
+  hacer la prueba final en ventana con David. OpenBot sigue sin una
+  parada propia demostrada. Un timeout no cancela su entrega.
+- Por esos pendientes la fase 5 queda PARCIAL SEGURA. No se declara
+  LISTO.
