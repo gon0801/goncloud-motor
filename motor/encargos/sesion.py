@@ -325,16 +325,27 @@ def descendientes(raiz: int) -> list[dict] | None:
     import subprocess
 
     if os.name == "nt":
-        from motor.plataforma.windows import _descendientes
+        from motor.plataforma.windows import _consulta_pid, _descendientes
 
         pids = _descendientes(raiz)
         if pids is None:
             return None
-        return [
-            {"pid": pid, "inicio": inicio, "boot_id": plataforma.boot_id()}
-            for pid in pids
-            if (inicio := plataforma.hora_inicio(pid))
-        ]
+        identidades = []
+        for pid in pids:
+            estado = _consulta_pid(pid)
+            if estado == "muerto":
+                continue
+            if estado == "incierto":
+                return None
+            inicio = plataforma.hora_inicio(pid)
+            if not inicio:
+                if _consulta_pid(pid) == "muerto":
+                    continue
+                return None
+            identidades.append(
+                {"pid": pid, "inicio": inicio, "boot_id": plataforma.boot_id()}
+            )
+        return identidades
     try:
         p = subprocess.run(
             ["/bin/ps", "-ax", "-o", "pid=,ppid="],
