@@ -48,11 +48,31 @@ def _trabajos_sobre(home: Path, generacion: str) -> list[dict]:
             continue
         if not doc or str(doc.get("generacion") or "") != generacion:
             continue
+        if doc.get("reserva") and not doc.get("pid"):
+            ocupantes.append(doc)
+            continue
         if not doc.get("pid"):
             continue
         from motor import plataforma
 
-        if plataforma.estado_proc(doc) == "vivo":
+        try:
+            estado = plataforma.estado_proc(doc)
+        except (OSError, TypeError, ValueError):
+            estado = "incierto"
+        if estado == "vivo":
+            ocupantes.append(doc)
+            continue
+        directorio = doc.get("directorio")
+        if directorio:
+            try:
+                from motor.encargos.sesion import observar
+
+                observacion = observar(Path(str(directorio)), doc)
+            except Exception:
+                observacion = "incierto"
+            if observacion in ("vivo", "incierto"):
+                ocupantes.append(doc)
+        elif estado == "incierto":
             ocupantes.append(doc)
     return ocupantes
 
@@ -104,11 +124,32 @@ def anotar_trabajo(
     identidad: dict | None = None,
 ) -> None:
     doc = {"trabajo": trabajo, "generacion": generacion, "herramienta": herramienta}
+    path = home / "trabajos" / f"{trabajo}.json"
+    try:
+        previo = _leer(path)
+    except (OSError, ValueError):
+        previo = None
+    if previo:
+        if previo.get("directorio"):
+            doc["directorio"] = previo["directorio"]
+        if previo.get("reserva"):
+            doc["reserva"] = True
     if identidad:
-        for campo in ("pid", "inicio", "boot_id", "host"):
+        for campo in ("pid", "inicio", "boot_id", "host", "directorio"):
             if identidad.get(campo) not in (None, ""):
                 doc[campo] = identidad[campo]
-    _atomico(home / "trabajos" / f"{trabajo}.json", doc)
+        if identidad.get("reserva"):
+            doc["reserva"] = True
+        elif identidad.get("reserva") is False:
+            doc.pop("reserva", None)
+    _atomico(path, doc)
+
+
+def liberar_trabajo(home: Path, trabajo: str) -> None:
+    try:
+        (home / "trabajos" / f"{trabajo}.json").unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def leer_trabajo(home: Path, trabajo: str) -> dict | None:

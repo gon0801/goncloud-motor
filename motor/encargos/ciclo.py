@@ -892,6 +892,18 @@ def _lanzar_uno(
         _publica(prompt, contenido)
         flota_generacion = ""
         flota_ruta = ""
+        home_path = None
+        flota_reservada = False
+
+        def _liberar_flota() -> None:
+            if flota_reservada and home_path is not None:
+                try:
+                    from motor.flota.control import liberar_trabajo
+
+                    liberar_trabajo(home_path, enc.id)
+                except Exception:
+                    pass
+
         try:
             flota_home_path = registro.base / "flota-home.json"
             if flota_home_path.is_file():
@@ -906,7 +918,6 @@ def _lanzar_uno(
                         home_path = registro.base / home_path
                     flota_generacion = _asignar_flota(home_path)
                     flota_ruta = str(home_path / "generaciones" / flota_generacion)
-                    _anotar_flota(home_path, enc.id, flota_generacion, enc.agente or rol)
                     _publica(
                         directorio / "generacion.json",
                         json.dumps(
@@ -914,69 +925,93 @@ def _lanzar_uno(
                             ensure_ascii=False,
                         ),
                     )
+                    _anotar_flota(
+                        home_path,
+                        enc.id,
+                        flota_generacion,
+                        enc.agente or rol,
+                        {"reserva": True, "directorio": str(directorio)},
+                    )
+                    flota_reservada = True
         except Exception:
             flota_generacion = ""
             flota_ruta = ""
-        cmd = lanzador(enc, prompt, espacio, sesion)
+            flota_reservada = False
+        try:
+            cmd = lanzador(enc, prompt, espacio, sesion)
+        except Exception:
+            _liberar_flota()
+            raise
         if not cmd:
+            _liberar_flota()
             return
         entorno_gen = (
             {"MOTOR_GENERACION": flota_generacion, "MOTOR_GENERACION_RUTA": flota_ruta}
             if flota_generacion
             else None
         )
-        preparar_administrado(
-            cmd, espacio, directorio, enc, sesion, hora, runtime, entorno_gen
-        )
-        reservado = registro.anotar(
-            enc.id,
-            {
-                "kind": "reserva",
-                "data": {
-                    "rol": rol,
-                    "generacion": generacion,
-                    "candidato": token,
-                    "host": socket.gethostname(),
-                    "hora": hora,
-                },
-            },
-            f"reserva:{enc.id}:{generacion}",
-        )
-        if reservado != "nuevo":
-            return
-        if not _conseguir_conductor(registro, enc, token, hora):
-            from datetime import datetime, timedelta, timezone
-
-            reanuda = (datetime.now(timezone.utc) + timedelta(seconds=30)).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
+        try:
+            preparar_administrado(
+                cmd, espacio, directorio, enc, sesion, hora, runtime, entorno_gen
             )
-            marcar_espera(
-                registro,
+            reservado = registro.anotar(
                 enc.id,
-                "la autoridad no concedio otro conductor",
-                reanuda,
-                hora,
+                {
+                    "kind": "reserva",
+                    "data": {
+                        "rol": rol,
+                        "generacion": generacion,
+                        "candidato": token,
+                        "host": socket.gethostname(),
+                        "hora": hora,
+                    },
+                },
+                f"reserva:{enc.id}:{generacion}",
             )
-            return
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "conductor",
-                "data": {"token": token, "host": socket.gethostname(), "hora": hora},
-            },
-            f"conductor-local:{enc.id}:{token}",
-        )
-        _publica(raiz / "actual", directorio.name)
-        from motor import plataforma
+            if reservado != "nuevo":
+                _liberar_flota()
+                return
+            if not _conseguir_conductor(registro, enc, token, hora):
+                from datetime import datetime, timedelta, timezone
 
-        plataforma.sincroniza_directorio(raiz)
-        proc = lanzar_administrado(directorio, token)
+                reanuda = (datetime.now(timezone.utc) + timedelta(seconds=30)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+                marcar_espera(
+                    registro,
+                    enc.id,
+                    "la autoridad no concedio otro conductor",
+                    reanuda,
+                    hora,
+                )
+                _liberar_flota()
+                return
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "conductor",
+                    "data": {"token": token, "host": socket.gethostname(), "hora": hora},
+                },
+                f"conductor-local:{enc.id}:{token}",
+            )
+            _publica(raiz / "actual", directorio.name)
+            from motor import plataforma
+
+            plataforma.sincroniza_directorio(raiz)
+            proc = lanzar_administrado(directorio, token)
+        except Exception:
+            _liberar_flota()
+            raise
         if flota_generacion:
             try:
                 from motor.flota.control import anotar_trabajo as _anotar_flota
 
                 _anotar_flota(
-                    home_path, enc.id, flota_generacion, enc.agente or rol, proc
+                    home_path,
+                    enc.id,
+                    flota_generacion,
+                    enc.agente or rol,
+                    {**proc, "directorio": str(directorio)},
                 )
             except Exception:
                 pass
