@@ -403,7 +403,13 @@ def _arbol(e: Encargo, d: dict, hora: str) -> Encargo:
 
 def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
     clase = d["clase"]
-    if clase == "confirmado":
+    if clase == "producto_aprobado":
+        return replace(
+            e,
+            ultimo_hecho="producto aprobado; falta comprobar efectos mediados",
+            hora=hora or e.hora,
+        )
+    if clase in ("confirmado", "cierre_comprobado"):
         evidencia = str(d.get("evidencia") or "")
         if not evidencia:
             raise TransicionIlegal("confirmado sin evidencia")

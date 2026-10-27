@@ -530,7 +530,15 @@ def _pedidos_efecto(espacio: Path) -> list[dict] | None:
     for item in datos:
         if not isinstance(item, dict) or not str(item.get("id") or "").strip():
             return None
-    return datos
+    return [
+        {
+            "id": str(p["id"]),
+            "operacion": str(p.get("operacion") or "publicar"),
+            "clave": str(p.get("clave") or p["id"]),
+            "cuerpo": str(p.get("cuerpo") or ""),
+        }
+        for p in datos
+    ]
 
 
 def _anotar_juicio(
@@ -655,8 +663,20 @@ def _incorporar(
     )
     huella = digest(observacion)
     juicio = leer_juicio(Path(referencia["resultado"]), observacion, huella, espacio)
-    if juicio["clase"] == "confirmado":
-        pedidos = _pedidos_efecto(espacio)
+    pedidos = _pedidos_efecto(espacio)
+    if juicio["clase"] == "confirmado" and pedidos:
+        from .cierre import componer
+
+        try:
+            componer(juicio, observacion, pedidos, enc)
+        except ValueError:
+            juicio = {
+                "clase": "instrumento",
+                "firma": huella,
+                "causa": "confirmacion antes de comprobar efectos mediados pendientes",
+                "reparacion": "aprobar explicitamente el producto y enumerar los efectos pendientes sin afirmar que ya ocurrieron",
+            }
+    if juicio["clase"] in ("confirmado", "producto_aprobado"):
         if pedidos is None:
             juicio = {
                 "clase": "instrumento",
@@ -665,6 +685,8 @@ def _incorporar(
                 "reparacion": "corregir solicitud interna del efecto",
             }
         else:
+            if juicio["clase"] == "producto_aprobado":
+                _anotar_juicio(registro, enc, juicio, hora, enc.generacion)
             if pedidos and not enc.autoridad:
                 from datetime import datetime, timedelta, timezone
 
@@ -714,11 +736,16 @@ def _incorporar(
                         "reparacion": "conciliar efecto antes de completar la entrega",
                     }
                     break
+    if juicio["clase"] in ("confirmado", "producto_aprobado") and pedidos:
+        from .cierre import componer
+
+        juicio = componer(juicio, observacion, pedidos, registro.fold(enc.id))
+        _publica(directorio / "cierre.json", json.dumps(juicio, ensure_ascii=False))
     _anotar_juicio(registro, enc, juicio, hora, enc.generacion)
     enc = registro.fold(enc.id)
     if enc.estado == "terminado":
         _publicar_resultado(registro, enc, hora)
-    if juicio["clase"] != "confirmado":
+    if juicio["clase"] not in ("confirmado", "cierre_comprobado"):
         registro.anotar(
             enc.id,
             {
@@ -803,6 +830,12 @@ def _lanzar_uno(
                     "error_instrumento": "falta observacion del supervisor",
                 }
                 _publica(origen, json.dumps(observacion))
+            observacion = {
+                **observacion,
+                "solicitudes_efecto": _pedidos_efecto(espacio) or [],
+            }
+            origen = directorio / "observaciones-revision.json"
+            _publica(origen, json.dumps(observacion, ensure_ascii=False))
             resultado = runtime / "resultado.json"
             _publica(
                 directorio / "revision.json",
@@ -1090,11 +1123,18 @@ def _soltar_conductor(registro: Registro, enc: Encargo, hora: str) -> bool:
         return True
     directorio = _directorio(registro.base, enc.id)
     pendiente = enc.estado == "terminado"
-    if not enc.candidato and enc.estado not in ("deteniendo", "detenido", "cancelado"):
+    if (
+        not enc.candidato
+        and enc.estado not in ("deteniendo", "detenido", "cancelado")
+        and not (directorio / "incorporado").is_file()
+    ):
         try:
             ref = json.loads((directorio / "revision.json").read_text(encoding="utf-8"))
             juicio = json.loads(Path(ref["resultado"]).read_text(encoding="utf-8"))
-            pendiente = pendiente or juicio.get("clase") == "confirmado"
+            pendiente = pendiente or juicio.get("clase") in (
+                "confirmado",
+                "producto_aprobado",
+            )
         except (OSError, ValueError, KeyError):
             pass
     if pendiente and not enc.candidato:
@@ -1271,14 +1311,35 @@ def recibir_resultado(
             validar_juicio(juicio, observaciones, digest(observaciones))
         except (ValueError, KeyError, TypeError) as exc:
             return {"rechazado": True, "motivo": str(exc)}
-        if juicio["clase"] != "confirmado":
+        if juicio["clase"] not in ("confirmado", "producto_aprobado"):
             return {"rechazado": True, "motivo": "el resultado no fue comprobado"}
+        if any(e.estado in ("intencion", "incierto") for e in enc.efectos):
+            return {
+                "rechazado": True,
+                "motivo": "la autoridad conserva efectos sin recibo",
+            }
+        cierre = juicio
+        if juicio["clase"] == "producto_aprobado" or observaciones.get(
+            "solicitudes_efecto"
+        ):
+            from .cierre import componer, comprobar_destino
+
+            try:
+                cierre = componer(
+                    juicio,
+                    observaciones,
+                    observaciones.get("solicitudes_efecto") or [],
+                    enc,
+                )
+                comprobar_destino(cierre, DestinoEnsayo(registro.base / "destino"))
+            except (ValueError, KeyError, TypeError) as exc:
+                return {"rechazado": True, "motivo": str(exc)}
         resultado = registro.anotar(
             enc.id,
             {
                 "kind": "comprobacion",
                 "data": {
-                    **juicio,
+                    **cierre,
                     "observaciones": observaciones,
                     "host": host,
                     "hora": hora,

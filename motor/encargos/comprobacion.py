@@ -238,6 +238,10 @@ completo, el producto real y esas observaciones. Un rc=0 o una nota no demuestra
 Si falla el instrumento, arregla el procedimiento sin cambiar un producto valido ni repetir efectos.
 Una salida incompleta se recupera en este encargo. No pidas al usuario que escriba este protocolo.
 No cambies el objetivo ni despliegues. Las escrituras externas se piden en pedido-efecto.json.
+Tu tarea es preparar el producto y la solicitud. No tienes acceso al registro ni al destino.
+El revisor puede aprobar el producto con efectos pendientes; el supervisor obtiene los recibos
+reales por el adaptador y compone el cierre. No conviertas la falta de esos recibos en una
+comprobacion local ficticia ni busques credenciales para producirlos desde una herramienta.
 No agregues pruebas nuevas salvo dinero, escritura de produccion, instalar/borrar/deshacer, o una regresion por incidente real. Nunca pruebas de texto, de pruebas ni mutantes.
 No leas secretos ni uses otros agentes ni servicios. Conserva contexto y pendientes en contexto.md."""
 
@@ -249,10 +253,18 @@ No inventes observaciones. Un comando tautologico, una nota o una fraccion del o
 Clasifica el fallo usando comando, stdout, stderr y producto. El codigo de salida no distingue
 instrumento y defecto. Un SyntaxError del -c del comprobador es instrumento, no producto.
 Escribe SOLO tu juicio en {resultado}, con este objeto JSON interno.
-{{"clase":"confirmado|instrumento|defecto|no_concluyente", "observacion":"{huella}",
+{{"clase":"confirmado|producto_aprobado|instrumento|defecto|no_concluyente", "observacion":"{huella}",
 "evidencia":"relacion concreta entre pedido completo, producto y salidas observadas",
 "causa":"causa comprobada si fallo", "reparacion":"trabajo concreto para continuar",
 "cobertura":[{{"objetivo":"resultado solicitado", "ejecuciones":[0], "razon":"que demuestra"}}]}}
+Si el producto y sus comprobaciones cumplen y solo faltan efectos del adaptador de ensayo,
+usa producto_aprobado y agrega efectos_pendientes con los IDs exactos de solicitudes_efecto.
+Eso autoriza al supervisor a mediar esas solicitudes; NO afirma que ya ocurrieron.
+El supervisor concilia sus recibos reales y compone el cierre sin modificar tu juicio.
+No pidas al responsable acceso al registro, al destino ni sus credenciales para obtener recibos.
+Si el recibo de texto de ensayo no basta para comprobar un resultado solicitado, no lo apruebes
+como si bastara; explica la inspeccion adicional necesaria. Usa confirmado cuando no quede
+ningun efecto pendiente. Ambos tipos necesitan evidencia y cobertura reales del producto.
 Cada parte puede usar referencias vacias cuando su razon cita un hecho ya registrado o la inspeccion
 del producto. El juicio completo debe vincular ejecuciones reales; no repitas efectos para probar recibos.
 Confirma solo si las observaciones demuestran el objetivo completo. Si falta evidencia,
@@ -266,12 +278,18 @@ def validar_juicio(d: dict, observacion: dict, huella: str) -> None:
     if not isinstance(d, dict) or d.get("observacion") != huella:
         raise ValueError("el juicio no corresponde a las ejecuciones observadas")
     clase = d.get("clase")
-    if clase not in ("confirmado", "instrumento", "defecto", "no_concluyente"):
+    if clase not in (
+        "confirmado",
+        "producto_aprobado",
+        "instrumento",
+        "defecto",
+        "no_concluyente",
+    ):
         raise ValueError("falta clasificacion del revisor")
     for campo in ("evidencia", "causa", "reparacion"):
         if campo in d and not isinstance(d[campo], str):
             raise ValueError(f"{campo} debe ser texto")
-    if clase == "confirmado":
+    if clase in ("confirmado", "producto_aprobado"):
         ejecuciones = observacion.get("ejecuciones") or []
         cobertura = d.get("cobertura") or []
         if not isinstance(ejecuciones, list) or not all(
@@ -302,6 +320,19 @@ def validar_juicio(d: dict, observacion: dict, huella: str) -> None:
             referencias.update(refs)
         if not referencias:
             raise ValueError("el juicio no vincula ninguna ejecucion observada")
+        if clase == "producto_aprobado":
+            pendientes = d.get("efectos_pendientes")
+            solicitudes = observacion.get("solicitudes_efecto") or []
+            if (
+                not isinstance(pendientes, list)
+                or not pendientes
+                or not all(isinstance(x, str) for x in pendientes)
+                or len(set(pendientes)) != len(pendientes)
+                or set(pendientes) != {p["id"] for p in solicitudes}
+            ):
+                raise ValueError(
+                    "la aprobacion necesita los IDs exactos de los efectos solicitados"
+                )
     elif not d.get("reparacion", "").strip() or not d.get("causa", "").strip():
         raise ValueError("el revisor necesita causa y accion concretas")
 

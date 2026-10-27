@@ -38,6 +38,10 @@ def _registro(base: Path) -> Registro:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if os.name == "nt":
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="motor")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
