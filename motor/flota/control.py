@@ -257,6 +257,19 @@ def recuperar(home: Path) -> dict:
                 rc_c, _nombre_c = _comprobar_detalle(gen_c)
                 if rc_c != 0:
                     return revertir(home)
+                if (gen_c / "motor" / "__main__.py").is_file():
+                    try:
+                        arranque = subprocess.run(
+                            [sys.executable, "-m", "motor", "--help"],
+                            cwd=gen_c,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                        if arranque.returncode != 0:
+                            return revertir(home)
+                    except (OSError, subprocess.TimeoutExpired):
+                        return revertir(home)
         return {"accion": "nada"}
     destino = (pend.get("destino") or {}).get("codigo") or ""
     anterior = (pend.get("anterior") or {}).get("codigo") or ""
