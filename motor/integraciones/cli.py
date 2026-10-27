@@ -17,6 +17,7 @@ from .directores import (
     guardar_capacidades,
     hora,
     promover,
+    registrar_identidad,
     relay,
     resultado_directo,
 )
@@ -39,6 +40,20 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--clave", required=True)
     s.add_argument("--texto", default="")
     s.add_argument("--archivo", type=Path)
+    s.add_argument("--pid", type=int)
+    s.add_argument("--inicio", default="")
+    s.add_argument("--boot-id", default="")
+    s.add_argument("--host", default="")
+    s.add_argument("--sesion", default="")
+
+    s = sub.add_parser("registrar-sesion")
+    s.add_argument("encargo")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--pid", type=int)
+    s.add_argument("--inicio", default="")
+    s.add_argument("--boot-id", default="")
+    s.add_argument("--host", default="")
+    s.add_argument("--sesion", default="")
 
     s = sub.add_parser("ver")
     s.add_argument("encargo")
@@ -102,6 +117,21 @@ def _correr(args) -> int:
             if not texto.strip():
                 print("falta el pedido", file=sys.stderr)
                 return 2
+            identidad = None
+            if (
+                args.pid is not None
+                or args.inicio
+                or args.boot_id
+                or args.host
+                or args.sesion
+            ):
+                identidad = {
+                    "pid": args.pid,
+                    "inicio": args.inicio,
+                    "boot_id": args.boot_id,
+                    "host": args.host,
+                    "sesion": args.sesion,
+                }
             return _json(
                 encargar(
                     reg,
@@ -112,8 +142,18 @@ def _correr(args) -> int:
                     args.canal,
                     args.via,
                     adjuntos,
+                    identidad,
                 )
             )
+        if args.cmd == "registrar-sesion":
+            identidad = {
+                "pid": args.pid,
+                "inicio": args.inicio,
+                "boot_id": args.boot_id,
+                "host": args.host,
+                "sesion": args.sesion,
+            }
+            return _json(registrar_identidad(reg, args.encargo, identidad))
         if args.cmd == "ver":
             return _json(consultar(reg, args.encargo))
         if args.cmd in ("parar", "continuar", "cancelar"):

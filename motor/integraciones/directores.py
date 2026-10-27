@@ -32,6 +32,49 @@ def nombre_canal(canal: str) -> str:
     return canal
 
 
+def _identidad_normalizada(identidad: dict | None) -> dict:
+    if not identidad:
+        return {}
+    salida: dict = {}
+    if identidad.get("pid") is not None and identidad.get("pid") != "":
+        try:
+            salida["pid"] = int(identidad["pid"])
+        except (TypeError, ValueError):
+            salida["pid"] = identidad["pid"]
+    for campo in ("inicio", "boot_id", "host", "sesion", "job"):
+        if identidad.get(campo):
+            salida[campo] = str(identidad[campo])
+    return salida
+
+
+def _cierre_observado(sesion: dict | None) -> bool:
+    if not sesion:
+        return False
+    return bool(
+        sesion.get("estado") == "cerrado"
+        and (sesion.get("observacion") == "ausente" or sesion.get("cierre_observado"))
+    )
+
+
+def registrar_identidad(
+    registro: Registro, encargo: str, identidad: dict | None
+) -> dict:
+    datos = _identidad_normalizada(identidad)
+    path = registro.base / "directo" / f"{encargo}.json"
+    actual = _leer(path) or {
+        "estado": "sin-identidad",
+        "director": "",
+        "encargo": encargo,
+    }
+    if datos:
+        actual.update(datos)
+        if actual.get("estado") in (None, "sin-identidad"):
+            actual["estado"] = "activo" if datos.get("pid") else "sin-identidad"
+    actual["encargo"] = encargo
+    _atomico(path, actual)
+    return actual
+
+
 def encargar(
     registro: Registro,
     texto: str,
@@ -41,6 +84,7 @@ def encargar(
     canal: str,
     via: str,
     adjuntos: tuple[str, ...] = (),
+    identidad: dict | None = None,
 ) -> dict:
     canal = nombre_canal(canal)
     salida = recibir(
@@ -55,16 +99,18 @@ def encargar(
     )
     if via == "directa" and not salida.get("conflicto"):
         path = registro.base / "directo" / f"{salida['encargo']}.json"
+        datos = _identidad_normalizada(identidad)
         if not path.exists():
-            _atomico(
-                path,
-                {
-                    "estado": "activo",
-                    "sesion": clave,
-                    "director": director,
-                    "encargo": salida["encargo"],
-                },
-            )
+            doc = {
+                "estado": "activo" if datos.get("pid") else "sin-identidad",
+                "sesion": datos.get("sesion") or clave,
+                "director": director,
+                "encargo": salida["encargo"],
+            }
+            doc.update(datos)
+            _atomico(path, doc)
+        elif datos:
+            registrar_identidad(registro, salida["encargo"], datos)
     return salida
 
 
@@ -73,7 +119,39 @@ def cerrar_sesion(registro: Registro, encargo: str) -> dict:
     actual = _leer(path)
     if actual is None:
         return {"encargo": encargo, "estado": "sin-sesion"}
-    actual["estado"] = "cerrado"
+    if not actual.get("pid"):
+        actual["estado"] = "sin-identidad"
+        actual["motivo"] = "sin identidad del ejecutor; no se acredita el cierre"
+        _atomico(path, actual)
+        return actual
+    proc = {
+        "pid": int(actual["pid"]),
+        "inicio": str(actual.get("inicio") or ""),
+        "boot_id": str(actual.get("boot_id") or ""),
+        "host": str(actual.get("host") or ""),
+        "job": str(actual.get("job") or ""),
+    }
+    directorio = registro.base / "directo-sesion" / encargo
+    directorio.mkdir(parents=True, exist_ok=True)
+    _atomico(directorio / "proc.json", proc)
+    from motor.encargos.sesion import cerrar as _cerrar_real
+
+    try:
+        observacion = _cerrar_real(directorio, proc)
+    except Exception as exc:  # noqa: BLE001 el borde de cierre informa, no acredita
+        observacion = "incierto"
+        actual["motivo"] = str(exc)
+    actual["observacion"] = observacion
+    if observacion == "ausente":
+        actual["estado"] = "cerrado"
+        actual["cierre_observado"] = True
+        actual.pop("motivo", None)
+    else:
+        actual["estado"] = "activo"
+        actual["cierre_observado"] = False
+        actual["motivo"] = actual.get("motivo") or (
+            "el ejecutor sigue vivo" if observacion == "vivo" else "cierre incierto"
+        )
     _atomico(path, actual)
     return actual
 
@@ -83,10 +161,15 @@ def promover(registro: Registro, encargo: str, clave: str, hora: str) -> dict:
     if enc is None:
         return {"rechazada": True, "motivo": "no hay encargo", "encargo": encargo}
     sesion = _leer(registro.base / "directo" / f"{encargo}.json")
-    if sesion and sesion.get("estado") != "cerrado":
+    if enc.via == "directa" and not _cierre_observado(sesion):
         salida = consultar(registro, encargo)
         salida["rechazada"] = True
-        salida["motivo"] = "el ejecutor directo sigue abierto"
+        if sesion and sesion.get("estado") == "sin-identidad":
+            salida["motivo"] = "sin identidad del ejecutor; no se acredita el cierre"
+        elif sesion is None:
+            salida["motivo"] = "falta el cierre observado de la sesion directa"
+        else:
+            salida["motivo"] = "el ejecutor directo sigue abierto"
         return salida
     if enc.proc is not None or enc.reserva:
         salida = consultar(registro, encargo)
@@ -115,19 +198,36 @@ def resultado_directo(
     enc = registro.fold(encargo)
     if enc is None:
         return {"rechazada": True, "motivo": "no hay encargo"}
+    if enc.via != "directa":
+        salida = consultar(registro, encargo)
+        salida["rechazada"] = True
+        salida["motivo"] = "el resultado directo solo cierra la via directa"
+        return salida
+    sesion = _leer(registro.base / "directo" / f"{encargo}.json")
+    if not _cierre_observado(sesion):
+        salida = consultar(registro, encargo)
+        salida["rechazada"] = True
+        salida["motivo"] = (
+            "sin identidad del ejecutor; no se acredita el cierre"
+            if sesion and sesion.get("estado") == "sin-identidad"
+            else "falta el cierre observado de la sesion directa"
+        )
+        return salida
     espacio = registro.base / "espacio" / encargo
     espacio.mkdir(parents=True, exist_ok=True)
     destino = espacio / "resultado.txt"
-    if not destino.exists():
+    if destino.exists():
+        cuerpo = destino.read_text(encoding="utf-8")
+        if cuerpo != texto:
+            salida = consultar(registro, encargo)
+            salida["conflicto"] = True
+            salida["motivo"] = "el resultado ya publicado es otro"
+            return salida
+    else:
         temporal = destino.with_suffix(".txt.tmp")
         temporal.write_text(texto, encoding="utf-8")
         temporal.replace(destino)
-    cuerpo = destino.read_text(encoding="utf-8")
-    if cuerpo != texto:
-        salida = consultar(registro, encargo)
-        salida["conflicto"] = True
-        salida["motivo"] = "el resultado ya publicado es otro"
-        return salida
+        cuerpo = texto
     evidencia = hashlib.sha256(cuerpo.encode()).hexdigest()
     resultado = registro.anotar(
         encargo,

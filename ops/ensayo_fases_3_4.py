@@ -102,6 +102,23 @@ def ssh(host: str, remoto: str, limite: int = 25) -> dict:
     return {"rc": hecho.returncode, "texto": "\n".join(lineas[:12])}
 
 
+def ejecutor_directo():
+    sys.path.insert(0, str(RAIZ))
+    from motor import plataforma
+
+    import socket
+
+    proc = subprocess.Popen(["sleep", "30"])
+    args = [
+        "--pid", str(proc.pid),
+        "--inicio", plataforma.hora_inicio(proc.pid),
+        "--boot-id", plataforma.boot_id(),
+        "--host", socket.gethostname(),
+        "--sesion", f"ensayo-{proc.pid}",
+    ]
+    return proc, args
+
+
 def entregas(base: Path, encargo: str) -> int:
     db = sqlite3.connect(base / "registro.sqlite")
     try:
@@ -410,10 +427,11 @@ def main() -> int:
 
         plan = base / "plan-externo.txt"
         plan.write_text(PEDIDO, encoding="utf-8")
+        ejecutor_hermes, args_ejecutor_hermes = ejecutor_directo()
         hermes_directa = motor(
             "director", "encargar", "--base", str(base), "--director", "hermes",
             "--via", "directa", "--canal", "canal-hermes", "--clave", "h-directa",
-            "--texto", PEDIDO,
+            "--texto", PEDIDO, *args_ejecutor_hermes,
         )
         claw_directa = motor(
             "director", "encargar", "--base", str(base), "--director", "claw",
@@ -469,7 +487,8 @@ def main() -> int:
         rechazada = motor("director", "promover", encargo, "--base", str(base), "--clave", "promover-1")
         exigir(rechazada.get("rechazada") is True, "promover no esperó el cierre de la vía directa")
         exigir(not (base / "ejecucion" / encargo).exists(), "promover abrió un escritor")
-        motor("director", "cerrar-sesion", encargo, "--base", str(base))
+        cerrado_hermes = motor("director", "cerrar-sesion", encargo, "--base", str(base))
+        exigir(cerrado_hermes.get("estado") == "cerrado" and cerrado_hermes.get("observacion") == "ausente", "cerrar-sesion no observó el cierre del ejecutor")
         promovido = motor("director", "promover", encargo, "--base", str(base), "--clave", "promover-1")
         exigir(promovido["encargo"] == encargo and promovido["via"] == "durable", "promover no conservó el encargo")
         exigir(entregas(base, encargo) == 1, "promover creó otra entrega")
@@ -568,10 +587,11 @@ def main() -> int:
         }
         evidencia["dobles"].append(evidencia["poteto"]["doble"])
 
+        _ejecutor_aviso, args_ejecutor_aviso = ejecutor_directo()
         aviso_id = motor(
             "director", "encargar", "--base", str(base), "--director", "hermes",
             "--via", "directa", "--canal", "canal-hermes", "--clave", "aviso",
-            "--texto", PEDIDO,
+            "--texto", PEDIDO, *args_ejecutor_aviso,
         )["encargo"]
         motor("director", "cerrar-sesion", aviso_id, "--base", str(base))
         cerrado = motor(
@@ -635,10 +655,11 @@ def main() -> int:
             timeout=20,
         )
         exigir(estado.returncode == 0 and RESPUESTA in estado.stdout, "status no recuperó el mismo resultado")
+        _ejecutor_ob, args_ejecutor_ob = ejecutor_directo()
         ob = motor(
             "director", "encargar", "--base", str(base), "--director", "openbot",
             "--via", "directa", "--canal", "canal-openbot", "--clave", "ob-1",
-            "--texto", PEDIDO,
+            "--texto", PEDIDO, *args_ejecutor_ob,
         )
         motor("director", "cerrar-sesion", ob["encargo"], "--base", str(base))
         resultado = motor(
