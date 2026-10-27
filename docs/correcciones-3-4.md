@@ -127,6 +127,32 @@ suyo no cancela.
   borró. Hermes en PC y OpenBot siguen en la misma clase de pendiente.
   OpenBot no estaba corriendo en la Mac.
 
+## Ronda 3. Recorridos reales aislados intentados
+
+- Claw en Mini. Perfil propio ensayo34b con config sin secretos y runtime
+  claude-cli para anthropic/claude-sonnet-5-5. El backend real arrancó el
+  proveedor y el modelo pedidos. El turno falló con Not logged in. La
+  sesión CLI de ese contexto aislado no hereda el login del gateway vivo.
+  Lo necesario del operador es un login interactivo de Claude en el
+  contexto del perfil de ensayo, o autorizar copiar solo los perfiles de
+  auth portables que el propio CLI sugiere. No se copiaron credenciales.
+  El perfil de ensayo se borró.
+- Hermes en PC. Home propio .hermes-ensayo34. El runtime aislado se
+  preparó y vio Copilot por el gh nativo de la PC, sin copiar secretos.
+  La skill nueva se instaló en ese home. El turno falló antes del modelo
+  con Error storage_unavailable. Lo necesario del operador es inicializar
+  el almacenamiento de ese home con el setup del propio Hermes o autorizar
+  otro home de ensayo inicializado. El home quedó presente porque un
+  archivo sigue bloqueado. Es residuo propio en
+  C:\Users\ehven\.hermes-ensayo34 y se puede borrar cuando se libere.
+- OpenBot en Mac. El CLI real responde y list da exit 5. La app no está
+  corriendo y no hay agente con Local scripts. Lo necesario del operador
+  es abrir OpenBot y habilitar un agente de ensayo con Local scripts, o
+  autorizar arrancar la app. No se arrancó.
+
+Ninguno de los tres recorridos se declara completo. El código, las skills
+y la política ya entregados no dependen de estos turnos para revisarse.
+
 ## Receta de fase 5
 
 Activar por máquina en una ventana con los directores detenidos. Instalar la
