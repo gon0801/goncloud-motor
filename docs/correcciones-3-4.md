@@ -9,7 +9,7 @@ vivos.
 
 | Repo | Ruta | Rama | Base revisada | SHA final |
 | --- | --- | --- | --- | --- |
-| Motor | /Users/dn/dev/goncloud-motor-encargos-3-4 | feat/encargos-3-4 | 235ef8a | ver git log de esta rama |
+| Motor | /Users/dn/dev/goncloud-motor-encargos-3-4 | feat/encargos-3-4 | 235ef8a | c7a780e, más este informe |
 | Hermes | /Users/dn/dev/goncloud-hermes-encargos-3-4 | feat/encargos-3-4 | f3bef23 | eb06573 |
 | Conf | /Users/dn/dev/goncloud-motor-conf-encargos-3-4 | feat/encargos-3-4 | 45f6187 | f02bd82 |
 | OpenClaw | /Users/dn/dev/goncloud-openclaw-encargos-3-4 | feat/encargos-3-4 | 75d5135 | 86a3dce |
