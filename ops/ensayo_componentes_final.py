@@ -308,6 +308,7 @@ def remoto(base, sha, instalar, preparadas=None):
     if os.name == "nt":
         plugin = home / "generaciones" / gen_a / "config/hermes/plugins/goncloud-team"
         sys.path.insert(0, str(plugin))
+        from subscriptions import process as proceso_cli
         from subscriptions.process import _resolve_windows_shim, run_cli
 
         espacio = base / "prueba-plugin"
@@ -318,6 +319,14 @@ def remoto(base, sha, instalar, preparadas=None):
             text=True,
             check=True,
         )
+        ejecutados = []
+        ejecutar_arbol = proceso_cli._run_with_process_tree
+
+        def registrar(argv, **kwargs):
+            ejecutados.append(argv[0])
+            return ejecutar_arbol(argv, **kwargs)
+
+        proceso_cli._run_with_process_tree = registrar
         fijado = run_cli(
             ["codex", "--version"],
             "",
@@ -327,7 +336,20 @@ def remoto(base, sha, instalar, preparadas=None):
         )
         assert global_cli.returncode == fijado.returncode == 0
         assert codex_a["version"] in fijado.stdout
-        assert codex_b["version"] in global_cli.stdout
+        assert (
+            Path(ejecutados[-1])
+            .resolve()
+            .is_relative_to((home / "generaciones" / gen_a).resolve())
+        )
+        otro = run_cli(
+            ["codex", "--version"],
+            "",
+            espacio,
+            30,
+            env_overlay={"MOTOR_GENERACION_RUTA": str(home / "generaciones" / gen_b)},
+        )
+        assert otro.returncode == 0 and codex_b["version"] in otro.stdout
+        proceso_cli._run_with_process_tree = ejecutar_arbol
         paso(
             "plugin_version_fijada",
             {"global": global_cli.stdout.strip(), "generacion": fijado.stdout.strip()},
