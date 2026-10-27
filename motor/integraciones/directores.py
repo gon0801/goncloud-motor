@@ -587,23 +587,63 @@ def _conciliar_transporte(
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return "incierto", str(exc)
-    texto = (hecho.stdout or "").strip()
-    if texto:
-        try:
-            doc = json.loads(texto)
-        except ValueError:
-            doc = None
-        if isinstance(doc, dict):
-            for campo in ("id", "recibo", "receipt"):
-                if doc.get(campo):
-                    return "hallado", str(doc[campo])
-            if str(doc.get("estado") or "") in ("ausente", "no-encontrado", "not_found"):
-                return "ausente", ""
-            return "incierto", "la conciliacion no confirmo el aviso"
-        return "hallado", texto.splitlines()[0].strip()
     if hecho.returncode != 0:
+        return "incierto", f"la conciliacion salio {hecho.returncode}"
+    texto = (hecho.stdout or "").strip()
+    if not texto:
+        return "incierto", "la conciliacion no devolvio recibo"
+    try:
+        doc = json.loads(texto)
+    except ValueError:
+        return "incierto", "la conciliacion no devolvio un JSON valido"
+    if not isinstance(doc, dict):
+        return "incierto", "la conciliacion no devolvio un objeto JSON"
+    for campo in ("id", "recibo", "receipt"):
+        if doc.get(campo):
+            return "hallado", str(doc[campo])
+    if doc.get("ausente") is True or str(doc.get("estado") or "") in (
+        "ausente",
+        "no-encontrado",
+        "not_found",
+    ):
         return "ausente", ""
-    return "incierto", "la conciliacion no devolvio recibo"
+    return "incierto", "la conciliacion no confirmo el aviso"
+
+
+def _declara_idempotencia(cfg: dict | None) -> bool:
+    if not cfg:
+        return False
+    if cfg.get("idempotente") is True:
+        return True
+    marca = cfg.get("idempotencia")
+    return marca is True or str(marca or "") == "MOTOR_AVISO_ID"
+
+
+def _registrar_intento(path: Path, guardado: dict) -> None:
+    guardado["estado"] = "incierto"
+    try:
+        guardado["intentos"] = int(guardado.get("intentos") or 0) + 1
+    except (TypeError, ValueError):
+        guardado["intentos"] = 1
+    _atomico(path, guardado)
+
+
+def _enviar_aviso(
+    registro: Registro, comando: list, guardado: dict, cuerpo: str, path: Path
+) -> None:
+    _registrar_intento(path, guardado)
+    recibo, error = _ejecutar_transporte(registro, comando, guardado, cuerpo)
+    if recibo:
+        guardado["estado"] = "publicado"
+        guardado["alcance"] = "externo"
+        guardado["recibo"] = recibo
+        guardado.pop("motivo", None)
+    else:
+        guardado["estado"] = "incierto"
+        guardado["alcance"] = "externo"
+        guardado["recibo"] = ""
+        guardado["motivo"] = error
+    _atomico(path, guardado)
 
 
 def drenar(registro: Registro, cortar: str = "") -> dict:
@@ -655,6 +695,10 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
                 _atomico(path, guardado)
                 publicados.append(guardado)
                 continue
+            if _declara_idempotencia(cfg):
+                _enviar_aviso(registro, comando, guardado, cuerpo, path)
+                publicados.append(guardado)
+                continue
             if not conciliacion:
                 guardado["motivo"] = "aviso incierto sin conciliacion; no se reenvia"
                 _atomico(path, guardado)
@@ -676,16 +720,7 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
                 _atomico(path, guardado)
                 publicados.append(guardado)
                 continue
-            recibo, error = _ejecutar_transporte(registro, comando, guardado, cuerpo)
-            if recibo:
-                guardado["estado"] = "publicado"
-                guardado["alcance"] = "externo"
-                guardado["recibo"] = recibo
-                guardado.pop("motivo", None)
-            else:
-                guardado["estado"] = "incierto"
-                guardado["motivo"] = error
-            _atomico(path, guardado)
+            _enviar_aviso(registro, comando, guardado, cuerpo, path)
             publicados.append(guardado)
             continue
         if cortar == "antes" and not entrega.exists():
@@ -706,6 +741,7 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
             continue
         if cortar == "despues" and not guardado.get("recibo"):
             if comando:
+                _registrar_intento(path, guardado)
                 _ejecutar_transporte(registro, comando, guardado, cuerpo)
                 guardado["estado"] = "incierto"
                 guardado["alcance"] = "externo"
@@ -724,18 +760,7 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
             _atomico(path, guardado)
             publicados.append(guardado)
             continue
-        recibo, error = _ejecutar_transporte(registro, comando, guardado, cuerpo)
-        if recibo:
-            guardado["estado"] = "publicado"
-            guardado["alcance"] = "externo"
-            guardado["recibo"] = recibo
-            guardado.pop("motivo", None)
-        else:
-            guardado["estado"] = "pendiente"
-            guardado["alcance"] = "externo"
-            guardado["recibo"] = ""
-            guardado["motivo"] = error
-        _atomico(path, guardado)
+        _enviar_aviso(registro, comando, guardado, cuerpo, path)
         publicados.append(guardado)
     return {"avisos": publicados}
 
