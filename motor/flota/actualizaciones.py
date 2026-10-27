@@ -261,6 +261,7 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict) -> None:
                 ]
             )
             configuracion = json.loads(salida)
+            configuracion["agents"]["ownership"] = "explicit"
             _atomico(destino / "modelos.json", configuracion)
             for nombre, entry in configuracion["agents"]["entries"].items():
                 entry["workspace"] = str(destino / "workspaces" / nombre)

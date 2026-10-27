@@ -43,7 +43,8 @@ def ejecutar(argv, *, cwd=None, entrada=None, timeout=3600):
         argv, cwd=cwd, input=entrada, capture_output=True, timeout=timeout, check=False
     )
     if r.returncode:
-        raise RuntimeError(f"{Path(argv[0]).name} terminó con salida {r.returncode}")
+        detalle = r.stderr.decode("utf-8", errors="replace")[-2000:]
+        raise RuntimeError(f"{Path(argv[0]).name} terminó con salida {r.returncode}: {detalle}")
     return r.stdout.decode("utf-8", errors="replace").strip()
 
 
@@ -190,7 +191,8 @@ def remoto(base, sha, instalar):
                 raise AssertionError("se aceptó una candidata de integridad inválida")
             return {"rc": r.returncode}
         if r.returncode:
-            raise RuntimeError("CLI flota falló: " + str(args[0]))
+            detalle = r.stderr.decode("utf-8", errors="replace")[-1000:]
+            raise RuntimeError("CLI flota falló: " + str(args[0]) + ": " + detalle)
         return json.loads(r.stdout)
 
     componentes = ["codex", "hermes"] if os.name == "nt" else ["codex", "openclaw"]
