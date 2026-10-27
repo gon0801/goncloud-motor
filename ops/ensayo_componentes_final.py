@@ -352,7 +352,12 @@ def remoto(base, sha, instalar, preparadas=None):
         proceso_cli._run_with_process_tree = ejecutar_arbol
         paso(
             "plugin_version_fijada",
-            {"global": global_cli.stdout.strip(), "generacion": fijado.stdout.strip()},
+            {
+                "global": global_cli.stdout.strip(),
+                "generacion_A": fijado.stdout.strip(),
+                "generacion_B": otro.stdout.strip(),
+                "ejecutables_reales": ejecutados,
+            },
         )
     mala = copy.deepcopy({"componentes": b, "no_disponibles": []})
     mala["componentes"][0]["integridad"] = (

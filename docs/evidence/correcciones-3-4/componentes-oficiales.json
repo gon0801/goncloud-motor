@@ -1,0 +1,77 @@
+{
+  "componentes": [
+    {
+      "nombre": "openclaw",
+      "tipo": "npm",
+      "paquete": "openclaw",
+      "version": "2026.10.8",
+      "fuente": "https://registry.npmjs.org/openclaw/latest",
+      "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-2026.10.8.tgz",
+      "integridad": "sha512-fWOIOOyddIBqeuPz82DBCdY5kNl1yD51qebAHnxlTN7SmVoH5/WSIudR/N1zDhcIIksgJXe6ZgGy5ngSRxZOrQ=="
+    },
+    {
+      "nombre": "codex",
+      "tipo": "npm",
+      "paquete": "@openai/codex",
+      "version": "0.164.0",
+      "fuente": "https://registry.npmjs.org/%40openai%2Fcodex/latest",
+      "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.164.0.tgz",
+      "integridad": "sha512-TWj7UGyPRe3Pj/A3ddNAxs1te3a/W/xAd+J0LHrrFTmsSfahGMOLF/vn88D3QCIgAT3B1rm1y/Z3NYE0rx6cZQ=="
+    },
+    {
+      "nombre": "claude",
+      "tipo": "npm",
+      "paquete": "@anthropic-ai/claude-code",
+      "version": "2.1.311",
+      "fuente": "https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/latest",
+      "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.311.tgz",
+      "integridad": "sha512-7SgBitii1ZscdbRJXLcub7Vv2pfvH3wo7RrCKg4vZpklIfz9HgigJFFJGIjCY6jzoPDvbQcwwugvm3A8PTejzw=="
+    },
+    {
+      "nombre": "grok",
+      "tipo": "npm",
+      "paquete": "@xai-official/grok",
+      "version": "1.0.70",
+      "fuente": "https://registry.npmjs.org/%40xai-official%2Fgrok/latest",
+      "tarball": "https://registry.npmjs.org/@xai-official/grok/-/grok-1.0.70.tgz",
+      "integridad": "sha512-Q2Ncoez//mk1Z9CNhgvp9eAYfZJZmshDAPxs0XAhhGnilH3abGAyTwqOSvqVnsFCUjjzT9TCYZIgAH2A2XL6CQ=="
+    },
+    {
+      "nombre": "qwen",
+      "tipo": "npm",
+      "paquete": "@qwen-code/qwen-code",
+      "version": "0.26.2",
+      "fuente": "https://registry.npmjs.org/%40qwen-code%2Fqwen-code/latest",
+      "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.26.2.tgz",
+      "integridad": "sha512-0kLvwIx/CmU+bU2t5X4YD43RxNCcv1OQCaZEEMi4ZIMST/bOSFmhM+V/6oiZSWEbCB/ukA4y/DSVwun7A8/4NA=="
+    },
+    {
+      "nombre": "kimi",
+      "tipo": "npm",
+      "paquete": "@moonshot-ai/kimi-code",
+      "version": "2.3.3",
+      "fuente": "https://registry.npmjs.org/%40moonshot-ai%2Fkimi-code/latest",
+      "tarball": "https://registry.npmjs.org/@moonshot-ai/kimi-code/-/kimi-code-2.3.3.tgz",
+      "integridad": "sha512-3V8bycucf9KgPRH27S8De2u0ip84/Ry3FpNn6gi5z9JmoEHt9vxiYHHZqiMdyDf5nPm4bv+YKGwKEQL4oYpRTw=="
+    },
+    {
+      "nombre": "opencode",
+      "tipo": "npm",
+      "paquete": "opencode-ai",
+      "version": "1.19.4",
+      "fuente": "https://registry.npmjs.org/opencode-ai/latest",
+      "tarball": "https://registry.npmjs.org/opencode-ai/-/opencode-ai-1.19.4.tgz",
+      "integridad": "sha512-O3rTc9OCd6CeeJohCAjFYD3MX5U0weKzKnySfsJ9sw9uAbNZZK4meIcjd+7k3inmZB5G2qONSen3yA45yECiFA=="
+    },
+    {
+      "nombre": "hermes",
+      "tipo": "git",
+      "repositorio": "https://github.com/NousResearch/hermes-agent.git",
+      "version": "v0.22.5",
+      "revision": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+      "integridad": "git:bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+      "fuente": "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest"
+    }
+  ],
+  "no_disponibles": []
+}

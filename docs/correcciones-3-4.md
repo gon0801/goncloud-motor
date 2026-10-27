@@ -1,3 +1,7 @@
+> Cierre actualizado: fases 3–4 completas y revisión independiente de Astra aprobada.
+> El informe vigente es [Cierre de fases 3–4](cierre-fases-3-4.md).
+> Lo que sigue conserva la entrega y las rondas anteriores como historial.
+
 # Correcciones de las fases 3 y 4. Entrega para revisión de Codex
 
 Ejecutor: Muse Code con muse-wonder-1.0 en la Mac, con dos trabajadores
