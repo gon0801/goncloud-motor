@@ -51,10 +51,19 @@ def _identidad_normalizada(identidad: dict | None) -> dict:
 def _cierre_observado(sesion: dict | None) -> bool:
     if not sesion:
         return False
-    return bool(
-        sesion.get("estado") == "cerrado"
-        and (sesion.get("observacion") == "ausente" or sesion.get("cierre_observado"))
-    )
+    if sesion.get("estado") != "cerrado":
+        return False
+    if not (sesion.get("observacion") == "ausente" or sesion.get("cierre_observado")):
+        return False
+    if sesion.get("cierre_pid") is None or sesion.get("pid") is None:
+        return False
+    try:
+        if int(sesion["cierre_pid"]) != int(sesion["pid"]):
+            return False
+    except (TypeError, ValueError):
+        if str(sesion["cierre_pid"]) != str(sesion["pid"]):
+            return False
+    return str(sesion.get("cierre_inicio") or "") == str(sesion.get("inicio") or "")
 
 
 def registrar_identidad(
@@ -68,8 +77,17 @@ def registrar_identidad(
         "encargo": encargo,
     }
     if datos:
+        cambia = any(
+            campo in datos and actual.get(campo) != datos[campo]
+            for campo in ("pid", "inicio", "boot_id", "host", "sesion")
+        )
         actual.update(datos)
-        if actual.get("estado") in (None, "sin-identidad"):
+        if cambia:
+            actual["estado"] = "activo" if actual.get("pid") else "sin-identidad"
+            actual["cierre_observado"] = False
+            for marca in ("observacion", "cierre_pid", "cierre_inicio", "motivo"):
+                actual.pop(marca, None)
+        elif actual.get("estado") in (None, "sin-identidad"):
             actual["estado"] = "activo" if datos.get("pid") else "sin-identidad"
     actual["encargo"] = encargo
     _atomico(path, actual)
@@ -122,6 +140,9 @@ def cerrar_sesion(registro: Registro, encargo: str) -> dict:
         return {"encargo": encargo, "estado": "sin-sesion"}
     if not actual.get("pid"):
         actual["estado"] = "sin-identidad"
+        actual["cierre_observado"] = False
+        actual.pop("cierre_pid", None)
+        actual.pop("cierre_inicio", None)
         actual["motivo"] = "sin identidad del ejecutor; no se acredita el cierre"
         _atomico(path, actual)
         return actual
@@ -146,10 +167,14 @@ def cerrar_sesion(registro: Registro, encargo: str) -> dict:
     if observacion == "ausente":
         actual["estado"] = "cerrado"
         actual["cierre_observado"] = True
+        actual["cierre_pid"] = proc["pid"]
+        actual["cierre_inicio"] = proc["inicio"]
         actual.pop("motivo", None)
     else:
         actual["estado"] = "activo"
         actual["cierre_observado"] = False
+        actual.pop("cierre_pid", None)
+        actual.pop("cierre_inicio", None)
         actual["motivo"] = actual.get("motivo") or (
             "el ejecutor sigue vivo" if observacion == "vivo" else "cierre incierto"
         )
