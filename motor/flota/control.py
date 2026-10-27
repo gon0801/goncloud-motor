@@ -190,6 +190,9 @@ def publicar_proyeccion(home: Path, politica: Politica, paquete: Path) -> dict:
     herramientas = hashlib.sha256()
     for path in sorted((poteto / "runtimes").glob("*.json")):
         herramientas.update(path.read_bytes())
+    dirigir = [p for p in politica.puestos if p.funcion == "dirigir"]
+    if not dirigir:
+        raise ValueError("la proyección necesita el puesto dirigir")
     flota = {
         "schema": "sistema-agentes.flota.v1",
         "rootId": "flota-directores",
@@ -199,7 +202,7 @@ def publicar_proyeccion(home: Path, politica: Politica, paquete: Path) -> dict:
         "host": "ensayo",
         "executor": "cli",
         "accountRef": "suscripcion",
-        "model": {"id": politica.puestos[0].cadena[0][0]},
+        "model": {"id": dirigir[0].cadena[0][0]},
         "generation": 1,
         "permissions": ["read"],
         "attestations": [
@@ -220,6 +223,8 @@ def discrepancia(config_modelo: str, cli_modelo: str) -> str:
 
 
 def observar_ejecutable(nombre: str, argv: list[str]) -> dict:
+    if not argv or not str(argv[0]).strip():
+        raise ValueError("observar necesita un comando")
     try:
         hecho = subprocess.run(argv, capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired) as exc:

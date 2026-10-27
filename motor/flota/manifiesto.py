@@ -138,7 +138,11 @@ def desde_doc(doc: dict) -> Politica:
 
 
 def emitir(politica: Politica) -> str:
-    lineas = [f"generacion = {json.dumps(politica.generacion, ensure_ascii=False)}", ""]
+    lineas = [f"generacion = {json.dumps(politica.generacion, ensure_ascii=False)}"]
+    if politica.skills:
+        skills = ", ".join(json.dumps(s, ensure_ascii=False) for s in politica.skills)
+        lineas.append(f"skill = [{skills}]")
+    lineas.append("")
     for puesto in politica.puestos:
         lineas.append("[[puesto]]")
         lineas.append(f"funcion = {json.dumps(puesto.funcion, ensure_ascii=False)}")
@@ -183,10 +187,6 @@ def emitir(politica: Politica) -> str:
                 "",
             ]
         )
-    if politica.skills:
-        skills = ", ".join(json.dumps(s, ensure_ascii=False) for s in politica.skills)
-        lineas.append(f"skill = [{skills}]")
-        lineas.append("")
     return "\n".join(lineas)
 
 
