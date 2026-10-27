@@ -85,6 +85,29 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--izquierda", required=True)
     s.add_argument("--derecha", required=True)
 
+    s = sub.add_parser("descubrir")
+    s.add_argument("--componentes", nargs="+", default=None)
+    s.add_argument("--home", type=Path)
+
+    for nombre in ("preparar", "actualizar"):
+        s = sub.add_parser(nombre)
+        s.add_argument("--home", type=Path, required=True)
+        s.add_argument("--componentes", nargs="+", default=None)
+        s.add_argument("--catalogo", type=Path)
+        s.add_argument("--motor-origen", type=Path)
+        for repo in ("hermes", "claw", "conf"):
+            s.add_argument("--repo-" + repo, type=Path)
+
+    s = sub.add_parser("estado")
+    s.add_argument("--home", type=Path, required=True)
+
+    for nombre in ("catalogos", "actualizar-modelos"):
+        s = sub.add_parser(nombre)
+        s.add_argument("--home", type=Path, required=True)
+        s.add_argument("--tabla", type=Path)
+        s.add_argument("--manifiesto", type=Path)
+        s.add_argument("--repo-hermes", type=Path)
+
     args = ap.parse_args(argv)
     try:
         return _correr(args)
@@ -94,13 +117,75 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _correr(args) -> int:
+    if args.cmd in ("descubrir", "preparar", "actualizar", "estado"):
+        from . import actualizaciones
+        from .control import _atomico
+
+        if args.cmd == "descubrir":
+            resultado = actualizaciones.descubrir(args.componentes)
+            if args.home is not None:
+                _atomico(args.home / "descubrimiento.json", resultado)
+            return _json(resultado)
+        if args.cmd == "estado":
+            return _json(actualizaciones.estado(args.home))
+        catalogo = (
+            json.loads(args.catalogo.read_text(encoding="utf-8"))
+            if args.catalogo is not None
+            else actualizaciones.descubrir(args.componentes)
+        )
+        repos = {
+            nombre: getattr(args, "repo_" + nombre)
+            for nombre in ("hermes", "claw", "conf")
+            if getattr(args, "repo_" + nombre) is not None
+        }
+        funcion = (
+            actualizaciones.preparar
+            if args.cmd == "preparar"
+            else actualizaciones.actualizar
+        )
+        return _json(
+            funcion(
+                args.home, catalogo, motor_origen=args.motor_origen, repos=repos or None
+            )
+        )
+    if args.cmd in ("catalogos", "actualizar-modelos"):
+        from .catalogos import descubrir_modelos, publicar_politica_modelos
+        from .control import _atomico
+        from .manifiesto import proyectar_tabla
+
+        manifiesto = args.manifiesto or args.home / "manifiesto.toml"
+        if args.tabla is not None:
+            tabla = json.loads(args.tabla.read_text(encoding="utf-8"))
+        elif manifiesto.is_file():
+            tabla = proyectar_tabla(cargar(manifiesto))
+        else:
+            raise ValueError("la politica comun aun no esta preparada")
+        descubrimiento = descubrir_modelos(tabla)
+        _atomico(args.home / "catalogos-modelos.json", descubrimiento)
+        if args.cmd == "catalogos":
+            return _json(descubrimiento)
+        from .cerrojo import _cerrojo_flota
+
+        with _cerrojo_flota(args.home):
+            vigente = proyectar_tabla(cargar(manifiesto))
+            if vigente["chains"] != tabla["chains"]:
+                descubrimiento = descubrir_modelos(vigente)
+            return _json(
+                publicar_politica_modelos(
+                    manifiesto, vigente, descubrimiento, hermes_repo=args.repo_hermes
+                )
+            )
     if args.cmd == "sembrar":
         tabla = json.loads(args.tabla.read_text(encoding="utf-8"))
         politica = sembrar_tabla(tabla, args.generacion)
         guardar(args.salida, politica)
-        return _json({"generacion": politica.generacion, "puestos": len(politica.puestos)})
+        return _json(
+            {"generacion": politica.generacion, "puestos": len(politica.puestos)}
+        )
     if args.cmd == "proyectar":
-        return _json(publicar_proyeccion(args.home, cargar(args.manifiesto), args.paquete))
+        return _json(
+            publicar_proyeccion(args.home, cargar(args.manifiesto), args.paquete)
+        )
     if args.cmd == "aplicar":
         return _json(aplicar(args.home, args.destino, args.corte))
     if args.cmd == "recuperar":

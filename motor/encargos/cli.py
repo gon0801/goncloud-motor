@@ -326,7 +326,7 @@ def _lanzador(agente: str):
             "--session-id",
             sesion,
             "--permission-mode",
-            "acceptEdits",
+            "bypassPermissions",
             "--always-approve",
             "--no-plan",
             "--max-turns",

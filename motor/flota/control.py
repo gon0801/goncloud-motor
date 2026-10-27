@@ -166,6 +166,13 @@ def asignar(home: Path) -> str:
 
 
 def _comprobar_detalle(gen: Path) -> tuple[int, str]:
+    if (gen / "runtime.json").is_file():
+        try:
+            from .actualizaciones import comprobar_runtime
+
+            comprobar_runtime(gen)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            return 1, "runtime de componentes"
     script = gen / "comprobar.py"
     if script.is_file():
         try:

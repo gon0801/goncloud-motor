@@ -35,7 +35,7 @@ def _codex_windows() -> Path:
     raise RuntimeError("no se encontro el ejecutable nativo instalado de Codex/MXC")
 
 
-def _entorno(runtime: Path, suscripcion: bool, cmd: list[str]) -> dict[str, str]:
+def _entorno(runtime: Path, suscripcion: bool, cmd: list[str], *, agente: str | None = None) -> dict[str, str]:
     permitidas = {
         "PATH",
         "SYSTEMROOT",
@@ -73,7 +73,7 @@ def _entorno(runtime: Path, suscripcion: bool, cmd: list[str]) -> dict[str, str]
     for path in (env["APPDATA"], env["LOCALAPPDATA"], env["CODEX_HOME"]):
         Path(path).mkdir(parents=True, exist_ok=True)
     if suscripcion:
-        nombre = Path(cmd[0]).stem.lower()
+        nombre = agente or Path(cmd[0]).stem.lower()
         if nombre == "codex":
             origen = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
             destino = runtime / ".codex"
@@ -103,14 +103,21 @@ def aislar(
     *,
     lectura: bool = False,
     suscripcion: bool = False,
+    lecturas_extra: tuple[Path, ...] = (),
+    agente: str | None = None,
 ) -> ComandoAislado:
     espacio, runtime = espacio.resolve(), runtime.resolve()
     if espacio.parent.name != "espacio" or runtime.is_relative_to(espacio):
         raise RuntimeError("la jaula necesita espacio concedido y runtime separado")
     runtime.mkdir(parents=True, exist_ok=True)
-    env = _entorno(runtime, suscripcion, cmd)
+    env = _entorno(runtime, suscripcion, cmd, agente=agente)
     if os.name == "nt":
-        broker = _codex_windows()
+        ejecutable = Path(cmd[0])
+        broker = (
+            ejecutable.resolve()
+            if ejecutable.is_absolute() and ejecutable.name.lower() == "codex.exe"
+            else _codex_windows()
+        )
         if broker.is_relative_to(espacio) or broker.is_relative_to(runtime):
             raise RuntimeError("el broker de aislamiento pertenece al trabajador")
         if Path(cmd[0]).stem.lower() == "codex":
@@ -129,6 +136,7 @@ def aislar(
             broker.parent,
             Path(os.environ["SystemRoot"]),
         ]
+        raices.extend(path.resolve() for path in lecturas_extra)
         raices.extend(
             Path(os.environ[k])
             for k in ("ProgramFiles", "ProgramFiles(x86)")
@@ -188,7 +196,7 @@ def aislar(
         f"(deny file-read* (subpath {json.dumps(str(Path.home()))}))",
         "(allow file-read-metadata)",
     ]
-    for path in (espacio, runtime):
+    for path in (espacio, runtime, *(p.resolve() for p in lecturas_extra)):
         perfil.append(f"(allow file-read* (subpath {json.dumps(str(path))}))")
     for path in (runtime,) if lectura else (espacio, runtime):
         perfil.append(f"(allow file-write* (subpath {json.dumps(str(path))}))")

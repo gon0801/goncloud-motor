@@ -125,12 +125,19 @@ def preparar_administrado(
     hora: str,
     runtime: Path,
     entorno_extra: dict[str, str] | None = None,
+    *,
+    agente: str | None = None,
 ) -> None:
     from motor.runwrap import _publica
 
     from .aislamiento import aislar
 
-    comando = aislar(cmd, cwd, runtime, lectura=enc.rol == "revisor", suscripcion=True)
+    generacion = (entorno_extra or {}).get("MOTOR_GENERACION_RUTA")
+    comando = aislar(
+        cmd, cwd, runtime, lectura=enc.rol == "revisor", suscripcion=True,
+        lecturas_extra=(Path(generacion),) if generacion else (),
+        agente=agente,
+    )
     if entorno_extra:
         comando.entorno.update(entorno_extra)
     spec = {
@@ -145,7 +152,7 @@ def preparar_administrado(
         "host": socket.gethostname(),
         "sesion": sesion,
         "rol": enc.rol,
-        "agente": Path(cmd[0]).stem.lower(),
+        "agente": agente or Path(cmd[0]).stem.lower(),
         "hora": hora,
     }
     spec_path = directorio / "arranque.json"

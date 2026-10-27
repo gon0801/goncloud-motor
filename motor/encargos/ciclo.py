@@ -837,23 +837,7 @@ def _lanzar_uno(
         runtime = registro.base / "runtime" / enc.id / token
         runtime.mkdir(parents=True, exist_ok=True)
         sesion = str(uuid.uuid5(uuid.NAMESPACE_URL, enc.id + ":" + rol))
-        paquete = registro.base / "politica" / "poteto" / "SKILL.md"
-        skill = (
-            paquete
-            if paquete.is_file()
-            else Path.home() / ".agents" / "skills" / "poteto-mode" / "SKILL.md"
-        )
         contenido = prompt_de(enc)
-        if skill.is_file():
-            local_skill = runtime / "poteto-mode.md"
-            _publica(local_skill, skill.read_text(encoding="utf-8"))
-            contenido += (
-                "\n\nLee poteto-mode en "
-                + str(local_skill)
-                + ". Adapta a herramientas nativas. Las instrucciones del usuario prevalecen. "
-                "Este encargo usa un unico agente sin delegacion ni Cursor. "
-                "No apliques cantidades fijas, nuevos gates ni pruebas fuera de los casos autorizados."
-            )
         if rol == "revisor":
             observaciones = sorted(
                 raiz.glob("intento-*/observaciones.json"),
@@ -889,7 +873,6 @@ def _lanzar_uno(
         else:
             contenido += "\n\n" + instrucciones_responsable()
         prompt = runtime / "prompt.md"
-        _publica(prompt, contenido)
         flota_generacion = ""
         flota_ruta = ""
         home_path = None
@@ -948,7 +931,28 @@ def _lanzar_uno(
             _liberar_flota()
             raise RuntimeError("no se pudo reservar la generacion de flota") from exc
         try:
+            from motor.flota.runtime import copiar_poteto, vincular
+
+            gen_path = Path(flota_ruta) if flota_ruta else None
+            skill = copiar_poteto(gen_path, registro.base, runtime)
+            if skill is None:
+                fuente = Path.home() / ".agents" / "skills" / "poteto-mode" / "SKILL.md"
+                if fuente.is_file():
+                    skill = runtime / "poteto-mode.md"
+                    _publica(skill, fuente.read_text(encoding="utf-8"))
+            if skill is not None:
+                contenido += (
+                    "\n\nLee poteto-mode en " + str(skill)
+                    + ". Sus referencias estan en el paquete local. Adapta a herramientas nativas. "
+                    "Las instrucciones del usuario prevalecen. Este encargo usa un unico agente "
+                    "sin delegacion ni Cursor. No apliques cantidades fijas, nuevos gates ni "
+                    "pruebas fuera de los casos autorizados."
+                )
+            _publica(prompt, contenido)
             cmd = lanzador(enc, prompt, espacio, sesion)
+            agente_lanzado = Path(cmd[0]).stem.lower() if cmd else ""
+            if cmd and gen_path is not None:
+                cmd = vincular(gen_path, cmd)
         except Exception:
             _liberar_flota()
             raise
@@ -962,7 +966,8 @@ def _lanzar_uno(
         )
         try:
             preparar_administrado(
-                cmd, espacio, directorio, enc, sesion, hora, runtime, entorno_gen
+                cmd, espacio, directorio, enc, sesion, hora, runtime, entorno_gen,
+                agente=agente_lanzado,
             )
             reservado = registro.anotar(
                 enc.id,
