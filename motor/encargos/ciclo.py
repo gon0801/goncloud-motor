@@ -567,21 +567,49 @@ def _incorporar(
     outcome_path = directorio / "outcome.json"
     if outcome_path.is_file():
         outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+        spec = (
+            json.loads((directorio / "arranque.json").read_text(encoding="utf-8"))
+            if (directorio / "arranque.json").is_file()
+            else {}
+        )
+        agente = spec.get("agente") or enc.agente or "externo"
         if outcome.get("fallo_runtime"):
-            from datetime import datetime, timedelta, timezone
+            from .rutas import fallo
 
-            reanuda = (datetime.now(timezone.utc) + timedelta(seconds=60)).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
-            marcar_espera(
-                registro,
+            seguidas = 1
+            for evento in reversed(registro.eventos(enc.id)):
+                if evento["data"].get("agente") != agente:
+                    continue
+                if evento["kind"] == "proveedor_disponible":
+                    break
+                if evento["kind"] == "proveedor_fallo":
+                    seguidas += 1
+            causa = fallo(agente, outcome["fallo_runtime"], hora, seguidas)
+            registro.anotar(
                 enc.id,
-                "runtime del agente: " + outcome["fallo_runtime"],
-                reanuda,
-                hora,
+                {"kind": "proveedor_fallo", "data": {**causa, "hora": hora}},
+                f"proveedor-fallo:{enc.id}:{enc.generacion}",
             )
+            if not enc.agentes:
+                marcar_espera(
+                    registro,
+                    enc.id,
+                    "runtime del agente: " + causa["causa"],
+                    causa["hasta"],
+                    hora,
+                )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
+        if any(p.agente == agente for p in enc.pausas):
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "proveedor_disponible",
+                    "data": {"agente": agente, "hora": hora},
+                },
+                f"proveedor-disponible:{enc.id}:{enc.generacion}",
+            )
+            enc = registro.fold(enc.id)
     if enc.rol != "revisor":
         path = directorio / "observaciones.json"
         if not path.is_file():

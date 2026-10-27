@@ -60,6 +60,14 @@ class Efecto:
 
 
 @dataclass(frozen=True)
+class PausaAgente:
+    agente: str
+    hasta: str
+    causa: str
+    relevo: bool = True
+
+
+@dataclass(frozen=True)
 class Encargo:
     id: str
     clave: str
@@ -99,6 +107,9 @@ class Encargo:
     conductor: str = ""
     candidato: str = ""
     host: str = ""
+    agentes: tuple[str, ...] = ()
+    agente: str = ""
+    pausas: tuple[PausaAgente, ...] = ()
 
 
 def huella_entrega(
@@ -158,6 +169,17 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     e = estado
     if kind == "recibo":
         return e
+    if kind == "ruta_agentes":
+        return replace(e, agentes=tuple(d["agentes"]))
+    if kind == "proveedor_fallo":
+        pausa = PausaAgente(d["agente"], d["hasta"], d["causa"], d["relevo"])
+        return replace(
+            e,
+            pausas=tuple(p for p in e.pausas if p.agente != pausa.agente) + (pausa,),
+            causa=d["causa"],
+        )
+    if kind == "proveedor_disponible":
+        return replace(e, pausas=tuple(p for p in e.pausas if p.agente != d["agente"]))
     if kind == "orden":
         return _orden(e, d, hora)
     if kind == "ajuste":
@@ -214,6 +236,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             e,
             reserva=False,
             rol=str(d.get("rol") or e.rol),
+            agente=str(d.get("agente") or e.agente),
             intento=d["id"],
             sesion=d.get("sesion") or e.sesion,
             proc=Proc(
@@ -487,6 +510,8 @@ def vista(e: Encargo, recibo: str = "") -> dict:
     return {
         "encargo": e.id,
         "estado": e.estado,
+        "agente": e.agente,
+        "agentes_autorizados": list(e.agentes),
         "ultimo_hecho": e.ultimo_hecho,
         "hora": e.hora,
         "motivo": e.motivo,

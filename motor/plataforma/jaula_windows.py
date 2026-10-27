@@ -20,6 +20,18 @@ from pathlib import Path
 from .windows import JobMatarAlCerrar, _jobs
 
 
+def disponible() -> bool:
+    try:
+        query = c.WinDLL(
+            "processmodel.dll", use_last_error=True
+        ).Experimental_QuerySandboxSupport
+        query.argtypes, query.restype = [c.POINTER(c.c_uint64)], w.BOOL
+        capacidades = c.c_uint64()
+        return bool(query(c.byref(capacidades)) and capacidades.value & 1)
+    except (OSError, AttributeError):
+        return False
+
+
 class Inicio(c.Structure):
     _fields_ = [
         ("cb", w.DWORD),
@@ -131,7 +143,7 @@ def _especificacion(limites: dict) -> bytes:
         return posicion + 4
 
     red = tabla([0, 4, 0], 8)
-    salida = tabla([0, 4, 0], 8)
+    salida = tabla([0, 4, 0], 8) if limites["internet"] else tabla([0, 0, 0], 4)
     puntero(red + 4, salida)
     puntero(64, red)
     if limites["internet"]:
@@ -334,9 +346,10 @@ def limpiar(control: Path) -> None:
     )
 
 
-class Recursos:
-    def __init__(self, job, escritorio, proceso, control):
-        self.job, self.escritorio = job, escritorio
+class Recursos(JobMatarAlCerrar):
+    def __init__(self, nombre, escritorio, proceso, control):
+        super().__init__(nombre)
+        self.escritorio = escritorio
         self.proceso, self.control = proceso, Path(control)
         self.cerrado = False
 
@@ -344,7 +357,7 @@ class Recursos:
         if self.cerrado:
             return
         self.cerrado = True
-        self.job.cerrar()
+        super().cerrar()
         self.proceso.wait(5)
         self.escritorio.cerrar()
         limpiar(self.control)
@@ -454,7 +467,7 @@ def crear(
         p = Proceso(info, cmd, lecturas[0], lecturas[1] if len(lecturas) > 1 else None)
         nombre_job = "Local\\goncloud-motor-" + uuid.uuid4().hex
         try:
-            job = JobMatarAlCerrar(nombre_job)
+            job = Recursos(nombre_job, escritorio, p, control)
             job.asignar(p)
         except BaseException:
             p.kill()
@@ -462,13 +475,12 @@ def crear(
             if job:
                 job.cerrar()
             raise
-        recursos = Recursos(job, escritorio, p, control)
-        _jobs[p.pid] = recursos
-        atexit.register(recursos.cerrar)
+        _jobs[p.pid] = job
+        atexit.register(job.cerrar)
 
         def liberar():
             if p.k.ResumeThread(p._thread) == 0xFFFFFFFF:
-                recursos.cerrar()
+                job.cerrar()
                 raise c.WinError(c.get_last_error())
 
         p._motor_liberar = liberar

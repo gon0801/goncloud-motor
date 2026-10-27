@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -98,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--una-vez", action="store_true")
     s.add_argument("--intervalo", type=float, default=1.0)
     s.add_argument("--umbral", type=float, default=30.0)
-    s.add_argument("--agente", default="")
+    s.add_argument("--agente", choices=("codex", "grok", "sleep", "ensayo"), default="")
+    s.add_argument("--respaldo", choices=("codex", "grok"), action="append", default=[])
 
     s = sub.add_parser("encargos-aplicar")
     s.add_argument("--base", type=Path)
@@ -203,11 +206,53 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
 
 
 def _supervisor(reg: Registro, args) -> int:
-    lanzador = _lanzador(args.agente) if args.agente else None
+    from .frontera import turno
+    from .rutas import elegir, proximo
+
+    if args.respaldo and not args.agente:
+        raise ValueError("--respaldo necesita --agente como ruta principal")
+    ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
+
+    def lanzar(enc, prompt, espacio, sesion):
+        if not enc.agentes:
+            return None
+        hora = ahora_iso()
+        disponibles = {agente for agente in enc.agentes if _disponible(agente)}
+        agente = elegir(enc, hora, disponibles)
+        if agente:
+            return _lanzador(agente)(enc, prompt, espacio, sesion)
+        motivos = [
+            p.causa for p in enc.pausas if p.agente in disponibles and p.hasta > hora
+        ]
+        motivo = (
+            "; ".join(motivos)
+            or "las rutas autorizadas no tienen runtime, suscripcion o aislamiento disponibles en este host"
+        )
+        marcar_espera(reg, enc.id, motivo, proximo(enc, hora, disponibles), hora)
+        return None
 
     def paso() -> list[dict]:
         hora = ahora_iso()
-        return barrer(reg, hora, time.time(), lanzador, umbral_s=args.umbral)
+        if ruta:
+            with turno(reg.base):
+                for ident in reg.ids():
+                    enc = reg.fold(ident)
+                    if enc.agentes != ruta and enc.estado not in (
+                        "terminado",
+                        "cancelado",
+                    ):
+                        reg.anotar(
+                            ident,
+                            {
+                                "kind": "ruta_agentes",
+                                "data": {"agentes": list(ruta), "hora": hora},
+                            },
+                            f"ruta:{ident}:{len(reg.eventos(ident))}",
+                        )
+        habilitado = ruta or any(reg.fold(ident).agentes for ident in reg.ids())
+        return barrer(
+            reg, hora, time.time(), lanzar if habilitado else None, umbral_s=args.umbral
+        )
 
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))
@@ -215,6 +260,37 @@ def _supervisor(reg: Registro, args) -> int:
     while True:
         paso()
         time.sleep(args.intervalo)
+
+
+def _disponible(agente: str) -> bool:
+    if agente in ("sleep", "ensayo"):
+        return os.name != "nt" and Path("/usr/bin/sandbox-exec").is_file()
+    if agente == "grok" and os.name == "nt":
+        return False
+    if os.name == "nt":
+        from motor.plataforma.jaula_windows import disponible
+
+        if not disponible():
+            return False
+    if not shutil.which(agente):
+        return False
+    if os.name != "nt" and not Path("/usr/bin/sandbox-exec").is_file():
+        return False
+    if agente == "grok":
+        return (Path.home() / ".grok" / "auth.json").is_file()
+    if agente == "codex":
+        path = (
+            Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+            / "auth.json"
+        )
+        try:
+            datos = json.loads(path.read_text(encoding="utf-8"))
+            return datos.get("auth_mode") == "chatgpt" and not datos.get(
+                "OPENAI_API_KEY"
+            )
+        except (OSError, ValueError):
+            return False
+    return False
 
 
 def _lanzador(agente: str):

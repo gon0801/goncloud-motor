@@ -67,8 +67,6 @@ def herramienta_en_curso(directorio: Path) -> bool | None:
     if datos.get("observada"):
         if not datos.get("activas"):
             return False
-        if os.name == "nt":
-            return True
         try:
             agente = int((directorio / "agent.pid").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -129,6 +127,7 @@ def preparar_administrado(
         "host": socket.gethostname(),
         "sesion": sesion,
         "rol": enc.rol,
+        "agente": Path(cmd[0]).stem.lower(),
         "hora": hora,
     }
     spec_path = directorio / "arranque.json"
@@ -326,7 +325,16 @@ def descendientes(raiz: int) -> list[dict] | None:
     import subprocess
 
     if os.name == "nt":
-        return None
+        from motor.plataforma.windows import _descendientes
+
+        pids = _descendientes(raiz)
+        if pids is None:
+            return None
+        return [
+            {"pid": pid, "inicio": inicio, "boot_id": plataforma.boot_id()}
+            for pid in pids
+            if (inicio := plataforma.hora_inicio(pid))
+        ]
     try:
         p = subprocess.run(
             ["/bin/ps", "-ax", "-o", "pid=,ppid="],

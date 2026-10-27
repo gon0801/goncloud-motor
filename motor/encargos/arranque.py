@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 # El wrapper se ejecuta por ruta absoluta y nunca importa código del espacio del agente.
@@ -78,6 +79,44 @@ class Observacion:
         )
 
 
+class SalidaRuntime:
+    def __init__(self, agente: str):
+        self.agente = agente
+        self.terminal = ""
+        self.ultimo_error = ""
+
+    def evento(self, data: dict) -> None:
+        tipo = data.get("type")
+        update = data.get("sessionUpdate")
+        error_grok = self.agente == "grok" and (
+            tipo == "error"
+            or (isinstance(update, dict) and update.get("update") == "error")
+        )
+        if tipo in ("error", "turn.failed") or error_grok:
+            origen = update if error_grok and isinstance(update, dict) else data
+            error = origen.get("error") or origen.get("message") or origen.get("data")
+            if isinstance(error, dict):
+                error = error.get("message") or json.dumps(error)
+            self.ultimo_error = str(error or "el proveedor cerro el turno con error")[
+                -1000:
+            ]
+            if tipo == "turn.failed" or error_grok:
+                self.terminal = self.ultimo_error
+        elif tipo == "turn.completed" and self.agente == "codex":
+            self.terminal = self.ultimo_error = ""
+
+    def fallo(self, rc: int, stderr: str) -> str:
+        if self.terminal:
+            return self.terminal
+        if rc:
+            return (
+                self.ultimo_error
+                or stderr.strip()
+                or f"el CLI termino con codigo {rc}, sin error estructurado"
+            )[-1000:]
+        return ""
+
+
 def ejecutar(spec_path: Path) -> int:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     d = spec_path.parent
@@ -113,6 +152,7 @@ def ejecutar(spec_path: Path) -> int:
                     **proc,
                     "sesion": spec["sesion"],
                     "rol": spec["rol"],
+                    "agente": spec["agente"],
                     "hora": spec["hora"],
                     "herramientas_observables": True,
                 },
@@ -135,7 +175,7 @@ def ejecutar(spec_path: Path) -> int:
                 "env": spec["env"],
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
-                "stderr": subprocess.STDOUT,
+                "stderr": subprocess.PIPE,
                 "text": True,
                 "encoding": "utf-8",
                 "errors": "replace",
@@ -171,7 +211,18 @@ def ejecutar(spec_path: Path) -> int:
                 {"observada": True, "activas": [], "secuencia": 0, "hora": time.time()}
             ),
         )
-        fallo_runtime = ""
+        runtime = SalidaRuntime(spec["agente"])
+        errores = deque(maxlen=40)
+
+        def leer_errores():
+            with open(d / "stderr.txt", "a", encoding="utf-8") as log:
+                for linea in p.stderr:
+                    errores.append(linea[-1000:])
+                    log.write(linea)
+                    log.flush()
+
+        lector_error = threading.Thread(target=leer_errores, daemon=True)
+        lector_error.start()
         with open(d / "log.txt", "a", encoding="utf-8") as log:
             for linea in p.stdout:
                 log.write(linea)
@@ -182,19 +233,33 @@ def ejecutar(spec_path: Path) -> int:
                     continue
                 if isinstance(data, dict):
                     observacion.evento(data)
-                    if data.get("type") == "turn.failed":
-                        fallo_runtime = str(
-                            (data.get("error") or {}).get("message") or "turno fallido"
-                        )[-1000:]
+                    runtime.evento(data)
         rc = p.wait()
+        lector_error.join(1)
         fin_observacion.set()
         _publica(
             d / "outcome.json",
             json.dumps(
-                {"exit": rc, "token": spec["token"], "fallo_runtime": fallo_runtime}
+                {
+                    "exit": rc,
+                    "token": spec["token"],
+                    "fallo_runtime": runtime.fallo(rc, "".join(errores)),
+                }
             ),
         )
         return rc
+    except (OSError, RuntimeError) as exc:
+        _publica(
+            d / "outcome.json",
+            json.dumps(
+                {
+                    "exit": 1,
+                    "token": spec["token"],
+                    "fallo_runtime": f"arranque {type(exc).__name__}: {exc}",
+                }
+            ),
+        )
+        return 1
     finally:
         reg.close()
 
