@@ -54,11 +54,66 @@ def asignar(home: Path) -> str:
     return cabeza(home)
 
 
-def _comprobar(gen: Path) -> int:
+def _comprobar_detalle(gen: Path) -> tuple[int, str]:
     script = gen / "comprobar.py"
-    if not script.is_file():
-        return 1
-    return subprocess.run([sys.executable, str(script)], cwd=gen).returncode
+    if script.is_file():
+        try:
+            rc = subprocess.run(
+                [sys.executable, str(script)], cwd=gen, timeout=120
+            ).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            return 1, "comprobar.py"
+        return rc, "comprobar.py"
+    if (gen / "motor" / "__main__.py").is_file():
+        try:
+            ayuda = subprocess.run(
+                [sys.executable, "-m", "motor", "--help"],
+                cwd=gen,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if ayuda.returncode != 0:
+                return ayuda.returncode or 1, "motor --help"
+            compilado = subprocess.run(
+                [sys.executable, "-m", "compileall", "-q", str(gen / "motor")],
+                cwd=gen,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            return compilado.returncode, "motor --help y compileall"
+        except (OSError, subprocess.TimeoutExpired):
+            return 1, "motor --help y compileall"
+    if (gen / "pyproject.toml").is_file():
+        try:
+            rc = subprocess.run(
+                [sys.executable, "-m", "compileall", "-q", str(gen)],
+                cwd=gen,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            ).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            return 1, "compileall"
+        return rc, "compileall"
+    if any(gen.glob("*.py")) or (gen / "motor").is_dir():
+        try:
+            rc = subprocess.run(
+                [sys.executable, "-m", "compileall", "-q", str(gen)],
+                cwd=gen,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            ).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            return 1, "compileall"
+        return rc, "compileall"
+    return 1, "ninguno"
+
+
+def _comprobar(gen: Path) -> int:
+    return _comprobar_detalle(gen)[0]
 
 
 def _enlace(home: Path, gen: Path) -> None:
@@ -68,9 +123,84 @@ def _enlace(home: Path, gen: Path) -> None:
     actual.symlink_to(gen, target_is_directory=True)
 
 
+def _anterior_real(home: Path) -> str:
+    actual = home / "actual"
+    if actual.is_symlink():
+        return asignar(home)
+    completo = _leer(home / "instalacion.json")
+    if completo:
+        codigo = (completo.get("destino") or {}).get("codigo")
+        if codigo:
+            return str(codigo)
+    return cabeza(home)
+
+
+def revertir(home: Path) -> dict:
+    pend_path = home / "instalacion-pendiente.json"
+    inst_path = home / "instalacion.json"
+    pend = _leer(pend_path)
+    comp = _leer(inst_path)
+    if pend is None and comp is None:
+        return {"accion": "nada"}
+    usado = ""
+    recibo = None
+    consumir_pendiente = False
+    if pend is not None and comp is not None:
+        pend_anterior = str((pend.get("anterior") or {}).get("codigo") or "")
+        comp_destino = str((comp.get("destino") or {}).get("codigo") or "")
+        vigente = asignar(home) if (home / "actual").is_symlink() else comp_destino
+        if pend_anterior and pend_anterior in {vigente, comp_destino}:
+            recibo = pend
+            usado = "pendiente"
+            consumir_pendiente = True
+        else:
+            recibo = comp
+            usado = "instalacion"
+            consumir_pendiente = True
+    elif pend is not None:
+        recibo = pend
+        usado = "pendiente"
+        consumir_pendiente = True
+    else:
+        recibo = comp
+        usado = "instalacion"
+    assert recibo is not None
+    anterior = str((recibo.get("anterior") or {}).get("codigo") or "")
+    destino = str((recibo.get("destino") or {}).get("codigo") or "")
+    if not anterior:
+        return {"accion": "nada"}
+    motor = home / "motor"
+    if (motor / ".git").exists() or (motor / ".git").is_file():
+        subprocess.run(
+            ["git", "-C", str(motor), "-c", "core.hooksPath=/dev/null", "checkout", "-q", "--detach", anterior],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    previa = home / "generaciones" / anterior
+    actual = home / "actual"
+    if previa.exists():
+        _enlace(home, previa)
+    elif actual.is_symlink():
+        actual.unlink()
+    if usado == "instalacion":
+        historial = home / "historial"
+        historial.mkdir(parents=True, exist_ok=True)
+        nombre = f"instalacion-{destino}.json" if destino else "instalacion.json"
+        destino_historial = historial / nombre
+        if destino_historial.exists():
+            destino_historial = historial / f"instalacion-{destino}-{recibo.get('intento') or 'revertida'}.json"
+        inst_path.replace(destino_historial)
+    if consumir_pendiente:
+        pend_path.unlink(missing_ok=True)
+    doc = {"accion": "revertido", "anterior": anterior, "destino": destino, "recibo": usado}
+    _atomico(home / "recuperacion.json", doc)
+    return {"accion": "revertido", "anterior": anterior, "generacion": anterior, "destino": destino}
+
+
 def aplicar(home: Path, destino: str, corte: str = "") -> dict:
     motor = home / "motor"
-    head = cabeza(home)
+    anterior = _anterior_real(home)
     completo = _leer(home / "instalacion.json")
     if (
         completo
@@ -84,39 +214,49 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
         "intento": destino[:12],
         "maquina": "ensayo",
         "etapa": "origen",
-        "anterior": {"codigo": head, "conf": ""},
+        "anterior": {"codigo": anterior, "conf": ""},
         "destino": {"codigo": destino, "conf": ""},
         "causa": "",
     }
     _atomico(home / "instalacion-pendiente.json", recibo)
     if corte == "pendiente":
-        return {"accion": "cortado", "etapa": "origen", "vigente": head}
+        return {"accion": "cortado", "etapa": "origen", "vigente": anterior}
     gen = home / "generaciones" / destino
     if not gen.exists():
         _git(motor, "worktree", "add", "--detach", str(gen), destino)
     recibo["etapa"] = "codigo"
     _atomico(home / "instalacion-pendiente.json", recibo)
     if corte == "worktree":
-        return {"accion": "cortado", "etapa": "codigo", "vigente": asignar(home) if (home / "actual").exists() else head}
-    if _comprobar(gen) != 0:
+        return {"accion": "cortado", "etapa": "codigo", "vigente": asignar(home) if (home / "actual").exists() else anterior}
+    rc, comprobador = _comprobar_detalle(gen)
+    recibo["comprobador"] = comprobador
+    if rc != 0:
         (home / "instalacion-pendiente.json").unlink(missing_ok=True)
         _atomico(
             home / "candidata.json",
-            {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo"},
+            {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo", "comprobador": comprobador},
         )
-        return {"accion": "rechazada", "vigente": head, "destino": destino}
+        return {"accion": "rechazada", "vigente": anterior, "destino": destino}
     _enlace(home, gen)
     recibo["etapa"] = "completo"
     recibo["causa"] = ""
     _atomico(home / "instalacion.json", recibo)
     (home / "instalacion-pendiente.json").unlink(missing_ok=True)
-    return {"accion": "aplicada", "generacion": destino, "anterior": head}
+    return {"accion": "aplicada", "generacion": destino, "anterior": anterior}
 
 
 def recuperar(home: Path) -> dict:
     pend_path = home / "instalacion-pendiente.json"
     pend = _leer(pend_path)
     if pend is None:
+        comp = _leer(home / "instalacion.json")
+        if comp and comp.get("etapa") == "completo":
+            destino_c = str((comp.get("destino") or {}).get("codigo") or "")
+            gen_c = home / "generaciones" / destino_c
+            if destino_c and gen_c.exists():
+                rc_c, _nombre_c = _comprobar_detalle(gen_c)
+                if rc_c != 0:
+                    return revertir(home)
         return {"accion": "nada"}
     destino = (pend.get("destino") or {}).get("codigo") or ""
     anterior = (pend.get("anterior") or {}).get("codigo") or ""
@@ -125,15 +265,17 @@ def recuperar(home: Path) -> dict:
     apunta = False
     if gen.exists() and actual.is_symlink():
         apunta = actual.resolve() == gen.resolve()
-    if gen.exists() and _comprobar(gen) == 0:
+    rc, comprobador = _comprobar_detalle(gen) if gen.exists() else (1, "ninguno")
+    if gen.exists() and rc == 0:
         if not apunta:
             _enlace(home, gen)
         pend["etapa"] = "completo"
         pend["causa"] = ""
+        pend["comprobador"] = comprobador
         _atomico(home / "instalacion.json", pend)
         pend_path.unlink(missing_ok=True)
         return {"accion": "completo", "generacion": destino}
-    if gen.exists() and _comprobar(gen) != 0:
+    if gen.exists() and rc != 0:
         if apunta and anterior:
             previa = home / "generaciones" / anterior
             if previa.exists():
@@ -143,7 +285,7 @@ def recuperar(home: Path) -> dict:
         pend_path.unlink(missing_ok=True)
         _atomico(
             home / "candidata.json",
-            {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo"},
+            {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo", "comprobador": comprobador},
         )
         return {"accion": "rechazada", "destino": destino}
     pend_path.unlink(missing_ok=True)

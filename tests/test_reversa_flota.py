@@ -86,6 +86,33 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(cand["estado"], "rechazada")
         self.assertEqual(cand["destino"], self.mala)
 
+    def test_fallo_en_la_tercera_conserva_la_segunda_y_reversa_tras_completa(self) -> None:
+        self.assertEqual(aplicar(self.home, self.buena)["accion"], "aplicada")
+        self.assertEqual(aplicar(self.home, self.nueva)["accion"], "aplicada")
+        salida = aplicar(self.home, self.mala)
+        self.assertEqual(salida["accion"], "rechazada")
+        self.assertEqual(salida["vigente"], self.nueva)
+        self.assertEqual(asignar(self.home), self.nueva)
+        self.assertTrue((self.home / "instalacion.json").exists())
+        reversa = subprocess.run(
+            ["sh", str(REVERSA), "--home", str(self.home)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("revertido", reversa.stdout)
+        self.assertEqual(asignar(self.home), self.buena)
+        self.assertFalse((self.home / "instalacion.json").exists())
+        self.assertTrue(list((self.home / "historial").glob("instalacion-*.json")))
+        otra = subprocess.run(
+            ["sh", str(REVERSA), "--home", str(self.home)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(otra.stdout.strip(), "nada")
+        self.assertEqual(asignar(self.home), self.buena)
+
     def test_el_trabajo_activo_conserva_su_generacion(self) -> None:
         aplicar(self.home, self.buena)
         anotar_trabajo(self.home, "uno", self.buena, "codex")

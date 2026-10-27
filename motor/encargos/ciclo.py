@@ -936,6 +936,26 @@ def _lanzar_uno(
         from motor import plataforma
 
         plataforma.sincroniza_directorio(raiz)
+        try:
+            flota_home_path = registro.base / "flota-home.json"
+            if flota_home_path.is_file():
+                flota_doc = json.loads(
+                    flota_home_path.read_text(encoding="utf-8")
+                )
+                home_flota = str(flota_doc.get("home") or "")
+                if home_flota:
+                    from motor.flota.control import anotar_trabajo as _anotar_flota
+                    from motor.flota.control import asignar as _asignar_flota
+
+                    home_path = Path(home_flota)
+                    if not home_path.is_absolute():
+                        home_path = registro.base / home_path
+                    herramienta = Path(cmd[0]).stem if cmd else ""
+                    _anotar_flota(
+                        home_path, enc.id, _asignar_flota(home_path), herramienta
+                    )
+        except Exception:
+            pass
         lanzar_administrado(directorio, token)
 
 

@@ -16,6 +16,7 @@ from .control import (
     observar_ejecutable,
     publicar_proyeccion,
     recuperar,
+    revertir,
 )
 from .manifiesto import cargar, guardar, misma_cadena, sembrar_tabla
 
@@ -45,6 +46,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--corte", default="")
 
     s = sub.add_parser("recuperar")
+    s.add_argument("--home", type=Path, required=True)
+
+    s = sub.add_parser("revertir")
     s.add_argument("--home", type=Path, required=True)
 
     s = sub.add_parser("trabajo")
@@ -101,6 +105,8 @@ def _correr(args) -> int:
         return _json(aplicar(args.home, args.destino, args.corte))
     if args.cmd == "recuperar":
         return _json(recuperar(args.home))
+    if args.cmd == "revertir":
+        return _json(revertir(args.home))
     if args.cmd == "trabajo":
         anotar_trabajo(args.home, args.id, args.generacion, args.herramienta)
         return _json({"trabajo": args.id, "generacion": args.generacion})
