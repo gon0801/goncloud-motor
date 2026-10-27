@@ -99,6 +99,34 @@ observaron ejecutables y versiones reales, y eso no se presenta como
 observación del modelo usado. OpenBot sigue sin ofrecer parada. Un timeout
 suyo no cancela.
 
+## Ronda 2. Correcciones a la segunda revisión
+
+- El aviso incierto se persiste antes de enviar. Un fallo de envío o de
+  conciliación nunca acredita ausencia. Solo una ausencia explícita o un
+  recibo permiten cerrar el aviso. La reproducción de la ronda da una sola
+  entrega tras el reintento.
+- Una identidad nueva invalida el cierre de la anterior. La sesión queda
+  activa sin cierre observado y promover rechaza con el ejecutor vivo.
+- El supervisor consume pendientes-autoridad en cada paso. Tras reiniciarlo,
+  trabajador y autoridad quedan en durable sin pendientes. director ver
+  sincroniza y muestra durable también desde otra base.
+- El publicador consume el paquete poteto completo con poteto.v1.json y
+  skills/poteto-mode/SKILL.md. Valida cada JSON distribuido antes de
+  sustituir. Un runtime corrupto conservó la generación A.
+- La generación se fija antes de construir el lanzamiento. El trabajo
+  queda anotado con su proceso real. Aplicar otra generación con ese
+  trabajo vivo devuelve ocupada y el proceso siguió leyendo buena. Una
+  anotación sin proceso vivo no bloquea la aplicación.
+- Aplicar verifica que un worktree reutilizado corresponde a su SHA y
+  está limpio. Los AGENTS.md de implementer, reviewer, adversary y
+  verifier de Claw ya no ordenan motor valida ni motor entrega.
+- Recorrido real aislado intentado en Mini. El perfil propio ensayo34 de
+  OpenClaw cargó la skill nueva, pero el turno no corrió. El perfil
+  aislado no tiene una fuente de autenticación portable y no copié el
+  almacén de credenciales del perfil principal. El perfil de ensayo se
+  borró. Hermes en PC y OpenBot siguen en la misma clase de pendiente.
+  OpenBot no estaba corriendo en la Mac.
+
 ## Receta de fase 5
 
 Activar por máquina en una ventana con los directores detenidos. Instalar la
