@@ -7,8 +7,12 @@ quedó corriendo en la autoridad con los encargos trasladados. La política
 común v7 ya se publica desde PC y converge en Mini y Mac. Las skills
 vivas de los directores ya se reinstalaron en los perfiles que las
 reciben. La prueba final en ventana con David ya se hizo en Hermi y
-en Claw. Ningún paso dejó dos escritores activos sobre el mismo
-recurso. Después del cierre, David cambió una regla de fondo: cada
+en Claw. Ningún paso dejó dos escritores ejecutando a la vez sobre
+el mismo recurso. En el corte de PC hubo minutos con el vigía
+todavía habilitado y el controlador ya creado, sin disparo del
+vigía en esa ventana: su última corrida fue a las 08:35 y se pausó
+antes de la siguiente. Después del cierre, David cambió una regla
+de fondo: cada
 máquina es independiente y tiene su propia libreta de encargos. Esa
 decisión ya se implementó y está al final de este documento.
 
@@ -75,6 +79,9 @@ de Hermes es feat/hermes-team.
   con la skill motor nueva con sha256 6c30cd9d y la sonda de poteto en
   vivo dio OK. En Claw de Mini, los agentes main, implementer e
   ingenieria quedaron con la skill motor nueva con sha256 1a0e7bfd.
+  Los dos hashes no tienen que coincidir. Son los archivos de cada
+  plataforma, Hermes en PC y Claw en Mini, y cada uno cuadra con el
+  archivo de su propio repo integrado.
   Las versiones anteriores quedaron en el resguardo de cada máquina.
   El redespliegue completo de configure_team no se corrió. Su
   validación choca con el SOUL local de claw y su bandera para
@@ -125,12 +132,21 @@ de Hermes es feat/hermes-team.
   máquinas son independientes y cada una tiene su propia libreta de
   encargos. Ver
   [decision-maquinas-independientes.md](decision-maquinas-independientes.md).
-  Esa decisión ya se implementó el 2026-10-27. La Mac tiene su
-  servicio local ai.goncloud.motor-encargos sobre
+  Esa decisión se implementó en su parte de libretas el 2026-10-27.
+  La Mac tiene su servicio local ai.goncloud.motor-encargos sobre
   /Users/dn/.motor-encargos, corriendo con pid 17201. La PC tiene su
   tarea GoncloudMotorEncargos sobre C:\Users\ehven\.motor-encargos,
   en estado Running. Ninguna de las tres libretas tiene
-  autoridad.json. Cada una guarda solo lo suyo.
+  autoridad.json. De aquí en adelante cada una guarda solo lo suyo.
+  La libreta de Mini conserva además el historial migrado en la
+  fase 5, que incluye encargos nacidos en la Mac. Es historial
+  archivado y detenido, no encargos activos de otra máquina.
+  Reversa de este paso: en Mac,
+  `launchctl bootout gui/501/ai.goncloud.motor-encargos` y borrar su
+  plist. En PC, terminar y borrar la tarea GoncloudMotorEncargos.
+  Las libretas locales no se borran. Volver a la autoridad de Mini
+  exige primero detener los servicios locales y conciliar los
+  encargos creados en local. Nunca con los dos escribiendo a la vez.
 - Prueba de independencia: la Mac recibió el encargo
   enc_e63cdedf98598872 en su libreta, lo consultó y lo canceló en
   local. La PC hizo lo mismo con enc_54f2fdf08cabe7da. Mini conservó
@@ -146,5 +162,5 @@ de Hermes es feat/hermes-team.
   agente quedó demostrada en los ensayos de las rondas anteriores.
 - OpenBot sigue sin una parada propia demostrada. Un timeout no
   cancela su entrega. Esa capacidad no se le atribuye.
-- Por ese pendiente de decisión la fase 5 queda PARCIAL SEGURA. No
-  se declara LISTO.
+- La fase 5 queda PARCIAL SEGURA por los límites honestos de arriba
+  y por OpenBot. No se declara LISTO.

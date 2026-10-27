@@ -49,7 +49,7 @@
       "script": "model_watch.py",
       "definicion_guardada": "C:\\Users\\ehven\\.motor-resguardo\\fase-5-20261028\\cron-claw-antes.txt (fuera del repo)",
       "estado": "pausado con hermes -p claw cron pause d710c8527b7f, después de verificar snapshot, réplicas y primer ciclo del controlador",
-      "reversa": "hermes -p claw cron resume d710c8527b7f"
+      "reversa": "hermes -p claw cron pause b7d546da8335 y apenas después hermes -p claw cron resume d710c8527b7f. Nunca dejar ambos activos."
     },
     "controlador": {
       "id": "b7d546da8335",
@@ -62,5 +62,6 @@
     },
     "un_solo_escritor": "Confirmado en cron list posterior: vigia-modelos [paused], flota-controlador [active]. Lista guardada en C:\\Users\\ehven\\.motor-resguardo\\fase-5-20261028\\cron-claw-despues.txt"
   },
-  "autoridad_encargos": "Mini sigue siendo la autoridad de encargos en ~/.motor-encargos. La política común no mueve esa autoridad."
+  "autoridad_encargos": "Histórico del paso 7: en ese momento Mini era la autoridad de encargos. La decisión posterior de máquinas independientes lo sustituyó. Cada máquina tiene ahora su libreta local sin autoridad.json.",
+  "nota_independencia": "Las generaciones c97f05 (preparada en el publicador PC) y bddd4ee (aplicada en las réplicas) no son el mismo identificador porque la generación aplicada incluye el runtime de cada host. La convergencia se demuestra con el mismo manifiesto 89daac5f y el mismo fuente_hash f4e65d9f en Mini y Mac."
 }
