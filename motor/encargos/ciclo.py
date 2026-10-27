@@ -970,7 +970,16 @@ def _lanzar_uno(
         from motor import plataforma
 
         plataforma.sincroniza_directorio(raiz)
-        lanzar_administrado(directorio, token)
+        proc = lanzar_administrado(directorio, token)
+        if flota_generacion:
+            try:
+                from motor.flota.control import anotar_trabajo as _anotar_flota
+
+                _anotar_flota(
+                    home_path, enc.id, flota_generacion, enc.agente or rol, proc
+                )
+            except Exception:
+                pass
 
 
 def marcar_espera(

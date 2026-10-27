@@ -115,7 +115,21 @@ class ReversaFlota(unittest.TestCase):
 
     def test_el_trabajo_activo_conserva_su_generacion(self) -> None:
         aplicar(self.home, self.buena)
-        anotar_trabajo(self.home, "uno", self.buena, "codex")
+        proc = subprocess.Popen(["/bin/sleep", "300"])
+        self.addCleanup(proc.kill)
+        from motor import plataforma
+
+        anotar_trabajo(
+            self.home,
+            "uno",
+            self.buena,
+            "codex",
+            {
+                "pid": proc.pid,
+                "inicio": plataforma.hora_inicio(proc.pid),
+                "boot_id": plataforma.boot_id(),
+            },
+        )
         salida = aplicar(self.home, self.nueva)
         self.assertEqual(salida["accion"], "ocupada")
         self.assertEqual(leer_trabajo(self.home, "uno")["generacion"], self.buena)

@@ -46,7 +46,13 @@ def _trabajos_sobre(home: Path, generacion: str) -> list[dict]:
             doc = _leer(path)
         except (OSError, ValueError):
             continue
-        if doc and str(doc.get("generacion") or "") == generacion:
+        if not doc or str(doc.get("generacion") or "") != generacion:
+            continue
+        if not doc.get("pid"):
+            continue
+        from motor import plataforma
+
+        if plataforma.estado_proc(doc) == "vivo":
             ocupantes.append(doc)
     return ocupantes
 
@@ -90,11 +96,19 @@ def _asegurar_gen(home: Path, destino: str, gen: Path) -> bool:
     return _gen_integra(gen, destino)
 
 
-def anotar_trabajo(home: Path, trabajo: str, generacion: str, herramienta: str) -> None:
-    _atomico(
-        home / "trabajos" / f"{trabajo}.json",
-        {"trabajo": trabajo, "generacion": generacion, "herramienta": herramienta},
-    )
+def anotar_trabajo(
+    home: Path,
+    trabajo: str,
+    generacion: str,
+    herramienta: str,
+    identidad: dict | None = None,
+) -> None:
+    doc = {"trabajo": trabajo, "generacion": generacion, "herramienta": herramienta}
+    if identidad:
+        for campo in ("pid", "inicio", "boot_id", "host"):
+            if identidad.get(campo) not in (None, ""):
+                doc[campo] = identidad[campo]
+    _atomico(home / "trabajos" / f"{trabajo}.json", doc)
 
 
 def leer_trabajo(home: Path, trabajo: str) -> dict | None:
