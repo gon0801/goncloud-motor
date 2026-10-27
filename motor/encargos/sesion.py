@@ -124,12 +124,15 @@ def preparar_administrado(
     sesion: str,
     hora: str,
     runtime: Path,
+    entorno_extra: dict[str, str] | None = None,
 ) -> None:
     from motor.runwrap import _publica
 
     from .aislamiento import aislar
 
     comando = aislar(cmd, cwd, runtime, lectura=enc.rol == "revisor", suscripcion=True)
+    if entorno_extra:
+        comando.entorno.update(entorno_extra)
     spec = {
         "cmd": comando.argv,
         "cwd": str(cwd),

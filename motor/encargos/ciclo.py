@@ -890,10 +890,44 @@ def _lanzar_uno(
             contenido += "\n\n" + instrucciones_responsable()
         prompt = runtime / "prompt.md"
         _publica(prompt, contenido)
+        flota_generacion = ""
+        flota_ruta = ""
+        try:
+            flota_home_path = registro.base / "flota-home.json"
+            if flota_home_path.is_file():
+                flota_doc = json.loads(flota_home_path.read_text(encoding="utf-8"))
+                home_flota = str(flota_doc.get("home") or "")
+                if home_flota:
+                    from motor.flota.control import anotar_trabajo as _anotar_flota
+                    from motor.flota.control import asignar as _asignar_flota
+
+                    home_path = Path(home_flota)
+                    if not home_path.is_absolute():
+                        home_path = registro.base / home_path
+                    flota_generacion = _asignar_flota(home_path)
+                    flota_ruta = str(home_path / "generaciones" / flota_generacion)
+                    _anotar_flota(home_path, enc.id, flota_generacion, enc.agente or rol)
+                    _publica(
+                        directorio / "generacion.json",
+                        json.dumps(
+                            {"generacion": flota_generacion, "ruta": flota_ruta},
+                            ensure_ascii=False,
+                        ),
+                    )
+        except Exception:
+            flota_generacion = ""
+            flota_ruta = ""
         cmd = lanzador(enc, prompt, espacio, sesion)
         if not cmd:
             return
-        preparar_administrado(cmd, espacio, directorio, enc, sesion, hora, runtime)
+        entorno_gen = (
+            {"MOTOR_GENERACION": flota_generacion, "MOTOR_GENERACION_RUTA": flota_ruta}
+            if flota_generacion
+            else None
+        )
+        preparar_administrado(
+            cmd, espacio, directorio, enc, sesion, hora, runtime, entorno_gen
+        )
         reservado = registro.anotar(
             enc.id,
             {
@@ -936,26 +970,6 @@ def _lanzar_uno(
         from motor import plataforma
 
         plataforma.sincroniza_directorio(raiz)
-        try:
-            flota_home_path = registro.base / "flota-home.json"
-            if flota_home_path.is_file():
-                flota_doc = json.loads(
-                    flota_home_path.read_text(encoding="utf-8")
-                )
-                home_flota = str(flota_doc.get("home") or "")
-                if home_flota:
-                    from motor.flota.control import anotar_trabajo as _anotar_flota
-                    from motor.flota.control import asignar as _asignar_flota
-
-                    home_path = Path(home_flota)
-                    if not home_path.is_absolute():
-                        home_path = registro.base / home_path
-                    herramienta = Path(cmd[0]).stem if cmd else ""
-                    _anotar_flota(
-                        home_path, enc.id, _asignar_flota(home_path), herramienta
-                    )
-        except Exception:
-            pass
         lanzar_administrado(directorio, token)
 
 
