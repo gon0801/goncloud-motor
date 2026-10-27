@@ -177,40 +177,80 @@ def anotar_respaldo(home: Path, politica: Politica, respaldo: dict) -> Politica:
 
 
 def publicar_proyeccion(home: Path, politica: Politica, paquete: Path) -> dict:
+    import os
+    import tempfile
+
     salida = home / "proyeccion"
-    if salida.exists():
-        shutil.rmtree(salida)
-    salida.mkdir(parents=True)
-    tabla = proyectar_tabla(politica)
-    texto = json.dumps(tabla, ensure_ascii=False, indent=2) + "\n"
-    (salida / "model-routing.source.json").write_text(texto, encoding="utf-8")
-    poteto = salida / "poteto"
-    shutil.copytree(paquete, poteto)
-    digest = hashlib.sha256((poteto / "SKILL.md").read_bytes()).hexdigest()
-    herramientas = hashlib.sha256()
-    for path in sorted((poteto / "runtimes").glob("*.json")):
-        herramientas.update(path.read_bytes())
-    dirigir = [p for p in politica.puestos if p.funcion == "dirigir"]
-    if not dirigir:
-        raise ValueError("la proyección necesita el puesto dirigir")
-    flota = {
-        "schema": "sistema-agentes.flota.v1",
-        "rootId": "flota-directores",
-        "unitId": "director",
-        "attempt": 1,
-        "specialist": "director",
-        "host": "ensayo",
-        "executor": "cli",
-        "accountRef": "suscripcion",
-        "model": {"id": dirigir[0].cadena[0][0]},
-        "generation": 1,
-        "permissions": ["read"],
-        "attestations": [
-            {"what": "poteto", "digest": f"sha256:{digest}"},
-            {"what": "tools", "digest": "sha256:" + herramientas.hexdigest()},
-        ],
-    }
-    (salida / "flota.json").write_text(json.dumps(flota, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    home.mkdir(parents=True, exist_ok=True)
+    temporal = Path(
+        tempfile.mkdtemp(prefix=".proyeccion-", dir=str(home))
+    )
+    respaldo = home / ".proyeccion-anterior"
+    try:
+        tabla = proyectar_tabla(politica)
+        dirigir = [p for p in politica.puestos if p.funcion == "dirigir"]
+        if not dirigir:
+            raise ValueError("la proyección necesita el puesto dirigir")
+        if not (Path(paquete) / "SKILL.md").is_file():
+            raise ValueError("el paquete no trae SKILL.md")
+        texto = json.dumps(tabla, ensure_ascii=False, indent=2) + "\n"
+        (temporal / "model-routing.source.json").write_text(
+            texto, encoding="utf-8"
+        )
+        poteto = temporal / "poteto"
+        shutil.copytree(paquete, poteto)
+        digest = hashlib.sha256((poteto / "SKILL.md").read_bytes()).hexdigest()
+        herramientas = hashlib.sha256()
+        for path in sorted((poteto / "runtimes").glob("*.json")):
+            herramientas.update(path.read_bytes())
+        flota = {
+            "schema": "sistema-agentes.flota.v1",
+            "rootId": "flota-directores",
+            "unitId": "director",
+            "attempt": 1,
+            "specialist": "director",
+            "host": "ensayo",
+            "executor": "cli",
+            "accountRef": "suscripcion",
+            "model": {"id": dirigir[0].cadena[0][0]},
+            "generation": 1,
+            "permissions": ["read"],
+            "attestations": [
+                {"what": "poteto", "digest": f"sha256:{digest}"},
+                {"what": "tools", "digest": "sha256:" + herramientas.hexdigest()},
+            ],
+        }
+        (temporal / "flota.json").write_text(
+            json.dumps(flota, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        json.loads((temporal / "model-routing.source.json").read_text(encoding="utf-8"))
+        json.loads((temporal / "flota.json").read_text(encoding="utf-8"))
+    except BaseException:
+        shutil.rmtree(temporal, ignore_errors=True)
+        raise
+    if (respaldo.exists() or respaldo.is_symlink()) and not (
+        salida.exists() or salida.is_symlink()
+    ):
+        os.rename(respaldo, salida)
+    elif respaldo.exists() or respaldo.is_symlink():
+        if respaldo.is_dir() and not respaldo.is_symlink():
+            shutil.rmtree(respaldo)
+        else:
+            respaldo.unlink()
+    movida = False
+    try:
+        if salida.exists() or salida.is_symlink():
+            os.rename(salida, respaldo)
+            movida = True
+        os.rename(temporal, salida)
+    except BaseException:
+        if movida and not salida.exists() and respaldo.exists():
+            os.rename(respaldo, salida)
+        shutil.rmtree(temporal, ignore_errors=True)
+        raise
+    if movida:
+        shutil.rmtree(respaldo, ignore_errors=True)
     return {"proyeccion": str(salida), "poteto": digest}
 
 
