@@ -6,8 +6,9 @@ PARCIAL SEGURO. La integración se mergeó en los cuatro repos y el sucesor
 quedó corriendo en la autoridad con los encargos trasladados. La política
 común v7 ya se publica desde PC y converge en Mini y Mac. Las skills
 vivas de los directores ya se reinstalaron en los perfiles que las
-reciben. Queda la prueba final en ventana con David. Ningún paso dejó
-dos escritores activos sobre el mismo recurso.
+reciben. La prueba final en ventana con David ya se hizo en Hermi y
+en Claw. Ningún paso dejó dos escritores activos sobre el mismo
+recurso.
 
 ## Integración
 
@@ -76,12 +77,16 @@ de Hermes es feat/hermes-team.
   El redespliegue completo de configure_team no se corrió. Su
   validación choca con el SOUL local de claw y su bandera para
   conservarlo tiene un defecto. No se forzó ningún SOUL ajeno.
-- 9. Pruebas como usuario final. PARCIAL. Desde la Mac se creó un
+- 9. Pruebas como usuario final. REALIZADO. Desde la Mac se creó un
   encargo directo con un ejecutor real, se observó su cierre, se
   promovió a durable en la autoridad y la consulta canónica devolvió
   durable. El recorrido completo con trabajo durable ejecutado por la
   autoridad y aviso al canal quedó demostrado en las rondas de
-  corrección. La prueba en ventana con David no se hizo.
+  corrección. La prueba en ventana con David se hizo el 2026-10-27.
+  Hermi respondió como director listo para recibir el pedido y sin
+  cambiar archivos. Claw respondió lo mismo tras el reinicio de Mini.
+  Claw tardó unos cinco minutos porque su gateway seguía preparando
+  las bases de sus agentes. Su salud respondió bien a las 13:56.
 
 ## Reversa
 
@@ -114,10 +119,11 @@ de Hermes es feat/hermes-team.
 - PC: se borraron el home de ensayo .hermes-ensayo34d, los scripts
   temporales y las carpetas npm-p-* y prueba-* dentro de
   C:\Users\ehven\flota. El home estable del publicador quedó intacto.
-- Pendientes con dueño: hacer la prueba final en ventana con David e
-  instalar el servicio de encargos en PC solo si David decide que PC
-  tenga ese rol. Hoy PC publica la política y no es autoridad de
-  encargos. OpenBot sigue sin una parada propia demostrada. Un
-  timeout no cancela su entrega.
-- Por esos pendientes la fase 5 queda PARCIAL SEGURA. No se declara
-  LISTO.
+- Pendiente con dueño: instalar el servicio de encargos en PC solo
+  si David decide que PC tenga ese rol. Hoy PC publica la política y
+  no es autoridad de encargos. No es una falla. Es una decisión de
+  alcance que no se tomó.
+- OpenBot sigue sin una parada propia demostrada. Un timeout no
+  cancela su entrega. Esa capacidad no se le atribuye.
+- Por ese pendiente de decisión la fase 5 queda PARCIAL SEGURA. No
+  se declara LISTO.
