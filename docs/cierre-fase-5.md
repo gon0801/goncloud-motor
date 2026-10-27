@@ -4,10 +4,10 @@
 
 PARCIAL SEGURO. La integración se mergeó en los cuatro repos y el sucesor
 quedó corriendo en la autoridad con los encargos trasladados. La política
-común v7 ya se publica desde PC y converge en Mini y Mac. Las
-instrucciones vivas de los directores quedan pendientes con su causa
-registrada. Ningún paso dejó dos escritores activos sobre el mismo
-recurso.
+común v7 ya se publica desde PC y converge en Mini y Mac. Las skills
+vivas de los directores ya se reinstalaron en los perfiles que las
+reciben. Queda la prueba final en ventana con David. Ningún paso dejó
+dos escritores activos sobre el mismo recurso.
 
 ## Integración
 
@@ -33,8 +33,12 @@ de Hermes es feat/hermes-team.
   ~/.motor-resguardo/fase-5-20261028.
 - 2. Operaciones de producción. PARCIAL. El servicio del sucesor es un
   LaunchAgent en el dominio del usuario. launchd no tenía sudo sin
-  contraseña para un LaunchDaemon nuevo. El arranque tras reinicio
-  completo sin sesión iniciada no está demostrado.
+  contraseña para un LaunchDaemon nuevo. El arranque tras reinicio sí
+  se demostró el 2026-10-27. Mini reinició y el servicio
+  ai.goncloud.motor-encargos levantó solo con pid 583 a los 32
+  segundos del arranque. El registro durable conservó sus 98 eventos.
+  Sigue en el dominio del usuario, así que depende de que la sesión
+  de gon exista al arrancar, como ocurre hoy con su inicio automático.
 - 3. Migración repetible. REALIZADO. Importador con identidad estable,
   probado sobre copia coherente y aplicado en Mini. Repetirlo devuelve
   los mismos encargos.
@@ -62,9 +66,16 @@ de Hermes es feat/hermes-team.
 - 8. Sistema viejo, directores y retiro. PARCIAL. La admisión del motor
   viejo se cerró con retención en Mac y Mini. Su daemon sigue solo como
   lector histórico. El claw-autoupdate de Mini quedó desactivado con su
-  definición guardada. Las skills vivas de Hermes y Claw no se
-  reinstalaron en los perfiles en producción en esta pasada. El vigía
-  de la Mac se conservó porque es observador.
+  definición guardada. El vigía de la Mac se conservó porque es
+  observador. Las skills vivas sí se reinstalaron el 2026-10-27, solo
+  en los perfiles que las reciben. En Hermes, el director claw quedó
+  con la skill motor nueva con sha256 6c30cd9d y la sonda de poteto en
+  vivo dio OK. En Claw de Mini, los agentes main, implementer e
+  ingenieria quedaron con la skill motor nueva con sha256 1a0e7bfd.
+  Las versiones anteriores quedaron en el resguardo de cada máquina.
+  El redespliegue completo de configure_team no se corrió. Su
+  validación choca con el SOUL local de claw y su bandera para
+  conservarlo tiene un defecto. No se forzó ningún SOUL ajeno.
 - 9. Pruebas como usuario final. PARCIAL. Desde la Mac se creó un
   encargo directo con un ejecutor real, se observó su cierre, se
   promovió a durable en la autoridad y la consulta canónica devolvió
@@ -93,17 +104,20 @@ de Hermes es feat/hermes-team.
 ## Residuos y pendientes con dueño
 
 - PC: el home C:\Users\ehven\flota ya es la instalación estable del
-  publicador. No es un residuo. Quedan carpetas de ensayo previas en
-  ese mismo home y se conservan como evidencia del fallo corregido.
-- Mini: /Users/gon/ensayo-flota-r4 y la copia del historial Mac en
-  /Users/gon/copia-mac. Son productos de ensayo declarados y se
-  conservan. El home estable de la réplica es /Users/gon/flota.
+  publicador. No es un residuo.
 - Mac: el home estable de la réplica es /Users/dn/flota.
-- Pendientes con dueño: reinstalar las skills vivas en los perfiles
-  de producción de Hermes y Claw, instalar el servicio de encargos
-  en PC si se decide que PC sea autoridad secundaria, demostrar el
-  arranque tras un reinicio completo sin sesión iniciada en Mini, y
-  hacer la prueba final en ventana con David. OpenBot sigue sin una
-  parada propia demostrada. Un timeout no cancela su entrega.
+- Mini: el home estable de la réplica es /Users/gon/flota. Los
+  residuos de ensayo /Users/gon/ensayo-flota-r4 y
+  /Users/gon/copia-mac se borraron el 2026-10-27 con autorización de
+  David. La copia era eso, una copia. El historial original no se
+  tocó. Los resguardos quedan fuera del repo.
+- PC: se borraron el home de ensayo .hermes-ensayo34d, los scripts
+  temporales y las carpetas npm-p-* y prueba-* dentro de
+  C:\Users\ehven\flota. El home estable del publicador quedó intacto.
+- Pendientes con dueño: hacer la prueba final en ventana con David e
+  instalar el servicio de encargos en PC solo si David decide que PC
+  tenga ese rol. Hoy PC publica la política y no es autoridad de
+  encargos. OpenBot sigue sin una parada propia demostrada. Un
+  timeout no cancela su entrega.
 - Por esos pendientes la fase 5 queda PARCIAL SEGURA. No se declara
   LISTO.
