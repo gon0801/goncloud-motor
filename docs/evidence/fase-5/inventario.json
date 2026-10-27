@@ -1,0 +1,60 @@
+{
+  "fecha": "2026-10-28",
+  "alcance": "Inventario solo lectura previo a fase 5. Sin secretos.",
+  "bases": {
+    "motor": "6cf9e9697b47d217bf2b75f1ebda6f5077cc61fa",
+    "hermes": "30146347434758b19e828be10bcdc88adb0876cc",
+    "openclaw": "4fcc61626139e5de74d880fc1e50c45a3c8a0321",
+    "conf": "f02bd82a416aec562b313c1dcf4858d72349327a"
+  },
+  "rutas_flota_ciclo": {
+    "entrada": "ops/flota_ciclo.py --home <home-flota> --motor-origen <repo-motor> --repo-hermes <repo-hermes> --repo-claw <repo-claw> --repo-conf <repo-conf>",
+    "publicador_pc": "agrega --salida <snapshot>",
+    "replicas": "agregan --replica <snapshot-recibido>",
+    "home_flota_por_host": "pendiente de fijar al instalar en cada host, fuera de directorios de ensayo"
+  },
+  "mac": {
+    "usuario": "dn",
+    "motor_viejo": "LaunchDaemon com.goncloud.motor corriendo sobre ~/.motor (motor.db, formato 3 motor09, 1826 eventos, 4 batches)",
+    "encargos_activos_viejos": "ninguno: AttemptStarted=AttemptEnded=344, inbox sin pendientes",
+    "escritor_encargos": "daemon com.goncloud.motor; entrada por buzones OpenBot Agents/*/motor-buzon",
+    "openbot": "app presente, agente DG con rutinas inactivas",
+    "python": "/opt/homebrew/bin/python3 3.14.7",
+    "vigila_modelos_mac": "ai.goncloud.vigila-modelos (observador, CalendarInterval 08:00)",
+    "resguardo": "~/.motor-resguardo/fase-5-20261028/mac-motor.db (API backup de SQLite)"
+  },
+  "mini": {
+    "usuario": "gon",
+    "autoridad_encargos_nueva": "Mini, almacen ~/.motor-encargos (aun no existe)",
+    "motor_viejo": "LaunchDaemon com.goncloud.motor corriendo sobre ~/.motor (989 eventos, 1 batch)",
+    "encargos_activos_viejos": "ninguno: AttemptStarted=AttemptEnded=187",
+    "openclaw": "2026.10.7, gateway ai.openclaw.gateway corriendo en 127.0.0.1:18789",
+    "claw_autoupdate": "ai.goncloud.claw-autoupdate, CalendarInterval 04:50, /Users/gon/goncloud-autoupdate/claw_autoupdate.py",
+    "python": "/Users/gon/.local/bin/python3 3.12.15",
+    "resguardo": "~/.motor-resguardo/fase-5-20261028/mini-motor.db (API backup de SQLite)"
+  },
+  "pc": {
+    "usuario": "ehven",
+    "hermes": "v0.22.5, gateway por multiplexor de perfiles, todos running",
+    "cron_claw": [
+      {"id": "a9606c0778dd", "nombre": "monday-pedidos-semanal"},
+      {"id": "5ff1be5c79c9", "nombre": "cron-vigilante"},
+      {"id": "d710c8527b7f", "nombre": "vigia-modelos", "schedule": "35 8 * * *", "script": "model_watch.py", "deliver": "telegram"},
+      {"id": "cd97177d02da", "nombre": "respaldo-diario-hermes"}
+    ],
+    "versiones": "codex-cli 0.163.0, grok 1.0.70, Python 3.14.9 (Hermes)",
+    "resguardo": "definicion de vigia-modelos registrada en este inventario; el home de Hermes tiene su propio respaldo diario"
+  },
+  "motor06": {
+    "repo": "gon0801/goncloud-motor-conf",
+    "pr26": "MERGED b46d6378b8afcd82f21b1c0c1a037a0bbcfa030f (bloque A)",
+    "pr27": "MERGED 87a28f84e932d29d8e5038ede2d53a9099b5d517 (solo comentario)",
+    "pendiente": "bloques B y C no completos; grep: Invalid range end registrado como instrumento defectuoso, no como puerta",
+    "accion": "no reaplicar PR 26/27; crear encargo migrado detenido con el objetivo pendiente real"
+  },
+  "faltantes_a_implementar": [
+    "importador de encargos viejos con identidad estable hacia ~/.motor-encargos",
+    "servicio nativo del sucesor (autoridad Mini) con admision cerrada y reversa de servicio",
+    "activacion de flota_ciclo con rutas estables y sustitucion de escritores por host"
+  ]
+}

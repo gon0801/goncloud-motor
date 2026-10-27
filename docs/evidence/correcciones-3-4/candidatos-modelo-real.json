@@ -1,0 +1,194 @@
+{
+  "estado": "completado",
+  "fecha_utc": "2026-10-27T17:45:02.065217+00:00",
+  "alcance": "Una respuesta real por SDK candidato, perfiles clonados; no reproduce los encargos de fase3 ni activa servicios",
+  "excepcion_modelo": "Grok4.7 OAuth como respaldo temporal autorizado; fuentev7 intacta",
+  "claw_2026_10_8": {
+    "meta": {
+      "generation": "/Users/gon/ensayo-final34-componentes/instalacion/generaciones/4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372",
+      "argv_prefix": [
+        "/Users/gon/.openclaw/tools/node-v24.22.1/bin/node",
+        "/Users/gon/ensayo-final34-componentes/instalacion/generaciones/4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372/herramientas/openclaw/node_modules/openclaw/openclaw.mjs"
+      ],
+      "config_fuente": "/Users/gon/ensayo-final34-componentes/instalacion/generaciones/4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372/perfiles/claw/openclaw.json",
+      "config_fuente_sha256": "0d1566862844b039bacd3ca8ab6bb1101354a61a76d7aadf682c39deb21812b8",
+      "profile": "/Users/gon/ensayo-final34-candidato/claw",
+      "workspace": "/Users/gon/ensayo-final34-candidato/claw/workspace",
+      "modelo_deseado_fuente": {
+        "primary": "anthropic/claude-opus-5-5",
+        "fallbacks": [
+          "anthropic/claude-sonnet-5-5",
+          "openai/gpt-6.1-sol",
+          "kimi/k3"
+        ]
+      },
+      "modelo_ensayo": "xai/grok-4.7",
+      "cuenta": "OAuthXai nativa,una cuenta copiada dentroMini;sinAPIkeynueva"
+    },
+    "componente": {
+      "nombre": "openclaw",
+      "tipo": "npm",
+      "paquete": "openclaw",
+      "version": "2026.10.8",
+      "fuente": "https://registry.npmjs.org/openclaw/2026.10.8",
+      "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-2026.10.8.tgz",
+      "integridad": "sha512-fWOIOOyddIBqeuPz82DBCdY5kNl1yD51qebAHnxlTN7SmVoH5/WSIudR/N1zDhcIIksgJXe6ZgGy5ngSRxZOrQ=="
+    },
+    "respuesta": "CANDIDATO_OK",
+    "terminal_receipt": {
+      "runId": "7822ebcb-8fb3-4b7d-91fe-967904711358",
+      "sessionId": "candidato-final34-10-8",
+      "turnId": "7822ebcb-8fb3-4b7d-91fe-967904711358",
+      "requested": {
+        "provider": "xai",
+        "model": "grok-4.7"
+      },
+      "effective": {
+        "provider": "xai",
+        "model": "grok-4.7",
+        "responseModel": "grok-4.7-build"
+      },
+      "successfulToolNames": [
+        "read"
+      ],
+      "rerouted": true,
+      "terminalDisposition": "visible"
+    },
+    "credential_source_kind": "profile",
+    "execution_trace": {
+      "winnerProvider": "xai",
+      "winnerModel": "grok-4.7",
+      "attempts": [
+        {
+          "provider": "xai",
+          "model": "grok-4.7",
+          "result": "success",
+          "stage": "assistant"
+        }
+      ],
+      "fallbackUsed": false,
+      "runner": "embedded"
+    },
+    "tool_summary": {
+      "calls": 2,
+      "tools": [
+        "read"
+      ],
+      "failures": 0
+    },
+    "request_shaping": {
+      "authMode": "auth-profile",
+      "thinking": "high"
+    },
+    "duration_ms": 5302,
+    "config_fuente_sha256_despues": "0d1566862844b039bacd3ca8ab6bb1101354a61a76d7aadf682c39deb21812b8",
+    "auth_import_api": "SDK2026.10.8 plugin-sdk/provider-auth.js upsertAuthProfile",
+    "resultado": "CANDIDATO_OK",
+    "rc": 0
+  },
+  "hermes_0_22_5_pm": {
+    "meta": {
+      "generacion": "C:\\Users\\ehven\\ensayo-final34-componentes\\instalacion\\generaciones\\b8596c2a347edaff7a034ec0f670b51ed5ffa77d",
+      "argv_prefix": [
+        "C:\\Users\\ehven\\ensayo-final34-componentes\\instalacion\\generaciones\\b8596c2a347edaff7a034ec0f670b51ed5ffa77d\\perfiles\\hermes\\installs\\34e34e20ddc1d9d0\\environments\\74dba1b77a0944ee8cfa6d525d5d03d8\\venv\\Scripts\\python.exe",
+        "-m",
+        "hermes_cli.main"
+      ],
+      "pythonpath": "C:\\Users\\ehven\\ensayo-final34-componentes\\instalacion\\generaciones\\b8596c2a347edaff7a034ec0f670b51ed5ffa77d\\herramientas\\hermes\\src",
+      "runtime_dir": "C:\\Users\\ehven\\ensayo-final34-componentes\\instalacion\\generaciones\\b8596c2a347edaff7a034ec0f670b51ed5ffa77d\\herramientas\\hermes\\tools",
+      "profile": "C:\\Users\\ehven\\ensayo-final34-candidato\\hermes",
+      "workspace": "C:\\Users\\ehven\\ensayo-final34-candidato\\hermes-workspace",
+      "config_fuente": "C:\\Users\\ehven\\ensayo-final34-componentes\\instalacion\\generaciones\\b8596c2a347edaff7a034ec0f670b51ed5ffa77d\\perfiles\\hermes\\profiles\\claw\\config.yaml",
+      "config_fuente_sha256": "1ae958223b08ed88ef1798bae7876cb722e480cb63b769b7bfd52ad4188af239",
+      "modelo_deseado_fuente": {
+        "provider": "anthropic",
+        "default": "claude-opus-5-5"
+      },
+      "modelo_ensayo": "xai-oauth/grok-4.7",
+      "cuenta": "credential_pool.xai-oauth delalmacennativoexistente,copialocalprivada"
+    },
+    "componente": {
+      "fuente": "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest",
+      "integridad": "git:bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+      "nombre": "hermes",
+      "repositorio": "https://github.com/NousResearch/hermes-agent.git",
+      "revision": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+      "tipo": "git",
+      "version": "v0.22.5"
+    },
+    "result": {
+      "text": "CANDIDATO_OK",
+      "exit_code": 0,
+      "session_id": "local-65ed6858b75c7a99249a35567f8595a76c0b00c3873f6af5ccc72cded14d8244",
+      "duration_ms": 23688,
+      "timestamp": 1793122458000
+    },
+    "sesion_modelo_provider": [
+      "local-65ed6858b75c7a99249a35567f8595a76c0b00c3873f6af5ccc72cded14d8244",
+      "grok-4.7",
+      "xai-oauth",
+      2,
+      "8050b467a317c49305f947d143e3e6db7a95c8eba6df70f11ae919236c5a7116"
+    ],
+    "herramientas": [
+      {
+        "name": "read_file",
+        "input": {
+          "path": "C:\\Users\\ehven\\ensayo-final34-candidato\\hermes\\skills\\poteto-mode\\SKILL.md"
+        }
+      },
+      {
+        "name": "read_file",
+        "input": {
+          "path": "C:\\Users\\ehven\\ensayo-final34-candidato\\hermes\\skills\\principle-prove-it-works\\SKILL.md"
+        }
+      }
+    ],
+    "resultados_herramientas": [
+      {
+        "name": "read_file",
+        "is_error": false,
+        "duration_ms": 1665
+      },
+      {
+        "name": "read_file",
+        "is_error": false,
+        "duration_ms": 1669
+      }
+    ],
+    "config_fuente_sha256_despues": "1ae958223b08ed88ef1798bae7876cb722e480cb63b769b7bfd52ad4188af239"
+  },
+  "limpieza": {
+    "hermes": {
+      "gateway_pid_propio": null,
+      "gateway_detenido": true,
+      "perfil_y_auth_eliminados": true,
+      "workspace_eliminado": true,
+      "generacion_modificada": false
+    },
+    "claw": {
+      "perfil_y_auth_eliminados": true,
+      "workspace_eliminado": true,
+      "generacion_modificada": false,
+      "nuevos_runtimes_creados": false
+    }
+  },
+  "overrides_solo_clones": {
+    "ambos": [
+      "modelo/proveedor Grok4.7 OAuth temporal",
+      "workspace yalmacenprivados",
+      "canales,hooks ycronoperativosdeshabilitados"
+    ],
+    "hermes": [
+      "fallback_providers vacio",
+      "MCP yplugins deshabilitados para sondaSDK de lectura",
+      "max_turns4 ypresupuesto120s sóloenclon"
+    ],
+    "claw": [
+      "agent mainunico",
+      "providerXai desdelaconfiguracionnativaexistente",
+      "cuentaOAuthimportadaconAPI SDKnuevo"
+    ]
+  },
+  "limite_de_esta_sonda": "Acredita SDK/proveedor/cuenta ylecturas deherramienta; no repite losflujos deingenieria ni losencargos de fase3."
+}

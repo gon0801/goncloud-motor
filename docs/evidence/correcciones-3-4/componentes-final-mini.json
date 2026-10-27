@@ -1,0 +1,541 @@
+{
+  "host": "mini",
+  "fuentes": {
+    "motor": {
+      "revision": "e1f298d9f035097dddbd8bd9b31a61da066c288b",
+      "sha256": "6c588d2778e957308302f61371e5706a7855e4d2f96ccaf653540260c9be5523"
+    },
+    "hermes": {
+      "revision": "eb06573a51c23c65f579bff1fa91824e7c41d19b",
+      "sha256": "21fbe2060e4157f72dcd1c4abef10056d8c1afcb741e0c83cc853e5c3c623636"
+    },
+    "claw": {
+      "revision": "4fcc61626139e5de74d880fc1e50c45a3c8a0321",
+      "sha256": "8ae85dc6e14602a79ca7bc479808d55e8cad7a1999ca040462229da82000c047"
+    },
+    "conf": {
+      "revision": "f02bd82a416aec562b313c1dcf4858d72349327a",
+      "sha256": "d5fff44fde4eb449cfb4ee673f4e0f4e844e3ea87b9440db5c1b9935fa08295e"
+    }
+  },
+  "pasos": [
+    {
+      "nombre": "descubrimiento_oficial",
+      "resultado": {
+        "componentes": [
+          {
+            "nombre": "codex",
+            "tipo": "npm",
+            "paquete": "@openai/codex",
+            "version": "0.164.0",
+            "fuente": "https://registry.npmjs.org/%40openai%2Fcodex/latest",
+            "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.164.0.tgz",
+            "integridad": "sha512-TWj7UGyPRe3Pj/A3ddNAxs1te3a/W/xAd+J0LHrrFTmsSfahGMOLF/vn88D3QCIgAT3B1rm1y/Z3NYE0rx6cZQ=="
+          },
+          {
+            "nombre": "openclaw",
+            "tipo": "npm",
+            "paquete": "openclaw",
+            "version": "2026.10.8",
+            "fuente": "https://registry.npmjs.org/openclaw/latest",
+            "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-2026.10.8.tgz",
+            "integridad": "sha512-fWOIOOyddIBqeuPz82DBCdY5kNl1yD51qebAHnxlTN7SmVoH5/WSIudR/N1zDhcIIksgJXe6ZgGy5ngSRxZOrQ=="
+          }
+        ],
+        "no_disponibles": []
+      }
+    },
+    {
+      "nombre": "aplicar_A",
+      "resultado": {
+        "accion": "aplicada",
+        "generacion": "9417b20ebbf724a18611b3302ee6fadf0c9395f6",
+        "anterior": "4397db6529920e8ab303124d4200adf4813ec885",
+        "preparacion": {
+          "accion": "preparada",
+          "generacion": "9417b20ebbf724a18611b3302ee6fadf0c9395f6",
+          "runtime": "/Users/gon/ensayo-final34-componentes/instalacion/generaciones/9417b20ebbf724a18611b3302ee6fadf0c9395f6/runtime.json",
+          "reutilizada": false
+        }
+      }
+    },
+    {
+      "nombre": "B_ocupada_conserva_A",
+      "resultado": {
+        "accion": "ocupada",
+        "trabajador": {
+          "version": "codex-cli 0.163.0",
+          "argv": [
+            "/Users/gon/ensayo-final34-componentes/instalacion/generaciones/9417b20ebbf724a18611b3302ee6fadf0c9395f6/herramientas/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+          ],
+          "poteto": "config/hermes/shared/sistema-agentes/poteto",
+          "generacion": "9417b20ebbf724a18611b3302ee6fadf0c9395f6"
+        }
+      }
+    },
+    {
+      "nombre": "aplicar_B",
+      "resultado": {
+        "accion": "aplicada",
+        "generacion": "4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372",
+        "anterior": "9417b20ebbf724a18611b3302ee6fadf0c9395f6",
+        "preparacion": {
+          "accion": "preparada",
+          "generacion": "4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372",
+          "runtime": "/Users/gon/ensayo-final34-componentes/instalacion/generaciones/4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372/runtime.json",
+          "reutilizada": true
+        }
+      }
+    },
+    {
+      "nombre": "integridad_rechazada",
+      "resultado": {
+        "rc": 1
+      }
+    },
+    {
+      "nombre": "corte_aplicacion",
+      "resultado": {
+        "accion": "cortado",
+        "etapa": "codigo",
+        "vigente": "4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372"
+      }
+    },
+    {
+      "nombre": "recuperacion",
+      "resultado": {
+        "accion": "completo",
+        "generacion": "9417b20ebbf724a18611b3302ee6fadf0c9395f6"
+      }
+    },
+    {
+      "nombre": "motor_inarrancable_revertido",
+      "resultado": {
+        "rc_arranque": 1,
+        "reversa": "revertido 4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372",
+        "generacion": "4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372"
+      }
+    },
+    {
+      "nombre": "estado_final",
+      "resultado": {
+        "generacion": "4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372",
+        "runtime": {
+          "schema": 1,
+          "lanzadores": {
+            "codex": [
+              "herramientas/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+            ],
+            "openclaw": [
+              "/Users/gon/.openclaw/tools/node-v24.22.1/bin/node",
+              "herramientas/openclaw/node_modules/openclaw/openclaw.mjs"
+            ]
+          },
+          "env": {
+            "HERMES_HOME": "perfiles/hermes",
+            "HERMES_PROFILES_DIR": "perfiles/hermes/profiles",
+            "HERMES_RUNTIME_DIR": "herramientas/hermes/tools",
+            "OPENCLAW_STATE_DIR": "perfiles/claw",
+            "OPENCLAW_CONFIG_PATH": "perfiles/claw/openclaw.json"
+          },
+          "componentes": [
+            {
+              "nombre": "codex",
+              "tipo": "npm",
+              "paquete": "@openai/codex",
+              "version": "0.164.0",
+              "fuente": "https://registry.npmjs.org/%40openai%2Fcodex/latest",
+              "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.164.0.tgz",
+              "integridad": "sha512-TWj7UGyPRe3Pj/A3ddNAxs1te3a/W/xAd+J0LHrrFTmsSfahGMOLF/vn88D3QCIgAT3B1rm1y/Z3NYE0rx6cZQ=="
+            },
+            {
+              "nombre": "openclaw",
+              "tipo": "npm",
+              "paquete": "openclaw",
+              "version": "2026.10.8",
+              "fuente": "https://registry.npmjs.org/openclaw/2026.10.8",
+              "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-2026.10.8.tgz",
+              "integridad": "sha512-fWOIOOyddIBqeuPz82DBCdY5kNl1yD51qebAHnxlTN7SmVoH5/WSIudR/N1zDhcIIksgJXe6ZgGy5ngSRxZOrQ=="
+            }
+          ],
+          "no_disponibles": [],
+          "observaciones": {
+            "codex": {
+              "version": "codex-cli 0.164.0",
+              "ejecutable": [
+                "herramientas/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+              ]
+            },
+            "openclaw": {
+              "version": "OpenClaw 2026.10.8 (dc2523e)",
+              "ejecutable": [
+                "/Users/gon/.openclaw/tools/node-v24.22.1/bin/node",
+                "herramientas/openclaw/node_modules/openclaw/openclaw.mjs"
+              ]
+            }
+          },
+          "config": {
+            "claw": "perfiles/claw/openclaw.json"
+          },
+          "poteto": "config/hermes/shared/sistema-agentes/poteto",
+          "politica": "config/hermes/model-routing.source.json",
+          "claw_modelos": "perfiles/claw/modelos.json",
+          "archivos": {
+            "herramientas/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex": "d8990e3ee7acfbc26f91265b12a1a83f0fee40d0e0f8f1f40a37d4ec21f499cf",
+            "/Users/gon/.openclaw/tools/node-v24.22.1/bin/node": "6f32069480ec14d52b6d7b1f3c7124cfbbc46203abf5ddf5c65b127435f3f329",
+            "herramientas/openclaw/node_modules/openclaw/openclaw.mjs": "98caf565334400768d4a8ee54f7f9302c4b2c79881552c79785ed7d66da6a996",
+            "config/claw/agents/implementer/agent/workshop-skills/.backup-skill-review-20260912/README.md": "2354aeea325214ca72febee597f06ef89d6fa54421c1975f03805d0df11699fb",
+            "config/claw/agents/implementer/agent/workshop-skills/.backup-skill-review-20260912/pr-sin-gh.SKILL.md": "0b818283c1376ec2ba483085a1016057afc7ff97e6f5d6be9895e0d8c5c2b5b7",
+            "config/claw/agents/implementer/agent/workshop-skills/.backup-skill-review-20260912/regression-red-verify.SKILL.md": "ba2d7575fb6fd281f863997f67cb5894c6bae427e17e3d250babdf15a2bb0b1b",
+            "config/claw/agents/implementer/agent/workshop-skills/.backup-skill-review-20260919/README.md": "4a790005607e93f4b7dd7a07c0e4d6a4e11aeeda81d294458101984fdcea2469",
+            "config/claw/agents/implementer/agent/workshop-skills/.backup-skill-review-20260919/mac-exec-detach-poll.SKILL.md": "a015c8ca429ff804353a15c3283ceb185bd5499c88b30aa23fa239735d30ff62",
+            "config/claw/agents/implementer/agent/workshop-skills/.backup-skill-review-20260919/saikit-cierre-pr.SKILL.md": "d9ca2939b46fa62e809f97180ebde4059ff50190a2b6d25c733052405f0f11f6",
+            "config/claw/agents/implementer/agent/workshop-skills/hook-rojo-ajeno/SKILL.md": "ac41213a86905de55df717f4def2f75ffa8fc72d22a23f2ea5f68949d00e18d5",
+            "config/claw/agents/implementer/agent/workshop-skills/mac-exec-detach-poll/ENV.md": "f7f155f311bf50e69e7ddc46793233e7597852436010e520d0623b1d9bc2c6f9",
+            "config/claw/agents/implementer/agent/workshop-skills/mac-exec-detach-poll/SKILL.md": "0150d5ea54830ee34d7edd765d5b458e3cbc078f3822a5406bc1e294a7b7987b",
+            "config/claw/agents/implementer/agent/workshop-skills/motor/SKILL.md": "1a0e7bfd5587112c054bfb8902ffc60574cf7b6c472b175eca080d8c100277c1",
+            "config/claw/agents/implementer/agent/workshop-skills/no-op-commit-drop/SKILL.md": "3080d29c23d30087ebbb40928177ffe264ae921b6154711d1a4c116f8cf67682",
+            "config/claw/agents/implementer/agent/workshop-skills/pr-sin-gh/SKILL.md": "eefa20d4deb998004410438b648f8997e8683d666bb2b82b5c072b28c972fa3a",
+            "config/claw/agents/implementer/agent/workshop-skills/regression-red-verify/SKILL.md": "a8a6f27a7471ff2e063415c713c8c81eaf68d6db96dd65ceb3108c7045c97c52",
+            "config/claw/agents/implementer/agent/workshop-skills/saikit-cierre-pr/MERGE-POR-ORDEN.md": "9534819024f24abbfbce00342dff5d2d8a5c825aff2ee6b84f661f65f62455ac",
+            "config/claw/agents/implementer/agent/workshop-skills/saikit-cierre-pr/SKILL.md": "09c8868fcb1d264f76ffc4c4e6f956354e06db8010803ffdbf919c01c6068847",
+            "config/claw/agents/ingenieria/agent/workshop-skills/browser-cli-claw-profile/SKILL.md": "9fe8550fa4802b34bef57efe53cae6124f035956bebf90b2fee0372e94ba18ca",
+            "config/claw/agents/ingenieria/agent/workshop-skills/gateway-sync-verify/SKILL.md": "61a78e276ae18de976f2dd0d40f2dc1604ab82fda277c4348ee88cfe175fbe1d",
+            "config/claw/agents/ingenieria/agent/workshop-skills/goncloud-ssh-ops/SKILL.md": "1293829fb72436c7d654d0a4f1ef6872f9e49efcc72fcbfa480dabceaf93f529",
+            "config/claw/agents/ingenieria/agent/workshop-skills/mac-node-ops/SKILL.md": "e5b52accde2b1be7ff21f68a878721623ea2152bb9fdd7f6ac02fa89f4150880",
+            "config/claw/agents/ingenieria/agent/workshop-skills/mac-node-ops/audit-session-log.md": "de8b4656f8b0fe486be64c1b80cac4ae85ebe07ca9028b3285eef9e8c5da9ea0",
+            "config/claw/agents/ingenieria/agent/workshop-skills/mac-node-ops/drive-agent-tab.md": "90c8fc1e39bb2bc0b844ad05cbd7649c078ce41b249aa1ec5f96f75893ccc35c",
+            "config/claw/agents/ingenieria/agent/workshop-skills/mac-node-ops/kit-merge-route.md": "5b57f76069ce9c414283ee7e9fd8934004f8647ab1bb3bc243dd37f43ca0f4ae",
+            "config/claw/agents/ingenieria/agent/workshop-skills/mac-node-ops/locate-session-cwd.md": "b6a4a5a9795cbd1824890eabcb9461f374f65be44e79fb50e8b5fc5eff468448",
+            "config/claw/agents/ingenieria/agent/workshop-skills/motor/SKILL.md": "1a0e7bfd5587112c054bfb8902ffc60574cf7b6c472b175eca080d8c100277c1",
+            "config/claw/agents/ingenieria/agent/workshop-skills/openclaw-gateway-diag/SKILL.md": "e5cc5af7a5353e1d0b18fabbbe32116027a447fb89f8a8fee9951c389c12e656",
+            "config/claw/agents/ingenieria/agent/workshop-skills/saikit-cierre-pr/MERGE-POR-ORDEN.md": "9534819024f24abbfbce00342dff5d2d8a5c825aff2ee6b84f661f65f62455ac",
+            "config/claw/agents/ingenieria/agent/workshop-skills/saikit-cierre-pr/SKILL.md": "09c8868fcb1d264f76ffc4c4e6f956354e06db8010803ffdbf919c01c6068847",
+            "config/claw/agents/main/agent/workshop-skills/agent-dispatch/SKILL.md": "b4149a54b04c7818381c3eb3a0ff19935559dcb8422229f61d3e8c9b6f385327",
+            "config/claw/agents/main/agent/workshop-skills/automation-run-recovery/SKILL.md": "fb17e4c322cad827e44cb2adaa151b2c9814b28e22b734f7f29b29614fe88880",
+            "config/claw/agents/main/agent/workshop-skills/browser-bridge-recovery/SKILL.md": "b0091842d43d7725a992a15cf2aa3542976a2b1e8cc3d8a4dea16025ae062dfe",
+            "config/claw/agents/main/agent/workshop-skills/browser-cli-claw-profile/SKILL.md": "9fe8550fa4802b34bef57efe53cae6124f035956bebf90b2fee0372e94ba18ca",
+            "config/claw/agents/main/agent/workshop-skills/dedicated-edge-browser/SKILL.md": "28219583ec71882be81c16ed324a044b60d21b7fd4c5e517292ec8c294c30fa5",
+            "config/claw/agents/main/agent/workshop-skills/dedicated-edge-browser/claude-artifact-read.md": "ca026b1e68c4ad9661b11d04459d129351f4ea7fde851515ddd17ddaa882704f",
+            "config/claw/agents/main/agent/workshop-skills/dedicated-edge-browser/gmail-attachment-send.md": "ae0473d9110c4e8aaf8afa5c4a1081cfd4e0e00693489453184cecdaac1ae3d2",
+            "config/claw/agents/main/agent/workshop-skills/gateway-cli-setup/SKILL.md": "01e88c9a5cf6473448aca0f537049031471143ede9c0d33d42f17ef034bb4874",
+            "config/claw/agents/main/agent/workshop-skills/gateway-delivery-queue/SKILL.md": "4cd83e7f6778068c9e839917f33d195e39f544d369227c2d5a1005c9b382d4a1",
+            "config/claw/agents/main/agent/workshop-skills/gateway-doctor-fix/SKILL.md": "cc4b8ec45f7cbf87799266659a33409d5717e7fa93ce4002add74c33122d632c",
+            "config/claw/agents/main/agent/workshop-skills/gateway-edge-cdp/SKILL.md": "786da518429a9aa0a8895a89e6448a553e80a43547ec35e8740962ac1389fd1e",
+            "config/claw/agents/main/agent/workshop-skills/gateway-edge-cdp/monday-export.md": "1b0e889de06796964f75e3f9f1d8a1ad260ddb77ed9d6e0f9322ca45aa428207",
+            "config/claw/agents/main/agent/workshop-skills/gateway-mobile-pairing/SKILL.md": "c84bfa1819f8e2fc4cf222137db49857fad78340bc0cee166be6d88093ea156f",
+            "config/claw/agents/main/agent/workshop-skills/gateway-stability-diagnosis/SKILL.md": "632f8da9655be869dfab9ed9cd1acd50d9b01f5b972522b4e0391783130d0637",
+            "config/claw/agents/main/agent/workshop-skills/gateway-to-mac-mail-attachment/SKILL.md": "5aa63cd6611940513c5a6f6f674ab42bd8d69d1de788ac1d65f1fc4134cf084a",
+            "config/claw/agents/main/agent/workshop-skills/git-commit-push/SKILL.md": "fe05c6647226208dde9d92c685b3080ec2dc7df72a0bebd3270bf49163edfbff",
+            "config/claw/agents/main/agent/workshop-skills/github-private-read/SKILL.md": "cb21b431123ac489b7b0ada21304946059e0afd88808e796c7c21999f5318968",
+            "config/claw/agents/main/agent/workshop-skills/gmail-html-email/SKILL.md": "52e05217f7b054b6b57a82869077c35612f86c4ff45de1ca6025b67d348c49cc",
+            "config/claw/agents/main/agent/workshop-skills/local-image-inspection/SKILL.md": "2f5259af8febf9590079ab08afae2bd2eedc691f746d7b6c3741d2248171f583",
+            "config/claw/agents/main/agent/workshop-skills/mac-agent-transcript/SKILL.md": "8b5f396f05be602604474eea4b956ba02f4f063f609567a788c16291a0828310",
+            "config/claw/agents/main/agent/workshop-skills/mac-input-control/SKILL.md": "4135c50337da7c8760eb7b270df69ead4dd2dd5dc0b438bcc4dcf8d97ba9e2d4",
+            "config/claw/agents/main/agent/workshop-skills/mac-node-file-transfer/SKILL.md": "7802aba7206abe948908aea4a7c9e64e0e8287e8450950514abf33564d5c37d5",
+            "config/claw/agents/main/agent/workshop-skills/mac-screenshot/SKILL.md": "d230e57d3a25c099f908e8a9e69160dc4f58ed14dd743b50620afdeafa2521bc",
+            "config/claw/agents/main/agent/workshop-skills/mac-terminal-control/SKILL.md": "d6885d8fcdd6f14fdcefdc42e55ede9164face713ef37e44e1e42ded94115c18",
+            "config/claw/agents/main/agent/workshop-skills/mac-tmux-control/SKILL.md": "c150828a12dc0777eee26d39aa9acba9db2d194ca6d372de301569ec21b5d8d3",
+            "config/claw/agents/main/agent/workshop-skills/mac-wireguard-diagnose/SKILL.md": "26625e4bcd6d0e0dc245b46c1288c2820c9877be1ce06b1362a3b8716ec29192",
+            "config/claw/agents/main/agent/workshop-skills/motor/SKILL.md": "1a0e7bfd5587112c054bfb8902ffc60574cf7b6c472b175eca080d8c100277c1",
+            "config/claw/agents/main/agent/workshop-skills/openclaw-config-patch/SKILL.md": "135c1836360280b11d647f2d4fc67d2a40633e38eac4aa63b6c4d8fef1e1caa9",
+            "config/claw/agents/main/agent/workshop-skills/owner-report-delivery/SKILL.md": "70582e633b94e6bbfc175003a2b1e1aa1ab9b4c2149938cb136e8ea68ce40b00",
+            "config/claw/agents/main/agent/workshop-skills/post-merge-closure/SKILL.md": "7f3ef75156d60d7895a54ab3185be0c32de4612a49cbd1b3fd88608ebb2547a2",
+            "config/claw/agents/main/agent/workshop-skills/saikit-merge-route/SKILL.md": "b49e537ee2eba74daec3a1c1fc23ef8d8627956e49a08459c9ca98eaa56cbb38",
+            "config/claw/agents/main/agent/workshop-skills/seguimiento-tablero/SKILL.md": "84e91a682dd40beb1da0633f4599d5f4798c4c283825d2aa74b8de1ff411a508",
+            "config/claw/agents/main/agent/workshop-skills/telegram-ack-reaction/SKILL.md": "de5cc937936a29c0c708c9b1b8e55800cddb002a921a965f2f2266633cde5941",
+            "config/claw/agents/main/agent/workshop-skills/telegram-bot-send/SKILL.md": "fb19d9246cccd57846c7facf916d28dbb902b9d5df4633d1df424545a40638e6",
+            "config/claw/agents/main/agent/workshop-skills/test-discrimination-verification/SKILL.md": "5e65b7eed8bd9af1469fd6be5dad42ccbd7836d261d28e3648b261beaddc041b",
+            "config/claw/agents/operaciones/agent/workshop-skills/browser-cli-claw-profile/SKILL.md": "9fe8550fa4802b34bef57efe53cae6124f035956bebf90b2fee0372e94ba18ca",
+            "config/claw/agents/operaciones/agent/workshop-skills/gmail-compose-rich-mail/SKILL.md": "c49a32b3a418476bf5c06eaba4b6bf33e7b307f22e0acf5ace5a907625379197",
+            "config/claw/agents/operaciones/agent/workshop-skills/openclaw-cron-jobs/SKILL.md": "6f0ffdbff40905f73fa978a783d772eaacb271fc42d1adaed60c0da212292dee",
+            "config/claw/agents/operaciones/agent/workshop-skills/openclaw-cron-jobs/exec-locked-fallback.md": "6b076eea435758e5e26ad9257ab9338376527acb9509f54f26954b81b1eadd00",
+            "config/claw/agents/operaciones/agent/workshop-skills/packing-baseline-html-pair/SKILL.md": "78fa058614cea45ce9b1fc4e617aa1e043393a22e3c1bb9ff4ac921d73d13afb",
+            "config/claw/agents/operaciones/agent/workshop-skills/sellercentral-browser-census/SKILL.md": "23bde8420208e5ae6439e0280ba97d014fc706c4f88755b5ba56b9c5bdae6f4b",
+            "config/claw/agents/operaciones/agent/workshop-skills/sellercentral-browser-census/customization-capture.md": "e6e1f01b7285db96c27857079953bec3043ceef364ced48d8bff4eb58dc06a48",
+            "config/claw/agents/operaciones/agent/workshop-skills/sellercentral-browser-census/odoo-census-crosscheck.md": "51deb5162d676fa84ddc147bfb79ee9790450b54dc3e0ccf68a1f03119bfcb07",
+            "config/claw/agents/operaciones/agent/workshop-skills/telegram-send-gonserver/SKILL.md": "b993ee4feca2e626729b13ba88a3e96de6e740c9fc0dbfb5d315d3d64dc424ed",
+            "config/claw/agents/reviewer/agent/workshop-skills/superseded-head-review/SKILL.md": "924a12b690223d815db0ef770140d3e3e020be88da4ab47f950e0c3a201da7c9",
+            "config/claw/agents/reviewer/agent/workshop-skills/test-lock-vacuity/SKILL.md": "be1174d844f08239aa860715ad95737790897818383f84db3926e55fdf699253",
+            "config/claw/agents/usuario/agent/AGENTS.md": "16c6f59f63642ae2c1c4bbef17c97b9162bac54c448531020b34bf7388561442",
+            "config/claw/agents/verifier/agent/workshop-skills/cron-payload-verify/SKILL.md": "d77cef51dfc0e70719ca7f2bdd2fd02f1f7e3d29a1ba856a8051b79c03001c65",
+            "config/claw/agents/verifier/agent/workshop-skills/egress-suppression-verify/SKILL.md": "5aa70d0b8757aadb46088574d40c82746e09f9e7f392a56f5115d135b1babf39",
+            "config/claw/agents/verifier/agent/workshop-skills/lane-claim-verify/SKILL.md": "2202dc84586050cd48c4444dc5460dbb0ea2202534b2a0479cc6ac3aa6b06ac5",
+            "config/claw/agents/verifier/agent/workshop-skills/lane-claim-verify/history-rewrite.md": "3eacfd6319e4d3b1138e48b6efdebb823900ff37b8394759ffb067bbafd762c4",
+            "config/claw/agents/verifier/agent/workshop-skills/regression-triage/SKILL.md": "dd991e6e229e30257095c71d23077d1dfa50934c467b5c438b2768662800cb11",
+            "config/claw/agents/verifier/agent/workshop-skills/regression-triage/full-battery.md": "9786cb01ea2a2c26abcd54026b278e44f4851e18a496ce33c90a70d05225afed",
+            "config/claw/agents/verifier/agent/workshop-skills/test-discrimination-verify/SKILL.md": "5d8e15ecefacd7f8ddd76da236039d8dfa52dce41ee65a593e09500949fa1985",
+            "config/claw/agents/verifier/agent/workshop-skills/test-discrimination-verify/fixtures.md": "d506c71a6c5d8b05ab7c85b59668ed3a6a087adb9de6252c3a0a9b42fddfd8ea",
+            "config/claw/agents/verifier/agent/workshop-skills/test-discrimination-verify/live-leak-probe.md": "b21ea786750f065de62f43d715ad1824feb3a3b9801b595d8eb6c9faa10ce8ba",
+            "config/claw/agents/verifier/agent/workshop-skills/test-discrimination-verify/rules.md": "c47a1eb6b83c5f1f35ec787a8a74e491bb889da02dbea4250115189253d35bfe",
+            "config/claw/agents/verifier/agent/workshop-skills/test-discrimination-verify/scripts/mutation_battery.py": "66c5d7d8d491802a7ae1ba9b4dc42a653e028ea334216396f3d963f82994e64d",
+            "config/claw/docs/superpowers/specs/2026-09-12-structural-investigation-guard-design.md": "bb777c9f1a74891fdc19f9d38351c0e7afdfdd8a2d5543eb9464e65ad821d48a",
+            "config/claw/docs/superpowers/specs/2026-09-18-tablero-de-corrida-design.md": "e6e893574d8fe0c398abea8efc07208090f35a329f99ec698bdc0bc43fd37d9c",
+            "config/claw/docs/superpowers/specs/2026-09-19-native-harness-orchestration-design.md": "a4e7c9a082a9f572bc74bebbf6688f698909db1f98e0f0461659c183f893ff53",
+            "config/claw/docs/superpowers/specs/2026-09-21-fase9-cierre-design.md": "f99e5792ba4bc49401052684bd55e70b0c8d433904546abc2d8c85953050dfd7",
+            "config/claw/docs/superpowers/specs/2026-09-22-centro-tareas-design.md": "d09e554660cf9682365ef0a022ac3e8813612305a4d81399388024db212b2c22",
+            "config/claw/docs/superpowers/specs/2026-09-22-openclaw-runtime-separation-design.md": "42f9a48847a5797b69ae11b082151b8f1178f0f1d63d5e3ba91e7af29cdec766",
+            "config/claw/docs/superpowers/specs/2026-09-26-seguimiento-inmediato-design.md": "8fd28a9a59d4de09d6298029851418a63232129a6ec4d482cb92fa266b9cef55",
+            "config/claw/docs/superpowers/specs/2026-09-29-director-corrida-design.md": "9690f6f7b91e2cac6e353f296f6f195c490c40c75737880c9c9537c6f0c3f39f",
+            "config/claw/docs/superpowers/specs/2026-09-29-director-corrida-transiciones.md": "3a2a94bf2e59ba71b94c80dceeec8ab4ec4a179cfd7ab2f18a5f5bf45fab4b1a",
+            "config/claw/docs/superpowers/specs/2026-09-30-encargos-agentes-design.md": "d1eafec733dbcff4ac0132f3f90f40fbbdfbf96bfcdf36a296fe2e1746b9ddf2",
+            "config/claw/docs/superpowers/specs/2026-09-30-encargos-agentes-rationale.md": "15d595f7c03586c34ba724f0609e4dca7d89771416da72fd4e4477f6845fccbf",
+            "config/claw/docs/superpowers/specs/2026-09-30-progress-events-design.md": "e1c67e8839f65810ef5394b8dd2d25bc443e30c4b5e5fd8c0eccc76719efb11d",
+            "config/claw/docs/superpowers/specs/2026-10-04-flota-poteto-contract.md": "e1f700090adc257d09b1ae50e2348c236ccd7ae98ec2fa9bfec99fc19b671786",
+            "config/claw/docs/superpowers/specs/2026-10-05-sistema-agentes-unificado-design.md": "10fdc545cb4b50b30d3e94ece262b7611b75fb2bec7b1d60b07cb307e0ec5456",
+            "config/claw/docs/superpowers/specs/2026-10-13-sua-01-frontera-durable-design.md": "b3cf5fad2e369a3f0e3c2fa0f0a01273a4fd87e1f5b883430314ed8918a45c5f",
+            "config/claw/docs/superpowers/specs/2026-10-14-sua-02-controlador-design.md": "1683f4b7694a7369ad0e06f675c64485b0c9474052c8f5236a21ebf1692ad7ce",
+            "config/claw/docs/superpowers/specs/2026-10-14-sua-03-trabajadores-design.md": "549d4f3c2d7c72e7820c9a270d225416276f23734c66697f888eb689bf40c20b",
+            "config/claw/docs/superpowers/specs/2026-10-16-sua-04-modelos-y-agentes-design.md": "075a3495f7d91db908da90be02a1b0673f8e5bc43a3c126ab34fc4a25a4968ef",
+            "config/claw/docs/superpowers/specs/2026-10-16-sua-05-ingenieria-y-calidad-design.md": "ba6e76680573d5c5b8dc9cbc8070daf9b710e67c4750bbc6e75c0d5682168bc2",
+            "config/claw/docs/superpowers/specs/2026-10-16-sua-06-seguimiento-y-panel-design.md": "8382adbd2c148428f10c42ab99d58676c9718967d658d9edfd9ebe8df6dbfac6",
+            "config/claw/docs/superpowers/specs/2026-10-17-recertificacion-automatica-design.md": "14a5bc25c060783aa010dca5ac51bcb5654abfd8365953fe7965472fc2538589",
+            "config/claw/docs/superpowers/specs/2026-10-17-sua-07-hermes-design.md": "ccc432d1c20787b6a93ac5a30368c744fbc44d4de2ba8b62672730d648b46d13",
+            "config/claw/scripts/agent-work/contexto/adaptacion-openclaw.md": "01559d8cb2ade807dc7fdbd3c33430236bf604779f229296f7be612aac005ba1",
+            "config/claw/scripts/agent-work/contexto/adaptacion-opencode-run.md": "8084a0a91d397ac2d97f6e5bc8b9e839851778e6b2a7d2bee6de672768caa2cc",
+            "config/claw/scripts/agent-work/contexto/bloque-agents.md": "87b322bb8827bc45daa31d189bc8cad09a02f63c68d4e65e6c4a3648589dfb92",
+            "config/claw/scripts/agent-work/contexto/poteto.v1.json": "06f5bd907b0b2726c31c661414d3873da1ab9c8d240718ef08cdcdfc7cd6e61f",
+            "config/claw/source-revision.json": "5de8a9cd3ba6f72fbbffed439f469336946f8605f99960434119e320527293b4",
+            "config/conf/flota/manifesto.toml": "b7517dd6989098dd0787f7ed5c5e04a08df7a0ca4d2ad9846112f6d91e34618f",
+            "config/conf/source-revision.json": "1f1288711cac242d8fd09cece385d8b7111499d5cd665f900c165eee1e4bb187",
+            "config/hermes/claw-routing.json": "c44035a247f84d77a9ced2d7b75a11da2ff6c8a74934f77f4e98ec412f7ceb4f",
+            "config/hermes/director-plugins.json": "9a29ca9cc0eca9feed77934de9ea6de247a2b25c9b714644b33cda4469353276",
+            "config/hermes/model-routing.source.json": "b6e02cc3ca15a17aa59b9677593867e5e11cfeda8234453fd43dd74960d18ccb",
+            "config/hermes/plugins/goncloud-team/README.md": "6a7c44e9338ad9314c3544ff0e08c0f9c9201d5f05111576e69c635485bc4295",
+            "config/hermes/plugins/goncloud-team/__init__.py": "3ae5673ba02c0eb8c1047f58514d4bc09282dcb22087c1de95dd15f92e6fea2e",
+            "config/hermes/plugins/goncloud-team/carpetas.py": "a25973cb7b8ebd73302ffaebb60af8f1c3285b2b78bab37b583e5c24bb7e2156",
+            "config/hermes/plugins/goncloud-team/entrega_pr.py": "9fe35d98bcf667758f317a44e61883cdc0d3ee1d4ca9cfff8a2b5917af82cb45",
+            "config/hermes/plugins/goncloud-team/hogar.py": "127dde5cd0d207a85713e53bec39eb7fe0e4686bc80f51fb91393ccb388c1353",
+            "config/hermes/plugins/goncloud-team/jev_auto.py": "b347fd921b8cdc421b61e441dd6c89309075362b2ded38c747e6c4b95865563a",
+            "config/hermes/plugins/goncloud-team/jev_cliente.py": "cffd9bad1b823fb1fbc204c9d0dd4d15cdd2fd8e2aeb35a81d39860f607420d9",
+            "config/hermes/plugins/goncloud-team/jev_decisiones.py": "d4b690233d42cc91a113d85a7ca16f0757bf3ac83b2768532d3a9f70caaa9d9d",
+            "config/hermes/plugins/goncloud-team/jev_estado.py": "f6f047a9f9ded1b32e612372aa7a0f4e9f7fb68f2ba795e2f66b84ab6321148c",
+            "config/hermes/plugins/goncloud-team/jev_texto.py": "4a646d8ec6d4c24fc1bab059bec77c68c7b3a62d77030de284e5f6c6794d0ed2",
+            "config/hermes/plugins/goncloud-team/muse_bridge.py": "bda35d28d047e90b2d225a018c879eec845671b2df59d3f6dbb574de88951a54",
+            "config/hermes/plugins/goncloud-team/plugin.yaml": "ba8cfdf4009dcf423e2d5c97de3f83eda4ae74b3165ba69cc5d025733bf1a8d2",
+            "config/hermes/plugins/goncloud-team/poteto.py": "f9ba32ca16e419bf344a59e845130f59a21ecf1b82800ee3eaccad5f6ade2d18",
+            "config/hermes/plugins/goncloud-team/schemas.py": "2ea99487d984e81676fde464b036adc2abece1a2439c90a4ef81cea776a5976f",
+            "config/hermes/plugins/goncloud-team/subscriptions/__init__.py": "69052f22624ed10f6547b0084e8799cf5076d80c24e351c123e069ed678b55f7",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/__init__.py": "55432dde32946f0e83d170e7e010db69e2cc72345eec3fbc3fecd46dfdb49692",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/_http.py": "64104f3a6b1ce17a922ab23ae724ecaa2e64f9ec9e641c9803a47cf00bb65cfa",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/_live_probe.py": "3567bf274be7357704855bd00f6968ba489407731f172da72a025434eef4d202",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/claude.py": "9586be1c60d32abcdecc90751b28a824961f98ed89442c66afa9215c9460f50b",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/codex.py": "fde7ecf589b4b8067539d196f2a02ab2561a175ecf2e226def85c4a120f58fdb",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/deepseek.py": "165a4913cc4e9838d2e3dfd2109206968f1dbc5020331dc81ba56fe73476a5d1",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/grok.py": "5f3ec340477ca8b8bc67d854b2fa66b18bcb9357e9bd254988e84c24ff0b58c8",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/kimi.py": "052f8f65e6eee145228d86196a81a3c976956b64ecc02cb68d4ef3e56f16c804",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/muse.py": "d1a359cd7285a51602a29de1abeb3484965d26085afbb922e8c5e5bb6429cfc0",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/opencode.py": "cbbb3034fdbebfe6f897f438dcf335a7734d331086c688411ece29006984b714",
+            "config/hermes/plugins/goncloud-team/subscriptions/adapters/zai.py": "ebdd8ae11233fab4b8da4977fd8b2e7ab3c9c38e42f62da6a261e90037410d1b",
+            "config/hermes/plugins/goncloud-team/subscriptions/catalog.py": "90c2fae29e60974041b4eab930dcd425699f415fdec8d39660e324fc2736669e",
+            "config/hermes/plugins/goncloud-team/subscriptions/private_files.py": "dfd3dffc891f5f6d42fc80f55000266d7ca34af088fa37be4af4e268b455581a",
+            "config/hermes/plugins/goncloud-team/subscriptions/process.py": "93d8efe628189ac02570e1e0451c159b9476789bbfa3d92dd8ef9b64ec93facc",
+            "config/hermes/plugins/goncloud-team/subscriptions/redaction.py": "42f5ca2842d124ec236d8c90c107882c450eb55a08fd0c38df273dec6ddbd398",
+            "config/hermes/plugins/goncloud-team/subscriptions/router.py": "914df85d3fa9184c24d844b4de22a7d74488c8bd44849b443dc365811612abfa",
+            "config/hermes/plugins/goncloud-team/subscriptions/state.py": "d26c838ae2a3f6edf49f3637832936ff4d9f158c8685e4e8122c5a09aed7d156",
+            "config/hermes/plugins/goncloud-team/subscriptions/types.py": "b9e2e0161d0994f45cff6f6ddb5333fce2c1e27a01ba05bddc613960e2cf85b4",
+            "config/hermes/plugins/goncloud-team/workflow.py": "2b001b44dccf7659c84d6feeb98b16ee59c42ef49ac3e93ff54cfb8d86db8b6d",
+            "config/hermes/scripts/backup_hermes.py": "d77494339bee97bc0cb86638f9bbf5bda98f37d612124e21d7a8008da1de0177",
+            "config/hermes/scripts/claw_autoupdate.py": "5e6b56ab23d5db5705f1f6b264041d507ee5743e1cdb281a86e2d153bb70f3d7",
+            "config/hermes/scripts/claw_models.py": "2f45e9269fb51da8526be6a92c53b0774aad1b346594887859d2d9e7455affc9",
+            "config/hermes/scripts/claw_parche.py": "e10c019e57ee773fde572288495b1243669925f57a8e6d3e84dfa4ac7bb3504a",
+            "config/hermes/scripts/configure_subscriptions.py": "f19180e0ad323910f53b24656e6bdc6475c61fdb79ef95ebe6062983c133dd2e",
+            "config/hermes/scripts/configure_team.py": "1e285922b6ac860c32af3adf5696fba961fa658d98f351fb459581487735ce33",
+            "config/hermes/scripts/hermes_autoupdate.py": "4d7c1288c91b2e617948135010670fd682761c4aff596c5e86a553e9911ab8ba",
+            "config/hermes/scripts/jev_medir_ruteo.py": "5c7a8a5925e1c175bc9914fac29985787d9cf3bd6fa2f24451fbe9c892c5464c",
+            "config/hermes/scripts/jev_medir_skills.py": "cf9344f22683adb6ccf08043fb46f5fe378f2686b803d1cdd7406cd7721b1b41",
+            "config/hermes/scripts/model_lines.py": "1d4dc82f4c4ea03937a5751f2a2728cb7b5feb911e4aa8a0f0d088efaa0542bd",
+            "config/hermes/scripts/model_watch.py": "efc5f5942f4fc1070d801f39440b75efc642924ea227123680c61ef163d073a8",
+            "config/hermes/scripts/pinned_models.py": "9353c7653f8d1000ddc3029117f85c00324ca231b0812c8c6927379321f8da06",
+            "config/hermes/scripts/probe_route.py": "b79f1427068fd948c8f76661f77f8b2eeb1afd41f0a57e5377c6c216f5efbad7",
+            "config/hermes/scripts/promote_model.py": "94cdb394346423e221f41b0a8d77260bfe6c64ba4ceb4ecc736ed3f45dd0712b",
+            "config/hermes/scripts/restore_hermes_check.py": "6f7478af9d65fa89cd57a6198c7793ac7736427747ed2a7d32582c8bb6100b1b",
+            "config/hermes/scripts/sonda_poteto.py": "b121e538fe4bc123893e20e942d7b1d870b9f21147a175a91bb2e7a574e95436",
+            "config/hermes/scripts/verificar_pin_g.py": "c7deafe1fca69680e34139f72ea0d96c7df4cf31d848bf43d27bc67880f2f1f9",
+            "config/hermes/scripts/vigia_comun.py": "b18d08eead9788a73bc66e4ca56814929122a4fe849397724a20067970d6b870",
+            "config/hermes/scripts/vigila_modelos.py": "3bc888024abb07466e72180baf1bd702f5d0fb349888b27ceac39861dbe07317",
+            "config/hermes/scripts/vigila_tareas.py": "0e5dbf77f3052fbbcd41119267cc189d8e4c889c8e98eb0c47eb9e6b809a2942",
+            "config/hermes/shared/BUSINESS.md": "bb5dd90d083f5d76c8362b693007de059505aebaa0a6d9c1f07ea34fa7f39d0d",
+            "config/hermes/shared/CONTRACT.md": "dbdc4255634039c2115a2caa807c934d73606100ba31b86f8d6fc9359a976fb8",
+            "config/hermes/shared/sistema-agentes/g/scripts/sistema_agentes/__init__.py": "6c26d7ada6c35d24936b5edf26bc43ab947831ff390428bd6cafefed22c379ca",
+            "config/hermes/shared/sistema-agentes/g/scripts/sistema_agentes/contrato.py": "071d3af3ad97549f2d32a8b1489117583ffd0c04ad90ee2d3e3092e3f977d959",
+            "config/hermes/shared/sistema-agentes/g/scripts/sistema_agentes/derivar.py": "e2858a084ab582ec1038933247d314a6790ec6db8f16d62e59a1b88ecedeee25",
+            "config/hermes/shared/sistema-agentes/poteto/adaptacion-hermes.md": "ab069bf52a7b1fd5d9f0b686f6750f797ad0393c04dba50f4a76207768bb83b4",
+            "config/hermes/shared/sistema-agentes/poteto/bloque-soul-hermes.md": "b39796290a323018653434f7dd7d6f48f561a953024ad9242fd146f74883f6ae",
+            "config/hermes/shared/sistema-agentes/poteto/hermes.json": "bbabec0f85f6e0ee1eb457ca3db9722ac3c6d48372e3de4475aec7c592cc40ee",
+            "config/hermes/shared/sistema-agentes/poteto/poteto.v1.json": "06f5bd907b0b2726c31c661414d3873da1ab9c8d240718ef08cdcdfc7cd6e61f",
+            "config/hermes/shared/sistema-agentes/poteto/skills/architect/SKILL.md": "2b2aa56c2e40a256d7c1bb0b0bdb052255234fabd19b99ac8e57148c495ccc2a",
+            "config/hermes/shared/sistema-agentes/poteto/skills/architect/references/design-red-flags.md": "d0e639e4cc588ec865f930d3a4111faad60987ae36925917e319d7ceca7c69ce",
+            "config/hermes/shared/sistema-agentes/poteto/skills/architect/references/rationale-template.md": "3bd76d4286a288b55a195cf786f9a25632b9f5e362271c006e8ce16e66bdc97b",
+            "config/hermes/shared/sistema-agentes/poteto/skills/architect/references/runner-prompt.md": "21dd5314aab778c5007228027a4591d97693fbec6ab86524037772b63f40948e",
+            "config/hermes/shared/sistema-agentes/poteto/skills/blast-radius/SKILL.md": "03f44dbf518c0b87b19b70c57af40cf74dd70fb5affa6550ab508751325760c0",
+            "config/hermes/shared/sistema-agentes/poteto/skills/how/SKILL.md": "d99b9bb1ede287fed7add2d457507024c0cfaecd78259fa0af99380edd5d8705",
+            "config/hermes/shared/sistema-agentes/poteto/skills/how/references/explainer-prompt.md": "ddb89cebefc24e2b54517a331aedfe045b6971e101f45c71b8cef4cccff45bff",
+            "config/hermes/shared/sistema-agentes/poteto/skills/how/references/explorer-prompt.md": "6300128385ee940fd42ecb84b0e623435440a2dc283eae54ee4a52ba56947ba1",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/SKILL.md": "40cd8f4485e1b923b5f457be3a84dafc4f167185ad7a6bf465fd4da5945a9550",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/authoring-a-skill.md": "c9c78d0e9a69001259ff95db6a2107775b339b8b0cc8caca0cd27d950d3bee4c",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/autonomous-run.md": "f0bd965bdc5f3a7d8d90e23c4c634e3d70e34d2aeca662141f3c0b5964e7b6b5",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/autopilot-full.md": "7193f2435d7d641358c6afc9fc9721798f8bc30305c93de6bde5ee351fe7385a",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/autopilot-stack.md": "c7c73c6bbcabf675deeb945df41764bf5536a818527452708a179247b46340c6",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/babysit.md": "c5ed808ed88b3bc01bb4a65576ab11c91a10ec6d3d09fe5fc8803e12bb21f576",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/bug-fix.md": "1006fa3d97e38b6b513ddab6904d58b464db8299982d7e957334a180335ae8a8",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/eval.md": "cbcf29215953fab344b8837fac1ff9e5277d6030a8e01d1692a8a8a8c5ea1ebf",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/feature.md": "c96bd4116eb4580f92fc8329145dedbce58015c33a87205b50cbf5d64104a5f8",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/hillclimb.md": "f59daef8aee51d04c47b93d58d28d9cd4e4b4d8353e6689604aa172f0275ade8",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/investigation.md": "dc66bcf6af3a074fc7f67aa5e12b93ef571a4fb4d8e17f2f1af5ae5359f42e46",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/multi-phase-plan.md": "24063831a78942376c41e76b0cde911560e09a7355563011d2df2faf453add3e",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/opening-a-pr.md": "9ac02dc17c4c9c0244bbd77c11b6c690984e7a7ef29ffd639f5025cf190e13eb",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/orchestrate.md": "4f03379ca523aa3c339fac687e30b9fa060f05b1106d8d96aab660cba79003ee",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/pause-safely.md": "2fa4812aebb034e8845752b014614b1a45331d1d380c07e9321b849cd520805b",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/perf-issue.md": "5d88fa8412f19f62d65415bb70b20edb343249f2a04a3a125b6740f43bc8f2db",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/prototype.md": "1eb3c6ef0a6db34d42eb9cf1064f988d21e0d11bddd1e7b606c765d3634a478b",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/refactoring.md": "3c42377601236e9eb7f43a69beb4bac807971810c327431b02120af18aa8fe8e",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/runtime-forensics.md": "5d660620a2791801567fa7922f387035fb47b0a4dd1fb2caebc665d120cdac89",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/session-pickup.md": "1b2f58f40e4c60fdfadac12e97ebe9f4923241add1c06bcab3336f7fab110b8a",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/shipping.md": "7e54ff11a5f76f30693827c58f2e6348b6d4a1d6323d83711a6b8e14703e17b9",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/trace-forensics.md": "e8a671fd5511a894f90c933bca75815e7a1d730cb53333075a80b0927e81acfc",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/visual-parity.md": "6881b42014302942de137eabed12174c2ab935cc509f8268189f41983ef467a3",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/playbooks/worktree-cleanup.md": "8bc16702515b480783e6d826476e1fc0ff18df6ae12ea8156490995f11e70f8a",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/references/agents/comment-sicko.md": "3e239e40b7b4b9beb2cf7f3ccc57f2388eb8b69bd1ba8ae888ef87ef6e0e2116",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/references/bugbot-triage.md": "b2d146c770d8d3593e1ef3d77b668039b8e1f78093ea1a86f1d45d7f99614309",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/references/codex-tools.md": "0766ba83145c5e625f2db22393b90beabcd56da6da39f0611dbf5f99f8f35d1d",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/references/copilot-tools.md": "0c668ee63f2f87f21e7e72c036d7702eb8844acf8679de2aaae7a5e8f561af24",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/references/licenses/NOTICE.md": "232a21a3bf88991185e6837270cba41cd83646c3998f91942c823fecc4440b4d",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/references/merge-safety.md": "277f7e43aa53ee8ab526dc322e16387eca6c120fdb203e58f183d360619ddcec",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/references/pi-tools.md": "7558c79be815e8a08da4cb54f7d22e20baf9bb294ddb39d59ebf5dbfc40ed40b",
+            "config/hermes/shared/sistema-agentes/poteto/skills/poteto-mode/references/resume-storage.md": "3b89633ed87a5fc1eb1665d0689f52d7cdb7b5c0433e243a345054b60e952db8",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-attack-the-premise/SKILL.md": "c8ce0f2bdc9006d17b0b9347f2e7505170dff398857af62abd0ead6bab877daa",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-boundary-discipline/SKILL.md": "e59efe04ed66e3a403a50e70640daeb5c7b592598687a67b6e25ceed6251d19f",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-build-the-lever/SKILL.md": "d142676018f4918119f5a8095b933b17749b1173c8a74dbc679d6f19d3f88032",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-encode-lessons-in-structure/SKILL.md": "1568ece8b96017b6e244530f96d937317d0ac602a58f25415d9f90073b378d6c",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-exhaust-the-design-space/SKILL.md": "4abd4aaca2527af82dba58d908c7d91c33a0fe0f2145aa46a19bcf7fb5525db9",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-experience-first/SKILL.md": "688917387e19da6a343fe657c726eb65998937da69ed7d29f1dfaadb53516a10",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-explain-the-number/SKILL.md": "f376dfbb8086c76e313036d303628bf454e94aec9c2a5ccfcc7fafef1aabd72f",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-fix-root-causes/SKILL.md": "4c5fd0fb9eb4754dff9a6dd4d1de7a87dc927f5154ab3afd643bedb9b7f8b6b9",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-foundational-thinking/SKILL.md": "a3d9bf77ebb9ed5c5eb9ef6ae719f6eeecf5fda6122a134a89ce6856b14577ab",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-guard-the-context-window/SKILL.md": "6db84b7d5e67fb4e2e6a260605f2c2e34fbeaa1bc0e49645eef6f00a17543778",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-laziness-protocol/SKILL.md": "4c1514611a4d85f58a8d31403d6541aacbd1254bd981667adf6111b08295c539",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-make-operations-idempotent/SKILL.md": "576260695df90ac979f01c03321d5a8cb7bd824bdbc5d3fbe6790ee1caa19ab4",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md": "8014f4eb04fe50474f7e3f9286bce2de276116b8b669cd2fe7b2100972efb68a",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-minimize-reader-load/SKILL.md": "d10f8f6f185a61df8db1b5037bcf638f815d49f3cfe1fb3613f9a858896e6de5",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-model-the-domain/SKILL.md": "3d14c29b3aca902ed7bf11716df971d4561f8e9624d70e2a9650feb918a22619",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-never-block-on-the-human/SKILL.md": "060b88f06b57486102bd7ac1c6fc73b84092f956a836d9c8947cc768a8eef4c2",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-outcome-oriented-execution/SKILL.md": "55f1baeb9951f8584399bf82042e78f623e1f1dd560cb9b6413302bde43fd439",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-prove-it-works/SKILL.md": "779a5955bfcff1bdd6274a3287ac527fa6b00246cd0d66d7cf8ffc354e4d76ce",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-redesign-from-first-principles/SKILL.md": "e54d6d205206261850eb5eb28026f0820773e01001485c97b4b423bab18b2c05",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-separate-before-serializing-shared-state/SKILL.md": "dd432081bc5664ce1a9513a6b58207d8e4685e0d0cb894278204bd08a637f601",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-sequence-verifiable-units/SKILL.md": "5bee6caf5abdf7b05b3e7c8d3e66549d108c2f798d8155c352a1764d030816d7",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-subtract-before-you-add/SKILL.md": "af2dfa66022e7a27e05fddf17ad8d8e450ebd4150ca3d037ccf25a8191ac0882",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-test-behavior-not-implementation/SKILL.md": "c1da1aa8a5550e692ad474ac8157ede82f7ba204c41f7e7ca3423bee7c0c3898",
+            "config/hermes/shared/sistema-agentes/poteto/skills/principle-type-system-discipline/SKILL.md": "388d8966513f19f8357b4250044f7f6d6c236874224fdcf8411667b548052e9a",
+            "config/hermes/shared/sistema-agentes/poteto/skills/tdd/SKILL.md": "276f883002b7a0b9be4ec982d0752fc68eaceed8e6db502316a87aa4600d152e",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/SKILL.md": "c536ba59451dd43354aeb67672f05245888f7b9d3ba1f0cce2b52d3b90ea64ce",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/epistemics.md": "98fa3a42c087fe73b0078e740d3df02fc7cfbca56d714cf09825da358a23b643",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/investigator-prompt.md": "0d374a18311628e62bf49893213aa31fc53f8111f5a8aceb5b9c63dad2354c9d",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/source-playbook.md": "9ae9dcb9d09111c9facc68510331c5aba4aed9b1b057314ff1fc0e166ad3993a",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/sources/code-archaeology.md": "a4a3970e9db448054aed676f3f7feeee667b4b69f0bd57c8fd72b751be687cc7",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/sources/databricks.md": "236ede7aab6454662a992db088a5393537a5233a4c26719c93188f9e174488f6",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/sources/datadog.md": "b139faac5dc11b8f26c8255dce6033c1a6ac143b038d3dd103f2034c5dbec9cd",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/sources/incident-postmortem.md": "bf2661f1a81c37700884a45b77d6289be0c802b065febced31990e6564510839",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/sources/linear.md": "01304e7f1badfcfb78babbb0edcadeb3cc8dd3f713793420cdff24ba190f907c",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/sources/notion.md": "3bcfa695c49dfad4ac036d5d7181c12585f55ac04f1936198d16ab75a2788997",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/sources/sentry.md": "2d4f83048eac1df530b399e2aed75dd7c9c18577b7665420aaeb96d0ceb0b702",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/sources/slack.md": "3bc6309f5c7b26ace3b919dbd7f7b048861dd2020f910fe24f656cc74b3b661c",
+            "config/hermes/shared/sistema-agentes/poteto/skills/why/references/synthesizer-prompt.md": "07cafec27a3d6fa9650d162d7a2c8e97a5262d52203592803c5d6a91c5036594",
+            "config/hermes/skills/motor/SKILL.md": "6c30cd9d43fb266c620c9f5d53b12b1e27d5584b534dc0a87371211da53c7f68",
+            "config/hermes/source-revision.json": "3fdf3349621f6cc6449f2f3fdf2bc2f135f806f75c5a82ea886a7402a7a496cb",
+            "config/hermes/team.json": "acc7c40b4aad410f8559eeaa7be8628a0a1297e6cf61361b5e9fe20de029ad27",
+            "perfiles/claw/modelos.json": "11346c395a0f66e815795bdb5554a6092938d16d885baaca52440da835112084",
+            "perfiles/claw/openclaw.json": "0d1566862844b039bacd3ca8ab6bb1101354a61a76d7aadf682c39deb21812b8"
+          }
+        },
+        "preparaciones": [
+          {
+            "estado": "rechazada",
+            "generacion": "2b9dc0cadde28dec0999bf5b02067ae29b2ecce2",
+            "componentes": [
+              "codex",
+              "openclaw"
+            ],
+            "motivo": "fallo node (salida 1)"
+          },
+          {
+            "estado": "preparada",
+            "generacion": "4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372",
+            "catalogo": {
+              "componentes": [
+                {
+                  "nombre": "codex",
+                  "tipo": "npm",
+                  "paquete": "@openai/codex",
+                  "version": "0.164.0",
+                  "fuente": "https://registry.npmjs.org/%40openai%2Fcodex/latest",
+                  "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.164.0.tgz",
+                  "integridad": "sha512-TWj7UGyPRe3Pj/A3ddNAxs1te3a/W/xAd+J0LHrrFTmsSfahGMOLF/vn88D3QCIgAT3B1rm1y/Z3NYE0rx6cZQ=="
+                },
+                {
+                  "nombre": "openclaw",
+                  "tipo": "npm",
+                  "paquete": "openclaw",
+                  "version": "2026.10.8",
+                  "fuente": "https://registry.npmjs.org/openclaw/2026.10.8",
+                  "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-2026.10.8.tgz",
+                  "integridad": "sha512-fWOIOOyddIBqeuPz82DBCdY5kNl1yD51qebAHnxlTN7SmVoH5/WSIudR/N1zDhcIIksgJXe6ZgGy5ngSRxZOrQ=="
+                }
+              ],
+              "no_disponibles": []
+            },
+            "runtime": "/Users/gon/ensayo-final34-componentes/instalacion/generaciones/4bd9dac6f0a299f555f8fbfd80b7f0e6fc212372/runtime.json",
+            "integridad_runtime": "aec3d5496c6903345b6b4a3d8b36f48092462bba8a9c5c487fddfde80b064625",
+            "componentes": [
+              "codex",
+              "openclaw"
+            ]
+          },
+          {
+            "estado": "rechazada",
+            "generacion": "893f7ac173e01a9405cff2db2ab07aa2190d6ed8",
+            "componentes": [
+              "codex",
+              "openclaw"
+            ],
+            "motivo": "el artefacto npm no coincide con su integridad oficial"
+          },
+          {
+            "estado": "preparada",
+            "generacion": "9417b20ebbf724a18611b3302ee6fadf0c9395f6",
+            "catalogo": {
+              "componentes": [
+                {
+                  "nombre": "codex",
+                  "tipo": "npm",
+                  "paquete": "@openai/codex",
+                  "version": "0.163.0",
+                  "fuente": "https://registry.npmjs.org/%40openai%2Fcodex/0.163.0",
+                  "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.163.0.tgz",
+                  "integridad": "sha512-HNd7vR9oTK6M2ikxFnvNDCdYUgAsyo9VVnd5KnEd2ON0GYI++7MiX9XNPUkhtdgGKFPsWS+CEppQ1UU63uVhUw=="
+                },
+                {
+                  "nombre": "openclaw",
+                  "tipo": "npm",
+                  "paquete": "openclaw",
+                  "version": "2026.10.7",
+                  "fuente": "https://registry.npmjs.org/openclaw/2026.10.7",
+                  "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-2026.10.7.tgz",
+                  "integridad": "sha512-iiZO+kFFBgQvxm17wn3Sc/MSC/GQu01PubAFVNA2Nn736HOHUbR0ra7a9NeW9wpjq3kDkSJ1RB7dTP+qVJFXig=="
+                }
+              ],
+              "no_disponibles": []
+            },
+            "runtime": "/Users/gon/ensayo-final34-componentes/instalacion/generaciones/9417b20ebbf724a18611b3302ee6fadf0c9395f6/runtime.json",
+            "integridad_runtime": "687fa0d819526da0550acbcae67e52ad1ce09954a08a7bc991e5db2a95866177",
+            "componentes": [
+              "codex",
+              "openclaw"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

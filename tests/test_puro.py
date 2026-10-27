@@ -101,11 +101,12 @@ class PlanTest(unittest.TestCase):
             self.assertIn(x, t)
 
     def test_formato_de_la_skill_valida(self):
-        """El plan que enseña skill/motor/SKILL.md, con su bloque humano, pasa la validación."""
+        """La skill del director no enseña un bloque ejecutable. El parser sigue aceptando uno."""
         skill = (
             Path(__file__).parent.parent / "skill" / "motor" / "SKILL.md"
         ).read_text()
-        self.assertIn("`lane: fast`", skill)
+        self.assertIn("director encargar", skill)
+        self.assertNotIn("lane:", skill)
         p = parse_plan(
             PLAN
             + "\n## Bloque H — login\nlane: fast\nhumano: login entra a Seller Central\n"

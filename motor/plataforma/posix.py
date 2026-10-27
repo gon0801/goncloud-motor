@@ -74,6 +74,19 @@ def pid_vivo(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    ps = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
+    try:
+        r = subprocess.run(
+            [ps, "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+        )
+        if r.stdout.strip().startswith("Z"):
+            return False
+    except OSError:
+        pass
     try:
         r, _ = os.waitpid(pid, os.WNOHANG)  # un hijo terminado sin recoger
         return r == 0

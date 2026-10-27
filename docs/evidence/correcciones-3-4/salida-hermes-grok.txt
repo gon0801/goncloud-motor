@@ -1,0 +1,9 @@
+Home aislado Hermes ensayo34d en PC (Windows), skill motor nueva instalada en skills/motor/SKILL.md del home.
+Proveedor usado: xai-oauth (SuperGrok) con modelo grok-4.7, primer puesto de INVESTIGAR en v7.
+La credencial ya existia en el pool principal de Hermes de la misma PC. Solo se copio su entrada al home de ensayo, dentro de la misma maquina. Nada entro al repo.
+Anthropic sin cuota semanal y ChatGPT/Codex con limite de uso (429, reinicia en ~497 h). Por eso el recorrido usa Grok como respaldo autorizado. La politica deseada v7 no cambia.
+Turno 1 (tarea acotada de solo lectura):
+  "Usaría la vía directa, según la sección «Qué vía usar»: una tarea acotada que cabe en los agentes y no pide continuidad se hace con los agentes del director, no con el motor."
+Turno 2 (trabajo sin conversacion, varias etapas, plan externo):
+  "Usaría la vía durable y encargaría el plan al motor tal cual, como texto o archivo del pedido, sin reescribirlo en bloques ni campos de aceptación."
+Los homes de ensayo se borran al guardar esta evidencia.

@@ -14,6 +14,7 @@
     motor doctor --home H [--json]                          qué puede correr aquí, sin modelo
     motor doctor --home H --como-servicio [--espera S]      cada ruta con un encargo de prueba, en el entorno del servicio
     motor instala --maquina mac|mini|pc --usuario U --home H --imprime
+    motor instala-encargos --maquina mac|mini|pc --usuario U --home H --imprime
     motor programadas --home H [--json]                      tareas que apuntan a carpetas que el motor borra (sale 3 si hay)
     motor version [--json]                                   versión del paquete y SHA del código que corre
     motor daemon --home H [--intervalo S] [--hasta-terminar] [--tope S]
@@ -623,7 +624,42 @@ def _vuelve_a_la_buena(home: Path, d: Path, error: str):
     return None, (malo, [error])
 
 
+_CMDS_ENCARGO = {
+    "encargar",
+    "ver",
+    "parar",
+    "continuar",
+    "cancelar",
+    "corregir",
+    "efecto",
+    "espera",
+    "pregunta",
+    "afirmacion",
+    "parada-local",
+    "supervisor",
+    "encargos-aplicar",
+    "encargos-migrar",
+}
+
+
 def main(argv: list[str] | None = None) -> int:
+    if os.name == "nt":
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
+    argv_in = list(sys.argv[1:] if argv is None else argv)
+    if argv_in and argv_in[0] == "flota":
+        from .flota.cli import main as flota_main
+
+        return flota_main(argv_in[1:])
+    if argv_in and argv_in[0] == "director":
+        from .integraciones.cli import main as director_main
+
+        return director_main(argv_in[1:])
+    if argv_in and argv_in[0] in _CMDS_ENCARGO:
+        from .encargos.cli import main as encargos_main
+
+        return encargos_main(argv_in)
     ap = argparse.ArgumentParser(prog="motor")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("valida")
@@ -678,6 +714,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--home", type=Path, required=True)
     s.add_argument("--json", action="store_true")
     s = sub.add_parser("instala")
+    s.add_argument("--maquina", required=True)
+    s.add_argument("--usuario", required=True)
+    s.add_argument("--home", required=True)
+    s.add_argument("--imprime", action="store_true")
+    s = sub.add_parser("instala-encargos")
     s.add_argument("--maquina", required=True)
     s.add_argument("--usuario", required=True)
     s.add_argument("--home", required=True)
@@ -863,6 +904,19 @@ def main(argv: list[str] | None = None) -> int:
 
         print(
             instalable(
+                a.maquina,
+                a.usuario,
+                sys.executable,
+                a.home,
+                str(Path(__file__).resolve().parent.parent),
+            )
+        )
+        return 0
+    if a.cmd == "instala-encargos":
+        from .servicio import instalable_encargos
+
+        print(
+            instalable_encargos(
                 a.maquina,
                 a.usuario,
                 sys.executable,

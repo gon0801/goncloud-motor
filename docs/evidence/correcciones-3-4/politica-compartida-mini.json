@@ -1,0 +1,12 @@
+{
+  "publicar": {
+    "accion": "publicada",
+    "salida": "/Users/gon/ensayo-final34-componentes/politica-publicada.json",
+    "origen": "Gons-Mac-Mini-2.lan",
+    "hash": "27dd05295b9d0da3678f3a443ae39726354e3127ffb527f3392ce20d59d46e96",
+    "generacion": "v7"
+  },
+  "replica_identica": true,
+  "fuente_invalida_conservada": true,
+  "replica_no_promueve": true
+}
