@@ -1,0 +1,12 @@
+Encargo durable real en esta Mac, base aislada /tmp/demo-durable-r3c (se conserva).
+Pedido: plan externo en archivo, sin bloques ni campos de aceptacion.
+Alta: motor director encargar --via durable --director openbot --canal openbot --archivo plan-externo.txt
+Encargo: enc_b516a61e8e3de8a8
+Ejecutor real: Codex por suscripcion (supervisor --agente codex), con Grok intentado antes sin escribir producto.
+Producto en espacio/enc_b516a61e8e3de8a8: saludo.txt con los bytes exactos "entrega durable comprobada", procedimiento.json valido, evidencia-comportamiento.txt y contexto.md.
+El supervisor se reinicio en cada paso (procesos nuevos) y el estado persistio. El encargo paso por esperando_reintento por capacidad del modelo y cerro solo al seguir el supervisor.
+Juicio del revisor real: confirmado. El juicio inspecciono saludo.txt, procedimiento.json y la ejecucion cat con rc 0. Estado final: terminado.
+Canal de origen: OpenBot, agente DG, con adaptador en /tmp/canal_openbot.py que normaliza el recibo.
+Primer envio del aviso: incierto por timeout del transporte. La conciliacion por la clave del aviso lo confirmo sin reejecutar el trabajo.
+Aviso av_79e7c913a770e06f: estado publicado, recibo externo 744a06da-58d8-4260-804a-cea7c04aefe1.
+Doble declarado: el adaptador de canal es un script propio que llama al CLI real de OpenBot. El agente DG y su entrega son reales.

@@ -164,6 +164,27 @@ Los tres recorridos de directores quedaron completados con dobles
 declarados solo en el modelo de respaldo. Anthropic y ChatGPT estaban
 sin cuota y ambos directores corrieron con Grok autorizado.
 
+## Ronda 3. Dos fallos corregidos y encargo durable real
+
+- Un aviso incierto ya no se degrada a local-pendiente cuando el canal
+  está ilegible o sin comando. Al restaurar el transporte concilia antes
+  de reenviar. La reproducción de la ronda da entregas 1 tras restaurar.
+- La generación queda protegida desde la reserva previa al lanzamiento.
+  Aplicar en esa ventana devuelve ocupada. Con el líder muerto y un hijo
+  vivo, el árbol manda y aplicar también devuelve ocupada. El proceso
+  siguió leyendo buena en ambos caminos.
+- Encargo durable real en esta Mac desde un plan externo en archivo.
+  Codex escribió saludo.txt y procedimiento.json. El supervisor se
+  reinició en cada paso y el estado persistió. El juicio del revisor
+  confirmó el producto y el encargo terminó. El aviso salió al canal
+  OpenBot del agente DG. El primer envío quedó incierto por timeout y
+  la conciliación por clave lo publicó con recibo externo, sin repetir
+  el trabajo. Evidencia en salida-durable-real.txt.
+- Actualización y reversa por host con componentes reales siguen sin
+  instalarse sobre PC y Mini en esta ronda. Tocar los componentes
+  vivos es activación de fase 5. Las instalaciones aisladas locales
+  con el propio motor y su reversa están probadas desde la ronda 1.
+
 ## Receta de fase 5
 
 Activar por máquina en una ventana con los directores detenidos. Instalar la

@@ -59,7 +59,7 @@
     "claw_directa": "enc_5e3fcba50d2a264a",
     "mismo_texto": true,
     "hermes_durable": "enc_15c0017fe57da863",
-    "claw_plan": "enc_3c63756675587969",
+    "claw_plan": "enc_23cc96daf604e8f3",
     "plan_sin_acepta": true
   },
   "promover": {
@@ -110,20 +110,20 @@
   },
   "flota": {
     "aplicada": "aplicada",
-    "trabajo": "26762ba8ec5bc633d28748c789709cc757e13531",
+    "trabajo": "5da4c8cbb21cfab02a43e0a014b90c6256b4eaee",
     "segunda": "aplicada",
-    "asignada": "f00494d1e145823f70eae8a1f3a75796032f194a",
+    "asignada": "1bdbfcd6ce0fb62bad222f4373d0e4e431c01afa",
     "rechazada": "rechazada",
     "cortada": "cortado",
     "recuperada": "completo",
     "segunda_recuperacion": "nada",
-    "reversa": "revertido f00494d1e145823f70eae8a1f3a75796032f194a",
+    "reversa": "revertido 1bdbfcd6ce0fb62bad222f4373d0e4e431c01afa",
     "reversa_otra": "nada",
     "reversa_rc": 0,
-    "actual": "f00494d1e145823f70eae8a1f3a75796032f194a",
+    "actual": "1bdbfcd6ce0fb62bad222f4373d0e4e431c01afa",
     "marca_reaparecio": false,
-    "cabeza": "f00494d1e145823f70eae8a1f3a75796032f194a",
-    "anterior": "f00494d1e145823f70eae8a1f3a75796032f194a"
+    "cabeza": "1bdbfcd6ce0fb62bad222f4373d0e4e431c01afa",
+    "anterior": "1bdbfcd6ce0fb62bad222f4373d0e4e431c01afa"
   },
   "limpieza": {
     "procesos": []
