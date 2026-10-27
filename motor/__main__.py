@@ -641,6 +641,10 @@ _CMDS_ENCARGO = {
 
 
 def main(argv: list[str] | None = None) -> int:
+    if os.name == "nt":
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
     argv_in = list(sys.argv[1:] if argv is None else argv)
     if argv_in and argv_in[0] == "flota":
         from .flota.cli import main as flota_main
