@@ -173,9 +173,12 @@ def env_minimo_windows(origen: dict) -> dict:
     return {k: origen[k] for k in ENV_WINDOWS if k in origen}
 
 
-def tarea_xml(usuario: str, python: str, home: str, raiz: str = "") -> str:
+def tarea_xml(
+    usuario: str, python: str, home: str, raiz: str = "", argumentos: str = ""
+) -> str:
     """Tarea programada: al ARRANCAR, aunque nadie inicie sesión (contraseña guardada en
     Windows), sin límite de tiempo, reintentar si falla."""
+    args = argumentos or f'-m motor servicio --home "{home}"'
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>motor de planes (siempre encendido)</Description></RegistrationInfo>
@@ -189,7 +192,7 @@ def tarea_xml(usuario: str, python: str, home: str, raiz: str = "") -> str:
     <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
     <AllowStartOnDemand>true</AllowStartOnDemand>
   </Settings>
-  <Actions Context="Author"><Exec><Command>{python}</Command><Arguments>-m motor servicio --home "{home}"</Arguments>{f"<WorkingDirectory>{raiz}</WorkingDirectory>" if raiz else ""}</Exec></Actions>
+  <Actions Context="Author"><Exec><Command>{python}</Command><Arguments>{args}</Arguments>{f"<WorkingDirectory>{raiz}</WorkingDirectory>" if raiz else ""}</Exec></Actions>
 </Task>
 """
 

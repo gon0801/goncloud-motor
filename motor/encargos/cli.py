@@ -111,6 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("encargos-aplicar")
     s.add_argument("--base", type=Path)
 
+    s = sub.add_parser("encargos-migrar")
+    s.add_argument("--desde", type=Path, required=True)
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--host", required=True)
+    s.add_argument("--motor06", action="store_true")
+
     try:
         args = ap.parse_args(argv)
     except SystemExit as exc:
@@ -137,6 +143,14 @@ def _correr(args) -> int:
 
 
 def _con_registro(args, reg: Registro, hora: str) -> int:
+    if args.cmd == "encargos-migrar":
+        from .migracion import crear_motor06, importar_encargos
+
+        relacion = importar_encargos(args.desde, reg, args.host, hora)
+        if args.motor06:
+            relacion.append(crear_motor06(reg, hora))
+        print(json.dumps(relacion, ensure_ascii=False, sort_keys=True))
+        return 0
     if args.cmd == "encargar":
         texto = args.texto
         adjuntos: tuple[str, ...] = ()

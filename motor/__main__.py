@@ -14,6 +14,7 @@
     motor doctor --home H [--json]                          qué puede correr aquí, sin modelo
     motor doctor --home H --como-servicio [--espera S]      cada ruta con un encargo de prueba, en el entorno del servicio
     motor instala --maquina mac|mini|pc --usuario U --home H --imprime
+    motor instala-encargos --maquina mac|mini|pc --usuario U --home H --imprime
     motor programadas --home H [--json]                      tareas que apuntan a carpetas que el motor borra (sale 3 si hay)
     motor version [--json]                                   versión del paquete y SHA del código que corre
     motor daemon --home H [--intervalo S] [--hasta-terminar] [--tope S]
@@ -637,6 +638,7 @@ _CMDS_ENCARGO = {
     "parada-local",
     "supervisor",
     "encargos-aplicar",
+    "encargos-migrar",
 }
 
 
@@ -712,6 +714,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--home", type=Path, required=True)
     s.add_argument("--json", action="store_true")
     s = sub.add_parser("instala")
+    s.add_argument("--maquina", required=True)
+    s.add_argument("--usuario", required=True)
+    s.add_argument("--home", required=True)
+    s.add_argument("--imprime", action="store_true")
+    s = sub.add_parser("instala-encargos")
     s.add_argument("--maquina", required=True)
     s.add_argument("--usuario", required=True)
     s.add_argument("--home", required=True)
@@ -897,6 +904,19 @@ def main(argv: list[str] | None = None) -> int:
 
         print(
             instalable(
+                a.maquina,
+                a.usuario,
+                sys.executable,
+                a.home,
+                str(Path(__file__).resolve().parent.parent),
+            )
+        )
+        return 0
+    if a.cmd == "instala-encargos":
+        from .servicio import instalable_encargos
+
+        print(
+            instalable_encargos(
                 a.maquina,
                 a.usuario,
                 sys.executable,

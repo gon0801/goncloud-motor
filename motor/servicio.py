@@ -57,6 +57,47 @@ def instalable(maquina: str, usuario: str, python: str, home: str, raiz: str) ->
     return plist_launchd(usuario, python, home, raiz)
 
 
+def plist_encargos(
+    usuario: str,
+    python: str,
+    home: str,
+    raiz: str,
+    etiqueta: str = "com.goncloud.motor-encargos",
+) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Va en /Library/LaunchDaemons/{etiqueta}.plist: arranca al prender, sin sesión iniciada. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{etiqueta}</string>
+  <key>UserName</key><string>{usuario}</string>
+  <key>ProgramArguments</key>
+  <array><string>{python}</string><string>-m</string><string>motor</string><string>supervisor</string><string>--base</string><string>{home}</string></array>
+  <key>WorkingDirectory</key><string>{raiz}</string>
+  <key>EnvironmentVariables</key><dict><key>HOME</key><string>/Users/{usuario}</string><key>PATH</key><string>{PATH_SERVICIO}</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>{home}/servicio-encargos.log</string>
+  <key>StandardErrorPath</key><string>{home}/servicio-encargos.log</string>
+</dict>
+</plist>
+"""
+
+
+def instalable_encargos(
+    maquina: str, usuario: str, python: str, home: str, raiz: str
+) -> str:
+    if maquina.lower() == "pc":
+        return tarea_xml(
+            usuario,
+            python,
+            home,
+            raiz,
+            argumentos=f'-m motor supervisor --base "{home}"',
+        )
+    return plist_encargos(usuario, python, home, raiz)
+
+
 def supervisor(home: Path, intervalo: float = 10.0) -> int:
     from .control import leer
 
