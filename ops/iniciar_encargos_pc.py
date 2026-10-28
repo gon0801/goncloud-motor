@@ -223,6 +223,8 @@ def main():
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
                 "-File",
                 str(supervisor),
             ]
