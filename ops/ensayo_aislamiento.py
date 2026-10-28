@@ -21,6 +21,32 @@ CODIGO = r"""
 import json, pathlib, socket, subprocess, sys, time
 b, runtime = map(pathlib.Path, sys.argv[1:3])
 r = {}
+if sys.platform == 'win32':
+    import ctypes as c
+    from ctypes import wintypes as w
+    u, k = c.WinDLL('user32', use_last_error=True), c.WinDLL('kernel32')
+    u.GetProcessWindowStation.restype = w.HANDLE
+    u.GetThreadDesktop.argtypes, u.GetThreadDesktop.restype = [w.DWORD], w.HANDLE
+    u.GetUserObjectInformationW.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)]
+    def nombre_gui(handle):
+        texto, necesario = c.create_unicode_buffer(512), w.DWORD()
+        assert u.GetUserObjectInformationW(handle, 2, texto, c.sizeof(texto), c.byref(necesario))
+        return texto.value
+    r['gui'] = [nombre_gui(u.GetProcessWindowStation()), nombre_gui(u.GetThreadDesktop(k.GetCurrentThreadId()))]
+    assert r['gui'][0].casefold() != 'winsta0'
+    k.QueryInformationJobObject.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)]
+    k.QueryInformationJobObject.restype = w.BOOL
+    ui, tamano = w.DWORD(), w.DWORD()
+    r['ui_inmediata_consultada'] = bool(k.QueryInformationJobObject(None, 4, c.byref(ui), c.sizeof(ui), c.byref(tamano)))
+    r['ui_inmediata_restricciones'] = ui.value
+    c.set_last_error(0)
+    abierto = u.OpenClipboard(None)
+    try:
+        denegado = not abierto or not u.EmptyClipboard()
+        r['clipboard_error'] = c.get_last_error()
+        r['clipboard_escribir_bloqueado'] = denegado and r['clipboard_error'] == 5
+    finally:
+        if abierto: u.CloseClipboard()
 for nombre, path in [
     ('producto', b/'espacio'/'probe'), ('runtime', runtime),
     ('registro', b/'registro'), ('destino', b/'destino'),
@@ -134,7 +160,16 @@ def main() -> int:
                 correcto &= all(
                     v != "permitido" for k, v in r.items() if k.startswith("tcp-")
                 )
+                correcto &= r["clipboard_escribir_bloqueado"]
             plataforma.matar_grupo(creado.proceso)
+        escritorios = [
+            informe["roles"][rol]["observacion"]["gui"]
+            for rol in ("responsable", "revisor")
+        ]
+        informe["gui_separada"] = escritorios[0] != escritorios[1] and all(
+            nombre[0].casefold() != "winsta0" for nombre in escritorios
+        )
+        correcto &= informe["gui_separada"]
         runtime = base / "runtime" / "arbol"
         comando = aislar(
             [sys.executable, str(script), str(base), str(runtime), "[]", "arbol"],
