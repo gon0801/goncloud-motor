@@ -154,12 +154,15 @@ de Hermes es feat/hermes-team.
 - La base cliente de la Mac que apuntaba a Mini se conserva solo
   como vía para entrar a Mini a consultar su historial. Ya no es la
   ruta de los encargos de la Mac.
-- Límites honestos: el arranque tras reinicio se demostró en Mini.
-  En Mac y PC se instaló el mismo patrón de arranque por sesión y no
-  se reinició ninguna de las dos para esta prueba. La ejecución
-  durable con ejecutor sigue como quedó en Mini: la libreta recibe,
-  guarda, consulta y cancela en local, y la ejecución con ruta de
-  agente quedó demostrada en los ensayos de las rondas anteriores.
+- Límites honestos: el arranque tras reinicio se demostró en Mini y
+  en PC. En PC la tarea falló una vez al dispararse a los doce
+  segundos del inicio de sesión. Se le puso un minuto de espera al
+  disparador, se reinició la PC otra vez y la tarea quedó Running
+  sola. La Mac no se reinició porque David pidió no tocarla. Ahí el
+  arranque tras reinicio queda pendiente. La ejecución durable con
+  ejecutor sigue como quedó en Mini: la libreta recibe, guarda,
+  consulta y cancela en local, y la ejecución con ruta de agente
+  quedó demostrada en los ensayos de las rondas anteriores.
 - OpenBot sigue sin una parada propia demostrada. Un timeout no
   cancela su entrega. Esa capacidad no se le atribuye.
 - La fase 5 queda PARCIAL SEGURA por los límites honestos de arriba
