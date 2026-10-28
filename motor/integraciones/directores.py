@@ -545,12 +545,15 @@ def _aviso_de(enc) -> dict:
 
 def _cuerpo_del_aviso(registro: Registro, encargo: str, evidencia: str) -> str | None:
     destino = registro.base / "espacio" / encargo / "resultado.txt"
+    es_hash = len(evidencia) == 64 and all(
+        c in "0123456789abcdef" for c in evidencia
+    )
     if destino.is_file():
         cuerpo = destino.read_text(encoding="utf-8")
-        if hashlib.sha256(cuerpo.encode()).hexdigest() == evidencia:
-            return cuerpo
-        return None
-    if len(evidencia) == 64 and all(c in "0123456789abcdef" for c in evidencia):
+        if es_hash:
+            return cuerpo if hashlib.sha256(cuerpo.encode()).hexdigest() == evidencia else None
+        return cuerpo
+    if es_hash:
         return None
     return evidencia
 

@@ -1,4 +1,7 @@
-"""La instalación del servicio de encargos exige ruta y vincula su base."""
+"""La instalación del servicio de encargos exige ruta y vincula su base.
+
+También cubre el cuerpo del aviso cuando la evidencia viene en prosa.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +10,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import hashlib
+
+from motor.encargos.registro import Registro
+from motor.integraciones.directores import _cuerpo_del_aviso
 from motor.servicio import instalable_encargos, vincular_base
 
 
@@ -63,6 +70,24 @@ class ServicioEncargos(unittest.TestCase):
             self.assertNotEqual(
                 main(["supervisor", "--base", base, "--una-vez"]), 0
             )
+
+
+    def test_cuerpo_del_aviso_con_evidencia_en_prosa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            espacio = reg.base / "espacio" / "enc_x"
+            espacio.mkdir(parents=True)
+            (espacio / "resultado.txt").write_text("la frase pedida", encoding="utf-8")
+            self.assertEqual(
+                _cuerpo_del_aviso(reg, "enc_x", "El juez vio la frase pedida."),
+                "la frase pedida",
+            )
+            huella = hashlib.sha256(b"la frase pedida").hexdigest()
+            self.assertEqual(
+                _cuerpo_del_aviso(reg, "enc_x", huella), "la frase pedida"
+            )
+            self.assertIsNone(_cuerpo_del_aviso(reg, "enc_x", "0" * 64))
 
 
 if __name__ == "__main__":
