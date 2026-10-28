@@ -144,7 +144,7 @@ def vincular_base(base: Path, flota_home: Path, canal: Path | None = None) -> di
     doc = None
     if canal is not None:
         try:
-            doc = json.loads(Path(canal).read_text(encoding="utf-8"))
+            doc = json.loads(Path(canal).read_text(encoding="utf-8-sig"))
         except ValueError as exc:
             raise ValueError(f"el canal vinculado no es JSON valido: {exc}") from exc
         if not isinstance(doc, dict) or not doc:
