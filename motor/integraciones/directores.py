@@ -104,6 +104,10 @@ def encargar(
     via: str,
     adjuntos: tuple[str, ...] = (),
     identidad: dict | None = None,
+    entrega_nivel: str = "terminado",
+    repo: str = "",
+    rama: str = "",
+    base_rama: str = "",
 ) -> dict:
     canal = nombre_canal(canal)
     salida = recibir(
@@ -115,6 +119,10 @@ def encargar(
         canal=canal,
         via=via,
         adjuntos=adjuntos,
+        entrega_nivel=entrega_nivel,
+        repo=repo,
+        rama=rama,
+        base_rama=base_rama,
     )
     if via == "directa" and not salida.get("conflicto"):
         path = registro.base / "directo" / f"{salida['encargo']}.json"
@@ -540,6 +548,13 @@ def _aviso_de(enc) -> dict:
         "evidencia": evidencia,
         "estado": "pendiente",
         "recibo": "",
+        "entrega": {
+            "nivel_autorizado": enc.entrega.nivel,
+            "nivel_alcanzado": enc.nivel_alcanzado,
+            "repo": enc.entrega.repo,
+            "pr_numero": enc.pr_numero,
+            "pr_sha": enc.pr_sha,
+        },
     }
 
 

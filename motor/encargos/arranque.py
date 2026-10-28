@@ -135,8 +135,19 @@ class SalidaRuntime:
         self.agente = agente
         self.terminal = ""
         self.ultimo_error = ""
+        self.sesion_runtime = ""
 
     def evento(self, data: dict) -> None:
+        if self.agente == "codex" and not self.sesion_runtime:
+            for clave in ("thread_id", "session_id"):
+                valor = data.get(clave)
+                if isinstance(valor, str) and valor:
+                    self.sesion_runtime = valor
+                    break
+            else:
+                hilo = data.get("thread")
+                if isinstance(hilo, dict) and isinstance(hilo.get("id"), str):
+                    self.sesion_runtime = hilo["id"]
         tipo = data.get("type")
         update = data.get("sessionUpdate")
         error_grok = self.agente == "grok" and (
@@ -196,18 +207,18 @@ def ejecutar(spec_path: Path) -> int:
             ):
                 _publica(d / "outcome.json", json.dumps({"sin_liberar": True}))
                 return 0
-            evento = {
-                "kind": "intento_abierto",
-                "data": {
-                    "id": spec["token"],
-                    **proc,
-                    "sesion": spec["sesion"],
-                    "rol": spec["rol"],
-                    "agente": spec["agente"],
-                    "hora": spec["hora"],
-                    "herramientas_observables": True,
-                },
+            datos_intento = {
+                "id": spec["token"],
+                **proc,
+                "sesion": spec["sesion"],
+                "rol": spec["rol"],
+                "agente": spec["agente"],
+                "hora": spec["hora"],
+                "herramientas_observables": True,
             }
+            for clave in ("modelo", "sesion_modo", "poteto_digest"):
+                datos_intento[clave] = spec.get(clave) or ""
+            evento = {"kind": "intento_abierto", "data": datos_intento}
             resultado = reg.anotar(enc.id, evento, f"intento:{enc.id}:{spec['token']}")
             if resultado not in ("nuevo", "igual"):
                 return 1
@@ -295,6 +306,7 @@ def ejecutar(spec_path: Path) -> int:
                     "exit": rc,
                     "token": spec["token"],
                     "fallo_runtime": runtime.fallo(rc, "".join(errores)),
+                    "sesion_runtime": runtime.sesion_runtime,
                 }
             ),
         )

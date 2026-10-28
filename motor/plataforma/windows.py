@@ -769,11 +769,16 @@ def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no 
     estado = _consulta_pid(pid)
     if estado == "incierto":
         return "incierto"
+    reutilizado = False
     if estado == "vivo":
         actual = hora_inicio(pid)
-        if not actual or actual != inicio:
+        if not actual:
             return "incierto"
-        return "vivo"
+        if actual == inicio:
+            return "vivo"
+        if not actual.isdigit() or not inicio.isdigit():
+            return "incierto"
+        reutilizado = True
     propio = _jobs.get(pid)
     if propio is not None and propio._h:
         pids = propio.pids()
@@ -796,6 +801,18 @@ def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no 
     hijos = _descendientes(pid)
     if hijos is None:
         return "incierto"
+    if reutilizado:
+        for hijo in hijos:
+            creado = hora_inicio(hijo)
+            if not creado:
+                if _consulta_pid(hijo) == "muerto":
+                    continue
+                return "incierto"
+            if not creado.isdigit():
+                return "incierto"
+            if int(inicio) <= int(creado) < int(actual):
+                return "vivo"
+        return "ausente"
     return "vivo" if hijos else "ausente"
 
 

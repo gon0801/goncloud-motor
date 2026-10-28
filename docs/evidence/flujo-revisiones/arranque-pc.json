@@ -1,0 +1,84 @@
+{
+  "fecha": "2026-10-28",
+  "equipo": "pc",
+  "usuario": "ehven",
+  "estado": "Modo normal verificado con el motor anterior integrado; despliegue del flujo nuevo pendiente de DeepSeek",
+  "comando_sonda": "ssh pc \"C:/Users/ehven/AppData/Local/hermes/hermes-agent/.hermes-runtime/python/cpython-3.11.16-windows-x86_64-none/python.exe -B C:/Users/ehven/.motor-resguardo/cierre-flujo-20261028/iniciar_encargos_pc.py --sonda\"",
+  "resultado": {
+    "exit_code": 0,
+    "api": "ExplorerCOM+CREATE_BREAKAWAY_FROM_JOB",
+    "mismo_sid": true,
+    "ssh": {
+      "pid": 3220,
+      "session": 0,
+      "in_job": true
+    },
+    "explorer": {
+      "pid": 8296,
+      "session": 1,
+      "in_job": false
+    },
+    "puente": {
+      "pid": 5956,
+      "session": 1,
+      "in_job": true,
+      "exit_code": 0
+    },
+    "sonda": {
+      "pid": 8392,
+      "session": 1,
+      "in_job": false,
+      "exit_code": 0
+    },
+    "probe_processes_finished": true,
+    "evidencia_pc": "C:/Users/ehven/.motor-resguardo/cierre-flujo-20261028/sonda-arranque-d9bde83a41714b299e80064a13ed88c9.completo.json"
+  },
+  "diagnostico": [
+    {
+      "api": "CreateProcessAsUserW",
+      "resultado": "WinError 1314; token SSH no tiene SeAssignPrimaryTokenPrivilege. No creó hijo."
+    },
+    {
+      "api": "CreateProcessWithTokenW",
+      "resultado": "Hijo suspendido session=0, in_job=true; terminado antes de ejecutar código. La API usa la sesión del llamador."
+    },
+    {
+      "api": "CreateProcessW+PROC_THREAD_ATTRIBUTE_PARENT_PROCESS(Explorer)",
+      "resultado": "Hijo suspendido session=0, in_job=false; terminado antes de ejecutar código. Descartado."
+    },
+    {
+      "api": "Shell.Application directo",
+      "resultado": "DCOM configurado como usuario interactivo no resuelve identidad desde sesión 0."
+    },
+    {
+      "api": "Session:1!new:ShellWindows + FindWindowSW(DESKTOP)",
+      "resultado": "Obtiene Explorer del mismo usuario y ejecuta puente en sesión 1. El puente hace breakaway de su hijo y espera su fin."
+    }
+  ],
+  "resguardos": [
+    "SID, sesión y ausencia de Job verificados en el hijo antes del modo normal.",
+    "Runtime y supervisor deben existir en rutas fijas bajo el usuario.",
+    "Sin credenciales nuevas, cambios de cuentas, privilegios, AppControl, tareas ni reinicios.",
+    "Ningún supervisor real fue iniciado por esta verificación."
+  ],
+  "referencias": [
+    "https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw",
+    "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw",
+    "https://learn.microsoft.com/en-us/windows/win32/termserv/session-to-session-activation-with-a-session-moniker"
+  ],
+  "comprobaciones": [
+    "ruff check ops/iniciar_encargos_pc.py: pasó",
+    "Python Windows 3.11.16 ejecutó la utilidad y la sonda: exit 0",
+    "Sonda y puente terminaron; espera explícita de ambos en la utilidad."
+  ],
+  "supervisor_real_observado": {
+    "pid": 5292,
+    "sesion": 1,
+    "mismo_sid": true,
+    "in_job": false,
+    "persistio_tras_cerrar_ssh": true,
+    "codigo_motor": "46be73974e388f0f28fcacb06921a7c08e05b7f2",
+    "nota": "Se restauró el servicio previo. No acredita despliegue de la implementación nueva."
+  },
+  "configuracion_global_execution_policy": "Restricted, sin cambios"
+}

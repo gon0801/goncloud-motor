@@ -54,6 +54,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--restriccion", action="append", default=[])
     s.add_argument("--canal", default="")
     s.add_argument("--via", choices=("directa", "durable"), default="durable")
+    s.add_argument(
+        "--entrega",
+        choices=("terminado", "pr", "integrado", "desplegado"),
+        default="terminado",
+    )
+    s.add_argument("--repo", default="")
+    s.add_argument("--rama", default="")
+    s.add_argument("--base-rama", default="")
 
     s = sub.add_parser("ver")
     s.add_argument("encargo")
@@ -171,6 +179,10 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
                 restricciones=tuple(args.restriccion),
                 canal=args.canal,
                 via=args.via,
+                entrega_nivel=args.entrega,
+                repo=args.repo,
+                rama=args.rama,
+                base_rama=args.base_rama,
             )
         )
     if args.cmd == "ver":
@@ -225,6 +237,31 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
     return 2
 
 
+def _puerto_github(base: Path):
+    """Puerto GitHub del supervisor desde base/github.json.
+
+    {"falso": "/ruta"} usa FakeGitHub (ensayos y repos locales);
+    {"real": true} usa gh de verdad. Sin archivo, los encargos con
+    nivel pr o mas esperan visibles en el paso de entrega.
+    """
+    path = base / "github.json"
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    from motor.github import FakeGitHub, GhGitHub
+
+    if doc.get("falso"):
+        return FakeGitHub(Path(str(doc["falso"])).expanduser())
+    if doc.get("real"):
+        return GhGitHub()
+    return None
+
+
 def _supervisor(reg: Registro, args) -> int:
     from .frontera import turno
     from .rutas import elegir, proximo
@@ -243,22 +280,42 @@ def _supervisor(reg: Registro, args) -> int:
         if not enc.agentes:
             return None
         hora = ahora_iso()
+        rol = enc.rol or "responsable"
         generacion = None
         referencia = reg.base / "ejecucion" / enc.id / f"intento-{enc.generacion}-{enc.conductor}" / "generacion.json"
         if referencia.is_file():
             generacion = Path(json.loads(referencia.read_text(encoding="utf-8"))["ruta"])
-        disponibles = {agente for agente in enc.agentes if _disponible(agente, generacion)}
-        agente = elegir(enc, hora, disponibles)
-        if agente:
-            return _lanzador(agente)(enc, prompt, espacio, sesion)
-        motivos = [
-            p.causa for p in enc.pausas if p.agente in disponibles and p.hasta > hora
-        ]
-        motivo = (
-            "; ".join(motivos)
-            or "las rutas autorizadas no tienen runtime, suscripcion o aislamiento disponibles en este host"
+        disponibles = {
+            agente: _modelos_para(agente, rol, generacion)
+            for agente in enc.agentes
+            if _disponible(agente, generacion)
+        }
+        excluir = (
+            frozenset(m for r, _a, m in enc.modelos if r == "responsable")
+            if rol == "revisor"
+            else frozenset()
         )
-        marcar_espera(reg, enc.id, motivo, proximo(enc, hora, disponibles), hora)
+        elegido = elegir(
+            enc, hora, disponibles, rol=rol, excluir_modelos=excluir
+        )
+        if elegido:
+            agente, modelo = elegido
+            modo = _sesion_modo(enc, agente, rol)
+            argv = _lanzador(agente, modelo, modo)(enc, prompt, espacio, sesion)
+            return argv, {"agente": agente, "modelo": modelo, "sesion_modo": modo}
+        if rol == "revisor" and disponibles and all(
+            m in excluir for m in disponibles.values()
+        ):
+            motivo = "sin modelo de revisión distinto disponible"
+        else:
+            motivos = [
+                p.causa for p in enc.pausas if p.agente in disponibles and p.hasta > hora
+            ]
+            motivo = (
+                "; ".join(motivos)
+                or "las rutas autorizadas no tienen runtime, suscripcion o aislamiento disponibles en este host"
+            )
+        marcar_espera(reg, enc.id, motivo, proximo(enc, hora, set(disponibles)), hora)
         return None
 
     def paso() -> list[dict]:
@@ -281,7 +338,12 @@ def _supervisor(reg: Registro, args) -> int:
                         )
         habilitado = ruta or any(reg.fold(ident).agentes for ident in reg.ids())
         salida = barrer(
-            reg, hora, time.time(), lanzar if habilitado else None, umbral_s=args.umbral
+            reg,
+            hora,
+            time.time(),
+            lanzar if habilitado else None,
+            umbral_s=args.umbral,
+            gh=_puerto_github(reg.base),
         )
         try:
             from motor.integraciones.directores import drenar
@@ -343,7 +405,49 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
     return False
 
 
-def _lanzador(agente: str):
+_MODELO_POR_DEFECTO = {"grok": "xai/grok-4.7", "codex": "openai/gpt-6.1-sol"}
+_PREFIJO_PROVEEDOR = {"grok": "xai/", "codex": "openai/"}
+
+
+def _modelos_para(
+    agente: str, rol: str, generacion: Path | None
+) -> tuple[str, ...]:
+    """Identidades proveedor/modelo que el agente podría correr para este
+    rol, en orden de la política."""
+    if generacion is not None and agente in _PREFIJO_PROVEEDOR:
+        from motor.flota.runtime import modelos_de_chain
+
+        try:
+            refs = modelos_de_chain(
+                generacion,
+                "planear" if rol == "revisor" else "codigo",
+                _PREFIJO_PROVEEDOR[agente],
+            )
+        except (OSError, ValueError, TypeError):
+            refs = ()
+        if refs:
+            return refs
+    return (_MODELO_POR_DEFECTO.get(agente, ""),)
+
+
+def _sesion_modo(enc, agente: str, rol: str) -> str:
+    hubo_rol = any(r == rol for r, _a, _m in enc.modelos)
+    if agente not in ("codex", "grok"):
+        return "nueva"
+    if not hubo_rol:
+        return "nueva"
+    viva = enc.viva_revisor if rol == "revisor" else enc.viva_responsable
+    if not viva:
+        return "reconstruida"
+    if agente == "codex":
+        previa = enc.sesion_revisor if rol == "revisor" else enc.sesion_responsable
+        return "reanudada" if previa else "reconstruida"
+    return "reanudada"
+
+
+def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
+    pelado = modelo.split("/", 1)[-1] if modelo else ""
+
     def dormir(enc, prompt: Path, espacio: Path, sesion: str):
         del enc, prompt, sesion
         return ["/bin/bash", "-c", "sleep 3600"]
@@ -353,7 +457,7 @@ def _lanzador(agente: str):
         return [
             "grok",
             "--model",
-            "grok-4.7",
+            pelado or "grok-4.7",
             "--reasoning-effort",
             "high",
             "--cwd",
@@ -374,25 +478,37 @@ def _lanzador(agente: str):
         ]
 
     def codex(enc, prompt: Path, espacio: Path, sesion: str):
-        del enc, sesion
-        return [
-            "codex",
-            "exec",
+        del sesion
+        texto = (
+            "Lee el pedido y las instrucciones en "
+            + str(prompt)
+            + ". Ejecuta el trabajo autorizado."
+        )
+        comunes = [
             "--ignore-user-config",
             "--ignore-rules",
-            "--ephemeral",
             "--json",
             "--skip-git-repo-check",
             "--dangerously-bypass-approvals-and-sandbox",
             "-m",
-            "gpt-6.1-sol",
+            pelado or "gpt-6.1-sol",
             "-c",
             'model_reasoning_effort="xhigh"',
+        ]
+        previa = (
+            enc.sesion_revisor
+            if (enc.rol or "responsable") == "revisor"
+            else enc.sesion_responsable
+        )
+        if sesion_modo == "reanudada" and previa:
+            return ["codex", "exec", "resume", *comunes, previa, texto]
+        return [
+            "codex",
+            "exec",
+            *comunes,
             "--cd",
             str(espacio),
-            "Lee el pedido y las instrucciones en "
-            + str(prompt)
-            + ". Ejecuta el trabajo autorizado.",
+            texto,
         ]
 
     def ensayo(enc, prompt: Path, espacio: Path, sesion: str):
@@ -448,6 +564,10 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
                     restricciones=tuple(msg.get("restricciones") or ()),
                     canal=msg.get("canal") or "",
                     via=msg.get("via") or "durable",
+                    entrega_nivel=msg.get("entrega_nivel") or "terminado",
+                    repo=msg.get("repo") or "",
+                    rama=msg.get("rama") or "",
+                    base_rama=msg.get("base_rama") or msg.get("base") or "",
                 )
             )
         finally:

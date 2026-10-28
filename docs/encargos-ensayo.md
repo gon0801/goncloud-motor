@@ -1,5 +1,10 @@
 # Ejecutar un encargo de ensayo
 
+> El protocolo de cierre que describe este documento (`procedimiento.json`
+> obligatorio, juicio por clase global con cobertura) fue reemplazado por el
+> [flujo de revisiones](flujo-revisiones.md). Este texto queda como registro
+> del ensayo de la entrega 1.0.35.
+
 Esta entrega conserva el flujo 1.0.35 y usa una base separada para los encargos nuevos. No instala servicios. La receta anterior de `ops/ensayo_encargos.py` por ejemplos y confirmaciones inyectadas fue retirada.
 
 ## Entregar un pedido normal

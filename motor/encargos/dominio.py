@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import socket
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 ESTADOS = (
     "recibido",
@@ -67,6 +67,116 @@ class PausaAgente:
     relevo: bool = True
 
 
+CRITERIOS = ("seguridad", "datos", "comportamiento", "prueba_exigida", "operativo")
+NIVELES = ("terminado", "pr", "integrado", "desplegado")
+_ORDEN_NIVEL = {
+    "ninguno": 0,
+    "terminado": 1,
+    "pr_abierto": 2,
+    "pr": 3,
+    "integrado": 4,
+    "desplegado": 5,
+}
+
+
+@dataclass(frozen=True)
+class VersionProducto:
+    firma: str
+    manifiesto: tuple[tuple[str, str], ...]
+    sha_git: str = ""
+
+    def como_dict(self) -> dict:
+        return {
+            "firma": self.firma,
+            "manifiesto": [list(x) for x in self.manifiesto],
+            "sha_git": self.sha_git,
+        }
+
+    @classmethod
+    def desde(cls, firma: str, manifiesto, sha_git: str = "") -> "VersionProducto":
+        return cls(
+            firma=str(firma),
+            manifiesto=tuple(
+                (str(x[0]), str(x[1])) for x in (manifiesto or ()) if len(x) >= 2
+            ),
+            sha_git=str(sha_git or ""),
+        )
+
+
+def id_hallazgo(origen: str, ancla: str, titulo: str) -> str:
+    normal = " ".join(str(titulo).lower().split())
+    return "h_" + hashlib.sha256(f"{origen}|{ancla}|{normal}".encode()).hexdigest()[:8]
+
+
+@dataclass(frozen=True)
+class Hallazgo:
+    id: str
+    gravedad: str
+    criterio: str
+    titulo: str
+    reproduccion: str = ""
+    ancla: str = ""
+    origen: str = "independiente"
+    estado: str = "abierto"
+
+    def como_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "gravedad": self.gravedad,
+            "criterio": self.criterio,
+            "titulo": self.titulo,
+            "reproduccion": self.reproduccion,
+            "ancla": self.ancla,
+            "origen": self.origen,
+            "estado": self.estado,
+        }
+
+    @classmethod
+    def desde(cls, d: dict) -> "Hallazgo":
+        return cls(
+            id=str(d.get("id") or ""),
+            gravedad=str(d.get("gravedad") or "observacion"),
+            criterio=str(d.get("criterio") or ""),
+            titulo=str(d.get("titulo") or ""),
+            reproduccion=str(d.get("reproduccion") or ""),
+            ancla=str(d.get("ancla") or ""),
+            origen=str(d.get("origen") or "independiente"),
+            estado=str(d.get("estado") or "abierto"),
+        )
+
+
+@dataclass(frozen=True)
+class RefRevision:
+    revision_id: str
+    version: str
+    base_version: str
+    alcance: str
+    veredicto: str
+    revisor: str
+    origen: str
+    cubre: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class EntregaAutorizada:
+    nivel: str = "terminado"
+    repo: str = ""
+    rama: str = ""
+    base: str = ""
+
+
+@dataclass(frozen=True)
+class AlcanceRevision:
+    clase: str
+    version: str
+    base_version: str
+    abiertos: tuple[Hallazgo, ...] = ()
+    tocadas: tuple[str, ...] = ()
+    conservadas: tuple[str, ...] = ()
+    observacion: dict | None = None
+    manifiesto: tuple[tuple[str, str], ...] = ()
+
+
 @dataclass(frozen=True)
 class Encargo:
     id: str
@@ -111,6 +221,29 @@ class Encargo:
     agente: str = ""
     pausas: tuple[PausaAgente, ...] = ()
     via: str = "durable"
+    entrega: EntregaAutorizada = field(default_factory=EntregaAutorizada)
+    nivel_alcanzado: str = "ninguno"
+    pr_numero: int = 0
+    pr_sha: str = ""
+    deepseek_sha: str = ""
+    producto: VersionProducto | None = None
+    revisado: VersionProducto | None = None
+    hallazgos: tuple[Hallazgo, ...] = ()
+    aprobadas: tuple[tuple[str, str], ...] = ()
+    revision_vigente: RefRevision | None = None
+    deepseek_vigente: RefRevision | None = None
+    modelos: tuple[tuple[str, str, str], ...] = ()
+    sesion_responsable: str = ""
+    sesion_revisor: str = ""
+    epoca_responsable: int = 0
+    epoca_revisor: int = 0
+    viva_responsable: bool = False
+    viva_revisor: bool = False
+    sesion_modo: str = ""
+    poteto_digest: str = ""
+    bloqueo_huella: str = ""
+    sin_progreso: int = 0
+    observada_version: str = ""
 
 
 def huella_entrega(
@@ -144,6 +277,124 @@ def efecto_de(e: Encargo, efecto_id: str) -> Efecto | None:
     return None
 
 
+def bloqueantes_abiertos(e: Encargo, origen: str = "") -> tuple[Hallazgo, ...]:
+    return tuple(
+        h
+        for h in e.hallazgos
+        if h.gravedad == "bloqueante"
+        and h.estado == "abierto"
+        and (not origen or h.origen == origen)
+    )
+
+
+def _fusionar(
+    actuales: tuple[Hallazgo, ...], nuevos: tuple[Hallazgo, ...]
+) -> tuple[Hallazgo, ...]:
+    por_id = {h.id: h for h in actuales}
+    orden = [h.id for h in actuales]
+    for h in nuevos:
+        if h.id not in por_id:
+            orden.append(h.id)
+            por_id[h.id] = h
+            continue
+        previo = por_id[h.id]
+        if (
+            previo.gravedad == "bloqueante"
+            and previo.estado == "abierto"
+            and h.gravedad == "observacion"
+            and h.estado != "resuelto"
+        ):
+            continue
+        por_id[h.id] = h
+    return tuple(por_id[i] for i in orden)
+
+
+def huella_bloqueo(e: Encargo) -> str:
+    ids = sorted(h.id for h in bloqueantes_abiertos(e))
+    firma = e.producto.firma if e.producto else ""
+    return hashlib.sha256(("|".join(ids) + "|" + firma).encode()).hexdigest()
+
+
+def _con_progreso(e: Encargo) -> Encargo:
+    huella = huella_bloqueo(e)
+    if huella != e.bloqueo_huella:
+        return replace(e, bloqueo_huella=huella, sin_progreso=0)
+    return e
+
+
+def alcance_de(e: Encargo) -> AlcanceRevision:
+    version = e.producto.firma if e.producto else ""
+    manifiesto = e.producto.manifiesto if e.producto else ()
+    if e.revision_vigente is None or e.revisado is None or e.producto is None:
+        return AlcanceRevision(
+            clase="completa",
+            version=version,
+            base_version="",
+            abiertos=bloqueantes_abiertos(e, "independiente"),
+            manifiesto=manifiesto,
+        )
+    base = dict(e.revisado.manifiesto)
+    actual = dict(manifiesto)
+    tocadas = tuple(
+        sorted(r for r in set(base) | set(actual) if base.get(r) != actual.get(r))
+    )
+    conservadas = tuple(r for r, h in e.aprobadas if actual.get(r) == h)
+    return AlcanceRevision(
+        clase="correccion",
+        version=version,
+        base_version=e.revisado.firma,
+        abiertos=bloqueantes_abiertos(e, "independiente"),
+        tocadas=tocadas,
+        conservadas=conservadas,
+        manifiesto=manifiesto,
+    )
+
+
+def revision_independiente_cubre_producto(e: Encargo) -> bool:
+    ref, producto = e.revision_vigente, e.producto
+    if ref is None or ref.veredicto != "aprobado" or producto is None:
+        return False
+    if ref.version == producto.firma:
+        return True
+    ds = e.deepseek_vigente
+    actual = dict(producto.manifiesto)
+    return bool(
+        e.entrega.nivel != "terminado"
+        and e.rol != "revisor"
+        and e.revisado is not None
+        and ref.version == e.revisado.firma
+        and ds is not None
+        and ds.veredicto == "aprobado"
+        and ds.version == producto.firma
+        and producto.sha_git
+        and producto.sha_git == e.pr_sha == e.deepseek_sha
+        and all(actual.get(ruta) == firma for ruta, firma in e.aprobadas)
+    )
+
+
+def nivel_cumplido(e: Encargo) -> bool:
+    return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(
+        e.entrega.nivel, 1
+    )
+
+
+def _entrega_de(d: dict) -> EntregaAutorizada:
+    nivel = str(d.get("entrega_nivel") or "terminado")
+    if nivel not in NIVELES:
+        raise TransicionIlegal(f"nivel de entrega desconocido: {nivel}")
+    repo = str(d.get("repo") or "")
+    base = str(d.get("base") or "")
+    rama = str(d.get("rama") or "")
+    if nivel != "terminado":
+        if not repo or not base:
+            raise TransicionIlegal(
+                "el nivel de entrega exige repo y rama base desde el encargo"
+            )
+        if not rama:
+            rama = f"encargo/{d.get('id') or ''}"
+    return EntregaAutorizada(nivel=nivel, repo=repo, rama=rama, base=base)
+
+
 def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     kind = evento["kind"]
     d = evento["data"]
@@ -154,6 +405,10 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         via = d.get("via") or "durable"
         if via not in ("directa", "durable"):
             raise TransicionIlegal("via desconocida")
+        if via == "directa" and (d.get("entrega_nivel") or "terminado") != "terminado":
+            raise TransicionIlegal(
+                "la via directa no entrega niveles externos; usa la via durable"
+            )
         if d.get("detenido"):
             return Encargo(
                 id=d["id"],
@@ -172,6 +427,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
                 escrituras=False,
                 intentos_nuevos=False,
                 via=via,
+                entrega=_entrega_de(d),
             )
         return Encargo(
             id=d["id"],
@@ -191,6 +447,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             ),
             pendientes=tuple(d.get("pendientes") or ("comprobar el pedido",)),
             via=via,
+            entrega=_entrega_de(d),
         )
     if estado is None:
         raise TransicionIlegal("no hay encargo")
@@ -266,11 +523,29 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             raise TransicionIlegal("no hay autorización para otro intento")
         if e.proc is not None:
             raise TransicionIlegal("ya hay un escritor")
+        rol_intento = str(d.get("rol") or e.rol or "responsable")
+        poteto = str(d.get("poteto_digest") or "")
+        if "poteto_digest" in d and rol_intento == "responsable" and not poteto:
+            raise TransicionIlegal("intento del responsable sin poteto verificado")
+        modelo = str(d.get("modelo") or "")
+        modelos = e.modelos
+        if modelo:
+            registro_modelo = (rol_intento, str(d.get("agente") or e.agente), modelo)
+            if not modelos or modelos[-1] != registro_modelo:
+                modelos = modelos + (registro_modelo,)
+        viva = (
+            {"viva_revisor": True}
+            if rol_intento == "revisor"
+            else {"viva_responsable": True}
+        )
         return replace(
             e,
             reserva=False,
-            rol=str(d.get("rol") or e.rol),
+            rol=rol_intento,
             agente=str(d.get("agente") or e.agente),
+            modelos=modelos,
+            sesion_modo=str(d.get("sesion_modo") or e.sesion_modo),
+            poteto_digest=poteto or e.poteto_digest,
             intento=d["id"],
             sesion=d.get("sesion") or e.sesion,
             proc=Proc(
@@ -283,6 +558,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             herramientas_observables=bool(d.get("herramientas_observables", True)),
             hora=hora or e.hora,
             ultimo_hecho=e.ultimo_hecho or "intento abierto",
+            **viva,
         )
     if kind == "actividad":
         if e.estado in _CERRADOS or e.estado == "esperando_reintento":
@@ -307,7 +583,86 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             causa=d.get("causa") or e.causa,
         )
     if kind == "intento_cerrado":
-        return replace(e, proc=None, herramienta="", reserva=False)
+        sesion_runtime = str(d.get("sesion_runtime") or "")
+        cambios = {}
+        if sesion_runtime:
+            if e.rol == "revisor":
+                cambios["sesion_revisor"] = sesion_runtime
+            else:
+                cambios["sesion_responsable"] = sesion_runtime
+        return replace(e, proc=None, herramienta="", reserva=False, **cambios)
+    if kind == "sesion_perdida":
+        if (d.get("rol") or e.rol) == "revisor":
+            return replace(
+                e,
+                sesion_revisor="",
+                viva_revisor=False,
+                epoca_revisor=e.epoca_revisor + 1,
+            )
+        return replace(
+            e,
+            sesion_responsable="",
+            viva_responsable=False,
+            epoca_responsable=e.epoca_responsable + 1,
+        )
+    if kind == "producto_listo":
+        version = VersionProducto.desde(
+            d.get("version") or "", d.get("manifiesto"), d.get("sha_git") or ""
+        )
+        return _con_progreso(
+            replace(
+                e,
+                producto=version,
+                ultimo_hecho="producto listo para revisar",
+                hora=hora or e.hora,
+            )
+        )
+    if kind == "observacion_supervisor":
+        return replace(
+            e,
+            observada_version=str(d.get("version") or e.observada_version),
+            causa=str(d.get("error_instrumento") or e.causa),
+            ultimo_hecho="comprobaciones observadas por el supervisor",
+            hora=hora or e.hora,
+        )
+    if kind == "revision":
+        return _revision(e, d, hora)
+    if kind == "instrumento_fallo":
+        return replace(
+            e,
+            causa=str(d.get("causa") or e.causa),
+            motivo=f"instrumento: {d.get('fuente') or 'desconocido'}",
+            siguiente=str(d.get("siguiente") or "reintentar el mismo paso"),
+            ultimo_hecho=str(d.get("causa") or e.ultimo_hecho),
+            hora=hora or e.hora,
+        )
+    if kind == "entrega_externa":
+        return _entrega_externa(e, d, hora)
+    if kind == "sin_progreso":
+        huella = str(d.get("huella") or "")
+        veces = e.sin_progreso + 1 if huella and huella == e.bloqueo_huella else 1
+        diagnostico = str(d.get("diagnostico") or d.get("causa") or "")
+        if d.get("escalar"):
+            return replace(
+                e,
+                estado="necesita_usuario",
+                bloqueo_huella=huella or e.bloqueo_huella,
+                sin_progreso=veces,
+                preguntas=e.preguntas + ((diagnostico,) if diagnostico else ()),
+                motivo=diagnostico or "el mismo bloqueo sin progreso",
+                siguiente="hace falta una decisión del usuario",
+                ultimo_hecho=diagnostico or "el mismo bloqueo sin progreso",
+                hora=hora or e.hora,
+            )
+        return replace(
+            e,
+            bloqueo_huella=huella or e.bloqueo_huella,
+            sin_progreso=veces,
+            motivo="la corrección no resolvió el bloqueo",
+            siguiente="diagnosticar por qué la corrección no resolvió el bloqueo",
+            ultimo_hecho="sin progreso: el mismo bloqueo y la misma firma",
+            hora=hora or e.hora,
+        )
     if kind == "arbol":
         return _arbol(e, d, hora)
     if kind == "comprobacion":
@@ -394,6 +749,10 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     if kind == "resultado_directo":
         if e.via != "directa":
             raise TransicionIlegal("el resultado directo solo cierra la via directa")
+        if e.entrega.nivel != "terminado":
+            raise TransicionIlegal(
+                "el resultado directo no cumple niveles externos de entrega"
+            )
         if e.proc is not None or e.reserva:
             raise TransicionIlegal("hay un escritor abierto")
         if e.estado in ("cancelado", "terminado"):
@@ -477,6 +836,88 @@ def _arbol(e: Encargo, d: dict, hora: str) -> Encargo:
     )
 
 
+def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
+    origen = str(d.get("origen") or "independiente")
+    nuevos = tuple(
+        Hallazgo.desde(h) for h in (d.get("hallazgos") or ()) if isinstance(h, dict)
+    )
+    hallazgos = _fusionar(e.hallazgos, nuevos)
+    veredicto = str(d.get("veredicto") or "no_concluyente")
+    provisional = replace(e, hallazgos=hallazgos)
+    if bloqueantes_abiertos(provisional, origen):
+        veredicto = "cambios"
+    ref = RefRevision(
+        revision_id=str(d.get("revision_id") or ""),
+        version=str(d.get("version") or ""),
+        base_version=str(d.get("base_version") or ""),
+        alcance=str(d.get("alcance") or "completa"),
+        veredicto=veredicto,
+        revisor=str(d.get("revisor") or ""),
+        origen=origen,
+        cubre=tuple(str(x) for x in (d.get("cubre") or ())),
+    )
+    aprobadas = e.aprobadas
+    if d.get("aprobadas") is not None:
+        aprobadas = tuple(
+            (str(x[0]), str(x[1]))
+            for x in (d.get("aprobadas") or ())
+            if isinstance(x, (list, tuple)) and len(x) >= 2
+        )
+    revisado = e.revisado
+    if (
+        origen == "independiente"
+        and e.producto is not None
+        and ref.version == e.producto.firma
+    ):
+        revisado = e.producto
+    cambios = {
+        "hallazgos": hallazgos,
+        "aprobadas": aprobadas,
+        "revisado": revisado,
+        "ultimo_hecho": f"revisión {origen}: {veredicto}",
+        "hora": hora or e.hora,
+    }
+    if veredicto == "no_concluyente" and d.get("evidencia"):
+        cambios["causa"] = str(d["evidencia"])[:1000]
+    if origen == "deepseek":
+        cambios["deepseek_vigente"] = ref
+    else:
+        cambios["revision_vigente"] = ref
+    return _con_progreso(replace(e, **cambios))
+
+
+def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
+    paso = str(d.get("paso") or "")
+    sha = str(d.get("sha") or "")
+    candidato = e.nivel_alcanzado
+    if paso in ("pr_abierto", "pr_listo"):
+        candidato = "pr_abierto"
+    elif paso == "deepseek_leido":
+        if not bloqueantes_abiertos(e, "deepseek"):
+            candidato = "pr"
+    elif paso == "integrado":
+        candidato = "integrado"
+    elif paso == "desplegado":
+        candidato = "desplegado"
+    if _ORDEN_NIVEL.get(candidato, 0) < _ORDEN_NIVEL.get(e.nivel_alcanzado, 0):
+        candidato = e.nivel_alcanzado
+    producto = e.producto
+    if paso == "commit" and producto is not None and sha:
+        producto = replace(producto, sha_git=sha)
+    return replace(
+        e,
+        nivel_alcanzado=candidato,
+        pr_numero=int(d.get("numero") or e.pr_numero or 0),
+        pr_sha=sha
+        if paso in ("commit", "push", "pr_abierto", "pr_listo") and sha
+        else e.pr_sha,
+        deepseek_sha=sha if paso == "deepseek_leido" and sha else e.deepseek_sha,
+        producto=producto,
+        ultimo_hecho=f"entrega externa: {paso}",
+        hora=hora or e.hora,
+    )
+
+
 def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
     clase = d["clase"]
     if clase == "producto_aprobado":
@@ -494,9 +935,20 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
             return replace(
                 e, evidencia=evidencias, hora=hora or e.hora, ultimo_hecho=evidencia
             )
+        if e.entrega.nivel != "terminado" and not nivel_cumplido(e):
+            return replace(
+                e,
+                evidencia=evidencias,
+                hora=hora or e.hora,
+                ultimo_hecho=evidencia,
+                siguiente="completar la entrega externa autorizada",
+            )
         return replace(
             e,
             estado="terminado",
+            nivel_alcanzado=e.nivel_alcanzado
+            if e.nivel_alcanzado != "ninguno"
+            else "terminado",
             evidencia=evidencias,
             intentos_nuevos=False,
             escrituras=False,
@@ -508,37 +960,42 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
             repeticiones=0,
         )
     if clase == "instrumento":
-        firma = d["firma"]
+        firma = str(d.get("firma") or "")
         rep = e.repeticiones + 1 if firma == e.firma_fallo else 1
+        causa = str(d.get("causa") or "instrumento defectuoso")
         return replace(
             e,
-            procedimiento=e.procedimiento + (d["reparacion"],),
-            causa=d["causa"],
+            procedimiento=e.procedimiento + (str(d.get("reparacion") or causa),),
+            causa=causa,
             firma_fallo=firma,
             repeticiones=rep,
-            ultimo_hecho=d["causa"],
+            ultimo_hecho=causa,
             hora=hora or e.hora,
             motivo="instrumento defectuoso",
             siguiente="reparar la comprobación y volver a mirar el producto",
         )
     if clase == "defecto":
-        firma = d["firma"]
+        firma = str(d.get("firma") or "")
         rep = e.repeticiones + 1 if firma == e.firma_fallo else 1
+        causa = str(d.get("causa") or "defecto del producto")
         return replace(
             e,
-            causa=d["causa"],
+            causa=causa,
             firma_fallo=firma,
             repeticiones=rep,
-            ultimo_hecho=d["causa"],
+            ultimo_hecho=causa,
             hora=hora or e.hora,
             motivo="defecto del producto",
             siguiente="corregir el producto y repetir la comprobación",
         )
     if clase == "no_concluyente":
+        motivo = str(
+            d.get("motivo") or d.get("causa") or "evidencia insuficiente"
+        )
         return replace(
             e,
-            motivo=d["motivo"],
-            ultimo_hecho=d["motivo"],
+            motivo=motivo,
+            ultimo_hecho=motivo,
             hora=hora or e.hora,
             siguiente="volver a observar; no declarar terminado",
         )
@@ -589,11 +1046,47 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         raise TransicionIlegal("terminado sin evidencia")
     if e.estado == "ejecutando" and not e.ultimo_hecho:
         raise TransicionIlegal("ejecutando sin hecho")
+    def _modelo(rol: str) -> str:
+        for r, _agente, modelo in reversed(e.modelos):
+            if r == rol:
+                return modelo
+        return ""
+
+    ref = e.revision_vigente
     return {
         "encargo": e.id,
         "estado": e.estado,
         "agente": e.agente,
         "agentes_autorizados": list(e.agentes),
+        "modelos": {
+            "implementador": _modelo("responsable"),
+            "revisor": _modelo("revisor"),
+        },
+        "producto": {
+            "archivos": [r for r, _ in e.producto.manifiesto] if e.producto else [],
+            "firma": e.producto.firma if e.producto else "",
+        },
+        "revision": {
+            "version": ref.version if ref else "",
+            "veredicto": ref.veredicto if ref else "",
+            "bloqueantes_abiertos": [
+                h.como_dict() for h in bloqueantes_abiertos(e)
+            ],
+            "observaciones": [
+                h.titulo
+                for h in e.hallazgos
+                if h.gravedad == "observacion" and h.estado == "abierto"
+            ],
+        },
+        "entrega": {
+            "nivel_autorizado": e.entrega.nivel,
+            "nivel_alcanzado": e.nivel_alcanzado,
+            "repo": e.entrega.repo,
+            "rama": e.entrega.rama,
+            "base": e.entrega.base,
+            "pr": {"numero": e.pr_numero, "sha": e.pr_sha},
+            "deepseek": {"sha": e.deepseek_sha, "leida": bool(e.deepseek_sha)},
+        },
         "ultimo_hecho": e.ultimo_hecho,
         "hora": e.hora,
         "motivo": e.motivo,
@@ -696,15 +1189,8 @@ def decision_proceso(
     return {"matar": False, "lanzar": lanzar and not eventos, "eventos": eventos}
 
 
-def prompt_de(e: Encargo) -> str:
-    lineas = [
-        (
-            "Eres el responsable de este encargo. Sigue poteto-mode en este espacio. "
-            "Carga la skill empaquetada del runtime y limita las herramientas al espacio concedido."
-        ),
-        "El pedido original no se reescribe.",
-        f"Pedido:\n{e.texto}",
-    ]
+def _bloques_comunes(e: Encargo) -> list[str]:
+    lineas = ["El pedido original no se reescribe.", f"Pedido:\n{e.texto}"]
     if e.restricciones:
         lineas.append("Restricciones:\n" + "\n".join(e.restricciones))
     if e.ajustes:
@@ -723,14 +1209,97 @@ def prompt_de(e: Encargo) -> str:
         )
     if e.preguntas:
         lineas.append("Preguntas pendientes:\n" + "\n".join(e.preguntas))
+    return lineas
+
+
+def prompt_responsable(e: Encargo) -> str:
+    lineas = [
+        (
+            "Eres el responsable de este encargo. Sigue poteto-mode en este espacio. "
+            "Carga la skill empaquetada del runtime y limita las herramientas al espacio concedido."
+        )
+    ]
+    lineas += _bloques_comunes(e)
+    abiertos = bloqueantes_abiertos(e)
+    if abiertos:
+        detalle = []
+        for h in abiertos:
+            detalle.append(
+                f"{h.id} [{h.criterio}] {h.titulo}\n"
+                f"  ancla: {h.ancla or 'sin ancla'}\n"
+                f"  reproduccion: {h.reproduccion}"
+            )
+        ref = e.revision_vigente.version if e.revision_vigente else ""
+        lineas.append(
+            "Hallazgos bloqueantes abiertos de la revisión"
+            + (f" de la versión {ref}" if ref else "")
+            + ". Corrige solo estos y sus efectos; lo demás aprobado se conserva:\n"
+            + "\n".join(detalle)
+        )
+    if e.aprobadas:
+        lineas.append(
+            "Rutas ya aprobadas; no las reescribas sin necesidad:\n"
+            + "\n".join(r for r, _ in e.aprobadas)
+        )
     if e.causa or e.motivo:
         lineas.append(
             f"Última observación: {e.causa or e.motivo}\nSiguiente trabajo concreto: {e.siguiente}"
         )
     lineas.append(
-        "Comprueba el comportamiento pedido y deja la salida en evidencia-comportamiento.txt. "
+        "Comprueba el comportamiento pedido y deja la evidencia en .interno/evidencia.txt. "
         "No declares el encargo terminado: el supervisor mira el destino. "
-        "Una escritura fuera de este espacio se pide en pedido-efecto.json. "
+        "Una escritura fuera de este espacio se pide en .interno/pedido-efecto.json. "
         "No repitas un efecto que ya tenga recibo."
     )
     return "\n\n".join(lineas)
+
+
+def prompt_revisor(e: Encargo, alcance: AlcanceRevision) -> str:
+    lineas = [
+        (
+            "Eres el revisor técnico independiente de este encargo. No eres el "
+            "responsable y no sigues poteto-mode. El espacio del producto es de "
+            "solo lectura para ti."
+        )
+    ]
+    lineas += _bloques_comunes(e)
+    if alcance.clase == "correccion":
+        lineas.append(
+            f"Alcance de esta revisión: correccion sobre la versión {alcance.version}"
+            f" (base {alcance.base_version}). Comprueba los hallazgos abiertos y los "
+            "efectos de las correcciones. Lo aprobado que no cambió conserva su aprobación."
+        )
+        if alcance.abiertos:
+            lineas.append(
+                "Hallazgos que esta vuelta cubre:\n"
+                + "\n".join(
+                    f"{h.id} [{h.criterio}] {h.titulo} (ancla: {h.ancla})"
+                    for h in alcance.abiertos
+                )
+            )
+        if alcance.tocadas:
+            lineas.append(
+                "Rutas cuyo contenido cambió desde la base:\n"
+                + "\n".join(alcance.tocadas)
+            )
+        if alcance.conservadas:
+            lineas.append(
+                "Rutas aprobadas con el contenido intacto. No las vuelvas a revisar:\n"
+                + "\n".join(alcance.conservadas)
+            )
+    else:
+        lineas.append(
+            f"Alcance de esta revisión: completa, contra todo el pedido, "
+            f"sobre la versión {alcance.version}."
+        )
+    lineas.append(
+        "Solo bloquea por seguridad, datos, comportamiento solicitado roto, una prueba "
+        "exigida en los casos autorizados que falte, o un error operativo demostrable "
+        "en un documento. Todo bloqueante necesita cómo reproducirlo. Lo demás es "
+        "observación y no impide aprobar."
+    )
+    return "\n\n".join(lineas)
+
+
+def prompt_de(e: Encargo) -> str:
+    return prompt_responsable(e)

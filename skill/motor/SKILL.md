@@ -9,6 +9,10 @@ David manda texto o archivos. Eso es el pedido. No lo conviertas en bloques, cam
 
 Si el pedido cabe en tus agentes y David no pidió continuidad, hazlo por la vía directa. Si debe seguir sin esta conversación, cruzar máquinas o entregar en etapas, usa la vía durable. Si David nombró la vía, usa esa.
 
+Hasta dónde llega la entrega se fija al encargar con `--entrega`: `terminado` (defecto) es producto aprobado por otro modelo, sin tocar GitHub. `pr` además abre el PR y espera la revisión de DeepSeek de ese SHA. `integrado` además lo mergea sobre el SHA revisado. `desplegado` además exige un efecto de despliegue con recibo. Los niveles `pr`, `integrado` y `desplegado` necesitan `--repo` y `--base-rama` desde el inicio; `--rama` es opcional.
+
+`terminado` significa nivel alcanzado igual al autorizado, no solo "el producto anda". La vista y el aviso siempre distinguen ambos niveles, más PR y DeepSeek cuando aplican. En la vía durable, el implementador trabaja con poteto-mode y revisa otro modelo siempre; las observaciones no bloqueantes no abren otra vuelta.
+
 ```sh
 python3 -B -m motor director encargar \
   --via directa \

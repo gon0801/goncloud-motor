@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from motor import plataforma
-from motor.encargos.comprobacion import observar_procedimiento
+from motor.encargos.comprobacion import interno_de, observar_comprobaciones
 from motor.encargos.frontera import leer_parada_local, turno
 from motor.encargos.registro import Registro
 from motor.runwrap import _publica
@@ -42,9 +42,20 @@ def main(path: Path) -> int:
             ):
                 return 0
         os.environ["MOTOR_COMPROBADOR_GRUPO"] = str(os.getpid())
-        observacion = observar_procedimiento(
-            Path(spec["cwd"]), Path(spec["directorio"]), path.parent
+        espacio = Path(spec["cwd"])
+        observacion = observar_comprobaciones(
+            espacio, interno_de(espacio), Path(spec["directorio"]), path.parent
         )
+        if observacion is None:
+            from motor.encargos.comprobacion import firma_producto
+
+            firma = firma_producto(espacio)
+            observacion = {
+                "sin_comprobaciones": True,
+                "ejecuciones": [],
+                "producto": firma,
+                "version": firma,
+            }
         _publica(
             Path(spec["directorio"]) / "observaciones.json",
             json.dumps(observacion, ensure_ascii=False),

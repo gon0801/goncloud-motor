@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from motor.encargos.ciclo import _incorporar, ahora_iso, recibir
-from motor.encargos.comprobacion import digest
+from motor.encargos.comprobacion import firma_producto
 from motor.encargos.frontera import DestinoEnsayo, despachar
 from motor.encargos.registro import Registro
 
@@ -47,7 +47,9 @@ class Motor06(unittest.TestCase):
                 reg, enc, destino, "pr-26", "merge", "pr-26", "integrado", hora
             )
             self.assertEqual(primero["n"], 1)
-            (espacio / "pedido-efecto.json").write_text(
+            interno = espacio / ".interno"
+            interno.mkdir()
+            (interno / "pedido-efecto.json").write_text(
                 json.dumps(
                     {
                         "id": "pr-26",
@@ -57,8 +59,8 @@ class Motor06(unittest.TestCase):
                     }
                 )
             )
-            procedimiento = espacio / "procedimiento.json"
-            procedimiento.write_text(
+            comprobaciones = interno / "comprobaciones.json"
+            comprobaciones.write_text(
                 json.dumps(
                     {
                         "comprobaciones": [
@@ -118,6 +120,7 @@ class Motor06(unittest.TestCase):
                     {
                         "observaciones": str(d / "observaciones.json"),
                         "resultado": str(resultado),
+                        "version": firma_producto(espacio),
                     }
                 )
             )
@@ -125,10 +128,12 @@ class Motor06(unittest.TestCase):
             resultado.write_text(
                 json.dumps(
                     {
-                        "clase": "instrumento",
-                        "observacion": digest(observacion),
-                        "causa": "el patron grep es invalido, el archivo no fue examinado",
-                        "reparacion": "leer modelos.toml con el parser TOML y comparar ambas definiciones",
+                        "veredicto": "no_concluyente",
+                        "version": firma_producto(espacio),
+                        "evidencia": "el comando de comprobacion no examino el archivo",
+                        "instrumento": {
+                            "causa": "el patron grep es invalido, el archivo no fue examinado"
+                        },
                     }
                 )
             )
@@ -144,7 +149,7 @@ class Motor06(unittest.TestCase):
                 "v={x['nombre'] for x in d['modelos'].values()}; "
                 "assert {'kimi-code/k3','kimi-code/k3.1-pro'} <= v; print(sorted(v))"
             )
-            procedimiento.write_text(
+            comprobaciones.write_text(
                 json.dumps(
                     {
                         "comprobaciones": [
@@ -162,16 +167,10 @@ class Motor06(unittest.TestCase):
             resultado.write_text(
                 json.dumps(
                     {
-                        "clase": "confirmado",
-                        "observacion": digest(observacion),
+                        "veredicto": "aprobado",
+                        "version": firma_producto(espacio),
                         "evidencia": observacion["ejecuciones"][0]["stdout"],
-                        "cobertura": [
-                            {
-                                "objetivo": "las dos definiciones solicitadas",
-                                "ejecuciones": [0],
-                                "razon": "el parser comparo los dos nombres completos",
-                            }
-                        ],
+                        "efectos_pendientes": ["pr-26"],
                     }
                 )
             )
