@@ -37,8 +37,17 @@ def observar(directorio: Path, proc: dict | None) -> str:
         identidades = json.loads(
             (directorio / "arbol.json").read_text(encoding="utf-8")
         )
-        if any(plataforma.estado_proc(x) == "vivo" for x in identidades):
-            return "vivo"
+        raiz_inicio = str(proc.get("inicio") or "")
+        for x in identidades:
+            inicio = str(x.get("inicio") or "")
+            if (
+                inicio.isdigit()
+                and raiz_inicio.isdigit()
+                and int(inicio) < int(raiz_inicio)
+            ):
+                continue
+            if plataforma.estado_proc(x) == "vivo":
+                return "vivo"
     except (OSError, ValueError, TypeError):
         pass
     if os.name == "nt":
