@@ -524,12 +524,11 @@ def preparar(
                 home / "generaciones" / asignar(home) / "runtime.json"
             )
             if ruta_vigente.is_file():
-                vigentes = {
-                    c["nombre"]
-                    for c in json.loads(
+                vigentes = set(
+                    json.loads(
                         ruta_vigente.read_text(encoding="utf-8")
-                    ).get("componentes", [])
-                }
+                    ).get("lanzadores", {})
+                )
         except (OSError, ValueError):
             vigentes = set()
         try:

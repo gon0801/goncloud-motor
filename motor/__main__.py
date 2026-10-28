@@ -932,14 +932,20 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"motor: {exc}", file=sys.stderr)
             return 2
-        if a.flota_home is not None:
-            from .servicio import vincular_base
+        if a.flota_home is None or a.canal is None:
+            print(
+                "motor: instala-encargos necesita --flota-home y --canal "
+                "para conectar la base con su flota y su canal",
+                file=sys.stderr,
+            )
+            return 2
+        from .servicio import vincular_base
 
-            try:
-                vincular_base(Path(a.home), a.flota_home, a.canal)
-            except (OSError, ValueError) as exc:
-                print(f"motor: {exc}", file=sys.stderr)
-                return 2
+        try:
+            vincular_base(Path(a.home), a.flota_home, a.canal)
+        except (OSError, ValueError) as exc:
+            print(f"motor: {exc}", file=sys.stderr)
+            return 2
         print(texto)
         return 0
     if a.cmd == "formato":

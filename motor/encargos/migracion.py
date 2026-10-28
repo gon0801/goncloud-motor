@@ -52,11 +52,32 @@ def _clave(host: str, plan: str) -> str:
 
 
 def _previo(registro: Registro, host: str, plan: str) -> dict | None:
-    for ukey in (_clave(host, plan), f"migracion:{host}:{plan}"):
+    for ukey in (
+        _clave(host, plan),
+        f"migracion:{host}:{plan}",
+        f"entrega:{_clave(host, plan)}",
+        f"entrega:migracion-{host}-{plan}",
+    ):
         previo = registro.por_ukey(ukey)
         if previo is not None:
             return previo
     return None
+
+
+def _asegurar_detenido(
+    registro: Registro, encargo: str, host: str, plan: str, hora: str
+) -> None:
+    enc = registro.fold(encargo)
+    if enc is None or enc.estado in (
+        "detenido",
+        "deteniendo",
+        "terminado",
+        "cancelado",
+    ):
+        return
+    from motor.integraciones.directores import parar
+
+    parar(registro, encargo, f"parada-{_clave(host, plan)}", hora)
 
 
 def _relacion(registro: Registro, host: str, plan: str, encargo: str) -> dict:
@@ -110,7 +131,37 @@ def importar_encargos(
         )
         previo = _previo(registro, host, plan)
         if previo is not None:
-            relacion.append(_relacion(registro, host, plan, previo["encargo"]))
+            encargo_previo = previo["encargo"]
+            _asegurar_detenido(registro, encargo_previo, host, plan, hora)
+            if not any(
+                e["kind"] == "migracion"
+                for e in registro.eventos(encargo_previo)
+            ):
+                registro.anotar(
+                    encargo_previo,
+                    {
+                        "kind": "migracion",
+                        "data": {
+                            "hora": hora,
+                            "origen": {
+                                "host": host,
+                                "plan": plan,
+                                "almacen": str(desde),
+                            },
+                            "conteo_por_kind": conteo,
+                            "total_eventos": len(lista),
+                            "ultimo_kind": ultimo_kind,
+                            "merged": merged,
+                            "verified": verified,
+                            "nota": (
+                                f"migración desde {host}/{plan} con "
+                                f"{len(lista)} eventos; último {ultimo_kind}"
+                            ),
+                        },
+                    },
+                    _clave(host, plan),
+                )
+            relacion.append(_relacion(registro, host, plan, encargo_previo))
             continue
         salida = recibir(
             registro,
@@ -157,10 +208,13 @@ def importar_encargos(
 
 
 def crear_motor06(registro: Registro, hora: str) -> dict:
-    previo = _previo(registro, "", "motor-06") or registro.por_ukey(
-        "migracion:motor-06"
+    previo = (
+        _previo(registro, "", "motor-06")
+        or registro.por_ukey("migracion:motor-06")
+        or registro.por_ukey("entrega:migracion-motor-06")
     )
     if previo is not None:
+        _asegurar_detenido(registro, previo["encargo"], "", "motor-06", hora)
         return _relacion(registro, "", "motor-06", previo["encargo"])
     salida = recibir(
         registro,

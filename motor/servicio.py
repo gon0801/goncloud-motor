@@ -138,19 +138,34 @@ def vincular_base(base: Path, flota_home: Path, canal: Path | None = None) -> di
     import json
 
     base = Path(base)
-    flota_home = Path(flota_home)
+    flota_home = Path(flota_home).resolve()
     if not (flota_home / "generaciones").is_dir():
         raise ValueError(f"la flota vinculada no existe en {flota_home}")
+    doc = None
+    if canal is not None:
+        try:
+            doc = json.loads(Path(canal).read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise ValueError(f"el canal vinculado no es JSON valido: {exc}") from exc
+        if not isinstance(doc, dict) or not doc:
+            raise ValueError("el canal vinculado debe ser un objeto con canales")
+        for nombre, cfg in doc.items():
+            if not isinstance(cfg, dict) or not (
+                isinstance(cfg.get("comando"), list)
+                and cfg.get("comando")
+                or isinstance(cfg.get("conciliacion"), list)
+                and cfg.get("conciliacion")
+            ):
+                raise ValueError(
+                    f"el canal {nombre} no trae comando ni conciliacion utilizables"
+                )
     base.mkdir(parents=True, exist_ok=True)
     (base / "flota-home.json").write_text(
         json.dumps({"home": str(flota_home)}, ensure_ascii=False),
         encoding="utf-8",
     )
     salida = {"flota_home": str(flota_home)}
-    if canal is not None:
-        doc = json.loads(Path(canal).read_text(encoding="utf-8"))
-        if not isinstance(doc, dict) or not doc:
-            raise ValueError("el canal vinculado debe ser un objeto con canales")
+    if doc is not None:
         (base / "canal.json").write_text(
             json.dumps(doc, ensure_ascii=False), encoding="utf-8"
         )
