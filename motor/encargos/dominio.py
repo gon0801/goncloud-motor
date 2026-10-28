@@ -154,6 +154,25 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         via = d.get("via") or "durable"
         if via not in ("directa", "durable"):
             raise TransicionIlegal("via desconocida")
+        if d.get("detenido"):
+            return Encargo(
+                id=d["id"],
+                clave=d["clave"],
+                huella=d["huella"],
+                director=d.get("director") or "",
+                texto=d["texto"],
+                adjuntos=tuple(d.get("adjuntos") or ()),
+                restricciones=tuple(d.get("restricciones") or ()),
+                canal=d.get("canal") or "",
+                estado="detenido",
+                ultimo_hecho="importado detenido sin escrituras",
+                hora=hora,
+                siguiente="detenido hasta continuar tras conciliar los efectos",
+                pendientes=tuple(d.get("pendientes") or ("comprobar el pedido",)),
+                escrituras=False,
+                intentos_nuevos=False,
+                via=via,
+            )
         return Encargo(
             id=d["id"],
             clave=d["clave"],

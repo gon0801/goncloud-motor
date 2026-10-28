@@ -68,6 +68,7 @@ def recibir(
     restricciones: tuple[str, ...] = (),
     canal: str = "",
     via: str = "durable",
+    detenido: bool = False,
 ) -> dict:
     huella = huella_entrega(texto, adjuntos, restricciones)
     ukey = f"entrega:{clave}"
@@ -81,6 +82,7 @@ def recibir(
             or datos.get("via", "durable") != via
             or datos.get("canal", "") != canal
             or datos.get("director", "") != director
+            or bool(datos.get("detenido")) != detenido
         ):
             salida["conflicto"] = True
         return salida
@@ -99,6 +101,7 @@ def recibir(
             "restricciones": list(restricciones),
             "canal": canal,
             "via": via,
+            "detenido": detenido,
             "recibo": recibo,
             "hora": hora,
         },
