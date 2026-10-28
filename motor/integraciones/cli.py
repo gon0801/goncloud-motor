@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from motor.encargos.registro import Registro, exigir_base
+from motor.encargos.seleccion import solicitar_modelos
 
 from .directores import (
     capacidades_openbot,
@@ -54,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--repo", default="")
     s.add_argument("--rama", default="")
     s.add_argument("--base-rama", default="")
+    s.add_argument("--responsable", default="")
+    s.add_argument("--revisor", default="")
 
     s = sub.add_parser("registrar-sesion")
     s.add_argument("encargo")
@@ -159,6 +162,7 @@ def _correr(args) -> int:
                     repo=args.repo,
                     rama=args.rama,
                     base_rama=args.base_rama,
+                    modelos_solicitados=solicitar_modelos(args.responsable, args.revisor),
                 )
             )
         if args.cmd == "registrar-sesion":

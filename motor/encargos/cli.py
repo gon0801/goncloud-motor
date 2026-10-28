@@ -5,11 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
+from .agentes import _disponible, _lanzador, _modelos_para, _sesion_modo
 from .ciclo import (
     afirmar,
     ahora_iso,
@@ -24,6 +25,7 @@ from .ciclo import (
 )
 from .frontera import DestinoEnsayo, despachar
 from .registro import BaseProhibida, Registro, exigir_base
+from .seleccion import solicitar_modelos
 
 
 def _json(datos: dict) -> int:
@@ -62,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--repo", default="")
     s.add_argument("--rama", default="")
     s.add_argument("--base-rama", default="")
+    s.add_argument("--responsable", default="")
+    s.add_argument("--revisor", default="")
 
     s = sub.add_parser("ver")
     s.add_argument("encargo")
@@ -113,8 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--una-vez", action="store_true")
     s.add_argument("--intervalo", type=float, default=1.0)
     s.add_argument("--umbral", type=float, default=30.0)
-    s.add_argument("--agente", choices=("codex", "grok", "sleep", "ensayo"), default="")
-    s.add_argument("--respaldo", choices=("codex", "grok"), action="append", default=[])
+    s.add_argument("--agente", choices=("codex", "grok", "muse", "kimi", "sleep", "ensayo"), default="")
+    s.add_argument("--respaldo", choices=("codex", "grok", "muse", "kimi"), action="append", default=[])
 
     s = sub.add_parser("encargos-aplicar")
     s.add_argument("--base", type=Path)
@@ -183,6 +187,7 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
                 repo=args.repo,
                 rama=args.rama,
                 base_rama=args.base_rama,
+                modelos_solicitados=solicitar_modelos(args.responsable, args.revisor),
             )
         )
     if args.cmd == "ver":
@@ -269,7 +274,9 @@ def _supervisor(reg: Registro, args) -> int:
     if args.respaldo and not args.agente:
         raise ValueError("--respaldo necesita --agente como ruta principal")
     ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
-    if not ruta and not any(reg.fold(i).agentes for i in reg.ids()):
+    if not ruta and not any(
+        reg.fold(i).agentes or reg.fold(i).modelos_solicitados for i in reg.ids()
+    ):
         raise ValueError(
             "supervisor sin ruta de agentes: configura --agente o una ruta "
             "persistida en los encargos; sin ruta los pedidos quedarian "
@@ -277,17 +284,25 @@ def _supervisor(reg: Registro, args) -> int:
         )
 
     def lanzar(enc, prompt, espacio, sesion):
-        if not enc.agentes:
-            return None
         hora = ahora_iso()
         rol = enc.rol or "responsable"
+        solicitado = next((
+            (agente, modelo) for r, agente, modelo in enc.modelos_solicitados if r == rol
+        ), None)
+        candidatas = (solicitado[0],) if solicitado else enc.agentes
+        if not candidatas:
+            marcar_espera(
+                reg, enc.id, f"sin ruta de agentes para el rol {rol}",
+                proximo(enc, hora, set()), hora,
+            )
+            return None
         generacion = None
         referencia = reg.base / "ejecucion" / enc.id / f"intento-{enc.generacion}-{enc.conductor}" / "generacion.json"
         if referencia.is_file():
             generacion = Path(json.loads(referencia.read_text(encoding="utf-8"))["ruta"])
         disponibles = {
-            agente: _modelos_para(agente, rol, generacion)
-            for agente in enc.agentes
+            agente: (solicitado[1],) if solicitado else _modelos_para(agente, rol, generacion)
+            for agente in candidatas
             if _disponible(agente, generacion)
         }
         excluir = (
@@ -296,7 +311,7 @@ def _supervisor(reg: Registro, args) -> int:
             else frozenset()
         )
         elegido = elegir(
-            enc, hora, disponibles, rol=rol, excluir_modelos=excluir
+            replace(enc, agentes=candidatas), hora, disponibles, rol=rol, excluir_modelos=excluir
         )
         if elegido:
             agente, modelo = elegido
@@ -304,7 +319,7 @@ def _supervisor(reg: Registro, args) -> int:
             argv = _lanzador(agente, modelo, modo)(enc, prompt, espacio, sesion)
             return argv, {"agente": agente, "modelo": modelo, "sesion_modo": modo}
         if rol == "revisor" and disponibles and all(
-            m in excluir for m in disponibles.values()
+            m in excluir for modelos in disponibles.values() for m in modelos
         ):
             motivo = "sin modelo de revisión distinto disponible"
         else:
@@ -313,9 +328,15 @@ def _supervisor(reg: Registro, args) -> int:
             ]
             motivo = (
                 "; ".join(motivos)
-                or "las rutas autorizadas no tienen runtime, suscripcion o aislamiento disponibles en este host"
+                or (
+                    f"el modelo solicitado {solicitado[1]} no tiene runtime, suscripcion "
+                    "o aislamiento disponibles en este host"
+                    if solicitado else
+                    "las rutas autorizadas no tienen runtime, suscripcion o aislamiento disponibles en este host"
+                )
             )
-        marcar_espera(reg, enc.id, motivo, proximo(enc, hora, set(disponibles)), hora)
+        marcar_espera(reg, enc.id, motivo,
+                     proximo(replace(enc, agentes=candidatas), hora, set(disponibles)), hora)
         return None
 
     def paso() -> list[dict]:
@@ -336,7 +357,9 @@ def _supervisor(reg: Registro, args) -> int:
                             },
                             f"ruta:{ident}:{len(reg.eventos(ident))}",
                         )
-        habilitado = ruta or any(reg.fold(ident).agentes for ident in reg.ids())
+        habilitado = ruta or any(
+            reg.fold(ident).agentes or reg.fold(ident).modelos_solicitados for ident in reg.ids()
+        )
         salida = barrer(
             reg,
             hora,
@@ -365,165 +388,6 @@ def _supervisor(reg: Registro, args) -> int:
     while True:
         paso()
         time.sleep(args.intervalo)
-
-
-def _disponible(agente: str, generacion: Path | None = None) -> bool:
-    if agente in ("sleep", "ensayo"):
-        return os.name != "nt" and Path("/usr/bin/sandbox-exec").is_file()
-    if agente == "grok" and os.name == "nt":
-        return False
-    if os.name == "nt":
-        from motor.plataforma.jaula_windows import disponible
-
-        if not disponible():
-            return False
-    if generacion is not None and (generacion / "runtime.json").is_file():
-        from motor.flota.runtime import resolver_ejecutable
-
-        try:
-            resolver_ejecutable(generacion, [agente], requerido=True)
-        except (OSError, ValueError, TypeError):
-            return False
-    elif not shutil.which(agente):
-        return False
-    if os.name != "nt" and not Path("/usr/bin/sandbox-exec").is_file():
-        return False
-    if agente == "grok":
-        return (Path.home() / ".grok" / "auth.json").is_file()
-    if agente == "codex":
-        path = (
-            Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-            / "auth.json"
-        )
-        try:
-            datos = json.loads(path.read_text(encoding="utf-8"))
-            return datos.get("auth_mode") == "chatgpt" and not datos.get(
-                "OPENAI_API_KEY"
-            )
-        except (OSError, ValueError):
-            return False
-    return False
-
-
-_MODELO_POR_DEFECTO = {"grok": "xai/grok-4.7", "codex": "openai/gpt-6.1-sol"}
-_PREFIJO_PROVEEDOR = {"grok": "xai/", "codex": "openai/"}
-
-
-def _modelos_para(
-    agente: str, rol: str, generacion: Path | None
-) -> tuple[str, ...]:
-    """Identidades proveedor/modelo que el agente podría correr para este
-    rol, en orden de la política."""
-    if generacion is not None and agente in _PREFIJO_PROVEEDOR:
-        from motor.flota.runtime import modelos_de_chain
-
-        try:
-            refs = modelos_de_chain(
-                generacion,
-                "planear" if rol == "revisor" else "codigo",
-                _PREFIJO_PROVEEDOR[agente],
-            )
-        except (OSError, ValueError, TypeError):
-            refs = ()
-        if refs:
-            return refs
-    return (_MODELO_POR_DEFECTO.get(agente, ""),)
-
-
-def _sesion_modo(enc, agente: str, rol: str) -> str:
-    hubo_rol = any(r == rol for r, _a, _m in enc.modelos)
-    if agente not in ("codex", "grok"):
-        return "nueva"
-    if not hubo_rol:
-        return "nueva"
-    viva = enc.viva_revisor if rol == "revisor" else enc.viva_responsable
-    if not viva:
-        return "reconstruida"
-    if agente == "codex":
-        previa = enc.sesion_revisor if rol == "revisor" else enc.sesion_responsable
-        return "reanudada" if previa else "reconstruida"
-    return "reanudada"
-
-
-def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
-    pelado = modelo.split("/", 1)[-1] if modelo else ""
-
-    def dormir(enc, prompt: Path, espacio: Path, sesion: str):
-        del enc, prompt, sesion
-        return ["/bin/bash", "-c", "sleep 3600"]
-
-    def grok(enc, prompt: Path, espacio: Path, sesion: str):
-        del enc
-        return [
-            "grok",
-            "--model",
-            pelado or "grok-4.7",
-            "--reasoning-effort",
-            "high",
-            "--cwd",
-            str(espacio),
-            "--session-id",
-            sesion,
-            "--permission-mode",
-            "bypassPermissions",
-            "--always-approve",
-            "--no-plan",
-            "--max-turns",
-            "24",
-            "--disable-web-search",
-            "--output-format",
-            "streaming-json",
-            "--prompt-file",
-            str(prompt),
-        ]
-
-    def codex(enc, prompt: Path, espacio: Path, sesion: str):
-        del sesion
-        texto = (
-            "Lee el pedido y las instrucciones en "
-            + str(prompt)
-            + ". Ejecuta el trabajo autorizado."
-        )
-        comunes = [
-            "--ignore-user-config",
-            "--ignore-rules",
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "-m",
-            pelado or "gpt-6.1-sol",
-            "-c",
-            'model_reasoning_effort="xhigh"',
-        ]
-        previa = (
-            enc.sesion_revisor
-            if (enc.rol or "responsable") == "revisor"
-            else enc.sesion_responsable
-        )
-        if sesion_modo == "reanudada" and previa:
-            return ["codex", "exec", "resume", *comunes, previa, texto]
-        return [
-            "codex",
-            "exec",
-            *comunes,
-            "--cd",
-            str(espacio),
-            texto,
-        ]
-
-    def ensayo(enc, prompt: Path, espacio: Path, sesion: str):
-        del enc, prompt, sesion
-        return ["/bin/bash", str(espacio / "trabajo.sh")]
-
-    if agente == "sleep":
-        return dormir
-    if agente == "grok":
-        return grok
-    if agente == "codex":
-        return codex
-    if agente == "ensayo":
-        return ensayo
-    return None
 
 
 def _aplicar_stdin(base_fija: Path | None) -> int:
@@ -568,6 +432,9 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
                     repo=msg.get("repo") or "",
                     rama=msg.get("rama") or "",
                     base_rama=msg.get("base_rama") or msg.get("base") or "",
+                    modelos_solicitados=solicitar_modelos(
+                        msg.get("responsable", ""), msg.get("revisor", "")
+                    ),
                 )
             )
         finally:

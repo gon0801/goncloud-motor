@@ -111,15 +111,38 @@ def _api():
     return k
 
 
-def _especificacion(limites: dict) -> bytes:
-    # Vtable slots del esquema Microsoft BaseContainerSpecification.fbs 0.1.0.
+def _especificacion(limites: dict, *, psec: bool = False) -> bytes:
+    # Esquemas Microsoft SBOX 0.1.0 y ProcessSecurityEnvironment 1.1.
     buf = bytearray(80)
-    struct.pack_into("<I", buf, 0, 36)
-    buf[4:8] = b"SBOX"
-    struct.pack_into("<HH12H", buf, 8, 28, 44, 4, 8, 0, 0, 36, 9, 24, 12, 16, 28, 0, 20)
-    struct.pack_into("<i", buf, 36, 28)
-    buf[44] = buf[45] = 1
-    struct.pack_into("<Q", buf, 72, JOB_OBJECT_UILIMIT_ALL)
+    if psec:
+        struct.pack_into("<I", buf, 0, 32)
+        buf[4:8] = b"PSEC"
+        struct.pack_into("<HH9H", buf, 8, 22, 48, 4, 8, 12, 16, 24, 28, 32, 36, 40)
+        struct.pack_into("<iHH", buf, 32, 24, 1, 1)
+        struct.pack_into("<Q", buf, 48, JOB_OBJECT_UILIMIT_ALL)
+        campo_capacidades, campo_escritura, campo_lectura, campo_denegado, campo_red = (
+            40,
+            56,
+            60,
+            64,
+            68,
+        )
+    else:
+        struct.pack_into("<I", buf, 0, 36)
+        buf[4:8] = b"SBOX"
+        struct.pack_into(
+            "<HH12H", buf, 8, 28, 44, 4, 8, 0, 0, 36, 9, 24, 12, 16, 28, 0, 20
+        )
+        struct.pack_into("<i", buf, 36, 28)
+        buf[44] = buf[45] = 1
+        struct.pack_into("<Q", buf, 72, JOB_OBJECT_UILIMIT_ALL)
+        campo_capacidades, campo_escritura, campo_lectura, campo_denegado, campo_red = (
+            60,
+            48,
+            52,
+            56,
+            64,
+        )
 
     def cadena(valor):
         while len(buf) % 4:
@@ -141,14 +164,17 @@ def _especificacion(limites: dict) -> bytes:
         for i, valor in enumerate(valores):
             puntero(posicion + 4 + 4 * i, cadena(valor))
 
-    puntero(40, cadena("0.1.0"))
+    if psec:
+        vector(72, limites["enumeracion"])
+    else:
+        puntero(40, cadena("0.1.0"))
     capacidades = (
         "registryRead,internetClient" if limites["internet"] else "registryRead"
     )
-    puntero(60, cadena(capacidades))
-    vector(48, limites["escritura"])
-    vector(52, limites["lectura"])
-    vector(56, [])
+    puntero(campo_capacidades, cadena(capacidades))
+    vector(campo_escritura, limites["escritura"])
+    vector(campo_lectura, limites["lectura"])
+    vector(campo_denegado, [])
 
     def tabla(campos, tamano):
         while len(buf) % 2:
@@ -174,7 +200,7 @@ def _especificacion(limites: dict) -> bytes:
     red = tabla([0, 4, 0], 8)
     salida = tabla([0, 4, 0], 8) if limites["internet"] else tabla([0, 0, 0], 4)
     puntero(red + 4, salida)
-    puntero(64, red)
+    puntero(campo_red, red)
     if limites["internet"]:
         destinos = limites["proveedor"]
         permitidas = referencias(salida + 4, 1)
@@ -263,7 +289,11 @@ class Escritorio:
                     nombre = c.create_unicode_buffer(512)
                     necesario = w.DWORD()
                     if not self.u.GetUserObjectInformationW(
-                        self.station, UOI_NAME, nombre, c.sizeof(nombre), c.byref(necesario)
+                        self.station,
+                        UOI_NAME,
+                        nombre,
+                        c.sizeof(nombre),
+                        c.byref(necesario),
                     ):
                         raise c.WinError(c.get_last_error())
                     self.nombre = nombre.value
@@ -393,10 +423,11 @@ def limpiar(control: Path) -> None:
 
 
 class Recursos(JobMatarAlCerrar):
-    def __init__(self, nombre, escritorio, proceso, control):
+    def __init__(self, nombre, escritorio, proceso, control, entorno=None):
         super().__init__(nombre)
         self.escritorio = escritorio
         self.proceso, self.control = proceso, Path(control)
+        self.entorno = entorno
         self.cerrado = False
 
     def cerrar(self):
@@ -405,6 +436,8 @@ class Recursos(JobMatarAlCerrar):
         self.cerrado = True
         super().cerrar()
         self.proceso.wait(5)
+        if self.entorno:
+            self.entorno.cerrar()
         self.escritorio.cerrar()
         limpiar(self.control)
 
@@ -444,6 +477,7 @@ def crear(
     extremos = []
     p = None
     job = None
+    entorno_seguro = None
     lecturas = []
     nulo = os.open(os.devnull, os.O_RDONLY)
     os.set_inheritable(nulo, True)
@@ -470,50 +504,56 @@ def crear(
         si.stdout = msvcrt.get_osfhandle(extremos[0])
         si.stderr = msvcrt.get_osfhandle(extremos[-1])
         info = Informacion()
-        api = c.WinDLL(
-            "processmodel.dll", use_last_error=True
-        ).Experimental_CreateProcessInSandbox
-        api.argtypes = [
-            w.LPCWSTR,
-            w.LPWSTR,
-            c.c_void_p,
-            c.c_void_p,
-            w.BOOL,
-            w.DWORD,
-            c.c_void_p,
-            w.LPCWSTR,
-            c.POINTER(Inicio),
-            w.LPCWSTR,
-            c.c_void_p,
-            w.DWORD,
-            c.POINTER(Informacion),
-        ]
-        api.restype = w.BOOL
-        entorno = c.create_unicode_buffer(
-            "\0".join(k + "=" + v for k, v in sorted(env.items())) + "\0\0"
-        )
-        especificacion = _especificacion(limites)
-        argv = c.create_unicode_buffer(subprocess.list2cmdline(cmd))
-        if not api(
-            cmd[0],
-            argv,
-            None,
-            None,
-            False,
-            0x4 | 0x400 | 0x08000000,
-            entorno,
-            str(cwd),
-            c.byref(si),
-            identidad,
-            especificacion,
-            len(especificacion),
-            c.byref(info),
-        ):
-            raise c.WinError(c.get_last_error())
+        if "enumeracion" in limites:
+            from .psec_windows import Entorno
+
+            entorno_seguro = Entorno(_especificacion(limites, psec=True))
+            entorno_seguro.crear(cmd, cwd, env, si, info)
+        else:
+            api = c.WinDLL(
+                "processmodel.dll", use_last_error=True
+            ).Experimental_CreateProcessInSandbox
+            api.argtypes = [
+                w.LPCWSTR,
+                w.LPWSTR,
+                c.c_void_p,
+                c.c_void_p,
+                w.BOOL,
+                w.DWORD,
+                c.c_void_p,
+                w.LPCWSTR,
+                c.POINTER(Inicio),
+                w.LPCWSTR,
+                c.c_void_p,
+                w.DWORD,
+                c.POINTER(Informacion),
+            ]
+            api.restype = w.BOOL
+            entorno = c.create_unicode_buffer(
+                "\0".join(k + "=" + v for k, v in sorted(env.items())) + "\0\0"
+            )
+            especificacion = _especificacion(limites)
+            argv = c.create_unicode_buffer(subprocess.list2cmdline(cmd))
+            if not api(
+                cmd[0],
+                argv,
+                None,
+                None,
+                False,
+                0x4 | 0x400 | 0x08000000,
+                entorno,
+                str(cwd),
+                c.byref(si),
+                identidad,
+                especificacion,
+                len(especificacion),
+                c.byref(info),
+            ):
+                raise c.WinError(c.get_last_error())
         p = Proceso(info, cmd, lecturas[0], lecturas[1] if len(lecturas) > 1 else None)
         nombre_job = "Local\\goncloud-motor-" + uuid.uuid4().hex
         try:
-            job = Recursos(nombre_job, escritorio, p, control)
+            job = Recursos(nombre_job, escritorio, p, control, entorno_seguro)
             job.asignar(p)
         except BaseException:
             p.kill()
@@ -537,6 +577,8 @@ def crear(
             p.wait(5)
         if job:
             job.cerrar()
+        if entorno_seguro:
+            entorno_seguro.cerrar()
         escritorio.cerrar()
         limpiar(control)
         for flujo in lecturas:

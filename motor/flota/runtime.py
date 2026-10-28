@@ -101,7 +101,9 @@ def _poner_modelo(argumentos: list[str], opciones: tuple[str, ...], valor: str) 
         argumentos.extend([opciones[0], valor])
 
 
-def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> list[str]:
+def vincular(
+    generacion: Path, cmd: list[str], *, funcion: str = "codigo", modelo_explicito: bool = False
+) -> list[str]:
     nombre = Path(cmd[0]).stem.lower()
     doc = cargar_runtime(generacion)
     argumentos = resolver_ejecutable(generacion, cmd)
@@ -122,7 +124,7 @@ def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> li
                 actual = argumentos[i + 1]
         elegida = next(
             ((r, e) for r, e in elegible if r.split("/", 1)[1] == actual),
-            elegible[0] if elegible else None,
+            elegible[0] if elegible and not modelo_explicito else None,
         )
         if elegida is not None:
             _poner_modelo(argumentos, ("--model", "-m"), elegida[0].split("/", 1)[1])
@@ -133,7 +135,7 @@ def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> li
         for i, arg in enumerate(argumentos):
             if arg in ("-m", "--model") and i + 1 < len(argumentos):
                 actual = argumentos[i + 1]
-        if refs and all(r.split("/", 1)[1] != actual for r in refs):
+        if not modelo_explicito and refs and all(r.split("/", 1)[1] != actual for r in refs):
             _poner_modelo(argumentos, ("-m", "--model"), refs[0].split("/", 1)[1])
     return argumentos
 

@@ -81,17 +81,20 @@ Los eventos estructurados del CLI y los procesos observados distinguen herramien
 
 En macOS, Seatbelt niega escrituras globales y la lectura del HOME original. El responsable puede escribir su espacio y runtime; el revisor tiene el producto de solo lectura.
 
-En Windows, el motor usa `Experimental_CreateProcessInSandbox` de `processmodel.dll`, con el contrato SBOX 0.1.0, AppContainer, permisos BFS y estación y escritorio privados. Se comprobó desde OpenSSH Session 0 en Windows 11 25H2 build 26200.9711, Python 3.14.7 y Codex 0.163.0. El sandbox MXC/PSEC del CLI no pudo iniciar los ejecutables que cargan USER32 en esa sesión; por eso el motor aplica la frontera nativa al CLI completo y sus hijos. No depende de una sesión gráfica abierta.
+En Windows, Codex conserva `Experimental_CreateProcessInSandbox` de `processmodel.dll` y el contrato SBOX 0.1.0. Muse y Kimi usan `CreateProcessSecurityEnvironment` con PSEC 1.1 para permitir consultas y enumeración de directorios antecesores sin conceder lectura de sus archivos. Ambos caminos conservan el Job, la estación y el escritorio privados. Las ejecuciones comprobadas de la PC se inician en la sesión normal del usuario, fuera del Job de OpenSSH.
+
+El ensayo comparativo comprueba las denegaciones sobre registro, destino, credenciales privadas y otros espacios, y que el revisor no puede escribir el producto. Un fichero ajeno publicado por su ACL para `ALL APPLICATION PACKAGES` sigue legible en ambos caminos; no se anuncia una garantía de token LPAC que ese comportamiento no demuestra. La enumeración PSEC no autoriza leer los demás archivos de esos directorios.
 
 Cada proceso se crea suspendido, entra en un Job y publica PID, inicio y Job antes de liberar al modelo o comprobador. El Job controla la vida del árbol. AppContainer y BFS controlan sus permisos. El revisor puede escribir su runtime, pero no el producto. Registro, destino, otros espacios y credenciales ajenas quedan fuera de las raíces concedidas. La estación privada permite inicializar USER32 sin abrir un escritorio ajeno. El auxiliar de consola del sistema se distingue por imagen e identidad para observar actividad, y permanece dentro del árbol que debe cerrarse.
 
-En Windows, los comandos del agente permiten TCP 443 hacia las direcciones públicas resueltas para `chatgpt.com` y `auth.openai.com` al preparar el intento. Este límite opera por direcciones IP, que pueden compartirse entre dominios. Los comprobadores no tienen red. Se comprobaron denegaciones reales hacia la Mini, otro destino de Internet y un listener de loopback. No se modifican ACL de instalaciones, reglas globales de firewall, usuarios, servicios ni la selección guardada de sandbox de Codex. La API es experimental; un host sin la capacidad necesaria no ofrece esa ejecución administrada. En Windows la ruta administrada comprobada es Codex. Grok no se ofrece allí como respaldo.
+En Windows, los comandos del agente permiten TCP 443 hacia las direcciones públicas del proveedor al preparar el intento: `chatgpt.com` y `auth.openai.com` para Codex, `api.meta.ai` para Muse, y `api.kimi.com` y `auth.kimi.com` para Kimi. Este límite opera por direcciones IP, que pueden compartirse entre dominios. Los comprobadores no tienen red. Se comprobaron denegaciones reales hacia la Mini, otro destino de Internet y un listener de loopback. No se modifican ACL de instalaciones, reglas globales de firewall, usuarios, servicios ni la selección guardada de sandbox de Codex. Un host sin la capacidad de aislamiento necesaria no ofrece esa ejecución administrada. Grok no se ofrece como respaldo en Windows.
 
 Para repetir la comprobación de permisos y cierre en otra base propia de Windows, ejecuta lo siguiente. La segunda variante usa el perfil de red del agente sin invocar un modelo.
 
 ```powershell
 py -3 ops/ensayo_aislamiento.py --base C:\ruta\propia\jaula-comprobador
 py -3 ops/ensayo_aislamiento.py --base C:\ruta\propia\jaula-agente --internet-suscripcion --tcp IP_DE_ENSAYO:PUERTO
+py -3 ops/ensayo_aislamiento.py --base C:\ruta\propia\jaula-psec --psec
 ```
 
 ```sh
