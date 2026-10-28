@@ -1152,7 +1152,7 @@ def decision_proceso(
     if arbol == "vivo":
         if herramienta_viva:
             return {"matar": False, "lanzar": False, "eventos": []}
-        if herramienta_viva is None and not herramientas_observables:
+        if herramienta_viva is None:
             return {"matar": False, "lanzar": False, "eventos": []}
         if sin_hecho_nuevo:
             return {

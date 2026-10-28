@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -369,14 +370,12 @@ def _instalar_hermes(doc: dict, destino: Path) -> dict:
     env["HERMES_RUNTIME_DIR"] = str(destino / "tools")
     if os.name == "nt":
         argv = [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(codigo / "setup-hermes.ps1"),
-            "-RuntimeOnly",
+            sys.executable,
+            "-m",
+            "pm.cli",
+            "install",
+            "--trust-recorded",
+            "--test-environment=",
         ]
     else:
         argv = ["bash", str(codigo / "setup-hermes.sh"), "--runtime-only"]

@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from motor.flota.actualizaciones import _crear_generacion, preparar
@@ -25,6 +26,30 @@ class ActualizacionesFlota(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_windows_instala_con_el_python_que_ya_funciona(self):
+        from motor.flota import distribuidores as dist
+
+        destino = self.base / "generacion/herramientas/hermes"
+        codigo = destino / "src"
+        paquete = codigo / "pm"
+        paquete.mkdir(parents=True)
+        (paquete / "__init__.py").write_text("")
+        (paquete / "cli.py").write_text(
+            "from pathlib import Path; Path('instalado').write_text('ok')"
+        )
+        contrato = {"version": "ensayo"}
+        entorno = dist._entorno_generacion(destino.parents[1])
+        with (
+            patch.object(dist, "os", SimpleNamespace(name="nt")),
+            patch.object(dist, "_git", return_value="revision"),
+            patch.object(dist, "_entorno_generacion", return_value=entorno),
+            patch.object(dist, "_runtime_hermes", side_effect=[RuntimeError(), contrato]),
+        ):
+            self.assertEqual(
+                dist._instalar_hermes({"revision": "revision"}, destino), contrato
+            )
+        self.assertEqual((codigo / "instalado").read_text(), "ok")
 
     def artefacto(self):
         paquete = io.BytesIO()
