@@ -385,9 +385,19 @@ def _supervisor(reg: Registro, args) -> int:
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))
         return 0
-    while True:
-        paso()
-        time.sleep(args.intervalo)
+    from motor.senal import Senal
+
+    senal = Senal(reg.base, lambda: {})
+    senal.arranca()
+    try:
+        while True:
+            informes = paso()
+            senal.avanzo(
+                sum(i["estado"] not in ("terminado", "cancelado") for i in informes)
+            )
+            time.sleep(args.intervalo)
+    finally:
+        senal.para()
 
 
 def _aplicar_stdin(base_fija: Path | None) -> int:

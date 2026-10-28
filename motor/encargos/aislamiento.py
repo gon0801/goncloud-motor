@@ -15,6 +15,8 @@ from pathlib import Path
 
 import tomllib
 
+from .autenticacion_kimi import acceso_kimi
+
 
 @dataclass(frozen=True)
 class ComandoAislado:
@@ -119,9 +121,10 @@ def _entorno(
             destino.chmod(0o600)
             return env
         if nombre == "kimi":
-            _preparar_kimi(runtime, cmd)
+            expira = _preparar_kimi(runtime, cmd)
             env.update(
                 KIMI_CODE_HOME=str(runtime / ".kimi-code"),
+                MOTOR_KIMI_ACCESS_EXPIRES_AT=str(expira),
                 KIMI_CODE_NO_AUTO_UPDATE="1",
                 KIMI_DISABLE_TELEMETRY="1",
                 KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START="false",
@@ -149,7 +152,7 @@ def _entorno(
     return env
 
 
-def _preparar_kimi(runtime: Path, cmd: list[str]) -> None:
+def _preparar_kimi(runtime: Path, cmd: list[str]) -> float:
     origen = Path(os.environ.get("KIMI_CODE_HOME", str(Path.home() / ".kimi-code")))
     config = tomllib.loads((origen / "config.toml").read_text(encoding="utf-8"))
     alias = (
@@ -160,28 +163,25 @@ def _preparar_kimi(runtime: Path, cmd: list[str]) -> None:
     if (
         modelo["provider"] != "managed:kimi-code"
         or proveedor.get("api_key")
+        or proveedor.get("api_key_env")
         or proveedor.get("base_url", "").rstrip("/") != "https://api.kimi.com/coding/v1"
         or proveedor.get("oauth", {}).get("key") != "oauth/kimi-code"
     ):
         raise RuntimeError("el encargo necesita la suscripcion OAuth de Kimi Code")
     destino = runtime / ".kimi-code"
-    (destino / "credentials").mkdir(parents=True, exist_ok=True)
-    for relativo in ("credentials/kimi-code.json", "device_id", "region"):
+    acceso = acceso_kimi(origen)
+    destino.mkdir(parents=True, exist_ok=True)
+    for relativo in ("device_id", "region"):
         fuente = origen / relativo
         if fuente.is_file():
             shutil.copyfile(fuente, destino / relativo)
             (destino / relativo).chmod(0o600)
-        elif relativo.startswith("credentials/"):
-            raise RuntimeError("falta el acceso OAuth de Kimi Code")
     texto = [
         f"default_model = {json.dumps(alias)}",
         '[providers."managed:kimi-code"]',
         'type = "kimi"',
-        'api_key = ""',
+        "api_key = " + json.dumps(acceso.token),
         'base_url = "https://api.kimi.com/coding/v1"',
-        '[providers."managed:kimi-code".oauth]',
-        'storage = "file"',
-        'key = "oauth/kimi-code"',
         "[models." + json.dumps(alias) + "]",
         'provider = "managed:kimi-code"',
     ]
@@ -189,6 +189,8 @@ def _preparar_kimi(runtime: Path, cmd: list[str]) -> None:
         if clave in modelo:
             texto.append(clave + " = " + json.dumps(modelo[clave]))
     (destino / "config.toml").write_text("\n".join(texto) + "\n", encoding="utf-8")
+    (destino / "config.toml").chmod(0o600)
+    return acceso.expira
 
 
 def _muse_local(

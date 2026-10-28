@@ -287,6 +287,19 @@ def _sesion_kimi(indice: Path, espacio: Path) -> str:
     return ""
 
 
+def _autenticacion_expirada(spec: dict, fallo: str) -> bool:
+    from motor.fallas import clasifica
+
+    expira = spec["env"].get("MOTOR_KIMI_ACCESS_EXPIRES_AT")
+    return bool(
+        spec["agente"] == "kimi"
+        and fallo
+        and expira
+        and time.time() >= float(expira)
+        and clasifica("kimi", "", fallo)["kind"] == "auth"
+    )
+
+
 def ejecutar(spec_path: Path) -> int:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     d = spec_path.parent
@@ -405,13 +418,17 @@ def ejecutar(spec_path: Path) -> int:
         if spec["agente"] == "kimi" and not runtime.sesion_runtime:
             indice = Path(spec["env"]["KIMI_CODE_HOME"]) / "session_index.jsonl"
             runtime.sesion_runtime = _sesion_kimi(indice, Path(spec["cwd"]))
+        fallo_runtime = runtime.fallo(rc, "".join(errores))
         _publica(
             d / "outcome.json",
             json.dumps(
                 {
                     "exit": rc,
                     "token": spec["token"],
-                    "fallo_runtime": runtime.fallo(rc, "".join(errores)),
+                    "fallo_runtime": fallo_runtime,
+                    "autenticacion_expirada": _autenticacion_expirada(
+                        spec, fallo_runtime
+                    ),
                     "sesion_runtime": runtime.sesion_runtime,
                 }
             ),

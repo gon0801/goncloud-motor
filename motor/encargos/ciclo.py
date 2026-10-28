@@ -1175,6 +1175,16 @@ def _incorporar(
                 registro.base / "runtime" / enc.id / token_intento,
                 _almacen_sesion(registro.base, enc.id, enc.rol),
             )
+        if outcome.get("autenticacion_expirada"):
+            marcar_espera(
+                registro,
+                enc.id,
+                "renovando el acceso de Kimi para continuar la misma sesion",
+                hora,
+                hora,
+            )
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
         if outcome.get("fallo_runtime") and spec.get("sesion_modo") == "reanudada":
             from motor.fallas import clasifica
 

@@ -79,6 +79,8 @@ El responsable conserva su procedimiento interno en `procedimiento.json`. El sup
 
 Los eventos estructurados del CLI y los procesos observados distinguen herramientas ocupadas de sesiones sin actividad. El tamaño del log no acredita progreso. `contexto.md` y el registro conservan el trabajo entre turnos. Cada intento usa un HOME privado con autenticación de suscripción; no hereda configuración, credenciales de producción ni el agente SSH.
 
+El supervisor renueva OAuth de Kimi en el archivo canónico. El runtime recibe solo el JWT de acceso, enviado como Bearer al endpoint de suscripción `https://api.kimi.com/coding/v1`. El campo `api_key` del SDK transporta ese JWT temporal; no contiene una llave de pago por consumo. El runtime no recibe el refresh token. Si Kimi devuelve un error de autenticación después del vencimiento, el supervisor conserva su sesión y continúa con un acceso renovado. Ese vencimiento no cuenta como cuota ni vuelve a ejecutar la implementación.
+
 En macOS, Seatbelt niega escrituras globales y la lectura del HOME original. El responsable puede escribir su espacio y runtime; el revisor tiene el producto de solo lectura.
 
 En Windows, Codex conserva `Experimental_CreateProcessInSandbox` de `processmodel.dll` y el contrato SBOX 0.1.0. Muse y Kimi usan `CreateProcessSecurityEnvironment` con PSEC 1.1 para permitir consultas y enumeración de directorios antecesores sin conceder lectura de sus archivos. Ambos caminos conservan el Job, la estación y el escritorio privados. Las ejecuciones comprobadas de la PC se inician en la sesión normal del usuario, fuera del Job de OpenSSH.
