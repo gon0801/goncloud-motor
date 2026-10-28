@@ -518,6 +518,20 @@ def preparar(
             recibo,
             {"estado": "preparando", "generacion": revision, "catalogo": catalogo},
         )
+        vigentes: set[str] = set()
+        try:
+            ruta_vigente = (
+                home / "generaciones" / asignar(home) / "runtime.json"
+            )
+            if ruta_vigente.is_file():
+                vigentes = {
+                    c["nombre"]
+                    for c in json.loads(
+                        ruta_vigente.read_text(encoding="utf-8")
+                    ).get("componentes", [])
+                }
+        except (OSError, ValueError):
+            vigentes = set()
         try:
             for doc in componentes:
                 destino = gen / "herramientas" / doc["nombre"]
@@ -532,6 +546,11 @@ def preparar(
                     subprocess.SubprocessError,
                 ) as exc:
                     shutil.rmtree(destino, ignore_errors=True)
+                    if doc["nombre"] in vigentes:
+                        raise RuntimeError(
+                            f"la candidata retiraria {doc['nombre']}, vigente "
+                            f"en la generacion actual: {exc}"
+                        ) from exc
                     runtime["no_disponibles"].append(
                         {
                             "nombre": doc["nombre"],
@@ -567,6 +586,11 @@ def preparar(
                             "launcher": observacion,
                         }
                     )
+            if not runtime["lanzadores"]:
+                raise RuntimeError(
+                    "la candidata no dejo ninguna herramienta utilizable; "
+                    "se conserva la generacion vigente"
+                )
             _copiar_config(gen, fuentes, runtime)
             runtime["archivos"] = {}
             comandos = list(runtime["lanzadores"].values())
@@ -691,6 +715,21 @@ def comprobar_runtime(gen: Path) -> dict:
         raise ValueError("la candidata no tiene una preparacion comprobada")
     _comprobar_runtime(gen, recibo)
     runtime = json.loads((gen / "runtime.json").read_text(encoding="utf-8"))
+    if not runtime.get("lanzadores"):
+        raise ValueError("la candidata no tiene herramientas utilizables")
+    pendientes = {
+        c.get("nombre") for c in runtime.get("no_disponibles", [])
+    }
+    ausentes = [
+        nombre
+        for nombre in recibo.get("componentes", [])
+        if nombre not in runtime["lanzadores"] and nombre not in pendientes
+    ]
+    if ausentes:
+        raise ValueError(
+            "la candidata omite herramientas sin declararlas pendientes: "
+            + ", ".join(sorted(ausentes))
+        )
     for nombre, argv in runtime["lanzadores"].items():
         env = _entorno_generacion(gen)
         if nombre == "hermes":
