@@ -230,7 +230,6 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             "kimi",
             "--model",
             modelo or "kimi-code/k3.1-pro",
-            "--auto",
             "--output-format",
             "stream-json",
             "--prompt",
