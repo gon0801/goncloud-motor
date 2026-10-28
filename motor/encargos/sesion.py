@@ -74,7 +74,11 @@ def herramienta_en_curso(directorio: Path) -> bool | None:
     except (OSError, ValueError):
         return True
     if datos.get("observada"):
+        if datos.get("modelo_en_curso") is True:
+            return True
         if not datos.get("activas"):
+            if "modelo_en_curso" in datos and datos["modelo_en_curso"] is None:
+                return None
             return False
         try:
             agente = int((directorio / "agent.pid").read_text(encoding="utf-8"))

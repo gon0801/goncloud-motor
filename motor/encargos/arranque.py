@@ -28,12 +28,26 @@ class Observacion:
         self.hora = time.time()
         self.hecho = ""
         self.llamadas_grok: dict[str, dict] = {}
+        self.modelo_en_curso: bool | None = None
 
     def evento(self, data: dict) -> None:
         tipo = data.get("type")
         item = data.get("item") or {}
         avance = True
         ejecucion = None
+        if tipo in ("turn.started", "thought", "text") or (
+            tipo in ("item.started", "item.completed") and item.get("type") == "reasoning"
+        ):
+            self.modelo_en_curso = True
+            self.publicar()
+            return
+        if tipo in ("turn.completed", "turn.failed", "result"):
+            self.modelo_en_curso = False
+            self.secuencia += 1
+            self.hora = time.time()
+            self.hecho = str(tipo)
+            self.publicar()
+            return
         if tipo in ("tool_call", "tool_call_update"):
             ident = data.get("toolCallId")
             estado = data.get("status")
@@ -60,6 +74,7 @@ class Observacion:
             terminal = estado in ("completed", "failed", "cancelled", "canceled")
             self.llamadas_grok[ident] = {**previo, "estado": estado}
             if terminal:
+                self.modelo_en_curso = True
                 self.abiertas.discard(ident)
                 salida = data.get("rawOutput")
                 if (
@@ -86,8 +101,10 @@ class Observacion:
             if tipo == "item.started":
                 self.abiertas.add(ident)
             else:
+                self.modelo_en_curso = True
                 self.abiertas.discard(ident)
         elif tipo in ("assistant", "user"):
+            self.modelo_en_curso = True
             for bloque in (data.get("message") or {}).get("content") or []:
                 if not isinstance(bloque, dict):
                     continue
@@ -116,11 +133,15 @@ class Observacion:
                 if tipo in ("tool_call", "tool_call_update")
                 else f"{tipo} {item.get('type') or ''}".strip()
             )
+        self.publicar()
+
+    def publicar(self) -> None:
         _publica(
             self.directorio / "herramienta.json",
             json.dumps(
                 {
                     "observada": True,
+                    "modelo_en_curso": self.modelo_en_curso,
                     "activas": sorted(self.abiertas),
                     "secuencia": self.secuencia,
                     "hora": self.hora,
@@ -267,12 +288,7 @@ def ejecutar(spec_path: Path) -> int:
 
         threading.Thread(target=observar_hijos, daemon=True).start()
         observacion = Observacion(d)
-        _publica(
-            d / "herramienta.json",
-            json.dumps(
-                {"observada": True, "activas": [], "secuencia": 0, "hora": time.time()}
-            ),
-        )
+        observacion.publicar()
         runtime = SalidaRuntime(spec["agente"])
         errores = deque(maxlen=40)
 

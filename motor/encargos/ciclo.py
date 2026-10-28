@@ -369,6 +369,25 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
                 ],
             )
 
+    codex = destino / ".codex"
+    if codex.is_dir():
+        import sqlite3
+        from contextlib import closing
+
+        rollouts = {p.name: p.resolve() for p in (codex / "sessions").rglob("*.jsonl")}
+        for indice in codex.glob("state_*.sqlite"):
+            with closing(sqlite3.connect(indice)) as db, db:
+                columnas = {fila[1] for fila in db.execute("PRAGMA table_info(threads)")}
+                if not {"id", "rollout_path"} <= columnas:
+                    continue
+                for ident, antigua in db.execute("SELECT id, rollout_path FROM threads"):
+                    nombre = Path(str(antigua)).name
+                    if nombre in rollouts:
+                        db.execute(
+                            "UPDATE threads SET rollout_path=? WHERE id=?",
+                            (str(rollouts[nombre]), ident),
+                        )
+
 
 def _leer_proc(directorio: Path) -> dict | None:
     path = directorio / "proc.json"

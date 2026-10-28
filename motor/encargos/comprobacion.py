@@ -365,6 +365,8 @@ observaciones y no impiden aprobar.
 Si el fallo es del instrumento (un SyntaxError del comando de comprobacion, un argv roto,
 un timeout del comprobador) y no del producto, declaralo en el campo instrumento en vez de
 inventar un bloqueante: el responsable repara el comando sin tocar un producto valido.
+El campo instrumento solo describe una falla vigente que impide verificar. Si ya la
+resolviste y pudiste verificar, deja instrumento vacio y cuenta lo recuperado en observaciones.
 Escribe SOLO tu juicio en {resultado}, con este objeto JSON interno.
 {{"veredicto":"aprobado|cambios|no_concluyente", "version":"{ref.version}",
 "evidencia":"relacion concreta entre pedido, producto y lo observado",
