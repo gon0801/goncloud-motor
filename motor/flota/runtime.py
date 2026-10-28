@@ -53,6 +53,54 @@ def resolver_ejecutable(
     return [*resuelto, *cmd[1:]]
 
 
+def modelos_de_chain(
+    generacion: Path, funcion: str, prefijo: str
+) -> tuple[str, ...]:
+    """Todas las identidades `proveedor/modelo` de la chain con ese
+    prefijo, en orden de la política y sin duplicados."""
+    doc = cargar_runtime(generacion)
+    politica = doc.get("politica")
+    if not politica:
+        return ()
+    try:
+        tabla = json.loads(_ruta(generacion, politica).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ()
+    vistos: list[str] = []
+    for etiqueta in tabla.get("chains", {}).get(funcion, []):
+        ref, _, _esfuerzo = str(etiqueta).partition(" (")
+        if ref.startswith(prefijo) and ref not in vistos:
+            vistos.append(ref)
+    return tuple(vistos)
+
+
+def modelo_de_chain(generacion: Path, funcion: str, prefijo: str) -> str:
+    """Identidad `proveedor/modelo` de la primera etiqueta de la chain con
+    ese prefijo de proveedor. Vacio si la política no ofrece ninguna."""
+    doc = cargar_runtime(generacion)
+    politica = doc.get("politica")
+    if not politica:
+        return ""
+    try:
+        tabla = json.loads(_ruta(generacion, politica).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    for etiqueta in tabla.get("chains", {}).get(funcion, []):
+        ref, _, _esfuerzo = str(etiqueta).partition(" (")
+        if ref.startswith(prefijo):
+            return ref
+    return ""
+
+
+def _poner_modelo(argumentos: list[str], opciones: tuple[str, ...], valor: str) -> None:
+    indices = [i for i, arg in enumerate(argumentos) if arg in opciones]
+    if indices:
+        for i in indices:
+            argumentos[i + 1] = valor
+    else:
+        argumentos.extend([opciones[0], valor])
+
+
 def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> list[str]:
     nombre = Path(cmd[0]).stem.lower()
     doc = cargar_runtime(generacion)
@@ -60,21 +108,64 @@ def vincular(generacion: Path, cmd: list[str], *, funcion: str = "codigo") -> li
     politica = doc.get("politica")
     if politica and nombre == "grok":
         tabla = json.loads(_ruta(generacion, politica).read_text(encoding="utf-8"))
-        for etiqueta in tabla.get("chains", {}).get(funcion, []):
-            ref, _, esfuerzo = etiqueta.partition(" (")
-            if ref.startswith("xai/"):
-                for opciones, valor in (
-                    (("--model", "-m"), ref.split("/", 1)[1]),
-                    (("--reasoning-effort", "--effort"), esfuerzo.rstrip(")")),
-                ):
-                    indices = [i for i, arg in enumerate(argumentos) if arg in opciones]
-                    if indices:
-                        for i in indices:
-                            argumentos[i + 1] = valor
-                    else:
-                        argumentos.extend([opciones[0], valor])
-                break
+        elegible = [
+            (ref, esfuerzo.rstrip(")"))
+            for ref, _, esfuerzo in (
+                str(etiqueta).partition(" (")
+                for etiqueta in tabla.get("chains", {}).get(funcion, [])
+            )
+            if ref.startswith("xai/")
+        ]
+        actual = ""
+        for i, arg in enumerate(argumentos):
+            if arg in ("--model", "-m") and i + 1 < len(argumentos):
+                actual = argumentos[i + 1]
+        elegida = next(
+            ((r, e) for r, e in elegible if r.split("/", 1)[1] == actual),
+            elegible[0] if elegible else None,
+        )
+        if elegida is not None:
+            _poner_modelo(argumentos, ("--model", "-m"), elegida[0].split("/", 1)[1])
+            _poner_modelo(argumentos, ("--reasoning-effort", "--effort"), elegida[1])
+    if politica and nombre == "codex":
+        refs = modelos_de_chain(generacion, funcion, "openai/")
+        actual = ""
+        for i, arg in enumerate(argumentos):
+            if arg in ("-m", "--model") and i + 1 < len(argumentos):
+                actual = argumentos[i + 1]
+        if refs and all(r.split("/", 1)[1] != actual for r in refs):
+            _poner_modelo(argumentos, ("-m", "--model"), refs[0].split("/", 1)[1])
     return argumentos
+
+
+class PotetoAusente(RuntimeError):
+    pass
+
+
+def exigir_poteto(
+    generacion: Path | None, base: Path, runtime: Path
+) -> tuple[Path, str]:
+    """Copia poteto-mode al runtime y devuelve (ruta, digest sha256).
+
+    A diferencia de copiar_poteto, la ausencia es un error visible: el
+    responsable nunca corre sin poteto en silencio.
+    """
+    import hashlib
+
+    skill = copiar_poteto(generacion, base, runtime)
+    if skill is None:
+        skills = Path.home() / ".agents" / "skills"
+        fuente = skills / "poteto-mode" / "SKILL.md"
+        if fuente.is_file():
+            destino = runtime / "skills"
+            shutil.copytree(skills, destino, dirs_exist_ok=True)
+            skill = destino / "poteto-mode" / "SKILL.md"
+    if skill is None:
+        raise PotetoAusente(
+            "falta poteto-mode en la generacion de flota, en "
+            f"{base / 'politica' / 'poteto'} y en ~/.agents/skills/poteto-mode"
+        )
+    return skill, hashlib.sha256(skill.read_bytes()).hexdigest()
 
 
 def copiar_poteto(generacion: Path | None, base: Path, runtime: Path) -> Path | None:

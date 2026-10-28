@@ -136,6 +136,9 @@ def preparar_administrado(
     entorno_extra: dict[str, str] | None = None,
     *,
     agente: str | None = None,
+    modelo: str = "",
+    sesion_modo: str = "",
+    poteto_digest: str = "",
 ) -> None:
     from motor.runwrap import _publica
 
@@ -162,6 +165,9 @@ def preparar_administrado(
         "sesion": sesion,
         "rol": enc.rol,
         "agente": agente or Path(cmd[0]).stem.lower(),
+        "modelo": modelo,
+        "sesion_modo": sesion_modo,
+        "poteto_digest": poteto_digest,
         "hora": hora,
     }
     spec_path = directorio / "arranque.json"

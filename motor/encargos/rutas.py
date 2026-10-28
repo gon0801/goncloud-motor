@@ -17,14 +17,33 @@ from motor.relevo import (
 from .dominio import Encargo
 
 
-def elegir(enc: Encargo, hora: str, disponibles: set[str]) -> str | None:
+def elegir(
+    enc: Encargo,
+    hora: str,
+    disponibles: dict[str, str | tuple[str, ...]],
+    *,
+    rol: str,
+    excluir_modelos: frozenset[str] = frozenset(),
+) -> tuple[str, str] | None:
+    """Primer agente disponible con un modelo para este rol no excluido.
+
+    `disponibles` mapea agente -> modelos que podría correr para el rol,
+    en orden de política. Excluir al autor es por identidad de modelo, no
+    por CLI ni sesión: si la cabeza es el autor, se mira el siguiente.
+    """
     pausas = {p.agente: p for p in enc.pausas}
     for agente in enc.agentes:
         if agente not in disponibles:
             continue
         pausa = pausas.get(agente)
         if pausa is None or pausa.hasta <= hora:
-            return agente
+            valor = disponibles[agente]
+            modelos = (valor,) if isinstance(valor, str) else tuple(valor)
+            for modelo in modelos:
+                if modelo and modelo in excluir_modelos:
+                    continue
+                return agente, modelo
+            continue
         if not pausa.relevo:
             return None
     return None

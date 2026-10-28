@@ -46,6 +46,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--boot-id", default="")
     s.add_argument("--host", default="")
     s.add_argument("--sesion", default="")
+    s.add_argument(
+        "--entrega",
+        choices=("terminado", "pr", "integrado", "desplegado"),
+        default="terminado",
+    )
+    s.add_argument("--repo", default="")
+    s.add_argument("--rama", default="")
+    s.add_argument("--base-rama", default="")
 
     s = sub.add_parser("registrar-sesion")
     s.add_argument("encargo")
@@ -147,6 +155,10 @@ def _correr(args) -> int:
                     args.via,
                     adjuntos,
                     identidad,
+                    entrega_nivel=args.entrega,
+                    repo=args.repo,
+                    rama=args.rama,
+                    base_rama=args.base_rama,
                 )
             )
         if args.cmd == "registrar-sesion":

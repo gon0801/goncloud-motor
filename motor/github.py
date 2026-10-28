@@ -492,7 +492,11 @@ class GhGitHub:
         return "\n".join(texto.splitlines()[-80:])
 
     def comentarios_deepseek(self, repo, numero, sha=""):
-        """Comentarios de DeepSeek (ai-review) ya publicados en ese PR, para ese SHA si lo nombran."""
+        """Comentarios de la integracion ai-review en ese PR y para ese SHA.
+
+        Solo acredita origen el autor github-actions[bot] con la marca
+        sticky de ai-review y el SHA pedido. El texto no acredita origen.
+        """
         n = self.nombre(repo)
         out = []
         for ruta in (f"repos/{n}/issues/{numero}/comments", f"repos/{n}/pulls/{numero}/comments"):
@@ -509,11 +513,9 @@ class GhGitHub:
                         continue
                     body = str(c.get("body") or "")
                     autor = str((c.get("user") or {}).get("login") or "")
-                    if not (
-                        "deepseek" in body.lower()
-                        or "deepseek" in autor.lower()
-                        or "ai-review" in body.lower()
-                    ):
+                    if autor != "github-actions[bot]":
+                        continue
+                    if "<!-- ai-review:sticky -->" not in body:
                         continue
                     marca = _MARCA_SHA.search(body)
                     real = (
@@ -521,7 +523,7 @@ class GhGitHub:
                         if marca
                         else str(c.get("commit_id") or c.get("original_commit_id") or "")
                     )
-                    if sha and real != sha:
+                    if not real or (sha and real != sha):
                         continue
                     out.append({"texto": body, "autor": autor, "sha": real})
         return out
@@ -592,6 +594,8 @@ class FakeGitHub:
     def __init__(self, d: Path):
         self.d = d
         d.mkdir(parents=True, exist_ok=True)
+        if not (d / "github.json").exists():
+            self._guardar({"prs": {}, "checks": {}})
 
     def _cargar(self) -> dict:
         p = self.d / "github.json"
