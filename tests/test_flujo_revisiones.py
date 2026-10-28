@@ -629,6 +629,17 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
         self.assertEqual(hallazgos[0].gravedad, "bloqueante")
         self.assertEqual(hallazgos[0].ancla, "seguridad.py:9")
 
+        body_schema3 = (
+            '<!-- ai-review:findings={"schema":3,"completion":"complete",'
+            '"findings":[{"id":"F-9","severity":"High",'
+            '"file":"seguridad.py","line":10,"state":"open",'
+            '"title":"Token publicado"}]} -->'
+        )
+        hallazgos = hallazgos_deepseek([{"texto": body_schema3}], "abc")
+        self.assertEqual(len(hallazgos), 1)
+        self.assertEqual(hallazgos[0].gravedad, "bloqueante")
+        self.assertEqual(hallazgos[0].ancla, "seguridad.py:10")
+
     def test_comentarios_deepseek_solo_acepta_la_integracion_real(self):
         sha = "a" * 40
         filas = [

@@ -728,6 +728,8 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
         entradas, _ = json.JSONDecoder().raw_decode(resto)
     except ValueError:
         return None
+    if isinstance(entradas, dict):
+        entradas = entradas.get("findings")
     if not isinstance(entradas, list):
         return None
     salida: list[Hallazgo] = []
