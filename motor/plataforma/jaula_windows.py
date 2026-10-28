@@ -19,6 +19,9 @@ from pathlib import Path
 
 from .windows import JobMatarAlCerrar, _jobs, hora_inicio
 
+JOB_OBJECT_UILIMIT_ALL = 0xFF
+UOI_NAME = 2
+
 
 def imagen_proceso(pid: int, inicio: str) -> str | None:  # pragma: no cover
     k = c.WinDLL("kernel32", use_last_error=True)
@@ -110,12 +113,13 @@ def _api():
 
 def _especificacion(limites: dict) -> bytes:
     # Vtable slots del esquema Microsoft BaseContainerSpecification.fbs 0.1.0.
-    buf = bytearray(68)
+    buf = bytearray(80)
     struct.pack_into("<I", buf, 0, 36)
     buf[4:8] = b"SBOX"
-    struct.pack_into("<HH12H", buf, 8, 28, 32, 4, 8, 0, 0, 0, 9, 24, 12, 16, 28, 0, 20)
+    struct.pack_into("<HH12H", buf, 8, 28, 44, 4, 8, 0, 0, 36, 9, 24, 12, 16, 28, 0, 20)
     struct.pack_into("<i", buf, 36, 28)
     buf[44] = buf[45] = 1
+    struct.pack_into("<Q", buf, 72, JOB_OBJECT_UILIMIT_ALL)
 
     def cadena(valor):
         while len(buf) % 4:
@@ -200,7 +204,8 @@ class Escritorio:
         self.u = c.WinDLL("user32", use_last_error=True)
         self.k = _api()
         self.station = self.desktop = None
-        self.nombre = "motor-" + uuid.uuid4().hex
+        self.nombre = ""
+        self.desktop_nombre = "motor-" + uuid.uuid4().hex
         for nombre, args, resultado in (
             (
                 "CreateWindowStationW",
@@ -209,6 +214,11 @@ class Escritorio:
             ),
             ("GetProcessWindowStation", [], w.HANDLE),
             ("SetProcessWindowStation", [w.HANDLE], w.BOOL),
+            (
+                "GetUserObjectInformationW",
+                [w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)],
+                w.BOOL,
+            ),
             (
                 "CreateDesktopW",
                 [
@@ -236,7 +246,7 @@ class Escritorio:
         ]
         convertir.restype = w.BOOL
         sd = c.c_void_p()
-        # Solo son objetos GUI nuevos de este intento, nunca WinSta0 ni un escritorio ajeno.
+        # El descriptor solo se aplica al crear; nunca cambia ACL de una estacion existente.
         sddl = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GA;;;AC)(A;;GA;;;S-1-15-2-2)(A;;GA;;;RC)S:(ML;;NW;;;LW)"
         if not convertir(sddl, 1, c.byref(sd), None):
             raise c.WinError(c.get_last_error())
@@ -245,13 +255,24 @@ class Escritorio:
             with _estacion_lock:
                 original = self.u.GetProcessWindowStation()
                 self.station = self.u.CreateWindowStationW(
-                    self.nombre, 0, 0xF037F, c.byref(sa)
+                    None, 0, 0xF037F, c.byref(sa)
                 )
                 if not self.station or not self.u.SetProcessWindowStation(self.station):
                     raise c.WinError(c.get_last_error())
                 try:
+                    nombre = c.create_unicode_buffer(512)
+                    necesario = w.DWORD()
+                    if not self.u.GetUserObjectInformationW(
+                        self.station, UOI_NAME, nombre, c.sizeof(nombre), c.byref(necesario)
+                    ):
+                        raise c.WinError(c.get_last_error())
+                    self.nombre = nombre.value
+                    if self.nombre.casefold() == "winsta0":
+                        raise RuntimeError(
+                            "la jaula requiere una estacion no interactiva"
+                        )
                     self.desktop = self.u.CreateDesktopW(
-                        "Default", None, None, 0, 0xF01FF, c.byref(sa)
+                        self.desktop_nombre, None, None, 0, 0xF01FF, c.byref(sa)
                     )
                     if not self.desktop:
                         raise c.WinError(c.get_last_error())
@@ -442,7 +463,7 @@ def crear(
         si = Inicio()
         si.cb, si.desktop, si.flags = (
             c.sizeof(Inicio),
-            escritorio.nombre + "\\Default",
+            escritorio.nombre + "\\" + escritorio.desktop_nombre,
             0x100,
         )
         si.stdin = msvcrt.get_osfhandle(nulo)
