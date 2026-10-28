@@ -191,7 +191,9 @@ def _preparar_kimi(runtime: Path, cmd: list[str]) -> None:
     (destino / "config.toml").write_text("\n".join(texto) + "\n", encoding="utf-8")
 
 
-def _muse_local(argv: list[str], runtime: Path) -> tuple[list[str], dict]:
+def _muse_local(
+    argv: list[str], runtime: Path, entorno: dict[str, str]
+) -> tuple[list[str], dict]:
     origen = Path(argv[0]).resolve()
     destino = runtime / "cli" / origen.name
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -199,14 +201,23 @@ def _muse_local(argv: list[str], runtime: Path) -> tuple[list[str], dict]:
     shutil.copymode(origen, destino)
     with destino.open("rb") as fuente:
         huella = hashlib.file_digest(fuente, "sha256").hexdigest()
-    version = subprocess.run(
-        [str(destino), "--version"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=True,
-    ).stdout.strip()
+    try:
+        version = subprocess.run(
+            [str(destino), "--version"],
+            cwd=runtime,
+            env=entorno,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            "no se pudo comprobar la version de Muse: " + type(exc).__name__
+        ) from exc
     procedencia = {
         "origen": str(origen),
         "ejecutable": str(destino),
@@ -235,15 +246,18 @@ def aislar(
     nombre = agente or Path(cmd[0]).stem.lower()
     procedencia = None
     if os.name == "nt":
-        ejecutable = Path(cmd[0])
-        broker = (
-            ejecutable.resolve()
-            if ejecutable.is_absolute() and ejecutable.name.lower() == "codex.exe"
-            else _codex_windows()
-        )
-        if broker.is_relative_to(espacio) or broker.is_relative_to(runtime):
-            raise RuntimeError("el broker de aislamiento pertenece al trabajador")
+        raices = [
+            Path(sys.executable).resolve().parent,
+            Path(os.environ["SystemRoot"]),
+        ]
         if Path(cmd[0]).stem.lower() == "codex":
+            ejecutable = Path(cmd[0])
+            broker = (
+                ejecutable.resolve() if ejecutable.is_absolute() else _codex_windows()
+            )
+            if broker.is_relative_to(espacio) or broker.is_relative_to(runtime):
+                raise RuntimeError("el broker de aislamiento pertenece al trabajador")
+            raices.append(broker.parent)
             argv = [str(broker), *cmd[1:]]
         else:
             from motor.plataforma.windows import argv_windows
@@ -255,12 +269,7 @@ def aislar(
                     raise FileNotFoundError(argv[0])
                 argv = [str(Path(ejecutable).resolve()), *argv[1:]]
         if nombre == "muse":
-            argv, procedencia = _muse_local(argv, runtime)
-        raices = [
-            Path(sys.executable).resolve().parent,
-            broker.parent,
-            Path(os.environ["SystemRoot"]),
-        ]
+            argv, procedencia = _muse_local(argv, runtime, env)
         raices.extend(path.resolve() for path in lecturas_extra)
         if nombre == "kimi":
             raices.append(Path(argv[0]).parent)

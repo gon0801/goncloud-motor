@@ -58,8 +58,13 @@ class Observacion:
         if data.get("role") in ("assistant", "tool"):
             self.modelo_en_curso = True
             if data["role"] == "assistant":
-                for llamada in data.get("tool_calls") or []:
-                    self.abiertas.add(str(llamada["id"]))
+                llamadas = data.get("tool_calls")
+                if isinstance(llamadas, list):
+                    for llamada in llamadas:
+                        if isinstance(llamada, dict):
+                            ident = llamada.get("id")
+                            if isinstance(ident, str) and ident:
+                                self.abiertas.add(ident)
             else:
                 self.abiertas.discard(str(data.get("tool_call_id")))
                 self.secuencia += 1
@@ -251,6 +256,37 @@ class SalidaRuntime:
         return ""
 
 
+def _sesion_kimi(indice: Path, espacio: Path) -> str:
+    try:
+        lineas = indice.read_text(encoding="utf-8").splitlines()
+        cwd = espacio.resolve()
+    except (OSError, UnicodeError, RuntimeError):
+        return ""
+    for linea in reversed(lineas):
+        if not linea.strip():
+            continue
+        try:
+            fila = json.loads(linea)
+        except ValueError:
+            continue
+        if not isinstance(fila, dict):
+            continue
+        workdir, ident = fila.get("workDir"), fila.get("sessionId")
+        if (
+            not isinstance(workdir, str)
+            or not workdir.strip()
+            or not isinstance(ident, str)
+            or not ident.strip()
+        ):
+            continue
+        try:
+            if Path(workdir).resolve() == cwd:
+                return ident
+        except (OSError, ValueError, RuntimeError):
+            continue
+    return ""
+
+
 def ejecutar(spec_path: Path) -> int:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     d = spec_path.parent
@@ -368,12 +404,7 @@ def ejecutar(spec_path: Path) -> int:
         fin_observacion.set()
         if spec["agente"] == "kimi" and not runtime.sesion_runtime:
             indice = Path(spec["env"]["KIMI_CODE_HOME"]) / "session_index.jsonl"
-            if indice.is_file():
-                for linea in reversed(indice.read_text(encoding="utf-8").splitlines()):
-                    fila = json.loads(linea)
-                    if Path(fila["workDir"]).resolve() == Path(spec["cwd"]).resolve():
-                        runtime.sesion_runtime = str(fila["sessionId"])
-                        break
+            runtime.sesion_runtime = _sesion_kimi(indice, Path(spec["cwd"]))
         _publica(
             d / "outcome.json",
             json.dumps(

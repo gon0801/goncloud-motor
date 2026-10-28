@@ -27,4 +27,6 @@ def solicitar_modelos(
         ):
             raise ValueError(f"modelo de {rol} desconocido: usa proveedor/modelo")
         salida.append((rol, _AGENTE_POR_PROVEEDOR[proveedor], referencia))
+    if len(salida) == 2 and salida[0][2] == salida[1][2]:
+        raise ValueError("el revisor debe usar un modelo distinto del responsable")
     return tuple(salida)

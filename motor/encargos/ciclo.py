@@ -387,12 +387,22 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
         indice_destino.parent.mkdir(parents=True, exist_ok=True)
         filas = []
         for linea in indice_kimi.read_text(encoding="utf-8").splitlines():
-            fila = json.loads(linea)
+            if not linea.strip():
+                continue
+            try:
+                fila = json.loads(linea)
+            except ValueError:
+                continue
+            if not isinstance(fila, dict) or not all(
+                isinstance(fila.get(campo), str) and fila[campo]
+                for campo in ("sessionDir", "sessionId", "workDir")
+            ):
+                continue
             antigua = ruta_guardada(fila["sessionDir"])
             if antigua.is_relative_to(origen):
                 fila["sessionDir"] = str(destino / antigua.relative_to(origen))
             filas.append(json.dumps(fila))
-        indice_destino.write_text("\n".join(filas) + "\n", encoding="utf-8")
+        indice_destino.write_text("\n".join(filas) + ("\n" if filas else ""), encoding="utf-8")
 
     muse = destino / ".local/share/muse/session-index.db"
     if muse.is_file() and not muse.is_symlink():
@@ -400,7 +410,8 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
         from contextlib import closing
 
         with closing(sqlite3.connect(muse)) as db, db:
-            for ident, directorio, log in db.execute("SELECT session_id, session_dir, session_log_path FROM sessions"):
+            filas = db.execute("SELECT session_id, session_dir, session_log_path FROM sessions").fetchall()
+            for ident, directorio, log in filas:
                 anterior = ruta_guardada(directorio)
                 if anterior.is_relative_to(origen):
                     db.execute("UPDATE sessions SET session_dir=?, session_log_path=? WHERE session_id=?",
