@@ -392,6 +392,7 @@ class FlujoRevisiones(unittest.TestCase):
 
             self.assertEqual(_asegurar_repo(r.fold(), r.espacio), "")
             (r.espacio / "saludo.txt").write_text("hola")
+            (_interno(r) / "evidencia.txt").write_text("lei saludo.txt: hola")
             r.incorporar()
             r.juicio(
                 {
