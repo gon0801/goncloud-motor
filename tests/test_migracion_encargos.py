@@ -6,6 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from unittest.mock import patch
+
+from motor.encargos.dominio import decision_proceso
 from motor.encargos.migracion import crear_motor06, importar_encargos
 from motor.encargos.registro import Registro
 from motor.store import Store
@@ -62,6 +65,73 @@ class MigracionEncargos(unittest.TestCase):
             self.assertFalse(enc06.escrituras)
             self.assertIn(enc06.estado, ("deteniendo", "detenido"))
             self.assertIn("bloques B y C", enc06.texto)
+
+    def test_importado_nace_detenido_aunque_se_corte_despues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raiz = Path(tmp)
+            viejo = Store(raiz / "viejo" / "motor.db")
+            viejo.append("plan-a", "A", "Merged", {"sha": "a" * 40})
+            viejo.db.close()
+            reg = Registro(raiz / "nuevo")
+            self.addCleanup(reg.close)
+            with patch.object(
+                Registro, "anotar", side_effect=RuntimeError("corte inyectado")
+            ):
+                with self.assertRaises(RuntimeError):
+                    importar_encargos(raiz / "viejo" / "motor.db", reg, "mac", HORA)
+            enc = reg.fold(reg.ids()[0])
+            self.assertEqual(enc.estado, "detenido")
+            self.assertFalse(enc.escrituras)
+            self.assertFalse(enc.intentos_nuevos)
+            self.assertFalse(
+                decision_proceso(enc, "ausente", None, False, True, HORA)["lanzar"]
+            )
+
+    def test_reimportar_sana_una_entrega_vieja_sin_duplicar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raiz = Path(tmp)
+            viejo = Store(raiz / "viejo" / "motor.db")
+            viejo.append("plan-a", "A", "Merged", {"sha": "a" * 40})
+            viejo.db.close()
+            reg = Registro(raiz / "nuevo")
+            self.addCleanup(reg.close)
+            from motor.encargos.ciclo import recibir
+
+            salida = recibir(
+                reg,
+                "Migración desde el motor anterior. Origen host=mac "
+                "plan=plan-a almacén=x.",
+                "migracion-mac-plan-a",
+                HORA,
+                director="migracion",
+                canal="",
+                via="durable",
+            )
+            self.assertEqual(reg.fold(salida["encargo"]).estado, "recibido")
+            relacion = importar_encargos(
+                raiz / "viejo" / "motor.db", reg, "mac", HORA
+            )
+            self.assertEqual(relacion[0]["encargo"], salida["encargo"])
+            self.assertEqual(len(reg.ids()), 1)
+            enc = reg.fold(salida["encargo"])
+            self.assertIn(enc.estado, ("deteniendo", "detenido"))
+            self.assertFalse(enc.escrituras)
+
+    def test_host_y_plan_semejantes_no_se_fusionan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raiz = Path(tmp)
+            uno_v = Store(raiz / "uno" / "motor.db")
+            uno_v.append("plan-a", "A", "Merged", {"sha": "a" * 40})
+            uno_v.db.close()
+            dos_v = Store(raiz / "dos" / "motor.db")
+            dos_v.append("mini-plan-a", "B", "Merged", {"sha": "b" * 40})
+            dos_v.db.close()
+            reg = Registro(raiz / "nuevo")
+            self.addCleanup(reg.close)
+            uno = importar_encargos(raiz / "uno" / "motor.db", reg, "mac-mini", HORA)
+            dos = importar_encargos(raiz / "dos" / "motor.db", reg, "mac", HORA)
+            self.assertNotEqual(uno[0]["encargo"], dos[0]["encargo"])
+            self.assertEqual(len(reg.ids()), 2)
 
 
 if __name__ == "__main__":

@@ -47,10 +47,37 @@ def _foto_coherente(desde: Path) -> Path:
         origen.close()
 
 
-def _detener(registro: Registro, encargo: str, clave: str, hora: str) -> dict:
+def _clave(host: str, plan: str) -> str:
+    return f"migracion-{len(host)}-{host}-{plan}"
+
+
+def _previo(registro: Registro, host: str, plan: str) -> dict | None:
+    for ukey in (
+        _clave(host, plan),
+        f"migracion:{host}:{plan}",
+        f"entrega:{_clave(host, plan)}",
+        f"entrega:migracion-{host}-{plan}",
+    ):
+        previo = registro.por_ukey(ukey)
+        if previo is not None:
+            return previo
+    return None
+
+
+def _asegurar_detenido(
+    registro: Registro, encargo: str, host: str, plan: str, hora: str
+) -> None:
+    enc = registro.fold(encargo)
+    if enc is None or enc.estado in (
+        "detenido",
+        "deteniendo",
+        "terminado",
+        "cancelado",
+    ):
+        return
     from motor.integraciones.directores import parar
 
-    return parar(registro, encargo, clave, hora)
+    parar(registro, encargo, f"parada-{_clave(host, plan)}", hora)
 
 
 def _relacion(registro: Registro, host: str, plan: str, encargo: str) -> dict:
@@ -102,15 +129,55 @@ def importar_encargos(
             "trabajo nuevo. Queda detenido sin escrituras hasta que un "
             "director concilie los efectos confirmados y lo reanude."
         )
+        previo = _previo(registro, host, plan)
+        if previo is not None:
+            encargo_previo = previo["encargo"]
+            _asegurar_detenido(registro, encargo_previo, host, plan, hora)
+            if not any(
+                e["kind"] == "migracion"
+                for e in registro.eventos(encargo_previo)
+            ):
+                registro.anotar(
+                    encargo_previo,
+                    {
+                        "kind": "migracion",
+                        "data": {
+                            "hora": hora,
+                            "origen": {
+                                "host": host,
+                                "plan": plan,
+                                "almacen": str(desde),
+                            },
+                            "conteo_por_kind": conteo,
+                            "total_eventos": len(lista),
+                            "ultimo_kind": ultimo_kind,
+                            "merged": merged,
+                            "verified": verified,
+                            "nota": (
+                                f"migración desde {host}/{plan} con "
+                                f"{len(lista)} eventos; último {ultimo_kind}"
+                            ),
+                        },
+                    },
+                    _clave(host, plan),
+                )
+            relacion.append(_relacion(registro, host, plan, encargo_previo))
+            continue
         salida = recibir(
             registro,
             texto,
-            f"migracion-{host}-{plan}",
+            _clave(host, plan),
             hora,
             director="migracion",
             canal="",
             via="durable",
+            detenido=True,
         )
+        if salida.get("conflicto"):
+            raise ValueError(
+                f"conflicto de migración en {host}/{plan}: la identidad ya "
+                "corresponde a otro pedido; no se agrega un origen incompatible"
+            )
         encargo = salida["encargo"]
         registro.anotar(
             encargo,
@@ -134,14 +201,21 @@ def importar_encargos(
                     ),
                 },
             },
-            f"migracion:{host}:{plan}",
+            _clave(host, plan),
         )
-        _detener(registro, encargo, f"migracion-parar-{host}-{plan}", hora)
         relacion.append(_relacion(registro, host, plan, encargo))
     return relacion
 
 
 def crear_motor06(registro: Registro, hora: str) -> dict:
+    previo = (
+        _previo(registro, "", "motor-06")
+        or registro.por_ukey("migracion:motor-06")
+        or registro.por_ukey("entrega:migracion-motor-06")
+    )
+    if previo is not None:
+        _asegurar_detenido(registro, previo["encargo"], "", "motor-06", hora)
+        return _relacion(registro, "", "motor-06", previo["encargo"])
     salida = recibir(
         registro,
         TEXTO_MOTOR_06,
@@ -150,7 +224,13 @@ def crear_motor06(registro: Registro, hora: str) -> dict:
         director="migracion",
         canal="",
         via="durable",
+        detenido=True,
     )
+    if salida.get("conflicto"):
+        raise ValueError(
+            "conflicto de migración en MOTOR 06: la identidad ya corresponde "
+            "a otro pedido; no se agrega un origen incompatible"
+        )
     encargo = salida["encargo"]
     registro.anotar(
         encargo,
@@ -172,5 +252,4 @@ def crear_motor06(registro: Registro, hora: str) -> dict:
         },
         "migracion:motor-06",
     )
-    _detener(registro, encargo, "migracion-parar-motor-06", hora)
     return _relacion(registro, "", "motor-06", encargo)

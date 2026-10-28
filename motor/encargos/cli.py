@@ -232,6 +232,12 @@ def _supervisor(reg: Registro, args) -> int:
     if args.respaldo and not args.agente:
         raise ValueError("--respaldo necesita --agente como ruta principal")
     ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
+    if not ruta and not any(reg.fold(i).agentes for i in reg.ids()):
+        raise ValueError(
+            "supervisor sin ruta de agentes: configura --agente o una ruta "
+            "persistida en los encargos; sin ruta los pedidos quedarian "
+            "en recibido indefinidamente"
+        )
 
     def lanzar(enc, prompt, espacio, sesion):
         if not enc.agentes:

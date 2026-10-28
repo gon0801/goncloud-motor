@@ -723,6 +723,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--usuario", required=True)
     s.add_argument("--home", required=True)
     s.add_argument("--imprime", action="store_true")
+    s.add_argument("--agente", default="")
+    s.add_argument("--respaldo", action="append", default=[])
+    s.add_argument("--flota-home", type=Path)
+    s.add_argument("--canal", type=Path)
     s = sub.add_parser("formato")
     s.add_argument("--home", type=Path, required=True)
     s = sub.add_parser("daemon")
@@ -915,15 +919,34 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "instala-encargos":
         from .servicio import instalable_encargos
 
-        print(
-            instalable_encargos(
+        try:
+            texto = instalable_encargos(
                 a.maquina,
                 a.usuario,
                 sys.executable,
                 a.home,
                 str(Path(__file__).resolve().parent.parent),
+                agente=a.agente,
+                respaldos=tuple(a.respaldo),
             )
-        )
+        except ValueError as exc:
+            print(f"motor: {exc}", file=sys.stderr)
+            return 2
+        if a.flota_home is None or a.canal is None:
+            print(
+                "motor: instala-encargos necesita --flota-home y --canal "
+                "para conectar la base con su flota y su canal",
+                file=sys.stderr,
+            )
+            return 2
+        from .servicio import vincular_base
+
+        try:
+            vincular_base(Path(a.home), a.flota_home, a.canal)
+        except (OSError, ValueError) as exc:
+            print(f"motor: {exc}", file=sys.stderr)
+            return 2
+        print(texto)
         return 0
     if a.cmd == "formato":
         from .formato import puede_volver

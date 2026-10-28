@@ -10,7 +10,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from motor.flota.actualizaciones import _crear_generacion
+import sys
+from unittest.mock import patch
+
+from motor.flota.actualizaciones import _crear_generacion, preparar
 from motor.flota.control import aplicar, asignar, revertir
 from motor.flota.distribuidores import _descargar, _instalar_npm, _validar_componente
 
@@ -116,6 +119,74 @@ class ActualizacionesFlota(unittest.TestCase):
         self.assertEqual(revertir(home)["accion"], "revertido")
         self.assertEqual(asignar(home), a)
         self.assertTrue((home / "historial" / f"instalacion-{b}.json").is_file())
+
+
+    def test_candidata_corrupta_conserva_la_generacion_vigente(self):
+        origen = self.base / "origen2"
+        origen.mkdir()
+        for args in (
+            ("init", "-q"),
+            ("config", "user.email", "ensayo@localhost"),
+            ("config", "user.name", "Ensayo"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(origen), *args], check=True, capture_output=True
+            )
+        (origen / "comprobar.py").write_text("raise SystemExit(0)\n")
+        subprocess.run(["git", "-C", str(origen), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(origen), "commit", "-qm", "base"], check=True)
+        home = self.base / "home2"
+        home.mkdir()
+        (home / "manifiesto.toml").write_text(
+            'generacion="ensayo"\n[[puesto]]\nfuncion="director"\n'
+            'modelo=["p/m"]\nesfuerzo=["low"]\n'
+        )
+
+        def doc(v):
+            sri = "sha512-" + base64.b64encode(
+                hashlib.sha512(v.encode()).digest()
+            ).decode()
+            return dict(
+                nombre="openclaw",
+                tipo="npm",
+                paquete="openclaw",
+                version=v,
+                fuente="https://registry.npmjs.org/openclaw/latest",
+                tarball=f"https://registry.npmjs.org/openclaw/-/openclaw-{v}.tgz",
+                integridad=sri,
+            )
+
+        def cache(d, content):
+            p = (
+                home
+                / "artefactos"
+                / (hashlib.sha256(d["integridad"].encode()).hexdigest() + ".tgz")
+            )
+            p.parent.mkdir(exist_ok=True)
+            p.write_bytes(content)
+
+        def install(d, artifact, dest, cache_dir):
+            dest.mkdir(parents=True)
+            script = dest / "cli.py"
+            script.write_text("print(" + repr(d["version"]) + ")")
+            return [sys.executable, str(script)]
+
+        a = doc("1")
+        cache(a, b"1")
+        with patch(
+            "motor.flota.actualizaciones._instalar_npm", side_effect=install
+        ):
+            primera = preparar(
+                home, {"componentes": [a]}, motor_origen=origen, repos={}
+            )
+            self.assertEqual(
+                aplicar(home, primera["generacion"])["accion"], "aplicada"
+            )
+            b = doc("2")
+            cache(b, b"corrupto")
+            with self.assertRaises(RuntimeError):
+                preparar(home, {"componentes": [b]}, motor_origen=origen, repos={})
+        self.assertEqual(asignar(home), primera["generacion"])
 
 
 if __name__ == "__main__":

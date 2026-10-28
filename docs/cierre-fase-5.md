@@ -4,9 +4,17 @@
 
 PARCIAL SEGURO. La integración se mergeó en los cuatro repos y el sucesor
 quedó corriendo en la autoridad con los encargos trasladados. La política
-común y las instrucciones vivas de los directores quedan pendientes con su
-causa registrada. Ningún paso dejó dos escritores activos sobre el mismo
-recurso.
+común v7 ya se publica desde PC y converge en Mini y Mac. Las skills
+vivas de los directores ya se reinstalaron en los perfiles que las
+reciben. La prueba final en ventana con David ya se hizo en Hermi y
+en Claw. Ningún paso dejó dos escritores ejecutando a la vez sobre
+el mismo recurso. En el corte de PC hubo minutos con el vigía
+todavía habilitado y el controlador ya creado, sin disparo del
+vigía en esa ventana: su última corrida fue a las 08:35 y se pausó
+antes de la siguiente. Después del cierre, David cambió una regla
+de fondo: cada
+máquina es independiente y tiene su propia libreta de encargos. Esa
+decisión ya se implementó y está al final de este documento.
 
 ## Integración
 
@@ -16,6 +24,7 @@ recurso.
 | goncloud-hermes | [#94](https://github.com/gon0801/goncloud-hermes/pull/94) | 8e5fb050fd3b |
 | goncloud-openclaw | [#371](https://github.com/gon0801/goncloud-openclaw/pull/371) | 1daa415466cf |
 | goncloud-motor-conf | [#28](https://github.com/gon0801/goncloud-motor-conf/pull/28) | ab9dc8fe9da0 |
+| goncloud-motor (fix) | [#86](https://github.com/gon0801/goncloud-motor/pull/86) | 71e8e313fb0a |
 
 La revisión independiente aprobó los cuatro antes del merge. Los gates
 rojos fueron falsos positivos de gitleaks sobre ids y rutas de la
@@ -31,8 +40,12 @@ de Hermes es feat/hermes-team.
   ~/.motor-resguardo/fase-5-20261028.
 - 2. Operaciones de producción. PARCIAL. El servicio del sucesor es un
   LaunchAgent en el dominio del usuario. launchd no tenía sudo sin
-  contraseña para un LaunchDaemon nuevo. El arranque tras reinicio
-  completo sin sesión iniciada no está demostrado.
+  contraseña para un LaunchDaemon nuevo. El arranque tras reinicio sí
+  se demostró el 2026-10-27. Mini reinició y el servicio
+  ai.goncloud.motor-encargos levantó solo con pid 583 a los 32
+  segundos del arranque. El registro durable conservó sus 98 eventos.
+  Sigue en el dominio del usuario, así que depende de que la sesión
+  de gon exista al arrancar, como ocurre hoy con su inicio automático.
 - 3. Migración repetible. REALIZADO. Importador con identidad estable,
   probado sobre copia coherente y aplicado en Mini. Repetirlo devuelve
   los mismos encargos.
@@ -46,23 +59,43 @@ de Hermes es feat/hermes-team.
   quince, todos detenidos y sin escrituras. MOTOR 06 quedó como encargo
   detenido con sus bloques B y C pendientes. Los PR 26 y 27 no se
   reaplicaron.
-- 7. Política común y réplicas. PENDIENTE. El ciclo de flota en PC falló
-  en un instalador node durante la preparación de componentes. No se
-  pausó vigia-modelos porque el reemplazo todavía no corre. Cuando el
-  ciclo corra, se pausa el cron d710c8527b7f y se crea la entrada única
-  del controlador por el mismo mecanismo de cron de Hermes.
+- 7. Política común y réplicas. REALIZADO. Ver
+  [evidence/fase-5/politica-comun.json](evidence/fase-5/politica-comun.json).
+  El publicador de PC generó el snapshot v7 (manifiesto con sha256
+  89daac5f). Las réplicas de Mini y Mac lo importaron y aplicaron la
+  misma generación de herramientas bddd4ee5, con fuente Gon-PC. Los
+  fallos previos venían de un instalador node y de un repo Hermes
+  local en una rama vieja. Ambos se corrigieron antes de activar el
+  reemplazo. Se creó el cron único
+  flota-controlador b7d546da8335 en el perfil claw, su primer ciclo
+  disparado terminó ok y apenas entonces se pausó vigia-modelos
+  d710c8527b7f por el subcomando nativo. Queda un solo escritor.
 - 8. Sistema viejo, directores y retiro. PARCIAL. La admisión del motor
   viejo se cerró con retención en Mac y Mini. Su daemon sigue solo como
   lector histórico. El claw-autoupdate de Mini quedó desactivado con su
-  definición guardada. Las skills vivas de Hermes y Claw no se
-  reinstalaron en los perfiles en producción en esta pasada. El vigía
-  de la Mac se conservó porque es observador.
-- 9. Pruebas como usuario final. PARCIAL. Desde la Mac se creó un
+  definición guardada. El vigía de la Mac se conservó porque es
+  observador. Las skills vivas sí se reinstalaron el 2026-10-27, solo
+  en los perfiles que las reciben. En Hermes, el director claw quedó
+  con la skill motor nueva con sha256 6c30cd9d y la sonda de poteto en
+  vivo dio OK. En Claw de Mini, los agentes main, implementer e
+  ingenieria quedaron con la skill motor nueva con sha256 1a0e7bfd.
+  Los dos hashes no tienen que coincidir. Son los archivos de cada
+  plataforma, Hermes en PC y Claw en Mini, y cada uno cuadra con el
+  archivo de su propio repo integrado.
+  Las versiones anteriores quedaron en el resguardo de cada máquina.
+  El redespliegue completo de configure_team no se corrió. Su
+  validación choca con el SOUL local de claw y su bandera para
+  conservarlo tiene un defecto. No se forzó ningún SOUL ajeno.
+- 9. Pruebas como usuario final. REALIZADO. Desde la Mac se creó un
   encargo directo con un ejecutor real, se observó su cierre, se
   promovió a durable en la autoridad y la consulta canónica devolvió
   durable. El recorrido completo con trabajo durable ejecutado por la
   autoridad y aviso al canal quedó demostrado en las rondas de
-  corrección. La prueba en ventana con David no se hizo.
+  corrección. La prueba en ventana con David se hizo el 2026-10-27.
+  Hermi respondió como director listo para recibir el pedido y sin
+  cambiar archivos. Claw respondió lo mismo tras el reinicio de Mini.
+  Claw tardó unos cinco minutos porque su gateway seguía preparando
+  las bases de sus agentes. Su salud respondió bien a las 13:56.
 
 ## Reversa
 
@@ -73,15 +106,64 @@ de Hermes es feat/hermes-team.
   su propio comando de mantenimiento.
 - Claw-autoupdate: launchctl enable gui/501/ai.goncloud.claw-autoupdate
   y bootstrap con el plist guardado en el resguardo.
-- Política: como vigia-modelos nunca se pausó, no hay reversa que
-  aplicar en PC todavía.
+- Política en PC: pausa el controlador y reactiva el vigía. Nunca
+  dejes ambos activos. Corre
+  `hermes -p claw cron pause b7d546da8335` y luego
+  `hermes -p claw cron resume d710c8527b7f`. La definición previa del
+  cron quedó guardada fuera del repo en el resguardo de PC.
+- Réplicas: borra el home de flota de cada réplica o revierte su
+  generación con `ops/reversa_ensayo.py --home <home-flota>`. Esa
+  reversa no toca los encargos ni la autoridad de Mini.
 
 ## Residuos y pendientes con dueño
 
-- PC: home de flota parcialmente preparado en C:\Users\ehven\flota. Es
-  del ensayo de despliegue y se conserva hasta que el ciclo corra.
-- Mini: /Users/gon/ensayo-flota-r4 y la copia del historial Mac en
-  /Users/gon/copia-mac. Son productos de ensayo declarados.
-- El siguiente paso con dueño es corregir el instalador node que el
-  ciclo de flota invoca en PC, o declarar ese componente pendiente en
-  el propio ciclo, y después ejecutar el paso 7 completo.
+- PC: el home C:\Users\ehven\flota ya es la instalación estable del
+  publicador. No es un residuo.
+- Mac: el home estable de la réplica es /Users/dn/flota.
+- Mini: el home estable de la réplica es /Users/gon/flota. Los
+  residuos de ensayo /Users/gon/ensayo-flota-r4 y
+  /Users/gon/copia-mac se borraron el 2026-10-27 con autorización de
+  David. La copia era eso, una copia. El historial original no se
+  tocó. Los resguardos quedan fuera del repo.
+- PC: se borraron el home de ensayo .hermes-ensayo34d, los scripts
+  temporales y las carpetas npm-p-* y prueba-* dentro de
+  C:\Users\ehven\flota. El home estable del publicador quedó intacto.
+- Decisión posterior de David, ya tomada el 2026-10-27: las tres
+  máquinas son independientes y cada una tiene su propia libreta de
+  encargos. Ver
+  [decision-maquinas-independientes.md](decision-maquinas-independientes.md).
+  Esa decisión se implementó en su parte de libretas el 2026-10-27.
+  La Mac tiene su servicio local ai.goncloud.motor-encargos sobre
+  /Users/dn/.motor-encargos, corriendo con pid 17201. La PC tiene su
+  tarea GoncloudMotorEncargos sobre C:\Users\ehven\.motor-encargos,
+  en estado Running. Ninguna de las tres libretas tiene
+  autoridad.json. De aquí en adelante cada una guarda solo lo suyo.
+  La libreta de Mini conserva además el historial migrado en la
+  fase 5, que incluye encargos nacidos en la Mac. Es historial
+  archivado y detenido, no encargos activos de otra máquina.
+  Reversa de este paso: en Mac,
+  `launchctl bootout gui/501/ai.goncloud.motor-encargos` y borrar su
+  plist. En PC, terminar y borrar la tarea GoncloudMotorEncargos.
+  Las libretas locales no se borran. Volver a la autoridad de Mini
+  exige primero detener los servicios locales y conciliar los
+  encargos creados en local. Nunca con los dos escribiendo a la vez.
+- Prueba de independencia: la Mac recibió el encargo
+  enc_e63cdedf98598872 en su libreta, lo consultó y lo canceló en
+  local. La PC hizo lo mismo con enc_54f2fdf08cabe7da. Mini conservó
+  su libreta y sus 98 eventos sin cambios.
+- La base cliente de la Mac que apuntaba a Mini se conserva solo
+  como vía para entrar a Mini a consultar su historial. Ya no es la
+  ruta de los encargos de la Mac.
+- Límites honestos: el arranque tras reinicio se demostró en Mini y
+  en PC. En PC la tarea falló una vez al dispararse a los doce
+  segundos del inicio de sesión. Se le puso un minuto de espera al
+  disparador, se reinició la PC otra vez y la tarea quedó Running
+  sola. La Mac no se reinició porque David pidió no tocarla. Ahí el
+  arranque tras reinicio queda pendiente. La ejecución durable con
+  ejecutor sigue como quedó en Mini: la libreta recibe, guarda,
+  consulta y cancela en local, y la ejecución con ruta de agente
+  quedó demostrada en los ensayos de las rondas anteriores.
+- OpenBot sigue sin una parada propia demostrada. Un timeout no
+  cancela su entrega. Esa capacidad no se le atribuye.
+- La fase 5 queda PARCIAL SEGURA por los límites honestos de arriba
+  y por OpenBot. No se declara LISTO.
