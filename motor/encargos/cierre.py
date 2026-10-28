@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from .comprobacion import digest, validar_juicio_legado
-from .dominio import Encargo, bloqueantes_abiertos, nivel_cumplido
+from .dominio import (
+    Encargo, bloqueantes_abiertos, nivel_cumplido,
+    revision_independiente_cubre_producto,
+)
 
 
 def _recibos(pedidos: list[dict], enc: Encargo) -> list[dict]:
@@ -43,7 +46,7 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
     ref = enc.revision_vigente
     if ref is None or ref.veredicto != "aprobado":
         raise ValueError("cierre sin revisión independiente aprobada")
-    if enc.producto is None or ref.version != enc.producto.firma:
+    if not revision_independiente_cubre_producto(enc):
         raise ValueError("la revisión aprobada no es sobre la versión vigente")
     if bloqueantes_abiertos(enc):
         raise ValueError("cierre con bloqueantes abiertos")

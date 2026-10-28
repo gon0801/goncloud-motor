@@ -29,6 +29,7 @@ from .dominio import (
     TransicionIlegal,
     alcance_de,
     bloqueantes_abiertos,
+    revision_independiente_cubre_producto,
     decision_fallo,
     decision_proceso,
     huella_bloqueo,
@@ -735,13 +736,21 @@ def _reanuda_desde(hora: str, segundos: int) -> str:
 
 
 def _revision_aprobada_vigente(enc: Encargo) -> bool:
-    ref = enc.revision_vigente
+    return revision_independiente_cubre_producto(enc) and not bloqueantes_abiertos(enc)
+
+
+def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
     return bool(
-        ref
-        and ref.veredicto == "aprobado"
-        and enc.producto is not None
-        and ref.version == enc.producto.firma
-        and not bloqueantes_abiertos(enc)
+        enc.deepseek_vigente is not None
+        and enc.revision_vigente is not None
+        and enc.revision_vigente.veredicto == "aprobado"
+        and (
+            bloqueantes_abiertos(enc, "deepseek")
+            or revision_independiente_cubre_producto(enc)
+        )
+        and enc.rol != "revisor"
+        and not bloqueantes_abiertos(enc, "independiente")
+        and not (set(alcance_de(enc).tocadas) & {r for r, _h in enc.aprobadas})
     )
 
 
@@ -757,7 +766,11 @@ def _aplica_entrega(enc: Encargo) -> bool:
     return (
         enc.deepseek_vigente is not None
         and enc.producto is not None
-        and not enc.producto.sha_git
+        and enc.producto.sha_git != enc.deepseek_sha
+        and (
+            enc.revision_vigente.version == enc.producto.firma
+            or _correccion_deepseek_conserva_aprobadas(enc)
+        )
     )
 
 
@@ -775,10 +788,11 @@ def _producto_no_aprobado(enc: Encargo, espacio: Path):
         return None
     actual = version_producto(espacio)
     referencias = {enc.producto.firma}
-    if enc.revisado is not None:
-        referencias.add(enc.revisado.firma)
-    if enc.revision_vigente is not None:
-        referencias.add(enc.revision_vigente.version)
+    if not _correccion_deepseek_conserva_aprobadas(enc):
+        if enc.revisado is not None:
+            referencias.add(enc.revisado.firma)
+        if enc.revision_vigente is not None:
+            referencias.add(enc.revision_vigente.version)
     referencias.discard("")
     if any(actual.firma != referencia for referencia in referencias):
         return actual
@@ -1282,17 +1296,9 @@ def _incorporar_responsable(
             f"observacion:{enc.id}:{version.firma}",
         )
         enc = registro.fold(enc.id)
-    if (
-        enc.deepseek_vigente is not None
-        and enc.revision_vigente is not None
-        and enc.revision_vigente.veredicto == "aprobado"
-        and bloqueantes_abiertos(enc, "deepseek")
-        and not bloqueantes_abiertos(enc, "independiente")
-    ):
-        alcance = alcance_de(enc)
-        if not (set(alcance.tocadas) & {r for r, _h in enc.aprobadas}):
-            _publica(directorio / "incorporado", hora)
-            return registro.fold(enc.id)
+    if _correccion_deepseek_conserva_aprobadas(enc):
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     alcance = alcance_de(enc)
     registro.anotar(
         enc.id,

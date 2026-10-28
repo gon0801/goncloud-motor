@@ -350,6 +350,28 @@ def alcance_de(e: Encargo) -> AlcanceRevision:
     )
 
 
+def revision_independiente_cubre_producto(e: Encargo) -> bool:
+    ref, producto = e.revision_vigente, e.producto
+    if ref is None or ref.veredicto != "aprobado" or producto is None:
+        return False
+    if ref.version == producto.firma:
+        return True
+    ds = e.deepseek_vigente
+    actual = dict(producto.manifiesto)
+    return bool(
+        e.entrega.nivel != "terminado"
+        and e.rol != "revisor"
+        and e.revisado is not None
+        and ref.version == e.revisado.firma
+        and ds is not None
+        and ds.veredicto == "aprobado"
+        and ds.version == producto.firma
+        and producto.sha_git
+        and producto.sha_git == e.pr_sha == e.deepseek_sha
+        and all(actual.get(ruta) == firma for ruta, firma in e.aprobadas)
+    )
+
+
 def nivel_cumplido(e: Encargo) -> bool:
     return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(
         e.entrega.nivel, 1
