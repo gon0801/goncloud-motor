@@ -10,13 +10,13 @@ from pathlib import Path
 
 
 def enumeracion_para(limites: dict) -> list[str]:
+    completas = [Path(ruta) for ruta in (*limites["lectura"], *limites["escritura"])]
+    candidatas = {padre for ruta in completas for padre in ruta.parents}
+    candidatas.add(Path(os.environ["PROGRAMDATA"]))
     return sorted(
-        {
-            str(padre)
-            for ruta in (*limites["lectura"], *limites["escritura"])
-            for padre in Path(ruta).parents
-        }
-        | {str(Path(os.environ["PROGRAMDATA"]))}
+        str(ruta)
+        for ruta in candidatas
+        if not any(ruta.is_relative_to(completa) for completa in completas)
     )
 
 
