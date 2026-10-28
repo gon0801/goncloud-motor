@@ -86,6 +86,7 @@ def recibir(
     repo: str = "",
     rama: str = "",
     base_rama: str = "",
+    modelos_solicitados: tuple[tuple[str, str, str], ...] = (),
 ) -> dict:
     if via == "directa" and entrega_nivel != "terminado":
         raise TransicionIlegal(
@@ -108,6 +109,7 @@ def recibir(
             or (datos.get("repo") or "") != repo
             or (datos.get("rama") or "") != rama
             or (datos.get("base") or "") != base_rama
+            or tuple(tuple(x) for x in datos.get("modelos_solicitados", ())) != modelos_solicitados
         ):
             salida["conflicto"] = True
         return salida
@@ -128,6 +130,7 @@ def recibir(
         "repo": repo,
         "rama": rama,
         "base": base_rama,
+        "modelos_solicitados": [list(x) for x in modelos_solicitados],
         "recibo": recibo,
         "hora": hora,
     }
@@ -148,6 +151,7 @@ def recibir(
         repo,
         rama,
         base_rama,
+        modelos_solicitados,
     )
     return vista(registro.fold(encargo), recibo)
 
@@ -355,19 +359,64 @@ def _almacen_sesion(base: Path, encargo_id: str, rol: str) -> Path:
 
 
 def _copiar_sesion(origen: Path, destino: Path) -> None:
+    import os
     import shutil
 
-    for sub in (".codex", ".grok"):
+    def ruta_guardada(valor) -> Path:
+        texto = str(valor)
+        if os.name == "nt" and texto.startswith("\\\\?\\"):
+            texto = "\\\\" + texto[8:] if texto.startswith("\\\\?\\UNC\\") else texto[4:]
+        return Path(texto)
+
+    for sub in (".codex", ".grok", ".local/share/muse", ".kimi-code/sessions", ".kimi-code/file-history"):
         fuente = origen / sub
         if fuente.is_dir():
             shutil.copytree(
                 fuente,
                 destino / sub,
                 dirs_exist_ok=True,
+                symlinks=True,
                 ignore=lambda _d, nombres: [
                     n for n in nombres if n == "auth.json"
                 ],
             )
+
+    indice_kimi = origen / ".kimi-code/session_index.jsonl"
+    if indice_kimi.is_file() and not indice_kimi.is_symlink():
+        indice_destino = destino / ".kimi-code/session_index.jsonl"
+        indice_destino.parent.mkdir(parents=True, exist_ok=True)
+        filas = []
+        for linea in indice_kimi.read_text(encoding="utf-8").splitlines():
+            if not linea.strip():
+                continue
+            try:
+                fila = json.loads(linea)
+            except ValueError:
+                continue
+            if not isinstance(fila, dict) or not all(
+                isinstance(fila.get(campo), str) and fila[campo]
+                for campo in ("sessionDir", "sessionId", "workDir")
+            ):
+                continue
+            antigua = ruta_guardada(fila["sessionDir"])
+            if antigua.is_relative_to(origen):
+                fila["sessionDir"] = str(destino / antigua.relative_to(origen))
+            filas.append(json.dumps(fila))
+        indice_destino.write_text("\n".join(filas) + ("\n" if filas else ""), encoding="utf-8")
+
+    muse = destino / ".local/share/muse/session-index.db"
+    if muse.is_file() and not muse.is_symlink():
+        import sqlite3
+        from contextlib import closing
+
+        with closing(sqlite3.connect(muse)) as db, db:
+            filas = db.execute("SELECT session_id, session_dir, session_log_path FROM sessions").fetchall()
+            for ident, directorio, log in filas:
+                anterior = ruta_guardada(directorio)
+                if anterior.is_relative_to(origen):
+                    db.execute("UPDATE sessions SET session_dir=?, session_log_path=? WHERE session_id=?",
+                               (str(destino / anterior.relative_to(origen)),
+                                str(destino / ruta_guardada(log).relative_to(origen)), ident))
 
     codex = destino / ".codex"
     if codex.is_dir():
@@ -376,6 +425,8 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
 
         rollouts = {p.name: p.resolve() for p in (codex / "sessions").rglob("*.jsonl")}
         for indice in codex.glob("state_*.sqlite"):
+            if indice.is_symlink():
+                continue
             with closing(sqlite3.connect(indice)) as db, db:
                 columnas = {fila[1] for fila in db.execute("PRAGMA table_info(threads)")}
                 if not {"id", "rollout_path"} <= columnas:
@@ -1124,6 +1175,16 @@ def _incorporar(
                 registro.base / "runtime" / enc.id / token_intento,
                 _almacen_sesion(registro.base, enc.id, enc.rol),
             )
+        if outcome.get("autenticacion_expirada"):
+            marcar_espera(
+                registro,
+                enc.id,
+                "renovando el acceso de Kimi para continuar la misma sesion",
+                hora,
+                hora,
+            )
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
         if outcome.get("fallo_runtime") and spec.get("sesion_modo") == "reanudada":
             from motor.fallas import clasifica
 
@@ -2087,7 +2148,10 @@ def _lanzar_uno(
                 Path(cmd[0]).stem.lower() if cmd else ""
             )
             if cmd and gen_path is not None:
-                cmd = vincular(gen_path, cmd, funcion="planear" if rol == "revisor" else "codigo")
+                cmd = vincular(
+                    gen_path, cmd, funcion="planear" if rol == "revisor" else "codigo",
+                    modelo_explicito=any(r == rol for r, _a, _m in enc.modelos_solicitados),
+                )
         except Exception:
             _liberar_flota()
             raise
@@ -2242,6 +2306,7 @@ def _espejo_entrega(
     repo: str = "",
     rama: str = "",
     base_rama: str = "",
+    modelos_solicitados: tuple[tuple[str, str, str], ...] = (),
 ) -> None:
     from .transporte import cargar, operar
 
@@ -2262,6 +2327,7 @@ def _espejo_entrega(
             "repo": repo,
             "rama": rama,
             "base_rama": base_rama,
+            **{rol: modelo for rol, _agente, modelo in modelos_solicitados},
         },
     )
     _marcar_autoridad(

@@ -233,6 +233,7 @@ class Encargo:
     revision_vigente: RefRevision | None = None
     deepseek_vigente: RefRevision | None = None
     modelos: tuple[tuple[str, str, str], ...] = ()
+    modelos_solicitados: tuple[tuple[str, str, str], ...] = ()
     sesion_responsable: str = ""
     sesion_revisor: str = ""
     epoca_responsable: int = 0
@@ -428,6 +429,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
                 intentos_nuevos=False,
                 via=via,
                 entrega=_entrega_de(d),
+                modelos_solicitados=tuple(tuple(x) for x in d.get("modelos_solicitados", ())),
             )
         return Encargo(
             id=d["id"],
@@ -448,6 +450,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             pendientes=tuple(d.get("pendientes") or ("comprobar el pedido",)),
             via=via,
             entrega=_entrega_de(d),
+            modelos_solicitados=tuple(tuple(x) for x in d.get("modelos_solicitados", ())),
         )
     if estado is None:
         raise TransicionIlegal("no hay encargo")
@@ -1057,7 +1060,10 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         "encargo": e.id,
         "estado": e.estado,
         "agente": e.agente,
-        "agentes_autorizados": list(e.agentes),
+        "agentes_autorizados": list(dict.fromkeys((
+            *e.agentes, *(agente for _rol, agente, _modelo in e.modelos_solicitados)
+        ))),
+        "modelos_solicitados": {rol: modelo for rol, _agente, modelo in e.modelos_solicitados},
         "modelos": {
             "implementador": _modelo("responsable"),
             "revisor": _modelo("revisor"),

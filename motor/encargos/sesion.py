@@ -162,6 +162,7 @@ def preparar_administrado(
         "env": comando.entorno,
         "aislamiento": comando.mecanismo,
         "jaula": comando.jaula,
+        "ejecutable": comando.ejecutable,
         "base": str(_base_de(cwd)),
         "encargo": enc.id,
         "token": enc.conductor,

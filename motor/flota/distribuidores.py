@@ -11,6 +11,7 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 NPM = {
@@ -238,6 +239,32 @@ def _npm() -> list[str]:
     )
 
 
+def _node_de_generacion(origen: Path, destino: Path) -> Path:
+    with origen.open("rb") as entrada:
+        huella = hashlib.file_digest(entrada, "sha256").hexdigest()
+    herramientas = destino.parent.resolve()
+    preparado = herramientas / "node" / huella / "node.exe"
+    if not preparado.resolve().is_relative_to(herramientas):
+        raise ValueError("Node preparado fuera de la generacion")
+    if preparado.exists():
+        with preparado.open("rb") as entrada:
+            if hashlib.file_digest(entrada, "sha256").hexdigest() != huella:
+                raise ValueError("Node preparado no coincide con su integridad")
+        return preparado
+    preparado.parent.mkdir(parents=True, exist_ok=True)
+    temporal = preparado.with_name(f".node-{uuid.uuid4().hex}.tmp")
+    try:
+        # copyfile crea un archivo que hereda la ACL de la generacion, no la del SDK privado.
+        shutil.copyfile(origen, temporal)
+        with temporal.open("rb") as entrada:
+            if hashlib.file_digest(entrada, "sha256").hexdigest() != huella:
+                raise ValueError("Node preparado no coincide con su integridad")
+        temporal.replace(preparado)
+    finally:
+        temporal.unlink(missing_ok=True)
+    return preparado
+
+
 def _instalar_npm(doc: dict, artefacto: Path, destino: Path, cache: Path) -> list[str]:
     destino.mkdir(parents=True, exist_ok=True)
     _run(
@@ -291,7 +318,10 @@ def _instalar_npm(doc: dict, artefacto: Path, destino: Path, cache: Path) -> lis
     if ejecutable.suffix in (".js", ".mjs", ".cjs") or (
         cabecera.startswith(b"#!") and b"node" in cabecera
     ):
-        return [str(Path(shutil.which("node")).resolve()), str(ejecutable)]
+        node = Path(shutil.which("node")).resolve()
+        if os.name == "nt":
+            node = _node_de_generacion(node, destino)
+        return [str(node), str(ejecutable)]
     return [str(ejecutable)]
 
 

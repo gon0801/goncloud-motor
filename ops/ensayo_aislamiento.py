@@ -79,6 +79,11 @@ def main() -> int:
     ap.add_argument("--base", type=Path)
     ap.add_argument("--tcp", action="append", default=[], help="host:puerto propio")
     ap.add_argument(
+        "--psec",
+        action="store_true",
+        help="comprueba el contrato PSEC 1.1 con enumeración",
+    )
+    ap.add_argument(
         "--internet-suscripcion",
         action="store_true",
         help="comprueba tambien el perfil de red del agente, sin invocar el modelo",
@@ -129,6 +134,10 @@ def main() -> int:
                 lectura=rol == "revisor",
                 suscripcion=args.internet_suscripcion,
             )
+            if args.psec:
+                from motor.plataforma.psec_windows import enumeracion_para
+
+                comando.jaula["enumeracion"] = enumeracion_para(comando.jaula)
             creado = crear(
                 cmd if args.internet_suscripcion else comando.argv,
                 comando.jaula,
@@ -176,6 +185,10 @@ def main() -> int:
             espacio,
             runtime,
         )
+        if args.psec:
+            from motor.plataforma.psec_windows import enumeracion_para
+
+            comando.jaula["enumeracion"] = enumeracion_para(comando.jaula)
         creado = crear(
             comando.argv,
             comando.jaula,

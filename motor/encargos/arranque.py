@@ -31,12 +31,54 @@ class Observacion:
         self.modelo_en_curso: bool | None = None
 
     def evento(self, data: dict) -> None:
+        if data.get("payload_type"):
+            tipo = data["payload_type"]
+            payload = data.get("payload") or {}
+            if tipo == "run.lifecycle.started" or tipo == "run.output.delta":
+                self.modelo_en_curso = True
+            elif tipo == "task.lifecycle.started":
+                self.abiertas.add(str(payload.get("task_id")))
+                self.modelo_en_curso = True
+            elif tipo in (
+                "task.lifecycle.completed",
+                "task.lifecycle.failed",
+                "task.lifecycle.cancelled",
+            ):
+                self.abiertas.discard(str(payload.get("task_id")))
+            elif tipo.startswith("run.terminal."):
+                self.abiertas.clear()
+                self.modelo_en_curso = False
+                self.secuencia += 1
+                self.hora = time.time()
+                self.hecho = tipo
+            else:
+                return
+            self.publicar()
+            return
+        if data.get("role") in ("assistant", "tool"):
+            self.modelo_en_curso = True
+            if data["role"] == "assistant":
+                llamadas = data.get("tool_calls")
+                if isinstance(llamadas, list):
+                    for llamada in llamadas:
+                        if isinstance(llamada, dict):
+                            ident = llamada.get("id")
+                            if isinstance(ident, str) and ident:
+                                self.abiertas.add(ident)
+            else:
+                self.abiertas.discard(str(data.get("tool_call_id")))
+                self.secuencia += 1
+                self.hora = time.time()
+                self.hecho = "tool.result"
+            self.publicar()
+            return
         tipo = data.get("type")
         item = data.get("item") or {}
         avance = True
         ejecucion = None
         if tipo in ("turn.started", "thought", "text") or (
-            tipo in ("item.started", "item.completed") and item.get("type") == "reasoning"
+            tipo in ("item.started", "item.completed")
+            and item.get("type") == "reasoning"
         ):
             self.modelo_en_curso = True
             self.publicar()
@@ -159,7 +201,7 @@ class SalidaRuntime:
         self.sesion_runtime = ""
 
     def evento(self, data: dict) -> None:
-        if self.agente == "codex" and not self.sesion_runtime:
+        if self.agente in ("codex", "kimi", "muse") and not self.sesion_runtime:
             for clave in ("thread_id", "session_id"):
                 valor = data.get(clave)
                 if isinstance(valor, str) and valor:
@@ -169,6 +211,20 @@ class SalidaRuntime:
                 hilo = data.get("thread")
                 if isinstance(hilo, dict) and isinstance(hilo.get("id"), str):
                     self.sesion_runtime = hilo["id"]
+                stream = data.get("stream") or {}
+                if self.agente == "muse" and stream.get("kind") == "session":
+                    self.sesion_runtime = str(stream.get("id") or "")
+        if self.agente == "muse" and str(data.get("payload_type") or "").startswith(
+            "run.terminal."
+        ):
+            payload = data.get("payload") or {}
+            if payload.get("terminal") == "completed":
+                self.terminal = self.ultimo_error = ""
+            else:
+                self.terminal = self.ultimo_error = str(
+                    payload.get("reason") or "Muse no completo el turno"
+                )[-1000:]
+            return
         tipo = data.get("type")
         update = data.get("sessionUpdate")
         error_grok = self.agente == "grok" and (
@@ -198,6 +254,50 @@ class SalidaRuntime:
                 or f"el CLI termino con codigo {rc}, sin error estructurado"
             )[-1000:]
         return ""
+
+
+def _sesion_kimi(indice: Path, espacio: Path) -> str:
+    try:
+        lineas = indice.read_text(encoding="utf-8").splitlines()
+        cwd = espacio.resolve()
+    except (OSError, UnicodeError, RuntimeError):
+        return ""
+    for linea in reversed(lineas):
+        if not linea.strip():
+            continue
+        try:
+            fila = json.loads(linea)
+        except ValueError:
+            continue
+        if not isinstance(fila, dict):
+            continue
+        workdir, ident = fila.get("workDir"), fila.get("sessionId")
+        if (
+            not isinstance(workdir, str)
+            or not workdir.strip()
+            or not isinstance(ident, str)
+            or not ident.strip()
+        ):
+            continue
+        try:
+            if Path(workdir).resolve() == cwd:
+                return ident
+        except (OSError, ValueError, RuntimeError):
+            continue
+    return ""
+
+
+def _autenticacion_expirada(spec: dict, fallo: str) -> bool:
+    from motor.fallas import clasifica
+
+    expira = spec["env"].get("MOTOR_KIMI_ACCESS_EXPIRES_AT")
+    return bool(
+        spec["agente"] == "kimi"
+        and fallo
+        and expira
+        and time.time() >= float(expira)
+        and clasifica("kimi", "", fallo)["kind"] == "auth"
+    )
 
 
 def ejecutar(spec_path: Path) -> int:
@@ -315,13 +415,20 @@ def ejecutar(spec_path: Path) -> int:
         rc = p.wait()
         lector_error.join(1)
         fin_observacion.set()
+        if spec["agente"] == "kimi" and not runtime.sesion_runtime:
+            indice = Path(spec["env"]["KIMI_CODE_HOME"]) / "session_index.jsonl"
+            runtime.sesion_runtime = _sesion_kimi(indice, Path(spec["cwd"]))
+        fallo_runtime = runtime.fallo(rc, "".join(errores))
         _publica(
             d / "outcome.json",
             json.dumps(
                 {
                     "exit": rc,
                     "token": spec["token"],
-                    "fallo_runtime": runtime.fallo(rc, "".join(errores)),
+                    "fallo_runtime": fallo_runtime,
+                    "autenticacion_expirada": _autenticacion_expirada(
+                        spec, fallo_runtime
+                    ),
                     "sesion_runtime": runtime.sesion_runtime,
                 }
             ),
