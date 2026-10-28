@@ -560,7 +560,7 @@ def _config_canal(registro: Registro, canal: str) -> dict | None:
     if not path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {"error": "canal.json ilegible"}
     if not isinstance(doc, dict):
