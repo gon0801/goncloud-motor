@@ -1526,7 +1526,10 @@ def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
     )
     if r.returncode != 0:
         return "", f"git add fallo: {r.stderr.strip()[-300:]}"
-    if _git(espacio, "status", "--porcelain").stdout.strip():
+    pendientes = _git(espacio, "diff", "--cached", "--quiet")
+    if pendientes.returncode not in (0, 1):
+        return "", f"git diff del indice fallo: {pendientes.stderr.strip()[-300:]}"
+    if pendientes.returncode == 1:
         titulo = " ".join(enc.texto.split())[:72] or enc.id
         r = _git(
             espacio,
