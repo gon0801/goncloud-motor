@@ -232,6 +232,12 @@ def _supervisor(reg: Registro, args) -> int:
     if args.respaldo and not args.agente:
         raise ValueError("--respaldo necesita --agente como ruta principal")
     ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
+    if not ruta:
+        print(
+            "motor: supervisor sin ruta de agentes; los pedidos durables "
+            "quedaran en recibido hasta configurar --agente",
+            file=sys.stderr,
+        )
 
     def lanzar(enc, prompt, espacio, sesion):
         if not enc.agentes:
