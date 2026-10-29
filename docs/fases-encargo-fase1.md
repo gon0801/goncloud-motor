@@ -79,17 +79,20 @@ producto publicable no abre PR.
 ## Correcciones de la revisión
 
 1. El resultado recibido se liga a la fase y al intento que lo produjeron. La
-   fase se toma del conductor del intento o de la versión del producto, no de la
-   fase activa del momento. La clave `resultado:<encargo>:<fase>:<token>` es la
-   identidad de la operación: repetir el mensaje devuelve el recibo anterior y un
-   contenido distinto con la misma identidad se rechaza como conflicto.
+   asociación conductor-fase se guarda como evento propio y se consulta antes de
+   inferir nada; después valen la fase del intento y la versión del producto. La
+   clave `resultado:<encargo>:<fase>:<token>` es la identidad de la operación:
+   repetir el mensaje devuelve el recibo anterior y un contenido distinto con la
+   misma identidad se rechaza como conflicto.
 2. La rama publicada es la misma que se creó al preparar el repositorio. Se
    retiró la rama por fase de esta entrega, porque creaba una referencia
    inexistente en la primera publicación.
-3. Al continuar, se selecciona la primera fase disponible. Durante la parada, el
-   cierre conserva la fase preparada y mueve la selección al trabajo pendiente.
-   Si todas las fases quedaron preparadas, el siguiente barrido completa el
-   cierre global con una clave propia.
+3. Al continuar, se selecciona la primera fase disponible y se conserva el rol y
+   el paso de una fase ya iniciada. Una fase en revisión retoma al revisor; una
+   fase pendiente o una corrección activan al implementador. Durante la parada,
+   el cierre conserva la fase preparada y mueve la selección al trabajo
+   pendiente. Si todas las fases quedaron preparadas, el siguiente barrido
+   completa el cierre global con una clave propia.
 4. La adopción y el avance eligen una fase cuyas dependencias estén preparadas.
    Reorganizar la propuesta conserva las versiones de entrada ya fijadas y no
    permite reescribir las dependencias de una fase trabajada.
