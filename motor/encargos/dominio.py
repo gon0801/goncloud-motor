@@ -385,7 +385,6 @@ def fase_implicita(e: Encargo) -> Fase:
         id=FASE_IMPLICITA,
         resultado="Resultado completo del pedido original",
         estado="trabajo",
-        rama=e.entrega.rama,
     )
 
 
@@ -952,12 +951,6 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     raise TransicionIlegal(f"evento desconocido: {kind}")
 
 
-def _rama_de_fase(e: Encargo, fase_id: str, total: int) -> str:
-    if not e.entrega.rama:
-        return ""
-    return f"{e.entrega.rama}/{fase_id}" if total > 1 else e.entrega.rama
-
-
 def _requiere_de(item: dict) -> tuple[tuple[str, str], ...]:
     crudo = item.get("requiere") or ()
     if not isinstance(crudo, (list, tuple)):
@@ -973,6 +966,27 @@ def _requiere_de(item: dict) -> tuple[tuple[str, str], ...]:
             raise TransicionIlegal("dependencia de fase vacía")
         salida.append((fid, version))
     return tuple(salida)
+
+
+def _fusionar_requiere(
+    previas: tuple[tuple[str, str], ...], nuevas: tuple[tuple[str, str], ...]
+) -> tuple[tuple[str, str], ...]:
+    """Una propuesta sin versión no borra una entrada ya fijada."""
+    fijadas = {fase: version for fase, version in previas if version}
+    return tuple(
+        (fase, version or fijadas.get(fase, "")) for fase, version in nuevas
+    )
+
+
+def _fase_disponible(fases: tuple[Fase, ...]) -> Fase | None:
+    """Primera fase no preparada cuya dependencia ya está preparada."""
+    preparadas = {f.id for f in fases if f.estado == "preparada"}
+    for fase in fases:
+        if fase.estado == "preparada":
+            continue
+        if all(dep in preparadas for dep, _version in fase.requiere):
+            return fase
+    return None
 
 
 def _sin_ciclo(fases: tuple[Fase, ...]) -> None:
@@ -1029,14 +1043,26 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
                     resultado=resultado,
                     estado="pendiente",
                     requiere=requiere,
-                    rama=_rama_de_fase(e, fid, len(crudo)),
                 )
             )
             continue
         if previa.estado != "pendiente" and resultado and resultado != previa.resultado:
             raise TransicionIlegal(f"no se reescribe el resultado de la fase {fid}")
+        if previa.estado != "pendiente":
+            fusionada = _fusionar_requiere(previa.requiere, requiere)
+            if fusionada != previa.requiere:
+                raise TransicionIlegal(
+                    f"no se reescriben las dependencias de la fase {fid} ya trabajada"
+                )
+            requiere_final = previa.requiere
+        else:
+            requiere_final = _fusionar_requiere(previa.requiere, requiere)
         nuevas.append(
-            replace(previa, resultado=resultado or previa.resultado, requiere=requiere)
+            replace(
+                previa,
+                resultado=resultado or previa.resultado,
+                requiere=requiere_final,
+            )
         )
     for fid in existentes:
         if fid not in vistos:
@@ -1049,9 +1075,19 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
             if dep == fase.id:
                 raise TransicionIlegal(f"la fase {fase.id} se requiere a sí misma")
     _sin_ciclo(tuple(nuevas))
-    activa = e.fase_activa if e.fase_activa in por_id else ""
-    if not activa:
-        activa = next((f.id for f in nuevas if f.estado != "preparada"), nuevas[0].id)
+    actual = next((f for f in nuevas if f.id == e.fase_activa), None)
+    preparadas = {f.id for f in nuevas if f.estado == "preparada"}
+    disponible = _fase_disponible(tuple(nuevas))
+    if (
+        actual is not None
+        and actual.estado != "preparada"
+        and all(dep in preparadas for dep, _version in actual.requiere)
+    ):
+        activa = actual.id
+    elif disponible is not None:
+        activa = disponible.id
+    else:
+        activa = e.fase_activa if any(f.id == e.fase_activa for f in nuevas) else nuevas[0].id
     return replace(
         e,
         fases=tuple(nuevas),
@@ -1092,13 +1128,49 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     if accion == "continuar":
         if e.estado != "detenido":
             raise TransicionIlegal("continuar espera el estado detenido")
+        disponible = _fase_disponible(e.fases)
+        if disponible is not None:
+            return replace(
+                e,
+                estado="recibido",
+                fase_activa=disponible.id,
+                rol="responsable",
+                estrategia="investigar",
+                intentos_nuevos=True,
+                escrituras=e.autoridad,
+                motivo="",
+                siguiente=f"trabajar la fase {disponible.id}",
+                ultimo_hecho="se continuó el encargo",
+                hora=hora or e.hora,
+                proc=None,
+                herramienta="",
+            )
+        if e.fases and all(f.estado == "preparada" for f in e.fases):
+            return replace(
+                e,
+                estado="recibido",
+                rol="revisor",
+                intentos_nuevos=True,
+                escrituras=e.autoridad,
+                motivo="",
+                siguiente="completar el cierre global",
+                ultimo_hecho="se continuó; todas las fases están preparadas",
+                hora=hora or e.hora,
+                proc=None,
+                herramienta="",
+            )
         return replace(
             e,
             estado="recibido",
+            rol="",
             intentos_nuevos=True,
             escrituras=e.autoridad,
             motivo="",
-            siguiente="reanudar el mismo encargo",
+            siguiente=(
+                "esperar a que una dependencia se prepare"
+                if e.fases
+                else "reanudar el mismo encargo"
+            ),
             ultimo_hecho="se continuó el mismo encargo",
             hora=hora or e.hora,
             proc=None,
@@ -1303,16 +1375,20 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
         )
         firma = fase.producto.firma if fase.producto else ""
         fases = _preparar_con_entrada(e.fases, preparada, firma)
-        siguiente = next((f.id for f in fases if f.estado != "preparada"), "")
+        disponible = _fase_disponible(fases)
+        siguiente = disponible.id if disponible is not None else ""
+        pendientes = [f for f in fases if f.estado != "preparada"]
         if e.estado in ("cancelado", "deteniendo", "detenido"):
+            activa = siguiente or (pendientes[0].id if pendientes else fase.id)
             return replace(
                 e,
                 fases=fases,
+                fase_activa=activa,
                 evidencia=evidencias,
                 hora=hora or e.hora,
                 ultimo_hecho=evidencia,
             )
-        if siguiente:
+        if disponible is not None:
             return replace(
                 e,
                 fases=fases,
@@ -1326,6 +1402,22 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
                 intentos_nuevos=True,
                 escrituras=e.autoridad,
                 ultimo_hecho=f"fase {fase.id} preparada; continúa la fase {siguiente}",
+                hora=hora or e.hora,
+            )
+        if pendientes:
+            return replace(
+                e,
+                fases=fases,
+                estado="recibido",
+                fase_activa=pendientes[0].id,
+                rol="",
+                estrategia="investigar",
+                motivo="",
+                siguiente="esperar a que una dependencia se prepare",
+                evidencia=evidencias,
+                intentos_nuevos=True,
+                escrituras=e.autoridad,
+                ultimo_hecho=f"fase {fase.id} preparada; quedan dependencias sin preparar",
                 hora=hora or e.hora,
             )
         return replace(
@@ -1541,6 +1633,8 @@ def decision_proceso(
     if e.estado in ("detenido", "cancelado", "terminado", "esperando_reintento"):
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.fases and all(f.estado == "preparada" for f in e.fases):
+        return {"matar": False, "lanzar": False, "eventos": []}
+    if e.fases and _fase_disponible(e.fases) is None:
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.estado == "necesita_usuario" and not e.pendientes:
         return {"matar": False, "lanzar": False, "eventos": []}
