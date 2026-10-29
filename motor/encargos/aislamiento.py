@@ -496,6 +496,54 @@ def _sonda_de(marca: str) -> SondaEntorno:
     )
 
 
+_GUION_SONDA_PY = """
+import os, shutil, sys
+marca = os.environ["MOTOR_SONDA_MARCA"]
+def falla(clase, detalle):
+    print(f"{clase}:{detalle}")
+    sys.exit(3)
+temporal = os.environ.get("CLAUDE_CODE_TMPDIR") or ""
+if not temporal:
+    falla("temp-cli", "sinnada")
+base = os.path.join(temporal, "sonda-" + marca)
+try:
+    os.makedirs(base, exist_ok=True)
+    with open(os.path.join(base, "marca"), "x"):
+        pass
+    shutil.rmtree(base)
+except OSError:
+    falla("temp-cli", base)
+shell = os.environ.get("TMPDIR") or ""
+if not shell:
+    falla("temp-shell", "sinnada")
+marca_shell = os.path.join(shell, "marca-sonda-" + marca)
+try:
+    with open(marca_shell, "x"):
+        pass
+    os.unlink(marca_shell)
+except OSError:
+    falla("temp-shell", shell)
+espacio = os.environ["MOTOR_SONDA_ESPACIO"]
+marca_espacio = os.path.join(espacio, ".sonda-" + marca)
+try:
+    with open(marca_espacio, "x"):
+        pass
+    os.unlink(marca_espacio)
+except OSError:
+    falla("espacio", espacio)
+for ruta in sys.argv[1:]:
+    try:
+        if os.path.isdir(ruta):
+            os.listdir(ruta)
+        else:
+            with open(ruta, "rb") as f:
+                f.read(1)
+    except OSError:
+        falla("fuente", ruta)
+print("ok")
+"""
+
+
 def sondear(
     espacio: Path, runtime: Path, lecturas: tuple[Path, ...] = ()
 ) -> SondaEntorno:
@@ -512,8 +560,23 @@ def sondear(
     fuentes = tuple(Path(p).expanduser().resolve() for p in lecturas)
     marca = uuid.uuid4().hex[:16]
     try:
+        if os.name == "nt":
+            argv_sonda = [
+                sys.executable,
+                "-c",
+                _GUION_SONDA_PY,
+                *(str(p) for p in fuentes),
+            ]
+        else:
+            argv_sonda = [
+                "/bin/sh",
+                "-c",
+                _GUION_SONDA,
+                "sonda",
+                *(str(p) for p in fuentes),
+            ]
         comando = aislar(
-            ["/bin/sh", "-c", _GUION_SONDA, "sonda", *(str(p) for p in fuentes)],
+            argv_sonda,
             espacio,
             runtime,
             lecturas_extra=fuentes,

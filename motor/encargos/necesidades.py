@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -54,13 +53,12 @@ class SolicitudInvalida(ValueError):
     pass
 
 
-def _publica(path: Path, doc: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _publica(path: Path, doc: dict, raiz: Path | None = None) -> None:
+    datos = json.dumps(doc, ensure_ascii=False, sort_keys=True).encode("utf-8")
     tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(doc, f, ensure_ascii=False, sort_keys=True)
-        f.flush()
-        os.fsync(f.fileno())
+    capacidades._escribir_seguro(tmp, datos, raiz=raiz)
+    if raiz is not None:
+        capacidades._padre_seguro(path, raiz)
     os.replace(tmp, path)
 
 
@@ -89,6 +87,7 @@ def preparar(
             "conductor": conductor,
             "rol": enc.rol,
         },
+        raiz=Path(espacio),
     )
     _publica(
         buzon / "catalogo.json",
@@ -100,9 +99,12 @@ def preparar(
                 "Una capacidad ausente no está disponible."
             ),
         },
+        raiz=Path(espacio),
     )
-    shutil.copyfile(
-        Path(__file__).with_name("cliente_necesidad.py"), buzon / CLIENTE
+    capacidades._escribir_seguro(
+        buzon / CLIENTE,
+        Path(__file__).with_name("cliente_necesidad.py").read_bytes(),
+        raiz=Path(espacio),
     )
 
 
@@ -188,13 +190,18 @@ def _solicitud_de(enc, crudo: dict) -> Solicitud:
     motivo = str(crudo.get("motivo") or "")
     if len(motivo) > MAX_MOTIVO:
         raise SolicitudInvalida(f"el motivo supera {MAX_MOTIVO} caracteres")
+    generacion_cruda = crudo.get("generacion")
+    if generacion_cruda is None:
+        generacion_cruda = 0
+    if isinstance(generacion_cruda, bool) or not isinstance(generacion_cruda, int):
+        raise SolicitudInvalida("la generación de la solicitud no es un entero")
     return Solicitud(
         id=ident,
         operacion=operacion,
         recurso=str(crudo.get("recurso") or ""),
         fase=str(crudo.get("fase") or ""),
         intento=str(crudo.get("intento") or ""),
-        generacion=int(crudo.get("generacion") or 0),
+        generacion=generacion_cruda,
         conductor=str(crudo.get("conductor") or ""),
         motivo=motivo,
         parametros=_parametros(crudo.get("parametros")),
@@ -343,7 +350,7 @@ def _escribir_respuesta(
     destino = carpeta / f"{sol.id}.json"
     if preservar and destino.exists():
         destino = carpeta / f"{sol.id}.{doc.get('estado') or 'aviso'}-{int(time.time())}.json"
-    _publica(destino, doc)
+    _publica(destino, doc, raiz=Path(espacio))
 
 
 def _archivar(path: Path) -> None:
@@ -735,6 +742,7 @@ def atender(
             _publica(
                 buzon / RESPUESTAS / f"{path.stem}.json",
                 {"id": path.stem, "estado": "error", "motivo": "la solicitud no es JSON válido"},
+                raiz=Path(espacio),
             )
             _archivar(path)
             resumen["errores"] += 1
@@ -745,6 +753,7 @@ def atender(
             _publica(
                 buzon / RESPUESTAS / f"{path.stem}.json",
                 {"id": path.stem, "estado": "error", "motivo": str(exc)},
+                raiz=Path(espacio),
             )
             _archivar(path)
             resumen["errores"] += 1
@@ -758,6 +767,7 @@ def atender(
                     "estado": "conflicto",
                     "motivo": "esa identidad ya tiene otro contenido; no se ejecutó",
                 },
+                raiz=Path(espacio),
             )
             _archivar(path)
             resumen["errores"] += 1

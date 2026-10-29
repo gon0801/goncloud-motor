@@ -36,6 +36,7 @@ OPERACIONES_SIN_RECURSO = (DECISION,)
 
 MAX_SQL = 20_000
 MAX_FILAS = 500
+MAX_DATOS = 1024 * 1024
 MAX_TEXTO = 64 * 1024
 MAX_BYTES = 8 * 1024 * 1024
 TIMEOUT_S = 120
@@ -86,8 +87,8 @@ def _padre_seguro(path: Path, raiz: Path | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     if raiz is None:
         return path
-    raiz = Path(raiz).resolve()
-    actual = path.parent
+    raiz = Path(os.path.abspath(raiz))
+    actual = Path(os.path.abspath(path.parent))
     while actual != raiz and raiz in actual.parents:
         if actual.is_symlink():
             raise ValueError(f"el destino {path} pasa por un enlace simbólico")
@@ -255,7 +256,24 @@ def _consultar(ruta: Path, sql: str, destino: Path) -> dict:
     finally:
         db.close()
     truncado = len(filas) > MAX_FILAS
-    visibles = filas[:MAX_FILAS]
+    visibles = []
+    total_bytes = 0
+    for fila in filas[:MAX_FILAS]:
+        valores = []
+        for v in fila:
+            if isinstance(v, (str, bytes)) and len(v) > 4096:
+                valores.append(v[:4096])
+                truncado = True
+            else:
+                valores.append(v)
+        estimada = len(
+            json.dumps(valores, ensure_ascii=False, default=str).encode("utf-8")
+        )
+        if visibles and total_bytes + estimada > MAX_DATOS:
+            truncado = True
+            break
+        visibles.append(valores)
+        total_bytes += estimada
     datos = {
         "columnas": columnas,
         "filas": [list(f) for f in visibles],
