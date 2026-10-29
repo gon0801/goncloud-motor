@@ -128,7 +128,7 @@ def _correr(args) -> int:
             adjuntos: tuple[str, ...] = ()
             if args.archivo:
                 texto = args.archivo.read_text(encoding="utf-8")
-                adjuntos = (str(args.archivo),)
+                adjuntos = (str(args.archivo.resolve()),)
             if not texto.strip():
                 print("falta el pedido", file=sys.stderr)
                 return 2

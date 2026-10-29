@@ -84,6 +84,14 @@ def _ruta_absoluta(valor: str) -> Path:
 def _padre_seguro(path: Path, raiz: Path | None = None) -> Path:
     """Rechaza un destino dentro de la raíz que pase por un enlace del trabajador."""
     path = Path(path)
+    if raiz is not None:
+        raiz_abs = Path(os.path.abspath(raiz))
+        actual = Path(os.path.abspath(path.parent))
+        previo = actual
+        while previo != raiz_abs and raiz_abs in previo.parents:
+            if previo.is_symlink():
+                raise ValueError(f"el destino {path} pasa por un enlace simbólico")
+            previo = previo.parent
     path.parent.mkdir(parents=True, exist_ok=True)
     if raiz is None:
         return path
