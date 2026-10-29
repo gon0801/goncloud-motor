@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+import tomllib
 
 ESFUERZOS = frozenset({"xhigh", "high", "medium", "low", "off"})
 _PROHIBIDO = ("token", "secret", "password", "passwd", "credential", "authorization")
@@ -246,7 +247,8 @@ def proyectar_tabla(politica: Politica) -> dict:
     return {
         "schema_version": 1,
         "source": "flota/manifesto.toml",
-        "columns": ["Primary", "F1", "F2", "F3"],
+        "columns": ["Primary"]
+        + [f"F{i}" for i in range(1, max(len(p.cadena) for p in politica.puestos))],
         "profile_inheritance": dict(politica.herencia),
         "chains": chains,
     }

@@ -11,6 +11,7 @@ import json
 import math
 import os
 import platform
+import re
 import socket
 import ssl
 import tempfile
@@ -172,7 +173,9 @@ def _respuesta(raw: bytes, anterior: dict, *, permitir_vencido: bool = False) ->
     }
 
 
-def _refresh(origen: Path, refresh: str) -> bytes:
+def _refresh(
+    origen: Path, refresh: str, oauth_host: str = "https://auth.kimi.com"
+) -> bytes:
     device = (origen / "device_id").read_text(encoding="utf-8").strip()
     _exigir(
         bool(device) and all(" " <= c <= "~" for c in device),
@@ -200,7 +203,7 @@ def _refresh(origen: Path, refresh: str) -> bytes:
         "Accept": "application/json",
     }
     conexion = http.client.HTTPSConnection(
-        "auth.kimi.com", timeout=30, context=ssl.create_default_context()
+        oauth_host.removeprefix("https://"), timeout=30, context=ssl.create_default_context()
     )
     try:
         conexion.request(
@@ -230,9 +233,20 @@ def _refresh(origen: Path, refresh: str) -> bytes:
         conexion.close()
 
 
-def acceso_kimi(origen: Path) -> AccesoKimi:
-    path = origen / "credentials/kimi-code.json"
-    pendiente = path.with_name("kimi-code.motor-pending.json")
+def acceso_kimi(
+    origen: Path,
+    *,
+    credencial: str = "kimi-code",
+    oauth_host: str = "https://auth.kimi.com",
+) -> AccesoKimi:
+    _exigir(
+        oauth_host in ("https://auth.kimi.com", "https://auth.kimi.ai")
+        and isinstance(credencial, str)
+        and re.fullmatch(r"kimi-code(?:-env-[0-9a-f]{16})?", credencial) is not None,
+        "origen OAuth de Kimi no autorizado",
+    )
+    path = origen / "credentials" / (credencial + ".json")
+    pendiente = path.with_name(credencial + ".motor-pending.json")
     with _canonico(path) as archivo:
         inicial = archivo.read()
         stat = os.fstat(archivo.fileno())
@@ -270,7 +284,7 @@ def acceso_kimi(origen: Path) -> AccesoKimi:
                 _claims(refresh)["client_id"] == _CLIENTE,
                 "cliente OAuth de Kimi distinto",
             )
-            respuesta = _refresh(origen, refresh)
+            respuesta = _refresh(origen, refresh, oauth_host)
             # Durable antes de interpretar HTTP200: el refresh anterior ya puede estar consumido.
             _privado(
                 pendiente,
@@ -299,4 +313,4 @@ def acceso_kimi(origen: Path) -> AccesoKimi:
         if nuevo["expires_at"] > time.time():
             return AccesoKimi(nuevo["access_token"], nuevo["expires_at"])
     # Un pendiente viejo se instala primero: el siguiente refresh usa su R1, nunca R0.
-    return acceso_kimi(origen)
+    return acceso_kimi(origen, credencial=credencial, oauth_host=oauth_host)

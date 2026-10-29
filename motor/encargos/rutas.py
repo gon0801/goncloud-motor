@@ -14,6 +14,7 @@ from motor.relevo import (
     pausa_pasajera_s,
 )
 
+from .catalogo_agentes import identidad_modelo
 from .dominio import Encargo
 
 
@@ -32,6 +33,7 @@ def elegir(
     por CLI ni sesión: si la cabeza es el autor, se mira el siguiente.
     """
     pausas = {p.agente: p for p in enc.pausas}
+    excluidos = {identidad_modelo(m) for m in excluir_modelos}
     for agente in enc.agentes:
         if agente not in disponibles:
             continue
@@ -40,7 +42,7 @@ def elegir(
             valor = disponibles[agente]
             modelos = (valor,) if isinstance(valor, str) else tuple(valor)
             for modelo in modelos:
-                if modelo and modelo in excluir_modelos:
+                if modelo and identidad_modelo(modelo) in excluidos:
                     continue
                 return agente, modelo
             continue

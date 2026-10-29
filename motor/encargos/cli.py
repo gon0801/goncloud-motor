@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .agentes import _disponible, _lanzador, _modelos_para, _sesion_modo
+from .catalogo_agentes import ADAPTADORES, identidad_modelo
 from .ciclo import (
     afirmar,
     ahora_iso,
@@ -117,8 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--una-vez", action="store_true")
     s.add_argument("--intervalo", type=float, default=1.0)
     s.add_argument("--umbral", type=float, default=30.0)
-    s.add_argument("--agente", choices=("codex", "grok", "muse", "kimi", "sleep", "ensayo"), default="")
-    s.add_argument("--respaldo", choices=("codex", "grok", "muse", "kimi"), action="append", default=[])
+    s.add_argument("--agente", choices=(*ADAPTADORES, "sleep", "ensayo"), default="")
+    s.add_argument("--respaldo", choices=tuple(ADAPTADORES), action="append", default=[])
 
     s = sub.add_parser("encargos-aplicar")
     s.add_argument("--base", type=Path)
@@ -319,7 +320,8 @@ def _supervisor(reg: Registro, args) -> int:
             argv = _lanzador(agente, modelo, modo)(enc, prompt, espacio, sesion)
             return argv, {"agente": agente, "modelo": modelo, "sesion_modo": modo}
         if rol == "revisor" and disponibles and all(
-            m in excluir for modelos in disponibles.values() for m in modelos
+            identidad_modelo(m) in {identidad_modelo(x) for x in excluir}
+            for modelos in disponibles.values() for m in modelos
         ):
             motivo = "sin modelo de revisión distinto disponible"
         else:

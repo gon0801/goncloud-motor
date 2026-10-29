@@ -74,6 +74,29 @@ class Observacion:
             return
         tipo = data.get("type")
         item = data.get("item") or {}
+        if tipo in ("step_start", "step_finish", "tool_use", "reasoning"):
+            parte = data.get("part") or {}
+            if not isinstance(parte, dict):
+                return
+            self.modelo_en_curso = (
+                tipo != "step_finish" or parte.get("reason") == "tool-calls"
+            )
+            if tipo == "tool_use":
+                ident = str(parte.get("callID") or parte.get("id") or "")
+                estado = parte.get("state") or {}
+                if isinstance(estado, dict) and estado.get("status") in (
+                    "completed",
+                    "error",
+                ):
+                    self.abiertas.discard(ident)
+                elif ident:
+                    self.abiertas.add(ident)
+            if tipo != "reasoning":
+                self.secuencia += 1
+                self.hora = time.time()
+                self.hecho = tipo
+            self.publicar()
+            return
         avance = True
         ejecucion = None
         if tipo in ("turn.started", "thought", "text") or (
@@ -83,7 +106,7 @@ class Observacion:
             self.modelo_en_curso = True
             self.publicar()
             return
-        if tipo in ("turn.completed", "turn.failed", "result"):
+        if tipo in ("turn.completed", "turn.failed", "result", "end"):
             self.modelo_en_curso = False
             self.secuencia += 1
             self.hora = time.time()
@@ -201,8 +224,8 @@ class SalidaRuntime:
         self.sesion_runtime = ""
 
     def evento(self, data: dict) -> None:
-        if self.agente in ("codex", "kimi", "muse") and not self.sesion_runtime:
-            for clave in ("thread_id", "session_id"):
+        if not self.sesion_runtime:
+            for clave in ("thread_id", "session_id", "sessionID", "sessionId"):
                 valor = data.get(clave)
                 if isinstance(valor, str) and valor:
                     self.sesion_runtime = valor
@@ -226,6 +249,41 @@ class SalidaRuntime:
                 )[-1000:]
             return
         tipo = data.get("type")
+        if (
+            self.agente == "grok"
+            and tipo == "end"
+            and data.get("stopReason") != "end_turn"
+        ):
+            self.terminal = self.ultimo_error = "Grok no completo el turno: " + str(
+                data.get("stopReason")
+            )
+            return
+        if self.agente in ("claude", "qwen") and tipo == "result":
+            if data.get("is_error") is True or data.get("subtype") not in (
+                "success",
+                "success_streamcomplete",
+                "streamcomplete",
+            ):
+                self.terminal = self.ultimo_error = str(
+                    data.get("error")
+                    or data.get("result")
+                    or data.get("errors")
+                    or "el cliente no completo el turno"
+                )[-1000:]
+            else:
+                self.terminal = self.ultimo_error = ""
+            return
+        if tipo == "step_finish" and (self.agente == "opencode" or "sessionID" in data):
+            parte = data.get("part") or {}
+            if isinstance(parte, dict) and parte.get("reason") not in (
+                "stop",
+                "tool-calls",
+            ):
+                self.terminal = self.ultimo_error = (
+                    "OpenCode no completo el turno: " + str(parte.get("reason"))
+                )
+            elif not self.terminal:
+                self.ultimo_error = ""
         update = data.get("sessionUpdate")
         error_grok = self.agente == "grok" and (
             tipo == "error"
@@ -235,11 +293,26 @@ class SalidaRuntime:
             origen = update if error_grok and isinstance(update, dict) else data
             error = origen.get("error") or origen.get("message") or origen.get("data")
             if isinstance(error, dict):
-                error = error.get("message") or json.dumps(error)
+                detalle = error.get("data")
+                detalle = detalle if isinstance(detalle, dict) else {}
+                mensaje = error.get("message") or detalle.get("message")
+                status = error.get("statusCode") or detalle.get("statusCode")
+                error = (
+                    mensaje
+                    if isinstance(mensaje, str)
+                    else "el proveedor cerro el turno con error"
+                )
+                if isinstance(status, int) and not isinstance(status, bool):
+                    error = f"HTTP {status}: {error}"
             self.ultimo_error = str(error or "el proveedor cerro el turno con error")[
                 -1000:
             ]
-            if tipo == "turn.failed" or error_grok:
+            if (
+                tipo == "turn.failed"
+                or error_grok
+                or self.agente == "opencode"
+                or "sessionID" in data
+            ):
                 self.terminal = self.ultimo_error
         elif tipo == "turn.completed" and self.agente == "codex":
             self.terminal = self.ultimo_error = ""
@@ -290,13 +363,12 @@ def _sesion_kimi(indice: Path, espacio: Path) -> str:
 def _autenticacion_expirada(spec: dict, fallo: str) -> bool:
     from motor.fallas import clasifica
 
-    expira = spec["env"].get("MOTOR_KIMI_ACCESS_EXPIRES_AT")
+    expira = spec["env"].get("MOTOR_" + spec["agente"].upper() + "_ACCESS_EXPIRES_AT")
     return bool(
-        spec["agente"] == "kimi"
-        and fallo
+        fallo
         and expira
         and time.time() >= float(expira)
-        and clasifica("kimi", "", fallo)["kind"] == "auth"
+        and clasifica(spec["agente"], "", fallo)["kind"] == "auth"
     )
 
 
@@ -337,7 +409,7 @@ def ejecutar(spec_path: Path) -> int:
                 "hora": spec["hora"],
                 "herramientas_observables": True,
             }
-            for clave in ("modelo", "sesion_modo", "poteto_digest"):
+            for clave in ("modelo", "sesion_modo", "poteto_digest", "cliente"):
                 datos_intento[clave] = spec.get(clave) or ""
             evento = {"kind": "intento_abierto", "data": datos_intento}
             resultado = reg.anotar(enc.id, evento, f"intento:{enc.id}:{spec['token']}")

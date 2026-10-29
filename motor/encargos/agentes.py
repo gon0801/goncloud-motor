@@ -7,14 +7,16 @@ import os
 import shutil
 from pathlib import Path
 
+from .catalogo_agentes import ADAPTADORES, cliente_para, modelo_canonico
+
 
 def _disponible(agente: str, generacion: Path | None = None) -> bool:
     if agente in ("sleep", "ensayo"):
         return os.name != "nt" and Path("/usr/bin/sandbox-exec").is_file()
-    if agente == "grok" and os.name == "nt":
+    if agente not in ADAPTADORES:
         return False
     if os.name == "nt":
-        if agente in ("muse", "kimi"):
+        if ADAPTADORES[agente].psec:
             from motor.plataforma.psec_windows import disponible
         else:
             from motor.plataforma.jaula_windows import disponible
@@ -25,17 +27,17 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
         from motor.flota.runtime import resolver_ejecutable
 
         try:
-            resolver_ejecutable(generacion, [agente], requerido=agente != "muse")
+            resolver_ejecutable(
+                generacion, [cliente_para(agente)], requerido=agente != "muse"
+            )
         except (OSError, ValueError, TypeError):
             return False
         if agente == "muse" and not shutil.which(agente):
             return False
-    elif not shutil.which(agente):
+    elif not shutil.which(cliente_para(agente)):
         return False
     if os.name != "nt" and not Path("/usr/bin/sandbox-exec").is_file():
         return False
-    if agente == "grok":
-        return (Path.home() / ".grok" / "auth.json").is_file()
     if agente == "codex":
         path = (
             Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
@@ -49,59 +51,64 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
         except (OSError, ValueError):
             return False
     if agente == "muse":
+        from .autenticacion_muse import cuenta_muse
+
         try:
-            datos = json.loads(
-                (Path.home() / ".config/muse/auth.json").read_text(encoding="utf-8")
-            )
-            cuenta = datos["providers"]["meta"]
-            return (
-                isinstance(cuenta, dict)
-                and cuenta.get("subs_active") is True
-                and bool(cuenta.get("access_token"))
-            )
-        except (OSError, ValueError, KeyError, TypeError):
+            return bool(cuenta_muse())
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError):
             return False
     if agente == "kimi":
-        return (Path.home() / ".kimi-code/credentials/kimi-code.json").is_file()
+        import tomllib
+
+        try:
+            origen = Path(
+                os.environ.get("KIMI_CODE_HOME", str(Path.home() / ".kimi-code"))
+            )
+            datos = tomllib.loads((origen / "config.toml").read_text(encoding="utf-8"))
+            clave = datos["providers"]["managed:kimi-code"]["oauth"]["key"]
+            return (
+                isinstance(clave, str)
+                and clave.startswith("oauth/kimi-code")
+                and "/" not in clave.removeprefix("oauth/")
+                and (
+                    origen / "credentials" / (clave.removeprefix("oauth/") + ".json")
+                ).is_file()
+            )
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+    if agente in ("claude", "opencode", "qwen", "grok"):
+        from .suscripciones import disponible
+
+        return disponible(agente)
     return False
-
-
-_MODELO_POR_DEFECTO = {
-    "grok": "xai/grok-4.7",
-    "codex": "openai/gpt-6.1-sol",
-    "muse": "meta/muse-wonder-1.0",
-    "kimi": "kimi-code/k3.1-pro",
-}
-_PREFIJO_PROVEEDOR = {
-    "grok": "xai/",
-    "codex": "openai/",
-    "muse": "meta/",
-    "kimi": "kimi-code/",
-}
 
 
 def _modelos_para(agente: str, rol: str, generacion: Path | None) -> tuple[str, ...]:
     """Identidades proveedor/modelo que el agente podría correr para este
     rol, en orden de la política."""
-    if generacion is not None and agente in _PREFIJO_PROVEEDOR:
+    if generacion is not None and agente in ADAPTADORES:
         from motor.flota.runtime import modelos_de_chain
 
         try:
-            refs = modelos_de_chain(
-                generacion,
-                "planear" if rol == "revisor" else "codigo",
-                _PREFIJO_PROVEEDOR[agente],
+            refs = tuple(
+                dict.fromkeys(
+                    modelo_canonico(ref)
+                    for prefijo in ADAPTADORES[agente].prefijos
+                    for ref in modelos_de_chain(
+                        generacion, "planear" if rol == "revisor" else "codigo", prefijo
+                    )
+                )
             )
         except (OSError, ValueError, TypeError):
             refs = ()
         if refs:
             return refs
-    return (_MODELO_POR_DEFECTO.get(agente, ""),)
+    return (ADAPTADORES[agente].modelo if agente in ADAPTADORES else "",)
 
 
 def _sesion_modo(enc, agente: str, rol: str) -> str:
     anteriores = [a for r, a, _m in enc.modelos if r == rol]
-    if agente not in _PREFIJO_PROVEEDOR:
+    if agente not in ADAPTADORES:
         return "nueva"
     if not anteriores:
         return "nueva"
@@ -110,13 +117,21 @@ def _sesion_modo(enc, agente: str, rol: str) -> str:
     viva = enc.viva_revisor if rol == "revisor" else enc.viva_responsable
     if not viva:
         return "reconstruida"
-    if agente in ("codex", "muse", "kimi"):
+    if agente in ("codex", "muse", "kimi", "claude", "opencode", "qwen"):
         previa = enc.sesion_revisor if rol == "revisor" else enc.sesion_responsable
+        if (
+            agente == "kimi"
+            and cliente_para(agente) == "opencode"
+            and previa
+            and not previa.startswith("ses_")
+        ):
+            return "reconstruida"
         return "reanudada" if previa else "reconstruida"
     return "reanudada"
 
 
 def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
+    modelo = modelo_canonico(modelo)
     pelado = modelo.split("/", 1)[-1] if modelo else ""
 
     def dormir(enc, prompt: Path, espacio: Path, sesion: str):
@@ -124,7 +139,11 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
         return ["/bin/bash", "-c", "sleep 3600"]
 
     def grok(enc, prompt: Path, espacio: Path, sesion: str):
-        del enc
+        previa = (
+            enc.sesion_revisor
+            if (enc.rol or "responsable") == "revisor"
+            else enc.sesion_responsable
+        )
         return [
             "grok",
             "--model",
@@ -133,8 +152,11 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             "high",
             "--cwd",
             str(espacio),
-            "--session-id",
-            sesion,
+            *(
+                ["--resume", previa]
+                if sesion_modo == "reanudada" and previa
+                else ["--session-id", sesion]
+            ),
             "--permission-mode",
             "bypassPermissions",
             "--always-approve",
@@ -215,6 +237,8 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
         ]
 
     def kimi(enc, prompt: Path, espacio: Path, sesion: str):
+        if cliente_para("kimi") == "opencode":
+            return opencode(enc, prompt, "motor-kimi/" + (pelado or "k3.1-pro"))
         del espacio, sesion
         previa = (
             enc.sesion_revisor
@@ -239,6 +263,75 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             argv.extend(["--session", previa])
         return argv
 
+    def opencode(enc, prompt: Path, referencia: str):
+        previa = (
+            enc.sesion_revisor
+            if (enc.rol or "responsable") == "revisor"
+            else enc.sesion_responsable
+        )
+        return [
+            "opencode",
+            "run",
+            "--pure",
+            "--auto",
+            "--format",
+            "json",
+            "--model",
+            referencia,
+            "--variant",
+            "high",
+            *(["--session", previa] if sesion_modo == "reanudada" and previa else []),
+            "Lee el pedido y las instrucciones en "
+            + str(prompt)
+            + ". Ejecuta el trabajo autorizado.",
+        ]
+
+    def suscripcion(enc, prompt: Path, espacio: Path, sesion: str):
+        del espacio
+        previa = (
+            enc.sesion_revisor
+            if (enc.rol or "responsable") == "revisor"
+            else enc.sesion_responsable
+        )
+        reanudar = sesion_modo == "reanudada" and previa
+        texto = (
+            "Lee el pedido y las instrucciones en "
+            + str(prompt)
+            + ". Ejecuta el trabajo autorizado."
+        )
+        if agente == "claude":
+            return [
+                "claude",
+                "--safe-mode",
+                "--print",
+                "--verbose",
+                "--output-format",
+                "stream-json",
+                "--model",
+                pelado or "claude-sonnet-5-5",
+                "--effort",
+                "high",
+                "--dangerously-skip-permissions",
+                *(["--resume", previa] if reanudar else ["--session-id", sesion]),
+                texto,
+            ]
+        if agente == "qwen":
+            return [
+                "qwen",
+                "--auth-type",
+                "openai",
+                "--model",
+                pelado or "qwen3.8-max",
+                "--output-format",
+                "stream-json",
+                "--approval-mode",
+                "yolo",
+                *(["--resume", previa] if reanudar else ["--session-id", sesion]),
+                "--prompt",
+                texto,
+            ]
+        return opencode(enc, prompt, modelo or ADAPTADORES[agente].modelo)
+
     if agente == "sleep":
         return dormir
     if agente == "grok":
@@ -249,6 +342,8 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
         return muse
     if agente == "kimi":
         return kimi
+    if agente in ("claude", "opencode", "qwen"):
+        return suscripcion
     if agente == "ensayo":
         return ensayo
     return None
