@@ -369,10 +369,24 @@ def _escribir_respuesta(
 
 def _archivar(path: Path) -> None:
     """La petición queda como recibo del pedido; el id no se reutiliza."""
+    if Path(path).is_symlink():
+        return
     try:
         path.replace(path.with_suffix(".hecha"))
     except OSError:
         path.unlink(missing_ok=True)
+
+
+def _sin_enlaces(espacio: Path, ruta: Path) -> None:
+    raiz = Path(os.path.abspath(espacio))
+    actual = Path(os.path.abspath(ruta))
+    if raiz not in actual.parents and actual != raiz:
+        raise ValueError(f"la ruta {ruta} queda fuera del espacio")
+    previo = actual
+    while previo != raiz and raiz in previo.parents:
+        if previo.is_symlink():
+            raise ValueError(f"la ruta {ruta} pasa por un enlace simbólico")
+        previo = previo.parent
 
 
 def _anotar(
@@ -755,7 +769,11 @@ def atender(
 ) -> dict:
     """Un paso del buzón: registra, resuelve y responde lo pendiente del intento."""
     buzon = Path(espacio) / BUZON
-    pendientes = sorted((buzon / PETICIONES).glob("*.json"))
+    _sin_enlaces(espacio, buzon / PETICIONES)
+    _sin_enlaces(espacio, buzon / RESPUESTAS)
+    pendientes = sorted(
+        p for p in (buzon / PETICIONES).glob("*.json") if not p.is_symlink()
+    )
     resumen = {"atendidas": 0, "preguntas": 0, "errores": 0}
     if not pendientes:
         return resumen
