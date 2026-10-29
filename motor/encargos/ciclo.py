@@ -1742,6 +1742,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 "kind": "entrega_externa",
                 "data": {
                     "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": paso,
                     "repo": enc.entrega.repo,
                     "sha": sha,
@@ -1766,6 +1767,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 "kind": "entrega_externa",
                 "data": {
                     "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": "pr_abierto",
                     "repo": enc.entrega.repo,
                     "numero": numero,
@@ -1785,6 +1787,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 "kind": "entrega_externa",
                 "data": {
                     "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": "pr_listo",
                     "repo": enc.entrega.repo,
                     "numero": numero,
@@ -1844,6 +1847,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                         "kind": "entrega_externa",
                         "data": {
                             "fase": enc.fase_activa,
+                            "intento": enc.intento,
                             "paso": "deepseek_disparado",
                             "repo": enc.entrega.repo,
                             "numero": numero,
@@ -1896,6 +1900,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 "kind": "entrega_externa",
                 "data": {
                     "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": "deepseek_leido",
                     "repo": enc.entrega.repo,
                     "numero": numero,
@@ -1948,6 +1953,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 "kind": "entrega_externa",
                 "data": {
                     "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": "integrado",
                     "repo": enc.entrega.repo,
                     "numero": enc.pr_numero,
@@ -1993,6 +1999,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 "kind": "entrega_externa",
                 "data": {
                     "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": "desplegado",
                     "repo": enc.entrega.repo,
                     "numero": enc.pr_numero,
