@@ -2807,35 +2807,35 @@ def _fase_de_resultado(
 ) -> str:
     """Fase que produjo el resultado, sin tomarla de la fase activa del momento.
 
-    La asociación durable conductor-fase manda. Después, el conductor guarda la
-    fase del intento y la versión del producto identifica al productor. Solo si
-    nada de eso existe se usa la fase activa, y entonces la asociación queda
-    registrada para el siguiente mensaje del mismo conductor.
+    La asociación durable conductor-fase manda y se guarda en cualquier ruta que
+    acepte el resultado, no solo cuando hay que recurrir a la fase activa. Después
+    valen la fase del intento y la versión del producto.
     """
     ligada = _asociacion_conductor(registro, enc, token)
     if ligada:
         return ligada
+    fase = ""
     for ev in reversed(registro.eventos(enc.id)):
         if ev["kind"] == "conductor" and str(ev["data"].get("token") or "") == token:
             fase = str(ev["data"].get("fase") or "")
-            if fase:
-                return fase
             break
-    candidatas = [
-        fase.id
-        for fase in enc.fases
-        if (fase.producto is not None and fase.producto.firma == version)
-        or (fase.revisado is not None and fase.revisado.firma == version)
-        or (
-            fase.revision_vigente is not None
-            and fase.revision_vigente.version == version
-        )
-    ]
-    if len(candidatas) == 1:
-        return candidatas[0]
-    if len(candidatas) > 1:
-        return ""
-    fase = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
+    if not fase:
+        candidatas = [
+            candidata.id
+            for candidata in enc.fases
+            if (candidata.producto is not None and candidata.producto.firma == version)
+            or (candidata.revisado is not None and candidata.revisado.firma == version)
+            or (
+                candidata.revision_vigente is not None
+                and candidata.revision_vigente.version == version
+            )
+        ]
+        if len(candidatas) == 1:
+            fase = candidatas[0]
+        elif len(candidatas) > 1:
+            return ""
+    if not fase:
+        fase = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
     if fase:
         _asociar_conductor(registro, enc, token, fase, hora)
     return fase
