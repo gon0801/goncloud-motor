@@ -690,7 +690,9 @@ def revision_independiente_cubre_producto(e: Encargo) -> bool:
 
 def nivel_cumplido(e: Encargo) -> bool:
     if e.nivel_alcanzado == "sin_cambios":
-        return e.revisado is not None
+        # Sin cambios publicables sólo satisface niveles sin efectos externos;
+        # integrado y desplegado exigen el nivel real alcanzado.
+        return e.revisado is not None and e.entrega.nivel in ("terminado", "pr")
     return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(
         e.entrega.nivel, 1
     )

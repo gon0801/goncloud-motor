@@ -2513,32 +2513,70 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         if ref_base:
             conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}")
             if conteo.returncode == 0 and conteo.stdout.strip() == "0":
-                registro.anotar(
-                    enc.id,
-                    {
-                        "kind": "entrega_externa",
-                        "data": {
-                            "fase": enc.fase_activa,
-                            "intento": enc.intento,
-                            "paso": "sin_cambios",
-                            "repo": enc.entrega.repo,
-                            "rama": rama,
-                            "base": base,
-                            "sha": sha,
-                            "recibo": sha,
-                            "evidencia": (
-                                f"fase {enc.fase_activa} sin cambios publicables "
-                                f"sobre {base}; se entrega el producto revisado "
-                                "como evidencia, sin PR"
-                            ),
-                            "hora": hora,
+                if enc.entrega.nivel == "pr":
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "entrega_externa",
+                            "data": {
+                                "fase": enc.fase_activa,
+                                "intento": enc.intento,
+                                "paso": "sin_cambios",
+                                "repo": enc.entrega.repo,
+                                "rama": rama,
+                                "base": base,
+                                "sha": sha,
+                                "recibo": sha,
+                                "evidencia": (
+                                    f"fase {enc.fase_activa} sin cambios publicables "
+                                    f"sobre {base}; se entrega el producto revisado "
+                                    "como evidencia, sin PR"
+                                ),
+                                "hora": hora,
+                            },
                         },
-                    },
-                    f"entrega:{enc.id}:{enc.fase_activa}:sin_cambios:{sha}",
-                )
-                return _intentar_cierre(
-                    registro, registro.fold(enc.id) or enc, espacio, directorio, hora
-                )
+                        f"entrega:{enc.id}:{enc.fase_activa}:sin_cambios:{sha}",
+                    )
+                    return _intentar_cierre(
+                        registro, registro.fold(enc.id) or enc, espacio, directorio, hora
+                    )
+                if enc.entrega.nivel == "integrado":
+                    # El sha ya está contenido en la base: integración ya
+                    # aplicada, conciliada con la punta real de esa base.
+                    punta = (
+                        _git(espacio, "rev-parse", "--verify", "--quiet", f"{ref_base}^{{commit}}")
+                        .stdout.strip()
+                    )
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "entrega_externa",
+                            "data": {
+                                "fase": enc.fase_activa,
+                                "intento": enc.intento,
+                                "paso": "integrado",
+                                "repo": enc.entrega.repo,
+                                "rama": rama,
+                                "base": base,
+                                "sha": punta,
+                                "recibo": punta,
+                                "evidencia": (
+                                    f"fase {enc.fase_activa} ya contenida en {base} "
+                                    f"en {punta}; conciliada como integrada"
+                                ),
+                                "hora": hora,
+                            },
+                        },
+                        f"entrega:{enc.id}:{enc.fase_activa}:integrado:{sha}",
+                    )
+                    enc = registro.fold(enc.id)
+                    if nivel_cumplido(enc):
+                        return _intentar_cierre(
+                            registro, enc, espacio, directorio, hora
+                        )
+                    return enc
+                # desplegado: la ausencia de diff no acredita el despliegue; el
+                # flujo normal sigue hasta el efecto exigido.
         try:
             pr = gh.abrir_pr(
                 enc.entrega.repo,
