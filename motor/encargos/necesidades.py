@@ -369,7 +369,7 @@ def _escribir_respuesta(
 
 def _archivar(path: Path) -> None:
     """La petición queda como recibo del pedido; el id no se reutiliza."""
-    if Path(path).is_symlink():
+    if capacidades._es_enlace(Path(path)):
         return
     try:
         path.replace(path.with_suffix(".hecha"))
@@ -384,7 +384,7 @@ def _sin_enlaces(espacio: Path, ruta: Path) -> None:
         raise ValueError(f"la ruta {ruta} queda fuera del espacio")
     previo = actual
     while previo != raiz and raiz in previo.parents:
-        if previo.is_symlink():
+        if capacidades._es_enlace(previo):
             raise ValueError(f"la ruta {ruta} pasa por un enlace simbólico")
         previo = previo.parent
 
@@ -772,7 +772,7 @@ def atender(
     _sin_enlaces(espacio, buzon / PETICIONES)
     _sin_enlaces(espacio, buzon / RESPUESTAS)
     pendientes = sorted(
-        p for p in (buzon / PETICIONES).glob("*.json") if not p.is_symlink()
+        p for p in (buzon / PETICIONES).glob("*.json") if not capacidades._es_enlace(p)
     )
     resumen = {"atendidas": 0, "preguntas": 0, "errores": 0}
     if not pendientes:

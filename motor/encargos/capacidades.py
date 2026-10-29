@@ -81,6 +81,13 @@ def _ruta_absoluta(valor: str) -> Path:
     return ruta
 
 
+def _es_enlace(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    es_junction = getattr(os.path, "isjunction", None)
+    return bool(es_junction and es_junction(path))
+
+
 def _padre_seguro(path: Path, raiz: Path | None = None) -> Path:
     """Rechaza un destino dentro de la raíz que pase por un enlace del trabajador."""
     path = Path(path)
@@ -89,7 +96,7 @@ def _padre_seguro(path: Path, raiz: Path | None = None) -> Path:
         actual = Path(os.path.abspath(path.parent))
         previo = actual
         while previo != raiz_abs and raiz_abs in previo.parents:
-            if previo.is_symlink():
+            if _es_enlace(previo):
                 raise ValueError(f"el destino {path} pasa por un enlace simbólico")
             previo = previo.parent
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +105,7 @@ def _padre_seguro(path: Path, raiz: Path | None = None) -> Path:
     raiz = Path(os.path.abspath(raiz))
     actual = Path(os.path.abspath(path.parent))
     while actual != raiz and raiz in actual.parents:
-        if actual.is_symlink():
+        if _es_enlace(actual):
             raise ValueError(f"el destino {path} pasa por un enlace simbólico")
         actual = actual.parent
     return path
