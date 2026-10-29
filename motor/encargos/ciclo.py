@@ -1532,28 +1532,28 @@ def _git(espacio: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _repo_url(repo: str) -> str:
-    if "://" in repo or repo.startswith(("/", ".", "~")) or Path(repo).exists():
-        return repo
-    return f"https://github.com/{repo}.git"
-
-
 def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
     """El espacio de un encargo con entrega es un clon en la rama del encargo.
 
     Devuelve la causa si no se pudo; el supervisor clona fuera de la jaula,
     sin sesion LLM.
     """
+    from motor.repositorios import resolver_repositorio
+
+    try:
+        repo = resolver_repositorio(enc.entrega.repo)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return f"no se pudo resolver el repositorio de entrega: {exc}"
     if (espacio / ".git").exists():
-        return ""
+        r = _git(espacio, "remote", "set-url", "origin", repo.remoto)
+        return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
     if version_producto(espacio).manifiesto:
         return (
             "el espacio ya tiene producto pero no es un clon del repo "
             f"{enc.entrega.repo}; no se mezcla sobre un trabajo existente"
         )
-    url = _repo_url(enc.entrega.repo)
     r = subprocess.run(
-        ["git", "clone", "--quiet", url, str(espacio / ".clon-tmp")],
+        ["git", "clone", "--quiet", repo.fuente, str(espacio / ".clon-tmp")],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -1573,7 +1573,8 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
             f"no se pudo crear la rama {enc.entrega.rama} desde "
             f"{enc.entrega.base}: {r.stderr.strip()[-300:]}"
         )
-    return ""
+    r = _git(espacio, "remote", "set-url", "origin", repo.remoto)
+    return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
 
 
 def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
