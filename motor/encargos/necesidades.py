@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from . import capacidades
@@ -311,8 +312,8 @@ def _respuesta(
                 )
                 doc["recortado"] = f"la respuesta completa quedó en {destino}"
                 doc["datos_archivo"] = str(destino)
-            except (OSError, ValueError):
-                pass
+            except (OSError, ValueError) as exc:
+                doc["publicacion_fallo"] = str(exc)
     return doc
 
 
@@ -865,9 +866,27 @@ def atender(
                 )
                 resumen["pendientes"] = resumen.get("pendientes", 0) + 1
                 continue
-            _escribir_respuesta(
-                espacio, previa, _respuesta_de_registro(espacio, previa, directorio)
-            )
+            doc = _respuesta_de_registro(espacio, previa, directorio)
+            if doc.get("publicacion_fallo"):
+                _escribir_respuesta(
+                    espacio,
+                    previa,
+                    _respuesta(
+                        previa,
+                        "pendiente",
+                        motivo=(
+                            "no se pudo publicar el archivo de datos en el espacio: "
+                            f"{doc['publicacion_fallo']}"
+                        ),
+                        alternativa=(
+                            "corregir el destino del entregable; la entrega se "
+                            "reintentará sin repetir la consulta"
+                        ),
+                    ),
+                )
+                resumen["pendientes"] = resumen.get("pendientes", 0) + 1
+                continue
+            _escribir_respuesta(espacio, previa, doc)
             _archivar(path)
             continue
         if previa is not None and previa.estado == "pregunta" and not previa.respuesta:
@@ -1094,6 +1113,35 @@ def atender(
             continue
         final = "resuelta" if estado == "ok" else estado
         evidencia = json.dumps(resultado.get("evidencia") or {}, ensure_ascii=False, sort_keys=True)
+        # La entrega del archivo precede a la resolución: sin archivo publicado no hay
+        # consulta resuelta.
+        doc = _respuesta(
+            replace(sol, evidencia=evidencia),
+            final,
+            datos=resultado.get("datos"),
+            motivo=str(resultado.get("motivo") or ""),
+            alternativa=str(resultado.get("alternativa") or ""),
+            espacio=espacio,
+        )
+        if final == "resuelta" and doc.get("publicacion_fallo"):
+            _escribir_respuesta(
+                espacio,
+                sol,
+                _respuesta(
+                    sol,
+                    "pendiente",
+                    motivo=(
+                        "no se pudo publicar el archivo de datos en el espacio: "
+                        f"{doc['publicacion_fallo']}"
+                    ),
+                    alternativa=(
+                        "el resultado quedó guardado en el host; la entrega se "
+                        "reintentará en el siguiente paso sin repetir la consulta"
+                    ),
+                ),
+            )
+            resumen["pendientes"] = resumen.get("pendientes", 0) + 1
+            continue
         _anotar_resolucion(
             registro,
             enc,
@@ -1105,18 +1153,7 @@ def atender(
         )
         actual = registro.fold(enc.id) or enc
         nuevo = _buscar(actual, sol.id) or sol
-        _escribir_respuesta(
-            espacio,
-            nuevo,
-            _respuesta(
-                nuevo,
-                final,
-                datos=resultado.get("datos"),
-                motivo=str(resultado.get("motivo") or ""),
-                alternativa=str(resultado.get("alternativa") or ""),
-                espacio=espacio,
-            ),
-        )
+        _escribir_respuesta(espacio, nuevo, doc)
         _archivar(path)
         resumen["atendidas" if final == "resuelta" else "errores"] += 1
     return resumen
