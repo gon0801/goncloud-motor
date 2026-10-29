@@ -209,6 +209,7 @@ class Fase:
     base: str = ""
     evidencia: str = ""
     inspeccion_pendiente: str = ""
+    inspeccion_solicitud: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -240,6 +241,7 @@ class Fase:
             "base": self.base,
             "evidencia": self.evidencia,
             "inspeccion_pendiente": self.inspeccion_pendiente,
+            "inspeccion_solicitud": self.inspeccion_solicitud,
         }
 
 
@@ -304,7 +306,7 @@ class Solicitud:
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
             raise TransicionIlegal("solicitud sin id")
-        if not str(self.operacion or "").strip():
+        if not str(self.operacion or "").strip() and self.estado == "pendiente":
             raise TransicionIlegal("solicitud sin operación")
         if self.estado not in ESTADOS_SOLICITUD:
             raise TransicionIlegal(f"estado de solicitud desconocido: {self.estado}")
@@ -690,6 +692,24 @@ def nivel_cumplido(e: Encargo) -> bool:
     return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(
         e.entrega.nivel, 1
     )
+
+
+def inspeccion_bloquea(e: Encargo) -> bool:
+    """La inspección pendiente no consume otro turno sin información nueva.
+
+    La información nueva es la respuesta del propietario o la resolución
+    terminal de la solicitud ligada; con ella el barrido relanza al revisor.
+    """
+    fase = e.fase_actual
+    if fase is None or not fase.inspeccion_pendiente:
+        return False
+    ident = fase.inspeccion_solicitud
+    if not ident:
+        return True
+    sol = next((s for s in e.solicitudes if s.id == ident), None)
+    if sol is None:
+        return True
+    return sol.estado in ("pendiente", "pregunta")
 
 
 def _entrega_de(d: dict) -> EntregaAutorizada:
@@ -1166,6 +1186,18 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
 
     if kind == "solicitud":
         return _solicitud(e, d, hora)
+    if kind == "inspeccion_solicitud":
+        e = _fase_de_evento(e, d)
+        fase = e.fase_actual
+        if fase is None:
+            raise TransicionIlegal("no hay fase para la inspección")
+        ident = str(d.get("solicitud") or "").strip()
+        if not ident:
+            raise TransicionIlegal("la inspección necesita su solicitud")
+        return replace(
+            con_fase(e, replace(fase, inspeccion_solicitud=ident)),
+            hora=hora or e.hora,
+        )
     if kind == "resolucion":
         return _resolucion(e, d, hora)
     if kind == "respuesta":
@@ -1205,6 +1237,9 @@ def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:
     intento = str(d.get("intento") or "")
     if not intento or (e.intento and intento != e.intento):
         raise TransicionIlegal("la solicitud no pertenece al intento vigente")
+    nace = str(d.get("estado") or "pendiente")
+    if nace not in ("pendiente", "pregunta"):
+        raise TransicionIlegal("una solicitud nace pendiente o a la espera del propietario")
     sol = Solicitud(
         id=ident,
         operacion=str(d["operacion"]),
@@ -1215,8 +1250,28 @@ def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:
         conductor=str(d.get("conductor") or ""),
         motivo=str(d.get("motivo") or ""),
         parametros=tuple((str(k), str(v)) for k, v in (d.get("parametros") or ())),
+        estado=nace,
+        pregunta=str(d.get("pregunta") or "") if nace == "pregunta" else "",
     )
     return replace(e, solicitudes=e.solicitudes + (sol,), hora=hora or e.hora)
+
+
+def _reanudar_inspeccion(e: Encargo, ident: str) -> Encargo:
+    """La información que faltaba reabre el encargo que esperaba por ella."""
+    fase = e.fase_actual
+    if (
+        e.estado == "necesita_usuario"
+        and fase is not None
+        and fase.inspeccion_solicitud == ident
+        and not inspeccion_bloquea(e)
+    ):
+        return replace(
+            e,
+            estado="recibido",
+            motivo="",
+            siguiente="continuar la revisión con la inspección resuelta",
+        )
+    return e
 
 
 def _resolucion(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -1238,11 +1293,14 @@ def _resolucion(e: Encargo, d: dict, hora: str) -> Encargo:
         pregunta=str(d.get("pregunta") or ""),
         detalle=str(d.get("detalle") or ""),
     )
-    return replace(
+    e = replace(
         e,
         solicitudes=tuple(nueva if s.id == ident else s for s in e.solicitudes),
         hora=hora or e.hora,
     )
+    if estado in ("resuelta", "error", "denegada", "detenida"):
+        e = _reanudar_inspeccion(e, ident)
+    return e
 
 
 def _respuesta(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -1258,10 +1316,13 @@ def _respuesta(e: Encargo, d: dict, hora: str) -> Encargo:
             hora=hora or e.hora,
         )
     nueva = replace(sol, estado="respuesta", respuesta=texto)
-    return replace(
-        e,
-        solicitudes=tuple(nueva if s.id == ident else s for s in e.solicitudes),
-        hora=hora or e.hora,
+    return _reanudar_inspeccion(
+        replace(
+            e,
+            solicitudes=tuple(nueva if s.id == ident else s for s in e.solicitudes),
+            hora=hora or e.hora,
+        ),
+        ident,
     )
 
 
@@ -2066,6 +2127,10 @@ def decision_proceso(
     # Con un impedimento del entorno pendiente, otro proceso repetiría el mismo
     # trabajo sin información nueva. La huella sólo se limpia con evidencia.
     if e.impedimento:
+        return {"matar": False, "lanzar": False, "eventos": []}
+    # La inspección pendiente exige lo mismo: sin el dato que falta, otro turno
+    # del revisor no aporta información.
+    if inspeccion_bloquea(e):
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.fases and all(f.estado == "preparada" for f in e.fases):
         return {"matar": False, "lanzar": False, "eventos": []}

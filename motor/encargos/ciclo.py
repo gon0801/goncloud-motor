@@ -39,6 +39,7 @@ from .dominio import (
     huella_bloqueo,
     huella_entrega,
     id_encargo,
+    inspeccion_bloquea,
     nivel_cumplido,
     prompt_responsable,
     prompt_revisor,
@@ -1322,6 +1323,145 @@ def _intentar_cierre(
     return enc
 
 
+def _id_inspeccion(enc: Encargo, juicio: JuicioValidado) -> str:
+    return "insp-" + hashlib.sha256(
+        f"{enc.id}:{enc.fase_activa}:{juicio.version}".encode()
+    ).hexdigest()[:16]
+
+
+def _texto_inspeccion_resuelta(enc: Encargo) -> str:
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_solicitud:
+        return ""
+    sol = next(
+        (s for s in enc.solicitudes if s.id == fase.inspeccion_solicitud), None
+    )
+    if sol is None or sol.estado in ("pendiente", "pregunta"):
+        return ""
+    partes = ["estado: " + sol.estado]
+    if sol.respuesta:
+        partes.append("respuesta: " + sol.respuesta[:400])
+    if sol.detalle:
+        partes.append("detalle: " + sol.detalle[:400])
+    if sol.evidencia:
+        partes.append("evidencia: " + sol.evidencia[:400])
+    return "; ".join(partes)
+
+
+def _ligar_inspeccion(
+    registro: Registro, enc: Encargo, espacio: Path, juicio: JuicioValidado, hora: str
+) -> None:
+    """La inspección pendiente pasa por el puente: petición ejecutable si una
+    capacidad concedida la cubre, o espera identificada del propietario."""
+    fase = enc.fase_actual
+    if fase is None:
+        return
+    ident = _id_inspeccion(enc, juicio)
+    if fase.inspeccion_solicitud == ident or any(
+        s.id == ident for s in enc.solicitudes
+    ):
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "inspeccion_solicitud",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "solicitud": ident,
+                "hora": hora,
+            },
+        },
+        f"inspeccion:{enc.id}:{enc.fase_activa}:{ident}",
+    )
+    enc = registro.fold(enc.id) or enc
+    try:
+        recursos = capacidades.cargar(registro.base)
+    except capacidades.ConfigInvalida:
+        recursos = {}
+    rev = enc.revision_vigente.revision_id if enc.revision_vigente else ""
+    pregunta = (
+        f"La revisión {rev or 'vigente'} de la fase {enc.fase_activa} (versión "
+        f"{juicio.version[:12]}) no concluyó: falta «{juicio.inspeccion_faltante}». "
+    )
+    intento = enc.intento or enc.conductor or "supervisor"
+    pedido = juicio.inspeccion
+    if pedido is not None and pedido.operacion in capacidades.operaciones_de(
+        recursos, pedido.recurso
+    ):
+        crudo = {
+            "id": ident,
+            "encargo": enc.id,
+            "operacion": pedido.operacion,
+            "recurso": pedido.recurso,
+            "fase": enc.fase_activa,
+            "intento": intento,
+            "generacion": enc.generacion,
+            "conductor": enc.conductor,
+            "motivo": pregunta[:necesidades.MAX_MOTIVO],
+            "parametros": dict(pedido.parametros),
+        }
+        try:
+            necesidades.pedir_inspeccion(espacio, enc, crudo)
+        except (OSError, ValueError):
+            # Sin buzón no hay ejecución: la espera del propietario es la única
+            # vía que queda y se registra abajo.
+            pass
+        else:
+            if recursos[pedido.recurso].get("autorizacion") == "propietario":
+                marcar_pregunta(
+                    registro,
+                    enc.id,
+                    pregunta
+                    + f"El recurso {pedido.recurso} exige tu autorización para "
+                    f"{pedido.operacion}; responde a la solicitud {ident}.",
+                    True,
+                    hora,
+                )
+            return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "solicitud",
+            "data": {
+                "id": ident,
+                "operacion": pedido.operacion if pedido is not None else "",
+                "recurso": pedido.recurso if pedido is not None else "",
+                "fase": enc.fase_activa,
+                "intento": intento,
+                "generacion": enc.generacion,
+                "conductor": enc.conductor,
+                "motivo": pregunta[:necesidades.MAX_MOTIVO],
+                "parametros": [
+                    list(x) for x in (pedido.parametros if pedido is not None else ())
+                ],
+                "estado": "pregunta",
+                "pregunta": (
+                    pregunta
+                    + "Ninguna capacidad concedida del puente la cubre"
+                    + (
+                        f": el recurso {pedido.recurso} no está concedido"
+                        if pedido is not None
+                        else ""
+                    )
+                    + f". Concede la capacidad o responde a la solicitud {ident}."
+                ),
+                "hora": hora,
+            },
+        },
+        f"solicitud:{enc.id}:{ident}",
+    )
+    marcar_pregunta(
+        registro,
+        enc.id,
+        pregunta
+        + "Ninguna capacidad concedida del puente la cubre. Concede la capacidad "
+        f"o responde a la solicitud {ident} con el dato o la autorización.",
+        True,
+        hora,
+    )
+
+
 def _cerrar_con_juicio(
     registro: Registro,
     enc: Encargo,
@@ -1475,6 +1615,7 @@ def _cerrar_con_juicio(
                 "esta misma revision; el producto aprobado no se reabre",
                 hora, "inspeccion", rol="revisor",
             )
+            _ligar_inspeccion(registro, enc, espacio, juicio, hora)
         else:
             _devolver(
                 registro, enc, "investigar",
@@ -1796,6 +1937,11 @@ def _incorporar_revisor(
 ) -> Encargo:
     from motor.runwrap import _publica
 
+    if inspeccion_bloquea(enc):
+        # El juicio que queda en el directorio es el de la vuelta ya incorporada;
+        # sin la información que falta, consumirlo otra vez no aporta nada.
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     ref_path = directorio / "revision.json"
     if not ref_path.is_file():
         if _bloqueo_entorno(registro, enc, espacio, hora):
@@ -2622,12 +2768,12 @@ def _lanzar_uno(
                 marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
                 return
             contenido += "\n\n" + necesidades.bloque_capacidades(espacio, recursos)
-            if enc.inspeccion_pendiente:
+            resuelta = _texto_inspeccion_resuelta(enc)
+            if resuelta:
                 contenido += (
-                    "\n\nInspeccion pendiente de la vuelta anterior: "
-                    + enc.inspeccion_pendiente
-                    + ". Obtenla por el buzon si una capacidad concedida la resuelve "
-                    "y continua esta revision sobre la misma version."
+                    "\n\nInspeccion pendiente de la vuelta anterior, ya obtenida "
+                    "por el buzon: " + resuelta
+                    + ". Continua esta revision sobre la misma version con ese dato."
                 )
         else:
             interno_de(espacio, crear=True)

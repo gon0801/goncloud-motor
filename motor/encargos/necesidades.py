@@ -150,6 +150,19 @@ La decisión no autoriza escrituras ni sustituye al pedido. Las herramientas loc
 siguen disponibles; no cambies de agente ni de modo."""
 
 
+def pedir_inspeccion(espacio: Path, enc, crudo: dict) -> None:
+    """El motor deja en el buzón la inspección que declaró el revisor.
+
+    Pasa por la misma validación de `_solicitud_de` que una petición del
+    agente: el buzón es el único camino de ejecución.
+    """
+    sol = _solicitud_de(enc, crudo)
+    buzon = Path(espacio) / BUZON
+    _sin_enlaces(espacio, buzon / PETICIONES)
+    (buzon / PETICIONES).mkdir(parents=True, exist_ok=True)
+    _publica(buzon / PETICIONES / f"{sol.id}.json", crudo, raiz=Path(espacio))
+
+
 def _parametros(crudo) -> tuple[tuple[str, str], ...]:
     if crudo is None:
         return ()
