@@ -424,6 +424,16 @@ def ejecutar(spec_path: Path) -> int:
                     json.dumps({"sin_liberar": True, "autoridad": False}),
                 )
                 return 1
+            from motor.encargos import capacidades, necesidades
+
+            actual = reg.fold(enc.id) or enc
+            try:
+                recursos = capacidades.cargar(reg.base)
+            except capacidades.ConfigInvalida:
+                recursos = {}
+            necesidades.preparar(
+                Path(spec["cwd"]), actual, spec["token"], recursos
+            )
             _publica(d / "proc.json", json.dumps(proc))
             plataforma.sincroniza_directorio(d)
             opciones = {

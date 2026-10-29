@@ -24,6 +24,7 @@ from .comprobacion import (
     leer_juicio,
     version_producto,
 )
+from . import capacidades, necesidades
 from .dominio import (
     Encargo,
     FASE_IMPLICITA,
@@ -33,6 +34,8 @@ from .dominio import (
     revision_independiente_cubre_producto,
     decision_fallo,
     decision_proceso,
+    defecto_al_adoptar_fases,
+    fuentes_autorizadas,
     huella_bloqueo,
     huella_entrega,
     id_encargo,
@@ -532,9 +535,25 @@ def barrer(
                     {"kind": "reserva_cerrada", "data": {"hora": hora}},
                     f"reserva-cerrada:{encargo_id}:{enc.generacion}",
                 )
-                enc = registro.fold(encargo_id)
+                enc = registro.fold(encargo_id) or enc
         else:
             arbol = observar(directorio, proc)
+        if enc.estado not in ("cancelado", "terminado"):
+            try:
+                necesidades.atender(registro, enc, espacio, directorio, hora)
+            except (OSError, ValueError) as exc:
+                registro.anotar(
+                    encargo_id,
+                    {
+                        "kind": "procedimiento",
+                        "data": {
+                            "nota": f"el buzón de necesidades falló: {type(exc).__name__}: {exc}",
+                            "hora": hora,
+                        },
+                    },
+                    f"buzon-fallo:{encargo_id}:{type(exc).__name__}",
+                )
+            enc = registro.fold(encargo_id) or enc
         if enc.host and enc.host != socket.gethostname() and (enc.reserva or enc.proc):
             arbol = "incierto"
         observacion_path = directorio / "herramienta.json"
@@ -637,14 +656,7 @@ def barrer(
             if sin_llm:
                 arbol = observar(directorio, proc)
         sin_hecho = _edad(enc, epoch) >= umbral_s
-        decision = decision_proceso(
-            enc,
-            arbol,
-            herramienta_en_curso(directorio),
-            sin_hecho,
-            enc.herramientas_observables,
-            hora,
-        )
+        decision = _decision(enc, arbol, directorio, sin_hecho, hora)
         if sin_llm:
             decision["lanzar"] = False
         if parada:
@@ -654,6 +666,40 @@ def barrer(
             ]
             if arbol == "vivo":
                 decision["matar"] = True
+        # Cada causa pendiente se levanta con su propia comprobación, nunca con
+        # una ajena. La que este host no puede comprobar sigue hasta un ajuste.
+        if (
+            enc is not None
+            and enc.impedimentos
+            and not parada
+            and enc.via != "directa"
+        ):
+            resueltas = []
+            for pendiente in enc.impedimentos:
+                if (
+                    _verificar_impedimento(
+                        pendiente.clase, enc, espacio, base, registro
+                    )
+                    is True
+                ):
+                    resueltas.append(pendiente.clase)
+            for clase in resueltas:
+                _resolver_impedimento(registro, enc, clase, hora)
+            if resueltas:
+                enc = registro.fold(encargo_id) or enc
+                decision = _decision(enc, arbol, directorio, sin_hecho, hora)
+                if sin_llm:
+                    decision["lanzar"] = False
+        # Y el entorno se comprueba antes de consumir otro turno, no después de
+        # que falle. Si la comprobación no puede hacerse, tampoco acredita nada.
+        if decision["lanzar"] and not parada and enc.via != "directa":
+            sonda = _sonda_entorno(enc, espacio, base)
+            if not sonda.ok:
+                _anotar_impedimento(
+                    registro, enc, "entorno", sonda.causa, sonda.condicion, hora
+                )
+                enc = registro.fold(encargo_id) or enc
+                decision["lanzar"] = False
         if decision["eventos"]:
             _aplicar(
                 registro,
@@ -664,6 +710,8 @@ def barrer(
             enc = registro.fold(encargo_id)
         if decision["matar"] and proc:
             cerrar(directorio, proc)
+        if decision["matar"] or parada:
+            necesidades.cerrar_herramientas(directorio)
         if decision["lanzar"] and lanzador is not None and not parada:
             _lanzar_uno(registro, enc, directorio, espacio, hora, lanzador)
             enc = registro.fold(encargo_id)
@@ -763,7 +811,13 @@ def _anotar_instrumento(
     siguiente: str,
     hora: str,
     serie: str,
+    clase: str = "",
+    artefacto: str = "",
 ) -> None:
+    """Registra el fallo con la operación que lo produjo. `clase` es la
+    identidad estable: no cambia porque el mensaje cambie de redacción.
+    `artefacto` es el archivo a revalidar para acreditar la reparación, cuando
+    no basta con una ruta canónica del espacio."""
     registro.anotar(
         enc.id,
         {
@@ -771,6 +825,8 @@ def _anotar_instrumento(
             "data": {
                 "fuente": fuente,
                 "causa": causa,
+                "clase": clase,
+                "artefacto": artefacto,
                 "version": enc.producto.firma if enc.producto else "",
                 "siguiente": siguiente,
                 "hora": hora,
@@ -802,6 +858,245 @@ def _devolver(
             },
         },
         f"devolucion:{enc.id}:{enc.generacion}:{serie}",
+    )
+
+
+def _sonda_entorno(enc: Encargo, espacio: Path, base: Path):
+    from .aislamiento import sondear
+
+    return sondear(
+        espacio, base / "runtime" / enc.id / "sonda", fuentes_autorizadas(enc)
+    )
+
+
+def _decision(
+    enc: Encargo, arbol: str, directorio: Path, sin_hecho: bool, hora: str
+) -> dict:
+    return decision_proceso(
+        enc,
+        arbol,
+        herramienta_en_curso(directorio),
+        sin_hecho,
+        enc.herramientas_observables,
+        hora,
+    )
+
+
+_VERIFICABLES = ("entorno", "comprobaciones.json", "fases.json", "pedido-efecto.json")
+
+_EVIDENCIA_DE = {
+    "entorno": (
+        "la sonda del entorno funciona: temporal del CLI, espacio y fuentes autorizadas"
+    ),
+    "comprobaciones.json": ".interno/comprobaciones.json vuelve a validar",
+    "fases.json": (
+        ".interno/fases.json valida y su propuesta se puede adoptar "
+        "sobre las fases vigentes"
+    ),
+    "pedido-efecto.json": ".interno/pedido-efecto.json vuelve a validar",
+}
+
+
+def _es_verificable(clase: str) -> bool:
+    # El juicio también: su archivo se puede volver a validar contra la versión
+    # vigente sin gastar otro turno del revisor.
+    return clase in _VERIFICABLES or clase.startswith("juicio:")
+
+
+def _evidencia_de(clase: str) -> str:
+    if clase.startswith("juicio:"):
+        return "el juicio vuelve a validar para la versión revisada"
+    return _EVIDENCIA_DE.get(clase, "la comprobación de la causa")
+
+
+def _apariciones(registro, enc: Encargo, clase: str) -> int:
+    """Cuántas veces apareció esta causa. Sube al registrarla y al resolverla,
+    así una retransmisión no crea un evento y una recaída sí."""
+    return sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["kind"] in ("impedimento", "impedimento_resuelto")
+        and ev["data"].get("clase") == clase
+    )
+
+
+def _anotar_impedimento(
+    registro, enc: Encargo, clase: str, causa: str, condicion: str, hora: str
+) -> None:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "impedimento",
+            "data": {
+                "clase": clase,
+                "causa": causa,
+                "condicion": condicion,
+                "verificable": _es_verificable(clase),
+                "hora": hora,
+            },
+        },
+        f"impedimento:{enc.id}:{clase}:{_apariciones(registro, enc, clase) + 1}",
+    )
+
+
+def _resolver_impedimento(registro, enc: Encargo, clase: str, hora: str) -> None:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "impedimento_resuelto",
+            "data": {
+                "clase": clase,
+                "evidencia": _evidencia_de(clase),
+                "hora": hora,
+            },
+        },
+        f"impedimento-resuelto:{enc.id}:{clase}:{_apariciones(registro, enc, clase)}",
+    )
+
+
+def _bloqueo_entorno(registro, enc: Encargo, espacio: Path, hora: str) -> bool:
+    """La jaula manda sobre el trabajador: si no deja trabajar, el fallo de
+    instrumento no es una corrección que el trabajador pueda hacer."""
+    sonda = _sonda_entorno(enc, espacio, registro.base)
+    if sonda.ok:
+        return False
+    _anotar_impedimento(registro, enc, "entorno", sonda.causa, sonda.condicion, hora)
+    return True
+
+
+def _juicio_reparado(
+    clase: str, enc: Encargo, registro, espacio: Path
+) -> bool | None:
+    """Revalida el mismo archivo de juicio contra la versión vigente, sin
+    aplicar su veredicto: comprobar no es cerrar con él. Repite también las
+    demás condiciones con las que la incorporación lo rechaza —que la
+    referencia sea de la versión vigente y que enumere los efectos pedidos—:
+    levantar la espera con menos que eso solo mueve el rechazo a la siguiente
+    incorporación. `None` si el registro no conserva qué archivo falló."""
+    if registro is None:
+        return None
+    artefacto = ""
+    for ev in reversed(registro.eventos(enc.id)):
+        if ev["kind"] == "instrumento_fallo" and ev["data"].get("clase") == clase:
+            artefacto = str(ev["data"].get("artefacto") or "")
+            break
+    if not artefacto:
+        return None
+    ruta = Path(artefacto)
+    if clase == "juicio:referencia" or ruta.name == "revision.json":
+        try:
+            referencia = json.loads(ruta.read_text(encoding="utf-8"))
+            if not isinstance(referencia, dict):
+                return False
+            if _version_de_referencia(referencia, enc) != (
+                version_producto(espacio).firma
+            ):
+                return False
+            ruta = Path(str(referencia["resultado"]))
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            return False
+    if not ruta.is_file():
+        return False
+    resultado = leer_juicio(ruta, alcance_de(enc))
+    if not isinstance(resultado, JuicioValidado):
+        return False
+    if clase == "juicio:esquema:efectos":
+        try:
+            pedidos = _pedidos_efecto(espacio)
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            return False
+        return (
+            resultado.veredicto != "aprobado"
+            or not pedidos
+            or set(resultado.efectos_pendientes)
+            == {str(p["id"]) for p in pedidos}
+        )
+    return True
+
+
+def _verificar_impedimento(
+    clase: str, enc: Encargo, espacio: Path, base: Path, registro=None
+) -> bool | None:
+    """Comprueba por su cuenta si la causa dejó de estar, repitiendo la
+    condición que la rechazó. `None` si este host no puede saberlo, que no es
+    lo mismo que haberlo comprobado."""
+    if clase == "entorno":
+        return _sonda_entorno(enc, espacio, base).ok
+    if clase.startswith("juicio:"):
+        return _juicio_reparado(clase, enc, registro, espacio)
+    interno = interno_de(espacio)
+    try:
+        if clase == "comprobaciones.json":
+            leer_declaradas(interno)
+            return True
+        if clase == "fases.json":
+            from .fases import leer_propuesta
+
+            propuesta = leer_propuesta(interno)
+            if propuesta is None:
+                return True
+            # La forma no basta: la espera también pudo nacer de que adoptar
+            # la propuesta viola las dependencias o el estado de las fases.
+            return not defecto_al_adoptar_fases(enc, propuesta)
+        if clase == "pedido-efecto.json":
+            _pedidos_efecto(espacio)
+            return True
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+        return False
+    return None
+
+
+def _impedimento_de_instrumento(
+    registro, enc: Encargo, clase: str, causa: str, condicion: str, hora: str
+) -> bool:
+    """El mismo instrumento con el mismo defecto no es información nueva.
+
+    Se mide por la clase del defecto contra el registro de fallos, no por el
+    texto: un identificador de intento dentro del mensaje no reinicia la cuenta.
+    Una clase distinta sí es un intento de reparación y se deja pasar.
+    """
+    previas = sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["kind"] == "instrumento_fallo" and ev["data"].get("clase") == clase
+    )
+    if previas < 2:
+        return False
+    _anotar_impedimento(registro, enc, clase, causa, condicion, hora)
+    return True
+
+
+def _fallo_juicio(
+    registro,
+    enc: Encargo,
+    clase: str,
+    causa: str,
+    siguiente: str,
+    condicion: str,
+    artefacto: str,
+    hora: str,
+    serie: str,
+) -> None:
+    """Único camino para registrar que el juicio no se pudo usar.
+
+    Concentra las dos decisiones que esa condición arrastra: la identidad del
+    defecto y el control de repetición. Una rama que anota y devuelve el control
+    al barrido sin pasar por aquí vuelve a lanzar al revisor en cada vuelta, y
+    eso ya pasó con la referencia obsoleta."""
+    _anotar_instrumento(
+        registro, enc, "juicio", causa, siguiente,
+        hora, serie, clase=clase, artefacto=artefacto,
+    )
+    _impedimento_de_instrumento(registro, enc, clase, causa, condicion, hora)
+
+
+def _version_de_referencia(referencia: dict, enc: Encargo) -> str:
+    """La versión que la referencia declara haber revisado. Es la misma cuenta
+    en la incorporación, que rechaza la referencia, y en la verificación, que
+    levanta la espera: si difieren, hay una referencia que la verificación
+    acepta y la incorporación sigue rechazando."""
+    return str(
+        referencia.get("version") or (enc.producto.firma if enc.producto else "")
     )
 
 
@@ -949,13 +1244,17 @@ def _intentar_cierre(
         _anotar_instrumento(
             registro, enc, "adaptador", str(exc),
             "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
-            hora, f"pedidos-{enc.generacion}",
+            hora, f"pedidos-{enc.generacion}", clase="pedido-efecto.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", str(exc),
-            "corregir la solicitud interna sin tocar el producto",
-            hora, "pedidos",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "pedido-efecto.json", str(exc),
+            "que .interno/pedido-efecto.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir la solicitud interna sin tocar el producto",
+                hora, "pedidos",
+            )
         return registro.fold(enc.id)
     if pedidos and not enc.autoridad:
         marcar_espera(
@@ -1042,22 +1341,29 @@ def _cerrar_con_juicio(
         _anotar_instrumento(
             registro, enc, "adaptador", error_pedidos,
             "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
-            hora, f"pedidos-{enc.generacion}",
+            hora, f"pedidos-{enc.generacion}", clase="pedido-efecto.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", error_pedidos,
-            "corregir la solicitud interna sin tocar el producto",
-            hora, "pedidos",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "pedido-efecto.json", error_pedidos,
+            "que .interno/pedido-efecto.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", error_pedidos,
+                "corregir la solicitud interna sin tocar el producto",
+                hora, "pedidos",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if juicio.veredicto == "aprobado" and pedidos:
         if set(juicio.efectos_pendientes) != {str(p["id"]) for p in pedidos}:
-            _anotar_instrumento(
-                registro, enc, "juicio",
+            _fallo_juicio(
+                registro, enc, "juicio:esquema:efectos",
                 "la aprobacion no enumera en efectos_pendientes los IDs exactos solicitados",
                 "volver a emitir el juicio enumerando los efectos aprobados",
-                hora, f"efectos-{enc.generacion}",
+                "que el juicio enumere en efectos_pendientes los efectos "
+                "solicitados para la versión revisada",
+                str(directorio / "revision.json"), hora,
+                f"efectos-{enc.generacion}",
             )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
@@ -1316,19 +1622,27 @@ def _incorporar_responsable(
 ) -> Encargo:
     from motor.runwrap import _publica
 
+    if _bloqueo_entorno(registro, enc, espacio, hora):
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     interno = interno_de(espacio, crear=True)
     enc, error_fases = adoptar_fases(registro, enc, interno, hora)
     if error_fases:
         _anotar_instrumento(
             registro, enc, "fases", error_fases,
             "corregir .interno/fases.json sin devolver el plan al usuario",
-            hora, f"fases-{enc.generacion}",
+            hora, f"fases-{enc.generacion}", clase="fases.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", error_fases,
-            "corregir el formato interno de las fases y volver a intentar",
-            hora, "fases",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "fases.json", error_fases,
+            "que la propuesta de .interno/fases.json se pueda adoptar "
+            "sobre las fases vigentes", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", error_fases,
+                "corregir el formato interno de las fases y volver a intentar",
+                hora, "fases",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     try:
@@ -1358,13 +1672,17 @@ def _incorporar_responsable(
         _anotar_instrumento(
             registro, enc, "comprobacion", error_declaradas,
             "corregir .interno/comprobaciones.json sin tocar el producto",
-            hora, f"declaradas-{enc.generacion}",
+            hora, f"declaradas-{enc.generacion}", clase="comprobaciones.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", error_declaradas,
-            "corregir las comprobaciones declaradas y volver a observar",
-            hora, "declaradas",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "comprobaciones.json", error_declaradas,
+            "que .interno/comprobaciones.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", error_declaradas,
+                "corregir las comprobaciones declaradas y volver a observar",
+                hora, "declaradas",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     try:
@@ -1373,13 +1691,17 @@ def _incorporar_responsable(
         _anotar_instrumento(
             registro, enc, "adaptador", str(exc),
             "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
-            hora, f"pedidos-{enc.generacion}",
+            hora, f"pedidos-{enc.generacion}", clase="pedido-efecto.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", str(exc),
-            "corregir la solicitud interna sin tocar el producto",
-            hora, "pedidos",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "pedido-efecto.json", str(exc),
+            "que .interno/pedido-efecto.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir la solicitud interna sin tocar el producto",
+                hora, "pedidos",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if declaradas is not None:
@@ -1398,18 +1720,21 @@ def _incorporar_responsable(
             iniciar_comprobacion(espacio, directorio)
             return enc
         if observacion.get("error_instrumento"):
+            causa_obs = str(observacion["error_instrumento"])
             _anotar_instrumento(
-                registro, enc, "comprobacion",
-                str(observacion["error_instrumento"]),
+                registro, enc, "comprobacion", causa_obs,
                 "corregir las comprobaciones declaradas y volver a observar",
-                hora, f"obs-{enc.generacion}",
+                hora, f"obs-{enc.generacion}", clase="comprobacion",
             )
-            _devolver(
-                registro, enc, "reparar_instrumento",
-                str(observacion["error_instrumento"]),
-                "reparar el comando de comprobacion sin tocar el producto",
-                hora, "obs",
-            )
+            if not _impedimento_de_instrumento(
+                registro, enc, "comprobacion", causa_obs,
+                "que el comando de comprobacion vuelva a ejecutarse", hora,
+            ):
+                _devolver(
+                    registro, enc, "reparar_instrumento", causa_obs,
+                    "reparar el comando de comprobacion sin tocar el producto",
+                    hora, "obs",
+                )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
         registro.anotar(
@@ -1462,25 +1787,48 @@ def _incorporar_revisor(
 
     ref_path = directorio / "revision.json"
     if not ref_path.is_file():
-        _anotar_instrumento(
-            registro, enc, "juicio", "falta la referencia de la revision",
+        if _bloqueo_entorno(registro, enc, espacio, hora):
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
+        _fallo_juicio(
+            registro, enc, "juicio:referencia",
+            "falta la referencia de la revision",
             "volver a lanzar la revision sobre la misma version",
-            hora, f"sinref-{enc.generacion}",
+            "que la referencia de la revisión señale un juicio válido "
+            "para la versión revisada",
+            str(ref_path), hora, f"sinref-{enc.generacion}",
         )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
-    referencia = json.loads(ref_path.read_text(encoding="utf-8"))
+    try:
+        referencia = json.loads(ref_path.read_text(encoding="utf-8"))
+        if not isinstance(referencia, dict) or not str(
+            referencia.get("resultado") or ""
+        ):
+            raise ValueError("la referencia no señala el resultado del juicio")
+    except (OSError, UnicodeError, ValueError) as exc:
+        if _bloqueo_entorno(registro, enc, espacio, hora):
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id) or enc
+        causa = f"la referencia de la revisión no se puede utilizar: {exc}"
+        _fallo_juicio(
+            registro, enc, "juicio:referencia", causa,
+            "volver a lanzar la revision sobre la misma version",
+            "que la referencia de la revisión señale un juicio válido "
+            "para la versión revisada",
+            str(ref_path), hora, f"refilegible-{enc.generacion}",
+        )
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id) or enc
     version_actual = version_producto(espacio)
-    version_esperada = str(
-        referencia.get("version")
-        or (enc.producto.firma if enc.producto else "")
-    )
-    if version_actual.firma != version_esperada:
-        _anotar_instrumento(
-            registro, enc, "juicio",
+    if version_actual.firma != _version_de_referencia(referencia, enc):
+        _fallo_juicio(
+            registro, enc, "juicio:referencia",
             "el producto cambio durante la revision",
             "volver a revisar la version vigente",
-            hora, f"stale-{enc.generacion}",
+            "que la referencia de la revisión señale un juicio válido "
+            "para la versión revisada",
+            str(ref_path), hora, f"stale-{enc.generacion}",
         )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -1503,24 +1851,37 @@ def _incorporar_revisor(
     alcance = alcance_de(enc)
     resultado = leer_juicio(Path(referencia["resultado"]), alcance)
     if isinstance(resultado, FalloInstrumento):
-        _anotar_instrumento(
-            registro, enc, resultado.fuente, resultado.causa,
+        if _bloqueo_entorno(registro, enc, espacio, hora):
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
+        # Un juicio ilegible se vuelve a emitir sobre la misma versión: no es
+        # trabajo del responsable. El mismo defecto dos veces sí lo detiene.
+        _fallo_juicio(
+            registro, enc, f"juicio:{resultado.defecto}", resultado.causa,
             "volver a emitir el juicio con el formato pedido sobre la misma version",
-            hora, f"juicio-{enc.generacion}",
+            "que el juicio vuelva a validar para la versión revisada",
+            str(Path(referencia["resultado"])), hora, f"juicio-{enc.generacion}",
         )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if resultado.instrumento:
+        if _bloqueo_entorno(registro, enc, espacio, hora):
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
         _anotar_instrumento(
             registro, enc, "comprobacion", resultado.instrumento,
             "reparar el instrumento de comprobacion sin tocar el producto",
-            hora, f"instrumento-revisor-{enc.generacion}",
+            hora, f"instrumento-revisor-{enc.generacion}", clase="comprobacion",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", resultado.instrumento,
-            "corregir el comando de comprobacion y volver a observar",
-            hora, "instrumento",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "comprobacion", resultado.instrumento,
+            "que el comando de comprobacion vuelva a ejecutarse", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", resultado.instrumento,
+                "corregir el comando de comprobacion y volver a observar",
+                hora, "instrumento",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     return _cerrar_con_juicio(registro, enc, espacio, directorio, resultado, hora)
@@ -2041,6 +2402,7 @@ def _lanzar_uno(
             enc.via == "directa"
             or enc.proc is not None
             or enc.reserva
+            or enc.impedimento
             or leer_parada_local(registro.base)
             or (enc.fases and all(f.estado == "preparada" for f in enc.fases))
         ):
@@ -2103,7 +2465,14 @@ def _lanzar_uno(
         else:
             interno_de(espacio, crear=True)
             contenido = prompt_responsable(enc)
-            contenido += "\n\n" + instrucciones_responsable(interno_de(espacio))
+            try:
+                recursos = capacidades.cargar(registro.base)
+            except capacidades.ConfigInvalida:
+                recursos = {}
+            necesidades.preparar(espacio, enc, token, recursos)
+            contenido += "\n\n" + instrucciones_responsable(
+                interno_de(espacio), necesidades.bloque_capacidades(espacio, recursos)
+            )
         # Sólo observaciones de este encargo; la autoridad sigue fuera de la jaula.
         copias_observadas = []
         for fuente in sorted(raiz.glob("intento-*/observaciones*.json")):

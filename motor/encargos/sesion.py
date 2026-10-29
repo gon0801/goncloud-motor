@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from motor import plataforma
+from motor.encargos.dominio import fuentes_autorizadas
 
 
 class Marca:
@@ -150,9 +151,11 @@ def preparar_administrado(
     from .catalogo_agentes import cliente_para
 
     generacion = (entorno_extra or {}).get("MOTOR_GENERACION_RUTA")
+    concesiones = [Path(generacion)] if generacion else []
+    concesiones.extend(fuentes_autorizadas(enc))
     comando = aislar(
         cmd, cwd, runtime, lectura=enc.rol == "revisor", suscripcion=True,
-        lecturas_extra=(Path(generacion),) if generacion else (),
+        lecturas_extra=tuple(concesiones),
         agente=agente,
     )
     if entorno_extra:

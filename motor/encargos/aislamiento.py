@@ -85,6 +85,10 @@ def _entorno(
         TMPDIR=str(temporal),
         TEMP=str(temporal),
         TMP=str(temporal),
+        # El CLI de Claude no mira TMPDIR para el temporal de su shell: usa
+        # CLAUDE_CODE_TMPDIR y, si falta, cae en /tmp. Fuera de la jaula eso es
+        # EPERM en cada orden. Ver incidente-mini-cuota-20261029.
+        CLAUDE_CODE_TMPDIR=str(temporal),
         PYTHONDONTWRITEBYTECODE="1",
         CODEX_HOME=str(runtime / ".codex"),
     )
@@ -416,3 +420,131 @@ def aislar(
     return ComandoAislado(
         [str(sandbox), "-f", str(path), *cmd], env, "seatbelt", ejecutable=procedencia
     )
+
+
+@dataclass(frozen=True)
+class SondaEntorno:
+    """Resultado de comprobar, bajo el aislamiento real, lo que el trabajador
+    necesita para empezar. `ok` es la única evidencia de recuperación válida:
+    una fecha, una generación o un cambio de modelo no la sustituyen."""
+
+    ok: bool
+    causa: str = ""
+    condicion: str = ""
+
+
+_GUION_SONDA = """set -u
+marca="${MOTOR_SONDA_MARCA:?}"
+temporal="${CLAUDE_CODE_TMPDIR:?}"
+uid=$(id -u)
+base="$temporal/claude-$uid/sonda-$marca"
+if mkdir -p "$base" 2>/dev/null; then :; else echo "temp-cli:$base"; exit 3; fi
+if : > "$base/marca" 2>/dev/null; then :; else echo "temp-cli:$base"; exit 3; fi
+rm -rf "$base" 2>/dev/null
+shell="${TMPDIR:-}"
+if [ -z "$shell" ]; then echo "temp-shell:sinnada"; exit 4; fi
+if ( set -C; : > "$shell/marca-sonda-$marca" ) 2>/dev/null; then :; else
+  echo "temp-shell:$shell"; exit 4
+fi
+rm -f "$shell/marca-sonda-$marca" 2>/dev/null
+# Nada del producto se toca: nombre irrepetible y sin sobrescribir.
+if ( set -C; : > "$MOTOR_SONDA_ESPACIO/.sonda-$marca" ) 2>/dev/null; then :; else
+  echo "espacio:$MOTOR_SONDA_ESPACIO"; exit 5
+fi
+rm -f "$MOTOR_SONDA_ESPACIO/.sonda-$marca" 2>/dev/null
+for ruta in "$@"; do
+  if [ -d "$ruta" ]; then
+    if ls "$ruta" >/dev/null 2>&1; then :; else echo "fuente:$ruta"; exit 6; fi
+  else
+    if cat "$ruta" >/dev/null 2>&1; then :; else echo "fuente:$ruta"; exit 6; fi
+  fi
+done
+echo ok
+"""
+
+
+def _sonda_de(marca: str) -> SondaEntorno:
+    clase, _, detalle = marca.partition(":")
+    if clase == "temp-cli":
+        return SondaEntorno(
+            False,
+            f"no se puede crear el temporal del CLI en {detalle}",
+            "que el temporal del CLI caiga en una ruta escribible del aislamiento",
+        )
+    if clase == "temp-shell":
+        return SondaEntorno(
+            False,
+            f"no se puede escribir en el temporal del shell ({detalle})",
+            "que el temporal del shell caiga en una ruta escribible del aislamiento",
+        )
+    if clase == "espacio":
+        return SondaEntorno(
+            False,
+            f"el espacio concedido no admite escritura ({detalle})",
+            "que el espacio concedido vuelva a ser escribible",
+        )
+    if clase == "fuente":
+        return SondaEntorno(
+            False,
+            f"no se puede leer la fuente autorizada {detalle}",
+            "que la fuente autorizada exista y se conceda al trabajador",
+        )
+    return SondaEntorno(
+        False,
+        f"la sonda del entorno no terminó: {detalle or 'sin detalle'}",
+        "que el aislamiento del host funcione",
+    )
+
+
+def sondear(
+    espacio: Path, runtime: Path, lecturas: tuple[Path, ...] = ()
+) -> SondaEntorno:
+    """Comprueba con comandos locales, y sin llamar a ningún modelo, las
+    operaciones que el trabajador necesita al arrancar: su temporal de shell,
+    la escritura en el espacio y la lectura de las fuentes autorizadas.
+
+    No acredita lo que no pudo ejecutar: sin jaula, o con una fuente declarada
+    que ya no está, el resultado es un fallo con su condición.
+    """
+    import uuid
+
+    espacio, runtime = Path(espacio).resolve(), Path(runtime).resolve()
+    fuentes = tuple(Path(p).expanduser().resolve() for p in lecturas)
+    marca = uuid.uuid4().hex[:16]
+    try:
+        comando = aislar(
+            ["/bin/sh", "-c", _GUION_SONDA, "sonda", *(str(p) for p in fuentes)],
+            espacio,
+            runtime,
+            lecturas_extra=fuentes,
+        )
+    except (OSError, RuntimeError) as exc:
+        return SondaEntorno(
+            False,
+            f"no se pudo preparar el aislamiento: {type(exc).__name__}: {exc}",
+            "que el aislamiento del host esté disponible",
+        )
+    try:
+        entorno = dict(comando.entorno)
+        entorno["MOTOR_SONDA_ESPACIO"] = str(espacio)
+        entorno["MOTOR_SONDA_MARCA"] = marca
+        hecho = subprocess.run(
+            comando.argv,
+            cwd=str(espacio),
+            env=entorno,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return SondaEntorno(
+            False,
+            f"no se pudo ejecutar la sonda bajo el aislamiento: {type(exc).__name__}: {exc}",
+            "que el aislamiento del host esté disponible",
+        )
+    salida = [linea for linea in (hecho.stdout or "").splitlines() if linea.strip()]
+    if hecho.returncode == 0 and salida and salida[-1].strip() == "ok":
+        return SondaEntorno(True)
+    marca_fallo = salida[-1].strip() if salida else f"codigo {hecho.returncode}"
+    return _sonda_de(marca_fallo)

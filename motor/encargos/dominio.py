@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import socket
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 ESTADOS = (
     "recibido",
@@ -240,6 +241,101 @@ class Fase:
 
 
 @dataclass(frozen=True)
+class Decision:
+    """Elección técnica con motivo y evidencia. Una decisión no autoriza nada."""
+
+    id: str
+    eleccion: str
+    motivo: str
+    evidencia: str = ""
+    fases: tuple[str, ...] = ()
+    hora: str = ""
+
+    def como_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "eleccion": self.eleccion,
+            "motivo": self.motivo,
+            "evidencia": self.evidencia,
+            "fases": list(self.fases),
+            "hora": self.hora,
+        }
+
+
+ESTADOS_SOLICITUD = (
+    "pendiente",
+    "pregunta",
+    "respuesta",
+    "resuelta",
+    "error",
+    "denegada",
+    "detenida",
+)
+
+
+@dataclass(frozen=True)
+class Solicitud:
+    """Una necesidad del trabajador, con la identidad que le concedió el host.
+
+    `estado` avanza pendiente -> resuelta, o se detiene en pregunta, error,
+    denegada o detenida. La fase y el intento son los de origen: una resolución
+    de otra fase no se aplica.
+    """
+
+    id: str
+    operacion: str
+    recurso: str
+    fase: str
+    intento: str
+    generacion: int
+    conductor: str
+    motivo: str = ""
+    parametros: tuple[tuple[str, str], ...] = ()
+    estado: str = "pendiente"
+    evidencia: str = ""
+    pregunta: str = ""
+    respuesta: str = ""
+    detalle: str = ""
+
+    def __post_init__(self) -> None:
+        if not str(self.id or "").strip():
+            raise TransicionIlegal("solicitud sin id")
+        if not str(self.operacion or "").strip():
+            raise TransicionIlegal("solicitud sin operación")
+        if self.estado not in ESTADOS_SOLICITUD:
+            raise TransicionIlegal(f"estado de solicitud desconocido: {self.estado}")
+
+    def como_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "operacion": self.operacion,
+            "recurso": self.recurso,
+            "fase": self.fase,
+            "intento": self.intento,
+            "generacion": self.generacion,
+            "motivo": self.motivo,
+            "parametros": [list(x) for x in self.parametros],
+            "estado": self.estado,
+            "evidencia": self.evidencia,
+            "pregunta": self.pregunta,
+            "respuesta": self.respuesta,
+            "detalle": self.detalle,
+        }
+
+
+@dataclass(frozen=True)
+class Impedimento:
+    """Una causa pendiente con su identidad. `clase` nombra la operación que
+    falla, no el texto del mensaje. `verificable` dice si el host puede
+    comprobar por su cuenta que dejó de fallar."""
+
+    clase: str
+    causa: str
+    condicion: str
+    verificable: bool = True
+
+
+@dataclass(frozen=True)
 class Encargo:
     id: str
     clave: str
@@ -296,9 +392,19 @@ class Encargo:
     poteto_digest: str = ""
     bloqueo_huella: str = ""
     sin_progreso: int = 0
+    # Las causas pendientes del entorno o del instrumento. Mientras haya una,
+    # ningún proceso nuevo: cada una se levanta con su propia comprobación.
+    impedimento: str = ""
+    impedimento_causa: str = ""
+    impedimento_condicion: str = ""
+    impedimento_fuente: str = ""
+    impedimentos: tuple[Impedimento, ...] = ()
     observada_version: str = ""
     fases: tuple[Fase, ...] = ()
     fase_activa: str = ""
+    solicitudes: tuple[Solicitud, ...] = ()
+    decisiones: tuple[Decision, ...] = ()
+    autorizaciones: tuple[tuple[str, str, str, str, str, str], ...] = ()
 
     # La fase conserva el producto, la revisión y la entrega. Estas vistas
     # existen para los consumidores del encargo que trabajan la fase actual.
@@ -458,6 +564,22 @@ def _fusionar(
     return tuple(por_id[i] for i in orden)
 
 
+def fuentes_autorizadas(e: Encargo) -> tuple[Path, ...]:
+    """Rutas cuya lectura concede el pedido. Sólo los adjuntos declarados al
+    recibir el encargo: una ruta escrita en el texto no autoriza nada.
+
+    Devuelve también las que ya no existen: la sonda tiene que intentar leerlas
+    y fallar, no dar por bueno lo que no comprobó.
+    """
+    fuentes = []
+    for crudo in e.adjuntos:
+        ruta = Path(str(crudo)).expanduser()
+        if not ruta.is_absolute():
+            ruta = (Path.cwd() / ruta).resolve()
+        fuentes.append(ruta)
+    return tuple(fuentes)
+
+
 def huella_bloqueo(e: Encargo) -> str:
     ids = sorted(h.id for h in bloqueantes_abiertos(e))
     firma = e.producto.firma if e.producto else ""
@@ -469,6 +591,38 @@ def _con_progreso(e: Encargo) -> Encargo:
     if huella != e.bloqueo_huella:
         return replace(e, bloqueo_huella=huella, sin_progreso=0)
     return e
+
+
+def fuente_de_impedimento(clase: str) -> str:
+    return "entorno" if clase == "entorno" else "instrumento"
+
+
+def _con_impedimentos(
+    e: Encargo, impedimentos: tuple[Impedimento, ...], hora: str = ""
+) -> Encargo:
+    """Recompone la causa vigente a partir del conjunto. La primera por clase
+    alimenta los campos que ya leen el estado y la consulta."""
+    ordenados = tuple(sorted(impedimentos, key=lambda i: i.clase))
+    if not ordenados:
+        return replace(
+            e,
+            impedimentos=(),
+            impedimento="",
+            impedimento_causa="",
+            impedimento_condicion="",
+            impedimento_fuente="",
+            hora=hora or e.hora,
+        )
+    primero = ordenados[0]
+    return replace(
+        e,
+        impedimentos=ordenados,
+        impedimento=primero.clase,
+        impedimento_causa=primero.causa,
+        impedimento_condicion=primero.condicion,
+        impedimento_fuente=fuente_de_impedimento(primero.clase),
+        hora=hora or e.hora,
+    )
 
 
 def alcance_de(e: Encargo) -> AlcanceRevision:
@@ -621,6 +775,11 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     if kind == "ajuste":
         if e.estado != "detenido":
             raise TransicionIlegal("el ajuste espera el estado detenido")
+        # Un ajuste trae información nueva del operador. Sólo levanta las causas
+        # que el host no puede comprobar: las demás siguen hasta verificarse.
+        e = _con_impedimentos(
+            e, tuple(i for i in e.impedimentos if i.verificable), hora
+        )
         return replace(
             e,
             ajustes=e.ajustes + (d["texto"],),
@@ -804,6 +963,42 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             ultimo_hecho=str(d.get("causa") or e.ultimo_hecho),
             hora=hora or e.hora,
         )
+    if kind == "impedimento":
+        clase = str(d.get("clase") or d.get("huella") or "")
+        causa = str(d.get("causa") or "")
+        condicion = str(d.get("condicion") or "")
+        if not clase or not causa or not condicion:
+            raise TransicionIlegal("el impedimento necesita clase, causa y condicion")
+        pendientes = {i.clase: i for i in e.impedimentos}
+        pendientes[clase] = Impedimento(
+            clase, causa, condicion, bool(d.get("verificable", True))
+        )
+        e = _con_impedimentos(e, tuple(pendientes.values()), hora)
+        return replace(
+            e,
+            motivo=e.impedimento_causa,
+            siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
+            ultimo_hecho=e.impedimento_causa,
+        )
+    if kind == "impedimento_resuelto":
+        clase = str(d.get("clase") or d.get("huella") or "")
+        evidencia = str(d.get("evidencia") or "")
+        if not clase or not evidencia:
+            raise TransicionIlegal("el impedimento no se resuelve sin clase y evidencia")
+        restantes = tuple(i for i in e.impedimentos if i.clase != clase)
+        if len(restantes) == len(e.impedimentos):
+            return e
+        e = _con_impedimentos(e, restantes, hora)
+        return replace(
+            e,
+            motivo=e.impedimento_causa,
+            siguiente=(
+                "esperar a que se cumpla: " + e.impedimento_condicion
+                if e.impedimentos
+                else "seguir el mismo encargo"
+            ),
+            ultimo_hecho="impedimento resuelto: " + evidencia,
+        )
     if kind == "entrega_externa":
         return _entrega_externa(e, d, hora)
     if kind == "sin_progreso":
@@ -958,7 +1153,141 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             motivo="",
         )
 
+    if kind == "solicitud":
+        return _solicitud(e, d, hora)
+    if kind == "resolucion":
+        return _resolucion(e, d, hora)
+    if kind == "respuesta":
+        return _respuesta(e, d, hora)
+    if kind == "autorizacion":
+        return _autorizacion(e, d, hora)
+    if kind == "decision":
+        return _decision(e, d, hora)
+    if kind == "solicitud_tardia":
+        return replace(
+            e,
+            procedimiento=e.procedimiento
+            + (
+                "solicitud sin efecto: "
+                + str(d.get("id") or "")
+                + " ("
+                + str(d.get("motivo") or "fuera de la fase o del intento")
+                + ")",
+            ),
+            hora=hora or e.hora,
+        )
+
     raise TransicionIlegal(f"evento desconocido: {kind}")
+
+
+def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:
+    """Una necesidad entra con la fase y el intento de origen, no con los vigentes."""
+    if e.estado in _CERRADOS or e.estado == "detenido":
+        raise TransicionIlegal("el encargo no admite solicitudes en este estado")
+    ident = str(d.get("id") or "").strip()
+    if not ident:
+        raise TransicionIlegal("la solicitud necesita id")
+    if any(s.id == ident for s in e.solicitudes):
+        raise TransicionIlegal(f"la solicitud {ident} ya existe")
+    if str(d.get("fase") or "") != e.fase_activa:
+        raise TransicionIlegal("la solicitud no pertenece a la fase activa")
+    intento = str(d.get("intento") or "")
+    if not intento or (e.intento and intento != e.intento):
+        raise TransicionIlegal("la solicitud no pertenece al intento vigente")
+    sol = Solicitud(
+        id=ident,
+        operacion=str(d["operacion"]),
+        recurso=str(d.get("recurso") or ""),
+        fase=str(d.get("fase") or ""),
+        intento=intento,
+        generacion=int(d.get("generacion") or 0),
+        conductor=str(d.get("conductor") or ""),
+        motivo=str(d.get("motivo") or ""),
+        parametros=tuple((str(k), str(v)) for k, v in (d.get("parametros") or ())),
+    )
+    return replace(e, solicitudes=e.solicitudes + (sol,), hora=hora or e.hora)
+
+
+def _resolucion(e: Encargo, d: dict, hora: str) -> Encargo:
+    ident = str(d.get("id") or "")
+    sol = next((s for s in e.solicitudes if s.id == ident), None)
+    if sol is None:
+        raise TransicionIlegal("la resolución no tiene solicitud")
+    if str(d.get("fase") or "") != sol.fase or str(d.get("intento") or "") != sol.intento:
+        raise TransicionIlegal("la resolución no corresponde a la fase e intento de origen")
+    if sol.estado in ("resuelta", "denegada"):
+        raise TransicionIlegal("la solicitud ya tiene resolución definitiva")
+    estado = str(d.get("estado") or "")
+    if estado not in ESTADOS_SOLICITUD or estado == "pendiente":
+        raise TransicionIlegal("estado de resolución inválido")
+    nueva = replace(
+        sol,
+        estado=estado,
+        evidencia=str(d.get("evidencia") or ""),
+        pregunta=str(d.get("pregunta") or ""),
+        detalle=str(d.get("detalle") or ""),
+    )
+    return replace(
+        e,
+        solicitudes=tuple(nueva if s.id == ident else s for s in e.solicitudes),
+        hora=hora or e.hora,
+    )
+
+
+def _respuesta(e: Encargo, d: dict, hora: str) -> Encargo:
+    """Una respuesta tardía se conserva y no cambia el trabajo que ya no la espera."""
+    ident = str(d.get("solicitud") or "")
+    texto = str(d.get("texto") or "")
+    sol = next((s for s in e.solicitudes if s.id == ident), None)
+    if sol is None or sol.estado != "pregunta":
+        return replace(
+            e,
+            procedimiento=e.procedimiento
+            + (f"respuesta sin pregunta vigente ({ident}): {texto}",),
+            hora=hora or e.hora,
+        )
+    nueva = replace(sol, estado="respuesta", respuesta=texto)
+    return replace(
+        e,
+        solicitudes=tuple(nueva if s.id == ident else s for s in e.solicitudes),
+        hora=hora or e.hora,
+    )
+
+
+def _autorizacion(e: Encargo, d: dict, hora: str) -> Encargo:
+    """Una respuesta autoriza la operación explicada, no todo el recurso."""
+    recurso = str(d.get("recurso") or "").strip()
+    operacion = str(d.get("operacion") or "").strip()
+    texto = str(d.get("texto") or "")
+    if not recurso:
+        raise TransicionIlegal("la autorización necesita recurso")
+    if not operacion:
+        raise TransicionIlegal("la autorización necesita la operación explicada")
+    fase = str(d.get("fase") or "")
+    intento = str(d.get("intento") or "")
+    tupla = (recurso, operacion, fase, intento, texto, hora)
+    if any(x[:5] == tupla[:5] for x in e.autorizaciones):
+        return e
+    return replace(e, autorizaciones=e.autorizaciones + (tupla,), hora=hora or e.hora)
+
+
+def _decision(e: Encargo, d: dict, hora: str) -> Encargo:
+    ident = str(d.get("id") or "").strip()
+    if not ident:
+        raise TransicionIlegal("la decisión necesita id")
+    if any(x.id == ident for x in e.decisiones):
+        raise TransicionIlegal(f"la decisión {ident} ya existe")
+    decision = Decision(
+        id=ident,
+        eleccion=str(d.get("eleccion") or ""),
+        motivo=str(d.get("motivo") or ""),
+        evidencia=str(d.get("evidencia") or ""),
+        fases=tuple(str(x) for x in d.get("fases") or ()),
+        hora=hora or e.hora,
+    )
+    if not decision.eleccion or not decision.motivo:
+        raise TransicionIlegal("la decisión necesita elección y motivo")
+    return replace(e, decisiones=e.decisiones + (decision,), hora=hora or e.hora)
 
 
 def _requiere_de(item: dict) -> tuple[tuple[str, str], ...]:
@@ -1107,6 +1436,18 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     )
 
 
+def defecto_al_adoptar_fases(e: Encargo, fases) -> str:
+    """El defecto que impediría adoptar la propuesta sobre el estado vigente,
+    sin adoptarla. Es la misma validación que aplica el evento `fases`: que el
+    archivo tenga forma de propuesta no basta si deja un ciclo o reescribe una
+    fase ya trabajada."""
+    try:
+        _adoptar_fases(e, {"fases": list(fases)}, e.hora)
+    except TransicionIlegal as exc:
+        return str(exc)
+    return ""
+
+
 def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
     """Conserva el paso de una fase iniciada; activa al implementador solo
     cuando hay que empezar una fase o corregir un defecto."""
@@ -1149,6 +1490,8 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     if accion == "continuar":
         if e.estado != "detenido":
             raise TransicionIlegal("continuar espera el estado detenido")
+        # Continuar retoma el encargo y no repara nada: las causas pendientes
+        # siguen vigentes, cada una con su propia comprobación.
         disponible = _fase_disponible(e.fases)
         if disponible is not None:
             rol, estrategia = _rol_de_continuacion(e, disponible)
@@ -1589,6 +1932,27 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         },
         "fases": [f.como_dict() for f in e.fases],
         "fase_activa": e.fase_activa,
+        "solicitudes": [s.como_dict() for s in e.solicitudes],
+        "necesidad_actual": next(
+            (
+                s.como_dict()
+                for s in e.solicitudes
+                if s.estado in ("pendiente", "pregunta", "respuesta")
+            ),
+            None,
+        ),
+        "decisiones": [d.como_dict() for d in e.decisiones],
+        "autorizaciones": [
+            {
+                "recurso": a[0],
+                "operacion": a[1],
+                "fase": a[2],
+                "intento": a[3],
+                "texto": a[4],
+                "hora": a[5],
+            }
+            for a in e.autorizaciones
+        ],
         "objetivo": {
             "fases": len(e.fases),
             "preparadas": len(e.fases_preparadas()),
@@ -1601,6 +1965,26 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         "motivo": e.motivo,
         "siguiente": e.siguiente,
         "preguntas": list(e.preguntas),
+        "impedimento": (
+            {
+                "clase": e.impedimento,
+                "fuente": e.impedimento_fuente,
+                "causa": e.impedimento_causa,
+                "condicion": e.impedimento_condicion,
+            }
+            if e.impedimento
+            else None
+        ),
+        "impedimentos": [
+            {
+                "clase": i.clase,
+                "fuente": fuente_de_impedimento(i.clase),
+                "causa": i.causa,
+                "condicion": i.condicion,
+                "verificable": i.verificable,
+            }
+            for i in e.impedimentos
+        ],
         "recibo": recibo,
         "reanuda_en": e.reanuda_en,
         "estrategia": e.estrategia,
@@ -1653,6 +2037,10 @@ def decision_proceso(
             return {"matar": True, "lanzar": False, "eventos": []}
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.estado in ("detenido", "cancelado", "terminado", "esperando_reintento"):
+        return {"matar": False, "lanzar": False, "eventos": []}
+    # Con un impedimento del entorno pendiente, otro proceso repetiría el mismo
+    # trabajo sin información nueva. La huella sólo se limpia con evidencia.
+    if e.impedimento:
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.fases and all(f.estado == "preparada" for f in e.fases):
         return {"matar": False, "lanzar": False, "eventos": []}

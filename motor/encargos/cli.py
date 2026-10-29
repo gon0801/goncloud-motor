@@ -104,6 +104,17 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--texto", required=True)
     s.add_argument("--bloquea", action="store_true")
 
+    s = sub.add_parser("responder")
+    s.add_argument("encargo")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--solicitud", required=True)
+    s.add_argument("--respuesta", required=True)
+    s.add_argument("--autor", default="propietario")
+    s.add_argument("--clave", required=True)
+
+    s = sub.add_parser("capacidades")
+    s.add_argument("--base", type=Path, required=True)
+
     s = sub.add_parser("afirmacion")
     s.add_argument("encargo")
     s.add_argument("--base", type=Path, required=True)
@@ -233,6 +244,28 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         )
     if args.cmd == "pregunta":
         return _json(marcar_pregunta(reg, args.encargo, args.texto, args.bloquea, hora))
+    if args.cmd == "responder":
+        from .necesidades import responder
+
+        return _json(
+            responder(
+                reg,
+                args.encargo,
+                args.solicitud,
+                args.respuesta,
+                args.autor,
+                args.clave,
+                hora,
+            )
+        )
+    if args.cmd == "capacidades":
+        from .capacidades import ConfigInvalida, cargar, catalogo
+
+        try:
+            recursos = cargar(reg.base)
+        except ConfigInvalida as exc:
+            return _json({"error": str(exc), "recursos": []})
+        return _json({"recursos": catalogo(recursos)})
     if args.cmd == "afirmacion":
         return _json(afirmar(reg, args.encargo, args.texto, hora))
     if args.cmd == "parada-local":

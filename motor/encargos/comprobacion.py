@@ -301,7 +301,8 @@ def digest(datos: dict) -> str:
     return hashlib.sha256(json.dumps(datos, sort_keys=True).encode()).hexdigest()
 
 
-def instrucciones_responsable(interno: Path) -> str:
+def instrucciones_responsable(interno: Path, capacidades: str = "") -> str:
+    puente = ("\n" + capacidades) if capacidades else ""
     return f"""Investiga, implementa y comprueba el pedido completo con las herramientas adecuadas al trabajo.
 El espacio fuera de .interno/ es solo el producto que se entrega. Todo lo interno va en {interno}:
 contexto.md con hechos, decisiones y pendientes; evidencia.txt con lo que observaste al comprobar.
@@ -326,7 +327,7 @@ Tu tarea es preparar el producto y la solicitud. No tienes acceso al registro ni
 El supervisor obtiene los recibos reales por el adaptador y compone el cierre. No conviertas la
 falta de esos recibos en una comprobacion local ficticia ni busques credenciales para producirlos.
 No agregues pruebas nuevas salvo dinero, escritura de produccion, instalar/borrar/deshacer, o una regresion por incidente real. Nunca pruebas de texto, de pruebas ni mutantes.
-No leas secretos ni uses otros agentes ni servicios."""
+No leas secretos ni uses otros agentes ni servicios.{puente}"""
 
 
 def instrucciones_revision(ref: AlcanceRevision, resultado: Path) -> str:
@@ -474,8 +475,23 @@ class JuicioValidado:
 
 @dataclass(frozen=True)
 class FalloInstrumento:
+    """Un fallo del instrumento con su identidad estable. `defecto` distingue
+    qué operación falló, sin depender del texto del mensaje."""
+
     fuente: str
     causa: str
+    defecto: str = "otro"
+
+
+class DefectoJuicio(ValueError):
+    """La condición concreta que el juicio no cumplió.
+
+    Sigue siendo un ValueError para quien ya lo captura así; `condicion`
+    conserva qué faltaba sin tener que adivinarlo del mensaje."""
+
+    def __init__(self, condicion: str, mensaje: str) -> None:
+        super().__init__(mensaje)
+        self.condicion = condicion
 
 
 def _ruta_de(ancla: str) -> str:
@@ -497,12 +513,14 @@ def validar_juicio(
     Nunca exige cobertura ni referencias a ejecuciones.
     """
     if not isinstance(d, dict):
-        raise ValueError("el juicio no es un objeto")
+        raise DefectoJuicio("objeto", "el juicio no es un objeto")
     if str(d.get("version") or "") != alcance.version:
-        raise ValueError("el juicio no corresponde a la versión revisada")
+        raise DefectoJuicio(
+            "version", "el juicio no corresponde a la versión revisada"
+        )
     veredicto = d.get("veredicto")
     if veredicto not in ("aprobado", "cambios", "no_concluyente"):
-        raise ValueError("falta el veredicto del revisor")
+        raise DefectoJuicio("veredicto", "falta el veredicto del revisor")
     evidencia = str(d.get("evidencia") or "")
     instrumento = ""
     inst = d.get("instrumento")
@@ -597,7 +615,7 @@ def validar_juicio(
         elif error_pedidos:
             raise ValueError(error_pedidos)
         elif not evidencia.strip():
-            raise ValueError("aprobación sin evidencia")
+            raise DefectoJuicio("evidencia", "aprobación sin evidencia")
     if veredicto == "cambios" and not hay_bloqueantes and not instrumento:
         veredicto = "aprobado" if evidencia.strip() else "no_concluyente"
     manifiesto = dict(alcance.manifiesto)
@@ -639,10 +657,21 @@ def validar_juicio(
 
 def leer_juicio(path: Path, alcance: AlcanceRevision) -> JuicioValidado | FalloInstrumento:
     try:
-        d = json.loads(path.read_text(encoding="utf-8"))
+        texto = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return FalloInstrumento("juicio", f"juicio no utilizable: {exc}", "lectura")
+    try:
+        d = json.loads(texto)
+    except ValueError as exc:
+        return FalloInstrumento("juicio", f"juicio no utilizable: {exc}", "json")
+    try:
         return validar_juicio(d, alcance)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        return FalloInstrumento(fuente="juicio", causa=f"juicio no utilizable: {exc}")
+    except DefectoJuicio as exc:
+        return FalloInstrumento(
+            "juicio", f"juicio no utilizable: {exc}", f"esquema:{exc.condicion}"
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        return FalloInstrumento("juicio", f"juicio no utilizable: {exc}", "esquema:forma")
 
 
 _SENALES_DEEPSEEK = (
