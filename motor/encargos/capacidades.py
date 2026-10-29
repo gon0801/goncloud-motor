@@ -269,7 +269,7 @@ def _consultar(ruta: Path, sql: str, destino: Path) -> dict:
             estimada = len(
                 json.dumps(valores, ensure_ascii=False, default=str).encode("utf-8")
             )
-            if visibles and total_bytes + estimada > MAX_DATOS:
+            if total_bytes + estimada > MAX_DATOS:
                 truncado = True
                 break
             visibles.append(valores)
