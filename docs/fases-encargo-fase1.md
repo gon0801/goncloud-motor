@@ -1,7 +1,8 @@
 # Fase 1: estado propio de las fases
 
 Parche local para revisión. No incluye despliegue, PR abierto ni cambios en la
-instalación. Base: `c8b368252af884f6f4cd52ea038749d54333803d`.
+instalación. Base: `c8b368252af884f6f4cd52ea038749d54333803d`, rama
+`feat/fases-encargo-fase1`, worktree `/Users/dn/dev/goncloud-motor-fases`.
 
 ## Qué conserva cada fase
 
