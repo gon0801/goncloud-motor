@@ -1293,7 +1293,6 @@ def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:
 
 
 def _reanudar_inspeccion(e: Encargo, ident: str) -> Encargo:
-    """La información que faltaba reabre el encargo que esperaba por ella."""
     fase = e.fase_actual
     if (
         e.estado == "necesita_usuario"
@@ -2169,8 +2168,6 @@ def decision_proceso(
     # trabajo sin información nueva. La huella sólo se limpia con evidencia.
     if e.impedimento:
         return {"matar": False, "lanzar": False, "eventos": []}
-    # La inspección pendiente exige lo mismo: sin el dato que falta, otro turno
-    # del revisor no aporta información.
     if inspeccion_bloquea(e):
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.fases and all(f.estado == "preparada" for f in e.fases):
