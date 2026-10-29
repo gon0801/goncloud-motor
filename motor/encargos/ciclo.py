@@ -2780,14 +2780,41 @@ def _publicar_resultado(registro: Registro, enc: Encargo, hora: str) -> bool:
     return registrado
 
 
+def _asociacion_conductor(registro: Registro, enc: Encargo, token: str) -> str:
+    previo = registro.por_ukey(f"conductor-fase:{enc.id}:{token}")
+    if previo is None:
+        return ""
+    return str(previo["data"].get("fase") or "")
+
+
+def _asociar_conductor(
+    registro: Registro, enc: Encargo, token: str, fase: str, hora: str
+) -> None:
+    if not token or not fase:
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "conductor_fase",
+            "data": {"token": token, "fase": fase, "hora": hora},
+        },
+        f"conductor-fase:{enc.id}:{token}",
+    )
+
+
 def _fase_de_resultado(
-    registro: Registro, enc: Encargo, token: str, version: str
+    registro: Registro, enc: Encargo, token: str, version: str, hora: str
 ) -> str:
     """Fase que produjo el resultado, sin tomarla de la fase activa del momento.
 
-    El conductor guarda la fase del intento. Un historial anterior no la trae,
-    y entonces la versión del producto identifica al productor.
+    La asociación durable conductor-fase manda. Después, el conductor guarda la
+    fase del intento y la versión del producto identifica al productor. Solo si
+    nada de eso existe se usa la fase activa, y entonces la asociación queda
+    registrada para el siguiente mensaje del mismo conductor.
     """
+    ligada = _asociacion_conductor(registro, enc, token)
+    if ligada:
+        return ligada
     for ev in reversed(registro.eventos(enc.id)):
         if ev["kind"] == "conductor" and str(ev["data"].get("token") or "") == token:
             fase = str(ev["data"].get("fase") or "")
@@ -2808,9 +2835,10 @@ def _fase_de_resultado(
         return candidatas[0]
     if len(candidatas) > 1:
         return ""
-    if not enc.fases:
-        return FASE_IMPLICITA
-    return enc.fase_activa
+    fase = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
+    if fase:
+        _asociar_conductor(registro, enc, token, fase, hora)
+    return fase
 
 
 def _huella_resultado(observaciones: dict, juicio: dict) -> str:
@@ -2867,7 +2895,7 @@ def _recibir_resultado_nuevo(
     )
     if not version or not manifiesto:
         return {"rechazado": True, "motivo": "el resultado no trae versión del producto"}
-    fase = _fase_de_resultado(registro, enc, token, version)
+    fase = _fase_de_resultado(registro, enc, token, version, hora)
     if not fase:
         return {"rechazado": True, "motivo": "el resultado no identifica una única fase"}
     huella = _huella_resultado(observaciones, juicio)
