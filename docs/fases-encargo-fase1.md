@@ -71,10 +71,28 @@ aprobaciones ni reactiva encargos detenidos.
 ## Límite de esta entrega
 
 No se implementaron el puente de herramientas, los conectores, la corrección
-central de DeepSeek, los PR apilados ni el despliegue. La rama por fase existe
-(`<rama autorizada>/<fase>`), pero la base de cada PR sigue siendo la rama
-autorizada del encargo; apilar fases y actualizar descendientes corresponde a la
-fase 3 del plan. Una fase sin producto publicable no abre PR.
+central de DeepSeek, los PR apilados ni el despliegue. La rama del producto, la
+rama seleccionada y la rama publicada son la rama autorizada del encargo; la
+separación por fase y el apilado corresponden a la fase 3 del plan. Una fase sin
+producto publicable no abre PR.
+
+## Correcciones de la revisión
+
+1. El resultado recibido se liga a la fase y al intento que lo produjeron. La
+   fase se toma del conductor del intento o de la versión del producto, no de la
+   fase activa del momento. La clave `resultado:<encargo>:<fase>:<token>` es la
+   identidad de la operación: repetir el mensaje devuelve el recibo anterior y un
+   contenido distinto con la misma identidad se rechaza como conflicto.
+2. La rama publicada es la misma que se creó al preparar el repositorio. Se
+   retiró la rama por fase de esta entrega, porque creaba una referencia
+   inexistente en la primera publicación.
+3. Al continuar, se selecciona la primera fase disponible. Durante la parada, el
+   cierre conserva la fase preparada y mueve la selección al trabajo pendiente.
+   Si todas las fases quedaron preparadas, el siguiente barrido completa el
+   cierre global con una clave propia.
+4. La adopción y el avance eligen una fase cuyas dependencias estén preparadas.
+   Reorganizar la propuesta conserva las versiones de entrada ya fijadas y no
+   permite reescribir las dependencias de una fase trabajada.
 
 ## Comprobación
 
