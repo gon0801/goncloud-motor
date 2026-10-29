@@ -1111,7 +1111,7 @@ def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
     """Conserva el paso de una fase iniciada; activa al implementador solo
     cuando hay que empezar una fase o corregir un defecto."""
     if fase.estado in ("revision", "entrega"):
-        if bloqueantes_abiertos(e):
+        if bloqueantes_abiertos(e) or e.estrategia == "reparar_instrumento":
             return "responsable", e.estrategia
         rol = "revisor" if fase.estado == "revision" else (e.rol or "revisor")
         return rol, e.estrategia
