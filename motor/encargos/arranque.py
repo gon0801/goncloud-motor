@@ -406,6 +406,7 @@ def ejecutar(spec_path: Path) -> int:
                 "sesion": spec["sesion"],
                 "rol": spec["rol"],
                 "agente": spec["agente"],
+                "fase": enc.fase_activa,
                 "hora": spec["hora"],
                 "herramientas_observables": True,
             }

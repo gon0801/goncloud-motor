@@ -26,6 +26,7 @@ from .comprobacion import (
 )
 from .dominio import (
     Encargo,
+    FASE_IMPLICITA,
     TransicionIlegal,
     alcance_de,
     bloqueantes_abiertos,
@@ -719,8 +720,14 @@ def _pedidos_efecto(espacio: Path) -> list[dict]:
 
 
 def _anotar_juicio(
-    registro: Registro, enc: Encargo, juicio: dict, hora: str, serie: int
+    registro: Registro,
+    enc: Encargo,
+    juicio: dict,
+    hora: str,
+    serie: int,
+    clave: str = "",
 ) -> None:
+    sufijo = f":{clave}" if clave else ""
     registro.anotar(
         enc.id,
         {
@@ -733,7 +740,7 @@ def _anotar_juicio(
             },
         },
         f"comprobacion:{enc.id}:{enc.fase_activa}:{juicio['clase']}:"
-        f"{juicio.get('firma') or juicio.get('motivo')}:{serie}",
+        f"{juicio.get('firma') or juicio.get('motivo')}:{serie}{sufijo}",
     )
 
 
@@ -1001,7 +1008,14 @@ def _intentar_cierre(
         )
         return registro.fold(enc.id)
     _publica(directorio / "cierre.json", json.dumps(cierre, ensure_ascii=False))
-    _anotar_juicio(registro, enc, cierre, hora, enc.generacion)
+    _anotar_juicio(
+        registro,
+        enc,
+        cierre,
+        hora,
+        enc.generacion,
+        clave="global" if enc.objetivo_completo() else "",
+    )
     enc = registro.fold(enc.id)
     if enc.estado == "terminado":
         _publicar_resultado(registro, enc, hora)
@@ -2264,7 +2278,13 @@ def _lanzar_uno(
                 enc.id,
                 {
                     "kind": "conductor",
-                    "data": {"token": token, "host": socket.gethostname(), "hora": hora},
+                    "data": {
+                        "token": token,
+                        "host": socket.gethostname(),
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "hora": hora,
+                    },
                 },
                 f"conductor-local:{enc.id}:{token}",
             )
@@ -2510,6 +2530,8 @@ def conceder_conductor(
                 "data": {
                     "conductor": token,
                     "host": host,
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "hora": hora,
                     "generacion": enc.generacion + 1,
                 },
@@ -2645,6 +2667,7 @@ def observar_intento(
                     "job": job,
                     "host": host,
                     "sesion": sesion,
+                    "fase": enc.fase_activa,
                     "hora": hora,
                 },
             },
@@ -2757,6 +2780,73 @@ def _publicar_resultado(registro: Registro, enc: Encargo, hora: str) -> bool:
     return registrado
 
 
+def _fase_de_resultado(
+    registro: Registro, enc: Encargo, token: str, version: str
+) -> str:
+    """Fase que produjo el resultado, sin tomarla de la fase activa del momento.
+
+    El conductor guarda la fase del intento. Un historial anterior no la trae,
+    y entonces la versión del producto identifica al productor.
+    """
+    for ev in reversed(registro.eventos(enc.id)):
+        if ev["kind"] == "conductor" and str(ev["data"].get("token") or "") == token:
+            fase = str(ev["data"].get("fase") or "")
+            if fase:
+                return fase
+            break
+    candidatas = [
+        fase.id
+        for fase in enc.fases
+        if (fase.producto is not None and fase.producto.firma == version)
+        or (fase.revisado is not None and fase.revisado.firma == version)
+        or (
+            fase.revision_vigente is not None
+            and fase.revision_vigente.version == version
+        )
+    ]
+    if len(candidatas) == 1:
+        return candidatas[0]
+    if len(candidatas) > 1:
+        return ""
+    if not enc.fases:
+        return FASE_IMPLICITA
+    return enc.fase_activa
+
+
+def _huella_resultado(observaciones: dict, juicio: dict) -> str:
+    payload = json.dumps(
+        {"observaciones": observaciones, "juicio": juicio},
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _resultado_ya_aplicado(
+    registro: Registro, enc: Encargo, fase: str, token: str, huella: str = ""
+) -> dict | None:
+    ukey = f"resultado:{enc.id}:{fase}:{token}"
+    previo = registro.por_ukey(ukey)
+    if previo is None:
+        return None
+    guardada = str(previo["data"].get("huella_resultado") or "")
+    if huella and guardada and huella != guardada:
+        return {
+            "conflicto": True,
+            "motivo": "el mismo intento trae un resultado distinto",
+            "fase": fase,
+        }
+    return {
+        "registrado": True,
+        "encargo": enc.id,
+        "estado": enc.estado,
+        "retransmision": True,
+        "recibo": ukey,
+        "fase": fase,
+    }
+
+
 def _recibir_resultado_nuevo(
     registro: Registro,
     enc: Encargo,
@@ -2777,6 +2867,32 @@ def _recibir_resultado_nuevo(
     )
     if not version or not manifiesto:
         return {"rechazado": True, "motivo": "el resultado no trae versión del producto"}
+    fase = _fase_de_resultado(registro, enc, token, version)
+    if not fase:
+        return {"rechazado": True, "motivo": "el resultado no identifica una única fase"}
+    huella = _huella_resultado(observaciones, juicio)
+    previo = _resultado_ya_aplicado(registro, enc, fase, token, huella)
+    if previo is not None:
+        return previo
+    activa = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
+    if fase != activa:
+        return {"rechazado": True, "motivo": "el resultado pertenece a otra fase"}
+    if enc.intento:
+        evento_intento = next(
+            (
+                ev
+                for ev in reversed(registro.eventos(enc.id))
+                if ev["kind"] == "intento_abierto"
+                and str(ev["data"].get("id") or "") == enc.intento
+            ),
+            None,
+        )
+        fase_intento = str((evento_intento or {}).get("data", {}).get("fase") or "")
+        if fase_intento and fase_intento != fase:
+            return {"rechazado": True, "motivo": "el intento pertenece a otra fase"}
+    actual = next((f for f in enc.fases if f.id == fase), None)
+    if actual is not None and actual.estado == "preparada":
+        return {"rechazado": True, "motivo": "la fase ya está preparada"}
     if enc.producto is None or enc.producto.firma != version:
         registro.anotar(
             enc.id,
@@ -2785,12 +2901,12 @@ def _recibir_resultado_nuevo(
                 "data": {
                     "version": version,
                     "manifiesto": [list(x) for x in manifiesto],
-                    "fase": enc.fase_activa,
+                    "fase": fase,
                     "intento": enc.intento,
                     "hora": hora,
                 },
             },
-            f"producto-autoridad:{enc.id}:{enc.fase_activa}:{version}",
+            f"producto-autoridad:{enc.id}:{fase}:{version}",
         )
         enc = registro.fold(enc.id)
     crudo = dict(juicio)
@@ -2841,12 +2957,12 @@ def _recibir_resultado_nuevo(
                 "aprobadas": [list(x) for x in validado.aprobadas],
                 "evidencia": validado.evidencia,
                 "efectos_pendientes": list(validado.efectos_pendientes),
-                "fase": enc.fase_activa,
+                "fase": fase,
                 "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"revision-autoridad:{enc.id}:{enc.fase_activa}:{version}",
+        f"revision-autoridad:{enc.id}:{fase}:{version}",
     )
     enc = registro.fold(enc.id)
     from .cierre import comprobar_destino, componer
@@ -2857,18 +2973,28 @@ def _recibir_resultado_nuevo(
             comprobar_destino(cierre, DestinoEnsayo(registro.base / "destino"))
     except (ValueError, KeyError, TypeError) as exc:
         return {"rechazado": True, "motivo": str(exc)}
+    ukey = f"resultado:{enc.id}:{fase}:{token}"
     resultado = registro.anotar(
         enc.id,
         {
             "kind": "comprobacion",
-            "data": {**cierre, "observaciones": observaciones, "host": host, "hora": hora},
+            "data": {
+                **cierre,
+                "fase": fase,
+                "huella_resultado": huella,
+                "observaciones": observaciones,
+                "host": host,
+                "hora": hora,
+            },
         },
-        f"resultado:{enc.id}:{enc.fase_activa}:{token}",
+        ukey,
     )
     return {
         "registrado": resultado in ("nuevo", "igual"),
         "encargo": enc.id,
         "estado": registro.fold(enc.id).estado,
+        "fase": fase,
+        "recibo": ukey,
     }
 
 
