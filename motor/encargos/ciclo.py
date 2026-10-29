@@ -2460,7 +2460,55 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             },
             f"entrega:{enc.id}:{enc.fase_activa}:{paso}:{sha}",
         )
-    if not enc.pr_numero:
+    if enc.pr_numero:
+        # El PR ya registrado se consulta antes que cualquier operación nueva:
+        # un merge aplicado con respuesta perdida se concilia, no se repite.
+        try:
+            vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
+        except Exception as exc:
+            causa = (
+                f"no se pudo consultar el PR #{enc.pr_numero} registrado: {exc}"
+            )
+            _anotar_instrumento(
+                registro, enc, "github", causa,
+                "reintentar la consulta del PR ya registrado",
+                hora, f"pr-ver-{enc.generacion}",
+            )
+            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            return registro.fold(enc.id)
+        numero = enc.pr_numero
+        recibo = vista_pr.merge_commit or vista_pr.head
+        if (
+            vista_pr.estado == "mergeado"
+            and enc.entrega.nivel in ("integrado", "desplegado")
+            and enc.nivel_alcanzado == "pr"
+        ):
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "paso": "integrado",
+                        "repo": enc.entrega.repo,
+                        "rama": rama,
+                        "base": base,
+                        "numero": numero,
+                        "sha": recibo,
+                        "recibo": recibo,
+                        "hora": hora,
+                    },
+                },
+                f"entrega:{enc.id}:{enc.fase_activa}:integrado:{enc.pr_sha}",
+            )
+            enc = registro.fold(enc.id)
+            if nivel_cumplido(enc):
+                return _intentar_cierre(
+                    registro, enc, espacio, directorio, hora
+                )
+            return enc
+    else:
         ref_base = _ref_existente(espacio, f"origin/{base}", base)
         if ref_base:
             conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}")
@@ -2491,65 +2539,65 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 return _intentar_cierre(
                     registro, registro.fold(enc.id) or enc, espacio, directorio, hora
                 )
-    try:
-        pr = gh.abrir_pr(
-            enc.entrega.repo,
-            rama,
-            base,
-            f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
-            f"Encargo {enc.id}. Revision independiente aprobada.",
-        )
-        numero = int(pr.numero)
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "paso": "pr_abierto",
-                    "repo": enc.entrega.repo,
-                    "rama": rama,
-                    "base": base,
-                    "numero": numero,
-                    "sha": pr.head or sha,
-                    "recibo": str(numero),
-                    "hora": hora,
+        try:
+            pr = gh.abrir_pr(
+                enc.entrega.repo,
+                rama,
+                base,
+                f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
+                f"Encargo {enc.id}. Revision independiente aprobada.",
+            )
+            numero = int(pr.numero)
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "paso": "pr_abierto",
+                        "repo": enc.entrega.repo,
+                        "rama": rama,
+                        "base": base,
+                        "numero": numero,
+                        "sha": pr.head or sha,
+                        "recibo": str(numero),
+                        "hora": hora,
+                    },
                 },
-            },
-            f"entrega:{enc.id}:{enc.fase_activa}:pr_abierto:{numero}",
-        )
-        enc = registro.fold(enc.id)
-        if pr.borrador:
-            gh.marcar_listo(enc.entrega.repo, numero)
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "paso": "pr_listo",
-                    "repo": enc.entrega.repo,
-                    "rama": rama,
-                    "base": base,
-                    "numero": numero,
-                    "sha": sha,
-                    "recibo": str(numero),
-                    "hora": hora,
+                f"entrega:{enc.id}:{enc.fase_activa}:pr_abierto:{numero}",
+            )
+            enc = registro.fold(enc.id)
+            if pr.borrador:
+                gh.marcar_listo(enc.entrega.repo, numero)
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "paso": "pr_listo",
+                        "repo": enc.entrega.repo,
+                        "rama": rama,
+                        "base": base,
+                        "numero": numero,
+                        "sha": sha,
+                        "recibo": str(numero),
+                        "hora": hora,
+                    },
                 },
-            },
-            f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
-        )
-    except Exception as exc:
-        causa = f"no se pudo abrir o preparar el PR: {exc}"
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "reintentar la apertura del PR de la misma rama",
-            hora, f"pr-{enc.generacion}",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-        return registro.fold(enc.id)
+                f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
+            )
+        except Exception as exc:
+            causa = f"no se pudo abrir o preparar el PR: {exc}"
+            _anotar_instrumento(
+                registro, enc, "github", causa,
+                "reintentar la apertura del PR de la misma rama",
+                hora, f"pr-{enc.generacion}",
+            )
+            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     try:
         veredicto_ci = gh.checks(enc.entrega.repo, numero, sha, ())
