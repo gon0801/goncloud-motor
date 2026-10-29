@@ -2148,11 +2148,92 @@ def _ref_existente(espacio: Path, *candidatos: str) -> str:
     return ""
 
 
-def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
+def _deps_de(enc: Encargo, fase) -> list:
+    salida = []
+    if fase is None:
+        return salida
+    for dep_id, _version in fase.requiere:
+        dep = next((f for f in enc.fases if f.id == dep_id), None)
+        if dep is not None:
+            salida.append(dep)
+    return salida
+
+
+def _incorporar_entradas(
+    enc: Encargo, espacio: Path, registro: Registro | None = None, hora: str = ""
+) -> str:
+    """Incorpora la versión vigente de cada antecesor que la fase no consume.
+
+    Nunca rebasea: `git merge --no-ff` con la base efectiva del dep (su recibo
+    integrado o el sha de su producto). Devuelve la causa si no se pudo.
+    """
+    fase = enc.fase_actual
+    for dep in _deps_de(enc, fase):
+        version = next((v for d, v in fase.requiere if d == dep.id), "")
+        if dep.producto is None or version == dep.producto.firma:
+            continue
+        rama_dep = _rama_de_fase(enc, dep)
+        base = _ref_existente(
+            espacio,
+            dep.integrado_sha,
+            dep.producto.sha_git,
+            f"origin/{rama_dep}",
+        )
+        if not base:
+            return (
+                f"no se encontro la version de la entrada {dep.id} "
+                f"({dep.integrado_sha or dep.producto.sha_git or rama_dep})"
+            )
+        sha_ref = (
+            _git(espacio, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+            .stdout.strip()
+            or base
+        )
+        r = _git(
+            espacio,
+            "-c", "user.name=motor de encargos",
+            "-c", "user.email=motor@localhost",
+            "merge", "--no-ff", "--quiet",
+            "-m", f"incorporar la entrada {dep.id} ({sha_ref[:12]})",
+            sha_ref,
+        )
+        if r.returncode != 0:
+            _git(espacio, "merge", "--abort")
+            return (
+                f"conflicto al incorporar la entrada {dep.id} ({sha_ref}): "
+                f"{r.stderr.strip()[-300:]}"
+            )
+        if registro is not None:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrada_incorporada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "dep": dep.id,
+                        "version": dep.producto.firma,
+                        "sha": sha_ref,
+                        "hora": hora,
+                    },
+                },
+                f"entrada:{enc.id}:{enc.fase_activa}:{dep.id}:{dep.producto.firma}",
+            )
+            enc = registro.fold(enc.id) or enc
+            fase = enc.fase_actual
+    return ""
+
+
+def _asegurar_repo(
+    enc: Encargo,
+    espacio: Path,
+    registro: Registro | None = None,
+    hora: str = "",
+) -> str:
     """El espacio de un encargo con entrega es un clon en la rama del encargo.
 
     Devuelve la causa si no se pudo; el supervisor clona fuera de la jaula,
-    sin sesion LLM.
+    sin sesion LLM. Con registro anota las entradas incorporadas.
     """
     from motor.repositorios import resolver_repositorio
 
@@ -2167,19 +2248,16 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
         rama = _rama_fase(enc)
         actual = _git(espacio, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         if actual != rama:
-            dep = None
             fase = enc.fase_actual
-            if fase is not None:
-                for dep_id, _version in fase.requiere:
-                    dep = next((f for f in enc.fases if f.id == dep_id), None)
-            inicio = _ref_existente(
-                espacio,
-                f"origin/{rama}",
-                rama,
-                dep.producto.sha_git if dep is not None and dep.producto else "",
-                f"origin/{_base_fase(enc)}",
-                f"origin/{enc.entrega.base}",
-            )
+            candidatos = [f"origin/{rama}", rama]
+            for dep in _deps_de(enc, fase):
+                candidatos += [
+                    dep.integrado_sha,
+                    dep.producto.sha_git if dep.producto else "",
+                    f"origin/{_rama_de_fase(enc, dep)}",
+                ]
+            candidatos += [f"origin/{_base_fase(enc)}", f"origin/{enc.entrega.base}"]
+            inicio = _ref_existente(espacio, *candidatos)
             if not inicio:
                 return f"no se encontro la base para crear la rama {rama}"
             r = _git(espacio, "checkout", "-B", rama, inicio)
@@ -2188,7 +2266,8 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
                     f"no se pudo crear la rama {rama} desde {inicio}: "
                     f"{r.stderr.strip()[-300:]}"
                 )
-        return ""
+            return _incorporar_entradas(enc, espacio, registro, hora)
+        return _incorporar_entradas(enc, espacio, registro, hora)
     if version_producto(espacio).manifiesto:
         return (
             "el espacio ya tiene producto pero no es un clon del repo "
@@ -2211,7 +2290,15 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
     clon.rmdir()
     rama = _rama_fase(enc)
     base = _base_fase(enc)
-    inicio = _ref_existente(espacio, f"origin/{base}", f"origin/{enc.entrega.base}")
+    candidatos = []
+    for dep in _deps_de(enc, enc.fase_actual):
+        candidatos += [
+            dep.integrado_sha,
+            dep.producto.sha_git if dep.producto else "",
+            f"origin/{_rama_de_fase(enc, dep)}",
+        ]
+    candidatos += [f"origin/{base}", f"origin/{enc.entrega.base}"]
+    inicio = _ref_existente(espacio, *candidatos)
     r = _git(espacio, "checkout", "-B", rama, inicio or f"origin/{enc.entrega.base}")
     if r.returncode != 0:
         return (
@@ -2322,8 +2409,16 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     espacio = _espacio(registro.base, enc.id)
     directorio = _directorio(registro.base, enc.id)
-    causa = _asegurar_repo(enc, espacio)
+    causa = _asegurar_repo(enc, espacio, registro, hora)
     if causa:
+        if causa.startswith("conflicto al incorporar la entrada"):
+            _devolver(
+                registro, enc, "integrar_antecesor", causa,
+                "resolver el conflicto con la entrada del antecesor conservando "
+                "el trabajo propio; lo aprobado que no cambio se conserva",
+                hora, f"entrada-{enc.generacion}",
+            )
+            return registro.fold(enc.id)
         _anotar_instrumento(
             registro, enc, "github", causa,
             "dejar accesible el repo declarado y reintentar",
@@ -2331,6 +2426,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         )
         marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
         return registro.fold(enc.id)
+    enc = registro.fold(enc.id) or enc
     stale = _producto_no_aprobado(enc, espacio)
     if stale is not None:
         return _reabrir_revision(registro, enc, stale, hora)
@@ -2739,8 +2835,17 @@ def _lanzar_uno(
         runtime.mkdir(parents=True, exist_ok=True)
         _copiar_sesion(_almacen_sesion(registro.base, enc.id, rol), runtime)
         if enc.entrega.nivel != "terminado" and rol == "responsable":
-            causa_repo = _asegurar_repo(enc, espacio)
+            causa_repo = _asegurar_repo(enc, espacio, registro, hora)
             if causa_repo:
+                if causa_repo.startswith("conflicto al incorporar la entrada"):
+                    _devolver(
+                        registro, enc, "integrar_antecesor", causa_repo,
+                        "resolver el conflicto con la entrada del antecesor "
+                        "conservando el trabajo propio; lo aprobado que no "
+                        "cambio se conserva",
+                        hora, f"entrada-{generacion}",
+                    )
+                    return
                 _anotar_instrumento(
                     registro, enc, "github", causa_repo,
                     "dejar accesible el repo declarado y reintentar",
@@ -2748,6 +2853,9 @@ def _lanzar_uno(
                 )
                 marcar_espera(registro, enc.id, causa_repo, _reanuda_en(300), hora)
                 return
+            # Las entradas incorporadas tocan las fases; el replace local de
+            # generacion y conductor sigue vigente para este lanzamiento.
+            enc = replace(enc, fases=(registro.fold(enc.id) or enc).fases)
         epoca = enc.epoca_revisor if rol == "revisor" else enc.epoca_responsable
         sesion = str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"{enc.id}:{rol}:{epoca}")

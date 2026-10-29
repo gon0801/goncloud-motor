@@ -205,6 +205,7 @@ class Fase:
     pr_numero: int = 0
     pr_sha: str = ""
     deepseek_sha: str = ""
+    integrado_sha: str = ""
     rama: str = ""
     base: str = ""
     evidencia: str = ""
@@ -1043,6 +1044,28 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             ultimo_hecho=str(d.get("causa") or "entrega bloqueada por checks en rojo"),
             hora=hora or e.hora,
         )
+    if kind == "entrada_incorporada":
+        e = _fase_de_evento(e, d)
+        fase = e.fase_actual
+        dep = str(d.get("dep") or "").strip()
+        version = str(d.get("version") or "").strip()
+        if fase is None or not dep or not version:
+            raise TransicionIlegal("la entrada incorporada necesita fase, dep y versión")
+        if not any(d_ == dep for d_, _v in fase.requiere):
+            raise TransicionIlegal(f"la fase {fase.id} no consume a {dep}")
+        return replace(
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    requiere=tuple(
+                        (d_, version if d_ == dep else v) for d_, v in fase.requiere
+                    ),
+                ),
+            ),
+            ultimo_hecho=f"entrada de {dep} incorporada: {version[:12]}",
+            hora=hora or e.hora,
+        )
     if kind == "sin_progreso":
         huella = str(d.get("huella") or "")
         veces = e.sin_progreso + 1 if huella and huella == e.bloqueo_huella else 1
@@ -1759,6 +1782,11 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         if paso in ("commit", "push", "pr_abierto", "pr_listo") and sha
         else fase.pr_sha,
         deepseek_sha=sha if paso == "deepseek_leido" and sha else fase.deepseek_sha,
+        integrado_sha=(
+            str(d.get("recibo") or sha)
+            if paso == "integrado" and (d.get("recibo") or sha)
+            else fase.integrado_sha
+        ),
         rama=str(d.get("rama") or fase.rama),
         base=str(d.get("base") or fase.base),
         evidencia=(
