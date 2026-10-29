@@ -50,6 +50,7 @@ from .frontera import (
     turno,
 )
 from .registro import Registro
+from .fases import adoptar as adoptar_fases
 from .sesion import (
     cerrar,
     crecer_log,
@@ -722,8 +723,17 @@ def _anotar_juicio(
 ) -> None:
     registro.anotar(
         enc.id,
-        {"kind": "comprobacion", "data": {**juicio, "hora": hora}},
-        f"comprobacion:{enc.id}:{juicio['clase']}:{juicio.get('firma') or juicio.get('motivo')}:{serie}",
+        {
+            "kind": "comprobacion",
+            "data": {
+                **juicio,
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "hora": hora,
+            },
+        },
+        f"comprobacion:{enc.id}:{enc.fase_activa}:{juicio['clase']}:"
+        f"{juicio.get('firma') or juicio.get('motivo')}:{serie}",
     )
 
 
@@ -847,7 +857,11 @@ def _aplica_entrega(enc: Encargo) -> bool:
 
 def _evidencia_revision(registro: Registro, enc: Encargo) -> str:
     for ev in reversed(registro.eventos(enc.id)):
-        if ev["kind"] == "revision" and (ev["data"].get("origen") or "independiente") == "independiente":
+        if (
+            ev["kind"] == "revision"
+            and (ev["data"].get("origen") or "independiente") == "independiente"
+            and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+        ):
             return str(ev["data"].get("evidencia") or "")
     return ""
 
@@ -880,10 +894,12 @@ def _reabrir_revision(
             "data": {
                 "version": version.firma,
                 "manifiesto": [list(x) for x in version.manifiesto],
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"producto:{enc.id}:{enc.generacion}:{version.firma}",
+        f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
     )
     registro.anotar(
         enc.id,
@@ -1058,10 +1074,12 @@ def _cerrar_con_juicio(
                 "aprobadas": [list(x) for x in juicio.aprobadas],
                 "evidencia": juicio.evidencia,
                 "efectos_pendientes": list(juicio.efectos_pendientes),
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"revision-dato:{enc.id}:{enc.generacion}:{juicio.version}",
+        f"revision-dato:{enc.id}:{enc.fase_activa}:{enc.generacion}:{juicio.version}",
     )
     enc = registro.fold(enc.id)
     if juicio.veredicto == "cambios":
@@ -1285,6 +1303,20 @@ def _incorporar_responsable(
     from motor.runwrap import _publica
 
     interno = interno_de(espacio, crear=True)
+    enc, error_fases = adoptar_fases(registro, enc, interno, hora)
+    if error_fases:
+        _anotar_instrumento(
+            registro, enc, "fases", error_fases,
+            "corregir .interno/fases.json sin devolver el plan al usuario",
+            hora, f"fases-{enc.generacion}",
+        )
+        _devolver(
+            registro, enc, "reparar_instrumento", error_fases,
+            "corregir el formato interno de las fases y volver a intentar",
+            hora, "fases",
+        )
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     try:
         declaradas = leer_declaradas(interno)
         error_declaradas = ""
@@ -1300,10 +1332,12 @@ def _incorporar_responsable(
                 "version": version.firma,
                 "manifiesto": [list(x) for x in version.manifiesto],
                 "declara_comprobaciones": declaradas is not None,
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"producto:{enc.id}:{enc.generacion}:{version.firma}",
+        f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
     )
     enc = registro.fold(enc.id)
     if error_declaradas:
@@ -1444,10 +1478,12 @@ def _incorporar_revisor(
                 "data": {
                     "version": version_actual.firma,
                     "manifiesto": [list(x) for x in version_actual.manifiesto],
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "hora": hora,
                 },
             },
-            f"producto:{enc.id}:{enc.generacion}:{version_actual.firma}",
+            f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version_actual.firma}",
         )
         enc = registro.fold(enc.id)
     alcance = alcance_de(enc)
@@ -1568,10 +1604,10 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
     for entrada in clon.iterdir():
         entrada.replace(espacio / entrada.name)
     clon.rmdir()
-    r = _git(espacio, "checkout", "-B", enc.entrega.rama, f"origin/{enc.entrega.base}")
+    r = _git(espacio, "checkout", "-B", enc.rama_entrega, f"origin/{enc.entrega.base}")
     if r.returncode != 0:
         return (
-            f"no se pudo crear la rama {enc.entrega.rama} desde "
+            f"no se pudo crear la rama {enc.rama_entrega} desde "
             f"{enc.entrega.base}: {r.stderr.strip()[-300:]}"
         )
     r = _git(espacio, "remote", "set-url", "origin", repo.remoto)
@@ -1603,7 +1639,7 @@ def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
         if r.returncode != 0:
             return "", f"git commit fallo: {r.stderr.strip()[-300:]}"
     sha = _git(espacio, "rev-parse", "HEAD").stdout.strip()
-    r = _git(espacio, "push", "--quiet", "origin", enc.entrega.rama)
+    r = _git(espacio, "push", "--quiet", "origin", enc.rama_entrega)
     if r.returncode != 0:
         return "", f"git push fallo: {r.stderr.strip()[-300:]}"
     return sha, ""
@@ -1705,6 +1741,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
                     "paso": paso,
                     "repo": enc.entrega.repo,
                     "sha": sha,
@@ -1712,12 +1749,12 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:{paso}:{sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:{paso}:{sha}",
         )
     try:
         pr = gh.abrir_pr(
             enc.entrega.repo,
-            enc.entrega.rama,
+            enc.rama_entrega,
             enc.entrega.base,
             f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
             f"Encargo {enc.id}. Revision independiente aprobada.",
@@ -1728,6 +1765,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
                     "paso": "pr_abierto",
                     "repo": enc.entrega.repo,
                     "numero": numero,
@@ -1736,7 +1774,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:pr_abierto:{numero}",
+            f"entrega:{enc.id}:{enc.fase_activa}:pr_abierto:{numero}",
         )
         enc = registro.fold(enc.id)
         if pr.borrador:
@@ -1746,6 +1784,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
                     "paso": "pr_listo",
                     "repo": enc.entrega.repo,
                     "numero": numero,
@@ -1754,7 +1793,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:pr_listo:{numero}:{sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
         )
     except Exception as exc:
         causa = f"no se pudo abrir o preparar el PR: {exc}"
@@ -1804,6 +1843,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     {
                         "kind": "entrega_externa",
                         "data": {
+                            "fase": enc.fase_activa,
                             "paso": "deepseek_disparado",
                             "repo": enc.entrega.repo,
                             "numero": numero,
@@ -1811,7 +1851,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                             "hora": hora,
                         },
                     },
-                    f"entrega:{enc.id}:deepseek_disparado:{sha}",
+                    f"entrega:{enc.id}:{enc.fase_activa}:deepseek_disparado:{sha}",
                 )
             marcar_espera(
                 registro,
@@ -1832,6 +1872,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             {
                 "kind": "revision",
                 "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "revision_id": "rev_ds_" + sha[:12],
                     "version": enc.producto.firma if enc.producto else "",
                     "base_version": enc.deepseek_sha,
@@ -1846,13 +1888,14 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"revision-ds:{enc.id}:{sha}",
+            f"revision-ds:{enc.id}:{enc.fase_activa}:{sha}",
         )
         registro.anotar(
             enc.id,
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
                     "paso": "deepseek_leido",
                     "repo": enc.entrega.repo,
                     "numero": numero,
@@ -1861,7 +1904,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:deepseek_leido:{sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:deepseek_leido:{sha}",
         )
         enc = registro.fold(enc.id)
         abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
@@ -1904,6 +1947,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
                     "paso": "integrado",
                     "repo": enc.entrega.repo,
                     "numero": enc.pr_numero,
@@ -1912,7 +1956,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:integrado:{enc.pr_sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:integrado:{enc.pr_sha}",
         )
         enc = registro.fold(enc.id)
     if enc.entrega.nivel == "desplegado" and enc.nivel_alcanzado == "integrado":
@@ -1948,6 +1992,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
                     "paso": "desplegado",
                     "repo": enc.entrega.repo,
                     "numero": enc.pr_numero,
@@ -1956,7 +2001,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:desplegado:{efecto.id}",
+            f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{efecto.id}",
         )
         enc = registro.fold(enc.id)
     if nivel_cumplido(enc):
@@ -1976,6 +2021,7 @@ def _lanzar_uno(
             or enc.proc is not None
             or enc.reserva
             or leer_parada_local(registro.base)
+            or (enc.fases and all(f.estado == "preparada" for f in enc.fases))
         ):
             return
         rol = enc.rol or "responsable"
@@ -2612,12 +2658,14 @@ def _resultado_desde_fold(
     lee como respaldo para encargos cerrados por la via anterior.
     """
     eventos = registro.eventos(enc.id)
+    fase_id = enc.fase_activa
     revision = next(
         (
             ev["data"]
             for ev in reversed(eventos)
             if ev["kind"] == "revision"
             and (ev["data"].get("origen") or "independiente") == "independiente"
+            and (ev["data"].get("fase") or fase_id) == fase_id
         ),
         None,
     )
@@ -2730,10 +2778,12 @@ def _recibir_resultado_nuevo(
                 "data": {
                     "version": version,
                     "manifiesto": [list(x) for x in manifiesto],
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "hora": hora,
                 },
             },
-            f"producto-autoridad:{enc.id}:{version}",
+            f"producto-autoridad:{enc.id}:{enc.fase_activa}:{version}",
         )
         enc = registro.fold(enc.id)
     crudo = dict(juicio)
@@ -2784,10 +2834,12 @@ def _recibir_resultado_nuevo(
                 "aprobadas": [list(x) for x in validado.aprobadas],
                 "evidencia": validado.evidencia,
                 "efectos_pendientes": list(validado.efectos_pendientes),
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"revision-autoridad:{enc.id}:{version}",
+        f"revision-autoridad:{enc.id}:{enc.fase_activa}:{version}",
     )
     enc = registro.fold(enc.id)
     from .cierre import comprobar_destino, componer
@@ -2804,7 +2856,7 @@ def _recibir_resultado_nuevo(
             "kind": "comprobacion",
             "data": {**cierre, "observaciones": observaciones, "host": host, "hora": hora},
         },
-        f"resultado:{enc.id}:{token}",
+        f"resultado:{enc.id}:{enc.fase_activa}:{token}",
     )
     return {
         "registrado": resultado in ("nuevo", "igual"),
@@ -2871,12 +2923,13 @@ def recibir_resultado(
                 "kind": "comprobacion",
                 "data": {
                     **cierre,
+                    "fase": enc.fase_activa,
                     "observaciones": observaciones,
                     "host": host,
                     "hora": hora,
                 },
             },
-            f"resultado:{enc.id}:{token}",
+            f"resultado:{enc.id}:{enc.fase_activa}:{token}",
         )
         return {
             "registrado": resultado in ("nuevo", "igual"),

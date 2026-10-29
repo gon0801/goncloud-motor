@@ -40,9 +40,9 @@ def _recibos(pedidos: list[dict], enc: Encargo) -> list[dict]:
 
 
 def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
-    """Cierre del flujo nuevo: revision aprobada sobre la firma vigente,
-    recibos de efectos y, si el nivel autorizado es pr o mas, DeepSeek
-    leido para el SHA actual y nivel alcanzado igual al autorizado."""
+    """Cierre de una fase: revisión aprobada sobre la firma vigente,
+    recibos de efectos y, si el nivel autorizado es pr o más, DeepSeek
+    leído para el SHA actual y nivel alcanzado igual al autorizado."""
     ref = enc.revision_vigente
     if ref is None or ref.veredicto != "aprobado":
         raise ValueError("cierre sin revisión independiente aprobada")
@@ -68,6 +68,7 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
         )
     return {
         "clase": "cierre_comprobado",
+        "fase": enc.fase_activa,
         "firma": enc.producto.firma,
         "revision": ref.revision_id,
         "nivel_alcanzado": enc.nivel_alcanzado
