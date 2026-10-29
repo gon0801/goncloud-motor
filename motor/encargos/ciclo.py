@@ -59,6 +59,7 @@ from .sesion import (
     preparar_administrado,
     recuperar_arranque,
 )
+from .suscripciones import CuentaNoDisponible
 
 _UMBRAL_S = 30
 
@@ -368,7 +369,7 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
             texto = "\\\\" + texto[8:] if texto.startswith("\\\\?\\UNC\\") else texto[4:]
         return Path(texto)
 
-    for sub in (".codex", ".grok", ".local/share/muse", ".kimi-code/sessions", ".kimi-code/file-history"):
+    for sub in (".codex", ".grok", ".local/share/muse", ".kimi-code/sessions", ".kimi-code/file-history", ".claude/projects", ".qwen/projects", ".qwen/tmp", ".local/share/opencode"):
         fuente = origen / sub
         if fuente.is_dir():
             shutil.copytree(
@@ -2218,6 +2219,10 @@ def _lanzar_uno(
 
             plataforma.sincroniza_directorio(raiz)
             proc = lanzar_administrado(directorio, token)
+        except CuentaNoDisponible as exc:
+            _liberar_flota()
+            marcar_pregunta(registro, enc.id, str(exc), True, hora)
+            return
         except Exception:
             _liberar_flota()
             raise

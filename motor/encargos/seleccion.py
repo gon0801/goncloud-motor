@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-_AGENTE_POR_PROVEEDOR = {
-    "openai": "codex",
-    "xai": "grok",
-    "meta": "muse",
-    "kimi-code": "kimi",
-}
+from .catalogo_agentes import agente_del_modelo, identidad_modelo, modelo_canonico
 
 
 def solicitar_modelos(
@@ -19,14 +14,14 @@ def solicitar_modelos(
             raise TypeError(f"el modelo de {rol} debe ser proveedor/modelo")
         if not referencia:
             continue
-        proveedor, separador, modelo = referencia.partition("/")
-        if (
-            proveedor not in _AGENTE_POR_PROVEEDOR
-            or not separador
-            or not modelo.strip()
-        ):
+        referencia = modelo_canonico(referencia)
+        _proveedor, separador, modelo = referencia.partition("/")
+        agente = agente_del_modelo(referencia)
+        if not agente or not separador or not modelo.strip():
             raise ValueError(f"modelo de {rol} desconocido: usa proveedor/modelo")
-        salida.append((rol, _AGENTE_POR_PROVEEDOR[proveedor], referencia))
-    if len(salida) == 2 and salida[0][2] == salida[1][2]:
+        salida.append((rol, agente, referencia))
+    if len(salida) == 2 and identidad_modelo(salida[0][2]) == identidad_modelo(
+        salida[1][2]
+    ):
         raise ValueError("el revisor debe usar un modelo distinto del responsable")
     return tuple(salida)

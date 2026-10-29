@@ -147,6 +147,7 @@ def preparar_administrado(
     from motor.runwrap import _publica
 
     from .aislamiento import aislar
+    from .catalogo_agentes import cliente_para
 
     generacion = (entorno_extra or {}).get("MOTOR_GENERACION_RUTA")
     comando = aislar(
@@ -170,6 +171,7 @@ def preparar_administrado(
         "sesion": sesion,
         "rol": enc.rol,
         "agente": agente or Path(cmd[0]).stem.lower(),
+        "cliente": cliente_para(agente or Path(cmd[0]).stem.lower()),
         "modelo": modelo,
         "sesion_modo": sesion_modo,
         "poteto_digest": poteto_digest,

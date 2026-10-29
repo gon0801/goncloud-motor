@@ -16,6 +16,8 @@ from pathlib import Path
 import tomllib
 
 from .autenticacion_kimi import acceso_kimi
+from .catalogo_agentes import ADAPTADORES, cliente_para
+from .suscripciones import CuentaNoDisponible, leer_cuenta
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,12 @@ def _entorno(
         for k, v in os.environ.items()
         if k.upper() in permitidas or k.upper().startswith("LC_")
     }
+    if os.name == "nt":
+        env["PATH"] = (
+            str(Path(sys.executable).resolve().parent)
+            + os.pathsep
+            + env.get("PATH", "")
+        )
     temporal = runtime / "tmp"
     temporal.mkdir(parents=True, exist_ok=True)
     env.update(
@@ -90,29 +98,22 @@ def _entorno(
         Path(path).mkdir(parents=True, exist_ok=True)
     if suscripcion:
         nombre = agente or Path(cmd[0]).stem.lower()
+        if nombre in ("claude", "opencode", "qwen", "grok"):
+            from .suscripciones import preparar
+
+            preparar(nombre, runtime, cmd, env)
+            return env
         if nombre == "muse":
-            origen = Path.home() / ".config/muse/auth.json"
-            datos = json.loads(origen.read_text(encoding="utf-8"))
-            cuenta = datos.get("providers", {}).get("meta", {})
-            if (
-                not isinstance(cuenta, dict)
-                or cuenta.get("subs_active") is not True
-                or not cuenta.get("access_token")
-            ):
-                raise RuntimeError("el encargo necesita la suscripcion Meta de Muse")
-            if (
-                cuenta.get("api_base_url", "https://api.meta.ai/v1").rstrip("/")
-                != "https://api.meta.ai/v1"
-            ):
-                raise RuntimeError(
-                    "la suscripcion Muse no usa el destino Meta autorizado"
-                )
+            cuenta = leer_cuenta(nombre)
+            documento = json.loads(
+                (Path.home() / ".config/muse/auth.json").read_text(encoding="utf-8")
+            )
             destino = runtime / ".config/muse/auth.json"
             destino.parent.mkdir(parents=True, exist_ok=True)
             destino.write_text(
                 json.dumps(
                     {
-                        "schema_version": datos.get("schema_version", 1),
+                        "schema_version": documento.get("schema_version", 1),
                         "providers": {"meta": cuenta},
                     }
                 ),
@@ -129,22 +130,29 @@ def _entorno(
                 KIMI_DISABLE_TELEMETRY="1",
                 KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START="false",
             )
+            if cliente_para(nombre) == "opencode":
+                from .suscripciones import preparar_kimi_opencode
+
+                preparar_kimi_opencode(runtime, env)
             return env
         if nombre == "codex":
             origen = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
             destino = runtime / ".codex"
-        elif nombre == "grok":
-            origen = Path.home() / ".grok"
-            destino = runtime / ".grok"
         else:
             return env
         auth = origen / "auth.json"
         if auth.is_file():
             if nombre == "codex":
-                datos = json.loads(auth.read_text(encoding="utf-8"))
+                try:
+                    datos = json.loads(auth.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    raise CuentaNoDisponible(
+                        nombre, "no se pudo leer el login de suscripcion"
+                    ) from None
                 if datos.get("auth_mode") != "chatgpt" or datos.get("OPENAI_API_KEY"):
-                    raise RuntimeError(
-                        "el encargo necesita autenticacion Codex por suscripcion"
+                    raise CuentaNoDisponible(
+                        nombre,
+                        "el encargo necesita autenticacion por suscripcion de ChatGPT",
                     )
             destino.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(auth, destino / "auth.json")
@@ -154,22 +162,63 @@ def _entorno(
 
 def _preparar_kimi(runtime: Path, cmd: list[str]) -> float:
     origen = Path(os.environ.get("KIMI_CODE_HOME", str(Path.home() / ".kimi-code")))
-    config = tomllib.loads((origen / "config.toml").read_text(encoding="utf-8"))
-    alias = (
-        cmd[cmd.index("--model") + 1] if "--model" in cmd else config["default_model"]
-    )
-    modelo = config["models"][alias]
-    proveedor = config["providers"][modelo["provider"]]
+    try:
+        config = tomllib.loads((origen / "config.toml").read_text(encoding="utf-8"))
+        alias = (
+            cmd[cmd.index("--model") + 1]
+            if "--model" in cmd
+            else config["default_model"]
+        )
+        if alias.startswith("motor-kimi/"):
+            alias = "kimi-code/" + alias.partition("/")[2]
+        if alias == "kimi-code/k3" and alias not in config["models"]:
+            modelo = {
+                "provider": "managed:kimi-code",
+                "model": "k3",
+                "max_context_size": 1048576,
+                "capabilities": [
+                    "thinking",
+                    "always_thinking",
+                    "image_in",
+                    "video_in",
+                    "tool_use",
+                ],
+                "support_efforts": ["low", "high", "max"],
+                "default_effort": "high",
+            }
+        else:
+            modelo = config["models"][alias]
+        proveedor = config["providers"][modelo["provider"]]
+    except (OSError, ValueError, TypeError, KeyError):
+        raise CuentaNoDisponible(
+            "kimi", "no se pudo leer el modelo de la suscripcion configurada"
+        ) from None
+    oauth = proveedor.get("oauth", {})
+    base_url = proveedor.get("base_url", "").rstrip("/")
+    oauth_host = oauth.get("oauth_host", "https://auth.kimi.com").rstrip("/")
+    pares = {
+        "https://api.kimi.com/coding/v1": "https://auth.kimi.com",
+        "https://api.kimi.ai/coding/v1": "https://auth.kimi.ai",
+    }
+    clave = oauth.get("key", "")
     if (
         modelo["provider"] != "managed:kimi-code"
         or proveedor.get("api_key")
         or proveedor.get("api_key_env")
-        or proveedor.get("base_url", "").rstrip("/") != "https://api.kimi.com/coding/v1"
-        or proveedor.get("oauth", {}).get("key") != "oauth/kimi-code"
+        or pares.get(base_url) != oauth_host
+        or not isinstance(clave, str)
+        or not clave.startswith("oauth/")
     ):
-        raise RuntimeError("el encargo necesita la suscripcion OAuth de Kimi Code")
+        raise CuentaNoDisponible(
+            "kimi", "el encargo necesita la suscripcion OAuth de Kimi Code"
+        )
     destino = runtime / ".kimi-code"
-    acceso = acceso_kimi(origen)
+    try:
+        acceso = acceso_kimi(
+            origen, credencial=clave.removeprefix("oauth/"), oauth_host=oauth_host
+        )
+    except RuntimeError as exc:
+        raise CuentaNoDisponible("kimi", str(exc)) from None
     destino.mkdir(parents=True, exist_ok=True)
     for relativo in ("device_id", "region"):
         fuente = origen / relativo
@@ -181,11 +230,18 @@ def _preparar_kimi(runtime: Path, cmd: list[str]) -> float:
         '[providers."managed:kimi-code"]',
         'type = "kimi"',
         "api_key = " + json.dumps(acceso.token),
-        'base_url = "https://api.kimi.com/coding/v1"',
+        "base_url = " + json.dumps(base_url),
         "[models." + json.dumps(alias) + "]",
         'provider = "managed:kimi-code"',
     ]
-    for clave in ("model", "max_context_size", "capabilities"):
+    for clave in (
+        "model",
+        "max_context_size",
+        "max_output_size",
+        "capabilities",
+        "support_efforts",
+        "default_effort",
+    ):
         if clave in modelo:
             texto.append(clave + " = " + json.dumps(modelo[clave]))
     (destino / "config.toml").write_text("\n".join(texto) + "\n", encoding="utf-8")
@@ -273,7 +329,7 @@ def aislar(
         if nombre == "muse":
             argv, procedencia = _muse_local(argv, runtime, env)
         raices.extend(path.resolve() for path in lecturas_extra)
-        if nombre == "kimi":
+        if nombre in ADAPTADORES and ADAPTADORES[nombre].psec:
             raices.append(Path(argv[0]).parent)
             env["NODE_OPTIONS"] = "--preserve-symlinks --preserve-symlinks-main"
         raices.extend(
@@ -281,7 +337,7 @@ def aislar(
             for k in ("ProgramFiles", "ProgramFiles(x86)")
             if k in os.environ
         )
-        if suscripcion and nombre not in ("codex", "muse", "kimi"):
+        if suscripcion and nombre not in ADAPTADORES:
             raise RuntimeError("el agente no tiene adaptador Windows de suscripcion")
         if suscripcion and nombre == "codex":
             capacidades = [
@@ -307,11 +363,7 @@ def aislar(
             "proveedor": sorted(
                 {
                     str(ipaddress.ip_address(fila[4][0]))
-                    for host in {
-                        "codex": ("chatgpt.com", "auth.openai.com"),
-                        "muse": ("api.meta.ai",),
-                        "kimi": ("auth.kimi.com", "api.kimi.com"),
-                    }[nombre]
+                    for host in ADAPTADORES[nombre].dominios
                     for fila in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
                     if ipaddress.ip_address(fila[4][0]).is_global
                 }
@@ -324,7 +376,7 @@ def aislar(
             raise RuntimeError(
                 "no hay direcciones publicas del proveedor para la suscripcion"
             )
-        if nombre in ("muse", "kimi"):
+        if nombre in ADAPTADORES and ADAPTADORES[nombre].psec:
             from motor.plataforma.psec_windows import enumeracion_para
 
             limites["enumeracion"] = enumeracion_para(limites)
@@ -341,6 +393,18 @@ def aislar(
         f"(deny file-read* (subpath {json.dumps(str(Path.home()))}))",
         "(allow file-read-metadata)",
     ]
+    if nombre == "muse":
+        from .autenticacion_muse import ejecutable_muse
+
+        nativo = ejecutable_muse()
+        cmd = [str(nativo), *cmd[1:]]
+        perfil.append(f"(allow file-read* (literal {json.dumps(str(nativo))}))")
+        procedencia = {
+            "origen": str(nativo),
+            "ejecutable": str(nativo),
+            "sha256": hashlib.sha256(nativo.read_bytes()).hexdigest(),
+            "tipo": "instalacion-local-firmada",
+        }
     for path in (espacio, runtime, *(p.resolve() for p in lecturas_extra)):
         perfil.append(f"(allow file-read* (subpath {json.dumps(str(path))}))")
     for path in (runtime,) if lectura else (espacio, runtime):
@@ -349,4 +413,6 @@ def aislar(
         perfil.append(f'(allow file-write* (literal "{path}"))')
     path = runtime / "jaula.sb"
     path.write_text("\n".join(perfil), encoding="utf-8")
-    return ComandoAislado([str(sandbox), "-f", str(path), *cmd], env, "seatbelt")
+    return ComandoAislado(
+        [str(sandbox), "-f", str(path), *cmd], env, "seatbelt", ejecutable=procedencia
+    )
