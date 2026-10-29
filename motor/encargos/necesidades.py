@@ -76,6 +76,8 @@ def preparar(
     """Deja el cliente, la identidad concedida y el catálogo público en el espacio."""
     buzon = Path(espacio) / BUZON
     for sub in (PETICIONES, RESPUESTAS):
+        _sin_enlaces(espacio, buzon / sub)
+    for sub in (PETICIONES, RESPUESTAS):
         (buzon / sub).mkdir(parents=True, exist_ok=True)
     _publica(
         buzon / "sesion.json",
@@ -384,7 +386,7 @@ def _sin_enlaces(espacio: Path, ruta: Path) -> None:
         raise ValueError(f"la ruta {ruta} queda fuera del espacio")
     previo = actual
     while previo != raiz and raiz in previo.parents:
-        if capacidades._es_enlace(previo):
+        if previo.exists() and capacidades._es_enlace(previo):
             raise ValueError(f"la ruta {ruta} pasa por un enlace simbólico")
         previo = previo.parent
 
