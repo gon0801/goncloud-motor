@@ -249,31 +249,33 @@ def _huella(path: Path) -> str:
 def _consultar(ruta: Path, sql: str, destino: Path) -> dict:
     cuerpo = _sentencia_leible(sql)
     db = abrir_lectura(ruta)
+    truncado = False
+    visibles = []
+    total_bytes = 0
     try:
         cursor = db.execute(cuerpo)
         columnas = [d[0] for d in cursor.description or ()]
-        filas = cursor.fetchmany(MAX_FILAS + 1)
+        for fila in cursor:
+            if len(visibles) >= MAX_FILAS:
+                truncado = True
+                break
+            valores = []
+            for v in fila:
+                if isinstance(v, (str, bytes)) and len(v) > 4096:
+                    valores.append(v[:4096])
+                    truncado = True
+                else:
+                    valores.append(v)
+            estimada = len(
+                json.dumps(valores, ensure_ascii=False, default=str).encode("utf-8")
+            )
+            if visibles and total_bytes + estimada > MAX_DATOS:
+                truncado = True
+                break
+            visibles.append(valores)
+            total_bytes += estimada
     finally:
         db.close()
-    truncado = len(filas) > MAX_FILAS
-    visibles = []
-    total_bytes = 0
-    for fila in filas[:MAX_FILAS]:
-        valores = []
-        for v in fila:
-            if isinstance(v, (str, bytes)) and len(v) > 4096:
-                valores.append(v[:4096])
-                truncado = True
-            else:
-                valores.append(v)
-        estimada = len(
-            json.dumps(valores, ensure_ascii=False, default=str).encode("utf-8")
-        )
-        if visibles and total_bytes + estimada > MAX_DATOS:
-            truncado = True
-            break
-        visibles.append(valores)
-        total_bytes += estimada
     datos = {
         "columnas": columnas,
         "filas": [list(f) for f in visibles],

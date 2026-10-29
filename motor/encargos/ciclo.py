@@ -2626,7 +2626,17 @@ def _lanzar_uno(
                 recursos = capacidades.cargar(registro.base)
             except capacidades.ConfigInvalida:
                 recursos = {}
-            necesidades.preparar(espacio, enc, token, recursos)
+            try:
+                necesidades.preparar(espacio, enc, token, recursos)
+            except (OSError, ValueError) as exc:
+                causa = f"no se pudo preparar el buzón de necesidades: {exc}"
+                _anotar_instrumento(
+                    registro, enc, "buzon", causa,
+                    "retirar el enlace o directorio que bloquea el buzón y reintentar",
+                    hora, f"buzon-{generacion}",
+                )
+                marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+                return
             contenido += "\n\n" + instrucciones_responsable(
                 interno_de(espacio), necesidades.bloque_capacidades(espacio, recursos)
             )
