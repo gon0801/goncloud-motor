@@ -844,6 +844,7 @@ def _devolver(
     siguiente: str,
     hora: str,
     serie: str,
+    rol: str = "responsable",
 ) -> None:
     registro.anotar(
         enc.id,
@@ -851,7 +852,7 @@ def _devolver(
             "kind": "estrategia",
             "data": {
                 "estrategia": estrategia,
-                "rol": "responsable",
+                "rol": rol,
                 "motivo": motivo,
                 "siguiente": siguiente,
                 "hora": hora,
@@ -1394,6 +1395,7 @@ def _cerrar_con_juicio(
                 "aprobadas": [list(x) for x in juicio.aprobadas],
                 "evidencia": juicio.evidencia,
                 "efectos_pendientes": list(juicio.efectos_pendientes),
+                "inspeccion_faltante": juicio.inspeccion_faltante,
                 "fase": enc.fase_activa,
                 "intento": enc.intento,
                 "hora": hora,
@@ -1465,12 +1467,21 @@ def _cerrar_con_juicio(
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if juicio.veredicto == "no_concluyente":
-        _devolver(
-            registro, enc, "investigar",
-            juicio.nota or "evidencia insuficiente para aprobar",
-            juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
-            hora, "no-concluyente",
-        )
+        if juicio.inspeccion_faltante:
+            _devolver(
+                registro, enc, "inspeccionar",
+                juicio.inspeccion_faltante,
+                "obtener por el buzon la inspeccion faltante y continuar "
+                "esta misma revision; el producto aprobado no se reabre",
+                hora, "inspeccion", rol="revisor",
+            )
+        else:
+            _devolver(
+                registro, enc, "investigar",
+                juicio.nota or "evidencia insuficiente para aprobar",
+                juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
+                hora, "no-concluyente",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
@@ -1944,6 +1955,43 @@ def _git(espacio: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _rama_de_fase(enc: Encargo, fase) -> str:
+    if fase is not None and fase.rama:
+        return fase.rama
+    if fase is None or len(enc.fases) <= 1:
+        return enc.entrega.rama
+    return f"{enc.entrega.rama}/{fase.id}"
+
+
+def _rama_fase(enc: Encargo) -> str:
+    return _rama_de_fase(enc, enc.fase_actual)
+
+
+def _base_fase(enc: Encargo) -> str:
+    fase = enc.fase_actual
+    if fase is None or len(enc.fases) <= 1:
+        return enc.entrega.base
+    base = enc.entrega.base
+    for dep_id, _version in fase.requiere:
+        dep = next((f for f in enc.fases if f.id == dep_id), None)
+        if dep is None:
+            continue
+        if dep.nivel_alcanzado in ("integrado", "desplegado"):
+            continue
+        base = _rama_de_fase(enc, dep)
+    return base
+
+
+def _ref_existente(espacio: Path, *candidatos: str) -> str:
+    for candidato in candidatos:
+        if not candidato:
+            continue
+        r = _git(espacio, "rev-parse", "--verify", "--quiet", f"{candidato}^{{commit}}")
+        if r.returncode == 0:
+            return candidato
+    return ""
+
+
 def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
     """El espacio de un encargo con entrega es un clon en la rama del encargo.
 
@@ -1958,7 +2006,33 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
         return f"no se pudo resolver el repositorio de entrega: {exc}"
     if (espacio / ".git").exists():
         r = _git(espacio, "remote", "set-url", "origin", repo.remoto)
-        return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
+        if r.returncode != 0:
+            return "no se pudo configurar el remoto de publicación"
+        rama = _rama_fase(enc)
+        actual = _git(espacio, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        if actual != rama:
+            dep = None
+            fase = enc.fase_actual
+            if fase is not None:
+                for dep_id, _version in fase.requiere:
+                    dep = next((f for f in enc.fases if f.id == dep_id), None)
+            inicio = _ref_existente(
+                espacio,
+                f"origin/{rama}",
+                rama,
+                dep.producto.sha_git if dep is not None and dep.producto else "",
+                f"origin/{_base_fase(enc)}",
+                f"origin/{enc.entrega.base}",
+            )
+            if not inicio:
+                return f"no se encontro la base para crear la rama {rama}"
+            r = _git(espacio, "checkout", "-B", rama, inicio)
+            if r.returncode != 0:
+                return (
+                    f"no se pudo crear la rama {rama} desde {inicio}: "
+                    f"{r.stderr.strip()[-300:]}"
+                )
+        return ""
     if version_producto(espacio).manifiesto:
         return (
             "el espacio ya tiene producto pero no es un clon del repo "
@@ -1979,11 +2053,14 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
     for entrada in clon.iterdir():
         entrada.replace(espacio / entrada.name)
     clon.rmdir()
-    r = _git(espacio, "checkout", "-B", enc.rama_entrega, f"origin/{enc.entrega.base}")
+    rama = _rama_fase(enc)
+    base = _base_fase(enc)
+    inicio = _ref_existente(espacio, f"origin/{base}", f"origin/{enc.entrega.base}")
+    r = _git(espacio, "checkout", "-B", rama, inicio or f"origin/{enc.entrega.base}")
     if r.returncode != 0:
         return (
-            f"no se pudo crear la rama {enc.rama_entrega} desde "
-            f"{enc.entrega.base}: {r.stderr.strip()[-300:]}"
+            f"no se pudo crear la rama {rama} desde "
+            f"{base}: {r.stderr.strip()[-300:]}"
         )
     r = _git(espacio, "remote", "set-url", "origin", repo.remoto)
     return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
@@ -2014,7 +2091,7 @@ def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
         if r.returncode != 0:
             return "", f"git commit fallo: {r.stderr.strip()[-300:]}"
     sha = _git(espacio, "rev-parse", "HEAD").stdout.strip()
-    r = _git(espacio, "push", "--quiet", "origin", enc.rama_entrega)
+    r = _git(espacio, "push", "--quiet", "origin", _rama_fase(enc))
     if r.returncode != 0:
         return "", f"git push fallo: {r.stderr.strip()[-300:]}"
     return sha, ""
@@ -2046,7 +2123,7 @@ def _disparar_deepseek(gh, enc: Encargo, espacio: Path, sha: str) -> None:
             archivo, texto = "ai-review-publish.yml", publish.stdout
         else:
             archivo, texto = "ai-review-worker.yml", worker.stdout
-        base = _git(espacio, "rev-parse", f"origin/{enc.entrega.base}").stdout.strip()
+        base = _git(espacio, "rev-parse", f"origin/{_base_fase(enc)}").stdout.strip()
         valores = {
             "pr_number": str(enc.pr_numero),
             "head_sha": sha,
@@ -2110,6 +2187,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         )
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return registro.fold(enc.id)
+    rama = _rama_fase(enc)
+    base = _base_fase(enc)
     for paso in ("commit", "push"):
         registro.anotar(
             enc.id,
@@ -2120,6 +2199,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "intento": enc.intento,
                     "paso": paso,
                     "repo": enc.entrega.repo,
+                    "rama": rama,
+                    "base": base,
                     "sha": sha,
                     "recibo": sha,
                     "hora": hora,
@@ -2127,11 +2208,42 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             },
             f"entrega:{enc.id}:{enc.fase_activa}:{paso}:{sha}",
         )
+    if not enc.pr_numero:
+        ref_base = _ref_existente(espacio, f"origin/{base}", base)
+        if ref_base:
+            conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}")
+            if conteo.returncode == 0 and conteo.stdout.strip() == "0":
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "entrega_externa",
+                        "data": {
+                            "fase": enc.fase_activa,
+                            "intento": enc.intento,
+                            "paso": "sin_cambios",
+                            "repo": enc.entrega.repo,
+                            "rama": rama,
+                            "base": base,
+                            "sha": sha,
+                            "recibo": sha,
+                            "evidencia": (
+                                f"fase {enc.fase_activa} sin cambios publicables "
+                                f"sobre {base}; se entrega el producto revisado "
+                                "como evidencia, sin PR"
+                            ),
+                            "hora": hora,
+                        },
+                    },
+                    f"entrega:{enc.id}:{enc.fase_activa}:sin_cambios:{sha}",
+                )
+                return _intentar_cierre(
+                    registro, registro.fold(enc.id) or enc, espacio, directorio, hora
+                )
     try:
         pr = gh.abrir_pr(
             enc.entrega.repo,
-            enc.rama_entrega,
-            enc.entrega.base,
+            rama,
+            base,
             f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
             f"Encargo {enc.id}. Revision independiente aprobada.",
         )
@@ -2145,6 +2257,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "intento": enc.intento,
                     "paso": "pr_abierto",
                     "repo": enc.entrega.repo,
+                    "rama": rama,
+                    "base": base,
                     "numero": numero,
                     "sha": pr.head or sha,
                     "recibo": str(numero),
@@ -2165,6 +2279,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "intento": enc.intento,
                     "paso": "pr_listo",
                     "repo": enc.entrega.repo,
+                    "rama": rama,
+                    "base": base,
                     "numero": numero,
                     "sha": sha,
                     "recibo": str(numero),
@@ -2183,6 +2299,34 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return registro.fold(enc.id)
     enc = registro.fold(enc.id)
+    try:
+        veredicto_ci = gh.checks(enc.entrega.repo, numero, sha, ())
+    except Exception as exc:
+        causa = f"no se pudieron leer los checks del PR #{numero}: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura de checks del mismo SHA",
+            hora, f"checks-leer-{sha[:12]}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return registro.fold(enc.id)
+    if not veredicto_ci.green:
+        if veredicto_ci.fallas:
+            _devolver(
+                registro, enc, "investigar",
+                "checks requeridos en rojo: " + ", ".join(veredicto_ci.fallas),
+                "corregir los checks requeridos en rojo del PR de esta fase; "
+                "lo aprobado que no cambio se conserva",
+                hora, f"checks-{sha[:12]}",
+            )
+        else:
+            marcar_espera(
+                registro, enc.id,
+                "esperando checks requeridos del PR "
+                f"#{numero}: {', '.join(veredicto_ci.faltan)}",
+                _reanuda_en(120), hora,
+            )
+        return registro.fold(enc.id)
     if enc.deepseek_sha != sha:
         try:
             comentarios = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
@@ -2462,6 +2606,19 @@ def _lanzar_uno(
                     + ". Emite el juicio con el formato pedido."
                 )
             contenido += "\n\n" + instrucciones_revision(alcance, resultado)
+            try:
+                recursos = capacidades.cargar(registro.base)
+            except capacidades.ConfigInvalida:
+                recursos = {}
+            necesidades.preparar(espacio, enc, token, recursos)
+            contenido += "\n\n" + necesidades.bloque_capacidades(espacio, recursos)
+            if enc.inspeccion_pendiente:
+                contenido += (
+                    "\n\nInspeccion pendiente de la vuelta anterior: "
+                    + enc.inspeccion_pendiente
+                    + ". Obtenla por el buzon si una capacidad concedida la resuelve "
+                    "y continua esta revision sobre la misma version."
+                )
         else:
             interno_de(espacio, crear=True)
             contenido = prompt_responsable(enc)

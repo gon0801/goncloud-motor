@@ -245,6 +245,7 @@ class GitHubPort(Protocol):
         self, repo: str, rama: str, base: str, titulo: str, cuerpo: str
     ) -> PrView: ...
     def marcar_listo(self, repo: str, numero: int) -> None: ...
+    def cambiar_base(self, repo: str, numero: int, base: str) -> None: ...
     def checks(
         self,
         repo: str,
@@ -350,7 +351,12 @@ class GhGitHub:
             )
         )
         if existentes:
-            return self._vista(repo, existentes[0]["number"])
+            numero = existentes[0]["number"]
+            vista = self._vista(repo, numero)
+            if vista.base != base:
+                self.cambiar_base(repo, numero, base)
+                vista = self._vista(repo, numero)
+            return vista
         for intento in range(REINTENTOS_PR):
             try:
                 url = self._gh(
@@ -381,6 +387,13 @@ class GhGitHub:
     def marcar_listo(self, repo, numero):
         if self._vista(repo, numero).borrador:
             self._gh("pr", "ready", str(numero), "-R", self.nombre(repo))
+
+    def cambiar_base(self, repo, numero, base):
+        if self._vista(repo, numero).base != base:
+            self._gh(
+                "pr", "edit", str(numero), "--base", base,
+                "-R", self.nombre(repo),
+            )
 
     @staticmethod
     def _paginas(texto: str) -> list:
@@ -662,6 +675,9 @@ class FakeGitHub:
                 "titulo": titulo,
             }
             self._guardar(s)
+        elif s["prs"][k]["base"] != base:
+            s["prs"][k]["base"] = base
+            self._guardar(s)
         return self._vista(repo, s["prs"][k])
 
     def _pr(self, s: dict, repo: str, numero: int) -> dict:
@@ -674,6 +690,13 @@ class FakeGitHub:
         s = self._cargar()
         self._pr(s, repo, numero)["borrador"] = False
         self._guardar(s)
+
+    def cambiar_base(self, repo, numero, base):
+        s = self._cargar()
+        pr = self._pr(s, repo, numero)
+        if pr["base"] != base:
+            pr["base"] = base
+            self._guardar(s)
 
     def _correr(self, repo: str, sha: str, cmd: str) -> bool:
         with tempfile.TemporaryDirectory() as t:

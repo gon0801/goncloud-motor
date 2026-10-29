@@ -206,7 +206,9 @@ class Fase:
     pr_sha: str = ""
     deepseek_sha: str = ""
     rama: str = ""
+    base: str = ""
     evidencia: str = ""
+    inspeccion_pendiente: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -235,7 +237,9 @@ class Fase:
             "pr": {"numero": self.pr_numero, "sha": self.pr_sha},
             "deepseek": {"sha": self.deepseek_sha, "leida": bool(self.deepseek_sha)},
             "rama": self.rama,
+            "base": self.base,
             "evidencia": self.evidencia,
+            "inspeccion_pendiente": self.inspeccion_pendiente,
         }
 
 
@@ -472,6 +476,11 @@ class Encargo:
             return fase.rama
         return self.entrega.rama
 
+    @property
+    def inspeccion_pendiente(self) -> str:
+        fase = self.fase_actual
+        return fase.inspeccion_pendiente if fase else ""
+
     def fases_preparadas(self) -> tuple[Fase, ...]:
         return tuple(f for f in self.fases if f.estado == "preparada")
 
@@ -676,6 +685,8 @@ def revision_independiente_cubre_producto(e: Encargo) -> bool:
 
 
 def nivel_cumplido(e: Encargo) -> bool:
+    if e.nivel_alcanzado == "sin_cambios":
+        return e.revisado is not None
     return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(
         e.entrega.nivel, 1
     )
@@ -1629,6 +1640,11 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
         revision_vigente=ref if origen != "deepseek" else fase.revision_vigente,
         deepseek_vigente=ref if origen == "deepseek" else fase.deepseek_vigente,
         estado=estado,
+        inspeccion_pendiente=(
+            str(d.get("inspeccion_faltante") or "").strip()
+            if veredicto == "no_concluyente"
+            else ""
+        ),
     )
     cambios = {
         "ultimo_hecho": f"revisión {origen}: {veredicto}",
@@ -1656,7 +1672,9 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         candidato = "integrado"
     elif paso == "desplegado":
         candidato = "desplegado"
-    if _ORDEN_NIVEL.get(candidato, 0) < _ORDEN_NIVEL.get(fase.nivel_alcanzado, 0):
+    elif paso == "sin_cambios":
+        candidato = "sin_cambios"
+    if paso != "sin_cambios" and _ORDEN_NIVEL.get(candidato, 0) < _ORDEN_NIVEL.get(fase.nivel_alcanzado, 0):
         candidato = fase.nivel_alcanzado
     producto = fase.producto
     if paso == "commit" and producto is not None and sha:
@@ -1669,6 +1687,13 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         if paso in ("commit", "push", "pr_abierto", "pr_listo") and sha
         else fase.pr_sha,
         deepseek_sha=sha if paso == "deepseek_leido" and sha else fase.deepseek_sha,
+        rama=str(d.get("rama") or fase.rama),
+        base=str(d.get("base") or fase.base),
+        evidencia=(
+            str(d.get("evidencia") or fase.evidencia)
+            if paso == "sin_cambios"
+            else fase.evidencia
+        ),
         producto=producto,
         estado="entrega" if fase.estado in ("revision", "entrega") else fase.estado,
     )
