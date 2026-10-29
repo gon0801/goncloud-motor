@@ -756,6 +756,16 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             viva_responsable=False,
             epoca_responsable=e.epoca_responsable + 1,
         )
+    if kind == "conductor_fase":
+        fase = str(d.get("fase") or "")
+        token = str(d.get("token") or "")
+        if not fase:
+            raise TransicionIlegal("asociación sin fase")
+        if e.conductor and token != e.conductor:
+            raise TransicionIlegal("la asociación no corresponde al conductor")
+        if e.fases and fase != FASE_IMPLICITA and all(f.id != fase for f in e.fases):
+            raise TransicionIlegal("asociación a una fase inexistente")
+        return e
     if kind == "fases":
         return _adoptar_fases(e, d, hora)
     if kind == "producto_listo":
@@ -1097,6 +1107,17 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     )
 
 
+def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
+    """Conserva el paso de una fase iniciada; activa al implementador solo
+    cuando hay que empezar una fase o corregir un defecto."""
+    if fase.estado in ("revision", "entrega"):
+        if bloqueantes_abiertos(e):
+            return "responsable", e.estrategia
+        rol = "revisor" if fase.estado == "revision" else (e.rol or "revisor")
+        return rol, e.estrategia
+    return "responsable", "investigar"
+
+
 def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     accion = d["accion"]
     if accion == "parar":
@@ -1130,16 +1151,17 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             raise TransicionIlegal("continuar espera el estado detenido")
         disponible = _fase_disponible(e.fases)
         if disponible is not None:
+            rol, estrategia = _rol_de_continuacion(e, disponible)
             return replace(
                 e,
                 estado="recibido",
                 fase_activa=disponible.id,
-                rol="responsable",
-                estrategia="investigar",
+                rol=rol,
+                estrategia=estrategia,
                 intentos_nuevos=True,
                 escrituras=e.autoridad,
                 motivo="",
-                siguiente=f"trabajar la fase {disponible.id}",
+                siguiente=f"continuar la fase {disponible.id}",
                 ultimo_hecho="se continuó el encargo",
                 hora=hora or e.hora,
                 proc=None,
