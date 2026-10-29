@@ -846,21 +846,24 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
     )
     hallazgos = _fusionar(e.hallazgos, nuevos)
     veredicto = str(d.get("veredicto") or "no_concluyente")
+    alcance = str(d.get("alcance") or "completa")
+    if alcance == "correccion" and e.revisado is None:
+        veredicto = "no_concluyente"
     provisional = replace(e, hallazgos=hallazgos)
-    if bloqueantes_abiertos(provisional, origen):
+    if veredicto != "no_concluyente" and bloqueantes_abiertos(provisional, origen):
         veredicto = "cambios"
     ref = RefRevision(
         revision_id=str(d.get("revision_id") or ""),
         version=str(d.get("version") or ""),
         base_version=str(d.get("base_version") or ""),
-        alcance=str(d.get("alcance") or "completa"),
+        alcance=alcance,
         veredicto=veredicto,
         revisor=str(d.get("revisor") or ""),
         origen=origen,
         cubre=tuple(str(x) for x in (d.get("cubre") or ())),
     )
     aprobadas = e.aprobadas
-    if d.get("aprobadas") is not None:
+    if veredicto != "no_concluyente" and d.get("aprobadas") is not None:
         aprobadas = tuple(
             (str(x[0]), str(x[1]))
             for x in (d.get("aprobadas") or ())
@@ -869,6 +872,7 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
     revisado = e.revisado
     if (
         origen == "independiente"
+        and veredicto != "no_concluyente"
         and e.producto is not None
         and ref.version == e.producto.firma
     ):

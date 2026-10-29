@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .repositorios import resolver_repositorio
 from .workspace import git
 
 
@@ -304,8 +305,10 @@ class GhGitHub:
 
     @staticmethod
     def nombre(repo: str) -> str:
-        r = repo.removesuffix(".git")
-        return r.split("github.com/")[-1] if "github.com/" in r else r.split(":")[-1]
+        nombre = resolver_repositorio(repo).github
+        if nombre is None:
+            raise ValueError("el repositorio local no tiene un remoto GitHub configurado")
+        return nombre
 
     def _vista(self, repo: str, numero: int) -> PrView:
         d = json.loads(
