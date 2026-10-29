@@ -1144,6 +1144,16 @@ def _aplica_entrega(enc: Encargo) -> bool:
         return False
     if enc.revision_vigente.veredicto != "aprobado":
         return False
+    fase = enc.fase_actual
+    if (
+        fase is not None
+        and fase.entrega_bloqueada_sha
+        and enc.producto is not None
+        and fase.entrega_bloqueada_sha == enc.producto.sha_git
+    ):
+        # La aprobación se conserva; sólo deja de ser aplicable a la entrega
+        # mientras el producto vigente siga en rojo.
+        return False
     if not bloqueantes_abiertos(enc):
         return _revision_aprobada_vigente(enc)
     if bloqueantes_abiertos(enc, "independiente"):
@@ -2458,6 +2468,21 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     if not veredicto_ci.green:
         if veredicto_ci.fallas:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_bloqueada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "sha": sha,
+                        "causa": "checks requeridos en rojo: "
+                        + ", ".join(veredicto_ci.fallas),
+                        "hora": hora,
+                    },
+                },
+                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}",
+            )
             _devolver(
                 registro, enc, "investigar",
                 "checks requeridos en rojo: " + ", ".join(veredicto_ci.fallas),

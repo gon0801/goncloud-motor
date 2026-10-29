@@ -210,6 +210,7 @@ class Fase:
     evidencia: str = ""
     inspeccion_pendiente: str = ""
     inspeccion_solicitud: str = ""
+    entrega_bloqueada_sha: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -1032,6 +1033,16 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         )
     if kind == "entrega_externa":
         return _entrega_externa(e, d, hora)
+    if kind == "entrega_bloqueada":
+        e = _fase_de_evento(e, d)
+        fase = e.fase_actual
+        if fase is None:
+            raise TransicionIlegal("no hay fase para la entrega bloqueada")
+        return replace(
+            con_fase(e, replace(fase, entrega_bloqueada_sha=str(d.get("sha") or ""))),
+            ultimo_hecho=str(d.get("causa") or "entrega bloqueada por checks en rojo"),
+            hora=hora or e.hora,
+        )
     if kind == "sin_progreso":
         huella = str(d.get("huella") or "")
         veces = e.sin_progreso + 1 if huella and huella == e.bloqueo_huella else 1
