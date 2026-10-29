@@ -263,6 +263,7 @@ def _respuesta(
     alternativa: str = "",
     pregunta: str = "",
     respuesta: str = "",
+    espacio: Path | None = None,
 ) -> dict:
     doc: dict[str, object] = {
         "id": sol.id,
@@ -285,6 +286,18 @@ def _respuesta(
     if len(texto) > MAX_RESPUESTA:
         doc.pop("datos", None)
         doc["recortado"] = "la respuesta completa quedó en la evidencia"
+        if datos is not None and espacio is not None:
+            destino = Path(espacio) / ENTREGAS / sol.id / "datos.json"
+            try:
+                capacidades._escribir_seguro(
+                    destino,
+                    json.dumps(datos, ensure_ascii=False, default=str).encode("utf-8"),
+                    raiz=Path(espacio),
+                )
+                doc["recortado"] = f"la respuesta completa quedó en {destino}"
+                doc["datos_archivo"] = str(destino)
+            except (OSError, ValueError):
+                pass
     return doc
 
 
@@ -327,6 +340,7 @@ def _respuesta_de_registro(
         motivo=sol.detalle,
         pregunta=sol.pregunta,
         respuesta=sol.respuesta,
+        espacio=espacio,
     )
 
 
@@ -480,6 +494,22 @@ def _mismo_contenido(a: Path, b: Path) -> bool:
         return False
 
 
+def _copiar_seguro(origen: Path, destino: Path, raiz: Path) -> None:
+    destino = capacidades._padre_seguro(destino, raiz)
+    try:
+        destino.unlink()
+    except FileNotFoundError:
+        pass
+    banderas = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(destino, banderas, 0o600)
+    with os.fdopen(fd, "wb") as salida, open(origen, "rb") as entrada:
+        while True:
+            bloque = entrada.read(1024 * 1024)
+            if not bloque:
+                break
+            salida.write(bloque)
+
+
 def _publicar_snapshot(
     espacio: Path, sol: Solicitud, resultado: dict, directorio: Path
 ) -> dict:
@@ -503,7 +533,7 @@ def _publicar_snapshot(
     if not copia.is_file() or not _mismo_contenido(copia, origen):
         temporal = copia.with_name(copia.name + ".tmp")
         try:
-            capacidades._escribir_seguro(temporal, origen.read_bytes(), raiz=espacio)
+            _copiar_seguro(origen, temporal, espacio)
             os.replace(temporal, copia)
         except (OSError, ValueError) as exc:
             return {
@@ -878,6 +908,7 @@ def atender(
                     datos=resultado.get("datos"),
                     motivo=resultado.get("motivo", ""),
                     alternativa=resultado.get("alternativa", ""),
+                    espacio=espacio,
                 ),
                 preservar=estado != "registrada",
             )
@@ -1050,6 +1081,7 @@ def atender(
                 datos=resultado.get("datos"),
                 motivo=str(resultado.get("motivo") or ""),
                 alternativa=str(resultado.get("alternativa") or ""),
+                espacio=espacio,
             ),
         )
         _archivar(path)
