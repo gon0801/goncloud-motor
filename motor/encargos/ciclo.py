@@ -1384,9 +1384,29 @@ def _ligar_inspeccion(
     if fase is None:
         return
     ident = _id_inspeccion(enc, juicio)
-    if fase.inspeccion_solicitud == ident or any(
-        s.id == ident for s in enc.solicitudes
-    ):
+    if fase.inspeccion_solicitud == ident:
+        return
+    previa = next((s for s in enc.solicitudes if s.id == ident), None)
+    if previa is not None:
+        if fase.inspeccion_entregada == marca_inspeccion_entregada(previa):
+            # La respuesta de esa solicitud ya se entregó y consumió: el mismo
+            # pedido no re-liga ni gasta otra entrega.
+            return
+        # El juicio vuelve a pedir una inspección cuya respuesta existe pero no
+        # se entregó a esta vuelta: se re-liga para que el próximo turno la reciba.
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "inspeccion_solicitud",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "solicitud": ident,
+                    "hora": hora,
+                },
+            },
+            f"inspeccion:{enc.id}:{enc.fase_activa}:{ident}:{enc.generacion}",
+        )
         return
     registro.anotar(
         enc.id,
@@ -1399,7 +1419,7 @@ def _ligar_inspeccion(
                 "hora": hora,
             },
         },
-        f"inspeccion:{enc.id}:{enc.fase_activa}:{ident}",
+        f"inspeccion:{enc.id}:{enc.fase_activa}:{ident}:{enc.generacion}",
     )
     enc = registro.fold(enc.id) or enc
     try:
@@ -1955,23 +1975,92 @@ def _incorporar_responsable(
     return registro.fold(enc.id)
 
 
-def _juicio_repite_inspeccion(enc: Encargo, directorio: Path) -> bool:
-    """Un pedido corregido (otra identidad) es información nueva y se consume
-    aunque la solicitud anterior ya tenga su respuesta entregada.
-    """
-    fase = enc.fase_actual
-    if fase is None or not fase.inspeccion_solicitud:
-        return True
+def _juicio_de_referencia(enc: Encargo, directorio: Path):
+    """El juicio que la referencia señala, o None si no se puede leer."""
     try:
         referencia = json.loads(
             (directorio / "revision.json").read_text(encoding="utf-8")
         )
-        resultado = leer_juicio(Path(referencia["resultado"]), alcance_de(enc))
+        return leer_juicio(Path(referencia["resultado"]), alcance_de(enc))
     except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _juicio_repite_inspeccion(enc: Encargo, directorio: Path) -> bool:
+    """Un pedido corregido (otra identidad) es información nueva y se consume
+    aunque la solicitud anterior ya tenga su respuesta entregada. Repite cuando
+    la identidad es la ligada, o coincide con otra solicitud de inspección cuya
+    respuesta ya se entregó (la marca vigente de la fase).
+    """
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_solicitud:
         return True
+    resultado = _juicio_de_referencia(enc, directorio)
     if not isinstance(resultado, JuicioValidado):
         return True
-    return _id_inspeccion(enc, resultado) == fase.inspeccion_solicitud
+    ident = _id_inspeccion(enc, resultado)
+    if ident == fase.inspeccion_solicitud:
+        return True
+    otra = next((s for s in enc.solicitudes if s.id == ident), None)
+    return (
+        otra is not None
+        and fase.inspeccion_entregada == marca_inspeccion_entregada(otra)
+    )
+
+
+def _salta_inspeccion(
+    registro: Registro, enc: Encargo, directorio: Path, hora: str
+) -> bool:
+    """True cuando el juicio presente no debe consumirse como revisión.
+
+    Un turno muerto no produce juicio: la referencia sigue señalando el que
+    una incorporación anterior ya consumió y no se gasta nada, con el gate
+    abierto para relanzar con el mismo dato. Un juicio que re-declara el
+    pedido ligado acredita que la respuesta entregada se consumió: se anota
+    la marca y tampoco gasta revisión.
+    """
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_pendiente:
+        return False
+    resultado = _juicio_de_referencia(enc, directorio)
+    if not isinstance(resultado, JuicioValidado):
+        return inspeccion_bloquea(enc) and _juicio_repite_inspeccion(
+            enc, directorio
+        )
+    if (
+        registro.por_ukey(
+            "revision-dato:"
+            f"{enc.id}:{enc.fase_activa}:{enc.generacion}:{resultado.version}"
+        )
+        is not None
+    ):
+        return True
+    ident = _id_inspeccion(enc, resultado)
+    if ident != fase.inspeccion_solicitud:
+        otra = next((s for s in enc.solicitudes if s.id == ident), None)
+        return (
+            otra is not None
+            and fase.inspeccion_entregada == marca_inspeccion_entregada(otra)
+        )
+    sol = next((s for s in enc.solicitudes if s.id == ident), None)
+    if sol is not None and sol.estado not in ("pendiente", "pregunta"):
+        marca = marca_inspeccion_entregada(sol)
+        if fase.inspeccion_entregada != marca:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "inspeccion_entregada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "solicitud": sol.id,
+                        "marca": marca,
+                        "hora": hora,
+                    },
+                },
+                f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
+            )
+    return True
 
 
 def _incorporar_revisor(
@@ -1983,7 +2072,7 @@ def _incorporar_revisor(
 ) -> Encargo:
     from motor.runwrap import _publica
 
-    if inspeccion_bloquea(enc) and _juicio_repite_inspeccion(enc, directorio):
+    if _salta_inspeccion(registro, enc, directorio, hora):
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     ref_path = directorio / "revision.json"
@@ -3050,35 +3139,6 @@ def _lanzar_uno(
                     "por el buzon: " + resuelta
                     + ". Continua esta revision sobre la misma version con ese dato."
                 )
-                fase_info = enc.fase_actual
-                sol_info = (
-                    next(
-                        (
-                            s
-                            for s in enc.solicitudes
-                            if s.id == fase_info.inspeccion_solicitud
-                        ),
-                        None,
-                    )
-                    if fase_info is not None
-                    else None
-                )
-                if sol_info is not None:
-                    marca = marca_inspeccion_entregada(sol_info)
-                    registro.anotar(
-                        enc.id,
-                        {
-                            "kind": "inspeccion_entregada",
-                            "data": {
-                                "fase": enc.fase_activa,
-                                "intento": enc.intento,
-                                "solicitud": sol_info.id,
-                                "marca": marca,
-                                "hora": hora,
-                            },
-                        },
-                        f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
-                    )
         else:
             interno_de(espacio, crear=True)
             contenido = prompt_responsable(enc)
