@@ -185,7 +185,6 @@ class BlockView:
     checks_ts: dict[str, float] = field(default_factory=dict)
     verified_ts: dict[str, float] = field(default_factory=dict)
     nota_ts: float = 0.0
-    pruebas_sin_marca: tuple[str, ...] = ()
     relanzadas_saltadas: set[str] = field(default_factory=set)
     politica_bloquea: dict[str, dict] = field(default_factory=dict)
     temporales: dict[str, tuple[float, float]] = field(
@@ -458,13 +457,6 @@ def fold(plan: Plan, events: list[Event], maquina: str | None = None) -> Snapsho
                                 and dep.get("codigo") != 75
                             )
                         )
-                    if (
-                        a.role == "implementar"
-                        and d["outcome"].get("kind") == "entregado"
-                    ):
-                        bv.pruebas_sin_marca = tuple(
-                            d["outcome"].get("pruebas_sin_marca") or ()
-                        )
                     if a.role == "implementar" and (
                         a.modalidad != "aclarar"
                         or d["outcome"].get("kind")
@@ -626,7 +618,7 @@ def _aclaracion_resuelta(outcome: dict) -> bool:
 
 
 def _bloqueantes(review: dict) -> list[dict]:
-    """Regla 4 de quality-kit: solo bloquea lo que trae comando que lo reproduce."""
+    """Hallazgos con una reproducción que permite comprobar el problema."""
     return [b for b in review.get("bloqueantes", []) if b.get("repro", "").strip()]
 
 
@@ -1446,12 +1438,7 @@ def decide(
                         (
                             (
                                 "aviso",
-                                b.aviso
-                                + (
-                                    ". Agregó archivos de prueba sin la marca de pruebas"
-                                    if bv.pruebas_sin_marca
-                                    else ""
-                                ),
+                                b.aviso,
                             ),
                             ("n", str(hechos)),
                             ("total", str(len(snap.blocks))),

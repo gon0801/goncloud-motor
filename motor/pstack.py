@@ -1,8 +1,7 @@
 """El motor pide y comprueba pstack. Todo lo de "usar pstack" que no toca disco ni procesos.
 
 - `huella(fuente, formato)`: qué hizo el agente, sacado de SU registro (nunca de su resultado).
-- `juzga(huella, exigencia)`: `Cumple` o `Falta` con lo que faltó en lenguaje llano. Lo único que
-  se juzga es mecánico y visible en cualquier registro: cuántos subagentes lanzó.
+- `juzga(huella, exigencia)`: informa si el registro es verificable, sin cuotas de subagentes.
 - `instrucciones(exigencia, cli)`: la sección "Cómo trabajas" del encargo; sale de la misma
   exigencia que luego juzga, así lo que se pide y lo que se comprueba no se separan.
 - `FORMATOS`: una fila por CLI con el aspecto, en su registro, de lanzar un subagente y correr un
@@ -38,7 +37,7 @@ class Exigencia:
 
     skills: tuple[str, ...] = (SKILL_BASE,)
     playbook: bool = False
-    min_subagentes: int = 0
+    min_subagentes: int = 0  # compatibilidad con configuraciones anteriores; no exige cantidades
 
     def to_dict(self) -> dict:
         return {
@@ -419,12 +418,6 @@ def huella(fuente: str | Iterable[str] | None, formato: str) -> Huella:
 def juzga(h: Huella, e: Exigencia) -> Cumple | Falta:
     if not h.legible:
         return Cumple(verificable=False)
-    if len(h.subagentes) < e.min_subagentes:
-        return Falta(
-            (
-                f"lanzó {len(h.subagentes)} subagente(s) y se pedían al menos {e.min_subagentes}",
-            )
-        )
     return Cumple()
 
 
@@ -435,16 +428,11 @@ def instrucciones(e: Exigencia, cli: str) -> str:
         "Las guías que pide este intento van completas en «## Anexo: tus guías», al final del "
         "encargo. Las rutas que una guía menciona son relativas a la carpeta de esa guía.",
     ]
-    if e.min_subagentes:
-        linea = (
-            f"Lanza al menos {e.min_subagentes} subagente(s) con la herramienta de subagentes de "
-            "tu CLI."
-        )
-        if cli == "kimi":
-            linea += (
-                " Cada elemento de `items` de `AgentSwarm` cuenta como un subagente."
-            )
-        pasos.append(linea)
+    pasos.append(
+        "Aplica poteto-mode y elige las skills, herramientas y apoyos que aporten evidencia "
+        "al pedido y a sus riesgos. Justifica las comprobaciones y revisiones por lo que "
+        "demuestran y conserva la evidencia que sigue siendo válida."
+    )
     pasos.append(
         "El motor juzga lo que haces, no lo que lees: lo que solo digas no cuenta."
     )

@@ -30,7 +30,6 @@ from dataclasses import dataclass, field
 
 LANES = ("fast", "gate", "release")
 HUMAN_KINDS = ("login", "2fa", "captcha", "pago")
-PRUEBAS = ("dinero", "datos", "instala", "falla")
 
 
 @dataclass(frozen=True)
@@ -70,7 +69,7 @@ class Block:
         str, ...
     ] = ()  # checks que el plan exige además de la protección de la rama
     tipo: str = ""  # "bug" si el bloque arregla un bug
-    pruebas: str = ""  # dinero | datos | instala | falla; vacío = sin marca
+    pruebas: str = ""  # contexto de comprobación indicado en el pedido
 
     @property
     def es_bug(self) -> bool:
@@ -342,7 +341,8 @@ def parse_plan(
     modelos: set[str] | None = None,
 ) -> Plan:
     """Lee el plan y lo valida entero. Devuelve Plan o lanza PlanError con TODOS los errores.
-    Con `modelos` (los de la conf) también revisa que existan los que pide `implementa:`/`revisa:`."""
+    Con `modelos` (los de la conf) también revisa que existan los que pide `implementa:`/`revisa:`.
+    Acepta los argumentos antiguos de cantidad de implementadores sin imponer una cuota."""
     titulo, plan_id, autopiloto, repo_plan = "", "", "", ""
     implementa: tuple[str, ...] = ()
     revisa: tuple[str, ...] = ()
@@ -447,11 +447,7 @@ def parse_plan(
             errores.append(
                 f"bloque {d.id}: un bloque fast no lleva 'despliegue:'"
             )
-        pruebas = f.get("pruebas", "").strip().lower()
-        if pruebas and pruebas not in PRUEBAS:
-            errores.append(
-                f"bloque {d.id}: pruebas debe ser una de {PRUEBAS}, no {pruebas!r}"
-            )
+        pruebas = f.get("pruebas", "").strip()
         if lane == "fast" and _entra_por_ssh(f.get("prueba-real", "")):
             errores.append(
                 f"bloque {d.id}: un bloque fast no lleva 'prueba-real' que entre por ssh a otra máquina"
@@ -521,11 +517,6 @@ def parse_plan(
         errores.append(
             "'revisa:' necesita al menos un modelo que no esté en 'implementa:'; "
             "nadie revisa su propio trabajo"
-        )
-    if not implementa and min_implementadores and implementadores < min_implementadores:
-        errores.append(
-            f"la política tiene {implementadores} implementador(es); se exigen {min_implementadores} "
-            "para que una cuota agotada no detenga el plan"
         )
     plan = Plan(
         id=plan_id,

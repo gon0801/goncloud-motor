@@ -202,18 +202,15 @@ def _por_conciliar(eventos) -> list[str]:
 
 
 def _valida(path: Path, home: Path | None):
-    impl, modelos, tabla = 0, None, ()
+    modelos, tabla = None, ()
     if home and (home / "maquina.toml").exists():
         conf = load_conf(load_maquina(home).conf)
-        impl, modelos, tabla = (
-            len(conf.escalera("implementar")),
+        modelos, tabla = (
             set(conf.rutas),
             conf.escalera("implementar"),
         )
     plan = parse_plan(
         path.read_text(encoding="utf-8"),
-        min_implementadores=2 if home else 0,
-        implementadores=impl,
         modelos=modelos,
     )
     if tabla and (malos := revisa_sin_quien(plan, tabla)):

@@ -295,28 +295,16 @@ def _term_pid(pid: int) -> None:
             return
 
 
-CASOS_PRUEBAS = {
-    "dinero": "dinero (pujas, precios, presupuestos o cobros)",
-    "datos": "datos (escribir datos de producción)",
-    "instala": "instala (instalar, borrar o deshacer en las máquinas)",
-    "falla": "falla (una falla que ya pasó en producción)",
-}
-
-
 def texto_pruebas(block, revisar: bool = False) -> str:
-    marca = getattr(block, "pruebas", "")
-    if marca:
-        caso = CASOS_PRUEBAS.get(marca, marca)
-        if revisar:
-            return (
-                f"Marca de pruebas: este bloque lleva `pruebas: {marca}`, el caso {caso}; va UNA prueba."
-            )
-        return (
-            f"Marca de pruebas: este bloque lleva `pruebas: {marca}`, el caso {caso}. Escribe UNA prueba."
-        )
-    if revisar:
-        return "No pidas pruebas nuevas; lo que falte va en notas."
-    return "No escribas pruebas nuevas: basta comprobar que corre."
+    contexto = getattr(block, "pruebas", "")
+    pedido = f"Contexto de pruebas del pedido: {contexto}. " if contexto else ""
+    accion = "Evalúa" if revisar else "Elige"
+    return (
+        f"{pedido}{accion} pruebas, verificaciones y revisiones que aporten evidencia útil "
+        "al comportamiento solicitado y al riesgo del cambio. Explica qué demuestra cada "
+        "comprobación y el impacto real de cada hallazgo. Conserva la evidencia válida "
+        "y repite el trabajo cuando exista un motivo concreto."
+    )
 
 
 def inputs_de_workflow(texto: str) -> list[tuple[str, bool]]:
@@ -345,21 +333,6 @@ def inputs_de_workflow(texto: str) -> list[tuple[str, bool]]:
                 if not re.match(r"^\s{4}\S", linea):
                     break
     return out
-
-
-def es_archivo_prueba(ruta: str) -> bool:
-    partes = [p.lower() for p in ruta.replace("\\", "/").split("/") if p]
-    if not partes:
-        return False
-    nombre = partes[-1]
-    return (
-        any(p in ("tests", "test", "__tests__") for p in partes[:-1])
-        or nombre.startswith("test_")
-        or nombre.startswith("test")
-        and nombre.endswith(".py")
-        or "_test." in nombre
-        or ".test." in nombre
-    )
 
 
 @dataclass
@@ -1419,22 +1392,6 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             "resumen": str(res.get("resumen", ""))[:500],
             **self._aclaracion_entregada(att, res),
         }
-        if not getattr(block, "pruebas", ""):
-            try:
-                rc2 = self.repo_conf(snap, block.repo)
-                espejo = self.cx.ws.espejo(block.repo)
-                base = git(
-                    "merge-base", f"origin/{rc2.principal}", punta, cwd=espejo
-                ).stdout.strip()
-                if base:
-                    diff = git(
-                        "diff", "--name-only", "--diff-filter=A", base, punta, cwd=espejo
-                    ).stdout
-                    nuevas = [x for x in diff.splitlines() if es_archivo_prueba(x)]
-                    if nuevas:
-                        entregado["pruebas_sin_marca"] = nuevas
-            except Exception:  # noqa: BLE001 - anotar nunca frena una entrega
-                pass
         return entregado
 
     @staticmethod

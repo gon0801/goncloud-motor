@@ -3609,9 +3609,10 @@ def _lanzar_uno(
                 contenido += (
                     "\n\nLee poteto-mode en " + str(skill)
                     + ". Sus referencias estan en el paquete local. Adapta a herramientas nativas. "
-                    "Las instrucciones del usuario prevalecen. Este encargo usa un unico agente "
-                    "sin delegacion ni Cursor. No apliques cantidades fijas, nuevos gates ni "
-                    "pruebas fuera de los casos autorizados."
+                    "Las instrucciones del usuario prevalecen. Usa las skills, herramientas y apoyos "
+                    "que aporten al pedido con los accesos concedidos. Elige pruebas y revisiones "
+                    "segun el comportamiento, el riesgo y la evidencia que haga falta. Conserva lo "
+                    "ya comprobado y repitelo cuando exista un motivo concreto."
                 )
             _publica(prompt, contenido)
             lanzado = lanzador(enc, prompt, espacio, sesion)
