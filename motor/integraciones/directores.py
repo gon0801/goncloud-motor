@@ -660,6 +660,7 @@ def _ejecutar_transporte(
     env = os.environ.copy()
     env.update(
         {
+            "PYTHONIOENCODING": "utf-8",
             "MOTOR_AVISO_ID": str(aviso.get("id") or ""),
             "MOTOR_AVISO_ENCARGO": str(aviso.get("encargo") or ""),
             "MOTOR_AVISO_CANAL": str(aviso.get("canal") or ""),
@@ -697,6 +698,7 @@ def _conciliar_transporte(
     env = os.environ.copy()
     env.update(
         {
+            "PYTHONIOENCODING": "utf-8",
             "MOTOR_AVISO_ID": str(aviso.get("id") or ""),
             "MOTOR_AVISO_ENCARGO": str(aviso.get("encargo") or ""),
             "MOTOR_AVISO_CANAL": str(aviso.get("canal") or ""),

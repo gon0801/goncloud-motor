@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -26,31 +27,39 @@ class RecuperacionFase5(unittest.TestCase):
             sink = raiz / "transporte.py"
             sink.write_text(
                 "import json,sys\nfrom pathlib import Path\n"
-                "datos=sys.stdin.buffer.read()\ndatos.decode('utf-8')\n"
-                "Path(sys.argv[1]).write_bytes(datos)\n"
                 f"respuesta={{'recibo':{recibo!r}}}\n"
-                "sys.stdout.buffer.write(json.dumps(respuesta,ensure_ascii=False).encode('utf-8'))\n",
+                "if sys.argv[2]=='texto':\n"
+                " datos=sys.stdin.read()\n"
+                " Path(sys.argv[1]).write_text(datos,encoding='utf-8')\n"
+                " print(json.dumps(respuesta,ensure_ascii=False))\n"
+                "else:\n"
+                " datos=sys.stdin.buffer.read()\n datos.decode('utf-8')\n"
+                " Path(sys.argv[1]).write_bytes(datos)\n"
+                " sys.stdout.buffer.write(json.dumps(respuesta,ensure_ascii=False).encode('utf-8'))\n",
                 encoding="utf-8",
             )
             aviso = {"id": "av_unicode", "encargo": "enc_temporal", "canal": "local"}
             try:
-                for n, cuerpo in enumerate(("Operación completada. Próxima revisión.", "Revisión completada 🚀")):
-                    envio = raiz / f"envio-{n}.txt"
-                    comando = [sys.executable, "-B", "-X", "utf8=0", str(sink), str(envio)]
-                    with self.subTest(operacion="enviar", cuerpo=cuerpo):
-                        self.assertEqual(
-                            directores._ejecutar_transporte(reg, comando, aviso, cuerpo),
-                            (recibo, ""),
-                        )
-                        self.assertEqual(envio.read_bytes(), cuerpo.encode("utf-8"))
-                    conciliacion = raiz / f"conciliacion-{n}.txt"
-                    comando[-1] = str(conciliacion)
-                    with self.subTest(operacion="conciliar", cuerpo=cuerpo):
-                        self.assertEqual(
-                            directores._conciliar_transporte(reg, comando, aviso, cuerpo),
-                            ("hallado", recibo),
-                        )
-                        self.assertEqual(conciliacion.read_bytes(), cuerpo.encode("utf-8"))
+                with patch.dict(os.environ):
+                    os.environ.pop("PYTHONIOENCODING", None)
+                    for modo in ("buffer", "texto"):
+                        for n, cuerpo in enumerate(("Operación completada. Próxima revisión.", "Revisión completada 🚀")):
+                            envio = raiz / f"envio-{modo}-{n}.txt"
+                            comando = [sys.executable, "-B", "-X", "utf8=0", str(sink), str(envio), modo]
+                            with self.subTest(operacion="enviar", cuerpo=cuerpo, io=modo):
+                                self.assertEqual(
+                                    directores._ejecutar_transporte(reg, comando, aviso, cuerpo),
+                                    (recibo, ""),
+                                )
+                                self.assertEqual(envio.read_bytes(), cuerpo.encode("utf-8"))
+                            conciliacion = raiz / f"conciliacion-{modo}-{n}.txt"
+                            comando[-2] = str(conciliacion)
+                            with self.subTest(operacion="conciliar", cuerpo=cuerpo, io=modo):
+                                self.assertEqual(
+                                    directores._conciliar_transporte(reg, comando, aviso, cuerpo),
+                                    ("hallado", recibo),
+                                )
+                                self.assertEqual(conciliacion.read_bytes(), cuerpo.encode("utf-8"))
             finally:
                 reg.close()
 
