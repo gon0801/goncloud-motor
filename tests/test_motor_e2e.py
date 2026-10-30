@@ -1745,8 +1745,8 @@ class TestPstack(BancoPstack):
                 encoding="utf-8"
             )
         )
-        self.assertEqual((h["estado"], h["exigir"]), ("falta", False))
-        self.assertEqual(h["faltas"], ["lanzó 0 subagente(s) y se pedían al menos 1"])
+        self.assertEqual((h["estado"], h["exigir"]), ("cumple", False))
+        self.assertEqual(h["faltas"], [])
         h = json.loads(
             (self.intentos("revisar")[0] / "huella.json").read_text(encoding="utf-8")
         )
@@ -1795,7 +1795,7 @@ class TestPstack(BancoPstack):
             brief.endswith(ultima.strip() + "\n\n"), f"{rol}: el anexo es lo último"
         )
 
-    def test_exigir_rechaza_con_sin_pstack_y_el_siguiente_intento_sabe_por_que(self):
+    def test_exigir_no_repite_el_intento_por_una_cuota_antigua(self):
         self.arranca_pstack(
             True,
             {"sonnet": "pstack_falla_primero", "opus": "pstack_ok"},
@@ -1806,12 +1806,12 @@ class TestPstack(BancoPstack):
         h = json.loads(
             (self.intentos("implementar")[0] / "huella.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(h["estado"], "falta")
-        self.assertIn("lanzó 0 subagente(s)", " ".join(h["faltas"]))
+        self.assertEqual(h["estado"], "cumple")
+        self.assertEqual(h["faltas"], [])
         self.assertEqual(len(self.intentos("implementar")), 1)
 
 
-    def test_sin_pstack_cuenta_como_falla_del_modelo_y_entra_el_relevo(self):
+    def test_sin_subagentes_entrega_sin_forzar_relevo(self):
         self.arranca_pstack(
             True,
             {"sonnet": "pstack_no", "glm": "pstack_ok", "opus": "pstack_ok"},
@@ -1827,7 +1827,7 @@ class TestPstack(BancoPstack):
         h = json.loads(
             (self.intentos("implementar")[0] / "huella.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(h["estado"], "falta")
+        self.assertEqual(h["estado"], "cumple")
 
 
     def test_registro_ilegible_pasa_y_avisa_una_sola_vez_por_cli_y_dia(self):
@@ -1939,16 +1939,16 @@ class TestResultadosNoSoloCarga(BancoPstack):
 
 
 class TestPanelDelRevisor(BancoPstack):
-    """El revisor también rinde cuentas: el juez cuenta sus subagentes y el siguiente sabe por qué."""
+    """La huella del revisor conserva lo observado sin imponer una cuota de subagentes."""
 
-    def test_revisor_con_menos_subagentes_anota_la_falta_y_entrega(self):
+    def test_revisor_con_menos_subagentes_entrega_sin_falta_por_cantidad(self):
         self.arranca_pstack(True, {"opus": "pstack_uno"}, min_subagentes={"gate.revisar": 2}, revisa="opus")
         fines = self.fines("revisar")
         self.assertEqual([o["kind"] for o in fines], ["veredicto"])
         self.assertEqual(len(self.intentos("revisar")), 1)
         h = json.loads((self.intentos("revisar")[0] / "huella.json").read_text(encoding="utf-8"))
-        self.assertEqual(h["estado"], "falta")
-        self.assertTrue(any("subagente" in x for x in h["faltas"]))
+        self.assertEqual(h["estado"], "cumple")
+        self.assertEqual(h["faltas"], [])
 
     def test_revisor_con_los_subagentes_pedidos_pasa(self):
         self.arranca_pstack(True, {"opus": "pstack_ok"}, min_subagentes={"gate.revisar": 2}, revisa="opus")
