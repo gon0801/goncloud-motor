@@ -40,7 +40,7 @@ class RecuperacionFase5(unittest.TestCase):
             )
             aviso = {"id": "av_unicode", "encargo": "enc_temporal", "canal": "local"}
             try:
-                with patch.dict(os.environ):
+                with patch.dict(os.environ, {"LC_ALL": "C", "PYTHONCOERCECLOCALE": "0"}):
                     os.environ.pop("PYTHONIOENCODING", None)
                     for modo in ("buffer", "texto"):
                         for n, cuerpo in enumerate(("Operación completada. Próxima revisión.", "Revisión completada 🚀")):
@@ -62,6 +62,65 @@ class RecuperacionFase5(unittest.TestCase):
                                 self.assertEqual(conciliacion.read_bytes(), cuerpo.encode("utf-8"))
             finally:
                 reg.close()
+
+    def test_transporte_contiene_stdout_invalido_y_conserva_ack_con_stderr_invalido(self):
+        for salida in ("stdout", "stderr"):
+            with self.subTest(salida=salida), tempfile.TemporaryDirectory() as tmp:
+                raiz = Path(tmp)
+                reg = Registro(raiz / "base")
+                try:
+                    ident = directores.encargar(
+                        reg, "avisar avances", "utf8-invalido", HORA, "hermes", "local", "durable",
+                    )["encargo"]
+                    reg.anotar(ident, {"kind": "fases", "data": {
+                        "fases": [{"id": "A", "resultado": "fase comprobada"}], "hora": HORA,
+                    }}, "fase")
+                    reg.anotar(ident, {"kind": "decision", "data": {
+                        "id": "decision", "eleccion": "seguir", "motivo": "nueva evidencia", "hora": HORA,
+                    }}, "decision")
+                    enc = reg.fold(ident)
+                    hechos = directores.hechos_de_avance(enc)
+                    malo, bueno = [directores._aviso_de_hecho(enc, h) for h in hechos]
+                    sink = raiz / "salida-cp1252.py"
+                    sink.write_text(
+                        "import json,os,sys\n"
+                        "sys.stdin.buffer.read().decode('utf-8')\n"
+                        "respuesta=json.dumps({'recibo':'recibo-válido'},ensure_ascii=False).encode('utf-8')\n"
+                        "if os.environ['MOTOR_AVISO_ID']==sys.argv[2]:\n"
+                        " if sys.argv[1]=='stdout':\n"
+                        "  sys.stdout.buffer.write(b'{\"recibo\":\"ACK-\\xf3\"}')\n"
+                        " else:\n"
+                        "  sys.stdout.buffer.write(respuesta)\n  sys.stderr.buffer.write(b'\\xf3')\n"
+                        "else:\n sys.stdout.buffer.write(respuesta)\n",
+                        encoding="utf-8",
+                    )
+                    comando = [sys.executable, "-B", str(sink), salida, malo["id"]]
+                    (reg.base / "canal.json").write_text(json.dumps({"local": {
+                        "comando": comando, "idempotente": False,
+                    }}), encoding="utf-8")
+                    avisos = directores.drenar(reg)["avisos"]
+                    self.assertEqual([a["id"] for a in avisos], [malo["id"], bueno["id"]])
+                    if salida == "stdout":
+                        self.assertEqual((avisos[0]["estado"], avisos[0]["recibo"]), ("incierto", ""))
+                        self.assertFalse(avisos[0]["entregado"])
+                        self.assertTrue(avisos[0]["motivo"])
+                    else:
+                        self.assertTrue(avisos[0]["entregado"])
+                        self.assertEqual(avisos[0]["recibo"], "recibo-válido")
+                    self.assertTrue(avisos[1]["entregado"])
+                    self.assertEqual(avisos[1]["recibo"], "recibo-válido")
+                    estado, detalle = directores._conciliar_transporte(reg, comando, malo, "aviso inválido")
+                    if salida == "stdout":
+                        self.assertEqual(estado, "incierto")
+                        self.assertTrue(detalle)
+                    else:
+                        self.assertEqual((estado, detalle), ("hallado", "recibo-válido"))
+                    self.assertEqual(
+                        directores._conciliar_transporte(reg, comando, bueno, "aviso válido"),
+                        ("hallado", "recibo-válido"),
+                    )
+                finally:
+                    reg.close()
 
     def test_deepseek_schema3_concilia_F1_resuelto_ya_persistido(self):
         sha = "aa335ac97b3a85a6fdade67fbcc5ada58c869d2f"
