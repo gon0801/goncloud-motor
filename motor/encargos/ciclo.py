@@ -2591,7 +2591,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     return _intentar_cierre(
                         registro, registro.fold(enc.id) or enc, espacio, directorio, hora
                     )
-                if enc.entrega.nivel == "integrado":
+                if enc.entrega.nivel in ("integrado", "desplegado"):
                     # El sha ya está contenido en la base: integración ya
                     # aplicada, conciliada con la punta real de esa base.
                     punta = (
@@ -2625,9 +2625,14 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                         return _intentar_cierre(
                             registro, enc, espacio, directorio, hora
                         )
+                    # desplegado sin diff: la ausencia de diff no abre un PR
+                    # vacío; el nivel se cierra con el efecto exigido.
+                    enc = _paso_despliegue(registro, enc, hora)
+                    if nivel_cumplido(enc) and enc.estado != "terminado":
+                        return _intentar_cierre(
+                            registro, enc, espacio, directorio, hora
+                        )
                     return enc
-                # desplegado: la ausencia de diff no acredita el despliegue; el
-                # flujo normal sigue hasta el efecto exigido.
         try:
             pr = gh.abrir_pr(
                 enc.entrega.repo,
@@ -2888,55 +2893,65 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             f"entrega:{enc.id}:{enc.fase_activa}:integrado:{enc.pr_sha}",
         )
         enc = registro.fold(enc.id)
-    if enc.entrega.nivel == "desplegado" and enc.nivel_alcanzado == "integrado":
-        efecto = next(
-            (
-                e
-                for e in enc.efectos
-                if e.operacion == "desplegar" and e.estado == "aplicado" and e.recibo
-            ),
-            None,
-        )
-        if efecto is None:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "sin_progreso",
-                    "data": {
-                        "huella": enc.bloqueo_huella,
-                        "diagnostico": (
-                            "integrado; falta un efecto de despliegue "
-                            "declarado con recibo para cerrar el nivel "
-                            "desplegado"
-                        ),
-                        "escalar": True,
-                        "hora": hora,
-                    },
-                },
-                f"entrega:{enc.id}:desplegado:sin-efecto",
-            )
-            return registro.fold(enc.id)
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "paso": "desplegado",
-                    "repo": enc.entrega.repo,
-                    "numero": enc.pr_numero,
-                    "sha": enc.pr_sha,
-                    "recibo": efecto.recibo,
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{efecto.id}",
-        )
-        enc = registro.fold(enc.id)
+    enc = _paso_despliegue(registro, enc, hora)
     if nivel_cumplido(enc):
         return _intentar_cierre(registro, enc, espacio, directorio, hora)
     return enc
+
+
+def _paso_despliegue(registro: Registro, enc: Encargo, hora: str) -> Encargo:
+    """Nivel desplegado: concilia el efecto aplicado con recibo durable.
+
+    Sin efecto declarado el encargo queda pendiente visible; nunca se
+    reabre un PR vacío para acreditar el despliegue.
+    """
+    if enc.entrega.nivel != "desplegado" or enc.nivel_alcanzado != "integrado":
+        return enc
+    efecto = next(
+        (
+            e
+            for e in enc.efectos
+            if e.operacion == "desplegar" and e.estado == "aplicado" and e.recibo
+        ),
+        None,
+    )
+    if efecto is None:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "sin_progreso",
+                "data": {
+                    "huella": enc.bloqueo_huella,
+                    "diagnostico": (
+                        "integrado; falta un efecto de despliegue "
+                        "declarado con recibo para cerrar el nivel "
+                        "desplegado"
+                    ),
+                    "escalar": True,
+                    "hora": hora,
+                },
+            },
+            f"entrega:{enc.id}:desplegado:sin-efecto",
+        )
+        return registro.fold(enc.id)
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "desplegado",
+                "repo": enc.entrega.repo,
+                "numero": enc.pr_numero,
+                "sha": enc.pr_sha,
+                "recibo": efecto.recibo,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{efecto.id}",
+    )
+    return registro.fold(enc.id) or enc
 
 
 def _lanzar_uno(

@@ -51,8 +51,12 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
     if bloqueantes_abiertos(enc):
         raise ValueError("cierre con bloqueantes abiertos")
     if enc.entrega.nivel != "terminado":
-        if enc.nivel_alcanzado != "sin_cambios" and (
-            not enc.deepseek_sha or enc.deepseek_sha != enc.pr_sha
+        # DeepSeek revisa el diff del PR; sin PR (sin_cambios o entrega ya
+        # contenida en la base) no hay diff que revisar ni recibo posible.
+        if (
+            enc.pr_numero
+            and enc.nivel_alcanzado != "sin_cambios"
+            and (not enc.deepseek_sha or enc.deepseek_sha != enc.pr_sha)
         ):
             raise ValueError("falta leer la revisión de DeepSeek del SHA actual")
         if not nivel_cumplido(enc):
@@ -69,10 +73,15 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
                 " Entrega sin cambios publicables: sin PR; el producto "
                 "revisado queda como evidencia."
             )
-        else:
+        elif enc.pr_numero:
             detalle += (
                 f" Entrega {enc.nivel_alcanzado}: PR #{enc.pr_numero} "
                 f"en {enc.entrega.repo}, SHA {enc.pr_sha}, DeepSeek leído."
+            )
+        else:
+            detalle += (
+                f" Entrega {enc.nivel_alcanzado} por contención en "
+                f"{enc.entrega.base}: sin PR; el SHA ya está en la base."
             )
     return {
         "clase": "cierre_comprobado",
