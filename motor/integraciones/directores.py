@@ -676,6 +676,7 @@ def _ejecutar_transporte(
             input=cuerpo,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
             env=env,
         )
@@ -706,7 +707,8 @@ def _conciliar_transporte(
     argv = [str(x) for x in comando] + [str(aviso.get("id") or "")]
     try:
         hecho = subprocess.run(
-            argv, input=cuerpo, capture_output=True, text=True, timeout=30, env=env
+            argv, input=cuerpo, capture_output=True, text=True,
+            encoding="utf-8", timeout=30, env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return "incierto", str(exc)
