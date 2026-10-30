@@ -2209,8 +2209,20 @@ def _incorporar_entradas(
     fase = enc.fase_actual
     for dep in _deps_de(enc, fase):
         version = next((v for d, v in fase.requiere if d == dep.id), "")
-        if dep.producto is None or version == dep.producto.firma:
+        if dep.producto is None:
             continue
+        if version == dep.producto.firma:
+            # El contenido ya se consume, pero un squash de la entrada cambia
+            # el commit integrado sin cambiar la firma: ese commit tiene que
+            # quedar en la historia de la consumidora.
+            if not dep.integrado_sha:
+                continue
+            ancestro = _git(
+                espacio,
+                "merge-base", "--is-ancestor", dep.integrado_sha, "HEAD",
+            )
+            if ancestro.returncode == 0:
+                continue
         rama_dep = _rama_de_fase(enc, dep)
         base = _ref_existente(
             espacio,
@@ -2256,7 +2268,7 @@ def _incorporar_entradas(
                         "hora": hora,
                     },
                 },
-                f"entrada:{enc.id}:{enc.fase_activa}:{dep.id}:{dep.producto.firma}",
+                f"entrada:{enc.id}:{enc.fase_activa}:{dep.id}:{dep.producto.firma}:{sha_ref}",
             )
             enc = registro.fold(enc.id) or enc
             fase = enc.fase_actual
