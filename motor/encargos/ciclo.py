@@ -2627,7 +2627,7 @@ def _asegurar_repo(
             f"{enc.entrega.repo}; no se mezcla sobre un trabajo existente"
         )
     r = subprocess.run(
-        ["git", "clone", "--quiet", repo.fuente, str(espacio / ".clon-tmp")],
+        ["git", "clone", "--quiet", "--", repo.fuente, str(espacio / ".clon-tmp")],
         capture_output=True,
         text=True,
         encoding="utf-8",

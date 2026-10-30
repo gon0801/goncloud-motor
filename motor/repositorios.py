@@ -117,7 +117,7 @@ def rama_predeterminada(repo: str, consultar_remoto: bool = True) -> str:
     if local is not None and repositorio.remoto == str(local):
         raise ValueError("el repositorio local no declara una rama predeterminada")
     resultado = subprocess.run(
-        ["git", "ls-remote", "--symref", repositorio.remoto, "HEAD"],
+        ["git", "ls-remote", "--symref", "--", repositorio.remoto, "HEAD"],
         capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30,
     )
     for linea in resultado.stdout.splitlines():
