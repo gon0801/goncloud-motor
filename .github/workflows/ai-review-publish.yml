@@ -52,7 +52,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: gon0801/goncloud-pr-review
-          ref: 43731e37d56e5475e70734c922f271003e971762
+          ref: 501218fb201a4287feca5c4f9ae15c64284170c4
           path: ai-review-code
           persist-credentials: false
       - name: preparar entorno
