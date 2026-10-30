@@ -2282,42 +2282,112 @@ def _deps_de(enc: Encargo, fase) -> list:
     return salida
 
 
+def _merge_ancestria(espacio: Path, dep_id: str, sha: str) -> str:
+    """Incorpora la ancestría de un commit cuyo contenido ya está en HEAD.
+
+    `-s ours` deja el árbol intacto: sólo une la historia para que el sha
+    integrado cuente como antecesor.
+    """
+    r = _git(
+        espacio,
+        "-c", "user.name=motor de encargos",
+        "-c", "user.email=motor@localhost",
+        "merge", "-s", "ours", "--no-ff", "--quiet",
+        "-m", f"incorporar la entrada {dep_id} ({sha[:12]})",
+        sha,
+    )
+    if r.returncode != 0:
+        _git(espacio, "merge", "--abort")
+        return (
+            f"conflicto al incorporar la entrada {dep_id} ({sha}): "
+            f"{r.stderr.strip()[-300:]}"
+        )
+    return ""
+
+
 def _incorporar_entradas(
     enc: Encargo, espacio: Path, registro: Registro | None = None, hora: str = ""
 ) -> str:
     """Incorpora la versión vigente de cada antecesor que la fase no consume.
 
-    Nunca rebasea: `git merge --no-ff` con la base efectiva del dep (su recibo
-    integrado o el sha de su producto). Devuelve la causa si no se pudo.
+    Nunca rebasea: `git merge --no-ff` con el commit efectivo del dep. Cuando
+    la firma ya se consume, sólo falta la ancestría del commit integrado (un
+    squash la reescribe) y se une con `-s ours`, árbol intacto. Devuelve la
+    causa si no se pudo.
     """
     fase = enc.fase_actual
-    for dep in _deps_de(enc, fase):
+    deps = _deps_de(enc, fase)
+    if any(dep.integrado_sha for dep in deps):
+        # El commit integrado vive en el remoto hasta que alguien lo trae.
+        _git(espacio, "fetch", "--quiet", "origin")
+
+    def _anotar(dep, sha: str) -> None:
+        if registro is None:
+            return
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "entrada_incorporada",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "dep": dep.id,
+                    "version": dep.producto.firma,
+                    "sha": sha,
+                    "hora": hora,
+                },
+            },
+            f"entrada:{enc.id}:{enc.fase_activa}:{dep.id}:{dep.producto.firma}:{sha}",
+        )
+
+    for dep in deps:
         version = next((v for d, v in fase.requiere if d == dep.id), "")
         if dep.producto is None:
             continue
+        integrado = ""
+        if dep.integrado_sha:
+            resuelto = _git(
+                espacio,
+                "rev-parse", "--verify", "--quiet",
+                f"{dep.integrado_sha}^{{commit}}",
+            )
+            if resuelto.returncode != 0:
+                return (
+                    "no se encontro localmente el commit integrado de la "
+                    f"entrada {dep.id} ({dep.integrado_sha})"
+                )
+            integrado = resuelto.stdout.strip() or dep.integrado_sha
+        ancestro_integrado = (
+            _git(
+                espacio, "merge-base", "--is-ancestor", integrado, "HEAD"
+            ).returncode
+            == 0
+            if integrado
+            else False
+        )
         if version == dep.producto.firma:
             # El contenido ya se consume, pero un squash de la entrada cambia
             # el commit integrado sin cambiar la firma: ese commit tiene que
             # quedar en la historia de la consumidora.
-            if not dep.integrado_sha:
+            if not integrado or ancestro_integrado:
                 continue
-            ancestro = _git(
-                espacio,
-                "merge-base", "--is-ancestor", dep.integrado_sha, "HEAD",
-            )
-            if ancestro.returncode == 0:
-                continue
+            causa = _merge_ancestria(espacio, dep.id, integrado)
+            if causa:
+                return causa
+            _anotar(dep, integrado)
+            if registro is not None:
+                fase = (registro.fold(enc.id) or enc).fase_actual
+            continue
         rama_dep = _rama_de_fase(enc, dep)
         base = _ref_existente(
             espacio,
-            dep.integrado_sha,
             dep.producto.sha_git,
             f"origin/{rama_dep}",
         )
         if not base:
             return (
                 f"no se encontro la version de la entrada {dep.id} "
-                f"({dep.integrado_sha or dep.producto.sha_git or rama_dep})"
+                f"({dep.producto.sha_git or rama_dep})"
             )
         sha_ref = (
             _git(espacio, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
@@ -2338,24 +2408,16 @@ def _incorporar_entradas(
                 f"conflicto al incorporar la entrada {dep.id} ({sha_ref}): "
                 f"{r.stderr.strip()[-300:]}"
             )
+        _anotar(dep, sha_ref)
         if registro is not None:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "entrada_incorporada",
-                    "data": {
-                        "fase": enc.fase_activa,
-                        "intento": enc.intento,
-                        "dep": dep.id,
-                        "version": dep.producto.firma,
-                        "sha": sha_ref,
-                        "hora": hora,
-                    },
-                },
-                f"entrada:{enc.id}:{enc.fase_activa}:{dep.id}:{dep.producto.firma}:{sha_ref}",
-            )
-            enc = registro.fold(enc.id) or enc
-            fase = enc.fase_actual
+            fase = (registro.fold(enc.id) or enc).fase_actual
+        if integrado and integrado != sha_ref and not ancestro_integrado:
+            causa = _merge_ancestria(espacio, dep.id, integrado)
+            if causa:
+                return causa
+            _anotar(dep, integrado)
+            if registro is not None:
+                fase = (registro.fold(enc.id) or enc).fase_actual
     return ""
 
 
@@ -2521,6 +2583,28 @@ def _disparar_deepseek(gh, enc: Encargo, espacio: Path, sha: str) -> None:
         pass
 
 
+def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -> None:
+    """El conflicto de la entrada frena el paso de entrega sobre el producto
+    vigente: lo resuelve el responsable en el espacio y su arreglo, con
+    producto nuevo, vuelve a habilitar la entrega."""
+    if enc.producto is None:
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_bloqueada",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "sha": enc.producto.sha_git,
+                "causa": causa,
+                "hora": hora,
+            },
+        },
+        f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{enc.producto.sha_git}",
+    )
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
@@ -2547,6 +2631,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     causa = _asegurar_repo(enc, espacio, registro, hora)
     if causa:
         if causa.startswith("conflicto al incorporar la entrada"):
+            _bloquear_entrega(registro, enc, causa, hora)
             _devolver(
                 registro, enc, "integrar_antecesor", causa,
                 "resolver el conflicto con la entrada del antecesor conservando "
@@ -3069,6 +3154,9 @@ def _lanzar_uno(
             causa_repo = _asegurar_repo(enc, espacio, registro, hora)
             if causa_repo:
                 if causa_repo.startswith("conflicto al incorporar la entrada"):
+                    # El conflicto se resuelve en el espacio: este turno corre
+                    # con la entrega bloqueada y su arreglo desbloquea.
+                    _bloquear_entrega(registro, enc, causa_repo, hora)
                     _devolver(
                         registro, enc, "integrar_antecesor", causa_repo,
                         "resolver el conflicto con la entrada del antecesor "
@@ -3076,17 +3164,25 @@ def _lanzar_uno(
                         "cambio se conserva",
                         hora, f"entrada-{generacion}",
                     )
+                else:
+                    _anotar_instrumento(
+                        registro, enc, "github", causa_repo,
+                        "dejar accesible el repo declarado y reintentar",
+                        hora, f"repo-{generacion}",
+                    )
+                    marcar_espera(registro, enc.id, causa_repo, _reanuda_en(300), hora)
                     return
-                _anotar_instrumento(
-                    registro, enc, "github", causa_repo,
-                    "dejar accesible el repo declarado y reintentar",
-                    hora, f"repo-{generacion}",
-                )
-                marcar_espera(registro, enc.id, causa_repo, _reanuda_en(300), hora)
-                return
             # Las entradas incorporadas tocan las fases; el replace local de
             # generacion y conductor sigue vigente para este lanzamiento.
-            enc = replace(enc, fases=(registro.fold(enc.id) or enc).fases)
+            fresco = registro.fold(enc.id) or enc
+            enc = replace(
+                enc,
+                fases=fresco.fases,
+                motivo=fresco.motivo,
+                causa=fresco.causa,
+                siguiente=fresco.siguiente,
+                estrategia=fresco.estrategia,
+            )
         epoca = enc.epoca_revisor if rol == "revisor" else enc.epoca_responsable
         sesion = str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"{enc.id}:{rol}:{epoca}")
