@@ -211,6 +211,7 @@ class Fase:
     evidencia: str = ""
     inspeccion_pendiente: str = ""
     inspeccion_solicitud: str = ""
+    inspeccion_entregada: str = ""
     entrega_bloqueada_sha: str = ""
 
     def __post_init__(self) -> None:
@@ -244,6 +245,7 @@ class Fase:
             "evidencia": self.evidencia,
             "inspeccion_pendiente": self.inspeccion_pendiente,
             "inspeccion_solicitud": self.inspeccion_solicitud,
+            "inspeccion_entregada": self.inspeccion_entregada,
         }
 
 
@@ -702,7 +704,9 @@ def inspeccion_bloquea(e: Encargo) -> bool:
     """La inspección pendiente no consume otro turno sin información nueva.
 
     La información nueva es la respuesta del propietario o la resolución
-    terminal de la solicitud ligada; con ella el barrido relanza al revisor.
+    terminal de la solicitud ligada, y abre el gate una sola vez: cuando el
+    resultado ya se entregó al revisor, la marca de la fase cierra hasta que
+    llegue una respuesta o resolución distinta.
     """
     fase = e.fase_actual
     if fase is None or not fase.inspeccion_pendiente:
@@ -713,7 +717,13 @@ def inspeccion_bloquea(e: Encargo) -> bool:
     sol = next((s for s in e.solicitudes if s.id == ident), None)
     if sol is None:
         return True
-    return sol.estado in ("pendiente", "pregunta")
+    if sol.estado in ("pendiente", "pregunta"):
+        return True
+    return fase.inspeccion_entregada == marca_inspeccion_entregada(sol)
+
+
+def marca_inspeccion_entregada(sol: Solicitud) -> str:
+    return f"{sol.id}:{sol.estado}"
 
 
 def _entrega_de(d: dict) -> EntregaAutorizada:
@@ -1232,6 +1242,18 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             raise TransicionIlegal("la inspección necesita su solicitud")
         return replace(
             con_fase(e, replace(fase, inspeccion_solicitud=ident)),
+            hora=hora or e.hora,
+        )
+    if kind == "inspeccion_entregada":
+        e = _fase_de_evento(e, d)
+        fase = e.fase_actual
+        if fase is None:
+            raise TransicionIlegal("no hay fase para la entrega de la inspección")
+        marca = str(d.get("marca") or "").strip()
+        if not marca:
+            raise TransicionIlegal("la entrega de la inspección necesita su marca")
+        return replace(
+            con_fase(e, replace(fase, inspeccion_entregada=marca)),
             hora=hora or e.hora,
         )
     if kind == "resolucion":

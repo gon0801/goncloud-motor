@@ -40,6 +40,7 @@ from .dominio import (
     huella_entrega,
     id_encargo,
     inspeccion_bloquea,
+    marca_inspeccion_entregada,
     nivel_cumplido,
     prompt_responsable,
     prompt_revisor,
@@ -1334,8 +1335,24 @@ def _intentar_cierre(
 
 
 def _id_inspeccion(enc: Encargo, juicio: JuicioValidado) -> str:
+    """La identidad incluye la descripción y el pedido: corregir la consulta
+    (otro SQL, otro recurso) es otra inspección, no la ya lanzada."""
+    pedido = juicio.inspeccion
+    estructura = (
+        ""
+        if pedido is None
+        else json.dumps(
+            {
+                "operacion": pedido.operacion,
+                "recurso": pedido.recurso,
+                "parametros": sorted(pedido.parametros),
+            },
+            sort_keys=True,
+        )
+    )
     return "insp-" + hashlib.sha256(
-        f"{enc.id}:{enc.fase_activa}:{juicio.version}".encode()
+        f"{enc.id}:{enc.fase_activa}:{juicio.version}"
+        f":{juicio.inspeccion_faltante}:{estructura}".encode()
     ).hexdigest()[:16]
 
 
@@ -1938,6 +1955,27 @@ def _incorporar_responsable(
     return registro.fold(enc.id)
 
 
+def _juicio_repite_inspeccion(enc: Encargo, directorio: Path) -> bool:
+    """El juicio pendiente repite el pedido de la inspección ya ligada.
+
+    Un pedido corregido (otra identidad) es información nueva y se consume
+    aunque la solicitud anterior ya tenga su respuesta entregada.
+    """
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_solicitud:
+        return True
+    try:
+        referencia = json.loads(
+            (directorio / "revision.json").read_text(encoding="utf-8")
+        )
+        resultado = leer_juicio(Path(referencia["resultado"]), alcance_de(enc))
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return True
+    if not isinstance(resultado, JuicioValidado):
+        return True
+    return _id_inspeccion(enc, resultado) == fase.inspeccion_solicitud
+
+
 def _incorporar_revisor(
     registro: Registro,
     enc: Encargo,
@@ -1947,9 +1985,10 @@ def _incorporar_revisor(
 ) -> Encargo:
     from motor.runwrap import _publica
 
-    if inspeccion_bloquea(enc):
-        # El juicio que queda en el directorio es el de la vuelta ya incorporada;
-        # sin la información que falta, consumirlo otra vez no aporta nada.
+    if inspeccion_bloquea(enc) and _juicio_repite_inspeccion(enc, directorio):
+        # El juicio que queda en el directorio repite el pedido de la
+        # inspección ligada y su respuesta ya se entregó; consumirlo otra
+        # vez no aporta información. Un pedido corregido sí se consume.
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     ref_path = directorio / "revision.json"
@@ -2994,6 +3033,35 @@ def _lanzar_uno(
                     "por el buzon: " + resuelta
                     + ". Continua esta revision sobre la misma version con ese dato."
                 )
+                fase_info = enc.fase_actual
+                sol_info = (
+                    next(
+                        (
+                            s
+                            for s in enc.solicitudes
+                            if s.id == fase_info.inspeccion_solicitud
+                        ),
+                        None,
+                    )
+                    if fase_info is not None
+                    else None
+                )
+                if sol_info is not None:
+                    marca = marca_inspeccion_entregada(sol_info)
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "inspeccion_entregada",
+                            "data": {
+                                "fase": enc.fase_activa,
+                                "intento": enc.intento,
+                                "solicitud": sol_info.id,
+                                "marca": marca,
+                                "hora": hora,
+                            },
+                        },
+                        f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
+                    )
         else:
             interno_de(espacio, crear=True)
             contenido = prompt_responsable(enc)
