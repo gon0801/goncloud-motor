@@ -14,6 +14,48 @@ HORA = "2026-10-29T10:00:00Z"
 
 
 class RecuperacionFase5(unittest.TestCase):
+    def test_espera_tardia_conserva_parada_y_continuacion_idempotente(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            try:
+                ident = ciclo.recibir(
+                    reg, "reanudar el mismo ensayo", "espera-tardia", "2026-10-30T20:26:03Z",
+                )["encargo"]
+                parada = ciclo.ordenar(reg, ident, "parar", "parada", "2026-10-30T20:26:05Z")
+                reg.anotar(ident, {"kind": "arbol", "data": {
+                    "observacion": "ausente", "hora": "2026-10-30T20:26:05Z",
+                }}, "arbol-ausente")
+                ciclo.marcar_espera(
+                    reg, ident,
+                    "esperando revisión de DeepSeek para el SHA f207a080f96f0741e5394894745b7d12869b64d6",
+                    "2026-10-30T20:27:04Z", "2026-10-30T20:26:04Z",
+                )
+                detenido = reg.fold(ident)
+                self.assertEqual(detenido.estado, "detenido")
+                self.assertFalse(detenido.escrituras)
+                self.assertFalse(detenido.intentos_nuevos)
+                repetida = ciclo.ordenar(reg, ident, "parar", "parada", "2026-10-30T20:28:00Z")
+                self.assertEqual(repetida["recibo"], parada["recibo"])
+                self.assertTrue(repetida["retransmision"])
+                continuada = ciclo.ordenar(reg, ident, "continuar", "continuacion", "2026-10-30T20:28:01Z")
+                self.assertEqual(continuada["estado"], "recibido")
+                self.assertNotIn("rechazada", continuada)
+                antes = len(reg.eventos(ident))
+                repetida = ciclo.ordenar(reg, ident, "continuar", "continuacion", "2026-10-30T20:28:02Z")
+                self.assertEqual(repetida["recibo"], continuada["recibo"])
+                self.assertTrue(repetida["retransmision"])
+                self.assertEqual(len(reg.eventos(ident)), antes)
+                self.assertEqual(sum(
+                    e["kind"] == "orden" and e["data"]["accion"] == "continuar"
+                    for e in reg.eventos(ident)
+                ), 1)
+                actual = reg.fold(ident)
+                self.assertTrue(actual.escrituras)
+                self.assertTrue(actual.intentos_nuevos)
+                self.assertEqual(actual.efectos, detenido.efectos)
+            finally:
+                reg.close()
+
     def test_pedido_de_despliegue_invalido_se_contiene_y_se_recupera(self):
         for invalido in (42, [42]):
             with self.subTest(pedido=invalido), tempfile.TemporaryDirectory() as tmp:
