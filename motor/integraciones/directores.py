@@ -1096,7 +1096,48 @@ def _publicar_aviso(
     return _cerrar_aviso(guardado, True)
 
 
+RECIBO_SEMILLA = "semilla-local"
+
+
+def _avisos_actuales(registro: Registro, enc) -> list[dict]:
+    avisos = []
+    if enc.estado == "terminado" and enc.evidencia:
+        avisos.append(_aviso_de(enc))
+    avisos.extend(_aviso_de_hecho(enc, hecho) for hecho in hechos_de_avance(enc))
+    return avisos
+
+
+def _sembrar_avisos_previos(registro: Registro) -> None:
+    """El primer drenado de una base vieja no anuncia hechos que ya existían.
+
+    Sin esta marca, instalar el supervisor sobre un registro con canal
+    trataría cada fase, decisión y PR anterior como novedad y lo enviaría.
+    Un hecho que aparece después de la marca sí se publica.
+    """
+    marca = registro.base / "avisos" / ".semilla-hechos"
+    if marca.is_file():
+        return
+    for encargo in registro.ids():
+        enc = registro.fold(encargo)
+        if enc is None or not enc.canal:
+            continue
+        for aviso in _avisos_actuales(registro, enc):
+            path = registro.base / "avisos" / f"{aviso['id']}.json"
+            if path.is_file():
+                continue
+            sembrado = dict(aviso)
+            sembrado["estado"] = "publicado"
+            sembrado["recibo"] = RECIBO_SEMILLA
+            sembrado["alcance"] = "local"
+            _atomico(path, sembrado)
+    marca.parent.mkdir(parents=True, exist_ok=True)
+    temporal = marca.with_suffix(".tmp")
+    temporal.write_text("semilla\n", encoding="utf-8")
+    temporal.replace(marca)
+
+
 def drenar(registro: Registro, cortar: str = "") -> dict:
+    _sembrar_avisos_previos(registro)
     publicados = []
     for encargo in registro.ids():
         enc = registro.fold(encargo)
