@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from motor.encargos.ciclo import ahora_iso, consultar, ordenar, recibir, resolver_entrega
-from motor.encargos.dominio import TransicionIlegal
+from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida
 from motor.encargos.registro import Registro
 
 
@@ -138,7 +138,7 @@ def encargar(
     restricciones: tuple[str, ...] = (),
 ) -> dict:
     canal = nombre_canal(canal)
-    entrega_nivel = resolver_entrega(entrega_nivel, repo)
+    entrega_nivel = resolver_entrega(entrega_nivel, repo, via)
     salida = recibir(
         registro,
         texto,
@@ -858,6 +858,14 @@ def hechos_de_avance(enc) -> list[dict]:
                 ),
             }
         )
+    elif (espera := espera_inspeccion_consumida(enc)) is not None:
+        hechos.append(
+            {
+                "tipo": "espera",
+                "identidad": f"impedimento:{espera['clase']}:{espera['causa']}",
+                "texto": f"Espera de {espera['clase']}: {espera['causa']}. Condición: {espera['condicion']}.",
+            }
+        )
     return hechos
 
 
@@ -1098,10 +1106,18 @@ def _publicar_aviso(
 
 def drenar(registro: Registro, cortar: str = "") -> dict:
     publicados = []
+    corte = registro.corte_avisos()
     for encargo in registro.ids():
         enc = registro.fold(encargo)
         if enc is None or not enc.canal:
             continue
+        anterior = registro.fold(encargo, hasta=corte)
+        historicos = {
+            _aviso_de_hecho(anterior, hecho)["id"]
+            for hecho in hechos_de_avance(anterior) if hecho["tipo"] in (
+                "fase", "revision", "pr", "decision"
+            )
+        } if anterior is not None else set()
         trabajos: list[tuple[dict, str | None]] = []
         if enc.estado == "terminado" and enc.evidencia:
             aviso = _aviso_de(enc)
@@ -1109,7 +1125,12 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
                 (aviso, _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"])))
             )
         for hecho in hechos_de_avance(enc):
-            trabajos.append((_aviso_de_hecho(enc, hecho), hecho["texto"]))
+            aviso = _aviso_de_hecho(enc, hecho)
+            if aviso["id"] in historicos and not (
+                registro.base / "avisos" / f"{aviso['id']}.json"
+            ).exists():
+                continue
+            trabajos.append((aviso, hecho["texto"]))
         for aviso, cuerpo in trabajos:
             publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar))
     return {"avisos": publicados}

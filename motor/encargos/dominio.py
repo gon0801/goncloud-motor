@@ -728,6 +728,34 @@ def marca_inspeccion_entregada(sol: Solicitud) -> str:
     return f"{sol.id}:{sol.estado}"
 
 
+def inspeccion_consumida(e: Encargo) -> Solicitud | None:
+    fase = e.fase_actual
+    if fase is None or not fase.inspeccion_pendiente:
+        return None
+    sol = next((s for s in e.solicitudes if s.id == fase.inspeccion_solicitud), None)
+    if sol is None or sol.estado in ("pendiente", "pregunta"):
+        return None
+    return sol if respuesta_consumida(fase, marca_inspeccion_entregada(sol)) else None
+
+
+def espera_inspeccion_consumida(e: Encargo) -> dict | None:
+    sol = inspeccion_consumida(e)
+    if sol is None:
+        return None
+    return {
+        "clase": "inspeccion:" + sol.id,
+        "causa": (
+            f"la revisión repitió la inspección {sol.id} ya consumida; "
+            f"el resultado está en .interno/buzon/respuestas/{sol.id}.json"
+        ),
+        "condicion": (
+            "un juicio corregido que use el resultado disponible o una consulta "
+            "distinta; se conserva el producto y no se repite la herramienta"
+        ),
+        "verificable": True,
+    }
+
+
 def respuesta_consumida(fase: Fase, marca: str) -> bool:
     """La respuesta ya se entregó, aunque después se haya ligado otra consulta."""
     return bool(marca) and (
@@ -743,9 +771,9 @@ def _entrega_de(d: dict) -> EntregaAutorizada:
     base = str(d.get("base") or "")
     rama = str(d.get("rama") or "")
     if nivel != "terminado":
-        if not repo or not base:
+        if not repo:
             raise TransicionIlegal(
-                "el nivel de entrega exige repo y rama base desde el encargo"
+                "el nivel de entrega exige un repositorio desde el encargo"
             )
         if not rama:
             rama = f"encargo/{d.get('id') or ''}"
@@ -815,6 +843,14 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         return e
     if kind == "ruta_agentes":
         return replace(e, agentes=tuple(d["agentes"]))
+    if kind == "contexto_entrega":
+        base = str(d.get("base") or "").strip()
+        if not base or (e.entrega.base and e.entrega.base != base):
+            raise TransicionIlegal("el contexto no puede cambiar una base autorizada")
+        return replace(
+            e, entrega=replace(e.entrega, base=base),
+            causa="", motivo="", siguiente="seguir el mismo encargo", hora=hora or e.hora,
+        )
     if kind == "proveedor_fallo":
         pausa = PausaAgente(d["agente"], d["hasta"], d["causa"], d["relevo"])
         return replace(
@@ -2289,6 +2325,12 @@ def decision_proceso(
     # trabajo sin información nueva. La huella sólo se limpia con evidencia.
     if e.impedimento:
         return {"matar": False, "lanzar": False, "eventos": []}
+    espera = espera_inspeccion_consumida(e)
+    if espera is not None:
+        return {
+            "matar": False, "lanzar": False,
+            "eventos": [{"kind": "impedimento", "data": {**espera, "hora": hora}}],
+        }
     if inspeccion_bloquea(e):
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.fases and all(f.estado == "preparada" for f in e.fases):

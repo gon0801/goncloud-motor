@@ -80,15 +80,13 @@ def ahora_iso(epoch: float | None = None) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def resolver_entrega(explicita: str | None, repo: str) -> str:
-    """Un repo sin nivel explícito es el flujo de código con GitHub: PR, no cierre local.
-
-    `terminado` solo cierra ese recorrido si el llamador lo pidió. Sin repo, el
-    silencio sigue siendo entrega local.
-    """
+def resolver_entrega(explicita: str | None, repo: str, via: str = "durable") -> str:
+    """La vía directa es local; la durable con repo infiere PR salvo nivel explícito."""
     nivel = str(explicita or "").strip()
     if nivel:
         return nivel
+    if via == "directa":
+        return "terminado"
     if str(repo or "").strip():
         return "pr"
     return "terminado"
@@ -121,6 +119,8 @@ def recibir(
     if prev:
         enc = registro.fold(prev["encargo"])
         datos = prev["data"]
+        if not base_rama:
+            base_rama = enc.entrega.base
         salida = vista(enc, datos["recibo"])
         if (
             datos["huella"] != huella
@@ -131,11 +131,18 @@ def recibir(
             or (datos.get("entrega_nivel") or "terminado") != entrega_nivel
             or (datos.get("repo") or "") != repo
             or (datos.get("rama") or "") != rama
-            or (datos.get("base") or "") != base_rama
+            or enc.entrega.base != base_rama
             or tuple(tuple(x) for x in datos.get("modelos_solicitados", ())) != modelos_solicitados
         ):
             salida["conflicto"] = True
         return salida
+    if entrega_nivel != "terminado" and repo and not base_rama:
+        from motor.repositorios import rama_predeterminada
+
+        try:
+            base_rama = rama_predeterminada(repo, consultar_remoto=False)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            base_rama = ""
     encargo = id_encargo(clave, huella)
     recibo = recibo_de(ukey)
     datos_entrega = {
@@ -658,6 +665,7 @@ def barrer(
             not parada
             and enc.proc is None
             and not enc.reserva
+            and not enc.impedimento
             and enc.intentos_nuevos
             and enc.estado in ("recibido", "ejecutando")
             and enc.via != "directa"
@@ -704,6 +712,11 @@ def barrer(
                 _resolver_impedimento(registro, enc, clase, hora)
             if resueltas:
                 enc = registro.fold(encargo_id) or enc
+                if (
+                    any(c.startswith("inspeccion:") for c in resueltas)
+                    and arbol == "ausente" and enc.proc is None and not enc.reserva
+                ):
+                    enc = _incorporar_revisor(registro, enc, espacio, hora, directorio)
                 decision = _decision(enc, arbol, directorio, sin_hecho, hora)
                 if sin_llm:
                     decision["lanzar"] = False
@@ -918,10 +931,12 @@ _EVIDENCIA_DE = {
 def _es_verificable(clase: str) -> bool:
     # El juicio también: su archivo se puede volver a validar contra la versión
     # vigente sin gastar otro turno del revisor.
-    return clase in _VERIFICABLES or clase.startswith("juicio:")
+    return clase in _VERIFICABLES or clase.startswith(("juicio:", "inspeccion:"))
 
 
 def _evidencia_de(clase: str) -> str:
+    if clase.startswith("inspeccion:"):
+        return "hay un juicio corregido o una inspección distinta sin consumir"
     if clase.startswith("juicio:"):
         return "el juicio vuelve a validar para la versión revisada"
     return _EVIDENCIA_DE.get(clase, "la comprobación de la causa")
@@ -941,6 +956,11 @@ def _apariciones(registro, enc: Encargo, clase: str) -> int:
 def _anotar_impedimento(
     registro, enc: Encargo, clase: str, causa: str, condicion: str, hora: str
 ) -> None:
+    if any(
+        i.clase == clase and i.causa == causa and i.condicion == condicion
+        for i in enc.impedimentos
+    ):
+        return
     registro.anotar(
         enc.id,
         {
@@ -1040,6 +1060,22 @@ def _verificar_impedimento(
     lo mismo que haberlo comprobado."""
     if clase == "entorno":
         return _sonda_entorno(enc, espacio, base).ok
+    if clase.startswith("inspeccion:"):
+        juicio = _juicio_de_referencia(enc, _directorio(base, enc.id))
+        if not isinstance(juicio, JuicioValidado):
+            return False
+        if juicio.version != version_producto(espacio).firma:
+            return False
+        if juicio.veredicto != "no_concluyente" or not juicio.inspeccion_faltante:
+            return True
+        ident = _id_inspeccion(enc, juicio)
+        fase = enc.fase_actual
+        if fase is None:
+            return False
+        previa = next((s for s in enc.solicitudes if s.id == ident), None)
+        return ident != clase.removeprefix("inspeccion:") and (
+            previa is None or not respuesta_consumida(fase, marca_inspeccion_entregada(previa))
+        )
     if clase.startswith("juicio:"):
         return _juicio_reparado(clase, enc, registro, espacio)
     interno = interno_de(espacio)
@@ -1380,13 +1416,18 @@ def _texto_inspeccion_resuelta(enc: Encargo) -> str:
     )
     if sol is None or sol.estado in ("pendiente", "pregunta"):
         return ""
-    partes = ["estado: " + sol.estado]
+    respuesta = necesidades.BUZON / necesidades.RESPUESTAS / f"{sol.id}.json"
+    cliente = necesidades.BUZON / necesidades.CLIENTE
+    partes = [
+        "solicitud: " + sol.id,
+        "estado: " + sol.estado,
+        f"resultado accesible en el espacio: {respuesta}",
+        f"leer el resultado ya obtenido con el cliente {cliente}, subcomando ver {sol.id}",
+    ]
     if sol.respuesta:
         partes.append("respuesta: " + sol.respuesta[:400])
     if sol.detalle:
         partes.append("detalle: " + sol.detalle[:400])
-    if sol.evidencia:
-        partes.append("evidencia: " + sol.evidencia[:400])
     return "; ".join(partes)
 
 
@@ -2295,18 +2336,32 @@ def _rama_fase(enc: Encargo) -> str:
 
 
 def _base_fase(enc: Encargo) -> str:
+    por_id = {f.id: f for f in enc.fases}
+    por_rama = {_rama_de_fase(enc, f): f for f in enc.fases}
+
+    def entrada(fase, visitadas: frozenset[str]) -> str:
+        if fase.id in visitadas:
+            raise ValueError("las bases de las fases forman un ciclo")
+        if fase.nivel_alcanzado not in ("sin_cambios", "integrado", "desplegado"):
+            return _rama_de_fase(enc, fase)
+        visitadas = visitadas | {fase.id}
+        if fase.base:
+            antecesora = por_rama.get(fase.base)
+            return entrada(antecesora, visitadas) if antecesora else fase.base
+        return base_de(fase, visitadas)
+
+    def base_de(fase, visitadas: frozenset[str]) -> str:
+        base = enc.entrega.base
+        for dep_id, _version in fase.requiere:
+            dep = por_id.get(dep_id)
+            if dep is not None:
+                candidata = entrada(dep, visitadas)
+                if candidata != enc.entrega.base:
+                    base = candidata
+        return base
+
     fase = enc.fase_actual
-    if fase is None or len(enc.fases) <= 1:
-        return enc.entrega.base
-    base = enc.entrega.base
-    for dep_id, _version in fase.requiere:
-        dep = next((f for f in enc.fases if f.id == dep_id), None)
-        if dep is None:
-            continue
-        if dep.nivel_alcanzado in ("integrado", "desplegado"):
-            continue
-        base = _rama_de_fase(enc, dep)
-    return base
+    return base_de(fase, frozenset()) if fase is not None else enc.entrega.base
 
 
 def _ref_existente(espacio: Path, *candidatos: str) -> str:
@@ -2514,6 +2569,20 @@ def _asegurar_repo(
     """
     from motor.repositorios import resolver_repositorio
 
+    if not enc.entrega.base:
+        from motor.repositorios import rama_predeterminada
+
+        try:
+            base = rama_predeterminada(enc.entrega.repo)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return f"no se pudo resolver la base de entrega: {exc}"
+        if registro is not None:
+            registro.anotar(
+                enc.id,
+                {"kind": "contexto_entrega", "data": {"base": base, "hora": hora}},
+                f"contexto-entrega:{enc.id}",
+            )
+        enc = replace(enc, entrega=replace(enc.entrega, base=base))
     try:
         repo = resolver_repositorio(enc.entrega.repo)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -2551,7 +2620,7 @@ def _asegurar_repo(
             f"{enc.entrega.repo}; no se mezcla sobre un trabajo existente"
         )
     r = subprocess.run(
-        ["git", "clone", "--quiet", repo.fuente, str(espacio / ".clon-tmp")],
+        ["git", "clone", "--quiet", "--", repo.fuente, str(espacio / ".clon-tmp")],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -2685,6 +2754,23 @@ def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -
     )
 
 
+def _checks_extra(enc: Encargo, espacio: Path) -> tuple[str, ...]:
+    from motor.conf import RepoConf
+
+    base = _ref_existente(espacio, f"origin/{enc.entrega.base}", enc.entrega.base)
+    if not base:
+        raise ValueError("no se encontró la base autorizada para leer .motor.toml")
+    existe = _git(espacio, "ls-tree", "--name-only", base, "--", ".motor.toml")
+    if existe.returncode != 0:
+        raise ValueError("no se pudo consultar .motor.toml en la base autorizada")
+    if not existe.stdout.strip():
+        return ()
+    contenido = _git(espacio, "show", f"{base}:.motor.toml")
+    if contenido.returncode != 0:
+        raise ValueError("no se pudo leer .motor.toml en la base autorizada")
+    return RepoConf.parse(contenido.stdout).checks_extra
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
@@ -2740,7 +2826,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return registro.fold(enc.id)
     rama = _rama_fase(enc)
-    base = _base_fase(enc)
+    base = (
+        enc.entrega.base if enc.entrega.nivel in ("integrado", "desplegado")
+        else _base_fase(enc)
+    )
     for paso in ("commit", "push"):
         registro.anotar(
             enc.id,
@@ -2765,6 +2854,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         # un merge aplicado con respuesta perdida se concilia, no se repite.
         try:
             vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
+            if vista_pr.base != base and vista_pr.estado == "abierto":
+                gh.cambiar_base(enc.entrega.repo, enc.pr_numero, base)
+                vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
         except Exception as exc:
             causa = (
                 f"no se pudo consultar el PR #{enc.pr_numero} registrado: {exc}"
@@ -2780,6 +2872,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         recibo = vista_pr.merge_commit or vista_pr.head
         if (
             vista_pr.estado == "mergeado"
+            and vista_pr.base == enc.entrega.base
             and enc.entrega.nivel in ("integrado", "desplegado")
             and enc.nivel_alcanzado == "pr"
         ):
@@ -2808,7 +2901,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     registro, enc, espacio, directorio, hora
                 )
             return enc
-    else:
+    if not enc.pr_numero or (
+        vista_pr.estado == "mergeado" and vista_pr.base != base
+    ):
         ref_base = _ref_existente(espacio, f"origin/{base}", base)
         if ref_base:
             conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}")
@@ -2942,7 +3037,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     try:
-        veredicto_ci = gh.checks(enc.entrega.repo, numero, sha, ())
+        veredicto_ci = gh.checks(
+            enc.entrega.repo, numero, sha, _checks_extra(enc, espacio),
+            base_politica=enc.entrega.base,
+        )
     except Exception as exc:
         causa = f"no se pudieron leer los checks del PR #{numero}: {exc}"
         _anotar_instrumento(
@@ -3101,6 +3199,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     if enc.entrega.nivel in ("integrado", "desplegado") and enc.nivel_alcanzado == "pr":
         try:
             vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
+            if vista_pr.base != enc.entrega.base:
+                raise ValueError(
+                    f"el PR apunta a {vista_pr.base}; falta integrar en {enc.entrega.base}"
+                )
             if vista_pr.estado != "mergeado":
                 vista_pr = gh.merge(
                     enc.entrega.repo,
@@ -3158,8 +3260,17 @@ def _paso_despliegue(
         pedidos = [
             p for p in _pedidos_efecto(espacio) if p["operacion"] == "desplegar"
         ]
-    except (OSError, ValueError):
-        pedidos = []
+    except (OSError, ValueError, TypeError) as exc:
+        _anotar_instrumento(
+            registro, enc, "adaptador", str(exc),
+            "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
+            hora, f"pedidos-{enc.generacion}", clase="pedido-efecto.json",
+        )
+        _anotar_impedimento(
+            registro, enc, "pedido-efecto.json", str(exc),
+            "que .interno/pedido-efecto.json vuelva a validar", hora,
+        )
+        return registro.fold(enc.id) or enc
     efecto = None
     for pedido in pedidos:
         efecto = next(
@@ -3309,6 +3420,7 @@ def _lanzar_uno(
             enc = replace(
                 enc,
                 fases=fresco.fases,
+                entrega=fresco.entrega,
                 motivo=fresco.motivo,
                 causa=fresco.causa,
                 siguiente=fresco.siguiente,

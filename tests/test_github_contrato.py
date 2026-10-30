@@ -333,7 +333,7 @@ class PollChecksAnotaLaEsperaTest(unittest.TestCase):
         ]
         gh = SimpleNamespace(
             ver=lambda repo, n: PrView(n, "f", "main", False, "s", "abierto", ""),
-            checks=lambda *a: veredictos.pop(0),
+            checks=lambda *a, base_politica="": veredictos.pop(0),
         )
         fx = Effects(SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0))
         snap = m.fold(plan, [])

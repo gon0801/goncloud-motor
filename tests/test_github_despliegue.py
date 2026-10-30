@@ -278,7 +278,7 @@ class ChecksTest(unittest.TestCase):
 
         gh = SimpleNamespace(
             ver=lambda repo, n: PrView(n, "f", "main", False, SHA, "abierto", ""),
-            checks=lambda *a: ChecksVerdict(
+            checks=lambda *a, base_politica="": ChecksVerdict(
                 SHA,
                 False,
                 False,
