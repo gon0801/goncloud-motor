@@ -166,13 +166,6 @@ def recibir(
     }
     reducir(None, {"kind": "entrega", "data": datos_entrega})
     registro.append(encargo, "entrega", datos_entrega, ukey, hora)
-    if entrega_nivel != "terminado" and not base_rama:
-        _anotar_instrumento(
-            registro, registro.fold(encargo), "github",
-            "falta resolver la rama predeterminada del repositorio",
-            "resolver el contexto del repositorio antes de crear la rama de trabajo",
-            hora, "contexto-entrega",
-        )
     _espejo_entrega(
         registro,
         encargo,
