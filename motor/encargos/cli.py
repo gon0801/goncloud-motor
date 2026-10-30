@@ -196,7 +196,7 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
                 restricciones=tuple(args.restriccion),
                 canal=args.canal,
                 via=args.via,
-                entrega_nivel=resolver_entrega(args.entrega, args.repo),
+                entrega_nivel=resolver_entrega(args.entrega, args.repo, args.via),
                 repo=args.repo,
                 rama=args.rama,
                 base_rama=args.base_rama,
@@ -503,7 +503,8 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
                     canal=msg.get("canal") or "",
                     via=msg.get("via") or "durable",
                     entrega_nivel=resolver_entrega(
-                        msg.get("entrega_nivel"), msg.get("repo") or ""
+                        msg.get("entrega_nivel"), msg.get("repo") or "",
+                        msg.get("via") or "durable",
                     ),
                     repo=msg.get("repo") or "",
                     rama=msg.get("rama") or "",

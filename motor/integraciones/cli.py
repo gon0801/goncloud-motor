@@ -170,7 +170,7 @@ def _correr(args) -> int:
                     args.via,
                     adjuntos,
                     identidad,
-                    entrega_nivel=resolver_entrega(args.entrega, args.repo),
+                    entrega_nivel=resolver_entrega(args.entrega, args.repo, args.via),
                     repo=args.repo,
                     rama=args.rama,
                     base_rama=args.base_rama,

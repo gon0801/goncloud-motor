@@ -48,6 +48,14 @@ class Registro:
             "CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events "
             "BEGIN SELECT RAISE(ABORT, 'append-only'); END"
         )
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS cortes_avisos ("
+            " version TEXT PRIMARY KEY, evento INTEGER NOT NULL)"
+        )
+        self.db.execute(
+            "INSERT OR IGNORE INTO cortes_avisos (version, evento) "
+            "SELECT 'avances-v1', COALESCE(MAX(id), 0) FROM events"
+        )
 
     def close(self) -> None:
         self.db.close()
@@ -115,9 +123,16 @@ class Registro:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def fold(self, encargo: str) -> Encargo | None:
+    def corte_avisos(self) -> int:
+        return self.db.execute(
+            "SELECT evento FROM cortes_avisos WHERE version = 'avances-v1'"
+        ).fetchone()[0]
+
+    def fold(self, encargo: str, hasta: int | None = None) -> Encargo | None:
         estado = None
         for ev in self.eventos(encargo):
+            if hasta is not None and ev["id"] > hasta:
+                break
             estado = reducir(estado, ev)
         return estado
 

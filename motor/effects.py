@@ -2254,6 +2254,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             a.sha,
             tuple(dict.fromkeys([*rc.checks_extra, *block.checks])),
             relanzadas,
+            base_politica=rc.principal,
         )
         if not v.terminal:
             # Se anota solo cuando (faltan, github_termino) cambia respecto del último

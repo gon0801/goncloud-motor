@@ -253,6 +253,7 @@ class GitHubPort(Protocol):
         sha: str,
         extra: tuple[str, ...],
         relanzadas: tuple[str, ...] = (),
+        *, base_politica: str = "",
     ) -> ChecksVerdict: ...
     def merge(
         self, repo: str, numero: int, sha: str, metodo: str, mensaje: str
@@ -422,44 +423,47 @@ class GhGitHub:
         # Repo privado en el plan gratis: GitHub no ofrece protección ni reglas (HTTP 403).
         return "Upgrade to GitHub Pro" in str(e)
 
-    def checks(self, repo, numero, sha, extra, relanzadas=()):
+    def checks(self, repo, numero, sha, extra, relanzadas=(), *, base_politica=""):
         n = self.nombre(repo)
         pr = self._vista(repo, numero)
-        try:
-            req = _contextos(json.loads(
-                self._gh(
-                    "api",
-                    f"repos/{n}/branches/{pr.base}/protection/required_status_checks",
-                    "--jq",
-                    ".contexts",
+        req = []
+        for base in dict.fromkeys(b for b in (pr.base, base_politica) if b):
+            try:
+                protegidos = _contextos(json.loads(
+                    self._gh(
+                        "api",
+                        f"repos/{n}/branches/{base}/protection/required_status_checks",
+                        "--jq",
+                        ".contexts",
+                    )
+                ))
+            except RuntimeError as e:
+                if not (self._sin_proteccion(e) or self._sin_funcion_en_el_plan(e)):
+                    raise
+                protegidos = []
+            req.extend(c for c in protegidos if c not in req)
+            try:
+                reglas = self._paginas(
+                    self._gh(
+                        "api",
+                        f"repos/{n}/rules/branches/{base}",
+                        "--paginate",
+                    )
                 )
-            ))
-        except RuntimeError as e:
-            if not (self._sin_proteccion(e) or self._sin_funcion_en_el_plan(e)):
-                raise
-            req = []
-        try:
-            reglas = self._paginas(
-                self._gh(
-                    "api",
-                    f"repos/{n}/rules/branches/{pr.base}",
-                    "--paginate",
-                )
-            )
-        except RuntimeError as e:
-            if not self._sin_funcion_en_el_plan(e):
-                raise
-            reglas = []
-        for pagina in reglas:
-            for regla in pagina if isinstance(pagina, list) else []:
-                if regla.get("type") != "required_status_checks":
-                    continue
-                for c in (regla.get("parameters") or {}).get(
-                    "required_status_checks", []
-                ):
-                    ctx = c.get("context") if isinstance(c, dict) else c
-                    if ctx and ctx not in req:
-                        req.append(ctx)
+            except RuntimeError as e:
+                if not self._sin_funcion_en_el_plan(e):
+                    raise
+                reglas = []
+            for pagina in reglas:
+                for regla in pagina if isinstance(pagina, list) else []:
+                    if regla.get("type") != "required_status_checks":
+                        continue
+                    for c in (regla.get("parameters") or {}).get(
+                        "required_status_checks", []
+                    ):
+                        ctx = c.get("context") if isinstance(c, dict) else c
+                        if ctx and ctx not in req:
+                            req.append(ctx)
         requeridos = tuple(dict.fromkeys([*req, *extra]))
         runs: list[dict] = []
         for pagina in self._paginas(
@@ -715,7 +719,7 @@ class FakeGitHub:
                 == 0
             )
 
-    def checks(self, repo, numero, sha, extra, relanzadas=()):
+    def checks(self, repo, numero, sha, extra, relanzadas=(), *, base_politica=""):
         s = self._cargar()
         pr = self._pr(s, repo, numero)
         cfg = self._cfg(repo)
