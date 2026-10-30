@@ -6,7 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
-from motor.encargos.ciclo import ahora_iso, consultar, ordenar, recibir
+from motor.encargos.ciclo import ahora_iso, consultar, ordenar, recibir, resolver_entrega
+from motor.encargos.dominio import TransicionIlegal
 from motor.encargos.registro import Registro
 
 
@@ -94,6 +95,31 @@ def registrar_identidad(
     return actual
 
 
+def _ruta_identidad_canal(registro: Registro, encargo: str) -> Path:
+    return registro.base / "canal-identidad" / f"{encargo}.json"
+
+
+def registrar_identidad_canal(
+    registro: Registro,
+    encargo: str,
+    canal: str,
+    director: str,
+    sesion: str = "",
+) -> dict:
+    """La identidad del canal queda fija al nacer el encargo. No se reescribe."""
+    path = _ruta_identidad_canal(registro, encargo)
+    actual = _leer(path)
+    if actual is not None:
+        return actual
+    doc = {
+        "canal": nombre_canal(canal),
+        "director": director,
+        "sesion": str(sesion or ""),
+    }
+    _atomico(path, doc)
+    return doc
+
+
 def encargar(
     registro: Registro,
     texto: str,
@@ -104,13 +130,15 @@ def encargar(
     via: str,
     adjuntos: tuple[str, ...] = (),
     identidad: dict | None = None,
-    entrega_nivel: str = "terminado",
+    entrega_nivel: str = "",
     repo: str = "",
     rama: str = "",
     base_rama: str = "",
     modelos_solicitados: tuple[tuple[str, str, str], ...] = (),
+    restricciones: tuple[str, ...] = (),
 ) -> dict:
     canal = nombre_canal(canal)
+    entrega_nivel = resolver_entrega(entrega_nivel, repo)
     salida = recibir(
         registro,
         texto,
@@ -120,6 +148,7 @@ def encargar(
         canal=canal,
         via=via,
         adjuntos=adjuntos,
+        restricciones=restricciones,
         entrega_nivel=entrega_nivel,
         repo=repo,
         rama=rama,
@@ -140,6 +169,13 @@ def encargar(
             _atomico(path, doc)
         elif datos:
             registrar_identidad(registro, salida["encargo"], datos)
+    if not salida.get("conflicto") and salida.get("encargo"):
+        sesion = ""
+        if identidad:
+            sesion = str(identidad.get("sesion") or "")
+        registrar_identidad_canal(
+            registro, salida["encargo"], canal, director, sesion
+        )
     return salida
 
 
@@ -733,130 +769,349 @@ def _enviar_aviso(
     _atomico(path, guardado)
 
 
+def _entregado(aviso: dict) -> bool:
+    return bool(
+        aviso.get("estado") == "publicado"
+        and aviso.get("recibo")
+        and aviso.get("alcance") == "externo"
+    )
+
+
+def hechos_de_avance(enc) -> list[dict]:
+    """Hechos ya registrados que merecen un aviso. La identidad es el hecho, no el reloj."""
+    if enc.estado in ("cancelado", "detenido", "deteniendo"):
+        return []
+    hechos = []
+    fase = enc.fase_actual
+    if fase is not None:
+        hechos.append(
+            {
+                "tipo": "fase",
+                "identidad": f"{fase.id}:{fase.estado}:{fase.resultado}:{fase.evidencia}",
+                "texto": (
+                    f"Fase {fase.id} ({fase.estado}). "
+                    f"Resultado: {fase.resultado or 'sin resultado todavía'}."
+                ),
+            }
+        )
+        if fase.revision_vigente is not None:
+            ref = fase.revision_vigente
+            hechos.append(
+                {
+                    "tipo": "revision",
+                    "identidad": f"{ref.revision_id}:{ref.veredicto}:{ref.version}",
+                    "texto": f"Revisión de {fase.id}: {ref.veredicto} sobre {ref.version}.",
+                }
+            )
+        if fase.pr_numero:
+            hechos.append(
+                {
+                    "tipo": "pr",
+                    "identidad": f"{fase.pr_numero}:{fase.pr_sha}",
+                    "texto": f"PR #{fase.pr_numero} de {fase.id} en {fase.pr_sha}.",
+                }
+            )
+    for sol in enc.solicitudes:
+        if sol.estado != "pregunta":
+            continue
+        hechos.append(
+            {
+                "tipo": "pregunta",
+                "identidad": sol.id,
+                "solicitud": sol.id,
+                "texto": (
+                    f"Pregunta {sol.id} del encargo {enc.id}, fase {sol.fase}: "
+                    f"{sol.pregunta or sol.motivo}"
+                ),
+            }
+        )
+    for dec in enc.decisiones:
+        hechos.append(
+            {
+                "tipo": "decision",
+                "identidad": dec.id,
+                "texto": (
+                    f"Decisión: {dec.eleccion}. Motivo: {dec.motivo}. "
+                    f"Evidencia: {dec.evidencia or 'sin evidencia'}."
+                ),
+            }
+        )
+    if enc.estado == "esperando_reintento" and (enc.motivo or enc.reanuda_en):
+        hechos.append(
+            {
+                "tipo": "espera",
+                "identidad": f"reintento:{enc.reanuda_en}:{enc.motivo}",
+                "texto": (
+                    f"Espera: {enc.motivo or 'servicio'}. "
+                    f"Reanuda: {enc.reanuda_en or 'sin hora'}."
+                ),
+            }
+        )
+    elif enc.impedimento and (enc.impedimento_causa or enc.impedimento_condicion):
+        hechos.append(
+            {
+                "tipo": "espera",
+                "identidad": f"impedimento:{enc.impedimento}:{enc.impedimento_causa}",
+                "texto": (
+                    f"Espera de {enc.impedimento}: {enc.impedimento_causa}. "
+                    f"Condición: {enc.impedimento_condicion}."
+                ),
+            }
+        )
+    return hechos
+
+
+def _aviso_de_hecho(enc, hecho: dict) -> dict:
+    evidencia = f"avance:{hecho['tipo']}:{hecho['identidad']}"
+    aviso = {
+        "id": id_aviso(enc.id, evidencia),
+        "encargo": enc.id,
+        "canal": enc.canal,
+        "evidencia": evidencia,
+        "estado": "pendiente",
+        "recibo": "",
+        "tipo": hecho["tipo"],
+        "entrega": {
+            "nivel_autorizado": enc.entrega.nivel,
+            "nivel_alcanzado": enc.nivel_alcanzado,
+            "repo": enc.entrega.repo,
+            "pr_numero": enc.pr_numero,
+            "pr_sha": enc.pr_sha,
+        },
+    }
+    if hecho.get("solicitud"):
+        aviso["solicitud"] = hecho["solicitud"]
+    return aviso
+
+
+def responder_canal(
+    registro: Registro,
+    encargo: str,
+    solicitud: str,
+    texto: str,
+    clave: str,
+    canal: str,
+    hora: str,
+    sesion: str = "",
+) -> dict:
+    """Aplica la respuesta a esa pregunta si el canal es el de origen. No abre otro encargo."""
+    enc = registro.fold(encargo)
+    if enc is None:
+        return {"rechazada": True, "motivo": "no hay encargo", "aplicada": False, "encargo": encargo}
+    try:
+        canal_resp = nombre_canal(canal)
+    except ValueError as exc:
+        return {"rechazada": True, "motivo": str(exc), "aplicada": False, "encargo": encargo}
+    identidad = _leer(_ruta_identidad_canal(registro, encargo)) or {}
+    origen = str(identidad.get("canal") or enc.canal or "")
+    if not origen or canal_resp != origen:
+        return {
+            "rechazada": True,
+            "motivo": "el canal no es el de origen del encargo",
+            "aplicada": False,
+            "encargo": encargo,
+        }
+    sesion_origen = str(identidad.get("sesion") or "")
+    if sesion_origen and str(sesion or "") != sesion_origen:
+        return {
+            "rechazada": True,
+            "motivo": "la identidad del canal no coincide",
+            "aplicada": False,
+            "encargo": encargo,
+        }
+    from motor.encargos.necesidades import responder
+
+    try:
+        salida = responder(
+            registro,
+            encargo,
+            solicitud,
+            texto,
+            f"canal:{canal_resp}",
+            clave,
+            hora,
+        )
+    except TransicionIlegal as exc:
+        return {
+            "rechazada": True,
+            "motivo": str(exc),
+            "aplicada": False,
+            "encargo": encargo,
+        }
+    salida["encargo"] = encargo
+    salida["canal"] = canal_resp
+    if not salida.get("aplicada"):
+        salida["tardia"] = True
+        salida["motivo"] = (
+            salida.get("motivo") or "la respuesta no aplica a una pregunta vigente"
+        )
+        return salida
+    from motor.encargos.ciclo import _directorio, _espacio
+    from motor.encargos.necesidades import continuar_respuestas
+
+    actual = registro.fold(encargo)
+    if actual is not None:
+        salida["continuacion"] = continuar_respuestas(
+            registro,
+            actual,
+            _espacio(registro.base, encargo),
+            _directorio(registro.base, encargo),
+            hora,
+        )
+    return salida
+
+
+def _cerrar_aviso(guardado: dict, novedad: bool) -> dict:
+    guardado["entregado"] = _entregado(guardado)
+    guardado["novedad"] = novedad
+    if not guardado["entregado"]:
+        guardado["nota"] = (
+            "un archivo local no es un mensaje entregado al canal"
+            if guardado.get("alcance") == "local" or guardado.get("estado") == "local-pendiente"
+            else guardado.get("nota") or ""
+        )
+        if not guardado["nota"]:
+            guardado.pop("nota", None)
+    return guardado
+
+
+def _publicar_aviso(
+    registro: Registro, aviso: dict, cuerpo: str | None, cortar: str
+) -> dict:
+    """Misma recuperación de recibo para el cierre y para el avance. Sin modelo."""
+    path = registro.base / "avisos" / f"{aviso['id']}.json"
+    guardado = _leer(path) or dict(aviso)
+    if guardado.get("estado") == "publicado" and guardado.get("recibo"):
+        return _cerrar_aviso(guardado, False)
+    if guardado.get("estado") == "local-pendiente" and guardado.get("alcance") == "local":
+        try:
+            nombre_previo = nombre_canal(str(guardado.get("canal") or ""))
+        except ValueError:
+            nombre_previo = ""
+        cfg_previo = _config_canal(registro, nombre_previo) if nombre_previo else None
+        comando_previo = (
+            list(cfg_previo.get("comando") or [])
+            if cfg_previo and not cfg_previo.get("error")
+            else []
+        )
+        if not comando_previo:
+            return _cerrar_aviso(guardado, False)
+    try:
+        nombre = nombre_canal(str(guardado["canal"]))
+    except ValueError:
+        guardado["estado"] = "incierto"
+        guardado["motivo"] = "el canal no es un nombre"
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, True)
+    canal_dir = registro.base / "canal" / nombre
+    entrega = canal_dir / guardado["id"]
+    if cuerpo is None:
+        guardado["estado"] = "incierto"
+        guardado["motivo"] = "no hay un resultado legible que concuerde con la evidencia"
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, True)
+    try:
+        intentos = int(guardado.get("intentos") or 0)
+    except (TypeError, ValueError):
+        intentos = 0
+    ya_enviado = guardado.get("estado") == "incierto" or intentos > 0
+    if ya_enviado:
+        guardado["estado"] = "incierto"
+    cfg = _config_canal(registro, nombre)
+    if cfg and cfg.get("error"):
+        if ya_enviado:
+            guardado["estado"] = "incierto"
+            guardado["motivo"] = str(cfg["error"])
+        else:
+            guardado["estado"] = "local-pendiente"
+            guardado["alcance"] = "local"
+            guardado["recibo"] = ""
+            guardado["motivo"] = str(cfg["error"])
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, True)
+    comando = list(cfg.get("comando") or []) if cfg else []
+    conciliacion = list(cfg.get("conciliacion") or []) if cfg else []
+    if guardado.get("estado") == "incierto":
+        if not comando:
+            guardado["motivo"] = "sin transporte configurado; no se reenvia"
+            _atomico(path, guardado)
+            return _cerrar_aviso(guardado, True)
+        if _declara_idempotencia(cfg):
+            _enviar_aviso(registro, comando, guardado, cuerpo, path)
+            return _cerrar_aviso(guardado, True)
+        if not conciliacion:
+            guardado["motivo"] = "aviso incierto sin conciliacion; no se reenvia"
+            _atomico(path, guardado)
+            return _cerrar_aviso(guardado, True)
+        resultado_con, dato = _conciliar_transporte(
+            registro, conciliacion, guardado, cuerpo
+        )
+        if resultado_con == "hallado":
+            guardado["estado"] = "publicado"
+            guardado["alcance"] = "externo"
+            guardado["recibo"] = dato
+            guardado.pop("motivo", None)
+            _atomico(path, guardado)
+            return _cerrar_aviso(guardado, True)
+        if resultado_con == "incierto":
+            guardado["motivo"] = dato
+            _atomico(path, guardado)
+            return _cerrar_aviso(guardado, True)
+        _enviar_aviso(registro, comando, guardado, cuerpo, path)
+        return _cerrar_aviso(guardado, True)
+    if cortar == "antes" and not entrega.exists():
+        guardado["estado"] = "pendiente"
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, True)
+    if not entrega.exists():
+        canal_dir.mkdir(parents=True, exist_ok=True)
+        temporal = entrega.with_suffix(".tmp")
+        temporal.write_text(cuerpo, encoding="utf-8")
+        temporal.replace(entrega)
+    if entrega.read_text(encoding="utf-8") != cuerpo:
+        guardado["estado"] = "incierto"
+        guardado["motivo"] = "el canal tiene otro contenido y no se puede conciliar"
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, True)
+    if cortar == "despues" and not guardado.get("recibo"):
+        if comando:
+            _registrar_intento(path, guardado)
+            _ejecutar_transporte(registro, comando, guardado, cuerpo)
+            guardado["estado"] = "incierto"
+            guardado["alcance"] = "externo"
+            guardado["motivo"] = "envio hecho sin recibo; falta conciliar"
+        else:
+            guardado["estado"] = "local-pendiente"
+            guardado["alcance"] = "local"
+            guardado["recibo"] = ""
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, True)
+    if not comando:
+        guardado["estado"] = "local-pendiente"
+        guardado["alcance"] = "local"
+        guardado["recibo"] = ""
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, True)
+    _enviar_aviso(registro, comando, guardado, cuerpo, path)
+    return _cerrar_aviso(guardado, True)
+
+
 def drenar(registro: Registro, cortar: str = "") -> dict:
     publicados = []
     for encargo in registro.ids():
         enc = registro.fold(encargo)
-        if enc is None or enc.estado != "terminado" or not enc.canal or not enc.evidencia:
+        if enc is None or not enc.canal:
             continue
-        aviso = _aviso_de(enc)
-        path = registro.base / "avisos" / f"{aviso['id']}.json"
-        guardado = _leer(path) or aviso
-        if guardado.get("estado") == "publicado" and guardado.get("recibo"):
-            publicados.append(guardado)
-            continue
-        try:
-            nombre = nombre_canal(str(guardado["canal"]))
-        except ValueError:
-            guardado["estado"] = "incierto"
-            guardado["motivo"] = "el canal no es un nombre"
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
-        canal_dir = registro.base / "canal" / nombre
-        entrega = canal_dir / guardado["id"]
-        cuerpo = _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"]))
-        if cuerpo is None:
-            guardado["estado"] = "incierto"
-            guardado["motivo"] = "no hay un resultado legible que concuerde con la evidencia"
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
-        try:
-            intentos = int(guardado.get("intentos") or 0)
-        except (TypeError, ValueError):
-            intentos = 0
-        ya_enviado = guardado.get("estado") == "incierto" or intentos > 0
-        if ya_enviado:
-            guardado["estado"] = "incierto"
-        cfg = _config_canal(registro, nombre)
-        if cfg and cfg.get("error"):
-            if ya_enviado:
-                guardado["estado"] = "incierto"
-                guardado["motivo"] = str(cfg["error"])
-            else:
-                guardado["estado"] = "local-pendiente"
-                guardado["alcance"] = "local"
-                guardado["recibo"] = ""
-                guardado["motivo"] = str(cfg["error"])
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
-        comando = list(cfg.get("comando") or []) if cfg else []
-        conciliacion = list(cfg.get("conciliacion") or []) if cfg else []
-        if guardado.get("estado") == "incierto":
-            if not comando:
-                guardado["motivo"] = "sin transporte configurado; no se reenvia"
-                _atomico(path, guardado)
-                publicados.append(guardado)
-                continue
-            if _declara_idempotencia(cfg):
-                _enviar_aviso(registro, comando, guardado, cuerpo, path)
-                publicados.append(guardado)
-                continue
-            if not conciliacion:
-                guardado["motivo"] = "aviso incierto sin conciliacion; no se reenvia"
-                _atomico(path, guardado)
-                publicados.append(guardado)
-                continue
-            resultado_con, dato = _conciliar_transporte(
-                registro, conciliacion, guardado, cuerpo
+        trabajos: list[tuple[dict, str | None]] = []
+        if enc.estado == "terminado" and enc.evidencia:
+            aviso = _aviso_de(enc)
+            trabajos.append(
+                (aviso, _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"])))
             )
-            if resultado_con == "hallado":
-                guardado["estado"] = "publicado"
-                guardado["alcance"] = "externo"
-                guardado["recibo"] = dato
-                guardado.pop("motivo", None)
-                _atomico(path, guardado)
-                publicados.append(guardado)
-                continue
-            if resultado_con == "incierto":
-                guardado["motivo"] = dato
-                _atomico(path, guardado)
-                publicados.append(guardado)
-                continue
-            _enviar_aviso(registro, comando, guardado, cuerpo, path)
-            publicados.append(guardado)
-            continue
-        if cortar == "antes" and not entrega.exists():
-            guardado["estado"] = "pendiente"
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
-        if not entrega.exists():
-            canal_dir.mkdir(parents=True, exist_ok=True)
-            temporal = entrega.with_suffix(".tmp")
-            temporal.write_text(cuerpo, encoding="utf-8")
-            temporal.replace(entrega)
-        if entrega.read_text(encoding="utf-8") != cuerpo:
-            guardado["estado"] = "incierto"
-            guardado["motivo"] = "el canal tiene otro contenido y no se puede conciliar"
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
-        if cortar == "despues" and not guardado.get("recibo"):
-            if comando:
-                _registrar_intento(path, guardado)
-                _ejecutar_transporte(registro, comando, guardado, cuerpo)
-                guardado["estado"] = "incierto"
-                guardado["alcance"] = "externo"
-                guardado["motivo"] = "envio hecho sin recibo; falta conciliar"
-            else:
-                guardado["estado"] = "local-pendiente"
-                guardado["alcance"] = "local"
-                guardado["recibo"] = ""
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
-        if not comando:
-            guardado["estado"] = "local-pendiente"
-            guardado["alcance"] = "local"
-            guardado["recibo"] = ""
-            _atomico(path, guardado)
-            publicados.append(guardado)
-            continue
-        _enviar_aviso(registro, comando, guardado, cuerpo, path)
-        publicados.append(guardado)
+        for hecho in hechos_de_avance(enc):
+            trabajos.append((_aviso_de_hecho(enc, hecho), hecho["texto"]))
+        for aviso, cuerpo in trabajos:
+            publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar))
     return {"avisos": publicados}
 
 
@@ -874,6 +1129,9 @@ def capacidades_openbot(argv: list[str]) -> dict:
         "timeout_cancela": "the work continues" not in texto,
         "skills": False,
         "publicacion_de_sesion": False,
+        "recepcion": any(
+            marca in texto for marca in ("reply", "responder", "inbound")
+        ),
         "rc_ayuda": ayuda.returncode,
         "rc_cancelar": cancelar.returncode,
     }

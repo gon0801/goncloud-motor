@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
+from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import (
     _anotar_instrumento,
     _incorporar,
@@ -791,6 +792,53 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
             self.assertEqual(e.pr_numero, 0)
             estado_fake = json.loads((raiz / "fake" / "github.json").read_text())
             self.assertEqual(estado_fake["prs"], {})
+
+    def test_inspeccion_pendiente_pasa_por_el_puente_y_no_repite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "insp-1", "Crea dato.txt con 42")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "dato.txt").write_text("42")
+            r.incorporar()
+            lanzamientos = []
+
+            def lanzador(enc, prompt, espacio, sesion):
+                lanzamientos.append(
+                    (enc.rol, Path(prompt).read_text(encoding="utf-8"))
+                )
+                return None
+
+            with mock.patch(
+                "motor.encargos.aislamiento.sondear",
+                return_value=SondaEntorno(True),
+            ):
+                for _ in range(2):
+                    r.juicio(
+                        {
+                            "veredicto": "no_concluyente",
+                            "evidencia": "falta acceso a la fuente externa",
+                            "inspeccion_faltante": "consultar metricas de cuenta",
+                        }
+                    )
+                    r.incorporar()
+                    barrer(r.reg, ahora_iso(), time.time(), lanzador)
+            e = r.fold()
+            self.assertEqual(lanzamientos, [])
+            self.assertEqual(len(r.eventos("revision")), 1)
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertEqual(
+                e.inspeccion_pendiente, "consultar metricas de cuenta"
+            )
+            self.assertEqual(len(e.solicitudes), 1)
+
+            from motor.encargos.necesidades import responder
+
+            responder(
+                r.reg, r.enc, e.fases[0].inspeccion_solicitud, "si",
+                "propietario", "insp-1", ahora_iso(),
+            )
+            barrer(r.reg, ahora_iso(), time.time(), lanzador)
+            self.assertEqual([rol for rol, _prompt in lanzamientos], ["revisor"])
+            self.assertIn("estado: respuesta", lanzamientos[0][1])
 
     def test_poteto_local_llega_con_las_skills_hermanas(self):
         with tempfile.TemporaryDirectory() as tmp:

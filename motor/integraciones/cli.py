@@ -21,8 +21,10 @@ from .directores import (
     promover,
     registrar_identidad,
     relay,
+    responder_canal,
     resultado_directo,
 )
+from motor.encargos.ciclo import resolver_entrega
 
 
 def _json(datos: dict) -> int:
@@ -50,13 +52,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument(
         "--entrega",
         choices=("terminado", "pr", "integrado", "desplegado"),
-        default="terminado",
+        default=None,
     )
     s.add_argument("--repo", default="")
     s.add_argument("--rama", default="")
     s.add_argument("--base-rama", default="")
     s.add_argument("--responsable", default="")
     s.add_argument("--revisor", default="")
+    s.add_argument("--restriccion", action="append", default=[])
 
     s = sub.add_parser("registrar-sesion")
     s.add_argument("encargo")
@@ -95,6 +98,15 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--cortar", default="")
 
+    s = sub.add_parser("responder")
+    s.add_argument("encargo")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--solicitud", required=True)
+    s.add_argument("--respuesta", required=True)
+    s.add_argument("--clave", required=True)
+    s.add_argument("--canal", required=True)
+    s.add_argument("--sesion", default="")
+
     s = sub.add_parser("conciliar-autoridad")
     s.add_argument("--base", type=Path, required=True)
 
@@ -128,7 +140,7 @@ def _correr(args) -> int:
             adjuntos: tuple[str, ...] = ()
             if args.archivo:
                 texto = args.archivo.read_text(encoding="utf-8")
-                adjuntos = (str(args.archivo),)
+                adjuntos = (str(args.archivo.resolve()),)
             if not texto.strip():
                 print("falta el pedido", file=sys.stderr)
                 return 2
@@ -158,11 +170,12 @@ def _correr(args) -> int:
                     args.via,
                     adjuntos,
                     identidad,
-                    entrega_nivel=args.entrega,
+                    entrega_nivel=resolver_entrega(args.entrega, args.repo),
                     repo=args.repo,
                     rama=args.rama,
                     base_rama=args.base_rama,
                     modelos_solicitados=solicitar_modelos(args.responsable, args.revisor),
+                    restricciones=tuple(args.restriccion),
                 )
             )
         if args.cmd == "registrar-sesion":
@@ -186,6 +199,21 @@ def _correr(args) -> int:
             return _json(resultado_directo(reg, args.encargo, args.texto, marca))
         if args.cmd == "avisar":
             return _json(drenar(reg, args.cortar))
+        if args.cmd == "responder":
+            salida = responder_canal(
+                reg,
+                args.encargo,
+                args.solicitud,
+                args.respuesta,
+                args.clave,
+                args.canal,
+                marca,
+                args.sesion,
+            )
+            if salida.get("rechazada"):
+                print(json.dumps(salida, ensure_ascii=False))
+                return 2
+            return _json(salida)
         if args.cmd == "conciliar-autoridad":
             return _json(conciliar_autoridad(reg))
     finally:

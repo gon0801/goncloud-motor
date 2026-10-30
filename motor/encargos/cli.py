@@ -23,6 +23,7 @@ from .ciclo import (
     ordenar,
     parada_local,
     recibir,
+    resolver_entrega,
 )
 from .frontera import DestinoEnsayo, despachar
 from .registro import BaseProhibida, Registro, exigir_base
@@ -60,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument(
         "--entrega",
         choices=("terminado", "pr", "integrado", "desplegado"),
-        default="terminado",
+        default=None,
     )
     s.add_argument("--repo", default="")
     s.add_argument("--rama", default="")
@@ -103,6 +104,17 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--texto", required=True)
     s.add_argument("--bloquea", action="store_true")
+
+    s = sub.add_parser("responder")
+    s.add_argument("encargo")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--solicitud", required=True)
+    s.add_argument("--respuesta", required=True)
+    s.add_argument("--autor", default="propietario")
+    s.add_argument("--clave", required=True)
+
+    s = sub.add_parser("capacidades")
+    s.add_argument("--base", type=Path, required=True)
 
     s = sub.add_parser("afirmacion")
     s.add_argument("encargo")
@@ -169,7 +181,7 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         adjuntos: tuple[str, ...] = ()
         if args.archivo:
             texto = args.archivo.read_text(encoding="utf-8")
-            adjuntos = (str(args.archivo),)
+            adjuntos = (str(args.archivo.resolve()),)
         if not texto.strip():
             print("falta el pedido", file=sys.stderr)
             return 2
@@ -184,7 +196,7 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
                 restricciones=tuple(args.restriccion),
                 canal=args.canal,
                 via=args.via,
-                entrega_nivel=args.entrega,
+                entrega_nivel=resolver_entrega(args.entrega, args.repo),
                 repo=args.repo,
                 rama=args.rama,
                 base_rama=args.base_rama,
@@ -233,6 +245,38 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         )
     if args.cmd == "pregunta":
         return _json(marcar_pregunta(reg, args.encargo, args.texto, args.bloquea, hora))
+    if args.cmd == "responder":
+        from .ciclo import _directorio, _espacio
+        from .necesidades import continuar_respuestas, responder
+
+        salida = responder(
+            reg,
+            args.encargo,
+            args.solicitud,
+            args.respuesta,
+            args.autor,
+            args.clave,
+            hora,
+        )
+        if salida.get("aplicada"):
+            enc = reg.fold(args.encargo)
+            if enc is not None:
+                salida["continuacion"] = continuar_respuestas(
+                    reg,
+                    enc,
+                    _espacio(reg.base, args.encargo),
+                    _directorio(reg.base, args.encargo),
+                    hora,
+                )
+        return _json(salida)
+    if args.cmd == "capacidades":
+        from .capacidades import ConfigInvalida, cargar, catalogo
+
+        try:
+            recursos = cargar(reg.base)
+        except ConfigInvalida as exc:
+            return _json({"error": str(exc), "recursos": []})
+        return _json({"recursos": catalogo(recursos)})
     if args.cmd == "afirmacion":
         return _json(afirmar(reg, args.encargo, args.texto, hora))
     if args.cmd == "parada-local":
@@ -377,6 +421,24 @@ def _supervisor(reg: Registro, args) -> int:
         except Exception:
             pass
         try:
+            from .ciclo import _directorio, _espacio
+            from .necesidades import continuar_respuestas
+
+            for ident in reg.ids():
+                enc = reg.fold(ident)
+                if enc is None:
+                    continue
+                if any(s.estado == "respuesta" for s in enc.solicitudes):
+                    continuar_respuestas(
+                        reg,
+                        enc,
+                        _espacio(reg.base, ident),
+                        _directorio(reg.base, ident),
+                        hora,
+                    )
+        except Exception:
+            pass
+        try:
             from motor.integraciones.directores import conciliar_autoridad
 
             conciliar_autoridad(reg)
@@ -440,7 +502,9 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
                     restricciones=tuple(msg.get("restricciones") or ()),
                     canal=msg.get("canal") or "",
                     via=msg.get("via") or "durable",
-                    entrega_nivel=msg.get("entrega_nivel") or "terminado",
+                    entrega_nivel=resolver_entrega(
+                        msg.get("entrega_nivel"), msg.get("repo") or ""
+                    ),
                     repo=msg.get("repo") or "",
                     rama=msg.get("rama") or "",
                     base_rama=msg.get("base_rama") or msg.get("base") or "",

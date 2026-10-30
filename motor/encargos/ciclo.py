@@ -24,17 +24,24 @@ from .comprobacion import (
     leer_juicio,
     version_producto,
 )
+from . import capacidades, necesidades
 from .dominio import (
     Encargo,
+    FASE_IMPLICITA,
     TransicionIlegal,
     alcance_de,
     bloqueantes_abiertos,
     revision_independiente_cubre_producto,
     decision_fallo,
     decision_proceso,
+    defecto_al_adoptar_fases,
+    fuentes_autorizadas,
     huella_bloqueo,
     huella_entrega,
     id_encargo,
+    inspeccion_bloquea,
+    marca_inspeccion_entregada,
+    respuesta_consumida,
     nivel_cumplido,
     prompt_responsable,
     prompt_revisor,
@@ -50,6 +57,7 @@ from .frontera import (
     turno,
 )
 from .registro import Registro
+from .fases import adoptar as adoptar_fases
 from .sesion import (
     cerrar,
     crecer_log,
@@ -70,6 +78,20 @@ def ahora_iso(epoch: float | None = None) -> str:
     if epoch is None:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def resolver_entrega(explicita: str | None, repo: str) -> str:
+    """Un repo sin nivel explícito es el flujo de código con GitHub: PR, no cierre local.
+
+    `terminado` solo cierra ese recorrido si el llamador lo pidió. Sin repo, el
+    silencio sigue siendo entrega local.
+    """
+    nivel = str(explicita or "").strip()
+    if nivel:
+        return nivel
+    if str(repo or "").strip():
+        return "pr"
+    return "terminado"
 
 
 def recibir(
@@ -530,9 +552,25 @@ def barrer(
                     {"kind": "reserva_cerrada", "data": {"hora": hora}},
                     f"reserva-cerrada:{encargo_id}:{enc.generacion}",
                 )
-                enc = registro.fold(encargo_id)
+                enc = registro.fold(encargo_id) or enc
         else:
             arbol = observar(directorio, proc)
+        if enc.estado not in ("cancelado", "terminado"):
+            try:
+                necesidades.atender(registro, enc, espacio, directorio, hora)
+            except (OSError, ValueError) as exc:
+                registro.anotar(
+                    encargo_id,
+                    {
+                        "kind": "procedimiento",
+                        "data": {
+                            "nota": f"el buzón de necesidades falló: {type(exc).__name__}: {exc}",
+                            "hora": hora,
+                        },
+                    },
+                    f"buzon-fallo:{encargo_id}:{type(exc).__name__}",
+                )
+            enc = registro.fold(encargo_id) or enc
         if enc.host and enc.host != socket.gethostname() and (enc.reserva or enc.proc):
             arbol = "incierto"
         observacion_path = directorio / "herramienta.json"
@@ -635,14 +673,7 @@ def barrer(
             if sin_llm:
                 arbol = observar(directorio, proc)
         sin_hecho = _edad(enc, epoch) >= umbral_s
-        decision = decision_proceso(
-            enc,
-            arbol,
-            herramienta_en_curso(directorio),
-            sin_hecho,
-            enc.herramientas_observables,
-            hora,
-        )
+        decision = _decision(enc, arbol, directorio, sin_hecho, hora)
         if sin_llm:
             decision["lanzar"] = False
         if parada:
@@ -652,6 +683,40 @@ def barrer(
             ]
             if arbol == "vivo":
                 decision["matar"] = True
+        # Cada causa pendiente se levanta con su propia comprobación, nunca con
+        # una ajena. La que este host no puede comprobar sigue hasta un ajuste.
+        if (
+            enc is not None
+            and enc.impedimentos
+            and not parada
+            and enc.via != "directa"
+        ):
+            resueltas = []
+            for pendiente in enc.impedimentos:
+                if (
+                    _verificar_impedimento(
+                        pendiente.clase, enc, espacio, base, registro
+                    )
+                    is True
+                ):
+                    resueltas.append(pendiente.clase)
+            for clase in resueltas:
+                _resolver_impedimento(registro, enc, clase, hora)
+            if resueltas:
+                enc = registro.fold(encargo_id) or enc
+                decision = _decision(enc, arbol, directorio, sin_hecho, hora)
+                if sin_llm:
+                    decision["lanzar"] = False
+        # Y el entorno se comprueba antes de consumir otro turno, no después de
+        # que falle. Si la comprobación no puede hacerse, tampoco acredita nada.
+        if decision["lanzar"] and not parada and enc.via != "directa":
+            sonda = _sonda_entorno(enc, espacio, base)
+            if not sonda.ok:
+                _anotar_impedimento(
+                    registro, enc, "entorno", sonda.causa, sonda.condicion, hora
+                )
+                enc = registro.fold(encargo_id) or enc
+                decision["lanzar"] = False
         if decision["eventos"]:
             _aplicar(
                 registro,
@@ -662,6 +727,8 @@ def barrer(
             enc = registro.fold(encargo_id)
         if decision["matar"] and proc:
             cerrar(directorio, proc)
+        if decision["matar"] or parada:
+            necesidades.cerrar_herramientas(directorio)
         if decision["lanzar"] and lanzador is not None and not parada:
             _lanzar_uno(registro, enc, directorio, espacio, hora, lanzador)
             enc = registro.fold(encargo_id)
@@ -718,12 +785,27 @@ def _pedidos_efecto(espacio: Path) -> list[dict]:
 
 
 def _anotar_juicio(
-    registro: Registro, enc: Encargo, juicio: dict, hora: str, serie: int
+    registro: Registro,
+    enc: Encargo,
+    juicio: dict,
+    hora: str,
+    serie: int,
+    clave: str = "",
 ) -> None:
+    sufijo = f":{clave}" if clave else ""
     registro.anotar(
         enc.id,
-        {"kind": "comprobacion", "data": {**juicio, "hora": hora}},
-        f"comprobacion:{enc.id}:{juicio['clase']}:{juicio.get('firma') or juicio.get('motivo')}:{serie}",
+        {
+            "kind": "comprobacion",
+            "data": {
+                **juicio,
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "hora": hora,
+            },
+        },
+        f"comprobacion:{enc.id}:{enc.fase_activa}:{juicio['clase']}:"
+        f"{juicio.get('firma') or juicio.get('motivo')}:{serie}{sufijo}",
     )
 
 
@@ -746,7 +828,13 @@ def _anotar_instrumento(
     siguiente: str,
     hora: str,
     serie: str,
+    clase: str = "",
+    artefacto: str = "",
 ) -> None:
+    """Registra el fallo con la operación que lo produjo. `clase` es la
+    identidad estable: no cambia porque el mensaje cambie de redacción.
+    `artefacto` es el archivo a revalidar para acreditar la reparación, cuando
+    no basta con una ruta canónica del espacio."""
     registro.anotar(
         enc.id,
         {
@@ -754,6 +842,8 @@ def _anotar_instrumento(
             "data": {
                 "fuente": fuente,
                 "causa": causa,
+                "clase": clase,
+                "artefacto": artefacto,
                 "version": enc.producto.firma if enc.producto else "",
                 "siguiente": siguiente,
                 "hora": hora,
@@ -771,6 +861,7 @@ def _devolver(
     siguiente: str,
     hora: str,
     serie: str,
+    rol: str = "responsable",
 ) -> None:
     registro.anotar(
         enc.id,
@@ -778,13 +869,252 @@ def _devolver(
             "kind": "estrategia",
             "data": {
                 "estrategia": estrategia,
-                "rol": "responsable",
+                "rol": rol,
                 "motivo": motivo,
                 "siguiente": siguiente,
                 "hora": hora,
             },
         },
         f"devolucion:{enc.id}:{enc.generacion}:{serie}",
+    )
+
+
+def _sonda_entorno(enc: Encargo, espacio: Path, base: Path):
+    from .aislamiento import sondear
+
+    return sondear(
+        espacio, base / "runtime" / enc.id / "sonda", fuentes_autorizadas(enc)
+    )
+
+
+def _decision(
+    enc: Encargo, arbol: str, directorio: Path, sin_hecho: bool, hora: str
+) -> dict:
+    return decision_proceso(
+        enc,
+        arbol,
+        herramienta_en_curso(directorio),
+        sin_hecho,
+        enc.herramientas_observables,
+        hora,
+    )
+
+
+_VERIFICABLES = ("entorno", "comprobaciones.json", "fases.json", "pedido-efecto.json")
+
+_EVIDENCIA_DE = {
+    "entorno": (
+        "la sonda del entorno funciona: temporal del CLI, espacio y fuentes autorizadas"
+    ),
+    "comprobaciones.json": ".interno/comprobaciones.json vuelve a validar",
+    "fases.json": (
+        ".interno/fases.json valida y su propuesta se puede adoptar "
+        "sobre las fases vigentes"
+    ),
+    "pedido-efecto.json": ".interno/pedido-efecto.json vuelve a validar",
+}
+
+
+def _es_verificable(clase: str) -> bool:
+    # El juicio también: su archivo se puede volver a validar contra la versión
+    # vigente sin gastar otro turno del revisor.
+    return clase in _VERIFICABLES or clase.startswith("juicio:")
+
+
+def _evidencia_de(clase: str) -> str:
+    if clase.startswith("juicio:"):
+        return "el juicio vuelve a validar para la versión revisada"
+    return _EVIDENCIA_DE.get(clase, "la comprobación de la causa")
+
+
+def _apariciones(registro, enc: Encargo, clase: str) -> int:
+    """Cuántas veces apareció esta causa. Sube al registrarla y al resolverla,
+    así una retransmisión no crea un evento y una recaída sí."""
+    return sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["kind"] in ("impedimento", "impedimento_resuelto")
+        and ev["data"].get("clase") == clase
+    )
+
+
+def _anotar_impedimento(
+    registro, enc: Encargo, clase: str, causa: str, condicion: str, hora: str
+) -> None:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "impedimento",
+            "data": {
+                "clase": clase,
+                "causa": causa,
+                "condicion": condicion,
+                "verificable": _es_verificable(clase),
+                "hora": hora,
+            },
+        },
+        f"impedimento:{enc.id}:{clase}:{_apariciones(registro, enc, clase) + 1}",
+    )
+
+
+def _resolver_impedimento(registro, enc: Encargo, clase: str, hora: str) -> None:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "impedimento_resuelto",
+            "data": {
+                "clase": clase,
+                "evidencia": _evidencia_de(clase),
+                "hora": hora,
+            },
+        },
+        f"impedimento-resuelto:{enc.id}:{clase}:{_apariciones(registro, enc, clase)}",
+    )
+
+
+def _bloqueo_entorno(registro, enc: Encargo, espacio: Path, hora: str) -> bool:
+    """La jaula manda sobre el trabajador: si no deja trabajar, el fallo de
+    instrumento no es una corrección que el trabajador pueda hacer."""
+    sonda = _sonda_entorno(enc, espacio, registro.base)
+    if sonda.ok:
+        return False
+    _anotar_impedimento(registro, enc, "entorno", sonda.causa, sonda.condicion, hora)
+    return True
+
+
+def _juicio_reparado(
+    clase: str, enc: Encargo, registro, espacio: Path
+) -> bool | None:
+    """Revalida el mismo archivo de juicio contra la versión vigente, sin
+    aplicar su veredicto: comprobar no es cerrar con él. Repite también las
+    demás condiciones con las que la incorporación lo rechaza —que la
+    referencia sea de la versión vigente y que enumere los efectos pedidos—:
+    levantar la espera con menos que eso solo mueve el rechazo a la siguiente
+    incorporación. `None` si el registro no conserva qué archivo falló."""
+    if registro is None:
+        return None
+    artefacto = ""
+    for ev in reversed(registro.eventos(enc.id)):
+        if ev["kind"] == "instrumento_fallo" and ev["data"].get("clase") == clase:
+            artefacto = str(ev["data"].get("artefacto") or "")
+            break
+    if not artefacto:
+        return None
+    ruta = Path(artefacto)
+    if clase == "juicio:referencia" or ruta.name == "revision.json":
+        try:
+            referencia = json.loads(ruta.read_text(encoding="utf-8"))
+            if not isinstance(referencia, dict):
+                return False
+            if _version_de_referencia(referencia, enc) != (
+                version_producto(espacio).firma
+            ):
+                return False
+            ruta = Path(str(referencia["resultado"]))
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            return False
+    if not ruta.is_file():
+        return False
+    resultado = leer_juicio(ruta, alcance_de(enc))
+    if not isinstance(resultado, JuicioValidado):
+        return False
+    if clase == "juicio:esquema:efectos":
+        try:
+            pedidos = _pedidos_efecto(espacio)
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            return False
+        return (
+            resultado.veredicto != "aprobado"
+            or not pedidos
+            or set(resultado.efectos_pendientes)
+            == {str(p["id"]) for p in pedidos}
+        )
+    return True
+
+
+def _verificar_impedimento(
+    clase: str, enc: Encargo, espacio: Path, base: Path, registro=None
+) -> bool | None:
+    """Comprueba por su cuenta si la causa dejó de estar, repitiendo la
+    condición que la rechazó. `None` si este host no puede saberlo, que no es
+    lo mismo que haberlo comprobado."""
+    if clase == "entorno":
+        return _sonda_entorno(enc, espacio, base).ok
+    if clase.startswith("juicio:"):
+        return _juicio_reparado(clase, enc, registro, espacio)
+    interno = interno_de(espacio)
+    try:
+        if clase == "comprobaciones.json":
+            leer_declaradas(interno)
+            return True
+        if clase == "fases.json":
+            from .fases import leer_propuesta
+
+            propuesta = leer_propuesta(interno)
+            if propuesta is None:
+                return True
+            # La forma no basta: la espera también pudo nacer de que adoptar
+            # la propuesta viola las dependencias o el estado de las fases.
+            return not defecto_al_adoptar_fases(enc, propuesta)
+        if clase == "pedido-efecto.json":
+            _pedidos_efecto(espacio)
+            return True
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+        return False
+    return None
+
+
+def _impedimento_de_instrumento(
+    registro, enc: Encargo, clase: str, causa: str, condicion: str, hora: str
+) -> bool:
+    """El mismo instrumento con el mismo defecto no es información nueva.
+
+    Se mide por la clase del defecto contra el registro de fallos, no por el
+    texto: un identificador de intento dentro del mensaje no reinicia la cuenta.
+    Una clase distinta sí es un intento de reparación y se deja pasar.
+    """
+    previas = sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["kind"] == "instrumento_fallo" and ev["data"].get("clase") == clase
+    )
+    if previas < 2:
+        return False
+    _anotar_impedimento(registro, enc, clase, causa, condicion, hora)
+    return True
+
+
+def _fallo_juicio(
+    registro,
+    enc: Encargo,
+    clase: str,
+    causa: str,
+    siguiente: str,
+    condicion: str,
+    artefacto: str,
+    hora: str,
+    serie: str,
+) -> None:
+    """Único camino para registrar que el juicio no se pudo usar.
+
+    Concentra las dos decisiones que esa condición arrastra: la identidad del
+    defecto y el control de repetición. Una rama que anota y devuelve el control
+    al barrido sin pasar por aquí vuelve a lanzar al revisor en cada vuelta, y
+    eso ya pasó con la referencia obsoleta."""
+    _anotar_instrumento(
+        registro, enc, "juicio", causa, siguiente,
+        hora, serie, clase=clase, artefacto=artefacto,
+    )
+    _impedimento_de_instrumento(registro, enc, clase, causa, condicion, hora)
+
+
+def _version_de_referencia(referencia: dict, enc: Encargo) -> str:
+    """La versión que la referencia declara haber revisado. Es la misma cuenta
+    en la incorporación, que rechaza la referencia, y en la verificación, que
+    levanta la espera: si difieren, hay una referencia que la verificación
+    acepta y la incorporación sigue rechazando."""
+    return str(
+        referencia.get("version") or (enc.producto.firma if enc.producto else "")
     )
 
 
@@ -830,6 +1160,16 @@ def _aplica_entrega(enc: Encargo) -> bool:
         return False
     if enc.revision_vigente.veredicto != "aprobado":
         return False
+    fase = enc.fase_actual
+    if (
+        fase is not None
+        and fase.entrega_bloqueada_sha
+        and enc.producto is not None
+        and fase.entrega_bloqueada_sha == enc.producto.sha_git
+    ):
+        # La aprobación se conserva; sólo deja de ser aplicable a la entrega
+        # mientras el producto vigente siga en rojo.
+        return False
     if not bloqueantes_abiertos(enc):
         return _revision_aprobada_vigente(enc)
     if bloqueantes_abiertos(enc, "independiente"):
@@ -847,7 +1187,11 @@ def _aplica_entrega(enc: Encargo) -> bool:
 
 def _evidencia_revision(registro: Registro, enc: Encargo) -> str:
     for ev in reversed(registro.eventos(enc.id)):
-        if ev["kind"] == "revision" and (ev["data"].get("origen") or "independiente") == "independiente":
+        if (
+            ev["kind"] == "revision"
+            and (ev["data"].get("origen") or "independiente") == "independiente"
+            and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+        ):
             return str(ev["data"].get("evidencia") or "")
     return ""
 
@@ -880,10 +1224,12 @@ def _reabrir_revision(
             "data": {
                 "version": version.firma,
                 "manifiesto": [list(x) for x in version.manifiesto],
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"producto:{enc.id}:{enc.generacion}:{version.firma}",
+        f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
     )
     registro.anotar(
         enc.id,
@@ -926,13 +1272,17 @@ def _intentar_cierre(
         _anotar_instrumento(
             registro, enc, "adaptador", str(exc),
             "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
-            hora, f"pedidos-{enc.generacion}",
+            hora, f"pedidos-{enc.generacion}", clase="pedido-efecto.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", str(exc),
-            "corregir la solicitud interna sin tocar el producto",
-            hora, "pedidos",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "pedido-efecto.json", str(exc),
+            "que .interno/pedido-efecto.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir la solicitud interna sin tocar el producto",
+                hora, "pedidos",
+            )
         return registro.fold(enc.id)
     if pedidos and not enc.autoridad:
         marcar_espera(
@@ -985,11 +1335,193 @@ def _intentar_cierre(
         )
         return registro.fold(enc.id)
     _publica(directorio / "cierre.json", json.dumps(cierre, ensure_ascii=False))
-    _anotar_juicio(registro, enc, cierre, hora, enc.generacion)
+    _anotar_juicio(
+        registro,
+        enc,
+        cierre,
+        hora,
+        enc.generacion,
+        clave="global" if enc.objetivo_completo() else "",
+    )
     enc = registro.fold(enc.id)
     if enc.estado == "terminado":
         _publicar_resultado(registro, enc, hora)
     return enc
+
+
+def _id_inspeccion(enc: Encargo, juicio: JuicioValidado) -> str:
+    """La identidad incluye la descripción y el pedido: corregir la consulta
+    (otro SQL, otro recurso) es otra inspección, no la ya lanzada."""
+    pedido = juicio.inspeccion
+    estructura = (
+        ""
+        if pedido is None
+        else json.dumps(
+            {
+                "operacion": pedido.operacion,
+                "recurso": pedido.recurso,
+                "parametros": sorted(pedido.parametros),
+            },
+            sort_keys=True,
+        )
+    )
+    return "insp-" + hashlib.sha256(
+        f"{enc.id}:{enc.fase_activa}:{juicio.version}"
+        f":{juicio.inspeccion_faltante}:{estructura}".encode()
+    ).hexdigest()[:16]
+
+
+def _texto_inspeccion_resuelta(enc: Encargo) -> str:
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_solicitud:
+        return ""
+    sol = next(
+        (s for s in enc.solicitudes if s.id == fase.inspeccion_solicitud), None
+    )
+    if sol is None or sol.estado in ("pendiente", "pregunta"):
+        return ""
+    partes = ["estado: " + sol.estado]
+    if sol.respuesta:
+        partes.append("respuesta: " + sol.respuesta[:400])
+    if sol.detalle:
+        partes.append("detalle: " + sol.detalle[:400])
+    if sol.evidencia:
+        partes.append("evidencia: " + sol.evidencia[:400])
+    return "; ".join(partes)
+
+
+def _ligar_inspeccion(
+    registro: Registro, enc: Encargo, espacio: Path, juicio: JuicioValidado, hora: str
+) -> None:
+    """La inspección pendiente pasa por el puente: petición ejecutable si una
+    capacidad concedida la cubre, o espera identificada del propietario."""
+    fase = enc.fase_actual
+    if fase is None:
+        return
+    ident = _id_inspeccion(enc, juicio)
+    if fase.inspeccion_solicitud == ident:
+        return
+    previa = next((s for s in enc.solicitudes if s.id == ident), None)
+    if previa is not None:
+        if respuesta_consumida(fase, marca_inspeccion_entregada(previa)):
+            # La respuesta de esa solicitud ya se entregó y consumió: el mismo
+            # pedido no re-liga ni gasta otra entrega.
+            return
+        # El juicio vuelve a pedir una inspección cuya respuesta existe pero no
+        # se entregó a esta vuelta: se re-liga para que el próximo turno la reciba.
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "inspeccion_solicitud",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "solicitud": ident,
+                    "hora": hora,
+                },
+            },
+            f"inspeccion:{enc.id}:{enc.fase_activa}:{ident}:{enc.generacion}",
+        )
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "inspeccion_solicitud",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "solicitud": ident,
+                "hora": hora,
+            },
+        },
+        f"inspeccion:{enc.id}:{enc.fase_activa}:{ident}:{enc.generacion}",
+    )
+    enc = registro.fold(enc.id) or enc
+    try:
+        recursos = capacidades.cargar(registro.base)
+    except capacidades.ConfigInvalida:
+        recursos = {}
+    rev = enc.revision_vigente.revision_id if enc.revision_vigente else ""
+    pregunta = (
+        f"La revisión {rev or 'vigente'} de la fase {enc.fase_activa} (versión "
+        f"{juicio.version[:12]}) no concluyó: falta «{juicio.inspeccion_faltante}». "
+    )
+    intento = enc.intento or enc.conductor or "supervisor"
+    pedido = juicio.inspeccion
+    if pedido is not None and pedido.operacion in capacidades.operaciones_de(
+        recursos, pedido.recurso
+    ):
+        crudo = {
+            "id": ident,
+            "encargo": enc.id,
+            "operacion": pedido.operacion,
+            "recurso": pedido.recurso,
+            "fase": enc.fase_activa,
+            "intento": intento,
+            "generacion": enc.generacion,
+            "conductor": enc.conductor,
+            "motivo": pregunta[:necesidades.MAX_MOTIVO],
+            "parametros": dict(pedido.parametros),
+        }
+        try:
+            necesidades.pedir_inspeccion(espacio, enc, crudo)
+        except (OSError, ValueError):
+            # Sin buzón no hay ejecución: la espera del propietario es la única
+            # vía que queda y se registra abajo.
+            pass
+        else:
+            if recursos[pedido.recurso].get("autorizacion") == "propietario":
+                marcar_pregunta(
+                    registro,
+                    enc.id,
+                    pregunta
+                    + f"El recurso {pedido.recurso} exige tu autorización para "
+                    f"{pedido.operacion}; responde a la solicitud {ident}.",
+                    True,
+                    hora,
+                )
+            return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "solicitud",
+            "data": {
+                "id": ident,
+                "operacion": pedido.operacion if pedido is not None else "",
+                "recurso": pedido.recurso if pedido is not None else "",
+                "fase": enc.fase_activa,
+                "intento": intento,
+                "generacion": enc.generacion,
+                "conductor": enc.conductor,
+                "motivo": pregunta[:necesidades.MAX_MOTIVO],
+                "parametros": [
+                    list(x) for x in (pedido.parametros if pedido is not None else ())
+                ],
+                "estado": "pregunta",
+                "pregunta": (
+                    pregunta
+                    + "Ninguna capacidad concedida del puente la cubre"
+                    + (
+                        f": el recurso {pedido.recurso} no está concedido"
+                        if pedido is not None
+                        else ""
+                    )
+                    + f". Concede la capacidad o responde a la solicitud {ident}."
+                ),
+                "hora": hora,
+            },
+        },
+        f"solicitud:{enc.id}:{ident}",
+    )
+    marcar_pregunta(
+        registro,
+        enc.id,
+        pregunta
+        + "Ninguna capacidad concedida del puente la cubre. Concede la capacidad "
+        f"o responde a la solicitud {ident} con el dato o la autorización.",
+        True,
+        hora,
+    )
 
 
 def _cerrar_con_juicio(
@@ -1012,22 +1544,29 @@ def _cerrar_con_juicio(
         _anotar_instrumento(
             registro, enc, "adaptador", error_pedidos,
             "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
-            hora, f"pedidos-{enc.generacion}",
+            hora, f"pedidos-{enc.generacion}", clase="pedido-efecto.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", error_pedidos,
-            "corregir la solicitud interna sin tocar el producto",
-            hora, "pedidos",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "pedido-efecto.json", error_pedidos,
+            "que .interno/pedido-efecto.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", error_pedidos,
+                "corregir la solicitud interna sin tocar el producto",
+                hora, "pedidos",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if juicio.veredicto == "aprobado" and pedidos:
         if set(juicio.efectos_pendientes) != {str(p["id"]) for p in pedidos}:
-            _anotar_instrumento(
-                registro, enc, "juicio",
+            _fallo_juicio(
+                registro, enc, "juicio:esquema:efectos",
                 "la aprobacion no enumera en efectos_pendientes los IDs exactos solicitados",
                 "volver a emitir el juicio enumerando los efectos aprobados",
-                hora, f"efectos-{enc.generacion}",
+                "que el juicio enumere en efectos_pendientes los efectos "
+                "solicitados para la versión revisada",
+                str(directorio / "revision.json"), hora,
+                f"efectos-{enc.generacion}",
             )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
@@ -1058,10 +1597,13 @@ def _cerrar_con_juicio(
                 "aprobadas": [list(x) for x in juicio.aprobadas],
                 "evidencia": juicio.evidencia,
                 "efectos_pendientes": list(juicio.efectos_pendientes),
+                "inspeccion_faltante": juicio.inspeccion_faltante,
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"revision-dato:{enc.id}:{enc.generacion}:{juicio.version}",
+        f"revision-dato:{enc.id}:{enc.fase_activa}:{enc.generacion}:{juicio.version}",
     )
     enc = registro.fold(enc.id)
     if juicio.veredicto == "cambios":
@@ -1127,12 +1669,22 @@ def _cerrar_con_juicio(
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if juicio.veredicto == "no_concluyente":
-        _devolver(
-            registro, enc, "investigar",
-            juicio.nota or "evidencia insuficiente para aprobar",
-            juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
-            hora, "no-concluyente",
-        )
+        if juicio.inspeccion_faltante:
+            _devolver(
+                registro, enc, "inspeccionar",
+                juicio.inspeccion_faltante,
+                "obtener por el buzon la inspeccion faltante y continuar "
+                "esta misma revision; el producto aprobado no se reabre",
+                hora, "inspeccion", rol="revisor",
+            )
+            _ligar_inspeccion(registro, enc, espacio, juicio, hora)
+        else:
+            _devolver(
+                registro, enc, "investigar",
+                juicio.nota or "evidencia insuficiente para aprobar",
+                juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
+                hora, "no-concluyente",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
@@ -1284,7 +1836,29 @@ def _incorporar_responsable(
 ) -> Encargo:
     from motor.runwrap import _publica
 
+    if _bloqueo_entorno(registro, enc, espacio, hora):
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     interno = interno_de(espacio, crear=True)
+    enc, error_fases = adoptar_fases(registro, enc, interno, hora)
+    if error_fases:
+        _anotar_instrumento(
+            registro, enc, "fases", error_fases,
+            "corregir .interno/fases.json sin devolver el plan al usuario",
+            hora, f"fases-{enc.generacion}", clase="fases.json",
+        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "fases.json", error_fases,
+            "que la propuesta de .interno/fases.json se pueda adoptar "
+            "sobre las fases vigentes", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", error_fases,
+                "corregir el formato interno de las fases y volver a intentar",
+                hora, "fases",
+            )
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     try:
         declaradas = leer_declaradas(interno)
         error_declaradas = ""
@@ -1300,23 +1874,29 @@ def _incorporar_responsable(
                 "version": version.firma,
                 "manifiesto": [list(x) for x in version.manifiesto],
                 "declara_comprobaciones": declaradas is not None,
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"producto:{enc.id}:{enc.generacion}:{version.firma}",
+        f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
     )
     enc = registro.fold(enc.id)
     if error_declaradas:
         _anotar_instrumento(
             registro, enc, "comprobacion", error_declaradas,
             "corregir .interno/comprobaciones.json sin tocar el producto",
-            hora, f"declaradas-{enc.generacion}",
+            hora, f"declaradas-{enc.generacion}", clase="comprobaciones.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", error_declaradas,
-            "corregir las comprobaciones declaradas y volver a observar",
-            hora, "declaradas",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "comprobaciones.json", error_declaradas,
+            "que .interno/comprobaciones.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", error_declaradas,
+                "corregir las comprobaciones declaradas y volver a observar",
+                hora, "declaradas",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     try:
@@ -1325,13 +1905,17 @@ def _incorporar_responsable(
         _anotar_instrumento(
             registro, enc, "adaptador", str(exc),
             "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
-            hora, f"pedidos-{enc.generacion}",
+            hora, f"pedidos-{enc.generacion}", clase="pedido-efecto.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", str(exc),
-            "corregir la solicitud interna sin tocar el producto",
-            hora, "pedidos",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "pedido-efecto.json", str(exc),
+            "que .interno/pedido-efecto.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir la solicitud interna sin tocar el producto",
+                hora, "pedidos",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if declaradas is not None:
@@ -1350,18 +1934,21 @@ def _incorporar_responsable(
             iniciar_comprobacion(espacio, directorio)
             return enc
         if observacion.get("error_instrumento"):
+            causa_obs = str(observacion["error_instrumento"])
             _anotar_instrumento(
-                registro, enc, "comprobacion",
-                str(observacion["error_instrumento"]),
+                registro, enc, "comprobacion", causa_obs,
                 "corregir las comprobaciones declaradas y volver a observar",
-                hora, f"obs-{enc.generacion}",
+                hora, f"obs-{enc.generacion}", clase="comprobacion",
             )
-            _devolver(
-                registro, enc, "reparar_instrumento",
-                str(observacion["error_instrumento"]),
-                "reparar el comando de comprobacion sin tocar el producto",
-                hora, "obs",
-            )
+            if not _impedimento_de_instrumento(
+                registro, enc, "comprobacion", causa_obs,
+                "que el comando de comprobacion vuelva a ejecutarse", hora,
+            ):
+                _devolver(
+                    registro, enc, "reparar_instrumento", causa_obs,
+                    "reparar el comando de comprobacion sin tocar el producto",
+                    hora, "obs",
+                )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
         registro.anotar(
@@ -1403,6 +1990,127 @@ def _incorporar_responsable(
     return registro.fold(enc.id)
 
 
+def _juicio_de_referencia(enc: Encargo, directorio: Path):
+    """El juicio que la referencia señala, o None si no se puede leer."""
+    try:
+        referencia = json.loads(
+            (directorio / "revision.json").read_text(encoding="utf-8")
+        )
+        return leer_juicio(Path(referencia["resultado"]), alcance_de(enc))
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _juicio_repite_inspeccion(enc: Encargo, directorio: Path) -> bool:
+    """Un pedido corregido (otra identidad) es información nueva y se consume
+    aunque la solicitud anterior ya tenga su respuesta entregada. Repite cuando
+    la identidad es la ligada, o coincide con otra solicitud de inspección cuya
+    respuesta ya se entregó (la marca vigente de la fase).
+    """
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_solicitud:
+        return True
+    resultado = _juicio_de_referencia(enc, directorio)
+    if not isinstance(resultado, JuicioValidado):
+        return True
+    ident = _id_inspeccion(enc, resultado)
+    if ident == fase.inspeccion_solicitud:
+        return True
+    otra = next((s for s in enc.solicitudes if s.id == ident), None)
+    return (
+        otra is not None
+        and respuesta_consumida(fase, marca_inspeccion_entregada(otra))
+    )
+
+
+def _consumir_ligada(registro: Registro, enc: Encargo, hora: str) -> None:
+    """Al cambiar de consulta, la respuesta ya entregada queda consumida.
+
+    Si no se registra, volver a la consulta anterior la re-liga como si nadie
+    la hubiera visto y el revisor gasta otro turno con el mismo error.
+    """
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_solicitud:
+        return
+    sol = next((s for s in enc.solicitudes if s.id == fase.inspeccion_solicitud), None)
+    if sol is None or sol.estado in ("pendiente", "pregunta"):
+        return
+    marca = marca_inspeccion_entregada(sol)
+    if respuesta_consumida(fase, marca):
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "inspeccion_entregada",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "solicitud": sol.id,
+                "marca": marca,
+                "hora": hora,
+            },
+        },
+        f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
+    )
+
+
+def _salta_inspeccion(
+    registro: Registro, enc: Encargo, directorio: Path, hora: str
+) -> bool:
+    """True cuando el juicio presente no debe consumirse como revisión.
+
+    Un turno muerto no produce juicio: la referencia sigue señalando el que
+    una incorporación anterior ya consumió y no se gasta nada, con el gate
+    abierto para relanzar con el mismo dato. Un juicio que re-declara el
+    pedido ligado acredita que la respuesta entregada se consumió: se anota
+    la marca y tampoco gasta revisión.
+    """
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_pendiente:
+        return False
+    resultado = _juicio_de_referencia(enc, directorio)
+    if not isinstance(resultado, JuicioValidado):
+        return inspeccion_bloquea(enc) and _juicio_repite_inspeccion(
+            enc, directorio
+        )
+    if (
+        registro.por_ukey(
+            "revision-dato:"
+            f"{enc.id}:{enc.fase_activa}:{enc.generacion}:{resultado.version}"
+        )
+        is not None
+    ):
+        return True
+    ident = _id_inspeccion(enc, resultado)
+    if ident != fase.inspeccion_solicitud:
+        _consumir_ligada(registro, enc, hora)
+        enc = registro.fold(enc.id) or enc
+        fase = enc.fase_actual or fase
+        otra = next((s for s in enc.solicitudes if s.id == ident), None)
+        return otra is not None and respuesta_consumida(
+            fase, marca_inspeccion_entregada(otra)
+        )
+    sol = next((s for s in enc.solicitudes if s.id == ident), None)
+    if sol is not None and sol.estado not in ("pendiente", "pregunta"):
+        marca = marca_inspeccion_entregada(sol)
+        if fase.inspeccion_entregada != marca:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "inspeccion_entregada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "solicitud": sol.id,
+                        "marca": marca,
+                        "hora": hora,
+                    },
+                },
+                f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
+            )
+    return True
+
+
 def _incorporar_revisor(
     registro: Registro,
     enc: Encargo,
@@ -1412,27 +2120,53 @@ def _incorporar_revisor(
 ) -> Encargo:
     from motor.runwrap import _publica
 
+    if _salta_inspeccion(registro, enc, directorio, hora):
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     ref_path = directorio / "revision.json"
     if not ref_path.is_file():
-        _anotar_instrumento(
-            registro, enc, "juicio", "falta la referencia de la revision",
+        if _bloqueo_entorno(registro, enc, espacio, hora):
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
+        _fallo_juicio(
+            registro, enc, "juicio:referencia",
+            "falta la referencia de la revision",
             "volver a lanzar la revision sobre la misma version",
-            hora, f"sinref-{enc.generacion}",
+            "que la referencia de la revisión señale un juicio válido "
+            "para la versión revisada",
+            str(ref_path), hora, f"sinref-{enc.generacion}",
         )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
-    referencia = json.loads(ref_path.read_text(encoding="utf-8"))
+    try:
+        referencia = json.loads(ref_path.read_text(encoding="utf-8"))
+        if not isinstance(referencia, dict) or not str(
+            referencia.get("resultado") or ""
+        ):
+            raise ValueError("la referencia no señala el resultado del juicio")
+    except (OSError, UnicodeError, ValueError) as exc:
+        if _bloqueo_entorno(registro, enc, espacio, hora):
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id) or enc
+        causa = f"la referencia de la revisión no se puede utilizar: {exc}"
+        _fallo_juicio(
+            registro, enc, "juicio:referencia", causa,
+            "volver a lanzar la revision sobre la misma version",
+            "que la referencia de la revisión señale un juicio válido "
+            "para la versión revisada",
+            str(ref_path), hora, f"refilegible-{enc.generacion}",
+        )
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id) or enc
     version_actual = version_producto(espacio)
-    version_esperada = str(
-        referencia.get("version")
-        or (enc.producto.firma if enc.producto else "")
-    )
-    if version_actual.firma != version_esperada:
-        _anotar_instrumento(
-            registro, enc, "juicio",
+    if version_actual.firma != _version_de_referencia(referencia, enc):
+        _fallo_juicio(
+            registro, enc, "juicio:referencia",
             "el producto cambio durante la revision",
             "volver a revisar la version vigente",
-            hora, f"stale-{enc.generacion}",
+            "que la referencia de la revisión señale un juicio válido "
+            "para la versión revisada",
+            str(ref_path), hora, f"stale-{enc.generacion}",
         )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -1444,33 +2178,48 @@ def _incorporar_revisor(
                 "data": {
                     "version": version_actual.firma,
                     "manifiesto": [list(x) for x in version_actual.manifiesto],
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "hora": hora,
                 },
             },
-            f"producto:{enc.id}:{enc.generacion}:{version_actual.firma}",
+            f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version_actual.firma}",
         )
         enc = registro.fold(enc.id)
     alcance = alcance_de(enc)
     resultado = leer_juicio(Path(referencia["resultado"]), alcance)
     if isinstance(resultado, FalloInstrumento):
-        _anotar_instrumento(
-            registro, enc, resultado.fuente, resultado.causa,
+        if _bloqueo_entorno(registro, enc, espacio, hora):
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
+        # Un juicio ilegible se vuelve a emitir sobre la misma versión: no es
+        # trabajo del responsable. El mismo defecto dos veces sí lo detiene.
+        _fallo_juicio(
+            registro, enc, f"juicio:{resultado.defecto}", resultado.causa,
             "volver a emitir el juicio con el formato pedido sobre la misma version",
-            hora, f"juicio-{enc.generacion}",
+            "que el juicio vuelva a validar para la versión revisada",
+            str(Path(referencia["resultado"])), hora, f"juicio-{enc.generacion}",
         )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if resultado.instrumento:
+        if _bloqueo_entorno(registro, enc, espacio, hora):
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
         _anotar_instrumento(
             registro, enc, "comprobacion", resultado.instrumento,
             "reparar el instrumento de comprobacion sin tocar el producto",
-            hora, f"instrumento-revisor-{enc.generacion}",
+            hora, f"instrumento-revisor-{enc.generacion}", clase="comprobacion",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", resultado.instrumento,
-            "corregir el comando de comprobacion y volver a observar",
-            hora, "instrumento",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "comprobacion", resultado.instrumento,
+            "que el comando de comprobacion vuelva a ejecutarse", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", resultado.instrumento,
+                "corregir el comando de comprobacion y volver a observar",
+                hora, "instrumento",
+            )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     return _cerrar_con_juicio(registro, enc, espacio, directorio, resultado, hora)
@@ -1533,11 +2282,235 @@ def _git(espacio: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
+def _rama_de_fase(enc: Encargo, fase) -> str:
+    if fase is not None and fase.rama:
+        return fase.rama
+    if fase is None or len(enc.fases) <= 1:
+        return enc.entrega.rama
+    return f"{enc.entrega.rama}-{fase.id}"
+
+
+def _rama_fase(enc: Encargo) -> str:
+    return _rama_de_fase(enc, enc.fase_actual)
+
+
+def _base_fase(enc: Encargo) -> str:
+    fase = enc.fase_actual
+    if fase is None or len(enc.fases) <= 1:
+        return enc.entrega.base
+    base = enc.entrega.base
+    for dep_id, _version in fase.requiere:
+        dep = next((f for f in enc.fases if f.id == dep_id), None)
+        if dep is None:
+            continue
+        if dep.nivel_alcanzado in ("integrado", "desplegado"):
+            continue
+        base = _rama_de_fase(enc, dep)
+    return base
+
+
+def _ref_existente(espacio: Path, *candidatos: str) -> str:
+    for candidato in candidatos:
+        if not candidato:
+            continue
+        r = _git(espacio, "rev-parse", "--verify", "--quiet", f"{candidato}^{{commit}}")
+        if r.returncode == 0:
+            return candidato
+    return ""
+
+
+def _deps_de(enc: Encargo, fase) -> list:
+    salida = []
+    if fase is None:
+        return salida
+    for dep_id, _version in fase.requiere:
+        dep = next((f for f in enc.fases if f.id == dep_id), None)
+        if dep is not None:
+            salida.append(dep)
+    return salida
+
+
+def _traer_base_integrada(espacio: Path, dep_id: str, sha: str) -> str:
+    """Trae los cambios de la base donde se integró el squash.
+
+    El squash también contiene esa base. Unir sólo su historia con `-s ours`
+    deja fuera archivos ajenos y el PR siguiente propone borrarlos.
+    """
+    padres = _git(espacio, "rev-parse", "--verify", "--quiet", f"{sha}^@").stdout.split()
+    if not padres:
+        return ""
+    base = padres[0]
+    if _git(espacio, "merge-base", "--is-ancestor", base, "HEAD").returncode == 0:
+        return ""
+    r = _git(
+        espacio,
+        "-c", "user.name=motor de encargos",
+        "-c", "user.email=motor@localhost",
+        "merge", "--no-ff", "--quiet",
+        "-m", f"incorporar la base integrada de {dep_id} ({base[:12]})",
+        base,
+    )
+    if r.returncode != 0:
+        _git(espacio, "merge", "--abort")
+        return (
+            f"conflicto al incorporar la entrada {dep_id} ({base}): "
+            f"{r.stderr.strip()[-300:]}"
+        )
+    return ""
+
+
+def _merge_ancestria(espacio: Path, dep_id: str, sha: str) -> str:
+    """Incorpora la ancestría de un commit cuyo contenido ya está en HEAD.
+
+    Primero trae la base real del squash. `-s ours` sólo une la historia
+    para que el sha integrado cuente como antecesor, sin reescribir el árbol.
+    """
+    causa = _traer_base_integrada(espacio, dep_id, sha)
+    if causa:
+        return causa
+    r = _git(
+        espacio,
+        "-c", "user.name=motor de encargos",
+        "-c", "user.email=motor@localhost",
+        "merge", "-s", "ours", "--no-ff", "--quiet",
+        "-m", f"incorporar la entrada {dep_id} ({sha[:12]})",
+        sha,
+    )
+    if r.returncode != 0:
+        _git(espacio, "merge", "--abort")
+        return (
+            f"conflicto al incorporar la entrada {dep_id} ({sha}): "
+            f"{r.stderr.strip()[-300:]}"
+        )
+    return ""
+
+
+def _incorporar_entradas(
+    enc: Encargo, espacio: Path, registro: Registro | None = None, hora: str = ""
+) -> str:
+    """Incorpora la versión vigente de cada antecesor que la fase no consume.
+
+    Nunca rebasea: `git merge --no-ff` con el commit efectivo del dep. Cuando
+    la firma ya se consume, sólo falta la ancestría del commit integrado (un
+    squash la reescribe) y se une con `-s ours`, árbol intacto. Devuelve la
+    causa si no se pudo.
+    """
+    fase = enc.fase_actual
+    deps = _deps_de(enc, fase)
+    if any(dep.integrado_sha for dep in deps):
+        # El commit integrado vive en el remoto hasta que alguien lo trae.
+        _git(espacio, "fetch", "--quiet", "origin")
+
+    def _anotar(dep, sha: str) -> None:
+        if registro is None:
+            return
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "entrada_incorporada",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "dep": dep.id,
+                    "version": dep.producto.firma,
+                    "sha": sha,
+                    "hora": hora,
+                },
+            },
+            f"entrada:{enc.id}:{enc.fase_activa}:{dep.id}:{dep.producto.firma}:{sha}",
+        )
+
+    for dep in deps:
+        version = next((v for d, v in fase.requiere if d == dep.id), "")
+        if dep.producto is None:
+            continue
+        integrado = ""
+        if dep.integrado_sha:
+            resuelto = _git(
+                espacio,
+                "rev-parse", "--verify", "--quiet",
+                f"{dep.integrado_sha}^{{commit}}",
+            )
+            if resuelto.returncode != 0:
+                return (
+                    "no se encontro localmente el commit integrado de la "
+                    f"entrada {dep.id} ({dep.integrado_sha})"
+                )
+            integrado = resuelto.stdout.strip() or dep.integrado_sha
+        ancestro_integrado = (
+            _git(
+                espacio, "merge-base", "--is-ancestor", integrado, "HEAD"
+            ).returncode
+            == 0
+            if integrado
+            else False
+        )
+        if version == dep.producto.firma:
+            # El contenido ya se consume, pero un squash de la entrada cambia
+            # el commit integrado sin cambiar la firma: ese commit tiene que
+            # quedar en la historia de la consumidora.
+            if not integrado or ancestro_integrado:
+                continue
+            causa = _merge_ancestria(espacio, dep.id, integrado)
+            if causa:
+                return causa
+            _anotar(dep, integrado)
+            if registro is not None:
+                fase = (registro.fold(enc.id) or enc).fase_actual
+            continue
+        rama_dep = _rama_de_fase(enc, dep)
+        base = _ref_existente(
+            espacio,
+            dep.producto.sha_git,
+            f"origin/{rama_dep}",
+        )
+        if not base:
+            return (
+                f"no se encontro la version de la entrada {dep.id} "
+                f"({dep.producto.sha_git or rama_dep})"
+            )
+        sha_ref = (
+            _git(espacio, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+            .stdout.strip()
+            or base
+        )
+        r = _git(
+            espacio,
+            "-c", "user.name=motor de encargos",
+            "-c", "user.email=motor@localhost",
+            "merge", "--no-ff", "--quiet",
+            "-m", f"incorporar la entrada {dep.id} ({sha_ref[:12]})",
+            sha_ref,
+        )
+        if r.returncode != 0:
+            _git(espacio, "merge", "--abort")
+            return (
+                f"conflicto al incorporar la entrada {dep.id} ({sha_ref}): "
+                f"{r.stderr.strip()[-300:]}"
+            )
+        _anotar(dep, sha_ref)
+        if registro is not None:
+            fase = (registro.fold(enc.id) or enc).fase_actual
+        if integrado and integrado != sha_ref and not ancestro_integrado:
+            causa = _merge_ancestria(espacio, dep.id, integrado)
+            if causa:
+                return causa
+            _anotar(dep, integrado)
+            if registro is not None:
+                fase = (registro.fold(enc.id) or enc).fase_actual
+    return ""
+
+
+def _asegurar_repo(
+    enc: Encargo,
+    espacio: Path,
+    registro: Registro | None = None,
+    hora: str = "",
+) -> str:
     """El espacio de un encargo con entrega es un clon en la rama del encargo.
 
     Devuelve la causa si no se pudo; el supervisor clona fuera de la jaula,
-    sin sesion LLM.
+    sin sesion LLM. Con registro anota las entradas incorporadas.
     """
     from motor.repositorios import resolver_repositorio
 
@@ -1547,7 +2520,31 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
         return f"no se pudo resolver el repositorio de entrega: {exc}"
     if (espacio / ".git").exists():
         r = _git(espacio, "remote", "set-url", "origin", repo.remoto)
-        return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
+        if r.returncode != 0:
+            return "no se pudo configurar el remoto de publicación"
+        rama = _rama_fase(enc)
+        actual = _git(espacio, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        if actual != rama:
+            fase = enc.fase_actual
+            candidatos = [f"origin/{rama}", rama]
+            for dep in _deps_de(enc, fase):
+                candidatos += [
+                    dep.integrado_sha,
+                    dep.producto.sha_git if dep.producto else "",
+                    f"origin/{_rama_de_fase(enc, dep)}",
+                ]
+            candidatos += [f"origin/{_base_fase(enc)}", f"origin/{enc.entrega.base}"]
+            inicio = _ref_existente(espacio, *candidatos)
+            if not inicio:
+                return f"no se encontro la base para crear la rama {rama}"
+            r = _git(espacio, "checkout", "-B", rama, inicio)
+            if r.returncode != 0:
+                return (
+                    f"no se pudo crear la rama {rama} desde {inicio}: "
+                    f"{r.stderr.strip()[-300:]}"
+                )
+            return _incorporar_entradas(enc, espacio, registro, hora)
+        return _incorporar_entradas(enc, espacio, registro, hora)
     if version_producto(espacio).manifiesto:
         return (
             "el espacio ya tiene producto pero no es un clon del repo "
@@ -1568,11 +2565,22 @@ def _asegurar_repo(enc: Encargo, espacio: Path) -> str:
     for entrada in clon.iterdir():
         entrada.replace(espacio / entrada.name)
     clon.rmdir()
-    r = _git(espacio, "checkout", "-B", enc.entrega.rama, f"origin/{enc.entrega.base}")
+    rama = _rama_fase(enc)
+    base = _base_fase(enc)
+    candidatos = []
+    for dep in _deps_de(enc, enc.fase_actual):
+        candidatos += [
+            dep.integrado_sha,
+            dep.producto.sha_git if dep.producto else "",
+            f"origin/{_rama_de_fase(enc, dep)}",
+        ]
+    candidatos += [f"origin/{base}", f"origin/{enc.entrega.base}"]
+    inicio = _ref_existente(espacio, *candidatos)
+    r = _git(espacio, "checkout", "-B", rama, inicio or f"origin/{enc.entrega.base}")
     if r.returncode != 0:
         return (
-            f"no se pudo crear la rama {enc.entrega.rama} desde "
-            f"{enc.entrega.base}: {r.stderr.strip()[-300:]}"
+            f"no se pudo crear la rama {rama} desde "
+            f"{base}: {r.stderr.strip()[-300:]}"
         )
     r = _git(espacio, "remote", "set-url", "origin", repo.remoto)
     return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
@@ -1603,7 +2611,7 @@ def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
         if r.returncode != 0:
             return "", f"git commit fallo: {r.stderr.strip()[-300:]}"
     sha = _git(espacio, "rev-parse", "HEAD").stdout.strip()
-    r = _git(espacio, "push", "--quiet", "origin", enc.entrega.rama)
+    r = _git(espacio, "push", "--quiet", "origin", _rama_fase(enc))
     if r.returncode != 0:
         return "", f"git push fallo: {r.stderr.strip()[-300:]}"
     return sha, ""
@@ -1635,7 +2643,7 @@ def _disparar_deepseek(gh, enc: Encargo, espacio: Path, sha: str) -> None:
             archivo, texto = "ai-review-publish.yml", publish.stdout
         else:
             archivo, texto = "ai-review-worker.yml", worker.stdout
-        base = _git(espacio, "rev-parse", f"origin/{enc.entrega.base}").stdout.strip()
+        base = _git(espacio, "rev-parse", f"origin/{_base_fase(enc)}").stdout.strip()
         valores = {
             "pr_number": str(enc.pr_numero),
             "head_sha": sha,
@@ -1653,6 +2661,28 @@ def _disparar_deepseek(gh, enc: Encargo, espacio: Path, sha: str) -> None:
         gh.disparar_workflow(enc.entrega.repo, archivo, inputs)
     except Exception:
         pass
+
+
+def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -> None:
+    """El conflicto de la entrada frena el paso de entrega sobre el producto
+    vigente: lo resuelve el responsable en el espacio y su arreglo, con
+    producto nuevo, vuelve a habilitar la entrega."""
+    if enc.producto is None:
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_bloqueada",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "sha": enc.producto.sha_git,
+                "causa": causa,
+                "hora": hora,
+            },
+        },
+        f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{enc.producto.sha_git}",
+    )
 
 
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
@@ -1678,8 +2708,17 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     espacio = _espacio(registro.base, enc.id)
     directorio = _directorio(registro.base, enc.id)
-    causa = _asegurar_repo(enc, espacio)
+    causa = _asegurar_repo(enc, espacio, registro, hora)
     if causa:
+        if causa.startswith("conflicto al incorporar la entrada"):
+            _bloquear_entrega(registro, enc, causa, hora)
+            _devolver(
+                registro, enc, "integrar_antecesor", causa,
+                "resolver el conflicto con la entrada del antecesor conservando "
+                "el trabajo propio; lo aprobado que no cambio se conserva",
+                hora, f"entrada-{enc.generacion}",
+            )
+            return registro.fold(enc.id)
         _anotar_instrumento(
             registro, enc, "github", causa,
             "dejar accesible el repo declarado y reintentar",
@@ -1687,6 +2726,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         )
         marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
         return registro.fold(enc.id)
+    enc = registro.fold(enc.id) or enc
     stale = _producto_no_aprobado(enc, espacio)
     if stale is not None:
         return _reabrir_revision(registro, enc, stale, hora)
@@ -1699,73 +2739,251 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         )
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return registro.fold(enc.id)
+    rama = _rama_fase(enc)
+    base = _base_fase(enc)
     for paso in ("commit", "push"):
         registro.anotar(
             enc.id,
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": paso,
                     "repo": enc.entrega.repo,
+                    "rama": rama,
+                    "base": base,
                     "sha": sha,
                     "recibo": sha,
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:{paso}:{sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:{paso}:{sha}",
         )
+    if enc.pr_numero:
+        # El PR ya registrado se consulta antes que cualquier operación nueva:
+        # un merge aplicado con respuesta perdida se concilia, no se repite.
+        try:
+            vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
+        except Exception as exc:
+            causa = (
+                f"no se pudo consultar el PR #{enc.pr_numero} registrado: {exc}"
+            )
+            _anotar_instrumento(
+                registro, enc, "github", causa,
+                "reintentar la consulta del PR ya registrado",
+                hora, f"pr-ver-{enc.generacion}",
+            )
+            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            return registro.fold(enc.id)
+        numero = enc.pr_numero
+        recibo = vista_pr.merge_commit or vista_pr.head
+        if (
+            vista_pr.estado == "mergeado"
+            and enc.entrega.nivel in ("integrado", "desplegado")
+            and enc.nivel_alcanzado == "pr"
+        ):
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "paso": "integrado",
+                        "repo": enc.entrega.repo,
+                        "rama": rama,
+                        "base": base,
+                        "numero": numero,
+                        "sha": recibo,
+                        "recibo": recibo,
+                        "hora": hora,
+                    },
+                },
+                f"entrega:{enc.id}:{enc.fase_activa}:integrado:{enc.pr_sha}",
+            )
+            enc = registro.fold(enc.id)
+            if nivel_cumplido(enc):
+                return _intentar_cierre(
+                    registro, enc, espacio, directorio, hora
+                )
+            return enc
+    else:
+        ref_base = _ref_existente(espacio, f"origin/{base}", base)
+        if ref_base:
+            conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}")
+            if conteo.returncode == 0 and conteo.stdout.strip() == "0":
+                if enc.entrega.nivel == "pr":
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "entrega_externa",
+                            "data": {
+                                "fase": enc.fase_activa,
+                                "intento": enc.intento,
+                                "paso": "sin_cambios",
+                                "repo": enc.entrega.repo,
+                                "rama": rama,
+                                "base": base,
+                                "sha": sha,
+                                "recibo": sha,
+                                "evidencia": (
+                                    f"fase {enc.fase_activa} sin cambios publicables "
+                                    f"sobre {base}; se entrega el producto revisado "
+                                    "como evidencia, sin PR"
+                                ),
+                                "hora": hora,
+                            },
+                        },
+                        f"entrega:{enc.id}:{enc.fase_activa}:sin_cambios:{sha}",
+                    )
+                    return _intentar_cierre(
+                        registro, registro.fold(enc.id) or enc, espacio, directorio, hora
+                    )
+                if enc.entrega.nivel in ("integrado", "desplegado"):
+                    # El sha ya está contenido en la base: integración ya
+                    # aplicada, conciliada con la punta real de esa base.
+                    punta = (
+                        _git(espacio, "rev-parse", "--verify", "--quiet", f"{ref_base}^{{commit}}")
+                        .stdout.strip()
+                    )
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "entrega_externa",
+                            "data": {
+                                "fase": enc.fase_activa,
+                                "intento": enc.intento,
+                                "paso": "integrado",
+                                "repo": enc.entrega.repo,
+                                "rama": rama,
+                                "base": base,
+                                "sha": punta,
+                                "recibo": punta,
+                                "evidencia": (
+                                    f"fase {enc.fase_activa} ya contenida en {base} "
+                                    f"en {punta}; conciliada como integrada"
+                                ),
+                                "hora": hora,
+                            },
+                        },
+                        f"entrega:{enc.id}:{enc.fase_activa}:integrado:{sha}",
+                    )
+                    enc = registro.fold(enc.id)
+                    if nivel_cumplido(enc):
+                        return _intentar_cierre(
+                            registro, enc, espacio, directorio, hora
+                        )
+                    # desplegado sin diff: no se abre un PR vacío.
+                    enc = _paso_despliegue(registro, enc, espacio, hora)
+                    if nivel_cumplido(enc) and enc.estado != "terminado":
+                        return _intentar_cierre(
+                            registro, enc, espacio, directorio, hora
+                        )
+                    return enc
+        try:
+            pr = gh.abrir_pr(
+                enc.entrega.repo,
+                rama,
+                base,
+                f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
+                f"Encargo {enc.id}. Revision independiente aprobada.",
+            )
+            numero = int(pr.numero)
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "paso": "pr_abierto",
+                        "repo": enc.entrega.repo,
+                        "rama": rama,
+                        "base": base,
+                        "numero": numero,
+                        "sha": pr.head or sha,
+                        "recibo": str(numero),
+                        "hora": hora,
+                    },
+                },
+                f"entrega:{enc.id}:{enc.fase_activa}:pr_abierto:{numero}",
+            )
+            enc = registro.fold(enc.id)
+            if pr.borrador:
+                gh.marcar_listo(enc.entrega.repo, numero)
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "paso": "pr_listo",
+                        "repo": enc.entrega.repo,
+                        "rama": rama,
+                        "base": base,
+                        "numero": numero,
+                        "sha": sha,
+                        "recibo": str(numero),
+                        "hora": hora,
+                    },
+                },
+                f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
+            )
+        except Exception as exc:
+            causa = f"no se pudo abrir o preparar el PR: {exc}"
+            _anotar_instrumento(
+                registro, enc, "github", causa,
+                "reintentar la apertura del PR de la misma rama",
+                hora, f"pr-{enc.generacion}",
+            )
+            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            return registro.fold(enc.id)
+    enc = registro.fold(enc.id)
     try:
-        pr = gh.abrir_pr(
-            enc.entrega.repo,
-            enc.entrega.rama,
-            enc.entrega.base,
-            f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
-            f"Encargo {enc.id}. Revision independiente aprobada.",
-        )
-        numero = int(pr.numero)
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "paso": "pr_abierto",
-                    "repo": enc.entrega.repo,
-                    "numero": numero,
-                    "sha": pr.head or sha,
-                    "recibo": str(numero),
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:pr_abierto:{numero}",
-        )
-        enc = registro.fold(enc.id)
-        if pr.borrador:
-            gh.marcar_listo(enc.entrega.repo, numero)
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "paso": "pr_listo",
-                    "repo": enc.entrega.repo,
-                    "numero": numero,
-                    "sha": sha,
-                    "recibo": str(numero),
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:pr_listo:{numero}:{sha}",
-        )
+        veredicto_ci = gh.checks(enc.entrega.repo, numero, sha, ())
     except Exception as exc:
-        causa = f"no se pudo abrir o preparar el PR: {exc}"
+        causa = f"no se pudieron leer los checks del PR #{numero}: {exc}"
         _anotar_instrumento(
             registro, enc, "github", causa,
-            "reintentar la apertura del PR de la misma rama",
-            hora, f"pr-{enc.generacion}",
+            "reintentar la lectura de checks del mismo SHA",
+            hora, f"checks-leer-{sha[:12]}",
         )
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return registro.fold(enc.id)
-    enc = registro.fold(enc.id)
+    if not veredicto_ci.green:
+        if veredicto_ci.fallas:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_bloqueada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "sha": sha,
+                        "causa": "checks requeridos en rojo: "
+                        + ", ".join(veredicto_ci.fallas),
+                        "hora": hora,
+                    },
+                },
+                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}",
+            )
+            _devolver(
+                registro, enc, "investigar",
+                "checks requeridos en rojo: " + ", ".join(veredicto_ci.fallas),
+                "corregir los checks requeridos en rojo del PR de esta fase; "
+                "lo aprobado que no cambio se conserva",
+                hora, f"checks-{sha[:12]}",
+            )
+        else:
+            marcar_espera(
+                registro, enc.id,
+                "esperando checks requeridos del PR "
+                f"#{numero}: {', '.join(veredicto_ci.faltan)}",
+                _reanuda_en(120), hora,
+            )
+        return registro.fold(enc.id)
     if enc.deepseek_sha != sha:
         try:
             comentarios = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
@@ -1804,6 +3022,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     {
                         "kind": "entrega_externa",
                         "data": {
+                            "fase": enc.fase_activa,
+                            "intento": enc.intento,
                             "paso": "deepseek_disparado",
                             "repo": enc.entrega.repo,
                             "numero": numero,
@@ -1811,7 +3031,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                             "hora": hora,
                         },
                     },
-                    f"entrega:{enc.id}:deepseek_disparado:{sha}",
+                    f"entrega:{enc.id}:{enc.fase_activa}:deepseek_disparado:{sha}",
                 )
             marcar_espera(
                 registro,
@@ -1832,6 +3052,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             {
                 "kind": "revision",
                 "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "revision_id": "rev_ds_" + sha[:12],
                     "version": enc.producto.firma if enc.producto else "",
                     "base_version": enc.deepseek_sha,
@@ -1846,13 +3068,15 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"revision-ds:{enc.id}:{sha}",
+            f"revision-ds:{enc.id}:{enc.fase_activa}:{sha}",
         )
         registro.anotar(
             enc.id,
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": "deepseek_leido",
                     "repo": enc.entrega.repo,
                     "numero": numero,
@@ -1861,7 +3085,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:deepseek_leido:{sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:deepseek_leido:{sha}",
         )
         enc = registro.fold(enc.id)
         abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
@@ -1904,6 +3128,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             {
                 "kind": "entrega_externa",
                 "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "paso": "integrado",
                     "repo": enc.entrega.repo,
                     "numero": enc.pr_numero,
@@ -1912,56 +3138,115 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:integrado:{enc.pr_sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:integrado:{enc.pr_sha}",
         )
         enc = registro.fold(enc.id)
-    if enc.entrega.nivel == "desplegado" and enc.nivel_alcanzado == "integrado":
+    enc = _paso_despliegue(registro, enc, espacio, hora)
+    if nivel_cumplido(enc):
+        return _intentar_cierre(registro, enc, espacio, directorio, hora)
+    return enc
+
+
+def _paso_despliegue(
+    registro: Registro, enc: Encargo, espacio: Path, hora: str
+) -> Encargo:
+    """Nunca reabre un PR vacío: solo sella con el efecto que corresponde a un
+    pedido vivo, con la misma identidad que exige el cierre."""
+    if enc.entrega.nivel != "desplegado" or enc.nivel_alcanzado != "integrado":
+        return enc
+    try:
+        pedidos = [
+            p for p in _pedidos_efecto(espacio) if p["operacion"] == "desplegar"
+        ]
+    except (OSError, ValueError):
+        pedidos = []
+    efecto = None
+    for pedido in pedidos:
         efecto = next(
             (
                 e
                 for e in enc.efectos
-                if e.operacion == "desplegar" and e.estado == "aplicado" and e.recibo
+                if e.id == pedido["id"]
+                and e.operacion == pedido["operacion"]
+                and e.clave == pedido["clave"]
+                and e.cuerpo == pedido["cuerpo"]
+                and e.estado == "aplicado"
+                and e.recibo
             ),
             None,
         )
-        if efecto is None:
-            registro.anotar(
+        if efecto is not None:
+            break
+    if efecto is None and pedidos:
+        from .frontera import DestinoEnsayo, despachar
+
+        destino = DestinoEnsayo(registro.base / "destino")
+        for pedido in pedidos:
+            despachar(
+                registro,
                 enc.id,
-                {
-                    "kind": "sin_progreso",
-                    "data": {
-                        "huella": enc.bloqueo_huella,
-                        "diagnostico": (
-                            "integrado; falta un efecto de despliegue "
-                            "declarado con recibo para cerrar el nivel "
-                            "desplegado"
-                        ),
-                        "escalar": True,
-                        "hora": hora,
-                    },
-                },
-                f"entrega:{enc.id}:desplegado:sin-efecto",
+                destino,
+                str(pedido["id"]),
+                str(pedido["operacion"]),
+                str(pedido["clave"]),
+                str(pedido["cuerpo"]),
+                hora,
             )
-            return registro.fold(enc.id)
+        enc = registro.fold(enc.id)
+        efecto = None
+        for pedido in pedidos:
+            efecto = next(
+                (
+                    e
+                    for e in enc.efectos
+                    if e.id == pedido["id"]
+                    and e.operacion == pedido["operacion"]
+                    and e.clave == pedido["clave"]
+                    and e.cuerpo == pedido["cuerpo"]
+                    and e.estado == "aplicado"
+                    and e.recibo
+                ),
+                None,
+            )
+            if efecto is not None:
+                break
+    if efecto is None:
         registro.anotar(
             enc.id,
             {
-                "kind": "entrega_externa",
+                "kind": "sin_progreso",
                 "data": {
-                    "paso": "desplegado",
-                    "repo": enc.entrega.repo,
-                    "numero": enc.pr_numero,
-                    "sha": enc.pr_sha,
-                    "recibo": efecto.recibo,
+                    "huella": enc.bloqueo_huella,
+                    "diagnostico": (
+                        "integrado; falta un efecto de despliegue "
+                        "declarado con recibo para cerrar el nivel "
+                        "desplegado"
+                    ),
+                    "escalar": True,
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:desplegado:{efecto.id}",
+            f"entrega:{enc.id}:desplegado:sin-efecto",
         )
-        enc = registro.fold(enc.id)
-    if nivel_cumplido(enc):
-        return _intentar_cierre(registro, enc, espacio, directorio, hora)
-    return enc
+        return registro.fold(enc.id)
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "desplegado",
+                "repo": enc.entrega.repo,
+                "numero": enc.pr_numero,
+                "sha": enc.pr_sha,
+                "recibo": efecto.recibo,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{efecto.id}",
+    )
+    return registro.fold(enc.id) or enc
 
 
 def _lanzar_uno(
@@ -1975,7 +3260,9 @@ def _lanzar_uno(
             enc.via == "directa"
             or enc.proc is not None
             or enc.reserva
+            or enc.impedimento
             or leer_parada_local(registro.base)
+            or (enc.fases and all(f.estado == "preparada" for f in enc.fases))
         ):
             return
         rol = enc.rol or "responsable"
@@ -1995,15 +3282,38 @@ def _lanzar_uno(
         runtime.mkdir(parents=True, exist_ok=True)
         _copiar_sesion(_almacen_sesion(registro.base, enc.id, rol), runtime)
         if enc.entrega.nivel != "terminado" and rol == "responsable":
-            causa_repo = _asegurar_repo(enc, espacio)
+            causa_repo = _asegurar_repo(enc, espacio, registro, hora)
             if causa_repo:
-                _anotar_instrumento(
-                    registro, enc, "github", causa_repo,
-                    "dejar accesible el repo declarado y reintentar",
-                    hora, f"repo-{generacion}",
-                )
-                marcar_espera(registro, enc.id, causa_repo, _reanuda_en(300), hora)
-                return
+                if causa_repo.startswith("conflicto al incorporar la entrada"):
+                    # El conflicto se resuelve en el espacio: este turno corre
+                    # con la entrega bloqueada y su arreglo desbloquea.
+                    _bloquear_entrega(registro, enc, causa_repo, hora)
+                    _devolver(
+                        registro, enc, "integrar_antecesor", causa_repo,
+                        "resolver el conflicto con la entrada del antecesor "
+                        "conservando el trabajo propio; lo aprobado que no "
+                        "cambio se conserva",
+                        hora, f"entrada-{generacion}",
+                    )
+                else:
+                    _anotar_instrumento(
+                        registro, enc, "github", causa_repo,
+                        "dejar accesible el repo declarado y reintentar",
+                        hora, f"repo-{generacion}",
+                    )
+                    marcar_espera(registro, enc.id, causa_repo, _reanuda_en(300), hora)
+                    return
+            # Las entradas incorporadas tocan las fases; el replace local de
+            # generacion y conductor sigue vigente para este lanzamiento.
+            fresco = registro.fold(enc.id) or enc
+            enc = replace(
+                enc,
+                fases=fresco.fases,
+                motivo=fresco.motivo,
+                causa=fresco.causa,
+                siguiente=fresco.siguiente,
+                estrategia=fresco.estrategia,
+            )
         epoca = enc.epoca_revisor if rol == "revisor" else enc.epoca_responsable
         sesion = str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"{enc.id}:{rol}:{epoca}")
@@ -2033,10 +3343,50 @@ def _lanzar_uno(
                     + ". Emite el juicio con el formato pedido."
                 )
             contenido += "\n\n" + instrucciones_revision(alcance, resultado)
+            try:
+                recursos = capacidades.cargar(registro.base)
+            except capacidades.ConfigInvalida:
+                recursos = {}
+            try:
+                necesidades.preparar(espacio, enc, token, recursos)
+            except (OSError, ValueError) as exc:
+                causa = f"no se pudo preparar el buzón de necesidades: {exc}"
+                _anotar_instrumento(
+                    registro, enc, "buzon", causa,
+                    "retirar el enlace o directorio que bloquea el buzón y reintentar",
+                    hora, f"buzon-{generacion}",
+                )
+                marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+                return
+            contenido += "\n\n" + necesidades.bloque_capacidades(espacio, recursos)
+            resuelta = _texto_inspeccion_resuelta(enc)
+            if resuelta:
+                contenido += (
+                    "\n\nInspeccion pendiente de la vuelta anterior, ya obtenida "
+                    "por el buzon: " + resuelta
+                    + ". Continua esta revision sobre la misma version con ese dato."
+                )
         else:
             interno_de(espacio, crear=True)
             contenido = prompt_responsable(enc)
-            contenido += "\n\n" + instrucciones_responsable(interno_de(espacio))
+            try:
+                recursos = capacidades.cargar(registro.base)
+            except capacidades.ConfigInvalida:
+                recursos = {}
+            try:
+                necesidades.preparar(espacio, enc, token, recursos)
+            except (OSError, ValueError) as exc:
+                causa = f"no se pudo preparar el buzón de necesidades: {exc}"
+                _anotar_instrumento(
+                    registro, enc, "buzon", causa,
+                    "retirar el enlace o directorio que bloquea el buzón y reintentar",
+                    hora, f"buzon-{generacion}",
+                )
+                marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+                return
+            contenido += "\n\n" + instrucciones_responsable(
+                interno_de(espacio), necesidades.bloque_capacidades(espacio, recursos)
+            )
         # Sólo observaciones de este encargo; la autoridad sigue fuera de la jaula.
         copias_observadas = []
         for fuente in sorted(raiz.glob("intento-*/observaciones*.json")):
@@ -2211,7 +3561,13 @@ def _lanzar_uno(
                 enc.id,
                 {
                     "kind": "conductor",
-                    "data": {"token": token, "host": socket.gethostname(), "hora": hora},
+                    "data": {
+                        "token": token,
+                        "host": socket.gethostname(),
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "hora": hora,
+                    },
                 },
                 f"conductor-local:{enc.id}:{token}",
             )
@@ -2457,6 +3813,8 @@ def conceder_conductor(
                 "data": {
                     "conductor": token,
                     "host": host,
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
                     "hora": hora,
                     "generacion": enc.generacion + 1,
                 },
@@ -2592,6 +3950,7 @@ def observar_intento(
                     "job": job,
                     "host": host,
                     "sesion": sesion,
+                    "fase": enc.fase_activa,
                     "hora": hora,
                 },
             },
@@ -2612,12 +3971,14 @@ def _resultado_desde_fold(
     lee como respaldo para encargos cerrados por la via anterior.
     """
     eventos = registro.eventos(enc.id)
+    fase_id = enc.fase_activa
     revision = next(
         (
             ev["data"]
             for ev in reversed(eventos)
             if ev["kind"] == "revision"
             and (ev["data"].get("origen") or "independiente") == "independiente"
+            and (ev["data"].get("fase") or fase_id) == fase_id
         ),
         None,
     )
@@ -2702,6 +4063,101 @@ def _publicar_resultado(registro: Registro, enc: Encargo, hora: str) -> bool:
     return registrado
 
 
+def _asociacion_conductor(registro: Registro, enc: Encargo, token: str) -> str:
+    previo = registro.por_ukey(f"conductor-fase:{enc.id}:{token}")
+    if previo is None:
+        return ""
+    return str(previo["data"].get("fase") or "")
+
+
+def _asociar_conductor(
+    registro: Registro, enc: Encargo, token: str, fase: str, hora: str
+) -> None:
+    if not token or not fase:
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "conductor_fase",
+            "data": {"token": token, "fase": fase, "hora": hora},
+        },
+        f"conductor-fase:{enc.id}:{token}",
+    )
+
+
+def _fase_de_resultado(
+    registro: Registro, enc: Encargo, token: str, version: str, hora: str
+) -> str:
+    """Fase que produjo el resultado, sin tomarla de la fase activa del momento.
+
+    La asociación durable conductor-fase manda y se guarda en cualquier ruta que
+    acepte el resultado, no solo cuando hay que recurrir a la fase activa. Después
+    valen la fase del intento y la versión del producto.
+    """
+    ligada = _asociacion_conductor(registro, enc, token)
+    if ligada:
+        return ligada
+    fase = ""
+    for ev in reversed(registro.eventos(enc.id)):
+        if ev["kind"] == "conductor" and str(ev["data"].get("token") or "") == token:
+            fase = str(ev["data"].get("fase") or "")
+            break
+    if not fase:
+        candidatas = [
+            candidata.id
+            for candidata in enc.fases
+            if (candidata.producto is not None and candidata.producto.firma == version)
+            or (candidata.revisado is not None and candidata.revisado.firma == version)
+            or (
+                candidata.revision_vigente is not None
+                and candidata.revision_vigente.version == version
+            )
+        ]
+        if len(candidatas) == 1:
+            fase = candidatas[0]
+        elif len(candidatas) > 1:
+            return ""
+    if not fase:
+        fase = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
+    if fase:
+        _asociar_conductor(registro, enc, token, fase, hora)
+    return fase
+
+
+def _huella_resultado(observaciones: dict, juicio: dict) -> str:
+    payload = json.dumps(
+        {"observaciones": observaciones, "juicio": juicio},
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _resultado_ya_aplicado(
+    registro: Registro, enc: Encargo, fase: str, token: str, huella: str = ""
+) -> dict | None:
+    ukey = f"resultado:{enc.id}:{fase}:{token}"
+    previo = registro.por_ukey(ukey)
+    if previo is None:
+        return None
+    guardada = str(previo["data"].get("huella_resultado") or "")
+    if huella and guardada and huella != guardada:
+        return {
+            "conflicto": True,
+            "motivo": "el mismo intento trae un resultado distinto",
+            "fase": fase,
+        }
+    return {
+        "registrado": True,
+        "encargo": enc.id,
+        "estado": enc.estado,
+        "retransmision": True,
+        "recibo": ukey,
+        "fase": fase,
+    }
+
+
 def _recibir_resultado_nuevo(
     registro: Registro,
     enc: Encargo,
@@ -2722,6 +4178,32 @@ def _recibir_resultado_nuevo(
     )
     if not version or not manifiesto:
         return {"rechazado": True, "motivo": "el resultado no trae versión del producto"}
+    fase = _fase_de_resultado(registro, enc, token, version, hora)
+    if not fase:
+        return {"rechazado": True, "motivo": "el resultado no identifica una única fase"}
+    huella = _huella_resultado(observaciones, juicio)
+    previo = _resultado_ya_aplicado(registro, enc, fase, token, huella)
+    if previo is not None:
+        return previo
+    activa = enc.fase_activa or (FASE_IMPLICITA if not enc.fases else "")
+    if fase != activa:
+        return {"rechazado": True, "motivo": "el resultado pertenece a otra fase"}
+    if enc.intento:
+        evento_intento = next(
+            (
+                ev
+                for ev in reversed(registro.eventos(enc.id))
+                if ev["kind"] == "intento_abierto"
+                and str(ev["data"].get("id") or "") == enc.intento
+            ),
+            None,
+        )
+        fase_intento = str((evento_intento or {}).get("data", {}).get("fase") or "")
+        if fase_intento and fase_intento != fase:
+            return {"rechazado": True, "motivo": "el intento pertenece a otra fase"}
+    actual = next((f for f in enc.fases if f.id == fase), None)
+    if actual is not None and actual.estado == "preparada":
+        return {"rechazado": True, "motivo": "la fase ya está preparada"}
     if enc.producto is None or enc.producto.firma != version:
         registro.anotar(
             enc.id,
@@ -2730,10 +4212,12 @@ def _recibir_resultado_nuevo(
                 "data": {
                     "version": version,
                     "manifiesto": [list(x) for x in manifiesto],
+                    "fase": fase,
+                    "intento": enc.intento,
                     "hora": hora,
                 },
             },
-            f"producto-autoridad:{enc.id}:{version}",
+            f"producto-autoridad:{enc.id}:{fase}:{version}",
         )
         enc = registro.fold(enc.id)
     crudo = dict(juicio)
@@ -2784,10 +4268,12 @@ def _recibir_resultado_nuevo(
                 "aprobadas": [list(x) for x in validado.aprobadas],
                 "evidencia": validado.evidencia,
                 "efectos_pendientes": list(validado.efectos_pendientes),
+                "fase": fase,
+                "intento": enc.intento,
                 "hora": hora,
             },
         },
-        f"revision-autoridad:{enc.id}:{version}",
+        f"revision-autoridad:{enc.id}:{fase}:{version}",
     )
     enc = registro.fold(enc.id)
     from .cierre import comprobar_destino, componer
@@ -2798,18 +4284,28 @@ def _recibir_resultado_nuevo(
             comprobar_destino(cierre, DestinoEnsayo(registro.base / "destino"))
     except (ValueError, KeyError, TypeError) as exc:
         return {"rechazado": True, "motivo": str(exc)}
+    ukey = f"resultado:{enc.id}:{fase}:{token}"
     resultado = registro.anotar(
         enc.id,
         {
             "kind": "comprobacion",
-            "data": {**cierre, "observaciones": observaciones, "host": host, "hora": hora},
+            "data": {
+                **cierre,
+                "fase": fase,
+                "huella_resultado": huella,
+                "observaciones": observaciones,
+                "host": host,
+                "hora": hora,
+            },
         },
-        f"resultado:{enc.id}:{token}",
+        ukey,
     )
     return {
         "registrado": resultado in ("nuevo", "igual"),
         "encargo": enc.id,
         "estado": registro.fold(enc.id).estado,
+        "fase": fase,
+        "recibo": ukey,
     }
 
 
@@ -2871,12 +4367,13 @@ def recibir_resultado(
                 "kind": "comprobacion",
                 "data": {
                     **cierre,
+                    "fase": enc.fase_activa,
                     "observaciones": observaciones,
                     "host": host,
                     "hora": hora,
                 },
             },
-            f"resultado:{enc.id}:{token}",
+            f"resultado:{enc.id}:{enc.fase_activa}:{token}",
         )
         return {
             "registrado": resultado in ("nuevo", "igual"),

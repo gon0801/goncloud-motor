@@ -3,5 +3,7 @@
   "subagente": "openbot-cli",
   "terminal": "local",
   "skill": "SKILL.md",
-  "parada": false
+  "parada": false,
+  "recepcion": false,
+  "respuesta": "motor director responder"
 }

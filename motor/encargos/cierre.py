@@ -40,9 +40,9 @@ def _recibos(pedidos: list[dict], enc: Encargo) -> list[dict]:
 
 
 def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
-    """Cierre del flujo nuevo: revision aprobada sobre la firma vigente,
-    recibos de efectos y, si el nivel autorizado es pr o mas, DeepSeek
-    leido para el SHA actual y nivel alcanzado igual al autorizado."""
+    """Cierre de una fase: revisión aprobada sobre la firma vigente,
+    recibos de efectos y, si el nivel autorizado es pr o más, DeepSeek
+    leído para el SHA actual y nivel alcanzado igual al autorizado."""
     ref = enc.revision_vigente
     if ref is None or ref.veredicto != "aprobado":
         raise ValueError("cierre sin revisión independiente aprobada")
@@ -51,7 +51,13 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
     if bloqueantes_abiertos(enc):
         raise ValueError("cierre con bloqueantes abiertos")
     if enc.entrega.nivel != "terminado":
-        if not enc.deepseek_sha or enc.deepseek_sha != enc.pr_sha:
+        # DeepSeek revisa el diff del PR; sin PR (sin_cambios o entrega ya
+        # contenida en la base) no hay diff que revisar ni recibo posible.
+        if (
+            enc.pr_numero
+            and enc.nivel_alcanzado != "sin_cambios"
+            and (not enc.deepseek_sha or enc.deepseek_sha != enc.pr_sha)
+        ):
             raise ValueError("falta leer la revisión de DeepSeek del SHA actual")
         if not nivel_cumplido(enc):
             raise ValueError("el nivel alcanzado no es el autorizado")
@@ -62,12 +68,24 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
             f"{x['id']} {x['recibo']} {x['cuerpo']}" for x in recibos
         )
     if enc.entrega.nivel != "terminado":
-        detalle += (
-            f" Entrega {enc.nivel_alcanzado}: PR #{enc.pr_numero} "
-            f"en {enc.entrega.repo}, SHA {enc.pr_sha}, DeepSeek leído."
-        )
+        if enc.nivel_alcanzado == "sin_cambios":
+            detalle += (
+                " Entrega sin cambios publicables: sin PR; el producto "
+                "revisado queda como evidencia."
+            )
+        elif enc.pr_numero:
+            detalle += (
+                f" Entrega {enc.nivel_alcanzado}: PR #{enc.pr_numero} "
+                f"en {enc.entrega.repo}, SHA {enc.pr_sha}, DeepSeek leído."
+            )
+        else:
+            detalle += (
+                f" Entrega {enc.nivel_alcanzado} por contención en "
+                f"{enc.entrega.base}: sin PR; el SHA ya está en la base."
+            )
     return {
         "clase": "cierre_comprobado",
+        "fase": enc.fase_activa,
         "firma": enc.producto.firma,
         "revision": ref.revision_id,
         "nivel_alcanzado": enc.nivel_alcanzado

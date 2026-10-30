@@ -406,6 +406,7 @@ def ejecutar(spec_path: Path) -> int:
                 "sesion": spec["sesion"],
                 "rol": spec["rol"],
                 "agente": spec["agente"],
+                "fase": enc.fase_activa,
                 "hora": spec["hora"],
                 "herramientas_observables": True,
             }
@@ -418,6 +419,23 @@ def ejecutar(spec_path: Path) -> int:
             from motor.encargos.ciclo import _avisar_intento
 
             if not _avisar_intento(reg, enc.id, proc, spec["hora"]):
+                _publica(
+                    d / "outcome.json",
+                    json.dumps({"sin_liberar": True, "autoridad": False}),
+                )
+                return 1
+            from motor.encargos import capacidades, necesidades
+
+            actual = reg.fold(enc.id) or enc
+            try:
+                recursos = capacidades.cargar(reg.base)
+            except capacidades.ConfigInvalida:
+                recursos = {}
+            try:
+                necesidades.preparar(
+                    Path(spec["cwd"]), actual, spec["token"], recursos
+                )
+            except (OSError, ValueError):
                 _publica(
                     d / "outcome.json",
                     json.dumps({"sin_liberar": True, "autoridad": False}),
