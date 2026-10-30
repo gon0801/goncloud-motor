@@ -2795,7 +2795,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                             registro, enc, espacio, directorio, hora
                         )
                     # desplegado sin diff: no se abre un PR vacío.
-                    enc = _paso_despliegue(registro, enc, hora)
+                    enc = _paso_despliegue(registro, enc, espacio, hora)
                     if nivel_cumplido(enc) and enc.estado != "terminado":
                         return _intentar_cierre(
                             registro, enc, espacio, directorio, hora
@@ -3061,24 +3061,42 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             f"entrega:{enc.id}:{enc.fase_activa}:integrado:{enc.pr_sha}",
         )
         enc = registro.fold(enc.id)
-    enc = _paso_despliegue(registro, enc, hora)
+    enc = _paso_despliegue(registro, enc, espacio, hora)
     if nivel_cumplido(enc):
         return _intentar_cierre(registro, enc, espacio, directorio, hora)
     return enc
 
 
-def _paso_despliegue(registro: Registro, enc: Encargo, hora: str) -> Encargo:
-    """Nunca reabre un PR vacío: el despliegue se acredita con el recibo del efecto."""
+def _paso_despliegue(
+    registro: Registro, enc: Encargo, espacio: Path, hora: str
+) -> Encargo:
+    """Nunca reabre un PR vacío: solo sella con el efecto que corresponde a un
+    pedido vivo, con la misma identidad que exige el cierre."""
     if enc.entrega.nivel != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
-    efecto = next(
-        (
-            e
-            for e in enc.efectos
-            if e.operacion == "desplegar" and e.estado == "aplicado" and e.recibo
-        ),
-        None,
-    )
+    try:
+        pedidos = [
+            p for p in _pedidos_efecto(espacio) if p["operacion"] == "desplegar"
+        ]
+    except (OSError, ValueError):
+        pedidos = []
+    efecto = None
+    for pedido in pedidos:
+        efecto = next(
+            (
+                e
+                for e in enc.efectos
+                if e.id == pedido["id"]
+                and e.operacion == pedido["operacion"]
+                and e.clave == pedido["clave"]
+                and e.cuerpo == pedido["cuerpo"]
+                and e.estado == "aplicado"
+                and e.recibo
+            ),
+            None,
+        )
+        if efecto is not None:
+            break
     if efecto is None:
         registro.anotar(
             enc.id,
