@@ -212,6 +212,7 @@ class Fase:
     inspeccion_pendiente: str = ""
     inspeccion_solicitud: str = ""
     inspeccion_entregada: str = ""
+    inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
 
     def __post_init__(self) -> None:
@@ -246,6 +247,7 @@ class Fase:
             "inspeccion_pendiente": self.inspeccion_pendiente,
             "inspeccion_solicitud": self.inspeccion_solicitud,
             "inspeccion_entregada": self.inspeccion_entregada,
+            "inspecciones_consumidas": list(self.inspecciones_consumidas),
         }
 
 
@@ -719,11 +721,18 @@ def inspeccion_bloquea(e: Encargo) -> bool:
         return True
     if sol.estado in ("pendiente", "pregunta"):
         return True
-    return fase.inspeccion_entregada == marca_inspeccion_entregada(sol)
+    return respuesta_consumida(fase, marca_inspeccion_entregada(sol))
 
 
 def marca_inspeccion_entregada(sol: Solicitud) -> str:
     return f"{sol.id}:{sol.estado}"
+
+
+def respuesta_consumida(fase: Fase, marca: str) -> bool:
+    """La respuesta ya se entregó, aunque después se haya ligado otra consulta."""
+    return bool(marca) and (
+        marca == fase.inspeccion_entregada or marca in fase.inspecciones_consumidas
+    )
 
 
 def _entrega_de(d: dict) -> EntregaAutorizada:
@@ -1252,8 +1261,18 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         marca = str(d.get("marca") or "").strip()
         if not marca:
             raise TransicionIlegal("la entrega de la inspección necesita su marca")
+        consumidas = fase.inspecciones_consumidas
+        if marca not in consumidas:
+            consumidas = consumidas + (marca,)
         return replace(
-            con_fase(e, replace(fase, inspeccion_entregada=marca)),
+            con_fase(
+                e,
+                replace(
+                    fase,
+                    inspeccion_entregada=marca,
+                    inspecciones_consumidas=consumidas,
+                ),
+            ),
             hora=hora or e.hora,
         )
     if kind == "resolucion":

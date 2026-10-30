@@ -41,6 +41,7 @@ from .dominio import (
     id_encargo,
     inspeccion_bloquea,
     marca_inspeccion_entregada,
+    respuesta_consumida,
     nivel_cumplido,
     prompt_responsable,
     prompt_revisor,
@@ -1388,7 +1389,7 @@ def _ligar_inspeccion(
         return
     previa = next((s for s in enc.solicitudes if s.id == ident), None)
     if previa is not None:
-        if fase.inspeccion_entregada == marca_inspeccion_entregada(previa):
+        if respuesta_consumida(fase, marca_inspeccion_entregada(previa)):
             # La respuesta de esa solicitud ya se entregó y consumió: el mismo
             # pedido no re-liga ni gasta otra entrega.
             return
@@ -2004,7 +2005,38 @@ def _juicio_repite_inspeccion(enc: Encargo, directorio: Path) -> bool:
     otra = next((s for s in enc.solicitudes if s.id == ident), None)
     return (
         otra is not None
-        and fase.inspeccion_entregada == marca_inspeccion_entregada(otra)
+        and respuesta_consumida(fase, marca_inspeccion_entregada(otra))
+    )
+
+
+def _consumir_ligada(registro: Registro, enc: Encargo, hora: str) -> None:
+    """Al cambiar de consulta, la respuesta ya entregada queda consumida.
+
+    Si no se registra, volver a la consulta anterior la re-liga como si nadie
+    la hubiera visto y el revisor gasta otro turno con el mismo error.
+    """
+    fase = enc.fase_actual
+    if fase is None or not fase.inspeccion_solicitud:
+        return
+    sol = next((s for s in enc.solicitudes if s.id == fase.inspeccion_solicitud), None)
+    if sol is None or sol.estado in ("pendiente", "pregunta"):
+        return
+    marca = marca_inspeccion_entregada(sol)
+    if respuesta_consumida(fase, marca):
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "inspeccion_entregada",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "solicitud": sol.id,
+                "marca": marca,
+                "hora": hora,
+            },
+        },
+        f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
     )
 
 
@@ -2037,10 +2069,12 @@ def _salta_inspeccion(
         return True
     ident = _id_inspeccion(enc, resultado)
     if ident != fase.inspeccion_solicitud:
+        _consumir_ligada(registro, enc, hora)
+        enc = registro.fold(enc.id) or enc
+        fase = enc.fase_actual or fase
         otra = next((s for s in enc.solicitudes if s.id == ident), None)
-        return (
-            otra is not None
-            and fase.inspeccion_entregada == marca_inspeccion_entregada(otra)
+        return otra is not None and respuesta_consumida(
+            fase, marca_inspeccion_entregada(otra)
         )
     sol = next((s for s in enc.solicitudes if s.id == ident), None)
     if sol is not None and sol.estado not in ("pendiente", "pregunta"):
@@ -2282,12 +2316,44 @@ def _deps_de(enc: Encargo, fase) -> list:
     return salida
 
 
+def _traer_base_integrada(espacio: Path, dep_id: str, sha: str) -> str:
+    """Trae los cambios de la base donde se integró el squash.
+
+    El squash también contiene esa base. Unir sólo su historia con `-s ours`
+    deja fuera archivos ajenos y el PR siguiente propone borrarlos.
+    """
+    padres = _git(espacio, "rev-parse", "--verify", "--quiet", f"{sha}^@").stdout.split()
+    if not padres:
+        return ""
+    base = padres[0]
+    if _git(espacio, "merge-base", "--is-ancestor", base, "HEAD").returncode == 0:
+        return ""
+    r = _git(
+        espacio,
+        "-c", "user.name=motor de encargos",
+        "-c", "user.email=motor@localhost",
+        "merge", "--no-ff", "--quiet",
+        "-m", f"incorporar la base integrada de {dep_id} ({base[:12]})",
+        base,
+    )
+    if r.returncode != 0:
+        _git(espacio, "merge", "--abort")
+        return (
+            f"conflicto al incorporar la entrada {dep_id} ({base}): "
+            f"{r.stderr.strip()[-300:]}"
+        )
+    return ""
+
+
 def _merge_ancestria(espacio: Path, dep_id: str, sha: str) -> str:
     """Incorpora la ancestría de un commit cuyo contenido ya está en HEAD.
 
-    `-s ours` deja el árbol intacto: sólo une la historia para que el sha
-    integrado cuente como antecesor.
+    Primero trae la base real del squash. `-s ours` sólo une la historia
+    para que el sha integrado cuente como antecesor, sin reescribir el árbol.
     """
+    causa = _traer_base_integrada(espacio, dep_id, sha)
+    if causa:
+        return causa
     r = _git(
         espacio,
         "-c", "user.name=motor de encargos",
@@ -3097,6 +3163,39 @@ def _paso_despliegue(
         )
         if efecto is not None:
             break
+    if efecto is None and pedidos:
+        from .frontera import DestinoEnsayo, despachar
+
+        destino = DestinoEnsayo(registro.base / "destino")
+        for pedido in pedidos:
+            despachar(
+                registro,
+                enc.id,
+                destino,
+                str(pedido["id"]),
+                str(pedido["operacion"]),
+                str(pedido["clave"]),
+                str(pedido["cuerpo"]),
+                hora,
+            )
+        enc = registro.fold(enc.id)
+        efecto = None
+        for pedido in pedidos:
+            efecto = next(
+                (
+                    e
+                    for e in enc.efectos
+                    if e.id == pedido["id"]
+                    and e.operacion == pedido["operacion"]
+                    and e.clave == pedido["clave"]
+                    and e.cuerpo == pedido["cuerpo"]
+                    and e.estado == "aplicado"
+                    and e.recibo
+                ),
+                None,
+            )
+            if efecto is not None:
+                break
     if efecto is None:
         registro.anotar(
             enc.id,
