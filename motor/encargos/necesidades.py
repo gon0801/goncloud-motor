@@ -253,11 +253,9 @@ def _afirmativa(texto: str) -> bool:
 
 def _vigente(enc, sol: Solicitud) -> bool:
     """La solicitud sigue correspondiendo al trabajo que se va a ejecutar."""
-    if sol.fase and sol.fase != enc.fase_activa:
-        return False
-    if enc.intento and sol.intento and sol.intento != enc.intento:
-        return False
-    return True
+    from .dominio import solicitud_vigente
+
+    return solicitud_vigente(enc, sol.fase, sol.intento)
 
 
 def _autorizado(enc, recurso: str, operacion: str, fase: str, intento: str) -> bool:
@@ -1159,6 +1157,35 @@ def atender(
     return resumen
 
 
+def _reponer_peticion(espacio: Path, sol: Solicitud) -> None:
+    """Devuelve al buzón la petición archivada para que `atender` la cierre."""
+    buzon = Path(espacio) / BUZON / PETICIONES
+    buzon.mkdir(parents=True, exist_ok=True)
+    path = buzon / f"{sol.id}.json"
+    if path.is_file():
+        return
+    hecha = path.with_suffix(".hecha")
+    if hecha.is_file():
+        hecha.replace(path)
+        return
+    _publica(
+        path,
+        {
+            "id": sol.id,
+            "encargo": "",
+            "operacion": sol.operacion,
+            "recurso": sol.recurso,
+            "fase": sol.fase,
+            "intento": sol.intento,
+            "generacion": sol.generacion,
+            "conductor": sol.conductor,
+            "motivo": sol.motivo,
+            "parametros": dict(sol.parametros),
+        },
+        raiz=Path(espacio),
+    )
+
+
 def continuar_respuestas(
     registro: Registro,
     enc,
@@ -1166,76 +1193,37 @@ def continuar_respuestas(
     directorio: Path,
     hora: str,
 ) -> dict:
-    """Sigue el trabajo que esperaba una respuesta. Una ya resuelta no se repite."""
-    resumen = {"continuadas": 0, "denegadas": 0, "omitidas": 0}
-    try:
-        recursos = capacidades.cargar(registro.base)
-    except capacidades.ConfigInvalida:
-        recursos = {}
+    """Sigue solo la respuesta que el intento vigente todavía espera.
+
+    El cierre, la vigencia y la publicación los hace `atender`. Una entrega que
+    no llega al espacio queda pendiente y el resultado del host no se repite.
+    """
+    resumen = {"continuadas": 0, "denegadas": 0, "omitidas": 0, "pendientes": 0}
     actual = registro.fold(enc.id) or enc
     for sol in tuple(actual.solicitudes):
         if sol.estado != "respuesta":
             resumen["omitidas"] += 1
             continue
-        if not _afirmativa(sol.respuesta):
-            _anotar_resolucion(
-                registro,
-                actual,
-                sol,
-                "denegada",
-                detalle=f"el propietario respondió: {sol.respuesta}",
-                hora=hora,
-            )
-            nuevo = _buscar(registro.fold(enc.id) or actual, sol.id) or sol
-            _escribir_respuesta(
-                espacio,
-                nuevo,
-                _respuesta(nuevo, "denegada", motivo="la autorización no fue concedida", respuesta=sol.respuesta),
-            )
-            resumen["denegadas"] += 1
-            actual = registro.fold(enc.id) or actual
-            continue
-        previo = _resultado_huerfano(espacio, sol, directorio)
-        if previo is not None and str(previo.get("estado") or "") not in ("", "pregunta"):
-            resultado = previo
-        else:
-            resultado = _ejecutar(
-                registro, actual, sol, recursos, espacio, directorio, True, hora
-            )
-        estado = str(resultado.get("estado") or "error")
-        if estado in ("pregunta", "pendiente"):
+        if not _vigente(actual, sol):
             resumen["omitidas"] += 1
             continue
-        final = "resuelta" if estado == "ok" else estado
-        if final not in ("resuelta", "detenida", "error", "denegada"):
-            final = "error"
-        evidencia = json.dumps(
-            resultado.get("evidencia") or {}, ensure_ascii=False, sort_keys=True
-        )
-        _anotar_resolucion(
-            registro,
-            actual,
-            sol,
-            final if final in ("resuelta", "detenida") else "error",
-            evidencia=evidencia,
-            detalle=str(resultado.get("motivo") or ""),
-            hora=hora,
-        )
-        nuevo = _buscar(registro.fold(enc.id) or actual, sol.id) or sol
-        _escribir_respuesta(
-            espacio,
-            nuevo,
-            _respuesta(
-                nuevo,
-                final,
-                datos=resultado.get("datos"),
-                motivo=str(resultado.get("motivo") or ""),
-                respuesta=sol.respuesta,
-                espacio=espacio,
-            ),
-        )
-        resumen["continuadas"] += 1
+        _reponer_peticion(espacio, sol)
+        peticion = Path(espacio) / BUZON / PETICIONES / f"{sol.id}.json"
+        if peticion.is_file():
+            crudo = _leer(peticion) or {}
+            crudo["encargo"] = actual.id
+            _publica(peticion, crudo, raiz=Path(espacio))
+        paso = atender(registro, actual, espacio, directorio, hora)
         actual = registro.fold(enc.id) or actual
+        nuevo = _buscar(actual, sol.id)
+        if nuevo is not None and nuevo.estado == "resuelta":
+            resumen["continuadas"] += 1
+        elif nuevo is not None and nuevo.estado == "denegada":
+            resumen["denegadas"] += 1
+        elif paso.get("pendientes"):
+            resumen["pendientes"] += 1
+        else:
+            resumen["omitidas"] += 1
     return resumen
 
 

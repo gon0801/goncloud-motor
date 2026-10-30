@@ -73,3 +73,16 @@ Hermes y Claw no se hablaron por sus chats. Su transporte en el ensayo fue el sc
 ## Límites
 
 No hay aceptación nativa en PC, Mac y Mini ni revisión real de DeepSeek. No se reanudaron encargos detenidos. Los subagentes de Z.AI no arrancaron: la cuota del plan está agotada hasta 2026-11-02. La exploración y el código los hice en este turno.
+
+## Corrección de la ronda 1
+
+Una respuesta de otro intento queda en la historia y no se aplica. La continuación usa el puente existente: si los datos no llegan al espacio, la solicitud no queda resuelta y el resultado del host se reutiliza al publicar. Hermes y Claw firman la adaptación nueva; Claw sube a la generación 3.
+
+```sh
+python3 -B sonda-respuestas.py intento_tardio
+python3 -B sonda-respuestas.py publicacion
+python3 -B sonda-paquetes.py hermes
+python3 -B sonda-paquetes.py claw
+```
+
+Las cuatro salieron 0 contra estos worktrees. El ensayo de fase 4 también salió 0.

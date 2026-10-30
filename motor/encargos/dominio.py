@@ -1379,12 +1379,25 @@ def _resolucion(e: Encargo, d: dict, hora: str) -> Encargo:
     return e
 
 
+def solicitud_vigente(e: Encargo, fase: str, intento: str) -> bool:
+    """La solicitud sigue siendo el trabajo que espera la respuesta."""
+    if fase and fase != e.fase_activa:
+        return False
+    if e.intento and intento and intento != e.intento:
+        return False
+    return True
+
+
 def _respuesta(e: Encargo, d: dict, hora: str) -> Encargo:
     """Una respuesta tardía se conserva y no cambia el trabajo que ya no la espera."""
     ident = str(d.get("solicitud") or "")
     texto = str(d.get("texto") or "")
     sol = next((s for s in e.solicitudes if s.id == ident), None)
-    if sol is None or sol.estado != "pregunta":
+    if (
+        sol is None
+        or sol.estado != "pregunta"
+        or not solicitud_vigente(e, sol.fase, sol.intento)
+    ):
         return replace(
             e,
             procedimiento=e.procedimiento
