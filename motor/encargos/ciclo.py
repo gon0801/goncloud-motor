@@ -13,6 +13,7 @@ from pathlib import Path
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
+    VERSION_LECTOR_DEEPSEEK,
     digest,
     firma_producto,
     hallazgos_deepseek,
@@ -1191,6 +1192,15 @@ def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
     )
 
 
+def _deepseek_por_releer(enc: Encargo) -> bool:
+    return bool(
+        enc.deepseek_vigente is not None
+        and enc.deepseek_vigente.lector_version < VERSION_LECTOR_DEEPSEEK
+        and bloqueantes_abiertos(enc, "deepseek")
+        and revision_independiente_cubre_producto(enc)
+    )
+
+
 def _aplica_entrega(enc: Encargo) -> bool:
     if enc.entrega.nivel == "terminado" or enc.revision_vigente is None:
         return False
@@ -1213,7 +1223,7 @@ def _aplica_entrega(enc: Encargo) -> bool:
     return (
         enc.deepseek_vigente is not None
         and enc.producto is not None
-        and enc.producto.sha_git != enc.deepseek_sha
+        and (enc.producto.sha_git != enc.deepseek_sha or _deepseek_por_releer(enc))
         and (
             enc.revision_vigente.version == enc.producto.firma
             or _correccion_deepseek_conserva_aprobadas(enc)
@@ -2774,7 +2784,7 @@ def _checks_extra(enc: Encargo, espacio: Path) -> tuple[str, ...]:
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
-    if nivel_cumplido(enc) and enc.estado != "terminado":
+    if nivel_cumplido(enc) and enc.estado != "terminado" and not _deepseek_por_releer(enc):
         return _intentar_cierre(
             registro, enc, _espacio(registro.base, enc.id),
             _directorio(registro.base, enc.id), hora,
@@ -3082,7 +3092,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 _reanuda_en(120), hora,
             )
         return registro.fold(enc.id)
-    if enc.deepseek_sha != sha:
+    if enc.deepseek_sha != sha or _deepseek_por_releer(enc):
         try:
             comentarios = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
         except Exception as exc:
@@ -3159,6 +3169,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "veredicto": "cambios" if nuevos_bloq else "aprobado",
                     "revisor": "deepseek",
                     "origen": "deepseek",
+                    "lector_version": VERSION_LECTOR_DEEPSEEK,
                     "cubre": [
                         h.id for h in bloqueantes_abiertos(enc, "deepseek")
                     ],
@@ -3166,7 +3177,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"revision-ds:{enc.id}:{enc.fase_activa}:{sha}",
+            f"revision-ds:{enc.id}:{enc.fase_activa}:{sha}:lector{VERSION_LECTOR_DEEPSEEK}",
         )
         registro.anotar(
             enc.id,
@@ -3183,7 +3194,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:{enc.fase_activa}:deepseek_leido:{sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:deepseek_leido:{sha}:lector{VERSION_LECTOR_DEEPSEEK}",
         )
         enc = registro.fold(enc.id)
         abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
@@ -3598,9 +3609,10 @@ def _lanzar_uno(
                 contenido += (
                     "\n\nLee poteto-mode en " + str(skill)
                     + ". Sus referencias estan en el paquete local. Adapta a herramientas nativas. "
-                    "Las instrucciones del usuario prevalecen. Este encargo usa un unico agente "
-                    "sin delegacion ni Cursor. No apliques cantidades fijas, nuevos gates ni "
-                    "pruebas fuera de los casos autorizados."
+                    "Las instrucciones del usuario prevalecen. Usa las skills, herramientas y apoyos "
+                    "que aporten al pedido con los accesos concedidos. Elige pruebas y revisiones "
+                    "segun el comportamiento, el riesgo y la evidencia que haga falta. Conserva lo "
+                    "ya comprobado y repitelo cuando exista un motivo concreto."
                 )
             _publica(prompt, contenido)
             lanzado = lanzador(enc, prompt, espacio, sesion)

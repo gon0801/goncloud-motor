@@ -239,10 +239,10 @@ class TestNoVerificable(unittest.TestCase):
         self.assertFalse(h.legible)
         self.assertEqual(ps.juzga(h, ps.Exigencia()), ps.Cumple(verificable=False))
 
-    def test_registro_legible_sin_subagentes_si_faltan(self):
+    def test_registro_legible_sin_subagentes_no_exige_una_cuota_antigua(self):
         h = ps.huella(jl({"type": "system"}), "claude")
         self.assertTrue(h.legible)
-        self.assertIsInstance(ps.juzga(h, ps.Exigencia(min_subagentes=1)), ps.Falta)
+        self.assertEqual(ps.juzga(h, ps.Exigencia(min_subagentes=1)), ps.Cumple())
 
 
 class TestJuzga(unittest.TestCase):
@@ -253,10 +253,10 @@ class TestJuzga(unittest.TestCase):
         )
         self.assertEqual(ps.juzga(h, ps.Exigencia(min_subagentes=2)), ps.Cumple())
 
-    def test_falta_dice_cuantos_lanzo_y_cuantos_se_pedian(self):
+    def test_una_cuota_de_configuracion_anterior_no_invalida_el_trabajo(self):
         h = ps.huella(claude(("Bash", {"command": "ls"})), "claude")
         r = ps.juzga(h, ps.Exigencia(min_subagentes=2))
-        self.assertEqual(r, ps.Falta(("lanzó 0 subagente(s) y se pedían al menos 2",)))
+        self.assertEqual(r, ps.Cumple())
 
     def test_sin_exigencia_de_subagentes_cualquier_registro_legible_cumple(self):
         h = ps.huella(claude(("Bash", {"command": "ls"})), "claude")
@@ -277,16 +277,6 @@ class TestInstrucciones(unittest.TestCase):
             "Carga la skill",
         ):
             self.assertNotIn(prohibido, t)
-
-    def test_con_subagentes_dice_cuantos_y_como_cuenta_agentswarm_en_kimi(self):
-        t = ps.instrucciones(ps.Exigencia(min_subagentes=2), "kimi")
-        self.assertIn("al menos 2 subagente(s)", t)
-        self.assertIn("AgentSwarm", t)
-        for cli in ("claude", "opencode", "grok", "muse", "qwen"):
-            c = ps.instrucciones(ps.Exigencia(min_subagentes=2), cli)
-            self.assertIn("al menos 2 subagente(s)", c)
-            self.assertNotIn("AgentSwarm", c, cli)
-        self.assertNotIn("subagente", ps.instrucciones(ps.Exigencia(), "kimi"))
 
 
 class TestConf(unittest.TestCase):
@@ -695,7 +685,7 @@ class TestRegistrosReales(unittest.TestCase):
             self.assertGreaterEqual(len(h.subagentes), 1)
             self.assertEqual(ps.juzga(h, EXIGENCIA), ps.Cumple())
 
-    def test_un_registro_real_sin_subagentes_da_falta(self):
+    def test_un_registro_real_sin_subagentes_no_se_rechaza_por_cantidad(self):
         for cli, mq in self._cada():
             if (cli, mq) in SIN_REGISTRO:
                 continue
@@ -703,8 +693,7 @@ class TestRegistrosReales(unittest.TestCase):
             h = ps.huella(_sin_subagentes(registro, cli), cli)
             self.assertTrue(h.legible, "un lector roto no puede saltarse la prueba")
             v = ps.juzga(h, EXIGENCIA)
-            self.assertIsInstance(v, ps.Falta)
-            self.assertIn("lanzó 0 subagente(s)", v.texto())
+            self.assertEqual(v, ps.Cumple())
 
     def test_un_cli_sin_flag_de_registro_en_su_ruta_no_se_puede_verificar_y_lo_dice(
         self,
@@ -1378,15 +1367,14 @@ class TestJuzgaDeMide(unittest.TestCase):
         self.assertEqual(len(filas), 3)
         self.assertTrue(all("Cumple" in f for f in filas))
 
-    def test_un_cli_de_carril_con_falta_es_problema(self):
+    def test_un_cli_de_carril_sin_subagentes_no_se_rechaza_por_cantidad(self):
         def cambia(mq, corridas):
             if mq == "mini":
                 corridas[0] = _corrida("claude", claude(("Bash", {"command": "ls"})))
             return corridas
 
         _, problemas, _ = self.agrega(self._todas(cambia), list(MAQUINAS))
-        self.assertEqual(len(problemas), 1)
-        self.assertIn("mini/claude: Falta", problemas[0])
+        self.assertEqual(problemas, [])
 
     def test_un_cli_de_carril_no_verificable_es_problema(self):
         def cambia(mq, corridas):

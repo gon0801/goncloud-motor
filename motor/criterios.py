@@ -142,20 +142,22 @@ def _version(block: Block, contenido: str, acepta: str) -> str:
 
 
 def _proteccion(block: Block, texto: str) -> str:
-    if block.pruebas in ("dinero", "datos"):
+    caso = block.pruebas.strip().lower()
+    if caso in ("dinero", "datos"):
         return "datos_dinero"
     bajo = texto.lower()
     if any(p in bajo for p in _SECRETOS):
         return "seguridad"
-    if block.pruebas in _CASOS:
+    if caso in _CASOS:
         return "prueba_exigible"
     return "comportamiento"
 
 
 def _fase(block: Block) -> str:
-    if block.pruebas == "instala":
+    caso = block.pruebas.strip().lower()
+    if caso == "instala":
         return "instalacion"
-    if block.prueba_real and block.pruebas in _CASOS:
+    if block.prueba_real and caso in _CASOS:
         return "prueba_real"
     return "acepta"
 
@@ -163,11 +165,12 @@ def _fase(block: Block) -> str:
 def criterios_de(plan: Plan, block: Block) -> tuple[Criterio, ...]:
     """Un criterio por fila que trae Acepta. El id no se parte despues."""
     out = []
+    marca = block.pruebas.strip().lower()
     for row in block.rows:
         if not row.acepta.strip():
             continue
         texto = f"{row.contenido} {row.acepta}"
-        caso = block.pruebas if block.pruebas in _CASOS else None
+        caso = marca if marca in _CASOS else None
         out.append(
             Criterio(
                 id=f"{plan.id}/{block.id}/{row.id}",

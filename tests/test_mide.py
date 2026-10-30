@@ -197,7 +197,6 @@ class TestMide(unittest.TestCase):
                     ef.prompt_de_encargo("/x/b.md", esperado),
                     "cada máquina, al sustituir sus marcas, reproduce el prompt del motor",
                 )
-                self.assertIn("al menos 2 subagente(s)", x["encargo"])
 
     def test_el_script_no_escribe_ningun_titulo_del_encargo(self):
         for archivo in (MIDE_SH, ARMA_PY):

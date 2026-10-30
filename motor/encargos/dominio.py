@@ -156,6 +156,7 @@ class RefRevision:
     revisor: str
     origen: str
     cubre: tuple[str, ...] = ()
+    lector_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -1801,6 +1802,7 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
         revisor=str(d.get("revisor") or ""),
         origen=origen,
         cubre=tuple(str(x) for x in (d.get("cubre") or ())),
+        lector_version=int(d.get("lector_version") or 0),
     )
     aprobadas = fase.aprobadas
     if veredicto != "no_concluyente" and d.get("aprobadas") is not None:
@@ -2533,7 +2535,8 @@ def prompt_revisor(e: Encargo, alcance: AlcanceRevision) -> str:
             )
         if alcance.conservadas:
             lineas.append(
-                "Rutas aprobadas con el contenido intacto. No las vuelvas a revisar:\n"
+                "Rutas aprobadas con el contenido intacto. Conserva su evidencia y vuelve a ellas "
+                "si un efecto del cambio lo justifica:\n"
                 + "\n".join(alcance.conservadas)
             )
     else:
@@ -2542,10 +2545,10 @@ def prompt_revisor(e: Encargo, alcance: AlcanceRevision) -> str:
             f"sobre la versión {alcance.version}."
         )
     lineas.append(
-        "Solo bloquea por seguridad, datos, comportamiento solicitado roto, una prueba "
-        "exigida en los casos autorizados que falte, o un error operativo demostrable "
-        "en un documento. Todo bloqueante necesita cómo reproducirlo. Lo demás es "
-        "observación y no impide aprobar."
+        "Explica el impacto real y la evidencia de cada hallazgo. Un bloqueante identifica "
+        "un incumplimiento del pedido o un riesgo concreto sin resolver y cómo reproducirlo. "
+        "Elige pruebas y revisiones que aporten evidencia al comportamiento y al riesgo del "
+        "cambio. Conserva la evidencia válida y amplía la revisión cuando exista un motivo."
     )
     return "\n\n".join(lineas)
 

@@ -40,12 +40,14 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    hay modelo distinto disponible (por ejemplo, una sola cadena codex en PC),
    el encargo espera visible, jamás se auto-revisa.
 6. El revisor entrega juntos sus hallazgos. **Bloquear es un tipo, no texto**:
-   un hallazgo solo nace bloqueante con criterio de la lista vigente
-   (seguridad, datos, comportamiento solicitado roto, una prueba exigida en
-   los cuatro casos autorizados, error operativo demostrable en un documento)
-   **y** cómo reproducirlo. Sin eso, el código lo degrada a observación con su
-   texto intacto. Aprobar con observaciones no abre otra vuelta. No hay un
-   tercer agente que juzgue al revisor.
+   cada hallazgo explica su impacto real y la evidencia que lo sostiene.
+   Un bloqueante identifica un incumplimiento del pedido o un riesgo concreto
+   sin resolver y cómo reproducirlo. Se clasifica como seguridad, datos,
+   comportamiento, comprobación necesaria o problema operativo. Las pruebas
+   y revisiones se eligen por la evidencia útil que aportan al comportamiento
+   y al riesgo del cambio. El código valida el formato del juicio. Una revisión
+   adicional se justifica por lo que permite comprobar, sin repetir evidencia
+   válida por rutina.
 7. Con el nivel de entrega autorizado, el cierre decide (§ Niveles).
 
 ## Correcciones

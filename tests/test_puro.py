@@ -96,7 +96,6 @@ class PlanTest(unittest.TestCase):
             "sin repo",
             "ninguna fila trae 'Acepta'",
             "prueba-real",
-            "se exigen 2",
         ):
             self.assertIn(x, t)
 

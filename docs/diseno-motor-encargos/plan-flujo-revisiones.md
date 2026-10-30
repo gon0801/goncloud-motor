@@ -23,21 +23,21 @@ La revisión independiente debe mantenerse. Hay que corregir qué revisa cada vu
 7. Se corrigen los bloqueantes de DeepSeek. Sus revisiones posteriores comprueban el cambio desde su revisión anterior y los hallazgos pendientes.
 8. Con las revisiones resueltas, el trabajo continúa hasta la entrega que autorice el encargo. Abrir un PR, integrarlo y desplegarlo son resultados distintos; el motor informa cuál realizó.
 
-La validación del formato y de los recibos corresponde al código del motor. No añade un tercer agente que juzgue al revisor.
+La validación del formato y de los recibos corresponde al código del motor. Las revisiones adicionales se eligen cuando aportan evidencia útil al pedido o a un riesgo concreto.
 
 ## Qué puede bloquear
 
-Se aplican los criterios vigentes de David: seguridad, datos, comportamiento solicitado roto o una prueba exigida en los casos autorizados que falte. El revisor identifica el problema y cómo reproducirlo.
+El revisor explica el impacto real y la evidencia de cada hallazgo. Para bloquear, identifica qué parte del pedido no se cumple o qué riesgo concreto queda sin resolver y cómo reproducirlo.
 
-Las observaciones de estilo o redacción no impiden aprobar. Un documento sí puede bloquear si incumple lo solicitado o contiene un error operativo demostrable. La aprobación no exige eliminar todas las observaciones.
+Una preferencia sin impacto demostrado no impide aprobar. Un documento puede bloquear si incumple lo solicitado o contiene un error operativo demostrable. La aprobación no exige eliminar todas las observaciones.
 
-Las pruebas nuevas siguen limitadas a dinero, escrituras de producción, instalar/borrar/deshacer y regresiones de fallas reales. Comprobar que un cambio funciona no implica crear una prueba permanente. Para cambiar una cifra puede bastar leer el valor final.
+Las pruebas, verificaciones y revisiones se eligen por la evidencia útil que aportan al comportamiento solicitado y al riesgo del cambio. Una prueba permanente puede conservar esa evidencia para cambios futuros; una observación directa puede bastar cuando demuestra el resultado. La elección explica qué se comprueba y qué incertidumbre resuelve.
 
 ## Cómo se revisan las correcciones
 
 El motor conserva la versión revisada, los hallazgos y el resultado de la revisión. La siguiente vuelta recibe esa referencia y los cambios posteriores.
 
-El revisor comprueba los bloqueantes pendientes y las partes afectadas por las correcciones. Lo aprobado que no cambió conserva su aprobación. No vuelve a revisar todo el proyecto ni abre otra ronda por nuevas preferencias de estilo.
+El revisor comprueba los bloqueantes pendientes y las partes afectadas por las correcciones. Lo aprobado que no cambió conserva su aprobación. Amplía o repite la revisión cuando un cambio, un riesgo o información nueva lo justifiquen.
 
 Una corrección puede afectar una parte que no se editó directamente. El revisor amplía su revisión cuando identifica esa relación y explica el motivo. También puede señalar un problema grave nuevo respaldado por evidencia concreta.
 
@@ -74,7 +74,7 @@ En una corrección, muestra qué hallazgo se resolvió y qué cambió. La siguie
 
 Comprueba también los problemas ya observados: un fallo del instrumento no rehace la implementación y los archivos internos no contradicen una entrega que pide un solo archivo. Una observación no bloqueante no abre otra vuelta.
 
-Usa las comprobaciones y la evidencia necesarias para esos comportamientos. No agregues una batería universal ni repitas resultados válidos por cambios ajenos a lo comprobado.
+Elige el alcance de las comprobaciones por esos comportamientos y sus riesgos. Conserva los resultados válidos y repite una comprobación cuando un cambio o información nueva puedan afectar su conclusión.
 
 ## Entrega
 
