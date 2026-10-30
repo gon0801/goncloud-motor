@@ -4,9 +4,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from motor.encargos import ciclo, dominio
+from motor.encargos.comprobacion import hallazgos_deepseek, version_producto
 from motor.encargos.registro import Registro
+from motor.github import GhGitHub, PrView, veredicto
 from motor.integraciones import directores
 
 
@@ -14,6 +18,87 @@ HORA = "2026-10-29T10:00:00Z"
 
 
 class RecuperacionFase5(unittest.TestCase):
+    def test_deepseek_schema3_concilia_F1_resuelto_ya_persistido(self):
+        sha = "aa335ac97b3a85a6fdade67fbcc5ada58c869d2f"
+        contenido = {
+            "schema": 3,
+            "findings": [
+                {"id": "F1", "title": "La evidencia y el script referenciados no existen",
+                 "severity": "High", "status": {"kind": "resolved", "at_sha": "7d9787d790096b3a88d85c87a6c07d04c5fb0d39"},
+                 "primary_anchor": {"kind": "legacy", "path": "reporte.md", "line": 40}},
+                {"id": "F2", "title": "Siguiente paso inconsistente con la tabla consultada",
+                 "severity": "Low", "status": {"kind": "open"},
+                 "primary_anchor": {"kind": "legacy", "path": "reporte.md", "line": 46}},
+            ],
+        }
+        body = (
+            "<!-- ai-review:sticky -->\n"
+            f"<!-- ai-review:sha={sha} -->\n"
+            f"<!-- ai-review:completion={sha}:complete -->\n"
+            f"<!-- ai-review:findings={json.dumps(contenido)} -->"
+        )
+        filas = [{"body": body, "user": {"login": "github-actions[bot]"}}]
+        gh = GhGitHub()
+        gh._gh = lambda *args: json.dumps(filas) if "/issues/" in args[1] else "[]"
+        comentarios = gh.comentarios_deepseek("gon0801/motor-sandbox", 28, sha)
+        hallazgos = hallazgos_deepseek(comentarios, sha)
+        self.assertEqual([h.id for h in hallazgos], ["F2"])
+        self.assertEqual(hallazgos[0].ancla, "reporte.md:46")
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            try:
+                ident = ciclo.recibir(
+                    reg, "publicar reporte", "deepseek-resuelto", HORA,
+                    entrega_nivel="pr", repo="gon0801/motor-sandbox", base_rama="main",
+                )["encargo"]
+                espacio = ciclo._espacio(reg.base, ident)
+                (espacio / "reporte.md").write_text("producto aprobado\n")
+                producto = version_producto(espacio)
+                eventos = [
+                    ("producto_listo", {"version": producto.firma, "manifiesto": producto.manifiesto}),
+                    ("revision", {"version": producto.firma, "veredicto": "aprobado",
+                                  "evidencia": "producto comprobado", "origen": "independiente"}),
+                    ("entrega_externa", {"paso": "commit", "sha": sha}),
+                    ("entrega_externa", {"paso": "pr_listo", "numero": 28, "sha": sha}),
+                    ("revision", {"revision_id": "rev_ds_" + sha[:12], "version": producto.firma,
+                                  "veredicto": "cambios", "origen": "deepseek", "hallazgos": [
+                                      {"id": "F1", "titulo": contenido["findings"][0]["title"],
+                                       "gravedad": "bloqueante", "criterio": "comportamiento",
+                                       "estado": "abierto", "origen": "deepseek"}]}),
+                    ("entrega_externa", {"paso": "deepseek_leido", "sha": sha}),
+                ]
+                for n, (kind, data) in enumerate(eventos):
+                    clave = f"anterior:{n}"
+                    if kind == "revision" and data.get("origen") == "deepseek":
+                        clave = f"revision-ds:{ident}:{reg.fold(ident).fase_activa}:{sha}"
+                    elif kind == "entrega_externa" and data.get("paso") == "deepseek_leido":
+                        clave = f"entrega:{ident}:{reg.fold(ident).fase_activa}:deepseek_leido:{sha}"
+                    reg.anotar(ident, {"kind": kind, "data": {**data, "hora": HORA}}, clave)
+                self.assertEqual([h.id for h in dominio.bloqueantes_abiertos(reg.fold(ident))], ["F1"])
+                ciclo.ordenar(reg, ident, "parar", "parada-deepseek", HORA)
+                reg.anotar(ident, {"kind": "arbol", "data": {
+                    "observacion": "ausente", "hora": HORA,
+                }}, "arbol-deepseek")
+                continuada = ciclo.ordenar(reg, ident, "continuar", "continuar-deepseek", HORA)
+                self.assertNotIn("rechazada", continuada)
+                gh.ver = lambda repo, numero: PrView(numero, reg.fold(ident).entrega.rama, "main", False, sha, "abierto")
+                gh.checks = lambda *args, **kw: veredicto(sha, (), [])
+                with patch.object(ciclo, "_asegurar_repo", return_value=""), \
+                     patch.object(ciclo, "_commit_push", return_value=(sha, "")), \
+                     patch.object(ciclo, "_checks_extra", return_value=()), \
+                     patch.object(ciclo, "_sonda_entorno", return_value=SimpleNamespace(ok=True)):
+                    ciclo.barrer(reg, HORA, 0, None, gh=gh)
+                    final = reg.fold(ident)
+                    self.assertEqual(final.estado, "terminado")
+                    self.assertFalse(dominio.bloqueantes_abiertos(final))
+                    self.assertEqual(next(h.estado for h in final.hallazgos if h.id == "F1"), "resuelto")
+                    self.assertEqual(next(h.ancla for h in final.hallazgos if h.id == "F2"), "reporte.md:46")
+                    antes = len(reg.eventos(ident))
+                    ciclo.barrer(reg, HORA, 0, None, gh=gh)
+                    self.assertEqual(len(reg.eventos(ident)), antes)
+            finally:
+                reg.close()
+
     def test_espera_tardia_conserva_parada_y_continuacion_idempotente(self):
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")

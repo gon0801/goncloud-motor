@@ -156,6 +156,7 @@ class RefRevision:
     revisor: str
     origen: str
     cubre: tuple[str, ...] = ()
+    lector_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -1801,6 +1802,7 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
         revisor=str(d.get("revisor") or ""),
         origen=origen,
         cubre=tuple(str(x) for x in (d.get("cubre") or ())),
+        lector_version=int(d.get("lector_version") or 0),
     )
     aprobadas = fase.aprobadas
     if veredicto != "no_concluyente" and d.get("aprobadas") is not None:

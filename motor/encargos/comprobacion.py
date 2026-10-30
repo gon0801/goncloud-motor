@@ -810,6 +810,8 @@ _ESTADOS_CERRADOS_DEEPSEEK = (
     "descartada",
 )
 
+VERSION_LECTOR_DEEPSEEK = 1
+
 
 def _criterio_deepseek(texto: str) -> str:
     bajo = texto.lower()
@@ -838,7 +840,11 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
     for entrada in entradas:
         if not isinstance(entrada, dict):
             continue
-        estado = str(entrada.get("state") or entrada.get("estado") or "open").lower()
+        status = entrada.get("status")
+        estado = str(
+            (status.get("kind") if isinstance(status, dict) else status)
+            or entrada.get("state") or entrada.get("estado") or "open"
+        ).lower()
         if estado in _ESTADOS_CERRADOS_DEEPSEEK:
             continue
         severidad = str(entrada.get("severity") or entrada.get("severidad") or "").lower()
@@ -852,12 +858,19 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
         ).strip()
         if not titulo:
             continue
-        archivo = str(entrada.get("file") or entrada.get("archivo") or "").strip()
+        anchor = entrada.get("primary_anchor")
+        anchor = anchor if isinstance(anchor, dict) else {}
+        archivo = str(anchor.get("path") or entrada.get("file") or entrada.get("archivo") or "").strip()
         if not archivo:
             archivos = entrada.get("files") or entrada.get("archivos") or []
             if isinstance(archivos, (list, tuple)) and archivos:
                 archivo = str(archivos[0] or "").strip()
-        linea = entrada.get("line") or entrada.get("linea") or ""
+        rango = anchor.get("range")
+        linea = (
+            anchor.get("line")
+            or (rango[0] if isinstance(rango, (list, tuple)) and rango else "")
+            or entrada.get("line") or entrada.get("linea") or ""
+        )
         ancla = f"{archivo}:{linea}" if archivo and str(linea) else archivo
         fid = str(entrada.get("id") or "").strip()
         salida.append(
