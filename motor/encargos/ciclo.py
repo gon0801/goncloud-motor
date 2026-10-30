@@ -1956,9 +1956,7 @@ def _incorporar_responsable(
 
 
 def _juicio_repite_inspeccion(enc: Encargo, directorio: Path) -> bool:
-    """El juicio pendiente repite el pedido de la inspección ya ligada.
-
-    Un pedido corregido (otra identidad) es información nueva y se consume
+    """Un pedido corregido (otra identidad) es información nueva y se consume
     aunque la solicitud anterior ya tenga su respuesta entregada.
     """
     fase = enc.fase_actual
@@ -1986,9 +1984,6 @@ def _incorporar_revisor(
     from motor.runwrap import _publica
 
     if inspeccion_bloquea(enc) and _juicio_repite_inspeccion(enc, directorio):
-        # El juicio que queda en el directorio repite el pedido de la
-        # inspección ligada y su respuesta ya se entregó; consumirlo otra
-        # vez no aporta información. Un pedido corregido sí se consume.
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     ref_path = directorio / "revision.json"
@@ -2625,8 +2620,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                         return _intentar_cierre(
                             registro, enc, espacio, directorio, hora
                         )
-                    # desplegado sin diff: la ausencia de diff no abre un PR
-                    # vacío; el nivel se cierra con el efecto exigido.
+                    # desplegado sin diff: no se abre un PR vacío.
                     enc = _paso_despliegue(registro, enc, hora)
                     if nivel_cumplido(enc) and enc.estado != "terminado":
                         return _intentar_cierre(
@@ -2900,11 +2894,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
 
 
 def _paso_despliegue(registro: Registro, enc: Encargo, hora: str) -> Encargo:
-    """Nivel desplegado: concilia el efecto aplicado con recibo durable.
-
-    Sin efecto declarado el encargo queda pendiente visible; nunca se
-    reabre un PR vacío para acreditar el despliegue.
-    """
+    """Nunca reabre un PR vacío: el despliegue se acredita con el recibo del efecto."""
     if enc.entrega.nivel != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
     efecto = next(
