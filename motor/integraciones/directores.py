@@ -660,6 +660,7 @@ def _ejecutar_transporte(
     env = os.environ.copy()
     env.update(
         {
+            "PYTHONIOENCODING": "utf-8",
             "MOTOR_AVISO_ID": str(aviso.get("id") or ""),
             "MOTOR_AVISO_ENCARGO": str(aviso.get("encargo") or ""),
             "MOTOR_AVISO_CANAL": str(aviso.get("canal") or ""),
@@ -673,18 +674,18 @@ def _ejecutar_transporte(
     try:
         hecho = subprocess.run(
             argv,
-            input=cuerpo,
+            input=cuerpo.encode("utf-8"),
             capture_output=True,
-            text=True,
             timeout=30,
             env=env,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        texto = hecho.stdout.decode("utf-8") if hecho.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as exc:
         return "", str(exc)
     if hecho.returncode != 0:
-        detalle = (hecho.stderr or hecho.stdout or "")[-200:]
+        detalle = (hecho.stderr or hecho.stdout).decode("utf-8", errors="replace")[-200:]
         return "", f"el transporte salio {hecho.returncode}: {detalle}"
-    recibo = _recibo_transporte(hecho.stdout or "")
+    recibo = _recibo_transporte(texto)
     if not recibo:
         return "", "el transporte no devolvio recibo"
     return recibo, ""
@@ -696,6 +697,7 @@ def _conciliar_transporte(
     env = os.environ.copy()
     env.update(
         {
+            "PYTHONIOENCODING": "utf-8",
             "MOTOR_AVISO_ID": str(aviso.get("id") or ""),
             "MOTOR_AVISO_ENCARGO": str(aviso.get("encargo") or ""),
             "MOTOR_AVISO_CANAL": str(aviso.get("canal") or ""),
@@ -706,13 +708,14 @@ def _conciliar_transporte(
     argv = [str(x) for x in comando] + [str(aviso.get("id") or "")]
     try:
         hecho = subprocess.run(
-            argv, input=cuerpo, capture_output=True, text=True, timeout=30, env=env
+            argv, input=cuerpo.encode("utf-8"), capture_output=True, timeout=30, env=env,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        texto = hecho.stdout.decode("utf-8") if hecho.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as exc:
         return "incierto", str(exc)
     if hecho.returncode != 0:
         return "incierto", f"la conciliacion salio {hecho.returncode}"
-    texto = (hecho.stdout or "").strip()
+    texto = texto.strip()
     if not texto:
         return "incierto", "la conciliacion no devolvio recibo"
     try:
