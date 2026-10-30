@@ -1171,6 +1171,8 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             hora=hora or e.hora,
         )
     if kind == "espera":
+        if e.estado in _CERRADOS:
+            return e
         if not d.get("motivo") or not d.get("reanuda_en"):
             raise TransicionIlegal("la espera necesita motivo y reanudación")
         return replace(
