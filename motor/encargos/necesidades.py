@@ -1159,6 +1159,86 @@ def atender(
     return resumen
 
 
+def continuar_respuestas(
+    registro: Registro,
+    enc,
+    espacio: Path,
+    directorio: Path,
+    hora: str,
+) -> dict:
+    """Sigue el trabajo que esperaba una respuesta. Una ya resuelta no se repite."""
+    resumen = {"continuadas": 0, "denegadas": 0, "omitidas": 0}
+    try:
+        recursos = capacidades.cargar(registro.base)
+    except capacidades.ConfigInvalida:
+        recursos = {}
+    actual = registro.fold(enc.id) or enc
+    for sol in tuple(actual.solicitudes):
+        if sol.estado != "respuesta":
+            resumen["omitidas"] += 1
+            continue
+        if not _afirmativa(sol.respuesta):
+            _anotar_resolucion(
+                registro,
+                actual,
+                sol,
+                "denegada",
+                detalle=f"el propietario respondió: {sol.respuesta}",
+                hora=hora,
+            )
+            nuevo = _buscar(registro.fold(enc.id) or actual, sol.id) or sol
+            _escribir_respuesta(
+                espacio,
+                nuevo,
+                _respuesta(nuevo, "denegada", motivo="la autorización no fue concedida", respuesta=sol.respuesta),
+            )
+            resumen["denegadas"] += 1
+            actual = registro.fold(enc.id) or actual
+            continue
+        previo = _resultado_huerfano(espacio, sol, directorio)
+        if previo is not None and str(previo.get("estado") or "") not in ("", "pregunta"):
+            resultado = previo
+        else:
+            resultado = _ejecutar(
+                registro, actual, sol, recursos, espacio, directorio, True, hora
+            )
+        estado = str(resultado.get("estado") or "error")
+        if estado in ("pregunta", "pendiente"):
+            resumen["omitidas"] += 1
+            continue
+        final = "resuelta" if estado == "ok" else estado
+        if final not in ("resuelta", "detenida", "error", "denegada"):
+            final = "error"
+        evidencia = json.dumps(
+            resultado.get("evidencia") or {}, ensure_ascii=False, sort_keys=True
+        )
+        _anotar_resolucion(
+            registro,
+            actual,
+            sol,
+            final if final in ("resuelta", "detenida") else "error",
+            evidencia=evidencia,
+            detalle=str(resultado.get("motivo") or ""),
+            hora=hora,
+        )
+        nuevo = _buscar(registro.fold(enc.id) or actual, sol.id) or sol
+        _escribir_respuesta(
+            espacio,
+            nuevo,
+            _respuesta(
+                nuevo,
+                final,
+                datos=resultado.get("datos"),
+                motivo=str(resultado.get("motivo") or ""),
+                respuesta=sol.respuesta,
+                espacio=espacio,
+            ),
+        )
+        resumen["continuadas"] += 1
+        actual = registro.fold(enc.id) or actual
+    return resumen
+
+
 def responder(
     registro: Registro,
     encargo_id: str,

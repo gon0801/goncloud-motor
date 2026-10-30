@@ -80,6 +80,20 @@ def ahora_iso(epoch: float | None = None) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def resolver_entrega(explicita: str | None, repo: str) -> str:
+    """Un repo sin nivel explícito es el flujo de código con GitHub: PR, no cierre local.
+
+    `terminado` solo cierra ese recorrido si el llamador lo pidió. Sin repo, el
+    silencio sigue siendo entrega local.
+    """
+    nivel = str(explicita or "").strip()
+    if nivel:
+        return nivel
+    if str(repo or "").strip():
+        return "pr"
+    return "terminado"
+
+
 def recibir(
     registro: Registro,
     texto: str,

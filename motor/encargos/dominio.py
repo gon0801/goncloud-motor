@@ -2042,6 +2042,71 @@ def _efecto_evento(e: Encargo, d: dict, hora: str) -> Encargo:
     )
 
 
+def bitacora_legible(e: Encargo) -> list[dict]:
+    """Vista del registro de decisiones. No es otra fuente ni otro juez."""
+    fases = {f.id: f for f in e.fases}
+    filas = []
+    for decision in e.decisiones:
+        resultado = ""
+        for fase_id in decision.fases:
+            fase = fases.get(fase_id)
+            if fase is not None and fase.resultado:
+                resultado = fase.resultado
+                break
+        if not resultado and e.fase_actual is not None:
+            resultado = e.fase_actual.resultado
+        filas.append(
+            {
+                "decision": decision.eleccion,
+                "motivo": decision.motivo,
+                "evidencia": decision.evidencia,
+                "resultado": resultado or "registrada",
+                "fases": list(decision.fases),
+                "hora": decision.hora,
+            }
+        )
+    return filas
+
+
+def seguimiento_de(e: Encargo) -> dict:
+    fase = e.fase_actual
+    necesidad = next(
+        (
+            s.como_dict()
+            for s in e.solicitudes
+            if s.estado in ("pendiente", "pregunta", "respuesta")
+        ),
+        None,
+    )
+    ref = e.revision_vigente
+    espera = None
+    if e.estado == "esperando_reintento" or e.impedimento:
+        espera = {
+            "causa": e.impedimento_causa or e.motivo,
+            "clase": e.impedimento or "servicio",
+            "reanuda_en": e.reanuda_en,
+            "condicion": e.impedimento_condicion,
+        }
+    return {
+        "fase_actual": fase.id if fase else "",
+        "estado_fase": fase.estado if fase else "",
+        "resultado_alcanzado": (fase.resultado if fase else "") or "",
+        "necesidad_pendiente": necesidad,
+        "decision": e.decisiones[-1].como_dict() if e.decisiones else None,
+        "revision": (
+            {
+                "id": ref.revision_id,
+                "veredicto": ref.veredicto,
+                "version": ref.version,
+            }
+            if ref
+            else None
+        ),
+        "pr": {"numero": e.pr_numero, "sha": e.pr_sha} if e.pr_numero else None,
+        "espera": espera,
+    }
+
+
 def vista(e: Encargo, recibo: str = "") -> dict:
     if e.estado == "esperando_reintento" and (not e.motivo or not e.reanuda_en):
         raise TransicionIlegal("espera incompleta")
@@ -2109,6 +2174,8 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             None,
         ),
         "decisiones": [d.como_dict() for d in e.decisiones],
+        "bitacora": bitacora_legible(e),
+        "seguimiento": seguimiento_de(e),
         "autorizaciones": [
             {
                 "recurso": a[0],
@@ -2262,7 +2329,10 @@ def decision_proceso(
 def _bloques_comunes(e: Encargo) -> list[str]:
     lineas = ["El pedido original no se reescribe.", f"Pedido:\n{e.texto}"]
     if e.restricciones:
-        lineas.append("Restricciones:\n" + "\n".join(e.restricciones))
+        lineas.append(
+            "Prohibiciones expresas del propietario. No las trates como hipótesis del plan:\n"
+            + "\n".join(e.restricciones)
+        )
     if e.ajustes:
         lineas.append(
             "Ajustes incorporados con el trabajo detenido:\n" + "\n".join(e.ajustes)
@@ -2305,7 +2375,13 @@ def prompt_responsable(e: Encargo) -> str:
     lineas = [
         (
             "Eres el responsable de este encargo. Sigue poteto-mode en este espacio. "
-            "Carga la skill empaquetada del runtime y limita las herramientas al espacio concedido."
+            "Carga la skill empaquetada del runtime y limita las herramientas al espacio concedido. "
+            "Sharpen, Architect, Arena y Figure-it-out se usan cuando el trabajo los necesita; "
+            "no son una cadena obligatoria. Una hipótesis del plan no es una prohibición: "
+            "las decisiones técnicas dentro del objetivo y los permisos concedidos las tomas tú "
+            "y las registras con decision.registrar. Solo una prohibición expresa del propietario, "
+            "o una decisión que el pedido reserva al usuario, necesita su respuesta. "
+            "No devuelvas el plan por un detalle técnico ordinario ni por redacción menor."
         )
     ]
     lineas += _bloques_comunes(e)
