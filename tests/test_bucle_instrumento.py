@@ -976,6 +976,42 @@ class EnsayoDeObjetosDeLaJaula(unittest.TestCase):
         compile(self.ensayo.NT, "nt", "exec")
         compile(self.ensayo.CODIGO, "guion", "exec")
 
+    def test_el_espacio_propio_se_completa_a_ruta_nt_absoluta(self):
+        # En la PC, GetAppContainerNamedObjectPath devolvió una ruta relativa y
+        # NtCreateDirectoryObject la rechazó con 0xC000003B.
+        espacio_nt: dict = {}
+        exec(self.ensayo.RUTA_PROPIA, espacio_nt)
+        completa = espacio_nt["ruta_nt_propia"]
+        relativa = "AppContainerNamedObjects\\S-1-15-2-368368348-2193055017"
+        self.assertEqual(completa(relativa, 1), "\\Sessions\\1\\" + relativa)
+        absoluta = "\\Sessions\\1\\" + relativa
+        self.assertEqual(completa(absoluta, 1), absoluta)
+        self.assertEqual(completa("", 1), "")
+
+    def test_el_experimento_imprime_el_stderr_de_msys(self):
+        herramientas = {
+            "MOTOR_SONDA_SHELL": "bash.exe",
+            "MOTOR_SONDA_SH": "sh.exe",
+            "MOTOR_SONDA_GIT": "git.exe",
+        }
+        comando = ComandoAislado(["x"], {}, "appcontainer", {})
+        texto = "bash.exe: *** fatal error - NtCreateDirectoryObject: 0xC0000022"
+        with (
+            mock.patch.object(self.ensayo, "aislar", return_value=comando),
+            mock.patch.object(
+                self.ensayo,
+                "_ejecutar_en_jaula",
+                return_value=(3221225794, "", texto),
+            ),
+            mock.patch("builtins.print") as imprimir,
+        ):
+            fallos = self.ensayo._shell({}, Path("/e"), Path("/r"), herramientas)
+        self.assertEqual(fallos, 3)
+        self.assertTrue(all("0xC0000022" in c.args[0] for c in imprimir.call_args_list))
+
+    def test_el_guion_usa_la_ruta_completa_del_espacio_propio(self):
+        self.assertIn("propio = ruta_nt_propia(ruta.value, sesion)", self.ensayo.CODIGO)
+
     def test_confirma_la_causa_cuando_solo_el_espacio_propio_deja_crear(self):
         notas = self.ensayo.interpretar(self.medida("0xC0000022", "0x00000000"))
         self.assertTrue(notas[0].startswith("Confirmado"))

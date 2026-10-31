@@ -39,6 +39,7 @@ sys.path.insert(1, str(Path(__file__).resolve().parent))
 from ensayo_shell_jaula import PUSH
 
 from motor.encargos.aislamiento import (
+    _ejecutar_en_jaula,
     _herramientas_git,
     aislar,
     lanzar_en_jaula,
@@ -145,8 +146,19 @@ def token_actual():
     return datos
 """
 
+# GetAppContainerNamedObjectPath devuelve `AppContainerNamedObjects\<SID>`, sin el prefijo
+# `\Sessions\<n>\`. NtCreateDirectoryObject sin RootDirectory la rechaza con 0xC000003B (medido en la
+# PC el 30-oct), así que se completa a la ruta NT absoluta.
+RUTA_PROPIA = r"""
+def ruta_nt_propia(ruta, sesion):
+    if not ruta or ruta.startswith("\\"):
+        return ruta
+    return "\\Sessions\\%d\\%s" % (sesion, ruta)
+"""
+
 CODIGO = (
     NT
+    + RUTA_PROPIA
     + r"""
 import json, sys
 
@@ -156,7 +168,7 @@ try:
     ruta = c.create_unicode_buffer(1024)
     largo = w.ULONG()
     if k.GetAppContainerNamedObjectPath(None, None, len(ruta), ruta, c.byref(largo)):
-        propio = ruta.value
+        propio = ruta_nt_propia(ruta.value, sesion)
 except (AttributeError, OSError):
     pass
 marca = "motor-sonda-" + uuid.uuid4().hex[:12]
@@ -310,10 +322,14 @@ def _shell(comando_base: dict, espacio: Path, runtime: Path, herramientas: dict)
         ),
     ):
         comando = aislar(cmd, espacio, runtime, **comando_base)
-        rc, salida = lanzar_en_jaula(comando, cwd, dict(comando.entorno), plazo=60)
+        rc, salida, error = _ejecutar_en_jaula(comando, cwd, dict(comando.entorno), plazo=60)
         bien = rc == 0 and salida.split()[-1:] == ["ok"]
         fallos += not bien
-        print(f"    {caso}: {'ok' if bien else 'FALLA'} rc={rc} salida={' '.join(salida.split())[:300]!r}")
+        # El texto de msys sale por stderr: sin él no se ve en qué objeto se detiene.
+        print(
+            f"    {caso}: {'ok' if bien else 'FALLA'} rc={rc} salida={' '.join(salida.split())[:300]!r}"
+            f" error={' '.join(error.split())[:300]!r}"
+        )
     return fallos
 
 
