@@ -597,7 +597,10 @@ class CerrarTest(unittest.TestCase):
     def test_el_estado_de_la_identidad_ve_lo_que_sigue_en_la_jaula_sin_guardian_ni_bwrap(self):
         t = TablaDeProcesos()
         bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
-        identidad = {"guardian": 0, "bwrap": bwrap, "bwrap_inicio": inicio, "ns_pid": "pid:[7]"}
+        identidad = {
+            "guardian": 0, "bwrap": bwrap, "bwrap_inicio": inicio, "ns_pid": "pid:[7]",
+            "ns_init": init, "ns_init_inicio": t.inicio(init),
+        }
         with contextlib.ExitStack() as pila:
             for parche in t.parchear():
                 pila.enter_context(parche)
@@ -605,6 +608,25 @@ class CerrarTest(unittest.TestCase):
             self.assertTrue(jaula_linux.cerrar_identidad(identidad, plazo=0.5))
             self.assertFalse(jaula_linux.vivo_identidad(identidad))
         self.assertEqual(t.vivos(), [])
+
+    def test_un_numero_de_espacio_reusado_por_otra_jaula_no_se_toca(self):
+        """Muerto el init de la jaula anotada, el kernel ya mató a todo su espacio y el número
+        puede ser de otra jaula."""
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
+        identidad = {
+            "guardian": 0, "bwrap": bwrap, "bwrap_inicio": inicio, "ns_pid": "pid:[7]",
+            "ns_init": init, "ns_init_inicio": t.inicio(init),
+        }
+        t.kill(init, signal.SIGKILL)
+        t.kill(agente, signal.SIGKILL)
+        otra = t.nuevo(1, ns="pid:[7]")
+        with contextlib.ExitStack() as pila:
+            for parche in t.parchear():
+                pila.enter_context(parche)
+            self.assertFalse(jaula_linux.vivo_identidad(identidad))
+            self.assertTrue(jaula_linux.cerrar_identidad(identidad, plazo=0.2))
+        self.assertTrue(t.vivo(otra))
 
     def test_una_identidad_sin_hora_de_arranque_no_mata_al_pid_que_la_reuso(self):
         t = TablaDeProcesos()

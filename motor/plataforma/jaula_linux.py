@@ -173,7 +173,7 @@ def pasar(a, b):
                 if not d:
                     return
                 (b if s is a else a).sendall(d)
-    except OSError:
+    except (OSError, ValueError):
         pass
     finally:
         a.close(); b.close()
@@ -202,7 +202,7 @@ def _retransmitir(a, b) -> None:
                 if not datos:
                     return
                 (b if s is a else a).sendall(datos)
-    except OSError:
+    except (OSError, ValueError):
         pass
     finally:
         a.close()
@@ -245,7 +245,14 @@ def _atender_egreso(cliente, dominios, resolver) -> None:
                     continue
         if destino is None:
             return _responder(cliente, b"502 Bad Gateway")
-        cliente.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        try:
+            cliente.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            resto = cabecera.split(b"\r\n\r\n", 1)[1]
+            if resto:
+                destino.sendall(resto)
+        except OSError:
+            destino.close()
+            raise
         cliente.settimeout(None)
         _retransmitir(cliente, destino)
     except (OSError, ValueError):
@@ -327,14 +334,30 @@ def _en_ns(ns: str) -> list:
     return [int(n) for n in os.listdir("/proc") if n.isdigit() and _ns_pid(int(n)) == ns]
 
 
-def ns_de_la_jaula(bwrap: int) -> str:
-    """El espacio de nombres de pids de la jaula que lanzó `bwrap`: el de sus descendientes que
-    no comparten el nuestro. Vacío mientras no haya nacido o si no se puede leer."""
+def init_de_la_jaula(bwrap: int) -> int:
+    """El primer descendiente de `bwrap` que no comparte nuestro espacio de nombres de pids: el
+    init de la jaula. 0 mientras no haya nacido o si no se puede leer."""
     propio = _ns_pid(os.getpid())
     for p in _descendientes(bwrap):
         ns = _ns_pid(p)
         if ns and ns != propio:
-            return ns
+            return p
+    return 0
+
+
+def ns_de_la_jaula(bwrap: int) -> str:
+    """El espacio de nombres de pids de la jaula que lanzó `bwrap`, o vacío."""
+    init = init_de_la_jaula(bwrap)
+    return _ns_pid(init) if init else ""
+
+
+def _ns_vigente(identidad: dict) -> str:
+    """El `ns_pid` anotado, solo mientras siga vivo el init de esa jaula con su hora de
+    arranque. Los números de espacio de nombres se reusan: muerto el init, el kernel ya mató
+    a todo el espacio y el número puede ser de otra jaula, que no se toca."""
+    ns, init = identidad.get("ns_pid") or "", int(identidad.get("ns_init") or 0)
+    if ns and init and _inicio(init) == identidad.get("ns_init_inicio") and _vivo(init):
+        return ns
     return ""
 
 
@@ -618,9 +641,12 @@ def _guardian(spec: dict) -> int:
     busca_hasta = time.monotonic() + PLAZO_NS_S
     while codigo is None:
         if not ns and time.monotonic() < busca_hasta:
-            ns = ns_de_la_jaula(proceso.pid)
+            init = init_de_la_jaula(proceso.pid)
+            ns = _ns_pid(init) if init else ""
             if ns:
-                identidad["ns_pid"] = ns
+                identidad.update(
+                    ns_pid=ns, ns_init=init, ns_init_inicio=_inicio(init)
+                )
                 if control:
                     _publica(os.path.join(control, ARCHIVO_CONTROL), identidad)
         codigo = proceso.poll()
@@ -648,8 +674,9 @@ def cerrar_identidad(identidad: dict, plazo: float = 5.0) -> bool:
     import time
 
     pid = int(identidad.get("bwrap") or 0) if identidad.get("bwrap_inicio") else 0
-    if pid or identidad.get("ns_pid"):
-        cerrar(pid, inicio=identidad.get("bwrap_inicio"), ns=identidad.get("ns_pid") or "")
+    ns = _ns_vigente(identidad)
+    if pid or ns:
+        cerrar(pid, inicio=identidad.get("bwrap_inicio"), ns=ns)
     guardian = int(identidad.get("guardian") or 0)
     if guardian and _inicio(guardian) == identidad.get("guardian_inicio"):
         try:
@@ -667,7 +694,7 @@ def cerrar_identidad(identidad: dict, plazo: float = 5.0) -> bool:
 def vivo_identidad(identidad: dict) -> bool:
     """Vivo es el guardián, el bwrap o cualquier proceso que siga en el espacio de nombres de
     la jaula: matar a los dos primeros no cierra lo que ya quedó reparentado."""
-    if any(_vivo(p) for p in _en_ns(identidad.get("ns_pid") or "")):
+    if any(_vivo(p) for p in _en_ns(_ns_vigente(identidad))):
         return True
     for clave in ("guardian", "bwrap"):
         pid = int(identidad.get(clave) or 0)
