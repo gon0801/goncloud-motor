@@ -7,11 +7,13 @@ rutas de Linux. Cada frontera traduce con estas funciones.
 
 - `a_wsl` / `a_windows` traducen una ruta completa;
 - `argv_a_wsl` / `argv_a_windows` traducen los elementos de un argv, incluidos `--opcion=ruta`;
-- `texto_a_wsl` / `texto_a_windows` traducen las rutas sueltas dentro de un texto PLANO (un prompt,
+- `texto_a_wsl` / `texto_a_windows` traducen las rutas sueltas dentro de un texto (un prompt,
   una nota). Una ruta con espacios dentro de un texto se corta en el primer espacio: solo se puede
-  traducir entera cuando es un valor aparte (un elemento de argv, un campo). No sirven para JSON
-  crudo: en `"C:\\\\x\\\\dise\\u00f1o.md"` la barra de un escape se toma por separador de ruta y se
-  pierde el carácter escapado (`\\n`, `\\t`, `\\u00f1`);
+  traducir entera cuando es un valor aparte (un elemento de argv, un campo).
+  `texto_a_wsl` también sirve para un texto que lleva JSON escrito con `json.dumps` (el prompt de
+  un revisor lleva las observaciones así): reconoce la ruta con barras dobles y se detiene en el
+  escape que le sigue (`\\n`, `\\t`, `\\"`, `\\u00f1`), así que el JSON sigue siendo el mismo JSON.
+  `texto_a_windows` es solo para texto plano: lo que emite lleva barras simples;
 - `valores_a_wsl` / `valores_a_windows` traducen cada cadena de un documento JSON ya leído, y
   `json_a_wsl` / `json_a_windows` hacen lo mismo con el texto JSON: lo leen, traducen los valores
   y lo vuelven a escribir. Es lo que se usa con un `.interno/*.json`.
@@ -29,8 +31,13 @@ MONTAJE = "/mnt"
 _UNC_WSL = ("wsl.localhost", "wsl$")
 _OPCION = re.compile(r"^(-{0,2}[A-Za-z_][\w.-]*)=(.+)$", re.DOTALL)
 _SEPARADORES = re.compile(r"[\\/]+")
+# Una ruta de Windows dentro de un texto. Tiene dos formas, que se distinguen por el primer
+# separador: `C:\\Users\\x` (barras dobles, como sale de un json.dumps) cuyas partes no contienen
+# barras, de modo que el escape que sigue (`\n`, `\t`, `\"`, `\u00f1`) la termina; y
+# `C:\Users\x` o `C:/Users/x`. Una ruta puede empezar justo después de un `\n`, `\t`... escapado.
 _UNIDAD_EN_TEXTO = re.compile(
-    r"(?<![\w.:/\\-])(?:\\\\\?\\)?([A-Za-z]):(?=[\\/])([^\s\"'<>|*?`]*)"
+    r"(?:(?<![\w.:/\\-])|(?<=\\[nrtbf]))(?:\\\\\?\\)?[A-Za-z]:"
+    r"(?:(?:\\\\[^\s\"'<>|*?`\\/]*)+|(?=[\\/])[^\s\"'<>|*?`]*)"
 )
 _COLA = ".,;:)]}!"
 

@@ -372,6 +372,30 @@ def _autenticacion_expirada(spec: dict, fallo: str) -> bool:
     )
 
 
+def crear_agente(spec: dict, d: Path, opciones: dict):
+    """Crea el proceso del agente según el aislamiento que describe `spec`."""
+    from motor.plataforma import jaula_wsl
+
+    if spec["aislamiento"] == jaula_wsl.MECANISMO:
+        # El Job de Windows contiene a wsl.exe; lo de dentro de la distro lo cierra el
+        # guardián, y `sesion.cerrar` lo mata además de forma explícita.
+        argv = jaula_wsl.argv_guardian(
+            spec["jaula"], spec["cmd"], spec["env"], control=d, cwd=Path(spec["cwd"])
+        )
+        return plataforma.crear_proceso(
+            argv,
+            plataforma.Propiedad.COMANDO_CONTENIDO,
+            **{**opciones, "env": jaula_wsl.entorno_windows()},
+        )
+    if os.name == "nt":
+        from motor.plataforma.jaula_windows import crear
+
+        return crear(spec["cmd"], spec["jaula"], control=d, **opciones)
+    # Hereda el grupo ya identificado del wrapper. No hay una ventana de hijo huérfano.
+    p = subprocess.Popen(spec["cmd"], start_new_session=False, **opciones)
+    return plataforma.ProcesoCreado(p, "grupo")
+
+
 def ejecutar(spec_path: Path) -> int:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     d = spec_path.parent
@@ -453,15 +477,8 @@ def ejecutar(spec_path: Path) -> int:
                 "encoding": "utf-8",
                 "errors": "replace",
             }
-            if os.name == "nt":
-                from motor.plataforma.jaula_windows import crear
-
-                creado = crear(spec["cmd"], spec["jaula"], control=d, **opciones)
-                p = creado.proceso
-            else:
-                # Hereda el grupo ya identificado del wrapper. No hay una ventana de hijo huérfano.
-                p = subprocess.Popen(spec["cmd"], start_new_session=False, **opciones)
-                creado = plataforma.ProcesoCreado(p, "grupo")
+            creado = crear_agente(spec, d, opciones)
+            p = creado.proceso
             _publica(d / "agent.inicio", plataforma.hora_inicio(p.pid))
             _publica(d / "agent.pid", str(p.pid))
             if creado.job:

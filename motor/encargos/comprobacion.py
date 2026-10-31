@@ -103,7 +103,23 @@ def observar_comprobaciones(
         }
     if comandos is None:
         return None
-    return _ejecutar_declaradas(comandos, espacio, directorio, contenedor)
+    return _ejecutar_declaradas(
+        _argv_del_intento(comandos, directorio), espacio, directorio, contenedor
+    )
+
+
+def _argv_del_intento(comandos: list[dict], directorio: Path) -> list[dict]:
+    """Un agente que corrió en WSL declara sus rutas como `/mnt/c/...`; el comprobador las
+    ejecuta en el host, donde esa ruta no existe. Se traducen al leerlas, sin tocar el archivo
+    del agente. Lo demás que deja en `.interno/` (el cuerpo de un pedido de efecto, el texto
+    de las fases) es texto autorizado que el motor no interpreta como ruta, y no se reescribe."""
+    from .sesion import _en_distro
+
+    if not _en_distro(directorio):
+        return comandos
+    from motor.plataforma.rutas_wsl import argv_a_windows
+
+    return [{**c, "argv": argv_a_windows(c["argv"])} for c in comandos]
 
 
 def observar_procedimiento(espacio: Path, directorio: Path, contenedor: Path) -> dict:
