@@ -337,7 +337,9 @@ class JaulaRealTest(unittest.TestCase):
         cerrada = self.correr(script, red=RED_NINGUNA)
         self.assertNotEqual(cerrada.returncode, 0)
 
-    def test_matar_a_bwrap_no_deja_nada_vivo_dentro(self):
+    def test_cerrar_la_jaula_no_deja_nada_vivo_dentro(self):
+        """El SIGKILL al bwrap exterior no basta: en el bubblewrap 0.9 de Ubuntu 24.04 (CI)
+        quedaban el init, bash y los dos sleep. `cerrar` mata primero lo de dentro."""
         marca = f"31{os.getpid()}.5"
         jaula = self.jaula()
         p = subprocess.Popen(
@@ -367,7 +369,7 @@ class JaulaRealTest(unittest.TestCase):
             time.sleep(0.05)
         self.addCleanup(lambda: [os.kill(x, signal.SIGKILL) for x in vivos()])
         self.assertGreaterEqual(len(vivos()), 2)
-        os.kill(p.pid, signal.SIGKILL)
+        self.assertTrue(jaula_linux.cerrar(p.pid))
         p.wait()
         fin = time.time() + 10
         while vivos() and time.time() < fin:

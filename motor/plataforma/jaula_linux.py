@@ -131,6 +131,68 @@ def entorno_jaula(jaula: Jaula, extra: dict | None = None) -> dict:
     return entorno
 
 
+def _descendientes(raiz: int) -> list:
+    """Pids bajo `raiz`, vistos desde el anfitrión, por `/proc/<pid>/stat`."""
+    padres = {}
+    for nombre in os.listdir("/proc"):
+        if not nombre.isdigit():
+            continue
+        try:
+            with open(f"/proc/{nombre}/stat", "rb") as f:
+                resto = f.read().rsplit(b")", 1)[1].split()
+            padres[int(nombre)] = int(resto[1])
+        except (OSError, IndexError, ValueError):
+            continue
+    vistos, frontera = [], [raiz]
+    while frontera:
+        hijos = [p for p, padre in padres.items() if padre in frontera and p not in vistos]
+        vistos += hijos
+        frontera = hijos
+    return vistos
+
+
+def _vivo(pid: int) -> bool:
+    """Un zombi ya murió: solo espera que su padre lo recoja."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            return f.read().rsplit(b")", 1)[1].split()[0] != b"Z"
+    except (OSError, IndexError):
+        return False
+
+
+def cerrar(pid: int, plazo: float = 5.0) -> bool:
+    """Mata la jaula que lanzó el bwrap `pid` y espera a que no quede nada. True si no queda.
+
+    No basta con matar al bwrap exterior: con el bubblewrap 0.9 de Ubuntu 24.04 la jaula
+    sigue viva tras su SIGKILL (`--die-with-parent` no es una garantía; CI lo midió). El
+    init del espacio de pids es hijo del bwrap exterior y con su muerte cae todo lo de
+    dentro, así que se mata primero a los descendientes y al final al exterior."""
+    import signal
+    import time
+
+    fin = time.monotonic() + plazo
+    while True:
+        for hijo in _descendientes(pid):
+            try:
+                os.kill(hijo, signal.SIGKILL)
+            except OSError:
+                pass
+        if _vivo(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        if not _descendientes(pid) and not _vivo(pid):
+            return True
+        if time.monotonic() >= fin:
+            return False
+        time.sleep(0.02)
+
+
 def disponible(bwrap: str = BWRAP) -> str:
     """Vacío si bubblewrap puede crear una jaula aquí; si no, la causa. Un kernel sin
     espacios de nombres de usuario, o una política que los veda, falla en esta prueba y
