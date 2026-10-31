@@ -1240,6 +1240,21 @@ def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
     )
 
 
+def _bloqueo_externo_abierto(enc: Encargo) -> str:
+    """Bloqueantes de DeepSeek y checks requeridos en rojo que siguen abiertos,
+    con el texto con que `_paso_entrega` los reporta. Vacio si no hay ninguno."""
+    partes = []
+    abiertos = bloqueantes_abiertos(enc, "deepseek")
+    if abiertos:
+        partes.append("; ".join(f"{h.id} {h.titulo}" for h in abiertos) + " (DeepSeek)")
+    fase = enc.fase_actual
+    if fase is not None and fase.fallas_checks:
+        partes.append(
+            "checks requeridos en rojo: " + ", ".join(sorted(fase.fallas_checks))
+        )
+    return "; ".join(partes)
+
+
 def _deepseek_por_releer(enc: Encargo) -> bool:
     return bool(
         enc.deepseek_vigente is not None
@@ -1950,6 +1965,7 @@ def _incorporar_responsable(
         declaradas = None
         error_declaradas = str(exc)
     version = version_producto(espacio)
+    commit_entregado = _commit_entregado(enc, version, espacio)
     registro.anotar(
         enc.id,
         {
@@ -1957,6 +1973,7 @@ def _incorporar_responsable(
             "data": {
                 "version": version.firma,
                 "manifiesto": [list(x) for x in version.manifiesto],
+                "sha_git": commit_entregado,
                 "declara_comprobaciones": declaradas is not None,
                 "fase": enc.fase_activa,
                 "intento": enc.intento,
@@ -2048,6 +2065,17 @@ def _incorporar_responsable(
             f"observacion:{enc.id}:{version.firma}",
         )
         enc = registro.fold(enc.id)
+    if commit_entregado and not _deepseek_por_releer(enc):
+        abierto = _bloqueo_externo_abierto(enc)
+        if abierto:
+            _sin_avance(
+                registro, enc, abierto,
+                "se devolvio el trabajo y el implementador entrego la misma "
+                f"version, sin cambios en el arbol del commit {commit_entregado[:12]}",
+                hora, f"misma-version-{commit_entregado[:12]}",
+            )
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
     if _correccion_deepseek_conserva_aprobadas(enc):
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -2698,15 +2726,32 @@ def _asegurar_repo(
     return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
 
 
+_FUERA_DEL_PRODUCTO = (
+    ":(exclude).interno", ":(exclude)**/.interno",
+    ":(exclude)**/__pycache__", ":(exclude)**/.runtime",
+)
+
+
+def _commit_entregado(enc: Encargo, version, espacio: Path) -> str:
+    """El commit ya entregado cuando el producto vuelve con la misma firma y el
+    arbol de trabajo es exactamente ese commit; vacio en cualquier otro caso."""
+    previo = enc.producto
+    if previo is None or not previo.sha_git or previo.firma != version.firma:
+        return ""
+    cabeza = _git(espacio, "rev-parse", "--verify", "--quiet", "HEAD")
+    if cabeza.returncode != 0 or cabeza.stdout.strip() != previo.sha_git:
+        return ""
+    cambios = _git(espacio, "status", "--porcelain", "--", ".", *_FUERA_DEL_PRODUCTO)
+    if cambios.returncode != 0 or cambios.stdout.strip():
+        return ""
+    return previo.sha_git
+
+
 def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
     """Commit del producto (sin .interno) y push. Devuelve (sha, causa)."""
     if _git(espacio, "ls-files", "--", ".interno").stdout.strip():
         _git(espacio, "rm", "-r", "--cached", "--quiet", ".interno")
-    r = _git(
-        espacio, "add", "-A", "--", ".",
-        ":(exclude).interno", ":(exclude)**/.interno",
-        ":(exclude)**/__pycache__", ":(exclude)**/.runtime",
-    )
+    r = _git(espacio, "add", "-A", "--", ".", *_FUERA_DEL_PRODUCTO)
     if r.returncode != 0:
         return "", f"git add fallo: {r.stderr.strip()[-300:]}"
     pendientes = _git(espacio, "diff", "--cached", "--quiet")
