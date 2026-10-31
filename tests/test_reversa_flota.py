@@ -10,6 +10,8 @@ import time
 import unittest
 from pathlib import Path
 
+from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
+
 from motor.flota.control import (
     anotar_trabajo,
     aplicar,
@@ -208,6 +210,7 @@ class ReversaFlota(unittest.TestCase):
             if proc.exists():
                 cerrar(intento, json.loads(proc.read_text(encoding="utf-8")))
 
+    @unittest.skipUnless(HAY_AISLAMIENTO, SIN_AISLAMIENTO)
     def test_arranque_inyectado_en_el_enlace_conserva_su_generacion(self) -> None:
         from motor.encargos.ciclo import _lanzar_uno
         from motor.flota import control
@@ -242,6 +245,7 @@ class ReversaFlota(unittest.TestCase):
             self._cerrar_intento(base, eid)
             reg.close()
 
+    @unittest.skipUnless(HAY_AISLAMIENTO, SIN_AISLAMIENTO)
     def test_pausa_tras_asignar_registra_la_generacion_vigente(self) -> None:
         from motor.encargos.ciclo import _lanzar_uno
         from motor.flota import control
@@ -304,6 +308,7 @@ class ReversaFlota(unittest.TestCase):
             self._cerrar_intento(base, eid)
             reg.close()
 
+    @unittest.skipUnless(HAY_AISLAMIENTO, SIN_AISLAMIENTO)
     def test_recuperar_y_revertir_respetan_un_trabajador_real(self) -> None:
         from motor.encargos.ciclo import _lanzar_uno
         from motor.flota.control import recuperar, revertir
