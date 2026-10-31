@@ -687,6 +687,37 @@ class CerrarTest(unittest.TestCase):
             self.assertFalse(jaula_linux.vivo_identidad(identidad))
         self.assertEqual(t.vivos(), [])
 
+    def test_el_guardian_no_cierra_con_un_espacio_cuyo_init_ya_murio(self):
+        """Un comando que termina solo deja el espacio sin init: el kernel lo cerró y su
+        número puede ser ya de otra jaula en marcha."""
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
+        identidad = {
+            "bwrap_inicio": inicio, "ns_pid": "pid:[7]",
+            "ns_init": init, "ns_init_inicio": t.inicio(init),
+        }
+        t.kill(init, signal.SIGKILL)
+        t.kill(agente, signal.SIGKILL)
+        ajena = t.nuevo(1, ns="pid:[7]")
+        with contextlib.ExitStack() as pila:
+            for parche in t.parchear():
+                pila.enter_context(parche)
+            self.assertTrue(jaula_linux.cerrar_jaula(bwrap, identidad, plazo=0.2))
+        self.assertTrue(t.vivo(ajena))
+
+    def test_el_guardian_cierra_con_el_espacio_mientras_su_init_vive(self):
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
+        identidad = {
+            "bwrap_inicio": inicio, "ns_pid": "pid:[7]",
+            "ns_init": init, "ns_init_inicio": t.inicio(init),
+        }
+        with contextlib.ExitStack() as pila:
+            for parche in t.parchear():
+                pila.enter_context(parche)
+            self.assertTrue(jaula_linux.cerrar_jaula(bwrap, identidad, plazo=0.2))
+        self.assertEqual(t.vivos(), [])
+
     def test_un_numero_de_espacio_reusado_por_otra_jaula_no_se_toca(self):
         """Muerto el init de la jaula anotada, el kernel ya mató a todo su espacio y el número
         puede ser de otra jaula."""

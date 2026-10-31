@@ -664,13 +664,22 @@ def _guardian(spec: dict) -> int:
             codigo = SALIDA_PARADA
             break
         time.sleep(0.02)
-    cerrada = cerrar(proceso.pid, inicio=identidad["bwrap_inicio"], ns=ns)
+    cerrada = cerrar_jaula(proceso.pid, identidad)
     if control:
         _publica(
             os.path.join(control, ARCHIVO_CONTROL),
             {**identidad, "estado": "cerrado" if cerrada else "incierto"},
         )
     return codigo if cerrada else SALIDA_SIN_CERRAR
+
+
+def cerrar_jaula(bwrap: int, identidad: dict, plazo: float = 5.0) -> bool:
+    """`cerrar` con lo anotado en `identidad`. El espacio de nombres solo se usa si el init de
+    esa jaula sigue vivo (`_ns_vigente`): con el init muerto el kernel ya cerró el espacio y su
+    número puede ser de otra jaula, que el guardián no debe tocar."""
+    return cerrar(
+        bwrap, plazo, inicio=identidad.get("bwrap_inicio"), ns=_ns_vigente(identidad)
+    )
 
 
 def cerrar_identidad(identidad: dict, plazo: float = 5.0) -> bool:
