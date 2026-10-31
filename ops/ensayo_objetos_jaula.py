@@ -1,10 +1,23 @@
-"""Mide, dentro de la jaula real de Windows, qué directorios de objetos puede abrir o crear un AppContainer.
+"""Mide, dentro de la jaula real de Windows, por qué msys no puede crear o abrir su objeto, y si una concesión acotada alcanza.
 
 msys-2.0.dll llama a NtCreateDirectoryObject sobre `\\BaseNamedObjects\\msys-2.0S5-<clave>` con
 OBJ_OPENIF y, desde la sesión 1 o más, también sobre `\\Sessions\\BNOLINKS\\<n>\\msys-2.0S5-<clave>`.
-Este ensayo hace las mismas llamadas con nombres propios y con el espacio de nombres del propio
-AppContainer, para que la causa se lea en la PC y no se suponga. Lánzalo como lo lanza el supervisor
-(tarea programada): `jaula_windows.crear` falla con WinError 5 desde una sesión SSH.
+Después crea, dentro de ese directorio, secciones, pipes y enlaces con una DACL que solo nombra a
+Everyone y al usuario.
+
+Sin opciones el ensayo mide, desde dentro de la jaula:
+  1. qué directorios de objetos puede abrir o crear el AppContainer;
+  2. si el AppContainer puede reabrir un objeto que creó él mismo con una DACL solo Everyone (como
+     msys) y con otra que además nombra a ALL APPLICATION PACKAGES.
+
+Con `--concesion --clave <clave>` hace, además, el experimento que valida o descarta el arreglo
+acotado: el lanzador, fuera de la jaula, crea y mantiene abiertos los dos directorios de msys con
+una DACL que nombra a ALL APPLICATION PACKAGES y etiqueta de integridad baja, y dentro de la jaula
+corre bash, sh y git push para ver hasta dónde llega msys. Mientras corre, un msys sin jaula del
+mismo usuario que abra esos nombres se une a ellos. Cierra los procesos msys antes de lanzarlo.
+
+Lánzalo como lo lanza el supervisor (tarea programada): `jaula_windows.crear` falla con WinError 5
+desde una sesión SSH.
 """
 
 from __future__ import annotations
@@ -18,15 +31,23 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(1, str(Path(__file__).resolve().parent))
 
-from motor.encargos.aislamiento import aislar, lanzar_en_jaula
+from ensayo_shell_jaula import PUSH
 
-CODIGO = r"""
-import ctypes as c, json, os, sys, uuid
+from motor.encargos.aislamiento import (
+    _herramientas_git,
+    aislar,
+    lanzar_en_jaula,
+)
+
+NT = r"""
+import ctypes as c, os, uuid
 from ctypes import wintypes as w
 
 nt = c.WinDLL("ntdll")
 k = c.WinDLL("kernel32", use_last_error=True)
+adv = c.WinDLL("advapi32", use_last_error=True)
 
 
 class Texto(c.Structure):
@@ -48,23 +69,51 @@ for nombre in ("NtOpenDirectoryObject", "NtCreateDirectoryObject"):
     fn = getattr(nt, nombre)
     fn.argtypes, fn.restype = [c.POINTER(w.HANDLE), w.ULONG, c.POINTER(Atributos)], c.c_long
 nt.NtClose.argtypes, nt.NtClose.restype = [w.HANDLE], c.c_long
+adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+    w.LPCWSTR, w.DWORD, c.POINTER(c.c_void_p), c.POINTER(w.DWORD)
+]
+adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = w.BOOL
+k.LocalFree.argtypes, k.LocalFree.restype = [c.c_void_p], c.c_void_p
 CASO_INSENSIBLE, ABRIR_SI_EXISTE = 0x40, 0x80
 CONSULTAR, RECORRER, CREAR_OBJETO, CREAR_SUBDIRECTORIO = 0x1, 0x2, 0x4, 0x8
+MASCARA = CONSULTAR | RECORRER | CREAR_OBJETO | CREAR_SUBDIRECTORIO
 
 
-def llamar(operacion, ruta, acceso, banderas):
+def llamar(operacion, ruta, acceso, banderas, sddl=None, conservar=False):
+    descriptor = c.c_void_p()
+    if sddl and not adv.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, c.byref(descriptor), None
+    ):
+        raise c.WinError(c.get_last_error())
     buffer = c.create_unicode_buffer(ruta)
     texto = Texto(len(ruta) * 2, len(ruta) * 2 + 2, c.cast(buffer, w.LPWSTR))
-    atributos = Atributos(c.sizeof(Atributos), None, c.pointer(texto), banderas, None, None)
+    atributos = Atributos(
+        c.sizeof(Atributos), None, c.pointer(texto), banderas, descriptor.value, None
+    )
     asa = w.HANDLE()
     estado = getattr(nt, operacion)(c.byref(asa), acceso, c.byref(atributos))
+    if descriptor.value:
+        k.LocalFree(descriptor)
+    codigo = "0x%08X" % (estado & 0xFFFFFFFF)
+    if estado >= 0 and conservar:
+        return codigo, asa
     if estado >= 0:
         nt.NtClose(asa)
-    return "0x%08X" % (estado & 0xFFFFFFFF)
+    return codigo, None
 
 
-sesion = w.DWORD()
-k.ProcessIdToSessionId(os.getpid(), c.byref(sesion))
+def sesion_actual():
+    sesion = w.DWORD()
+    k.ProcessIdToSessionId(os.getpid(), c.byref(sesion))
+    return sesion.value
+"""
+
+CODIGO = (
+    NT
+    + r"""
+import json, sys
+
+sesion = sesion_actual()
 propio = ""
 try:
     ruta = c.create_unicode_buffer(1024)
@@ -74,35 +123,60 @@ try:
 except (AttributeError, OSError):
     pass
 marca = "motor-sonda-" + uuid.uuid4().hex[:12]
-mascara = CONSULTAR | RECORRER | CREAR_OBJETO | CREAR_SUBDIRECTORIO
+EXISTE = CASO_INSENSIBLE | ABRIR_SI_EXISTE
 pruebas = [
     ("abrir", "NtOpenDirectoryObject", "\\BaseNamedObjects", CONSULTAR | RECORRER, 0),
     ("recorrer", "NtOpenDirectoryObject", "\\BaseNamedObjects", RECORRER, 0),
-    ("crear", "NtCreateDirectoryObject", "\\BaseNamedObjects\\" + marca, mascara, CASO_INSENSIBLE | ABRIR_SI_EXISTE),
-    ("abrir", "NtOpenDirectoryObject", "\\Sessions\\BNOLINKS\\%d" % sesion.value, CONSULTAR | RECORRER, 0),
-    ("crear", "NtCreateDirectoryObject", "\\Sessions\\BNOLINKS\\%d\\%s" % (sesion.value, marca), mascara, CASO_INSENSIBLE | ABRIR_SI_EXISTE),
+    ("crear", "NtCreateDirectoryObject", "\\BaseNamedObjects\\" + marca, MASCARA, EXISTE),
+    ("abrir", "NtOpenDirectoryObject", "\\Sessions\\BNOLINKS\\%d" % sesion, CONSULTAR | RECORRER, 0),
+    ("crear", "NtCreateDirectoryObject", "\\Sessions\\BNOLINKS\\%d\\%s" % (sesion, marca), MASCARA, EXISTE),
 ]
 if len(sys.argv) > 1 and sys.argv[1]:
     clave = "msys-2.0S5-" + sys.argv[1]
-    pruebas.append(("abrir el de msys", "NtOpenDirectoryObject", "\\BaseNamedObjects\\" + clave, mascara, CASO_INSENSIBLE))
-    pruebas.append(("abrir o crear el de msys", "NtCreateDirectoryObject", "\\BaseNamedObjects\\" + clave, mascara, CASO_INSENSIBLE | ABRIR_SI_EXISTE))
+    pruebas.append(("abrir el de msys", "NtOpenDirectoryObject", "\\BaseNamedObjects\\" + clave, MASCARA, CASO_INSENSIBLE))
+    pruebas.append(("abrir o crear el de msys", "NtCreateDirectoryObject", "\\BaseNamedObjects\\" + clave, MASCARA, EXISTE))
+    pruebas.append(("abrir el de msys en la sesion", "NtOpenDirectoryObject", "\\Sessions\\BNOLINKS\\%d\\%s" % (sesion, clave), MASCARA, CASO_INSENSIBLE))
 if propio:
-    pruebas.append(("crear en el espacio del AppContainer", "NtCreateDirectoryObject", propio + "\\" + marca, mascara, CASO_INSENSIBLE | ABRIR_SI_EXISTE))
-resultado = {"sesion": sesion.value, "espacio_del_appcontainer": propio, "pruebas": []}
+    pruebas.append(("crear en el espacio del AppContainer", "NtCreateDirectoryObject", propio + "\\" + marca, MASCARA, EXISTE))
+resultado = {"sesion": sesion, "espacio_del_appcontainer": propio, "pruebas": []}
 for etiqueta, operacion, ruta, acceso, banderas in pruebas:
-    resultado["pruebas"].append([etiqueta, ruta, llamar(operacion, ruta, acceso, banderas)])
+    resultado["pruebas"].append([etiqueta, ruta, llamar(operacion, ruta, acceso, banderas)[0]])
+if propio:
+    for etiqueta, sufijo, sddl in (
+        ("reabrir lo propio, DACL solo Everyone (como msys)", "-w", "D:(A;;0xF000F;;;WD)"),
+        ("reabrir lo propio, DACL Everyone y ALL APPLICATION PACKAGES", "-aap", "D:(A;;0xF000F;;;WD)(A;;0xF000F;;;AC)"),
+    ):
+        ruta = propio + "\\" + marca + sufijo
+        creado, asa = llamar("NtCreateDirectoryObject", ruta, MASCARA, EXISTE, sddl, True)
+        if asa is None:
+            estado = "no se pudo crear: " + creado
+        else:
+            estado = llamar("NtOpenDirectoryObject", ruta, CONSULTAR | RECORRER, CASO_INSENSIBLE)[0]
+            nt.NtClose(asa)
+        resultado["pruebas"].append([etiqueta, ruta, estado])
 print(json.dumps(resultado), flush=True)
 """
+)
 
 EXITO = "0x00000000"
+SOLO_EVERYONE = "reabrir lo propio, DACL solo Everyone (como msys)"
+CON_PAQUETES = "reabrir lo propio, DACL Everyone y ALL APPLICATION PACKAGES"
+SDDL_CONCESION = "D:(A;;0xF000F;;;WD)(A;;0xF000F;;;AC)(A;;0xF000F;;;OW)S:(ML;;NW;;;LW)"
 
 
 def interpretar(medida: dict) -> list[str]:
-    por_ruta = {fila[1]: (fila[0], fila[2]) for fila in medida["pruebas"]}
-    global_ = [e for r, (_, e) in por_ruta.items() if r.startswith("\\BaseNamedObjects\\motor-sonda")]
-    propio = [e for r, (_, e) in por_ruta.items() if r.startswith(medida["espacio_del_appcontainer"] + "\\")] if medida["espacio_del_appcontainer"] else []
+    estados = {fila[0]: fila[2] for fila in medida["pruebas"]}
+    propio = medida["espacio_del_appcontainer"]
+    global_ = [
+        fila[2]
+        for fila in medida["pruebas"]
+        if fila[1].startswith("\\BaseNamedObjects\\motor-sonda")
+    ]
+    en_propio = [
+        fila[2] for fila in medida["pruebas"] if propio and fila[1].startswith(propio + "\\motor-sonda") and fila[0].startswith("crear")
+    ]
     notas = []
-    if global_ and global_[0] != EXITO and propio and propio[0] == EXITO:
+    if global_ and global_[0] != EXITO and en_propio and en_propio[0] == EXITO:
         notas.append(
             "Confirmado: el AppContainer no crea en \\BaseNamedObjects y sí en su propio espacio; "
             "msys-2.0.dll solo sabe lo primero."
@@ -114,15 +188,82 @@ def interpretar(medida: dict) -> list[str]:
         )
     else:
         notas.append("Sin conclusión: falta la medida del espacio propio o de \\BaseNamedObjects.")
+    if SOLO_EVERYONE in estados and CON_PAQUETES in estados:
+        if estados[SOLO_EVERYONE] != EXITO and estados[CON_PAQUETES] == EXITO:
+            notas.append(
+                "Una concesión acotada no alcanza: el contenedor no reabre ni lo que creó él con una "
+                "DACL solo Everyone, que es la que msys da a sus secciones, pipes y enlaces. "
+                "Conceder el directorio deja a msys fallar en el objeto siguiente."
+            )
+        elif estados[SOLO_EVERYONE] == EXITO:
+            notas.append(
+                "El contenedor sí reabre lo propio con DACL solo Everyone: la concesión acotada "
+                "del directorio puede bastar; corre --concesion para verlo con msys."
+            )
+        else:
+            notas.append("Sin conclusión sobre la DACL de los objetos propios: " + json.dumps(estados))
     return notas
+
+
+def _concesion(clave: str) -> tuple[list, list[str]]:
+    """Crea fuera de la jaula los dos directorios de msys con una DACL que nombra al paquete."""
+    espacio_nt: dict = {}
+    exec(NT, espacio_nt)
+    sesion = espacio_nt["sesion_actual"]()
+    abiertos, lineas = [], []
+    for ruta in (
+        "\\BaseNamedObjects\\msys-2.0S5-" + clave,
+        "\\Sessions\\BNOLINKS\\%d\\msys-2.0S5-%s" % (sesion, clave),
+    ):
+        codigo, asa = espacio_nt["llamar"](
+            "NtCreateDirectoryObject",
+            ruta,
+            espacio_nt["MASCARA"],
+            espacio_nt["CASO_INSENSIBLE"] | espacio_nt["ABRIR_SI_EXISTE"],
+            SDDL_CONCESION,
+            True,
+        )
+        if asa is not None:
+            abiertos.append((espacio_nt, asa))
+        nota = ""
+        if codigo == "0x40000000":
+            nota = " (ya existía con otro descriptor: cierra los procesos msys y repite)"
+        lineas.append(f"    crear fuera de la jaula {ruta} -> {codigo}{nota}")
+    return abiertos, lineas
+
+
+def _shell(comando_base: dict, espacio: Path, runtime: Path, herramientas: dict) -> int:
+    fallos = 0
+    for caso, cmd, cwd in (
+        ("bash de Git", [herramientas["MOTOR_SONDA_SHELL"], "-c", "echo ok"], espacio),
+        ("sh de Git", [herramientas["MOTOR_SONDA_SH"], "-c", "echo ok"], espacio),
+        (
+            "git push a un bare local",
+            [herramientas["MOTOR_SONDA_SHELL"], "-c", PUSH],
+            runtime / "tmp",
+        ),
+    ):
+        comando = aislar(cmd, espacio, runtime, **comando_base)
+        rc, salida = lanzar_en_jaula(comando, cwd, dict(comando.entorno), plazo=60)
+        bien = rc == 0 and salida.split()[-1:] == ["ok"]
+        fallos += not bien
+        print(f"    {caso}: {'ok' if bien else 'FALLA'} rc={rc} salida={' '.join(salida.split())[:300]!r}")
+    return fallos
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--clave", default="", help="clave de msys-2.0S5-<clave> del error del agente")
+    ap.add_argument(
+        "--concesion",
+        action="store_true",
+        help="experimento: crear fuera de la jaula los directorios de msys con una DACL para el paquete",
+    )
     args = ap.parse_args()
     if os.name != "nt":
         ap.error("este instrumento mide la jaula nativa de Windows")
+    if args.concesion and not args.clave:
+        ap.error("--concesion necesita --clave")
     fallos = 0
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
@@ -131,10 +272,8 @@ def main() -> int:
         runtime = base / "runtime" / ident
         espacio.mkdir(parents=True)
         runtime.mkdir(parents=True)
-        for nombre, opciones in (
-            ("sonda", {}),
-            ("agente claude", {"suscripcion": True, "agente": "claude"}),
-        ):
+        variantes = [("sonda", {}), ("agente claude", {"suscripcion": True, "agente": "claude"})]
+        for nombre, opciones in variantes:
             comando = aislar(
                 [sys.executable, "-c", CODIGO, args.clave], espacio, runtime, **opciones
             )
@@ -150,6 +289,22 @@ def main() -> int:
                 print(f"    {etiqueta}: {ruta} -> {estado}")
             for nota in interpretar(medida):
                 print(f"    {nota}")
+        if args.concesion:
+            print("- experimento de concesión acotada (agente claude)")
+            abiertos, lineas = _concesion(args.clave)
+            try:
+                print("\n".join(lineas))
+                herramientas = _herramientas_git(dict(os.environ))
+                fallos += _shell({"suscripcion": True, "agente": "claude"}, espacio, runtime, herramientas)
+                print(
+                    "    Lectura: si bash, sh y git push dan ok, la concesión acotada basta y se puede llevar "
+                    "al motor. Si falla con otro texto (por ejemplo 'couldn't create signal pipe' o "
+                    "'CreateFileMapping'), la concesión del directorio avanza a msys hasta el siguiente "
+                    "objeto y no alcanza."
+                )
+            finally:
+                for espacio_nt, asa in abiertos:
+                    espacio_nt["nt"].NtClose(asa)
     return 1 if fallos else 0
 
 

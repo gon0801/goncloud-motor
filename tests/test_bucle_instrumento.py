@@ -815,13 +815,36 @@ class EnsayoDeObjetosDeLaJaula(unittest.TestCase):
             ],
         }
 
+    def con_reapertura(self, solo_everyone: str, con_paquetes: str) -> dict:
+        medida = self.medida("0xC0000022", "0x00000000")
+        propio = medida["espacio_del_appcontainer"]
+        medida["pruebas"] += [
+            [self.ensayo.SOLO_EVERYONE, propio + "\\motor-sonda-ab-w", solo_everyone],
+            [self.ensayo.CON_PAQUETES, propio + "\\motor-sonda-ab-aap", con_paquetes],
+        ]
+        return medida
+
     def test_el_guion_compila(self):
+        compile(self.ensayo.NT, "nt", "exec")
         compile(self.ensayo.CODIGO, "guion", "exec")
 
     def test_confirma_la_causa_cuando_solo_el_espacio_propio_deja_crear(self):
         notas = self.ensayo.interpretar(self.medida("0xC0000022", "0x00000000"))
         self.assertEqual(len(notas), 1)
         self.assertTrue(notas[0].startswith("Confirmado"))
+
+    def test_descarta_la_concesion_acotada_si_el_contenedor_no_reabre_lo_suyo(self):
+        notas = self.ensayo.interpretar(self.con_reapertura("0xC0000022", "0x00000000"))
+        self.assertTrue(notas[0].startswith("Confirmado"))
+        self.assertTrue(notas[1].startswith("Una concesión acotada no alcanza"), notas)
+
+    def test_deja_abierta_la_concesion_si_el_contenedor_reabre_lo_suyo(self):
+        notas = self.ensayo.interpretar(self.con_reapertura("0x00000000", "0x00000000"))
+        self.assertIn("puede bastar", notas[1])
+
+    def test_el_experimento_pide_paquetes_y_etiqueta_baja(self):
+        self.assertIn(";;;AC)", self.ensayo.SDDL_CONCESION)
+        self.assertIn("(ML;;NW;;;LW)", self.ensayo.SDDL_CONCESION)
 
     def test_descarta_la_causa_cuando_el_global_deja_crear(self):
         notas = self.ensayo.interpretar(self.medida("0x00000000", "0x00000000"))
