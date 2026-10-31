@@ -35,6 +35,7 @@ from motor.encargos.dominio import (
     alcance_de,
     bloqueantes_abiertos,
     decision_proceso,
+    hubo_avance,
     reducir,
     vista,
 )
@@ -526,6 +527,38 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertEqual(e.sin_progreso, 1)
             self.assertTrue(_lanzaria(e))
+
+    def test_no_concluyente_con_el_primer_bloqueante_es_avance(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-4", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+
+            def vuelta(i: int, bloqueantes: list):
+                malo.write_text(f"intento-{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "no_concluyente",
+                        "evidencia": f"cat malo.txt -> intento-{i}, falta un dato",
+                        "bloqueantes": bloqueantes,
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1, [_bloqueante("malo.txt no contiene B")])
+            self.assertTrue(bloqueantes_abiertos(e))
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(2, [])
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = vuelta(3, [])
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("malo.txt no contiene B", e.motivo)
+            self.assertFalse(_lanzaria(e))
 
     def test_no_concluyente_que_cierra_un_bloqueante_es_avance(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -1212,6 +1245,110 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
                 self.assertTrue(
                     (skill.parent.parent / nombre / "SKILL.md").is_file()
                 )
+
+
+DOCS = Path(__file__).resolve().parent.parent / "docs"
+
+
+def _texto_doc(nombre: str) -> str:
+    return " ".join((DOCS / nombre).read_text(encoding="utf-8").split())
+
+
+class DocumentosDelFreno(unittest.TestCase):
+    def test_el_diseno_no_afirma_que_el_instrumento_repetido_escala(self):
+        diseno = _texto_doc("diseno-flujo-revisiones.md")
+        self.assertNotIn("tres veces sin progreso escala", diseno)
+        self.assertIn("no escala por conteo", diseno)
+        self.assertIn("no escala por conteo", _texto_doc("flujo-revisiones.md"))
+
+    def test_ningun_doc_dice_que_cambiar_la_firma_es_avance(self):
+        for nombre in ("diseno-flujo-revisiones.md", "flujo-revisiones.md"):
+            texto = _texto_doc(nombre)
+            self.assertNotIn("progreso = cambia la firma", texto, nombre)
+            self.assertNotIn("Hay progreso si la firma cambia", texto, nombre)
+            self.assertIn("Cambiar archivos no", texto, nombre)
+
+
+class AvanceGlobalDelFreno(unittest.TestCase):
+    def _eventos(self, tmp: str, clave: str):
+        reg = Registro(Path(tmp) / "base")
+        self.addCleanup(reg.close)
+        enc = recibir(reg, "pedido", clave, ahora_iso())["encargo"]
+        contador = [0]
+
+        def evento(kind: str, datos: dict):
+            contador[0] += 1
+            e = reg.fold(enc)
+            reg.anotar(
+                enc,
+                {
+                    "kind": kind,
+                    "data": {
+                        "fase": e.fase_activa,
+                        "intento": e.intento,
+                        "hora": ahora_iso(),
+                        **datos,
+                    },
+                },
+                f"avance:{contador[0]}",
+            )
+            return reg.fold(enc)
+
+        return evento
+
+    @staticmethod
+    def _revision(origen: str, ids: list[str]) -> dict:
+        return {
+            "revision_id": "rev_" + origen + "_".join(ids),
+            "version": "v1",
+            "base_version": "",
+            "alcance": "completa",
+            "veredicto": "cambios",
+            "revisor": "x",
+            "origen": origen,
+            "cubre": [],
+            "hallazgos": [
+                {
+                    "id": i,
+                    "gravedad": "bloqueante",
+                    "criterio": "comportamiento",
+                    "titulo": f"falla {i}",
+                    "reproduccion": "cat x",
+                    "ancla": "x:1",
+                    "origen": origen,
+                    "estado": "abierto",
+                }
+                for i in ids
+            ],
+            "aprobadas": [],
+            "evidencia": "e",
+            "efectos_pendientes": [],
+            "inspeccion_faltante": "",
+        }
+
+    def test_check_rojo_de_un_commit_anterior_sigue_siendo_bloqueo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evento = self._eventos(tmp, "avance-check")
+            previo = evento(
+                "entrega_bloqueada",
+                {"sha": "A", "causa": "ci rojo", "fallas": ["ci"]},
+            )
+            e = evento("revision", self._revision("independiente", ["R1"]))
+            self.assertFalse(hubo_avance(previo, e))
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
+            verde = evento("entrega_externa", {"paso": "checks_verdes", "sha": "B"})
+            self.assertTrue(hubo_avance(e, verde))
+            self.assertEqual(verde.fase_actual.fallas_checks, ())
+
+    def test_revision_independiente_no_cierra_bloqueantes_de_deepseek(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evento = self._eventos(tmp, "avance-ds")
+            previo = evento("revision", self._revision("deepseek", ["D1"]))
+            e = evento("revision", self._revision("independiente", ["R1"]))
+            self.assertFalse(hubo_avance(previo, e))
+            self.assertEqual(
+                [h.id for h in bloqueantes_abiertos(e, "deepseek")], ["D1"]
+            )
 
 
 if __name__ == "__main__":
