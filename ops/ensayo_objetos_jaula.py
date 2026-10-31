@@ -8,11 +8,14 @@ Everyone y al usuario.
 Sin opciones el ensayo mide, desde dentro de la jaula:
   1. qué directorios de objetos puede abrir o crear el AppContainer;
   2. si el AppContainer puede reabrir un objeto que creó él mismo con una DACL solo Everyone (como
-     msys) y con otra que además nombra a ALL APPLICATION PACKAGES.
+     msys) y con otras que además nombran a ALL APPLICATION PACKAGES y a ALL RESTRICTED APPLICATION
+     PACKAGES (el que usa un LPAC) o al SID del contenedor;
+  3. si el token es AppContainer y si es LPAC, con su SID.
 
 Con `--concesion --clave <clave>` hace, además, el experimento que valida o descarta el arreglo
 acotado: el lanzador, fuera de la jaula, crea y mantiene abiertos los dos directorios de msys con
-una DACL que nombra a ALL APPLICATION PACKAGES y etiqueta de integridad baja, y dentro de la jaula
+una DACL que nombra a ALL APPLICATION PACKAGES y a ALL RESTRICTED APPLICATION PACKAGES, con
+etiqueta de integridad baja, y dentro de la jaula
 corre bash, sh y git push para ver hasta dónde llega msys. Mientras corre, un msys sin jaula del
 mismo usuario que abra esos nombres se une a ellos. Cierra los procesos msys antes de lanzarlo.
 
@@ -106,6 +109,40 @@ def sesion_actual():
     sesion = w.DWORD()
     k.ProcessIdToSessionId(os.getpid(), c.byref(sesion))
     return sesion.value
+
+
+def token_actual():
+    # TokenIsAppContainer = 29, TokenAppContainerSid = 31, TokenIsLessPrivilegedAppContainer = 46.
+    k.GetCurrentProcess.restype = w.HANDLE
+    adv.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, c.POINTER(w.HANDLE)]
+    adv.OpenProcessToken.restype = w.BOOL
+    adv.GetTokenInformation.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)]
+    adv.GetTokenInformation.restype = w.BOOL
+    adv.ConvertSidToStringSidW.argtypes = [c.c_void_p, c.POINTER(w.LPWSTR)]
+    adv.ConvertSidToStringSidW.restype = w.BOOL
+    datos = {"appcontainer": None, "lpac": None, "sid": ""}
+    asa = w.HANDLE()
+    if not adv.OpenProcessToken(k.GetCurrentProcess(), 0x8, c.byref(asa)):
+        return datos
+
+    def entero(clase):
+        valor, tamano = w.DWORD(), w.DWORD()
+        if adv.GetTokenInformation(asa, clase, c.byref(valor), c.sizeof(valor), c.byref(tamano)):
+            return bool(valor.value)
+        return None
+
+    datos["appcontainer"], datos["lpac"] = entero(29), entero(46)
+    tamano = w.DWORD()
+    adv.GetTokenInformation(asa, 31, None, 0, c.byref(tamano))
+    if tamano.value:
+        buffer = c.create_string_buffer(tamano.value)
+        if adv.GetTokenInformation(asa, 31, buffer, tamano.value, c.byref(tamano)):
+            sid, texto = c.cast(buffer, c.POINTER(c.c_void_p))[0], w.LPWSTR()
+            if sid and adv.ConvertSidToStringSidW(sid, c.byref(texto)):
+                datos["sid"] = texto.value
+                k.LocalFree(c.cast(texto, c.c_void_p))
+    nt.NtClose(asa)
+    return datos
 """
 
 CODIGO = (
@@ -138,14 +175,28 @@ if len(sys.argv) > 1 and sys.argv[1]:
     pruebas.append(("abrir el de msys en la sesion", "NtOpenDirectoryObject", "\\Sessions\\BNOLINKS\\%d\\%s" % (sesion, clave), MASCARA, CASO_INSENSIBLE))
 if propio:
     pruebas.append(("crear en el espacio del AppContainer", "NtCreateDirectoryObject", propio + "\\" + marca, MASCARA, EXISTE))
-resultado = {"sesion": sesion, "espacio_del_appcontainer": propio, "pruebas": []}
+token = token_actual()
+resultado = {"sesion": sesion, "espacio_del_appcontainer": propio, "token": token, "pruebas": []}
 for etiqueta, operacion, ruta, acceso, banderas in pruebas:
     resultado["pruebas"].append([etiqueta, ruta, llamar(operacion, ruta, acceso, banderas)[0]])
 if propio:
-    for etiqueta, sufijo, sddl in (
+    reaperturas = [
         ("reabrir lo propio, DACL solo Everyone (como msys)", "-w", "D:(A;;0xF000F;;;WD)"),
-        ("reabrir lo propio, DACL Everyone y ALL APPLICATION PACKAGES", "-aap", "D:(A;;0xF000F;;;WD)(A;;0xF000F;;;AC)"),
-    ):
+        (
+            "reabrir lo propio, DACL Everyone y los dos paquetes (AC y S-1-15-2-2)",
+            "-aap",
+            "D:(A;;0xF000F;;;WD)(A;;0xF000F;;;AC)(A;;0xF000F;;;S-1-15-2-2)",
+        ),
+    ]
+    if token["sid"]:
+        reaperturas.append(
+            (
+                "reabrir lo propio, DACL Everyone y el SID del contenedor",
+                "-sid",
+                "D:(A;;0xF000F;;;WD)(A;;0xF000F;;;" + token["sid"] + ")",
+            )
+        )
+    for etiqueta, sufijo, sddl in reaperturas:
         ruta = propio + "\\" + marca + sufijo
         creado, asa = llamar("NtCreateDirectoryObject", ruta, MASCARA, EXISTE, sddl, True)
         if asa is None:
@@ -160,8 +211,14 @@ print(json.dumps(resultado), flush=True)
 
 EXITO = "0x00000000"
 SOLO_EVERYONE = "reabrir lo propio, DACL solo Everyone (como msys)"
-CON_PAQUETES = "reabrir lo propio, DACL Everyone y ALL APPLICATION PACKAGES"
-SDDL_CONCESION = "D:(A;;0xF000F;;;WD)(A;;0xF000F;;;AC)(A;;0xF000F;;;OW)S:(ML;;NW;;;LW)"
+CON_PAQUETES = "reabrir lo propio, DACL Everyone y los dos paquetes (AC y S-1-15-2-2)"
+CON_SID = "reabrir lo propio, DACL Everyone y el SID del contenedor"
+# AC es ALL APPLICATION PACKAGES; S-1-15-2-2 es ALL RESTRICTED APPLICATION PACKAGES, la que usa un
+# token LPAC. La jaula ya concede a las dos en su estación de ventanas (jaula_windows.Escritorio).
+SDDL_CONCESION = (
+    "D:(A;;0xF000F;;;WD)(A;;0xF000F;;;AC)(A;;0xF000F;;;S-1-15-2-2)(A;;0xF000F;;;OW)"
+    "S:(ML;;NW;;;LW)"
+)
 
 
 def interpretar(medida: dict) -> list[str]:
@@ -188,8 +245,9 @@ def interpretar(medida: dict) -> list[str]:
         )
     else:
         notas.append("Sin conclusión: falta la medida del espacio propio o de \\BaseNamedObjects.")
-    if SOLO_EVERYONE in estados and CON_PAQUETES in estados:
-        if estados[SOLO_EVERYONE] != EXITO and estados[CON_PAQUETES] == EXITO:
+    reabre_con_concesion = any(estados.get(x) == EXITO for x in (CON_PAQUETES, CON_SID))
+    if SOLO_EVERYONE in estados and (CON_PAQUETES in estados or CON_SID in estados):
+        if estados[SOLO_EVERYONE] != EXITO and reabre_con_concesion:
             notas.append(
                 "Una concesión acotada no alcanza: el contenedor no reabre ni lo que creó él con una "
                 "DACL solo Everyone, que es la que msys da a sus secciones, pipes y enlaces. "
@@ -202,6 +260,14 @@ def interpretar(medida: dict) -> list[str]:
             )
         else:
             notas.append("Sin conclusión sobre la DACL de los objetos propios: " + json.dumps(estados))
+    token = medida.get("token") or {}
+    if token.get("lpac"):
+        notas.append(
+            "El token es LPAC: ALL APPLICATION PACKAGES no le da acceso. La concesión debe nombrar a "
+            "S-1-15-2-2 o al SID del contenedor (" + (token.get("sid") or "sin SID") + ")."
+        )
+    elif token.get("lpac") is None:
+        notas.append("No se pudo leer si el token es LPAC: por eso la concesión nombra a los dos paquetes.")
     return notas
 
 
@@ -285,6 +351,7 @@ def main() -> int:
                 print(f"- {nombre}: FALLA rc={rc} salida={' '.join(salida.split())[:300]!r}")
                 continue
             print(f"- {nombre}: sesion={medida['sesion']} espacio_propio={medida['espacio_del_appcontainer']!r}")
+            print(f"    token: {json.dumps(medida.get('token'))}")
             for etiqueta, ruta, estado in medida["pruebas"]:
                 print(f"    {etiqueta}: {ruta} -> {estado}")
             for nota in interpretar(medida):

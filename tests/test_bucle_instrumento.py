@@ -830,8 +830,8 @@ class EnsayoDeObjetosDeLaJaula(unittest.TestCase):
 
     def test_confirma_la_causa_cuando_solo_el_espacio_propio_deja_crear(self):
         notas = self.ensayo.interpretar(self.medida("0xC0000022", "0x00000000"))
-        self.assertEqual(len(notas), 1)
         self.assertTrue(notas[0].startswith("Confirmado"))
+        self.assertFalse(any(n.startswith("Una concesión acotada") for n in notas))
 
     def test_descarta_la_concesion_acotada_si_el_contenedor_no_reabre_lo_suyo(self):
         notas = self.ensayo.interpretar(self.con_reapertura("0xC0000022", "0x00000000"))
@@ -842,9 +842,33 @@ class EnsayoDeObjetosDeLaJaula(unittest.TestCase):
         notas = self.ensayo.interpretar(self.con_reapertura("0x00000000", "0x00000000"))
         self.assertIn("puede bastar", notas[1])
 
-    def test_el_experimento_pide_paquetes_y_etiqueta_baja(self):
+    def test_el_experimento_pide_los_dos_paquetes_y_etiqueta_baja(self):
         self.assertIn(";;;AC)", self.ensayo.SDDL_CONCESION)
+        self.assertIn(";;;S-1-15-2-2)", self.ensayo.SDDL_CONCESION)
         self.assertIn("(ML;;NW;;;LW)", self.ensayo.SDDL_CONCESION)
+
+    def test_la_medida_de_reapertura_tambien_nombra_al_paquete_restringido(self):
+        self.assertIn("(A;;0xF000F;;;S-1-15-2-2)", self.ensayo.CODIGO)
+        self.assertIn("token_actual()", self.ensayo.CODIGO)
+
+    def test_reabrir_con_el_sid_del_contenedor_basta_para_leer_la_concesion(self):
+        medida = self.con_reapertura("0xC0000022", "0xC0000022")
+        medida["pruebas"].append(
+            [self.ensayo.CON_SID, "\\x\\motor-sonda-ab-sid", "0x00000000"]
+        )
+        notas = self.ensayo.interpretar(medida)
+        self.assertTrue(notas[1].startswith("Una concesión acotada no alcanza"), notas)
+
+    def test_un_token_lpac_se_avisa_y_no_se_descarta_por_el_paquete_general(self):
+        medida = self.con_reapertura("0xC0000022", "0xC0000022")
+        medida["token"] = {"appcontainer": True, "lpac": True, "sid": "S-1-15-2-7"}
+        notas = self.ensayo.interpretar(medida)
+        self.assertFalse(any(n.startswith("Una concesión acotada no alcanza") for n in notas))
+        self.assertTrue(any("LPAC" in n and "S-1-15-2-2" in n and "S-1-15-2-7" in n for n in notas))
+
+    def test_sin_leer_el_token_se_dice(self):
+        notas = self.ensayo.interpretar(self.medida("0xC0000022", "0x00000000"))
+        self.assertTrue(any("No se pudo leer si el token es LPAC" in n for n in notas))
 
     def test_descarta_la_causa_cuando_el_global_deja_crear(self):
         notas = self.ensayo.interpretar(self.medida("0x00000000", "0x00000000"))
