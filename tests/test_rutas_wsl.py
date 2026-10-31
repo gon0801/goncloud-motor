@@ -166,6 +166,29 @@ class TextoTest(unittest.TestCase):
             f"lee {ESPACIO_L}/diseño/añadir.md.",
         )
 
+    def test_texto_con_json_de_json_dumps_sigue_siendo_el_mismo_json(self):
+        """El prompt de un revisor lleva las observaciones como json.dumps. Una ruta seguida de
+        \\n, \\t, \\" o \\u00f1, o que empieza justo despues de un \\n, no pierde el escape."""
+        doc = {
+            "argv": ["cat", ESPACIO_W + "\\diseño.md"],
+            "nota": "ver " + ESPACIO_W + "\nsiguiente\ty ñ",
+            "pegada": ESPACIO_W + "\nsiguiente",
+            "stderr": 'File "' + ESPACIO_W + '\\tests\\test_x.py", line 3\n'
+            + ESPACIO_W + "\\a.py:12:\terror",
+        }
+        esperado = {
+            "argv": ["cat", ESPACIO_L + "/diseño.md"],
+            "nota": "ver " + ESPACIO_L + "\nsiguiente\ty ñ",
+            "pegada": ESPACIO_L + "\nsiguiente",
+            "stderr": 'File "' + ESPACIO_L + '/tests/test_x.py", line 3\n'
+            + ESPACIO_L + "/a.py:12:\terror",
+        }
+        for opciones in ({}, {"ensure_ascii": False, "indent": 2}):
+            with self.subTest(opciones=opciones):
+                crudo = "Observaciones:\n" + json.dumps(doc, **opciones)
+                traducido = r.texto_a_wsl(crudo)
+                self.assertEqual(json.loads(traducido.split("\n", 1)[1]), esperado)
+
     def test_texto_ida_y_vuelta(self):
         texto = f"escribe en {ESPACIO_L}/.interno/evidencia.txt y {ESPACIO_L}"
         self.assertEqual(r.texto_a_wsl(r.texto_a_windows(texto)), texto)
@@ -209,8 +232,6 @@ class DocumentoTest(unittest.TestCase):
             "cuerpo": "/mnt/c/literal con\ttab",
             "pegada": ESPACIO_L + "\nsiguiente",
         }
-        corrupto = json.loads(r.texto_a_wsl(crudo))
-        self.assertNotEqual(corrupto, esperado)
         self.assertEqual(json.loads(r.json_a_wsl(crudo)), esperado)
         self.assertEqual(json.loads(r.json_a_windows(r.json_a_wsl(crudo))), doc)
         self.assertEqual(r.valores_a_wsl(doc), esperado)

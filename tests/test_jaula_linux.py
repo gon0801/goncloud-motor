@@ -17,7 +17,7 @@ from motor.plataforma import jaula_linux
 from motor.plataforma.jaula_linux import RED_ABIERTA, RED_NINGUNA, Jaula
 
 CAUSA = (
-    jaula_linux.disponible()
+    jaula_linux.causa_no_disponible()
     if sys.platform.startswith("linux")
     else "la jaula de bubblewrap solo corre en Linux"
 )
@@ -374,6 +374,134 @@ class JaulaRealTest(unittest.TestCase):
         fin = time.time() + 10
         while vivos() and time.time() < fin:
             time.sleep(0.05)
+        self.assertEqual(vivos(), [])
+
+
+class DisponibleTest(unittest.TestCase):
+    """`disponible()` devuelve bool como `jaula_windows.disponible` y `psec_windows.disponible`;
+    la causa va aparte (#113 F2)."""
+
+    def test_sin_bwrap_disponible_es_false_y_la_causa_dice_por_que(self):
+        self.assertIs(jaula_linux.disponible("/no/existe/bwrap"), False)
+        self.assertIn("/no/existe/bwrap", jaula_linux.causa_no_disponible("/no/existe/bwrap"))
+
+    def test_disponible_es_verdadero_exactamente_cuando_no_hay_causa(self):
+        with mock.patch.object(jaula_linux, "causa_no_disponible", return_value=""):
+            self.assertIs(jaula_linux.disponible(), True)
+        with mock.patch.object(jaula_linux, "causa_no_disponible", return_value="falta algo"):
+            self.assertIs(jaula_linux.disponible(), False)
+
+
+class TablaDeProcesos:
+    """Una tabla de procesos de juguete para `cerrar`: sin /proc, sin señales reales."""
+
+    def __init__(self):
+        self.procs = {}
+        self.siguiente = 1000
+
+    def nuevo(self, ppid, **rasgos):
+        pid, self.siguiente = self.siguiente, self.siguiente + 1
+        self.procs[pid] = {"ppid": ppid, "vivo": True, "parado": False, "forker": False,
+                           "inmortal": False, **rasgos}
+        return pid
+
+    def descendientes(self, raiz):
+        vivos = {p: d for p, d in self.procs.items() if d["vivo"]}
+        vistos, frontera = [], [raiz]
+        while frontera:
+            hijos = [p for p, d in vivos.items() if d["ppid"] in frontera and p not in vistos]
+            vistos += hijos
+            frontera = hijos
+        for p, d in vivos.items():
+            if d["forker"] and not d["parado"]:
+                self.nuevo(p)
+        return vistos
+
+    def vivo(self, pid):
+        return bool(self.procs.get(pid, {}).get("vivo"))
+
+    def inicio(self, pid):
+        return f"t{pid}" if self.vivo(pid) else ""
+
+    def kill(self, pid, senal):
+        d = self.procs.get(pid)
+        if not d or not d["vivo"]:
+            raise ProcessLookupError(pid)
+        if senal == signal.SIGSTOP:
+            d["parado"] = True
+        elif senal == signal.SIGKILL and not d["inmortal"]:
+            d["vivo"] = False
+            for hijo in self.procs.values():
+                if hijo["ppid"] == pid and hijo["vivo"]:
+                    hijo["ppid"] = 1
+
+    def cerrar(self, raiz, **opciones):
+        with (
+            mock.patch.object(jaula_linux, "_descendientes", self.descendientes),
+            mock.patch.object(jaula_linux, "_vivo", self.vivo),
+            mock.patch.object(jaula_linux, "_inicio", self.inicio),
+            mock.patch.object(jaula_linux.os, "kill", self.kill),
+            mock.patch.object(jaula_linux.os, "waitpid", side_effect=ChildProcessError),
+        ):
+            return jaula_linux.cerrar(raiz, **opciones)
+
+
+class CerrarTest(unittest.TestCase):
+    """`cerrar` no puede dar la jaula por cerrada mientras viva algo que fue suyo (#113 F6)."""
+
+    def test_un_hijo_que_nace_entre_el_recorrido_y_el_kill_no_queda_huerfano(self):
+        t = TablaDeProcesos()
+        bwrap = t.nuevo(1)
+        init = t.nuevo(bwrap)
+        t.nuevo(init)
+        t.nuevo(init, forker=True)
+        self.assertTrue(t.cerrar(bwrap))
+        self.assertEqual([p for p in t.procs if t.vivo(p)], [])
+
+    def test_un_proceso_reparentado_que_sigue_vivo_impide_declarar_la_jaula_cerrada(self):
+        t = TablaDeProcesos()
+        bwrap = t.nuevo(1)
+        init = t.nuevo(bwrap)
+        sobreviviente = t.nuevo(init, inmortal=True)
+        self.assertFalse(t.cerrar(bwrap, plazo=0.1))
+        self.assertTrue(t.vivo(sobreviviente))
+        self.assertEqual(t.procs[sobreviviente]["ppid"], 1)
+
+    def test_un_bwrap_que_ya_salio_y_cuyo_pid_se_reuso_no_se_toca(self):
+        t = TablaDeProcesos()
+        ajeno = t.nuevo(1)
+        hijo_ajeno = t.nuevo(ajeno)
+        self.assertTrue(t.cerrar(ajeno, inicio="t-otro"))
+        self.assertTrue(t.vivo(ajeno) and t.vivo(hijo_ajeno))
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "usa /proc")
+class CerrarRealTest(unittest.TestCase):
+    def test_un_arbol_que_no_deja_de_hacer_fork_queda_sin_un_solo_proceso(self):
+        marca = f"47{os.getpid()}"
+        script = f"(while :; do sleep {marca} & sleep 0.005; done) & wait"
+        p = subprocess.Popen(["/bin/sh", "-c", script], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def vivos():
+            hallados = []
+            for d in Path("/proc").iterdir():
+                if d.name.isdigit():
+                    try:
+                        if f"sleep {marca}" in (d / "cmdline").read_text().replace("\0", " "):
+                            hallados.append(int(d.name))
+                    except OSError:
+                        pass
+            return hallados
+
+        self.addCleanup(lambda: [os.kill(x, signal.SIGKILL) for x in vivos()])
+        fin = time.time() + 10
+        while not vivos() and time.time() < fin:
+            time.sleep(0.02)
+        self.assertTrue(vivos())
+        self.assertTrue(jaula_linux.cerrar(p.pid))
+        p.wait()
+        time.sleep(0.2)
         self.assertEqual(vivos(), [])
 
 

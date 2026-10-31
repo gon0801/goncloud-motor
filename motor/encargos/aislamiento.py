@@ -304,8 +304,10 @@ def aislar(
     if espacio.parent.name != "espacio" or runtime.is_relative_to(espacio):
         raise RuntimeError("la jaula necesita espacio concedido y runtime separado")
     runtime.mkdir(parents=True, exist_ok=True)
-    env = _entorno(runtime, suscripcion, cmd, agente=agente)
     nombre = agente or Path(cmd[0]).stem.lower()
+    if suscripcion and usa_wsl(nombre):
+        return _comando_wsl(cmd, espacio, runtime, lectura, lecturas_extra, nombre)
+    env = _entorno(runtime, suscripcion, cmd, agente=agente)
     procedencia = None
     if os.name == "nt":
         raices = [
@@ -420,6 +422,37 @@ def aislar(
     return ComandoAislado(
         [str(sandbox), "-f", str(path), *cmd], env, "seatbelt", ejecutable=procedencia
     )
+
+
+def usa_wsl(agente: str | None) -> bool:
+    """En Windows, el agente que necesita shell corre dentro de WSL con la jaula de
+    bubblewrap: el bash de Git (msys) no arranca en un AppContainer. Los demás agentes
+    siguen en la jaula de Windows."""
+    return _en_windows() and usa_shell_de_git(agente)
+
+
+def _comando_wsl(
+    cmd: list[str],
+    espacio: Path,
+    runtime: Path,
+    lectura: bool,
+    lecturas_extra: tuple[Path, ...],
+    agente: str,
+) -> ComandoAislado:
+    """Describe el lanzamiento en la distro. `argv` es el comando del agente tal como lo
+    arma el motor, con rutas de Windows; las rutas y el entorno de la distro los resuelve
+    `jaula_wsl.argv_guardian` al lanzar, cuando ya se sumó el entorno extra del intento.
+    La red queda abierta: bubblewrap no filtra por dirección (ver el PR)."""
+    from motor.plataforma import jaula_wsl
+
+    jaula = jaula_wsl.jaula_de(
+        espacio,
+        runtime,
+        lectura=lectura,
+        lecturas=tuple(p.resolve() for p in lecturas_extra),
+        agente=agente,
+    )
+    return ComandoAislado(list(cmd), {}, jaula_wsl.MECANISMO, jaula)
 
 
 @dataclass(frozen=True)
@@ -720,6 +753,8 @@ def _ejecutar_en_jaula(
     En Windows eso es dentro del AppContainer (`aislar` solo lo describe);
     `subprocess.run` lo ejecutaría sin jaula y la sonda daría por bueno un
     entorno que el agente no tiene."""
+    if comando.mecanismo == "wsl-bwrap":  # jaula_wsl.MECANISMO
+        raise RuntimeError("un comando de la jaula de WSL no se ejecuta con subprocess.run")
     if comando.mecanismo != "appcontainer":
         hecho = subprocess.run(
             comando.argv,
