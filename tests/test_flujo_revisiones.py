@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -17,6 +18,7 @@ from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import (
     _anotar_instrumento,
     _incorporar,
+    _paso_entrega,
     ahora_iso,
     barrer,
     corregir,
@@ -36,6 +38,8 @@ from motor.encargos.dominio import (
     TransicionIlegal,
     alcance_de,
     bloqueantes_abiertos,
+    decision_proceso,
+    hubo_avance,
     reducir,
     vista,
 )
@@ -131,6 +135,87 @@ def _interno(r: Recorrido) -> Path:
     p = r.espacio / ".interno"
     p.mkdir(exist_ok=True)
     return p
+
+
+def _lanzaria(e) -> bool:
+    return decision_proceso(e, "ausente", None, False, True, e.hora)["lanzar"]
+
+
+def _bloqueante(titulo: str, repro: str = "cat malo.txt") -> dict:
+    return {
+        "criterio": "comportamiento",
+        "titulo": titulo,
+        "reproduccion": repro,
+        "ancla": "malo.txt:1",
+    }
+
+
+class _GhConDeepSeek(FakeGitHub):
+    """DeepSeek pide cambios con los bloqueantes de `titulos`, en cada SHA."""
+
+    titulos = ("Fuga de token en el log",)
+
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        if not self.titulos:
+            return [{"texto": "DeepSeek: APPROVED", "autor": "DeepSeek", "sha": sha}]
+        hallazgos = [
+            {"id": f"ds_{t}", "severity": "high", "title": t, "file": "saludo.txt"}
+            for t in self.titulos
+        ]
+        texto = "DeepSeek: CHANGES_REQUESTED\nai-review:findings=" + json.dumps(hallazgos)
+        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}]
+
+
+def _contiene(letra: str) -> str:
+    """Check que pasa solo si saludo.txt contiene `letra`."""
+    return (
+        f'"{sys.executable}" -c "import sys; '
+        f"sys.exit(0 if '{letra}' in open('saludo.txt').read() else 1)\""
+    )
+
+
+def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None):
+    """Encargo de nivel pr sobre un repo bare real. `vuelta(contenido)` hace
+    de implementador y de revisor que aprueba, y devuelve el encargo tras el
+    paso de entrega contra el GitHub falso."""
+    from motor.encargos.ciclo import _asegurar_repo
+
+    raiz = Path(tmp)
+    bare = raiz / "repo.git"
+    semilla = raiz / "semilla"
+    semilla.mkdir()
+    (semilla / "base.txt").write_text("base\n")
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", "--quiet", str(bare)], check=True
+    )
+    for args in (
+        ["init", "-b", "main", "--quiet"],
+        ["add", "-A"],
+        ["-c", "user.name=t", "-c", "user.email=t@l", "commit", "--quiet", "-m", "base"],
+        ["push", "--quiet", str(bare), "main"],
+    ):
+        subprocess.run(["git", "-C", str(semilla), *args], check=True)
+    r = Recorrido(
+        tmp, clave, "agrega saludo.txt con hola",
+        entrega_nivel="pr", repo=str(bare), base_rama="main",
+    )
+    caso.addCleanup(r.reg.close)
+    caso.assertEqual(_asegurar_repo(r.fold(), r.espacio), "")
+    falso = raiz / "fake"
+    falso.mkdir()
+    if config:
+        (falso / "repos.json").write_text(json.dumps({str(bare): config}))
+    gh = gh_cls(falso)
+
+    def vuelta(contenido: str):
+        (r.espacio / "saludo.txt").write_text(contenido)
+        r.incorporar()
+        r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt"})
+        r.incorporar()
+        return _paso_entrega(r.reg, r.fold(), gh, ahora_iso())
+
+    vuelta.gh = gh
+    return vuelta, r
 
 
 class FlujoRevisiones(unittest.TestCase):
@@ -324,31 +409,328 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertTrue(e.preguntas)
             self.assertEqual(malo.read_text(), "X")
 
+    def test_cambiar_archivos_con_el_mismo_bloqueante_escala(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sp-3", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+
+            def vuelta(i: int):
+                malo.write_text(f"intento-{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "cambios",
+                        "evidencia": f"cat malo.txt -> intento-{i}",
+                        "bloqueantes": [_bloqueante("malo.txt no contiene B")],
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1)
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            e = vuelta(2)
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(3)
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("malo.txt no contiene B", e.motivo)
+            self.assertIn("Se intento", e.motivo)
+            self.assertTrue(e.preguntas)
+            self.assertFalse(_lanzaria(e))
+
+    def test_bloqueantes_nuevos_sin_cerrar_ninguno_escalan(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sp-4", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+
+            def vuelta(i: int):
+                malo.write_text(f"intento-{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "cambios",
+                        "evidencia": f"cat malo.txt -> intento-{i}",
+                        "bloqueantes": [_bloqueante(f"malo.txt falla en el paso {i}")],
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1)
+            self.assertEqual(e.estrategia, "investigar")
+            e = vuelta(2)
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = vuelta(3)
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertFalse(_lanzaria(e))
+
+    def test_revisor_que_no_concluye_dos_vueltas_escala(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-1", "dato.txt con 42")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "dato.txt").write_text("41")
+
+            def vuelta(i: int):
+                e = r.incorporar()
+                self.assertEqual(e.rol, "revisor")
+                r.juicio(
+                    {
+                        "veredicto": "no_concluyente",
+                        "evidencia": f"no pude decidir, vuelta {i}",
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1)
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(2)
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(e.motivo)
+            self.assertFalse(_lanzaria(e))
+
+    def test_aprobar_corta_la_racha_y_la_fase_nueva_empieza_en_cero(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-3", "a.txt con A y b.txt con B")
+            self.addCleanup(r.reg.close)
+            interno = _interno(r)
+            (interno / "fases.json").write_text(
+                json.dumps(
+                    {
+                        "fases": [
+                            {"id": "a", "resultado": "a.txt con A"},
+                            {"id": "b", "resultado": "b.txt con B", "requiere": ["a"]},
+                        ]
+                    }
+                )
+            )
+            (r.espacio / "a.txt").write_text("A")
+            r.incorporar()
+            r.juicio({"veredicto": "no_concluyente", "evidencia": "duda en a"})
+            e = r.incorporar()
+            self.assertEqual(e.fase_activa, "a")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            r.incorporar()
+            r.juicio({"veredicto": "aprobado", "evidencia": "cat a.txt -> A"})
+            e = r.incorporar()
+            self.assertEqual(e.fase_activa, "b")
+            self.assertEqual(e.sin_progreso, 0)
+            (r.espacio / "b.txt").write_text("B")
+            r.incorporar()
+            r.juicio({"veredicto": "no_concluyente", "evidencia": "primera duda en b"})
+            e = r.incorporar()
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertTrue(_lanzaria(e))
+
+    def test_no_concluyente_con_el_primer_bloqueante_es_avance(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-4", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+
+            def vuelta(i: int, bloqueantes: list):
+                malo.write_text(f"intento-{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "no_concluyente",
+                        "evidencia": f"cat malo.txt -> intento-{i}, falta un dato",
+                        "bloqueantes": bloqueantes,
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1, [_bloqueante("malo.txt no contiene B")])
+            self.assertTrue(bloqueantes_abiertos(e))
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(2, [])
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = vuelta(3, [])
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("malo.txt no contiene B", e.motivo)
+            self.assertFalse(_lanzaria(e))
+
+    def test_no_concluyente_que_cierra_un_bloqueante_es_avance(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-2", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+            malo.write_text("X")
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "cambios",
+                    "evidencia": "cat malo.txt -> X",
+                    "bloqueantes": [_bloqueante("malo.txt no contiene B")],
+                }
+            )
+            e = r.incorporar()
+            hid = bloqueantes_abiertos(e)[0].id
+            for i in range(3):
+                malo.write_text(f"B{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "no_concluyente",
+                        "evidencia": f"cat malo.txt -> B{i}, falta un dato",
+                        "resueltos": [hid] if i == 0 else [],
+                    }
+                )
+                e = r.incorporar()
+                if i == 0:
+                    self.assertEqual(bloqueantes_abiertos(e), ())
+                    self.assertEqual(e.estrategia, "investigar")
+                    self.assertNotEqual(e.estado, "necesita_usuario")
+                    self.assertTrue(_lanzaria(e))
+                elif i == 1:
+                    self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+                else:
+                    self.assertEqual(e.estado, "necesita_usuario")
+
+    def test_checks_en_rojo_dos_vueltas_seguidas_escalan(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ci-1", FakeGitHub,
+                {"requeridos": ["ci"], "checks": {"ci": "exit 1"}},
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            e = vuelta("dos")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            e = vuelta("tres")
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("checks requeridos en rojo: ci", e.motivo)
+            self.assertIn("Se intento", e.motivo)
+            self.assertFalse(_lanzaria(e))
+
+    def test_deepseek_con_el_mismo_bloqueante_dos_vueltas_seguidas_escala(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-1", _GhConDeepSeek)
+            e = vuelta("uno")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            e = vuelta("dos")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            e = vuelta("tres")
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("DeepSeek", e.motivo)
+            self.assertIn("Se intento", e.motivo)
+            self.assertFalse(_lanzaria(e))
+
+    def test_deepseek_que_cierra_un_bloqueante_y_trae_otro_es_avance(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-2", _GhConDeepSeek)
+            e = vuelta("uno")
+            self.assertEqual(e.estrategia, "investigar")
+            for i in range(4):
+                vuelta.gh.titulos = (f"Falla {i} en el log",)
+                e = vuelta(f"v{i}")
+                self.assertEqual(e.estrategia, "investigar")
+                self.assertEqual(e.sin_progreso, 0)
+                self.assertNotEqual(e.estado, "necesita_usuario")
+                self.assertTrue(_lanzaria(e))
+
+    def test_check_que_vuelve_a_rojo_con_deepseek_abierto_escala(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ci-3", _GhConDeepSeek,
+                {"requeridos": ["ci"], "checks": {"ci": _contiene("A")}},
+            )
+            e = vuelta("A1")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            e = vuelta("A2")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            e = vuelta("x3")
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("checks requeridos en rojo: ci", e.motivo)
+            self.assertFalse(_lanzaria(e))
+
+    def test_check_que_alterna_rojo_y_verde_no_es_avance_cada_vez(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ci-4", _GhConDeepSeek,
+                {"requeridos": ["ci"], "checks": {"ci": _contiene("A")}},
+            )
+            e = vuelta("x1")
+            self.assertEqual(e.estrategia, "investigar")
+            e = vuelta("A2")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            e = vuelta("x3")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = vuelta("A4")
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertFalse(_lanzaria(e))
+
+    def test_cerrar_un_check_en_rojo_es_avance(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ci-2", FakeGitHub,
+                {
+                    "requeridos": ["a", "b"],
+                    "checks": {"a": _contiene("A"), "b": _contiene("B")},
+                },
+            )
+            e = vuelta("x")
+            self.assertEqual(e.estrategia, "investigar")
+            e = vuelta("A")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            e = vuelta("A2")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+
     def test_rondas_con_progreso_sin_tope(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-2", "malo.txt con B")
             self.addCleanup(r.reg.close)
             malo = r.espacio / "malo.txt"
-            for i in range(3):
+            cerrados: list[str] = []
+            for i in range(5):
                 malo.write_text(f"intento-{i}")
                 r.incorporar()
                 r.juicio(
                     {
                         "veredicto": "cambios",
                         "evidencia": f"lei malo.txt vuelta {i}",
+                        "resueltos": cerrados,
                         "bloqueantes": [
-                            {
-                                "criterio": "comportamiento",
-                                "titulo": "malo.txt no contiene B",
-                                "reproduccion": f"cat malo.txt -> intento-{i}",
-                                "ancla": "malo.txt:1",
-                            }
+                            _bloqueante(
+                                f"malo.txt falla en el paso {i}",
+                                f"cat malo.txt -> intento-{i}",
+                            )
                         ],
                     }
                 )
                 e = r.incorporar()
                 self.assertNotEqual(e.estado, "necesita_usuario")
                 self.assertEqual(e.sin_progreso, 0)
+                self.assertTrue(_lanzaria(e))
+                cerrados = [h.id for h in bloqueantes_abiertos(e, "independiente")]
             malo.write_text("B")
             r.incorporar()
             hid = bloqueantes_abiertos(r.fold())[0].id
@@ -867,6 +1249,110 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
                 self.assertTrue(
                     (skill.parent.parent / nombre / "SKILL.md").is_file()
                 )
+
+
+DOCS = Path(__file__).resolve().parent.parent / "docs"
+
+
+def _texto_doc(nombre: str) -> str:
+    return " ".join((DOCS / nombre).read_text(encoding="utf-8").split())
+
+
+class DocumentosDelFreno(unittest.TestCase):
+    def test_el_diseno_no_afirma_que_el_instrumento_repetido_escala(self):
+        diseno = _texto_doc("diseno-flujo-revisiones.md")
+        self.assertNotIn("tres veces sin progreso escala", diseno)
+        self.assertIn("no escala por conteo", diseno)
+        self.assertIn("no escala por conteo", _texto_doc("flujo-revisiones.md"))
+
+    def test_ningun_doc_dice_que_cambiar_la_firma_es_avance(self):
+        for nombre in ("diseno-flujo-revisiones.md", "flujo-revisiones.md"):
+            texto = _texto_doc(nombre)
+            self.assertNotIn("progreso = cambia la firma", texto, nombre)
+            self.assertNotIn("Hay progreso si la firma cambia", texto, nombre)
+            self.assertIn("Cambiar archivos no", texto, nombre)
+
+
+class AvanceGlobalDelFreno(unittest.TestCase):
+    def _eventos(self, tmp: str, clave: str):
+        reg = Registro(Path(tmp) / "base")
+        self.addCleanup(reg.close)
+        enc = recibir(reg, "pedido", clave, ahora_iso())["encargo"]
+        contador = [0]
+
+        def evento(kind: str, datos: dict):
+            contador[0] += 1
+            e = reg.fold(enc)
+            reg.anotar(
+                enc,
+                {
+                    "kind": kind,
+                    "data": {
+                        "fase": e.fase_activa,
+                        "intento": e.intento,
+                        "hora": ahora_iso(),
+                        **datos,
+                    },
+                },
+                f"avance:{contador[0]}",
+            )
+            return reg.fold(enc)
+
+        return evento
+
+    @staticmethod
+    def _revision(origen: str, ids: list[str]) -> dict:
+        return {
+            "revision_id": "rev_" + origen + "_".join(ids),
+            "version": "v1",
+            "base_version": "",
+            "alcance": "completa",
+            "veredicto": "cambios",
+            "revisor": "x",
+            "origen": origen,
+            "cubre": [],
+            "hallazgos": [
+                {
+                    "id": i,
+                    "gravedad": "bloqueante",
+                    "criterio": "comportamiento",
+                    "titulo": f"falla {i}",
+                    "reproduccion": "cat x",
+                    "ancla": "x:1",
+                    "origen": origen,
+                    "estado": "abierto",
+                }
+                for i in ids
+            ],
+            "aprobadas": [],
+            "evidencia": "e",
+            "efectos_pendientes": [],
+            "inspeccion_faltante": "",
+        }
+
+    def test_check_rojo_de_un_commit_anterior_sigue_siendo_bloqueo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evento = self._eventos(tmp, "avance-check")
+            previo = evento(
+                "entrega_bloqueada",
+                {"sha": "A", "causa": "ci rojo", "fallas": ["ci"]},
+            )
+            e = evento("revision", self._revision("independiente", ["R1"]))
+            self.assertFalse(hubo_avance(previo, e))
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
+            verde = evento("entrega_externa", {"paso": "checks_verdes", "sha": "B"})
+            self.assertTrue(hubo_avance(e, verde))
+            self.assertEqual(verde.fase_actual.fallas_checks, ())
+
+    def test_revision_independiente_no_cierra_bloqueantes_de_deepseek(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evento = self._eventos(tmp, "avance-ds")
+            previo = evento("revision", self._revision("deepseek", ["D1"]))
+            e = evento("revision", self._revision("independiente", ["R1"]))
+            self.assertFalse(hubo_avance(previo, e))
+            self.assertEqual(
+                [h.id for h in bloqueantes_abiertos(e, "deepseek")], ["D1"]
+            )
 
 
 class CorreccionEnCursoFlujo(unittest.TestCase):
