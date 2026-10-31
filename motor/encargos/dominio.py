@@ -311,6 +311,9 @@ class Solicitud:
     pregunta: str = ""
     respuesta: str = ""
     detalle: str = ""
+    # Respuestas del propietario que llegaron cuando la solicitud ya no estaba
+    # en `pregunta`: no cambian su estado, pero son información nueva.
+    tardias: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -335,7 +338,13 @@ class Solicitud:
             "pregunta": self.pregunta,
             "respuesta": self.respuesta,
             "detalle": self.detalle,
+            "tardias": list(self.tardias),
         }
+
+    @property
+    def respuestas_propietario(self) -> tuple[str, ...]:
+        """Todo lo que el propietario contestó, completo y en orden."""
+        return ((self.respuesta,) if self.respuesta else ()) + self.tardias
 
 
 @dataclass(frozen=True)
@@ -786,10 +795,15 @@ def sin_nada_en_curso(e: Encargo) -> bool:
         or e.reserva
         or e.impedimento
         or e.impedimentos
-        or inspeccion_bloquea(e)
-        or any(s.estado in ("pendiente", "pregunta") for s in e.solicitudes)
+        or (inspeccion_bloquea(e) and pregunta_de_inspeccion(e) is None)
+        or any(
+            s.estado in ("pendiente", "pregunta") and s is not pregunta_de_inspeccion(e)
+            for s in e.solicitudes
+        )
     ):
         return False
+    # Una pregunta del propietario sin estado `necesita_usuario` es un recibido
+    # mudo: nadie la va a contestar porque nadie sabe que está abierta.
     return not (
         e.fases
         and (
@@ -820,24 +834,48 @@ def inspeccion_bloquea(e: Encargo) -> bool:
     fase = e.fase_actual
     if fase is None or not fase.inspeccion_pendiente:
         return False
+    if ajuste_sin_ver_por_inspeccion(e):
+        return False
     ident = fase.inspeccion_solicitud
     if not ident:
         return True
     sol = next((s for s in e.solicitudes if s.id == ident), None)
     if sol is None:
-        return True
+        # La liga apunta a una solicitud que nunca se registró (llegó tarde, con
+        # el encargo detenido): nadie la va a resolver, no puede bloquear.
+        return False
     if sol.estado in ("pendiente", "pregunta"):
         return True
     return respuesta_consumida(fase, marca_inspeccion_entregada(sol))
 
 
+def ajuste_sin_ver_por_inspeccion(e: Encargo) -> bool:
+    """El propietario agregó un ajuste que ningún intento ha visto todavía: es
+    información nueva aunque la solicitud siga abierta. Abre el turno una sola
+    vez, porque al abrirse el intento del revisor el ajuste queda visto."""
+    fase = e.fase_actual
+    return (
+        fase is not None and bool(fase.inspeccion_pendiente) and correcciones_sin_ver(e)
+    )
+
+
+def pregunta_de_inspeccion(e: Encargo) -> Solicitud | None:
+    """La solicitud ligada que espera al propietario y bloquea la fase."""
+    fase = e.fase_actual
+    if fase is None or not fase.inspeccion_pendiente or not inspeccion_bloquea(e):
+        return None
+    sol = next((s for s in e.solicitudes if s.id == fase.inspeccion_solicitud), None)
+    return sol if sol is not None and sol.estado == "pregunta" else None
+
+
 def marca_inspeccion_entregada(sol: Solicitud) -> str:
-    return f"{sol.id}:{sol.estado}"
+    marca = f"{sol.id}:{sol.estado}"
+    return f"{marca}:r{len(sol.tardias)}" if sol.tardias else marca
 
 
 def inspeccion_consumida(e: Encargo) -> Solicitud | None:
     fase = e.fase_actual
-    if fase is None or not fase.inspeccion_pendiente:
+    if fase is None or not fase.inspeccion_pendiente or ajuste_sin_ver_por_inspeccion(e):
         return None
     sol = next((s for s in e.solicitudes if s.id == fase.inspeccion_solicitud), None)
     if sol is None or sol.estado in ("pendiente", "pregunta"):
@@ -987,6 +1025,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             "" if en_curso else hora,
         )
         e = replace(e, ajustes=e.ajustes + (d["texto"],))
+        e = _soltar_impedimento_de_inspeccion(e)
         if e.estado == "detenido":
             return replace(
                 e,
@@ -1347,7 +1386,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         bloquea = bool(d.get("bloquea_todo"))
         return replace(
             e,
-            preguntas=e.preguntas + (d["texto"],),
+            preguntas=e.preguntas if d["texto"] in e.preguntas else e.preguntas + (d["texto"],),
             estado="necesita_usuario" if bloquea else e.estado,
             motivo=d["texto"] if bloquea else e.motivo,
             siguiente="hace falta una decisión del usuario" if bloquea else e.siguiente,
@@ -1545,6 +1584,26 @@ def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:
     return replace(e, solicitudes=e.solicitudes + (sol,), hora=hora or e.hora)
 
 
+def _soltar_impedimento_de_inspeccion(e: Encargo) -> Encargo:
+    """Una respuesta o un ajuste del propietario es la salida del impedimento
+    `inspeccion:<id>`: sin ella solo un juicio corregido lo levanta, y el
+    revisor no corre mientras el impedimento siga."""
+    restantes = tuple(i for i in e.impedimentos if not i.clase.startswith("inspeccion:"))
+    if len(restantes) == len(e.impedimentos):
+        return e
+    e = _con_impedimentos(e, restantes)
+    return replace(
+        e,
+        motivo=e.impedimento_causa,
+        siguiente=(
+            "esperar a que se cumpla: " + e.impedimento_condicion
+            if e.impedimentos
+            else "seguir el mismo encargo"
+        ),
+        ultimo_hecho="el propietario aportó información nueva; el revisor retoma la inspección",
+    )
+
+
 def _reanudar_inspeccion(e: Encargo, ident: str) -> Encargo:
     fase = e.fase_actual
     if (
@@ -1600,31 +1659,48 @@ def solicitud_vigente(e: Encargo, fase: str, intento: str) -> bool:
     return True
 
 
+def respuesta_vigente(e: Encargo, sol: Solicitud) -> bool:
+    """La respuesta del propietario es información de la fase, no del intento.
+
+    Cada vuelta del revisor abre su propio intento y `e.intento` sigue siendo el
+    último, así que la solicitud de la vuelta anterior nunca coincide. El
+    revisor siguiente es quien la consume, de modo que basta la fase.
+    """
+    return not sol.fase or sol.fase == e.fase_activa
+
+
+def solicitud_ligada(e: Encargo, sol: Solicitud) -> bool:
+    """La solicitud es la que la inspección pendiente de la fase espera."""
+    fase = e.fase_actual
+    return fase is not None and bool(fase.inspeccion_solicitud) and fase.inspeccion_solicitud == sol.id
+
+
 def _respuesta(e: Encargo, d: dict, hora: str) -> Encargo:
     """Una respuesta tardía se conserva y no cambia el trabajo que ya no la espera."""
     ident = str(d.get("solicitud") or "")
     texto = str(d.get("texto") or "")
     sol = next((s for s in e.solicitudes if s.id == ident), None)
-    if (
-        sol is None
-        or sol.estado != "pregunta"
-        or not solicitud_vigente(e, sol.fase, sol.intento)
-    ):
+    if sol is None or not respuesta_vigente(e, sol):
         return replace(
             e,
             procedimiento=e.procedimiento
             + (f"respuesta sin pregunta vigente ({ident}): {texto}",),
             hora=hora or e.hora,
         )
-    nueva = replace(sol, estado="respuesta", respuesta=texto)
-    return _reanudar_inspeccion(
-        replace(
-            e,
-            solicitudes=tuple(nueva if s.id == ident else s for s in e.solicitudes),
-            hora=hora or e.hora,
-        ),
-        ident,
+    if sol.estado != "pregunta":
+        # La solicitud ya tiene resultado (un error, una denegación, una
+        # detención): la respuesta no lo reescribe pero tampoco se pierde.
+        if texto in sol.respuestas_propietario:
+            return e
+        nueva = replace(sol, tardias=sol.tardias + (texto,))
+    else:
+        nueva = replace(sol, estado="respuesta", respuesta=texto)
+    e = replace(
+        e,
+        solicitudes=tuple(nueva if s.id == ident else s for s in e.solicitudes),
+        hora=hora or e.hora,
     )
+    return _reanudar_inspeccion(_soltar_impedimento_de_inspeccion(e), ident)
 
 
 def _autorizacion(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -1868,6 +1944,24 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
 
 
 def _retomar(e: Encargo, hora: str) -> Encargo:
+    """Vuelve a abrir el trabajo. Si una pregunta del propietario sigue abierta
+    y bloquea la fase, no queda en `recibido`: dice cuál es."""
+    e = _retomar_trabajo(e, hora)
+    sol = pregunta_de_inspeccion(e) if e.estado == "recibido" else None
+    if sol is None:
+        return e
+    texto = sol.pregunta or e.fase_actual.inspeccion_pendiente
+    return replace(
+        e,
+        estado="necesita_usuario",
+        motivo=texto,
+        siguiente="hace falta una decisión del usuario",
+        ultimo_hecho=f"se continuó, pero la solicitud {sol.id} sigue esperando al propietario",
+        preguntas=e.preguntas if texto in e.preguntas else e.preguntas + (texto,),
+    )
+
+
+def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:
     """Vuelve a abrir el trabajo. No repara nada: las causas pendientes siguen
     vigentes, cada una con su propia comprobación. No toca el proceso: quien
     retoma desde `detenido` ya sabe que no hay ninguno."""

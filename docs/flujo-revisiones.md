@@ -172,6 +172,34 @@ a los 15 s. Cerrar un bloqueante o una
 aprobación sin nada abierto reinicia la cuenta, también al pasar a la fase
 siguiente. Nunca se declara éxito ni se vuelve a crear el encargo.
 
+## Inspecciones y respuestas del propietario
+
+Cuando el revisor no concluye y nombra una inspección, la fase queda ligada a
+su solicitud y el revisor no vuelve a correr sin información nueva. La
+información nueva es la respuesta del propietario, la resolución de la
+solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
+
+- **La respuesta llega completa.** `director responder` guarda el texto entero.
+  Si la solicitud ya tenía resultado (un error, una denegación, una detención),
+  la respuesta no lo reescribe: queda en `tardias` y el JSON de
+  `.interno/buzon/respuestas/<id>.json` pasa a `estado: respuesta` con la
+  respuesta completa, y el estado anterior en `anterior`. El prompt del revisor
+  y del responsable lleva cada respuesta de la fase, sin recortar y aunque no
+  sea la solicitud ligada.
+- **Un ajuste abre el turno una sola vez.** Con la pregunta abierta, con el
+  impedimento `inspeccion:<id>` o con el encargo detenido, un ajuste cuenta como
+  información nueva. El revisor corre una vez y, al abrirse su intento, el
+  ajuste queda visto: si repite el mismo pedido, el gate vuelve a cerrar.
+- **`continuar` no deja un `recibido` mudo.** Si la pregunta sigue abierta y
+  nada la contestó, el encargo queda en `necesita_usuario` con esa pregunta.
+- **Un recurso cambiado no es una repetición.** La identidad de la inspección
+  incluye el tamaño, la fecha y el hash de lo que leería el recurso (un
+  archivo local o una base sqlite). Pedirlo de nuevo tras subir otro archivo es
+  una solicitud nueva.
+- **Una solicitud tardía no cuelga la fase.** Una liga a una solicitud que no
+  existe no bloquea. Una solicitud detenida antes de despachar queda
+  `detenida`, y pedir lo mismo otra vez es una solicitud nueva.
+
 ## Niveles de entrega
 
 El nivel se fija al encargar (`--entrega`), no a mitad de camino. Los niveles

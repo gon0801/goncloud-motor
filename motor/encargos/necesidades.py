@@ -18,7 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import capacidades
-from .dominio import Solicitud, TransicionIlegal
+from .dominio import Solicitud, TransicionIlegal, respuesta_vigente
 from .frontera import leer_parada_local
 from .registro import Registro
 
@@ -253,9 +253,13 @@ def _afirmativa(texto: str) -> bool:
 
 def _vigente(enc, sol: Solicitud) -> bool:
     """La solicitud sigue correspondiendo al trabajo que se va a ejecutar."""
-    from .dominio import solicitud_vigente
+    from .dominio import solicitud_ligada, solicitud_vigente
 
-    return solicitud_vigente(enc, sol.fase, sol.intento)
+    return solicitud_vigente(enc, sol.fase, sol.intento) or (
+        # La inspección que la fase espera sigue siendo el trabajo aunque otra
+        # vuelta del revisor haya abierto su intento después de pedirla.
+        solicitud_ligada(enc, sol) and sol.fase == enc.fase_activa
+    )
 
 
 def _autorizado(enc, recurso: str, operacion: str, fase: str, intento: str) -> bool:
@@ -379,6 +383,46 @@ def _escribir_respuesta(
     if preservar and destino.exists():
         destino = carpeta / f"{sol.id}.{doc.get('estado') or 'aviso'}-{int(time.time())}.json"
     _publica(destino, doc, raiz=Path(espacio))
+
+
+_ESTADOS_SUPERADOS = ("error", "detenida", "pendiente", "pregunta", "conflicto", "tardia")
+
+
+def _con_respuestas_propietario(doc: dict, sol: Solicitud) -> dict:
+    """El documento del buzón dice lo que el propietario contestó, completo.
+
+    Un error o una detención anterior no es el estado actual de lo que el
+    propietario ya respondió: pasa a `anterior`. Un resultado real (`resuelta`)
+    o una denegación conservan su estado y su contenido.
+    """
+    textos = sol.respuestas_propietario
+    if not textos:
+        return doc
+    nuevo = dict(doc)
+    if nuevo.get("estado") in _ESTADOS_SUPERADOS:
+        nuevo["anterior"] = {
+            "estado": nuevo.get("estado"),
+            "motivo": nuevo.get("motivo", ""),
+        }
+        nuevo["estado"] = "respuesta"
+        nuevo["motivo"] = "el propietario respondió; su respuesta completa va en respuesta"
+    nuevo["respuesta"] = "\n\n".join(textos)
+    nuevo["respuestas_propietario"] = list(textos)
+    return nuevo
+
+
+def _reflejar_respuesta_propietario(
+    espacio: Path, sol: Solicitud, directorio: Path | None = None
+) -> bool:
+    """Reescribe el JSON del buzón para que refleje la respuesta del propietario."""
+    destino = Path(espacio) / BUZON / RESPUESTAS / f"{sol.id}.json"
+    actual = _leer(destino)
+    base = actual if actual is not None else _respuesta_de_registro(espacio, sol, directorio)
+    doc = _con_respuestas_propietario(base, sol)
+    if doc == actual:
+        return False
+    _publica(destino, doc, raiz=Path(espacio))
+    return True
 
 
 def _archivar(path: Path) -> None:
@@ -716,6 +760,12 @@ def _ejecutar(
     return resultado
 
 
+def registrar_pedida(registro: Registro, enc, crudo: dict, hora: str) -> str:
+    """Registra la petición que el motor dejó en el buzón, con la misma
+    identidad que usará `atender`: no se duplica ni se ejecuta dos veces."""
+    return _registrar_solicitud(registro, enc, _solicitud_de(enc, crudo), hora)
+
+
 def _registrar_solicitud(registro: Registro, enc, sol: Solicitud, hora: str) -> str:
     return _anotar(
         registro,
@@ -910,6 +960,16 @@ def atender(
             resumen["errores"] += 1
             continue
         if _detenida_ahora(registro, enc.id):
+            if previa is not None and previa.estado == "pendiente":
+                # Registrada pero sin despachar: queda detenida, no colgada.
+                _anotar_resolucion(
+                    registro,
+                    enc,
+                    previa,
+                    "detenida",
+                    detalle="el encargo se detuvo antes de despachar",
+                    hora=hora,
+                )
             _anotar(
                 registro,
                 enc.id,
@@ -1198,13 +1258,32 @@ def continuar_respuestas(
     El cierre, la vigencia y la publicación los hace `atender`. Una entrega que
     no llega al espacio queda pendiente y el resultado del host no se repite.
     """
-    resumen = {"continuadas": 0, "denegadas": 0, "omitidas": 0, "pendientes": 0}
+    resumen = {
+        "continuadas": 0,
+        "denegadas": 0,
+        "omitidas": 0,
+        "pendientes": 0,
+        "reflejadas": 0,
+    }
     actual = registro.fold(enc.id) or enc
     for sol in tuple(actual.solicitudes):
         if sol.estado != "respuesta":
-            resumen["omitidas"] += 1
+            if sol.tardias and respuesta_vigente(actual, sol):
+                # Ya tenía resultado: la respuesta no lo repite, pero el buzón
+                # tiene que decirla en vez de seguir mostrando el error viejo.
+                resumen["reflejadas"] += int(
+                    _reflejar_respuesta_propietario(espacio, sol, directorio)
+                )
+            else:
+                resumen["omitidas"] += 1
             continue
         if not _vigente(actual, sol):
+            # El intento que la pidió ya no existe: no se ejecuta, pero el
+            # buzón dice lo que el propietario contestó.
+            if respuesta_vigente(actual, sol):
+                resumen["reflejadas"] += int(
+                    _reflejar_respuesta_propietario(espacio, sol, directorio)
+                )
             resumen["omitidas"] += 1
             continue
         _reponer_peticion(espacio, sol)
@@ -1216,6 +1295,12 @@ def continuar_respuestas(
         paso = atender(registro, actual, espacio, directorio, hora)
         actual = registro.fold(enc.id) or actual
         nuevo = _buscar(actual, sol.id)
+        if nuevo is not None and nuevo.respuestas_propietario:
+            # `atender` puede cerrar con el error del pedido (operación no
+            # concedida): el buzón igual dice la respuesta completa.
+            resumen["reflejadas"] += int(
+                _reflejar_respuesta_propietario(espacio, nuevo, directorio)
+            )
         if nuevo is not None and nuevo.estado == "resuelta":
             resumen["continuadas"] += 1
         elif nuevo is not None and nuevo.estado == "denegada":
@@ -1265,8 +1350,20 @@ def responder(
         return {"conflicto": True, "motivo": "esa clave ya respondió otra cosa"}
     actual = registro.fold(encargo_id)
     nueva = _buscar(actual, solicitud_id)
-    aplicada = bool(nueva and nueva.estado == "respuesta" and nueva.respuesta == texto)
-    if aplicada and nueva is not None and nueva.recurso and _afirmativa(texto):
+    aplicada = bool(
+        nueva
+        and (
+            (nueva.estado == "respuesta" and nueva.respuesta == texto)
+            or str(texto) in nueva.tardias
+        )
+    )
+    if (
+        aplicada
+        and nueva is not None
+        and nueva.estado == "respuesta"
+        and nueva.recurso
+        and _afirmativa(texto)
+    ):
         _anotar(
             registro,
             encargo_id,

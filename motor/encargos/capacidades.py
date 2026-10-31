@@ -459,6 +459,36 @@ def _leer_http(recurso: dict, relativa: str, destino: Path) -> dict:
     }
 
 
+def huella_recurso(
+    recursos: dict[str, dict], operacion: str, recurso: str, parametros: dict
+) -> str:
+    """Estado observable de lo que la operación leería: tamaño, fecha y hash.
+
+    Vacío si el host no puede observarlo (recurso http, ruta ausente, ilegible).
+    Pedir de nuevo un recurso cuya huella cambió no es repetir la inspección.
+    """
+    concedido = recursos.get(recurso)
+    if concedido is None:
+        return ""
+    try:
+        if concedido.get("tipo") == "sqlite":
+            origen = _ruta_absoluta(concedido.get("ruta") or "")
+        elif operacion == REMOTO and str(concedido.get("transporte") or "fichero") != "http":
+            raiz = _ruta_absoluta(concedido.get("raiz") or "")
+            origen = (raiz / _ruta_relativa(str(parametros.get("ruta") or ""))).resolve()
+            if not origen.is_relative_to(raiz.resolve()):
+                return ""
+        else:
+            return ""
+        info = origen.stat()
+        if not origen.is_file():
+            return ""
+        digest = _huella(origen) if info.st_size <= MAX_BYTES else ""
+    except (ValueError, OSError, ConfigInvalida):
+        return ""
+    return f"{info.st_size}:{info.st_mtime_ns}:{digest}"
+
+
 def ejecutar(
     recursos: dict[str, dict],
     operacion: str,
