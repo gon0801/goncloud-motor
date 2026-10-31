@@ -107,6 +107,12 @@ y `continuar`.
   recibió.
 - Solo levanta las causas que el host no puede comprobar. Las demás siguen
   hasta verificarse.
+- Una corrección que entra mientras se escribe el cierre tampoco se pierde:
+  el cierre anota cuántas correcciones vio y el registro lo rechaza, en la
+  misma transacción, si hay más; el trabajo vuelve al implementador. Cuando
+  nadie puede recibir una corrección, el aviso de cierre al propietario la
+  nombra. En la vía directa se rechaza con su motivo: ningún intento del motor
+  la recibiría.
 - La misma clave no duplica la corrección. La misma clave con otro texto se
   reporta como `conflicto`.
 - `motor director corregir ENCARGO --base B --clave K --texto T --canal C
@@ -176,8 +182,12 @@ autor contenga «deepseek» no acreditan origen.
 
 El parseo de DeepSeek usa primero el bloque oculto
 `ai-review:findings=[...]` cuando lo trae: las entradas abiertas con
-severidad Critical o High nacen bloqueantes, Medium y Low entran como
-observaciones, y las resueltas o descartadas no reabren. Sin bloque
+severidad Critical, High o Medium nacen bloqueantes (devuelven el trabajo
+al implementador con su título, archivo y línea, dentro del mismo encargo),
+Low entra como observación visible en `ver` sin abrir otra vuelta, y las
+resueltas o descartadas no reabren. Un Medium entra por la misma vía que un
+bloqueante de DeepSeek, así que cualquier regla de avance o de vueltas sin
+progreso que cubra a estos lo cubre también. Sin bloque
 estructurado, bloquean las señales textuales reales por línea
 (`CHANGES_REQUESTED`, `REQUEST_CHANGES`, `[P0]`, `[P1]` y las prohibitivas
 de siempre); todo lo demás entra como observación visible. Los bloqueantes
