@@ -968,6 +968,8 @@ def _sin_avance(
 
 
 _NOTA_SIN_INTENTO = "Correcciones que ningún intento pudo recibir:"
+# La primera versión de la nota escribía este prefijo, sin tildes y en minúscula.
+_NOTA_SIN_INTENTO_ANTERIOR = "correcciones que ningun intento pudo recibir:"
 
 
 def _devolver_correcciones(registro: Registro, enc: Encargo, hora: str) -> bool:
@@ -1494,7 +1496,11 @@ def _intentar_cierre(
             hora, f"cierre-{enc.generacion}",
         )
         return registro.fold(enc.id)
-    sin_recibir = [n for n in enc.procedimiento if n.startswith(_NOTA_SIN_INTENTO)]
+    sin_recibir = [
+        n
+        for n in enc.procedimiento
+        if n.startswith((_NOTA_SIN_INTENTO, _NOTA_SIN_INTENTO_ANTERIOR))
+    ]
     if sin_recibir:
         # El aviso al propietario es esta evidencia: ahí tiene que ir lo que
         # nadie recibió.

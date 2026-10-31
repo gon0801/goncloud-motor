@@ -1712,6 +1712,48 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
             self.assertIn("el dato debe ser 43", e.evidencia[-1])
 
+    def test_la_nota_sin_intento_con_el_prefijo_anterior_llega_al_aviso_de_cierre(self):
+        from motor.integraciones import directores
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "aviso-legado", "Crea dato.txt con 42", canal="hermes")
+            self.addCleanup(r.reg.close)
+            self._revisor_con_juicio_aprobado(r)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": "correcciones que ningun intento pudo recibir: "
+                        "el dato debe ser 43",
+                        "ajustes_vistos": 1,
+                        "hora": r.hora,
+                    },
+                },
+                f"correcciones-sin-intento:{r.enc}:1",
+            )
+            with mock.patch(
+                "motor.encargos.ciclo.puede_recibir_intento", return_value=False
+            ), mock.patch(
+                "motor.encargos.dominio.puede_recibir_intento", return_value=False
+            ):
+                e = r.incorporar()
+            self.assertEqual(e.estado, "terminado")
+            self.assertIn("el dato debe ser 43", e.evidencia[-1])
+            directores.drenar(r.reg)
+            cuerpos = [
+                p.read_text(encoding="utf-8")
+                for p in (Path(r.base) / "canal" / "hermes").iterdir()
+            ]
+            self.assertTrue(
+                any(
+                    "ningun intento pudo recibir" in c and "el dato debe ser 43" in c
+                    for c in cuerpos
+                ),
+                cuerpos,
+            )
+
     def test_en_la_via_directa_la_correccion_se_rechaza_con_su_motivo(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "directa-1", "Crea dato.txt con 42", via="directa")
