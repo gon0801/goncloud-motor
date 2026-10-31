@@ -459,6 +459,21 @@ def _leer_http(recurso: dict, relativa: str, destino: Path) -> dict:
     }
 
 
+def recursos_observables(recursos: dict[str, dict]) -> tuple[str, ...]:
+    """Recursos cuyo cambio detecta `huella_recurso`: sqlite y remotos por fichero."""
+    return tuple(
+        sorted(
+            nombre
+            for nombre, concedido in recursos.items()
+            if concedido.get("tipo") == "sqlite"
+            or (
+                concedido.get("tipo") == "remoto"
+                and str(concedido.get("transporte") or "fichero") != "http"
+            )
+        )
+    )
+
+
 def huella_recurso(
     recursos: dict[str, dict], operacion: str, recurso: str, parametros: dict
 ) -> str:

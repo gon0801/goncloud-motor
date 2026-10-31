@@ -19,6 +19,8 @@ from motor.encargos import necesidades as nec
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import (
     _directorio,
+    _id_inspeccion,
+    _juicio_de_referencia,
     ahora_iso,
     barrer,
     corregir,
@@ -461,6 +463,102 @@ class SolicitudTardiaNoCuelgaLaFase(_Flujo):
         self.assertNotEqual(nueva, ident)
         self.assertEqual(llamadas, [nueva])
         self.assertEqual(self.buzon(r, nueva)["estado"], "resuelta")
+
+    def test_el_juicio_que_vuelve_a_pedir_la_inspeccion_huerfana_no_se_descarta(self):
+        r = self.recorrido("tard-3", con_recurso=True)
+        llamadas = self.herramienta_ok()
+        self.abrir_turno(r)
+        r.juicio(_pedido())
+        enc = r.fold()
+        ident = _id_inspeccion(enc, _juicio_de_referencia(enc, r.d), r.base)
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "revision",
+                "data": {
+                    "revision_id": "rev-huerfana",
+                    "version": enc.producto.firma,
+                    "base_version": "",
+                    "alcance": "completa",
+                    "veredicto": "no_concluyente",
+                    "revisor": "x",
+                    "origen": "independiente",
+                    "cubre": [],
+                    "hallazgos": [],
+                    "aprobadas": [],
+                    "evidencia": "falta",
+                    "efectos_pendientes": [],
+                    "inspeccion_faltante": "leer indice.txt del CI",
+                    "fase": enc.fase_activa,
+                    "hora": ahora_iso(),
+                },
+            },
+            "rev-huerfana",
+        )
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "inspeccion_solicitud",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "solicitud": ident,
+                    "hora": ahora_iso(),
+                },
+            },
+            "liga-huerfana",
+        )
+        self.cerrar_turno(r)
+        self.assertEqual(r.fold().solicitudes, ())
+        self.barrer(r)
+        self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])
+
+        self.abrir_turno(r)
+        r.juicio(_pedido())
+        r.incorporar()
+        self.cerrar_turno(r)
+        self.assertEqual([s.id for s in r.fold().solicitudes], [ident])
+        self.lanzamientos.clear()
+        self.barrer(r)
+
+        self.assertEqual(llamadas, [ident])
+        self.assertEqual(self.buzon(r, ident)["estado"], "resuelta")
+        self.assertEqual(r.fold().solicitudes[0].estado, "resuelta")
+
+
+class PromptDelRevisorSoloPrometeLoObservable(_Flujo):
+    def _prompt(self, recursos: dict) -> str:
+        r = self.recorrido("prompt-1")
+        (r.base / "capacidades.json").write_text(json.dumps({"recursos": recursos}))
+        self.barrer(r)
+        revisor = [p for rol, p in self.lanzamientos if rol == "revisor"]
+        self.assertTrue(revisor)
+        return revisor[-1]
+
+    def test_un_recurso_por_fichero_se_puede_pedir_de_nuevo(self):
+        prompt = self._prompt({"ci-github": {"tipo": "remoto", "raiz": "/tmp/ci"}})
+        self.assertIn("recurso observable del catalogo (ci-github)", prompt)
+
+    def test_un_recurso_http_no_promete_nada(self):
+        prompt = self._prompt(
+            {
+                "api": {
+                    "tipo": "remoto",
+                    "transporte": "http",
+                    "base": "https://ejemplo.invalid",
+                }
+            }
+        )
+        self.assertNotIn("pedirlo de nuevo no es repetir", prompt)
+        self.assertNotIn("(api)", prompt)
+
+    def test_recursos_observables_separa_http_de_fichero(self):
+        recursos = {
+            "a": {"tipo": "remoto", "raiz": "/x"},
+            "b": {"tipo": "remoto", "transporte": "http"},
+            "c": {"tipo": "sqlite", "ruta": "/y.db"},
+        }
+        self.assertEqual(cap.recursos_observables(recursos), ("a", "c"))
 
 
 class RecursoCambiadoNoEsRepetir(_Flujo):

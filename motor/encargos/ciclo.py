@@ -2478,7 +2478,12 @@ def _salta_inspeccion(
             fase, marca_inspeccion_entregada(otra)
         )
     sol = next((s for s in enc.solicitudes if s.id == ident), None)
-    if sol is not None and sol.estado not in ("pendiente", "pregunta"):
+    if sol is None:
+        # La liga apunta a una solicitud que nunca se registró: no hay respuesta
+        # que el juicio acredite como consumida. Se consume para que
+        # `_ligar_inspeccion` vuelva a encolar el pedido en vez de descartarlo.
+        return False
+    if sol.estado not in ("pendiente", "pregunta"):
         marca = marca_inspeccion_entregada(sol)
         if fase.inspeccion_entregada != marca:
             registro.anotar(
@@ -4082,11 +4087,16 @@ def _lanzar_uno_en_turno(
             contestado = _texto_respuestas_propietario(enc)
             if contestado:
                 contenido += "\n\n" + contestado
-            contenido += (
-                "\n\nSi un recurso del catalogo cambio desde la ultima lectura (otro "
-                "tamano, hash o fecha), pedirlo de nuevo no es repetir la inspeccion: "
-                "declaralo otra vez en inspeccion."
-            )
+            observables = capacidades.recursos_observables(recursos)
+            if observables:
+                contenido += (
+                    "\n\nSi un recurso observable del catalogo ("
+                    + ", ".join(observables)
+                    + ") cambio desde la ultima lectura (otro tamano, hash o fecha), "
+                    "pedirlo de nuevo no es repetir la inspeccion: declaralo otra vez "
+                    "en inspeccion. Los demas recursos (por ejemplo los remotos por "
+                    "http) no se pueden observar: pedir lo mismo sí cuenta como repetir."
+                )
         else:
             interno_de(espacio, crear=True)
             contenido = prompt_responsable(enc)
