@@ -45,6 +45,7 @@ from .dominio import (
     marca_inspeccion_entregada,
     respuesta_consumida,
     nivel_cumplido,
+    sin_nada_en_curso,
     prompt_responsable,
     prompt_revisor,
     recibo_de,
@@ -72,6 +73,15 @@ from .sesion import (
 from .suscripciones import CuentaNoDisponible
 
 _UMBRAL_S = 30
+
+# Quietud: un encargo abierto que no espera con hora ni tiene agente, lanzamiento
+# o paso externo en curso, y cuyo registro no se mueve. Toda espera con hora
+# dura como mucho 300 s (puerto o repo de entrega) y al vencer deja un evento,
+# así que 600 s sin ningún evento no puede ser una espera legítima. Las 3
+# vueltas seguidas evitan escalar por una sola observación, por ejemplo la
+# primera del supervisor tras una caída.
+_QUIETUD_S = 600
+_QUIETUD_VUELTAS = 3
 
 
 def ahora_iso(epoch: float | None = None) -> str:
@@ -747,6 +757,7 @@ def barrer(
         if decision["lanzar"] and lanzador is not None and not parada:
             _lanzar_uno(registro, enc, directorio, espacio, hora, lanzador)
             enc = registro.fold(encargo_id)
+        enc = _vigilar_quietud(registro, enc, decision, arbol, parada, hora, epoch)
         informes.append(vista(enc))
     return informes
 
@@ -761,6 +772,90 @@ def _edad(enc: Encargo, epoch: float) -> float:
     except ValueError:
         return 1e9
     return epoch - visto
+
+
+def _causa_quietud(enc: Encargo, vueltas: int, segundos: int, ultimo: int) -> str:
+    abiertos = ", ".join(h.id for h in bloqueantes_abiertos(enc)) or "ninguno"
+    revision = enc.revision_vigente.veredicto if enc.revision_vigente else "ninguna"
+    sha = enc.producto.sha_git if enc.producto else ""
+    return (
+        f"el encargo lleva {vueltas} vueltas del supervisor y {segundos} s sin ningun "
+        f"evento nuevo (el ultimo es el {ultimo}), sin espera con hora, sin agente, "
+        "sin lanzamiento pendiente ni paso externo que avance. Estado "
+        f"{enc.estado}, fase {enc.fase_activa or '-'}, estrategia {enc.estrategia}; "
+        f"entrega autorizada {enc.entrega.nivel}, alcanzada {enc.nivel_alcanzado}; "
+        f"revision {revision}; bloqueantes abiertos: {abiertos}; sha_git "
+        f"{sha[:12] or 'vacio'}, DeepSeek leido en {enc.deepseek_sha[:12] or 'ninguno'}; "
+        f"la entrega se considera pendiente: {'si' if _aplica_entrega(enc) else 'no'}. "
+        "Se intento: seguir con el paso de entrega o cierre de cada vuelta, sin "
+        "efecto nuevo en el registro."
+    )
+
+
+def _vigilar_quietud(
+    registro: Registro,
+    enc: Encargo,
+    decision: dict,
+    arbol: str,
+    parada: bool,
+    hora: str,
+    epoch: float,
+) -> Encargo:
+    """Cuenta vueltas seguidas en las que el encargo no tiene nada en curso y el
+    registro no se movio. Al pasar el umbral deja un evento `quietud` con la
+    causa y lo pasa a necesita_usuario. Cualquier evento nuevo reinicia la cuenta."""
+    ruta = _directorio(registro.base, enc.id) / "quietud.json"
+    quieto = (
+        not parada
+        and arbol == "ausente"
+        and not decision["lanzar"]
+        and not decision["matar"]
+        and sin_nada_en_curso(enc)
+    )
+    if not quieto:
+        ruta.unlink(missing_ok=True)
+        return enc
+    ultimo = registro.ultimo_evento(enc.id)
+    try:
+        previo = json.loads(ruta.read_text(encoding="utf-8"))
+        if not isinstance(previo, dict):
+            previo = {}
+    except (OSError, ValueError):
+        previo = {}
+    if (
+        previo.get("evento") == ultimo
+        and epoch - float(previo.get("visto") or 0) <= _QUIETUD_S
+    ):
+        vueltas = int(previo.get("vueltas") or 0) + 1
+        desde = float(previo.get("desde") or epoch)
+    else:
+        vueltas, desde = 1, epoch
+    segundos = int(epoch - desde)
+    if vueltas >= _QUIETUD_VUELTAS and segundos >= _QUIETUD_S:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "quietud",
+                "data": {
+                    "causa": _causa_quietud(enc, vueltas, segundos, ultimo),
+                    "vueltas": vueltas,
+                    "segundos": segundos,
+                    "evento": ultimo,
+                    "hora": hora,
+                },
+            },
+            f"quietud:{enc.id}:{ultimo}",
+        )
+        ruta.unlink(missing_ok=True)
+        return registro.fold(enc.id) or enc
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(
+        json.dumps(
+            {"evento": ultimo, "vueltas": vueltas, "desde": desde, "visto": epoch}
+        ),
+        encoding="utf-8",
+    )
+    return enc
 
 
 def _pedidos_efecto(espacio: Path) -> list[dict]:

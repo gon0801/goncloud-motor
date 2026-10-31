@@ -117,6 +117,12 @@ class Registro:
             {"id": r[0], "ts": r[1], "kind": r[2], "data": json.loads(r[3])} for r in rows
         ]
 
+    def ultimo_evento(self, encargo: str) -> int:
+        row = self.db.execute(
+            "SELECT MAX(id) FROM events WHERE encargo = ?", (encargo,)
+        ).fetchone()
+        return int(row[0] or 0)
+
     def ids(self) -> list[str]:
         rows = self.db.execute(
             "SELECT DISTINCT encargo FROM events ORDER BY encargo"

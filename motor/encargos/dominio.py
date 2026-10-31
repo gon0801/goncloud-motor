@@ -727,6 +727,32 @@ def revision_independiente_cubre_producto(e: Encargo) -> bool:
     )
 
 
+def sin_nada_en_curso(e: Encargo) -> bool:
+    """Encargo abierto que no explica por qué no avanza: no espera con hora, no
+    pide al usuario, no está detenido, y ningún agente, reserva, impedimento
+    registrado, inspección pendiente ni dependencia entre fases lo sostiene.
+    Si además el barrido no lanza nada y el registro no se mueve, está quieto."""
+    if (
+        e.estado not in ("recibido", "ejecutando")
+        or not e.intentos_nuevos
+        or e.via == "directa"
+        or e.proc is not None
+        or e.reserva
+        or e.impedimento
+        or e.impedimentos
+        or inspeccion_bloquea(e)
+        or any(s.estado in ("pendiente", "pregunta") for s in e.solicitudes)
+    ):
+        return False
+    return not (
+        e.fases
+        and (
+            all(f.estado == "preparada" for f in e.fases)
+            or _fase_disponible(e.fases) is None
+        )
+    )
+
+
 def nivel_cumplido(e: Encargo) -> bool:
     if e.nivel_alcanzado == "sin_cambios":
         # Sin cambios publicables sólo satisface niveles sin efectos externos;
@@ -1242,6 +1268,21 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             estado="necesita_usuario" if bloquea else e.estado,
             motivo=d["texto"] if bloquea else e.motivo,
             siguiente="hace falta una decisión del usuario" if bloquea else e.siguiente,
+            hora=hora or e.hora,
+        )
+    if kind == "quietud":
+        causa = str(d.get("causa") or "").strip()
+        if not causa:
+            raise TransicionIlegal("la quietud necesita causa")
+        if e.estado not in ("recibido", "ejecutando"):
+            return e
+        return replace(
+            e,
+            estado="necesita_usuario",
+            preguntas=e.preguntas + (causa,),
+            motivo=causa,
+            siguiente="hace falta una decisión del usuario",
+            ultimo_hecho=causa,
             hora=hora or e.hora,
         )
     if kind == "estrategia":
