@@ -29,6 +29,10 @@ PUSH = (
 )
 
 
+def salida(r):
+    return f"rc={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}"
+
+
 class DisponibilidadTest(unittest.TestCase):
     @unittest.skipUnless(EXIGIDA, "solo donde CI exige bubblewrap")
     def test_ci_tiene_una_jaula_que_arranca(self):
@@ -75,9 +79,33 @@ class ArgvTest(unittest.TestCase):
 
     def test_no_monta_el_home_ni_mnt(self):
         argv = self.argv(lecturas=(str(self.base / "fuente"),))
-        montados = [argv[i + 1] for i, x in enumerate(argv) if x.endswith("bind")]
-        for ruta in montados:
+        for ruta in argv:
             self.assertFalse(ruta.startswith(("/home", "/mnt", "/root")), ruta)
+
+    def test_resolv_conf_enlazado_a_mnt_de_wsl_se_monta_sin_crear_mnt(self):
+        etc = self.base / "etc"
+        etc.mkdir()
+        (etc / "hosts").write_text("127.0.0.1 localhost\n")
+        (etc / "localtime").symlink_to("/usr/share/zoneinfo/UTC")
+        wsl = self.base / "mnt" / "wsl"
+        wsl.mkdir(parents=True)
+        (wsl / "resolv.conf").write_text("nameserver 10.255.255.254\n")
+        (etc / "resolv.conf").symlink_to(wsl / "resolv.conf")
+        argv = jaula_linux._etc(str(etc))
+        self.assertEqual(argv[:2], ["--dir", "/etc"])
+        self.assertIn(
+            ["--ro-bind", str((wsl / "resolv.conf").resolve()), "/etc/resolv.conf"],
+            [argv[i : i + 3] for i in range(len(argv) - 2)],
+        )
+        self.assertIn(
+            ["--symlink", "/usr/share/zoneinfo/UTC", "/etc/localtime"],
+            [argv[i : i + 3] for i in range(len(argv) - 2)],
+        )
+        destinos = [argv[i + 2] for i, x in enumerate(argv) if x in ("--ro-bind", "--symlink")]
+        self.assertTrue(destinos)
+        for destino in destinos:
+            self.assertTrue(destino.startswith("/etc/"), destino)
+        self.assertEqual(argv.count("--dir"), 1)
 
     def test_la_red_ninguna_no_comparte_la_red(self):
         self.assertIn("--share-net", self.argv(red=RED_ABIERTA))
@@ -101,8 +129,10 @@ class ArgvTest(unittest.TestCase):
         argv = self.argv(ejecutables=(str(enlace),))
         self.assertEqual(self.montado(argv, real.resolve()), ["--ro-bind"])
         self.assertEqual(self.montado(argv, real.parent), [])
-        i = argv.index("--symlink")
-        self.assertEqual(argv[i : i + 3], ["--symlink", str(real.resolve()), str(enlace)])
+        self.assertIn(
+            ["--symlink", str(real.resolve()), str(enlace)],
+            [argv[i : i + 3] for i in range(len(argv) - 2)],
+        )
 
 
 @unittest.skipIf(CAUSA, CAUSA)
@@ -155,9 +185,9 @@ class JaulaRealTest(unittest.TestCase):
         for destino in destinos:
             with self.subTest(destino=str(destino)):
                 r = self.correr(f"echo x > {destino}")
-                self.assertNotEqual(r.returncode, 0)
+                self.assertNotEqual(r.returncode, 0, salida(r))
                 r = self.correr(f"mkdir -p {destino.parent} && echo x > {destino}")
-                self.assertNotEqual(r.returncode, 0)
+                self.assertNotEqual(r.returncode, 0, salida(r))
         self.assertEqual(list(self.otro.iterdir()), [])
         self.assertEqual(
             sorted(p.name for p in self.base.iterdir()), ["espacio", "otro", "runtime"]
@@ -193,7 +223,15 @@ class JaulaRealTest(unittest.TestCase):
     def test_no_existe_nada_del_anfitrion_que_no_se_concedio(self):
         for ruta in ("/mnt/c", "/mnt", "/home", "/root", "/var"):
             with self.subTest(ruta=ruta):
-                self.assertEqual(self.correr(f"test -e {ruta}").returncode, 1)
+                r = self.correr(f"test -e {ruta} || exit 1; ls -la {ruta}")
+                self.assertEqual(r.returncode, 1, salida(r))
+
+    def test_resolv_conf_se_lee_dentro_de_la_jaula(self):
+        host = Path("/etc/resolv.conf")
+        if not host.is_file():
+            self.skipTest("el anfitrión no tiene /etc/resolv.conf legible")
+        r = self.correr("cat /etc/resolv.conf")
+        self.assertEqual((r.returncode, r.stdout), (0, host.read_text()), salida(r))
 
     def test_bash_y_git_push_a_un_bare_local_funcionan(self):
         r = self.correr(f"cd {self.espacio} && {PUSH}")

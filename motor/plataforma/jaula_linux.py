@@ -50,11 +50,24 @@ def _sistema() -> list:
             montajes += ["--symlink", os.readlink(ruta), ruta]
         elif os.path.isdir(ruta):
             montajes += ["--ro-bind", ruta, ruta]
-    montajes += ["--ro-bind", "/etc", "/etc"]
-    if os.path.islink("/etc/resolv.conf"):
-        destino = os.path.realpath("/etc/resolv.conf")
-        if not destino.startswith(("/etc/", "/usr/")):
-            montajes += ["--ro-bind-try", destino, destino]
+    return montajes + _etc()
+
+
+def _etc(origen: str = "/etc") -> list:
+    """`/etc` de solo lectura, entrada por entrada. En WSL `resolv.conf` es un enlace a
+    `/mnt/wsl/resolv.conf`; montar `/etc` entero lo deja colgando, y montar su destino donde
+    está haría existir `/mnt` en la jaula. Se monta el archivo real sobre `/etc/resolv.conf`."""
+    montajes = ["--dir", "/etc"]
+    for nombre in sorted(os.listdir(origen)):
+        ruta, destino = os.path.join(origen, nombre), "/etc/" + nombre
+        if nombre == "resolv.conf" and os.path.islink(ruta):
+            real = os.path.realpath(ruta)
+            if os.path.isfile(real):
+                montajes += ["--ro-bind", real, destino]
+        elif os.path.islink(ruta):
+            montajes += ["--symlink", os.readlink(ruta), destino]
+        elif os.path.isdir(ruta) or os.path.isfile(ruta):
+            montajes += ["--ro-bind", ruta, destino]
     return montajes
 
 
