@@ -45,7 +45,8 @@ entrega externa y la anti-repetición, sin estado lateral.
 - **Errores internos separados del producto** (boundary-discipline). Todo
   fallo de instrumento/JSON/adaptador reintenta el paso que falló, con
   eventos idempotentes por paso+SHA en la entrega (make-operations-idempotent).
-  El mismo instrumento tres veces sin progreso escala a `necesita_usuario`.
+  Un `instrumento_fallo` repetido no escala por conteo: reintenta el mismo
+  paso y no toca `sin_progreso`. Solo la anti-repetición de abajo escala.
 - **Anti-repetición sin tope.** Sin número fijo de rondas: progreso = se
   cierra un bloqueante (revisor independiente, DeepSeek o checks requeridos).
   Cambiar archivos no cuenta. Sin progreso, primero diagnostica el
