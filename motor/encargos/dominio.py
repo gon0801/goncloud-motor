@@ -567,6 +567,20 @@ def correcciones_sin_ver(e: Encargo) -> bool:
     return len(e.ajustes) > e.ajustes_vistos
 
 
+def _ajustes_de_la_reserva(e: Encargo, d: dict) -> int:
+    """Cuántos ajustes lleva el prompt de la reserva. Una reserva de intento
+    de la versión anterior no anotaba el conteo, pero su prompt llevaba todos
+    los ajustes registrados hasta entonces: leerla como cero dejaría los
+    ajustes previos como no vistos y el cierre y la entrega volverían al
+    implementador para siempre. La concesión del conductor tampoco abre un
+    prompt, así que no cambia lo visto."""
+    if "ajustes" in d:
+        return int(d["ajustes"])
+    if d.get("conductor"):
+        return e.ajustes_vistos
+    return len(e.ajustes)
+
+
 def ajustes_cubiertos(e: Encargo) -> int:
     """Ajustes que un cierre puede dar por atendidos: los que vio un intento y
     los que la nota de cierre ya dijo que nadie pudo recibir."""
@@ -1012,7 +1026,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         return replace(
             e,
             reserva=True,
-            ajustes_reservados=int(d.get("ajustes", e.ajustes_vistos)),
+            ajustes_reservados=_ajustes_de_la_reserva(e, d),
             conductor=str(d.get("conductor") or e.conductor),
             candidato=str(d.get("candidato") or ""),
             host=str(d.get("host") or socket.gethostname()),

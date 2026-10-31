@@ -98,7 +98,9 @@ y `continuar`.
   de `continuar`. En `detenido` el encargo sigue detenido hasta `continuar`.
 - Una corrección que llega durante el intento que iba a cerrar el encargo no
   se pierde. Cada reserva de intento anota cuántas correcciones llevaba su
-  prompt (`ajustes`). Si hay más registradas que las que vio el último
+  prompt (`ajustes`; una reserva de la versión anterior sin ese conteo vio
+  todos los ajustes registrados hasta entonces, y la concesión del conductor
+  no cambia lo visto). Si hay más registradas que las que vio el último
   intento, el cierre y la entrega del PR no avanzan: el trabajo vuelve al
   implementador, cuyo prompt ya las lleva, y lo aprobado que no cambió se
   conserva. Si ningún intento puede lanzarse (todas las fases ya están
@@ -164,7 +166,9 @@ entrega. La lectura se espacia 120 s por SHA (la marca vive en
 fuerza una sola vez por generación y SHA cuando la incorporación del agente
 queda pendiente (aunque tarde muchos barridos, por ejemplo mientras corre el
 comprobador), para anotar un verde antes de contar la vuelta sin agotar la
-cuota de la API de GitHub. Cerrar un bloqueante o una
+cuota de la API de GitHub. El forzado se consume al leer, no al intentar: si
+la lectura falla queda pendiente, la causa queda en la marca y se reintenta
+a los 15 s. Cerrar un bloqueante o una
 aprobación sin nada abierto reinicia la cuenta, también al pasar a la fase
 siguiente. Nunca se declara éxito ni se vuelve a crear el encargo.
 

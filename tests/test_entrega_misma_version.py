@@ -271,6 +271,50 @@ class CheckQueSeRecuperaEnElMismoSha(unittest.TestCase):
             self.assertEqual(vistos, [()], "el verde se anota antes de contar la vuelta")
             self.assertEqual(len(_pasos(r, "checks_verdes")), 1)
 
+    def test_el_forzado_no_se_consume_si_la_lectura_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, repo = self._en_rojo(tmp, "rr-fallo")
+            gh = vuelta.gh
+            t0 = time.time()
+            _barrido(r, gh, t0)
+            _rerun_del_check(gh, repo, "ci", "exit 0")
+            self._incorporacion_pendiente(r)
+
+            intentos = []
+            original = gh.checks
+            falla = [True]
+
+            def checks(*args, **kwargs):
+                intentos.append(1)
+                if falla[0]:
+                    raise RuntimeError("gh: HTTP 502")
+                return original(*args, **kwargs)
+
+            gh.checks = checks
+            vistos = []
+
+            def incorporar_pendiente(registro, enc, *args, **kwargs):
+                vistos.append(enc.fase_actual.fallas_checks)
+                return enc
+
+            marca = r.d / "checks_lectura.json"
+            with mock.patch.object(ciclo, "_incorporar", incorporar_pendiente):
+                _barrido(r, gh, t0 + 1)
+                self.assertEqual(len(intentos), 1)
+                self.assertIn("HTTP 502", json.loads(marca.read_text())["error"])
+                self.assertEqual(json.loads(marca.read_text())["forzada"], "")
+                for i in range(2, 15):
+                    _barrido(r, gh, t0 + i)
+                self.assertEqual(len(intentos), 1, "el fallo tambien espacia")
+
+                falla[0] = False
+                _barrido(r, gh, t0 + 16)
+
+            self.assertEqual(vistos[0], ("ci",))
+            self.assertEqual(vistos[-1], (), "el reintento forzado anota el verde")
+            self.assertNotEqual(json.loads(marca.read_text())["forzada"], "")
+            self.assertEqual(len(_pasos(r, "checks_verdes")), 1)
+
     def test_incorporacion_pendiente_con_el_check_en_rojo_no_lee_en_cada_barrido(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, repo = self._en_rojo(tmp, "rr-pend-rojo")

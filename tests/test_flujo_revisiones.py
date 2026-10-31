@@ -1681,6 +1681,56 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertEqual(r.fold().estado, "terminado")
             self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
 
+    def _reserva_y_apertura(self, r: Recorrido, reserva: dict, marca: str) -> None:
+        r.reg.anotar(
+            r.enc, {"kind": "reserva", "data": {**reserva, "hora": r.hora}},
+            f"t-reserva-{marca}",
+        )
+        self._abrir_y_cerrar_intento(r, marca)
+
+    def test_una_reserva_de_la_version_anterior_vio_los_ajustes_previos(self):
+        from motor.encargos.dominio import correcciones_sin_ver
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self._reserva_y_apertura(
+                r, {"rol": "responsable", "generacion": 1}, "legado"
+            )
+            e = r.fold()
+            self.assertEqual(e.ajustes_vistos, 1)
+            self.assertFalse(correcciones_sin_ver(e))
+            corregir(r.reg, r.enc, "y con unidad", "c2", ahora_iso())
+            self.assertTrue(correcciones_sin_ver(r.fold()))
+
+    def test_la_concesion_del_conductor_no_da_por_vistos_los_ajustes(self):
+        from motor.encargos.dominio import correcciones_sin_ver
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self._reserva_y_apertura(
+                r,
+                {"conductor": "tok", "host": "h", "generacion": 1},
+                "conductor",
+            )
+            e = r.fold()
+            self.assertEqual(e.ajustes_vistos, 0)
+            self.assertTrue(correcciones_sin_ver(e))
+
+    def test_una_reserva_con_el_conteo_lo_respeta(self):
+        from motor.encargos.dominio import correcciones_sin_ver
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self._reserva_y_apertura(
+                r, {"rol": "responsable", "generacion": 1, "ajustes": 0}, "nuevo"
+            )
+            e = r.fold()
+            self.assertEqual(e.ajustes_vistos, 0)
+            self.assertTrue(correcciones_sin_ver(e))
+
     def test_una_nota_sin_intento_de_la_version_anterior_cuenta_como_anotada_y_el_cierre_termina(self):
         from motor.encargos.ciclo import _NOTA_SIN_INTENTO
 

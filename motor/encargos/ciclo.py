@@ -86,6 +86,7 @@ _UMBRAL_S = 30
 _QUIETUD_S = 600
 _QUIETUD_VUELTAS = 3
 _RELECTURA_CHECKS_S = 120
+_REINTENTO_FORZADO_S = 15
 
 
 def ahora_iso(epoch: float | None = None) -> str:
@@ -3096,48 +3097,68 @@ def _anotar_checks_verdes(
     return registro.fold(enc.id)
 
 
+def _marca_checks(directorio: Path) -> dict:
+    try:
+        marca = json.loads(
+            (directorio / "checks_lectura.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return {}
+    return marca if isinstance(marca, dict) else {}
+
+
 def _toca_releer_checks(
-    directorio: Path, sha: str, epoch: float, forzar: bool, generacion: int
+    marca: dict, sha: str, epoch: float, forzar: bool, generacion: int
 ) -> bool:
     """Una lectura por SHA cada `_RELECTURA_CHECKS_S`, como el espaciado de
-    `_paso_entrega`; la marca vive en disco para sobrevivir a un reinicio del
-    supervisor. `forzar` se salta el espaciado una sola vez por generación e
-    SHA: la incorporación pendiente puede durar muchos barridos, y la marca
-    recuerda cuál ya forzó."""
-    ruta = directorio / "checks_lectura.json"
-    forzada = f"{generacion}:{sha}"
+    `_paso_entrega`. `forzar` se salta el espaciado una sola vez por generación
+    y SHA: la incorporación pendiente puede durar muchos barridos, y la marca
+    recuerda cuál ya forzó. Un forzado cuya lectura falló sigue pendiente y se
+    reintenta pasados `_REINTENTO_FORZADO_S`, sin golpear a GitHub mientras
+    responde con error."""
     try:
-        previa = json.loads(ruta.read_text(encoding="utf-8"))
-        if not isinstance(previa, dict):
-            previa = {}
-    except (OSError, ValueError):
-        previa = {}
-    try:
-        reciente = (
-            previa.get("sha") == sha
-            and 0 <= epoch - float(previa.get("epoch") or 0) < _RELECTURA_CHECKS_S
-        )
+        desde = epoch - float(marca.get("epoch") or 0)
+        reciente = marca.get("sha") == sha and 0 <= desde < _RELECTURA_CHECKS_S
     except (TypeError, ValueError):
-        reciente = False
-    ya_forzada = previa.get("forzada") == forzada
-    forzar = forzar and not ya_forzada
-    if reciente and not forzar:
+        return True
+    if not reciente:
+        return True
+    if not forzar or marca.get("forzada") == f"{generacion}:{sha}":
         return False
+    return not marca.get("error") or desde >= _REINTENTO_FORZADO_S
+
+
+def _marcar_lectura_checks(
+    directorio: Path,
+    marca: dict,
+    sha: str,
+    epoch: float,
+    generacion: int,
+    consume_forzado: bool,
+    error: str = "",
+) -> None:
+    """Deja en disco el intento de lectura, que así sobrevive a un reinicio del
+    supervisor. Solo una lectura lograda consume el forzado; un fallo deja el
+    forzado pendiente y su causa a la vista."""
     try:
-        ruta.parent.mkdir(parents=True, exist_ok=True)
-        ruta.write_text(
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "checks_lectura.json").write_text(
             json.dumps(
                 {
                     "sha": sha,
                     "epoch": epoch,
-                    "forzada": forzada if forzar else previa.get("forzada", ""),
+                    "forzada": (
+                        f"{generacion}:{sha}"
+                        if consume_forzado and not error
+                        else marca.get("forzada", "")
+                    ),
+                    "error": error,
                 }
             ),
             encoding="utf-8",
         )
     except OSError:
         pass
-    return True
 
 
 def _reconciliar_checks(
@@ -3156,7 +3177,9 @@ def _reconciliar_checks(
     el espaciado. Con el agente corriendo no lee. Con la incorporación del
     agente pendiente `forzar` obliga una lectura, una sola por generación y
     SHA aunque la incorporación tarde muchos barridos (el comprobador del
-    supervisor), para anotar un verde antes de contar la vuelta."""
+    supervisor), para anotar un verde antes de contar la vuelta. El forzado
+    se consume al leer, no al intentar: una lectura fallida lo deja pendiente
+    y anota su causa en la marca."""
     fase = enc.fase_actual
     if (
         gh is None
@@ -3171,17 +3194,22 @@ def _reconciliar_checks(
     ):
         return enc
     sha = fase.entrega_bloqueada_sha
-    if not _toca_releer_checks(
-        _directorio(registro.base, enc.id), sha, epoch, forzar, enc.generacion
-    ):
+    directorio = _directorio(registro.base, enc.id)
+    marca = _marca_checks(directorio)
+    if not _toca_releer_checks(marca, sha, epoch, forzar, enc.generacion):
         return enc
     try:
         veredicto = gh.checks(
             enc.entrega.repo, enc.pr_numero, sha, _checks_extra(enc, espacio),
             base_politica=enc.entrega.base,
         )
-    except Exception:
+    except Exception as exc:
+        _marcar_lectura_checks(
+            directorio, marca, sha, epoch, enc.generacion, forzar,
+            error=f"{type(exc).__name__}: {exc}",
+        )
         return enc
+    _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
     if not veredicto.green:
         return enc
     return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
