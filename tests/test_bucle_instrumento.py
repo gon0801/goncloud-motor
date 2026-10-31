@@ -24,9 +24,11 @@ from unittest import mock
 from motor.encargos.aislamiento import (
     ComandoAislado,
     SondaEntorno,
-    _usa_shell_de_git,
+    es_causa_de_shell,
     lanzar_en_jaula,
+    sonda_de_shell_pendiente,
     sondear,
+    usa_shell_de_git,
 )
 from motor.encargos.ciclo import _incorporar, ahora_iso, barrer, recibir
 from motor.encargos.comprobacion import firma_producto
@@ -646,6 +648,96 @@ class BucleInstrumento(unittest.TestCase):
         self.assertEqual(e.impedimento_causa, causa)
 
 
+class ShellDeGitAlLanzar(unittest.TestCase):
+    """El shell se prueba según el agente que se lanza en ese intento, con la ruta
+    `claude, codex` autorizada. Usa el mismo banco del bucle con otra sonda."""
+
+    CAUSA = (
+        "el shell de Git no funciona bajo el aislamiento (codigo 66: "
+        "*** fatal error - NtCreateDirectoryObject(\\BaseNamedObjects\\"
+        "msys-2.0S5-1888ae32e00d56aa): 0xC0000022)"
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(mock.patch.stopall)
+        self.llamadas: list = []
+        self.shell_sano = False
+        for destino, valor in (
+            ("motor.encargos.ciclo.preparar_administrado", None),
+            (
+                "motor.encargos.ciclo.lanzar_administrado",
+                {"pid": os.getpid(), "inicio": "ensayo"},
+            ),
+        ):
+            mock.patch(destino, return_value=valor).start()
+        mock.patch(
+            "motor.flota.runtime.exigir_poteto",
+            return_value=(Path("/tmp/poteto-mode/SKILL.md"), "digest-de-ensayo"),
+        ).start()
+        mock.patch("motor.encargos.aislamiento._en_windows", return_value=True).start()
+        mock.patch("motor.encargos.aislamiento.sondear", side_effect=self.sondear).start()
+
+    def sondear(self, espacio, runtime, lecturas=(), agente=None):
+        self.llamadas.append(agente)
+        con_claude = "claude" in (agente if isinstance(agente, tuple) else (agente,))
+        if con_claude and not self.shell_sano:
+            return SondaEntorno(False, self.CAUSA, "que el shell arranque")
+        return RECUPERADO
+
+    def banco_con(self, agente: str) -> Banco:
+        banco = Banco(self._tmp.name, {"actual": RECUPERADO})
+        self.addCleanup(banco.reg.close)
+        (banco.espacio / "modelos.toml").write_text("modelos = {}\n")
+        banco.anotar(
+            "ruta_agentes",
+            {"agentes": ["claude", "codex"], "hora": ahora_iso()},
+            "ruta:ensayo",
+        )
+
+        def lanzador(enc, prompt, espacio, sesion):
+            banco.lanzamientos.append(f"{enc.rol}:{enc.generacion}:{agente}")
+            return ["/bin/echo", "sin proveedor"], {"agente": agente}
+
+        banco.lanzador = lanzador
+        return banco
+
+    def test_un_agente_distinto_de_claude_no_se_frena_por_el_shell(self):
+        banco = self.banco_con("codex")
+        banco.barrer(2)
+        self.assertEqual(banco.fold().impedimento, "")
+        self.assertEqual(len(banco.lanzamientos), 1)
+        self.assertNotIn("claude", self.llamadas)
+
+    def test_claude_con_el_shell_roto_frena_antes_de_lanzar_al_agente(self):
+        import motor.encargos.ciclo as ciclo
+
+        banco = self.banco_con("claude")
+        banco.barrer()
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "entorno")
+        self.assertEqual(e.impedimento_causa, self.CAUSA)
+        self.assertIn("claude", self.llamadas)
+        ciclo.lanzar_administrado.assert_not_called()
+        ciclo.preparar_administrado.assert_not_called()
+
+    def test_el_impedimento_del_shell_solo_se_levanta_cuando_el_shell_arranca(self):
+        import motor.encargos.ciclo as ciclo
+
+        banco = self.banco_con("claude")
+        banco.barrer(3)
+        self.assertEqual(banco.fold().impedimento, "entorno")
+        ciclo.lanzar_administrado.assert_not_called()
+        self.assertEqual(len(banco.eventos("impedimento_resuelto")), 0)
+
+        self.shell_sano = True
+        banco.barrer(3)
+        self.assertEqual(banco.fold().impedimento, "")
+        self.assertEqual(len(banco.eventos("impedimento_resuelto")), 1)
+        ciclo.lanzar_administrado.assert_called_once()
+
+
 class SondaDelShellDeGit(unittest.TestCase):
     """La sonda de Windows, con un `bash` de ensayo en lugar de msys.
 
@@ -666,7 +758,7 @@ class SondaDelShellDeGit(unittest.TestCase):
         ruta.chmod(0o755)
         return ruta
 
-    def sondear(self, bash: Path, agentes=()) -> SondaEntorno:
+    def sondear(self, bash: Path, agente="claude") -> SondaEntorno:
         temporal = self.tmp / "temporal"
         temporal.mkdir(exist_ok=True)
         entorno = {
@@ -694,7 +786,7 @@ class SondaDelShellDeGit(unittest.TestCase):
             ),
         ):
             return sondear(
-                self.espacio, self.tmp / "runtime" / "sonda", agentes=agentes
+                self.espacio, self.tmp / "runtime" / "sonda", agente=agente
             )
 
     def test_un_shell_sano_pasa_con_git_push_a_un_bare_local(self):
@@ -732,11 +824,67 @@ class SondaDelShellDeGit(unittest.TestCase):
         self.assertFalse(resultado.ok)
         self.assertIn("el shell de Git", resultado.causa)
 
-    def test_un_agente_sin_bash_de_git_no_prueba_ese_shell(self):
+    def test_el_shell_se_prueba_segun_el_agente_que_se_lanza_no_el_autorizado(self):
         roto = self.shell("bash-roto", "exit 66\n")
-        self.assertTrue(self.sondear(roto, agentes=("codex",)).ok)
-        self.assertFalse(self.sondear(roto, agentes=("codex", "claude")).ok)
-        self.assertFalse(self.sondear(roto).ok)
+        self.assertTrue(self.sondear(roto, agente="codex").ok)
+        self.assertTrue(self.sondear(roto, agente=None).ok)
+        self.assertFalse(self.sondear(roto, agente="claude").ok)
+
+    def test_el_error_del_proceso_queda_en_la_causa_si_la_sonda_no_termina(self):
+        roto = self.shell("bash-sano", 'exec /bin/sh "$@"\n')
+        with mock.patch(
+            "motor.encargos.aislamiento._ejecutar_en_jaula",
+            return_value=(
+                3221225781,
+                "",
+                "Traceback...\nImportError: DLL load failed (0xC0000142)\n",
+            ),
+        ):
+            resultado = self.sondear(roto)
+        self.assertFalse(resultado.ok)
+        self.assertIn("codigo 3221225781", resultado.causa)
+        self.assertIn("DLL load failed (0xC0000142)", resultado.causa)
+
+    def test_sin_error_ni_salida_la_causa_solo_trae_el_codigo(self):
+        roto = self.shell("bash-sano", 'exec /bin/sh "$@"\n')
+        with mock.patch(
+            "motor.encargos.aislamiento._ejecutar_en_jaula", return_value=(7, "", "")
+        ):
+            resultado = self.sondear(roto)
+        self.assertEqual(
+            resultado.causa, "la sonda del entorno no terminó: codigo 7"
+        )
+
+    def test_una_excepcion_de_la_jaula_no_tumba_a_quien_sondea(self):
+        sano = self.shell("bash-sano", 'exec /bin/sh "$@"\n')
+        for excepcion in (
+            RuntimeError("la jaula requiere una estacion no interactiva"),
+            ValueError("la jaula necesita stdin cerrado y salidas administradas"),
+            KeyError("SystemRoot"),
+        ):
+            with self.subTest(tipo=type(excepcion).__name__):
+                with mock.patch(
+                    "motor.encargos.aislamiento._ejecutar_en_jaula",
+                    side_effect=excepcion,
+                ):
+                    resultado = self.sondear(sano)
+                self.assertFalse(resultado.ok)
+                self.assertIn(type(excepcion).__name__, resultado.causa)
+                self.assertTrue(resultado.condicion)
+
+    def test_una_excepcion_al_preparar_la_jaula_tampoco_la_tumba(self):
+        temporal = self.tmp / "temporal"
+        temporal.mkdir(exist_ok=True)
+        with (
+            mock.patch("motor.encargos.aislamiento._en_windows", return_value=True),
+            mock.patch(
+                "motor.encargos.aislamiento.aislar",
+                side_effect=KeyError("SystemRoot"),
+            ),
+        ):
+            resultado = sondear(self.espacio, self.tmp / "runtime" / "sonda")
+        self.assertFalse(resultado.ok)
+        self.assertIn("KeyError", resultado.causa)
 
 
 class EnsayoDelOperador(unittest.TestCase):
@@ -908,11 +1056,24 @@ class LaSondaLanzaDentroDeLaJaula(unittest.TestCase):
 
 
 class ElShellDelCli(unittest.TestCase):
-    def test_solo_claude_o_un_agente_desconocido_usan_el_bash_de_git(self):
-        self.assertTrue(_usa_shell_de_git(()))
-        self.assertTrue(_usa_shell_de_git(("claude",)))
-        self.assertTrue(_usa_shell_de_git(("codex", "claude")))
-        self.assertFalse(_usa_shell_de_git(("codex",)))
+    def test_solo_claude_usa_el_bash_de_git(self):
+        self.assertTrue(usa_shell_de_git("claude"))
+        self.assertFalse(usa_shell_de_git("codex"))
+        self.assertFalse(usa_shell_de_git(None))
+
+    def test_el_shell_solo_se_prueba_en_windows(self):
+        with mock.patch("motor.encargos.aislamiento._en_windows", return_value=False):
+            self.assertFalse(sonda_de_shell_pendiente("claude"))
+        with mock.patch("motor.encargos.aislamiento._en_windows", return_value=True):
+            self.assertTrue(sonda_de_shell_pendiente("claude"))
+            self.assertFalse(sonda_de_shell_pendiente("codex"))
+
+    def test_reconoce_las_causas_que_vienen_del_shell(self):
+        from motor.encargos.aislamiento import _sonda_de
+
+        self.assertTrue(es_causa_de_shell(_sonda_de("shell:codigo 66: x").causa))
+        self.assertTrue(es_causa_de_shell(_sonda_de("git:codigo 128: x").causa))
+        self.assertFalse(es_causa_de_shell(_sonda_de("temp-cli:/t").causa))
 
 
 class SondaSinAislamiento(unittest.TestCase):

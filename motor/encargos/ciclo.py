@@ -893,15 +893,16 @@ def _devolver(
     )
 
 
-def _sonda_entorno(enc: Encargo, espacio: Path, base: Path):
+def _sonda_entorno(enc: Encargo, espacio: Path, base: Path, agente: str | None = None):
+    """`agente` es el que se lanzará en ese intento. Sin él la sonda no prueba el
+    shell del CLI: antes de elegir agente no se sabe cuál usará."""
     from .aislamiento import sondear
 
-    agentes = tuple(enc.agentes) or ((enc.agente,) if enc.agente else ())
     return sondear(
         espacio,
         base / "runtime" / enc.id / "sonda",
         fuentes_autorizadas(enc),
-        agentes,
+        agente,
     )
 
 
@@ -1000,7 +1001,7 @@ def _resolver_impedimento(registro, enc: Encargo, clase: str, hora: str) -> None
 def _bloqueo_entorno(registro, enc: Encargo, espacio: Path, hora: str) -> bool:
     """La jaula manda sobre el trabajador: si no deja trabajar, el fallo de
     instrumento no es una corrección que el trabajador pueda hacer."""
-    sonda = _sonda_entorno(enc, espacio, registro.base)
+    sonda = _sonda_entorno(enc, espacio, registro.base, enc.agente or None)
     if sonda.ok:
         return False
     _anotar_impedimento(registro, enc, "entorno", sonda.causa, sonda.condicion, hora)
@@ -1064,7 +1065,11 @@ def _verificar_impedimento(
     condición que la rechazó. `None` si este host no puede saberlo, que no es
     lo mismo que haberlo comprobado."""
     if clase == "entorno":
-        return _sonda_entorno(enc, espacio, base).ok
+        from .aislamiento import es_causa_de_shell
+
+        causa = next((i.causa for i in enc.impedimentos if i.clase == clase), "")
+        agente = "claude" if es_causa_de_shell(causa) else None
+        return _sonda_entorno(enc, espacio, base, agente).ok
     if clase.startswith("inspeccion:"):
         juicio = _juicio_de_referencia(enc, _directorio(base, enc.id))
         if not isinstance(juicio, JuicioValidado):
@@ -3638,6 +3643,16 @@ def _lanzar_uno(
         if not cmd:
             _liberar_flota()
             return
+        from .aislamiento import sonda_de_shell_pendiente
+
+        if sonda_de_shell_pendiente(agente_lanzado):
+            sonda = _sonda_entorno(enc, espacio, registro.base, agente_lanzado)
+            if not sonda.ok:
+                _liberar_flota()
+                _anotar_impedimento(
+                    registro, enc, "entorno", sonda.causa, sonda.condicion, hora
+                )
+                return
         modelo_lanzado = str(meta.get("modelo") or "") or _modelo_en_argv(cmd)
         sesion_modo = str(meta.get("sesion_modo") or "nueva")
         entorno_gen = (

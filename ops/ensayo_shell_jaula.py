@@ -70,7 +70,7 @@ def main() -> int:
                     veredicto, detalle = "FALLA", f"{type(exc).__name__}: {exc}"
                 fallos += veredicto != "ok"
                 print(f"- {nombre} / {caso}: {veredicto} {detalle}")
-        resultado = sondear(espacio, runtime / "sonda", agentes=("claude",))
+        resultado = sondear(espacio, runtime / "sonda", agente="claude")
         fallos += not resultado.ok
         print(f"- sondear(claude): ok={resultado.ok} causa={resultado.causa!r}")
     return 1 if fallos else 0

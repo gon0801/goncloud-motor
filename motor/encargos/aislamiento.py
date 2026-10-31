@@ -585,26 +585,43 @@ def _en_windows() -> bool:
     return os.name == "nt"
 
 
-def _usa_shell_de_git(agentes: tuple[str, ...]) -> bool:
-    """Claude Code corre sus órdenes con el bash de Git. Sin agentes conocidos
-    se asume lo mismo: es el que el motor lanza por omisión."""
-    return not agentes or "claude" in agentes
+SHELL_DE_GIT = frozenset({"claude"})
+_CAUSAS_DE_SHELL = ("el shell de Git no funciona", "git no funciona")
+
+
+def usa_shell_de_git(agente: str | None) -> bool:
+    """Claude Code corre sus órdenes con el bash de Git. Decide el agente que se
+    va a lanzar en ese intento, no la lista de agentes autorizados."""
+    return agente in SHELL_DE_GIT
+
+
+def sonda_de_shell_pendiente(agente: str | None) -> bool:
+    """El shell solo se prueba en Windows, donde la sonda corre en la jaula."""
+    return _en_windows() and usa_shell_de_git(agente)
+
+
+def es_causa_de_shell(causa: str) -> bool:
+    """Una causa de `sondear` que viene del shell o de git: solo se resuelve
+    volviendo a probar ese shell."""
+    return causa.startswith(_CAUSAS_DE_SHELL)
 
 
 def sondear(
     espacio: Path,
     runtime: Path,
     lecturas: tuple[Path, ...] = (),
-    agentes: tuple[str, ...] = (),
+    agente: str | None = None,
 ) -> SondaEntorno:
     """Comprueba con comandos locales, y sin llamar a ningún modelo, las
     operaciones que el trabajador necesita al arrancar: su temporal de shell,
     la escritura en el espacio y la lectura de las fuentes autorizadas. En
-    Windows corre dentro de la jaula y, si el agente usa el bash de Git, prueba
+    Windows corre dentro de la jaula y, si `agente` usa el bash de Git, prueba
     también ese shell, `sh` y un `git push` a un bare local.
 
     No acredita lo que no pudo ejecutar: sin jaula, o con una fuente declarada
-    que ya no está, el resultado es un fallo con su condición.
+    que ya no está, el resultado es un fallo con su condición. Nunca propaga una
+    excepción: la llama el supervisor, que en la PC arranca una vez desde una
+    tarea programada y no se reinicia solo.
     """
     import uuid
 
@@ -612,7 +629,7 @@ def sondear(
     fuentes = tuple(Path(p).expanduser().resolve() for p in lecturas)
     marca = uuid.uuid4().hex[:16]
     windows = _en_windows()
-    con_shell = windows and _usa_shell_de_git(tuple(agentes))
+    con_shell = sonda_de_shell_pendiente(agente)
     try:
         if windows:
             argv_sonda = [
@@ -636,7 +653,7 @@ def sondear(
             lecturas_extra=fuentes,
             agente="claude" if con_shell else None,
         )
-    except (OSError, RuntimeError) as exc:
+    except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
         return SondaEntorno(
             False,
             f"no se pudo preparar el aislamiento: {type(exc).__name__}: {exc}",
@@ -648,8 +665,8 @@ def sondear(
         entorno["MOTOR_SONDA_MARCA"] = marca
         if con_shell:
             entorno.update(_herramientas_git(entorno))
-        codigo, salida = lanzar_en_jaula(comando, espacio, entorno, plazo=90)
-    except (OSError, subprocess.SubprocessError) as exc:
+        codigo, salida, error = _ejecutar_en_jaula(comando, espacio, entorno, plazo=90)
+    except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
         return SondaEntorno(
             False,
             f"no se pudo ejecutar la sonda bajo el aislamiento: {type(exc).__name__}: {exc}",
@@ -658,8 +675,15 @@ def sondear(
     lineas = [linea for linea in (salida or "").splitlines() if linea.strip()]
     if codigo == 0 and lineas and lineas[-1].strip() == "ok":
         return SondaEntorno(True)
-    marca_fallo = lineas[-1].strip() if lineas else f"codigo {codigo}"
-    return _sonda_de(marca_fallo)
+    if not lineas:
+        detalle = " ".join((error or "").split())[:300]
+        return SondaEntorno(
+            False,
+            f"la sonda del entorno no terminó: codigo {codigo}"
+            + (f": {detalle}" if detalle else ""),
+            "que el aislamiento del host funcione",
+        )
+    return _sonda_de(lineas[-1].strip())
 
 
 def _herramientas_git(entorno: dict[str, str]) -> dict[str, str]:
@@ -685,9 +709,17 @@ def _herramientas_git(entorno: dict[str, str]) -> dict[str, str]:
 def lanzar_en_jaula(
     comando: ComandoAislado, cwd: Path, entorno: dict[str, str], *, plazo: float
 ) -> tuple[int, str]:
-    """Corre `comando` como lo lanza el motor. En Windows eso es dentro del
-    AppContainer (`aislar` solo lo describe); `subprocess.run` lo ejecutaría
-    sin jaula y la sonda daría por bueno un entorno que el agente no tiene."""
+    codigo, salida, _error = _ejecutar_en_jaula(comando, cwd, entorno, plazo=plazo)
+    return codigo, salida
+
+
+def _ejecutar_en_jaula(
+    comando: ComandoAislado, cwd: Path, entorno: dict[str, str], *, plazo: float
+) -> tuple[int, str, str]:
+    """Corre `comando` como lo lanza el motor y devuelve código, salida y error.
+    En Windows eso es dentro del AppContainer (`aislar` solo lo describe);
+    `subprocess.run` lo ejecutaría sin jaula y la sonda daría por bueno un
+    entorno que el agente no tiene."""
     if comando.mecanismo != "appcontainer":
         hecho = subprocess.run(
             comando.argv,
@@ -698,7 +730,7 @@ def lanzar_en_jaula(
             text=True,
             timeout=plazo,
         )
-        return hecho.returncode, hecho.stdout or ""
+        return hecho.returncode, hecho.stdout or "", hecho.stderr or ""
     from motor import plataforma
     from motor.plataforma.jaula_windows import crear
 
@@ -717,7 +749,7 @@ def lanzar_en_jaula(
     p = creado.proceso
     try:
         creado.liberar()
-        salida, _ = p.communicate(timeout=plazo)
-        return p.returncode, salida or ""
+        salida, error = p.communicate(timeout=plazo)
+        return p.returncode, salida or "", error or ""
     finally:
         plataforma.matar_grupo(p)
