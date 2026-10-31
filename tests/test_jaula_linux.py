@@ -445,6 +445,36 @@ class JaulaRealTest(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(vivos(), [])
 
+    def test_el_guardian_subreaper_cierra_la_jaula_aunque_deje_zombis_en_su_espacio(self):
+        """Como el guardián: subreaper, solo recoge al bwrap. Lo que la jaula deja reparentado
+        queda zombi en su espacio de pids hasta que alguien lo recoja, y un zombi no es un
+        proceso vivo: `cerrar` debe dar la jaula por cerrada."""
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        self.assertEqual(libc.prctl(36, 1, 0, 0, 0), 0)  # PR_SET_CHILD_SUBREAPER
+        self.addCleanup(libc.prctl, 36, 0, 0, 0, 0)
+        marca = f"33{os.getpid()}.5"
+        jaula = self.jaula()
+        p = subprocess.Popen(
+            jaula_linux.argv_jaula(jaula, ["/bin/bash", "-c", f"(sleep {marca} &) ; wait"]),
+            env=jaula_linux.entorno_jaula(jaula),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        inicio = jaula_linux._inicio(p.pid)
+        fin = time.time() + 10
+        ns = ""
+        while not ns and time.time() < fin:
+            ns = jaula_linux.ns_de_la_jaula(p.pid)
+            time.sleep(0.05)
+        self.assertTrue(ns)
+        os.kill(p.pid, signal.SIGKILL)
+        p.wait()
+        self.assertTrue(jaula_linux.cerrar(p.pid, inicio=inicio, ns=ns, plazo=10))
+        self.assertEqual(jaula_linux._en_ns(ns), [])
+
 
 class DisponibleTest(unittest.TestCase):
     """`disponible()` devuelve bool como `jaula_windows.disponible` y `psec_windows.disponible`;
@@ -461,6 +491,9 @@ class DisponibleTest(unittest.TestCase):
             self.assertIs(jaula_linux.disponible(), False)
 
 
+LISTDIR = os.listdir
+
+
 class TablaDeProcesos:
     """Una tabla de procesos de juguete para `cerrar`: sin /proc, sin señales reales."""
 
@@ -471,11 +504,18 @@ class TablaDeProcesos:
     def nuevo(self, ppid, **rasgos):
         pid, self.siguiente = self.siguiente, self.siguiente + 1
         self.procs[pid] = {"ppid": ppid, "vivo": True, "parado": False, "forker": False,
-                           "inmortal": False, "ns": "", **rasgos}
+                           "inmortal": False, "ns": "", "zombi": False, **rasgos}
         return pid
 
-    def en_ns(self, ns):
-        return [p for p, d in self.procs.items() if ns and d["vivo"] and d["ns"] == ns]
+    def ns_pid(self, pid):
+        """Como /proc/<pid>/ns/pid: un zombi, que sigue en la tabla, conserva su espacio."""
+        d = self.procs.get(pid)
+        return d["ns"] if d and d["vivo"] else ""
+
+    def listdir(self, ruta):
+        if ruta != "/proc":
+            return LISTDIR(ruta)
+        return [str(p) for p, d in self.procs.items() if d["vivo"]]
 
     def vivos(self):
         return [p for p in self.procs if self.vivo(p)]
@@ -493,15 +533,19 @@ class TablaDeProcesos:
         return vistos
 
     def vivo(self, pid):
-        return bool(self.procs.get(pid, {}).get("vivo"))
+        d = self.procs.get(pid, {})
+        return bool(d.get("vivo") and not d.get("zombi"))
 
     def inicio(self, pid):
-        return f"t{pid}" if self.vivo(pid) else ""
+        d = self.procs.get(pid, {})
+        return f"t{pid}" if d.get("vivo") else ""
 
     def kill(self, pid, senal):
         d = self.procs.get(pid)
         if not d or not d["vivo"]:
             raise ProcessLookupError(pid)
+        if d["zombi"]:
+            return
         if senal == signal.SIGSTOP:
             d["parado"] = True
         elif senal == signal.SIGKILL and not d["inmortal"]:
@@ -515,7 +559,8 @@ class TablaDeProcesos:
             mock.patch.object(jaula_linux, "_descendientes", self.descendientes),
             mock.patch.object(jaula_linux, "_vivo", self.vivo),
             mock.patch.object(jaula_linux, "_inicio", self.inicio),
-            mock.patch.object(jaula_linux, "_en_ns", self.en_ns),
+            mock.patch.object(jaula_linux, "_ns_pid", self.ns_pid),
+            mock.patch.object(jaula_linux.os, "listdir", self.listdir),
             mock.patch.object(jaula_linux.os, "kill", self.kill),
             mock.patch.object(jaula_linux.os, "waitpid", side_effect=ChildProcessError),
         )
@@ -576,6 +621,39 @@ class CerrarTest(unittest.TestCase):
         bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t, inmortal=True)
         self.assertFalse(t.cerrar(bwrap, inicio=inicio, ns="pid:[7]", plazo=0.1))
         self.assertTrue(t.vivo(agente))
+
+    def test_un_zombi_del_espacio_de_la_jaula_no_impide_declararla_cerrada(self):
+        """El guardián es subreaper: lo que la jaula deja reparentado cae en él, y solo recoge
+        al bwrap. Esos hijos quedan zombis, que siguen en el espacio de pids: no son 'vivos'
+        (la regresión de 878e2d9 daba 125 en cada cierre)."""
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
+        t.procs[init]["zombi"] = True
+        t.procs[agente]["zombi"] = True
+        self.assertEqual(t.vivos(), [])
+        self.assertEqual(
+            sorted(int(n) for n in t.listdir("/proc") if t.ns_pid(int(n)) == "pid:[7]"),
+            [init, agente],
+        )
+        self.assertTrue(t.cerrar(bwrap, inicio=inicio, ns="pid:[7]", plazo=0.1))
+
+    def test_un_zombi_junto_a_un_proceso_vivo_en_el_espacio_sigue_sin_cerrada(self):
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t, inmortal=True)
+        t.procs[init]["zombi"] = True
+        self.assertFalse(t.cerrar(bwrap, inicio=inicio, ns="pid:[7]", plazo=0.1))
+        self.assertTrue(t.vivo(agente))
+
+    def test_los_zombis_no_cuentan_como_miembros_vivos_del_espacio(self):
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
+        t.procs[init]["zombi"] = True
+        with contextlib.ExitStack() as pila:
+            for parche in t.parchear():
+                pila.enter_context(parche)
+            self.assertEqual(jaula_linux._en_ns("pid:[7]"), [agente])
+            t.procs[agente]["zombi"] = True
+            self.assertEqual(jaula_linux._en_ns("pid:[7]"), [])
 
     def test_con_el_pid_del_bwrap_reusado_se_cierra_la_jaula_pero_no_al_ajeno(self):
         t = TablaDeProcesos()

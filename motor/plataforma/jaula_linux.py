@@ -328,10 +328,16 @@ def _ns_pid(pid: int) -> str:
 
 
 def _en_ns(ns: str) -> list:
-    """Pids del anfitrión que viven en el espacio de nombres `ns`, cuelguen de quien cuelguen."""
+    """Pids del anfitrión que viven en el espacio de nombres `ns`, cuelguen de quien cuelguen.
+    Un zombi no cuenta: sigue en el espacio de nombres (su `struct pid` lo conserva) hasta que
+    su padre lo recoja, y el guardián, que es subreaper, solo recoge al bwrap. Contarlo
+    dejaría la jaula siempre sin cerrar."""
     if not ns:
         return []
-    return [int(n) for n in os.listdir("/proc") if n.isdigit() and _ns_pid(int(n)) == ns]
+    return [
+        int(n) for n in os.listdir("/proc")
+        if n.isdigit() and _ns_pid(int(n)) == ns and _vivo(int(n))
+    ]
 
 
 def init_de_la_jaula(bwrap: int) -> int:
