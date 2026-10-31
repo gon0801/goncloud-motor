@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from motor.encargos import cli as motor_cli
 from motor.encargos.registro import Registro
 from motor.integraciones import cli as director_cli
 
@@ -60,12 +61,15 @@ class DirectorCorregir(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"
             encargo = self._encargar(base)
-            _, primera = self._corregir(base, encargo)
-            _, repetida = self._corregir(base, encargo)
-            _, otra = self._corregir(base, encargo, texto="otro texto")
+            codigo_primera, primera = self._corregir(base, encargo)
+            codigo_repetida, repetida = self._corregir(base, encargo)
+            codigo_otra, otra = self._corregir(base, encargo, texto="otro texto")
             self.assertEqual(repetida["recibo"], primera["recibo"])
             self.assertTrue(repetida["retransmision"])
             self.assertTrue(otra["conflicto"])
+            self.assertEqual(
+                (codigo_primera, codigo_repetida, codigo_otra), (0, 0, 2)
+            )
             reg = Registro(base)
             self.addCleanup(reg.close)
             self.assertEqual(reg.fold(encargo).ajustes, ("usa UTF-8",))
@@ -117,6 +121,53 @@ class DirectorCorregir(unittest.TestCase):
             codigo, salida = self._corregir(base, "enc_no_existe")
             self.assertEqual(codigo, 2)
             self.assertEqual(salida["motivo"], "no hay encargo")
+
+
+class MotorCorregir(unittest.TestCase):
+    """`motor corregir` sale con 2 cuando hay conflicto o rechazo."""
+
+    def _correr(self, argv: list[str]) -> tuple[int, dict]:
+        with contextlib.redirect_stdout(io.StringIO()) as salida:
+            codigo = motor_cli.main(argv)
+        return codigo, json.loads(salida.getvalue().strip())
+
+    def test_conflicto_y_rechazo_salen_con_codigo_distinto_de_cero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            codigo, recibo = self._correr(
+                [
+                    "encargar", "--base", str(base), "--clave", "pedido-1",
+                    "--texto", "Crea dato.txt con 42",
+                ]
+            )
+            self.assertEqual(codigo, 0)
+            encargo = recibo["encargo"]
+
+            def corregir(clave: str, texto: str) -> tuple[int, dict]:
+                return self._correr(
+                    [
+                        "corregir", encargo, "--base", str(base),
+                        "--clave", clave, "--texto", texto,
+                    ]
+                )
+
+            self.assertEqual(corregir("c1", "usa UTF-8")[0], 0)
+            self.assertEqual(corregir("c1", "usa UTF-8")[0], 0)
+            codigo, salida = corregir("c1", "otro texto")
+            self.assertTrue(salida["conflicto"])
+            self.assertEqual(codigo, 2)
+            self.assertEqual(
+                self._correr(["cancelar", encargo, "--base", str(base), "--clave", "x"])[0],
+                0,
+            )
+            reg = Registro(base)
+            self.addCleanup(reg.close)
+            reg.anotar(
+                encargo, {"kind": "arbol", "data": {"observacion": "ausente"}}, "t-arbol"
+            )
+            codigo, salida = corregir("c2", "tarde")
+            self.assertTrue(salida["rechazada"])
+            self.assertEqual(codigo, 2)
 
 
 if __name__ == "__main__":
