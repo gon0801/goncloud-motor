@@ -31,7 +31,10 @@ from .dominio import (
     FASE_IMPLICITA,
     TransicionIlegal,
     alcance_de,
+    ajustes_cubiertos,
     bloqueantes_abiertos,
+    correcciones_sin_ver,
+    puede_recibir_intento,
     revision_independiente_cubre_producto,
     decision_fallo,
     decision_proceso,
@@ -39,6 +42,7 @@ from .dominio import (
     fuentes_autorizadas,
     huella_bloqueo,
     huella_entrega,
+    hubo_avance,
     id_encargo,
     inspeccion_bloquea,
     marca_inspeccion_entregada,
@@ -315,20 +319,39 @@ def _ordenar(
 def corregir(
     registro: Registro, encargo_id: str, texto: str, clave: str, hora: str
 ) -> dict:
+    """Registra una corrección sin interrumpir al agente. La toma el siguiente
+    intento. Sólo un encargo cerrado la rechaza. Un rechazo deja constancia
+    pero no gasta la clave: se vuelve a evaluar al repetirla, porque la causa
+    puede haber cambiado (por ejemplo, un encargo que pasó a durable)."""
     ukey = f"ajuste:{clave}"
+    ukey_rechazo = f"ajuste-rechazo:{clave}"
     prev = registro.por_ukey(ukey)
+    rechazo = registro.por_ukey(ukey_rechazo)
+    if prev and prev["data"].get("resultado") == "rechazada":
+        # Rechazo guardado con la clave por la versión anterior: no la ocupa.
+        rechazo = rechazo or prev
+        ukey = f"ajuste:{clave}:reintento"
+        prev = registro.por_ukey(ukey)
     enc = registro.fold(encargo_id)
     if enc is None:
         raise TransicionIlegal("no hay encargo")
     if prev:
-        salida = vista(registro.fold(encargo_id), prev["data"]["recibo"])
-        if prev["data"].get("texto") != texto:
+        salida = vista(enc, prev["data"]["recibo"])
+        if prev["encargo"] != encargo_id or prev["data"].get("texto") != texto:
             salida["conflicto"] = True
         else:
             salida["retransmision"] = True
         return salida
+    if rechazo and (
+        rechazo["encargo"] != encargo_id or rechazo["data"].get("texto") != texto
+    ):
+        # La clave no se gasta con un rechazo, pero sigue siendo de ese texto.
+        salida = vista(enc, rechazo["data"]["recibo"])
+        salida["conflicto"] = True
+        return salida
     recibo = recibo_de(ukey)
-    if enc.estado != "detenido":
+
+    def rechazar(motivo: str) -> dict:
         registro.append(
             encargo_id,
             "recibo",
@@ -337,24 +360,39 @@ def corregir(
                 "texto": texto,
                 "recibo": recibo,
                 "resultado": "rechazada",
-                "motivo": "el ajuste espera el estado detenido",
+                "motivo": motivo,
                 "hora": hora,
             },
-            ukey,
+            ukey_rechazo,
             hora,
         )
-        salida = vista(enc, recibo)
+        salida = vista(registro.fold(encargo_id), recibo)
         salida["rechazada"] = True
-        salida["motivo"] = "el ajuste espera el estado detenido"
+        salida["motivo"] = motivo
+        if rechazo:
+            salida["retransmision"] = True
         return salida
-    registro.append(
-        encargo_id,
-        "ajuste",
-        {"texto": texto, "recibo": recibo, "hora": hora},
-        ukey,
-        hora,
-    )
-    return vista(registro.fold(encargo_id), recibo)
+
+    if enc.via == "directa":
+        return rechazar(
+            "el encargo va por la vía directa: ningún intento del motor recibiría "
+            "la corrección; promuévelo a durable"
+        )
+    datos = {"texto": texto, "recibo": recibo, "hora": hora}
+    try:
+        reducir(enc, {"kind": "ajuste", "data": datos})
+    except TransicionIlegal as exc:
+        return rechazar(str(exc))
+    resultado = registro.append(encargo_id, "ajuste", datos, ukey, hora)
+    if resultado == "ilegal":
+        try:
+            reducir(registro.fold(encargo_id), {"kind": "ajuste", "data": datos})
+        except TransicionIlegal as exc:
+            return rechazar(str(exc))
+    salida = vista(registro.fold(encargo_id), recibo)
+    if resultado == "ajena":
+        salida["conflicto"] = True
+    return salida
 
 
 def consultar(registro: Registro, encargo_id: str) -> dict:
@@ -671,7 +709,11 @@ def barrer(
             and enc.estado in ("recibido", "ejecutando")
             and enc.via != "directa"
         ):
-            if _aplica_entrega(enc):
+            if (
+                _aplica_entrega(enc) or _revision_aprobada_vigente(enc)
+            ) and _devolver_correcciones(registro, enc, hora):
+                enc = registro.fold(encargo_id)
+            elif _aplica_entrega(enc):
                 enc = _paso_entrega(registro, enc, gh, hora)
                 sin_llm = True
             elif _revision_aprobada_vigente(enc):
@@ -805,9 +847,9 @@ def _anotar_juicio(
     hora: str,
     serie: int,
     clave: str = "",
-) -> None:
+) -> str:
     sufijo = f":{clave}" if clave else ""
-    registro.anotar(
+    return registro.anotar(
         enc.id,
         {
             "kind": "comprobacion",
@@ -891,6 +933,93 @@ def _devolver(
         },
         f"devolucion:{enc.id}:{enc.generacion}:{serie}",
     )
+
+
+def _sin_avance(
+    registro: Registro,
+    enc: Encargo,
+    abierto: str,
+    intentado: str,
+    hora: str,
+    serie: str,
+) -> None:
+    """Escalera de una vuelta que no cerro ningun bloqueante: la primera vuelve
+    a diagnosticar, la segunda seguida deja el encargo en necesita_usuario.
+    `enc` ya incorpora el hallazgo de la vuelta."""
+    huella = huella_bloqueo(enc)
+    base = f"sin-progreso:{enc.id}:{huella}:{enc.generacion}:{serie}"
+    if enc.sin_progreso >= 1:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "sin_progreso",
+                "data": {
+                    "huella": huella,
+                    "diagnostico": (
+                        "el mismo bloqueo sigue tras el diagnostico, sin "
+                        f"informacion nueva: {abierto}. Se intento: {intentado}"
+                    ),
+                    "escalar": True,
+                    "hora": hora,
+                },
+            },
+            base + ":escalar",
+        )
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "sin_progreso",
+            "data": {"huella": huella, "escalar": False, "hora": hora},
+        },
+        base + ":diagnostico",
+    )
+    _devolver(
+        registro, enc, "diagnosticar_bloqueo", abierto,
+        "diagnosticar por que la correccion no resolvio el bloqueo; "
+        "no repetir la misma accion",
+        hora, f"diagnostico-{serie}",
+    )
+
+
+_NOTA_SIN_INTENTO = "Correcciones que ningún intento pudo recibir:"
+# La primera versión de la nota escribía este prefijo, sin tildes y en minúscula.
+_NOTA_SIN_INTENTO_ANTERIOR = "correcciones que ningun intento pudo recibir:"
+
+
+def _devolver_correcciones(registro: Registro, enc: Encargo, hora: str) -> bool:
+    """Una corrección que ningún intento recibió no se cierra ni se entrega:
+    el trabajo vuelve al implementador, cuyo prompt la lleva. Si ningún intento
+    puede lanzarse (todas las fases preparadas), devolverlo bloquearía el
+    cierre para siempre: se cierra y la nota deja dicho qué correcciones
+    nadie recibió. La nota no las da por vistas: si un intento vuelve a poder
+    lanzarse, la corrección le llega."""
+    if enc.estado in ("terminado", "cancelado") or not correcciones_sin_ver(enc):
+        return False
+    if not puede_recibir_intento(enc):
+        sin_recibir = enc.ajustes[ajustes_cubiertos(enc):]
+        if sin_recibir:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": _NOTA_SIN_INTENTO + " " + " | ".join(sin_recibir),
+                        "ajustes_anotados": len(enc.ajustes),
+                        "hora": hora,
+                    },
+                },
+                f"correcciones-sin-intento:{enc.id}:{len(enc.ajustes)}",
+            )
+        return False
+    _devolver(
+        registro, enc, "investigar",
+        "hay correcciones del propietario que ningún intento recibió",
+        "incorporar las correcciones del propietario antes de cerrar o entregar; "
+        "lo aprobado que no cambio se conserva",
+        hora, f"correccion-{len(enc.ajustes)}",
+    )
+    return True
 
 
 def _sonda_entorno(enc: Encargo, espacio: Path, base: Path, agente: str | None = None):
@@ -1324,6 +1453,8 @@ def _intentar_cierre(
     """
     from motor.runwrap import _publica
 
+    if _devolver_correcciones(registro, enc, hora):
+        return registro.fold(enc.id)
     if enc.producto is not None and not enc.producto.sha_git:
         stale = _producto_no_aprobado(enc, espacio)
         if stale is not None:
@@ -1396,16 +1527,28 @@ def _intentar_cierre(
             hora, f"cierre-{enc.generacion}",
         )
         return registro.fold(enc.id)
+    sin_recibir = [
+        n
+        for n in enc.procedimiento
+        if n.startswith((_NOTA_SIN_INTENTO, _NOTA_SIN_INTENTO_ANTERIOR))
+    ]
+    if sin_recibir:
+        # El aviso al propietario es esta evidencia: ahí tiene que ir lo que
+        # nadie recibió.
+        cierre["evidencia"] += " Atención: " + " ".join(sin_recibir)
     _publica(directorio / "cierre.json", json.dumps(cierre, ensure_ascii=False))
-    _anotar_juicio(
+    resultado = _anotar_juicio(
         registro,
         enc,
-        cierre,
+        {**cierre, "ajustes_vistos": ajustes_cubiertos(enc)},
         hora,
         enc.generacion,
         clave="global" if enc.objetivo_completo() else "",
     )
     enc = registro.fold(enc.id)
+    if resultado == "ilegal" and correcciones_sin_ver(enc):
+        _devolver_correcciones(registro, enc, hora)
+        return registro.fold(enc.id)
     if enc.estado == "terminado":
         _publicar_resultado(registro, enc, hora)
     return enc
@@ -1638,7 +1781,7 @@ def _cerrar_con_juicio(
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
     version_previa = enc.revision_vigente.version if enc.revision_vigente else ""
-    ids_previos = {h.id for h in bloqueantes_abiertos(enc, "independiente")}
+    enc_previo = enc
     revisor = ""
     for rol, _agente, modelo in reversed(enc.modelos):
         if rol == "revisor":
@@ -1674,46 +1817,21 @@ def _cerrar_con_juicio(
     )
     enc = registro.fold(enc.id)
     if juicio.veredicto == "cambios":
-        ids_ahora = {h.id for h in bloqueantes_abiertos(enc, "independiente")}
-        progreso = juicio.version != version_previa or bool(ids_previos - ids_ahora)
+        progreso = hubo_avance(enc_previo, enc)
         abiertos = bloqueantes_abiertos(enc, "independiente")
         primero = abiertos[0] if abiertos else None
         motivo = primero.titulo if primero else (juicio.nota or "hay bloqueantes")
         if not progreso:
-            huella = huella_bloqueo(enc)
-            if enc.sin_progreso >= 1:
-                detalle = "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
-                registro.anotar(
-                    enc.id,
-                    {
-                        "kind": "sin_progreso",
-                        "data": {
-                            "huella": huella,
-                            "diagnostico": (
-                                "el mismo bloqueo sigue tras el diagnostico, "
-                                f"sin informacion nueva: {detalle}"
-                            ),
-                            "escalar": True,
-                            "hora": hora,
-                        },
-                    },
-                    f"sin-progreso:{enc.id}:{huella}:escalar",
-                )
-            else:
-                registro.anotar(
-                    enc.id,
-                    {
-                        "kind": "sin_progreso",
-                        "data": {"huella": huella, "escalar": False, "hora": hora},
-                    },
-                    f"sin-progreso:{enc.id}:{huella}:diagnostico",
-                )
-                _devolver(
-                    registro, enc, "diagnosticar_bloqueo", motivo,
-                    "diagnosticar por que la correccion no resolvio el bloqueo; "
-                    "no repetir la misma accion",
-                    hora, "diagnostico",
-                )
+            _sin_avance(
+                registro, enc,
+                "; ".join(f"{h.id} {h.titulo}" for h in abiertos) or motivo,
+                (
+                    "cambio archivos del producto"
+                    if juicio.version != version_previa
+                    else "no cambio el producto"
+                ) + " y el revisor independiente sigue viendo el bloqueante abierto",
+                hora, "cambios",
+            )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
         registro.anotar(
@@ -1745,11 +1863,21 @@ def _cerrar_con_juicio(
                 hora, "inspeccion", rol="revisor",
             )
             _ligar_inspeccion(registro, enc, espacio, juicio, hora)
-        else:
+        elif hubo_avance(enc_previo, enc):
             _devolver(
                 registro, enc, "investigar",
                 juicio.nota or "evidencia insuficiente para aprobar",
                 juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
+                hora, "no-concluyente",
+            )
+        else:
+            abiertos = bloqueantes_abiertos(enc)
+            _sin_avance(
+                registro, enc,
+                "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
+                or juicio.nota
+                or "el revisor no concluyo: evidencia insuficiente para aprobar",
+                "el revisor independiente no concluyo y no cerro ningun bloqueante",
                 hora, "no-concluyente",
             )
         _publica(directorio / "incorporado", hora)
@@ -2800,6 +2928,8 @@ def _checks_extra(enc: Encargo, espacio: Path) -> tuple[str, ...]:
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
+    if _devolver_correcciones(registro, enc, hora):
+        return registro.fold(enc.id)
     if nivel_cumplido(enc) and enc.estado != "terminado" and not _deepseek_por_releer(enc):
         return _intentar_cierre(
             registro, enc, _espacio(registro.base, enc.id),
@@ -3062,6 +3192,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
+    inicio_vuelta = enc
     try:
         veredicto_ci = gh.checks(
             enc.entrega.repo, numero, sha, _checks_extra(enc, espacio),
@@ -3078,6 +3209,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     if not veredicto_ci.green:
         if veredicto_ci.fallas:
+            fallas = sorted(str(x) for x in veredicto_ci.fallas)
+            causa_ci = "checks requeridos en rojo: " + ", ".join(fallas)
             registro.anotar(
                 enc.id,
                 {
@@ -3086,20 +3219,28 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                         "fase": enc.fase_activa,
                         "intento": enc.intento,
                         "sha": sha,
-                        "causa": "checks requeridos en rojo: "
-                        + ", ".join(veredicto_ci.fallas),
+                        "causa": causa_ci,
+                        "fallas": fallas,
                         "hora": hora,
                     },
                 },
                 f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}",
             )
-            _devolver(
-                registro, enc, "investigar",
-                "checks requeridos en rojo: " + ", ".join(veredicto_ci.fallas),
-                "corregir los checks requeridos en rojo del PR de esta fase; "
-                "lo aprobado que no cambio se conserva",
-                hora, f"checks-{sha[:12]}",
-            )
+            enc = registro.fold(enc.id)
+            if hubo_avance(inicio_vuelta, enc):
+                _devolver(
+                    registro, enc, "investigar", causa_ci,
+                    "corregir los checks requeridos en rojo del PR de esta fase; "
+                    "lo aprobado que no cambio se conserva",
+                    hora, f"checks-{sha[:12]}",
+                )
+            else:
+                _sin_avance(
+                    registro, enc, causa_ci,
+                    "se corrigio y se volvio a publicar el PR, pero siguen en "
+                    "rojo los mismos checks requeridos",
+                    hora, f"checks-{sha[:12]}",
+                )
         else:
             marcar_espera(
                 registro, enc.id,
@@ -3108,6 +3249,25 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 _reanuda_en(120), hora,
             )
         return registro.fold(enc.id)
+    fase_ci = enc.fase_actual
+    if fase_ci is not None and fase_ci.fallas_checks:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "entrega_externa",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "paso": "checks_verdes",
+                    "repo": enc.entrega.repo,
+                    "numero": numero,
+                    "sha": sha,
+                    "hora": hora,
+                },
+            },
+            f"entrega:{enc.id}:{enc.fase_activa}:checks_verdes:{sha}",
+        )
+        enc = registro.fold(enc.id)
     if enc.deepseek_sha != sha or _deepseek_por_releer(enc):
         try:
             comentarios = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
@@ -3167,6 +3327,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
         hallazgos = hallazgos_deepseek(comentarios, sha)
         nuevos_bloq = {h.id for h in hallazgos if h.gravedad == "bloqueante"}
+        relectura_ds = enc.deepseek_sha == sha
         fusion = list(hallazgos)
         for h in bloqueantes_abiertos(enc, "deepseek"):
             if h.id not in nuevos_bloq:
@@ -3215,12 +3376,22 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         enc = registro.fold(enc.id)
         abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
         if abiertos_ds:
-            _devolver(
-                registro, enc, "investigar", abiertos_ds[0].titulo,
-                "corregir " + ", ".join(h.id for h in abiertos_ds)
-                + " (DeepSeek); lo aprobado que no cambio se conserva",
-                hora, "deepseek",
-            )
+            if relectura_ds or hubo_avance(inicio_vuelta, enc):
+                _devolver(
+                    registro, enc, "investigar", abiertos_ds[0].titulo,
+                    "corregir " + ", ".join(h.id for h in abiertos_ds)
+                    + " (DeepSeek); lo aprobado que no cambio se conserva",
+                    hora, "deepseek",
+                )
+            else:
+                _sin_avance(
+                    registro, enc,
+                    "; ".join(f"{h.id} {h.titulo}" for h in abiertos_ds)
+                    + " (DeepSeek)",
+                    "se corrigio y se volvio a publicar el PR, pero DeepSeek "
+                    "mantiene el mismo bloqueante",
+                    hora, f"deepseek-{sha[:12]}",
+                )
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     if enc.entrega.nivel in ("integrado", "desplegado") and enc.nivel_alcanzado == "pr":
@@ -3751,6 +3922,7 @@ def _lanzar_uno_en_turno(
                     "data": {
                         "rol": rol,
                         "generacion": generacion,
+                        "ajustes": len(enc.ajustes),
                         "candidato": token,
                         "host": socket.gethostname(),
                         "hora": hora,

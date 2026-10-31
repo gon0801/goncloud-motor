@@ -14,6 +14,7 @@ from .directores import (
     cerrar_sesion,
     conciliar_autoridad,
     consultar_canonico,
+    corregir_canal,
     drenar,
     encargar,
     guardar_capacidades,
@@ -104,6 +105,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--solicitud", required=True)
     s.add_argument("--respuesta", required=True)
     s.add_argument("--clave", required=True)
+    s.add_argument("--canal", required=True)
+    s.add_argument("--sesion", default="")
+
+    s = sub.add_parser("corregir")
+    s.add_argument("encargo")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--clave", required=True)
+    s.add_argument("--texto", required=True)
     s.add_argument("--canal", required=True)
     s.add_argument("--sesion", default="")
 
@@ -211,6 +220,20 @@ def _correr(args) -> int:
                 args.sesion,
             )
             if salida.get("rechazada"):
+                print(json.dumps(salida, ensure_ascii=False))
+                return 2
+            return _json(salida)
+        if args.cmd == "corregir":
+            salida = corregir_canal(
+                reg,
+                args.encargo,
+                args.texto,
+                args.clave,
+                args.canal,
+                marca,
+                args.sesion,
+            )
+            if salida.get("rechazada") or salida.get("conflicto"):
                 print(json.dumps(salida, ensure_ascii=False))
                 return 2
             return _json(salida)

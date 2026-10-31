@@ -868,7 +868,7 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
         if estado in _ESTADOS_CERRADOS_DEEPSEEK:
             continue
         severidad = str(entrada.get("severity") or entrada.get("severidad") or "").lower()
-        bloqueante = severidad in ("critical", "high")
+        bloqueante = severidad in ("critical", "high", "medium")
         titulo = str(
             entrada.get("title")
             or entrada.get("titulo")
