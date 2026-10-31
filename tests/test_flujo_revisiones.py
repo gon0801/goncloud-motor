@@ -1656,6 +1656,31 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 cuerpos,
             )
 
+    def test_un_cierre_que_la_version_anterior_acepto_con_una_correccion_nueva_se_sigue_leyendo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            self._revisor_con_juicio_aprobado(r)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            e = r.fold()
+            cierre = {
+                "clase": "confirmado",
+                "evidencia": "lei dato.txt: 42",
+                "fase": e.fase_activa,
+                "intento": e.intento,
+                "hora": r.hora,
+                "ajustes_vistos": 0,
+            }
+            self.assertEqual(
+                r.reg.anotar(r.enc, {"kind": "comprobacion", "data": cierre}, "t-cierre-nuevo"),
+                "ilegal",
+            )
+            r.reg.db.execute(
+                "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
+                (r.hora, r.enc, "comprobacion", json.dumps(cierre), "t-cierre-legado"),
+            )
+            self.assertEqual(r.fold().estado, "terminado")
+            self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
+
     def test_una_nota_sin_intento_de_la_version_anterior_cuenta_como_anotada_y_el_cierre_termina(self):
         from motor.encargos.ciclo import _NOTA_SIN_INTENTO
 

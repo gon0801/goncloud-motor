@@ -844,7 +844,7 @@ def _entrega_de(d: dict) -> EntregaAutorizada:
     return EntregaAutorizada(nivel=nivel, repo=repo, rama=rama, base=base)
 
 
-def reducir(estado: Encargo | None, evento: dict) -> Encargo:
+def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encargo:
     kind = evento["kind"]
     d = evento["data"]
     hora = str(d.get("hora") or "")
@@ -1266,7 +1266,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     if kind == "arbol":
         return _arbol(e, d, hora)
     if kind == "comprobacion":
-        return _comprobacion(e, d, hora)
+        return _comprobacion(e, d, hora, nuevo)
     if kind == "afirmacion":
         return replace(
             e, procedimiento=e.procedimiento + (f"afirmación: {d['texto']}",)
@@ -2042,7 +2042,7 @@ def _preparar_con_entrada(
     return tuple(salida)
 
 
-def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
+def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encargo:
     clase = d["clase"]
     if clase == "producto_aprobado":
         return replace(
@@ -2128,8 +2128,10 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
         # nota). Una que entró después no la atendió nadie: el registro rechaza
         # el cierre en la misma transacción en que lo escribe, haya o no un
         # intento que pueda recibirla, así que no hay carrera con corregir.
+        # Sólo al escribir: un cierre ya registrado se relee tal como se
+        # aceptó, también los que escribió la versión anterior.
         vistas = d.get("ajustes_vistos")
-        if vistas is not None and len(e.ajustes) > int(vistas):
+        if nuevo and vistas is not None and len(e.ajustes) > int(vistas):
             raise TransicionIlegal("llegó una corrección durante el cierre")
         return replace(
             e,
