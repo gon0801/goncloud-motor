@@ -85,6 +85,7 @@ _UMBRAL_S = 30
 # primera del supervisor tras una caída.
 _QUIETUD_S = 600
 _QUIETUD_VUELTAS = 3
+_RELECTURA_CHECKS_S = 120
 
 
 def ahora_iso(epoch: float | None = None) -> str:
@@ -677,7 +678,7 @@ def barrer(
                 f"actividad:{encargo_id}:{firma[:16]}",
             )
             enc = registro.fold(encargo_id)
-        if (
+        por_incorporar = (
             arbol == "ausente"
             and (
                 enc.proc is not None
@@ -697,7 +698,16 @@ def barrer(
                 "esperando_reintento",
                 "necesita_usuario",
             )
+        )
+        if (
+            not parada
+            and enc.via != "directa"
+            and enc.estado in ("recibido", "ejecutando")
         ):
+            enc = _reconciliar_checks(
+                registro, enc, gh, espacio, hora, epoch, forzar=por_incorporar
+            )
+        if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
             arbol = observar(directorio, proc)
         if arbol == "ausente" and enc.proc is not None:
@@ -3049,6 +3059,134 @@ def _checks_extra(enc: Encargo, espacio: Path) -> tuple[str, ...]:
     return RepoConf.parse(contenido.stdout).checks_extra
 
 
+def _ronda_checks(registro: Registro, enc: Encargo, sha: str) -> str:
+    """Sufijo de las claves de checks del SHA: un check que vuelve a rojo tras
+    haber pasado a verde abre una ronda nueva, no repite el evento ya anotado."""
+    verdes = sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["kind"] == "entrega_externa"
+        and ev["data"].get("paso") == "checks_verdes"
+        and ev["data"].get("sha") == sha
+        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+    )
+    return f":ronda{verdes}" if verdes else ""
+
+
+def _anotar_checks_verdes(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> Encargo:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "checks_verdes",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:checks_verdes:{sha}"
+        + _ronda_checks(registro, enc, sha),
+    )
+    return registro.fold(enc.id)
+
+
+def _toca_releer_checks(
+    directorio: Path, sha: str, epoch: float, forzar: bool, generacion: int
+) -> bool:
+    """Una lectura por SHA cada `_RELECTURA_CHECKS_S`, como el espaciado de
+    `_paso_entrega`; la marca vive en disco para sobrevivir a un reinicio del
+    supervisor. `forzar` se salta el espaciado una sola vez por generación e
+    SHA: la incorporación pendiente puede durar muchos barridos, y la marca
+    recuerda cuál ya forzó."""
+    ruta = directorio / "checks_lectura.json"
+    forzada = f"{generacion}:{sha}"
+    try:
+        previa = json.loads(ruta.read_text(encoding="utf-8"))
+        if not isinstance(previa, dict):
+            previa = {}
+    except (OSError, ValueError):
+        previa = {}
+    try:
+        reciente = (
+            previa.get("sha") == sha
+            and 0 <= epoch - float(previa.get("epoch") or 0) < _RELECTURA_CHECKS_S
+        )
+    except (TypeError, ValueError):
+        reciente = False
+    ya_forzada = previa.get("forzada") == forzada
+    forzar = forzar and not ya_forzada
+    if reciente and not forzar:
+        return False
+    try:
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        ruta.write_text(
+            json.dumps(
+                {
+                    "sha": sha,
+                    "epoch": epoch,
+                    "forzada": forzada if forzar else previa.get("forzada", ""),
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return True
+
+
+def _reconciliar_checks(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    espacio: Path,
+    hora: str,
+    epoch: float,
+    forzar: bool = False,
+) -> Encargo:
+    """Relee los checks del SHA que dejó la entrega bloqueada, sin pasar por la
+    compuerta de `_aplica_entrega`. Un check requerido que se vuelve a correr
+    sobre el mismo SHA y pasa a verde se anota como `checks_verdes`; si sigue
+    en rojo o no se puede leer no se anota nada y la lectura se repite pasado
+    el espaciado. Con el agente corriendo no lee. Con la incorporación del
+    agente pendiente `forzar` obliga una lectura, una sola por generación y
+    SHA aunque la incorporación tarde muchos barridos (el comprobador del
+    supervisor), para anotar un verde antes de contar la vuelta."""
+    fase = enc.fase_actual
+    if (
+        gh is None
+        or fase is None
+        or not fase.fallas_checks
+        or not fase.entrega_bloqueada_sha
+        or not enc.pr_numero
+        or enc.producto is None
+        or fase.entrega_bloqueada_sha != enc.producto.sha_git
+        or enc.entrega.nivel == "terminado"
+        or (enc.proc is not None and not forzar)
+    ):
+        return enc
+    sha = fase.entrega_bloqueada_sha
+    if not _toca_releer_checks(
+        _directorio(registro.base, enc.id), sha, epoch, forzar, enc.generacion
+    ):
+        return enc
+    try:
+        veredicto = gh.checks(
+            enc.entrega.repo, enc.pr_numero, sha, _checks_extra(enc, espacio),
+            base_politica=enc.entrega.base,
+        )
+    except Exception:
+        return enc
+    if not veredicto.green:
+        return enc
+    return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
@@ -3348,7 +3486,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                         "hora": hora,
                     },
                 },
-                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}",
+                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}"
+                + _ronda_checks(registro, enc, sha),
             )
             enc = registro.fold(enc.id)
             if hubo_avance(inicio_vuelta, enc):
@@ -3375,23 +3514,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     fase_ci = enc.fase_actual
     if fase_ci is not None and fase_ci.fallas_checks:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "paso": "checks_verdes",
-                    "repo": enc.entrega.repo,
-                    "numero": numero,
-                    "sha": sha,
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:{enc.fase_activa}:checks_verdes:{sha}",
-        )
-        enc = registro.fold(enc.id)
+        enc = _anotar_checks_verdes(registro, enc, numero, sha, hora)
     if enc.deepseek_sha != sha or _deepseek_por_releer(enc):
         try:
             comentarios = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)

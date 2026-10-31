@@ -155,7 +155,16 @@ que mantiene el mismo bloqueante tras republicar el PR. La primera vuelta sin
 avance no repite: el responsable diagnostica por qué la corrección no lo
 resolvió. La segunda seguida deja el encargo en `necesita_usuario` con el
 diagnóstico concreto (qué bloqueante sigue abierto y qué se intentó), el
-trabajo intacto y sin lanzar más agentes. Cerrar un bloqueante o una
+trabajo intacto y sin lanzar más agentes. Un check requerido que estaba en
+rojo y pasa a verde al volver a correrse sobre el mismo SHA no espera a una
+entrega nueva: el supervisor relee en solo lectura los checks de ese SHA y
+anota `checks_verdes`, que cierra el bloqueo, reinicia la cuenta y reabre la
+entrega. La lectura se espacia 120 s por SHA (la marca vive en
+`checks_lectura.json` del encargo), no corre mientras el agente trabaja y se
+fuerza una sola vez por generación y SHA cuando la incorporación del agente
+queda pendiente (aunque tarde muchos barridos, por ejemplo mientras corre el
+comprobador), para anotar un verde antes de contar la vuelta sin agotar la
+cuota de la API de GitHub. Cerrar un bloqueante o una
 aprobación sin nada abierto reinicia la cuenta, también al pasar a la fase
 siguiente. Nunca se declara éxito ni se vuelve a crear el encargo.
 

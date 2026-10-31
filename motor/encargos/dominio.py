@@ -2030,6 +2030,9 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
     nueva = replace(
         fase,
         fallas_checks=() if paso == "checks_verdes" else fase.fallas_checks,
+        entrega_bloqueada_sha=(
+            "" if paso == "checks_verdes" else fase.entrega_bloqueada_sha
+        ),
         nivel_alcanzado=candidato,
         pr_numero=int(d.get("numero") or fase.pr_numero or 0),
         pr_sha=sha
