@@ -233,7 +233,7 @@ def _correr(args) -> int:
                 marca,
                 args.sesion,
             )
-            if salida.get("rechazada"):
+            if salida.get("rechazada") or salida.get("conflicto"):
                 print(json.dumps(salida, ensure_ascii=False))
                 return 2
             return _json(salida)

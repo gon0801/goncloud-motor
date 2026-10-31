@@ -1763,6 +1763,61 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertIn("vía directa", salida["motivo"])
             self.assertEqual(r.fold().ajustes, ())
 
+    def _promover(self, r: Recorrido) -> None:
+        resultado = r.reg.anotar(
+            r.enc,
+            {"kind": "via", "data": {"via": "durable", "hora": r.hora, "clave": "p1"}},
+            "t-promover",
+        )
+        self.assertEqual(resultado, "nuevo")
+        self.assertEqual(r.fold().via, "durable")
+
+    def test_un_rechazo_de_la_via_directa_no_bloquea_la_misma_clave_cuando_pasa_a_durable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "directa-2", "Crea dato.txt con 42", via="directa")
+            self.addCleanup(r.reg.close)
+            primera = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertTrue(primera["rechazada"])
+            repetida = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertTrue(repetida["rechazada"])
+            self.assertTrue(repetida["retransmision"])
+            self._promover(r)
+            aceptada = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertFalse(aceptada.get("rechazada"))
+            self.assertFalse(aceptada.get("conflicto"))
+            self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
+            otra = corregir(r.reg, r.enc, "usa UTF-8", "c2", ahora_iso())
+            self.assertFalse(otra.get("rechazada"))
+            self.assertEqual(r.fold().ajustes, ("el dato debe ser 43", "usa UTF-8"))
+            de_nuevo = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertTrue(de_nuevo["retransmision"])
+            self.assertEqual(len(r.fold().ajustes), 2)
+
+    def test_un_rechazo_guardado_con_la_clave_por_la_version_anterior_no_la_ocupa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            r.reg.append(
+                r.enc,
+                "recibo",
+                {
+                    "accion": "corregir",
+                    "texto": "el dato debe ser 43",
+                    "recibo": "rec_viejo",
+                    "resultado": "rechazada",
+                    "motivo": "el encargo va por la vía directa",
+                    "hora": r.hora,
+                },
+                "ajuste:c1",
+                r.hora,
+            )
+            aceptada = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertFalse(aceptada.get("rechazada"))
+            self.assertFalse(aceptada.get("conflicto"))
+            self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
+            repetida = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertTrue(repetida["retransmision"])
+            self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
+
     def test_si_ningun_intento_puede_lanzarse_la_correccion_no_bloquea_el_cierre(self):
         from dataclasses import replace
 
@@ -2084,6 +2139,60 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertTrue(repetida["retransmision"])
             self.assertTrue(otra["conflicto"])
             self.assertEqual(r.fold().ajustes, ("texto uno",))
+
+    def test_un_rechazo_tambien_detecta_la_clave_repetida_con_otro_texto(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            ordenar(r.reg, r.enc, "cancelar", "x1", ahora_iso())
+            primera = corregir(r.reg, r.enc, "texto uno", "c1", ahora_iso())
+            self.assertTrue(primera["rechazada"])
+            self.assertNotIn("conflicto", primera)
+            repetida = corregir(r.reg, r.enc, "texto uno", "c1", ahora_iso())
+            self.assertTrue(repetida["rechazada"])
+            self.assertTrue(repetida["retransmision"])
+            self.assertNotIn("conflicto", repetida)
+            otra = corregir(r.reg, r.enc, "texto dos", "c1", ahora_iso())
+            self.assertTrue(otra["conflicto"])
+            self.assertNotIn("retransmision", otra)
+            self.assertEqual(r.fold().ajustes, ())
+
+    def test_la_clave_rechazada_sigue_siendo_de_su_texto_aunque_la_causa_cambie(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "directa-3", "Crea dato.txt con 42", via="directa")
+            self.addCleanup(r.reg.close)
+            primera = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertTrue(primera["rechazada"])
+            otra = corregir(r.reg, r.enc, "usa UTF-8", "c1", ahora_iso())
+            self.assertTrue(otra["conflicto"])
+            self.assertNotIn("rechazada", otra)
+            self._promover(r)
+            otra = corregir(r.reg, r.enc, "usa UTF-8", "c1", ahora_iso())
+            self.assertTrue(otra["conflicto"])
+            self.assertEqual(r.fold().ajustes, ())
+            aceptada = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertFalse(aceptada.get("conflicto"))
+            self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
+
+    def test_un_rechazo_de_la_version_anterior_tambien_detecta_otro_texto(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            r.reg.append(
+                r.enc,
+                "recibo",
+                {
+                    "accion": "corregir",
+                    "texto": "el dato debe ser 43",
+                    "recibo": "rec_viejo",
+                    "resultado": "rechazada",
+                    "motivo": "el encargo va por la vía directa",
+                    "hora": r.hora,
+                },
+                "ajuste:c1",
+                r.hora,
+            )
+            otra = corregir(r.reg, r.enc, "usa UTF-8", "c1", ahora_iso())
+            self.assertTrue(otra["conflicto"])
+            self.assertEqual(r.fold().ajustes, ())
 
     def test_solo_levanta_las_causas_que_el_host_no_puede_comprobar(self):
         with tempfile.TemporaryDirectory() as tmp:

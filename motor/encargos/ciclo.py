@@ -320,9 +320,18 @@ def corregir(
     registro: Registro, encargo_id: str, texto: str, clave: str, hora: str
 ) -> dict:
     """Registra una corrección sin interrumpir al agente. La toma el siguiente
-    intento. Sólo un encargo cerrado la rechaza."""
+    intento. Sólo un encargo cerrado la rechaza. Un rechazo deja constancia
+    pero no gasta la clave: se vuelve a evaluar al repetirla, porque la causa
+    puede haber cambiado (por ejemplo, un encargo que pasó a durable)."""
     ukey = f"ajuste:{clave}"
+    ukey_rechazo = f"ajuste-rechazo:{clave}"
     prev = registro.por_ukey(ukey)
+    rechazo = registro.por_ukey(ukey_rechazo)
+    if prev and prev["data"].get("resultado") == "rechazada":
+        # Rechazo guardado con la clave por la versión anterior: no la ocupa.
+        rechazo = rechazo or prev
+        ukey = f"ajuste:{clave}:reintento"
+        prev = registro.por_ukey(ukey)
     enc = registro.fold(encargo_id)
     if enc is None:
         raise TransicionIlegal("no hay encargo")
@@ -332,9 +341,13 @@ def corregir(
             salida["conflicto"] = True
         else:
             salida["retransmision"] = True
-            if prev["data"].get("resultado") == "rechazada":
-                salida["rechazada"] = True
-                salida["motivo"] = prev["data"].get("motivo") or ""
+        return salida
+    if rechazo and (
+        rechazo["encargo"] != encargo_id or rechazo["data"].get("texto") != texto
+    ):
+        # La clave no se gasta con un rechazo, pero sigue siendo de ese texto.
+        salida = vista(enc, rechazo["data"]["recibo"])
+        salida["conflicto"] = True
         return salida
     recibo = recibo_de(ukey)
 
@@ -350,12 +363,14 @@ def corregir(
                 "motivo": motivo,
                 "hora": hora,
             },
-            ukey,
+            ukey_rechazo,
             hora,
         )
         salida = vista(registro.fold(encargo_id), recibo)
         salida["rechazada"] = True
         salida["motivo"] = motivo
+        if rechazo:
+            salida["retransmision"] = True
         return salida
 
     if enc.via == "directa":

@@ -62,10 +62,11 @@ class DirectorCorregir(unittest.TestCase):
             encargo = self._encargar(base)
             _, primera = self._corregir(base, encargo)
             _, repetida = self._corregir(base, encargo)
-            _, otra = self._corregir(base, encargo, texto="otro texto")
+            codigo, otra = self._corregir(base, encargo, texto="otro texto")
             self.assertEqual(repetida["recibo"], primera["recibo"])
             self.assertTrue(repetida["retransmision"])
             self.assertTrue(otra["conflicto"])
+            self.assertEqual(codigo, 2)
             reg = Registro(base)
             self.addCleanup(reg.close)
             self.assertEqual(reg.fold(encargo).ajustes, ("usa UTF-8",))
@@ -110,6 +111,30 @@ class DirectorCorregir(unittest.TestCase):
             codigo, salida = self._corregir(base, encargo)
             self.assertEqual(codigo, 2)
             self.assertIn("cancelado", salida["motivo"])
+
+    def test_clave_rechazada_repetida_con_otro_texto_es_conflicto_y_sale_con_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            encargo = self._encargar(base)
+            self._correr(["cancelar", encargo, "--base", str(base), "--clave", "cancela-1"])
+            reg = Registro(base)
+            self.addCleanup(reg.close)
+            reg.anotar(
+                encargo,
+                {"kind": "arbol", "data": {"observacion": "ausente"}},
+                "t-arbol",
+            )
+            codigo, primera = self._corregir(base, encargo)
+            self.assertEqual(codigo, 2)
+            self.assertTrue(primera["rechazada"])
+            codigo, repetida = self._corregir(base, encargo)
+            self.assertEqual(codigo, 2)
+            self.assertTrue(repetida["retransmision"])
+            codigo, otra = self._corregir(base, encargo, texto="otro texto")
+            self.assertEqual(codigo, 2)
+            self.assertTrue(otra["conflicto"])
+            self.assertNotIn("retransmision", otra)
+            self.assertEqual(reg.fold(encargo).ajustes, ())
 
     def test_encargo_inexistente_se_rechaza(self):
         with tempfile.TemporaryDirectory() as tmp:
