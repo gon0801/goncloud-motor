@@ -1,0 +1,28 @@
+name: Pruebas
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  bateria:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MOTOR_EXIGE_BWRAP: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Instalar bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 veda los espacios de nombres de usuario sin perfil de AppArmor.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: La jaula de bubblewrap arranca
+        run: bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --proc /proc --dev /dev -- /usr/bin/true
+      - name: Bateria completa
+        run: python -m unittest discover -s tests -t . -v
