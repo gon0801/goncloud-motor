@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from motor.plataforma import jaula_linux
 from motor.plataforma.jaula_linux import RED_ABIERTA, RED_NINGUNA, Jaula
@@ -77,10 +78,47 @@ class ArgvTest(unittest.TestCase):
         self.assertNotIn("--tmpfs", self.argv())
         self.assertNotIn("--tmpfs", self.argv(lectura=True))
 
+    @staticmethod
+    def destinos(argv):
+        """Dónde aparece algo dentro de la jaula. El origen no cuenta: el de `resolv.conf`
+        en WSL es /mnt/wsl/resolv.conf y se monta sobre /etc/resolv.conf."""
+        con_origen = ("--bind", "--ro-bind", "--ro-bind-try", "--symlink")
+        solos = ("--dir", "--proc", "--dev", "--tmpfs", "--remount-ro", "--chdir")
+        return [
+            argv[i + 2] if x in con_origen else argv[i + 1]
+            for i, x in enumerate(argv)
+            if x in con_origen + solos
+        ]
+
     def test_no_monta_el_home_ni_mnt(self):
         argv = self.argv(lecturas=(str(self.base / "fuente"),))
-        for ruta in argv:
-            self.assertFalse(ruta.startswith(("/home", "/mnt", "/root")), ruta)
+        destinos = self.destinos(argv)
+        for destino in destinos:
+            self.assertFalse(destino.startswith(("/home", "/mnt", "/root")), destino)
+
+    def test_con_el_etc_de_wsl_el_origen_de_mnt_no_crea_mnt_en_la_jaula(self):
+        etc = self.base / "etc"
+        etc.mkdir()
+        (etc / "hosts").write_text("127.0.0.1 localhost\n")
+        (etc / "resolv.conf").symlink_to("../mnt/wsl/resolv.conf")
+        real = os.path.realpath
+        es_archivo = os.path.isfile
+        original = jaula_linux._etc
+        with mock.patch.object(
+            jaula_linux.os.path,
+            "realpath",
+            lambda p: "/mnt/wsl/resolv.conf" if p.endswith("etc/resolv.conf") else real(p),
+        ), mock.patch.object(
+            jaula_linux.os.path,
+            "isfile",
+            lambda p: p == "/mnt/wsl/resolv.conf" or es_archivo(p),
+        ), mock.patch.object(jaula_linux, "_etc", lambda: original(str(etc))):
+            argv = self.argv(lecturas=(str(self.base / "fuente"),))
+        self.assertIn("/mnt/wsl/resolv.conf", argv)
+        destinos = self.destinos(argv)
+        self.assertIn("/etc/resolv.conf", destinos)
+        for destino in destinos:
+            self.assertFalse(destino.startswith(("/home", "/mnt", "/root")), destino)
 
     def test_resolv_conf_enlazado_a_mnt_de_wsl_se_monta_sin_crear_mnt(self):
         etc = self.base / "etc"
