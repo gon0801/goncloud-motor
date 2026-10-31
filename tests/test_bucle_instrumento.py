@@ -739,6 +739,57 @@ class SondaDelShellDeGit(unittest.TestCase):
         self.assertFalse(self.sondear(roto).ok)
 
 
+class EnsayoDelOperador(unittest.TestCase):
+    """`ops/ensayo_shell_jaula.py` no puede fallar por permisos de la jaula:
+    la variante del revisor no escribe en el espacio, y el push va al temporal."""
+
+    def test_el_push_corre_donde_cada_variante_puede_escribir(self):
+        import importlib.util
+
+        ruta = Path(__file__).resolve().parents[1] / "ops" / "ensayo_shell_jaula.py"
+        especificacion = importlib.util.spec_from_file_location("ensayo_shell", ruta)
+        ensayo = importlib.util.module_from_spec(especificacion)
+        especificacion.loader.exec_module(ensayo)
+        lanzados = []
+
+        def aislar(cmd, espacio, runtime, *, lectura=False, **_):
+            temporal = runtime / "tmp"
+            temporal.mkdir(parents=True, exist_ok=True)
+            escritura = [str(runtime)] + ([] if lectura else [str(espacio)])
+            return ComandoAislado(
+                cmd, {"TMPDIR": str(temporal)}, "appcontainer", {"escritura": escritura}
+            )
+
+        def lanzar(comando, cwd, entorno, *, plazo):
+            lanzados.append((comando.argv, Path(cwd), comando.jaula["escritura"]))
+            return 0, "ok\n"
+
+        herramientas = {
+            "MOTOR_SONDA_SHELL": "bash.exe",
+            "MOTOR_SONDA_SH": "sh.exe",
+            "MOTOR_SONDA_GIT": "git.exe",
+        }
+        with (
+            mock.patch.object(ensayo, "aislar", aislar),
+            mock.patch.object(ensayo, "lanzar_en_jaula", lanzar),
+            mock.patch.object(ensayo, "_herramientas_git", return_value=herramientas),
+            mock.patch.object(
+                ensayo, "sondear", return_value=SondaEntorno(True)
+            ),
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(ensayo.main(), 0)
+        empujes = [x for x in lanzados if ensayo.PUSH in x[0]]
+        self.assertEqual(len(empujes), 3)
+        for _argv, cwd, escritura in empujes:
+            self.assertTrue(
+                any(cwd.is_relative_to(raiz) for raiz in escritura), (cwd, escritura)
+            )
+        lectura = [x for x in empujes if len(x[2]) == 1]
+        self.assertEqual(len(lectura), 1)
+        self.assertEqual(lectura[0][1].name, "tmp")
+
+
 class LaSondaLanzaDentroDeLaJaula(unittest.TestCase):
     def test_en_appcontainer_no_se_usa_subprocess_run(self):
         comando = ComandoAislado(["x"], {}, "appcontainer", {"runtime": "r"})

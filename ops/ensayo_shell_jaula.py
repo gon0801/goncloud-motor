@@ -24,7 +24,7 @@ from motor.encargos.aislamiento import (
 )
 
 PUSH = (
-    "git init -q a && git init -q --bare b.git && cd a && "
+    "rm -rf a b.git && git init -q a && git init -q --bare b.git && cd a && "
     "git -c user.email=x@x -c user.name=x commit -q --allow-empty -m x && "
     "git push -q ../b.git HEAD:main && echo ok"
 )
@@ -59,8 +59,10 @@ def main() -> int:
                         ],
                     }[caso]
                     comando = aislar(cmd, espacio, runtime, **opciones)
+                    # El revisor no escribe en el espacio: el push va al temporal del runtime.
+                    cwd = Path(comando.entorno["TMPDIR"]) if "push" in caso else espacio
                     rc, salida = lanzar_en_jaula(
-                        comando, espacio, dict(comando.entorno), plazo=60
+                        comando, cwd, dict(comando.entorno), plazo=60
                     )
                     veredicto = "ok" if rc == 0 and salida.split()[-1:] == ["ok"] else "FALLA"
                     detalle = f"rc={rc} salida={' '.join(salida.split())[:300]!r}"
