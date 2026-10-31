@@ -19,6 +19,8 @@ import time
 import uuid
 from pathlib import Path
 
+from .rutas_wsl import argv_a_wsl
+
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 CREATE_NO_WINDOW = 0x08000000
@@ -311,17 +313,10 @@ def argv_wsl(
     ]
 
 
-def ruta_wsl(x: str) -> str:
-    """`C:\\Users\\x\\brief.md` -> `/mnt/c/Users/x/brief.md`; lo demás queda igual."""
-    if len(x) > 2 and x[1] == ":" and x[0].isalpha() and x[2] in "\\/":
-        return f"/mnt/{x[0].lower()}" + x[2:].replace("\\", "/")
-    return x
-
-
 def argv_en_wsl(argv: list[str]) -> list[str]:
     """Comando que corre DENTRO de WSL: las rutas de Windows del argv se traducen (MOTOR 01, PC:
     Muse no encontraba `C:\\...\\brief.md`). El directorio de trabajo lo traduce wsl.exe solo."""
-    return ["wsl.exe", "-e", *(ruta_wsl(x) for x in argv)]
+    return ["wsl.exe", "-e", *argv_a_wsl(argv)]
 
 
 def variables_wsl(env: dict) -> list[str]:
@@ -355,7 +350,7 @@ def lanzamiento_wsl(
     shims = str(Path(__file__).resolve().parent.parent / "shims")
     env2 = dict(env)
     env2["MOTOR_SHIMS"] = shims
-    argv = argv_wsl(distro, [ruta_wsl(x) for x in cmd], timeout=timeout, ahora=ahora)
+    argv = argv_wsl(distro, argv_a_wsl(cmd), timeout=timeout, ahora=ahora)
     return argv, env_wsl(env2)
 
 
