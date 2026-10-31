@@ -361,6 +361,17 @@ class Encargo:
     restricciones: tuple[str, ...]
     canal: str
     ajustes: tuple[str, ...] = ()
+    # Cuántos ajustes llevaba el prompt del último intento que llegó a abrirse.
+    # Un ajuste posterior no lo vio ningún intento: no se cierra ni se entrega.
+    ajustes_vistos: int = 0
+    # Cuántos ajustes lleva el prompt de la reserva en curso. Sólo pasa a
+    # `ajustes_vistos` cuando el intento se abre; si la reserva se cierra sin
+    # abrirlo, no cuenta nada.
+    ajustes_reservados: int = 0
+    # Cuántos ajustes quedaron dichos en la nota de cierre porque ningún intento
+    # podía recibirlos. No son vistos: si un intento vuelve a poder lanzarse, la
+    # corrección le llega.
+    ajustes_anotados: int = 0
     procedimiento: tuple[str, ...] = ()
     estado: str = "recibido"
     ultimo_hecho: str = ""
@@ -550,6 +561,24 @@ def efecto_de(e: Encargo, efecto_id: str) -> Efecto | None:
         if x.id == efecto_id:
             return x
     return None
+
+
+def correcciones_sin_ver(e: Encargo) -> bool:
+    return len(e.ajustes) > e.ajustes_vistos
+
+
+def ajustes_cubiertos(e: Encargo) -> int:
+    """Ajustes que un cierre puede dar por atendidos: los que vio un intento y
+    los que la nota de cierre ya dijo que nadie pudo recibir."""
+    return max(e.ajustes_vistos, e.ajustes_anotados)
+
+
+def puede_recibir_intento(e: Encargo) -> bool:
+    """Hay un intento que podría lanzarse: devolverle el trabajo sirve. Con
+    todas las fases preparadas el cierre global no lanza a nadie."""
+    if e.via == "directa" or not e.intentos_nuevos:
+        return False
+    return not e.fases or _fase_disponible(e.fases) is not None
 
 
 def bloqueantes_abiertos(e: Encargo, origen: str = "") -> tuple[Hallazgo, ...]:
@@ -841,7 +870,7 @@ def _entrega_de(d: dict) -> EntregaAutorizada:
     return EntregaAutorizada(nivel=nivel, repo=repo, rama=rama, base=base)
 
 
-def reducir(estado: Encargo | None, evento: dict) -> Encargo:
+def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encargo:
     kind = evento["kind"]
     d = evento["data"]
     hora = str(d.get("hora") or "")
@@ -924,24 +953,45 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     if kind == "orden":
         return _orden(e, d, hora)
     if kind == "ajuste":
-        if e.estado != "detenido":
-            raise TransicionIlegal("el ajuste espera el estado detenido")
+        if e.estado == "terminado":
+            raise TransicionIlegal("el encargo ya terminó; no admite correcciones")
+        if e.estado == "cancelado" or (
+            e.estado == "deteniendo" and e.motivo == "cancelado"
+        ):
+            raise TransicionIlegal("el encargo está cancelado; no admite correcciones")
         # Un ajuste trae información nueva del operador. Sólo levanta las causas
         # que el host no puede comprobar: las demás siguen hasta verificarse.
+        # Con el trabajo en curso no toca el reloj del último hecho: la
+        # detección de una sesión colgada no se reinicia por una nota.
+        en_curso = e.estado in ("recibido", "ejecutando", "conciliando")
         e = _con_impedimentos(
-            e, tuple(i for i in e.impedimentos if i.verificable), hora
-        )
-        return replace(
             e,
-            ajustes=e.ajustes + (d["texto"],),
-            hora=hora,
-            ultimo_hecho="ajuste incorporado con el trabajo detenido",
-            siguiente="seguir detenido hasta continuar",
+            tuple(i for i in e.impedimentos if i.verificable),
+            "" if en_curso else hora,
         )
+        e = replace(e, ajustes=e.ajustes + (d["texto"],))
+        if e.estado == "detenido":
+            return replace(
+                e,
+                hora=hora,
+                ultimo_hecho="ajuste incorporado con el trabajo detenido",
+                siguiente="seguir detenido hasta continuar",
+            )
+        if e.estado == "necesita_usuario":
+            return replace(
+                _retomar(e, hora),
+                ultimo_hecho="corrección incorporada; se retoma el trabajo",
+            )
+        return e
     if kind == "procedimiento":
         return replace(
             e,
             procedimiento=e.procedimiento + (d["nota"],),
+            # La nota de la versión anterior traía este conteo como
+            # "ajustes_vistos"; sólo la escribía la nota sin intento.
+            ajustes_anotados=int(
+                d.get("ajustes_anotados", d.get("ajustes_vistos", e.ajustes_anotados))
+            ),
             hora=hora or e.hora,
         )
     if kind == "migracion":
@@ -962,6 +1012,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         return replace(
             e,
             reserva=True,
+            ajustes_reservados=int(d.get("ajustes", e.ajustes_vistos)),
             conductor=str(d.get("conductor") or e.conductor),
             candidato=str(d.get("candidato") or ""),
             host=str(d.get("host") or socket.gethostname()),
@@ -972,7 +1023,13 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             hora=hora or e.hora,
         )
     if kind == "reserva_cerrada":
-        return replace(e, reserva=False, candidato="", hora=hora or e.hora)
+        return replace(
+            e,
+            reserva=False,
+            candidato="",
+            ajustes_reservados=e.ajustes_vistos,
+            hora=hora or e.hora,
+        )
     if kind == "conductor":
         return replace(
             e, conductor=d["token"], candidato="", host=d["host"], hora=hora or e.hora
@@ -1002,6 +1059,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         return replace(
             e,
             reserva=False,
+            ajustes_vistos=max(e.ajustes_vistos, e.ajustes_reservados),
             rol=rol_intento,
             agente=str(d.get("agente") or e.agente),
             modelos=modelos,
@@ -1051,7 +1109,14 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
                 cambios["sesion_revisor"] = sesion_runtime
             else:
                 cambios["sesion_responsable"] = sesion_runtime
-        return replace(e, proc=None, herramienta="", reserva=False, **cambios)
+        return replace(
+            e,
+            proc=None,
+            herramienta="",
+            reserva=False,
+            ajustes_reservados=e.ajustes_vistos,
+            **cambios,
+        )
     if kind == "sesion_perdida":
         if (d.get("rol") or e.rol) == "revisor":
             return replace(
@@ -1227,7 +1292,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
     if kind == "arbol":
         return _arbol(e, d, hora)
     if kind == "comprobacion":
-        return _comprobacion(e, d, hora)
+        return _comprobacion(e, d, hora, nuevo)
     if kind == "afirmacion":
         return replace(
             e, procedimiento=e.procedimiento + (f"afirmación: {d['texto']}",)
@@ -1780,58 +1845,57 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     if accion == "continuar":
         if e.estado != "detenido":
             raise TransicionIlegal("continuar espera el estado detenido")
-        # Continuar retoma el encargo y no repara nada: las causas pendientes
-        # siguen vigentes, cada una con su propia comprobación.
-        disponible = _fase_disponible(e.fases)
-        if disponible is not None:
-            rol, estrategia = _rol_de_continuacion(e, disponible)
-            return replace(
-                e,
-                estado="recibido",
-                fase_activa=disponible.id,
-                rol=rol,
-                estrategia=estrategia,
-                intentos_nuevos=True,
-                escrituras=e.autoridad,
-                motivo="",
-                siguiente=f"continuar la fase {disponible.id}",
-                ultimo_hecho="se continuó el encargo",
-                hora=hora or e.hora,
-                proc=None,
-                herramienta="",
-            )
-        if e.fases and all(f.estado == "preparada" for f in e.fases):
-            return replace(
-                e,
-                estado="recibido",
-                rol="revisor",
-                intentos_nuevos=True,
-                escrituras=e.autoridad,
-                motivo="",
-                siguiente="completar el cierre global",
-                ultimo_hecho="se continuó; todas las fases están preparadas",
-                hora=hora or e.hora,
-                proc=None,
-                herramienta="",
-            )
+        return replace(_retomar(e, hora), proc=None, herramienta="")
+    raise TransicionIlegal(f"orden desconocida: {accion}")
+
+
+def _retomar(e: Encargo, hora: str) -> Encargo:
+    """Vuelve a abrir el trabajo. No repara nada: las causas pendientes siguen
+    vigentes, cada una con su propia comprobación. No toca el proceso: quien
+    retoma desde `detenido` ya sabe que no hay ninguno."""
+    disponible = _fase_disponible(e.fases)
+    if disponible is not None:
+        rol, estrategia = _rol_de_continuacion(e, disponible)
         return replace(
             e,
             estado="recibido",
-            rol="",
+            fase_activa=disponible.id,
+            rol=rol,
+            estrategia=estrategia,
             intentos_nuevos=True,
             escrituras=e.autoridad,
             motivo="",
-            siguiente=(
-                "esperar a que una dependencia se prepare"
-                if e.fases
-                else "reanudar el mismo encargo"
-            ),
-            ultimo_hecho="se continuó el mismo encargo",
+            siguiente=f"continuar la fase {disponible.id}",
+            ultimo_hecho="se continuó el encargo",
             hora=hora or e.hora,
-            proc=None,
-            herramienta="",
         )
-    raise TransicionIlegal(f"orden desconocida: {accion}")
+    if e.fases and all(f.estado == "preparada" for f in e.fases):
+        return replace(
+            e,
+            estado="recibido",
+            rol="revisor",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            motivo="",
+            siguiente="completar el cierre global",
+            ultimo_hecho="se continuó; todas las fases están preparadas",
+            hora=hora or e.hora,
+        )
+    return replace(
+        e,
+        estado="recibido",
+        rol="",
+        intentos_nuevos=True,
+        escrituras=e.autoridad,
+        motivo="",
+        siguiente=(
+            "esperar a que una dependencia se prepare"
+            if e.fases
+            else "reanudar el mismo encargo"
+        ),
+        ultimo_hecho="se continuó el mismo encargo",
+        hora=hora or e.hora,
+    )
 
 
 def _arbol(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -2019,7 +2083,7 @@ def _preparar_con_entrada(
     return tuple(salida)
 
 
-def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
+def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encargo:
     clase = d["clase"]
     if clase == "producto_aprobado":
         return replace(
@@ -2101,6 +2165,15 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
                 ultimo_hecho=f"fase {fase.id} preparada; quedan dependencias sin preparar",
                 hora=hora or e.hora,
             )
+        # Quien cierra anota cuántas correcciones cubre (vistas o dichas en la
+        # nota). Una que entró después no la atendió nadie: el registro rechaza
+        # el cierre en la misma transacción en que lo escribe, haya o no un
+        # intento que pueda recibirla, así que no hay carrera con corregir.
+        # Sólo al escribir: un cierre ya registrado se relee tal como se
+        # aceptó, también los que escribió la versión anterior.
+        vistas = d.get("ajustes_vistos")
+        if nuevo and vistas is not None and len(e.ajustes) > int(vistas):
+            raise TransicionIlegal("llegó una corrección durante el cierre")
         return replace(
             e,
             fases=fases,
@@ -2490,7 +2563,8 @@ def _bloques_comunes(e: Encargo) -> list[str]:
         )
     if e.ajustes:
         lineas.append(
-            "Ajustes incorporados con el trabajo detenido:\n" + "\n".join(e.ajustes)
+            "Correcciones del propietario, incorporadas después del pedido:\n"
+            + "\n".join(e.ajustes)
         )
     if e.efectos:
         hechos = [f"{x.id} {x.estado} {x.recibo}".strip() for x in e.efectos]

@@ -81,7 +81,7 @@ class Registro:
             ):
                 estado = reducir(estado, {"kind": kind_prev, "data": json.loads(data_prev)})
             try:
-                reducir(estado, {"kind": kind, "data": data})
+                reducir(estado, {"kind": kind, "data": data}, nuevo=True)
             except TransicionIlegal:
                 self.db.execute("ROLLBACK")
                 return "ilegal"

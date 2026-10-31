@@ -79,6 +79,47 @@ en `intento_abierto`, con el prompt armado desde el fold (pedido,
 hallazgos abiertos, referencia de revisión). Reconstruir es válido; fingir
 continuidad, no.
 
+## Corregir un encargo en curso
+
+`motor corregir` y `motor director corregir` aceptan una corrección en
+cualquier estado salvo `cancelado` y `terminado` (o una cancelación en
+curso), que la rechazan con su motivo. No interrumpen al agente que corre:
+la corrección queda en el registro y la recibe el siguiente intento, del
+rol que sea, en su prompt. Para que se aplique de inmediato, se usa `parar`
+y `continuar`.
+
+- En `recibido`, `ejecutando` y `conciliando` solo se registra. El reloj del
+  último hecho no se toca, así que la detección de una sesión colgada sigue
+  igual.
+- En `esperando_reintento` solo se registra: la espera sigue su hora, y la
+  corrección cuenta como información nueva para las causas que el host no
+  puede comprobar.
+- En `necesita_usuario` además reabre el trabajo, igual que un ajuste seguido
+  de `continuar`. En `detenido` el encargo sigue detenido hasta `continuar`.
+- Una corrección que llega durante el intento que iba a cerrar el encargo no
+  se pierde. Cada reserva de intento anota cuántas correcciones llevaba su
+  prompt (`ajustes`). Si hay más registradas que las que vio el último
+  intento, el cierre y la entrega del PR no avanzan: el trabajo vuelve al
+  implementador, cuyo prompt ya las lleva, y lo aprobado que no cambió se
+  conserva. Si ningún intento puede lanzarse (todas las fases ya están
+  preparadas), devolver el trabajo bloquearía el cierre para siempre: el
+  cierre sigue y deja en las notas de procedimiento qué correcciones nadie
+  recibió.
+- Solo levanta las causas que el host no puede comprobar. Las demás siguen
+  hasta verificarse.
+- Una corrección que entra mientras se escribe el cierre tampoco se pierde:
+  el cierre anota cuántas correcciones vio y el registro lo rechaza, en la
+  misma transacción, si hay más; el trabajo vuelve al implementador. Cuando
+  nadie puede recibir una corrección, el aviso de cierre al propietario la
+  nombra. En la vía directa se rechaza con su motivo: ningún intento del motor
+  la recibiría.
+- La misma clave no duplica la corrección. La misma clave con otro texto se
+  reporta como `conflicto`.
+- `motor director corregir ENCARGO --base B --clave K --texto T --canal C
+  [--sesion S]` aplica la misma regla de canal y sesión que
+  `director responder`: solo el canal (y la sesión) de origen corrigen el
+  encargo.
+
 ## Errores de instrumento y repetición sin progreso
 
 Un fallo que no es del producto se anota como `instrumento_fallo` por fuente
@@ -154,8 +195,12 @@ autor contenga «deepseek» no acreditan origen.
 
 El parseo de DeepSeek usa primero el bloque oculto
 `ai-review:findings=[...]` cuando lo trae: las entradas abiertas con
-severidad Critical o High nacen bloqueantes, Medium y Low entran como
-observaciones, y las resueltas o descartadas no reabren. Sin bloque
+severidad Critical, High o Medium nacen bloqueantes (devuelven el trabajo
+al implementador con su título, archivo y línea, dentro del mismo encargo),
+Low entra como observación visible en `ver` sin abrir otra vuelta, y las
+resueltas o descartadas no reabren. Un Medium entra por la misma vía que un
+bloqueante de DeepSeek, así que cualquier regla de avance o de vueltas sin
+progreso que cubra a estos lo cubre también. Sin bloque
 estructurado, bloquean las señales textuales reales por línea
 (`CHANGES_REQUESTED`, `REQUEST_CHANGES`, `[P0]`, `[P1]` y las prohibitivas
 de siempre); todo lo demás entra como observación visible. Los bloqueantes

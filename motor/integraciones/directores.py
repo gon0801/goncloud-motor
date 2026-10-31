@@ -6,7 +6,14 @@ import os
 import subprocess
 from pathlib import Path
 
-from motor.encargos.ciclo import ahora_iso, consultar, ordenar, recibir, resolver_entrega
+from motor.encargos.ciclo import (
+    ahora_iso,
+    consultar,
+    corregir,
+    ordenar,
+    recibir,
+    resolver_entrega,
+)
 from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida
 from motor.encargos.registro import Registro
 
@@ -895,6 +902,56 @@ def _aviso_de_hecho(enc, hecho: dict) -> dict:
     return aviso
 
 
+def _canal_de_origen(
+    registro: Registro, encargo: str, canal: str, sesion: str
+) -> tuple[str, dict | None]:
+    """Sólo el canal y la sesión que dieron origen al encargo hablan por él."""
+    enc = registro.fold(encargo)
+    if enc is None:
+        return "", {"rechazada": True, "motivo": "no hay encargo", "aplicada": False, "encargo": encargo}
+    try:
+        canal_resp = nombre_canal(canal)
+    except ValueError as exc:
+        return "", {"rechazada": True, "motivo": str(exc), "aplicada": False, "encargo": encargo}
+    identidad = _leer(_ruta_identidad_canal(registro, encargo)) or {}
+    origen = str(identidad.get("canal") or enc.canal or "")
+    if not origen or canal_resp != origen:
+        return canal_resp, {
+            "rechazada": True,
+            "motivo": "el canal no es el de origen del encargo",
+            "aplicada": False,
+            "encargo": encargo,
+        }
+    sesion_origen = str(identidad.get("sesion") or "")
+    if sesion_origen and str(sesion or "") != sesion_origen:
+        return canal_resp, {
+            "rechazada": True,
+            "motivo": "la identidad del canal no coincide",
+            "aplicada": False,
+            "encargo": encargo,
+        }
+    return canal_resp, None
+
+
+def corregir_canal(
+    registro: Registro,
+    encargo: str,
+    texto: str,
+    clave: str,
+    canal: str,
+    hora: str,
+    sesion: str = "",
+) -> dict:
+    """Registra la corrección si el canal es el de origen. No interrumpe al agente."""
+    canal_corr, rechazo = _canal_de_origen(registro, encargo, canal, sesion)
+    if rechazo is not None:
+        return rechazo
+    salida = corregir(registro, encargo, texto, clave, hora)
+    salida["encargo"] = encargo
+    salida["canal"] = canal_corr
+    return salida
+
+
 def responder_canal(
     registro: Registro,
     encargo: str,
@@ -906,30 +963,9 @@ def responder_canal(
     sesion: str = "",
 ) -> dict:
     """Aplica la respuesta a esa pregunta si el canal es el de origen. No abre otro encargo."""
-    enc = registro.fold(encargo)
-    if enc is None:
-        return {"rechazada": True, "motivo": "no hay encargo", "aplicada": False, "encargo": encargo}
-    try:
-        canal_resp = nombre_canal(canal)
-    except ValueError as exc:
-        return {"rechazada": True, "motivo": str(exc), "aplicada": False, "encargo": encargo}
-    identidad = _leer(_ruta_identidad_canal(registro, encargo)) or {}
-    origen = str(identidad.get("canal") or enc.canal or "")
-    if not origen or canal_resp != origen:
-        return {
-            "rechazada": True,
-            "motivo": "el canal no es el de origen del encargo",
-            "aplicada": False,
-            "encargo": encargo,
-        }
-    sesion_origen = str(identidad.get("sesion") or "")
-    if sesion_origen and str(sesion or "") != sesion_origen:
-        return {
-            "rechazada": True,
-            "motivo": "la identidad del canal no coincide",
-            "aplicada": False,
-            "encargo": encargo,
-        }
+    canal_resp, rechazo = _canal_de_origen(registro, encargo, canal, sesion)
+    if rechazo is not None:
+        return rechazo
     from motor.encargos.necesidades import responder
 
     try:
