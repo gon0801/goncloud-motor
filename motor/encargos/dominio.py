@@ -215,6 +215,8 @@ class Fase:
     inspeccion_entregada: str = ""
     inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
+    fallas_checks: tuple[str, ...] = ()
+    cerrados: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -598,24 +600,49 @@ def fuentes_autorizadas(e: Encargo) -> tuple[Path, ...]:
     return tuple(fuentes)
 
 
+def _bloqueos_abiertos(e: Encargo) -> set[str]:
+    """Hallazgos bloqueantes y checks requeridos en rojo de la fase activa."""
+    fase = e.fase_actual
+    fallas = fase.fallas_checks if fase is not None else ()
+    return {h.id for h in bloqueantes_abiertos(e)} | {f"check:{f}" for f in fallas}
+
+
 def huella_bloqueo(e: Encargo) -> str:
     """Identidad de lo que sigue abierto. No incluye la firma del producto:
     cambiar archivos sin cerrar un bloqueante no es avance."""
-    ids = sorted(h.id for h in bloqueantes_abiertos(e))
-    return hashlib.sha256("|".join(ids).encode()).hexdigest()
+    return hashlib.sha256("|".join(sorted(_bloqueos_abiertos(e))).encode()).hexdigest()
+
+
+def _bloqueos_cerrados(e: Encargo) -> set[str]:
+    fase = e.fase_actual
+    return set(fase.cerrados) if fase is not None else set()
+
+
+def hubo_avance(previo: Encargo, e: Encargo) -> bool:
+    """Hay avance si entre `previo` y `e` se cerro un bloqueante o un check en
+    rojo, o si aparece el primero (no hay con que compararlo). Uno nuevo junto
+    a los que siguen abiertos no lo es. Cerrar de nuevo lo que ya se cerro una
+    vez y se reabrio tampoco: un check que alterna rojo y verde, o un bloqueante
+    que vuelve, no deja de ser el mismo bloqueo."""
+    antes = _bloqueos_abiertos(previo)
+    ahora = _bloqueos_abiertos(e)
+    ya_cerrados = _bloqueos_cerrados(previo)
+    return bool((antes - ahora) - ya_cerrados) or bool(
+        ahora and not antes and ahora - ya_cerrados
+    )
 
 
 def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Encargo:
-    """Hay avance si se cerro un bloqueante, o si aparece el primero (no hay
-    con que compararlo). Un bloqueante nuevo junto a los que siguen abiertos
-    no lo es. Un juicio concluyente sin nada abierto corta la racha: la duda
-    del revisor quedo resuelta y no arrastra la cuenta a lo que sigue."""
-    antes = {h.id for h in bloqueantes_abiertos(previo)}
-    ahora = {h.id for h in bloqueantes_abiertos(e)}
+    """Reinicia la cuenta de sin_progreso con un avance. Un juicio concluyente
+    sin nada abierto tambien la corta: la duda del revisor quedo resuelta y no
+    arrastra la cuenta a lo que sigue."""
+    avance = hubo_avance(previo, e) or (concluyente and not _bloqueos_abiertos(e))
+    cerrados = _bloqueos_abiertos(previo) - _bloqueos_abiertos(e)
+    fase = e.fase_actual
+    if fase is not None and cerrados - set(fase.cerrados):
+        e = con_fase(e, replace(fase, cerrados=tuple(sorted(set(fase.cerrados) | cerrados))))
     e = replace(e, bloqueo_huella=huella_bloqueo(e))
-    if antes - ahora or (ahora and not antes) or (concluyente and not ahora):
-        return replace(e, sin_progreso=0)
-    return e
+    return replace(e, sin_progreso=0) if avance else e
 
 
 def fuente_de_impedimento(clase: str) -> str:
@@ -1102,10 +1129,27 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         fase = e.fase_actual
         if fase is None:
             raise TransicionIlegal("no hay fase para la entrega bloqueada")
-        return replace(
-            con_fase(e, replace(fase, entrega_bloqueada_sha=str(d.get("sha") or ""))),
-            ultimo_hecho=str(d.get("causa") or "entrega bloqueada por checks en rojo"),
-            hora=hora or e.hora,
+        fallas = (
+            tuple(sorted(str(x) for x in d["fallas"]))
+            if "fallas" in d
+            else fase.fallas_checks
+        )
+        return _con_progreso(
+            e,
+            replace(
+                con_fase(
+                    e,
+                    replace(
+                        fase,
+                        entrega_bloqueada_sha=str(d.get("sha") or ""),
+                        fallas_checks=fallas,
+                    ),
+                ),
+                ultimo_hecho=str(
+                    d.get("causa") or "entrega bloqueada por checks en rojo"
+                ),
+                hora=hora or e.hora,
+            ),
         )
     if kind == "entrada_incorporada":
         e = _fase_de_evento(e, d)
@@ -1880,6 +1924,7 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         producto = replace(producto, sha_git=sha)
     nueva = replace(
         fase,
+        fallas_checks=() if paso == "checks_verdes" else fase.fallas_checks,
         nivel_alcanzado=candidato,
         pr_numero=int(d.get("numero") or fase.pr_numero or 0),
         pr_sha=sha
@@ -1901,11 +1946,12 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         producto=producto,
         estado="entrega" if fase.estado in ("revision", "entrega") else fase.estado,
     )
-    return replace(
+    resultado = replace(
         con_fase(e, nueva),
         ultimo_hecho=f"entrega externa: {paso}",
         hora=hora or e.hora,
     )
+    return _con_progreso(e, resultado) if paso == "checks_verdes" else resultado
 
 
 def _preparar_con_entrada(
