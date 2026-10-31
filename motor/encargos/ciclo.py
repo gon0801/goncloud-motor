@@ -896,8 +896,12 @@ def _devolver(
 def _sonda_entorno(enc: Encargo, espacio: Path, base: Path):
     from .aislamiento import sondear
 
+    agentes = tuple(enc.agentes) or ((enc.agente,) if enc.agente else ())
     return sondear(
-        espacio, base / "runtime" / enc.id / "sonda", fuentes_autorizadas(enc)
+        espacio,
+        base / "runtime" / enc.id / "sonda",
+        fuentes_autorizadas(enc),
+        agentes,
     )
 
 

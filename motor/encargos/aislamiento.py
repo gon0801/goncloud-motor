@@ -489,6 +489,17 @@ def _sonda_de(marca: str) -> SondaEntorno:
             f"no se puede leer la fuente autorizada {detalle}",
             "que la fuente autorizada exista y se conceda al trabajador",
         )
+    if clase in ("shell", "git"):
+        quien = "el shell de Git" if clase == "shell" else "git"
+        condicion = f"que {quien} funcione dentro de la jaula con el entorno del agente"
+        if "NtCreateDirectoryObject" in detalle or "0xC0000022" in detalle:
+            condicion = (
+                "que el shell de Git no dependa de crear su objeto en "
+                "\\BaseNamedObjects, vedado a un AppContainer"
+            )
+        return SondaEntorno(
+            False, f"{quien} no funciona bajo el aislamiento ({detalle})", condicion
+        )
     return SondaEntorno(
         False,
         f"la sonda del entorno no terminó: {detalle or 'sin detalle'}",
@@ -497,7 +508,7 @@ def _sonda_de(marca: str) -> SondaEntorno:
 
 
 _GUION_SONDA_PY = """
-import os, shutil, sys
+import os, shutil, subprocess, sys
 marca = os.environ["MOTOR_SONDA_MARCA"]
 def falla(clase, detalle):
     print(f"{clase}:{detalle}")
@@ -540,16 +551,57 @@ for ruta in sys.argv[1:]:
                 f.read(1)
     except OSError:
         falla("fuente", ruta)
+PUSH = (
+    'git() { "$MOTOR_SONDA_GIT" -c user.email=sonda@motor -c user.name=sonda "$@"; }; '
+    "git init -q a && git init -q --bare b.git && cd a && "
+    "git commit -q --allow-empty -m sonda && git push -q ../b.git HEAD:main && echo ok"
+)
+def corre(clase, argv, cwd):
+    try:
+        r = subprocess.run(
+            argv, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=25,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        falla(clase, type(e).__name__ + ": " + str(e)[:200])
+    if r.returncode != 0 or r.stdout.split()[-1:] != ["ok"]:
+        err = " ".join((r.stderr or r.stdout).split())[:300]
+        falla(clase, "codigo " + str(r.returncode) + ": " + err)
+bash = os.environ.get("MOTOR_SONDA_SHELL")
+if bash:
+    corre("shell", [bash, "-c", "echo ok"], espacio)
+    corre("shell", [os.environ["MOTOR_SONDA_SH"], "-c", "echo ok"], espacio)
+    carpeta = os.path.join(shell, "git-sonda-" + marca)
+    os.makedirs(carpeta)
+    try:
+        corre("git", [bash, "-c", PUSH], carpeta)
+    finally:
+        shutil.rmtree(carpeta, ignore_errors=True)
 print("ok")
 """
 
 
+def _en_windows() -> bool:
+    return os.name == "nt"
+
+
+def _usa_shell_de_git(agentes: tuple[str, ...]) -> bool:
+    """Claude Code corre sus órdenes con el bash de Git. Sin agentes conocidos
+    se asume lo mismo: es el que el motor lanza por omisión."""
+    return not agentes or "claude" in agentes
+
+
 def sondear(
-    espacio: Path, runtime: Path, lecturas: tuple[Path, ...] = ()
+    espacio: Path,
+    runtime: Path,
+    lecturas: tuple[Path, ...] = (),
+    agentes: tuple[str, ...] = (),
 ) -> SondaEntorno:
     """Comprueba con comandos locales, y sin llamar a ningún modelo, las
     operaciones que el trabajador necesita al arrancar: su temporal de shell,
-    la escritura en el espacio y la lectura de las fuentes autorizadas.
+    la escritura en el espacio y la lectura de las fuentes autorizadas. En
+    Windows corre dentro de la jaula y, si el agente usa el bash de Git, prueba
+    también ese shell, `sh` y un `git push` a un bare local.
 
     No acredita lo que no pudo ejecutar: sin jaula, o con una fuente declarada
     que ya no está, el resultado es un fallo con su condición.
@@ -559,8 +611,10 @@ def sondear(
     espacio, runtime = Path(espacio).resolve(), Path(runtime).resolve()
     fuentes = tuple(Path(p).expanduser().resolve() for p in lecturas)
     marca = uuid.uuid4().hex[:16]
+    windows = _en_windows()
+    con_shell = windows and _usa_shell_de_git(tuple(agentes))
     try:
-        if os.name == "nt":
+        if windows:
             argv_sonda = [
                 sys.executable,
                 "-c",
@@ -580,6 +634,7 @@ def sondear(
             espacio,
             runtime,
             lecturas_extra=fuentes,
+            agente="claude" if con_shell else None,
         )
     except (OSError, RuntimeError) as exc:
         return SondaEntorno(
@@ -591,23 +646,78 @@ def sondear(
         entorno = dict(comando.entorno)
         entorno["MOTOR_SONDA_ESPACIO"] = str(espacio)
         entorno["MOTOR_SONDA_MARCA"] = marca
-        hecho = subprocess.run(
-            comando.argv,
-            cwd=str(espacio),
-            env=entorno,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        if con_shell:
+            entorno.update(_herramientas_git(entorno))
+        codigo, salida = lanzar_en_jaula(comando, espacio, entorno, plazo=90)
     except (OSError, subprocess.SubprocessError) as exc:
         return SondaEntorno(
             False,
             f"no se pudo ejecutar la sonda bajo el aislamiento: {type(exc).__name__}: {exc}",
             "que el aislamiento del host esté disponible",
         )
-    salida = [linea for linea in (hecho.stdout or "").splitlines() if linea.strip()]
-    if hecho.returncode == 0 and salida and salida[-1].strip() == "ok":
+    lineas = [linea for linea in (salida or "").splitlines() if linea.strip()]
+    if codigo == 0 and lineas and lineas[-1].strip() == "ok":
         return SondaEntorno(True)
-    marca_fallo = salida[-1].strip() if salida else f"codigo {hecho.returncode}"
+    marca_fallo = lineas[-1].strip() if lineas else f"codigo {codigo}"
     return _sonda_de(marca_fallo)
+
+
+def _herramientas_git(entorno: dict[str, str]) -> dict[str, str]:
+    """Git y los shells de su instalación, donde los busca Claude Code: el
+    `bin\\bash.exe` de la instalación que resuelve `git` por el PATH del agente,
+    y en su defecto el de la ruta habitual. Una ruta que no existe no se omite:
+    la sonda la prueba y falla con su nombre."""
+    from motor.plataforma.windows import BASH_GIT_POR_OMISION
+
+    git = shutil.which("git", path=entorno.get("PATH"))
+    raiz = Path(git).resolve().parent.parent if git else None
+    if raiz is not None and (raiz / "bin" / "bash.exe").is_file():
+        bash = raiz / "bin" / "bash.exe"
+    else:
+        bash = Path(BASH_GIT_POR_OMISION)
+    return {
+        "MOTOR_SONDA_SHELL": str(bash),
+        "MOTOR_SONDA_SH": str(bash.parent.parent / "usr" / "bin" / "sh.exe"),
+        "MOTOR_SONDA_GIT": git or str(bash.parent.parent / "cmd" / "git.exe"),
+    }
+
+
+def lanzar_en_jaula(
+    comando: ComandoAislado, cwd: Path, entorno: dict[str, str], *, plazo: float
+) -> tuple[int, str]:
+    """Corre `comando` como lo lanza el motor. En Windows eso es dentro del
+    AppContainer (`aislar` solo lo describe); `subprocess.run` lo ejecutaría
+    sin jaula y la sonda daría por bueno un entorno que el agente no tiene."""
+    if comando.mecanismo != "appcontainer":
+        hecho = subprocess.run(
+            comando.argv,
+            cwd=str(cwd),
+            env=entorno,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=plazo,
+        )
+        return hecho.returncode, hecho.stdout or ""
+    from motor import plataforma
+    from motor.plataforma.jaula_windows import crear
+
+    creado = crear(
+        comando.argv,
+        comando.jaula,
+        cwd=cwd,
+        env=entorno,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    p = creado.proceso
+    try:
+        creado.liberar()
+        salida, _ = p.communicate(timeout=plazo)
+        return p.returncode, salida or ""
+    finally:
+        plataforma.matar_grupo(p)

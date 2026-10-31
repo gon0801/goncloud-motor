@@ -14,13 +14,20 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos.aislamiento import SondaEntorno, sondear
+from motor.encargos.aislamiento import (
+    ComandoAislado,
+    SondaEntorno,
+    _usa_shell_de_git,
+    lanzar_en_jaula,
+    sondear,
+)
 from motor.encargos.ciclo import _incorporar, ahora_iso, barrer, recibir
 from motor.encargos.comprobacion import firma_producto
 from motor.encargos.dominio import fuentes_autorizadas, vista
@@ -623,6 +630,154 @@ class BucleInstrumento(unittest.TestCase):
         self.assertFalse(resultado.ok)
         self.assertIn("fuente autorizada", resultado.causa)
         self.assertIn(str(fuente), resultado.causa)
+
+    def test_un_shell_de_git_que_no_arranca_frena_antes_de_lanzar(self):
+        causa = (
+            "el shell de Git no funciona bajo el aislamiento (codigo 66: "
+            "*** fatal error - NtCreateDirectoryObject(\\BaseNamedObjects\\"
+            "msys-2.0S5-1888ae32e00d56aa): 0xC0000022)"
+        )
+        self.sonda["actual"] = SondaEntorno(False, causa, "que el shell arranque")
+        banco = self.banco()
+        banco.barrer(3)
+        self.assertEqual(banco.lanzamientos, [])
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "entorno")
+        self.assertEqual(e.impedimento_causa, causa)
+
+
+class SondaDelShellDeGit(unittest.TestCase):
+    """La sonda de Windows, con un `bash` de ensayo en lugar de msys.
+
+    Corre el mismo guion que lanza en la PC, por `sondear`, con `aislar` y el
+    host de Windows sustituidos: lo que se prueba es qué deja pasar y qué frena.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.espacio = self.tmp / "espacio" / "producto"
+        self.espacio.mkdir(parents=True)
+
+    def shell(self, nombre: str, cuerpo: str) -> Path:
+        ruta = self.tmp / nombre
+        ruta.write_text("#!/bin/sh\n" + cuerpo)
+        ruta.chmod(0o755)
+        return ruta
+
+    def sondear(self, bash: Path, agentes=()) -> SondaEntorno:
+        temporal = self.tmp / "temporal"
+        temporal.mkdir(exist_ok=True)
+        entorno = {
+            "PATH": os.environ["PATH"],
+            "CLAUDE_CODE_TMPDIR": str(temporal),
+            "TMPDIR": str(temporal),
+            "HOME": str(self.tmp),
+        }
+        herramientas = {
+            "MOTOR_SONDA_SHELL": str(bash),
+            "MOTOR_SONDA_SH": str(bash),
+            "MOTOR_SONDA_GIT": shutil.which("git"),
+        }
+        with (
+            mock.patch("motor.encargos.aislamiento._en_windows", return_value=True),
+            mock.patch(
+                "motor.encargos.aislamiento._herramientas_git",
+                return_value=herramientas,
+            ),
+            mock.patch(
+                "motor.encargos.aislamiento.aislar",
+                side_effect=lambda argv, *a, **k: ComandoAislado(
+                    argv, entorno, "ensayo"
+                ),
+            ),
+        ):
+            return sondear(
+                self.espacio, self.tmp / "runtime" / "sonda", agentes=agentes
+            )
+
+    def test_un_shell_sano_pasa_con_git_push_a_un_bare_local(self):
+        resultado = self.sondear(self.shell("bash-sano", 'exec /bin/sh "$@"\n'))
+        self.assertTrue(resultado.ok, resultado.causa)
+        self.assertEqual(sorted(p.name for p in self.espacio.iterdir()), [])
+
+    def test_un_shell_que_muere_al_arrancar_deja_la_causa_concreta(self):
+        bash = self.shell(
+            "bash-roto",
+            "echo 'bash (6436) bash.exe: *** fatal error - "
+            "NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1888ae32e00d56aa)"
+            ": 0xC0000022' >&2\nexit 66\n",
+        )
+        resultado = self.sondear(bash)
+        self.assertFalse(resultado.ok)
+        self.assertIn("el shell de Git no funciona bajo el aislamiento", resultado.causa)
+        self.assertIn("codigo 66", resultado.causa)
+        self.assertIn("0xC0000022", resultado.causa)
+        self.assertIn("BaseNamedObjects", resultado.condicion)
+
+    def test_un_git_push_que_falla_con_el_shell_vivo_nombra_a_git(self):
+        bash = self.shell(
+            "bash-sin-git",
+            'case "$2" in echo*) echo ok;; *) echo "Could not read from remote'
+            ' repository" >&2; exit 128;; esac\n',
+        )
+        resultado = self.sondear(bash)
+        self.assertFalse(resultado.ok)
+        self.assertTrue(resultado.causa.startswith("git no funciona"), resultado.causa)
+        self.assertIn("Could not read from remote repository", resultado.causa)
+
+    def test_un_shell_ausente_no_acredita_el_entorno(self):
+        resultado = self.sondear(self.tmp / "no-esta" / "bash.exe")
+        self.assertFalse(resultado.ok)
+        self.assertIn("el shell de Git", resultado.causa)
+
+    def test_un_agente_sin_bash_de_git_no_prueba_ese_shell(self):
+        roto = self.shell("bash-roto", "exit 66\n")
+        self.assertTrue(self.sondear(roto, agentes=("codex",)).ok)
+        self.assertFalse(self.sondear(roto, agentes=("codex", "claude")).ok)
+        self.assertFalse(self.sondear(roto).ok)
+
+
+class LaSondaLanzaDentroDeLaJaula(unittest.TestCase):
+    def test_en_appcontainer_no_se_usa_subprocess_run(self):
+        comando = ComandoAislado(["x"], {}, "appcontainer", {"runtime": "r"})
+        proceso = mock.Mock(returncode=0)
+        proceso.communicate.return_value = ("ok\n", "")
+        creado = mock.Mock(proceso=proceso)
+        crear = mock.Mock(return_value=creado)
+        grupo = mock.Mock()
+        modulo = mock.Mock(crear=crear)
+        with (
+            mock.patch.dict(
+                "sys.modules", {"motor.plataforma.jaula_windows": modulo}
+            ),
+            mock.patch("motor.plataforma.matar_grupo", grupo, create=True),
+            mock.patch("subprocess.run") as ejecutar,
+        ):
+            codigo, salida = lanzar_en_jaula(
+                comando, Path("/espacio"), {"A": "1"}, plazo=5
+            )
+        ejecutar.assert_not_called()
+        crear.assert_called_once()
+        self.assertEqual(crear.call_args.args[:2], (["x"], {"runtime": "r"}))
+        creado.liberar.assert_called_once()
+        grupo.assert_called_once_with(proceso)
+        self.assertEqual((codigo, salida), (0, "ok\n"))
+
+
+class ElShellDelCli(unittest.TestCase):
+    def test_solo_claude_o_un_agente_desconocido_usan_el_bash_de_git(self):
+        self.assertTrue(_usa_shell_de_git(()))
+        self.assertTrue(_usa_shell_de_git(("claude",)))
+        self.assertTrue(_usa_shell_de_git(("codex", "claude")))
+        self.assertFalse(_usa_shell_de_git(("codex",)))
+
+
+class SondaSinAislamiento(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
 
     def test_sin_aislamiento_la_sonda_no_acredita_recuperacion(self):
         espacio = Path(self._tmp.name) / "espacio" / "producto"
