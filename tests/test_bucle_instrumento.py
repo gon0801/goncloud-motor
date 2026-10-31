@@ -790,6 +790,49 @@ class EnsayoDelOperador(unittest.TestCase):
         self.assertEqual(lectura[0][1].name, "tmp")
 
 
+class EnsayoDeObjetosDeLaJaula(unittest.TestCase):
+    """`ops/ensayo_objetos_jaula.py` se ejecuta en la PC. Aquí solo se prueba que el
+    guion compila y que lee bien una medida, con las dos respuestas posibles."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+
+        ruta = Path(__file__).resolve().parents[1] / "ops" / "ensayo_objetos_jaula.py"
+        especificacion = importlib.util.spec_from_file_location("ensayo_objetos", ruta)
+        cls.ensayo = importlib.util.module_from_spec(especificacion)
+        especificacion.loader.exec_module(cls.ensayo)
+
+    def medida(self, global_: str, propio: str) -> dict:
+        espacio = "\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-9"
+        return {
+            "sesion": 1,
+            "espacio_del_appcontainer": espacio,
+            "pruebas": [
+                ["crear", "\\BaseNamedObjects\\motor-sonda-ab", global_],
+                ["crear", "\\Sessions\\BNOLINKS\\1\\motor-sonda-ab", global_],
+                ["crear en el espacio del AppContainer", espacio + "\\motor-sonda-ab", propio],
+            ],
+        }
+
+    def test_el_guion_compila(self):
+        compile(self.ensayo.CODIGO, "guion", "exec")
+
+    def test_confirma_la_causa_cuando_solo_el_espacio_propio_deja_crear(self):
+        notas = self.ensayo.interpretar(self.medida("0xC0000022", "0x00000000"))
+        self.assertEqual(len(notas), 1)
+        self.assertTrue(notas[0].startswith("Confirmado"))
+
+    def test_descarta_la_causa_cuando_el_global_deja_crear(self):
+        notas = self.ensayo.interpretar(self.medida("0x00000000", "0x00000000"))
+        self.assertIn("la causa no es el espacio de nombres", notas[0])
+
+    def test_sin_medida_del_espacio_propio_no_concluye(self):
+        medida = self.medida("0xC0000022", "0x00000000")
+        medida["espacio_del_appcontainer"] = ""
+        self.assertTrue(self.ensayo.interpretar(medida)[0].startswith("Sin conclusión"))
+
+
 class LaSondaLanzaDentroDeLaJaula(unittest.TestCase):
     def test_en_appcontainer_no_se_usa_subprocess_run(self):
         comando = ComandoAislado(["x"], {}, "appcontainer", {"runtime": "r"})
