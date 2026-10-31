@@ -570,6 +570,20 @@ def correcciones_sin_ver(e: Encargo) -> bool:
     return len(e.ajustes) > e.ajustes_vistos
 
 
+def _ajustes_de_la_reserva(e: Encargo, d: dict) -> int:
+    """Cuántos ajustes lleva el prompt de la reserva. Una reserva de intento
+    de la versión anterior no anotaba el conteo, pero su prompt llevaba todos
+    los ajustes registrados hasta entonces: leerla como cero dejaría los
+    ajustes previos como no vistos y el cierre y la entrega volverían al
+    implementador para siempre. La concesión del conductor tampoco abre un
+    prompt, así que no cambia lo visto."""
+    if "ajustes" in d:
+        return int(d["ajustes"])
+    if d.get("conductor"):
+        return e.ajustes_vistos
+    return len(e.ajustes)
+
+
 def ajustes_cubiertos(e: Encargo) -> int:
     """Ajustes que un cierre puede dar por atendidos: los que vio un intento y
     los que la nota de cierre ya dijo que nadie pudo recibir."""
@@ -756,6 +770,32 @@ def revision_independiente_cubre_producto(e: Encargo) -> bool:
         and producto.sha_git
         and producto.sha_git == e.pr_sha == e.deepseek_sha
         and all(actual.get(ruta) == firma for ruta, firma in e.aprobadas)
+    )
+
+
+def sin_nada_en_curso(e: Encargo) -> bool:
+    """Encargo abierto que no explica por qué no avanza: no espera con hora, no
+    pide al usuario, no está detenido, y ningún agente, reserva, impedimento
+    registrado, inspección pendiente ni dependencia entre fases lo sostiene.
+    Si además el barrido no lanza nada y el registro no se mueve, está quieto."""
+    if (
+        e.estado not in ("recibido", "ejecutando")
+        or not e.intentos_nuevos
+        or e.via == "directa"
+        or e.proc is not None
+        or e.reserva
+        or e.impedimento
+        or e.impedimentos
+        or inspeccion_bloquea(e)
+        or any(s.estado in ("pendiente", "pregunta") for s in e.solicitudes)
+    ):
+        return False
+    return not (
+        e.fases
+        and (
+            all(f.estado == "preparada" for f in e.fases)
+            or _fase_disponible(e.fases) is None
+        )
     )
 
 
@@ -989,7 +1029,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         return replace(
             e,
             reserva=True,
-            ajustes_reservados=int(d.get("ajustes", e.ajustes_vistos)),
+            ajustes_reservados=_ajustes_de_la_reserva(e, d),
             conductor=str(d.get("conductor") or e.conductor),
             candidato=str(d.get("candidato") or ""),
             host=str(d.get("host") or socket.gethostname()),
@@ -1311,6 +1351,21 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             estado="necesita_usuario" if bloquea else e.estado,
             motivo=d["texto"] if bloquea else e.motivo,
             siguiente="hace falta una decisión del usuario" if bloquea else e.siguiente,
+            hora=hora or e.hora,
+        )
+    if kind == "quietud":
+        causa = str(d.get("causa") or "").strip()
+        if not causa:
+            raise TransicionIlegal("la quietud necesita causa")
+        if e.estado not in ("recibido", "ejecutando"):
+            return e
+        return replace(
+            e,
+            estado="necesita_usuario",
+            preguntas=e.preguntas + (causa,),
+            motivo=causa,
+            siguiente="hace falta una decisión del usuario",
+            ultimo_hecho=causa,
             hora=hora or e.hora,
         )
     if kind == "estrategia":
@@ -1993,6 +2048,9 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
     nueva = replace(
         fase,
         fallas_checks=() if paso == "checks_verdes" else fase.fallas_checks,
+        entrega_bloqueada_sha=(
+            "" if paso == "checks_verdes" else fase.entrega_bloqueada_sha
+        ),
         nivel_alcanzado=candidato,
         pr_numero=int(d.get("numero") or fase.pr_numero or 0),
         pr_sha=sha

@@ -48,6 +48,7 @@ from .dominio import (
     marca_inspeccion_entregada,
     respuesta_consumida,
     nivel_cumplido,
+    sin_nada_en_curso,
     prompt_responsable,
     prompt_revisor,
     recibo_de,
@@ -75,6 +76,17 @@ from .sesion import (
 from .suscripciones import CuentaNoDisponible
 
 _UMBRAL_S = 30
+
+# Quietud: un encargo abierto que no espera con hora ni tiene agente, lanzamiento
+# o paso externo en curso, y cuyo registro no se mueve. Toda espera con hora
+# dura como mucho 300 s (puerto o repo de entrega) y al vencer deja un evento,
+# así que 600 s sin ningún evento no puede ser una espera legítima. Las 3
+# vueltas seguidas evitan escalar por una sola observación, por ejemplo la
+# primera del supervisor tras una caída.
+_QUIETUD_S = 600
+_QUIETUD_VUELTAS = 3
+_RELECTURA_CHECKS_S = 120
+_REINTENTO_FORZADO_S = 15
 
 
 def ahora_iso(epoch: float | None = None) -> str:
@@ -667,7 +679,7 @@ def barrer(
                 f"actividad:{encargo_id}:{firma[:16]}",
             )
             enc = registro.fold(encargo_id)
-        if (
+        por_incorporar = (
             arbol == "ausente"
             and (
                 enc.proc is not None
@@ -687,7 +699,16 @@ def barrer(
                 "esperando_reintento",
                 "necesita_usuario",
             )
+        )
+        if (
+            not parada
+            and enc.via != "directa"
+            and enc.estado in ("recibido", "ejecutando")
         ):
+            enc = _reconciliar_checks(
+                registro, enc, gh, espacio, hora, epoch, forzar=por_incorporar
+            )
+        if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
             arbol = observar(directorio, proc)
         if arbol == "ausente" and enc.proc is not None:
@@ -788,6 +809,7 @@ def barrer(
         if decision["lanzar"] and lanzador is not None and not parada:
             _lanzar_uno(registro, enc, directorio, espacio, hora, lanzador)
             enc = registro.fold(encargo_id)
+        enc = _vigilar_quietud(registro, enc, decision, arbol, parada, hora, epoch)
         informes.append(vista(enc))
     return informes
 
@@ -802,6 +824,90 @@ def _edad(enc: Encargo, epoch: float) -> float:
     except ValueError:
         return 1e9
     return epoch - visto
+
+
+def _causa_quietud(enc: Encargo, vueltas: int, segundos: int, ultimo: int) -> str:
+    abiertos = ", ".join(h.id for h in bloqueantes_abiertos(enc)) or "ninguno"
+    revision = enc.revision_vigente.veredicto if enc.revision_vigente else "ninguna"
+    sha = enc.producto.sha_git if enc.producto else ""
+    return (
+        f"el encargo lleva {vueltas} vueltas del supervisor y {segundos} s sin ningun "
+        f"evento nuevo (el ultimo es el {ultimo}), sin espera con hora, sin agente, "
+        "sin lanzamiento pendiente ni paso externo que avance. Estado "
+        f"{enc.estado}, fase {enc.fase_activa or '-'}, estrategia {enc.estrategia}; "
+        f"entrega autorizada {enc.entrega.nivel}, alcanzada {enc.nivel_alcanzado}; "
+        f"revision {revision}; bloqueantes abiertos: {abiertos}; sha_git "
+        f"{sha[:12] or 'vacio'}, DeepSeek leido en {enc.deepseek_sha[:12] or 'ninguno'}; "
+        f"la entrega se considera pendiente: {'si' if _aplica_entrega(enc) else 'no'}. "
+        "Se intento: seguir con el paso de entrega o cierre de cada vuelta, sin "
+        "efecto nuevo en el registro."
+    )
+
+
+def _vigilar_quietud(
+    registro: Registro,
+    enc: Encargo,
+    decision: dict,
+    arbol: str,
+    parada: bool,
+    hora: str,
+    epoch: float,
+) -> Encargo:
+    """Cuenta vueltas seguidas en las que el encargo no tiene nada en curso y el
+    registro no se movio. Al pasar el umbral deja un evento `quietud` con la
+    causa y lo pasa a necesita_usuario. Cualquier evento nuevo reinicia la cuenta."""
+    ruta = _directorio(registro.base, enc.id) / "quietud.json"
+    quieto = (
+        not parada
+        and arbol == "ausente"
+        and not decision["lanzar"]
+        and not decision["matar"]
+        and sin_nada_en_curso(enc)
+    )
+    if not quieto:
+        ruta.unlink(missing_ok=True)
+        return enc
+    ultimo = registro.ultimo_evento(enc.id)
+    try:
+        previo = json.loads(ruta.read_text(encoding="utf-8"))
+        if not isinstance(previo, dict):
+            previo = {}
+    except (OSError, ValueError):
+        previo = {}
+    if (
+        previo.get("evento") == ultimo
+        and epoch - float(previo.get("visto") or 0) <= _QUIETUD_S
+    ):
+        vueltas = int(previo.get("vueltas") or 0) + 1
+        desde = float(previo.get("desde") or epoch)
+    else:
+        vueltas, desde = 1, epoch
+    segundos = int(epoch - desde)
+    if vueltas >= _QUIETUD_VUELTAS and segundos >= _QUIETUD_S:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "quietud",
+                "data": {
+                    "causa": _causa_quietud(enc, vueltas, segundos, ultimo),
+                    "vueltas": vueltas,
+                    "segundos": segundos,
+                    "evento": ultimo,
+                    "hora": hora,
+                },
+            },
+            f"quietud:{enc.id}:{ultimo}",
+        )
+        ruta.unlink(missing_ok=True)
+        return registro.fold(enc.id) or enc
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(
+        json.dumps(
+            {"evento": ultimo, "vueltas": vueltas, "desde": desde, "visto": epoch}
+        ),
+        encoding="utf-8",
+    )
+    return enc
 
 
 def _pedidos_efecto(espacio: Path) -> list[dict]:
@@ -1339,6 +1445,21 @@ def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
         and not bloqueantes_abiertos(enc, "independiente")
         and not (set(alcance_de(enc).tocadas) & {r for r, _h in enc.aprobadas})
     )
+
+
+def _bloqueo_externo_abierto(enc: Encargo) -> str:
+    """Bloqueantes de DeepSeek y checks requeridos en rojo que siguen abiertos,
+    con el texto con que `_paso_entrega` los reporta. Vacio si no hay ninguno."""
+    partes = []
+    abiertos = bloqueantes_abiertos(enc, "deepseek")
+    if abiertos:
+        partes.append("; ".join(f"{h.id} {h.titulo}" for h in abiertos) + " (DeepSeek)")
+    fase = enc.fase_actual
+    if fase is not None and fase.fallas_checks:
+        partes.append(
+            "checks requeridos en rojo: " + ", ".join(sorted(fase.fallas_checks))
+        )
+    return "; ".join(partes)
 
 
 def _deepseek_por_releer(enc: Encargo) -> bool:
@@ -2065,6 +2186,7 @@ def _incorporar_responsable(
         declaradas = None
         error_declaradas = str(exc)
     version = version_producto(espacio)
+    commit_entregado = _commit_entregado(enc, version, espacio)
     registro.anotar(
         enc.id,
         {
@@ -2072,6 +2194,7 @@ def _incorporar_responsable(
             "data": {
                 "version": version.firma,
                 "manifiesto": [list(x) for x in version.manifiesto],
+                "sha_git": commit_entregado,
                 "declara_comprobaciones": declaradas is not None,
                 "fase": enc.fase_activa,
                 "intento": enc.intento,
@@ -2163,6 +2286,17 @@ def _incorporar_responsable(
             f"observacion:{enc.id}:{version.firma}",
         )
         enc = registro.fold(enc.id)
+    if commit_entregado and not _deepseek_por_releer(enc):
+        abierto = _bloqueo_externo_abierto(enc)
+        if abierto:
+            _sin_avance(
+                registro, enc, abierto,
+                "se devolvio el trabajo y el implementador entrego la misma "
+                f"version, sin cambios en el arbol del commit {commit_entregado[:12]}",
+                hora, f"misma-version-{commit_entregado[:12]}",
+            )
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
     if _correccion_deepseek_conserva_aprobadas(enc):
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -2813,15 +2947,32 @@ def _asegurar_repo(
     return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
 
 
+_FUERA_DEL_PRODUCTO = (
+    ":(exclude).interno", ":(exclude)**/.interno",
+    ":(exclude)**/__pycache__", ":(exclude)**/.runtime",
+)
+
+
+def _commit_entregado(enc: Encargo, version, espacio: Path) -> str:
+    """El commit ya entregado cuando el producto vuelve con la misma firma y el
+    arbol de trabajo es exactamente ese commit; vacio en cualquier otro caso."""
+    previo = enc.producto
+    if previo is None or not previo.sha_git or previo.firma != version.firma:
+        return ""
+    cabeza = _git(espacio, "rev-parse", "--verify", "--quiet", "HEAD")
+    if cabeza.returncode != 0 or cabeza.stdout.strip() != previo.sha_git:
+        return ""
+    cambios = _git(espacio, "status", "--porcelain", "--", ".", *_FUERA_DEL_PRODUCTO)
+    if cambios.returncode != 0 or cambios.stdout.strip():
+        return ""
+    return previo.sha_git
+
+
 def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
     """Commit del producto (sin .interno) y push. Devuelve (sha, causa)."""
     if _git(espacio, "ls-files", "--", ".interno").stdout.strip():
         _git(espacio, "rm", "-r", "--cached", "--quiet", ".interno")
-    r = _git(
-        espacio, "add", "-A", "--", ".",
-        ":(exclude).interno", ":(exclude)**/.interno",
-        ":(exclude)**/__pycache__", ":(exclude)**/.runtime",
-    )
+    r = _git(espacio, "add", "-A", "--", ".", *_FUERA_DEL_PRODUCTO)
     if r.returncode != 0:
         return "", f"git add fallo: {r.stderr.strip()[-300:]}"
     pendientes = _git(espacio, "diff", "--cached", "--quiet")
@@ -2927,6 +3078,161 @@ def _checks_extra(enc: Encargo, espacio: Path) -> tuple[str, ...]:
     if contenido.returncode != 0:
         raise ValueError("no se pudo leer .motor.toml en la base autorizada")
     return RepoConf.parse(contenido.stdout).checks_extra
+
+
+def _ronda_checks(registro: Registro, enc: Encargo, sha: str) -> str:
+    """Sufijo de las claves de checks del SHA: un check que vuelve a rojo tras
+    haber pasado a verde abre una ronda nueva, no repite el evento ya anotado."""
+    verdes = sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["kind"] == "entrega_externa"
+        and ev["data"].get("paso") == "checks_verdes"
+        and ev["data"].get("sha") == sha
+        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+    )
+    return f":ronda{verdes}" if verdes else ""
+
+
+def _anotar_checks_verdes(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> Encargo:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "checks_verdes",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:checks_verdes:{sha}"
+        + _ronda_checks(registro, enc, sha),
+    )
+    return registro.fold(enc.id)
+
+
+def _marca_checks(directorio: Path) -> dict:
+    try:
+        marca = json.loads(
+            (directorio / "checks_lectura.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return {}
+    return marca if isinstance(marca, dict) else {}
+
+
+def _toca_releer_checks(
+    marca: dict, sha: str, epoch: float, forzar: bool, generacion: int
+) -> bool:
+    """Una lectura por SHA cada `_RELECTURA_CHECKS_S`, como el espaciado de
+    `_paso_entrega`. `forzar` se salta el espaciado una sola vez por generación
+    y SHA: la incorporación pendiente puede durar muchos barridos, y la marca
+    recuerda cuál ya forzó. Un forzado cuya lectura falló sigue pendiente y se
+    reintenta pasados `_REINTENTO_FORZADO_S`, sin golpear a GitHub mientras
+    responde con error."""
+    try:
+        desde = epoch - float(marca.get("epoch") or 0)
+        reciente = marca.get("sha") == sha and 0 <= desde < _RELECTURA_CHECKS_S
+    except (TypeError, ValueError):
+        return True
+    if not reciente:
+        return True
+    if not forzar or marca.get("forzada") == f"{generacion}:{sha}":
+        return False
+    return not marca.get("error") or desde >= _REINTENTO_FORZADO_S
+
+
+def _marcar_lectura_checks(
+    directorio: Path,
+    marca: dict,
+    sha: str,
+    epoch: float,
+    generacion: int,
+    consume_forzado: bool,
+    error: str = "",
+) -> None:
+    """Deja en disco el intento de lectura, que así sobrevive a un reinicio del
+    supervisor. Solo una lectura lograda consume el forzado; un fallo deja el
+    forzado pendiente y su causa a la vista."""
+    try:
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "checks_lectura.json").write_text(
+            json.dumps(
+                {
+                    "sha": sha,
+                    "epoch": epoch,
+                    "forzada": (
+                        f"{generacion}:{sha}"
+                        if consume_forzado and not error
+                        else marca.get("forzada", "")
+                    ),
+                    "error": error,
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _reconciliar_checks(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    espacio: Path,
+    hora: str,
+    epoch: float,
+    forzar: bool = False,
+) -> Encargo:
+    """Relee los checks del SHA que dejó la entrega bloqueada, sin pasar por la
+    compuerta de `_aplica_entrega`. Un check requerido que se vuelve a correr
+    sobre el mismo SHA y pasa a verde se anota como `checks_verdes`; si sigue
+    en rojo o no se puede leer no se anota nada y la lectura se repite pasado
+    el espaciado. Con el agente corriendo no lee. Con la incorporación del
+    agente pendiente `forzar` obliga una lectura, una sola por generación y
+    SHA aunque la incorporación tarde muchos barridos (el comprobador del
+    supervisor), para anotar un verde antes de contar la vuelta. El forzado
+    se consume al leer, no al intentar: una lectura fallida lo deja pendiente
+    y anota su causa en la marca."""
+    fase = enc.fase_actual
+    if (
+        gh is None
+        or fase is None
+        or not fase.fallas_checks
+        or not fase.entrega_bloqueada_sha
+        or not enc.pr_numero
+        or enc.producto is None
+        or fase.entrega_bloqueada_sha != enc.producto.sha_git
+        or enc.entrega.nivel == "terminado"
+        or (enc.proc is not None and not forzar)
+    ):
+        return enc
+    sha = fase.entrega_bloqueada_sha
+    directorio = _directorio(registro.base, enc.id)
+    marca = _marca_checks(directorio)
+    if not _toca_releer_checks(marca, sha, epoch, forzar, enc.generacion):
+        return enc
+    try:
+        veredicto = gh.checks(
+            enc.entrega.repo, enc.pr_numero, sha, _checks_extra(enc, espacio),
+            base_politica=enc.entrega.base,
+        )
+    except Exception as exc:
+        _marcar_lectura_checks(
+            directorio, marca, sha, epoch, enc.generacion, forzar,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return enc
+    _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
+    if not veredicto.green:
+        return enc
+    return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
 
 
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
@@ -3228,7 +3534,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                         "hora": hora,
                     },
                 },
-                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}",
+                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}"
+                + _ronda_checks(registro, enc, sha),
             )
             enc = registro.fold(enc.id)
             if hubo_avance(inicio_vuelta, enc):
@@ -3255,23 +3562,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     fase_ci = enc.fase_actual
     if fase_ci is not None and fase_ci.fallas_checks:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "paso": "checks_verdes",
-                    "repo": enc.entrega.repo,
-                    "numero": numero,
-                    "sha": sha,
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:{enc.fase_activa}:checks_verdes:{sha}",
-        )
-        enc = registro.fold(enc.id)
+        enc = _anotar_checks_verdes(registro, enc, numero, sha, hora)
     if enc.deepseek_sha != sha or _deepseek_por_releer(enc):
         try:
             comentarios = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
