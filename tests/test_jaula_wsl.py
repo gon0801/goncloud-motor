@@ -36,7 +36,17 @@ class FuenteTest(unittest.TestCase):
         original = Path(jaula_linux.__file__).read_text(encoding="utf-8")
         enviada = jaula_wsl.fuente()
         self.assertTrue(enviada.isascii())
-        self.assertEqual(ast.dump(ast.parse(enviada)), ast.dump(ast.parse(original)))
+        arbol = ast.parse(original)
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, (ast.Module, ast.FunctionDef, ast.ClassDef)):
+                primero = nodo.body[0]
+                if (
+                    len(nodo.body) > 1 and isinstance(primero, ast.Expr)
+                    and isinstance(primero.value, ast.Constant)
+                    and isinstance(primero.value.value, str)
+                ):
+                    del nodo.body[0]
+        self.assertEqual(ast.dump(ast.parse(enviada)), ast.dump(arbol))
 
     def test_el_argv_no_pasa_por_un_shell_y_cabe_en_la_linea_de_comandos_de_windows(self):
         jaula = jaula_wsl.jaula_de(

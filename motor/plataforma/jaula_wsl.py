@@ -47,11 +47,20 @@ def distro() -> str:
 def fuente() -> str:
     """El código de la distro, en ASCII: va en la línea de comandos de `wsl.exe` y no se
     arriesga a que un acento cambie de codificación por el camino. Cada carácter no ASCII
-    queda como su escape, que dentro de un literal es el mismo carácter. Sin comentarios ni
-    formato (`ast.unparse`, con el mismo árbol): la línea de comandos de Windows tiene tope."""
-    texto = Path(jaula_linux.__file__).read_text(encoding="utf-8")
-    texto = ast.unparse(ast.parse(texto))
-    return texto.encode("ascii", "backslashreplace").decode("ascii")
+    queda como su escape, que dentro de un literal es el mismo carácter. Sin comentarios, formato
+    ni docstrings (`ast.unparse`, mismo programa): la línea de comandos de Windows tiene tope."""
+    arbol = ast.parse(Path(jaula_linux.__file__).read_text(encoding="utf-8"))
+    for nodo in ast.walk(arbol):
+        cuerpo = getattr(nodo, "body", None)
+        if (
+            isinstance(nodo, (ast.Module, ast.FunctionDef, ast.ClassDef))
+            and isinstance(cuerpo, list) and len(cuerpo) > 1
+            and isinstance(cuerpo[0], ast.Expr)
+            and isinstance(cuerpo[0].value, ast.Constant)
+            and isinstance(cuerpo[0].value.value, str)
+        ):
+            del cuerpo[0]
+    return ast.unparse(arbol).encode("ascii", "backslashreplace").decode("ascii")
 
 
 def argv_orden(distribucion: str, orden: str, *args: str) -> list:
