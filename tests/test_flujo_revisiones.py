@@ -2173,6 +2173,22 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertFalse(aceptada.get("conflicto"))
             self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
 
+    def test_la_clave_rechazada_para_un_encargo_es_conflicto_para_otro_encargo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "directa-4", "Crea dato.txt con 42", via="directa")
+            self.addCleanup(r.reg.close)
+            otro = recibir(r.reg, "Crea otro.txt con 7", "otro-1", r.hora)["encargo"]
+            primera = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertTrue(primera["rechazada"])
+            ajena = corregir(r.reg, otro, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertTrue(ajena["conflicto"])
+            self.assertNotIn("rechazada", ajena)
+            self.assertEqual(r.reg.fold(otro).ajustes, ())
+            self._promover(r)
+            aceptada = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertFalse(aceptada.get("conflicto"))
+            self.assertEqual(r.fold().ajustes, ("el dato debe ser 43",))
+
     def test_un_rechazo_de_la_version_anterior_tambien_detecta_otro_texto(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = self._recorrido(tmp)
