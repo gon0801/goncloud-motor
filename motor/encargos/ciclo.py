@@ -356,6 +356,11 @@ def corregir(
         salida["motivo"] = motivo
         return salida
 
+    if enc.via == "directa":
+        return rechazar(
+            "el encargo va por la vía directa: ningún intento del motor recibiría "
+            "la corrección; promuévelo a durable"
+        )
     datos = {"texto": texto, "recibo": recibo, "hora": hora}
     try:
         reducir(enc, {"kind": "ajuste", "data": datos})
@@ -825,9 +830,9 @@ def _anotar_juicio(
     hora: str,
     serie: int,
     clave: str = "",
-) -> None:
+) -> str:
     sufijo = f":{clave}" if clave else ""
-    registro.anotar(
+    return registro.anotar(
         enc.id,
         {
             "kind": "comprobacion",
@@ -913,6 +918,9 @@ def _devolver(
     )
 
 
+_NOTA_SIN_INTENTO = "Correcciones que ningún intento pudo recibir:"
+
+
 def _devolver_correcciones(registro: Registro, enc: Encargo, hora: str) -> bool:
     """Una corrección que ningún intento recibió no se cierra ni se entrega:
     el trabajo vuelve al implementador, cuyo prompt la lleva. Si ningún intento
@@ -928,8 +936,7 @@ def _devolver_correcciones(registro: Registro, enc: Encargo, hora: str) -> bool:
             {
                 "kind": "procedimiento",
                 "data": {
-                    "nota": "correcciones que ningun intento pudo recibir: "
-                    + " | ".join(sin_recibir),
+                    "nota": _NOTA_SIN_INTENTO + " " + " | ".join(sin_recibir),
                     "ajustes_vistos": len(enc.ajustes),
                     "hora": hora,
                 },
@@ -1436,16 +1443,24 @@ def _intentar_cierre(
             hora, f"cierre-{enc.generacion}",
         )
         return registro.fold(enc.id)
+    sin_recibir = [n for n in enc.procedimiento if n.startswith(_NOTA_SIN_INTENTO)]
+    if sin_recibir:
+        # El aviso al propietario es esta evidencia: ahí tiene que ir lo que
+        # nadie recibió.
+        cierre["evidencia"] += " Atención: " + " ".join(sin_recibir)
     _publica(directorio / "cierre.json", json.dumps(cierre, ensure_ascii=False))
-    _anotar_juicio(
+    resultado = _anotar_juicio(
         registro,
         enc,
-        cierre,
+        {**cierre, "ajustes_vistos": len(enc.ajustes)},
         hora,
         enc.generacion,
         clave="global" if enc.objetivo_completo() else "",
     )
     enc = registro.fold(enc.id)
+    if resultado == "ilegal" and correcciones_sin_ver(enc):
+        _devolver_correcciones(registro, enc, hora)
+        return registro.fold(enc.id)
     if enc.estado == "terminado":
         _publicar_resultado(registro, enc, hora)
     return enc

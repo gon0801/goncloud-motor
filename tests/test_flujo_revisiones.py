@@ -1005,6 +1005,68 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             )
             self.assertEqual(cerrado.estado, "terminado")
 
+    def test_una_correccion_que_entra_durante_el_cierre_no_se_pierde(self):
+        from motor.encargos import cierre as modulo_cierre
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            (r.espacio / "dato.txt").write_text("42")
+            (_interno(r) / "evidencia.txt").write_text("dato.txt contiene 42")
+            r.incorporar()
+            r.juicio({"veredicto": "aprobado", "evidencia": "lei dato.txt: 42"})
+            real = modulo_cierre.componer
+
+            def componer_con_carrera(enc, pedidos, evidencia):
+                corregir(r.reg, r.enc, "el dato debe ser 43", "c-carrera", ahora_iso())
+                return real(enc, pedidos, evidencia)
+
+            with mock.patch(
+                "motor.encargos.cierre.componer", side_effect=componer_con_carrera
+            ):
+                e = r.incorporar()
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.ajustes, ("el dato debe ser 43",))
+            self.assertEqual(e.rol, "responsable")
+            prompts: list = []
+            self._barrer(r, self._lanzador(prompts))
+            self.assertIn("el dato debe ser 43", prompts[0][1])
+
+    def test_la_correccion_sin_intento_llega_al_propietario_en_el_aviso_de_cierre(self):
+        from motor.integraciones import directores
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "aviso-1", "Crea dato.txt con 42", canal="hermes")
+            self.addCleanup(r.reg.close)
+            self._revisor_con_juicio_aprobado(r)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            with mock.patch(
+                "motor.encargos.ciclo.puede_recibir_intento", return_value=False
+            ):
+                e = r.incorporar()
+            self.assertEqual(e.estado, "terminado")
+            self.assertIn("el dato debe ser 43", e.evidencia[-1])
+            directores.drenar(r.reg)
+            cuerpos = [
+                p.read_text(encoding="utf-8")
+                for p in (Path(r.base) / "canal" / "hermes").iterdir()
+            ]
+            self.assertTrue(
+                any(
+                    "ningún intento pudo recibir" in c and "el dato debe ser 43" in c
+                    for c in cuerpos
+                ),
+                cuerpos,
+            )
+
+    def test_en_la_via_directa_la_correccion_se_rechaza_con_su_motivo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "directa-1", "Crea dato.txt con 42", via="directa")
+            self.addCleanup(r.reg.close)
+            salida = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertTrue(salida["rechazada"])
+            self.assertIn("vía directa", salida["motivo"])
+            self.assertEqual(r.fold().ajustes, ())
+
     def test_si_ningun_intento_puede_lanzarse_la_correccion_no_bloquea_el_cierre(self):
         from dataclasses import replace
 
@@ -1258,6 +1320,140 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertEqual(len(r.fold().impedimentos), 2)
             corregir(r.reg, r.enc, "el juicio estaba mal", "c1", ahora_iso())
             self.assertEqual([i.clase for i in r.fold().impedimentos], ["entorno"])
+
+
+class MedianosDeepseekFlujo(unittest.TestCase):
+    """Un Medium abierto de DeepSeek bloquea como un High; un Low solo se ve."""
+
+    def _comentario(self, *hallazgos: dict) -> str:
+        return (
+            "ai-review › findings\n"
+            "<!-- ai-review:findings="
+            + json.dumps({"schema": 3, "findings": list(hallazgos)})
+            + " -->"
+        )
+
+    def _hallazgo(self, ident: str, severidad: str, estado: str = "open") -> dict:
+        return {
+            "id": ident,
+            "title": f"Titulo de {ident}",
+            "severity": severidad,
+            "status": {"kind": estado},
+            "primary_anchor": {"kind": "legacy", "path": "saludo.txt", "line": 3},
+        }
+
+    def _con_pr_abierto(self, tmp: str):
+        raiz = Path(tmp)
+        bare = raiz / "repo.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", "--quiet", str(bare)], check=True
+        )
+        semilla = raiz / "semilla"
+        subprocess.run(["git", "clone", "--quiet", str(bare), str(semilla)], check=True)
+        (semilla / "base.txt").write_text("base\n")
+        for args in (
+            ["add", "-A"],
+            ["-c", "user.name=t", "-c", "user.email=t@l", "commit", "--quiet", "-m", "base"],
+            ["push", "--quiet", "origin", "main"],
+        ):
+            subprocess.run(["git", "-C", str(semilla), *args], check=True)
+        r = Recorrido(
+            tmp, "ds-1", "agrega saludo.txt con hola",
+            entrega_nivel="pr", repo=str(bare), base_rama="main",
+        )
+        self.addCleanup(r.reg.close)
+        from motor.encargos.ciclo import _asegurar_repo
+
+        self.assertEqual(_asegurar_repo(r.fold(), r.espacio), "")
+        (r.espacio / "saludo.txt").write_text("hola")
+        (_interno(r) / "evidencia.txt").write_text("lei saludo.txt: hola")
+        r.incorporar()
+        r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt; contiene hola"})
+        r.incorporar()
+        gh = FakeGitHub(raiz / "fake")
+        barrer(r.reg, ahora_iso(), time.time(), lambda *a: None, gh=gh)
+        e = r.fold()
+        self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+        estado_fake = json.loads((raiz / "fake" / "github.json").read_text())
+        return r, gh, raiz, estado_fake, e
+
+    def _leer(self, r, gh, raiz, estado_fake, e, *hallazgos: dict, prompts=None):
+        pr = next(iter(estado_fake["prs"].values()))
+        pr["comentarios_deepseek"] = [
+            {"texto": self._comentario(*hallazgos), "sha": e.pr_sha}
+        ]
+        (raiz / "fake" / "github.json").write_text(json.dumps(estado_fake))
+
+        def lanzador(enc, prompt, espacio, sesion):
+            if prompts is not None:
+                prompts.append((enc.rol, Path(prompt).read_text(encoding="utf-8")))
+            return None
+
+        with mock.patch(
+            "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
+        ), mock.patch(
+            "motor.flota.runtime.exigir_poteto",
+            return_value=(raiz / "poteto.md", "digest"),
+        ):
+            for _ in range(2):
+                barrer(r.reg, e.reanuda_en or ahora_iso(), time.time(), lanzador, gh=gh)
+        return r.fold()
+
+    def test_un_medium_abierto_devuelve_el_trabajo_con_titulo_archivo_y_linea(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, gh, raiz, estado_fake, e = self._con_pr_abierto(tmp)
+            prompts: list = []
+            e = self._leer(
+                r, gh, raiz, estado_fake, e, self._hallazgo("F1", "Medium"),
+                prompts=prompts,
+            )
+            self.assertNotEqual(e.estado, "terminado")
+            abiertos = bloqueantes_abiertos(e, "deepseek")
+            self.assertEqual([h.id for h in abiertos], ["F1"])
+            self.assertEqual(abiertos[0].titulo, "Titulo de F1")
+            self.assertEqual(abiertos[0].ancla, "saludo.txt:3")
+            self.assertEqual([rol for rol, _ in prompts], ["responsable"])
+            self.assertIn("Titulo de F1", prompts[0][1])
+            self.assertIn("saludo.txt:3", prompts[0][1])
+
+    def test_el_mismo_medium_resuelto_deja_avanzar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, gh, raiz, estado_fake, e = self._con_pr_abierto(tmp)
+            e = self._leer(
+                r, gh, raiz, estado_fake, e, self._hallazgo("F1", "Medium", "resolved")
+            )
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(bloqueantes_abiertos(e, "deepseek"), ())
+
+    def test_un_low_no_devuelve_el_trabajo_y_sigue_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, gh, raiz, estado_fake, e = self._con_pr_abierto(tmp)
+            prompts: list = []
+            e = self._leer(
+                r, gh, raiz, estado_fake, e, self._hallazgo("F2", "Low"),
+                prompts=prompts,
+            )
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(prompts, [])
+            self.assertEqual(bloqueantes_abiertos(e, "deepseek"), ())
+            self.assertIn("Titulo de F2", vista(e)["revision"]["observaciones"])
+
+    def test_el_medium_abierto_se_cierra_cuando_deepseek_lo_marca_resuelto(self):
+        gravedad = hallazgos_deepseek(
+            [{"texto": self._comentario(self._hallazgo("F1", "Medium"))}], "abc"
+        )[0].gravedad
+        self.assertEqual(gravedad, "bloqueante")
+        self.assertEqual(
+            hallazgos_deepseek(
+                [{"texto": self._comentario(self._hallazgo("F1", "Medium", "fixed"))}],
+                "abc",
+            ),
+            (),
+        )
+        low = hallazgos_deepseek(
+            [{"texto": self._comentario(self._hallazgo("F2", "Low"))}], "abc"
+        )
+        self.assertEqual([h.gravedad for h in low], ["observacion"])
 
 
 if __name__ == "__main__":

@@ -2037,6 +2037,16 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
                 ultimo_hecho=f"fase {fase.id} preparada; quedan dependencias sin preparar",
                 hora=hora or e.hora,
             )
+        # Quien cierra anota cuántas correcciones vio. Una que entró después
+        # no la recibió nadie: el registro rechaza el cierre en la misma
+        # transacción en que lo escribe, así que no hay carrera con corregir.
+        vistas = d.get("ajustes_vistos")
+        if (
+            vistas is not None
+            and len(e.ajustes) > int(vistas)
+            and puede_recibir_intento(e)
+        ):
+            raise TransicionIlegal("llegó una corrección durante el cierre")
         return replace(
             e,
             fases=fases,
