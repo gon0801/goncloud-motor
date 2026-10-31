@@ -27,9 +27,11 @@ python3 -B -m motor encargar --base /tmp/encargo-personal --archivo /ruta/al/ped
 python3 -B -m motor supervisor --base /tmp/encargo-personal --agente codex --umbral 300
 python3 -B -m motor ver ID --base /tmp/encargo-personal
 python3 -B -m motor parar ID --base /tmp/encargo-personal --clave orden-parar-1
-python3 -B -m motor corregir ID --base /tmp/encargo-personal --clave ajuste-1 --texto 'Ajuste con el trabajo detenido'
+python3 -B -m motor corregir ID --base /tmp/encargo-personal --clave ajuste-1 --texto 'Corrección para el siguiente intento'
 python3 -B -m motor continuar ID --base /tmp/encargo-personal --clave orden-seguir-1
 ```
+
+`corregir` no necesita parar antes: se acepta con el encargo en cualquier estado salvo `cancelado` y `terminado`, no interrumpe al agente que corre y la recibe el siguiente intento. Para aplicarla de inmediato, usa `parar` y `continuar`. Ver [Corregir un encargo en curso](flujo-revisiones.md#corregir-un-encargo-en-curso).
 
 Una retransmisión de una orden conserva su recibo y no repite la transición. `parada-local --base ... --clave ...` cierra la admisión local aunque la autoridad no responda. Una operación ya enviada puede terminar después de aceptar parar.
 

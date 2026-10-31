@@ -44,6 +44,12 @@ python3 -B -m motor director continuar ENCARGO --base /tmp/ensayo --clave orden-
 
 OpenBot no ofrece parada hasta que su comando la demuestre. Un timeout no cancela el trabajo.
 
+Si David corrige algo con el encargo en marcha, no hace falta parar. `corregir` registra la nota con el encargo en cualquier estado salvo `cancelado` y `terminado`, no interrumpe al agente y la recibe el siguiente intento. Usa el mismo canal (y `--sesion`) con que encargaste. La misma clave retransmite; la misma clave con otro texto es un conflicto. Si David quiere que se aplique ya, usa `parar` y `continuar`.
+
+```sh
+python3 -B -m motor director corregir ENCARGO --base /tmp/ensayo --clave corregir-1 --canal origen --texto "usa UTF-8"
+```
+
 El resultado vuelve al canal de origen aunque este turno cierre. Si el aviso falla, se recupera el aviso. No se repite el encargo.
 
 El transporte del canal vive en `canal.json` de la base, por canal, con `comando` y `conciliacion`. El recibo válido es el que devuelve ese comando. Sin transporte, el aviso queda `local-pendiente` con alcance local y sin recibo. Si un envío queda incierto, primero se concilia y solo se reenvía cuando la conciliación dice que no llegó.

@@ -79,6 +79,38 @@ en `intento_abierto`, con el prompt armado desde el fold (pedido,
 hallazgos abiertos, referencia de revisión). Reconstruir es válido; fingir
 continuidad, no.
 
+## Corregir un encargo en curso
+
+`motor corregir` y `motor director corregir` aceptan una corrección en
+cualquier estado salvo `cancelado` y `terminado` (o una cancelación en
+curso), que la rechazan con su motivo. No interrumpen al agente que corre:
+la corrección queda en el registro y la recibe el siguiente intento, del
+rol que sea, en su prompt. Para que se aplique de inmediato, se usa `parar`
+y `continuar`.
+
+- En `recibido`, `ejecutando` y `conciliando` solo se registra. El reloj del
+  último hecho no se toca, así que la detección de una sesión colgada sigue
+  igual.
+- En `esperando_reintento` solo se registra: la espera sigue su hora, y la
+  corrección cuenta como información nueva para las causas que el host no
+  puede comprobar.
+- En `necesita_usuario` además reabre el trabajo, igual que un ajuste seguido
+  de `continuar`. En `detenido` el encargo sigue detenido hasta `continuar`.
+- Una corrección que llega durante el intento que iba a cerrar el encargo no
+  se pierde. Cada reserva de intento anota cuántas correcciones llevaba su
+  prompt (`ajustes`). Si hay más registradas que las que vio el último
+  intento, el cierre y la entrega del PR no avanzan: el trabajo vuelve al
+  implementador, cuyo prompt ya las lleva, y lo aprobado que no cambió se
+  conserva.
+- Solo levanta las causas que el host no puede comprobar. Las demás siguen
+  hasta verificarse.
+- La misma clave no duplica la corrección. La misma clave con otro texto se
+  reporta como `conflicto`.
+- `motor director corregir ENCARGO --base B --clave K --texto T --canal C
+  [--sesion S]` aplica la misma regla de canal y sesión que
+  `director responder`: solo el canal (y la sesión) de origen corrigen el
+  encargo.
+
 ## Errores de instrumento y repetición sin progreso
 
 Un fallo que no es del producto se anota como `instrumento_fallo` por fuente

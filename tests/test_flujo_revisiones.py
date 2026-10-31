@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -19,6 +19,10 @@ from motor.encargos.ciclo import (
     _incorporar,
     ahora_iso,
     barrer,
+    corregir,
+    marcar_espera,
+    marcar_pregunta,
+    ordenar,
     recibir,
 )
 from motor.encargos.comprobacion import (
@@ -863,6 +867,371 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
                 self.assertTrue(
                     (skill.parent.parent / nombre / "SKILL.md").is_file()
                 )
+
+
+class CorreccionEnCursoFlujo(unittest.TestCase):
+    """Una corrección se acepta con el encargo en cualquier estado no cerrado."""
+
+    def _recorrido(self, tmp: str, clave: str = "corr-1") -> Recorrido:
+        r = Recorrido(tmp, clave, "Crea dato.txt con 42")
+        self.addCleanup(r.reg.close)
+        return r
+
+    def _agente_corriendo(self, r: Recorrido) -> None:
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "reserva",
+                "data": {
+                    "rol": "responsable",
+                    "generacion": 1,
+                    "conductor": "tok",
+                    "hora": r.hora,
+                },
+            },
+            "t-reserva",
+        )
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "intento_abierto",
+                "data": {
+                    "id": "tok",
+                    "pid": os.getpid(),
+                    "inicio": "t",
+                    "rol": "responsable",
+                    "hora": r.hora,
+                },
+            },
+            "t-intento",
+        )
+
+    def _lanzador(self, prompts: list):
+        def lanzador(enc, prompt, espacio, sesion):
+            prompts.append((enc.rol, Path(prompt).read_text(encoding="utf-8")))
+            return None
+
+        return lanzador
+
+    def _barrer(
+        self, r: Recorrido, lanzador, arbol: str = "ausente", hora: str = ""
+    ) -> None:
+        with mock.patch(
+            "motor.encargos.aislamiento.sondear",
+            return_value=SondaEntorno(True),
+        ), mock.patch(
+            "motor.flota.runtime.exigir_poteto",
+            return_value=(Path(r.base) / "poteto.md", "digest"),
+        ), mock.patch("motor.encargos.ciclo.observar", return_value=arbol):
+            barrer(r.reg, hora or ahora_iso(), time.time(), lanzador)
+
+    def test_con_un_agente_corriendo_queda_registrada_y_llega_al_siguiente_intento(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            self._agente_corriendo(r)
+            antes = r.fold()
+            self.assertEqual(antes.estado, "ejecutando")
+            self.assertIsNotNone(antes.proc)
+            prompts: list = []
+            lanzador = self._lanzador(prompts)
+
+            salida = corregir(r.reg, r.enc, "usa UTF-8 en los avisos", "c1", ahora_iso())
+            self.assertFalse(salida.get("rechazada"))
+            self.assertFalse(salida.get("conflicto"))
+            e = r.fold()
+            self.assertEqual(e.ajustes, ("usa UTF-8 en los avisos",))
+            self.assertEqual(e.estado, "ejecutando")
+            self.assertEqual(e.proc, antes.proc)
+            self.assertEqual(e.hora, antes.hora)
+
+            with mock.patch("motor.encargos.ciclo.cerrar") as cerrar:
+                self._barrer(r, lanzador, arbol="vivo")
+            cerrar.assert_not_called()
+            self.assertEqual(prompts, [])
+            self.assertEqual(r.fold().proc, antes.proc)
+
+            self._barrer(r, lanzador, arbol="ausente")
+            self.assertEqual(len(prompts), 1)
+            self.assertIn("usa UTF-8 en los avisos", prompts[0][1])
+
+    def _revisor_con_juicio_aprobado(self, r: Recorrido) -> None:
+        (r.espacio / "dato.txt").write_text("42")
+        (_interno(r) / "evidencia.txt").write_text("dato.txt contiene 42")
+        r.incorporar()
+        self.assertEqual(r.fold().rol, "revisor")
+        r.juicio({"veredicto": "aprobado", "evidencia": "lei dato.txt: 42"})
+
+    def test_una_correccion_que_llega_en_el_ultimo_intento_no_se_pierde(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            self._revisor_con_juicio_aprobado(r)
+            salida = corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertFalse(salida.get("rechazada"))
+            e = r.incorporar()
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.rol, "responsable")
+            self.assertEqual(e.ajustes, ("el dato debe ser 43",))
+            prompts: list = []
+            self._barrer(r, self._lanzador(prompts))
+            self.assertEqual([rol for rol, _ in prompts], ["responsable"])
+            self.assertIn("el dato debe ser 43", prompts[0][1])
+            self.assertNotEqual(r.fold().estado, "terminado")
+
+    def test_el_cierre_sigue_cuando_un_intento_ya_recibio_la_correccion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            self._revisor_con_juicio_aprobado(r)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertNotEqual(r.incorporar().estado, "terminado")
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "reserva",
+                    "data": {
+                        "rol": "responsable",
+                        "generacion": 90,
+                        "ajustes": 1,
+                        "hora": r.hora,
+                    },
+                },
+                "t-reserva-recibida",
+            )
+            r.reg.anotar(r.enc, {"kind": "reserva_cerrada", "data": {}}, "t-cerrada-recibida")
+            self.assertEqual(r.fold().ajustes_vistos, 1)
+            from motor.encargos.ciclo import _intentar_cierre
+
+            cerrado = _intentar_cierre(
+                r.reg, r.fold(), r.espacio, r.d, ahora_iso()
+            )
+            self.assertEqual(cerrado.estado, "terminado")
+
+    def test_el_intento_que_se_lanza_anota_cuantas_correcciones_lleva_su_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            corregir(r.reg, r.enc, "usa UTF-8", "c1", ahora_iso())
+            prompts: list = []
+
+            def lanzador(enc, prompt, espacio, sesion):
+                prompts.append(Path(prompt).read_text(encoding="utf-8"))
+                return ["agente-falso"]
+
+            with mock.patch(
+                "motor.encargos.aislamiento.sondear",
+                return_value=SondaEntorno(True),
+            ), mock.patch(
+                "motor.flota.runtime.exigir_poteto",
+                return_value=(Path(r.base) / "poteto.md", "digest"),
+            ), mock.patch(
+                "motor.encargos.ciclo.preparar_administrado"
+            ), mock.patch(
+                "motor.encargos.ciclo.lanzar_administrado", return_value={}
+            ):
+                barrer(r.reg, ahora_iso(), time.time(), lanzador)
+            self.assertIn("usa UTF-8", prompts[0])
+            reservas = [
+                e for e in r.eventos("reserva") if e["data"].get("candidato")
+            ]
+            self.assertEqual([e["data"]["ajustes"] for e in reservas], [1])
+            self.assertEqual(r.fold().ajustes_vistos, 1)
+
+    def test_una_correccion_con_la_aprobacion_vigente_no_abre_el_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raiz = Path(tmp)
+            bare = raiz / "repo.git"
+            subprocess.run(
+                ["git", "init", "--bare", "-b", "main", "--quiet", str(bare)],
+                check=True,
+            )
+            semilla = raiz / "semilla"
+            subprocess.run(
+                ["git", "clone", "--quiet", str(bare), str(semilla)], check=True
+            )
+            (semilla / "base.txt").write_text("base\n")
+            for args in (
+                ["add", "-A"],
+                [
+                    "-c", "user.name=t", "-c", "user.email=t@l",
+                    "commit", "--quiet", "-m", "base",
+                ],
+                ["push", "--quiet", "origin", "main"],
+            ):
+                subprocess.run(["git", "-C", str(semilla), *args], check=True)
+            r = Recorrido(
+                tmp, "pr-corr-1", "agrega saludo.txt con hola",
+                entrega_nivel="pr", repo=str(bare), base_rama="main",
+            )
+            self.addCleanup(r.reg.close)
+            from motor.encargos.ciclo import _asegurar_repo
+
+            self.assertEqual(_asegurar_repo(r.fold(), r.espacio), "")
+            (r.espacio / "saludo.txt").write_text("hola")
+            (_interno(r) / "evidencia.txt").write_text("lei saludo.txt: hola")
+            r.incorporar()
+            r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt; contiene hola"})
+            e = r.incorporar()
+            self.assertNotEqual(e.estado, "terminado")
+            corregir(r.reg, r.enc, "el saludo debe ir en mayusculas", "c1", ahora_iso())
+            gh = FakeGitHub(raiz / "fake")
+            prompts: list = []
+            with mock.patch(
+                "motor.encargos.aislamiento.sondear",
+                return_value=SondaEntorno(True),
+            ), mock.patch(
+                "motor.flota.runtime.exigir_poteto",
+                return_value=(raiz / "poteto.md", "digest"),
+            ):
+                barrer(r.reg, ahora_iso(), time.time(), self._lanzador(prompts), gh=gh)
+            e = r.fold()
+            self.assertEqual(e.pr_numero, 0)
+            self.assertEqual(e.nivel_alcanzado, "ninguno")
+            estado_fake = json.loads((raiz / "fake" / "github.json").read_text())
+            self.assertEqual(estado_fake["prs"], {})
+            self.assertEqual([rol for rol, _ in prompts], ["responsable"])
+            self.assertIn("el saludo debe ir en mayusculas", prompts[0][1])
+
+    def test_la_correccion_la_recibe_el_revisor_tambien(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            (r.espacio / "dato.txt").write_text("42")
+            (_interno(r) / "evidencia.txt").write_text("dato.txt contiene 42")
+            r.incorporar()
+            self.assertEqual(r.fold().rol, "revisor")
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            prompts: list = []
+            self._barrer(r, self._lanzador(prompts))
+            self.assertEqual([rol for rol, _ in prompts], ["revisor"])
+            self.assertIn("el dato debe ser 43", prompts[0][1])
+
+    def test_en_esperando_reintento_se_acepta_y_el_trabajo_sigue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            hora = ahora_iso()
+            reanuda = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            marcar_espera(r.reg, r.enc, "cuota agotada", reanuda, hora)
+            self.assertEqual(r.fold().estado, "esperando_reintento")
+            salida = corregir(r.reg, r.enc, "prioriza el modo Windows", "c1", hora)
+            self.assertFalse(salida.get("rechazada"))
+            e = r.fold()
+            self.assertEqual(e.estado, "esperando_reintento")
+            self.assertEqual(e.reanuda_en, reanuda)
+            self.assertEqual(e.ajustes, ("prioriza el modo Windows",))
+            prompts: list = []
+            self._barrer(r, self._lanzador(prompts))
+            self.assertEqual(prompts, [])
+            self._barrer(r, self._lanzador(prompts), hora=reanuda)
+            self.assertEqual(len(prompts), 1)
+            self.assertIn("prioriza el modo Windows", prompts[0][1])
+
+    def test_en_necesita_usuario_se_acepta_y_reabre_el_trabajo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            hora = ahora_iso()
+            marcar_pregunta(r.reg, r.enc, "que formato prefieres", True, hora)
+            self.assertEqual(r.fold().estado, "necesita_usuario")
+            prompts: list = []
+            self._barrer(r, self._lanzador(prompts))
+            self.assertEqual(prompts, [])
+            salida = corregir(r.reg, r.enc, "usa el formato largo", "c1", hora)
+            self.assertFalse(salida.get("rechazada"))
+            e = r.fold()
+            self.assertEqual(e.estado, "recibido")
+            self.assertTrue(e.intentos_nuevos)
+            self._barrer(r, self._lanzador(prompts))
+            self.assertEqual(len(prompts), 1)
+            self.assertIn("usa el formato largo", prompts[0][1])
+
+    def test_detenido_sigue_detenido_hasta_continuar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            ordenar(r.reg, r.enc, "parar", "p1", ahora_iso())
+            r.reg.anotar(
+                r.enc,
+                {"kind": "arbol", "data": {"observacion": "ausente", "hora": r.hora}},
+                "t-arbol",
+            )
+            self.assertEqual(r.fold().estado, "detenido")
+            corregir(r.reg, r.enc, "ajuste con el trabajo detenido", "c1", ahora_iso())
+            self.assertEqual(r.fold().estado, "detenido")
+            ordenar(r.reg, r.enc, "continuar", "s1", ahora_iso())
+            e = r.fold()
+            self.assertEqual(e.estado, "recibido")
+            self.assertEqual(e.ajustes, ("ajuste con el trabajo detenido",))
+
+    def test_terminado_rechaza_con_su_motivo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            (r.espacio / "dato.txt").write_text("42")
+            (_interno(r) / "evidencia.txt").write_text("dato.txt contiene 42")
+            r.incorporar()
+            r.juicio({"veredicto": "aprobado", "evidencia": "lei dato.txt: 42"})
+            self.assertEqual(r.incorporar().estado, "terminado")
+            salida = corregir(r.reg, r.enc, "cambia el dato", "c1", ahora_iso())
+            self.assertTrue(salida["rechazada"])
+            self.assertIn("terminó", salida["motivo"])
+            self.assertEqual(r.fold().ajustes, ())
+            retransmitida = corregir(r.reg, r.enc, "cambia el dato", "c1", ahora_iso())
+            self.assertTrue(retransmitida["rechazada"])
+            self.assertTrue(retransmitida["retransmision"])
+
+    def test_cancelado_rechaza_con_su_motivo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            ordenar(r.reg, r.enc, "cancelar", "x1", ahora_iso())
+            r.reg.anotar(
+                r.enc,
+                {"kind": "arbol", "data": {"observacion": "ausente", "hora": r.hora}},
+                "t-arbol",
+            )
+            self.assertEqual(r.fold().estado, "cancelado")
+            salida = corregir(r.reg, r.enc, "ya no importa", "c1", ahora_iso())
+            self.assertTrue(salida["rechazada"])
+            self.assertIn("cancelado", salida["motivo"])
+            self.assertEqual(r.fold().ajustes, ())
+
+    def test_cancelando_rechaza_aunque_el_arbol_siga_vivo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            ordenar(r.reg, r.enc, "cancelar", "x1", ahora_iso())
+            self.assertEqual(r.fold().estado, "deteniendo")
+            salida = corregir(r.reg, r.enc, "ya no importa", "c1", ahora_iso())
+            self.assertTrue(salida["rechazada"])
+
+    def test_la_misma_clave_no_duplica_y_otro_texto_es_conflicto(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            primera = corregir(r.reg, r.enc, "texto uno", "c1", ahora_iso())
+            repetida = corregir(r.reg, r.enc, "texto uno", "c1", ahora_iso())
+            otra = corregir(r.reg, r.enc, "texto dos", "c1", ahora_iso())
+            self.assertEqual(repetida["recibo"], primera["recibo"])
+            self.assertTrue(repetida["retransmision"])
+            self.assertTrue(otra["conflicto"])
+            self.assertEqual(r.fold().ajustes, ("texto uno",))
+
+    def test_solo_levanta_las_causas_que_el_host_no_puede_comprobar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            for n, (clase, verificable) in enumerate(
+                (("entorno", True), ("juicio:r1", False))
+            ):
+                r.reg.anotar(
+                    r.enc,
+                    {
+                        "kind": "impedimento",
+                        "data": {
+                            "clase": clase,
+                            "causa": f"falla {clase}",
+                            "condicion": f"que {clase} funcione",
+                            "verificable": verificable,
+                            "hora": r.hora,
+                        },
+                    },
+                    f"t-imp-{n}",
+                )
+            self.assertEqual(len(r.fold().impedimentos), 2)
+            corregir(r.reg, r.enc, "el juicio estaba mal", "c1", ahora_iso())
+            self.assertEqual([i.clase for i in r.fold().impedimentos], ["entorno"])
 
 
 if __name__ == "__main__":

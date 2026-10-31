@@ -32,6 +32,7 @@ from .dominio import (
     TransicionIlegal,
     alcance_de,
     bloqueantes_abiertos,
+    correcciones_sin_ver,
     revision_independiente_cubre_producto,
     decision_fallo,
     decision_proceso,
@@ -315,20 +316,26 @@ def _ordenar(
 def corregir(
     registro: Registro, encargo_id: str, texto: str, clave: str, hora: str
 ) -> dict:
+    """Registra una corrección sin interrumpir al agente. La toma el siguiente
+    intento. Sólo un encargo cerrado la rechaza."""
     ukey = f"ajuste:{clave}"
     prev = registro.por_ukey(ukey)
     enc = registro.fold(encargo_id)
     if enc is None:
         raise TransicionIlegal("no hay encargo")
     if prev:
-        salida = vista(registro.fold(encargo_id), prev["data"]["recibo"])
-        if prev["data"].get("texto") != texto:
+        salida = vista(enc, prev["data"]["recibo"])
+        if prev["encargo"] != encargo_id or prev["data"].get("texto") != texto:
             salida["conflicto"] = True
         else:
             salida["retransmision"] = True
+            if prev["data"].get("resultado") == "rechazada":
+                salida["rechazada"] = True
+                salida["motivo"] = prev["data"].get("motivo") or ""
         return salida
     recibo = recibo_de(ukey)
-    if enc.estado != "detenido":
+
+    def rechazar(motivo: str) -> dict:
         registro.append(
             encargo_id,
             "recibo",
@@ -337,24 +344,32 @@ def corregir(
                 "texto": texto,
                 "recibo": recibo,
                 "resultado": "rechazada",
-                "motivo": "el ajuste espera el estado detenido",
+                "motivo": motivo,
                 "hora": hora,
             },
             ukey,
             hora,
         )
-        salida = vista(enc, recibo)
+        salida = vista(registro.fold(encargo_id), recibo)
         salida["rechazada"] = True
-        salida["motivo"] = "el ajuste espera el estado detenido"
+        salida["motivo"] = motivo
         return salida
-    registro.append(
-        encargo_id,
-        "ajuste",
-        {"texto": texto, "recibo": recibo, "hora": hora},
-        ukey,
-        hora,
-    )
-    return vista(registro.fold(encargo_id), recibo)
+
+    datos = {"texto": texto, "recibo": recibo, "hora": hora}
+    try:
+        reducir(enc, {"kind": "ajuste", "data": datos})
+    except TransicionIlegal as exc:
+        return rechazar(str(exc))
+    resultado = registro.append(encargo_id, "ajuste", datos, ukey, hora)
+    if resultado == "ilegal":
+        try:
+            reducir(registro.fold(encargo_id), {"kind": "ajuste", "data": datos})
+        except TransicionIlegal as exc:
+            return rechazar(str(exc))
+    salida = vista(registro.fold(encargo_id), recibo)
+    if resultado == "ajena":
+        salida["conflicto"] = True
+    return salida
 
 
 def consultar(registro: Registro, encargo_id: str) -> dict:
@@ -671,7 +686,11 @@ def barrer(
             and enc.estado in ("recibido", "ejecutando")
             and enc.via != "directa"
         ):
-            if _aplica_entrega(enc):
+            if (
+                _aplica_entrega(enc) or _revision_aprobada_vigente(enc)
+            ) and _devolver_correcciones(registro, enc, hora):
+                enc = registro.fold(encargo_id)
+            elif _aplica_entrega(enc):
                 enc = _paso_entrega(registro, enc, gh, hora)
                 sin_llm = True
             elif _revision_aprobada_vigente(enc):
@@ -891,6 +910,21 @@ def _devolver(
         },
         f"devolucion:{enc.id}:{enc.generacion}:{serie}",
     )
+
+
+def _devolver_correcciones(registro: Registro, enc: Encargo, hora: str) -> bool:
+    """Una corrección que ningún intento recibió no se cierra ni se entrega:
+    el trabajo vuelve al implementador, cuyo prompt la lleva."""
+    if enc.estado in ("terminado", "cancelado") or not correcciones_sin_ver(enc):
+        return False
+    _devolver(
+        registro, enc, "investigar",
+        "hay correcciones del propietario que ningún intento recibió",
+        "incorporar las correcciones del propietario antes de cerrar o entregar; "
+        "lo aprobado que no cambio se conserva",
+        hora, f"correccion-{len(enc.ajustes)}",
+    )
+    return True
 
 
 def _sonda_entorno(enc: Encargo, espacio: Path, base: Path):
@@ -1308,6 +1342,8 @@ def _intentar_cierre(
     """
     from motor.runwrap import _publica
 
+    if _devolver_correcciones(registro, enc, hora):
+        return registro.fold(enc.id)
     if enc.producto is not None and not enc.producto.sha_git:
         stale = _producto_no_aprobado(enc, espacio)
         if stale is not None:
@@ -2784,6 +2820,8 @@ def _checks_extra(enc: Encargo, espacio: Path) -> tuple[str, ...]:
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
+    if _devolver_correcciones(registro, enc, hora):
+        return registro.fold(enc.id)
     if nivel_cumplido(enc) and enc.estado != "terminado" and not _deepseek_por_releer(enc):
         return _intentar_cierre(
             registro, enc, _espacio(registro.base, enc.id),
@@ -3656,6 +3694,7 @@ def _lanzar_uno(
                     "data": {
                         "rol": rol,
                         "generacion": generacion,
+                        "ajustes": len(enc.ajustes),
                         "candidato": token,
                         "host": socket.gethostname(),
                         "hora": hora,
