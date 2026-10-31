@@ -101,7 +101,10 @@ y `continuar`.
   prompt (`ajustes`). Si hay más registradas que las que vio el último
   intento, el cierre y la entrega del PR no avanzan: el trabajo vuelve al
   implementador, cuyo prompt ya las lleva, y lo aprobado que no cambió se
-  conserva.
+  conserva. Si ningún intento puede lanzarse (todas las fases ya están
+  preparadas), devolver el trabajo bloquearía el cierre para siempre: el
+  cierre sigue y deja en las notas de procedimiento qué correcciones nadie
+  recibió.
 - Solo levanta las causas que el host no puede comprobar. Las demás siguen
   hasta verificarse.
 - La misma clave no duplica la corrección. La misma clave con otro texto se

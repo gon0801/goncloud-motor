@@ -1005,6 +1005,32 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             )
             self.assertEqual(cerrado.estado, "terminado")
 
+    def test_si_ningun_intento_puede_lanzarse_la_correccion_no_bloquea_el_cierre(self):
+        from dataclasses import replace
+
+        from motor.encargos.ciclo import _devolver_correcciones
+        from motor.encargos.dominio import Fase, puede_recibir_intento
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            preparadas = replace(
+                r.fold(),
+                fases=(Fase(id="f1", resultado="x", estado="preparada", evidencia="ok"),),
+                fase_activa="f1",
+            )
+            self.assertFalse(puede_recibir_intento(preparadas))
+            self.assertFalse(_devolver_correcciones(r.reg, preparadas, ahora_iso()))
+            e = r.fold()
+            self.assertEqual(e.ajustes_vistos, 1)
+            self.assertTrue(
+                any("el dato debe ser 43" in nota for nota in e.procedimiento)
+            )
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(
+                [x for x in r.eventos("estrategia") if "correccion" in str(x)], []
+            )
+
     def test_el_intento_que_se_lanza_anota_cuantas_correcciones_lleva_su_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = self._recorrido(tmp)

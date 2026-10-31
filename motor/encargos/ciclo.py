@@ -33,6 +33,7 @@ from .dominio import (
     alcance_de,
     bloqueantes_abiertos,
     correcciones_sin_ver,
+    puede_recibir_intento,
     revision_independiente_cubre_producto,
     decision_fallo,
     decision_proceso,
@@ -914,8 +915,27 @@ def _devolver(
 
 def _devolver_correcciones(registro: Registro, enc: Encargo, hora: str) -> bool:
     """Una corrección que ningún intento recibió no se cierra ni se entrega:
-    el trabajo vuelve al implementador, cuyo prompt la lleva."""
+    el trabajo vuelve al implementador, cuyo prompt la lleva. Si ningún intento
+    puede lanzarse (todas las fases preparadas), devolverlo bloquearía el
+    cierre para siempre: se cierra y la nota deja dicho qué correcciones
+    nadie recibió."""
     if enc.estado in ("terminado", "cancelado") or not correcciones_sin_ver(enc):
+        return False
+    if not puede_recibir_intento(enc):
+        sin_recibir = enc.ajustes[enc.ajustes_vistos:]
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "procedimiento",
+                "data": {
+                    "nota": "correcciones que ningun intento pudo recibir: "
+                    + " | ".join(sin_recibir),
+                    "ajustes_vistos": len(enc.ajustes),
+                    "hora": hora,
+                },
+            },
+            f"correcciones-sin-intento:{enc.id}:{len(enc.ajustes)}",
+        )
         return False
     _devolver(
         registro, enc, "investigar",

@@ -557,6 +557,14 @@ def correcciones_sin_ver(e: Encargo) -> bool:
     return len(e.ajustes) > e.ajustes_vistos
 
 
+def puede_recibir_intento(e: Encargo) -> bool:
+    """Hay un intento que podría lanzarse: devolverle el trabajo sirve. Con
+    todas las fases preparadas el cierre global no lanza a nadie."""
+    if e.via == "directa" or not e.intentos_nuevos:
+        return False
+    return not e.fases or _fase_disponible(e.fases) is not None
+
+
 def bloqueantes_abiertos(e: Encargo, origen: str = "") -> tuple[Hallazgo, ...]:
     return tuple(
         h
@@ -905,6 +913,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         return replace(
             e,
             procedimiento=e.procedimiento + (d["nota"],),
+            ajustes_vistos=int(d.get("ajustes_vistos", e.ajustes_vistos)),
             hora=hora or e.hora,
         )
     if kind == "migracion":
