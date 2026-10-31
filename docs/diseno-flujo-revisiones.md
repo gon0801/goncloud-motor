@@ -46,9 +46,10 @@ entrega externa y la anti-repetición, sin estado lateral.
   fallo de instrumento/JSON/adaptador reintenta el paso que falló, con
   eventos idempotentes por paso+SHA en la entrega (make-operations-idempotent).
   El mismo instrumento tres veces sin progreso escala a `necesita_usuario`.
-- **Anti-repetición sin tope.** Sin número fijo de rondas: progreso = cambia
-  la firma o se cierra un bloqueo. Sin progreso, primero diagnostica el
-  responsable; si el bloqueo vuelve idéntico, `necesita_usuario`.
+- **Anti-repetición sin tope.** Sin número fijo de rondas: progreso = se
+  cierra un bloqueante (revisor independiente, DeepSeek o checks requeridos).
+  Cambiar archivos no cuenta. Sin progreso, primero diagnostica el
+  responsable; la segunda vuelta seguida sin progreso es `necesita_usuario`.
 
 ## Alternativa considerada y rechazada
 

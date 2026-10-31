@@ -527,6 +527,38 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertEqual(e.sin_progreso, 1)
             self.assertTrue(_lanzaria(e))
 
+    def test_no_concluyente_con_el_primer_bloqueante_es_avance(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-4", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+
+            def vuelta(i: int, bloqueantes: list):
+                malo.write_text(f"intento-{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "no_concluyente",
+                        "evidencia": f"cat malo.txt -> intento-{i}, falta un dato",
+                        "bloqueantes": bloqueantes,
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1, [_bloqueante("malo.txt no contiene B")])
+            self.assertTrue(bloqueantes_abiertos(e))
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(2, [])
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = vuelta(3, [])
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("malo.txt no contiene B", e.motivo)
+            self.assertFalse(_lanzaria(e))
+
     def test_no_concluyente_que_cierra_un_bloqueante_es_avance(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "nc-2", "malo.txt con B")

@@ -98,12 +98,25 @@ Un `instrumento_fallo` repetido no escala por conteo: el tercer fallo
 idéntico no pasa el encargo a `necesita_usuario` por sí solo. Reintenta el
 mismo paso y el encargo sigue su curso.
 
-No hay tope de rondas. Hay progreso si la firma cambia o un bloqueo se
-resuelve. Si una revisión vuelve con los mismos bloqueantes y la misma firma,
-el siguiente paso no es repetir: el responsable diagnostica por qué la
-corrección no lo resolvió. Si tras el diagnóstico el bloqueo vuelve idéntico,
-el encargo pasa a `necesita_usuario` con la causa concreta y el trabajo
-intacto. Nunca se declara éxito ni se vuelve a crear el encargo.
+No hay tope de rondas mientras haya avance. Una vuelta es avance solo si
+cierra al menos un bloqueante: del revisor independiente, de DeepSeek o de
+los checks requeridos del PR. Cambiar archivos no es avance, y la firma del
+producto no entra en la cuenta. Que aparezca un bloqueante nuevo junto con
+uno cerrado sí es avance; uno nuevo sin cerrar ninguno no, y volver a cerrar
+algo que ya se cerró y se reabrió (por ejemplo un check que alterna rojo y
+verde) tampoco. El primer bloqueante que se ve no tiene con qué compararse y
+cuenta como avance.
+
+Una vuelta sin avance incluye al revisor que no concluye (`no_concluyente`
+sin inspección faltante), al implementador que cambia archivos con el mismo
+bloqueante abierto, a los checks requeridos que siguen en rojo y a DeepSeek
+que mantiene el mismo bloqueante tras republicar el PR. La primera vuelta sin
+avance no repite: el responsable diagnostica por qué la corrección no lo
+resolvió. La segunda seguida deja el encargo en `necesita_usuario` con el
+diagnóstico concreto (qué bloqueante sigue abierto y qué se intentó), el
+trabajo intacto y sin lanzar más agentes. Cerrar un bloqueante o una
+aprobación sin nada abierto reinicia la cuenta, también al pasar a la fase
+siguiente. Nunca se declara éxito ni se vuelve a crear el encargo.
 
 ## Niveles de entrega
 
