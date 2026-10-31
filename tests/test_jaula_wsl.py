@@ -672,6 +672,66 @@ class GuardianTest(unittest.TestCase):
         self.assertIn("Claude Code", p.stderr)
 
 
+class EnsayoDeLaPcTest(unittest.TestCase):
+    """`ops/ensayo_wsl_jaula.py` es lo que corre el operador en la PC: aqui, con la jaula
+    sustituida, se comprueba que recorre sus casos, informa y sale con el codigo correcto."""
+
+    def setUp(self):
+        import importlib.util
+
+        ruta = Path(__file__).resolve().parents[1] / "ops" / "ensayo_wsl_jaula.py"
+        spec = importlib.util.spec_from_file_location("ensayo_wsl_jaula", ruta)
+        self.ensayo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.ensayo)
+
+    def correr(self, ejecutar, argumentos=(), windows=True):
+        import contextlib
+        import io
+
+        comando = mock.Mock(jaula={"distro": ""}, argv=["claude", "--version"])
+        salida = io.StringIO()
+        with (
+            mock.patch.object(self.ensayo, "_en_windows", return_value=windows),
+            mock.patch.object(jaula_wsl, "ejecutar", side_effect=ejecutar) as llamada,
+            mock.patch.object(self.ensayo, "aislar", return_value=comando),
+            mock.patch.object(self.ensayo, "_parada", return_value=(True, "")),
+            mock.patch.object(self.ensayo, "sondear", return_value=mock.Mock(ok=True)),
+            contextlib.redirect_stdout(salida),
+        ):
+            codigo = self.ensayo.main(list(argumentos))
+        return codigo, salida.getvalue(), llamada
+
+    def test_todo_en_orden_sale_con_cero_y_recorre_bash_git_permisos_y_claude(self):
+        codigo, texto, llamada = self.correr(lambda *a, **k: (0, "ok\n", ""))
+        self.assertEqual(codigo, 0, texto)
+        self.assertIn("TODO EN ORDEN", texto)
+        for caso in ("bash", "git push a un bare local (responsable)", "el revisor NO escribe en el espacio",
+                     "no se ve el home de WSL", "claude --version", "parar cierra el arbol", "sondear(claude)"):
+            self.assertIn(f"- {caso}", texto)
+        revisores = [c.args[0]["lectura"] for c in llamada.call_args_list[: len(self.ensayo.CASOS)]]
+        self.assertEqual(revisores, [revisor for _c, revisor, _s in self.ensayo.CASOS])
+
+    def test_un_caso_que_falla_se_nombra_y_el_codigo_es_uno(self):
+        def ejecutar(jaula, cmd, env, **k):
+            return (1, "", "bwrap: no puede") if "git init" in cmd[-1] else (0, "ok\n", "")
+
+        codigo, texto, _ = self.correr(ejecutar)
+        self.assertEqual(codigo, 1)
+        self.assertIn("- git push a un bare local (responsable): FALLA", texto)
+        self.assertIn("bwrap: no puede", texto)
+        self.assertNotIn("TODO EN ORDEN", texto)
+
+    def test_la_pregunta_a_claude_solo_con_llamar(self):
+        _, _, sin = self.correr(lambda *a, **k: (0, "ok\n", ""))
+        _, _, con = self.correr(lambda *a, **k: (0, "ok\n", ""), ["--llamar"])
+        self.assertEqual(con.call_count, sin.call_count + 1)
+
+    def test_fuera_de_windows_no_hace_nada(self):
+        codigo, texto, llamada = self.correr(lambda *a, **k: (0, "ok\n", ""), windows=False)
+        self.assertEqual(codigo, 2)
+        llamada.assert_not_called()
+
+
 @unittest.skipUnless(LINUX, "la sonda de WSL corre en Linux")
 @unittest.skipIf(CAUSA and not EXIGIDA, CAUSA)
 class SondaRealTest(unittest.TestCase):

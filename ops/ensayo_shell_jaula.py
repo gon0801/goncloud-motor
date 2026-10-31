@@ -2,7 +2,8 @@
 
 `aislar` solo describe la jaula; quien la crea es `jaula_windows.crear`. Un `subprocess.run`
 sobre `comando.argv` corre sin jaula. Este ensayo usa `lanzar_en_jaula`, el mismo camino de la
-sonda, y se lanza igual que el supervisor (tarea programada), no por SSH.
+sonda, y se lanza igual que el supervisor (tarea programada), no por SSH. Cubre la jaula de
+Windows de los agentes que no necesitan shell; Claude corre en WSL: ver ops/ensayo_wsl_jaula.py.
 """
 
 from __future__ import annotations
@@ -41,8 +42,6 @@ def main() -> int:
         runtime.mkdir(parents=True)
         variantes = [
             ("sonda", {}),
-            ("agente claude", {"suscripcion": True, "agente": "claude"}),
-            ("revisor claude", {"suscripcion": True, "agente": "claude", "lectura": True}),
         ]
         for nombre, opciones in variantes:
             herramientas = _herramientas_git(dict(os.environ))
@@ -70,9 +69,9 @@ def main() -> int:
                     veredicto, detalle = "FALLA", f"{type(exc).__name__}: {exc}"
                 fallos += veredicto != "ok"
                 print(f"- {nombre} / {caso}: {veredicto} {detalle}")
-        resultado = sondear(espacio, runtime / "sonda", agente="claude")
+        resultado = sondear(espacio, runtime / "sonda")
         fallos += not resultado.ok
-        print(f"- sondear(claude): ok={resultado.ok} causa={resultado.causa!r}")
+        print(f"- sondear (jaula de Windows): ok={resultado.ok} causa={resultado.causa!r}")
     return 1 if fallos else 0
 
 
