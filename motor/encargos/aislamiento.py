@@ -466,7 +466,7 @@ class SondaEntorno:
     condicion: str = ""
 
 
-_GUION_SONDA = """set -u
+_GUION_SONDA_BASE = """set -u
 marca="${MOTOR_SONDA_MARCA:?}"
 temporal="${CLAUDE_CODE_TMPDIR:?}"
 uid=$(id -u)
@@ -492,11 +492,36 @@ for ruta in "$@"; do
     if cat "$ruta" >/dev/null 2>&1; then :; else echo "fuente:$ruta"; exit 6; fi
   fi
 done
+"""
+
+_GUION_SONDA = _GUION_SONDA_BASE + "echo ok\n"
+
+# Lo que el agente de WSL usa: bash, sh y un `git push` a un bare local. Cada fallo nombra
+# la operacion (shell | git) y trae el codigo y la salida en una linea.
+_GUION_SHELL_WSL = r"""
+una_linea() { tr '\n' ' ' | cut -c1-300; }
+probar() {
+  clase="$1"; shift
+  salida=$("$@" 2>&1); rc=$?
+  if [ "$rc" != 0 ] || [ "$(printf %s "$salida" | tail -n 1)" != ok ]; then
+    echo "$clase:codigo $rc: $(printf %s "$salida" | una_linea)"; rm -rf "${carpeta:-/nonexistent}"; exit 7
+  fi
+}
+probar shell /bin/bash -c 'echo ok'
+probar shell /bin/sh -c 'echo ok'
+carpeta="$TMPDIR/git-sonda-$marca"
+rm -rf "$carpeta"
+if mkdir -p "$carpeta" 2>/dev/null; then :; else echo "temp-shell:$TMPDIR"; exit 4; fi
+probar git /bin/bash -c 'cd "$1" && git init -q a && git init -q --bare b.git && cd a && git -c user.email=sonda@motor -c user.name=sonda commit -q --allow-empty -m sonda && git push -q ../b.git HEAD:main && echo ok' sonda "$carpeta"
+rm -rf "$carpeta"
 echo ok
 """
 
+_GUION_SONDA_WSL = _GUION_SONDA_BASE + _GUION_SHELL_WSL
+PLAZO_SONDA_WSL_S = 60
 
-def _sonda_de(marca: str) -> SondaEntorno:
+
+def _sonda_de(marca: str, wsl: bool = False) -> SondaEntorno:
     clase, _, detalle = marca.partition(":")
     if clase == "temp-cli":
         return SondaEntorno(
@@ -521,6 +546,13 @@ def _sonda_de(marca: str) -> SondaEntorno:
             False,
             f"no se puede leer la fuente autorizada {detalle}",
             "que la fuente autorizada exista y se conceda al trabajador",
+        )
+    if clase in ("shell", "git") and wsl:
+        quien = "bash" if clase == "shell" else "git"
+        return SondaEntorno(
+            False,
+            f"{quien} no funciona en la jaula de WSL ({detalle})",
+            f"que {quien} funcione dentro de la jaula de WSL con el entorno del agente",
         )
     if clase in ("shell", "git"):
         quien = "el shell de Git" if clase == "shell" else "git"
@@ -619,7 +651,6 @@ def _en_windows() -> bool:
 
 
 SHELL_DE_GIT = frozenset({"claude"})
-_CAUSAS_DE_SHELL = ("el shell de Git no funciona", "git no funciona")
 
 
 def usa_shell_de_git(agente: str | None) -> bool:
@@ -629,17 +660,11 @@ def usa_shell_de_git(agente: str | None) -> bool:
 
 
 def sonda_de_shell_pendiente(agente: str | None) -> bool:
-    """El bash de Git solo se prueba en Windows, donde la sonda corre en el AppContainer, y
-    solo para un agente que lo usa ahí. Un agente que corre en WSL (`usa_wsl`) no usa ese
-    shell: probarlo en el AppContainer, donde msys no arranca, frenaría un lanzamiento que
-    no lo necesita. Su shell es el de la distro y se prueba en la distro (fase sonda-wsl)."""
-    return _en_windows() and usa_shell_de_git(agente) and not usa_wsl(agente)
-
-
-def es_causa_de_shell(causa: str) -> bool:
-    """Una causa de `sondear` que viene del shell o de git: solo se resuelve
-    volviendo a probar ese shell."""
-    return causa.startswith(_CAUSAS_DE_SHELL)
+    """El shell del agente se prueba en Windows, donde la sonda corre en la jaula: en la jaula
+    de WSL para un agente que corre ahí (`usa_wsl`), que es donde usa su bash. El bash de
+    Git del AppContainer, donde msys no arranca, ya no se prueba para él: lo frenaría por un
+    shell que no ejecuta."""
+    return _en_windows() and usa_shell_de_git(agente)
 
 
 def sondear(
@@ -665,6 +690,8 @@ def sondear(
     fuentes = tuple(Path(p).expanduser().resolve() for p in lecturas)
     marca = uuid.uuid4().hex[:16]
     windows = _en_windows()
+    if usa_wsl(agente):
+        return _sondear_en_wsl(espacio, runtime, fuentes, marca)
     con_shell = sonda_de_shell_pendiente(agente)
     try:
         if windows:
@@ -708,6 +735,12 @@ def sondear(
             f"no se pudo ejecutar la sonda bajo el aislamiento: {type(exc).__name__}: {exc}",
             "que el aislamiento del host esté disponible",
         )
+    return _resultado_de_sonda(codigo, salida, error)
+
+
+def _resultado_de_sonda(
+    codigo: int, salida: str, error: str, wsl: bool = False
+) -> SondaEntorno:
     lineas = [linea for linea in (salida or "").splitlines() if linea.strip()]
     if codigo == 0 and lineas and lineas[-1].strip() == "ok":
         return SondaEntorno(True)
@@ -717,9 +750,41 @@ def sondear(
             False,
             f"la sonda del entorno no terminó: codigo {codigo}"
             + (f": {detalle}" if detalle else ""),
-            "que el aislamiento del host funcione",
+            "que la jaula de WSL funcione" if wsl else "que el aislamiento del host funcione",
         )
-    return _sonda_de(lineas[-1].strip())
+    return _sonda_de(lineas[-1].strip(), wsl)
+
+
+def _sondear_en_wsl(
+    espacio: Path, runtime: Path, fuentes: tuple[Path, ...], marca: str
+) -> SondaEntorno:
+    """La sonda de un agente que corre en WSL, dentro de la misma jaula en que correrá: temporal
+    del CLI y del shell, escritura en el espacio, lectura de las fuentes autorizadas, bash, sh
+    y un `git push` a un bare local. Con la misma regla que la de Windows: no acredita lo que
+    no pudo ejecutar y nunca propaga una excepción."""
+    try:
+        from motor.plataforma import jaula_wsl
+
+        runtime.mkdir(parents=True, exist_ok=True)
+        jaula = jaula_wsl.jaula_de(
+            espacio, runtime, lecturas=tuple(p for p in fuentes if p.exists())
+        )
+        entorno = {
+            "MOTOR_SONDA_ESPACIO": jaula_wsl.a_wsl(str(espacio)),
+            "MOTOR_SONDA_MARCA": marca,
+        }
+        cmd = ["/bin/sh", "-c", _GUION_SONDA_WSL, "sonda", *(jaula_wsl.a_wsl(str(p)) for p in fuentes)]
+        codigo, salida, error = jaula_wsl.ejecutar(
+            jaula, cmd, entorno, control=runtime.with_name(runtime.name + "-control"),
+            cwd=espacio, plazo=PLAZO_SONDA_WSL_S,
+        )
+    except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
+        return SondaEntorno(
+            False,
+            f"no se pudo ejecutar la sonda en la jaula de WSL: {type(exc).__name__}: {exc}",
+            "que la jaula de WSL esté disponible",
+        )
+    return _resultado_de_sonda(codigo, salida, error, wsl=True)
 
 
 def _herramientas_git(entorno: dict[str, str]) -> dict[str, str]:

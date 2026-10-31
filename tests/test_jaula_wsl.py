@@ -469,6 +469,32 @@ class DisponibleTest(unittest.TestCase):
         pregunta()
         self.assertEqual(correr.call_count, 2)
 
+    def test_sin_consultar_lee_lo_ultimo_aunque_haya_vencido_y_no_arranca_wsl(self):
+        correr = mock.Mock(return_value=mock.Mock(stdout=json.dumps({"causa": "falta bwrap"})))
+        hora = [0.0]
+        jaula_wsl.causa_no_disponible("claude", "Ubuntu", correr=correr, ahora=lambda: hora[0])
+        hora[0] = 500.0
+        with jaula_wsl.sin_consultar():
+            causa = jaula_wsl.causa_no_disponible(
+                "claude", "Ubuntu", correr=correr, ahora=lambda: hora[0]
+            )
+        self.assertEqual(causa, "falta bwrap")
+        self.assertEqual(correr.call_count, 1)
+
+    def test_sin_consultar_y_sin_respuesta_previa_dice_que_aun_no_se_consulto(self):
+        correr = mock.Mock(side_effect=AssertionError("wsl.exe"))
+        with jaula_wsl.sin_consultar():
+            causa = jaula_wsl.causa_no_disponible("claude", "Ubuntu", correr=correr)
+        self.assertEqual(causa, "aun no se ha consultado a WSL")
+        correr.assert_not_called()
+
+    def test_fuera_de_sin_consultar_vuelve_a_consultar(self):
+        correr = mock.Mock(return_value=mock.Mock(stdout=json.dumps({"causa": ""})))
+        with jaula_wsl.sin_consultar():
+            pass
+        self.assertEqual(jaula_wsl.causa_no_disponible("claude", "Ubuntu", correr=correr), "")
+        correr.assert_called_once()
+
     def test_sin_respuesta_de_wsl_la_causa_lo_dice(self):
         correr = mock.Mock(side_effect=OSError("no hay wsl.exe"))
         self.assertIn("wsl.exe", jaula_wsl.causa_no_disponible("claude", "", correr=correr))
@@ -644,6 +670,86 @@ class GuardianTest(unittest.TestCase):
                            stdin=subprocess.DEVNULL, env=entorno)
         self.assertEqual(p.returncode, jaula_linux.SALIDA_SIN_EJECUTABLE)
         self.assertIn("Claude Code", p.stderr)
+
+
+@unittest.skipUnless(LINUX, "la sonda de WSL corre en Linux")
+@unittest.skipIf(CAUSA and not EXIGIDA, CAUSA)
+class SondaRealTest(unittest.TestCase):
+    """La sonda de un agente de WSL con el guardián, la jaula y bash/git reales, detrás de un
+    doble de `wsl.exe`."""
+
+    def setUp(self):
+        self.assertEqual(CAUSA, "")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name).resolve()
+        self.espacio = self.base / "espacio" / "enc_x"
+        self.runtime = self.base / "runtime" / "enc_x" / "sonda"
+        self.espacio.mkdir(parents=True)
+        self.bin = self.base / "bin"
+        self.bin.mkdir()
+        self.doble(
+            '#!/bin/sh\n[ "$1" = "-d" ] && shift 2\n[ "$1" = "--exec" ] && shift\nexec "$@"\n'
+        )
+
+    def doble(self, guion):
+        wsl = self.bin / "wsl.exe"
+        wsl.write_text(guion)
+        wsl.chmod(0o755)
+        entorno = mock.patch.dict(os.environ, {"PATH": f"{self.bin}:{os.environ['PATH']}"})
+        entorno.start()
+        self.addCleanup(entorno.stop)
+
+    def procesos_con(self, texto):
+        hallados = []
+        for nombre in os.listdir("/proc"):
+            if nombre.isdigit():
+                try:
+                    linea = Path(f"/proc/{nombre}/cmdline").read_bytes().replace(b"\0", b" ")
+                except OSError:
+                    continue
+                if texto.encode() in linea and int(nombre) != os.getpid():
+                    hallados.append(int(nombre))
+        return hallados
+
+    def test_el_entorno_sano_pasa_con_bash_sh_y_git_push_dentro_de_la_jaula(self):
+        fuente = self.base / "datos.db"
+        fuente.write_text("x")
+        sonda = aislamiento._sondear_en_wsl(self.espacio, self.runtime, (fuente,), "m1")
+        self.assertTrue(sonda.ok, sonda.causa)
+        self.assertEqual([p.name for p in self.espacio.iterdir()], [])
+
+    def test_una_fuente_autorizada_ausente_se_nombra(self):
+        ausente = self.base / "no-esta.db"
+        sonda = aislamiento._sondear_en_wsl(self.espacio, self.runtime, (ausente,), "m2")
+        self.assertFalse(sonda.ok)
+        self.assertEqual(sonda.causa, f"no se puede leer la fuente autorizada {ausente}")
+
+    def test_un_comando_colgado_vuelve_en_el_plazo_y_no_deja_nada_vivo(self):
+        guion = self.espacio / "colgado.sh"
+        guion.write_text("#!/bin/sh\nsleep 4398 &\nsleep 4397\n")
+        guion.chmod(0o755)
+        jaula = jaula_wsl.jaula_de(self.espacio, self.runtime)
+        inicio = time.monotonic()
+        codigo, _, _ = jaula_wsl.ejecutar(
+            jaula, [str(guion)], {}, control=self.base / "control", cwd=self.espacio, plazo=2
+        )
+        self.assertEqual(codigo, jaula_linux.SALIDA_PARADA)
+        self.assertLess(time.monotonic() - inicio, 25)
+        self.assertEqual(self.procesos_con("sleep 4398") + self.procesos_con("sleep 4397"), [])
+
+    def test_un_wsl_exe_que_no_contesta_se_corta_y_la_sonda_frena_sin_colgarse(self):
+        self.doble("#!/bin/sh\nexec sleep 4396\n")
+        with (
+            mock.patch.object(jaula_wsl, "MARGEN_ESPERA_S", 1.0),
+            mock.patch.object(aislamiento, "PLAZO_SONDA_WSL_S", 1),
+        ):
+            inicio = time.monotonic()
+            sonda = aislamiento._sondear_en_wsl(self.espacio, self.runtime, (), "m3")
+        self.assertFalse(sonda.ok)
+        self.assertIn("no termino", sonda.causa)
+        self.assertLess(time.monotonic() - inicio, 20)
+        self.assertEqual(self.procesos_con("sleep 4396"), [])
 
 
 if __name__ == "__main__":

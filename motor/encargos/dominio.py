@@ -340,12 +340,15 @@ class Solicitud:
 class Impedimento:
     """Una causa pendiente con su identidad. `clase` nombra la operación que
     falla, no el texto del mensaje. `verificable` dice si el host puede
-    comprobar por su cuenta que dejó de fallar."""
+    comprobar por su cuenta que dejó de fallar. `agente` es el que se iba a lanzar
+    cuando falló, si la causa depende de él (su shell): se vuelve a probar con ese
+    mismo agente y no se supone ninguno."""
 
     clase: str
     causa: str
     condicion: str
     verificable: bool = True
+    agente: str = ""
 
 
 @dataclass(frozen=True)
@@ -1062,7 +1065,8 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             raise TransicionIlegal("el impedimento necesita clase, causa y condicion")
         pendientes = {i.clase: i for i in e.impedimentos}
         pendientes[clase] = Impedimento(
-            clase, causa, condicion, bool(d.get("verificable", True))
+            clase, causa, condicion, bool(d.get("verificable", True)),
+            str(d.get("agente") or ""),
         )
         e = _con_impedimentos(e, tuple(pendientes.values()), hora)
         return replace(
