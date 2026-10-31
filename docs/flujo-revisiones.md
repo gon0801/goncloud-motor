@@ -212,7 +212,7 @@ la escalera de diagnóstico de los bloqueos. A la tercera
 de la última revisión y no gasta otro turno del revisor.
 
 La cuenta empieza de nuevo con otra versión del producto, otro pedido, un
-bloqueante cerrado, otro veredicto, un ajuste o una respuesta del propietario.
+bloqueante cerrado o un check que pasó a verde (aunque ocurra fuera de la revisión), otro veredicto, un ajuste o una respuesta del propietario.
 Si el recurso pedido cambió desde la última lectura (otra huella del mismo
 archivo), pedirlo de nuevo no cuenta como repetir.
 

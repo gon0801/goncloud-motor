@@ -705,7 +705,11 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
     if fase is not None and cerrados - set(fase.cerrados):
         e = con_fase(e, replace(fase, cerrados=tuple(sorted(set(fase.cerrados) | cerrados))))
     e = replace(e, bloqueo_huella=huella_bloqueo(e))
-    return replace(e, sin_progreso=0) if avance else e
+    if not avance:
+        return e
+    # Un avance, venga de la revisión o de un check que se puso verde, cierra
+    # también la cuenta de revisiones no_concluyente repetidas.
+    return _sin_repeticiones(replace(e, sin_progreso=0))
 
 
 def fuente_de_impedimento(clase: str) -> str:
@@ -2123,7 +2127,7 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
         replace(con_fase(e, nueva), **cambios),
         concluyente=veredicto == "aprobado",
     )
-    return _contar_no_concluyentes(e, nuevo, d, origen, veredicto)
+    return _contar_no_concluyentes(nuevo, d, origen, veredicto)
 
 
 def _sin_repeticiones(e: Encargo) -> Encargo:
@@ -2160,9 +2164,7 @@ def _repite_pedido(previo: tuple[str, ...], ahora: tuple[str, ...]) -> bool:
     return previo[2] == ahora[2] or bool(ahora[3] and previo[3] == ahora[3])
 
 
-def _contar_no_concluyentes(
-    previo: Encargo, e: Encargo, d: dict, origen: str, veredicto: str
-) -> Encargo:
+def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) -> Encargo:
     """N revisiones no_concluyente seguidas sobre la misma versión, pidiendo
     lo mismo, son vueltas sin avance: la N-ésima deja el encargo pidiendo ayuda
     al propietario con la causa, en vez de seguir gastando turnos del revisor.
@@ -2176,8 +2178,8 @@ def _contar_no_concluyentes(
     if veredicto != "no_concluyente" or not faltante:
         return _sin_repeticiones(e)
     ref = _pedido_de_revision(e.fase_activa, d)
-    repite = _repite_pedido(previo.no_concluyente_ref, ref) and not hubo_avance(previo, e)
-    seguidas = previo.no_concluyentes + 1 if repite else 1
+    repite = _repite_pedido(e.no_concluyente_ref, ref)
+    seguidas = e.no_concluyentes + 1 if repite else 1
     e = replace(e, no_concluyentes=seguidas, no_concluyente_ref=ref)
     if seguidas < TOPE_NO_CONCLUYENTES:
         return e

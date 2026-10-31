@@ -145,6 +145,37 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         self.assertNotEqual(enc.estado, "necesita_usuario")
         self.assertNotIn("tras el diagnostico", enc.motivo)
 
+    def _checks(self, r, fallas: list, clave: str) -> None:
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "entrega_bloqueada",
+                "data": {
+                    "fase": r.fold().fase_activa,
+                    "sha": "abc",
+                    "fallas": fallas,
+                    "hora": ahora_iso(),
+                },
+            },
+            clave,
+        )
+
+    def test_un_avance_cerrado_fuera_de_la_revision_empieza_otra_cuenta(self):
+        r = self.recorrido("freno-8", con_recurso=True)
+        self.herramienta_ok()
+        self._checks(r, ["jaula-linux"], "checks-rojo")
+        self.vuelta(r, "a.txt")
+        self.vuelta(r, "b.txt")
+        self.assertEqual(r.fold().no_concluyentes, 2)
+
+        self._checks(r, [], "checks-verde")
+        self.assertEqual(r.fold().no_concluyentes, 0)
+
+        self.vuelta(r, "c.txt")
+        enc = r.fold()
+        self.assertEqual(enc.no_concluyentes, 1)
+        self.assertNotEqual(enc.estado, "necesita_usuario")
+
     def test_un_veredicto_distinto_corta_la_cuenta(self):
         r = self.recorrido("freno-6", con_recurso=True)
         self.herramienta_ok()
