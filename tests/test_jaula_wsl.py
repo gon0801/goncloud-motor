@@ -70,7 +70,7 @@ class ConcesionTest(unittest.TestCase):
         self.assertEqual(jaula["lecturas"], ["/mnt/c/fuentes/datos.db"])
         self.assertTrue(jaula["lectura"])
         self.assertEqual(jaula["credencial"], "claude")
-        self.assertEqual(jaula["red"], jaula_linux.RED_ABIERTA)
+        self.assertEqual(jaula["red"], jaula_linux.RED_NINGUNA)
 
     def test_solo_claude_lleva_la_credencial_de_la_distro(self):
         self.assertEqual(jaula_wsl.jaula_de(ESPACIO_W, RUNTIME_W, agente="qwen")["credencial"], "")
@@ -124,6 +124,27 @@ class AislarTest(unittest.TestCase):
         self.assertEqual(comando.entorno, {})
         self.assertEqual(comando.jaula["credencial"], "claude")
         self.assertFalse(comando.jaula["lectura"])
+
+    def test_la_jaula_de_wsl_solo_sale_a_los_dominios_del_proveedor_del_agente(self):
+        """Como el AppContainer, que concede las direcciones del proveedor y nada más: la
+        jaula de WSL ya no sale con la red abierta (#131 F2)."""
+        comando = self.aislar("claude")
+        self.assertEqual(comando.jaula["red"], jaula_linux.RED_PROVEEDOR)
+        self.assertEqual(comando.jaula["dominios"], ["api.anthropic.com", "claude.ai"])
+        spec = jaula_wsl.spec_guardian(comando.jaula, comando.argv, {})
+        self.assertEqual(spec["jaula"]["red"], jaula_linux.RED_PROVEEDOR)
+        self.assertEqual(spec["jaula"]["dominios"], ["api.anthropic.com", "claude.ai"])
+
+    def test_la_red_del_proveedor_exige_dominios_y_la_sonda_no_lleva_red(self):
+        with self.assertRaises(ValueError):
+            jaula_wsl.jaula_de(ESPACIO_W, RUNTIME_W, red=jaula_linux.RED_PROVEEDOR)
+        self.assertEqual(jaula_wsl.jaula_de(ESPACIO_W, RUNTIME_W)["dominios"], [])
+
+    def test_un_spec_guardado_antes_de_los_dominios_sigue_armando_el_guardian(self):
+        jaula = jaula_wsl.jaula_de(ESPACIO_W, RUNTIME_W, agente="claude")
+        del jaula["dominios"]
+        spec = jaula_wsl.spec_guardian(jaula, ["claude"], {})
+        self.assertEqual(spec["jaula"]["dominios"], [])
 
     def test_el_revisor_recibe_el_espacio_de_solo_lectura(self):
         self.assertTrue(self.aislar("claude", lectura=True).jaula["lectura"])
@@ -552,8 +573,8 @@ class GuardianTest(unittest.TestCase):
         if control:
             jaula_linux.cerrar_identidad(control)
 
-    def lanzar(self, cmd, *, lectura=False, plazo=None, padre=None):
-        jaula = jaula_wsl.jaula_de(self.espacio, self.runtime, lectura=lectura)
+    def lanzar(self, cmd, *, lectura=False, plazo=None, padre=None, **concesion):
+        jaula = jaula_wsl.jaula_de(self.espacio, self.runtime, lectura=lectura, **concesion)
         argv = jaula_wsl.argv_guardian(
             jaula, cmd, {}, control=self.control, cwd=self.espacio, plazo=plazo
         )
@@ -608,6 +629,32 @@ class GuardianTest(unittest.TestCase):
         p.communicate(timeout=30)
         self.assertNotEqual(p.returncode, 0)
         self.assertFalse((self.espacio / "g").exists())
+
+    def test_con_la_red_del_proveedor_el_agente_solo_sale_por_el_proxy_del_guardian(self):
+        """Sin red propia: nada llega a una dirección directa, y el proxy del guardián rechaza
+        lo que no es del proveedor (#131 F2). Tampoco queda el socket de salida al terminar."""
+        guion = self.espacio / "red.py"
+        guion.write_text(
+            "import socket\n"
+            "try:\n"
+            "    socket.create_connection(('1.1.1.1', 443), 3); print('directo')\n"
+            "except OSError:\n"
+            "    print('sin-red')\n"
+            "c = socket.create_connection(('127.0.0.1', 3128), 5)\n"
+            "c.sendall(b'CONNECT evil.example:443 HTTP/1.1\\r\\n\\r\\n')\n"
+            "print(c.recv(1024).split(b'\\r\\n')[0].decode())\n"
+        )
+        p = self.lanzar(
+            ["/usr/bin/python3", str(guion)], red=jaula_linux.RED_PROVEEDOR,
+            dominios=("api.anthropic.com",),
+        )
+        salida, error = p.communicate(timeout=60)
+        self.assertEqual(
+            (p.returncode, salida.splitlines()), (0, ["sin-red", "HTTP/1.1 403 Forbidden"]), error
+        )
+        self.assertEqual(
+            [n for n in os.listdir("/tmp") if n.startswith("motor-egreso-")], []
+        )
 
     def dormilones(self, *segundos):
         """Un agente que deja `sleep <n>` en segundo plano. El script va en el espacio para que

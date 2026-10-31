@@ -1201,9 +1201,13 @@ def _verificar_impedimento(
     lo mismo que haberlo comprobado."""
     if clase == "entorno":
         # Se vuelve a probar con el agente que falló, no con uno supuesto por el texto de la
-        # causa. Si la ruta ya no lo incluye, la causa no le aplica a lo que se lanzará.
+        # causa. Si el lanzador ya no lo elegiría (ni la ruta ni el modelo solicitado para el
+        # rol lo incluyen), la causa no le aplica a lo que se lanzará.
+        from .rutas import candidatas_de
+
         agente = next((i.agente for i in enc.impedimentos if i.clase == clase), "")
-        if agente and enc.agentes and agente not in enc.agentes:
+        candidatas = candidatas_de(enc, enc.rol or "responsable")
+        if agente and candidatas and agente not in candidatas:
             return True
         return _sonda_entorno(enc, espacio, base, agente or None).ok
     if clase.startswith("inspeccion:"):
@@ -3885,9 +3889,7 @@ def _lanzar_uno_en_turno(
         if not cmd:
             _liberar_flota()
             return
-        from .aislamiento import sonda_de_shell_pendiente
-
-        if sonda_de_shell_pendiente(agente_lanzado):
+        if en_wsl:
             if sonda is None or sonda[0] != agente_lanzado:
                 # La sonda no corre con el turno tomado ni con la flota reservada: se suelta
                 # todo, se prueba fuera y se vuelve a empezar con el resultado.

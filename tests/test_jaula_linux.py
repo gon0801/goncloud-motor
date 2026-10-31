@@ -1,6 +1,7 @@
 """Jaula de bubblewrap. Las pruebas con jaula real corren en Linux con bwrap (CI instala
 bubblewrap y exporta MOTOR_EXIGE_BWRAP=1: allí una jaula que no arranca es un fallo, no un skip)."""
 
+import contextlib
 import os
 import shutil
 import signal
@@ -14,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from motor.plataforma import jaula_linux
-from motor.plataforma.jaula_linux import RED_ABIERTA, RED_NINGUNA, Jaula
+from motor.plataforma.jaula_linux import RED_ABIERTA, RED_NINGUNA, RED_PROVEEDOR, Jaula
 
 CAUSA = (
     jaula_linux.causa_no_disponible()
@@ -148,6 +149,33 @@ class ArgvTest(unittest.TestCase):
     def test_la_red_ninguna_no_comparte_la_red(self):
         self.assertIn("--share-net", self.argv(red=RED_ABIERTA))
         self.assertNotIn("--share-net", self.argv(red=RED_NINGUNA))
+
+    def test_la_red_del_proveedor_no_comparte_la_del_anfitrion_y_pasa_por_el_puente(self):
+        """Sin `--share-net` la jaula no tiene red propia: lo único que sale es el proxy que
+        atiende el guardián, por el socket que entra en `/run/egreso` (#131 F2)."""
+        egreso = self.base / "egreso"
+        argv = self.argv(red=RED_PROVEEDOR, dominios=("api.anthropic.com",), egreso=str(egreso))
+        self.assertNotIn("--share-net", argv)
+        self.assertIn("--unshare-all", argv)
+        self.assertIn(["--bind", str(egreso), "/run/egreso"], [argv[i : i + 3] for i in range(len(argv) - 2)])
+        corte = argv.index("--")
+        self.assertEqual(argv[corte + 1 : corte + 5], ["/usr/bin/python3", "-I", "-S", "-c"])
+        self.assertEqual(argv[corte + 6 : corte + 9], ["/run/egreso/s", "3128", "--"])
+        self.assertEqual(argv[-3:], ["bash", "-c", "true"])
+
+    def test_la_red_del_proveedor_sin_dominios_o_sin_socket_no_arma_la_jaula(self):
+        with self.assertRaises(ValueError):
+            self.argv(red=RED_PROVEEDOR, egreso=str(self.base))
+        with self.assertRaises(ValueError):
+            self.argv(red=RED_PROVEEDOR, dominios=("api.anthropic.com",))
+
+    def test_el_agente_de_la_red_del_proveedor_usa_el_proxy_del_puente(self):
+        jaula = Jaula(str(self.espacio), str(self.runtime), red=RED_PROVEEDOR,
+                      dominios=("a.com",), egreso=str(self.base))
+        entorno = jaula_linux.entorno_jaula(jaula)
+        self.assertEqual(entorno["HTTPS_PROXY"], "http://127.0.0.1:3128")
+        self.assertEqual(entorno["https_proxy"], "http://127.0.0.1:3128")
+        self.assertNotIn("HTTPS_PROXY", jaula_linux.entorno_jaula(Jaula(str(self.espacio), str(self.runtime))))
 
     def test_rechaza_rutas_relativas_y_runtime_dentro_del_espacio(self):
         with self.assertRaises(ValueError):
@@ -376,6 +404,47 @@ class JaulaRealTest(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(vivos(), [])
 
+    def test_cerrar_con_el_bwrap_ya_muerto_mata_lo_que_dejo_reparentado(self):
+        """Lo que el guardián vio mientras el bwrap vivía (`ns_de_la_jaula`) cierra la jaula
+        aunque el bwrap muera antes, que es cuando el árbol del bwrap ya no la encuentra
+        (#113 F6)."""
+        marca = f"32{os.getpid()}.5"
+        jaula = self.jaula()
+        p = subprocess.Popen(
+            jaula_linux.argv_jaula(jaula, ["/bin/bash", "-c", f"sleep {marca} & wait"]),
+            env=jaula_linux.entorno_jaula(jaula),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        def vivos():
+            hallados = []
+            for d in Path("/proc").iterdir():
+                if d.name.isdigit():
+                    try:
+                        if marca in (d / "cmdline").read_text().replace("\0", " "):
+                            hallados.append(int(d.name))
+                    except OSError:
+                        pass
+            return [x for x in hallados if x != os.getpid()]
+
+        self.addCleanup(lambda: [os.kill(x, signal.SIGKILL) for x in vivos()])
+        inicio = jaula_linux._inicio(p.pid)
+        fin = time.time() + 10
+        ns = ""
+        while (not ns or not vivos()) and time.time() < fin:
+            ns = jaula_linux.ns_de_la_jaula(p.pid)
+            time.sleep(0.05)
+        self.assertTrue(ns and vivos())
+        os.kill(p.pid, signal.SIGKILL)
+        p.wait()
+        self.assertTrue(jaula_linux.cerrar(p.pid, inicio=inicio, ns=ns))
+        fin = time.time() + 10
+        while vivos() and time.time() < fin:
+            time.sleep(0.05)
+        self.assertEqual(vivos(), [])
+
 
 class DisponibleTest(unittest.TestCase):
     """`disponible()` devuelve bool como `jaula_windows.disponible` y `psec_windows.disponible`;
@@ -402,8 +471,14 @@ class TablaDeProcesos:
     def nuevo(self, ppid, **rasgos):
         pid, self.siguiente = self.siguiente, self.siguiente + 1
         self.procs[pid] = {"ppid": ppid, "vivo": True, "parado": False, "forker": False,
-                           "inmortal": False, **rasgos}
+                           "inmortal": False, "ns": "", **rasgos}
         return pid
+
+    def en_ns(self, ns):
+        return [p for p, d in self.procs.items() if ns and d["vivo"] and d["ns"] == ns]
+
+    def vivos(self):
+        return [p for p in self.procs if self.vivo(p)]
 
     def descendientes(self, raiz):
         vivos = {p: d for p, d in self.procs.items() if d["vivo"]}
@@ -435,14 +510,20 @@ class TablaDeProcesos:
                 if hijo["ppid"] == pid and hijo["vivo"]:
                     hijo["ppid"] = 1
 
-    def cerrar(self, raiz, **opciones):
-        with (
+    def parchear(self):
+        return (
             mock.patch.object(jaula_linux, "_descendientes", self.descendientes),
             mock.patch.object(jaula_linux, "_vivo", self.vivo),
             mock.patch.object(jaula_linux, "_inicio", self.inicio),
+            mock.patch.object(jaula_linux, "_en_ns", self.en_ns),
             mock.patch.object(jaula_linux.os, "kill", self.kill),
             mock.patch.object(jaula_linux.os, "waitpid", side_effect=ChildProcessError),
-        ):
+        )
+
+    def cerrar(self, raiz, **opciones):
+        with contextlib.ExitStack() as pila:
+            for parche in self.parchear():
+                pila.enter_context(parche)
             return jaula_linux.cerrar(raiz, **opciones)
 
 
@@ -474,6 +555,66 @@ class CerrarTest(unittest.TestCase):
         self.assertTrue(t.cerrar(ajeno, inicio="t-otro"))
         self.assertTrue(t.vivo(ajeno) and t.vivo(hijo_ajeno))
 
+    def jaula_con_bwrap_muerto(self, t, **rasgos):
+        """El bwrap sale antes de que nadie llame a `cerrar`: lo de dentro queda reparentado a 1."""
+        bwrap = t.nuevo(1)
+        inicio = t.inicio(bwrap)
+        init = t.nuevo(bwrap, ns="pid:[7]")
+        agente = t.nuevo(init, ns="pid:[7]", **rasgos)
+        t.kill(bwrap, signal.SIGKILL)
+        self.assertEqual(t.procs[init]["ppid"], 1)
+        return bwrap, inicio, init, agente
+
+    def test_un_bwrap_muerto_antes_no_declara_cerrada_la_jaula_que_dejo_reparentada(self):
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
+        self.assertTrue(t.cerrar(bwrap, inicio=inicio, ns="pid:[7]"))
+        self.assertEqual(t.vivos(), [])
+
+    def test_lo_reparentado_que_no_muere_impide_declarar_cerrada_la_jaula_con_el_bwrap_muerto(self):
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t, inmortal=True)
+        self.assertFalse(t.cerrar(bwrap, inicio=inicio, ns="pid:[7]", plazo=0.1))
+        self.assertTrue(t.vivo(agente))
+
+    def test_con_el_pid_del_bwrap_reusado_se_cierra_la_jaula_pero_no_al_ajeno(self):
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
+        ajeno = t.nuevo(1)
+        hijo_ajeno = t.nuevo(ajeno)
+        t.procs[ajeno]["ns"] = ""
+        self.assertTrue(t.cerrar(ajeno, inicio="t-del-bwrap", ns="pid:[7]"))
+        self.assertTrue(t.vivo(ajeno) and t.vivo(hijo_ajeno))
+        self.assertFalse(t.vivo(init) or t.vivo(agente))
+
+    def test_sin_inicio_se_toma_el_del_proceso_al_entrar_y_se_mata_su_arbol_una_vez(self):
+        t = TablaDeProcesos()
+        bwrap = t.nuevo(1)
+        hijo = t.nuevo(bwrap)
+        self.assertTrue(t.cerrar(bwrap))
+        self.assertFalse(t.vivo(bwrap) or t.vivo(hijo))
+
+    def test_el_estado_de_la_identidad_ve_lo_que_sigue_en_la_jaula_sin_guardian_ni_bwrap(self):
+        t = TablaDeProcesos()
+        bwrap, inicio, init, agente = self.jaula_con_bwrap_muerto(t)
+        identidad = {"guardian": 0, "bwrap": bwrap, "bwrap_inicio": inicio, "ns_pid": "pid:[7]"}
+        with contextlib.ExitStack() as pila:
+            for parche in t.parchear():
+                pila.enter_context(parche)
+            self.assertTrue(jaula_linux.vivo_identidad(identidad))
+            self.assertTrue(jaula_linux.cerrar_identidad(identidad, plazo=0.5))
+            self.assertFalse(jaula_linux.vivo_identidad(identidad))
+        self.assertEqual(t.vivos(), [])
+
+    def test_una_identidad_sin_hora_de_arranque_no_mata_al_pid_que_la_reuso(self):
+        t = TablaDeProcesos()
+        ajeno = t.nuevo(1)
+        with contextlib.ExitStack() as pila:
+            for parche in t.parchear():
+                pila.enter_context(parche)
+            jaula_linux.cerrar_identidad({"bwrap": ajeno}, plazo=0.1)
+        self.assertTrue(t.vivo(ajeno))
+
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "usa /proc")
 class CerrarRealTest(unittest.TestCase):
@@ -503,6 +644,163 @@ class CerrarRealTest(unittest.TestCase):
         p.wait()
         time.sleep(0.2)
         self.assertEqual(vivos(), [])
+
+
+def servidor_de_eco():
+    """Un servidor local que devuelve en mayúsculas lo que recibe. (socket, puerto)."""
+    import threading
+
+    escucha = socket.socket()
+    escucha.bind(("127.0.0.1", 0))
+    escucha.listen(4)
+
+    def atender():
+        while True:
+            try:
+                c, _ = escucha.accept()
+            except OSError:
+                return
+            dato = c.recv(1024)
+            c.sendall(dato.upper())
+            c.close()
+
+    threading.Thread(target=atender, daemon=True).start()
+    return escucha, escucha.getsockname()[1]
+
+
+class EgresoTest(unittest.TestCase):
+    """El proxy de salida del guardián: lo único que sale de una jaula con red `proveedor`."""
+
+    def setUp(self):
+        self.carpeta = Path(tempfile.mkdtemp(prefix="egr-")).resolve()
+        self.addCleanup(shutil.rmtree, self.carpeta, True)
+        previo = os.getcwd()
+        os.chdir(self.carpeta)
+        self.addCleanup(os.chdir, previo)
+        self.eco, self.puerto_eco = servidor_de_eco()
+        self.addCleanup(self.eco.close)
+        self.resueltos = []
+        crear = socket.create_connection
+
+        def resolver(host, puerto, **_):
+            self.resueltos.append(host)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (self.ip, puerto))]
+
+        def conectar(direccion, timeout=None):
+            self.conectados.append(direccion)
+            return crear(("127.0.0.1", self.puerto_eco), timeout)
+
+        self.conectados = []
+        self.ip = "93.184.216.34"
+        self.servidor = jaula_linux.servir_egreso(
+            "s", ("api.anthropic.com", "Claude.AI"), resolver
+        )
+        self.addCleanup(self.servidor.server_close)
+        self.addCleanup(self.servidor.shutdown)
+        parche = mock.patch.object(socket, "create_connection", conectar)
+        parche.start()
+        self.addCleanup(parche.stop)
+
+    def pedir(self, linea, enviar=b""):
+        c = socket.socket(socket.AF_UNIX)
+        c.settimeout(10)
+        c.connect("s")
+        c.sendall(linea.encode() + b"\r\nHost: x\r\n\r\n")
+        respuesta = b""
+        while b"\r\n\r\n" not in respuesta:
+            trozo = c.recv(1024)
+            if not trozo:
+                break
+            respuesta += trozo
+        estado = respuesta.split(b"\r\n", 1)[0].decode()
+        eco = b""
+        if enviar and b" 200 " in respuesta:
+            c.sendall(enviar)
+            eco = c.recv(1024)
+        c.close()
+        return estado, eco
+
+    def test_un_dominio_del_proveedor_con_direccion_publica_pasa_y_se_retransmite(self):
+        estado, eco = self.pedir("CONNECT api.anthropic.com:443 HTTP/1.1", b"hola")
+        self.assertEqual(estado, "HTTP/1.1 200 Connection Established")
+        self.assertEqual(eco, b"HOLA")
+        self.assertEqual(self.conectados, [("93.184.216.34", 443)])
+
+    def test_los_dominios_se_comparan_sin_mayusculas_ni_punto_final(self):
+        self.assertIn("200", self.pedir("CONNECT claude.ai.:443 HTTP/1.1")[0])
+
+    def test_otro_dominio_se_rechaza_sin_resolverlo_ni_conectar(self):
+        self.assertIn("403", self.pedir("CONNECT evil.example:443 HTTP/1.1")[0])
+        self.assertIn("403", self.pedir("CONNECT api.anthropic.com.evil.example:443 HTTP/1.1")[0])
+        self.assertEqual((self.resueltos, self.conectados), ([], []))
+
+    def test_otro_puerto_se_rechaza(self):
+        self.assertIn("403", self.pedir("CONNECT api.anthropic.com:22 HTTP/1.1")[0])
+        self.assertEqual(self.conectados, [])
+
+    def test_solo_connect(self):
+        self.assertIn("405", self.pedir("GET http://api.anthropic.com/ HTTP/1.1")[0])
+        self.assertEqual(self.conectados, [])
+
+    def test_un_dominio_del_proveedor_que_resuelve_a_una_direccion_privada_no_sale(self):
+        for ip in ("127.0.0.1", "10.0.0.5", "169.254.169.254", "192.168.1.1", "::1"):
+            with self.subTest(ip=ip):
+                self.ip = ip
+                self.assertIn("502", self.pedir("CONNECT api.anthropic.com:443 HTTP/1.1")[0])
+        self.assertEqual(self.conectados, [])
+
+
+@unittest.skipIf(CAUSA, CAUSA)
+class EgresoRealTest(unittest.TestCase):
+    """Con bubblewrap de verdad: la jaula sin red propia, y su única salida es el proxy."""
+
+    def test_la_jaula_no_llega_al_anfitrion_y_el_proxy_solo_deja_pasar_al_proveedor(self):
+        base = Path(tempfile.mkdtemp(prefix="egreso-real-")).resolve()
+        self.addCleanup(shutil.rmtree, base, True)
+        espacio, runtime, egreso = base / "espacio" / "enc_1", base / "runtime" / "enc_1", base / "e"
+        for carpeta in (espacio, runtime / "tmp", egreso):
+            carpeta.mkdir(parents=True)
+        eco, puerto_eco = servidor_de_eco()
+        self.addCleanup(eco.close)
+        crear = socket.create_connection
+
+        def resolver(host, puerto, **_):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", puerto))]
+
+        servidor = jaula_linux.servir_egreso(str(egreso / "s"), ("api.anthropic.com",), resolver)
+        self.addCleanup(servidor.server_close)
+        self.addCleanup(servidor.shutdown)
+        script = (
+            "import socket,os\n"
+            f"try:\n socket.create_connection(('127.0.0.1',{puerto_eco}),3);print('directo')\n"
+            "except OSError:\n print('sin-red')\n"
+            "def pedir(host,dato=b''):\n"
+            " c=socket.create_connection(('127.0.0.1',3128),5)\n"
+            " c.sendall(('CONNECT %s:443 HTTP/1.1\\r\\n\\r\\n'%host).encode())\n"
+            " r=c.recv(1024).split(b'\\r\\n')[0].decode()\n"
+            " if dato and ' 200 ' in r:\n  c.sendall(dato);r+=' '+c.recv(1024).decode()\n"
+            " return r\n"
+            "print(pedir('api.anthropic.com',b'hola'))\n"
+            "print(pedir('evil.example'))\n"
+            "print(os.environ['HTTPS_PROXY'])\n"
+        )
+        jaula = Jaula(str(espacio), str(runtime), red=RED_PROVEEDOR,
+                      dominios=("api.anthropic.com",), egreso=str(egreso))
+        with mock.patch.object(
+            socket, "create_connection",
+            lambda direccion, timeout=None: crear(("127.0.0.1", puerto_eco), timeout),
+        ):
+            r = subprocess.run(
+                jaula_linux.argv_jaula(jaula, ["/usr/bin/python3", "-c", script]),
+                env=jaula_linux.entorno_jaula(jaula), stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=60,
+            )
+        self.assertEqual(
+            r.stdout.splitlines(),
+            ["sin-red", "HTTP/1.1 200 Connection Established HOLA", "HTTP/1.1 403 Forbidden",
+             "http://127.0.0.1:3128"],
+            r.stderr,
+        )
 
 
 if __name__ == "__main__":

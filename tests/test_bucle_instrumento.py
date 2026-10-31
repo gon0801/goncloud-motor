@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 import time
@@ -26,9 +25,9 @@ from motor.encargos.aislamiento import (
     ComandoAislado,
     SondaEntorno,
     lanzar_en_jaula,
-    sonda_de_shell_pendiente,
     sondear,
     usa_shell_de_git,
+    usa_wsl,
 )
 from motor.encargos.ciclo import _incorporar, ahora_iso, barrer, recibir
 from motor.encargos.comprobacion import firma_producto
@@ -47,13 +46,14 @@ HAY_JAULA = Path("/usr/bin/sandbox-exec").is_file()
 class Banco:
     """El test hace de CLI y de entorno; nadie ejecuta un modelo."""
 
-    def __init__(self, tmp: str, sonda: dict):
+    def __init__(self, tmp: str, sonda: dict, modelos_solicitados: tuple = ()):
         self.sonda = sonda
         self.base = Path(tmp) / "base"
         self.reg = Registro(self.base)
         self.hora = ahora_iso()
         self.enc = recibir(
-            self.reg, "Cambia los modelos del motor", "mini-1", self.hora
+            self.reg, "Cambia los modelos del motor", "mini-1", self.hora,
+            modelos_solicitados=modelos_solicitados,
         )["encargo"]
         self.espacio = self.base / "espacio" / self.enc
         self.espacio.mkdir(parents=True, exist_ok=True)
@@ -677,8 +677,10 @@ class ShellDeGitAlLanzar(unittest.TestCase):
             return_value=(Path("/tmp/poteto-mode/SKILL.md"), "digest-de-ensayo"),
         ).start()
         mock.patch("motor.encargos.aislamiento._en_windows", return_value=True).start()
-        self.legado_msys = mock.patch("motor.encargos.aislamiento.usa_wsl", return_value=False)
-        self.legado_msys.start()
+        self.distro_sana = mock.patch(
+            "motor.plataforma.jaula_wsl.causa_no_disponible", return_value=""
+        )
+        self.distro_sana.start()
         self.parche_sonda = mock.patch("motor.encargos.aislamiento.sondear", side_effect=self.sondear)
         self.parche_sonda.start()
 
@@ -705,13 +707,13 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         )
         self.parche_sonda.start()
 
-    def banco_con(self, agente: str) -> Banco:
-        banco = Banco(self._tmp.name, {"actual": RECUPERADO})
+    def banco_con(self, agente: str, ruta=("claude", "codex"), solicitado=()) -> Banco:
+        banco = Banco(self._tmp.name, {"actual": RECUPERADO}, solicitado)
         self.addCleanup(banco.reg.close)
         (banco.espacio / "modelos.toml").write_text("modelos = {}\n")
         banco.anotar(
             "ruta_agentes",
-            {"agentes": ["claude", "codex"], "hora": ahora_iso()},
+            {"agentes": list(ruta), "hora": ahora_iso()},
             "ruta:ensayo",
         )
 
@@ -747,7 +749,6 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         sana, el lanzamiento sigue."""
         import motor.encargos.ciclo as ciclo
 
-        self.legado_msys.stop()
         self.sonda_real_de_claude()
         banco = self.banco_con("claude")
         with (
@@ -820,7 +821,7 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         self.shell_sano = True
         banco = self.banco_con("claude")
         self.lanzador_que_pregunta_por_la_distro(banco)
-        self.legado_msys.stop()
+        self.distro_sana.stop()
         visto = []
 
         def consulta(distribucion, orden, *args, **kwargs):
@@ -853,7 +854,7 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         self.shell_sano = True
         banco = self.banco_con("claude")
         self.lanzador_que_pregunta_por_la_distro(banco)
-        self.legado_msys.stop()
+        self.distro_sana.stop()
         with (
             mock.patch("motor.encargos.ciclo._consultar_wsl"),
             mock.patch("motor.plataforma.jaula_wsl._orden", side_effect=AssertionError("wsl.exe")) as orden,
@@ -934,8 +935,46 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         self.assertNotIn("claude", self.llamadas)
         ciclo.lanzar_administrado.assert_called_once()
 
+    def test_el_impedimento_no_se_levanta_sin_probar_si_el_pedido_solicita_al_agente_para_el_rol(self):
+        """El lanzador elige primero el agente solicitado para el rol: que la ruta no incluya a
+        claude no basta para dar por resuelta su causa (#133 F1)."""
+        import motor.encargos.ciclo as ciclo
+
+        banco = self.banco_con(
+            "claude", ruta=("codex",), solicitado=(("responsable", "claude", "claude-opus"),)
+        )
+        banco.barrer(4)
+        self.assertEqual(banco.fold().impedimento, "entorno")
+        self.assertEqual(banco.fold().impedimentos[0].agente, "claude")
+        self.assertEqual(len(banco.eventos("impedimento_resuelto")), 0)
+        self.assertEqual(len(banco.eventos("impedimento")), 1)
+        ciclo.lanzar_administrado.assert_not_called()
+
+        self.shell_sano = True
+        banco.barrer(3)
+        self.assertEqual(banco.fold().impedimento, "")
+        self.assertEqual(len(banco.eventos("impedimento_resuelto")), 1)
+        ciclo.lanzar_administrado.assert_called_once()
+
+    def test_el_impedimento_de_claude_se_levanta_si_el_pedido_solicita_a_otro_agente_para_el_rol(self):
+        banco = self.banco_con("claude")
+        banco.barrer(2)
+        self.assertEqual(banco.fold().impedimento, "entorno")
+        from dataclasses import replace
+
+        from motor.encargos.ciclo import _verificar_impedimento
+
+        solicitando_codex = replace(
+            banco.fold(), modelos_solicitados=(("responsable", "codex", "gpt-5"),)
+        )
+        self.llamadas.clear()
+        resuelto = _verificar_impedimento(
+            "entorno", solicitando_codex, banco.espacio, banco.base
+        )
+        self.assertIs(resuelto, True)
+        self.assertNotIn("claude", self.llamadas)
+
     def test_claude_con_bash_roto_en_wsl_frena_con_la_causa_de_la_distro_y_su_agente(self):
-        self.legado_msys.stop()
         self.sonda_real_de_claude()
         banco = self.banco_con("claude")
         with mock.patch(
@@ -968,11 +1007,11 @@ class ShellDeGitAlLanzar(unittest.TestCase):
 
 
 class SondaDelShellDeGit(unittest.TestCase):
-    """La sonda de Windows, con un `bash` de ensayo en lugar de msys.
+    """La sonda de la jaula de Windows: la de los agentes que no usan el bash de Git.
 
     Corre el mismo guion que lanza en la PC, por `sondear`, con `aislar` y el
-    host de Windows sustituidos: lo que se prueba es qué deja pasar y qué frena.
-    """
+    host de Windows sustituidos. El shell de Git no es parte de ella (#131 F7):
+    quien lo usa corre en WSL y su sonda es la de `SondaDeWsl`."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -987,7 +1026,7 @@ class SondaDelShellDeGit(unittest.TestCase):
         ruta.chmod(0o755)
         return ruta
 
-    def sondear(self, bash: Path, agente="claude") -> SondaEntorno:
+    def sondear(self, bash: Path | None = None, agente=None) -> SondaEntorno:
         temporal = self.tmp / "temporal"
         temporal.mkdir(exist_ok=True)
         entorno = {
@@ -996,18 +1035,11 @@ class SondaDelShellDeGit(unittest.TestCase):
             "TMPDIR": str(temporal),
             "HOME": str(self.tmp),
         }
-        herramientas = {
-            "MOTOR_SONDA_SHELL": str(bash),
-            "MOTOR_SONDA_SH": str(bash),
-            "MOTOR_SONDA_GIT": shutil.which("git"),
-        }
+        if bash is not None:
+            entorno["MOTOR_SONDA_SHELL"] = str(bash)
+            entorno["MOTOR_SONDA_SH"] = str(bash)
         with (
             mock.patch("motor.encargos.aislamiento._en_windows", return_value=True),
-            mock.patch("motor.encargos.aislamiento.usa_wsl", return_value=False),
-            mock.patch(
-                "motor.encargos.aislamiento._herramientas_git",
-                return_value=herramientas,
-            ),
             mock.patch(
                 "motor.encargos.aislamiento.aislar",
                 side_effect=lambda argv, *a, **k: ComandoAislado(
@@ -1019,46 +1051,23 @@ class SondaDelShellDeGit(unittest.TestCase):
                 self.espacio, self.tmp / "runtime" / "sonda", agente=agente
             )
 
-    def test_un_shell_sano_pasa_con_git_push_a_un_bare_local(self):
-        resultado = self.sondear(self.shell("bash-sano", 'exec /bin/sh "$@"\n'))
+    def test_la_sonda_de_windows_pasa_sin_tocar_el_producto(self):
+        resultado = self.sondear()
         self.assertTrue(resultado.ok, resultado.causa)
         self.assertEqual(sorted(p.name for p in self.espacio.iterdir()), [])
 
-    def test_un_shell_que_muere_al_arrancar_deja_la_causa_concreta(self):
-        bash = self.shell(
-            "bash-roto",
-            "echo 'bash (6436) bash.exe: *** fatal error - "
-            "NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1888ae32e00d56aa)"
-            ": 0xC0000022' >&2\nexit 66\n",
-        )
-        resultado = self.sondear(bash)
-        self.assertFalse(resultado.ok)
-        self.assertIn("el shell de Git no funciona bajo el aislamiento", resultado.causa)
-        self.assertIn("codigo 66", resultado.causa)
-        self.assertIn("0xC0000022", resultado.causa)
-        self.assertIn("BaseNamedObjects", resultado.condicion)
-
-    def test_un_git_push_que_falla_con_el_shell_vivo_nombra_a_git(self):
-        bash = self.shell(
-            "bash-sin-git",
-            'case "$2" in echo*) echo ok;; *) echo "Could not read from remote'
-            ' repository" >&2; exit 128;; esac\n',
-        )
-        resultado = self.sondear(bash)
-        self.assertFalse(resultado.ok)
-        self.assertTrue(resultado.causa.startswith("git no funciona"), resultado.causa)
-        self.assertIn("Could not read from remote repository", resultado.causa)
-
-    def test_un_shell_ausente_no_acredita_el_entorno(self):
-        resultado = self.sondear(self.tmp / "no-esta" / "bash.exe")
-        self.assertFalse(resultado.ok)
-        self.assertIn("el shell de Git", resultado.causa)
-
-    def test_el_shell_se_prueba_segun_el_agente_que_se_lanza_no_el_autorizado(self):
+    def test_el_shell_de_git_no_frena_a_la_sonda_del_appcontainer(self):
+        """Aunque el bash de Git no arranque en el AppContainer, esa sonda no lo prueba: lo
+        frenaría por un shell que nadie ejecuta ahí. Con `usa_wsl` en falso para `claude`
+        (combinación que en producción no existe) la sonda sigue sin leerlo."""
         roto = self.shell("bash-roto", "exit 66\n")
-        self.assertTrue(self.sondear(roto, agente="codex").ok)
-        self.assertTrue(self.sondear(roto, agente=None).ok)
-        self.assertFalse(self.sondear(roto, agente="claude").ok)
+        for agente in (None, "codex", "claude"):
+            with self.subTest(agente=agente):
+                with mock.patch(
+                    "motor.encargos.aislamiento.usa_wsl", return_value=False
+                ):
+                    resultado = self.sondear(roto, agente=agente)
+                self.assertTrue(resultado.ok, resultado.causa)
 
     def test_el_error_del_proceso_queda_en_la_causa_si_la_sonda_no_termina(self):
         roto = self.shell("bash-sano", 'exec /bin/sh "$@"\n')
@@ -1326,12 +1335,13 @@ class ElShellDelCli(unittest.TestCase):
         self.assertFalse(usa_shell_de_git("codex"))
         self.assertFalse(usa_shell_de_git(None))
 
-    def test_el_shell_solo_se_prueba_en_windows(self):
+    def test_el_agente_del_shell_de_git_corre_en_wsl_solo_en_windows(self):
         with mock.patch("motor.encargos.aislamiento._en_windows", return_value=False):
-            self.assertFalse(sonda_de_shell_pendiente("claude"))
+            self.assertFalse(usa_wsl("claude"))
         with mock.patch("motor.encargos.aislamiento._en_windows", return_value=True):
-            self.assertTrue(sonda_de_shell_pendiente("claude"))
-            self.assertFalse(sonda_de_shell_pendiente("codex"))
+            self.assertTrue(usa_wsl("claude"))
+            self.assertFalse(usa_wsl("codex"))
+            self.assertFalse(usa_wsl(None))
 
 
 class SondaDeWsl(unittest.TestCase):

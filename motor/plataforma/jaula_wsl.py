@@ -14,6 +14,7 @@ en la distro no está el motor. Cada orden es un argv de `wsl.exe --exec`: nada 
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
@@ -46,8 +47,10 @@ def distro() -> str:
 def fuente() -> str:
     """El código de la distro, en ASCII: va en la línea de comandos de `wsl.exe` y no se
     arriesga a que un acento cambie de codificación por el camino. Cada carácter no ASCII
-    queda como su escape, que dentro de un literal es el mismo carácter."""
+    queda como su escape, que dentro de un literal es el mismo carácter. Sin comentarios ni
+    formato (`ast.unparse`, con el mismo árbol): la línea de comandos de Windows tiene tope."""
     texto = Path(jaula_linux.__file__).read_text(encoding="utf-8")
+    texto = ast.unparse(ast.parse(texto))
     return texto.encode("ascii", "backslashreplace").decode("ascii")
 
 
@@ -72,15 +75,20 @@ def jaula_de(
     lectura: bool = False,
     lecturas: tuple = (),
     agente: str = "",
-    red: str = jaula_linux.RED_ABIERTA,
+    red: str = jaula_linux.RED_NINGUNA,
+    dominios: tuple = (),
 ) -> dict:
-    """La concesión de un encargo, en rutas de la distro y lista para ir en JSON."""
+    """La concesión de un encargo, en rutas de la distro y lista para ir en JSON. Sin `red`
+    la jaula no sale a ninguna parte; con `proveedor`, solo a los `dominios`."""
+    if red == jaula_linux.RED_PROVEEDOR and not dominios:
+        raise ValueError("la red del proveedor necesita sus dominios")
     return {
         "espacio": a_wsl(str(espacio)),
         "runtime": a_wsl(str(runtime)),
         "lectura": bool(lectura),
         "lecturas": [a_wsl(str(p)) for p in lecturas],
         "red": red,
+        "dominios": list(dominios),
         "credencial": "claude" if agente == "claude" else "",
         "distro": distro(),
     }
@@ -101,7 +109,8 @@ def spec_guardian(
 ) -> dict:
     spec = {
         "jaula": {
-            k: jaula[k] for k in ("espacio", "runtime", "lectura", "lecturas", "red")
+            **{k: jaula[k] for k in ("espacio", "runtime", "lectura", "lecturas", "red")},
+            "dominios": jaula.get("dominios", []),
         },
         "credencial": jaula.get("credencial", ""),
         "cmd": cmd_a_wsl(cmd),

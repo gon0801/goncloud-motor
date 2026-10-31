@@ -22,18 +22,27 @@ from dataclasses import dataclass
 BWRAP = "/usr/bin/bwrap"
 RED_ABIERTA = "abierta"
 RED_NINGUNA = "ninguna"
+RED_PROVEEDOR = "proveedor"
 PATH_JAULA = "/usr/local/bin:/usr/bin:/bin"
 DIRECTORIOS_DEL_SISTEMA = ("bin", "sbin", "lib", "lib32", "lib64", "libx32")
+EGRESO_EN_LA_JAULA = "/run/egreso"
+PUERTO_EGRESO = 3128
 
 
 @dataclass(frozen=True)
 class Jaula:
+    """`red` es `abierta`, `ninguna` o `proveedor`: sin red propia, solo con una salida a los
+    `dominios` del proveedor por el proxy del guardián, cuyo socket está en el directorio
+    `egreso` del anfitrión (lo crea el guardián)."""
+
     espacio: str
     runtime: str
     lectura: bool = False
     lecturas: tuple = ()
     ejecutables: tuple = ()
     red: str = RED_ABIERTA
+    dominios: tuple = ()
+    egreso: str = ""
 
 
 def _absoluta(ruta: str) -> str:
@@ -94,8 +103,10 @@ def argv_jaula(
     escritura y bwrap crea ahí los padres de cada bind. Por eso no hay `--tmpfs`: el
     temporal del agente es `TMPDIR`, dentro del runtime."""
     espacio, runtime = _absoluta(jaula.espacio), _absoluta(jaula.runtime)
-    if jaula.red not in (RED_ABIERTA, RED_NINGUNA):
+    if jaula.red not in (RED_ABIERTA, RED_NINGUNA, RED_PROVEEDOR):
         raise ValueError(f"red desconocida: {jaula.red!r}")
+    if jaula.red == RED_PROVEEDOR and not (jaula.dominios and jaula.egreso):
+        raise ValueError("la red del proveedor necesita sus dominios y el socket de salida")
     if runtime == espacio or runtime.startswith(espacio + "/"):
         raise ValueError("el runtime no puede estar dentro del espacio")
     argv = [bwrap, "--die-with-parent", "--new-session", "--unshare-all"]
@@ -110,8 +121,15 @@ def argv_jaula(
         argv += ["--ro-bind", ruta, ruta]
     argv += ["--bind", runtime, runtime]
     argv += ["--ro-bind" if jaula.lectura else "--bind", espacio, espacio]
+    cmd = list(cmd)
+    if jaula.red == RED_PROVEEDOR:
+        argv += ["--bind", _absoluta(jaula.egreso), EGRESO_EN_LA_JAULA]
+        cmd = [
+            "/usr/bin/python3", "-I", "-S", "-c", _PUENTE,
+            EGRESO_EN_LA_JAULA + "/s", str(PUERTO_EGRESO), "--", *cmd,
+        ]
     argv += ["--remount-ro", "/", "--chdir", _absoluta(cwd or espacio), "--"]
-    return argv + list(cmd)
+    return argv + cmd
 
 
 def entorno_jaula(jaula: Jaula, extra: dict | None = None) -> dict:
@@ -129,8 +147,139 @@ def entorno_jaula(jaula: Jaula, extra: dict | None = None) -> dict:
         "LANG": "C.UTF-8",
         "TERM": "dumb",
     }
+    if jaula.red == RED_PROVEEDOR:
+        proxy = f"http://127.0.0.1:{PUERTO_EGRESO}"
+        for nombre in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            entorno[nombre] = proxy
+        entorno["NO_PROXY"] = entorno["no_proxy"] = "127.0.0.1,localhost"
     entorno.update(extra or {})
     return entorno
+
+
+# Dentro de la jaula (sin red propia): escucha en 127.0.0.1 y pasa cada conexión por el socket
+# unix del guardián, que decide a dónde se sale. Se lanza antes del agente y no lo sobrevive.
+_PUENTE = r"""
+import os, select, socket, sys, threading
+ruta, puerto, cmd = sys.argv[1], int(sys.argv[2]), sys.argv[4:]
+escucha = socket.socket()
+escucha.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+escucha.bind(("127.0.0.1", puerto))
+escucha.listen(64)
+def pasar(a, b):
+    try:
+        while True:
+            for s in select.select([a, b], [], [], 3600)[0]:
+                d = s.recv(65536)
+                if not d:
+                    return
+                (b if s is a else a).sendall(d)
+    except OSError:
+        pass
+    finally:
+        a.close(); b.close()
+def servir(c):
+    u = socket.socket(socket.AF_UNIX)
+    try:
+        u.connect(ruta)
+    except OSError:
+        c.close(); return
+    pasar(c, u)
+if os.fork() == 0:
+    while True:
+        threading.Thread(target=servir, args=(escucha.accept()[0],), daemon=True).start()
+escucha.close()
+os.execvp(cmd[0], cmd)
+"""
+
+
+def _retransmitir(a, b) -> None:
+    import select
+
+    try:
+        while True:
+            for s in select.select([a, b], [], [], 3600)[0]:
+                datos = s.recv(65536)
+                if not datos:
+                    return
+                (b if s is a else a).sendall(datos)
+    except OSError:
+        pass
+    finally:
+        a.close()
+        b.close()
+
+
+def _es_global(ip: str) -> bool:
+    import ipaddress
+
+    return ipaddress.ip_address(ip).is_global
+
+
+def _atender_egreso(cliente, dominios, resolver) -> None:
+    """Un `CONNECT dominio:443` a un dominio del proveedor, a una dirección pública que se
+    resuelve aquí y a la que se conecta tal cual (sin segunda resolución). Todo lo demás se
+    rechaza: la jaula no tiene otra salida."""
+    import socket
+
+    try:
+        cliente.settimeout(30)
+        cabecera = b""
+        while b"\r\n\r\n" not in cabecera and len(cabecera) < 8192:
+            trozo = cliente.recv(4096)
+            if not trozo:
+                return cliente.close()
+            cabecera += trozo
+        linea = cabecera.split(b"\r\n", 1)[0].decode("latin-1").split()
+        if len(linea) < 2 or linea[0] != "CONNECT":
+            return _responder(cliente, b"405 Method Not Allowed")
+        host, _, puerto = linea[1].rpartition(":")
+        if puerto != "443" or host.lower().rstrip(".") not in dominios:
+            return _responder(cliente, b"403 Forbidden")
+        destino = None
+        for *_resto, direccion in resolver(host, 443, type=socket.SOCK_STREAM):
+            if _es_global(direccion[0]):
+                try:
+                    destino = socket.create_connection((direccion[0], 443), 15)
+                    break
+                except OSError:
+                    continue
+        if destino is None:
+            return _responder(cliente, b"502 Bad Gateway")
+        cliente.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        cliente.settimeout(None)
+        _retransmitir(cliente, destino)
+    except (OSError, ValueError):
+        cliente.close()
+
+
+def _responder(cliente, estado: bytes) -> None:
+    try:
+        cliente.sendall(b"HTTP/1.1 " + estado + b"\r\n\r\n")
+    except OSError:
+        pass
+    cliente.close()
+
+
+def servir_egreso(ruta: str, dominios, resolver=None):
+    """El proxy de salida de la jaula, en un socket unix en `ruta`. Devuelve el servidor:
+    `shutdown()` y `server_close()` lo paran."""
+    import socket
+    import socketserver
+    import threading
+
+    permitidos = frozenset(d.lower() for d in dominios)
+    resolver = resolver or socket.getaddrinfo
+
+    class Manejador(socketserver.BaseRequestHandler):
+        def handle(self):
+            _atender_egreso(self.request, permitidos, resolver)
+
+    class Servidor(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
+
+    servidor = Servidor(ruta, Manejador)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    return servidor
 
 
 def _descendientes(raiz: int) -> list:
@@ -162,14 +311,43 @@ def _vivo(pid: int) -> bool:
         return False
 
 
-def _congelar(pid: int, vistos: dict) -> None:
-    """SIGSTOP a `pid` y a todo lo que cuelga de él, hasta que un recorrido no encuentre nada
-    nuevo. Un proceso detenido no puede hacer fork: sin esto, un hijo nacido entre el recorrido
-    y el SIGKILL quedaría huérfano, fuera del árbol, y nadie lo vería."""
+def _ns_pid(pid: int) -> str:
+    """Identidad del espacio de nombres de pids de `pid` (`pid:[4026532...]`), o vacío si no
+    existe o no se deja leer. Un zombi ya no tiene espacio de nombres."""
+    try:
+        return os.readlink(f"/proc/{pid}/ns/pid")
+    except OSError:
+        return ""
+
+
+def _en_ns(ns: str) -> list:
+    """Pids del anfitrión que viven en el espacio de nombres `ns`, cuelguen de quien cuelguen."""
+    if not ns:
+        return []
+    return [int(n) for n in os.listdir("/proc") if n.isdigit() and _ns_pid(int(n)) == ns]
+
+
+def ns_de_la_jaula(bwrap: int) -> str:
+    """El espacio de nombres de pids de la jaula que lanzó `bwrap`: el de sus descendientes que
+    no comparten el nuestro. Vacío mientras no haya nacido o si no se puede leer."""
+    propio = _ns_pid(os.getpid())
+    for p in _descendientes(bwrap):
+        ns = _ns_pid(p)
+        if ns and ns != propio:
+            return ns
+    return ""
+
+
+def _congelar(pid: int, vistos: dict, ns: str = "") -> None:
+    """SIGSTOP a `pid` (si es de verdad el bwrap), a todo lo que cuelga de él y a todo lo que
+    vive en el espacio de nombres `ns`, hasta que un recorrido no encuentre nada nuevo. Un
+    proceso detenido no puede hacer fork: sin esto, un hijo nacido entre el recorrido y el
+    SIGKILL quedaría huérfano, fuera del árbol, y nadie lo vería."""
     import signal
 
     for _ in range(16):
-        nuevos = [p for p in (pid, *_descendientes(pid)) if p not in vistos]
+        candidatos = [*((pid, *_descendientes(pid)) if pid else ()), *_en_ns(ns)]
+        nuevos = [p for p in dict.fromkeys(candidatos) if p not in vistos]
         if not nuevos:
             return
         for p in nuevos:
@@ -180,7 +358,7 @@ def _congelar(pid: int, vistos: dict) -> None:
                 pass
 
 
-def cerrar(pid: int, plazo: float = 5.0, inicio: str | None = None) -> bool:
+def cerrar(pid: int, plazo: float = 5.0, inicio: str | None = None, ns: str = "") -> bool:
     """Mata la jaula que lanzó el bwrap `pid` y espera a que no quede nada. True si no queda.
 
     No basta con matar al bwrap exterior: con el bubblewrap 0.9 de Ubuntu 24.04 la jaula
@@ -190,28 +368,37 @@ def cerrar(pid: int, plazo: float = 5.0, inicio: str | None = None) -> bool:
     proceso reparentado a otro padre ya no cuelga de él. Por eso lo que cuenta es que ninguno
     de los anotados siga vivo.
 
-    Con `inicio` (la hora de arranque del bwrap que se lanzó), un `pid` que ya es otro proceso
-    no se toca: el bwrap ya salió y su pid pudo reusarse."""
+    `ns` es el espacio de nombres de pids de la jaula (`ns_de_la_jaula`, anotado mientras el
+    bwrap vivía): identifica a sus procesos aunque el bwrap haya muerto antes y los haya
+    dejado reparentados. `pid` solo se toca si sigue siendo el bwrap que se lanzó, con `inicio`
+    (su hora de arranque, o la que tiene al entrar): si ya salió, su pid pudo reusarse y ni
+    él ni su árbol se señalan. Sin `ns` ni bwrap vivo no hay con qué identificar la jaula y
+    no hay nada que cerrar."""
     import signal
     import time
 
-    if inicio and _inicio(pid) != inicio:
+    inicio = inicio or _inicio(pid)
+    bwrap = pid if inicio and _inicio(pid) == inicio else 0
+    if not bwrap and not ns:
         return True
     fin = time.monotonic() + plazo
     vistos: dict = {}
     while True:
-        _congelar(pid, vistos)
-        for p in vistos:
+        _congelar(bwrap, vistos, ns)
+        for p, arranque in vistos.items():
+            if _inicio(p) != arranque:
+                continue
             try:
                 os.kill(p, signal.SIGKILL)
             except OSError:
                 pass
-        try:
-            os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            pass
-        vivos = [p for p, inicio in vistos.items() if _inicio(p) == inicio and _vivo(p)]
-        if not vivos and not _descendientes(pid):
+        if bwrap:
+            try:
+                os.waitpid(bwrap, os.WNOHANG)
+            except ChildProcessError:
+                pass
+        vivos = [p for p, arranque in vistos.items() if _inicio(p) == arranque and _vivo(p)]
+        if not vivos and not (bwrap and _descendientes(bwrap)) and not _en_ns(ns):
             return True
         if time.monotonic() >= fin:
             return False
@@ -258,6 +445,7 @@ SALIDA_SIN_PREPARAR = 126
 SALIDA_SIN_EJECUTABLE = 127
 ARCHIVO_CONTROL = "jaula-wsl.json"
 CLAUDE_EN_EL_HOME = ".local/bin/claude"
+PLAZO_NS_S = 5.0
 
 
 def _inicio(pid: int) -> str:
@@ -388,11 +576,26 @@ def _guardian(spec: dict) -> int:
         print(f"Cuenta de claude: {exc}", file=sys.stderr)
         return SALIDA_SIN_PREPARAR
     extra.update(spec.get("env") or {})
+    egreso = ""
+    if jaula_spec.get("red") == RED_PROVEEDOR:
+        import atexit
+        import shutil
+        import tempfile
+
+        try:
+            egreso = tempfile.mkdtemp(prefix="motor-egreso-", dir="/tmp")
+            servidor = servir_egreso(egreso + "/s", jaula_spec.get("dominios") or ())
+        except OSError as exc:
+            print(f"no se pudo abrir la salida del proveedor: {exc}", file=sys.stderr)
+            return SALIDA_SIN_PREPARAR
+        atexit.register(shutil.rmtree, egreso, ignore_errors=True)
+        atexit.register(servidor.server_close)
     jaula = Jaula(
         espacio=jaula_spec["espacio"], runtime=jaula_spec["runtime"],
         lectura=bool(jaula_spec.get("lectura")),
         lecturas=tuple(jaula_spec.get("lecturas") or ()),
         ejecutables=tuple(ejecutables), red=jaula_spec.get("red", RED_ABIERTA),
+        dominios=tuple(jaula_spec.get("dominios") or ()), egreso=egreso,
     )
     control = spec.get("control")
     argv = argv_jaula(jaula, cmd, cwd=spec.get("cwd"))
@@ -411,7 +614,15 @@ def _guardian(spec: dict) -> int:
     if control:
         _publica(os.path.join(control, ARCHIVO_CONTROL), identidad)
     codigo = None
+    ns = ""
+    busca_hasta = time.monotonic() + PLAZO_NS_S
     while codigo is None:
+        if not ns and time.monotonic() < busca_hasta:
+            ns = ns_de_la_jaula(proceso.pid)
+            if ns:
+                identidad["ns_pid"] = ns
+                if control:
+                    _publica(os.path.join(control, ARCHIVO_CONTROL), identidad)
         codigo = proceso.poll()
         if codigo is not None:
             break
@@ -421,7 +632,7 @@ def _guardian(spec: dict) -> int:
             codigo = SALIDA_PARADA
             break
         time.sleep(0.02)
-    cerrada = cerrar(proceso.pid, inicio=identidad["bwrap_inicio"])
+    cerrada = cerrar(proceso.pid, inicio=identidad["bwrap_inicio"], ns=ns)
     if control:
         _publica(
             os.path.join(control, ARCHIVO_CONTROL),
@@ -436,9 +647,9 @@ def cerrar_identidad(identidad: dict, plazo: float = 5.0) -> bool:
     import signal
     import time
 
-    pid = int(identidad.get("bwrap") or 0)
-    if pid and _inicio(pid) == identidad.get("bwrap_inicio"):
-        cerrar(pid)
+    pid = int(identidad.get("bwrap") or 0) if identidad.get("bwrap_inicio") else 0
+    if pid or identidad.get("ns_pid"):
+        cerrar(pid, inicio=identidad.get("bwrap_inicio"), ns=identidad.get("ns_pid") or "")
     guardian = int(identidad.get("guardian") or 0)
     if guardian and _inicio(guardian) == identidad.get("guardian_inicio"):
         try:
@@ -454,6 +665,10 @@ def cerrar_identidad(identidad: dict, plazo: float = 5.0) -> bool:
 
 
 def vivo_identidad(identidad: dict) -> bool:
+    """Vivo es el guardián, el bwrap o cualquier proceso que siga en el espacio de nombres de
+    la jaula: matar a los dos primeros no cierra lo que ya quedó reparentado."""
+    if any(_vivo(p) for p in _en_ns(identidad.get("ns_pid") or "")):
+        return True
     for clave in ("guardian", "bwrap"):
         pid = int(identidad.get(clave) or 0)
         if pid and _inicio(pid) == identidad.get(clave + "_inicio") and _vivo(pid):
