@@ -314,7 +314,7 @@ def _puerto_github(base: Path):
 
 def _supervisor(reg: Registro, args) -> int:
     from .frontera import turno
-    from .rutas import elegir, proximo
+    from .rutas import candidatas_de, elegir, proximo, solicitado_de
 
     if args.respaldo and not args.agente:
         raise ValueError("--respaldo necesita --agente como ruta principal")
@@ -331,10 +331,8 @@ def _supervisor(reg: Registro, args) -> int:
     def lanzar(enc, prompt, espacio, sesion):
         hora = ahora_iso()
         rol = enc.rol or "responsable"
-        solicitado = next((
-            (agente, modelo) for r, agente, modelo in enc.modelos_solicitados if r == rol
-        ), None)
-        candidatas = (solicitado[0],) if solicitado else enc.agentes
+        solicitado = solicitado_de(enc, rol)
+        candidatas = candidatas_de(enc, rol)
         if not candidatas:
             marcar_espera(
                 reg, enc.id, f"sin ruta de agentes para el rol {rol}",

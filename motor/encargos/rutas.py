@@ -18,6 +18,21 @@ from .catalogo_agentes import identidad_modelo
 from .dominio import Encargo
 
 
+def solicitado_de(enc: Encargo, rol: str) -> tuple[str, str] | None:
+    """El (agente, modelo) que el pedido fijó para este rol, si lo fijó."""
+    return next(
+        ((agente, modelo) for r, agente, modelo in enc.modelos_solicitados if r == rol),
+        None,
+    )
+
+
+def candidatas_de(enc: Encargo, rol: str) -> tuple[str, ...]:
+    """Los agentes entre los que el lanzador elige para este rol: solo el solicitado si el
+    pedido fijó uno, y si no la ruta del encargo."""
+    solicitado = solicitado_de(enc, rol)
+    return (solicitado[0],) if solicitado else tuple(enc.agentes)
+
+
 def elegir(
     enc: Encargo,
     hora: str,

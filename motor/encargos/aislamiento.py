@@ -304,8 +304,10 @@ def aislar(
     if espacio.parent.name != "espacio" or runtime.is_relative_to(espacio):
         raise RuntimeError("la jaula necesita espacio concedido y runtime separado")
     runtime.mkdir(parents=True, exist_ok=True)
-    env = _entorno(runtime, suscripcion, cmd, agente=agente)
     nombre = agente or Path(cmd[0]).stem.lower()
+    if suscripcion and usa_wsl(nombre):
+        return _comando_wsl(cmd, espacio, runtime, lectura, lecturas_extra, nombre)
+    env = _entorno(runtime, suscripcion, cmd, agente=agente)
     procedencia = None
     if os.name == "nt":
         raices = [
@@ -422,6 +424,42 @@ def aislar(
     )
 
 
+def usa_wsl(agente: str | None) -> bool:
+    """En Windows, el agente que necesita shell corre dentro de WSL con la jaula de
+    bubblewrap: el bash de Git (msys) no arranca en un AppContainer. Los demás agentes
+    siguen en la jaula de Windows."""
+    return _en_windows() and usa_shell_de_git(agente)
+
+
+def _comando_wsl(
+    cmd: list[str],
+    espacio: Path,
+    runtime: Path,
+    lectura: bool,
+    lecturas_extra: tuple[Path, ...],
+    agente: str,
+) -> ComandoAislado:
+    """Describe el lanzamiento en la distro. `argv` es el comando del agente tal como lo
+    arma el motor, con rutas de Windows; las rutas y el entorno de la distro los resuelve
+    `jaula_wsl.argv_guardian` al lanzar, cuando ya se sumó el entorno extra del intento.
+    La jaula no tiene red propia: sale solo a los dominios del proveedor del agente, por el
+    proxy del guardián, igual que el AppContainer solo concede las direcciones del proveedor."""
+    from motor.plataforma import jaula_linux, jaula_wsl
+
+    if agente not in ADAPTADORES:
+        raise RuntimeError("el agente no tiene adaptador de suscripcion")
+    jaula = jaula_wsl.jaula_de(
+        espacio,
+        runtime,
+        lectura=lectura,
+        lecturas=tuple(p.resolve() for p in lecturas_extra),
+        agente=agente,
+        red=jaula_linux.RED_PROVEEDOR,
+        dominios=ADAPTADORES[agente].dominios,
+    )
+    return ComandoAislado(list(cmd), {}, jaula_wsl.MECANISMO, jaula)
+
+
 @dataclass(frozen=True)
 class SondaEntorno:
     """Resultado de comprobar, bajo el aislamiento real, lo que el trabajador
@@ -433,7 +471,7 @@ class SondaEntorno:
     condicion: str = ""
 
 
-_GUION_SONDA = """set -u
+_GUION_SONDA_BASE = """set -u
 marca="${MOTOR_SONDA_MARCA:?}"
 temporal="${CLAUDE_CODE_TMPDIR:?}"
 uid=$(id -u)
@@ -459,8 +497,33 @@ for ruta in "$@"; do
     if cat "$ruta" >/dev/null 2>&1; then :; else echo "fuente:$ruta"; exit 6; fi
   fi
 done
+"""
+
+_GUION_SONDA = _GUION_SONDA_BASE + "echo ok\n"
+
+# Lo que el agente de WSL usa: bash, sh y un `git push` a un bare local. Cada fallo nombra
+# la operacion (shell | git) y trae el codigo y la salida en una linea.
+_GUION_SHELL_WSL = r"""
+una_linea() { tr '\n' ' ' | cut -c1-300; }
+probar() {
+  clase="$1"; shift
+  salida=$("$@" 2>&1); rc=$?
+  if [ "$rc" != 0 ] || [ "$(printf %s "$salida" | tail -n 1)" != ok ]; then
+    echo "$clase:codigo $rc: $(printf %s "$salida" | una_linea)"; rm -rf "${carpeta:-/nonexistent}"; exit 7
+  fi
+}
+probar shell /bin/bash -c 'echo ok'
+probar shell /bin/sh -c 'echo ok'
+carpeta="$TMPDIR/git-sonda-$marca"
+rm -rf "$carpeta"
+if mkdir -p "$carpeta" 2>/dev/null; then :; else echo "temp-shell:$TMPDIR"; exit 4; fi
+probar git /bin/bash -c 'cd "$1" && git init -q a && git init -q --bare b.git && cd a && git -c user.email=sonda@motor -c user.name=sonda commit -q --allow-empty -m sonda && git push -q ../b.git HEAD:main && echo ok' sonda "$carpeta"
+rm -rf "$carpeta"
 echo ok
 """
+
+_GUION_SONDA_WSL = _GUION_SONDA_BASE + _GUION_SHELL_WSL
+PLAZO_SONDA_WSL_S = 60
 
 
 def _sonda_de(marca: str) -> SondaEntorno:
@@ -488,6 +551,13 @@ def _sonda_de(marca: str) -> SondaEntorno:
             False,
             f"no se puede leer la fuente autorizada {detalle}",
             "que la fuente autorizada exista y se conceda al trabajador",
+        )
+    if clase in ("shell", "git"):
+        quien = "bash" if clase == "shell" else "git"
+        return SondaEntorno(
+            False,
+            f"{quien} no funciona en la jaula de WSL ({detalle})",
+            f"que {quien} funcione dentro de la jaula de WSL con el entorno del agente",
         )
     return SondaEntorno(
         False,
@@ -544,23 +614,48 @@ print("ok")
 """
 
 
+def _en_windows() -> bool:
+    return os.name == "nt"
+
+
+SHELL_DE_GIT = frozenset({"claude"})
+
+
+def usa_shell_de_git(agente: str | None) -> bool:
+    """Claude Code corre sus órdenes con el bash de Git. Decide el agente que se
+    va a lanzar en ese intento, no la lista de agentes autorizados."""
+    return agente in SHELL_DE_GIT
+
+
 def sondear(
-    espacio: Path, runtime: Path, lecturas: tuple[Path, ...] = ()
+    espacio: Path,
+    runtime: Path,
+    lecturas: tuple[Path, ...] = (),
+    agente: str | None = None,
 ) -> SondaEntorno:
     """Comprueba con comandos locales, y sin llamar a ningún modelo, las
     operaciones que el trabajador necesita al arrancar: su temporal de shell,
-    la escritura en el espacio y la lectura de las fuentes autorizadas.
+    la escritura en el espacio y la lectura de las fuentes autorizadas. En
+    Windows corre dentro de la jaula. Un agente que usa el bash de Git (`usa_wsl`)
+    corre en la distro, así que su sonda es la de WSL, con bash, `sh` y un
+    `git push` a un bare local; el AppContainer, donde msys no arranca, no se
+    prueba para él porque no lo ejecuta.
 
     No acredita lo que no pudo ejecutar: sin jaula, o con una fuente declarada
-    que ya no está, el resultado es un fallo con su condición.
+    que ya no está, el resultado es un fallo con su condición. Nunca propaga una
+    excepción: la llama el supervisor, que en la PC arranca una vez desde una
+    tarea programada y no se reinicia solo.
     """
     import uuid
 
     espacio, runtime = Path(espacio).resolve(), Path(runtime).resolve()
     fuentes = tuple(Path(p).expanduser().resolve() for p in lecturas)
     marca = uuid.uuid4().hex[:16]
+    windows = _en_windows()
+    if usa_wsl(agente):
+        return _sondear_en_wsl(espacio, runtime, fuentes, marca)
     try:
-        if os.name == "nt":
+        if windows:
             argv_sonda = [
                 sys.executable,
                 "-c",
@@ -581,7 +676,7 @@ def sondear(
             runtime,
             lecturas_extra=fuentes,
         )
-    except (OSError, RuntimeError) as exc:
+    except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
         return SondaEntorno(
             False,
             f"no se pudo preparar el aislamiento: {type(exc).__name__}: {exc}",
@@ -591,23 +686,131 @@ def sondear(
         entorno = dict(comando.entorno)
         entorno["MOTOR_SONDA_ESPACIO"] = str(espacio)
         entorno["MOTOR_SONDA_MARCA"] = marca
-        hecho = subprocess.run(
-            comando.argv,
-            cwd=str(espacio),
-            env=entorno,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        codigo, salida, error = _ejecutar_en_jaula(comando, espacio, entorno, plazo=90)
+    except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
         return SondaEntorno(
             False,
             f"no se pudo ejecutar la sonda bajo el aislamiento: {type(exc).__name__}: {exc}",
             "que el aislamiento del host esté disponible",
         )
-    salida = [linea for linea in (hecho.stdout or "").splitlines() if linea.strip()]
-    if hecho.returncode == 0 and salida and salida[-1].strip() == "ok":
+    return _resultado_de_sonda(codigo, salida, error)
+
+
+def _resultado_de_sonda(
+    codigo: int, salida: str, error: str, wsl: bool = False
+) -> SondaEntorno:
+    lineas = [linea for linea in (salida or "").splitlines() if linea.strip()]
+    if codigo == 0 and lineas and lineas[-1].strip() == "ok":
         return SondaEntorno(True)
-    marca_fallo = salida[-1].strip() if salida else f"codigo {hecho.returncode}"
-    return _sonda_de(marca_fallo)
+    if not lineas:
+        detalle = " ".join((error or "").split())[:300]
+        return SondaEntorno(
+            False,
+            f"la sonda del entorno no terminó: codigo {codigo}"
+            + (f": {detalle}" if detalle else ""),
+            "que la jaula de WSL funcione" if wsl else "que el aislamiento del host funcione",
+        )
+    return _sonda_de(lineas[-1].strip())
+
+
+def _sondear_en_wsl(
+    espacio: Path, runtime: Path, fuentes: tuple[Path, ...], marca: str
+) -> SondaEntorno:
+    """La sonda de un agente que corre en WSL, dentro de la misma jaula en que correrá: temporal
+    del CLI y del shell, escritura en el espacio, lectura de las fuentes autorizadas, bash, sh
+    y un `git push` a un bare local. Con la misma regla que la de Windows: no acredita lo que
+    no pudo ejecutar y nunca propaga una excepción."""
+    try:
+        from motor.plataforma import jaula_wsl
+
+        runtime.mkdir(parents=True, exist_ok=True)
+        jaula = jaula_wsl.jaula_de(
+            espacio, runtime, lecturas=tuple(p for p in fuentes if p.exists())
+        )
+        entorno = {
+            "MOTOR_SONDA_ESPACIO": jaula_wsl.a_wsl(str(espacio)),
+            "MOTOR_SONDA_MARCA": marca,
+        }
+        cmd = ["/bin/sh", "-c", _GUION_SONDA_WSL, "sonda", *(jaula_wsl.a_wsl(str(p)) for p in fuentes)]
+        codigo, salida, error = jaula_wsl.ejecutar(
+            jaula, cmd, entorno, control=runtime.with_name(runtime.name + "-control"),
+            cwd=espacio, plazo=PLAZO_SONDA_WSL_S,
+        )
+    except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
+        return SondaEntorno(
+            False,
+            f"no se pudo ejecutar la sonda en la jaula de WSL: {type(exc).__name__}: {exc}",
+            "que la jaula de WSL esté disponible",
+        )
+    return _resultado_de_sonda(codigo, salida, error, wsl=True)
+
+
+def _herramientas_git(entorno: dict[str, str]) -> dict[str, str]:
+    """Git y los shells de su instalación, donde los busca Claude Code: el
+    `bin\\bash.exe` de la instalación que resuelve `git` por el PATH del agente,
+    y en su defecto el de la ruta habitual. Una ruta que no existe no se omite:
+    la sonda la prueba y falla con su nombre."""
+    from motor.plataforma.windows import BASH_GIT_POR_OMISION
+
+    git = shutil.which("git", path=entorno.get("PATH"))
+    raiz = Path(git).resolve().parent.parent if git else None
+    if raiz is not None and (raiz / "bin" / "bash.exe").is_file():
+        bash = raiz / "bin" / "bash.exe"
+    else:
+        bash = Path(BASH_GIT_POR_OMISION)
+    return {
+        "MOTOR_SONDA_SHELL": str(bash),
+        "MOTOR_SONDA_SH": str(bash.parent.parent / "usr" / "bin" / "sh.exe"),
+        "MOTOR_SONDA_GIT": git or str(bash.parent.parent / "cmd" / "git.exe"),
+    }
+
+
+def lanzar_en_jaula(
+    comando: ComandoAislado, cwd: Path, entorno: dict[str, str], *, plazo: float
+) -> tuple[int, str]:
+    codigo, salida, _error = _ejecutar_en_jaula(comando, cwd, entorno, plazo=plazo)
+    return codigo, salida
+
+
+def _ejecutar_en_jaula(
+    comando: ComandoAislado, cwd: Path, entorno: dict[str, str], *, plazo: float
+) -> tuple[int, str, str]:
+    """Corre `comando` como lo lanza el motor y devuelve código, salida y error.
+    En Windows eso es dentro del AppContainer (`aislar` solo lo describe);
+    `subprocess.run` lo ejecutaría sin jaula y la sonda daría por bueno un
+    entorno que el agente no tiene."""
+    if comando.mecanismo == "wsl-bwrap":  # jaula_wsl.MECANISMO
+        raise RuntimeError("un comando de la jaula de WSL no se ejecuta con subprocess.run")
+    if comando.mecanismo != "appcontainer":
+        hecho = subprocess.run(
+            comando.argv,
+            cwd=str(cwd),
+            env=entorno,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=plazo,
+        )
+        return hecho.returncode, hecho.stdout or "", hecho.stderr or ""
+    from motor import plataforma
+    from motor.plataforma.jaula_windows import crear
+
+    creado = crear(
+        comando.argv,
+        comando.jaula,
+        cwd=cwd,
+        env=entorno,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    p = creado.proceso
+    try:
+        creado.liberar()
+        salida, error = p.communicate(timeout=plazo)
+        return p.returncode, salida or "", error or ""
+    finally:
+        plataforma.matar_grupo(p)
