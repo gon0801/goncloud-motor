@@ -31,6 +31,7 @@ from .dominio import (
     FASE_IMPLICITA,
     TransicionIlegal,
     alcance_de,
+    ajustes_cubiertos,
     bloqueantes_abiertos,
     correcciones_sin_ver,
     puede_recibir_intento,
@@ -974,23 +975,25 @@ def _devolver_correcciones(registro: Registro, enc: Encargo, hora: str) -> bool:
     el trabajo vuelve al implementador, cuyo prompt la lleva. Si ningún intento
     puede lanzarse (todas las fases preparadas), devolverlo bloquearía el
     cierre para siempre: se cierra y la nota deja dicho qué correcciones
-    nadie recibió."""
+    nadie recibió. La nota no las da por vistas: si un intento vuelve a poder
+    lanzarse, la corrección le llega."""
     if enc.estado in ("terminado", "cancelado") or not correcciones_sin_ver(enc):
         return False
     if not puede_recibir_intento(enc):
-        sin_recibir = enc.ajustes[enc.ajustes_vistos:]
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "procedimiento",
-                "data": {
-                    "nota": _NOTA_SIN_INTENTO + " " + " | ".join(sin_recibir),
-                    "ajustes_vistos": len(enc.ajustes),
-                    "hora": hora,
+        sin_recibir = enc.ajustes[ajustes_cubiertos(enc):]
+        if sin_recibir:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": _NOTA_SIN_INTENTO + " " + " | ".join(sin_recibir),
+                        "ajustes_anotados": len(enc.ajustes),
+                        "hora": hora,
+                    },
                 },
-            },
-            f"correcciones-sin-intento:{enc.id}:{len(enc.ajustes)}",
-        )
+                f"correcciones-sin-intento:{enc.id}:{len(enc.ajustes)}",
+            )
         return False
     _devolver(
         registro, enc, "investigar",
@@ -1500,7 +1503,7 @@ def _intentar_cierre(
     resultado = _anotar_juicio(
         registro,
         enc,
-        {**cierre, "ajustes_vistos": len(enc.ajustes)},
+        {**cierre, "ajustes_vistos": ajustes_cubiertos(enc)},
         hora,
         enc.generacion,
         clave="global" if enc.objetivo_completo() else "",

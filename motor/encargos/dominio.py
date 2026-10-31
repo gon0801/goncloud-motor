@@ -368,6 +368,10 @@ class Encargo:
     # `ajustes_vistos` cuando el intento se abre; si la reserva se cierra sin
     # abrirlo, no cuenta nada.
     ajustes_reservados: int = 0
+    # Cuántos ajustes quedaron dichos en la nota de cierre porque ningún intento
+    # podía recibirlos. No son vistos: si un intento vuelve a poder lanzarse, la
+    # corrección le llega.
+    ajustes_anotados: int = 0
     procedimiento: tuple[str, ...] = ()
     estado: str = "recibido"
     ultimo_hecho: str = ""
@@ -561,6 +565,12 @@ def efecto_de(e: Encargo, efecto_id: str) -> Efecto | None:
 
 def correcciones_sin_ver(e: Encargo) -> bool:
     return len(e.ajustes) > e.ajustes_vistos
+
+
+def ajustes_cubiertos(e: Encargo) -> int:
+    """Ajustes que un cierre puede dar por atendidos: los que vio un intento y
+    los que la nota de cierre ya dijo que nadie pudo recibir."""
+    return max(e.ajustes_vistos, e.ajustes_anotados)
 
 
 def puede_recibir_intento(e: Encargo) -> bool:
@@ -951,7 +961,11 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         return replace(
             e,
             procedimiento=e.procedimiento + (d["nota"],),
-            ajustes_vistos=int(d.get("ajustes_vistos", e.ajustes_vistos)),
+            # La nota de la versión anterior traía este conteo como
+            # "ajustes_vistos"; sólo la escribía la nota sin intento.
+            ajustes_anotados=int(
+                d.get("ajustes_anotados", d.get("ajustes_vistos", e.ajustes_anotados))
+            ),
             hora=hora or e.hora,
         )
     if kind == "migracion":
@@ -2110,15 +2124,12 @@ def _comprobacion(e: Encargo, d: dict, hora: str) -> Encargo:
                 ultimo_hecho=f"fase {fase.id} preparada; quedan dependencias sin preparar",
                 hora=hora or e.hora,
             )
-        # Quien cierra anota cuántas correcciones vio. Una que entró después
-        # no la recibió nadie: el registro rechaza el cierre en la misma
-        # transacción en que lo escribe, así que no hay carrera con corregir.
+        # Quien cierra anota cuántas correcciones cubre (vistas o dichas en la
+        # nota). Una que entró después no la atendió nadie: el registro rechaza
+        # el cierre en la misma transacción en que lo escribe, haya o no un
+        # intento que pueda recibirla, así que no hay carrera con corregir.
         vistas = d.get("ajustes_vistos")
-        if (
-            vistas is not None
-            and len(e.ajustes) > int(vistas)
-            and puede_recibir_intento(e)
-        ):
+        if vistas is not None and len(e.ajustes) > int(vistas):
             raise TransicionIlegal("llegó una corrección durante el cierre")
         return replace(
             e,

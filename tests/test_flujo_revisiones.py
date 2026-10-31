@@ -1538,6 +1538,97 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self._barrer(r, self._lanzador(prompts))
             self.assertIn("el dato debe ser 43", prompts[0][1])
 
+    def test_la_carrera_con_el_cierre_tambien_se_rechaza_si_ningun_intento_puede_recibirla(self):
+        from motor.encargos import cierre as modulo_cierre
+        from motor.encargos.ciclo import _intentar_cierre
+        from motor.integraciones import directores
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "carrera-sin-intento", "Crea dato.txt con 42", canal="hermes")
+            self.addCleanup(r.reg.close)
+            self._revisor_con_juicio_aprobado(r)
+            real = modulo_cierre.componer
+
+            def componer_con_carrera(enc, pedidos, evidencia):
+                corregir(r.reg, r.enc, "el dato debe ser 43", "c-carrera", ahora_iso())
+                return real(enc, pedidos, evidencia)
+
+            with mock.patch(
+                "motor.encargos.ciclo.puede_recibir_intento", return_value=False
+            ), mock.patch(
+                "motor.encargos.dominio.puede_recibir_intento", return_value=False
+            ):
+                with mock.patch(
+                    "motor.encargos.cierre.componer", side_effect=componer_con_carrera
+                ):
+                    e = r.incorporar()
+                self.assertNotEqual(e.estado, "terminado")
+                self.assertEqual(e.ajustes, ("el dato debe ser 43",))
+                self.assertEqual(e.ajustes_vistos, 0)
+                self.assertTrue(
+                    any("el dato debe ser 43" in n for n in e.procedimiento)
+                )
+                cerrado = _intentar_cierre(r.reg, e, r.espacio, r.d, ahora_iso())
+            self.assertEqual(cerrado.estado, "terminado")
+            self.assertIn("el dato debe ser 43", cerrado.evidencia[-1])
+            directores.drenar(r.reg)
+            cuerpos = [
+                p.read_text(encoding="utf-8")
+                for p in (Path(r.base) / "canal" / "hermes").iterdir()
+            ]
+            self.assertTrue(
+                any(
+                    "ningún intento pudo recibir" in c and "el dato debe ser 43" in c
+                    for c in cuerpos
+                ),
+                cuerpos,
+            )
+
+    def test_una_correccion_entre_el_chequeo_inicial_y_la_foto_del_cierre_vuelve_al_implementador(self):
+        import inspect
+
+        from motor.encargos import ciclo
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            self._revisor_con_juicio_aprobado(r)
+            real = ciclo._pedidos_efecto
+
+            def pedidos_con_carrera(espacio):
+                if any(f.function == "_intentar_cierre" for f in inspect.stack()):
+                    corregir(r.reg, r.enc, "el dato debe ser 43", "c-hueco", ahora_iso())
+                return real(espacio)
+
+            with mock.patch(
+                "motor.encargos.ciclo._pedidos_efecto", side_effect=pedidos_con_carrera
+            ):
+                e = r.incorporar()
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.ajustes, ("el dato debe ser 43",))
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertIn("incorporar las correcciones", e.siguiente)
+
+    def test_la_nota_sin_intento_no_da_la_correccion_por_vista(self):
+        from dataclasses import replace
+
+        from motor.encargos.ciclo import _devolver_correcciones
+        from motor.encargos.dominio import Fase
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            fases = (Fase(id="f1", resultado="x", estado="preparada", evidencia="ok"),)
+            for _ in range(2):
+                preparadas = replace(r.fold(), fases=fases, fase_activa="f1")
+                self.assertFalse(_devolver_correcciones(r.reg, preparadas, ahora_iso()))
+            e = r.fold()
+            self.assertEqual(e.ajustes_vistos, 0)
+            self.assertEqual(
+                len([n for n in e.procedimiento if "el dato debe ser 43" in n]), 1
+            )
+            self.assertTrue(_devolver_correcciones(r.reg, e, ahora_iso()))
+            self.assertIn("incorporar las correcciones", r.fold().siguiente)
+
     def test_la_correccion_sin_intento_llega_al_propietario_en_el_aviso_de_cierre(self):
         from motor.integraciones import directores
 
@@ -1565,6 +1656,37 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 cuerpos,
             )
 
+    def test_una_nota_sin_intento_de_la_version_anterior_cuenta_como_anotada_y_el_cierre_termina(self):
+        from motor.encargos.ciclo import _NOTA_SIN_INTENTO
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            self._revisor_con_juicio_aprobado(r)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": _NOTA_SIN_INTENTO + " el dato debe ser 43",
+                        "ajustes_vistos": 1,
+                        "hora": r.hora,
+                    },
+                },
+                f"correcciones-sin-intento:{r.enc}:1",
+            )
+            e = r.fold()
+            self.assertEqual(e.ajustes_anotados, 1)
+            self.assertEqual(e.ajustes_vistos, 0)
+            with mock.patch(
+                "motor.encargos.ciclo.puede_recibir_intento", return_value=False
+            ), mock.patch(
+                "motor.encargos.dominio.puede_recibir_intento", return_value=False
+            ):
+                e = r.incorporar()
+            self.assertEqual(e.estado, "terminado")
+            self.assertIn("el dato debe ser 43", e.evidencia[-1])
+
     def test_en_la_via_directa_la_correccion_se_rechaza_con_su_motivo(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "directa-1", "Crea dato.txt con 42", via="directa")
@@ -1591,7 +1713,8 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertFalse(puede_recibir_intento(preparadas))
             self.assertFalse(_devolver_correcciones(r.reg, preparadas, ahora_iso()))
             e = r.fold()
-            self.assertEqual(e.ajustes_vistos, 1)
+            self.assertEqual(e.ajustes_vistos, 0)
+            self.assertEqual(e.ajustes_anotados, 1)
             self.assertTrue(
                 any("el dato debe ser 43" in nota for nota in e.procedimiento)
             )
