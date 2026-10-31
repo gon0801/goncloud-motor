@@ -32,6 +32,7 @@ from motor.encargos.dominio import (
     TransicionIlegal,
     alcance_de,
     bloqueantes_abiertos,
+    decision_proceso,
     reducir,
     vista,
 )
@@ -127,6 +128,19 @@ def _interno(r: Recorrido) -> Path:
     p = r.espacio / ".interno"
     p.mkdir(exist_ok=True)
     return p
+
+
+def _lanzaria(e) -> bool:
+    return decision_proceso(e, "ausente", None, False, True, e.hora)["lanzar"]
+
+
+def _bloqueante(titulo: str, repro: str = "cat malo.txt") -> dict:
+    return {
+        "criterio": "comportamiento",
+        "titulo": titulo,
+        "reproduccion": repro,
+        "ancla": "malo.txt:1",
+    }
 
 
 class FlujoRevisiones(unittest.TestCase):
@@ -320,31 +334,193 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertTrue(e.preguntas)
             self.assertEqual(malo.read_text(), "X")
 
+    def test_cambiar_archivos_con_el_mismo_bloqueante_escala(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sp-3", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+
+            def vuelta(i: int):
+                malo.write_text(f"intento-{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "cambios",
+                        "evidencia": f"cat malo.txt -> intento-{i}",
+                        "bloqueantes": [_bloqueante("malo.txt no contiene B")],
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1)
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            e = vuelta(2)
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(3)
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("malo.txt no contiene B", e.motivo)
+            self.assertIn("Se intento", e.motivo)
+            self.assertTrue(e.preguntas)
+            self.assertFalse(_lanzaria(e))
+
+    def test_bloqueantes_nuevos_sin_cerrar_ninguno_escalan(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sp-4", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+
+            def vuelta(i: int):
+                malo.write_text(f"intento-{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "cambios",
+                        "evidencia": f"cat malo.txt -> intento-{i}",
+                        "bloqueantes": [_bloqueante(f"malo.txt falla en el paso {i}")],
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1)
+            self.assertEqual(e.estrategia, "investigar")
+            e = vuelta(2)
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = vuelta(3)
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertFalse(_lanzaria(e))
+
+    def test_revisor_que_no_concluye_dos_vueltas_escala(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-1", "dato.txt con 42")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "dato.txt").write_text("41")
+
+            def vuelta(i: int):
+                e = r.incorporar()
+                self.assertEqual(e.rol, "revisor")
+                r.juicio(
+                    {
+                        "veredicto": "no_concluyente",
+                        "evidencia": f"no pude decidir, vuelta {i}",
+                    }
+                )
+                return r.incorporar()
+
+            e = vuelta(1)
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(2)
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(e.motivo)
+            self.assertFalse(_lanzaria(e))
+
+    def test_aprobar_corta_la_racha_y_la_fase_nueva_empieza_en_cero(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-3", "a.txt con A y b.txt con B")
+            self.addCleanup(r.reg.close)
+            interno = _interno(r)
+            (interno / "fases.json").write_text(
+                json.dumps(
+                    {
+                        "fases": [
+                            {"id": "a", "resultado": "a.txt con A"},
+                            {"id": "b", "resultado": "b.txt con B", "requiere": ["a"]},
+                        ]
+                    }
+                )
+            )
+            (r.espacio / "a.txt").write_text("A")
+            r.incorporar()
+            r.juicio({"veredicto": "no_concluyente", "evidencia": "duda en a"})
+            e = r.incorporar()
+            self.assertEqual(e.fase_activa, "a")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            r.incorporar()
+            r.juicio({"veredicto": "aprobado", "evidencia": "cat a.txt -> A"})
+            e = r.incorporar()
+            self.assertEqual(e.fase_activa, "b")
+            self.assertEqual(e.sin_progreso, 0)
+            (r.espacio / "b.txt").write_text("B")
+            r.incorporar()
+            r.juicio({"veredicto": "no_concluyente", "evidencia": "primera duda en b"})
+            e = r.incorporar()
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertTrue(_lanzaria(e))
+
+    def test_no_concluyente_que_cierra_un_bloqueante_es_avance(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "nc-2", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            malo = r.espacio / "malo.txt"
+            malo.write_text("X")
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "cambios",
+                    "evidencia": "cat malo.txt -> X",
+                    "bloqueantes": [_bloqueante("malo.txt no contiene B")],
+                }
+            )
+            e = r.incorporar()
+            hid = bloqueantes_abiertos(e)[0].id
+            for i in range(3):
+                malo.write_text(f"B{i}")
+                r.incorporar()
+                r.juicio(
+                    {
+                        "veredicto": "no_concluyente",
+                        "evidencia": f"cat malo.txt -> B{i}, falta un dato",
+                        "resueltos": [hid] if i == 0 else [],
+                    }
+                )
+                e = r.incorporar()
+                if i == 0:
+                    self.assertEqual(bloqueantes_abiertos(e), ())
+                    self.assertEqual(e.estrategia, "investigar")
+                    self.assertNotEqual(e.estado, "necesita_usuario")
+                    self.assertTrue(_lanzaria(e))
+                elif i == 1:
+                    self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+                else:
+                    self.assertEqual(e.estado, "necesita_usuario")
+
     def test_rondas_con_progreso_sin_tope(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-2", "malo.txt con B")
             self.addCleanup(r.reg.close)
             malo = r.espacio / "malo.txt"
-            for i in range(3):
+            cerrados: list[str] = []
+            for i in range(5):
                 malo.write_text(f"intento-{i}")
                 r.incorporar()
                 r.juicio(
                     {
                         "veredicto": "cambios",
                         "evidencia": f"lei malo.txt vuelta {i}",
+                        "resueltos": cerrados,
                         "bloqueantes": [
-                            {
-                                "criterio": "comportamiento",
-                                "titulo": "malo.txt no contiene B",
-                                "reproduccion": f"cat malo.txt -> intento-{i}",
-                                "ancla": "malo.txt:1",
-                            }
+                            _bloqueante(
+                                f"malo.txt falla en el paso {i}",
+                                f"cat malo.txt -> intento-{i}",
+                            )
                         ],
                     }
                 )
                 e = r.incorporar()
                 self.assertNotEqual(e.estado, "necesita_usuario")
                 self.assertEqual(e.sin_progreso, 0)
+                self.assertTrue(_lanzaria(e))
+                cerrados = [h.id for h in bloqueantes_abiertos(e, "independiente")]
             malo.write_text("B")
             r.incorporar()
             hid = bloqueantes_abiertos(r.fold())[0].id

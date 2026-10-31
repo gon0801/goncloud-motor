@@ -893,6 +893,53 @@ def _devolver(
     )
 
 
+def _sin_avance(
+    registro: Registro,
+    enc: Encargo,
+    abierto: str,
+    intentado: str,
+    hora: str,
+    serie: str,
+) -> None:
+    """Escalera de una vuelta que no cerro ningun bloqueante: la primera vuelve
+    a diagnosticar, la segunda seguida deja el encargo en necesita_usuario.
+    `enc` ya incorpora el hallazgo de la vuelta."""
+    huella = huella_bloqueo(enc)
+    base = f"sin-progreso:{enc.id}:{huella}:{enc.generacion}:{serie}"
+    if enc.sin_progreso >= 1:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "sin_progreso",
+                "data": {
+                    "huella": huella,
+                    "diagnostico": (
+                        "el mismo bloqueo sigue tras el diagnostico, sin "
+                        f"informacion nueva: {abierto}. Se intento: {intentado}"
+                    ),
+                    "escalar": True,
+                    "hora": hora,
+                },
+            },
+            base + ":escalar",
+        )
+        return
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "sin_progreso",
+            "data": {"huella": huella, "escalar": False, "hora": hora},
+        },
+        base + ":diagnostico",
+    )
+    _devolver(
+        registro, enc, "diagnosticar_bloqueo", abierto,
+        "diagnosticar por que la correccion no resolvio el bloqueo; "
+        "no repetir la misma accion",
+        hora, f"diagnostico-{serie}",
+    )
+
+
 def _sonda_entorno(enc: Encargo, espacio: Path, base: Path):
     from .aislamiento import sondear
 
@@ -1659,45 +1706,21 @@ def _cerrar_con_juicio(
     enc = registro.fold(enc.id)
     if juicio.veredicto == "cambios":
         ids_ahora = {h.id for h in bloqueantes_abiertos(enc, "independiente")}
-        progreso = juicio.version != version_previa or bool(ids_previos - ids_ahora)
+        progreso = bool(ids_previos - ids_ahora) or (bool(ids_ahora) and not ids_previos)
         abiertos = bloqueantes_abiertos(enc, "independiente")
         primero = abiertos[0] if abiertos else None
         motivo = primero.titulo if primero else (juicio.nota or "hay bloqueantes")
         if not progreso:
-            huella = huella_bloqueo(enc)
-            if enc.sin_progreso >= 1:
-                detalle = "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
-                registro.anotar(
-                    enc.id,
-                    {
-                        "kind": "sin_progreso",
-                        "data": {
-                            "huella": huella,
-                            "diagnostico": (
-                                "el mismo bloqueo sigue tras el diagnostico, "
-                                f"sin informacion nueva: {detalle}"
-                            ),
-                            "escalar": True,
-                            "hora": hora,
-                        },
-                    },
-                    f"sin-progreso:{enc.id}:{huella}:escalar",
-                )
-            else:
-                registro.anotar(
-                    enc.id,
-                    {
-                        "kind": "sin_progreso",
-                        "data": {"huella": huella, "escalar": False, "hora": hora},
-                    },
-                    f"sin-progreso:{enc.id}:{huella}:diagnostico",
-                )
-                _devolver(
-                    registro, enc, "diagnosticar_bloqueo", motivo,
-                    "diagnosticar por que la correccion no resolvio el bloqueo; "
-                    "no repetir la misma accion",
-                    hora, "diagnostico",
-                )
+            _sin_avance(
+                registro, enc,
+                "; ".join(f"{h.id} {h.titulo}" for h in abiertos) or motivo,
+                (
+                    "cambio archivos del producto"
+                    if juicio.version != version_previa
+                    else "no cambio el producto"
+                ) + " y el revisor independiente sigue viendo el bloqueante abierto",
+                hora, "cambios",
+            )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
         registro.anotar(
@@ -1729,11 +1752,21 @@ def _cerrar_con_juicio(
                 hora, "inspeccion", rol="revisor",
             )
             _ligar_inspeccion(registro, enc, espacio, juicio, hora)
-        else:
+        elif ids_previos - {h.id for h in bloqueantes_abiertos(enc, "independiente")}:
             _devolver(
                 registro, enc, "investigar",
                 juicio.nota or "evidencia insuficiente para aprobar",
                 juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
+                hora, "no-concluyente",
+            )
+        else:
+            abiertos = bloqueantes_abiertos(enc)
+            _sin_avance(
+                registro, enc,
+                "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
+                or juicio.nota
+                or "el revisor no concluyo: evidencia insuficiente para aprobar",
+                "el revisor independiente no concluyo y no cerro ningun bloqueante",
                 hora, "no-concluyente",
             )
         _publica(directorio / "incorporado", hora)

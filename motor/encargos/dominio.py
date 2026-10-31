@@ -599,15 +599,22 @@ def fuentes_autorizadas(e: Encargo) -> tuple[Path, ...]:
 
 
 def huella_bloqueo(e: Encargo) -> str:
+    """Identidad de lo que sigue abierto. No incluye la firma del producto:
+    cambiar archivos sin cerrar un bloqueante no es avance."""
     ids = sorted(h.id for h in bloqueantes_abiertos(e))
-    firma = e.producto.firma if e.producto else ""
-    return hashlib.sha256(("|".join(ids) + "|" + firma).encode()).hexdigest()
+    return hashlib.sha256("|".join(ids).encode()).hexdigest()
 
 
-def _con_progreso(e: Encargo) -> Encargo:
-    huella = huella_bloqueo(e)
-    if huella != e.bloqueo_huella:
-        return replace(e, bloqueo_huella=huella, sin_progreso=0)
+def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Encargo:
+    """Hay avance si se cerro un bloqueante, o si aparece el primero (no hay
+    con que compararlo). Un bloqueante nuevo junto a los que siguen abiertos
+    no lo es. Un juicio concluyente sin nada abierto corta la racha: la duda
+    del revisor quedo resuelta y no arrastra la cuenta a lo que sigue."""
+    antes = {h.id for h in bloqueantes_abiertos(previo)}
+    ahora = {h.id for h in bloqueantes_abiertos(e)}
+    e = replace(e, bloqueo_huella=huella_bloqueo(e))
+    if antes - ahora or (ahora and not antes) or (concluyente and not ahora):
+        return replace(e, sin_progreso=0)
     return e
 
 
@@ -1027,12 +1034,10 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             d.get("version") or "", d.get("manifiesto"), d.get("sha_git") or ""
         )
         nueva = replace(fase, producto=version, estado="revision")
-        return _con_progreso(
-            replace(
-                con_fase(e, nueva),
-                ultimo_hecho=f"producto de {fase.id} listo para revisar",
-                hora=hora or e.hora,
-            )
+        return replace(
+            con_fase(e, nueva),
+            ultimo_hecho=f"producto de {fase.id} listo para revisar",
+            hora=hora or e.hora,
         )
 
     if kind == "observacion_supervisor":
@@ -1146,7 +1151,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             sin_progreso=veces,
             motivo="la corrección no resolvió el bloqueo",
             siguiente="diagnosticar por qué la corrección no resolvió el bloqueo",
-            ultimo_hecho="sin progreso: el mismo bloqueo y la misma firma",
+            ultimo_hecho="sin progreso: ningun bloqueante cerrado en la vuelta",
             hora=hora or e.hora,
         )
     if kind == "arbol":
@@ -1842,7 +1847,11 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
     }
     if veredicto == "no_concluyente" and d.get("evidencia"):
         cambios["causa"] = str(d["evidencia"])[:1000]
-    return _con_progreso(replace(con_fase(e, nueva), **cambios))
+    return _con_progreso(
+        e,
+        replace(con_fase(e, nueva), **cambios),
+        concluyente=veredicto == "aprobado",
+    )
 
 
 def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
