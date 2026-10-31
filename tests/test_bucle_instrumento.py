@@ -1118,10 +1118,11 @@ class SondaDelShellDeGit(unittest.TestCase):
 
 
 class EnsayoDelOperador(unittest.TestCase):
-    """`ops/ensayo_shell_jaula.py` no puede fallar por permisos de la jaula:
-    la variante del revisor no escribe en el espacio, y el push va al temporal."""
+    """`ops/ensayo_shell_jaula.py` no puede fallar por permisos de la jaula: el push va al
+    temporal. Corre la unica variante de la jaula de Windows (la sonda); Claude y su revisor
+    corren en WSL y los cubre `ops/ensayo_wsl_jaula.py` (EnsayoDeLaPcTest)."""
 
-    def test_el_push_corre_donde_cada_variante_puede_escribir(self):
+    def test_el_push_corre_donde_la_variante_puede_escribir(self):
         import importlib.util
 
         ruta = Path(__file__).resolve().parents[1] / "ops" / "ensayo_shell_jaula.py"
@@ -1158,14 +1159,12 @@ class EnsayoDelOperador(unittest.TestCase):
         ):
             self.assertEqual(ensayo.main(), 0)
         empujes = [x for x in lanzados if ensayo.PUSH in x[0]]
-        self.assertEqual(len(empujes), 3)
+        self.assertEqual(len(empujes), 1)
         for _argv, cwd, escritura in empujes:
             self.assertTrue(
                 any(cwd.is_relative_to(raiz) for raiz in escritura), (cwd, escritura)
             )
-        lectura = [x for x in empujes if len(x[2]) == 1]
-        self.assertEqual(len(lectura), 1)
-        self.assertEqual(lectura[0][1].name, "tmp")
+        self.assertEqual(empujes[0][1].name, "tmp")
 
 
 class EnsayoDeObjetosDeLaJaula(unittest.TestCase):
