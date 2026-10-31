@@ -361,9 +361,13 @@ class Encargo:
     restricciones: tuple[str, ...]
     canal: str
     ajustes: tuple[str, ...] = ()
-    # Cuántos ajustes llevaba el prompt del último intento que se reservó. Un
-    # ajuste posterior no lo vio ningún intento: no se cierra ni se entrega.
+    # Cuántos ajustes llevaba el prompt del último intento que llegó a abrirse.
+    # Un ajuste posterior no lo vio ningún intento: no se cierra ni se entrega.
     ajustes_vistos: int = 0
+    # Cuántos ajustes lleva el prompt de la reserva en curso. Sólo pasa a
+    # `ajustes_vistos` cuando el intento se abre; si la reserva se cierra sin
+    # abrirlo, no cuenta nada.
+    ajustes_reservados: int = 0
     procedimiento: tuple[str, ...] = ()
     estado: str = "recibido"
     ultimo_hecho: str = ""
@@ -968,7 +972,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         return replace(
             e,
             reserva=True,
-            ajustes_vistos=int(d.get("ajustes", e.ajustes_vistos)),
+            ajustes_reservados=int(d.get("ajustes", e.ajustes_vistos)),
             conductor=str(d.get("conductor") or e.conductor),
             candidato=str(d.get("candidato") or ""),
             host=str(d.get("host") or socket.gethostname()),
@@ -979,7 +983,13 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
             hora=hora or e.hora,
         )
     if kind == "reserva_cerrada":
-        return replace(e, reserva=False, candidato="", hora=hora or e.hora)
+        return replace(
+            e,
+            reserva=False,
+            candidato="",
+            ajustes_reservados=e.ajustes_vistos,
+            hora=hora or e.hora,
+        )
     if kind == "conductor":
         return replace(
             e, conductor=d["token"], candidato="", host=d["host"], hora=hora or e.hora
@@ -1009,6 +1019,7 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
         return replace(
             e,
             reserva=False,
+            ajustes_vistos=max(e.ajustes_vistos, e.ajustes_reservados),
             rol=rol_intento,
             agente=str(d.get("agente") or e.agente),
             modelos=modelos,
@@ -1058,7 +1069,14 @@ def reducir(estado: Encargo | None, evento: dict) -> Encargo:
                 cambios["sesion_revisor"] = sesion_runtime
             else:
                 cambios["sesion_responsable"] = sesion_runtime
-        return replace(e, proc=None, herramienta="", reserva=False, **cambios)
+        return replace(
+            e,
+            proc=None,
+            herramienta="",
+            reserva=False,
+            ajustes_reservados=e.ajustes_vistos,
+            **cambios,
+        )
     if kind == "sesion_perdida":
         if (d.get("rol") or e.rol) == "revisor":
             return replace(

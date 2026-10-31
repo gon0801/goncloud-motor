@@ -1392,6 +1392,27 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             "t-intento",
         )
 
+    def _abrir_y_cerrar_intento(self, r: Recorrido, marca: str) -> None:
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "intento_abierto",
+                "data": {
+                    "id": marca,
+                    "pid": os.getpid(),
+                    "inicio": "t",
+                    "rol": "responsable",
+                    "hora": r.hora,
+                },
+            },
+            f"t-abierto-{marca}",
+        )
+        r.reg.anotar(
+            r.enc,
+            {"kind": "intento_cerrado", "data": {"hora": r.hora}},
+            f"t-cerrado-{marca}",
+        )
+
     def _lanzador(self, prompts: list):
         def lanzador(enc, prompt, espacio, sesion):
             prompts.append((enc.rol, Path(prompt).read_text(encoding="utf-8")))
@@ -1482,7 +1503,7 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 },
                 "t-reserva-recibida",
             )
-            r.reg.anotar(r.enc, {"kind": "reserva_cerrada", "data": {}}, "t-cerrada-recibida")
+            self._abrir_y_cerrar_intento(r, "t-recibida")
             self.assertEqual(r.fold().ajustes_vistos, 1)
             from motor.encargos.ciclo import _intentar_cierre
 
@@ -1606,7 +1627,98 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 e for e in r.eventos("reserva") if e["data"].get("candidato")
             ]
             self.assertEqual([e["data"]["ajustes"] for e in reservas], [1])
-            self.assertEqual(r.fold().ajustes_vistos, 1)
+            self.assertEqual(r.fold().ajustes_reservados, 1)
+            self.assertEqual(r.fold().ajustes_vistos, 0)
+
+    def test_un_arranque_fallido_no_cuenta_la_correccion_como_vista_y_el_cierre_no_termina(self):
+        from motor.encargos.dominio import correcciones_sin_ver
+        from motor.encargos.ciclo import _intentar_cierre
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            self._revisor_con_juicio_aprobado(r)
+            corregir(r.reg, r.enc, "el dato debe ser 43", "c1", ahora_iso())
+            self.assertNotEqual(r.incorporar().estado, "terminado")
+            self.assertEqual(r.fold().rol, "responsable")
+
+            comandos = [["agente-falso"]]
+
+            def lanzador(enc, prompt, espacio, sesion):
+                return comandos.pop() if comandos else None
+
+            with mock.patch(
+                "motor.encargos.aislamiento.sondear",
+                return_value=SondaEntorno(True),
+            ), mock.patch(
+                "motor.flota.runtime.exigir_poteto",
+                return_value=(Path(r.base) / "poteto.md", "digest"),
+            ), mock.patch(
+                "motor.encargos.ciclo.preparar_administrado"
+            ), mock.patch(
+                "motor.encargos.ciclo.lanzar_administrado",
+                side_effect=OSError("no arranca"),
+            ), mock.patch(
+                "motor.encargos.ciclo.observar", return_value="ausente"
+            ), mock.patch(
+                "motor.encargos.ciclo.recuperar_arranque",
+                return_value=("ausente", None),
+            ):
+                with self.assertRaises(OSError):
+                    barrer(r.reg, ahora_iso(), time.time(), lanzador)
+                barrer(r.reg, ahora_iso(), time.time(), lanzador)
+            e = r.fold()
+            self.assertEqual(
+                [x["data"]["ajustes"] for x in r.eventos("reserva") if "ajustes" in x["data"]],
+                [1],
+            )
+            self.assertFalse(e.reserva)
+            self.assertIsNone(e.proc)
+            self.assertEqual(e.ajustes_vistos, 0)
+            self.assertTrue(correcciones_sin_ver(e))
+
+            cerrado = _intentar_cierre(r.reg, e, r.espacio, r.d, ahora_iso())
+            self.assertNotEqual(cerrado.estado, "terminado")
+
+    def test_ajustes_vistos_es_el_conteo_de_la_reserva_y_solo_al_abrir_el_intento(self):
+        from motor.encargos.dominio import correcciones_sin_ver
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self._recorrido(tmp)
+            corregir(r.reg, r.enc, "primera", "c1", ahora_iso())
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "reserva",
+                    "data": {
+                        "rol": "responsable",
+                        "generacion": 1,
+                        "ajustes": 1,
+                        "candidato": "tok",
+                        "hora": r.hora,
+                    },
+                },
+                "t-reserva-exacta",
+            )
+            self.assertEqual(r.fold().ajustes_vistos, 0)
+            corregir(r.reg, r.enc, "segunda, despues del prompt", "c2", ahora_iso())
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "intento_abierto",
+                    "data": {
+                        "id": "tok",
+                        "pid": os.getpid(),
+                        "inicio": "t",
+                        "rol": "responsable",
+                        "hora": r.hora,
+                    },
+                },
+                "t-abierto-exacto",
+            )
+            e = r.fold()
+            self.assertEqual(len(e.ajustes), 2)
+            self.assertEqual(e.ajustes_vistos, 1)
+            self.assertTrue(correcciones_sin_ver(e))
 
     def test_una_correccion_con_la_aprobacion_vigente_no_abre_el_pr(self):
         with tempfile.TemporaryDirectory() as tmp:
