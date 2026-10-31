@@ -629,8 +629,11 @@ def usa_shell_de_git(agente: str | None) -> bool:
 
 
 def sonda_de_shell_pendiente(agente: str | None) -> bool:
-    """El shell solo se prueba en Windows, donde la sonda corre en la jaula."""
-    return _en_windows() and usa_shell_de_git(agente)
+    """El bash de Git solo se prueba en Windows, donde la sonda corre en el AppContainer, y
+    solo para un agente que lo usa ahí. Un agente que corre en WSL (`usa_wsl`) no usa ese
+    shell: probarlo en el AppContainer, donde msys no arranca, frenaría un lanzamiento que
+    no lo necesita. Su shell es el de la distro y se prueba en la distro (fase sonda-wsl)."""
+    return _en_windows() and usa_shell_de_git(agente) and not usa_wsl(agente)
 
 
 def es_causa_de_shell(causa: str) -> bool:

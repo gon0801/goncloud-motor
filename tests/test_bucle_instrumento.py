@@ -677,6 +677,8 @@ class ShellDeGitAlLanzar(unittest.TestCase):
             return_value=(Path("/tmp/poteto-mode/SKILL.md"), "digest-de-ensayo"),
         ).start()
         mock.patch("motor.encargos.aislamiento._en_windows", return_value=True).start()
+        self.legado_msys = mock.patch("motor.encargos.aislamiento.usa_wsl", return_value=False)
+        self.legado_msys.start()
         mock.patch("motor.encargos.aislamiento.sondear", side_effect=self.sondear).start()
 
     def sondear(self, espacio, runtime, lecturas=(), agente=None):
@@ -721,6 +723,18 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         self.assertIn("claude", self.llamadas)
         ciclo.lanzar_administrado.assert_not_called()
         ciclo.preparar_administrado.assert_not_called()
+
+    def test_claude_en_windows_corre_en_wsl_y_el_shell_roto_del_appcontainer_no_lo_frena(self):
+        """En la PC msys no arranca en el AppContainer, y claude no lo usa: corre en WSL
+        (DeepSeek F1). Con el AppContainer roto, el lanzamiento sigue y no se sondea el shell."""
+        import motor.encargos.ciclo as ciclo
+
+        self.legado_msys.stop()
+        banco = self.banco_con("claude")
+        banco.barrer(2)
+        self.assertEqual(banco.fold().impedimento, "")
+        self.assertNotIn("claude", self.llamadas)
+        ciclo.lanzar_administrado.assert_called_once()
 
     def test_el_impedimento_del_shell_solo_se_levanta_cuando_el_shell_arranca(self):
         import motor.encargos.ciclo as ciclo
@@ -774,6 +788,7 @@ class SondaDelShellDeGit(unittest.TestCase):
         }
         with (
             mock.patch("motor.encargos.aislamiento._en_windows", return_value=True),
+            mock.patch("motor.encargos.aislamiento.usa_wsl", return_value=False),
             mock.patch(
                 "motor.encargos.aislamiento._herramientas_git",
                 return_value=herramientas,
@@ -1100,8 +1115,18 @@ class ElShellDelCli(unittest.TestCase):
     def test_el_shell_solo_se_prueba_en_windows(self):
         with mock.patch("motor.encargos.aislamiento._en_windows", return_value=False):
             self.assertFalse(sonda_de_shell_pendiente("claude"))
-        with mock.patch("motor.encargos.aislamiento._en_windows", return_value=True):
+        with (
+            mock.patch("motor.encargos.aislamiento._en_windows", return_value=True),
+            mock.patch("motor.encargos.aislamiento.usa_wsl", return_value=False),
+        ):
             self.assertTrue(sonda_de_shell_pendiente("claude"))
+            self.assertFalse(sonda_de_shell_pendiente("codex"))
+
+    def test_el_agente_que_corre_en_wsl_no_prueba_el_bash_de_git_en_el_appcontainer(self):
+        """Claude en Windows corre en WSL: su shell no es msys. La sonda del AppContainer, donde
+        msys no arranca, frenaba su lanzamiento (DeepSeek F1)."""
+        with mock.patch("motor.encargos.aislamiento._en_windows", return_value=True):
+            self.assertFalse(sonda_de_shell_pendiente("claude"))
             self.assertFalse(sonda_de_shell_pendiente("codex"))
 
     def test_reconoce_las_causas_que_vienen_del_shell(self):
