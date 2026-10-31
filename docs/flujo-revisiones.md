@@ -200,6 +200,22 @@ solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
   existe no bloquea. Una solicitud detenida antes de despachar queda
   `detenida`, y pedir lo mismo otra vez es una solicitud nueva.
 
+### Revisiones `no_concluyente` repetidas
+
+Una revisión `no_concluyente` que nombra una inspección no cierra ni abre
+bloqueantes, así que el freno de `sin_progreso` por bloqueos no la veía. Ahora
+el encargo cuenta las revisiones independientes `no_concluyente` seguidas que
+piden lo mismo sobre la misma versión: el mismo texto de inspección o el mismo
+recurso. La cuenta es propia (`no_concluyentes`) y no toca `sin_progreso`,
+la escalera de diagnóstico de los bloqueos. A la tercera
+(`TOPE_NO_CONCLUYENTES`) el encargo queda en `necesita_usuario` con la causa
+de la última revisión y no gasta otro turno del revisor.
+
+La cuenta empieza de nuevo con otra versión del producto, otro pedido, un
+bloqueante cerrado, otro veredicto, un ajuste o una respuesta del propietario.
+Si el recurso pedido cambió desde la última lectura (otra huella del mismo
+archivo), pedirlo de nuevo no cuenta como repetir.
+
 ## Niveles de entrega
 
 El nivel se fija al encargar (`--entrega`), no a mitad de camino. Los niveles

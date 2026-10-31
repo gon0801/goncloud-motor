@@ -29,6 +29,7 @@ from . import capacidades, necesidades
 from .dominio import (
     Encargo,
     FASE_IMPLICITA,
+    TOPE_NO_CONCLUYENTES,
     TransicionIlegal,
     alcance_de,
     ajustes_cubiertos,
@@ -1692,6 +1693,19 @@ def _huella_del_pedido(base: Path, juicio: JuicioValidado) -> str:
     )
 
 
+def _pedido_de_inspeccion(base: Path, juicio: JuicioValidado) -> dict:
+    """Lo que el juicio pide al buzón y el estado actual de lo que leería."""
+    pedido = juicio.inspeccion
+    if pedido is None:
+        return {}
+    return {
+        "operacion": pedido.operacion,
+        "recurso": pedido.recurso,
+        "parametros": [list(x) for x in sorted(pedido.parametros)],
+        "huella": _huella_del_pedido(base, juicio),
+    }
+
+
 def _id_inspeccion(enc: Encargo, juicio: JuicioValidado, base: Path) -> str:
     """La identidad incluye la descripción y el pedido: corregir la consulta
     (otro SQL, otro recurso) es otra inspección, no la ya lanzada. También el
@@ -1987,6 +2001,7 @@ def _cerrar_con_juicio(
                 "evidencia": juicio.evidencia,
                 "efectos_pendientes": list(juicio.efectos_pendientes),
                 "inspeccion_faltante": juicio.inspeccion_faltante,
+                "pedido": _pedido_de_inspeccion(registro.base, juicio),
                 "fase": enc.fase_activa,
                 "intento": enc.intento,
                 "hora": hora,
@@ -2033,7 +2048,11 @@ def _cerrar_con_juicio(
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if juicio.veredicto == "no_concluyente":
-        if juicio.inspeccion_faltante:
+        if enc.estado == "necesita_usuario" and enc.no_concluyentes >= TOPE_NO_CONCLUYENTES:
+            # El mismo pedido sin avance N veces seguidas: el encargo ya pidió
+            # ayuda al propietario con la causa; no se gasta otro turno.
+            pass
+        elif juicio.inspeccion_faltante:
             _devolver(
                 registro, enc, "inspeccionar",
                 juicio.inspeccion_faltante,

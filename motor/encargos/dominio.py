@@ -7,6 +7,7 @@ no es un resultado comprobado.
 from __future__ import annotations
 
 import hashlib
+import json
 import socket
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -180,6 +181,9 @@ class AlcanceRevision:
 
 
 FASE_IMPLICITA = "fase_unica"
+# Revisiones no_concluyente seguidas, sobre la misma versión y pidiendo lo mismo,
+# tras las cuales el encargo pide ayuda al propietario en vez de otro turno.
+TOPE_NO_CONCLUYENTES = 3
 ESTADOS_FASE = ("pendiente", "trabajo", "revision", "entrega", "preparada")
 
 
@@ -430,6 +434,10 @@ class Encargo:
     poteto_digest: str = ""
     bloqueo_huella: str = ""
     sin_progreso: int = 0
+    # Revisiones no_concluyente seguidas sobre la misma versión que piden lo
+    # mismo, y qué pidió la última (fase, versión, texto, recurso, objetivo, huella).
+    no_concluyentes: int = 0
+    no_concluyente_ref: tuple[str, ...] = ()
     # Las causas pendientes del entorno o del instrumento. Mientras haya una,
     # ningún proceso nuevo: cada una se levanta con su propia comprobación.
     impedimento: str = ""
@@ -1025,7 +1033,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             "" if en_curso else hora,
         )
         e = replace(e, ajustes=e.ajustes + (d["texto"],))
-        e = _soltar_impedimento_de_inspeccion(e)
+        e = _soltar_impedimento_de_inspeccion(_sin_repeticiones(e))
         if e.estado == "detenido":
             return replace(
                 e,
@@ -1700,7 +1708,9 @@ def _respuesta(e: Encargo, d: dict, hora: str) -> Encargo:
         solicitudes=tuple(nueva if s.id == ident else s for s in e.solicitudes),
         hora=hora or e.hora,
     )
-    return _reanudar_inspeccion(_soltar_impedimento_de_inspeccion(e), ident)
+    return _reanudar_inspeccion(
+        _soltar_impedimento_de_inspeccion(_sin_repeticiones(e)), ident
+    )
 
 
 def _autorizacion(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -2108,10 +2118,88 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
     }
     if veredicto == "no_concluyente" and d.get("evidencia"):
         cambios["causa"] = str(d["evidencia"])[:1000]
-    return _con_progreso(
+    nuevo = _con_progreso(
         e,
         replace(con_fase(e, nueva), **cambios),
         concluyente=veredicto == "aprobado",
+    )
+    return _contar_no_concluyentes(e, nuevo, d, origen, veredicto)
+
+
+def _sin_repeticiones(e: Encargo) -> Encargo:
+    """Lo que el propietario aporta empieza otra cuenta de revisiones repetidas."""
+    return replace(e, no_concluyentes=0, no_concluyente_ref=())
+
+
+def _pedido_de_revision(fase_id: str, d: dict) -> tuple[str, ...]:
+    pedido = d.get("pedido") or {}
+    recurso = str(pedido.get("recurso") or "")
+    operacion = str(pedido.get("operacion") or "")
+    objetivo = json.dumps(
+        sorted([str(k), str(v)] for k, v in (pedido.get("parametros") or ())),
+        ensure_ascii=False,
+    )
+    return (
+        fase_id,
+        str(d.get("version") or ""),
+        " ".join(str(d.get("inspeccion_faltante") or "").lower().split()),
+        f"{operacion}@{recurso}" if recurso else "",
+        objetivo if recurso else "",
+        str(pedido.get("huella") or ""),
+    )
+
+
+def _repite_pedido(previo: tuple[str, ...], ahora: tuple[str, ...]) -> bool:
+    """Misma fase y versión, pidiendo lo mismo: el mismo texto o el mismo
+    recurso. Si el recurso pedido cambió desde la última lectura (otra huella
+    del mismo objetivo), pedirlo de nuevo no es repetir."""
+    if not previo or previo[:2] != ahora[:2]:
+        return False
+    if previo[4] == ahora[4] and previo[5] and ahora[5] and previo[5] != ahora[5]:
+        return False
+    return previo[2] == ahora[2] or bool(ahora[3] and previo[3] == ahora[3])
+
+
+def _contar_no_concluyentes(
+    previo: Encargo, e: Encargo, d: dict, origen: str, veredicto: str
+) -> Encargo:
+    """N revisiones no_concluyente seguidas sobre la misma versión, pidiendo
+    lo mismo, son vueltas sin avance: la N-ésima deja el encargo pidiendo ayuda
+    al propietario con la causa, en vez de seguir gastando turnos del revisor.
+    Un avance de bloqueantes, otra versión, otro pedido o un veredicto distinto
+    empiezan la cuenta de nuevo. La cuenta es propia (`no_concluyentes`): no
+    toca `sin_progreso`, que es la escalera de diagnóstico de los bloqueos y
+    cuenta rondas de diagnóstico, no vueltas de inspección."""
+    if origen != "independiente":
+        return e
+    faltante = str(d.get("inspeccion_faltante") or "").strip()
+    if veredicto != "no_concluyente" or not faltante:
+        return _sin_repeticiones(e)
+    ref = _pedido_de_revision(e.fase_activa, d)
+    repite = _repite_pedido(previo.no_concluyente_ref, ref) and not hubo_avance(previo, e)
+    seguidas = previo.no_concluyentes + 1 if repite else 1
+    e = replace(e, no_concluyentes=seguidas, no_concluyente_ref=ref)
+    if seguidas < TOPE_NO_CONCLUYENTES:
+        return e
+    fase = e.fase_actual
+    version = ref[1][:12]
+    causa = str(d.get("evidencia") or "").strip() or "sin evidencia nueva"
+    pregunta = (
+        f"El revisor no concluyó {seguidas} veces seguidas sobre la versión {version} "
+        f"pidiendo lo mismo: «{faltante}». Última causa: {causa[:400]}. "
+        "Aporta el dato (director responder o un ajuste) o decide cómo seguir."
+    )
+    if fase is not None:
+        e = con_fase(e, replace(fase, inspeccion_pendiente=""))
+    if e.estado not in ("recibido", "ejecutando"):
+        return e
+    return replace(
+        e,
+        estado="necesita_usuario",
+        preguntas=e.preguntas + (pregunta,),
+        motivo=pregunta,
+        siguiente="hace falta una decisión del usuario",
+        ultimo_hecho=pregunta,
     )
 
 
