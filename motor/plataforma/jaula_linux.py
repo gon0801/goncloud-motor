@@ -396,9 +396,14 @@ def _guardian(spec: dict) -> int:
     )
     control = spec.get("control")
     argv = argv_jaula(jaula, cmd, cwd=spec.get("cwd"))
-    proceso = subprocess.Popen(
-        argv, env=entorno_jaula(jaula, extra), stdin=subprocess.DEVNULL, start_new_session=True,
-    )
+    try:
+        proceso = subprocess.Popen(
+            argv, env=entorno_jaula(jaula, extra), stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        print(f"no se pudo lanzar la jaula ({BWRAP}): {exc}", file=sys.stderr)
+        return SALIDA_SIN_PREPARAR
     identidad = {
         "guardian": os.getpid(), "guardian_inicio": _inicio(os.getpid()),
         "bwrap": proceso.pid, "bwrap_inicio": _inicio(proceso.pid), "estado": "activo",

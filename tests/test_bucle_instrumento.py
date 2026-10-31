@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -24,7 +25,6 @@ from unittest import mock
 from motor.encargos.aislamiento import (
     ComandoAislado,
     SondaEntorno,
-    es_causa_de_shell,
     lanzar_en_jaula,
     sonda_de_shell_pendiente,
     sondear,
@@ -679,7 +679,8 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         mock.patch("motor.encargos.aislamiento._en_windows", return_value=True).start()
         self.legado_msys = mock.patch("motor.encargos.aislamiento.usa_wsl", return_value=False)
         self.legado_msys.start()
-        mock.patch("motor.encargos.aislamiento.sondear", side_effect=self.sondear).start()
+        self.parche_sonda = mock.patch("motor.encargos.aislamiento.sondear", side_effect=self.sondear)
+        self.parche_sonda.start()
 
     def sondear(self, espacio, runtime, lecturas=(), agente=None):
         self.llamadas.append(agente)
@@ -687,6 +688,22 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         if con_claude and not self.shell_sano:
             return SondaEntorno(False, self.CAUSA, "que el shell arranque")
         return RECUPERADO
+
+    def sonda_real_de_claude(self):
+        """Claude se sondea con la sonda real (aqui: la de WSL, con la distro sustituida); los
+        demas casos, como el chequeo general del barrido, siguen con el doble."""
+
+        def sondar(espacio, runtime, lecturas=(), agente=None):
+            if agente == "claude":
+                self.llamadas.append(agente)
+                return sondear(espacio, runtime, lecturas, agente)
+            return RECUPERADO
+
+        self.parche_sonda.stop()
+        self.parche_sonda = mock.patch(
+            "motor.encargos.aislamiento.sondear", side_effect=sondar
+        )
+        self.parche_sonda.start()
 
     def banco_con(self, agente: str) -> Banco:
         banco = Banco(self._tmp.name, {"actual": RECUPERADO})
@@ -724,17 +741,215 @@ class ShellDeGitAlLanzar(unittest.TestCase):
         ciclo.lanzar_administrado.assert_not_called()
         ciclo.preparar_administrado.assert_not_called()
 
-    def test_claude_en_windows_corre_en_wsl_y_el_shell_roto_del_appcontainer_no_lo_frena(self):
-        """En la PC msys no arranca en el AppContainer, y claude no lo usa: corre en WSL
-        (DeepSeek F1). Con el AppContainer roto, el lanzamiento sigue y no se sondea el shell."""
+    def test_claude_en_windows_se_prueba_en_wsl_y_el_appcontainer_roto_no_lo_frena(self):
+        """En la PC msys no arranca en el AppContainer, y claude no lo usa: corre en WSL. Su
+        sonda es la de la distro (DeepSeek F1): con el AppContainer inutilizable y la distro
+        sana, el lanzamiento sigue."""
         import motor.encargos.ciclo as ciclo
 
         self.legado_msys.stop()
+        self.sonda_real_de_claude()
+        banco = self.banco_con("claude")
+        with (
+            mock.patch("motor.encargos.aislamiento.aislar", side_effect=AssertionError("AppContainer")),
+            mock.patch("motor.plataforma.jaula_wsl.ejecutar", return_value=(0, "ok\n", "")) as wsl,
+        ):
+            banco.barrer(2)
+        self.assertEqual(banco.fold().impedimento, "")
+        wsl.assert_called_once()
+        ciclo.lanzar_administrado.assert_called_once()
+
+    def sustituir_sonda(self, funcion):
+        self.parche_sonda.stop()
+        self.parche_sonda = mock.patch(
+            "motor.encargos.aislamiento.sondear", side_effect=funcion
+        )
+        self.parche_sonda.start()
+
+    def test_la_sonda_no_corre_con_el_turno_tomado(self):
+        """Una sonda lenta o colgada no puede detener a los demas encargos (#110 F1): mientras
+        corre, otro hilo toma el turno global sin esperar."""
+        import threading
+
+        from motor.encargos.frontera import turno
+        import motor.encargos.ciclo as ciclo
+
+        banco = self.banco_con("claude")
+        visto = []
+
+        def sondar(espacio, runtime, lecturas=(), agente=None):
+            if agente == "claude":
+                libre = threading.Event()
+
+                def otro():
+                    with turno(banco.base):
+                        libre.set()
+
+                threading.Thread(target=otro, daemon=True).start()
+                visto.append(libre.wait(3))
+            return RECUPERADO
+
+        self.sustituir_sonda(sondar)
+        banco.barrer(2)
+        self.assertEqual(visto, [True])
+        ciclo.lanzar_administrado.assert_called_once()
+
+    def lanzador_que_pregunta_por_la_distro(self, banco):
+        """Como el del supervisor (cli._supervisor.lanzar): filtra por `_disponible`."""
+        from motor.encargos import agentes
+
+        def lanzador(enc, prompt, espacio, sesion):
+            if not agentes._disponible("claude", None):
+                return None
+            return ["/bin/echo", "sin proveedor"], {"agente": "claude"}
+
+        banco.lanzador = lanzador
+
+    def test_la_consulta_de_disponibilidad_de_wsl_no_corre_con_el_turno_tomado(self):
+        """Una distro lenta o colgada no puede detener a los demas encargos (#110 F1 aplicado
+        a la consulta de WSL): wsl.exe se pregunta antes del turno, y el lanzador, que corre
+        con el turno, solo lee la respuesta recordada."""
+        import threading
+
+        from motor.encargos.frontera import turno
+        from motor.plataforma import jaula_wsl
+        import motor.encargos.ciclo as ciclo
+
+        jaula_wsl._CACHE_DISPONIBLE.clear()
+        self.addCleanup(jaula_wsl._CACHE_DISPONIBLE.clear)
+        self.shell_sano = True
+        banco = self.banco_con("claude")
+        self.lanzador_que_pregunta_por_la_distro(banco)
+        self.legado_msys.stop()
+        visto = []
+
+        def consulta(distribucion, orden, *args, **kwargs):
+            libre = threading.Event()
+
+            def otro():
+                with turno(banco.base):
+                    libre.set()
+
+            threading.Thread(target=otro, daemon=True).start()
+            visto.append(libre.wait(3))
+            return {"causa": ""}
+
+        with (
+            mock.patch("motor.plataforma.jaula_wsl._orden", side_effect=consulta),
+            mock.patch(
+                "motor.plataforma.jaula_wsl.ejecutar", return_value=(0, "ok\n", "")
+            ),
+        ):
+            banco.barrer(2)
+        self.assertEqual(visto, [True])
+        ciclo.lanzar_administrado.assert_called_once()
+
+    def test_con_el_turno_tomado_el_lanzador_no_arranca_wsl_ni_siquiera_con_la_respuesta_vencida(self):
+        from motor.plataforma import jaula_wsl
+        import motor.encargos.ciclo as ciclo
+
+        jaula_wsl._CACHE_DISPONIBLE.clear()
+        self.addCleanup(jaula_wsl._CACHE_DISPONIBLE.clear)
+        self.shell_sano = True
+        banco = self.banco_con("claude")
+        self.lanzador_que_pregunta_por_la_distro(banco)
+        self.legado_msys.stop()
+        with (
+            mock.patch("motor.encargos.ciclo._consultar_wsl"),
+            mock.patch("motor.plataforma.jaula_wsl._orden", side_effect=AssertionError("wsl.exe")) as orden,
+        ):
+            banco.barrer(2)
+        orden.assert_not_called()
+        ciclo.lanzar_administrado.assert_not_called()
+
+    def test_la_flota_no_queda_reservada_mientras_la_sonda_corre_ni_si_la_sonda_lanza(self):
+        """La sonda del lanzamiento no libera la flota si lanza una excepcion (#110 F3)."""
+        import contextlib
+
+        banco = self.banco_con("claude")
+        home = Path(self._tmp.name) / "flota"
+        (home / "trabajos").mkdir(parents=True)
+        (banco.base / "flota-home.json").write_text(json.dumps({"home": str(home)}))
+        reserva = home / "trabajos" / f"{banco.enc}.json"
+        visto = []
+
+        def sondar(espacio, runtime, lecturas=(), agente=None):
+            if agente == "claude":
+                visto.append(reserva.exists())
+                raise RuntimeError("la sonda se rompio")
+            return RECUPERADO
+
+        self.sustituir_sonda(sondar)
+        with (
+            mock.patch("motor.flota.control.asignar", return_value="g1"),
+            mock.patch(
+                "motor.flota.control._cerrojo_flota",
+                side_effect=lambda _home: contextlib.nullcontext(),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                banco.barrer(1)
+        self.assertEqual(visto, [False])
+        self.assertFalse(reserva.exists())
+
+    def test_el_impedimento_se_vuelve_a_probar_con_el_agente_que_fallo_no_con_uno_supuesto(self):
+        """El impedimento del shell no se ata a claude por el texto de la causa (#110 F2)."""
         banco = self.banco_con("claude")
         banco.barrer(2)
+        self.assertEqual(banco.fold().impedimentos[0].agente, "claude")
+        self.llamadas.clear()
+        banco.barrer(1)
+        self.assertIn("claude", self.llamadas)
+
+    def test_un_impedimento_sin_agente_no_se_prueba_como_si_fuera_de_claude(self):
+        banco = self.banco_con("codex")
+        banco.anotar(
+            "impedimento",
+            {"clase": "entorno", "causa": self.CAUSA, "condicion": "que el shell arranque",
+             "agente": "", "hora": ahora_iso()},
+            "imp:sin-agente",
+        )
+        self.llamadas.clear()
+        banco.barrer(1)
+        self.assertNotIn("claude", self.llamadas)
         self.assertEqual(banco.fold().impedimento, "")
+
+    def test_si_la_ruta_ya_no_incluye_al_agente_que_fallo_el_impedimento_se_levanta(self):
+        import motor.encargos.ciclo as ciclo
+
+        banco = self.banco_con("claude")
+        banco.barrer(2)
+        self.assertEqual(banco.fold().impedimento, "entorno")
+        ciclo.lanzar_administrado.assert_not_called()
+        banco.anotar(
+            "ruta_agentes", {"agentes": ["codex"], "hora": ahora_iso()}, "ruta:cambio"
+        )
+        banco.lanzador = lambda enc, prompt, espacio, sesion: (
+            ["/bin/echo", "sin proveedor"], {"agente": "codex"}
+        )
+        self.llamadas.clear()
+        banco.barrer(2)
+        self.assertEqual(banco.fold().impedimento, "")
+        self.assertEqual(len(banco.eventos("impedimento_resuelto")), 1)
         self.assertNotIn("claude", self.llamadas)
         ciclo.lanzar_administrado.assert_called_once()
+
+    def test_claude_con_bash_roto_en_wsl_frena_con_la_causa_de_la_distro_y_su_agente(self):
+        self.legado_msys.stop()
+        self.sonda_real_de_claude()
+        banco = self.banco_con("claude")
+        with mock.patch(
+            "motor.plataforma.jaula_wsl.ejecutar",
+            return_value=(0, "git:codigo 128: fatal: detected dubious ownership\n", ""),
+        ):
+            banco.barrer(2)
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "entorno")
+        self.assertEqual(
+            e.impedimento_causa,
+            "git no funciona en la jaula de WSL (codigo 128: fatal: detected dubious ownership)",
+        )
+        self.assertEqual(e.impedimentos[0].agente, "claude")
 
     def test_el_impedimento_del_shell_solo_se_levanta_cuando_el_shell_arranca(self):
         import motor.encargos.ciclo as ciclo
@@ -1115,26 +1330,123 @@ class ElShellDelCli(unittest.TestCase):
     def test_el_shell_solo_se_prueba_en_windows(self):
         with mock.patch("motor.encargos.aislamiento._en_windows", return_value=False):
             self.assertFalse(sonda_de_shell_pendiente("claude"))
-        with (
-            mock.patch("motor.encargos.aislamiento._en_windows", return_value=True),
-            mock.patch("motor.encargos.aislamiento.usa_wsl", return_value=False),
-        ):
+        with mock.patch("motor.encargos.aislamiento._en_windows", return_value=True):
             self.assertTrue(sonda_de_shell_pendiente("claude"))
             self.assertFalse(sonda_de_shell_pendiente("codex"))
 
-    def test_el_agente_que_corre_en_wsl_no_prueba_el_bash_de_git_en_el_appcontainer(self):
-        """Claude en Windows corre en WSL: su shell no es msys. La sonda del AppContainer, donde
-        msys no arranca, frenaba su lanzamiento (DeepSeek F1)."""
-        with mock.patch("motor.encargos.aislamiento._en_windows", return_value=True):
-            self.assertFalse(sonda_de_shell_pendiente("claude"))
-            self.assertFalse(sonda_de_shell_pendiente("codex"))
 
-    def test_reconoce_las_causas_que_vienen_del_shell(self):
-        from motor.encargos.aislamiento import _sonda_de
+class SondaDeWsl(unittest.TestCase):
+    """La sonda de un agente que corre en WSL: el guion que corre en la distro (con un `sh`
+    de verdad) y la manera en que se arma y se interpreta. La jaula real la cubre CI."""
 
-        self.assertTrue(es_causa_de_shell(_sonda_de("shell:codigo 66: x").causa))
-        self.assertTrue(es_causa_de_shell(_sonda_de("git:codigo 128: x").causa))
-        self.assertFalse(es_causa_de_shell(_sonda_de("temp-cli:/t").causa))
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name).resolve()
+        self.espacio = self.tmp / "espacio" / "producto"
+        self.espacio.mkdir(parents=True)
+        self.runtime = self.tmp / "runtime" / "enc" / "sonda"
+        (self.tmp / "temporal").mkdir()
+
+    def guion(self, *fuentes, path=None):
+        from motor.encargos.aislamiento import _GUION_SONDA_WSL
+
+        entorno = {
+            "PATH": path or os.environ["PATH"],
+            "HOME": str(self.tmp),
+            "CLAUDE_CODE_TMPDIR": str(self.tmp / "temporal"),
+            "TMPDIR": str(self.tmp / "temporal"),
+            "MOTOR_SONDA_MARCA": "m1",
+            "MOTOR_SONDA_ESPACIO": str(self.espacio),
+        }
+        hecho = subprocess.run(
+            ["/bin/sh", "-c", _GUION_SONDA_WSL, "sonda", *map(str, fuentes)],
+            env=entorno, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
+        )
+        return hecho.returncode, hecho.stdout.strip().splitlines()[-1:], hecho
+
+    def test_un_entorno_sano_prueba_bash_sh_y_git_push_a_un_bare_local(self):
+        codigo, ultima, hecho = self.guion()
+        self.assertEqual((codigo, ultima), (0, ["ok"]), hecho.stderr)
+        self.assertEqual([p for p in (self.tmp / "temporal").rglob("*") if "sonda" in p.name], [])
+        self.assertEqual(sorted(self.espacio.iterdir()), [])
+
+    def test_un_git_que_falla_nombra_a_git_con_su_codigo_y_su_salida(self):
+        falso = self.tmp / "falso"
+        falso.mkdir()
+        git = falso / "git"
+        git.write_text("#!/bin/sh\necho 'fatal: detected dubious ownership' >&2\nexit 128\n")
+        git.chmod(0o755)
+        codigo, ultima, hecho = self.guion(path=f"{falso}:{os.environ['PATH']}")
+        self.assertEqual(codigo, 7, hecho.stderr)
+        self.assertEqual(ultima, ["git:codigo 128: fatal: detected dubious ownership"])
+        self.assertEqual([p for p in (self.tmp / "temporal").rglob("*") if "sonda" in p.name], [])
+
+    def test_una_fuente_ausente_se_nombra(self):
+        codigo, ultima, _ = self.guion(self.tmp / "no-esta.db")
+        self.assertEqual((codigo, ultima), (6, [f"fuente:{self.tmp / 'no-esta.db'}"]))
+
+    def sondear_con(self, resultado, fuentes=()):
+        from motor.encargos import aislamiento
+
+        with mock.patch("motor.plataforma.jaula_wsl.ejecutar", **resultado) as ejecutar:
+            sonda = aislamiento._sondear_en_wsl(
+                self.espacio, self.runtime, tuple(fuentes), "m1"
+            )
+        return sonda, ejecutar
+
+    def test_se_arma_con_la_concesion_en_rutas_de_la_distro_y_solo_monta_lo_que_existe(self):
+        from motor.encargos.aislamiento import PLAZO_SONDA_WSL_S
+
+        existe = self.tmp / "datos.db"
+        existe.write_text("x")
+        ausente = self.tmp / "no-esta.db"
+        sonda, ejecutar = self.sondear_con({"return_value": (0, "ok\n", "")}, (existe, ausente))
+        self.assertTrue(sonda.ok)
+        jaula, cmd, entorno = ejecutar.call_args.args
+        self.assertEqual(jaula["lecturas"], [str(existe)])
+        self.assertFalse(jaula["lectura"])
+        self.assertEqual(cmd[:2], ["/bin/sh", "-c"])
+        self.assertEqual(cmd[-2:], [str(existe), str(ausente)])
+        self.assertEqual(entorno, {"MOTOR_SONDA_ESPACIO": str(self.espacio), "MOTOR_SONDA_MARCA": "m1"})
+        self.assertEqual(ejecutar.call_args.kwargs["plazo"], PLAZO_SONDA_WSL_S)
+        self.assertEqual(ejecutar.call_args.kwargs["control"].parent, self.runtime.parent)
+
+    def test_la_causa_concreta_de_bash_y_de_git_nombra_la_jaula_de_wsl(self):
+        sonda, _ = self.sondear_con({"return_value": (7, "shell:codigo 126: Permission denied\n", "")})
+        self.assertFalse(sonda.ok)
+        self.assertEqual(sonda.causa, "bash no funciona en la jaula de WSL (codigo 126: Permission denied)")
+        self.assertEqual(sonda.condicion, "que bash funcione dentro de la jaula de WSL con el entorno del agente")
+        sonda, _ = self.sondear_con({"return_value": (7, "git:codigo 128: fatal: x\n", "")})
+        self.assertEqual(sonda.causa, "git no funciona en la jaula de WSL (codigo 128: fatal: x)")
+
+    def test_una_distro_que_no_termina_o_no_arranca_frena_con_su_causa_y_no_propaga(self):
+        sonda, _ = self.sondear_con({"return_value": (124, "", "la jaula de WSL no termino en 60 s")})
+        self.assertFalse(sonda.ok)
+        self.assertIn("no terminó: codigo 124: la jaula de WSL no termino en 60 s", sonda.causa)
+        self.assertEqual(sonda.condicion, "que la jaula de WSL funcione")
+        sonda, _ = self.sondear_con({"side_effect": OSError("no hay wsl.exe")})
+        self.assertFalse(sonda.ok)
+        self.assertIn("OSError: no hay wsl.exe", sonda.causa)
+
+    def test_sondear_manda_al_agente_de_wsl_a_la_distro_y_a_los_demas_al_aislamiento(self):
+        from motor.encargos import aislamiento
+
+        with (
+            mock.patch("motor.encargos.aislamiento._en_windows", return_value=True),
+            mock.patch("motor.plataforma.jaula_wsl.ejecutar", return_value=(0, "ok\n", "")) as wsl,
+            mock.patch("motor.encargos.aislamiento.aislar", side_effect=AssertionError("AppContainer")),
+        ):
+            self.assertTrue(aislamiento.sondear(self.espacio, self.runtime, (), "claude").ok)
+        wsl.assert_called_once()
+        with (
+            mock.patch("motor.encargos.aislamiento._en_windows", return_value=True),
+            mock.patch("motor.plataforma.jaula_wsl.ejecutar", side_effect=AssertionError("WSL")),
+            mock.patch("motor.encargos.aislamiento.aislar", side_effect=KeyError("SystemRoot")),
+        ):
+            sonda = aislamiento.sondear(self.espacio, self.runtime, (), "codex")
+        self.assertFalse(sonda.ok)
+        self.assertIn("no se pudo preparar el aislamiento", sonda.causa)
 
 
 class SondaSinAislamiento(unittest.TestCase):

@@ -14,9 +14,11 @@ en la distro no está el motor. Cada orden es un argv de `wsl.exe --exec`: nada 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -33,6 +35,7 @@ _PERMITIDAS = (
 )
 _CACHE_DISPONIBLE: dict = {}
 VIGENCIA_DISPONIBLE_S = 60.0
+MARGEN_ESPERA_S = 30.0
 
 
 def distro() -> str:
@@ -172,15 +175,35 @@ def cerrar_en_distro(directorio: Path, distribucion: str = "", *, correr=subproc
     return _resultado(directorio, control, respuesta)
 
 
+_modo = threading.local()
+
+
+@contextlib.contextmanager
+def sin_consultar():
+    """Mientras dure, `causa_no_disponible` no arranca `wsl.exe`. Es para quien tiene el turno
+    global: una distro lenta o colgada no puede detener a los demás encargos. Quien lo usa
+    consulta antes, fuera del turno, para dejar la respuesta recordada."""
+    previo = getattr(_modo, "sin_consultar", False)
+    _modo.sin_consultar = True
+    try:
+        yield
+    finally:
+        _modo.sin_consultar = previo
+
+
 def causa_no_disponible(
     agente: str, distribucion: str | None = None, *, correr=subprocess.run,
     ahora=time.monotonic,
 ) -> str:
     """Vacío si la distro corre la jaula y el agente. La respuesta se recuerda un minuto: el
-    supervisor la pregunta en cada vuelta y arrancar `wsl.exe` no es gratis."""
+    supervisor la pregunta en cada vuelta y arrancar `wsl.exe` no es gratis. Dentro de
+    `sin_consultar()` nunca arranca `wsl.exe`: devuelve lo último que se supo, aunque haya
+    vencido, o dice que aún no se consultó."""
     distribucion = distro() if distribucion is None else distribucion
     clave = (distribucion, agente)
     previa = _CACHE_DISPONIBLE.get(clave)
+    if getattr(_modo, "sin_consultar", False):
+        return previa[1] if previa else "aun no se ha consultado a WSL"
     if previa and ahora() - previa[0] < VIGENCIA_DISPONIBLE_S:
         return previa[1]
     respuesta = _orden(distribucion, "disponible", agente, correr=correr, plazo=60)
@@ -191,3 +214,40 @@ def causa_no_disponible(
     )
     _CACHE_DISPONIBLE[clave] = (ahora(), causa)
     return causa
+
+
+def ejecutar(
+    jaula: dict, cmd: list, env: dict, *, control: Path, cwd: Path, plazo: float
+) -> tuple:
+    """Corre `cmd` dentro de la jaula de WSL, espera y devuelve (codigo, salida, error). Es lo
+    que usa la sonda: el mismo guardián que lanza al agente, con plazo.
+
+    El plazo de la jaula lo vigila el guardián dentro de la distro; el de este lado cubre a
+    `wsl.exe` colgado o a una distro que no responde. En los dos casos lo de dentro se cierra
+    con el archivo de control y no queda nada vivo. Un código 124 con error dice que no terminó."""
+    from . import Propiedad, crear_proceso, matar_grupo
+
+    Path(control).mkdir(parents=True, exist_ok=True)
+    argv = argv_guardian(jaula, cmd, env, control=control, cwd=cwd, plazo=plazo)
+    creado = crear_proceso(
+        argv, Propiedad.COMANDO_CONTENIDO, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+        env=entorno_windows(),
+    )
+    p = creado.proceso
+    try:
+        creado.liberar()
+        salida, error = p.communicate(timeout=plazo + MARGEN_ESPERA_S)
+        return p.returncode, salida or "", (error or "").replace("\x00", "")
+    except subprocess.TimeoutExpired:
+        matar_grupo(p)
+        cerrar_en_distro(control, jaula.get("distro", ""))
+        return 124, "", f"la jaula de WSL no termino en {int(plazo)} s"
+    finally:
+        matar_grupo(p)
+        for tuberia in (p.stdout, p.stderr):
+            try:
+                if tuberia is not None:
+                    tuberia.close()
+            except (OSError, ValueError):
+                pass
