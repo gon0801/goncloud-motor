@@ -15,6 +15,14 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
         return os.name != "nt" and Path("/usr/bin/sandbox-exec").is_file()
     if agente not in ADAPTADORES:
         return False
+    from .aislamiento import usa_wsl
+
+    if usa_wsl(agente):
+        # El agente corre en la distro: cuentan su jaula, su ejecutable y su suscripcion
+        # de alli, no los de Windows.
+        from motor.plataforma import jaula_wsl
+
+        return jaula_wsl.causa_no_disponible(agente) == ""
     if os.name == "nt":
         if ADAPTADORES[agente].psec:
             from motor.plataforma.psec_windows import disponible

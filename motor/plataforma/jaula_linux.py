@@ -13,8 +13,10 @@ La raíz del agente es un tmpfs de solo lectura. Entra lo que hace falta para co
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 
 BWRAP = "/usr/bin/bwrap"
@@ -211,3 +213,250 @@ def disponible(bwrap: str = BWRAP) -> str:
         detalle = " ".join((hecho.stderr or "").split())[:300]
         return f"{bwrap} no puede crear una jaula (codigo {hecho.returncode}): {detalle}"
     return ""
+
+
+# --- Guardián dentro de la distro -------------------------------------------------------------
+# El supervisor corre en Windows y lanza `wsl.exe --exec python3 -I -S -c <este archivo> guardian
+# <spec>`. El guardián corre FUERA de la jaula, con el usuario real de la distro: lee la credencial
+# de Claude de su `~/.claude`, arma la jaula, la lanza y la cierra entera si el padre desaparece,
+# si le llega una señal de parada o si vence el plazo. Un Job de Windows no ve nada de esto.
+# Salidas: 124 = parada, plazo o padre muerto; 125 = no pudo cerrar la jaula; 126 = no pudo
+# prepararla (credencial); 127 = falta el ejecutable.
+
+SALIDA_PARADA = 124
+SALIDA_SIN_CERRAR = 125
+SALIDA_SIN_PREPARAR = 126
+SALIDA_SIN_EJECUTABLE = 127
+ARCHIVO_CONTROL = "jaula-wsl.json"
+CLAUDE_EN_EL_HOME = ".local/bin/claude"
+
+
+def _inicio(pid: int) -> str:
+    """Hora de arranque del proceso en ticks (campo 22 de `/proc/<pid>/stat`), o vacío.
+    Distingue un pid reusado."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            return f.read().rsplit(b")", 1)[1].split()[19].decode()
+    except (OSError, IndexError):
+        return ""
+
+
+def _publica(ruta: str, documento: dict) -> None:
+    tmp = ruta + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(documento, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, ruta)
+
+
+def ejecutable_de_claude(entorno: dict | None = None) -> str:
+    """Donde está Claude Code en la distro: `MOTOR_WSL_CLAUDE`, `~/.local/bin/claude` o el PATH."""
+    import shutil
+
+    entorno = os.environ if entorno is None else entorno
+    candidatos = [
+        entorno.get("MOTOR_WSL_CLAUDE", ""),
+        os.path.join(os.path.expanduser("~"), CLAUDE_EN_EL_HOME),
+    ]
+    for ruta in candidatos:
+        if ruta and os.path.isfile(ruta) and os.access(ruta, os.X_OK):
+            return ruta
+    return shutil.which("claude") or ""
+
+
+def _cuenta_de_claude(home: str) -> dict:
+    """La suscripción de Claude de la distro. Levanta ValueError con la causa si no sirve."""
+    ruta = os.path.join(home, ".claude", ".credentials.json")
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            cuenta = json.load(f).get("claudeAiOauth") or {}
+    except (OSError, ValueError, AttributeError):
+        raise ValueError(f"no se puede leer la suscripcion de Claude en {ruta}") from None
+    if not cuenta.get("accessToken") or "user:inference" not in (cuenta.get("scopes") or []):
+        raise ValueError("la suscripcion de Claude de la distro no da acceso de inferencia")
+    return cuenta
+
+
+def credencial_de_claude(ejecutable: str, home: str | None = None) -> dict:
+    """Entorno que lleva la suscripción a la jaula: el token de acceso, sin el de renovación.
+    Si el acceso venció se renueva con el cliente oficial, fuera de la jaula, como en Windows."""
+    import time
+
+    home = home or os.path.expanduser("~")
+    cuenta = _cuenta_de_claude(home)
+    expira = float(cuenta.get("expiresAt") or 0) / 1000
+    if expira and expira <= time.time():
+        try:
+            subprocess.run(
+                [ejecutable, "--print", "--safe-mode"], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise ValueError("no se pudo renovar la suscripcion de Claude en la distro") from None
+        cuenta = _cuenta_de_claude(home)
+        expira = float(cuenta.get("expiresAt") or 0) / 1000
+        if expira and expira <= time.time():
+            raise ValueError("Claude no pudo renovar el acceso de suscripcion en la distro")
+    entorno = {
+        "CLAUDE_CODE_OAUTH_TOKEN": cuenta["accessToken"],
+        "DISABLE_AUTOUPDATER": "1",
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+    }
+    if expira:
+        entorno["MOTOR_CLAUDE_ACCESS_EXPIRES_AT"] = str(expira)
+    return entorno
+
+
+def _preparar_runtime(runtime: str, credencial: str, ejecutable: str) -> dict:
+    for sub in ("tmp", ".config", ".local/share", ".claude"):
+        os.makedirs(os.path.join(runtime, sub), exist_ok=True)
+    entorno = {
+        "CLAUDE_CODE_TMPDIR": runtime + "/tmp",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if credencial == "claude":
+        entorno.update(credencial_de_claude(ejecutable))
+        entorno["CLAUDE_CONFIG_DIR"] = runtime + "/.claude"
+        _publica(
+            runtime + "/.claude/settings.json", {"skipDangerousModePermissionPrompt": True}
+        )
+    return entorno
+
+
+def _guardian(spec: dict) -> int:
+    import ctypes
+    import signal
+    import time
+
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
+    except Exception:  # noqa: BLE001
+        pass
+    parado = []
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, lambda *_: parado.append(sig))
+    padre = os.getppid()
+    plazo = spec.get("plazo")
+    fin = None if plazo is None else time.monotonic() + float(plazo)
+
+    cmd = list(spec["cmd"])
+    jaula_spec = spec["jaula"]
+    ejecutables = list(jaula_spec.get("ejecutables") or ())
+    ejecutable = ""
+    if cmd[0] == "claude":
+        ejecutable = ejecutable_de_claude()
+        if not ejecutable:
+            print("falta Claude Code en la distro (MOTOR_WSL_CLAUDE o ~/.local/bin/claude)",
+                  file=sys.stderr)
+            return SALIDA_SIN_EJECUTABLE
+        cmd[0] = ejecutable
+        ejecutables.append(ejecutable)
+    try:
+        extra = _preparar_runtime(jaula_spec["runtime"], spec.get("credencial", ""), ejecutable)
+    except (OSError, ValueError) as exc:
+        print(f"Cuenta de claude: {exc}", file=sys.stderr)
+        return SALIDA_SIN_PREPARAR
+    extra.update(spec.get("env") or {})
+    jaula = Jaula(
+        espacio=jaula_spec["espacio"], runtime=jaula_spec["runtime"],
+        lectura=bool(jaula_spec.get("lectura")),
+        lecturas=tuple(jaula_spec.get("lecturas") or ()),
+        ejecutables=tuple(ejecutables), red=jaula_spec.get("red", RED_ABIERTA),
+    )
+    control = spec.get("control")
+    argv = argv_jaula(jaula, cmd, cwd=spec.get("cwd"))
+    proceso = subprocess.Popen(
+        argv, env=entorno_jaula(jaula, extra), stdin=subprocess.DEVNULL, start_new_session=True,
+    )
+    identidad = {
+        "guardian": os.getpid(), "guardian_inicio": _inicio(os.getpid()),
+        "bwrap": proceso.pid, "bwrap_inicio": _inicio(proceso.pid), "estado": "activo",
+    }
+    if control:
+        _publica(os.path.join(control, ARCHIVO_CONTROL), identidad)
+    codigo = None
+    while codigo is None:
+        codigo = proceso.poll()
+        if codigo is not None:
+            break
+        if parado or (fin is not None and time.monotonic() >= fin) or (
+            os.getppid() != padre or not os.path.exists(f"/proc/{padre}")
+        ):
+            codigo = SALIDA_PARADA
+            break
+        time.sleep(0.02)
+    cerrada = cerrar(proceso.pid)
+    if control:
+        _publica(
+            os.path.join(control, ARCHIVO_CONTROL),
+            {**identidad, "estado": "cerrado" if cerrada else "incierto"},
+        )
+    return codigo if cerrada else SALIDA_SIN_CERRAR
+
+
+def cerrar_identidad(identidad: dict, plazo: float = 5.0) -> bool:
+    """Mata la jaula y al guardián que describe `identidad` (el archivo de control), si siguen
+    siendo esos procesos. True si no queda nada vivo."""
+    import signal
+    import time
+
+    pid = int(identidad.get("bwrap") or 0)
+    if pid and _inicio(pid) == identidad.get("bwrap_inicio"):
+        cerrar(pid)
+    guardian = int(identidad.get("guardian") or 0)
+    if guardian and _inicio(guardian) == identidad.get("guardian_inicio"):
+        try:
+            os.kill(guardian, signal.SIGKILL)
+        except OSError:
+            pass
+    fin = time.monotonic() + plazo
+    while vivo_identidad(identidad):
+        if time.monotonic() >= fin:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+def vivo_identidad(identidad: dict) -> bool:
+    for clave in ("guardian", "bwrap"):
+        pid = int(identidad.get(clave) or 0)
+        if pid and _inicio(pid) == identidad.get(clave + "_inicio") and _vivo(pid):
+            return True
+    return False
+
+
+def _causa_de_claude() -> str:
+    ejecutable = ejecutable_de_claude()
+    if not ejecutable:
+        return "falta Claude Code en la distro (MOTOR_WSL_CLAUDE o ~/.local/bin/claude)"
+    try:
+        _cuenta_de_claude(os.path.expanduser("~"))
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+def _principal(argv: list) -> int:
+    orden = argv[0] if argv else ""
+    if orden == "guardian":
+        return _guardian(json.loads(argv[1]))
+    if orden in ("cerrar", "estado"):
+        identidad = json.loads(argv[1])
+        if orden == "cerrar":
+            cerrar_identidad(identidad)
+        print(json.dumps({"vivo": vivo_identidad(identidad)}))
+        return 0
+    if orden == "disponible":
+        causa = disponible()
+        if not causa and argv[1:2] == ["claude"]:
+            causa = _causa_de_claude()
+        print(json.dumps({"causa": causa}))
+        return 0
+    print(f"orden desconocida: {orden!r}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(_principal(sys.argv[1:]))

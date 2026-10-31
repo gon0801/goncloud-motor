@@ -3632,7 +3632,17 @@ def _lanzar_uno(
             agente_lanzado = str(meta.get("agente") or "") or (
                 Path(cmd[0]).stem.lower() if cmd else ""
             )
-            if cmd and gen_path is not None:
+            from motor.plataforma.rutas_wsl import texto_a_wsl
+
+            from .aislamiento import usa_wsl
+
+            en_wsl = usa_wsl(agente_lanzado)
+            if en_wsl:
+                # El agente lee su pedido dentro de la distro: las rutas de Windows del texto
+                # (el .interno, el buzon, las observaciones) pasan a /mnt/<unidad>/. El
+                # ejecutable es el de la distro; el de la generacion es de Windows.
+                _publica(prompt, texto_a_wsl(contenido))
+            if cmd and gen_path is not None and not en_wsl:
                 cmd = vincular(
                     gen_path, cmd, funcion="planear" if rol == "revisor" else "codigo",
                     modelo_explicito=any(r == rol for r, _a, _m in enc.modelos_solicitados),
