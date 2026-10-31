@@ -73,7 +73,11 @@ def _ejecutable(ruta: str) -> list:
 def argv_jaula(
     jaula: Jaula, cmd: list, *, cwd: str | None = None, bwrap: str = BWRAP
 ) -> list:
-    """El argv que corre `cmd` dentro de la jaula. Lo arma y no lo ejecuta."""
+    """El argv que corre `cmd` dentro de la jaula. Lo arma y no lo ejecuta.
+
+    `--remount-ro /` no es recursivo: un tmpfs montado debajo (`/tmp`) seguiría con
+    escritura y bwrap crea ahí los padres de cada bind. Por eso no hay `--tmpfs`: el
+    temporal del agente es `TMPDIR`, dentro del runtime."""
     espacio, runtime = _absoluta(jaula.espacio), _absoluta(jaula.runtime)
     if jaula.red not in (RED_ABIERTA, RED_NINGUNA):
         raise ValueError(f"red desconocida: {jaula.red!r}")
@@ -83,7 +87,7 @@ def argv_jaula(
     if jaula.red == RED_ABIERTA:
         argv.append("--share-net")
     argv += _sistema()
-    argv += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+    argv += ["--proc", "/proc", "--dev", "/dev"]
     for ruta in jaula.ejecutables:
         argv += _ejecutable(_absoluta(ruta))
     for ruta in jaula.lecturas:

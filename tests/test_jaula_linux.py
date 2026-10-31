@@ -69,6 +69,10 @@ class ArgvTest(unittest.TestCase):
         ultimo_montaje = max(i for i, x in enumerate(argv) if x.endswith("bind"))
         self.assertGreater(argv.index("--remount-ro"), ultimo_montaje)
 
+    def test_no_monta_ningun_tmpfs_que_el_remount_ro_de_la_raiz_no_cubre(self):
+        self.assertNotIn("--tmpfs", self.argv())
+        self.assertNotIn("--tmpfs", self.argv(lectura=True))
+
     def test_no_monta_el_home_ni_mnt(self):
         argv = self.argv(lecturas=(str(self.base / "fuente"),))
         montados = [argv[i + 1] for i, x in enumerate(argv) if x.endswith("bind")]
@@ -134,11 +138,16 @@ class JaulaRealTest(unittest.TestCase):
         self.assertEqual((self.runtime / "tmp" / "nuevo").read_text(), "b\n")
 
     def test_escribir_fuera_del_espacio_falla(self):
+        # base, espacio/ y runtime/ existen dentro de la jaula solo como padres que bwrap crea
+        # para montar enc_1: ahí tampoco se escribe, ni se crea la carpeta que falta.
         destinos = [
             self.otro / "x",
+            self.base / "x",
+            self.base / "espacio" / "x",
             self.base / "espacio" / "enc_2" / "x",
             self.base / "runtime" / "enc_2",
             Path("/nuevo"),
+            Path("/tmp/x"),
             Path("/usr/x"),
             Path("/etc/x"),
             Path("/proc/x"),
@@ -147,7 +156,12 @@ class JaulaRealTest(unittest.TestCase):
             with self.subTest(destino=str(destino)):
                 r = self.correr(f"echo x > {destino}")
                 self.assertNotEqual(r.returncode, 0)
+                r = self.correr(f"mkdir -p {destino.parent} && echo x > {destino}")
+                self.assertNotEqual(r.returncode, 0)
         self.assertEqual(list(self.otro.iterdir()), [])
+        self.assertEqual(
+            sorted(p.name for p in self.base.iterdir()), ["espacio", "otro", "runtime"]
+        )
         self.assertFalse(Path("/nuevo").exists())
 
     def test_el_revisor_no_escribe_en_el_espacio_y_si_lee_y_escribe_en_su_runtime(self):
