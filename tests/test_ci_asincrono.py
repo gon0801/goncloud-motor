@@ -40,6 +40,9 @@ CI_PEDIDO = {
 
 
 class _CiAsincrono(_Flujo):
+    autorizacion = ""
+    workflow = "pruebas.yml"
+
     def montar(self, clave: str):
         """Un revisor que pidió ci.correr; la herramienta sigue corriendo en el
         intento-1 y el barrido la deja `pendiente`."""
@@ -50,9 +53,9 @@ class _CiAsincrono(_Flujo):
                     "recursos": {
                         "ci-linux": {
                             "tipo": "ci",
-                            "autorizacion": "",
+                            "autorizacion": self.autorizacion,
                             "repo": "o/r",
-                            "workflow": "pruebas.yml",
+                            "workflow": self.workflow,
                             "base": "main",
                         }
                     }
@@ -539,6 +542,68 @@ class UnCiIgualReusaLaCorridaViva(_CorridaViva):
         lanzadas = self.pedir_otra(r, "ci_nueva_version")
 
         self.assertEqual(len(lanzadas), 1)
+
+    def configurar(self, r, **cambios) -> None:
+        ruta = r.base / "capacidades.json"
+        doc = json.loads(ruta.read_text())
+        doc["recursos"]["ci-linux"].update(cambios)
+        ruta.write_text(json.dumps(doc))
+
+    def test_otra_configuracion_del_recurso_si_lanza_su_propia_corrida(self):
+        r, _primera = self.corrida_en_curso("reuso-6")
+        self.configurar(r, workflow="otra-bateria.yml", repo="otro/repo")
+
+        lanzadas = self.pedir_otra(r, "ci_otra_config")
+
+        self.assertEqual(len(lanzadas), 1)
+        self.assertNotEqual(self.sol(r, "ci_otra_config").carpeta, self.sol(r, _primera).carpeta)
+
+    def test_la_misma_configuracion_con_otro_orden_de_claves_se_reusa(self):
+        r, _primera = self.corrida_en_curso("reuso-7")
+        doc = json.loads((r.base / "capacidades.json").read_text())
+        recurso = doc["recursos"]["ci-linux"]
+        doc["recursos"]["ci-linux"] = dict(reversed(list(recurso.items())))
+        (r.base / "capacidades.json").write_text(json.dumps(doc))
+
+        self.assertEqual(self.pedir_otra(r, "ci_base_2"), [])
+
+    def autorizar(self, r) -> None:
+        enc = r.fold()
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "autorizacion",
+                "data": {
+                    "recurso": "ci-linux",
+                    "operacion": "ci.correr",
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "texto": "si",
+                    "autor": "propietario",
+                    "hora": ahora_iso(),
+                },
+            },
+            "t-autoriza",
+        )
+
+    def test_un_recurso_que_pide_autorizacion_no_se_reusa_sin_ella(self):
+        self.autorizacion = "propietario"
+        r, _primera = self.corrida_en_curso("reuso-8")
+
+        lanzadas = self.pedir_otra(r, "ci_sin_permiso")
+
+        self.assertEqual(len(lanzadas), 1, "la herramienta decide si pregunta; no se une a la ajena")
+        self.assertNotEqual(self.sol(r, "ci_sin_permiso").carpeta, self.sol(r, _primera).carpeta)
+
+    def test_con_la_autorizacion_del_propietario_si_se_reusa(self):
+        self.autorizacion = "propietario"
+        r, primera = self.corrida_en_curso("reuso-9")
+        self.autorizar(r)
+
+        lanzadas = self.pedir_otra(r, "ci_con_permiso")
+
+        self.assertEqual(lanzadas, [])
+        self.assertEqual(self.sol(r, "ci_con_permiso").carpeta, self.sol(r, primera).carpeta)
 
     def test_si_la_primera_ya_murio_se_lanza_una_nueva(self):
         r, primera = self.corrida_en_curso("reuso-5")

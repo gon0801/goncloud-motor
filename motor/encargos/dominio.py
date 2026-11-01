@@ -324,6 +324,8 @@ class Solicitud:
     # Firma del producto cuando se lanzó la herramienta: dos ci.correr iguales
     # son los que piden lo mismo sobre la misma versión.
     version: str = ""
+    # Huella de la configuración efectiva del recurso con que se lanzó.
+    configuracion: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -351,6 +353,7 @@ class Solicitud:
             "tardias": list(self.tardias),
             "carpeta": self.carpeta,
             "version": self.version,
+            "configuracion": self.configuracion,
         }
 
     @property
@@ -1620,7 +1623,12 @@ def _herramienta(e: Encargo, d: dict, hora: str) -> Encargo:
     return replace(
         e,
         solicitudes=tuple(
-            replace(s, carpeta=carpeta, version=str(d.get("version") or ""))
+            replace(
+                s,
+                carpeta=carpeta,
+                version=str(d.get("version") or ""),
+                configuracion=str(d.get("configuracion") or ""),
+            )
             if s.id == ident
             else s
             for s in e.solicitudes

@@ -9,6 +9,7 @@ decide el trabajo: conserva hechos y devuelve datos o la causa de la espera.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -955,9 +956,19 @@ def _atender_decision(
     return {"estado": "registrada", "datos": {"decision": sol.id}}
 
 
-def _corrida_igual(enc, sol: Solicitud, version: str, directorio: Path) -> Solicitud | None:
-    """La corrida de CI que sigue viva y pide lo mismo: mismo recurso, mismo job
-    y misma versión del producto. Repetirla cuesta otra corrida de minutos."""
+def _huella_config(concedido: dict) -> str:
+    """Huella de la configuración efectiva del recurso (repo, workflow, base...):
+    la misma corrida solo vale para quien pide con la misma configuración."""
+    texto = json.dumps(concedido, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
+
+
+def _corrida_igual(
+    enc, sol: Solicitud, version: str, configuracion: str, directorio: Path
+) -> Solicitud | None:
+    """La corrida de CI que sigue viva y pide lo mismo: mismo recurso con la misma
+    configuración, mismo job y misma versión del producto. Repetirla cuesta otra
+    corrida de minutos."""
     job = dict(sol.parametros).get("job")
     return next(
         (
@@ -969,6 +980,7 @@ def _corrida_igual(enc, sol: Solicitud, version: str, directorio: Path) -> Solic
             and otra.estado == "pendiente"
             and otra.carpeta
             and otra.version == version
+            and otra.configuracion == configuracion
             and dict(otra.parametros).get("job") == job
             and _en_curso(otra, directorio)
         ),
@@ -977,27 +989,49 @@ def _corrida_igual(enc, sol: Solicitud, version: str, directorio: Path) -> Solic
 
 
 def _recordar_carpeta(
-    registro: Registro, enc, sol: Solicitud, espacio: Path, directorio: Path, hora: str
+    registro: Registro,
+    enc,
+    sol: Solicitud,
+    espacio: Path,
+    directorio: Path,
+    hora: str,
+    recursos: dict[str, dict],
+    autorizado: bool,
 ) -> Solicitud:
     """Anota dónde correrá la herramienta antes de lanzarla. `sol` viene de la
     petición o del registro: la que ya recuerda su carpeta la conserva.
 
     Un `ci.correr` igual a uno que sigue vivo se une a esa corrida: su carpeta
-    es la de la corrida en marcha y no se lanza otra."""
+    es la de la corrida en marcha y no se lanza otra. Solo si el recurso está
+    concedido para esa operación y, cuando pide al propietario, ya lo autorizó:
+    unirse no puede saltarse lo que la herramienta comprobaría al lanzarse."""
     if sol.carpeta:
         return sol
-    version = ""
+    version = configuracion = ""
     otra = None
     if sol.operacion == capacidades.CI:
         from .comprobacion import firma_producto
 
+        concedido = recursos.get(sol.recurso)
         version = firma_producto(Path(espacio))
-        otra = _corrida_igual(enc, sol, version, directorio)
+        if concedido is not None:
+            configuracion = _huella_config(concedido)
+            permitido = sol.operacion in capacidades.operaciones_de(recursos, sol.recurso)
+            if permitido and (concedido.get("autorizacion") != "propietario" or autorizado):
+                otra = _corrida_igual(enc, sol, version, configuracion, directorio)
     carpeta = otra.carpeta if otra else str(_carpeta_de(sol, directorio))
     _anotar(
         registro,
         enc.id,
-        {"kind": "herramienta", "data": {"id": sol.id, "carpeta": carpeta, "version": version}},
+        {
+            "kind": "herramienta",
+            "data": {
+                "id": sol.id,
+                "carpeta": carpeta,
+                "version": version,
+                "configuracion": configuracion,
+            },
+        },
         f"herramienta:{enc.id}:{sol.id}",
     )
     if otra:
@@ -1018,6 +1052,7 @@ def _recordar_carpeta(
         sol,
         carpeta=(actual.carpeta if actual else "") or carpeta,
         version=(actual.version if actual else "") or version,
+        configuracion=(actual.configuracion if actual else "") or configuracion,
     )
 
 
@@ -1500,7 +1535,9 @@ def atender(
             )
         else:
             if not sol.carpeta:
-                sol = _recordar_carpeta(registro, enc, previa or sol, espacio, directorio, hora)
+                sol = _recordar_carpeta(
+                    registro, enc, previa or sol, espacio, directorio, hora, recursos, autorizado
+                )
             resultado = _ejecutar(
                 registro, enc, sol, recursos, espacio, directorio, autorizado, hora
             )
