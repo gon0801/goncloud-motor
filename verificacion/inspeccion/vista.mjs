@@ -37,6 +37,7 @@ export const colors = {
 export const step = (action, from, to) => {
   switch (action) {
     case "Termina":
+      if (to.juicio === "pideOtra") return "el revisor pide lo mismo con otra consulta";
       return to.juicio === "pide" ? "el revisor pide evidencia" : "el revisor aprueba";
     case "Incorporar":
       return "el motor lee el juicio";
