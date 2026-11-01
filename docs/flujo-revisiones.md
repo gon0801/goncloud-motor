@@ -335,9 +335,10 @@ anota nada. Una lectura con un bloqueante abierto baja el nivel alcanzado de
 abierto. Con un agente en curso solo se anota; devolver el trabajo es cosa de
 quien incorpora su vuelta. Si GitHub falla
 al releer, el espaciado no se consume (se reintenta a los 15 s) y el fallo queda
-en el evento `lectura_fallida`, que no toca el estado: el motivo y el siguiente
-trabajo del encargo, que lee el próximo turno del agente, siguen siendo los
-suyos.
+en el evento `lectura_fallida` (uno por tramo de fallos, más otro cada 10 minutos
+si dura) y se ve en `ver` (`entrega.deepseek.error`) hasta que una lectura sale
+bien. No toca el motivo ni el siguiente trabajo del encargo, que lee el próximo
+turno del agente: siguen siendo los suyos.
 
 Antes de terminar una fase con entrega `pr` (con `integrado` o `desplegado`, antes
 del merge), el supervisor vuelve a leer, sin espaciado, el comentario de

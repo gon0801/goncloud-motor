@@ -89,6 +89,7 @@ _QUIETUD_S = 600
 _QUIETUD_VUELTAS = 3
 _RELECTURA_CHECKS_S = 120
 _RELECTURA_DEEPSEEK_S = 60
+_AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
 
 
@@ -3515,12 +3516,14 @@ def _marca_deepseek(directorio: Path) -> dict:
 
 
 def _marcar_lectura_deepseek(
-    directorio: Path, sha: str, epoch: float, error: str = ""
+    directorio: Path, sha: str, epoch: float, error: str = "", aviso: float = 0.0
 ) -> None:
     try:
         directorio.mkdir(parents=True, exist_ok=True)
         (directorio / "deepseek_lectura.json").write_text(
-            json.dumps({"sha": sha, "epoch": epoch, "error": error}),
+            json.dumps(
+                {"sha": sha, "epoch": epoch, "error": error, "aviso": aviso}
+            ),
             encoding="utf-8",
         )
     except OSError:
@@ -3568,7 +3571,20 @@ def _releer_deepseek(
         # marca, sin tocar motivo, siguiente ni causa: el próximo turno del
         # agente no se redirige.
         error = f"{type(exc).__name__}: {exc}"
-        _marcar_lectura_deepseek(directorio, sha, epoch, error)
+        # Un aviso al empezar el tramo de fallos y otro cuando pasan
+        # `_AVISO_LECTURA_DEEPSEEK_S` desde el último, no según el reloj.
+        try:
+            ultimo_aviso = float(marca.get("aviso") or 0)
+        except (TypeError, ValueError):
+            ultimo_aviso = 0.0
+        nuevo_tramo = (
+            not marca.get("error") or epoch - ultimo_aviso >= _AVISO_LECTURA_DEEPSEEK_S
+        )
+        _marcar_lectura_deepseek(
+            directorio, sha, epoch, error, epoch if nuevo_tramo else ultimo_aviso
+        )
+        if not nuevo_tramo:
+            return enc
         registro.anotar(
             enc.id,
             {
@@ -3581,10 +3597,26 @@ def _releer_deepseek(
                     "hora": hora,
                 },
             },
-            f"lectura-fallida:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch // 600)}",
+            f"lectura-fallida:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch)}",
         )
-        return enc
+        return registro.fold(enc.id) or enc
     _marcar_lectura_deepseek(directorio, sha, epoch)
+    if marca.get("error"):
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "lectura_fallida",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "fuente": "deepseek",
+                    "sha": sha,
+                    "causa": "",
+                    "hora": hora,
+                },
+            },
+            f"lectura-recuperada:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch)}",
+        )
+        enc = registro.fold(enc.id) or enc
     if not comentarios:
         return enc
     huella = _huella_comentarios(comentarios)
