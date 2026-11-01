@@ -186,6 +186,24 @@ class CuerpoDelPrAlAbrir(unittest.TestCase):
                 cuerpo.endswith(f"Encargo {r.enc}. Fase: {e.fase_activa}.")
             )
 
+    def test_texto_multibyte_se_recorta_tambien_por_bytes(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "cuerpo-multibyte", FakeGitHub)
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "😀" * 65_000, encoding="utf-8"
+            )
+
+            e = vuelta("hola")
+
+            cuerpo = _pr_unico(vuelta.gh).get("cuerpo") or ""
+            self.assertLessEqual(len(cuerpo), LIMITE_GITHUB)
+            self.assertLessEqual(len(cuerpo.encode("utf-8")), LIMITE_GITHUB)
+            self.assertTrue(cuerpo.startswith("😀"))
+            self.assertIn(".interno/cuerpo-pr.md", cuerpo)
+            self.assertTrue(
+                cuerpo.endswith(f"Encargo {r.enc}. Fase: {e.fase_activa}.")
+            )
+
     def test_texto_con_nul_se_sanea_antes_de_publicar(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "cuerpo-nul", FakeGitHub)

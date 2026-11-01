@@ -3505,6 +3505,26 @@ def _leer_cuerpo_del_espacio(espacio: Path) -> str | None:
             os.close(fd)
 
 
+def _cabe_en_el_limite(cuerpo: str) -> bool:
+    """GitHub acepta 65 536 caracteres, pero el API también se queja por bytes
+    (64 KiB en varios casos): se respetan las dos medidas."""
+    return (
+        len(cuerpo) <= _LIMITE_CUERPO_PR
+        and len(cuerpo.encode("utf-8")) <= _LIMITE_CUERPO_PR
+    )
+
+
+def _cuerpo_recortado(texto: str, resto: str) -> str:
+    max_caracteres = _LIMITE_CUERPO_PR - len(resto)
+    max_bytes = _LIMITE_CUERPO_PR - len(resto.encode("utf-8"))
+    if max_caracteres <= 0 or max_bytes <= 0:
+        return resto[:_LIMITE_CUERPO_PR]
+    candidato = texto[:max_caracteres]
+    if len(candidato.encode("utf-8")) > max_bytes:
+        candidato = candidato.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+    return f"{candidato}{resto}"
+
+
 def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
     """El cuerpo del PR: lo que el responsable dejó en `.interno/cuerpo-pr.md`,
     con una línea final que identifica el encargo y la fase. Sin archivo o vacío
@@ -3518,11 +3538,10 @@ def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
         return defecto
     linea = f"Encargo {enc.id}. Fase: {enc.fase_activa or FASE_IMPLICITA}."
     cuerpo = f"{texto}\n\n{linea}"
-    if len(cuerpo) <= _LIMITE_CUERPO_PR:
+    if _cabe_en_el_limite(cuerpo):
         return cuerpo
     resto = f"{_NOTA_CUERPO_RECORTADO}\n\n{linea}"
-    disponible = max(0, _LIMITE_CUERPO_PR - len(resto))
-    return f"{texto[:disponible]}{resto}"
+    return _cuerpo_recortado(texto, resto)
 
 
 def _cuerpo_ya_publicado(registro: Registro, enc: Encargo, sha: str) -> bool:
