@@ -351,6 +351,52 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             self.assertEqual(e.fase_actual.fallas_checks, ("lint",))
 
 
+class EsperaDeChecksEnLaEntrega(unittest.TestCase):
+    """`_paso_entrega` anota `checks_esperando` solo si algún requerido está en marcha."""
+
+    def _entrega_con_checks(self, tmp, clave, en_marcha):
+        vuelta, r = _entrega_pr(
+            self, tmp, clave, _GhPorCommit, {"requeridos": ["ci"], "checks": {"ci": "exit 0"}}
+        )
+        vuelta.gh.checks = lambda _repo, *a, **k: ChecksVerdict(
+            sha=a[1] if len(a) > 1 else "", terminal=False, green=False, faltan=("ci",),
+            fallas=(), en_marcha=en_marcha,
+        )
+        return vuelta, r
+
+    def test_con_un_requerido_en_marcha_la_entrega_anota_la_espera(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._entrega_con_checks(tmp, "fr-esp-a", ("ci",))
+            e = vuelta("uno")
+            sha = e.producto.sha_git
+            self.assertEqual(e.estado, "esperando_reintento")
+            self.assertIn("esperando checks requeridos", e.motivo)
+            self.assertEqual(e.fase_actual.checks_esperando_sha, sha)
+            self.assertTrue(revision_externa_pendiente(e))
+            pasos = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") == "checks_esperando"
+            ]
+            self.assertEqual(len(pasos), 1)
+
+    def test_un_requerido_que_nadie_corre_espera_a_la_vista_pero_no_frena_el_conteo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._entrega_con_checks(tmp, "fr-esp-b", ())
+            e = vuelta("uno")
+            self.assertEqual(e.estado, "esperando_reintento")
+            self.assertIn("esperando checks requeridos", e.motivo)
+            self.assertEqual(e.fase_actual.checks_esperando_sha, "")
+            self.assertEqual(
+                [
+                    ev for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") == "checks_esperando"
+                ],
+                [],
+            )
+
+
 class ChecksEnMarcha(unittest.TestCase):
     """`veredicto.en_marcha`: los requeridos que faltan y están corriendo o en cola."""
 
