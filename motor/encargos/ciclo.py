@@ -3632,9 +3632,9 @@ def _veredicto_antes_de_cerrar(
     antes del merge), el veredicto vigente de DeepSeek sobre el SHA final de su
     PR; y, si es la última fase, sobre el de cada PR de las anteriores:
     DeepSeek puede publicar un hallazgo después de que el motor leyó, y la fase
-    ya cerrada no volvería a mirarse. Solo se reabre una fase cuyo PR sigue
-    abierto (nivel alcanzado pr): con integrado o desplegado las anteriores ya
-    se fusionaron y su corrección no cabe en ese PR.
+    ya cerrada no volvería a mirarse. Se reabre la fase cuyo PR sigue abierto
+    (nivel alcanzado pr); con integrado o desplegado las anteriores ya se
+    fusionaron y su corrección no cabe en ese PR: se pregunta al propietario.
 
     Devuelve None si se puede cerrar. Si hay un High o un Medium abierto, la
     fase de ese PR vuelve al responsable y se devuelve el encargo así."""
@@ -3656,7 +3656,7 @@ def _veredicto_antes_de_cerrar(
             for f in enc.fases:
                 if (
                     f.id == enc.fase_activa
-                    or f.nivel_alcanzado != "pr"
+                    or f.nivel_alcanzado not in ("pr", "integrado", "desplegado")
                     or not f.pr_numero
                     or not f.pr_sha
                 ):
@@ -3700,6 +3700,23 @@ def _veredicto_antes_de_cerrar(
         if not abiertos:
             continue
         huella = _huella_comentarios(comentarios)
+        if previa.nivel_alcanzado != "pr":
+            # El PR ya se fusionó: la corrección no cabe en él. No se termina
+            # en silencio con el hallazgo abierto: se avisa al propietario una vez.
+            clave = (
+                f"pregunta:{enc.id}:fusionado:{previa.id}:{previa.pr_sha}:{huella}"
+            )
+            if registro.por_ukey(clave) is not None:
+                continue
+            marcar_pregunta(
+                registro, enc.id,
+                f"DeepSeek dejó abierto en el PR #{previa.pr_numero}, ya fusionado, "
+                f"de la fase {previa.id}: " + "; ".join(h.titulo for h in abiertos)
+                + ". Esa fase no se puede reabrir en su PR. Decide si abrir un "
+                "encargo aparte para corregirlo o seguir sin corregirlo.",
+                True, hora, ukey=clave,
+            )
+            return registro.fold(enc.id)
         registro.anotar(
             enc.id,
             {

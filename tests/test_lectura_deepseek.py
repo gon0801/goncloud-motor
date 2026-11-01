@@ -199,6 +199,43 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             self.assertEqual(_ids(e), ["F6"])
             self.assertEqual(e.nivel_alcanzado, "pr_abierto")
 
+    def test_un_medium_en_un_pr_ya_fusionado_no_termina_el_encargo_en_silencio(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-fusionado", _GhComentarios, nivel="integrado"
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {"id": "dos", "resultado": "saludo.txt con dos", "requiere": ["uno"]},
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-dos",
+            )
+            vuelta.gh.textos[None] = _comentario()
+            e = vuelta("uno")
+            self.assertEqual(e.fase_activa, "dos")
+            primera = e.fases[0]
+            self.assertEqual(primera.nivel_alcanzado, "integrado")
+
+            vuelta.gh.textos[primera.pr_numero] = _comentario(_hallazgo("F9", "medium"))
+            e = vuelta("dos")
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.fase_activa, "dos")
+            self.assertEqual(len(e.preguntas), 1)
+            self.assertIn("ya fusionado", e.preguntas[0])
+            self.assertIn("hallazgo F9", e.preguntas[0])
+
+            e = ciclo._paso_entrega(r.reg, e, vuelta.gh, ahora_iso())
+            self.assertEqual(len(e.preguntas), 1)
+
     def test_sin_puerto_de_github_no_se_da_por_comprobado_el_veredicto(self):
         def texto(n):
             if n == 2:
