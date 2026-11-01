@@ -28,7 +28,7 @@ Córrela si el cambio toca alguna de las funciones de la tabla de cobertura. Par
 git --no-pager diff --no-ext-diff -W e0f06a2 -- motor/encargos/dominio.py motor/encargos/ciclo.py motor/encargos/necesidades.py
 ```
 
-Con `-W` cada trozo muestra la función que lo contiene. Busca esas funciones en la columna "Código" de la tabla de cobertura. `e0f06a2` es el commit de sincronía; ver abajo.
+Con `-W` cada trozo trae la función entera: la función que contiene el cambio es la primera línea `def` del contexto. El encabezado `@@` nombra la función anterior; no lo uses. Si la salida de `git diff` llega resumida, mándala a un archivo y léela ahí. Busca esas funciones en la columna "Código" de la tabla de cobertura. `e0f06a2` es el commit de sincronía; ver abajo.
 
 ## Cómo correrla
 
@@ -58,7 +58,7 @@ Para la corrida:
 - Necesita `mise` (`brew install mise`). La primera vez baja Java Temurin 25 y TLC 1.7.4 con checksum fijo. Sin `mise`, exporta `TLA2TOOLS` (ruta a `tla2tools.jar`) y `JAVA`.
 - Tarda unos segundos.
 - Sale 0 con `Model checking completed. No error has been found.` y sale 12 si una regla se rompe.
-- TLC se detiene en la primera regla rota. Para ver si hay otra, quítale a una copia la regla que ya conoces. Es solo para diagnosticar: un cambio que rompe una regla no queda bueno porque la copia sin esa regla pase.
+- TLC se detiene en la primera regla rota. Si quieres saber si hay otra, quítale a una copia la regla que ya conoces. Es opcional y solo sirve para diagnosticar: un cambio que rompe una regla no queda bueno porque la copia sin esa regla pase.
 
 Lee todo resultado con la skill `/statechart`. Pásale el modelo, la configuración y la vista `verificacion/inspeccion/vista.mjs`. Así:
 
@@ -92,7 +92,7 @@ Cada constante de `main.cfg` es una rama concreta del código. Cada acción del 
 
 Qué cuenta en el modelo:
 
-- **"Espera visible"**: un impedimento registrado (`imped`), o un estado que no es `recibido` ni `ejecutando` (`deteniendo`, `detenido`, `terminado`). `Abierto` deja fuera esos estados a propósito. El camino de `necesita_usuario` (preguntas al propietario) no está en el modelo; ver "Lo que no cubre".
+- **"Espera visible"**: un impedimento registrado (`imped`), o un estado que no es `recibido` ni `ejecutando` (`deteniendo`, `detenido`, `terminado`). Lo que solo se ve si alguien consulta el estado (por ejemplo, la `necesidad_actual` de `seguimiento_de`) no cuenta: nadie recibe un aviso. `Abierto` deja fuera esos estados a propósito. El camino de `necesita_usuario` (preguntas al propietario) no está en el modelo; ver "Lo que no cubre".
 - **Largo de un camino**: los estados que imprime TLC (`State 1` … `State N`). Hay N - 1 acciones.
 - **Dos caminos con las mismas acciones** pueden ser fallos distintos: compara las variables del último estado. Por ejemplo, la traba 9 de `antes-139.cfg` termina con la solicitud ligada `ausente`; invertir `DetieneLaPendiente` termina con la misma secuencia, pero con la solicitud `pendiente` y sin petición en el buzón.
 
@@ -100,9 +100,10 @@ Qué cuenta en el modelo:
 
 1. Lee el camino con `/statechart`.
 2. Repite cada paso contra el código, usando la tabla de cobertura para saber qué función hace cada paso.
-3. Si el código puede dar ese paso así, es un fallo real. Repórtalo con el camino en palabras del motor (por ejemplo: "el revisor pide evidencia, lo paras, el motor saca el pedido del buzón, continúas y queda atado a un pedido que no existe"). No cambies código del producto sin que lo pidan.
-4. Si el código no puede dar ese paso, el modelo está mal. Corrige la acción o la constante y anota por qué en el comentario de la acción.
-5. Nunca debilites una regla ni la quites del `.cfg` para que pase.
+3. Busca también, fuera de la tabla, si algún otro camino rescataría al encargo en el último estado. El detector de quietud no lo hace: `dominio.sin_nada_en_curso` da por sostenido un encargo con una inspección que bloquea.
+4. Si el código puede dar ese paso así y nada lo rescata, es un fallo real. Repórtalo con el camino en palabras del motor (por ejemplo: "el revisor pide evidencia, lo paras, el motor saca el pedido del buzón, continúas y queda atado a un pedido que no existe"). No cambies código del producto sin que lo pidan.
+5. Si el código no puede dar ese paso, el modelo está mal. Corrige la acción o la constante y anota por qué en el comentario de la acción.
+6. Nunca debilites una regla ni la quites del `.cfg` para que pase.
 
 ## Si el cambio es intencional
 
