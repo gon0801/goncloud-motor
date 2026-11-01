@@ -27,7 +27,7 @@ from motor.encargos.dominio import (
     bloqueantes_abiertos,
     revision_externa_pendiente,
 )
-from motor.github import ChecksVerdict, FakeGitHub
+from motor.github import ChecksVerdict, FakeGitHub, veredicto
 from tests.test_entrega_misma_version import _barrido, _rerun_del_check
 from tests.test_flujo_revisiones import _entrega_pr, _lanzaria
 from tests.test_lectura_deepseek import _comentario, _hallazgo, _ids
@@ -39,13 +39,6 @@ def setUpModule():
     )
     parche.start()
     unittest.addModuleCleanup(parche.stop)
-
-
-def _en_marcha(*nombres: str) -> tuple:
-    return tuple(
-        {"nombre": n, "run_id": "", "url": "", "status": "in_progress", "conclusion": None}
-        for n in nombres
-    )
 
 
 class _GhPorCommit(FakeGitHub):
@@ -192,7 +185,7 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             real = gh.checks
             gh.checks = lambda *a, **k: ChecksVerdict(
                 sha=sha, terminal=False, green=False, faltan=("ci",), fallas=(),
-                corridas=_en_marcha("ci"),
+                en_marcha=("ci",),
             )
             t0 = time.time()
             e = _barrido(r, gh, t0)
@@ -237,7 +230,7 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             real = gh.checks
             gh.checks = lambda *a, **k: ChecksVerdict(
                 sha=sha, terminal=False, green=False, faltan=("ci", "lint"), fallas=(),
-                corridas=_en_marcha("ci", "lint"),
+                en_marcha=("ci", "lint"),
             )
             t0 = time.time()
             e = _barrido(r, gh, t0)
@@ -270,7 +263,7 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             # Corrida nueva a medias: ci ya salió en rojo, lint todavía corre.
             gh.checks = lambda *a, **k: ChecksVerdict(
                 sha=sha, terminal=True, green=False, faltan=("lint",), fallas=("ci",),
-                corridas=_en_marcha("lint"),
+                en_marcha=("lint",),
             )
             t0 = time.time()
             e = _barrido(r, gh, t0)
@@ -289,6 +282,32 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
             self.assertEqual(e.fase_actual.checks_esperando_sha, "")
             self.assertIn("check:lint", e.fase_actual.cerrados)
+
+    def test_un_requerido_con_estado_legacy_pendiente_cuenta_como_en_marcha(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "fr-2h", _GhPorCommit,
+                {
+                    "requeridos": ["ci", "lint"],
+                    "checks": {"ci": "exit 1", "lint": "exit 1"},
+                },
+            )
+            gh = vuelta.gh
+            e = vuelta("uno")
+            sha = e.producto.sha_git
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci", "lint"))
+
+            # ci terminó en rojo; lint se reporta como estado legacy «pending», sin check run.
+            gh.checks = lambda *a, **k: veredicto(
+                sha, ("ci", "lint"),
+                [{"name": "ci", "status": "completed", "conclusion": "failure"}],
+                "",
+                [{"context": "lint", "state": "pending"}],
+            )
+            e = _barrido(r, gh, time.time())
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci", "lint"))
+            self.assertEqual(e.fase_actual.checks_esperando_sha, sha)
+            self.assertNotIn("check:lint", e.fase_actual.cerrados)
 
     def test_una_corrida_ajena_a_los_requeridos_no_retiene_el_refresco(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -330,6 +349,35 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             _rerun_del_check(gh, str(e.entrega.repo), "ci", "exit 0")
             e = _barrido(r, gh, time.time())
             self.assertEqual(e.fase_actual.fallas_checks, ("lint",))
+
+
+class ChecksEnMarcha(unittest.TestCase):
+    """`veredicto.en_marcha`: los requeridos que faltan y están corriendo o en cola."""
+
+    def test_una_corrida_sin_completar_esta_en_marcha(self):
+        v = veredicto(
+            "s", ("ci",), [{"name": "ci", "status": "in_progress", "conclusion": None}], "",
+        )
+        self.assertEqual((v.faltan, v.en_marcha), (("ci",), ("ci",)))
+
+    def test_un_estado_legacy_pendiente_esta_en_marcha(self):
+        v = veredicto("s", ("ci",), [], "", [{"context": "ci", "state": "pending"}])
+        self.assertEqual((v.faltan, v.en_marcha), (("ci",), ("ci",)))
+
+    def test_un_requerido_que_nadie_corre_no_esta_en_marcha(self):
+        v = veredicto("s", ("ci",), [], "", [])
+        self.assertEqual((v.faltan, v.en_marcha), (("ci",), ()))
+
+    def test_un_requerido_en_rojo_o_terminado_no_esta_en_marcha(self):
+        v = veredicto(
+            "s", ("ci", "lint"),
+            [
+                {"name": "ci", "status": "completed", "conclusion": "failure"},
+                {"name": "lint", "status": "completed", "conclusion": "success"},
+            ],
+            "",
+        )
+        self.assertEqual((v.fallas, v.faltan, v.en_marcha), (("ci",), (), ()))
 
 
 class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
