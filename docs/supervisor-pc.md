@@ -19,7 +19,7 @@ La cadena es la de antes con un eslabón más:
     SSH (en Job) → Explorer COM → puente (en Job) → libre (fuera del Job)
         → vigilante (fuera del Job) → supervisor.ps1 (fuera del Job)
 
-El proceso libre sale en segundos, como antes (el puente lo espera 15 s). El vigilante
+El proceso libre sale en segundos, como antes (el puente la espera hasta 60 s). El vigilante
 queda vivo, lanza `supervisor.ps1` y, cuando el proceso termina, lo vuelve a lanzar. Como
 el vigilante nace fuera del Job y sus hijos lo heredan, cada supervisor relanzado queda
 también fuera. El vigilante comprueba la identidad de cada supervisor (mismo SID, misma
@@ -52,8 +52,17 @@ espera; rota a 1 MB), `vigilante.json`, `vigilante.lock` (un solo vigilante por 
 `vigilante.parar`.
 
 Matar solo el supervisor lo hace volver en 5 s. Matar el vigilante deja al supervisor
-vivo y sin vigilancia; el siguiente arranque cierra ese PowerShell huérfano (solo si el PID
-sigue siendo `powershell.exe`) antes de lanzar el suyo.
+vivo y sin vigilancia; el siguiente arranque cierra ese PowerShell huérfano antes de lanzar
+el suyo, pero solo si es el mismo proceso: el PID sigue siendo `powershell.exe` y nació en el
+instante que el vigilante guardó (`supervisor_inicio` en `vigilante.json`). Un PID
+reutilizado, aunque sea de otro PowerShell, no coincide y no se toca; si no se puede
+comprobar, tampoco. Si `taskkill` no consigue cerrar un supervisor, el vigilante lo intenta
+con el propio proceso y, si sigue vivo, lo deja anotado en `vigilante.log` y en
+`vigilante.json` para que el siguiente arranque lo cierre.
+
+El arranque puede tardar hasta unos 45 s cuando hay un huérfano que comprobar y cerrar
+(`tasklist` 10 s y `taskkill` 20 s como máximo): el informe espera 45 s al vigilante, el
+puente 60 s y el comando completo 75 s.
 
 ## Lo que no hace
 
