@@ -15,7 +15,7 @@ from unittest import mock
 
 from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso
-from motor.encargos.dominio import bloqueantes_abiertos, prompt_responsable
+from motor.encargos.dominio import bloqueantes_abiertos, prompt_responsable, vista
 from motor.github import FakeGitHub
 from tests.test_entrega_misma_version import _barrido, _pasos
 from motor.encargos.aislamiento import SondaEntorno
@@ -389,9 +389,45 @@ class RelecturaConGithubCaido(unittest.TestCase):
             self.assertIn("502", fallos[0]["data"]["causa"])
             self.assertEqual(_ids(e), ["F1"])
             self.assertNotEqual(e.estado, "esperando_reintento")
+            self.assertIn("502", e.deepseek_error)
             e = _barrido(r, gh, t0 + 16)
             self.assertEqual(_ids(e), [])
             self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(e.deepseek_error, "")
+
+    def test_un_github_caido_un_rato_deja_un_solo_aviso_por_tramo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-gh-tramo", _GhQueFalla)
+            gh = vuelta.gh
+            gh.textos[None] = _comentario(_hallazgo("F1"))
+            vuelta("uno")
+            gh.fallos = 100
+            # Justo antes de un cambio de bloque de 10 minutos del reloj: el aviso
+            # depende del tramo de fallos, no de la hora a la que corre la prueba.
+            t0 = (time.time() // 600 + 1) * 600 - 10
+            for i in range(3):
+                e = _barrido(r, gh, t0 + 16 * i)
+            avisos = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "lectura_fallida" and ev["data"]["causa"]
+            ]
+            self.assertEqual(len(avisos), 1)
+            self.assertIn("502", e.deepseek_error)
+            self.assertEqual(vista(e)["entrega"]["deepseek"]["error"], e.deepseek_error)
+
+            # Si dura, otro aviso pasados 10 minutos desde el último.
+            _barrido(r, gh, t0 + 599)
+            avisos = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "lectura_fallida" and ev["data"]["causa"]
+            ]
+            self.assertEqual(len(avisos), 1)
+            _barrido(r, gh, t0 + 615)
+            avisos = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "lectura_fallida" and ev["data"]["causa"]
+            ]
+            self.assertEqual(len(avisos), 2)
 
 
 if __name__ == "__main__":

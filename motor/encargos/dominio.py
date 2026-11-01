@@ -213,6 +213,9 @@ class Fase:
     # Huella del comentario de DeepSeek que se leyó para `deepseek_sha`: el
     # motor relee el SHA vigente cuando el comentario cambia, no solo el SHA.
     deepseek_huella: str = ""
+    # Último fallo de la relectura de GitHub, hasta que una lectura vuelva a salir
+    # bien. Es para quien mira (`ver`): ningún prompt lo lee.
+    deepseek_error: str = ""
     integrado_sha: str = ""
     rama: str = ""
     base: str = ""
@@ -250,7 +253,11 @@ class Fase:
             else None,
             "nivel_alcanzado": self.nivel_alcanzado,
             "pr": {"numero": self.pr_numero, "sha": self.pr_sha},
-            "deepseek": {"sha": self.deepseek_sha, "leida": bool(self.deepseek_sha)},
+            "deepseek": {
+                "sha": self.deepseek_sha,
+                "leida": bool(self.deepseek_sha),
+                "error": self.deepseek_error,
+            },
             "rama": self.rama,
             "base": self.base,
             "evidencia": self.evidencia,
@@ -524,6 +531,11 @@ class Encargo:
     def deepseek_sha(self) -> str:
         fase = self.fase_actual
         return fase.deepseek_sha if fase else ""
+
+    @property
+    def deepseek_error(self) -> str:
+        fase = self.fase_actual
+        return fase.deepseek_error if fase else ""
 
     @property
     def rama_entrega(self) -> str:
@@ -1326,9 +1338,13 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             ),
         )
     if kind == "lectura_fallida":
-        # Queda en el registro y no toca el estado: ni motivo, ni siguiente, ni
-        # causa, que son lo que lee el próximo turno del agente.
-        return e
+        # Se ve en `ver` (deepseek.error) y no toca motivo, siguiente ni causa,
+        # que son lo que lee el próximo turno del agente. Una causa vacía anota
+        # que la lectura volvió a salir bien.
+        fase = e.fase_actual
+        if fase is None or str(d.get("fase") or fase.id) != fase.id:
+            return e
+        return con_fase(e, replace(fase, deepseek_error=str(d.get("causa") or "")))
     if kind == "fase_reabierta":
         return _fase_reabierta(e, d, hora)
     if kind == "entrada_incorporada":
@@ -2678,7 +2694,11 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             "rama": e.rama_entrega,
             "base": e.entrega.base,
             "pr": {"numero": e.pr_numero, "sha": e.pr_sha},
-            "deepseek": {"sha": e.deepseek_sha, "leida": bool(e.deepseek_sha)},
+            "deepseek": {
+                "sha": e.deepseek_sha,
+                "leida": bool(e.deepseek_sha),
+                "error": e.deepseek_error,
+            },
         },
         "fases": [f.como_dict() for f in e.fases],
         "fase_activa": e.fase_activa,
