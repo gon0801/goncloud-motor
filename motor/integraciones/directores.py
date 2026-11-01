@@ -3,7 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from motor.encargos.ciclo import (
@@ -14,7 +18,7 @@ from motor.encargos.ciclo import (
     recibir,
     resolver_entrega,
 )
-from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida
+from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida, reducir
 from motor.encargos.registro import Registro
 
 
@@ -29,6 +33,26 @@ def _leer(path: Path) -> dict | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+ESPERA_BASE_S = 60
+ESPERA_TOPE_S = 3600
+
+
+def espera_s(fallos: int) -> int:
+    """1, 2, 4... minutos entre intentos de un mismo aviso, con tope de una hora."""
+    return min(ESPERA_BASE_S * 2 ** min(max(fallos - 1, 0), 20), ESPERA_TOPE_S)
+
+
+def _epoch(hora: str) -> float | None:
+    try:
+        return datetime.fromisoformat(str(hora).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def id_aviso(encargo: str, evidencia: str) -> str:
@@ -664,6 +688,19 @@ def _ejecutar_transporte(
     cuerpo: str,
     con_id: bool = False,
 ) -> tuple[str, str]:
+    recibo, error, _ = _correr_transporte(registro, comando, aviso, cuerpo, con_id)
+    return recibo, error
+
+
+def _correr_transporte(
+    registro: Registro,
+    comando: list,
+    aviso: dict,
+    cuerpo: str,
+    con_id: bool = False,
+) -> tuple[str, str, bool]:
+    """(recibo, error, canal_caido). Solo un proceso que no corre, que no responde o que sale con error
+    marca el canal caído; una salida ilegible o sin recibo es un fallo de ese mensaje."""
     env = os.environ.copy()
     env.update(
         {
@@ -687,20 +724,30 @@ def _ejecutar_transporte(
             env=env,
         )
         texto = hecho.stdout.decode("utf-8") if hecho.returncode == 0 else ""
-    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as exc:
-        return "", str(exc)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "", str(exc), True
+    except UnicodeDecodeError as exc:
+        return "", str(exc), False
     if hecho.returncode != 0:
         detalle = (hecho.stderr or hecho.stdout).decode("utf-8", errors="replace")[-200:]
-        return "", f"el transporte salio {hecho.returncode}: {detalle}"
+        return "", f"el transporte salio {hecho.returncode}: {detalle}", True
     recibo = _recibo_transporte(texto)
     if not recibo:
-        return "", "el transporte no devolvio recibo"
-    return recibo, ""
+        return "", "el transporte no devolvio recibo", False
+    return recibo, "", False
 
 
 def _conciliar_transporte(
     registro: Registro, comando: list, aviso: dict, cuerpo: str
 ) -> tuple[str, str]:
+    estado, dato, _ = _correr_conciliacion(registro, comando, aviso, cuerpo)
+    return estado, dato
+
+
+def _correr_conciliacion(
+    registro: Registro, comando: list, aviso: dict, cuerpo: str
+) -> tuple[str, str, bool]:
+    """(estado, dato, canal_caido), con el mismo criterio de canal caído que `_correr_transporte`."""
     env = os.environ.copy()
     env.update(
         {
@@ -718,29 +765,31 @@ def _conciliar_transporte(
             argv, input=cuerpo.encode("utf-8"), capture_output=True, timeout=30, env=env,
         )
         texto = hecho.stdout.decode("utf-8") if hecho.returncode == 0 else ""
-    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as exc:
-        return "incierto", str(exc)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "incierto", str(exc), True
+    except UnicodeDecodeError as exc:
+        return "incierto", str(exc), False
     if hecho.returncode != 0:
-        return "incierto", f"la conciliacion salio {hecho.returncode}"
+        return "incierto", f"la conciliacion salio {hecho.returncode}", True
     texto = texto.strip()
     if not texto:
-        return "incierto", "la conciliacion no devolvio recibo"
+        return "incierto", "la conciliacion no devolvio recibo", False
     try:
         doc = json.loads(texto)
     except ValueError:
-        return "incierto", "la conciliacion no devolvio un JSON valido"
+        return "incierto", "la conciliacion no devolvio un JSON valido", False
     if not isinstance(doc, dict):
-        return "incierto", "la conciliacion no devolvio un objeto JSON"
+        return "incierto", "la conciliacion no devolvio un objeto JSON", False
     for campo in ("id", "recibo", "receipt"):
         if doc.get(campo):
-            return "hallado", str(doc[campo])
+            return "hallado", str(doc[campo]), False
     if doc.get("ausente") is True or str(doc.get("estado") or "") in (
         "ausente",
         "no-encontrado",
         "not_found",
     ):
-        return "ausente", ""
-    return "incierto", "la conciliacion no confirmo el aviso"
+        return "ausente", "", False
+    return "incierto", "la conciliacion no confirmo el aviso", False
 
 
 def _declara_idempotencia(cfg: dict | None) -> bool:
@@ -755,27 +804,54 @@ def _declara_idempotencia(cfg: dict | None) -> bool:
 def _registrar_intento(path: Path, guardado: dict) -> None:
     guardado["estado"] = "incierto"
     try:
-        guardado["intentos"] = int(guardado.get("intentos") or 0) + 1
+        previos = int(guardado.get("intentos") or 0)
     except (TypeError, ValueError):
-        guardado["intentos"] = 1
+        previos = 0
+    guardado.setdefault("fallos", previos)
+    guardado["intentos"] = previos + 1
     _atomico(path, guardado)
 
 
+def _diferir(guardado: dict, ahora: float) -> None:
+    """El próximo intento de un aviso que no llegó toca tras una espera que crece con cada fallo."""
+    try:
+        previos = int(guardado.get("fallos", guardado.get("intentos")) or 0)
+    except (TypeError, ValueError):
+        previos = 0
+    guardado["fallos"] = previos + 1
+    guardado["proximo_intento"] = _iso(ahora + espera_s(guardado["fallos"]))
+
+
+def _por_esperar(guardado: dict, ahora: float) -> bool:
+    toca = _epoch(guardado.get("proximo_intento") or "")
+    return toca is not None and ahora < toca
+
+
 def _enviar_aviso(
-    registro: Registro, comando: list, guardado: dict, cuerpo: str, path: Path
+    registro: Registro,
+    comando: list,
+    guardado: dict,
+    cuerpo: str,
+    path: Path,
+    vuelta: "Vuelta",
 ) -> None:
+    """Un envío. Si el transporte no da recibo, difiere el aviso y corta el canal en esta vuelta."""
     _registrar_intento(path, guardado)
-    recibo, error = _ejecutar_transporte(registro, comando, guardado, cuerpo)
+    recibo, error, caido = _correr_transporte(registro, comando, guardado, cuerpo)
     if recibo:
         guardado["estado"] = "publicado"
         guardado["alcance"] = "externo"
         guardado["recibo"] = recibo
-        guardado.pop("motivo", None)
+        for campo in ("motivo", "proximo_intento", "fallos"):
+            guardado.pop(campo, None)
     else:
         guardado["estado"] = "incierto"
         guardado["alcance"] = "externo"
         guardado["recibo"] = ""
         guardado["motivo"] = error
+        _diferir(guardado, vuelta.ahora)
+        if caido:
+            vuelta.caidos.add(guardado["canal"])
     _atomico(path, guardado)
 
 
@@ -787,93 +863,121 @@ def _entregado(aviso: dict) -> bool:
     )
 
 
-def hechos_de_avance(enc) -> list[dict]:
-    """Hechos ya registrados que merecen un aviso. La identidad es el hecho, no el reloj."""
-    if enc.estado in ("cancelado", "detenido", "deteniendo"):
+REMISION = "El detalle técnico está en el estado del encargo."
+
+_REPETIDO = re.compile(r"\b(un archivo|un comando|un identificador interno|una versión)(?:(?:,| y) \1)+")
+_SUSTITUCIONES = (
+    (re.compile(r"`[^`]*`"), lambda m: "un archivo" if re.search(r"[/\\]|\.\w{1,4}\b", m.group()) else "un comando"),
+    (re.compile(r"\b(?:enc|av|p|h|f|s)_[0-9a-f]{6,}\b"), lambda m: "un identificador interno"),
+    (re.compile(r"[\w.~-]*(?:[/\\][\w.~-]+)+"), lambda m: "un archivo"),
+    (re.compile(r"\b[\w-]+\.(?:py|json|md|txt|yml|yaml|toml|sh|ts|js|log)\b"), lambda m: "un archivo"),
+    (re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}\b"), lambda m: "una versión"),
+)
+
+
+def _llano(texto: str, tope: int = 240) -> tuple[str, bool]:
+    """Una frase de un agente para una persona no técnica y si traía detalle técnico.
+
+    Cada archivo, comando, id o hash se cambia por su nombre común, así la frase conserva su sentido
+    ("¿Uso la cuenta de un archivo?") en vez de quedar mutilada. Quien la escribe añade `REMISION`
+    cuando hubo cambios, para que el detalle se lea donde está.
+    """
+    t, tecnico = str(texto or ""), False
+    for patron, cambio in _SUSTITUCIONES:
+        t, n = patron.subn(cambio, t)
+        tecnico = tecnico or n > 0
+    t = _REPETIDO.sub(r"\1", re.sub(r"\s+", " ", t)).strip(" .,;:-")
+    return (t if len(t) <= tope else t[: tope - 1].rstrip() + "…"), tecnico
+
+
+def _con_remision(frase: str, tecnico: bool) -> str:
+    return f"{frase} {REMISION}" if tecnico else frase
+
+
+def _apariciones_de_impedimentos(registro: Registro, encargo: str) -> dict[str, int]:
+    """Cuántas veces se trabó el encargo por cada clase: cada paso de "no pendiente" a "pendiente" cuenta una."""
+    estado, previas, cuenta = None, set(), {}
+    for evento in registro.eventos(encargo):
+        estado = reducir(estado, evento)
+        ahora = {i.clase for i in estado.impedimentos}
+        for clase in ahora - previas:
+            cuenta[clase] = cuenta.get(clase, 0) + 1
+        previas = ahora
+    return cuenta
+
+
+def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dict]:
+    """Hechos ya registrados que merecen un aviso a una persona no técnica. La identidad es el hecho.
+
+    Van: el encargo arrancó, necesita una decisión, el PR está listo para decidir el merge y se trabó.
+    El cierre es otro aviso (`_aviso_de`). Decisiones del agente, esperas de reintento, revisiones,
+    comprobaciones y fases intermedias quedan en el registro y no salen al canal.
+
+    Un trabado se identifica por su clase y por la vez que el encargo se trabó con ella (`apariciones`):
+    el texto que cambia dentro de un mismo bloqueo no repite el aviso, y un bloqueo nuevo de la misma
+    clase, tras resolverse el anterior, sí lo avisa.
+    """
+    if enc.estado in ("cancelado", "detenido", "deteniendo", "terminado"):
         return []
     hechos = []
     fase = enc.fase_actual
-    if fase is not None:
+    if fase is not None or enc.estado in ("ejecutando", "esperando_reintento", "conciliando"):
+        hechos.append(
+            {"tipo": "inicio", "identidad": "inicio", "texto": "Empecé a trabajar en tu encargo."}
+        )
+    if fase is not None and fase.pr_numero and fase.nivel_alcanzado == "pr":
         hechos.append(
             {
-                "tipo": "fase",
-                "identidad": f"{fase.id}:{fase.estado}:{fase.resultado}:{fase.evidencia}",
-                "texto": (
-                    f"Fase {fase.id} ({fase.estado}). "
-                    f"Resultado: {fase.resultado or 'sin resultado todavía'}."
-                ),
+                "tipo": "pr",
+                "identidad": str(fase.pr_numero),
+                "texto": f"El PR #{fase.pr_numero} está listo para que decidas si lo integras.",
             }
         )
-        if fase.revision_vigente is not None:
-            ref = fase.revision_vigente
-            hechos.append(
-                {
-                    "tipo": "revision",
-                    "identidad": f"{ref.revision_id}:{ref.veredicto}:{ref.version}",
-                    "texto": f"Revisión de {fase.id}: {ref.veredicto} sobre {ref.version}.",
-                }
-            )
-        if fase.pr_numero:
-            hechos.append(
-                {
-                    "tipo": "pr",
-                    "identidad": f"{fase.pr_numero}:{fase.pr_sha}",
-                    "texto": f"PR #{fase.pr_numero} de {fase.id} en {fase.pr_sha}.",
-                }
-            )
+    preguntadas = set()
     for sol in enc.solicitudes:
         if sol.estado != "pregunta":
             continue
+        pregunta, tecnico = _llano(sol.pregunta or sol.motivo)
+        preguntadas.update(t for t in (sol.pregunta, sol.motivo, pregunta) if t)
         hechos.append(
             {
                 "tipo": "pregunta",
                 "identidad": sol.id,
                 "solicitud": sol.id,
-                "texto": (
-                    f"Pregunta {sol.id} del encargo {enc.id}, fase {sol.fase}: "
-                    f"{sol.pregunta or sol.motivo}"
+                "texto": _con_remision(
+                    "Necesito tu decisión para seguir." + (f" {pregunta}" if pregunta else ""),
+                    tecnico,
                 ),
             }
         )
-    for dec in enc.decisiones:
-        hechos.append(
-            {
-                "tipo": "decision",
-                "identidad": dec.id,
-                "texto": (
-                    f"Decisión: {dec.eleccion}. Motivo: {dec.motivo}. "
-                    f"Evidencia: {dec.evidencia or 'sin evidencia'}."
-                ),
-            }
-        )
-    if enc.estado == "esperando_reintento" and (enc.motivo or enc.reanuda_en):
-        hechos.append(
-            {
-                "tipo": "espera",
-                "identidad": f"reintento:{enc.reanuda_en}:{enc.motivo}",
-                "texto": (
-                    f"Espera: {enc.motivo or 'servicio'}. "
-                    f"Reanuda: {enc.reanuda_en or 'sin hora'}."
-                ),
-            }
-        )
-    elif enc.impedimento and (enc.impedimento_causa or enc.impedimento_condicion):
-        hechos.append(
-            {
-                "tipo": "espera",
-                "identidad": f"impedimento:{enc.impedimento}:{enc.impedimento_causa}",
-                "texto": (
-                    f"Espera de {enc.impedimento}: {enc.impedimento_causa}. "
-                    f"Condición: {enc.impedimento_condicion}."
-                ),
-            }
-        )
+    if enc.estado == "necesita_usuario" and enc.motivo:
+        pregunta, tecnico = _llano(enc.motivo)
+        if not {enc.motivo, pregunta} & preguntadas:
+            hechos.append(
+                {
+                    "tipo": "pregunta",
+                    "identidad": "usuario:" + hashlib.sha256(enc.motivo.encode()).hexdigest()[:12],
+                    "texto": _con_remision(
+                        f"Necesito tu decisión para seguir. {pregunta}".rstrip(), tecnico
+                    ),
+                }
+            )
+    clase, condicion = "", ""
+    if enc.impedimento and (enc.impedimento_causa or enc.impedimento_condicion):
+        clase, condicion = enc.impedimento, enc.impedimento_condicion
     elif (espera := espera_inspeccion_consumida(enc)) is not None:
+        clase, condicion = espera["clase"], ""
+    if clase:
+        hace_falta, tecnico = _llano(condicion)
         hechos.append(
             {
-                "tipo": "espera",
-                "identidad": f"impedimento:{espera['clase']}:{espera['causa']}",
-                "texto": f"Espera de {espera['clase']}: {espera['causa']}. Condición: {espera['condicion']}.",
+                "tipo": "trabado",
+                "identidad": f"{clase}:{(apariciones or {}).get(clase, 1)}",
+                "texto": _con_remision(
+                    "Tu encargo se trabó y no puede avanzar solo."
+                    + (f" Hace falta: {hace_falta}." if hace_falta else ""),
+                    tecnico or not hace_falta,
+                ),
             }
         )
     return hechos
@@ -1022,13 +1126,28 @@ def _cerrar_aviso(guardado: dict, novedad: bool) -> dict:
     return guardado
 
 
+@dataclass
+class Vuelta:
+    """Lo que una pasada de `drenar` comparte entre avisos: la hora y los canales cuyo transporte falló."""
+
+    ahora: float
+    caidos: set[str] = field(default_factory=set)
+
+
 def _publicar_aviso(
-    registro: Registro, aviso: dict, cuerpo: str | None, cortar: str
+    registro: Registro,
+    aviso: dict,
+    cuerpo: str | None,
+    cortar: str,
+    vuelta: Vuelta | None = None,
 ) -> dict:
     """Misma recuperación de recibo para el cierre y para el avance. Sin modelo."""
+    vuelta = vuelta or Vuelta(time.time())
     path = registro.base / "avisos" / f"{aviso['id']}.json"
     guardado = _leer(path) or dict(aviso)
     if guardado.get("estado") == "publicado" and guardado.get("recibo"):
+        return _cerrar_aviso(guardado, False)
+    if guardado.get("estado") == "descartado":
         return _cerrar_aviso(guardado, False)
     if guardado.get("estado") == "local-pendiente" and guardado.get("alcance") == "local":
         try:
@@ -1083,28 +1202,34 @@ def _publicar_aviso(
             guardado["motivo"] = "sin transporte configurado; no se reenvia"
             _atomico(path, guardado)
             return _cerrar_aviso(guardado, True)
-        if _declara_idempotencia(cfg):
-            _enviar_aviso(registro, comando, guardado, cuerpo, path)
-            return _cerrar_aviso(guardado, True)
+        if nombre in vuelta.caidos or _por_esperar(guardado, vuelta.ahora):
+            return _cerrar_aviso(guardado, False)
         if not conciliacion:
+            if _declara_idempotencia(cfg):
+                _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
+                return _cerrar_aviso(guardado, True)
             guardado["motivo"] = "aviso incierto sin conciliacion; no se reenvia"
             _atomico(path, guardado)
             return _cerrar_aviso(guardado, True)
-        resultado_con, dato = _conciliar_transporte(
+        resultado_con, dato, caido = _correr_conciliacion(
             registro, conciliacion, guardado, cuerpo
         )
         if resultado_con == "hallado":
             guardado["estado"] = "publicado"
             guardado["alcance"] = "externo"
             guardado["recibo"] = dato
-            guardado.pop("motivo", None)
+            for campo in ("motivo", "proximo_intento", "fallos"):
+                guardado.pop(campo, None)
             _atomico(path, guardado)
             return _cerrar_aviso(guardado, True)
         if resultado_con == "incierto":
             guardado["motivo"] = dato
+            _diferir(guardado, vuelta.ahora)
+            if caido:
+                vuelta.caidos.add(nombre)
             _atomico(path, guardado)
             return _cerrar_aviso(guardado, True)
-        _enviar_aviso(registro, comando, guardado, cuerpo, path)
+        _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
         return _cerrar_aviso(guardado, True)
     if cortar == "antes" and not entrega.exists():
         guardado["estado"] = "pendiente"
@@ -1139,22 +1264,49 @@ def _publicar_aviso(
         guardado["recibo"] = ""
         _atomico(path, guardado)
         return _cerrar_aviso(guardado, True)
-    _enviar_aviso(registro, comando, guardado, cuerpo, path)
+    if nombre in vuelta.caidos:
+        return _cerrar_aviso(guardado, False)
+    _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
     return _cerrar_aviso(guardado, True)
 
 
-def drenar(registro: Registro, cortar: str = "") -> dict:
+def _descartar_avances_de_terminados(registro: Registro, terminados: set[str]) -> None:
+    """De un encargo terminado solo vale el aviso de cierre: los avances sin entregar se descartan."""
+    for path in sorted((registro.base / "avisos").glob("*.json")):
+        try:
+            doc = _leer(path)
+        except (OSError, ValueError):
+            continue
+        if (
+            not doc
+            or doc.get("encargo") not in terminados
+            or not doc.get("tipo")
+            or doc.get("estado") in ("publicado", "descartado")
+        ):
+            continue
+        doc["estado"] = "descartado"
+        doc["motivo"] = "encargo terminado; solo se envia el aviso de cierre"
+        for campo in ("proximo_intento", "fallos"):
+            doc.pop(campo, None)
+        _atomico(path, doc)
+
+
+def drenar(registro: Registro, cortar: str = "", ahora: float | None = None) -> dict:
+    vuelta = Vuelta(time.time() if ahora is None else ahora)
     publicados = []
     corte = registro.corte_avisos()
-    for encargo in registro.ids():
-        enc = registro.fold(encargo)
+    encargos = {ident: registro.fold(ident) for ident in registro.ids()}
+    terminados = {i for i, e in encargos.items() if e is not None and e.estado == "terminado"}
+    if terminados:
+        _descartar_avances_de_terminados(registro, terminados)
+    for encargo, enc in encargos.items():
         if enc is None or not enc.canal:
             continue
         anterior = registro.fold(encargo, hasta=corte)
         historicos = {
             _aviso_de_hecho(anterior, hecho)["id"]
             for hecho in hechos_de_avance(anterior) if hecho["tipo"] in (
-                "fase", "revision", "pr", "decision"
+                "inicio", "pr"
             )
         } if anterior is not None else set()
         trabajos: list[tuple[dict, str | None]] = []
@@ -1163,7 +1315,8 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
             trabajos.append(
                 (aviso, _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"])))
             )
-        for hecho in hechos_de_avance(enc):
+        apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
+        for hecho in hechos_de_avance(enc, apariciones):
             aviso = _aviso_de_hecho(enc, hecho)
             if aviso["id"] in historicos and not (
                 registro.base / "avisos" / f"{aviso['id']}.json"
@@ -1171,7 +1324,7 @@ def drenar(registro: Registro, cortar: str = "") -> dict:
                 continue
             trabajos.append((aviso, hecho["texto"]))
         for aviso, cuerpo in trabajos:
-            publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar))
+            publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
     return {"avisos": publicados}
 
 
