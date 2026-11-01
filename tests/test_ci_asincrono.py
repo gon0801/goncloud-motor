@@ -181,6 +181,21 @@ class ElResultadoDeUnIntentoAnteriorLlega(_CiAsincrono):
         self.assertTrue(publico.is_relative_to(r.espacio))
         self.assertEqual(publico.read_text(encoding="utf-8"), LOG_CI)
 
+    def test_una_solicitud_sin_carpeta_encuentra_la_marca_de_una_herramienta_muerta(self):
+        r, ident = self.montar("tarde-sin-carpeta-marca", lanzada=False)
+        self.peticion_archivada(r, ident)
+        self.intento(r, "intento-2-b")
+        self.marca_de(r, ident)
+        self.assertEqual(self.sol(r, ident).carpeta, "")
+
+        with mock.patch("motor.plataforma.pid_vivo", return_value=False), mock.patch.object(
+            nec, "_ejecutar", side_effect=AssertionError("no se repite")
+        ):
+            self.barrer(r)
+
+        self.assertEqual(self.sol(r, ident).estado, "error")
+        self.assertEqual(self.buzon(r, ident)["estado"], "error")
+
     def marca_de(self, r, ident: str, **campos) -> Path:
         marca = r.d / "intento-1-a" / "herramientas" / f"{ident}.json"
         marca.parent.mkdir(parents=True, exist_ok=True)
