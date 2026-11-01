@@ -178,6 +178,7 @@ def preparar_administrado(
         cmd, cwd, runtime, lectura=enc.rol == "revisor", suscripcion=True,
         lecturas_extra=tuple(concesiones),
         agente=agente,
+        interprete=False,
     )
     if entorno_extra:
         comando.entorno.update(entorno_extra)
