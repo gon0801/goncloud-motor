@@ -81,13 +81,14 @@ Init ==
 
 \* El supervisor lanza al revisor: dominio.decision_proceso devuelve lanzar (sin
 \* impedimento, sin espera_inspeccion_consumida, sin inspeccion_bloquea). Al abrir el
-\* intento el ajuste queda visto y ciclo anota inspeccion_entregada de la resolución.
+\* intento el ajuste queda visto. La marca inspeccion_entregada no se anota aquí sino al
+\* incorporar el juicio (ver SaltaInspeccion): un revisor muerto sin juicio se relanza
+\* con el mismo dato.
 Lanzar ==
   /\ Abierto /\ ~proc /\ juicio = "ninguno" /\ ~imped /\ ~Consumida /\ ~Bloquea
   /\ proc' = TRUE /\ est' = "ejecutando" /\ ajuste' = FALSE
-  /\ vista' = IF liga /= 0 /\ Terminal(Sol(liga)) THEN [vista EXCEPT ![liga] = TRUE] ELSE vista
   /\ carrera' = (carrera \/ (pend /\ liga \in peticion /\ ~Terminal(Sol(liga)) /\ ~AjusteSinVer))
-  /\ UNCHANGED <<juicio, pend, liga, sol, peticion, imped>>
+  /\ UNCHANGED <<juicio, pend, liga, sol, peticion, vista, imped>>
 
 \* El revisor termina su turno y deja su juicio en outcome.json. Puede pasar también
 \* con la parada ya pedida.
@@ -111,15 +112,35 @@ LigarPide ==
        /\ peticion' = peticion \cup {k}
        /\ sol' = IF RegistraAlLigar THEN [sol EXCEPT ![k] = "pendiente"] ELSE sol
 
+\* ciclo._consumir_ligada: al cambiar de consulta (o al aprobar), la respuesta ya
+\* entregada de la solicitud ligada queda consumida.
+VistaAlCambiar ==
+  IF liga /= 0 /\ Terminal(Sol(liga)) THEN [vista EXCEPT ![liga] = TRUE] ELSE vista
+
+\* ciclo._salta_inspeccion (antes de incorporar, solo con inspeccion_pendiente): un juicio
+\* que vuelve a pedir la consulta ligada no se consume como revisión. Si la solicitud ya
+\* tiene resultado, acredita que se entregó (anota inspeccion_entregada). Con la liga sin
+\* solicitud, el código de #139 sí lo consume para volver a encolar (ReligaSinSolicitud).
+Salta(v) ==
+  /\ pend /\ juicio = "pide"
+  /\ LET k == IdPedido IN
+       IF k /= liga THEN sol[k] /= "ausente" /\ v[k]
+       ELSE sol[k] /= "ausente" \/ ~ReligaSinSolicitud
+
 Incorporar ==
   /\ Abierto /\ ~proc /\ juicio /= "ninguno"
   /\ juicio' = "ninguno"
-  /\ IF juicio = "aprueba"
-       THEN /\ est' = "terminado" /\ pend' = FALSE
+  /\ LET v == IF pend /\ IdPedido /= liga THEN VistaAlCambiar ELSE vista IN
+     IF Salta(v)
+       THEN /\ vista' = IF IdPedido = liga /\ Terminal(Sol(liga))
+                          THEN [vista EXCEPT ![liga] = TRUE] ELSE v
+            /\ UNCHANGED <<est, pend, liga, sol, peticion>>
+     ELSE IF juicio = "aprueba"
+       THEN /\ est' = "terminado" /\ pend' = FALSE /\ vista' = v
             /\ UNCHANGED <<liga, sol, peticion>>
-       ELSE /\ est' = "recibido" /\ pend' = TRUE
+       ELSE /\ est' = "recibido" /\ pend' = TRUE /\ vista' = v
             /\ LigarPide
-  /\ UNCHANGED <<proc, vista, ajuste, imped, carrera>>
+  /\ UNCHANGED <<proc, ajuste, imped, carrera>>
 
 \* necesidades.atender, una petición del buzón por paso.
 Atender ==

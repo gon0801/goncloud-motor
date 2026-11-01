@@ -36,15 +36,18 @@ Con `-W` cada trozo trae la función entera: la función que contiene el cambio 
 
 1. **Tradúcelo al modelo.**
    - Si invierte una rama de la tabla de cobertura, copia `main.cfg` a un `.cfg` nuevo en `verificacion/inspeccion/` e invierte ahí esa constante.
-   - Si cambia una acción, edita la acción en una copia del `.tla`.
+   - Si cambia una acción, copia `FlujoInspeccion.tla` a otro nombre (por ejemplo `FlujoInspeccionCambio.tla`), cambia su primera línea a `---- MODULE FlujoInspeccionCambio ----` y edita ahí la acción. TLC exige que el nombre del módulo coincida con el del archivo; el script lo comprueba.
    - Si no cambia nada que el modelo distinga (un mensaje, un registro de más), dilo y sigue con el paso 2.
 2. **Corre las tres configuraciones:**
 
    ```sh
    verificacion/inspeccion/verificar.sh              # main.cfg: el commit de sincronía, tiene que pasar
    verificacion/inspeccion/verificar.sh antes-139.cfg # el código de 72c30a8: tiene que fallar
-   verificacion/inspeccion/verificar.sh tu-cambio.cfg # tu traducción del paso 1
+   verificacion/inspeccion/verificar.sh tu-cambio.cfg # tu traducción del paso 1 (solo constantes)
+   verificacion/inspeccion/verificar.sh tu-cambio.cfg FlujoInspeccionCambio.tla # si copiaste el modelo
    ```
+
+   Sin el segundo argumento el script corre `FlujoInspeccion.tla`: una copia editada del modelo que no le pases no se comprueba.
 
    - Las dos primeras comprueban que el modelo sigue distinguiendo el código roto del sano.
    - Si `main.cfg` falla, o si `antes-139.cfg` pasa, el problema está en el modelo, no en tu cambio.
@@ -60,12 +63,12 @@ Para la corrida:
 - Sale 0 con `Model checking completed. No error has been found.` y sale 12 si una regla se rompe.
 - TLC se detiene en la primera regla rota. Si quieres saber si hay otra, quítale a una copia la regla que ya conoces. Es opcional y solo sirve para diagnosticar: un cambio que rompe una regla no queda bueno porque la copia sin esa regla pase.
 
-Lee todo resultado con la skill `/statechart`. Pásale el modelo, la configuración y la vista `verificacion/inspeccion/vista.mjs`. Así:
+Lee los resultados con la skill `/statechart` si la tienes. Es de pstack (cursor/plugins), no de este repo; en las máquinas de David está instalada como skill de usuario. Pásale el modelo, la configuración y la vista `verificacion/inspeccion/vista.mjs`. Así:
 
 - una regla rota sale como el camino más corto, en palabras;
-- una corrida limpia sale como el diagrama de cómo se mueve el encargo.
+- una corrida limpia sale como el diagrama de cómo se mueve el encargo (con `MaxIds = 3` son 366 estados, dentro de lo que dibuja).
 
-Con `MaxIds = 3` el grafo pasa de 500 estados y `/statechart` solo dibuja los caminos de las reglas rotas. Para ver el diagrama completo, usa una copia de la configuración con `MaxIds = 2`.
+Sin `/statechart`, la salida de `verificar.sh` ya trae el camino. Cada `State N: <Acción ...>` nombra la acción del modelo, y la tabla de cobertura dice qué función del motor la hace. Debajo vienen las variables de ese estado. Basta para decidir; `/statechart` solo lo pone en palabras.
 
 ## Cobertura
 
@@ -80,7 +83,8 @@ Cada constante de `main.cfg` es una rama concreta del código. Cada acción del 
 | `AjusteAbre` | `dominio.inspeccion_bloquea` e `inspeccion_consumida` consultan `ajuste_sin_ver_por_inspeccion` | TRUE |
 | `AjusteSuelta` | reducción `kind == "ajuste"` llama `_soltar_impedimento_de_inspeccion` | TRUE |
 | `RespuestaReabre` | `dominio._respuesta` a una solicitud que no es `pregunta`: suma `tardias` (marca nueva en `marca_inspeccion_entregada`) y suelta el impedimento | TRUE |
-| `Lanzar` | `dominio.decision_proceso` (orden: impedimento, `espera_inspeccion_consumida`, `inspeccion_bloquea`); `ciclo` anota `inspeccion_entregada` | |
+| `Lanzar` | `dominio.decision_proceso` (orden: impedimento, `espera_inspeccion_consumida`, `inspeccion_bloquea`); al abrir el intento el ajuste queda visto | |
+| `Salta`, `VistaAlCambiar` | `ciclo._salta_inspeccion` (antes de incorporar): un juicio que vuelve a pedir la consulta ligada no gasta revisión y, si la solicitud ya tiene resultado, anota `inspeccion_entregada`; `ciclo._consumir_ligada` la anota al cambiar de consulta. Un revisor muerto sin juicio no anota nada y se relanza con el mismo dato | |
 | `Incorporar`, `LigarPide` | guarda `por_incorporar` en `ciclo.barrer` (no incorpora con el encargo deteniendo o detenido); `ciclo._incorporar_revisor`, rama `no_concluyente` con `inspeccion_faltante`: `_devolver(..., "inspeccionar")` deja el encargo `recibido`; reducción `revision` (pone `inspeccion_pendiente`); `ciclo._ligar_inspeccion` con `ciclo._id_inspeccion`, `necesidades.pedir_inspeccion` y `necesidades.registrar_pedida` | |
 | `Atender` | `necesidades.atender`: previa con resultado (responde y archiva), rama `_detenida_ahora` (con la reducción `solicitud_tardia`, que solo anota en `procedimiento`), `_registrar_solicitud`, y la herramienta que termina con `_anotar_resolucion` → reducción `resolucion` (`dominio._resolucion`) | |
 | `Impedir` | `dominio.decision_proceso` → evento `impedimento` de `espera_inspeccion_consumida` | |
@@ -98,7 +102,7 @@ Qué cuenta en el modelo:
 
 ## Si una regla se rompe
 
-1. Lee el camino con `/statechart`.
+1. Lee el camino, con `/statechart` o directo de la salida de TLC.
 2. Repite cada paso contra el código, usando la tabla de cobertura para saber qué función hace cada paso.
 3. Busca también, fuera de la tabla, si algún otro camino rescataría al encargo en el último estado. El detector de quietud no lo hace: `dominio.sin_nada_en_curso` da por sostenido un encargo con una inspección que bloquea.
 4. Si el código puede dar ese paso así y nada lo rescata, es un fallo real. Repórtalo con el camino en palabras del motor (por ejemplo: "el revisor pide evidencia, lo paras, el motor saca el pedido del buzón, continúas y queda atado a un pedido que no existe"). No cambies código del producto sin que lo pidan.
@@ -136,4 +140,5 @@ Por qué pasan esas últimas:
 - El freno `TOPE_NO_CONCLUYENTES` (necesita_usuario tras N no concluyentes), cancelar, varias fases y varios encargos.
 - Una herramienta asíncrona (`ci.correr`) que termina después de que la solicitud quedó `detenida`.
 - El cambio de intento: `_vigente` deja vigente la solicitud ligada, así que no hace falta para estas reglas.
-- La cota: hasta `MaxIds = 3` identidades del mismo pedido; también se comprobó con 5. Un pase cubre el modelo dentro de la cota, no todo el motor.
+- Ningún job de CI corre esta verificación; hay que correrla a mano según "Cuándo correrla".
+- La cota: hasta `MaxIds = 3` identidades del mismo pedido (366 estados); también se comprobó con 5 (610 estados). Un pase cubre el modelo dentro de la cota, no todo el motor.
