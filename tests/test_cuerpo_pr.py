@@ -8,7 +8,13 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from motor.encargos.ciclo import _cuerpo_pr
+from motor.encargos.ciclo import (
+    _cuerpo_pr,
+    _leer_cuerpo_del_espacio,
+    _paso_entrega,
+    ahora_iso,
+)
+from motor.encargos.comprobacion import instrucciones_responsable
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import (
     Recorrido,
@@ -27,6 +33,17 @@ def setUpModule():
 def _pr_unico(gh) -> dict:
     estado = json.loads((gh.d / "github.json").read_text(encoding="utf-8"))
     return next(iter(estado["prs"].values()))
+
+
+class _GhFallaCuerpo(FakeGitHub):
+    """El primer intento de actualizar el cuerpo falla, como un error de `gh`."""
+
+    fallar = True
+
+    def actualizar_cuerpo(self, repo, numero, cuerpo):
+        if self.fallar:
+            raise RuntimeError("gh pr edit: fallo simulado")
+        return super().actualizar_cuerpo(repo, numero, cuerpo)
 
 
 class CuerpoDelPrAlAbrir(unittest.TestCase):
@@ -82,9 +99,37 @@ class CuerpoDelPrAlAbrir(unittest.TestCase):
             self.assertLessEqual(len(cuerpo), LIMITE_GITHUB)
             self.assertTrue(cuerpo.startswith(cabecera))
             self.assertIn(".interno/cuerpo-pr.md", cuerpo)
+            self.assertIn("fuera del PR", cuerpo)
             self.assertTrue(
                 cuerpo.endswith(f"Encargo {r.enc}. Fase: {e.fase_activa}.")
             )
+
+    def test_texto_con_nul_se_sanea_antes_de_publicar(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "cuerpo-nul", FakeGitHub)
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "# Cambios\n\x00oculto", encoding="utf-8"
+            )
+
+            vuelta("hola")
+
+            cuerpo = _pr_unico(vuelta.gh).get("cuerpo") or ""
+            self.assertNotIn("\x00", cuerpo)
+            self.assertTrue(cuerpo.startswith("# Cambios\noculto"))
+
+    def test_la_lectura_se_acota_al_limite_mas_uno(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            espacio = Path(tmp)
+            interno = espacio / ".interno"
+            interno.mkdir()
+            (interno / "cuerpo-pr.md").write_text(
+                "x" * (LIMITE_GITHUB + 10_000), encoding="utf-8"
+            )
+
+            texto = _leer_cuerpo_del_espacio(espacio)
+
+            self.assertIsNotNone(texto)
+            self.assertLessEqual(len(texto or ""), LIMITE_GITHUB + 1)
 
     def test_enlace_simbolico_al_host_no_se_publica_y_conserva_el_cuerpo_de_hoy(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -161,6 +206,69 @@ class CuerpoDelPrAlAbrir(unittest.TestCase):
                 resultado.get("cuerpo"),
                 "Encargo enc_x. Revision independiente aprobada.",
             )
+
+
+class CuerpoDelPrAlRepublicar(unittest.TestCase):
+    def test_pr_existente_recibe_el_cuerpo_actualizado_al_publicar_otra_version(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "cuerpo-republica", FakeGitHub)
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "primera version", encoding="utf-8"
+            )
+            vuelta("uno")
+            primero = _pr_unico(vuelta.gh).get("cuerpo")
+
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "segunda version", encoding="utf-8"
+            )
+            e = vuelta("dos")
+
+            segundo = _pr_unico(vuelta.gh).get("cuerpo")
+            self.assertNotEqual(primero, segundo)
+            self.assertEqual(
+                segundo, f"segunda version\n\nEncargo {r.enc}. Fase: {e.fase_activa}."
+            )
+
+    def test_fallo_al_actualizar_no_detiene_y_se_reintenta(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "cuerpo-republica-fallo", _GhFallaCuerpo
+            )
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "primera version", encoding="utf-8"
+            )
+            vuelta("uno")
+
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "segunda version", encoding="utf-8"
+            )
+            e = vuelta("dos")
+
+            self.assertTrue(e.pr_numero)
+            fallos = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "instrumento_fallo"
+                and "cuerpo" in str(ev["data"].get("causa") or "")
+            ]
+            self.assertTrue(fallos)
+
+            vuelta.gh.fallar = False
+            _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            self.assertEqual(
+                _pr_unico(vuelta.gh).get("cuerpo"),
+                f"segunda version\n\nEncargo {r.enc}. Fase: {e.fase_activa}.",
+            )
+
+
+class InstruccionesDelResponsable(unittest.TestCase):
+    def test_piden_escribir_el_cuerpo_del_pr(self):
+        texto = instrucciones_responsable(Path("/espacio/.interno"))
+
+        self.assertIn("cuerpo-pr.md", texto)
+        self.assertIn("rojo", texto)
+        self.assertIn("verde", texto)
 
 
 if __name__ == "__main__":

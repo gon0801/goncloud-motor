@@ -246,6 +246,7 @@ class GitHubPort(Protocol):
     ) -> PrView: ...
     def marcar_listo(self, repo: str, numero: int) -> None: ...
     def cambiar_base(self, repo: str, numero: int, base: str) -> None: ...
+    def actualizar_cuerpo(self, repo: str, numero: int, cuerpo: str) -> None: ...
     def checks(
         self,
         repo: str,
@@ -395,6 +396,12 @@ class GhGitHub:
                 "pr", "edit", str(numero), "--base", base,
                 "-R", self.nombre(repo),
             )
+
+    def actualizar_cuerpo(self, repo, numero, cuerpo):
+        self._gh(
+            "pr", "edit", str(numero), "--body", cuerpo,
+            "-R", self.nombre(repo),
+        )
 
     @staticmethod
     def _paginas(texto: str) -> list:
@@ -702,6 +709,11 @@ class FakeGitHub:
         if pr["base"] != base:
             pr["base"] = base
             self._guardar(s)
+
+    def actualizar_cuerpo(self, repo, numero, cuerpo):
+        s = self._cargar()
+        self._pr(s, repo, numero)["cuerpo"] = cuerpo
+        self._guardar(s)
 
     def _correr(self, repo: str, sha: str, cmd: str) -> bool:
         with tempfile.TemporaryDirectory() as t:

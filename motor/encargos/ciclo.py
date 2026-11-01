@@ -3463,7 +3463,8 @@ def _reconciliar_checks(
 _LIMITE_CUERPO_PR = 65_536
 _NOTA_CUERPO_RECORTADO = (
     "\n\n[Nota: el cuerpo supera el límite de GitHub y se recortó. "
-    "El texto completo está en .interno/cuerpo-pr.md.]"
+    "El texto completo está en `.interno/cuerpo-pr.md`, en el espacio del "
+    "encargo y fuera del PR.]"
 )
 
 
@@ -3496,7 +3497,7 @@ def _leer_cuerpo_del_espacio(espacio: Path) -> str | None:
         fd = -1
         with entrada:
             try:
-                return entrada.read()
+                return entrada.read(_LIMITE_CUERPO_PR + 1)
             except OSError:
                 return None
     finally:
@@ -3512,7 +3513,7 @@ def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
     texto = _leer_cuerpo_del_espacio(espacio)
     if texto is None:
         return defecto
-    texto = texto.rstrip()
+    texto = texto.replace("\x00", "").rstrip()
     if not texto.strip():
         return defecto
     linea = f"Encargo {enc.id}. Fase: {enc.fase_activa or FASE_IMPLICITA}."
@@ -3522,6 +3523,65 @@ def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
     resto = f"{_NOTA_CUERPO_RECORTADO}\n\n{linea}"
     disponible = max(0, _LIMITE_CUERPO_PR - len(resto))
     return f"{texto[:disponible]}{resto}"
+
+
+def _cuerpo_ya_publicado(registro: Registro, enc: Encargo, sha: str) -> bool:
+    return any(
+        ev["kind"] == "entrega_externa"
+        and ev["data"].get("paso") == "pr_cuerpo"
+        and ev["data"].get("sha") == sha
+        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+        for ev in registro.eventos(enc.id)
+    )
+
+
+def _anotar_cuerpo_publicado(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> None:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "pr_cuerpo",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:pr_cuerpo:{sha}",
+    )
+
+
+def _actualizar_cuerpo_pr(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    numero: int,
+    sha: str,
+    espacio: Path,
+    hora: str,
+) -> Encargo:
+    if _cuerpo_ya_publicado(registro, enc, sha):
+        return enc
+    try:
+        gh.actualizar_cuerpo(enc.entrega.repo, numero, _cuerpo_pr(enc, espacio))
+    except Exception as exc:
+        _anotar_instrumento(
+            registro,
+            enc,
+            "github",
+            f"no se pudo actualizar el cuerpo del PR #{numero}: {exc}",
+            "reintentar el cuerpo en la próxima publicación",
+            hora,
+            f"cuerpo-{sha[:12]}",
+        )
+        return registro.fold(enc.id) or enc
+    _anotar_cuerpo_publicado(registro, enc, numero, sha, hora)
+    return registro.fold(enc.id) or enc
 
 
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
@@ -3651,6 +3711,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     registro, enc, espacio, directorio, hora
                 )
             return enc
+        if vista_pr.estado == "abierto":
+            enc = _actualizar_cuerpo_pr(
+                registro, enc, gh, numero, sha, espacio, hora
+            )
     if not enc.pr_numero or (
         vista_pr.estado == "mergeado" and vista_pr.base != base
     ):
@@ -3776,6 +3840,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 },
                 f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
             )
+            _anotar_cuerpo_publicado(registro, enc, numero, sha, hora)
         except Exception as exc:
             causa = f"no se pudo abrir o preparar el PR: {exc}"
             _anotar_instrumento(
