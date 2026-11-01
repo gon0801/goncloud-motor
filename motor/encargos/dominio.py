@@ -318,6 +318,9 @@ class Solicitud:
     # Respuestas del propietario que llegaron cuando la solicitud ya no estaba
     # en `pregunta`: no cambian su estado, pero son información nueva.
     tardias: tuple[str, ...] = ()
+    # Carpeta del host donde su herramienta deja `resultado.json`. El intento
+    # que la lanzó puede no ser el vigente cuando termina: la solicitud la recuerda.
+    carpeta: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -343,6 +346,7 @@ class Solicitud:
             "respuesta": self.respuesta,
             "detalle": self.detalle,
             "tardias": list(self.tardias),
+            "carpeta": self.carpeta,
         }
 
     @property
@@ -1504,6 +1508,8 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
 
     if kind == "solicitud":
         return _solicitud(e, d, hora)
+    if kind == "herramienta":
+        return _herramienta(e, d, hora)
     if kind == "inspeccion_solicitud":
         e = _fase_de_evento(e, d)
         fase = e.fase_actual
@@ -1594,6 +1600,26 @@ def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:
         pregunta=str(d.get("pregunta") or "") if nace == "pregunta" else "",
     )
     return replace(e, solicitudes=e.solicitudes + (sol,), hora=hora or e.hora)
+
+
+def _herramienta(e: Encargo, d: dict, hora: str) -> Encargo:
+    """La solicitud recuerda dónde dejará su resultado la herramienta que la atiende."""
+    ident = str(d.get("id") or "")
+    sol = next((s for s in e.solicitudes if s.id == ident), None)
+    if sol is None:
+        raise TransicionIlegal("la herramienta no tiene solicitud")
+    carpeta = str(d.get("carpeta") or "")
+    if not carpeta:
+        raise TransicionIlegal("la herramienta necesita su carpeta")
+    if sol.carpeta:
+        return e
+    return replace(
+        e,
+        solicitudes=tuple(
+            replace(s, carpeta=carpeta) if s.id == ident else s for s in e.solicitudes
+        ),
+        hora=hora or e.hora,
+    )
 
 
 def _soltar_impedimento_de_inspeccion(e: Encargo) -> Encargo:
