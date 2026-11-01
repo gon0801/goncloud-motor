@@ -328,6 +328,8 @@ def instrucciones_responsable(interno: Path, capacidades: str = "") -> str:
     return f"""Investiga, implementa y comprueba el pedido completo con las herramientas adecuadas al trabajo.
 El espacio fuera de .interno/ es solo el producto que se entrega. Todo lo interno va en {interno}:
 contexto.md con hechos, decisiones y pendientes; evidencia.txt con lo que observaste al comprobar.
+Escribe .interno/cuerpo-pr.md con el cuerpo del PR: que cambio, como se comprueba y la salida
+de las pruebas en rojo y en verde. Ese texto sera la descripcion del PR.
 Comprobar es proporcional al pedido. Para cambiar una cifra puede bastar leer el valor final y
 dejarlo en evidencia.txt. Si una comprobacion ejecutable aporta, declarala en
 .interno/comprobaciones.json como {{"comprobaciones":[{{"objetivo":"parte del pedido que demuestra",

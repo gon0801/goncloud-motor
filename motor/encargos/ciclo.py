@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import socket
+import stat
 import subprocess
 import uuid
 from dataclasses import replace
@@ -3582,6 +3584,149 @@ def _reconciliar_checks(
     return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
 
 
+_LIMITE_CUERPO_PR = 65_536
+_NOTA_CUERPO_RECORTADO = (
+    "\n\n[Nota: el cuerpo supera el límite de GitHub y se recortó. "
+    "El texto completo está en `.interno/cuerpo-pr.md`, en el espacio del "
+    "encargo y fuera del PR.]"
+)
+
+
+def _leer_cuerpo_del_espacio(espacio: Path) -> str | None:
+    """Lee `.interno/cuerpo-pr.md` sin seguir enlaces ni aceptar un archivo
+    compartido con otro lugar del host. Devuelve None si no es un archivo
+    regular propio del espacio."""
+    ruta = espacio / ".interno" / "cuerpo-pr.md"
+    try:
+        if capacidades._es_enlace(ruta):
+            return None
+        info = os.lstat(ruta)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return None
+        if not ruta.resolve().is_relative_to(espacio.resolve()):
+            return None
+        fd = os.open(
+            ruta,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+    except (OSError, ValueError, RuntimeError):
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return None
+        entrada = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+        fd = -1
+        with entrada:
+            try:
+                return entrada.read(_LIMITE_CUERPO_PR + 1)
+            except OSError:
+                return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _cabe_en_el_limite(cuerpo: str) -> bool:
+    """GitHub acepta 65 536 caracteres, pero el API también se queja por bytes
+    (64 KiB en varios casos): se respetan las dos medidas."""
+    return (
+        len(cuerpo) <= _LIMITE_CUERPO_PR
+        and len(cuerpo.encode("utf-8")) <= _LIMITE_CUERPO_PR
+    )
+
+
+def _cuerpo_recortado(texto: str, resto: str) -> str:
+    max_caracteres = _LIMITE_CUERPO_PR - len(resto)
+    max_bytes = _LIMITE_CUERPO_PR - len(resto.encode("utf-8"))
+    if max_caracteres <= 0 or max_bytes <= 0:
+        return resto[:_LIMITE_CUERPO_PR]
+    candidato = texto[:max_caracteres]
+    if len(candidato.encode("utf-8")) > max_bytes:
+        candidato = candidato.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+    return f"{candidato}{resto}"
+
+
+def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
+    """El cuerpo del PR: lo que el responsable dejó en `.interno/cuerpo-pr.md`,
+    con una línea final que identifica el encargo y la fase. Sin archivo o vacío
+    se conserva el cuerpo de siempre."""
+    defecto = f"Encargo {enc.id}. Revision independiente aprobada."
+    texto = _leer_cuerpo_del_espacio(espacio)
+    if texto is None:
+        return defecto
+    texto = texto.replace("\x00", "").rstrip()
+    if not texto.strip():
+        return defecto
+    linea = f"Encargo {enc.id}. Fase: {enc.fase_activa or FASE_IMPLICITA}."
+    cuerpo = f"{texto}\n\n{linea}"
+    if _cabe_en_el_limite(cuerpo):
+        return cuerpo
+    resto = f"{_NOTA_CUERPO_RECORTADO}\n\n{linea}"
+    return _cuerpo_recortado(texto, resto)
+
+
+def _cuerpo_ya_publicado(registro: Registro, enc: Encargo, sha: str) -> bool:
+    return any(
+        ev["kind"] == "entrega_externa"
+        and ev["data"].get("paso") == "pr_cuerpo"
+        and ev["data"].get("sha") == sha
+        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+        for ev in registro.eventos(enc.id)
+    )
+
+
+def _anotar_cuerpo_publicado(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> None:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "pr_cuerpo",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:pr_cuerpo:{sha}",
+    )
+
+
+def _actualizar_cuerpo_pr(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    numero: int,
+    sha: str,
+    espacio: Path,
+    hora: str,
+) -> Encargo:
+    if _cuerpo_ya_publicado(registro, enc, sha):
+        return enc
+    try:
+        gh.actualizar_cuerpo(enc.entrega.repo, numero, _cuerpo_pr(enc, espacio))
+    except Exception as exc:
+        _anotar_instrumento(
+            registro,
+            enc,
+            "github",
+            f"no se pudo actualizar el cuerpo del PR #{numero}: {exc}",
+            "reintentar el cuerpo en la próxima publicación",
+            hora,
+            f"cuerpo-{sha[:12]}",
+        )
+        return registro.fold(enc.id) or enc
+    _anotar_cuerpo_publicado(registro, enc, numero, sha, hora)
+    return registro.fold(enc.id) or enc
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
@@ -3709,6 +3854,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     registro, enc, espacio, directorio, hora
                 )
             return enc
+        if vista_pr.estado == "abierto":
+            enc = _actualizar_cuerpo_pr(
+                registro, enc, gh, numero, sha, espacio, hora
+            )
     if not enc.pr_numero or (
         vista_pr.estado == "mergeado" and vista_pr.base != base
     ):
@@ -3790,7 +3939,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 rama,
                 base,
                 f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
-                f"Encargo {enc.id}. Revision independiente aprobada.",
+                _cuerpo_pr(enc, espacio),
             )
             numero = int(pr.numero)
             registro.anotar(
@@ -3833,6 +3982,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     },
                 },
                 f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
+            )
+            enc = _actualizar_cuerpo_pr(
+                registro, enc, gh, numero, sha, espacio, hora
             )
         except Exception as exc:
             causa = f"no se pudo abrir o preparar el PR: {exc}"
