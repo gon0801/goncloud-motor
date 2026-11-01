@@ -75,7 +75,10 @@ def copiar_arbol(origen: Path, destino: Path, omitir: tuple[str, ...] = ()) -> N
     """
     errores: list[tuple[str, str, str]] = []
     destino.mkdir(parents=True, exist_ok=True)
-    for raiz, carpetas, archivos in os.walk(origen):
+    def ilegible(exc: OSError) -> None:
+        errores.append((str(exc.filename), "", str(exc)))
+
+    for raiz, carpetas, archivos in os.walk(origen, onerror=ilegible):
         carpetas[:] = [c for c in carpetas if c not in omitir]
         relativa = Path(raiz).relative_to(origen)
         aqui = destino / relativa

@@ -11,7 +11,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from motor.encargos.arranque import Observacion
-from motor.encargos.ciclo import _copiar_sesion
+from motor.encargos.ciclo import _copiar_sesion, _copiar_sesion_sin_caer, ahora_iso, recibir
+from motor.encargos.copiar import copiar_arbol
+from motor.encargos.registro import Registro
 from motor.encargos.dominio import Encargo, decision_proceso
 from motor.encargos.sesion import herramienta_en_curso
 
@@ -181,6 +183,44 @@ class CopiaConArchivosDeSoloLectura(unittest.TestCase):
         _copiar_sesion(self.origen, self.almacen)
         self.assertFalse((self.almacen / ".local/share/opencode/auth.json").exists())
         self.assertTrue((self.almacen / ".local/share/opencode/otro.json").exists())
+
+
+@unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "necesita permisos POSIX sin root")
+class CopiaQueFalla(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(self._limpiar)
+        self.origen = self.tmp / "intento"
+        self.ilegible = self.origen / ".local/share/opencode/privado"
+        self.ilegible.mkdir(parents=True)
+        (self.origen / ".local/share/opencode/opencode.db").write_text("v1")
+        self.ilegible.chmod(0)
+
+    def _limpiar(self):
+        self.ilegible.chmod(0o755)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_un_directorio_ilegible_se_informa_y_no_se_salta_en_silencio(self):
+        destino = self.tmp / "almacen"
+        with self.assertRaises(shutil.Error) as visto:
+            copiar_arbol(self.origen / ".local/share/opencode", destino)
+        self.assertIn("privado", str(visto.exception))
+        self.assertEqual((destino / "opencode.db").read_text(), "v1")
+
+    def test_el_fallo_de_la_copia_queda_en_el_encargo_y_no_sube_al_barrido(self):
+        registro = Registro(self.tmp / "base")
+        hora = ahora_iso()
+        ident = recibir(registro, "copia", "copia-1", hora)["encargo"]
+        enc = registro.fold(ident)
+        for _ in range(2):
+            _copiar_sesion_sin_caer(
+                registro, enc, self.origen, self.tmp / "almacen", "guardar", hora
+            )
+        fallos = [e for e in registro.eventos(ident) if e["kind"] == "instrumento_fallo"]
+        self.assertEqual(len(fallos), 1)
+        self.assertEqual(fallos[0]["data"]["fuente"], "copia_sesion")
+        self.assertIn("privado", fallos[0]["data"]["causa"])
+        self.assertEqual((self.tmp / "almacen/.local/share/opencode/opencode.db").read_text(), "v1")
 
 
 if __name__ == "__main__":
