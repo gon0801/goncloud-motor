@@ -447,12 +447,21 @@ def _supervisor(reg: Registro, args) -> int:
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))
         return 0
-    from motor.senal import Senal
+    from motor.senal import VARIABLE_ENCARGOS, Senal
 
     from motor.integraciones.canales import canales_caidos
 
     base = reg.base
-    senal = Senal(base, lambda: {}, canales=lambda: canales_caidos(base))
+    # El supervisor vigila con su propio monitor de Kuma (MOTOR_KUMA_ENCARGOS_URL): MOTOR_KUMA_URL es del
+    # daemon del modo planes y, compartida, cada proceso taparía la caída del otro. La dirección se busca
+    # en el secretos.env de la base y, si no, en el de ~/.motor, donde ya viven los secretos de la máquina.
+    senal = Senal(
+        base,
+        lambda: {},
+        canales=lambda: canales_caidos(base),
+        respaldo=Path.home() / ".motor",
+        variable=VARIABLE_ENCARGOS,
+    )
     senal.arranca()
     try:
         while True:
