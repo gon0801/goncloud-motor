@@ -18,7 +18,7 @@ from motor.encargos.ciclo import (
     recibir,
     resolver_entrega,
 )
-from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida
+from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida, reducir
 from motor.encargos.registro import Registro
 
 
@@ -894,12 +894,28 @@ def _con_remision(frase: str, tecnico: bool) -> str:
     return f"{frase} {REMISION}" if tecnico else frase
 
 
-def hechos_de_avance(enc) -> list[dict]:
+def _apariciones_de_impedimentos(registro: Registro, encargo: str) -> dict[str, int]:
+    """Cuántas veces se trabó el encargo por cada clase: cada paso de "no pendiente" a "pendiente" cuenta una."""
+    estado, previas, cuenta = None, set(), {}
+    for evento in registro.eventos(encargo):
+        estado = reducir(estado, evento)
+        ahora = {i.clase for i in estado.impedimentos}
+        for clase in ahora - previas:
+            cuenta[clase] = cuenta.get(clase, 0) + 1
+        previas = ahora
+    return cuenta
+
+
+def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dict]:
     """Hechos ya registrados que merecen un aviso a una persona no técnica. La identidad es el hecho.
 
     Van: el encargo arrancó, necesita una decisión, el PR está listo para decidir el merge y se trabó.
     El cierre es otro aviso (`_aviso_de`). Decisiones del agente, esperas de reintento, revisiones,
     comprobaciones y fases intermedias quedan en el registro y no salen al canal.
+
+    Un trabado se identifica por su clase y por la vez que el encargo se trabó con ella (`apariciones`):
+    el texto que cambia dentro de un mismo bloqueo no repite el aviso, y un bloqueo nuevo de la misma
+    clase, tras resolverse el anterior, sí lo avisa.
     """
     if enc.estado in ("cancelado", "detenido", "deteniendo", "terminado"):
         return []
@@ -917,10 +933,12 @@ def hechos_de_avance(enc) -> list[dict]:
                 "texto": f"El PR #{fase.pr_numero} está listo para que decidas si lo integras.",
             }
         )
+    preguntadas = set()
     for sol in enc.solicitudes:
         if sol.estado != "pregunta":
             continue
         pregunta, tecnico = _llano(sol.pregunta or sol.motivo)
+        preguntadas.update(t for t in (sol.pregunta, sol.motivo, pregunta) if t)
         hechos.append(
             {
                 "tipo": "pregunta",
@@ -934,13 +952,16 @@ def hechos_de_avance(enc) -> list[dict]:
         )
     if enc.estado == "necesita_usuario" and enc.motivo:
         pregunta, tecnico = _llano(enc.motivo)
-        hechos.append(
-            {
-                "tipo": "pregunta",
-                "identidad": "usuario:" + hashlib.sha256(enc.motivo.encode()).hexdigest()[:12],
-                "texto": _con_remision(f"Necesito tu decisión para seguir. {pregunta}".rstrip(), tecnico),
-            }
-        )
+        if not {enc.motivo, pregunta} & preguntadas:
+            hechos.append(
+                {
+                    "tipo": "pregunta",
+                    "identidad": "usuario:" + hashlib.sha256(enc.motivo.encode()).hexdigest()[:12],
+                    "texto": _con_remision(
+                        f"Necesito tu decisión para seguir. {pregunta}".rstrip(), tecnico
+                    ),
+                }
+            )
     clase, condicion = "", ""
     if enc.impedimento and (enc.impedimento_causa or enc.impedimento_condicion):
         clase, condicion = enc.impedimento, enc.impedimento_condicion
@@ -951,7 +972,7 @@ def hechos_de_avance(enc) -> list[dict]:
         hechos.append(
             {
                 "tipo": "trabado",
-                "identidad": clase,
+                "identidad": f"{clase}:{(apariciones or {}).get(clase, 1)}",
                 "texto": _con_remision(
                     "Tu encargo se trabó y no puede avanzar solo."
                     + (f" Hace falta: {hace_falta}." if hace_falta else ""),
@@ -1294,7 +1315,8 @@ def drenar(registro: Registro, cortar: str = "", ahora: float | None = None) -> 
             trabajos.append(
                 (aviso, _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"])))
             )
-        for hecho in hechos_de_avance(enc):
+        apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
+        for hecho in hechos_de_avance(enc, apariciones):
             aviso = _aviso_de_hecho(enc, hecho)
             if aviso["id"] in historicos and not (
                 registro.base / "avisos" / f"{aviso['id']}.json"
