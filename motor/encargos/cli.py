@@ -133,6 +133,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--agente", choices=(*ADAPTADORES, "sleep", "ensayo"), default="")
     s.add_argument("--respaldo", choices=tuple(ADAPTADORES), action="append", default=[])
 
+    s = sub.add_parser("traer-main")
+    s.add_argument("encargo")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--contra", default="")
+    s.add_argument("--remoto", default="origin")
+
     s = sub.add_parser("encargos-aplicar")
     s.add_argument("--base", type=Path)
 
@@ -176,6 +182,15 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
             relacion.append(crear_motor06(reg, hora))
         print(json.dumps(relacion, ensure_ascii=False, sort_keys=True))
         return 0
+    if args.cmd == "traer-main":
+        from .integracion import traer_main
+
+        return _json(
+            traer_main(
+                reg, args.encargo, hora,
+                contra=args.contra, remoto=args.remoto,
+            )
+        )
     if args.cmd == "encargar":
         texto = args.texto
         adjuntos: tuple[str, ...] = ()

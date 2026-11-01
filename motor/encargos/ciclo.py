@@ -2996,6 +2996,8 @@ def _incorporar_entradas(
     squash la reescribe) y se une con `-s ours`, árbol intacto. Devuelve la
     causa si no se pudo.
     """
+    if _git(espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
+        return ""
     fase = enc.fase_actual
     deps = _deps_de(enc, fase)
     if any(dep.integrado_sha for dep in deps):
@@ -3607,6 +3609,14 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     espacio = _espacio(registro.base, enc.id)
     directorio = _directorio(registro.base, enc.id)
+    if _git(espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
+        causa = "hay una mezcla en curso con la base; resuélvela antes de entregar"
+        _devolver(
+            registro, enc, "integrar_main", causa,
+            "resolver el conflicto, 'git add' y 'git commit'; después continuar la entrega",
+            hora, f"mezcla-{enc.generacion}",
+        )
+        return registro.fold(enc.id)
     causa = _asegurar_repo(enc, espacio, registro, hora)
     if causa:
         if causa.startswith("conflicto al incorporar la entrada"):
