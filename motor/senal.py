@@ -39,8 +39,11 @@ def silencio_s(tiempos: dict[str, float]) -> float:
 
 
 class Senal:
-    def __init__(self, home: Path, tiempos, reloj=time.monotonic):
+    def __init__(self, home: Path, tiempos, reloj=time.monotonic, canales=None):
+        """`canales` devuelve los canales de avisos caídos (lectura local, sin tocar el canal): si hay
+        alguno, la señal sale con status=down y el último error."""
         self.home = home
+        self._canales = canales
         self._tiempos = tiempos
         self._reloj = reloj
         self._ultimo_avance = reloj()
@@ -90,10 +93,23 @@ class Senal:
 
     def _manda(self, url: str) -> None:
         base = urllib.parse.urlsplit(url)._replace(query="", fragment="").geturl()
-        msg = urllib.parse.quote(f"{self._planes} planes")
+        caidos = self._canales_caidos()
+        texto = f"{self._planes} planes"
+        for c in caidos:
+            texto += f"; canal {c['canal']} caído desde {c['fallando_desde']}: {c['ultimo_error']}"
+        msg = urllib.parse.quote(texto[:300])
+        estado = "down" if caidos else "up"
         abre = urllib.request.build_opener(_SinRedireccion).open
-        with abre(f"{base}?status=up&msg={msg}", timeout=TOPE_GET_S) as r:
+        with abre(f"{base}?status={estado}&msg={msg}", timeout=TOPE_GET_S) as r:
             r.read(1024)
+
+    def _canales_caidos(self) -> list[dict]:
+        if self._canales is None:
+            return []
+        try:
+            return list(self._canales())
+        except Exception:  # noqa: BLE001  un estado ilegible no apaga la señal de vida
+            return []
 
     def _anota(self, tipo: str) -> None:
         ahora = self._reloj()
