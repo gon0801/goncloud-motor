@@ -3741,11 +3741,23 @@ def _veredicto_antes_de_cerrar(
 def _cerrar_con_veredicto(
     registro: Registro, enc: Encargo, gh, espacio: Path, directorio: Path, hora: str
 ) -> Encargo:
+    if gh is None and _requiere_veredicto(enc):
+        # Sin puerto de GitHub no hay veredicto que comprobar: no se cierra.
+        return enc
     devuelto = _veredicto_antes_de_cerrar(registro, enc, gh, hora)
     if devuelto is not None:
         return devuelto
     return _intentar_cierre(
         registro, enc, espacio, directorio, hora, veredicto_comprobado=True
+    )
+
+
+def _requiere_veredicto(enc: Encargo) -> bool:
+    """Cerrar esta fase exige releer a DeepSeek: entrega con PR y nivel pr alcanzado."""
+    return bool(
+        enc.entrega.nivel in ("pr", "integrado", "desplegado")
+        and enc.nivel_alcanzado == "pr"
+        and enc.pr_numero
     )
 
 
@@ -3769,6 +3781,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         and enc.estado != "terminado"
         and not _deepseek_por_releer(enc)
         and not _sha_final_sin_leer(enc, gh)
+        and not (gh is None and _requiere_veredicto(enc))
     ):
         return _cerrar_con_veredicto(
             registro, enc, gh, _espacio(registro.base, enc.id),
