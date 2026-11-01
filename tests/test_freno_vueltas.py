@@ -380,7 +380,10 @@ class EsperaDeChecksEnLaEntrega(unittest.TestCase):
             ]
             self.assertEqual(len(pasos), 1)
 
-    def test_un_requerido_que_nadie_corre_espera_a_la_vista_pero_no_frena_el_conteo(self):
+    def test_un_requerido_que_nadie_corre_no_anota_la_espera_de_checks(self):
+        # La entrega espera a la vista, pero sin `checks_esperando`: no hay corrida que
+        # esperar. (El freno sigue sin contar aqui por DeepSeek, que aun no leyo el commit;
+        # que un requerido que nadie corre no suspende el conteo se prueba abajo.)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = self._entrega_con_checks(tmp, "fr-esp-b", ())
             e = vuelta("uno")
@@ -395,6 +398,34 @@ class EsperaDeChecksEnLaEntrega(unittest.TestCase):
                 ],
                 [],
             )
+
+    def test_un_requerido_que_nadie_corre_no_suspende_el_conteo_de_vueltas(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "fr-esp-c", _GhPorCommit,
+                {"requeridos": ["ci", "fantasma"], "checks": {"ci": "exit 1"}},
+            )
+            gh = vuelta.gh
+            e = vuelta("uno")
+            sha = e.producto.sha_git
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
+
+            # Una lectura sin checks en rojo ni corridas: `fantasma` falta y nadie lo corre.
+            gh.checks = lambda *a, **k: ChecksVerdict(
+                sha=sha, terminal=False, green=False, faltan=("fantasma",), fallas=(),
+                en_marcha=(),
+            )
+            e = _barrido(r, gh, time.time())
+            self.assertEqual(e.fase_actual.checks_esperando_sha, "")
+            self.assertFalse(revision_externa_pendiente(e))
+
+            # La vuelta sin cambios cuenta: el freno se ejecuta, no espera lo que no corre.
+            _devolver_el_trabajo(r, "fantasma")
+            r.incorporar()
+            e = r.fold()
+            self.assertEqual(e.sin_progreso, 1)
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertNotEqual(e.estado, "esperando_reintento")
 
 
 class ChecksEnMarcha(unittest.TestCase):
