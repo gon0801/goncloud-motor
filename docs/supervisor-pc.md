@@ -73,7 +73,13 @@ inicio de sesión es otro cambio.
 ## Comprobación real en la PC (después del despliegue)
 
 1. Arrancar con el comando y ver `vigilante` y `supervisor` en el informe, con
-   `in_job: false` y la sesión de Explorer.
+   `in_job: false` y la sesión de Explorer. Antes de seguir, comprobar que `supervisor.ps1`
+   se queda en primer plano: el vigilante lo relanza cada vez que su proceso termina, y el
+   supervisor no tiene candado de instancia única. Si `supervisor.ps1` lanzara el motor en
+   segundo plano y saliera, habría varios supervisores barriendo el mismo registro. Con el
+   supervisor sano y sin tocar nada, esperar 1 o 2 minutos: `--estado` debe seguir con
+   `"lanzamientos": 1` y `vigilante.log` no debe mostrar "el supervisor terminó". Si aparece,
+   no dar por buena la comprobación: `--parar` y revisar `supervisor.ps1`.
 2. Cerrar el proceso del supervisor (`taskkill /PID <pid del supervisor> /T /F`). En
    `vigilante.log` debe aparecer "el supervisor terminó" y "se vuelve a levantar en 5 s", y
    `--estado` debe mostrar un pid nuevo con `in_job: false`.
