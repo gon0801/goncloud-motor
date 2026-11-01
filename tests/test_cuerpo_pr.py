@@ -46,6 +46,16 @@ class _GhFallaCuerpo(FakeGitHub):
         return super().actualizar_cuerpo(repo, numero, cuerpo)
 
 
+class _GhCuentaCuerpo(FakeGitHub):
+    def __init__(self, d):
+        super().__init__(d)
+        self.actualizaciones = 0
+
+    def actualizar_cuerpo(self, repo, numero, cuerpo):
+        self.actualizaciones += 1
+        return super().actualizar_cuerpo(repo, numero, cuerpo)
+
+
 class _GhCapturaCuerpo(GhGitHub):
     """Captura el cuerpo que `gh` recibe por archivo, sin salir a la red."""
 
@@ -316,18 +326,64 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
                 "primera version", encoding="utf-8"
             )
             vuelta("uno")
-            primero = _pr_unico(vuelta.gh).get("cuerpo")
+            primer_pr = _pr_unico(vuelta.gh)
+            primero = primer_pr.get("cuerpo")
 
             (_interno(r) / "cuerpo-pr.md").write_text(
                 "segunda version", encoding="utf-8"
             )
             e = vuelta("dos")
 
-            segundo = _pr_unico(vuelta.gh).get("cuerpo")
+            segundo_pr = _pr_unico(vuelta.gh)
+            segundo = segundo_pr.get("cuerpo")
+            self.assertEqual(segundo_pr["numero"], primer_pr["numero"])
             self.assertNotEqual(primero, segundo)
             self.assertEqual(
                 segundo, f"segunda version\n\nEncargo {r.enc}. Fase: {e.fase_activa}."
             )
+
+    def test_un_pr_abierto_por_fuera_recibe_el_cuerpo_de_la_primera_publicacion(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "cuerpo-recupera", FakeGitHub)
+            e0 = r.fold()
+            viejo = vuelta.gh.abrir_pr(
+                e0.entrega.repo, e0.entrega.rama, "main", "t", "cuerpo viejo"
+            )
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "contenido", encoding="utf-8"
+            )
+
+            e = vuelta("hola")
+
+            pr = _pr_unico(vuelta.gh)
+            self.assertEqual(pr["numero"], viejo.numero)
+            self.assertEqual(
+                pr.get("cuerpo"),
+                f"contenido\n\nEncargo {r.enc}. Fase: {e.fase_activa}.",
+            )
+
+    def test_actualiza_una_vez_por_version_y_no_repite_el_mismo_sha(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "cuerpo-idempotente", _GhCuentaCuerpo
+            )
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "primera version", encoding="utf-8"
+            )
+            vuelta("uno")
+            self.assertEqual(vuelta.gh.actualizaciones, 1)
+
+            _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+            self.assertEqual(vuelta.gh.actualizaciones, 1)
+
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "segunda version", encoding="utf-8"
+            )
+            vuelta("dos")
+            self.assertEqual(vuelta.gh.actualizaciones, 2)
+
+            _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+            self.assertEqual(vuelta.gh.actualizaciones, 2)
 
     def test_fallo_al_actualizar_no_detiene_y_se_reintenta(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

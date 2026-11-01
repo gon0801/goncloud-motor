@@ -3859,7 +3859,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 },
                 f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
             )
-            _anotar_cuerpo_publicado(registro, enc, numero, sha, hora)
+            enc = _actualizar_cuerpo_pr(
+                registro, enc, gh, numero, sha, espacio, hora
+            )
         except Exception as exc:
             causa = f"no se pudo abrir o preparar el PR: {exc}"
             _anotar_instrumento(
