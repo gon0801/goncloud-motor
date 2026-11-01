@@ -126,8 +126,8 @@ def limpiar_temporal(runtime: Path) -> None:
 
 def _atajo_mktemp(runtime: Path) -> Path | None:
     """En macOS, BSD mktemp ignora TMPDIR sin una plantilla y usa /var/folders,
-    que la jaula niega. Un mktemp propio en el PATH lo lleva al temporal de la
-    corrida sin abrir otra escritura."""
+    que la jaula niega. Un mktemp propio en el PATH arma una plantilla dentro
+    del TMPDIR de la corrida, sin depender de la opción -p."""
     if sys.platform != "darwin":
         return None
     real = shutil.which("mktemp")
@@ -139,25 +139,28 @@ def _atajo_mktemp(runtime: Path) -> Path | None:
     atajo.write_text(
         "#!/bin/sh\n"
         f"real={shlex.quote(str(Path(real).resolve()))}\n"
-        "p=0\n"
-        "plantilla=0\n"
-        "prev=''\n"
-        'for a in "$@"; do\n'
-        "  case \"$a\" in\n"
-        "    -p|--tmpdir*) p=1 ;;\n"
-        "    -*) ;;\n"
+        "flags=''\n"
+        "prefijo=tmp\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        "  case \"$1\" in\n"
+        "    -p|--tmpdir*)\n"
+        '      exec "$real" "$@"\n'
+        "      ;;\n"
+        "    -t)\n"
+        "      prefijo=\"$2\"\n"
+        "      shift 2\n"
+        "      ;;\n"
+        "    -*)\n"
+        "      flags=\"$flags $1\"\n"
+        "      shift\n"
+        "      ;;\n"
         "    *)\n"
-        "      case \"$prev\" in\n"
-        "        *t*|*p*) ;;\n"
-        "        *) plantilla=1 ;;\n"
-        "      esac ;;\n"
+        '      exec "$real" "$@"\n'
+        "      ;;\n"
         "  esac\n"
-        "  prev=\"$a\"\n"
         "done\n"
-        'if [ "$p" -eq 0 ] && [ "$plantilla" -eq 0 ]; then\n'
-        '  exec "$real" -p "${TMPDIR:?}" "$@"\n'
-        "fi\n"
-        'exec "$real" "$@"\n',
+        '# Sin plantilla propia, el archivo vive en el TMPDIR de la corrida.\n'
+        'exec "$real" $flags "${TMPDIR:?}/$prefijo.XXXXXXXXXX"\n',
         encoding="utf-8",
     )
     atajo.chmod(0o755)
