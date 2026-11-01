@@ -7,6 +7,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from motor.encargos.dominio import Solicitud
 from motor.encargos.registro import Registro
 from motor.integraciones import directores
 
@@ -175,6 +176,55 @@ class SoloAvisosDeUsuarioFinal(Base):
         self.assertEqual(directores._llano("conseguir el equipo 0."), ("conseguir el equipo 0", False))
         self.assertEqual(directores._llano(""), ("", False))
         self.assertEqual(directores._con_remision("Hola.", False), "Hola.")
+
+    def test_una_solicitud_en_pregunta_y_el_encargo_que_espera_lo_mismo_avisan_una_vez(self):
+        ident = self.b.encargo()
+        texto = "¿Publico la versión final del informe?"
+        solicitud = Solicitud(
+            id="s1", operacion="permiso", recurso="r", fase="A", intento="i", generacion=1,
+            conductor="c", motivo=texto, estado="pregunta", pregunta=texto,
+        )
+        enc = replace(
+            self.b.reg.fold(ident), estado="necesita_usuario", motivo=texto, solicitudes=(solicitud,)
+        )
+        preguntas = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "pregunta"]
+        self.assertEqual(preguntas, [f"Necesito tu decisión para seguir. {texto}"])
+
+    def test_una_pregunta_distinta_del_encargo_que_espera_se_avisa_aparte(self):
+        ident = self.b.encargo()
+        solicitud = Solicitud(
+            id="s1", operacion="permiso", recurso="r", fase="A", intento="i", generacion=1,
+            conductor="c", motivo="uno", estado="pregunta", pregunta="¿Publico el informe?",
+        )
+        enc = replace(
+            self.b.reg.fold(ident), estado="necesita_usuario", motivo="¿Cambio el título?",
+            solicitudes=(solicitud,),
+        )
+        preguntas = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "pregunta"]
+        self.assertEqual(len(preguntas), 2)
+
+    def test_un_bloqueo_nuevo_de_la_misma_clase_se_avisa_otra_vez(self):
+        ident = self.b.encargo()
+
+        def trabar(n: int) -> None:
+            self.b.reg.anotar(ident, {"kind": "impedimento", "data": {
+                "clase": "comprobacion", "causa": f"falta un entorno {n}",
+                "condicion": f"conseguir el equipo {n}", "hora": HORA,
+            }}, f"imp-{n}")
+
+        trabar(0)
+        directores.drenar(self.b.reg, ahora=T0)
+        self.assertEqual(len(self.b.lineas("entregados.log")), 2, "inicio y el primer bloqueo")
+        self.b.reg.anotar(ident, {"kind": "impedimento_resuelto", "data": {
+            "clase": "comprobacion", "evidencia": "ya hay equipo", "hora": HORA,
+        }}, "resuelto-0")
+        directores.drenar(self.b.reg, ahora=T0 + 60)
+        self.assertEqual(len(self.b.lineas("entregados.log")), 2, "resolverlo no avisa nada")
+        trabar(1)
+        directores.drenar(self.b.reg, ahora=T0 + 120)
+        self.assertEqual(len(self.b.lineas("entregados.log")), 3, "el bloqueo nuevo sí se avisa")
+        directores.drenar(self.b.reg, ahora=T0 + 180)
+        self.assertEqual(len(self.b.lineas("entregados.log")), 3, "y no se repite")
 
     def test_un_impedimento_que_cambia_de_texto_no_repite_el_aviso(self):
         ident = self.b.encargo()
