@@ -16,9 +16,11 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   `Bearer`/`Basic`, de `token`, `api_key`, `password`, `clave`, `authorization` o `cookie` tras `=` o `:`, tokens con
   forma `id:secreto` y cualquier cadena opaca de 32 caracteres o más. Queda en una línea y acotado a 200 caracteres,
   porque un error de transporte puede traer la dirección o la clave del bot.
-- **Kuma necesita su dirección.** La señal solo sale si el `secretos.env` de la base del supervisor tiene
-  `MOTOR_KUMA_URL` (permisos 600). Sin ella, un canal caído se escribe en el log del proceso (stderr), una vez por hora,
-  y `motor director ver` sigue mostrándolo.
+- **De dónde sale la dirección de Kuma.** `ops/senal-kuma.sh` escribe `MOTOR_KUMA_URL` en `~/.motor/secretos.env`
+  (el home instalado, que el supervisor de encargos no puede usar como base). El supervisor mira primero el
+  `secretos.env` de su base y, si no trae la dirección, el de `~/.motor` (permisos 600 en los dos). Sin dirección en
+  ninguno, un canal caído se escribe en el log del proceso (stderr), una vez por hora, y `motor director ver` sigue
+  mostrándolo.
 - **Un estado dañado no rompe nada.** Un archivo de estado ilegible se ignora y un `fallos` que no es número cuenta como 0.
 - **Límite.** El estado se actualiza cuando hay un aviso que enviar. Si un canal falla y no quedan avisos pendientes,
   sigue figurando caído hasta el siguiente envío; `ultimo_intento` dice cuándo fue la última prueba.

@@ -452,7 +452,14 @@ def _supervisor(reg: Registro, args) -> int:
     from motor.integraciones.canales import canales_caidos
 
     base = reg.base
-    senal = Senal(base, lambda: {}, canales=lambda: canales_caidos(base))
+    # ops/senal-kuma.sh escribe MOTOR_KUMA_URL en ~/.motor/secretos.env, no en la base del supervisor:
+    # se mira primero la base y, si no la trae, ese home instalado.
+    senal = Senal(
+        base,
+        lambda: {},
+        canales=lambda: canales_caidos(base),
+        respaldo=Path.home() / ".motor",
+    )
     senal.arranca()
     try:
         while True:

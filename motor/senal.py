@@ -39,10 +39,12 @@ def silencio_s(tiempos: dict[str, float]) -> float:
 
 
 class Senal:
-    def __init__(self, home: Path, tiempos, reloj=time.monotonic, canales=None):
+    def __init__(self, home: Path, tiempos, reloj=time.monotonic, canales=None, respaldo: Path | None = None):
         """`canales` devuelve los canales de avisos caídos (lectura local, sin tocar el canal): si hay
-        alguno, la señal sale con status=down y el último error."""
+        alguno, la señal sale con status=down y el último error. `respaldo` es otro home cuyo
+        secretos.env se consulta si el principal no trae MOTOR_KUMA_URL."""
         self.home = home
+        self._respaldo = respaldo
         self._canales = canales
         self._tiempos = tiempos
         self._reloj = reloj
@@ -84,6 +86,8 @@ class Senal:
             if self._reloj() - self._ultimo_avance >= silencio_s(tiempos):
                 return False
             url = url_configurada(self.home)
+            if not url and self._respaldo is not None:
+                url = url_configurada(self._respaldo)
             if not url:
                 self._anota_canales_sin_kuma()
                 return False

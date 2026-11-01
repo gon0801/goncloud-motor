@@ -11,6 +11,7 @@ import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from motor.encargos.registro import Registro
 from motor.integraciones import canales, directores
@@ -34,6 +35,10 @@ TRANSPORTE = (
     " sys.exit(0)\n"
     "print(json.dumps({'recibo':'ok-'+os.environ['MOTOR_AVISO_ID']}))\n"
 )
+
+
+class _Alto(BaseException):
+    pass
 
 
 class Banco(unittest.TestCase):
@@ -227,6 +232,48 @@ class VerYSenal(Banco):
         self.assertIn("canal tg caído desde", consulta["msg"][0])
         self.assertIn("no puedo leer el archivo del bot", consulta["msg"][0])
         self.assertEqual(self.llamadas(), 0, "la señal no usa el transporte del canal caído")
+
+    def test_la_senal_usa_la_direccion_del_home_instalado_si_la_base_no_la_trae(self):
+        pedidos = self._kuma()
+        instalado = Path(self._tmp.name) / "motor-instalado"
+        instalado.mkdir()
+        (instalado / "secretos.env").write_text((self.base / "secretos.env").read_text())
+        (instalado / "secretos.env").chmod(0o600)
+        (self.base / "secretos.env").unlink()
+        canales.registrar_pasada(self.base, time.time() - 1000, {"tg": "se cortó"}, set())
+        sola = Senal(self.base, lambda: {}, canales=lambda: canales.canales_caidos(self.base))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(sola.una_vez(), "sin respaldo no hay dirección")
+        self.assertEqual(pedidos, [])
+        con_respaldo = Senal(
+            self.base, lambda: {}, canales=lambda: canales.canales_caidos(self.base), respaldo=instalado
+        )
+        self.assertTrue(con_respaldo.una_vez())
+        consulta = urllib.parse.parse_qs(urllib.parse.urlsplit(pedidos[-1]).query)
+        self.assertEqual(consulta["status"], ["down"])
+        self.assertIn("se cortó", consulta["msg"][0])
+
+    def test_el_supervisor_cablea_la_senal_con_el_home_instalado_como_respaldo(self):
+        from motor.encargos.cli import main
+
+        capturado = {}
+
+        class SenalFalsa:
+            def __init__(self, home, tiempos, **kwargs):
+                capturado.update(home=home, **kwargs)
+
+            def arranca(self):
+                raise _Alto
+
+        with mock.patch("motor.senal.Senal", SenalFalsa), mock.patch(
+            "motor.encargos.cli.barrer", return_value=[]
+        ):
+            with self.assertRaises(_Alto):
+                main(["supervisor", "--base", str(self.base), "--agente", "sleep"])
+        self.assertEqual(capturado["home"], self.base.resolve())
+        self.assertEqual(capturado["respaldo"], Path.home() / ".motor")
+        self.assertEqual(capturado["canales"](), [])
 
     def test_sin_canales_la_senal_no_cambia(self):
         pedidos = self._kuma()
