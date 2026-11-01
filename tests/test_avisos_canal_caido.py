@@ -54,9 +54,10 @@ class Banco:
             "fases": [{"id": "A", "resultado": "fase comprobada"}], "hora": HORA,
         }}, f"fase-{clave}")
         for n in range(avances - 1):
-            self.reg.anotar(ident, {"kind": "decision", "data": {
-                "id": f"d{n}", "eleccion": "seguir", "motivo": "evidencia", "hora": HORA,
-            }}, f"dec-{clave}-{n}")
+            self.reg.anotar(ident, {"kind": "impedimento", "data": {
+                "clase": f"c{n}", "causa": "falta un entorno", "condicion": "conseguir el equipo",
+                "hora": HORA,
+            }}, f"imp-{clave}-{n}")
         return ident
 
     def terminar(self, ident: str) -> None:
@@ -76,8 +77,8 @@ class CanalCaido(unittest.TestCase):
         self.addCleanup(self.b.reg.close)
 
     def test_un_transporte_que_falla_corta_el_canal_en_esa_vuelta(self):
-        self.b.encargo("uno", avances=3)
-        self.b.encargo("dos", avances=3)
+        self.b.encargo("uno", avances=2)
+        self.b.encargo("dos", avances=2)
         directores.drenar(self.b.reg, ahora=T0)
         self.assertEqual(len(self.b.llamadas()), 1)
 
@@ -97,10 +98,10 @@ class CanalCaido(unittest.TestCase):
         self.b.levantar()
         (self.b.base / "canal.json").write_text(json.dumps(
             {"tg": {"comando": [sys.executable, "-B", str(script)], "idempotente": True}}))
-        self.b.encargo("uno", avances=3)
+        self.b.encargo("uno", avances=2)
         avisos = directores.drenar(self.b.reg, ahora=T0)["avisos"]
-        self.assertEqual(len(self.b.llamadas()), 3)
-        self.assertEqual([a["entregado"] for a in avisos], [False, True, True])
+        self.assertEqual(len(self.b.llamadas()), 2)
+        self.assertEqual([a["entregado"] for a in avisos], [False, True])
 
     def test_el_corte_no_toca_a_otro_canal(self):
         otro = Path(self._tmp.name) / "otro.py"
@@ -167,9 +168,9 @@ class CanalCaido(unittest.TestCase):
         self.assertEqual(len(self.b.llamadas()), 2)
 
     def test_un_encargo_terminado_no_reenvia_avisos_de_avance(self):
-        ident = self.b.encargo("uno", avances=3)
+        ident = self.b.encargo("uno", avances=2)
         primeros = directores.drenar(self.b.reg, ahora=T0)["avisos"]
-        self.assertEqual(len(primeros), 3)
+        self.assertEqual(len(primeros), 2)
         self.b.terminar(ident)
         self.b.levantar()
         avisos = directores.drenar(self.b.reg, ahora=T0 + 10_000)["avisos"]
