@@ -251,6 +251,12 @@ no espera nada. La herramienta sigue por su cuenta, con su propio plazo
 (`MOTOR_CI_MAX`, 45 minutos) y su limpieza. El recurso no es observable: pedir el
 mismo job sobre la misma versión sí cuenta como repetir.
 
+Parar el encargo no corta la limpieza: la herramienta de CI recibe SIGTERM (solo
+ella, no el `gh` o el git de su limpieza) y `MOTOR_CI_GRACIA` (90 s) antes del
+SIGKILL, en las tres rutas que la terminan (el primer lanzamiento, la espera de
+una herramienta que ya estaba viva y `cerrar_herramientas`). La marca de la
+herramienta guarda su operación para que esta última sepa que es de CI.
+
 ### Revisiones `no_concluyente` repetidas
 
 Una revisión `no_concluyente` que nombra una inspección no cierra ni abre

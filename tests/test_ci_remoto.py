@@ -467,6 +467,87 @@ class ElRevisorLaPideYLaRecibe(_Flujo):
         return _Ci.ramas_remotas(self)
 
 
+LIMPIA_DESPACIO = """
+import pathlib, signal, sys, time
+def parar(*a):
+    time.sleep(3)  # la limpieza de verdad son varias llamadas de red
+    pathlib.Path(sys.argv[1]).write_text("limpio")
+    sys.exit(0)
+signal.signal(signal.SIGTERM, parar)
+print("listo", flush=True)
+time.sleep(120)
+"""
+
+
+class LaParadaDejaLimpiarElCi(unittest.TestCase):
+    """La parada del encargo mata la herramienta con `matar_proc`: SIGTERM y a los
+    2 s SIGKILL, menos que la limpieza de un CI. La herramienta de CI recibe un
+    plazo propio para cerrar su rama y su PR."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.raiz = Path(tmp.name)
+        self.marca_limpia = self.raiz / "limpio.txt"
+        self.herramienta = subprocess.Popen(
+            [sys.executable, "-c", LIMPIA_DESPACIO, str(self.marca_limpia)],
+            stdout=subprocess.PIPE, text=True, start_new_session=True,
+        )
+        self.addCleanup(self.herramienta.kill)
+        self.assertEqual(self.herramienta.stdout.readline().strip(), "listo")
+        for parche in (
+            mock.patch("motor.plataforma.hora_inicio", return_value="t0"),
+            mock.patch(
+                "motor.plataforma.pid_vivo",
+                side_effect=lambda pid: self.herramienta.poll() is None,
+            ),
+            mock.patch.object(nec, "CI_GRACIA_S", 20),
+        ):
+            parche.start()
+            self.addCleanup(parche.stop)
+
+    def test_matar_la_herramienta_de_ci_espera_a_que_cierre_su_rama(self):
+        nec._matar_herramienta(self.herramienta.pid, "t0", cap.CI)
+
+        self.assertEqual(self.marca_limpia.read_text(), "limpio")
+        self.assertIsNotNone(self.herramienta.poll())
+
+    def test_la_ruta_de_recuperacion_tambien_la_espera(self):
+        directorio = self.raiz / "ejecucion"
+        destino = nec._destino_host(directorio, "ci-1")
+        destino.mkdir(parents=True)
+        marca = {"pid": self.herramienta.pid, "inicio": "t0"}
+        with mock.patch.object(nec, "_detenida_ahora", return_value=True):
+            resultado = nec._esperar_herramienta(
+                SimpleNamespace(base=self.raiz), SimpleNamespace(id="enc_x"), destino, marca,
+                espera=5, operacion=cap.CI,
+            )
+
+        self.assertEqual(resultado["estado"], "detenida")
+        self.assertEqual(self.marca_limpia.read_text(), "limpio")
+
+    def test_cerrar_herramientas_lee_la_operacion_de_la_marca(self):
+        directorio = self.raiz / "ejecucion"
+        marca = nec._marca_herramienta(directorio, "ci-1")
+        marca.parent.mkdir(parents=True)
+        marca.write_text(
+            json.dumps({"pid": self.herramienta.pid, "inicio": "t0", "solicitud": "ci-1", "operacion": cap.CI})
+        )
+
+        cerrados = nec.cerrar_herramientas(directorio)
+
+        self.assertEqual(cerrados, 1)
+        self.assertEqual(self.marca_limpia.read_text(), "limpio")
+
+    def test_otra_herramienta_sigue_con_matar_proc(self):
+        llamadas = []
+        with mock.patch("motor.plataforma.matar_proc", side_effect=lambda p, i: llamadas.append((p, i)) or True):
+            nec._matar_herramienta(self.herramienta.pid, "t0", cap.REMOTO)
+
+        self.assertEqual(llamadas, [(self.herramienta.pid, "t0")])
+        self.assertFalse(self.marca_limpia.exists(), "sin plazo extra: nadie esperó la limpieza")
+
+
 class UnRunLargoNoSeMata(unittest.TestCase):
     def test_pasado_el_plazo_la_herramienta_de_ci_sigue_y_queda_pendiente(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

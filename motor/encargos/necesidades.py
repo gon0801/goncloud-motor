@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -36,6 +37,9 @@ TIMEOUT_S = float(os.environ.get("MOTOR_HERRAMIENTA_TIMEOUT") or 120)
 # Un run de CI tarda minutos: el barrido solo espera esto a que termine y sigue
 # con los demás encargos. La herramienta continúa por su cuenta.
 ESPERA_CI_S = float(os.environ.get("MOTOR_CI_ESPERA") or 5)
+# Lo que se le da a una herramienta de CI entre el SIGTERM y el SIGKILL: su
+# limpieza (cerrar el PR, borrar la rama) son varias llamadas de red.
+CI_GRACIA_S = float(os.environ.get("MOTOR_CI_GRACIA") or 90)
 LEASE_S = 30.0
 
 _AFIRMATIVAS = (
@@ -532,8 +536,31 @@ def _herramienta_viva(marca: dict) -> bool:
     return plataforma.hora_inicio(pid) == inicio
 
 
+def _matar_herramienta(pid: int, inicio: str, operacion: str = "") -> bool:
+    """Termina la herramienta. Una de CI recibe SIGTERM solo ella (no su grupo,
+    que incluiría el gh o el git de la limpieza) y CI_GRACIA_S para cerrar su rama
+    y su PR; `matar_proc` solo corta lo que siga vivo. El resto, como siempre."""
+    from motor import plataforma
+
+    marca = {"pid": pid, "inicio": inicio}
+    if operacion == capacidades.CI and os.name != "nt" and _herramienta_viva(marca):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        fin = time.time() + CI_GRACIA_S
+        while time.time() < fin and _herramienta_viva(marca):
+            time.sleep(0.2)
+    return plataforma.matar_proc(pid, inicio)
+
+
 def _esperar_herramienta(
-    registro: Registro, enc, destino: Path, marca: dict, espera: float | None = None
+    registro: Registro,
+    enc,
+    destino: Path,
+    marca: dict,
+    espera: float | None = None,
+    operacion: str = "",
 ) -> dict:
     """Espera a la herramienta que ya estaba en marcha; no lanza otra. `espera`
     acota cuánto: una herramienta lenta que ya espera no retiene el barrido."""
@@ -547,7 +574,7 @@ def _esperar_herramienta(
         if resultado is not None:
             return resultado
         if _detenida_ahora(registro, enc.id):
-            plataforma.matar_proc(pid, inicio)
+            _matar_herramienta(pid, inicio, operacion)
             return {
                 "estado": "detenida",
                 "motivo": "el encargo se detuvo mientras la herramienta anterior seguía viva",
@@ -687,7 +714,9 @@ def _ejecutar(
         return _completar_entrega(
             espacio,
             sol,
-            _esperar_herramienta(registro, enc, destino, previa, _espera_de(sol)),
+            _esperar_herramienta(
+                registro, enc, destino, previa, _espera_de(sol), sol.operacion
+            ),
             directorio,
         )
 
@@ -731,6 +760,7 @@ def _ejecutar(
                     "pid": proc.pid,
                     "inicio": plataforma.hora_inicio(proc.pid),
                     "solicitud": sol.id,
+                    "operacion": sol.operacion,
                     "hora": hora,
                 },
             )
@@ -738,7 +768,9 @@ def _ejecutar(
         return _completar_entrega(
             espacio,
             sol,
-            _esperar_herramienta(registro, enc, destino, previa, _espera_de(sol)),
+            _esperar_herramienta(
+                registro, enc, destino, previa, _espera_de(sol), sol.operacion
+            ),
             directorio,
         )
     if proc is None:
@@ -781,7 +813,7 @@ def _ejecutar(
                 # SIGTERM primero: la herramienta de CI cierra su rama y su PR.
                 proc.terminate()
                 try:
-                    proc.wait(60)
+                    proc.wait(CI_GRACIA_S)
                 except subprocess.TimeoutExpired:
                     pass
             if proc.poll() is None:
@@ -1437,14 +1469,12 @@ def responder(
 
 def cerrar_herramientas(directorio: Path) -> int:
     """Cierra las herramientas que el motor lanzó para este intento."""
-    from motor import plataforma
-
     cerrados = 0
     for path in sorted((Path(directorio) / "herramientas").glob("*.json")):
         doc = _leer(path) or {}
         pid, inicio = doc.get("pid"), doc.get("inicio")
         if pid and inicio:
-            plataforma.matar_proc(int(pid), str(inicio))
+            _matar_herramienta(int(pid), str(inicio), str(doc.get("operacion") or ""))
             cerrados += 1
         _archivar(path)
     return cerrados
