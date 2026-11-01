@@ -25,8 +25,9 @@ chmod +x "$S/bin/ssh"
 SECRETOS="$HOME_MINI/.motor/secretos.env"
 printf 'MOTOR_TELEGRAM_TOKEN=abc\n# nota\nMOTOR_KUMA_URL=http://viejo/api/push/DAEMON\nMOTOR_X=1' >"$SECRETOS"
 chmod 644 "$SECRETOS"
-TOKEN=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef
+TOKEN="$(printf "%032d" 0 | tr 0 x)" # armado al correr: ningún literal con forma de llave entra al repo
 SCRIPT="$RAIZ/ops/senal-kuma-encargos.sh"
+[ -x "$SCRIPT" ] || fallo "el script debe ser ejecutable: el doc lo invoca directo"
 
 lineas() { grep -c "^$1=" "$SECRETOS" || true; }
 
