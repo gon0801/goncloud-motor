@@ -16,6 +16,7 @@ import re
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
@@ -283,6 +284,23 @@ REINTENTOS_PR = 6
 ESPERA_PR_S = 3.0
 
 
+@contextmanager
+def _cuerpo_en_archivo(cuerpo: str):
+    """El cuerpo viaja a `gh` en un archivo, no como un argv gigante."""
+    archivo = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", newline="", suffix=".md", delete=False
+    )
+    try:
+        with archivo:
+            archivo.write(cuerpo)
+        yield archivo.name
+    finally:
+        try:
+            os.unlink(archivo.name)
+        except OSError:
+            pass
+
+
 class GhGitHub:
     """Contra GitHub de verdad. Se prueba con la suite de contrato solo si existe
     MOTOR_GH_SANDBOX=<dueño/repo> (un repo desechable)."""
@@ -359,31 +377,32 @@ class GhGitHub:
                 self.cambiar_base(repo, numero, base)
                 vista = self._vista(repo, numero)
             return vista
-        for intento in range(REINTENTOS_PR):
-            try:
-                url = self._gh(
-                    "pr",
-                    "create",
-                    "-R",
-                    n,
-                    "--draft",
-                    "--head",
-                    rama,
-                    "--base",
-                    base,
-                    "--title",
-                    titulo,
-                    "--body",
-                    cuerpo,
-                ).strip()
-                break
-            except RuntimeError as e:
-                # Recién empujada, la rama tarda unos segundos en verse del lado de GitHub.
-                if intento == REINTENTOS_PR - 1 or not any(
-                    x in str(e) for x in AUN_NO_LLEGA
-                ):
-                    raise
-                self.dormir(ESPERA_PR_S)
+        with _cuerpo_en_archivo(cuerpo) as ruta_cuerpo:
+            for intento in range(REINTENTOS_PR):
+                try:
+                    url = self._gh(
+                        "pr",
+                        "create",
+                        "-R",
+                        n,
+                        "--draft",
+                        "--head",
+                        rama,
+                        "--base",
+                        base,
+                        "--title",
+                        titulo,
+                        "--body-file",
+                        ruta_cuerpo,
+                    ).strip()
+                    break
+                except RuntimeError as e:
+                    # Recién empujada, la rama tarda unos segundos en verse del lado de GitHub.
+                    if intento == REINTENTOS_PR - 1 or not any(
+                        x in str(e) for x in AUN_NO_LLEGA
+                    ):
+                        raise
+                    self.dormir(ESPERA_PR_S)
         return self._vista(repo, int(url.rstrip("/").split("/")[-1]))
 
     def marcar_listo(self, repo, numero):
@@ -398,10 +417,11 @@ class GhGitHub:
             )
 
     def actualizar_cuerpo(self, repo, numero, cuerpo):
-        self._gh(
-            "pr", "edit", str(numero), "--body", cuerpo,
-            "-R", self.nombre(repo),
-        )
+        with _cuerpo_en_archivo(cuerpo) as ruta_cuerpo:
+            self._gh(
+                "pr", "edit", str(numero), "--body-file", ruta_cuerpo,
+                "-R", self.nombre(repo),
+            )
 
     @staticmethod
     def _paginas(texto: str) -> list:

@@ -15,7 +15,7 @@ from motor.encargos.ciclo import (
     ahora_iso,
 )
 from motor.encargos.comprobacion import instrucciones_responsable
-from motor.github import FakeGitHub
+from motor.github import FakeGitHub, GhGitHub
 from tests.test_flujo_revisiones import (
     Recorrido,
     _entrega_pr,
@@ -44,6 +44,88 @@ class _GhFallaCuerpo(FakeGitHub):
         if self.fallar:
             raise RuntimeError("gh pr edit: fallo simulado")
         return super().actualizar_cuerpo(repo, numero, cuerpo)
+
+
+class _GhCapturaCuerpo(GhGitHub):
+    """Captura el cuerpo que `gh` recibe por archivo, sin salir a la red."""
+
+    def __init__(self):
+        super().__init__()
+        self.llamadas: list[tuple] = []
+        self.cuerpo_recibido: str | None = None
+        self.ruta_cuerpo: str | None = None
+
+    def nombre(self, repo):
+        return "o/r"
+
+    def _gh(self, *a):
+        self.llamadas.append(a)
+        if a[:2] == ("pr", "list"):
+            return "[]"
+        if a[:2] in (("pr", "create"), ("pr", "edit")):
+            i = a.index("--body-file")
+            self.ruta_cuerpo = a[i + 1]
+            self.cuerpo_recibido = Path(self.ruta_cuerpo).read_text(encoding="utf-8")
+            return "https://github.com/o/r/pull/7" if a[:2] == ("pr", "create") else ""
+        if a[:2] == ("pr", "view"):
+            return json.dumps(
+                {
+                    "number": 7,
+                    "headRefName": "f",
+                    "baseRefName": "main",
+                    "isDraft": True,
+                    "headRefOid": "a" * 40,
+                    "state": "OPEN",
+                    "mergeCommit": None,
+                }
+            )
+        return ""
+
+
+class _GhFallaCreate(_GhCapturaCuerpo):
+    def _gh(self, *a):
+        if a[:2] == ("pr", "create"):
+            self.llamadas.append(a)
+            self.ruta_cuerpo = a[a.index("--body-file") + 1]
+            raise RuntimeError("gh pr create: fallo simulado")
+        return super()._gh(*a)
+
+
+class CuerpoPorArchivo(unittest.TestCase):
+    def test_gh_crea_el_pr_con_el_cuerpo_en_archivo_no_en_argv(self):
+        gh = _GhCapturaCuerpo()
+        cuerpo = "😀" * 65_000
+
+        gh.abrir_pr("o/r", "f", "main", "t", cuerpo)
+
+        self.assertEqual(gh.cuerpo_recibido, cuerpo)
+        self.assertFalse(Path(gh.ruta_cuerpo).exists())
+        creacion = next(a for a in gh.llamadas if a[:2] == ("pr", "create"))
+        self.assertIn("--body-file", creacion)
+        self.assertNotIn("--body", creacion)
+        self.assertNotIn(cuerpo, creacion)
+
+    def test_gh_actualiza_el_cuerpo_en_archivo_no_en_argv(self):
+        gh = _GhCapturaCuerpo()
+        cuerpo = "á" * 65_000
+
+        gh.actualizar_cuerpo("o/r", 7, cuerpo)
+
+        self.assertEqual(gh.cuerpo_recibido, cuerpo)
+        self.assertFalse(Path(gh.ruta_cuerpo).exists())
+        edicion = next(a for a in gh.llamadas if a[:2] == ("pr", "edit"))
+        self.assertIn("--body-file", edicion)
+        self.assertNotIn("--body", edicion)
+        self.assertNotIn(cuerpo, edicion)
+
+    def test_el_temporal_se_borra_si_gh_falla(self):
+        gh = _GhFallaCreate()
+
+        with self.assertRaises(RuntimeError):
+            gh.abrir_pr("o/r", "f", "main", "t", "cuerpo")
+
+        self.assertIsNotNone(gh.ruta_cuerpo)
+        self.assertFalse(Path(gh.ruta_cuerpo).exists())
 
 
 class CuerpoDelPrAlAbrir(unittest.TestCase):
