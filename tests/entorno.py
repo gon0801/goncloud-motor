@@ -21,6 +21,38 @@ SIN_WINDOWS = (
     "solo corre en Windows (la PC); en la Mac lo prueba ops/prueba-pc.sh"
     " y en el CI lo corre el job windows"
 )
+SIN_BREAKAWAY = (
+    "este host corre dentro de un Job sin breakaway (WinError 5 al lanzar):"
+    " las pruebas de procesos reales con Job propio corren en la PC con ops/prueba-pc.sh"
+)
+
+_breakaway: bool | None = None
+
+
+def deja_breakaway() -> bool:
+    """¿Este host deja lanzar un proceso con CREATE_BREAKAWAY_FROM_JOB?
+
+    El runner hospedado de Windows corre dentro de un Job que no lo permite;
+    la PC lo prueba con ops/prueba-pc.sh.
+    """
+    global _breakaway
+    if _breakaway is None:
+        if os.name != "nt":
+            _breakaway = False
+        else:
+            import subprocess
+            import sys
+
+            from motor.plataforma import windows
+
+            try:
+                p = subprocess.Popen([sys.executable, "-c", "pass"], **windows.kwargs_grupo())
+            except OSError:
+                _breakaway = False
+            else:
+                p.wait()
+                _breakaway = True
+    return _breakaway
 
 
 def _clase_que_falla(*_args):
@@ -47,3 +79,9 @@ def requiere_windows(destino):
         )
 
     return envoltorio
+
+
+def requiere_breakaway(destino):
+    """Un salto por capacidad del host (Job sin breakaway) es tolerado con motivo,
+    dentro y fuera del job de Windows: en la PC corren de verdad."""
+    return unittest.skipUnless(os.name == "nt" and deja_breakaway(), SIN_BREAKAWAY)(destino)

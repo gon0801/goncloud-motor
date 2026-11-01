@@ -129,7 +129,7 @@ class ReporteCompletoTest(unittest.TestCase):
         self.assertEqual(datos["faltas"], [])
         self.assertTrue(datos["ok"])
         self.assertEqual(datos["maquina"]["nombre"], "maquina-de-prueba")
-        self.assertEqual(datos["maquina"]["sistema"], "macos")
+        self.assertIn(datos["maquina"]["sistema"], ("macos", "linux", "windows"))
         for clave in ("jaula", "java_tlc", "avisos", "senal", "recursos", "agentes", "arranque"):
             self.assertEqual(datos[clave]["estado"], "ok", clave)
         agentes = {f["agente"]: f["estado"] for f in datos["agentes"]["filas"]}

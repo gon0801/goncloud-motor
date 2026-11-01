@@ -8,6 +8,22 @@ from motor.plataforma import posix, windows
 from tests import entorno
 
 
+def _distro_de_esta_pc() -> str:
+    """Nombre de la primera distro de WSL, o "" si no hay (wsl.exe -l escribe en UTF-16)."""
+    import subprocess
+
+    try:
+        r = subprocess.run(["wsl.exe", "-l", "-q"], capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if r.returncode != 0:
+        return ""
+    for linea in r.stdout.decode("utf-16-le", errors="replace").splitlines():
+        if linea.strip("\x00 ﻿\r\n"):
+            return linea.strip("\x00 ﻿\r\n")
+    return ""
+
+
 class ArranqueTest(unittest.TestCase):
     def setUp(self):
         posix._cache_boottime[:] = [None, None]
@@ -346,6 +362,8 @@ class WslTest(unittest.TestCase):
     def test_wsl_python3_y_shims_resuelven_en_linux(self):
         import subprocess
 
+        if not _distro_de_esta_pc():
+            self.skipTest("sin distro WSL instalada en esta PC (wsl.exe -l está vacío)")
         argv, env = windows.lanzamiento_wsl(
             ["/bin/sh", "-c", "command -v python3 && command -v muse && command -v gh"],
             {
@@ -394,7 +412,7 @@ class WslTest(unittest.TestCase):
         )
         subprocess.run(["git", "init", "-q"], cwd=conf, check=True)
         (home / "maquina.toml").write_text(
-            f'nombre = "x"\nconf = "{conf}"\nwsl = ["falso"]\n'
+            f'nombre = "x"\nconf = "{conf.as_posix()}"\nwsl = ["falso"]\n'
         )
         vistos = []
 
