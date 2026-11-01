@@ -57,11 +57,25 @@ if args[:2] == ["pr", "create"]:
     estado["commit"] = git("rev-parse", rama).strip()
     guardar()
     print("https://github.com/o/r/pull/7")
+elif args[:2] == ["pr", "view"]:
+    visto = int(estado.get("pr_view") or 0)
+    estado["pr_view"] = visto + 1
+    guardar()
+    mezcla = os.environ.get("FAKE_GH_MEZCLA", "MERGEABLE")
+    if mezcla == "TARDE":
+        mezcla = "UNKNOWN" if visto < 2 else "CONFLICTING"
+    print(json.dumps({{"mergeable": mezcla,
+        "mergeStateStatus": "DIRTY" if mezcla == "CONFLICTING" else "CLEAN",
+        "baseRefOid": git("rev-parse", "main").strip(),
+        "headRefOid": estado.get("commit", "")}}))
 elif args[:2] == ["run", "list"]:
     guardar()
-    print(json.dumps([{{"databaseId": 1234, "status": "completed", "conclusion": "success",
-        "headSha": val("--commit"), "event": "pull_request",
-        "url": "https://github.com/o/r/actions/runs/1234", "workflowName": "Pruebas"}}]))
+    if os.environ.get("FAKE_GH_MEZCLA") == "TARDE" and int(estado.get("pr_view") or 0) < 3:
+        print("[]")
+    else:
+        print(json.dumps([{{"databaseId": 1234, "status": "completed", "conclusion": "success",
+            "headSha": val("--commit"), "event": "pull_request",
+            "url": "https://github.com/o/r/actions/runs/1234", "workflowName": "Pruebas"}}]))
 elif args[:2] == ["run", "view"] and "--log" not in args:
     guardar()
     print(json.dumps({{"status": "completed", "conclusion": "success",
@@ -313,6 +327,52 @@ class CausaClaraSiFalta(_Ci):
 
         self.assertEqual(r["estado"], "error")
         self.assertIn("parámetro job", r["motivo"])
+
+
+class ElConflictoSeVeAntesDeEsperar(_Ci):
+    def setUp(self):
+        super().setUp()
+        otro = self.raiz / "otro"
+        subprocess.run(["git", "clone", "--quiet", str(self.bare), str(otro)], check=True)
+        (otro / "base.txt").write_text("main cambio\n")
+        _git(otro, "commit", "-am", "main cambia")
+        _git(otro, "push", "--quiet", "origin", "main")
+
+    def pedir_en_conflicto(self) -> dict:
+        with mock.patch.dict(os.environ, {"FAKE_GH_MEZCLA": "CONFLICTING"}), \
+             mock.patch.object(cap, "CI_MEZCLA_S", 0.2), \
+             mock.patch.object(cap, "CI_MEZCLA_SONDEO_S", 0.01):
+            return self.pedir()
+
+    def test_dice_los_archivos_y_que_hay_que_traer_main(self):
+        r = self.pedir_en_conflicto()
+
+        self.assertEqual(r["estado"], "error")
+        self.assertIn("no se puede mezclar", r["motivo"])
+        self.assertIn("base.txt", r["motivo"])
+        self.assertIn("traer main", r["alternativa"])
+
+    def test_no_espera_una_corrida_que_no_va_a_llegar(self):
+        self.pedir_en_conflicto()
+
+        llamadas = [args[:2] for args in self.estado_gh()["llamadas"]]
+        self.assertNotIn(["run", "list"], llamadas)
+
+    def test_limpia_la_rama_y_el_pr_temporales(self):
+        self.pedir_en_conflicto()
+
+        self.assertEqual(self.ramas_remotas(), [])
+        self.assertFalse(self.estado_gh()["pr_abierto"])
+
+    def test_un_conflicto_que_github_calcula_tarde_tambien_corta_la_espera(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_MEZCLA": "TARDE"}), \
+             mock.patch.object(cap, "CI_MEZCLA_S", 0.0), \
+             mock.patch.object(cap, "CI_MEZCLA_SONDEO_S", 0.01):
+            r = self.pedir()
+
+        self.assertEqual(r["estado"], "error")
+        self.assertIn("base.txt", r["motivo"])
+        self.assertNotIn("no inició", r["motivo"])
 
 
 class LaLimpiezaEsSiempre(_Ci):

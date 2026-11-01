@@ -474,6 +474,8 @@ def _leer_http(recurso: dict, relativa: str, destino: Path) -> dict:
 CI_SONDEO_S = float(os.environ.get("MOTOR_CI_SONDEO") or 10)
 CI_MAX_S = float(os.environ.get("MOTOR_CI_MAX") or 45 * 60)
 CI_BUSCA_RUN_S = float(os.environ.get("MOTOR_CI_BUSCA_RUN") or 5 * 60)
+CI_MEZCLA_S = float(os.environ.get("MOTOR_CI_MEZCLA") or 30)
+CI_MEZCLA_SONDEO_S = float(os.environ.get("MOTOR_CI_MEZCLA_SONDEO") or 2)
 MAX_LOG = 64 * 1024 * 1024
 _RED = (
     "could not resolve host",
@@ -651,9 +653,13 @@ def _json_gh(gh: str, repo: str, *args: str) -> object:
         raise CiFallo(f"gh devolvió algo que no es JSON: {salida[-200:]}", "reintentar") from exc
 
 
-def _esperar_run(gh: str, repo: str, workflow: str, sha: str, limite: float) -> dict:
+def _esperar_run(
+    gh: str, repo: str, workflow: str, sha: str, limite: float, vigilar=None
+) -> dict:
     fin = time.time() + min(CI_BUSCA_RUN_S, limite)
     while True:
+        if vigilar is not None:
+            vigilar()
         argumentos = ["run", "list", "--commit", sha, "--json",
                       "databaseId,status,conclusion,headSha,event,url,workflowName", "--limit", "20"]
         if workflow:
@@ -667,6 +673,73 @@ def _esperar_run(gh: str, repo: str, workflow: str, sha: str, limite: float) -> 
                 "comprobar que el workflow corre en pull_request y que Actions está habilitado",
             )
         time.sleep(CI_SONDEO_S)
+
+
+def _vista_mezcla(gh: str, repo: str, numero: str, limite: float) -> dict:
+    """GitHub calcula `mergeable` después de crear el PR: UNKNOWN no es respuesta."""
+    fin = time.time() + max(0.0, limite)
+    while True:
+        vista = _json_gh(
+            gh, repo, "pr", "view", numero,
+            "--json", "mergeable,mergeStateStatus",
+        )
+        if not isinstance(vista, dict):
+            raise CiFallo("gh no devolvió el estado del PR temporal", "reintentar")
+        estado = str(vista.get("mergeable") or "").strip().upper()
+        if estado and estado != "UNKNOWN":
+            return vista
+        if time.time() >= fin:
+            return vista
+        time.sleep(CI_MEZCLA_SONDEO_S)
+
+
+def _archivos_en_conflicto(
+    espacio: Path, remoto: str, base: str, cabeza: str
+) -> list[str]:
+    """Nombres del choque que GitHub ya reportó. Se calculan en el clon del host
+    contra la base vigente, sin tocar la rama ni el árbol del espacio."""
+    try:
+        _git_ci(
+            espacio, "fetch", "--quiet", "--no-tags", remoto,
+            f"refs/heads/{base}", plazo=60,
+        )
+    except CiFallo:
+        pass
+    for referencia in ("FETCH_HEAD", f"refs/remotes/origin/{base}"):
+        resultado = _correr(
+            [
+                "git", "-C", str(espacio), "merge-tree", "--write-tree",
+                "--no-messages", "--name-only", referencia, cabeza,
+            ],
+            plazo=60,
+        )
+        if resultado.returncode not in (0, 1):
+            continue
+        lineas = [linea.strip() for linea in (resultado.stdout or "").splitlines()]
+        nombres = [linea for linea in lineas[1:] if linea]
+        if nombres:
+            return nombres
+    return []
+
+
+def _comprobar_mezcla(
+    gh: str, repo: str, remoto: str, base: str, numero: str, cabeza: str,
+    espacio: Path, limite: float,
+) -> None:
+    """Un PR que choca con su base no dispara `pull_request`: esperar el run
+    gastaría el plazo sin causa. Se corta aquí con los archivos del choque."""
+    vista = _vista_mezcla(gh, repo, numero, limite)
+    mergeable = str(vista.get("mergeable") or "").strip().upper()
+    estado = str(vista.get("mergeStateStatus") or "").strip().upper()
+    if mergeable != "CONFLICTING" and estado != "DIRTY":
+        return
+    choques = _archivos_en_conflicto(espacio, remoto, base, cabeza)
+    detalle = ", ".join(choques) if choques else "GitHub no detalló los archivos"
+    raise CiFallo(
+        f"el PR temporal contra {base} no se puede mezclar: chocan {detalle}",
+        f"la versión del encargo necesita traer {base} a su rama y resolver el choque; "
+        "después volver a pedir ci.correr",
+    )
 
 
 def _limpiar_ci(gh: str, repo: str, remoto: str, espacio: Path, rama: str, numero: str) -> dict:
@@ -786,7 +859,19 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
             plazo=120,
         ).strip().splitlines()[-1]
         numero = url_pr.rstrip("/").rsplit("/", 1)[-1]
-        run = _esperar_run(gh, repo, workflow, sha, limite - time.time())
+
+        def vigilar_conflicto() -> None:
+            # GitHub puede calcular `mergeable` tarde: se revisa mientras se
+            # busca el run para no cambiar un choque por un "no inició".
+            _comprobar_mezcla(gh, repo, remoto, base, numero, sha, espacio, 0)
+
+        _comprobar_mezcla(
+            gh, repo, remoto, base, numero, sha, espacio,
+            min(CI_MEZCLA_S, limite - time.time()),
+        )
+        run = _esperar_run(
+            gh, repo, workflow, sha, limite - time.time(), vigilar=vigilar_conflicto
+        )
         numero_run = str(run["databaseId"])
         while True:
             vista = _json_gh(gh, repo, "run", "view", numero_run, "--json", "status,conclusion,jobs,url")
