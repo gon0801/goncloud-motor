@@ -383,8 +383,9 @@ def _supervisor(reg: Registro, args) -> int:
                      proximo(replace(enc, agentes=candidatas), hora, set(disponibles)), hora)
         return None
 
-    # En el bucle los avisos corren en un hilo aparte: la cadencia del barrido no depende del canal, ni
-    # cuando funciona. Con --una-vez el proceso termina tras la pasada, así que drena en línea con tope.
+    # En el bucle los avisos corren en un hilo aparte con tope por pasada: la cadencia del barrido no
+    # depende del canal, ni cuando funciona. Con --una-vez no hay cadencia que cuidar ni pasada siguiente
+    # que retome lo que un tope dejara sin enviar: drena en línea y por completo.
     from motor.integraciones.directores import DrenadoAparte
 
     drenador = None if args.una_vez else DrenadoAparte(reg.base)
@@ -420,9 +421,9 @@ def _supervisor(reg: Registro, args) -> int:
         )
         try:
             if drenador is None:
-                from motor.integraciones.directores import TOPE_DRENAR_S, drenar
+                from motor.integraciones.directores import drenar
 
-                drenar(reg, tope_s=TOPE_DRENAR_S)
+                drenar(reg)
             else:
                 drenador.lanzar()
         except Exception:

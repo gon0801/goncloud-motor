@@ -108,6 +108,24 @@ class PasadaConTope(Base):
         self.assertEqual(len(set(entregados)), 5, "ningún aviso se manda dos veces")
 
 
+class UnaVez(Base):
+    demora = 0.3
+
+    def test_el_supervisor_una_vez_envia_todos_los_avisos_en_su_unica_pasada(self):
+        from motor.encargos.cli import main
+
+        for n in range(4):
+            self.b.encargo(f"e{n}")
+        (self.b.base / "demora").write_text("0.8")
+        with mock.patch("motor.encargos.cli.barrer", return_value=[]), mock.patch(
+            "motor.integraciones.directores.TOPE_DRENAR_S", 0.3
+        ):
+            main(["supervisor", "--base", str(self.b.base), "--agente", "sleep", "--una-vez"])
+        entregados = self.b.entregados()
+        self.assertEqual(len(entregados), 4, "con --una-vez no queda nada para una pasada que no habrá")
+        self.assertEqual(len(set(entregados)), 4)
+
+
 class SinTope(Base):
     def test_sin_tope_la_pasada_no_se_corta(self):
         self.b.encargo("uno")
