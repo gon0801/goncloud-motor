@@ -149,7 +149,7 @@ Operaciones:
 - `sqlite.tablas --recurso <r>`: tablas y columnas del recurso.
 - `sqlite.consultar --recurso <r> --parametro sql="SELECT ..."`: solo lectura, una sentencia.
 - `sqlite.snapshot --recurso <r>`: copia consistente con origen y huella; la ruta queda en la respuesta.
-- `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado.
+- `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado. `texto` trae solo los primeros 64 KB; si `texto_recortado` es true, el archivo completo está en `copia`, dentro del espacio.
 - `ci.correr --recurso <r> --parametro job="nombre-del-job"`: corre el workflow de pruebas de GitHub sobre la versión vigente del producto y devuelve el log literal de ese job, con el SHA y el número de run. Tarda minutos: la respuesta puede quedar `pendiente`. La rama y el PR temporales se cierran solos.
 Añade `--motivo` con para qué la necesitas. Si la respuesta es `pregunta`, queda una autorización
 pendiente con su id: sigue con lo demás o espera con `python3 {cliente} ver <id>`. Una respuesta
@@ -381,6 +381,12 @@ def _archivo_de(sol: Solicitud, datos: dict) -> tuple[str, str, str]:
     if sol.operacion == capacidades.CI:
         nombre = Path(str(datos.get("log_nombre") or "ci.log")).name
         return "log", "log_host", nombre
+    if sol.operacion == capacidades.REMOTO:
+        nombre = Path(str(datos.get("copia_host") or datos.get("copia") or "remoto")).name
+        # `datos.json` es el archivo donde `_respuesta` deja una respuesta larga.
+        if nombre == "datos.json":
+            nombre = "remoto-datos.json"
+        return "copia", "copia_host", nombre
     return "snapshot", "snapshot_host", "snapshot.db"
 
 
