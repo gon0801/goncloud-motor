@@ -22,27 +22,43 @@ Comprueba tres reglas:
 
 ## Cuándo correrla
 
-Córrela si el cambio toca alguna de las funciones de la tabla de cobertura. Para verlo, compara el commit de sincronía con el árbol de trabajo (incluye lo que no tiene commit):
+Córrela si el cambio toca alguna de las funciones de la tabla de cobertura. Para verlo, compara el commit de sincronía con el árbol de trabajo (incluye lo que no tiene commit), con la función entera alrededor de cada cambio:
 
 ```sh
-git diff e0f06a2 -- motor/encargos/dominio.py motor/encargos/ciclo.py motor/encargos/necesidades.py
+git --no-pager diff --no-ext-diff -W e0f06a2 -- motor/encargos/dominio.py motor/encargos/ciclo.py motor/encargos/necesidades.py
 ```
 
-Busca en ese diff los nombres de la columna "Código". `e0f06a2` es el commit de sincronía; ver abajo.
+Con `-W` cada trozo muestra la función que lo contiene. Busca esas funciones en la columna "Código" de la tabla de cobertura. `e0f06a2` es el commit de sincronía; ver abajo.
 
 ## Cómo correrla
 
-```sh
-verificacion/inspeccion/verificar.sh              # main.cfg: describe el código actual
-verificacion/inspeccion/verificar.sh antes-139.cfg # el código de 72c30a8: tiene que fallar
-```
+`main.cfg` describe el código del commit de sincronía, no tu árbol de trabajo. Correrlo tal cual no revisa un cambio: sale verde aunque el cambio rompa una regla. Revisar un cambio son tres pasos:
+
+1. **Tradúcelo al modelo.**
+   - Si invierte una rama de la tabla de cobertura, copia `main.cfg` a un `.cfg` nuevo en `verificacion/inspeccion/` e invierte ahí esa constante.
+   - Si cambia una acción, edita la acción en una copia del `.tla`.
+   - Si no cambia nada que el modelo distinga (un mensaje, un registro de más), dilo y sigue con el paso 2.
+2. **Corre las tres configuraciones:**
+
+   ```sh
+   verificacion/inspeccion/verificar.sh              # main.cfg: el commit de sincronía, tiene que pasar
+   verificacion/inspeccion/verificar.sh antes-139.cfg # el código de 72c30a8: tiene que fallar
+   verificacion/inspeccion/verificar.sh tu-cambio.cfg # tu traducción del paso 1
+   ```
+
+   - Las dos primeras comprueban que el modelo sigue distinguiendo el código roto del sano.
+   - Si `main.cfg` falla, o si `antes-139.cfg` pasa, el problema está en el modelo, no en tu cambio.
+3. **Decide.**
+   - Si tu configuración rompe una regla, el cambio la rompe: repórtalo con el camino (ver "Si una regla se rompe") y no lo des por bueno.
+   - Si pasa y el cambio es intencional, sigue "Si el cambio es intencional".
+   - Al terminar, borra las copias que no vayan al commit.
+
+Para la corrida:
 
 - Necesita `mise` (`brew install mise`). La primera vez baja Java Temurin 25 y TLC 1.7.4 con checksum fijo. Sin `mise`, exporta `TLA2TOOLS` (ruta a `tla2tools.jar`) y `JAVA`.
 - Tarda unos segundos.
 - Sale 0 con `Model checking completed. No error has been found.` y sale 12 si una regla se rompe.
-- Las dos corridas son la prueba completa:
-  - `main.cfg` tiene que pasar;
-  - `antes-139.cfg` tiene que fallar en `SinAtascoMudo` con la traba 9. Si de pronto pasa, el modelo ya no distingue el código roto del sano: el problema está en el modelo, no en el código.
+- TLC se detiene en la primera regla rota. Para ver si hay otra, quítale a una copia la regla que ya conoces. Es solo para diagnosticar: un cambio que rompe una regla no queda bueno porque la copia sin esa regla pase.
 
 Lee todo resultado con la skill `/statechart`. Pásale el modelo, la configuración y la vista `verificacion/inspeccion/vista.mjs`. Así:
 
@@ -65,14 +81,20 @@ Cada constante de `main.cfg` es una rama concreta del código. Cada acción del 
 | `AjusteSuelta` | reducción `kind == "ajuste"` llama `_soltar_impedimento_de_inspeccion` | TRUE |
 | `RespuestaReabre` | `dominio._respuesta` a una solicitud que no es `pregunta`: suma `tardias` (marca nueva en `marca_inspeccion_entregada`) y suelta el impedimento | TRUE |
 | `Lanzar` | `dominio.decision_proceso` (orden: impedimento, `espera_inspeccion_consumida`, `inspeccion_bloquea`); `ciclo` anota `inspeccion_entregada` | |
-| `Incorporar`, `LigarPide` | guarda `por_incorporar` en `ciclo.barrer`; `ciclo._incorporar_revisor` (rama `no_concluyente` con `inspeccion_faltante`); `ciclo._ligar_inspeccion`; `ciclo._id_inspeccion` | |
-| `Atender` | `necesidades.atender` (previa con resultado, `_detenida_ahora`, `_registrar_solicitud`, resolución) | |
+| `Incorporar`, `LigarPide` | guarda `por_incorporar` en `ciclo.barrer` (no incorpora con el encargo deteniendo o detenido); `ciclo._incorporar_revisor`, rama `no_concluyente` con `inspeccion_faltante`: `_devolver(..., "inspeccionar")` deja el encargo `recibido`; reducción `revision` (pone `inspeccion_pendiente`); `ciclo._ligar_inspeccion` con `ciclo._id_inspeccion`, `necesidades.pedir_inspeccion` y `necesidades.registrar_pedida` | |
+| `Atender` | `necesidades.atender`: previa con resultado (responde y archiva), rama `_detenida_ahora` (con la reducción `solicitud_tardia`, que solo anota en `procedimiento`), `_registrar_solicitud`, y la herramienta que termina con `_anotar_resolucion` → reducción `resolucion` (`dominio._resolucion`) | |
 | `Impedir` | `dominio.decision_proceso` → evento `impedimento` de `espera_inspeccion_consumida` | |
 | `Parar`, `Continuar` | `dominio._orden` (`parar`, `continuar` → `_retomar`) | |
 | `Matar`, `Detener` | `ciclo.barrer` con la parada: mata el árbol vivo; árbol ausente → `detenido` | |
 | `Ajustar`, `Responder` | reducción `ajuste`; `dominio._respuesta` vía `director responder` | |
 
 **Commit de sincronía: `e0f06a2`.** Ese es el commit en el que se comprobó por última vez que el modelo describe este código. Muévelo solo después de releer las funciones de la tabla en el commit nuevo y confirmar que el modelo sigue diciendo lo mismo.
+
+Qué cuenta en el modelo:
+
+- **"Espera visible"**: un impedimento registrado (`imped`), o un estado que no es `recibido` ni `ejecutando` (`deteniendo`, `detenido`, `terminado`). `Abierto` deja fuera esos estados a propósito. El camino de `necesita_usuario` (preguntas al propietario) no está en el modelo; ver "Lo que no cubre".
+- **Largo de un camino**: los estados que imprime TLC (`State 1` … `State N`). Hay N - 1 acciones.
+- **Dos caminos con las mismas acciones** pueden ser fallos distintos: compara las variables del último estado. Por ejemplo, la traba 9 de `antes-139.cfg` termina con la solicitud ligada `ausente`; invertir `DetieneLaPendiente` termina con la misma secuencia, pero con la solicitud `pendiente` y sin petición en el buzón.
 
 ## Si una regla se rompe
 
@@ -91,13 +113,13 @@ Cada constante de `main.cfg` es una rama concreta del código. Cada acción del 
   2. Comprueba que la regla que tocaste todavía puede fallar: invierte en una copia de `main.cfg` la constante que la sostiene. La tabla de abajo dice qué se espera.
   3. Mueve el commit de sincronía.
 
-Qué pasa al invertir cada constante en `main.cfg`, medido en `e0f06a2`:
+Qué pasa al invertir cada constante en `main.cfg`, medido en `e0f06a2` (largo en estados de TLC). Si tu cambio hace una de estas inversiones, la tabla ya te dice el resultado; córrelo igual para tener el camino:
 
 | Constante invertida | Resultado |
 |---|---|
-| `RegistraAlLigar` | `SinCarrera` se rompe en 4 pasos |
-| `DetieneLaPendiente` | `SinAtascoMudo` se rompe en 7 pasos |
-| `AjusteSuelta` y `RespuestaReabre` juntas | `ImpedimentoConSalida` se rompe en 8 pasos |
+| `RegistraAlLigar` | `SinCarrera` se rompe (4 estados) |
+| `DetieneLaPendiente` | `SinAtascoMudo` se rompe (7 estados) |
+| `AjusteSuelta` y `RespuestaReabre` juntas | `ImpedimentoConSalida` se rompe (8 estados) |
 | `ReligaSinSolicitud`, `LigaHuerfanaBloquea`, `AjusteAbre`, o `AjusteSuelta` o `RespuestaReabre` sola | pasa |
 
 Por qué pasan esas últimas:
