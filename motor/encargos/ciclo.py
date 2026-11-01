@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import socket
+import stat
 import subprocess
 import uuid
 from dataclasses import replace
@@ -3458,6 +3460,70 @@ def _reconciliar_checks(
     return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
 
 
+_LIMITE_CUERPO_PR = 65_536
+_NOTA_CUERPO_RECORTADO = (
+    "\n\n[Nota: el cuerpo supera el límite de GitHub y se recortó. "
+    "El texto completo está en .interno/cuerpo-pr.md.]"
+)
+
+
+def _leer_cuerpo_del_espacio(espacio: Path) -> str | None:
+    """Lee `.interno/cuerpo-pr.md` sin seguir enlaces ni aceptar un archivo
+    compartido con otro lugar del host. Devuelve None si no es un archivo
+    regular propio del espacio."""
+    ruta = espacio / ".interno" / "cuerpo-pr.md"
+    try:
+        if capacidades._es_enlace(ruta):
+            return None
+        info = os.lstat(ruta)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return None
+        if not ruta.resolve().is_relative_to(espacio.resolve()):
+            return None
+        fd = os.open(
+            ruta,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+    except (OSError, ValueError, RuntimeError):
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return None
+        entrada = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+        fd = -1
+        with entrada:
+            try:
+                return entrada.read()
+            except OSError:
+                return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
+    """El cuerpo del PR: lo que el responsable dejó en `.interno/cuerpo-pr.md`,
+    con una línea final que identifica el encargo y la fase. Sin archivo o vacío
+    se conserva el cuerpo de siempre."""
+    defecto = f"Encargo {enc.id}. Revision independiente aprobada."
+    texto = _leer_cuerpo_del_espacio(espacio)
+    if texto is None:
+        return defecto
+    texto = texto.rstrip()
+    if not texto.strip():
+        return defecto
+    linea = f"Encargo {enc.id}. Fase: {enc.fase_activa or FASE_IMPLICITA}."
+    cuerpo = f"{texto}\n\n{linea}"
+    if len(cuerpo) <= _LIMITE_CUERPO_PR:
+        return cuerpo
+    resto = f"{_NOTA_CUERPO_RECORTADO}\n\n{linea}"
+    disponible = max(0, _LIMITE_CUERPO_PR - len(resto))
+    return f"{texto[:disponible]}{resto}"
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
@@ -3666,7 +3732,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 rama,
                 base,
                 f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
-                f"Encargo {enc.id}. Revision independiente aprobada.",
+                _cuerpo_pr(enc, espacio),
             )
             numero = int(pr.numero)
             registro.anotar(

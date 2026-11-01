@@ -677,6 +677,7 @@ class FakeGitHub:
                 "borrador": True,
                 "estado": "abierto",
                 "titulo": titulo,
+                "cuerpo": cuerpo,
             }
             self._guardar(s)
         elif s["prs"][k]["base"] != base:
