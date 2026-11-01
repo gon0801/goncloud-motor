@@ -244,6 +244,43 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             self.assertIn("check:lint", e.fase_actual.cerrados)
             self.assertEqual(e.sin_progreso, 0)
 
+    def test_una_lectura_a_mitad_de_corrida_no_se_toma_por_terminada(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "fr-2f", _GhPorCommit,
+                {
+                    "requeridos": ["ci", "lint"],
+                    "checks": {"ci": "exit 1", "lint": "exit 1"},
+                },
+            )
+            gh = vuelta.gh
+            e = vuelta("uno")
+            sha = e.producto.sha_git
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci", "lint"))
+
+            # Corrida nueva a medias: ci ya salió en rojo, lint todavía corre.
+            gh.checks = lambda *a, **k: ChecksVerdict(
+                sha=sha, terminal=True, green=False, faltan=("lint",), fallas=("ci",),
+                github_termino=False,
+            )
+            t0 = time.time()
+            e = _barrido(r, gh, t0)
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci", "lint"))
+            self.assertEqual(e.fase_actual.checks_esperando_sha, sha)
+            self.assertNotIn("check:lint", e.fase_actual.cerrados)
+            self.assertEqual(e.sin_progreso, 0)
+            self.assertTrue(revision_externa_pendiente(e))
+
+            # Termina: lint pasa y ci sigue rojo. Ahora sí se refresca.
+            gh.checks = lambda *a, **k: ChecksVerdict(
+                sha=sha, terminal=True, green=False, faltan=(), fallas=("ci",),
+                github_termino=True,
+            )
+            e = _barrido(r, gh, t0 + ciclo._RELECTURA_CHECKS_S + 1)
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
+            self.assertEqual(e.fase_actual.checks_esperando_sha, "")
+            self.assertIn("check:lint", e.fase_actual.cerrados)
+
     def test_una_corrida_que_termina_con_otros_checks_en_rojo_sin_haberla_visto_pendiente_tambien_refresca(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
