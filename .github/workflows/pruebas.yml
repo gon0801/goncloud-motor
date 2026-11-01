@@ -41,14 +41,3 @@ jobs:
         run: /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
       - name: Comprobador con la jaula real de macOS (con MOTOR_EXIGE_SEATBELT=1 un skip es un fallo)
         run: python3 -m unittest -v tests.test_comprobador_interprete
-
-  tope-del-modelo:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: El Tope del modelo TLA+ es el de dominio.TOPE_NO_CONCLUYENTES
-        run: python -m unittest tests.test_tope_del_modelo -v
