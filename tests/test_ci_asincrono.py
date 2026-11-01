@@ -43,9 +43,11 @@ class _CiAsincrono(_Flujo):
     autorizacion = ""
     workflow = "pruebas.yml"
 
-    def montar(self, clave: str):
+    def montar(self, clave: str, lanzada: bool = True):
         """Un revisor que pidió ci.correr; la herramienta sigue corriendo en el
-        intento-1 y el barrido la deja `pendiente`."""
+        intento-1 y el barrido la deja `pendiente`. Con `lanzada=False` no hay
+        barrido: la solicitud queda como la dejaba el código que aún no
+        recordaba su carpeta."""
         r = self.recorrido(clave)
         (r.base / "capacidades.json").write_text(
             json.dumps(
@@ -68,6 +70,8 @@ class _CiAsincrono(_Flujo):
         self.cerrar_turno(r)
         ident = r.fold().fases[0].inspeccion_solicitud
         self.intento(r, "intento-1-a")
+        if not lanzada:
+            return r, ident
         corriendo = {"estado": "pendiente", "motivo": "el CI sigue corriendo"}
         with mock.patch.object(nec, "_ejecutar", return_value=corriendo):
             self.barrer(r)
@@ -158,6 +162,24 @@ class ElResultadoDeUnIntentoAnteriorLlega(_CiAsincrono):
 
         self.assertEqual(self.sol(r, ident).estado, "resuelta")
         self.assertEqual(self.buzon(r, ident)["estado"], "resuelta")
+
+    def test_una_solicitud_registrada_sin_carpeta_la_busca_en_los_intentos(self):
+        r, ident = self.montar("tarde-sin-carpeta", lanzada=False)
+        self.peticion_archivada(r, ident)
+        self.intento(r, "intento-2-b")
+        self.termina(r.d / "intento-1-a", ident)
+        self.assertEqual(self.sol(r, ident).carpeta, "")
+
+        with mock.patch.object(nec, "_ejecutar", side_effect=AssertionError("no se repite")):
+            self.barrer(r)
+
+        self.assertEqual(self.sol(r, ident).estado, "resuelta")
+        doc = self.buzon(r, ident)
+        self.assertEqual(doc["estado"], "resuelta")
+        self.assertEqual(doc["datos"]["run"], "41274694053")
+        publico = Path(doc["datos"]["log"])
+        self.assertTrue(publico.is_relative_to(r.espacio))
+        self.assertEqual(publico.read_text(encoding="utf-8"), LOG_CI)
 
     def marca_de(self, r, ident: str, **campos) -> Path:
         marca = r.d / "intento-1-a" / "herramientas" / f"{ident}.json"
