@@ -39,13 +39,18 @@ def silencio_s(tiempos: dict[str, float]) -> float:
 
 
 class Senal:
-    def __init__(self, home: Path, tiempos, reloj=time.monotonic):
+    def __init__(self, home: Path, tiempos, reloj=time.monotonic, canales=None):
+        """`canales` devuelve los canales de avisos caídos (lectura local, sin tocar el canal): si hay
+        alguno, la señal sale con status=down y el último error. La dirección es `MOTOR_KUMA_URL` del
+        `secretos.env` de `home`: cada proceso lee el de su propio home."""
         self.home = home
+        self._canales = canales
         self._tiempos = tiempos
         self._reloj = reloj
         self._ultimo_avance = reloj()
         self._planes = 0
         self._ultimo_log = float("-inf")
+        self._ultimo_log_canales = float("-inf")
         self._alto = threading.Event()
         self._hilo: threading.Thread | None = None
 
@@ -81,6 +86,7 @@ class Senal:
                 return False
             url = url_configurada(self.home)
             if not url:
+                self._anota_canales_sin_kuma()
                 return False
             self._manda(url)
             return True
@@ -90,10 +96,23 @@ class Senal:
 
     def _manda(self, url: str) -> None:
         base = urllib.parse.urlsplit(url)._replace(query="", fragment="").geturl()
-        msg = urllib.parse.quote(f"{self._planes} planes")
+        caidos = self._canales_caidos()
+        texto = f"{self._planes} planes"
+        for c in caidos:
+            texto += f"; canal {c['canal']} caído desde {c['fallando_desde']}: {c['ultimo_error']}"
+        msg = urllib.parse.quote(texto[:300])
+        estado = "down" if caidos else "up"
         abre = urllib.request.build_opener(_SinRedireccion).open
-        with abre(f"{base}?status=up&msg={msg}", timeout=TOPE_GET_S) as r:
+        with abre(f"{base}?status={estado}&msg={msg}", timeout=TOPE_GET_S) as r:
             r.read(1024)
+
+    def _canales_caidos(self) -> list[dict]:
+        if self._canales is None:
+            return []
+        try:
+            return list(self._canales())
+        except Exception:  # noqa: BLE001  un estado ilegible no apaga la señal de vida
+            return []
 
     def _anota(self, tipo: str) -> None:
         ahora = self._reloj()
@@ -101,3 +120,18 @@ class Senal:
             return
         self._ultimo_log = ahora
         print(f"motor: la señal a Kuma falló ({tipo})", file=sys.stderr, flush=True)
+
+    def _anota_canales_sin_kuma(self) -> None:
+        """Sin su dirección la señal no sale: un canal caído se deja dicho en el log del proceso."""
+        caidos = self._canales_caidos()
+        ahora = self._reloj()
+        if not caidos or ahora - self._ultimo_log_canales < LOG_CADA_S:
+            return
+        self._ultimo_log_canales = ahora
+        for c in caidos:
+            print(
+                f"motor: canal {c['canal']} caído desde {c['fallando_desde']}: {c['ultimo_error']} "
+                "(sin MOTOR_KUMA_URL no se avisa a Kuma)",
+                file=sys.stderr,
+                flush=True,
+            )

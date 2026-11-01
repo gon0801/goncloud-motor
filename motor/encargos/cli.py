@@ -457,9 +457,25 @@ def _supervisor(reg: Registro, args) -> int:
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))
         return 0
-    from motor.senal import Senal
+    from motor.senal import Senal, url_configurada
 
-    senal = Senal(reg.base, lambda: {})
+    from motor.integraciones.canales import canales_caidos
+
+    base = reg.base
+    # La señal del supervisor lee MOTOR_KUMA_URL del secretos.env de su propia base (en la Mini,
+    # ~/.motor-encargos/secretos.env). El daemon del modo planes lee el de ~/.motor: cada proceso, su archivo.
+    try:
+        configurada = bool(url_configurada(base))
+    except Exception:  # noqa: BLE001  un secretos.env ilegible tampoco da señal
+        configurada = False
+    if not configurada:
+        print(
+            "motor: sin MOTOR_KUMA_URL en el secretos.env de la base, el supervisor de encargos no manda señal a Kuma "
+            "(un canal caído solo se ve en `motor director ver` y en este log)",
+            file=sys.stderr,
+            flush=True,
+        )
+    senal = Senal(base, lambda: {}, canales=lambda: canales_caidos(base))
     senal.arranca()
     try:
         while True:
