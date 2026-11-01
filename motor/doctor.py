@@ -46,7 +46,8 @@ def entorno_del_servicio(mq: Maquina, ruta: Ruta, result: Path) -> dict[str, str
         **dict(mq.env),
         **dict(mq.secretos),
     }
-    base.pop(senal.VARIABLE, None)
+    for variable in senal.VARIABLES:
+        base.pop(variable, None)
     de_ruta = {k: string.Template(v).safe_substitute(base) for k, v in ruta.env}
     return {
         **base,

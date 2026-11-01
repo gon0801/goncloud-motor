@@ -11,8 +11,11 @@ import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+from motor import doctor as doctor_mod
+from motor import effects
 from motor.encargos.registro import Registro
 from motor.integraciones import canales, directores
 from motor.integraciones.cli import main as director
@@ -309,6 +312,20 @@ class VerYSenal(Banco):
         self.assertNotEqual(capturado["variable"], "MOTOR_KUMA_URL")
         self.assertEqual(capturado["respaldo"], Path.home() / ".motor")
         self.assertEqual(capturado["canales"](), [])
+
+    def test_ninguna_direccion_de_kuma_llega_al_entorno_de_los_agentes_ni_de_las_comprobaciones(self):
+        secretos = (
+            ("MOTOR_KUMA_URL", "http://kuma/push/daemon"),
+            ("MOTOR_KUMA_ENCARGOS_URL", "http://kuma/push/encargos"),
+            ("MOTOR_TELEGRAM_TOKEN", "prueba"),
+        )
+        mq = SimpleNamespace(env=(), secretos=secretos, path_extra=())
+        env = effects.entorno_maquina(mq)
+        servicio = doctor_mod.entorno_del_servicio(mq, SimpleNamespace(env=(), modelo="m"), self.base / "r.json")
+        for visto in (env, servicio):
+            self.assertNotIn("MOTOR_KUMA_URL", visto)
+            self.assertNotIn("MOTOR_KUMA_ENCARGOS_URL", visto)
+            self.assertEqual(visto["MOTOR_TELEGRAM_TOKEN"], "prueba", "los demás secretos siguen como antes")
 
     def test_sin_canales_la_senal_no_cambia(self):
         pedidos = self._kuma()
