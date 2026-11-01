@@ -195,10 +195,11 @@ Tres reglas evitan que el freno pare un encargo por error (casos del 1-nov):
 - **No cuenta con una revisión externa pendiente.** Mientras DeepSeek no haya
   leído el commit vigente, o sus checks requeridos sigan corriendo
   (`Fase.checks_esperando_sha`, que anota `checks_esperando` y cierran
-  `checks_verdes` o `checks_rojos`; solo vale mientras GitHub tiene corridas en
-  marcha para ese SHA: una lectura a mitad de corrida no se toma por terminada
-  ni refresca los checks en rojo, y `checks_rojos` los adopta cuando la corrida
-  acaba), una vuelta del responsable sin cambios no
+  `checks_verdes` o `checks_rojos`; solo vale mientras algún check
+  requerido tiene una corrida en marcha o en cola para ese SHA: una lectura a
+  mitad de corrida no se toma por terminada ni refresca los checks en rojo, y
+  `checks_rojos` los adopta cuando los requeridos acaban, aunque GitHub siga
+  corriendo otros workflows que no lo son), una vuelta del responsable sin cambios no
   se cuenta: el encargo espera (60 s con DeepSeek, 120 s con checks) en vez de
   contar un bloqueante que su fuente puede haber cerrado ya. Un bloqueante que la
   fuente cerró (resuelto o descartado) deja de estar abierto con la relectura

@@ -41,6 +41,13 @@ def setUpModule():
     unittest.addModuleCleanup(parche.stop)
 
 
+def _en_marcha(*nombres: str) -> tuple:
+    return tuple(
+        {"nombre": n, "run_id": "", "url": "", "status": "in_progress", "conclusion": None}
+        for n in nombres
+    )
+
+
 class _GhPorCommit(FakeGitHub):
     """DeepSeek publica `textos[i]` sobre el i-ésimo commit que el motor le pregunta,
     o nada si `textos[i]` es None o falta: la revisión de ese commit aún no llegó."""
@@ -184,7 +191,8 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
 
             real = gh.checks
             gh.checks = lambda *a, **k: ChecksVerdict(
-                sha=sha, terminal=False, green=False, faltan=("ci",), fallas=()
+                sha=sha, terminal=False, green=False, faltan=("ci",), fallas=(),
+                corridas=_en_marcha("ci"),
             )
             t0 = time.time()
             e = _barrido(r, gh, t0)
@@ -228,7 +236,8 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
 
             real = gh.checks
             gh.checks = lambda *a, **k: ChecksVerdict(
-                sha=sha, terminal=False, green=False, faltan=("ci", "lint"), fallas=()
+                sha=sha, terminal=False, green=False, faltan=("ci", "lint"), fallas=(),
+                corridas=_en_marcha("ci", "lint"),
             )
             t0 = time.time()
             e = _barrido(r, gh, t0)
@@ -261,7 +270,7 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             # Corrida nueva a medias: ci ya salió en rojo, lint todavía corre.
             gh.checks = lambda *a, **k: ChecksVerdict(
                 sha=sha, terminal=True, green=False, faltan=("lint",), fallas=("ci",),
-                github_termino=False,
+                corridas=_en_marcha("lint"),
             )
             t0 = time.time()
             e = _barrido(r, gh, t0)
@@ -280,6 +289,31 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
             self.assertEqual(e.fase_actual.checks_esperando_sha, "")
             self.assertIn("check:lint", e.fase_actual.cerrados)
+
+    def test_una_corrida_ajena_a_los_requeridos_no_retiene_el_refresco(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "fr-2g", _GhPorCommit,
+                {
+                    "requeridos": ["ci", "lint"],
+                    "checks": {"ci": "exit 1", "lint": "exit 1"},
+                },
+            )
+            gh = vuelta.gh
+            e = vuelta("uno")
+            sha = e.producto.sha_git
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci", "lint"))
+
+            # Los requeridos terminaron (lint pasa, ci sigue en rojo), pero GitHub
+            # todavía corre otro workflow que no es requerido: github_termino es falso.
+            gh.checks = lambda *a, **k: ChecksVerdict(
+                sha=sha, terminal=True, green=False, faltan=(), fallas=("ci",),
+                github_termino=False,
+            )
+            e = _barrido(r, gh, time.time())
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
+            self.assertIn("check:lint", e.fase_actual.cerrados)
+            self.assertEqual(e.fase_actual.checks_esperando_sha, "")
 
     def test_una_corrida_que_termina_con_otros_checks_en_rojo_sin_haberla_visto_pendiente_tambien_refresca(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

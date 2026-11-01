@@ -3376,6 +3376,19 @@ def _anotar_checks_verdes(
     return registro.fold(enc.id)
 
 
+def _requeridos_en_marcha(veredicto) -> bool:
+    """Un check requerido que aún no terminó tiene una corrida en marcha o en cola.
+    Uno sin ninguna corrida (nadie lo corre) no está en marcha: no hay qué esperar."""
+    for requerido in veredicto.faltan:
+        for corrida in veredicto.corridas:
+            nombre = str(corrida.get("nombre") or "")
+            if (nombre == requerido or nombre.startswith(requerido + " (")) and (
+                corrida.get("status") != "completed" or corrida.get("conclusion") is None
+            ):
+                return True
+    return False
+
+
 def _anotar_checks_esperando(
     registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
 ) -> Encargo:
@@ -3531,10 +3544,11 @@ def _reconciliar_checks(
         return enc
     _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
     if not veredicto.green:
-        if not veredicto.github_termino:
-            # GitHub aún tiene corridas en marcha o en cola para este SHA: lo que
-            # se lee es una corrida a medias, aunque algún check ya esté en rojo. No
-            # se toma por terminada ni se refrescan los checks en rojo con ella.
+        if _requeridos_en_marcha(veredicto):
+            # Algún check requerido sigue corriendo: lo que se lee es una corrida a
+            # medias, aunque otro ya esté en rojo. No se toma por terminada ni se
+            # refrescan los checks en rojo con ella. Las corridas ajenas a los
+            # requeridos no cuentan: no tienen por qué terminar para leer los rojos.
             return _anotar_checks_esperando(registro, enc, enc.pr_numero, sha, hora)
         if not veredicto.fallas:
             return enc
@@ -4283,7 +4297,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     hora, f"checks-{sha[:12]}",
                 )
         else:
-            if not veredicto_ci.github_termino:
+            if _requeridos_en_marcha(veredicto_ci):
                 _anotar_checks_esperando(registro, enc, numero, sha, hora)
             marcar_espera(
                 registro, enc.id,
