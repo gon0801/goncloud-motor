@@ -3972,6 +3972,23 @@ def _sha_final_sin_leer(enc: Encargo, gh) -> bool:
     )
 
 
+def _esperar_checks_requeridos(
+    registro: Registro, enc: Encargo, veredicto, numero: int, sha: str, hora: str
+) -> None:
+    """Ningún check requerido está en rojo y aún no están todos en verde: el PR espera.
+    Solo si alguno corre o está en cola (`veredicto.en_marcha`) queda anotado
+    `checks_esperando`, y con él el freno no cuenta vueltas; si el que falta no lo corre
+    nadie, se espera a la vista pero el freno sigue contando. Lo cubre
+    `tests/test_freno_vueltas.py::EsperaDeChecksEnLaEntrega`."""
+    if _requeridos_en_marcha(veredicto):
+        _anotar_checks_esperando(registro, enc, numero, sha, hora)
+    marcar_espera(
+        registro, enc.id,
+        f"esperando checks requeridos del PR #{numero}: {', '.join(veredicto.faltan)}",
+        _reanuda_en(120), hora,
+    )
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
@@ -4291,14 +4308,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     hora, f"checks-{sha[:12]}",
                 )
         else:
-            if _requeridos_en_marcha(veredicto_ci):
-                _anotar_checks_esperando(registro, enc, numero, sha, hora)
-            marcar_espera(
-                registro, enc.id,
-                "esperando checks requeridos del PR "
-                f"#{numero}: {', '.join(veredicto_ci.faltan)}",
-                _reanuda_en(120), hora,
-            )
+            _esperar_checks_requeridos(registro, enc, veredicto_ci, numero, sha, hora)
         return registro.fold(enc.id)
     fase_ci = enc.fase_actual
     if fase_ci is not None and fase_ci.fallas_checks:
