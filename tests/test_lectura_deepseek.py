@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from motor.encargos.dominio import bloqueantes_abiertos
+from motor.encargos.dominio import bloqueantes_abiertos, prompt_responsable
 from motor.github import FakeGitHub
 from tests.test_entrega_misma_version import _barrido, _pasos
 from motor.encargos.aislamiento import SondaEntorno
@@ -233,23 +233,73 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             self.assertEqual(e.estado, "esperando_reintento")
             self.assertIn("antes de cerrar", e.motivo)
 
-    def test_un_medium_tardio_impide_el_merge_con_entrega_integrada(self):
+    def test_un_medium_tardio_impide_el_merge_con_entrega_integrada_o_desplegada(self):
+        for nivel in ("integrado", "desplegado"):
+            with self.subTest(nivel=nivel), tempfile.TemporaryDirectory(
+                ignore_cleanup_errors=True
+            ) as tmp:
+                vuelta, r = _entrega_pr(
+                    self, tmp, f"ds-{nivel}", _GhComentarios, nivel=nivel
+                )
+                vuelta.gh.textos[None] = lambda n: (
+                    _comentario() if n == 1 else _comentario(_hallazgo("F6", "medium"))
+                )
+                e = vuelta("uno")
+                self.assertNotIn(e.nivel_alcanzado, ("integrado", "desplegado"))
+                self.assertNotEqual(e.estado, "terminado")
+                self.assertEqual(_ids(e), ["F6"])
+                self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+                self.assertEqual(_pasos(r, "integrado"), [])
+                pr = vuelta.gh.ver(e.entrega.repo, e.pr_numero)
+                self.assertEqual(pr.estado, "abierto")
+
+
+class _GhQueFalla(_GhComentarios):
+    """GitHub falla en las lecturas de `fallos` y luego responde."""
+
+    fallos = 0
+
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        if self.fallos > 0:
+            self.fallos -= 1
+            self.llamadas.append((numero, sha))
+            raise RuntimeError("gh api: 502")
+        return super().comentarios_deepseek(repo, numero, sha)
+
+
+class RelecturaConGithubCaido(unittest.TestCase):
+    def test_un_fallo_no_consume_el_espaciado_y_queda_a_la_vista(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(
-                self, tmp, "ds-integrado", _GhComentarios, nivel="integrado"
-            )
-            vuelta.gh.textos[None] = lambda n: (
-                _comentario() if n == 1 else _comentario(_hallazgo("F6", "medium"))
-            )
+            vuelta, r = _entrega_pr(self, tmp, "ds-gh-caido", _GhQueFalla)
+            gh = vuelta.gh
+            gh.textos[None] = _comentario(_hallazgo("F1"))
             e = vuelta("uno")
-            self.assertNotEqual(e.nivel_alcanzado, "integrado")
-            self.assertNotEqual(e.estado, "terminado")
-            self.assertEqual(_ids(e), ["F6"])
-            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
-            self.assertEqual(_pasos(r, "integrado"), [])
-            pr = vuelta.gh.ver(e.entrega.repo, e.pr_numero)
-            self.assertEqual(pr.estado, "abierto")
+            self.assertEqual(_ids(e), ["F1"])
+            antes = (e.motivo, e.siguiente, e.causa, e.ultimo_hecho, e.estrategia)
+            instruccion = prompt_responsable(e)
+            gh.textos[None] = _comentario(_hallazgo("F1", estado="dismissed"))
+            gh.fallos = 1
+            t0 = time.time()
+            e = _barrido(r, gh, t0)
+            fallos = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "lectura_fallida"
+                and "releer el comentario de DeepSeek" in ev["data"]["causa"]
+            ]
+            self.assertEqual(
+                (e.motivo, e.siguiente, e.causa, e.ultimo_hecho, e.estrategia), antes
+            )
+            self.assertEqual(prompt_responsable(e), instruccion)
+            self.assertNotIn("reintentar la relectura", prompt_responsable(e))
+            self.assertEqual(len(fallos), 1)
+            self.assertIn("502", fallos[0]["data"]["causa"])
+            self.assertEqual(_ids(e), ["F1"])
+            self.assertNotEqual(e.estado, "esperando_reintento")
+            e = _barrido(r, gh, t0 + 16)
+            self.assertEqual(_ids(e), [])
+            self.assertEqual(e.nivel_alcanzado, "pr")
 
 
 if __name__ == "__main__":
     unittest.main()
+
