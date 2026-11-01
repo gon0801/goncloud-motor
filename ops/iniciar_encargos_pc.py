@@ -61,6 +61,11 @@ class Windows:
         self.session = self.api(
             self.kernel, "ProcessIdToSessionId", [W.DWORD, C.POINTER(W.DWORD)]
         )
+        self.times = self.api(
+            self.kernel,
+            "GetProcessTimes",
+            [W.HANDLE] + [C.POINTER(W.FILETIME)] * 4,
+        )
         self.in_job = self.api(
             self.kernel, "IsProcessInJob", [W.HANDLE, W.HANDLE, C.POINTER(W.BOOL)]
         )
@@ -109,6 +114,20 @@ class Windows:
                 self.close(token)
             self.close(process)
 
+    def start_time(self, pid):
+        """Instante de creación del proceso (FILETIME), o None si no se puede leer. Junto
+        con el PID identifica al proceso: un PID reutilizado nace en otro instante."""
+        process = self.open(0x1000, False, pid)
+        if not process:
+            return None
+        try:
+            tiempos = [W.FILETIME() for _ in range(4)]
+            if not self.times(process, *(C.byref(t) for t in tiempos)):
+                return None
+            return (tiempos[0].dwHighDateTime << 32) | tiempos[0].dwLowDateTime
+        finally:
+            self.close(process)
+
     def explorer(self, sid):
         snapshot = self.api(
             self.kernel, "CreateToolhelp32Snapshot", [W.DWORD, W.DWORD], W.HANDLE
@@ -151,7 +170,13 @@ CREATE_NO_WINDOW = 0x08000000
 ESPERA_BASE_S = 5
 ESPERA_TOPE_S = 300
 ESTABLE_S = 600
-ESPERA_ARRANQUE_S = 10
+TIMEOUT_TASKLIST_S = 10
+TIMEOUT_TASKKILL_S = 20
+# El vigilante puede tardar, antes de su primer supervisor, en comprobar y cerrar un huérfano
+# (tasklist + taskkill); quien lo espera tiene que esperar más que eso, y el puente más aún.
+ESPERA_ARRANQUE_S = 45
+ESPERA_PUENTE_S = 60
+ESPERA_INFORME_S = 75
 CODIGO_YA_ACTIVO = 3
 
 
@@ -252,33 +277,48 @@ def leer_estado(ruta):
     return datos if isinstance(datos, dict) else {}
 
 
-def limpiar_huerfano(previo, imagen_de, matar_arbol, registrar):
+def limpiar_huerfano(previo, imagen_de, inicio_de, matar_arbol, registrar):
     """Si un vigilante anterior murió sin cerrar su supervisor, ese PowerShell sigue vivo y
-    un segundo supervisor duplicaría el barrido. Solo se cierra si el PID sigue siendo un
-    powershell (un PID reutilizado por otro programa no se toca)."""
-    pid = previo.get("supervisor_pid")
-    if not isinstance(pid, int):
+    un segundo supervisor duplicaría el barrido. Solo se cierra el proceso que es el mismo
+    que se lanzó: el PID tiene que seguir siendo un powershell y haber nacido en el instante
+    guardado. Un PID reutilizado, aunque sea de otro powershell, no coincide; y si no se
+    puede saber, no se toca. Devuelve True solo si lo cerró."""
+    pid, inicio = previo.get("supervisor_pid"), previo.get("supervisor_inicio")
+    if not isinstance(pid, int) or not inicio:
         return False
-    if (imagen_de(pid) or "").lower() != "powershell.exe":
+    try:
+        imagen, nacio = (imagen_de(pid) or "").lower(), inicio_de(pid)
+    except (OSError, subprocess.SubprocessError) as exc:
+        registrar(f"no se pudo comprobar el supervisor {pid} de un vigilante anterior: {exc}")
+        return False
+    if imagen != "powershell.exe" or nacio != inicio:
         return False
     registrar(f"se cierra el supervisor huérfano {pid} de un vigilante anterior")
-    matar_arbol(pid)
-    return True
+    if matar_arbol(pid):
+        return True
+    registrar(f"taskkill no pudo cerrar el supervisor huérfano {pid}")
+    return False
 
 
 def imagen_de(pid):
     salida = subprocess.run(
         ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-        capture_output=True, text=True, timeout=15, creationflags=CREATE_NO_WINDOW,
+        capture_output=True, text=True, timeout=TIMEOUT_TASKLIST_S,
+        creationflags=CREATE_NO_WINDOW,
     ).stdout.strip()
     return salida.split('","')[0].strip('"') if salida.startswith('"') else ""
 
 
 def matar_arbol(pid):
-    subprocess.run(
-        ["taskkill", "/PID", str(pid), "/T", "/F"],
-        capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW,
-    )
+    """True si el árbol quedó cerrado: taskkill terminó bien o el proceso ya no existía (128)."""
+    try:
+        resultado = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True, timeout=TIMEOUT_TASKKILL_S, creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return resultado.returncode in (0, 128)
 
 
 def comando_supervisor(powershell, supervisor):
@@ -307,28 +347,53 @@ def correr_vigilante(carpeta, comando, runtime, sid, sesion, windows):
 
     estado = {"vigilante_pid": os.getpid(), "inicio": time.time(), "lanzamientos": 0}
 
+    actual = {"proceso": None}
+
+    def cerrar(proceso):
+        """Cierra el árbol; si taskkill falla, lo intenta con el propio proceso."""
+        if matar_arbol(proceso.pid):
+            return True
+        registrar(f"taskkill no pudo cerrar el supervisor {proceso.pid}")
+        try:
+            proceso.terminate()
+            proceso.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return proceso.poll() is not None
+
     def lanzar():
         proceso = subprocess.Popen(comando, cwd=runtime, creationflags=CREATE_NO_WINDOW)
+        actual["proceso"] = proceso
         identidad = windows.identity(proceso.pid)
         if not identidad_valida(identidad, sid, sesion):
-            matar_arbol(proceso.pid)
+            if not cerrar(proceso):
+                raise RuntimeError(
+                    f"Supervisor {proceso.pid} rechazado y no se pudo cerrar; "
+                    "véase vigilante.log"
+                )
             raise RuntimeError("Supervisor rechazado: identidad, sesión o Job incorrectos")
         estado.update(
             supervisor=identidad, supervisor_pid=proceso.pid,
+            supervisor_inicio=windows.start_time(proceso.pid),
             lanzamientos=estado["lanzamientos"] + 1,
         )
         escribir_estado(ruta_estado, estado)
         return proceso
 
     def terminar(proceso):
-        matar_arbol(proceso.pid)
+        if not cerrar(proceso):
+            registrar(f"el supervisor {proceso.pid} sigue vivo; el próximo arranque lo cerrará")
 
-    limpiar_huerfano(previo, imagen_de, matar_arbol, registrar)
+    limpiar_huerfano(previo, imagen_de, windows.start_time, matar_arbol, registrar)
     registrar(f"vigilante {os.getpid()} en marcha")
     try:
         vigilar(lanzar, ruta_parar.exists, time.monotonic, time.sleep, registrar, terminar)
     finally:
-        estado.update(parado=True, supervisor_pid=None)
+        proceso = actual["proceso"]
+        vivo = proceso is not None and proceso.poll() is None
+        estado.update(parado=True)
+        if not vivo:
+            estado.update(supervisor_pid=None, supervisor_inicio=None)
         escribir_estado(ruta_estado, estado)
         ruta_parar.unlink(missing_ok=True)
         candado.close()
@@ -436,7 +501,7 @@ def main():
                 cwd=runtime,
                 creationflags=0x01000000 | 0x08000000,
                 check=True,
-                timeout=15,
+                timeout=ESPERA_PUENTE_S,
             )
             report = json.loads(output.read_text(encoding="utf-8"))
             report["bridge"] = own
@@ -454,7 +519,7 @@ def main():
             "exit_code": 0,
         }
         if not args.sonda:
-            # Este proceso sale en segundos (el puente lo espera 15 s); el vigilante que
+            # Este proceso sale en segundos (el puente espera hasta ESPERA_PUENTE_S); el vigilante que
             # deja atrás es quien mantiene vivo al supervisor.
             carpeta = Path.home() / CARPETA
             carpeta.mkdir(parents=True, exist_ok=True)
@@ -514,7 +579,7 @@ $desktop.Document.Application.ShellExecute({literal(sys.executable)},{literal(su
         capture_output=True,
     )
     completed = output.with_suffix(".completo.json")
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + ESPERA_INFORME_S
     while not completed.is_file():
         if time.monotonic() >= deadline:
             raise RuntimeError(f"Sin confirmación del puente: {output}")

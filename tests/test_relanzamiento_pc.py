@@ -154,10 +154,13 @@ class FueraDelJob(unittest.TestCase):
         self.assertFalse(pc.identidad_valida({**bueno, "session": 2}, "S-1", 1))
         self.assertFalse(pc.identidad_valida({**bueno, "sid": "S-2"}, "S-1", 1))
 
-    def _correr(self, carpeta, identidad, procesos, al_lanzar=None):
+    def _correr(self, carpeta, identidad, procesos, al_lanzar=None, mata=True):
         class Windows:
             def identity(self, pid):
                 return {**identidad, "pid": pid}
+
+            def start_time(self, pid):
+                return 1000 + pid
 
         lanzados = []
         muertos = []
@@ -172,7 +175,7 @@ class FueraDelJob(unittest.TestCase):
             return proceso
 
         with mock.patch.object(pc.subprocess, "Popen", side_effect=popen), mock.patch.object(
-            pc, "matar_arbol", side_effect=muertos.append
+            pc, "matar_arbol", side_effect=lambda pid: muertos.append(pid) or mata
         ), mock.patch.object(pc, "imagen_de", return_value=""), mock.patch.object(
             pc.time, "sleep", side_effect=reloj.dormir
         ), mock.patch.object(pc.time, "monotonic", reloj):
@@ -191,6 +194,9 @@ class FueraDelJob(unittest.TestCase):
 
             class Muere:
                 pid = 0
+
+                def poll(self):
+                    return 1
 
                 def __init__(self, al_esperar=None):
                     self.al_esperar = al_esperar
@@ -223,6 +229,9 @@ class FueraDelJob(unittest.TestCase):
             class Nace:
                 pid = 0
 
+                def poll(self):
+                    return 1
+
                 def wait(self, timeout=None):
                     (carpeta / "vigilante.parar").write_text("parar")
                     return 1
@@ -236,6 +245,90 @@ class FueraDelJob(unittest.TestCase):
             self.assertEqual(muertos, [101])
             self.assertNotIn("supervisor", json.loads((carpeta / "vigilante.json").read_text()))
             self.assertIn("RuntimeError", (carpeta / "vigilante.log").read_text())
+
+
+    def _vivo(self, cierra_con_terminate):
+        class Vivo:
+            pid = 0
+            terminados = 0
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("supervisor", timeout)
+
+            def terminate(self):
+                Vivo.terminados += 1
+                self.cerrado = cierra_con_terminate
+
+            cerrado = False
+
+            def poll(self):
+                return 1 if self.cerrado else None
+
+        return Vivo()
+
+    def test_si_taskkill_falla_al_parar_se_intenta_con_el_proceso_y_se_guarda_si_sigue_vivo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            carpeta = Path(tmp)
+            valida = {"sid": "S-1", "session": 1, "in_job": False}
+            vivo = self._vivo(cierra_con_terminate=False)
+            self._correr(
+                carpeta, valida, [vivo], mata=False,
+                al_lanzar=lambda: (carpeta / "vigilante.parar").write_text("parar"),
+            )
+            log = (carpeta / "vigilante.log").read_text()
+            self.assertIn("taskkill no pudo cerrar el supervisor 101", log)
+            self.assertIn("sigue vivo", log)
+            estado = json.loads((carpeta / "vigilante.json").read_text())
+            self.assertEqual((estado["supervisor_pid"], estado["supervisor_inicio"]), (101, 1101))
+            self.assertGreaterEqual(type(vivo).terminados, 1)
+
+    def test_si_taskkill_falla_pero_terminate_cierra_no_queda_nada_vivo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            carpeta = Path(tmp)
+            valida = {"sid": "S-1", "session": 1, "in_job": False}
+            self._correr(
+                carpeta, valida, [self._vivo(cierra_con_terminate=True)], mata=False,
+                al_lanzar=lambda: (carpeta / "vigilante.parar").write_text("parar"),
+            )
+            log = (carpeta / "vigilante.log").read_text()
+            self.assertNotIn("sigue vivo", log)
+            self.assertIsNone(json.loads((carpeta / "vigilante.json").read_text())["supervisor_pid"])
+
+    def test_un_supervisor_rechazado_que_no_se_puede_cerrar_se_informa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            carpeta = Path(tmp)
+            en_job = {"sid": "S-1", "session": 1, "in_job": True}
+            self._correr(
+                carpeta, en_job, [self._vivo(cierra_con_terminate=False)], mata=False,
+                al_lanzar=lambda: (carpeta / "vigilante.parar").write_text("parar"),
+            )
+            self.assertIn("rechazado y no se pudo cerrar", (carpeta / "vigilante.log").read_text())
+
+    def test_matar_arbol_solo_da_por_cerrado_lo_que_taskkill_cerro(self):
+        for codigo, esperado in ((0, True), (128, True), (1, False), (5, False)):
+            with mock.patch.object(
+                pc.subprocess, "run", return_value=mock.Mock(returncode=codigo)
+            ):
+                self.assertEqual(pc.matar_arbol(7), esperado, codigo)
+        for fallo in (subprocess.TimeoutExpired("taskkill", 20), OSError("no hay taskkill")):
+            with mock.patch.object(pc.subprocess, "run", side_effect=fallo):
+                self.assertFalse(pc.matar_arbol(7))
+
+
+class EsperasDelArranque(unittest.TestCase):
+    def test_cada_espera_cubre_los_timeouts_de_lo_que_espera(self):
+        # El vigilante, antes de su primer supervisor, puede comprobar (tasklist) y cerrar
+        # (taskkill) a un huérfano; quien lo espera no puede rendirse antes.
+        self.assertGreater(pc.ESPERA_ARRANQUE_S, pc.TIMEOUT_TASKLIST_S + pc.TIMEOUT_TASKKILL_S)
+        self.assertGreater(pc.ESPERA_PUENTE_S, pc.ESPERA_ARRANQUE_S)
+        self.assertGreater(pc.ESPERA_INFORME_S, pc.ESPERA_PUENTE_S)
+
+    def test_main_usa_esas_esperas_y_no_numeros_sueltos(self):
+        fuente = RUTA.read_text(encoding="utf-8")
+        self.assertIn("timeout=ESPERA_PUENTE_S", fuente)
+        self.assertIn("time.monotonic() + ESPERA_INFORME_S", fuente)
+        self.assertIn("timeout=TIMEOUT_TASKLIST_S", fuente)
+        self.assertIn("timeout=TIMEOUT_TASKKILL_S", fuente)
 
 
 class UnSoloVigilante(unittest.TestCase):
@@ -262,14 +355,48 @@ class UnSoloVigilante(unittest.TestCase):
             popen.assert_not_called()
             candado.close()
 
-    def test_un_supervisor_huerfano_se_cierra_solo_si_sigue_siendo_powershell(self):
+    def _huerfano(self, previo, imagen="powershell.exe", inicio=555, mata=True):
         muertos: list[int] = []
-        previo = {"supervisor_pid": 77}
-        self.assertTrue(pc.limpiar_huerfano(previo, lambda _p: "PowerShell.exe", muertos.append, print))
-        self.assertFalse(pc.limpiar_huerfano(previo, lambda _p: "notepad.exe", muertos.append, print))
-        self.assertFalse(pc.limpiar_huerfano(previo, lambda _p: "", muertos.append, print))
-        self.assertFalse(pc.limpiar_huerfano({}, lambda _p: "powershell.exe", muertos.append, print))
-        self.assertEqual(muertos, [77])
+        notas: list[str] = []
+
+        def inicio_de(_pid):
+            if isinstance(inicio, Exception):
+                raise inicio
+            return inicio
+
+        def matar(pid):
+            muertos.append(pid)
+            return mata
+
+        cerrado = pc.limpiar_huerfano(previo, lambda _p: imagen, inicio_de, matar, notas.append)
+        return cerrado, muertos, notas
+
+    def test_un_supervisor_huerfano_se_cierra_solo_si_es_el_mismo_proceso(self):
+        previo = {"supervisor_pid": 77, "supervisor_inicio": 555}
+        self.assertEqual(self._huerfano(previo)[:2], (True, [77]))
+        self.assertEqual(self._huerfano(previo, imagen="PowerShell.exe")[:2], (True, [77]))
+
+    def test_un_pid_reutilizado_no_se_toca_aunque_sea_otro_powershell(self):
+        previo = {"supervisor_pid": 77, "supervisor_inicio": 555}
+        self.assertEqual(self._huerfano(previo, inicio=999)[:2], (False, []))
+        self.assertEqual(self._huerfano(previo, imagen="notepad.exe")[:2], (False, []))
+        self.assertEqual(self._huerfano(previo, imagen="")[:2], (False, []))
+        self.assertEqual(self._huerfano(previo, inicio=None)[:2], (False, []))
+
+    def test_sin_instante_guardado_o_sin_poder_comprobar_no_se_cierra_nada(self):
+        self.assertEqual(self._huerfano({"supervisor_pid": 77})[:2], (False, []))
+        self.assertEqual(self._huerfano({"supervisor_inicio": 555})[:2], (False, []))
+        cerrado, muertos, notas = self._huerfano(
+            {"supervisor_pid": 77, "supervisor_inicio": 555}, inicio=OSError("acceso denegado")
+        )
+        self.assertEqual((cerrado, muertos), (False, []))
+        self.assertTrue(any("no se pudo comprobar" in n for n in notas))
+
+    def test_si_taskkill_no_cierra_al_huerfano_no_se_da_por_cerrado(self):
+        previo = {"supervisor_pid": 77, "supervisor_inicio": 555}
+        cerrado, muertos, notas = self._huerfano(previo, mata=False)
+        self.assertEqual((cerrado, muertos), (False, [77]))
+        self.assertTrue(any("taskkill no pudo" in n for n in notas))
 
 
 class ArranqueDelVigilante(unittest.TestCase):
