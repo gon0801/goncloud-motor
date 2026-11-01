@@ -3531,8 +3531,13 @@ def _reconciliar_checks(
         return enc
     _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
     if not veredicto.green:
-        if not veredicto.fallas:
+        if not veredicto.github_termino:
+            # GitHub aún tiene corridas en marcha o en cola para este SHA: lo que
+            # se lee es una corrida a medias, aunque algún check ya esté en rojo. No
+            # se toma por terminada ni se refrescan los checks en rojo con ella.
             return _anotar_checks_esperando(registro, enc, enc.pr_numero, sha, hora)
+        if not veredicto.fallas:
+            return enc
         fallas = tuple(sorted(str(x) for x in veredicto.fallas))
         if fase.checks_esperando_sha == sha or fallas != tuple(sorted(fase.fallas_checks)):
             # La corrida terminó en rojo: ya no hay revisión pendiente y los checks
@@ -4278,7 +4283,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     hora, f"checks-{sha[:12]}",
                 )
         else:
-            _anotar_checks_esperando(registro, enc, numero, sha, hora)
+            if not veredicto_ci.github_termino:
+                _anotar_checks_esperando(registro, enc, numero, sha, hora)
             marcar_espera(
                 registro, enc.id,
                 "esperando checks requeridos del PR "
