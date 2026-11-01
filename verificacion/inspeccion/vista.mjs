@@ -45,6 +45,9 @@ export const step = (action, from, to) => {
     case "Impedir":
       return "el motor registra un impedimento";
     case "Atender": {
+      for (const k of Object.keys(to.herr)) {
+        if (from.herr[k] !== to.herr[k] && to.herr[k] === "corre") return "el motor lanza la corrida de CI";
+      }
       for (const k of Object.keys(to.sol)) {
         if (from.sol[k] !== to.sol[k]) {
           if (to.sol[k] === "pendiente") return "el motor registra el pedido";
@@ -54,6 +57,16 @@ export const step = (action, from, to) => {
       }
       return "el motor saca el pedido del buzón";
     }
+    case "HerramientaTermina":
+      return "la corrida de CI termina";
+    case "Recoger":
+      return "el motor recoge el resultado de la corrida";
+    case "PedirCi":
+      return "el agente pide una corrida de CI por el buzón";
+    case "MatarTurno":
+      return "el motor mata el turno del agente";
+    case "CerrarHerramientas":
+      return "el motor cierra la corrida de CI";
     case "Parar":
       return "lo paras";
     case "Matar":

@@ -9,6 +9,7 @@ decide el trabajo: conserva hechos y devuelve datos o la causa de la espera.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -337,6 +338,44 @@ def _marca_herramienta(directorio: Path, solicitud_id: str) -> Path:
     return Path(directorio) / HERRAMIENTAS / f"{solicitud_id}.json"
 
 
+def _marca_de(carpeta: Path) -> Path:
+    return carpeta.parent / f"{carpeta.name}.json"
+
+
+def _marca_cerrada(carpeta: Path) -> Path:
+    """Donde `cerrar_herramientas` archiva la marca de una herramienta que mató."""
+    return carpeta.parent / f"{carpeta.name}.hecha"
+
+
+def _intentos(directorio: Path) -> list[Path]:
+    """El intento vigente primero y después los demás del mismo encargo."""
+    directorio = Path(directorio)
+    raiz = directorio.parent if directorio.name.startswith("intento-") else directorio
+    otros = [p for p in sorted(raiz.glob("intento-*")) if p != directorio]
+    return [directorio, *([raiz] if raiz != directorio else []), *otros]
+
+
+def _carpeta_de(sol: Solicitud, directorio: Path) -> Path:
+    """Dónde la herramienta de la solicitud deja su resultado.
+
+    La solicitud recuerda la carpeta donde se lanzó. Una anterior a ese
+    registro la busca en los intentos del encargo, por su marca o su resultado:
+    el vigente cuando ya cambió no es donde corre."""
+    if sol.carpeta:
+        return Path(sol.carpeta)
+    candidatas = [_destino_host(d, sol.id) for d in _intentos(directorio)]
+    for carpeta in candidatas:
+        huellas = (carpeta / "resultado.json", _marca_de(carpeta), _marca_cerrada(carpeta))
+        if any(h.is_file() for h in huellas):
+            return carpeta
+    return candidatas[0]
+
+
+def _en_curso(sol: Solicitud, directorio: Path) -> bool:
+    marca = _leer(_marca_de(_carpeta_de(sol, directorio)))
+    return bool(marca) and _herramienta_viva(marca)
+
+
 def _archivo_de(sol: Solicitud, datos: dict) -> tuple[str, str, str]:
     """(clave pública, clave del host, nombre) del archivo que publica la operación."""
     if sol.operacion == capacidades.CI:
@@ -355,7 +394,7 @@ def _respuesta_de_registro(
     """
     resultado: dict | None = None
     if directorio is not None:
-        resultado = _leer(_destino_host(directorio, sol.id) / "resultado.json")
+        resultado = _leer(_carpeta_de(sol, directorio) / "resultado.json")
     datos = (resultado or {}).get("datos")
     if isinstance(datos, dict) and sol.operacion in capacidades.CON_ARCHIVO:
         clave, clave_host, nombre = _archivo_de(sol, datos)
@@ -390,7 +429,7 @@ def _resultado_huerfano(
     """
     if directorio is None:
         return None
-    return _leer(_destino_host(directorio, sol.id) / "resultado.json")
+    return _leer(_carpeta_de(sol, directorio) / "resultado.json")
 
 
 def _escribir_respuesta(
@@ -523,17 +562,28 @@ def _detenida_ahora(registro: Registro, encargo_id: str) -> bool:
     return accion in ("parar", "cancelar")
 
 
-def _herramienta_viva(marca: dict) -> bool:
+def _vitalidad(marca: dict) -> str:
+    """`viva`, `muerta` o `incierta` cuando la marca o el host no permiten saberlo
+    (sin pid, sin hora de inicio, o una hora que el host no sabe leer)."""
     from motor import plataforma
 
     try:
         pid = int(marca.get("pid") or 0)
         inicio = str(marca.get("inicio") or "")
     except (TypeError, ValueError):
-        return False
-    if not pid or not inicio or not plataforma.pid_vivo(pid):
-        return False
-    return plataforma.hora_inicio(pid) == inicio
+        return "incierta"
+    if not pid:
+        return "incierta"
+    if not plataforma.pid_vivo(pid):
+        return "muerta"
+    actual = plataforma.hora_inicio(pid)
+    if not inicio or not actual:
+        return "incierta"
+    return "viva" if actual == inicio else "muerta"
+
+
+def _herramienta_viva(marca: dict) -> bool:
+    return _vitalidad(marca) == "viva"
 
 
 def _matar_herramienta(pid: int, inicio: str, operacion: str = "") -> bool:
@@ -665,7 +715,7 @@ def _publicar_snapshot(
     publico = {**datos, clave: str(copia), clave_host: str(origen)}
     actualizado = {**resultado, "datos": publico}
     try:
-        _publica(_destino_host(directorio, sol.id) / "resultado.json", actualizado)
+        _publica(_carpeta_de(sol, directorio) / "resultado.json", actualizado)
     except OSError:
         pass
     return actualizado
@@ -697,9 +747,9 @@ def _ejecutar(
     from motor import plataforma
     from .frontera import turno
 
-    destino = _destino_host(directorio, sol.id)
+    destino = _carpeta_de(sol, directorio)
     destino.mkdir(parents=True, exist_ok=True)
-    marca = _marca_herramienta(directorio, sol.id)
+    marca = _marca_de(destino)
     spec_path = destino / "spec.json"
     argv = [
         sys.executable,
@@ -906,6 +956,256 @@ def _atender_decision(
     return {"estado": "registrada", "datos": {"decision": sol.id}}
 
 
+def _huella_config(concedido: dict) -> str:
+    """Huella de la configuración efectiva del recurso (repo, workflow, base...):
+    la misma corrida solo vale para quien pide con la misma configuración."""
+    texto = json.dumps(concedido, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
+
+
+def _corrida_igual(
+    enc, sol: Solicitud, version: str, configuracion: str, directorio: Path
+) -> Solicitud | None:
+    """La corrida de CI que sigue viva y pide lo mismo: mismo recurso con la misma
+    configuración, mismo job y misma versión del producto. Repetirla cuesta otra
+    corrida de minutos."""
+    job = dict(sol.parametros).get("job")
+    return next(
+        (
+            otra
+            for otra in enc.solicitudes
+            if otra.id != sol.id
+            and otra.operacion == capacidades.CI
+            and otra.recurso == sol.recurso
+            and otra.estado == "pendiente"
+            and otra.carpeta
+            and otra.version == version
+            and otra.configuracion == configuracion
+            and dict(otra.parametros).get("job") == job
+            and _en_curso(otra, directorio)
+        ),
+        None,
+    )
+
+
+def _recordar_carpeta(
+    registro: Registro,
+    enc,
+    sol: Solicitud,
+    espacio: Path,
+    directorio: Path,
+    hora: str,
+    recursos: dict[str, dict],
+    autorizado: bool,
+) -> Solicitud:
+    """Anota dónde correrá la herramienta antes de lanzarla. `sol` viene de la
+    petición o del registro: la que ya recuerda su carpeta la conserva.
+
+    Un `ci.correr` igual a uno que sigue vivo se une a esa corrida: su carpeta
+    es la de la corrida en marcha y no se lanza otra. Solo si el recurso está
+    concedido para esa operación y, cuando pide al propietario, ya lo autorizó:
+    unirse no puede saltarse lo que la herramienta comprobaría al lanzarse."""
+    if sol.carpeta:
+        return sol
+    version = configuracion = ""
+    otra = None
+    if sol.operacion == capacidades.CI:
+        from .comprobacion import firma_producto
+
+        concedido = recursos.get(sol.recurso)
+        version = firma_producto(Path(espacio))
+        if concedido is not None:
+            configuracion = _huella_config(concedido)
+            permitido = sol.operacion in capacidades.operaciones_de(recursos, sol.recurso)
+            if permitido and (concedido.get("autorizacion") != "propietario" or autorizado):
+                otra = _corrida_igual(enc, sol, version, configuracion, directorio)
+    carpeta = otra.carpeta if otra else str(_carpeta_de(sol, directorio))
+    _anotar(
+        registro,
+        enc.id,
+        {
+            "kind": "herramienta",
+            "data": {
+                "id": sol.id,
+                "carpeta": carpeta,
+                "version": version,
+                "configuracion": configuracion,
+            },
+        },
+        f"herramienta:{enc.id}:{sol.id}",
+    )
+    if otra:
+        _anotar(
+            registro,
+            enc.id,
+            {
+                "kind": "procedimiento",
+                "data": {
+                    "nota": f"{sol.id} pide lo mismo que {otra.id}, que sigue corriendo: reusa esa corrida y no lanza otra",
+                    "hora": hora,
+                },
+            },
+            f"reuso:{enc.id}:{sol.id}",
+        )
+    actual = _buscar(registro.fold(enc.id) or enc, sol.id)
+    return replace(
+        sol,
+        carpeta=(actual.carpeta if actual else "") or carpeta,
+        version=(actual.version if actual else "") or version,
+        configuracion=(actual.configuracion if actual else "") or configuracion,
+    )
+
+
+def _cerrar_con_resultado(
+    registro: Registro,
+    enc,
+    sol: Solicitud,
+    resultado: dict,
+    espacio: Path,
+    hora: str,
+    peticion: Path,
+    resumen: dict,
+) -> None:
+    """Registra el resultado de la herramienta en la solicitud y lo deja en el buzón."""
+    estado = str(resultado.get("estado") or "error")
+    if estado == "pendiente":
+        _escribir_respuesta(
+            espacio,
+            sol,
+            _respuesta(
+                sol,
+                "pendiente",
+                motivo=str(resultado.get("motivo") or "la herramienta sigue en curso"),
+            ),
+        )
+        resumen["pendientes"] = resumen.get("pendientes", 0) + 1
+        return
+    if estado == "pregunta":
+        _anotar_resolucion(
+            registro, enc, sol, "pregunta", pregunta=str(resultado.get("pregunta") or ""), hora=hora
+        )
+        actual = registro.fold(enc.id) or enc
+        nuevo = _buscar(actual, sol.id) or sol
+        _escribir_respuesta(
+            espacio,
+            nuevo,
+            _respuesta(
+                nuevo,
+                "pregunta",
+                pregunta=nuevo.pregunta,
+                motivo="falta una autorización real del propietario",
+            ),
+        )
+        resumen["preguntas"] += 1
+        return
+    final = "resuelta" if estado == "ok" else estado
+    evidencia = json.dumps(resultado.get("evidencia") or {}, ensure_ascii=False, sort_keys=True)
+    # La entrega del archivo precede a la resolución: sin archivo publicado no hay
+    # consulta resuelta.
+    doc = _respuesta(
+        replace(sol, evidencia=evidencia),
+        final,
+        datos=resultado.get("datos"),
+        motivo=str(resultado.get("motivo") or ""),
+        alternativa=str(resultado.get("alternativa") or ""),
+        espacio=espacio,
+    )
+    if final == "resuelta" and doc.get("publicacion_fallo"):
+        _escribir_respuesta(
+            espacio,
+            sol,
+            _respuesta(
+                sol,
+                "pendiente",
+                motivo=(
+                    "no se pudo publicar el archivo de datos en el espacio: "
+                    f"{doc['publicacion_fallo']}"
+                ),
+                alternativa=(
+                    "el resultado quedó guardado en el host; la entrega se "
+                    "reintentará en el siguiente paso sin repetir la consulta"
+                ),
+            ),
+        )
+        resumen["pendientes"] = resumen.get("pendientes", 0) + 1
+        return
+    _anotar_resolucion(
+        registro,
+        enc,
+        sol,
+        final if final in ("resuelta", "detenida") else "error",
+        evidencia=evidencia,
+        detalle=str(resultado.get("motivo") or ""),
+        hora=hora,
+    )
+    actual = registro.fold(enc.id) or enc
+    nuevo = _buscar(actual, sol.id) or sol
+    _escribir_respuesta(espacio, nuevo, doc)
+    _archivar(peticion)
+    resumen["atendidas" if final == "resuelta" else "errores"] += 1
+
+
+def _recoger(
+    registro: Registro, enc, espacio: Path, directorio: Path, hora: str, resumen: dict
+) -> bool:
+    """Registra el resultado de toda herramienta que ya terminó.
+
+    Una corrida de CI dura más que un turno: puede terminar con otro intento
+    vigente, sin petición en el buzón o con el encargo detenido. La solicitud
+    sigue su carpeta, no el intento actual. Una herramienta que murió sin dejar
+    resultado cierra la solicitud con un error: `pendiente` es solo mientras corre.
+
+    Un resultado `ok` que llega después de la resolución `detenida` la cambia a
+    `resuelta`: el trabajo se hizo y el propietario lo recibe al continuar. Otro
+    resultado no la toca; la detención ya dijo la causa.
+    """
+    peticiones = Path(espacio) / BUZON / PETICIONES
+    hubo = False
+    for sol in tuple(enc.solicitudes):
+        if sol.estado not in ("pendiente", "detenida"):
+            continue
+        carpeta = _carpeta_de(sol, directorio)
+        marca = _leer(_marca_de(carpeta))
+        vitalidad = _vitalidad(marca) if marca else "ausente"
+        resultado = _leer(carpeta / "resultado.json")
+        if resultado is None:
+            # La marca `.hecha` es la de una herramienta que `cerrar_herramientas` mató.
+            muerta = vitalidad == "muerta" or (
+                vitalidad == "ausente" and _marca_cerrada(carpeta).is_file()
+            )
+            # Si no se puede comprobar que murió (`incierta`), la solicitud espera:
+            # un error en falso la cerraría con la corrida todavía en marcha.
+            if not muerta or sol.estado != "pendiente":
+                continue
+            resultado = {
+                "estado": "error",
+                "motivo": "la herramienta terminó sin dejar un resultado legible",
+                "alternativa": "volver a pedir la operación con un id nuevo",
+            }
+        estado = str(resultado.get("estado") or "error")
+        if estado in ("pendiente", "pregunta") or (sol.estado == "detenida" and estado != "ok"):
+            continue
+        if estado == "ok":
+            resultado = _completar_entrega(espacio, sol, resultado, directorio)
+        _anotar(
+            registro,
+            enc.id,
+            {
+                "kind": "procedimiento",
+                "data": {
+                    "nota": f"el resultado de {sol.id} se recogió de {carpeta}; la solicitud estaba {sol.estado}",
+                    "hora": hora,
+                },
+            },
+            f"recogido:{enc.id}:{sol.id}:{sol.estado}",
+        )
+        _cerrar_con_resultado(
+            registro, enc, sol, resultado, espacio, hora, peticiones / f"{sol.id}.json", resumen
+        )
+        hubo = True
+    return hubo
+
+
 def atender(
     registro: Registro, enc, espacio: Path, directorio: Path, hora: str
 ) -> dict:
@@ -913,10 +1213,12 @@ def atender(
     buzon = Path(espacio) / BUZON
     _sin_enlaces(espacio, buzon / PETICIONES)
     _sin_enlaces(espacio, buzon / RESPUESTAS)
+    resumen = {"atendidas": 0, "preguntas": 0, "errores": 0}
+    if _recoger(registro, enc, espacio, directorio, hora, resumen):
+        enc = registro.fold(enc.id) or enc
     pendientes = sorted(
         p for p in (buzon / PETICIONES).glob("*.json") if not capacidades._es_enlace(p)
     )
-    resumen = {"atendidas": 0, "preguntas": 0, "errores": 0}
     if not pendientes:
         return resumen
     try:
@@ -971,7 +1273,7 @@ def atender(
             reparacion = None
             if previa.estado == "resuelta" and previa.operacion in capacidades.CON_ARCHIVO:
                 durable = _leer(
-                    _destino_host(directorio, previa.id) / "resultado.json"
+                    _carpeta_de(previa, directorio) / "resultado.json"
                 )
                 if durable and durable.get("estado") == "ok":
                     reparacion = _publicar_snapshot(
@@ -1177,6 +1479,25 @@ def atender(
                     continue
             enc = registro.fold(enc.id) or enc
         if not _vigente(enc, sol):
+            if (
+                previa is not None
+                and previa.estado == "pendiente"
+                and previa.fase == enc.fase_activa
+                and _en_curso(previa, directorio)
+            ):
+                # Su herramienta sigue corriendo aunque el intento cambió: el
+                # resultado le llega a la fase cuando termine. Repetirla costaría otra corrida.
+                _escribir_respuesta(
+                    espacio,
+                    previa,
+                    _respuesta(
+                        previa,
+                        "pendiente",
+                        motivo="la herramienta sigue en curso; el resultado se recogerá cuando termine",
+                    ),
+                )
+                resumen["pendientes"] = resumen.get("pendientes", 0) + 1
+                continue
             _escribir_respuesta(
                 espacio,
                 sol,
@@ -1213,85 +1534,14 @@ def atender(
                 f"recuperado:{enc.id}:{sol.id}",
             )
         else:
+            if not sol.carpeta:
+                sol = _recordar_carpeta(
+                    registro, enc, previa or sol, espacio, directorio, hora, recursos, autorizado
+                )
             resultado = _ejecutar(
                 registro, enc, sol, recursos, espacio, directorio, autorizado, hora
             )
-        estado = str(resultado.get("estado") or "error")
-        if estado == "pendiente":
-            _escribir_respuesta(
-                espacio,
-                sol,
-                _respuesta(
-                    sol,
-                    "pendiente",
-                    motivo=str(resultado.get("motivo") or "la herramienta sigue en curso"),
-                ),
-            )
-            resumen["pendientes"] = resumen.get("pendientes", 0) + 1
-            continue
-        if estado == "pregunta":
-            _anotar_resolucion(
-                registro, enc, sol, "pregunta", pregunta=str(resultado.get("pregunta") or ""), hora=hora
-            )
-            actual = registro.fold(enc.id) or enc
-            nuevo = _buscar(actual, sol.id) or sol
-            _escribir_respuesta(
-                espacio,
-                nuevo,
-                _respuesta(
-                    nuevo,
-                    "pregunta",
-                    pregunta=nuevo.pregunta,
-                    motivo="falta una autorización real del propietario",
-                ),
-            )
-            resumen["preguntas"] += 1
-            continue
-        final = "resuelta" if estado == "ok" else estado
-        evidencia = json.dumps(resultado.get("evidencia") or {}, ensure_ascii=False, sort_keys=True)
-        # La entrega del archivo precede a la resolución: sin archivo publicado no hay
-        # consulta resuelta.
-        doc = _respuesta(
-            replace(sol, evidencia=evidencia),
-            final,
-            datos=resultado.get("datos"),
-            motivo=str(resultado.get("motivo") or ""),
-            alternativa=str(resultado.get("alternativa") or ""),
-            espacio=espacio,
-        )
-        if final == "resuelta" and doc.get("publicacion_fallo"):
-            _escribir_respuesta(
-                espacio,
-                sol,
-                _respuesta(
-                    sol,
-                    "pendiente",
-                    motivo=(
-                        "no se pudo publicar el archivo de datos en el espacio: "
-                        f"{doc['publicacion_fallo']}"
-                    ),
-                    alternativa=(
-                        "el resultado quedó guardado en el host; la entrega se "
-                        "reintentará en el siguiente paso sin repetir la consulta"
-                    ),
-                ),
-            )
-            resumen["pendientes"] = resumen.get("pendientes", 0) + 1
-            continue
-        _anotar_resolucion(
-            registro,
-            enc,
-            sol,
-            final if final in ("resuelta", "detenida") else "error",
-            evidencia=evidencia,
-            detalle=str(resultado.get("motivo") or ""),
-            hora=hora,
-        )
-        actual = registro.fold(enc.id) or enc
-        nuevo = _buscar(actual, sol.id) or sol
-        _escribir_respuesta(espacio, nuevo, doc)
-        _archivar(path)
-        resumen["atendidas" if final == "resuelta" else "errores"] += 1
+        _cerrar_con_resultado(registro, enc, sol, resultado, espacio, hora, path, resumen)
     return resumen
 
 
@@ -1467,14 +1717,34 @@ def responder(
     }
 
 
-def cerrar_herramientas(directorio: Path) -> int:
-    """Cierra las herramientas que el motor lanzó para este intento."""
+def cerrar_herramientas(directorio: Path, solo_del_turno: bool = False) -> int:
+    """Cierra las herramientas que el motor lanzó para este intento.
+
+    Con `solo_del_turno` (el turno del agente terminó o se mató) deja correr la
+    de CI: una corrida dura más que un turno y no depende de él. Su marca queda
+    en su sitio para que el siguiente paso recoja el resultado. Parar o cancelar
+    el encargo las cierra todas, con la limpieza de rama y PR de la de CI."""
     cerrados = 0
     for path in sorted((Path(directorio) / "herramientas").glob("*.json")):
         doc = _leer(path) or {}
+        operacion = str(doc.get("operacion") or "")
+        if solo_del_turno and operacion == capacidades.CI:
+            continue
         pid, inicio = doc.get("pid"), doc.get("inicio")
         if pid and inicio:
-            _matar_herramienta(int(pid), str(inicio), str(doc.get("operacion") or ""))
+            _matar_herramienta(int(pid), str(inicio), operacion)
             cerrados += 1
         _archivar(path)
     return cerrados
+
+
+def cerrar_herramientas_del_encargo(directorio: Path) -> int:
+    """Parar o cancelar: cierra las herramientas de todos los intentos del encargo,
+    no solo las del vigente. Una corrida de CI lanzada en un intento anterior sigue
+    viva y no la alcanzaría el cierre de este."""
+    return sum(cerrar_herramientas(d) for d in _intentos(directorio) if d.is_dir())
+
+
+def detenida_ahora(registro: Registro, encargo_id: str) -> bool:
+    """El propietario paró o canceló el encargo y no lo ha continuado."""
+    return _detenida_ahora(registro, encargo_id)
