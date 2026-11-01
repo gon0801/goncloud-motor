@@ -39,7 +39,9 @@ Se eligieron las dos cosas, cada una por una razón distinta:
 - **Un tope de tiempo por pasada (`tope_s`, 20 s).** Pasado el tope, la pasada no empieza avisos nuevos; lo que no
   se intentó se retoma en la pasada siguiente. El tope **no mata un envío ya empezado**: conserva su timeout propio
   (30 s). Matarlo podría cortar un mensaje que ya salió, duplicarlo al reintentar y marcar caído un canal sano. En el
-  hilo, una pasada larga no frena a `barrer`. Con `--una-vez` el proceso termina tras la pasada, así que no puede dejar
-  el trabajo en un hilo: drena en línea con ese mismo tope, y como mucho espera el envío en curso (hasta 30 s más).
+  hilo, una pasada larga no frena a `barrer`.
+- **`--una-vez` drena en línea y por completo, sin tope.** Ahí no hay cadencia que cuidar ni una pasada siguiente que
+  retome lo que un tope dejara sin enviar (el proceso termina). Un canal caído sigue costando como mucho un envío
+  fallido, porque el corte por canal y la espera de cada aviso evitan reintentos en cascada.
 
 `motor director avisar` sigue sin tope: lo pide una persona.
