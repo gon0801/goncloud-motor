@@ -20,6 +20,9 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   `secretos.env` de su propia base (`reg.base`; en la Mini, `~/.motor-encargos/secretos.env`, con permisos 600), como
   hoy. El daemon del modo planes lee el de `~/.motor/secretos.env`: cada proceso, su archivo, y por eso los dos procesos no se pisan en
   el monitor. El supervisor **nunca** lee `~/.motor` ni hay respaldo allí. No se creó ninguna dirección ni secreto nuevo.
+  Ojo con `ops/senal-kuma.sh`: da de alta los monitores `mini` y `pc` y escribe `MOTOR_KUMA_URL` en `~/.motor` (el
+  home del motor de planes). Esa es la dirección del daemon, no la del supervisor; la del supervisor es la que ya
+  tiene puesta el operador en el `secretos.env` de su base, y este cambio no la crea ni la mueve.
 - **"Canal caído" usa esa misma señal.** Con un canal caído, la señal de vida sale con `status=down` y el motivo
   (`N planes; canal <canal> caído desde <hora>: <último error>`), por la misma dirección; sin canal caído, `status=up`.
 - **Sin `MOTOR_KUMA_URL` en la base** (o con el archivo ilegible o con permisos abiertos), el supervisor no manda señal:
