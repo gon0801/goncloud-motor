@@ -157,13 +157,21 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(_ids(e), [])
 
-    def test_si_deepseek_no_reviso_el_sha_final_el_motor_espera(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-espera", _GhComentarios)
-            e = vuelta("uno")
-            self.assertNotEqual(e.estado, "terminado")
-            self.assertEqual(e.estado, "esperando_reintento")
-            self.assertIn("esperando revisión de DeepSeek", e.motivo)
+    def test_si_deepseek_no_reviso_el_sha_final_el_motor_espera_y_no_integra(self):
+        for nivel in ("pr", "integrado", "desplegado"):
+            with self.subTest(nivel=nivel), tempfile.TemporaryDirectory(
+                ignore_cleanup_errors=True
+            ) as tmp:
+                vuelta, r = _entrega_pr(
+                    self, tmp, f"ds-espera-{nivel}", _GhComentarios, nivel=nivel
+                )
+                e = vuelta("uno")
+                self.assertNotEqual(e.estado, "terminado")
+                self.assertEqual(e.estado, "esperando_reintento")
+                self.assertIn("esperando revisión de DeepSeek", e.motivo)
+                self.assertEqual(e.deepseek_sha, "")
+                self.assertEqual(_pasos(r, "integrado"), [])
+                self.assertEqual(vuelta.gh.ver(e.entrega.repo, e.pr_numero).estado, "abierto")
 
     def test_un_medium_en_el_pr_de_una_fase_anterior_la_reabre_al_cerrar_el_encargo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

@@ -4151,14 +4151,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     if enc.entrega.nivel in ("integrado", "desplegado") and enc.nivel_alcanzado == "pr":
-        if enc.deepseek_sha != enc.pr_sha:
-            # No se integra un SHA que DeepSeek no revisó.
-            marcar_espera(
-                registro, enc.id,
-                f"esperando revisión de DeepSeek para el SHA {enc.pr_sha}",
-                _reanuda_desde(hora, 60), hora,
-            )
-            return registro.fold(enc.id)
+        # Aquí `deepseek_sha == pr_sha` por construcción: el bloque de lectura de
+        # arriba espera o lee cuando DeepSeek no ha revisado el SHA, así que no
+        # se integra uno sin leer.
         devuelto = _veredicto_antes_de_cerrar(registro, enc, gh, hora)
         if devuelto is not None:
             return devuelto
