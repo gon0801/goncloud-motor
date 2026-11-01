@@ -14,9 +14,15 @@ from pathlib import Path
 from unittest import mock
 
 from motor.encargos.aislamiento import SondaEntorno
-from motor.encargos.ciclo import _aplica_entrega, _paso_entrega, ahora_iso, barrer
+from motor.encargos.ciclo import (
+    _aplica_entrega,
+    _incorporar_responsable,
+    _paso_entrega,
+    ahora_iso,
+    barrer,
+)
 from motor.encargos.comprobacion import version_producto
-from tests.test_flujo_revisiones import _entrega_pr, _GhConDeepSeek
+from tests.test_flujo_revisiones import Recorrido, _entrega_pr, _GhConDeepSeek
 
 _EXCLUIDAS_LEGADAS = (".git", "__pycache__", ".runtime", ".interno")
 
@@ -240,18 +246,36 @@ class PublicacionConObservacion(unittest.TestCase):
         self.assertTrue(_aplica_entrega(e))
         return vuelta, r, e
 
-    def _declarar_comprobacion(self, r) -> None:
+    def _comprobaciones(self, argv: list[str]) -> list[dict]:
+        return [{"objetivo": "saludo con el texto pedido", "argv": argv}]
+
+    def _declarar_comprobacion(self, r, argv: list[str] | None = None) -> list[dict]:
+        comandos = self._comprobaciones(
+            argv or ["python3", "-c", "import sys; sys.exit(1)"]
+        )
         interno = r.espacio / ".interno"
         interno.mkdir(exist_ok=True)
         (interno / "comprobaciones.json").write_text(
+            json.dumps({"comprobaciones": comandos}),
+            encoding="utf-8",
+        )
+        return comandos
+
+    def _escribir_observacion(self, r, version: str, declaradas: list[dict], rc: int):
+        (r.d / "observaciones.json").write_text(
             json.dumps(
                 {
-                    "comprobaciones": [
+                    "version": version,
+                    "producto": version,
+                    "comprobaciones": declaradas,
+                    "ejecuciones": [
                         {
-                            "objetivo": "saludo con el texto pedido",
-                            "argv": ["python3", "-c", "import sys; sys.exit(1)"],
+                            **declaradas[0],
+                            "rc": rc,
+                            "stdout": "",
+                            "stderr": "",
                         }
-                    ]
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -289,17 +313,17 @@ class PublicacionConObservacion(unittest.TestCase):
     def test_una_observacion_en_rojo_no_publica_la_version(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._producto_aprobado(tmp, "obs-rojo")
-            self._declarar_comprobacion(r)
+            declaradas = self._declarar_comprobacion(r)
             r.reg.anotar(
                 r.enc,
                 {
                     "kind": "observacion_supervisor",
                     "data": {
                         "version": e.producto.firma,
+                        "comprobaciones": declaradas,
                         "ejecuciones": [
                             {
-                                "objetivo": "saludo con el texto pedido",
-                                "argv": ["python3", "-c", "import sys; sys.exit(1)"],
+                                **declaradas[0],
                                 "rc": 1,
                                 "stdout": "",
                                 "stderr": "fallo",
@@ -334,6 +358,174 @@ class PublicacionConObservacion(unittest.TestCase):
                     for ev in nuevos
                 )
             )
+
+
+    def test_corregir_el_comando_desbloquea_la_publicacion(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._producto_aprobado(tmp, "f1")
+            rojo = self._declarar_comprobacion(
+                r, ["python3", "-c", "import sys; sys.exit(1)"]
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "observacion_supervisor",
+                    "data": {
+                        "version": e.producto.firma,
+                        "comprobaciones": rojo,
+                        "ejecuciones": [{**rojo[0], "rc": 1}],
+                        "hora": ahora_iso(),
+                    },
+                },
+                f"t-observacion-f1:{e.producto.firma}",
+            )
+            e = r.fold()
+            antes = _git(r.espacio, "rev-parse", "HEAD").stdout.strip()
+
+            verde = self._declarar_comprobacion(
+                r, ["python3", "-c", "import sys; sys.exit(0)"]
+            )
+            eventos_antes = len(r.reg.eventos(r.enc))
+            with mock.patch("motor.encargos.ciclo.iniciar_comprobacion") as iniciar:
+                _paso_entrega(r.reg, e, vuelta.gh, ahora_iso())
+            iniciar.assert_called_once()
+            nuevos = r.reg.eventos(r.enc)[eventos_antes:]
+            self.assertFalse(
+                any(
+                    ev["kind"] == "estrategia"
+                    and ev["data"].get("rol") == "responsable"
+                    and "rojo" in ev["data"].get("motivo", "")
+                    for ev in nuevos
+                ),
+                "la observacion roja del comando anterior no congela la version",
+            )
+            self.assertTrue(
+                any(
+                    ev["kind"] == "espera"
+                    and "observacion del comprobador" in ev["data"].get("motivo", "")
+                    for ev in nuevos
+                )
+            )
+            self.assertEqual(
+                _git(r.espacio, "rev-parse", "HEAD").stdout.strip(), antes
+            )
+
+            self._escribir_observacion(r, e.producto.firma, verde, rc=0)
+            _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+            self.assertNotEqual(
+                _git(r.espacio, "rev-parse", "HEAD").stdout.strip(), antes
+            )
+
+    def test_la_puerta_usa_la_version_que_se_publica(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, _commit, _legado = EntregaSinEfecto._con_commit_sin_sha(
+                self, tmp, "f2"
+            )
+            declaradas = self._declarar_comprobacion(
+                r, ["python3", "-c", "import sys; sys.exit(0)"]
+            )
+            actual = version_producto(r.espacio).firma
+            e = r.fold()
+            self.assertNotEqual(
+                e.producto.firma,
+                actual,
+                "el caso conserva una firma registrada anterior a la que se publica",
+            )
+            self._escribir_observacion(r, actual, declaradas, rc=0)
+            eventos_antes = len(r.reg.eventos(r.enc))
+
+            _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            nuevos = r.reg.eventos(r.enc)[eventos_antes:]
+            self.assertTrue(
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push")
+                    for ev in nuevos
+                ),
+                "la observacion de la version que se publica abre la entrega",
+            )
+
+    def test_un_comprobaciones_invalido_vuelve_al_responsable(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._producto_aprobado(tmp, "f3")
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text("{", encoding="utf-8")
+            eventos_antes = len(r.reg.eventos(r.enc))
+
+            _paso_entrega(r.reg, e, vuelta.gh, ahora_iso())
+
+            nuevos = r.reg.eventos(r.enc)[eventos_antes:]
+            self.assertTrue(
+                any(
+                    ev["kind"] == "estrategia"
+                    and ev["data"].get("rol") == "responsable"
+                    and ev["data"].get("estrategia") == "reparar_instrumento"
+                    for ev in nuevos
+                ),
+                "un comprobaciones.json invalido vuelve al responsable",
+            )
+            self.assertFalse(
+                any(ev["kind"] == "espera" for ev in nuevos),
+                "no se deja esperando sin que nadie pueda corregirlo",
+            )
+
+
+    def test_corregir_el_comando_hace_que_el_comprobador_vuelva_a_observar(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "f1-inc", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
+            rojo = self._declarar_comprobacion(
+                r, ["python3", "-c", "import sys; sys.exit(1)"]
+            )
+            self._escribir_observacion(
+                r, version_producto(r.espacio).firma, rojo, rc=1
+            )
+            _incorporar_responsable(
+                r.reg, r.fold(), r.espacio, ahora_iso(), r.d
+            )
+            observadas = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "observacion_supervisor"
+            ]
+            self.assertTrue(observadas)
+
+            verde = self._declarar_comprobacion(
+                r, ["python3", "-c", "import sys; sys.exit(0)"]
+            )
+            antes = len(observadas)
+            with mock.patch("motor.encargos.ciclo.iniciar_comprobacion") as iniciar:
+                _incorporar_responsable(
+                    r.reg, r.fold(), r.espacio, ahora_iso(), r.d
+                )
+            iniciar.assert_called_once()
+            self.assertEqual(
+                len(
+                    [
+                        ev
+                        for ev in r.reg.eventos(r.enc)
+                        if ev["kind"] == "observacion_supervisor"
+                    ]
+                ),
+                antes,
+                "la observacion roja del comando anterior no se reutiliza",
+            )
+
+            self._escribir_observacion(
+                r, version_producto(r.espacio).firma, verde, rc=0
+            )
+            _incorporar_responsable(
+                r.reg, r.fold(), r.espacio, ahora_iso(), r.d
+            )
+            ultima = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "observacion_supervisor"
+            ][-1]
+            self.assertEqual(ultima["data"]["comprobaciones"], verde)
 
 
 if __name__ == "__main__":

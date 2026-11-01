@@ -16,6 +16,7 @@ from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
     VERSION_LECTOR_DEEPSEEK,
+    _argv_del_intento,
     digest,
     firma_producto,
     hallazgos_deepseek,
@@ -2507,14 +2508,15 @@ def _incorporar_responsable(
     if declaradas is not None:
         path = directorio / "observaciones.json"
         observacion = None
+        esperadas = _argv_del_intento(declaradas, directorio)
         if path.is_file():
             try:
                 candidata = json.loads(path.read_text(encoding="utf-8"))
             except ValueError:
                 candidata = None
-            if candidata and (
-                candidata.get("version") or candidata.get("producto")
-            ) == version.firma:
+            if candidata and _observacion_corresponde(
+                candidata, version.firma, esperadas
+            ):
                 observacion = candidata
         if observacion is None:
             iniciar_comprobacion(espacio, directorio)
@@ -2537,17 +2539,19 @@ def _incorporar_responsable(
                 )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
+        ident = digest({"comprobaciones": esperadas})[:16]
         registro.anotar(
             enc.id,
             {
                 "kind": "observacion_supervisor",
                 "data": {
                     "version": version.firma,
+                    "comprobaciones": observacion.get("comprobaciones") or [],
                     "ejecuciones": observacion.get("ejecuciones") or [],
                     "hora": hora,
                 },
             },
-            f"observacion:{enc.id}:{version.firma}",
+            f"observacion:{enc.id}:{version.firma}:{ident}",
         )
         enc = registro.fold(enc.id)
     if commit_entregado and not _deepseek_por_releer(enc):
@@ -3597,13 +3601,28 @@ def _reconciliar_checks(
     return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
 
 
+def _observacion_corresponde(
+    observacion, version: str, declaradas: list[dict]
+) -> bool:
+    """La observacion es de esta version y de estas comprobaciones declaradas."""
+    if not isinstance(observacion, dict):
+        return False
+    if (observacion.get("version") or observacion.get("producto")) != version:
+        return False
+    return observacion.get("comprobaciones") == declaradas
+
+
 def _observacion_de_la_version(
-    registro: Registro, enc: Encargo, version: str, directorio: Path
+    registro: Registro,
+    enc: Encargo,
+    version: str,
+    declaradas: list[dict],
+    directorio: Path,
 ) -> dict | None:
     for ev in reversed(registro.eventos(enc.id)):
         if (
             ev["kind"] == "observacion_supervisor"
-            and str(ev["data"].get("version") or "") == version
+            and _observacion_corresponde(ev["data"], version, declaradas)
         ):
             return ev["data"]
     path = directorio / "observaciones.json"
@@ -3613,11 +3632,9 @@ def _observacion_de_la_version(
         candidata = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(candidata, dict):
-        return None
-    if (candidata.get("version") or candidata.get("producto")) != version:
-        return None
-    return candidata
+    if _observacion_corresponde(candidata, version, declaradas):
+        return candidata
+    return None
 
 
 def _fallas_de_observacion(
@@ -3662,12 +3679,23 @@ def _espera_por_observacion(
             "corregir .interno/comprobaciones.json sin tocar el producto",
             hora, f"obs-publicacion-{enc.generacion}", clase="comprobaciones.json",
         )
-        marcar_espera(registro, enc.id, str(exc), _reanuda_en(120), hora)
+        if not _impedimento_de_instrumento(
+            registro, enc, "comprobaciones.json", str(exc),
+            "que .interno/comprobaciones.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir .interno/comprobaciones.json sin tocar el producto",
+                hora, f"comprobaciones-{enc.generacion}",
+            )
         return registro.fold(enc.id)
     if declaradas is None or enc.producto is None:
         return None
-    version = enc.producto.firma
-    observacion = _observacion_de_la_version(registro, enc, version, directorio)
+    version = version_producto(espacio).firma
+    esperadas = _argv_del_intento(declaradas, directorio)
+    observacion = _observacion_de_la_version(
+        registro, enc, version, esperadas, directorio
+    )
     if observacion is None:
         iniciar_comprobacion(espacio, directorio)
         marcar_espera(
