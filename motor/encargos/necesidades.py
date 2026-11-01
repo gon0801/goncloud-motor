@@ -142,6 +142,7 @@ Operaciones:
 - `sqlite.consultar --recurso <r> --parametro sql="SELECT ..."`: solo lectura, una sentencia.
 - `sqlite.snapshot --recurso <r>`: copia consistente con origen y huella; la ruta queda en la respuesta.
 - `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado.
+- `ci.correr --recurso <r> --parametro job="nombre-del-job"`: corre el workflow de pruebas de GitHub sobre la versión vigente del producto y devuelve el log literal de ese job, con el SHA y el número de run. Tarda minutos: la respuesta puede quedar `pendiente`. La rama y el PR temporales se cierran solos.
 Añade `--motivo` con para qué la necesitas. Si la respuesta es `pregunta`, queda una autorización
 pendiente con su id: sigue con lo demás o espera con `python3 {cliente} ver <id>`. Una respuesta
 `error` trae la causa y la alternativa; corrige la solicitud en lugar de repetirla igual.
@@ -197,6 +198,7 @@ def _solicitud_de(enc, crudo: dict) -> Solicitud:
         capacidades.CONSULTAR,
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
+        capacidades.CI,
         capacidades.DECISION,
     )
     if operacion not in conocidas:
@@ -328,6 +330,14 @@ def _marca_herramienta(directorio: Path, solicitud_id: str) -> Path:
     return Path(directorio) / HERRAMIENTAS / f"{solicitud_id}.json"
 
 
+def _archivo_de(sol: Solicitud, datos: dict) -> tuple[str, str, str]:
+    """(clave pública, clave del host, nombre) del archivo que publica la operación."""
+    if sol.operacion == capacidades.CI:
+        nombre = Path(str(datos.get("log_nombre") or "ci.log")).name
+        return "log", "log_host", nombre
+    return "snapshot", "snapshot_host", "snapshot.db"
+
+
 def _respuesta_de_registro(
     espacio: Path, sol: Solicitud, directorio: Path | None = None
 ) -> dict:
@@ -340,16 +350,17 @@ def _respuesta_de_registro(
     if directorio is not None:
         resultado = _leer(_destino_host(directorio, sol.id) / "resultado.json")
     datos = (resultado or {}).get("datos")
-    if isinstance(datos, dict) and sol.operacion == capacidades.SNAPSHOT:
-        publico = Path(espacio) / ENTREGAS / sol.id / "snapshot.db"
-        host = Path(str(datos.get("snapshot_host") or ""))
+    if isinstance(datos, dict) and sol.operacion in capacidades.CON_ARCHIVO:
+        clave, clave_host, nombre = _archivo_de(sol, datos)
+        publico = Path(espacio) / ENTREGAS / sol.id / nombre
+        host = Path(str(datos.get(clave_host) or ""))
         if publico.is_file() and host.is_file() and _mismo_contenido(publico, host):
-            datos = {**datos, "snapshot": str(publico)}
+            datos = {**datos, clave: str(publico)}
         elif publico.is_file():
             datos = {
                 **datos,
-                "snapshot": "",
-                "snapshot_invalido": "la copia pública no coincide con el snapshot del host",
+                clave: "",
+                clave + "_invalido": "la copia pública no coincide con la del host",
             }
     return _respuesta(
         sol,
@@ -589,17 +600,18 @@ def _publicar_snapshot(
     datos = resultado.get("datos")
     if not isinstance(datos, dict):
         return resultado
-    host = str(datos.get("snapshot_host") or "")
-    origen = Path(host) if host else Path(str(datos.get("snapshot") or ""))
+    clave, clave_host, nombre = _archivo_de(sol, datos)
+    host = str(datos.get(clave_host) or "")
+    origen = Path(host) if host else Path(str(datos.get(clave) or ""))
     if not origen.is_file():
         return resultado
     if not host and origen.resolve().is_relative_to(Path(espacio).resolve()):
         return {
             "estado": "error",
-            "motivo": "no hay una copia confiable del host para reparar el snapshot",
-            "alternativa": "volver a solicitar el snapshot en un intento nuevo",
+            "motivo": "no hay una copia confiable del host para reparar el archivo entregado",
+            "alternativa": "volver a solicitar la operación en un intento nuevo",
         }
-    copia = Path(espacio) / ENTREGAS / sol.id / "snapshot.db"
+    copia = Path(espacio) / ENTREGAS / sol.id / nombre
     if copia.is_symlink():
         copia.unlink()
     if not copia.is_file() or not _mismo_contenido(copia, origen):
@@ -610,16 +622,16 @@ def _publicar_snapshot(
         except (OSError, ValueError) as exc:
             return {
                 "estado": "pendiente",
-                "motivo": f"no se pudo publicar el snapshot completo en el espacio: {exc}",
+                "motivo": f"no se pudo publicar el archivo completo en el espacio: {exc}",
                 "alternativa": "corregir el destino del entregable y reintentar",
             }
         if not _mismo_contenido(copia, origen):
             return {
                 "estado": "pendiente",
-                "motivo": "la copia publicada no coincide con el snapshot del host",
+                "motivo": "la copia publicada no coincide con la del host",
                 "alternativa": "corregir el destino del entregable y reintentar",
             }
-    publico = {**datos, "snapshot": str(copia), "snapshot_host": str(origen)}
+    publico = {**datos, clave: str(copia), clave_host: str(origen)}
     actualizado = {**resultado, "datos": publico}
     try:
         _publica(_destino_host(directorio, sol.id) / "resultado.json", actualizado)
@@ -632,7 +644,7 @@ def _completar_entrega(
     espacio: Path, sol: Solicitud, resultado: dict, directorio: Path
 ) -> dict:
     """Deja el snapshot en el espacio también cuando llega por recuperación."""
-    if sol.operacion == capacidades.SNAPSHOT and resultado.get("estado") == "ok":
+    if sol.operacion in capacidades.CON_ARCHIVO and resultado.get("estado") == "ok":
         return _publicar_snapshot(espacio, sol, resultado, directorio)
     return resultado
 
@@ -677,6 +689,7 @@ def _ejecutar(
             "parametros": dict(sol.parametros),
             "destino": str(destino),
             "autorizado": autorizado,
+            "espacio": str(espacio),
         },
     )
 
@@ -723,11 +736,21 @@ def _ejecutar(
 
     fin = time.time() + TIMEOUT_S
     detenida = False
+    sigue_viva = False
     try:
         while proc.poll() is None:
             if _detenida_ahora(registro, enc.id):
                 detenida = True
                 break
+            if time.time() > fin and sol.operacion == capacidades.CI:
+                # Un run de CI tarda minutos: la herramienta sigue por su cuenta
+                # (con su propio plazo y su limpieza) y el siguiente paso recoge
+                # el resultado. Matarla dejaría la rama y el PR temporales.
+                sigue_viva = True
+                return {
+                    "estado": "pendiente",
+                    "motivo": "el CI sigue corriendo; el resultado se recogerá en el siguiente paso",
+                }
             if time.time() > fin:
                 proc.kill()
                 proc.wait(5)
@@ -738,11 +761,11 @@ def _ejecutar(
                 }
             time.sleep(0.2)
     finally:
-        if proc.poll() is None:
+        if proc.poll() is None and not sigue_viva:
             proc.kill()
             proc.wait(5)
         actual = _leer(marca)
-        if actual and int(actual.get("pid") or 0) == proc.pid:
+        if not sigue_viva and actual and int(actual.get("pid") or 0) == proc.pid:
             marca.unlink(missing_ok=True)
     if detenida:
         return {
@@ -755,7 +778,7 @@ def _ejecutar(
         "motivo": "la herramienta terminó sin resultado legible",
         "alternativa": "volver a pedir la operación con un id nuevo",
     }
-    if sol.operacion == capacidades.SNAPSHOT and resultado.get("estado") == "ok":
+    if sol.operacion in capacidades.CON_ARCHIVO and resultado.get("estado") == "ok":
         resultado = _publicar_snapshot(espacio, sol, resultado, directorio)
     return resultado
 
@@ -891,7 +914,7 @@ def atender(
             "detenida",
         ):
             reparacion = None
-            if previa.estado == "resuelta" and previa.operacion == capacidades.SNAPSHOT:
+            if previa.estado == "resuelta" and previa.operacion in capacidades.CON_ARCHIVO:
                 durable = _leer(
                     _destino_host(directorio, previa.id) / "resultado.json"
                 )
@@ -1120,7 +1143,7 @@ def atender(
         )
         if previo is not None and str(previo.get("estado") or "") != "pregunta":
             resultado = previo
-            if sol.operacion == capacidades.SNAPSHOT and resultado.get("estado") == "ok":
+            if sol.operacion in capacidades.CON_ARCHIVO and resultado.get("estado") == "ok":
                 resultado = _publicar_snapshot(espacio, sol, resultado, directorio)
             _anotar(
                 registro,

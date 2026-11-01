@@ -209,6 +209,42 @@ solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
   existe no bloquea. Una solicitud detenida antes de despachar queda
   `detenida`, y pedir lo mismo otra vez es una solicitud nueva.
 
+### Evidencia de CI sin el operador (`ci.correr`)
+
+Cuando el revisor necesita el log de un job que solo existe en el CI (Linux
+real, bwrap, WSL), lo pide por el puente con `ci.correr` sobre un recurso de
+tipo `ci` que el host concede en `capacidades.json`:
+
+```json
+{"recursos": {"ci-linux": {"tipo": "ci", "repo": "gon0801/goncloud-motor",
+                           "workflow": "pruebas.yml", "base": "main"}}}
+```
+
+El juicio declara `"inspeccion": {"operacion": "ci.correr", "recurso":
+"ci-linux", "parametros": {"job": "jaula-linux"}}`. El supervisor, con el
+`gh` y el git que ya tiene (sin tokens nuevos):
+
+1. Arma un commit con la versión vigente del producto, con o sin commit propio,
+   en un índice aparte: no toca el índice, la rama ni el árbol del espacio, y
+   deja fuera `.interno/`.
+2. Lo sube a `ci-prueba/<encargo>-<sha7>-<hora>` y abre un PR borrador.
+3. Espera el run del workflow para ese SHA y el job pedido.
+4. Entrega el log literal, byte a byte, como archivo en
+   `.interno/entregas/<solicitud>/<job>-<sha7>-run<N>.log`, con el SHA, el árbol,
+   el número de run, la URL y la conclusión del job. Un job en rojo también
+   entrega su log.
+5. Cierra el PR y borra la rama, siempre, también si algo falla. Las ramas
+   `ci-prueba/<encargo>-*` que dejó un run muerto se borran al empezar el
+   siguiente.
+
+Sin `gh`, sin red, sin sesión de `gh` o con un job que no existe, el revisor
+recibe la causa y qué hacer: `gh no está instalado`, `sin red hacia GitHub`,
+`el acceso de gh o git del supervisor no basta` o la lista de jobs del run. Un
+run tarda minutos: pasado el plazo de la herramienta la respuesta queda
+`pendiente` y la herramienta sigue por su cuenta, con su propio plazo
+(`MOTOR_CI_MAX`, 45 minutos) y su limpieza. El recurso no es observable: pedir el
+mismo job sobre la misma versión sí cuenta como repetir.
+
 ### Revisiones `no_concluyente` repetidas
 
 Una revisión `no_concluyente` que nombra una inspección no cierra ni abre

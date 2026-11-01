@@ -30,9 +30,12 @@ TABLAS = "sqlite.tablas"
 CONSULTAR = "sqlite.consultar"
 SNAPSHOT = "sqlite.snapshot"
 REMOTO = "remoto.leer"
+CI = "ci.correr"
 DECISION = "decision.registrar"
 
 OPERACIONES_SIN_RECURSO = (DECISION,)
+# Operaciones cuyo resultado incluye un archivo que el supervisor publica en el espacio.
+CON_ARCHIVO = (SNAPSHOT, CI)
 
 MAX_SQL = 20_000
 MAX_FILAS = 500
@@ -150,7 +153,7 @@ def cargar(base: Path) -> dict[str, dict]:
         if not isinstance(crudo, dict):
             raise ConfigInvalida(f"el recurso {clave} debe ser un objeto")
         tipo = str(crudo.get("tipo") or "").strip()
-        if tipo not in ("sqlite", "remoto"):
+        if tipo not in ("sqlite", "remoto", "ci"):
             raise ConfigInvalida(f"el recurso {clave} tiene un tipo desconocido: {tipo!r}")
         autorizacion = str(crudo.get("autorizacion") or "").strip()
         if autorizacion not in ("", "propietario"):
@@ -168,6 +171,8 @@ def catalogo(recursos: dict[str, dict]) -> list[dict]:
         recurso = recursos[nombre]
         if recurso["tipo"] == "sqlite":
             operaciones = [TABLAS, CONSULTAR, SNAPSHOT]
+        elif recurso["tipo"] == "ci":
+            operaciones = [CI]
         else:
             operaciones = [REMOTO]
         salida.append(
@@ -459,6 +464,339 @@ def _leer_http(recurso: dict, relativa: str, destino: Path) -> dict:
     }
 
 
+CI_SONDEO_S = float(os.environ.get("MOTOR_CI_SONDEO") or 10)
+CI_MAX_S = float(os.environ.get("MOTOR_CI_MAX") or 45 * 60)
+CI_BUSCA_RUN_S = float(os.environ.get("MOTOR_CI_BUSCA_RUN") or 5 * 60)
+MAX_LOG = 64 * 1024 * 1024
+_RED = (
+    "could not resolve host",
+    "failed to connect",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "timed out",
+    "network is unreachable",
+    "no route to host",
+    "error connecting",
+    "unable to access",
+    "temporary failure in name resolution",
+    "tls handshake",
+    "dial tcp",
+)
+_SESION = (
+    "gh auth login",
+    "authentication",
+    "bad credentials",
+    "http 401",
+    "http 403",
+    "permission denied",
+    "could not read username",
+    "terminal prompts disabled",
+)
+
+
+class CiFallo(RuntimeError):
+    """Causa legible para el revisor; `alternativa` dice qué hacer."""
+
+    def __init__(self, motivo: str, alternativa: str = ""):
+        super().__init__(motivo)
+        self.motivo = motivo
+        self.alternativa = alternativa
+
+
+def _causa_de(salida: str, paso: str) -> CiFallo:
+    """Convierte la salida de gh o git en una causa que el revisor entienda."""
+    texto = " ".join(str(salida or "").split())[-400:]
+    bajo = texto.lower()
+    if any(p in bajo for p in _RED):
+        return CiFallo(
+            f"sin red hacia GitHub al {paso}: {texto}",
+            "reintentar cuando el host del supervisor tenga red, o pedir al operador el log",
+        )
+    if any(p in bajo for p in _SESION):
+        return CiFallo(
+            f"el acceso de gh o git del supervisor no basta para {paso}: {texto}",
+            "pedir al operador que renueve la sesión de gh o git del supervisor",
+        )
+    return CiFallo(f"no se pudo {paso}: {texto or 'sin salida'}", "revisar la causa antes de reintentar")
+
+
+def _correr(
+    argv: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict | None = None,
+    plazo: float = 120,
+    binario: bool = False,
+) -> "subprocess.CompletedProcess":
+    """`binario` entrega la salida tal cual, sin traducir saltos de línea ni
+    decodificar: el log de un job es evidencia literal."""
+    import subprocess
+
+    texto = {} if binario else {"text": True, "encoding": "utf-8", "errors": "replace"}
+    try:
+        return subprocess.run(
+            argv,
+            cwd=str(cwd) if cwd else None,
+            env={**os.environ, **(env or {})},
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=plazo,
+            **texto,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CiFallo(
+            f"sin respuesta de {Path(argv[0]).name} tras {int(plazo)}s ({' '.join(argv[1:3])})",
+            "reintentar cuando el host del supervisor tenga red",
+        ) from exc
+    except OSError as exc:
+        raise CiFallo(f"no se pudo ejecutar {argv[0]}: {exc}", "revisar la instalación en el host") from exc
+
+
+def _git_ci(espacio: Path, *args: str, env: dict | None = None, plazo: float = 120) -> str:
+    r = _correr(["git", "-C", str(espacio), *args], env=env, plazo=plazo)
+    if r.returncode != 0:
+        raise _causa_de(r.stderr or r.stdout, "git " + args[0])
+    return r.stdout
+
+
+def _gh(gh: str, repo: str, *args: str, plazo: float = 120, binario: bool = False):
+    r = _correr([gh, *args, "--repo", repo], plazo=plazo, binario=binario)
+    if r.returncode != 0:
+        fallo = r.stderr or r.stdout
+        if binario:
+            fallo = (fallo or b"").decode("utf-8", errors="replace")
+        raise _causa_de(fallo, "gh " + " ".join(args[:2]))
+    return r.stdout
+
+
+def _repo_de(concedido: dict, espacio: Path) -> tuple[str, str]:
+    """(owner/nombre para gh, remoto de git). Sale del recurso o del origin del espacio."""
+    import re
+
+    remoto = str(concedido.get("remoto") or "").strip()
+    if not remoto:
+        remoto = _git_ci(espacio, "remote", "get-url", "origin").strip()
+    repo = str(concedido.get("repo") or "").strip()
+    if not repo:
+        m = re.search(r"github\.com[:/]+([^/]+/[^/]+?)(?:\.git)?/?$", remoto)
+        if not m:
+            raise CiFallo(
+                "el recurso ci no declara repo y el origin del espacio no es de GitHub",
+                "pedir al host que declare repo en el recurso ci",
+            )
+        repo = m.group(1)
+    return repo, remoto
+
+
+def _commit_temporal(espacio: Path, destino: Path, ident: str) -> tuple[str, str]:
+    """Commit con la versión vigente del producto (con o sin commit propio) en un
+    índice aparte: ni el índice ni la rama ni el árbol del espacio se tocan."""
+    indice = destino / "indice-ci"
+    indice.unlink(missing_ok=True)
+    env = {
+        "GIT_INDEX_FILE": str(indice),
+        "GIT_AUTHOR_NAME": "motor-ci",
+        "GIT_AUTHOR_EMAIL": "motor-ci@localhost",
+        "GIT_COMMITTER_NAME": "motor-ci",
+        "GIT_COMMITTER_EMAIL": "motor-ci@localhost",
+    }
+    try:
+        cabeza = _git_ci(espacio, "rev-parse", "--verify", "HEAD").strip()
+        _git_ci(espacio, "read-tree", cabeza, env=env)
+        _git_ci(
+            espacio, "add", "-A", "--", ".",
+            ":(exclude).interno", ":(exclude)**/.interno",
+            ":(exclude)**/__pycache__", ":(exclude)**/.runtime",
+            env=env,
+        )
+        arbol = _git_ci(espacio, "write-tree", env=env).strip()
+        sha = _git_ci(
+            espacio, "commit-tree", arbol, "-p", cabeza, "-m", f"ci-prueba {ident}", env=env
+        ).strip()
+    finally:
+        indice.unlink(missing_ok=True)
+    return sha, arbol
+
+
+def _json_gh(gh: str, repo: str, *args: str) -> object:
+    salida = _gh(gh, repo, *args)
+    try:
+        return json.loads(salida or "null")
+    except ValueError as exc:
+        raise CiFallo(f"gh devolvió algo que no es JSON: {salida[-200:]}", "reintentar") from exc
+
+
+def _esperar_run(gh: str, repo: str, workflow: str, sha: str, limite: float) -> dict:
+    fin = time.time() + min(CI_BUSCA_RUN_S, limite)
+    while True:
+        argumentos = ["run", "list", "--commit", sha, "--json",
+                      "databaseId,status,conclusion,headSha,event,url,workflowName", "--limit", "20"]
+        if workflow:
+            argumentos += ["--workflow", workflow]
+        runs = [r for r in (_json_gh(gh, repo, *argumentos) or []) if r.get("headSha") == sha]
+        if runs:
+            return max(runs, key=lambda r: int(r.get("databaseId") or 0))
+        if time.time() > fin:
+            raise CiFallo(
+                f"GitHub no inició el workflow {workflow or '(cualquiera)'} para el commit {sha[:12]}",
+                "comprobar que el workflow corre en pull_request y que Actions está habilitado",
+            )
+        time.sleep(CI_SONDEO_S)
+
+
+def _limpiar_ci(gh: str, repo: str, remoto: str, espacio: Path, rama: str, numero: str) -> dict:
+    """Cierra el PR y borra la rama temporal. Cada paso dice si funcionó."""
+    limpieza = {"rama": rama, "pr": numero, "pr_cerrado": False, "rama_borrada": False}
+    if numero:
+        try:
+            _gh(gh, repo, "pr", "close", numero, "--delete-branch", plazo=60)
+            limpieza["pr_cerrado"] = True
+        except CiFallo as exc:
+            limpieza["pr_error"] = exc.motivo
+    try:
+        presente = _git_ci(espacio, "ls-remote", "--heads", remoto, f"refs/heads/{rama}", plazo=60).strip()
+        if presente:
+            _git_ci(espacio, "push", "--quiet", remoto, "--delete", f"refs/heads/{rama}", plazo=60)
+        limpieza["rama_borrada"] = True
+    except CiFallo as exc:
+        limpieza["rama_error"] = exc.motivo
+    return limpieza
+
+
+def _barrer_restos(remoto: str, espacio: Path, ident: str) -> None:
+    """Un run anterior que murió sin limpiar deja su rama (y con ella su PR, que
+    GitHub cierra al borrarla). Se borran las de este encargo antes de empezar."""
+    prefijo = "refs/heads/ci-prueba/" + re_sub_ci(ident) + "-"
+    try:
+        filas = _git_ci(espacio, "ls-remote", "--heads", remoto, prefijo + "*", plazo=60).splitlines()
+        for fila in filas:
+            ref = fila.split("	")[-1].strip()
+            if ref.startswith(prefijo):
+                _git_ci(espacio, "push", "--quiet", remoto, "--delete", ref, plazo=60)
+    except CiFallo:
+        pass
+
+
+def re_sub_ci(texto: str) -> str:
+    import re
+
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", texto)
+
+
+def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) -> dict:
+    """Corre el workflow de pruebas sobre la versión vigente del producto y
+    devuelve el log literal del job pedido, con el SHA y el número de run. Usa el
+    acceso de gh y git que ya tiene el supervisor; la rama y el PR temporales se
+    cierran siempre."""
+    import re
+    import shutil
+
+    job = str(parametros.get("job") or "").strip()
+    if not job or not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", job):
+        raise CiFallo(
+            "ci.correr necesita el parámetro job con el nombre exacto del job (por ejemplo jaula-linux)",
+            "volver a pedirla con --parametro job=<nombre>",
+        )
+    if espacio is None or not (Path(espacio) / ".git").exists():
+        raise CiFallo("el espacio del encargo no es un clon git", "pedir al host que prepare el repo de entrega")
+    espacio = Path(espacio)
+    gh = shutil.which("gh")
+    if not gh:
+        raise CiFallo(
+            "gh no está instalado en el host del supervisor: no hay forma de correr el CI de GitHub",
+            "instalar y autenticar gh en el host, o pedir al operador el log del job",
+        )
+    if not shutil.which("git"):
+        raise CiFallo("git no está instalado en el host del supervisor", "instalar git en el host")
+    repo, remoto = _repo_de(concedido, espacio)
+    base = str(concedido.get("base") or "main")
+    workflow = str(concedido.get("workflow") or "pruebas.yml")
+    limite = time.time() + CI_MAX_S
+
+    ident = f"{espacio.name}"
+    _barrer_restos(remoto, espacio, ident)
+    sha, arbol = _commit_temporal(espacio, destino, ident)
+    rama = f"ci-prueba/{re_sub_ci(ident)}-{sha[:7]}-{int(time.time())}"
+    numero = ""
+    subida = False
+    try:
+        _git_ci(espacio, "push", "--quiet", remoto, f"{sha}:refs/heads/{rama}", plazo=180)
+        subida = True
+        url_pr = _gh(
+            gh, repo, "pr", "create", "--draft", "--base", base, "--head", rama,
+            "--title", f"ci-prueba: {ident} {sha[:7]}",
+            "--body", "Corrida temporal del CI pedida por el revisor. Se cierra sola.",
+            plazo=120,
+        ).strip().splitlines()[-1]
+        numero = url_pr.rstrip("/").rsplit("/", 1)[-1]
+        run = _esperar_run(gh, repo, workflow, sha, limite - time.time())
+        numero_run = str(run["databaseId"])
+        while True:
+            vista = _json_gh(gh, repo, "run", "view", numero_run, "--json", "status,conclusion,jobs,url")
+            if str(vista.get("status")) == "completed":
+                break
+            if time.time() > limite:
+                raise CiFallo(
+                    f"el run {numero_run} no terminó en {int(CI_MAX_S // 60)} minutos ({vista.get('url') or ''})",
+                    "reintentar más tarde; el PR temporal se cerró",
+                )
+            time.sleep(CI_SONDEO_S)
+        trabajos = vista.get("jobs") or []
+        elegido = next((j for j in trabajos if str(j.get("name")) == job), None)
+        if elegido is None:
+            nombres = ", ".join(sorted(str(j.get("name")) for j in trabajos)) or "ninguno"
+            raise CiFallo(
+                f"el run {numero_run} no tiene un job llamado {job!r}; jobs: {nombres}",
+                "volver a pedirla con el nombre exacto de uno de esos jobs",
+            )
+        log = _gh(
+            gh, repo, "run", "view", numero_run, "--job", str(elegido["databaseId"]), "--log",
+            plazo=300, binario=True,
+        )
+        if len(log) > MAX_LOG:
+            raise CiFallo(f"el log del job supera {MAX_LOG} bytes", "pedir otro job")
+        nombre = f"{re.sub(r'[^A-Za-z0-9_.-]', '-', job)}-{sha[:7]}-run{numero_run}.log"
+        copia = destino / "remoto" / nombre
+        _escribir_seguro(copia, log)
+        resultado = {
+            "job": job,
+            "conclusion": str(elegido.get("conclusion") or vista.get("conclusion") or ""),
+            "sha": sha,
+            "arbol": arbol,
+            "run": numero_run,
+            "url": str(vista.get("url") or run.get("url") or ""),
+            "rama": rama,
+            "base": base,
+            "log_nombre": nombre,
+            "log_host": str(copia),
+            "log": str(copia),
+            "bytes": copia.stat().st_size,
+            "cola": log[-MAX_TEXTO:].decode("utf-8", errors="replace"),
+        }
+    except CiFallo:
+        if subida:
+            _limpiar_ci(gh, repo, remoto, espacio, rama, numero)
+        raise
+    resultado["limpieza"] = _limpiar_ci(gh, repo, remoto, espacio, rama, numero)
+    return {
+        "estado": "ok",
+        "datos": resultado,
+        "evidencia": {
+            "tipo": "ci",
+            "sha": sha,
+            "run": resultado["run"],
+            "job": job,
+            "conclusion": resultado["conclusion"],
+            "url": resultado["url"],
+            "ruta_copia": str(copia),
+            "sha256": _huella(copia),
+            "bytes": resultado["bytes"],
+            "limpieza": resultado["limpieza"],
+        },
+    }
+
+
 def recursos_observables(recursos: dict[str, dict]) -> tuple[str, ...]:
     """Recursos cuyo cambio detecta `huella_recurso`: sqlite y remotos por fichero."""
     return tuple(
@@ -511,6 +849,7 @@ def ejecutar(
     parametros: dict,
     destino: Path,
     autorizado: bool = False,
+    espacio: Path | None = None,
 ) -> dict:
     """Ejecuta una operación conocida. Devuelve resultado, pregunta o error con causa."""
     destino = Path(destino)
@@ -563,11 +902,19 @@ def ejecutar(
         if operacion == SNAPSHOT:
             ruta = _ruta_absoluta(concedido.get("ruta") or "")
             return _snapshot(ruta, destino)
+        if operacion == CI:
+            return _correr_ci(concedido, parametros, espacio, destino)
         if operacion == REMOTO:
             relativa = _ruta_relativa(str(parametros.get("ruta") or ""))
             if str(concedido.get("transporte") or "fichero") == "http":
                 return _leer_http(concedido, relativa, destino)
             return _leer_archivo(_ruta_absoluta(concedido.get("raiz") or ""), relativa, destino)
+    except CiFallo as exc:
+        return {
+            "estado": "error",
+            "motivo": exc.motivo,
+            "alternativa": exc.alternativa or "revisar la causa antes de reintentar",
+        }
     except (ValueError, FileNotFoundError, ConfigInvalida) as exc:
         return {
             "estado": "error",
@@ -605,6 +952,7 @@ def main(argv: list[str]) -> int:
             {str(k): str(v) for k, v in (spec.get("parametros") or {}).items()},
             destino,
             autorizado=bool(spec.get("autorizado")),
+            espacio=Path(spec["espacio"]) if spec.get("espacio") else None,
         )
     destino.mkdir(parents=True, exist_ok=True)
     _escribir_seguro(
