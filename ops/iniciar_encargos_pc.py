@@ -3,6 +3,10 @@
 --sonda ejecuta únicamente una comprobación inocua. No instala servicios ni tareas.
 Explorer COM selecciona la sesión; un puente usa CREATE_BREAKAWAY_FROM_JOB.
 CreateProcessAsUserW necesita un privilegio ausente en SSH y WithTokenW usa sesión 0.
+
+Sin --sonda deja un vigilante (también fuera del Job) que vuelve a lanzar el supervisor
+cuando termina, con espera creciente. --estado lo consulta y --parar lo detiene; véase
+docs/supervisor-pc.md.
 """
 
 import argparse
@@ -57,6 +61,11 @@ class Windows:
         self.session = self.api(
             self.kernel, "ProcessIdToSessionId", [W.DWORD, C.POINTER(W.DWORD)]
         )
+        self.times = self.api(
+            self.kernel,
+            "GetProcessTimes",
+            [W.HANDLE] + [C.POINTER(W.FILETIME)] * 4,
+        )
         self.in_job = self.api(
             self.kernel, "IsProcessInJob", [W.HANDLE, W.HANDLE, C.POINTER(W.BOOL)]
         )
@@ -105,6 +114,20 @@ class Windows:
                 self.close(token)
             self.close(process)
 
+    def start_time(self, pid):
+        """Instante de creación del proceso (FILETIME), o None si no se puede leer. Junto
+        con el PID identifica al proceso: un PID reutilizado nace en otro instante."""
+        process = self.open(0x1000, False, pid)
+        if not process:
+            return None
+        try:
+            tiempos = [W.FILETIME() for _ in range(4)]
+            if not self.times(process, *(C.byref(t) for t in tiempos)):
+                return None
+            return (tiempos[0].dwHighDateTime << 32) | tiempos[0].dwLowDateTime
+        finally:
+            self.close(process)
+
     def explorer(self, sid):
         snapshot = self.api(
             self.kernel, "CreateToolhelp32Snapshot", [W.DWORD, W.DWORD], W.HANDLE
@@ -141,6 +164,258 @@ class Windows:
             self.close(snapshot)
 
 
+CARPETA = ".motor-encargos"
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_NO_WINDOW = 0x08000000
+ESPERA_BASE_S = 5
+ESPERA_TOPE_S = 300
+ESTABLE_S = 600
+TIMEOUT_TASKLIST_S = 10
+TIMEOUT_TASKKILL_S = 20
+# El vigilante puede tardar, antes de su primer supervisor, en comprobar y cerrar un huérfano
+# (tasklist + taskkill); quien lo espera tiene que esperar más que eso, y el puente más aún.
+ESPERA_ARRANQUE_S = 45
+ESPERA_PUENTE_S = 60
+ESPERA_INFORME_S = 75
+CODIGO_YA_ACTIVO = 3
+
+
+def espera_creciente(fallos, base=ESPERA_BASE_S, tope=ESPERA_TOPE_S):
+    """Segundos antes del intento número `fallos` seguido: 5, 10, 20, ... hasta el tope."""
+    return min(base * 2 ** max(fallos - 1, 0), tope)
+
+
+def identidad_valida(identidad, sid, sesion):
+    return (
+        identidad["sid"] == sid
+        and identidad["session"] == sesion
+        and bool(sesion)
+        and not identidad["in_job"]
+    )
+
+
+def vigilar(
+    lanzar,
+    parar_pedido,
+    reloj,
+    dormir,
+    registrar,
+    terminar,
+    estable_s=ESTABLE_S,
+    base=ESPERA_BASE_S,
+    tope=ESPERA_TOPE_S,
+):
+    """Mantiene vivo el supervisor: cuando termina, lo vuelve a lanzar con una espera
+    que crece (5, 10, 20 ... 300 s). Un supervisor que vivió `estable_s` o más vuelve a
+    empezar la cuenta en la espera base. Devuelve cuántas veces lo lanzó.
+
+    `lanzar()` devuelve un proceso con `pid` y `wait(timeout)`; `parar_pedido()` es la
+    petición del operador; `terminar(proceso)` cierra el árbol del supervisor."""
+    fallos = lanzamientos = 0
+    while not parar_pedido():
+        inicio = reloj()
+        try:
+            proceso = lanzar()
+        except Exception as exc:
+            registrar(f"el supervisor no arrancó: {type(exc).__name__}: {exc}")
+        else:
+            lanzamientos += 1
+            registrar(f"supervisor en marcha, pid {proceso.pid}")
+            while True:
+                try:
+                    codigo = proceso.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    if parar_pedido():
+                        terminar(proceso)
+                        registrar("parada pedida: supervisor terminado")
+                        return lanzamientos
+                    continue
+                registrar(f"el supervisor terminó con código {codigo}")
+                break
+        fallos = 1 if reloj() - inicio >= estable_s else fallos + 1
+        espera = espera_creciente(fallos, base, tope)
+        registrar(f"se vuelve a levantar en {espera} s (intento seguido {fallos})")
+        for _ in range(espera):
+            if parar_pedido():
+                break
+            dormir(1)
+    registrar("parada pedida")
+    return lanzamientos
+
+
+def adquirir_exclusivo(ruta):
+    """Un solo vigilante por usuario: el candado lo suelta el sistema si el proceso muere."""
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    archivo = open(ruta, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            archivo.seek(0)
+            msvcrt.locking(archivo.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(archivo, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        archivo.close()
+        return None
+    return archivo
+
+
+def escribir_estado(ruta, datos):
+    temporal = ruta.with_suffix(".tmp")
+    temporal.write_text(json.dumps(datos, ensure_ascii=False), encoding="utf-8")
+    temporal.replace(ruta)
+
+
+def leer_estado(ruta):
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return datos if isinstance(datos, dict) else {}
+
+
+def limpiar_huerfano(previo, imagen_de, inicio_de, matar_arbol, registrar):
+    """Si un vigilante anterior murió sin cerrar su supervisor, ese PowerShell sigue vivo y
+    un segundo supervisor duplicaría el barrido. Solo se cierra el proceso que es el mismo
+    que se lanzó: el PID tiene que seguir siendo un powershell y haber nacido en el instante
+    guardado. Un PID reutilizado, aunque sea de otro powershell, no coincide; y si no se
+    puede saber, no se toca. Devuelve True solo si lo cerró."""
+    pid, inicio = previo.get("supervisor_pid"), previo.get("supervisor_inicio")
+    if not isinstance(pid, int) or not inicio:
+        return False
+    try:
+        imagen, nacio = (imagen_de(pid) or "").lower(), inicio_de(pid)
+    except (OSError, subprocess.SubprocessError) as exc:
+        registrar(f"no se pudo comprobar el supervisor {pid} de un vigilante anterior: {exc}")
+        return False
+    if imagen != "powershell.exe" or nacio != inicio:
+        return False
+    registrar(f"se cierra el supervisor huérfano {pid} de un vigilante anterior")
+    if matar_arbol(pid):
+        return True
+    registrar(f"taskkill no pudo cerrar el supervisor huérfano {pid}")
+    return False
+
+
+def imagen_de(pid):
+    salida = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+        capture_output=True, text=True, timeout=TIMEOUT_TASKLIST_S,
+        creationflags=CREATE_NO_WINDOW,
+    ).stdout.strip()
+    return salida.split('","')[0].strip('"') if salida.startswith('"') else ""
+
+
+def matar_arbol(pid):
+    """True si el árbol quedó cerrado: taskkill terminó bien o el proceso ya no existía (128)."""
+    try:
+        resultado = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True, timeout=TIMEOUT_TASKKILL_S, creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return resultado.returncode in (0, 128)
+
+
+def comando_supervisor(powershell, supervisor):
+    return [
+        str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive",
+        "-ExecutionPolicy", "Bypass", "-File", str(supervisor),
+    ]
+
+
+def correr_vigilante(carpeta, comando, runtime, sid, sesion, windows):
+    """Proceso del vigilante: nace fuera del Job de SSH (lo comprueba `main`), y sus hijos,
+    el supervisor incluido, heredan esa condición."""
+    candado = adquirir_exclusivo(carpeta / "vigilante.lock")
+    if candado is None:
+        return CODIGO_YA_ACTIVO
+    ruta_estado, ruta_parar, ruta_log = (
+        carpeta / "vigilante.json", carpeta / "vigilante.parar", carpeta / "vigilante.log",
+    )
+    previo = leer_estado(ruta_estado)
+
+    def registrar(texto):
+        if ruta_log.exists() and ruta_log.stat().st_size > 1_000_000:
+            ruta_log.replace(ruta_log.with_suffix(".log.1"))
+        with open(ruta_log, "a", encoding="utf-8") as log:
+            log.write(time.strftime("%Y-%m-%dT%H:%M:%S") + " " + texto + "\n")
+
+    estado = {"vigilante_pid": os.getpid(), "inicio": time.time(), "lanzamientos": 0}
+
+    actual = {"proceso": None}
+
+    def cerrar(proceso):
+        """Cierra el árbol; si taskkill falla, lo intenta con el propio proceso."""
+        if matar_arbol(proceso.pid):
+            return True
+        registrar(f"taskkill no pudo cerrar el supervisor {proceso.pid}")
+        try:
+            proceso.terminate()
+            proceso.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return proceso.poll() is not None
+
+    def lanzar():
+        proceso = subprocess.Popen(comando, cwd=runtime, creationflags=CREATE_NO_WINDOW)
+        actual["proceso"] = proceso
+        identidad = windows.identity(proceso.pid)
+        if not identidad_valida(identidad, sid, sesion):
+            if not cerrar(proceso):
+                raise RuntimeError(
+                    f"Supervisor {proceso.pid} rechazado y no se pudo cerrar; "
+                    "véase vigilante.log"
+                )
+            raise RuntimeError("Supervisor rechazado: identidad, sesión o Job incorrectos")
+        estado.update(
+            supervisor=identidad, supervisor_pid=proceso.pid,
+            supervisor_inicio=windows.start_time(proceso.pid),
+            lanzamientos=estado["lanzamientos"] + 1,
+        )
+        escribir_estado(ruta_estado, estado)
+        return proceso
+
+    def terminar(proceso):
+        if not cerrar(proceso):
+            registrar(f"el supervisor {proceso.pid} sigue vivo; el próximo arranque lo cerrará")
+
+    limpiar_huerfano(previo, imagen_de, windows.start_time, matar_arbol, registrar)
+    registrar(f"vigilante {os.getpid()} en marcha")
+    try:
+        vigilar(lanzar, ruta_parar.exists, time.monotonic, time.sleep, registrar, terminar)
+    finally:
+        proceso = actual["proceso"]
+        vivo = proceso is not None and proceso.poll() is None
+        estado.update(parado=True)
+        if not vivo:
+            estado.update(supervisor_pid=None, supervisor_inicio=None)
+        escribir_estado(ruta_estado, estado)
+        ruta_parar.unlink(missing_ok=True)
+        candado.close()
+    return 0
+
+
+def esperar_vigilante(ruta_estado, proceso, segundos=ESPERA_ARRANQUE_S, reloj=time.monotonic, dormir=time.sleep):
+    """Espera a que el vigilante, o el que ya había, tenga un supervisor con identidad válida."""
+    limite = reloj() + segundos
+    while reloj() < limite:
+        estado = leer_estado(ruta_estado)
+        codigo = proceso.poll()
+        if estado.get("supervisor") and not estado.get("parado"):
+            if estado.get("vigilante_pid") == proceso.pid or codigo == CODIGO_YA_ACTIVO:
+                return {**estado, "ya_activo": codigo == CODIGO_YA_ACTIVO}
+        if codigo not in (None, CODIGO_YA_ACTIVO):
+            raise RuntimeError(f"El vigilante terminó con código {codigo}")
+        dormir(0.2)
+    proceso.terminate()
+    raise RuntimeError("El vigilante no dejó un supervisor válido a tiempo; véase vigilante.log")
+
+
 def fixed_paths():
     home = Path.home()
     runtime = home / "motor-sucesor"
@@ -157,17 +432,43 @@ def fixed_paths():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sonda", action="store_true")
-    parser.add_argument("--fase", choices=["puente", "libre"], help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--parar", action="store_true",
+        help="pide al vigilante que cierre el supervisor y deje de relanzarlo",
+    )
+    parser.add_argument(
+        "--estado", action="store_true", help="muestra el estado del vigilante (vigilante.json)"
+    )
+    parser.add_argument(
+        "--fase", choices=["puente", "libre", "vigilante"], help=argparse.SUPPRESS
+    )
     parser.add_argument("--salida", help=argparse.SUPPRESS)
     parser.add_argument("--sid", help=argparse.SUPPRESS)
     parser.add_argument("--sesion", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.parar or args.estado:
+        carpeta = Path.home() / CARPETA
+        if args.parar:
+            carpeta.mkdir(parents=True, exist_ok=True)
+            (carpeta / "vigilante.parar").write_text("parar\n", encoding="utf-8")
+        print(json.dumps(leer_estado(carpeta / "vigilante.json"), ensure_ascii=False))
+        return
     if os.name != "nt":
         parser.error("Esta utilidad requiere Windows")
     windows = Windows()
     own = windows.identity()
     runtime, supervisor, powershell = fixed_paths()
     folder = Path.home() / ".motor-resguardo/cierre-flujo-20261028"
+    if args.fase == "vigilante":
+        if not identidad_valida(own, args.sid, args.sesion):
+            raise RuntimeError("Vigilante rechazado: usuario, sesión o Job incorrectos")
+        sys.exit(
+            correr_vigilante(
+                Path.home() / CARPETA,
+                comando_supervisor(powershell, supervisor),
+                runtime, args.sid, args.sesion, windows,
+            )
+        )
     if args.fase:
         output = Path(args.salida or "").resolve()
         if (
@@ -200,7 +501,7 @@ def main():
                 cwd=runtime,
                 creationflags=0x01000000 | 0x08000000,
                 check=True,
-                timeout=15,
+                timeout=ESPERA_PUENTE_S,
             )
             report = json.loads(output.read_text(encoding="utf-8"))
             report["bridge"] = own
@@ -218,28 +519,20 @@ def main():
             "exit_code": 0,
         }
         if not args.sonda:
-            command = [
-                str(powershell),
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(supervisor),
-            ]
-            process = subprocess.Popen(command, cwd=runtime, creationflags=0x08000000)
-            report["supervisor"] = windows.identity(process.pid)
-            if (
-                report["supervisor"]["session"] != args.sesion
-                or report["supervisor"]["in_job"]
-                or report["supervisor"]["sid"] != args.sid
-            ):
-                process.terminate()
-                process.wait(timeout=5)
-                raise RuntimeError(
-                    "Supervisor rechazado: identidad, sesión o Job incorrectos"
-                )
+            # Este proceso sale en segundos (el puente espera hasta ESPERA_PUENTE_S); el vigilante que
+            # deja atrás es quien mantiene vivo al supervisor.
+            carpeta = Path.home() / CARPETA
+            carpeta.mkdir(parents=True, exist_ok=True)
+            (carpeta / "vigilante.parar").unlink(missing_ok=True)
+            proceso = subprocess.Popen(
+                [sys.executable, "-I", str(Path(__file__).resolve()), "--fase", "vigilante",
+                 "--sid", args.sid, "--sesion", str(args.sesion)],
+                cwd=runtime,
+                creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            report["vigilante"] = esperar_vigilante(carpeta / "vigilante.json", proceso)
+            report["supervisor"] = report["vigilante"]["supervisor"]
         output.write_text(json.dumps(report), encoding="utf-8")
         return
     target = windows.explorer(own["sid"])
@@ -286,7 +579,7 @@ $desktop.Document.Application.ShellExecute({literal(sys.executable)},{literal(su
         capture_output=True,
     )
     completed = output.with_suffix(".completo.json")
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + ESPERA_INFORME_S
     while not completed.is_file():
         if time.monotonic() >= deadline:
             raise RuntimeError(f"Sin confirmación del puente: {output}")
