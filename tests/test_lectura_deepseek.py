@@ -13,6 +13,8 @@ import time
 import unittest
 from unittest import mock
 
+from motor.encargos import ciclo
+from motor.encargos.ciclo import ahora_iso
 from motor.encargos.dominio import bloqueantes_abiertos, prompt_responsable
 from motor.github import FakeGitHub
 from tests.test_entrega_misma_version import _barrido, _pasos
@@ -172,6 +174,30 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
                 self.assertEqual(e.deepseek_sha, "")
                 self.assertEqual(_pasos(r, "integrado"), [])
                 self.assertEqual(vuelta.gh.ver(e.entrega.repo, e.pr_numero).estado, "abierto")
+
+    def test_cerrar_sin_pasar_por_la_entrega_no_se_salta_el_veredicto(self):
+        # `_cerrar_con_juicio` y el reintento de barrer llaman a `_intentar_cierre`
+        # sin puerto de GitHub: con el nivel pr alcanzado no deben cerrar solos.
+        def texto(n):
+            if n == 2:
+                raise RuntimeError("gh api: 502")
+            return _comentario()
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-directo", _GhComentarios)
+            vuelta.gh.textos[None] = texto
+            e = vuelta("uno")
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(e.estado, "esperando_reintento")
+
+            vuelta.gh.textos[None] = _comentario(_hallazgo("F6", "medium"))
+            e = ciclo._intentar_cierre(r.reg, e, r.espacio, r.d, ahora_iso())
+            self.assertNotEqual(e.estado, "terminado")
+
+            e = ciclo._paso_entrega(r.reg, e, vuelta.gh, ahora_iso())
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(_ids(e), ["F6"])
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
 
     def test_un_medium_en_el_pr_de_una_fase_anterior_la_reabre_al_cerrar_el_encargo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

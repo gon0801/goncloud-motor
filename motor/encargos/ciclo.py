@@ -1581,12 +1581,26 @@ def _intentar_cierre(
     espacio: Path,
     directorio: Path,
     hora: str,
+    veredicto_comprobado: bool = False,
 ) -> Encargo:
     """Despacha efectos con recibo y compone el cierre si el nivel se cumplio.
 
     Lo usan _cerrar_con_juicio y el reintento sin LLM de barrer: un efecto
     sin asentar reintenta este paso, nunca rehace el producto.
+
+    Con entrega pr y el nivel pr alcanzado, el cierre pasa por
+    `_cerrar_con_veredicto`, que relee a DeepSeek con el puerto de GitHub. Quien
+    llega aquí sin ese paso (`veredicto_comprobado` falso) no cierra: el
+    siguiente paso de entrega lo hace con el veredicto vigente.
     """
+    if (
+        not veredicto_comprobado
+        and enc.entrega.nivel in ("pr", "integrado", "desplegado")
+        and enc.nivel_alcanzado == "pr"
+        and enc.pr_numero
+        and enc.estado != "terminado"
+    ):
+        return enc
     from motor.runwrap import _publica
 
     if _devolver_correcciones(registro, enc, hora):
@@ -3730,7 +3744,9 @@ def _cerrar_con_veredicto(
     devuelto = _veredicto_antes_de_cerrar(registro, enc, gh, hora)
     if devuelto is not None:
         return devuelto
-    return _intentar_cierre(registro, enc, espacio, directorio, hora)
+    return _intentar_cierre(
+        registro, enc, espacio, directorio, hora, veredicto_comprobado=True
+    )
 
 
 def _sha_final_sin_leer(enc: Encargo, gh) -> bool:
