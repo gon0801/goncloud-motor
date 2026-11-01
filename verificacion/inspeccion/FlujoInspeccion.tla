@@ -45,8 +45,7 @@ CONSTANTS
                        \* ciclo._cerrar_con_juicio): la Tope-ésima vuelta pasa a necesita_usuario.
                        \* Sin ella (antes del freno, ac41797) la cuenta no existe.
 
-Ids == 1..MaxIds
-PedAg == MaxIds + 1   \* el pedido de ci.correr que el agente hace por el buzón (no es de la inspección)
+PedAg == MaxIds + 2   \* el pedido de ci.correr que el agente hace por el buzón (no es de la inspección)
 Todos == 1..PedAg
 Estados == {"recibido", "ejecutando", "necesita_usuario", "deteniendo", "detenido", "terminado"}
 EstadosSol == {"ausente", "pendiente", "pregunta", "respuesta_si", "respuesta_no",
@@ -57,7 +56,8 @@ Herramientas == {"ninguna", "corre", "termino", "entregada"}
 VARIABLES
   est,      \* Encargo.estado
   proc,     \* hay un revisor corriendo (Encargo.proc, árbol vivo)
-  juicio,   \* outcome.json del revisor sin incorporar: "ninguno" | "aprueba" | "pide"
+  juicio,   \* outcome.json del revisor sin incorporar: "ninguno" | "aprueba" | "pide" | "pideOtra" (pide lo
+            \* mismo con otra consulta: otra ruta, otra identidad, igual para dominio._repite_pedido)
   pend,     \* fase.inspeccion_pendiente no vacío
   liga,     \* fase.inspeccion_solicitud: 0 = ninguna
   sol,      \* estado de cada Solicitud en Encargo.solicitudes ("ausente" = no registrada)
@@ -77,17 +77,17 @@ VARIABLES
             \* sin el freno ni autorización; "autoriza" = el recurso de la inspección tiene
             \* `autorizacion: "propietario"` (capacidades.cargar); "freno" = el revisor repite el
             \* pedido. Los dos últimos van sin ci.correr: ver "Lo que no cubre" en SKILL.md.
+  reabierto, \* historia: el propietario paró y continuó con el encargo en el tope, sin ajuste ni respuesta
   cuenta,   \* Encargo.no_concluyentes, saturada en Tope + 1: revisiones no_concluyente
             \* seguidas sobre la misma versión y pidiendo lo mismo
-  ligaVigente, \* la solicitud ligada la registró el intento vigente (Solicitud.intento == Encargo.intento)
-  sinInfo   \* historia: revisiones no_concluyente consumidas desde la última información nueva
-            \* (ajuste, respuesta o resolución de la solicitud ligada), saturada en Tope + 1
+  ligaVigente \* la solicitud ligada la registró el intento vigente (Solicitud.intento == Encargo.intento)
 
 vars == <<est, proc, juicio, pend, liga, sol, peticion, vista, ajuste, imped, carrera,
-          herr, aqui, corridaMuerta, caso, cuenta, ligaVigente, sinInfo>>
+          herr, aqui, corridaMuerta, caso, cuenta, ligaVigente, reabierto>>
 nuevas == <<herr, aqui, corridaMuerta>>
 fijas == <<caso>>
-contadores == <<cuenta, ligaVigente, sinInfo>>
+contadores == <<cuenta, ligaVigente, reabierto>>
+Ids == IF caso = "freno" THEN 1..(MaxIds + 1) ELSE 1..MaxIds   \* en "freno" una identidad más: el revisor cambia la consulta hasta Tope + 1 veces
 
 Abierto == est \in {"recibido", "ejecutando"}
 Sol(k) == IF k = 0 THEN "ausente" ELSE sol[k]
@@ -127,6 +127,13 @@ Consumida ==
 \* ciclo._id_inspeccion: el mismo pedido; una "detenida" pasa al siguiente reintento
 IdPedido == CHOOSE k \in Ids : sol[k] /= "detenida" /\ \A j \in 1..(k - 1) : sol[j] = "detenida"
 
+\* El revisor pide lo mismo con otra consulta (traba 4: jaula-linux-a.txt, -b.txt, -c.txt): la
+\* identidad cambia (ciclo._id_inspeccion incluye el pedido y la huella del recurso) pero
+\* dominio._repite_pedido sigue viéndolo como repetido (mismo texto del faltante).
+HayOtro == \E k \in Ids : sol[k] = "ausente" /\ k /= IdPedido
+IdOtro == CHOOSE k \in Ids : sol[k] = "ausente" /\ k /= IdPedido
+IdJ == IF juicio = "pideOtra" THEN IdOtro ELSE IdPedido   \* la identidad que nombra el juicio
+
 \* necesidades._recoger puede registrar el resultado de la herramienta de k
 HayQueRecoger(k) ==
   /\ est /= "terminado"
@@ -143,22 +150,14 @@ Reanuda(k, s2, v2) ==
   IF est = "necesita_usuario" /\ liga = k /\ ~BloqueaEn(pend, liga, s2, v2, ajuste)
     THEN "recibido" ELSE est
 
-\* Información nueva para el revisor, según dominio.inspeccion_bloquea: la solicitud ligada
-\* recibe un resultado (o cambia el que tenía: una detenida que pasa a resuelta). Reinicia
-\* la cuenta de revisiones consumidas sin información (sinInfo); el contador del freno
-\* (`cuenta`) no se reinicia así en el código, solo con un ajuste o una respuesta.
-SinInfoTras(s2) ==
-  IF liga /= 0 /\ s2[liga] /= sol[liga] /\ ConResultado(s2[liga]) THEN 0 ELSE sinInfo
-
 TypeOK ==
-  /\ est \in Estados /\ proc \in BOOLEAN /\ juicio \in {"ninguno", "aprueba", "pide"}
-  /\ pend \in BOOLEAN /\ liga \in 0..MaxIds
+  /\ est \in Estados /\ proc \in BOOLEAN /\ juicio \in {"ninguno", "aprueba", "pide", "pideOtra"}
+  /\ pend \in BOOLEAN /\ liga \in 0..(MaxIds + 1)
   /\ sol \in [Todos -> EstadosSol]
   /\ peticion \subseteq Todos /\ vista \in [Todos -> BOOLEAN]
   /\ ajuste \in BOOLEAN /\ imped \in BOOLEAN /\ carrera \in BOOLEAN
   /\ herr \in [Todos -> Herramientas] /\ aqui \in [Todos -> BOOLEAN] /\ corridaMuerta \in BOOLEAN
-  /\ caso \in {"ci", "autoriza", "freno"} /\ cuenta \in 0..(Tope + 1) /\ ligaVigente \in BOOLEAN
-  /\ sinInfo \in 0..(Tope + 1)
+  /\ caso \in {"ci", "autoriza", "freno"} /\ cuenta \in 0..(Tope + 1) /\ ligaVigente \in BOOLEAN /\ reabierto \in BOOLEAN
 
 Init ==
   /\ est = "ejecutando" /\ proc = TRUE /\ juicio = "ninguno"
@@ -166,7 +165,7 @@ Init ==
   /\ peticion = {} /\ vista = [k \in Todos |-> FALSE]
   /\ ajuste = FALSE /\ imped = FALSE /\ carrera = FALSE
   /\ herr = [k \in Todos |-> "ninguna"] /\ aqui = SinIntentoAnterior /\ corridaMuerta = FALSE
-  /\ caso \in {"ci", "autoriza", "freno"} /\ cuenta = 0 /\ ligaVigente = FALSE /\ sinInfo = 0
+  /\ caso \in {"ci", "autoriza", "freno"} /\ cuenta = 0 /\ ligaVigente = FALSE /\ reabierto = FALSE
 
 \* dominio.decision_proceso devuelve lanzar (sin impedimento, sin espera_inspeccion_consumida,
 \* sin inspeccion_bloquea).
@@ -185,14 +184,15 @@ Lanzar ==
   /\ carrera' = (carrera \/ (pend /\ liga \in peticion /\ ~Terminal(Sol(liga)) /\ ~AjusteSinVer))
   /\ aqui' = SinIntentoAnterior
   /\ ligaVigente' = FALSE
-  /\ UNCHANGED <<juicio, pend, liga, sol, peticion, vista, imped, herr, corridaMuerta, cuenta, sinInfo>>
+  /\ UNCHANGED <<juicio, pend, liga, sol, peticion, vista, imped, herr, corridaMuerta, cuenta, reabierto>>
   /\ UNCHANGED fijas
 
 \* El revisor termina su turno y deja su juicio en outcome.json. Puede pasar también
 \* con la parada ya pedida.
+\* En el caso `freno` el juicio puede pedir lo mismo con otra consulta (`pideOtra`, traba 4).
 Termina ==
   /\ proc /\ juicio = "ninguno"
-  /\ proc' = FALSE /\ juicio' \in {"aprueba", "pide"}
+  /\ proc' = FALSE /\ juicio' \in {"aprueba", "pide"} \cup (IF caso = "freno" /\ HayOtro THEN {"pideOtra"} ELSE {})
   /\ UNCHANGED <<est, pend, liga, sol, peticion, vista, ajuste, imped, carrera>>
   /\ UNCHANGED <<nuevas, fijas, contadores>>
 
@@ -202,7 +202,7 @@ Termina ==
 \* autorización, _ligar_inspeccion registra el pedido y llama marcar_pregunta (bloquea): el
 \* encargo queda en necesita_usuario con la pregunta, no en recibido.
 LigarPide ==
-  LET k == IdPedido IN
+  LET k == IdJ IN
   IF liga = k /\ (~ReligaSinSolicitud \/ sol[k] /= "ausente")
     \* Ya ligada: con la previa en `pregunta` y el encargo abierto, marcar_pregunta otra vez.
     THEN /\ est' = IF sol[k] = "pregunta" THEN "necesita_usuario" ELSE "recibido"
@@ -230,8 +230,8 @@ VistaAlCambiar ==
 \* inspeccion_entregada). Con la liga sin solicitud, el código de #139 sí lo consume para
 \* volver a encolar (ReligaSinSolicitud).
 Salta(v) ==
-  /\ pend /\ juicio = "pide"
-  /\ LET k == IdPedido IN
+  /\ pend /\ juicio \in {"pide", "pideOtra"}
+  /\ LET k == IdJ IN
        IF k /= liga THEN sol[k] /= "ausente" /\ v[k]
        ELSE sol[k] /= "ausente" \/ ~ReligaSinSolicitud
 
@@ -243,17 +243,17 @@ Salta(v) ==
 Incorporar ==
   /\ Abierto /\ ~proc /\ juicio /= "ninguno"
   /\ juicio' = "ninguno"
-  /\ LET v == IF pend /\ IdPedido /= liga THEN VistaAlCambiar ELSE vista IN
+  /\ LET v == IF pend /\ IdJ /= liga THEN VistaAlCambiar ELSE vista IN
      IF Salta(v)
-       THEN /\ vista' = IF IdPedido = liga /\ ConResultado(Sol(liga))
+       THEN /\ vista' = IF IdJ = liga /\ ConResultado(Sol(liga))
                           THEN [vista EXCEPT ![liga] = TRUE] ELSE v
-            /\ UNCHANGED <<est, pend, liga, sol, peticion, cuenta, ligaVigente, sinInfo>>
+            /\ UNCHANGED <<est, pend, liga, sol, peticion, cuenta, ligaVigente, reabierto>>
      ELSE IF juicio = "aprueba"
-       THEN /\ est' = "terminado" /\ pend' = FALSE /\ vista' = v /\ cuenta' = 0 /\ sinInfo' = 0
+       THEN /\ est' = "terminado" /\ pend' = FALSE /\ vista' = v /\ cuenta' = 0 /\ reabierto' = FALSE
             /\ UNCHANGED <<liga, sol, peticion, ligaVigente>>
        ELSE /\ vista' = v
             /\ cuenta' = IF ~ContandoFreno \/ cuenta >= Tope + 1 THEN cuenta ELSE cuenta + 1
-            /\ sinInfo' = IF ~ContandoFreno \/ sinInfo >= Tope + 1 THEN sinInfo ELSE sinInfo + 1
+            /\ reabierto' = reabierto
             /\ IF FrenoCuenta /\ ContandoFreno /\ cuenta + 1 >= Tope
                  THEN /\ est' = "necesita_usuario" /\ pend' = FALSE
                       /\ UNCHANGED <<liga, sol, peticion, ligaVigente>>
@@ -268,19 +268,17 @@ Atender ==
   /\ \E k \in peticion :
        \/ /\ Terminal(sol[k])                    \* previa con resultado: responde y archiva
           /\ peticion' = peticion \ {k}
-          /\ UNCHANGED <<est, sol, vista, herr, aqui, ligaVigente, sinInfo>>
+          /\ UNCHANGED <<est, sol, vista, herr, aqui, ligaVigente>>
        \/ /\ ~Terminal(sol[k]) /\ Parado         \* rama _detenida_ahora
           /\ sol' = IF DetieneLaPendiente /\ sol[k] = "pendiente"
                       THEN [sol EXCEPT ![k] = "detenida"] ELSE sol
           /\ vista' = [vista EXCEPT ![k] = FALSE]
           /\ peticion' = peticion \ {k}
-          /\ sinInfo' = SinInfoTras(IF DetieneLaPendiente /\ sol[k] = "pendiente"
-                                      THEN [sol EXCEPT ![k] = "detenida"] ELSE sol)
           /\ UNCHANGED <<est, herr, aqui, ligaVigente>>
        \/ /\ sol[k] = "ausente" /\ ~Parado       \* _registrar_solicitud
           /\ sol' = [sol EXCEPT ![k] = "pendiente"]
           /\ ligaVigente' = (~RespuestaVigente /\ (ligaVigente \/ k = liga))
-          /\ UNCHANGED <<est, peticion, vista, herr, aqui, sinInfo>>
+          /\ UNCHANGED <<est, peticion, vista, herr, aqui>>
        \/ /\ sol[k] = "pendiente" /\ ~Parado /\ herr[k] = "ninguna" /\ SinAutorizar(k)
           \* una herramienta que termina en el acto: resolucion (_cerrar_con_resultado ->
           \* _anotar_resolucion -> dominio._resolucion -> _reanudar_inspeccion)
@@ -288,20 +286,19 @@ Atender ==
           /\ vista' = [vista EXCEPT ![k] = FALSE]
           /\ peticion' = peticion \ {k}
           /\ est' = Reanuda(k, [sol EXCEPT ![k] = "resuelta"], [vista EXCEPT ![k] = FALSE])
-          /\ sinInfo' = SinInfoTras([sol EXCEPT ![k] = "resuelta"])
           /\ UNCHANGED <<herr, aqui, ligaVigente>>
        \/ /\ sol[k] = "pendiente" /\ ~Parado /\ herr[k] = "ninguna" /\ SinAutorizar(k) /\ ConCi
           \* ci.correr: _recordar_carpeta y _ejecutar la lanzan; la petición sigue en el
           \* buzón y la solicitud queda pendiente. Su carpeta es la del intento vigente.
           /\ herr' = [herr EXCEPT ![k] = "corre"]
           /\ aqui' = [aqui EXCEPT ![k] = TRUE]
-          /\ UNCHANGED <<est, sol, vista, peticion, ligaVigente, sinInfo>>
+          /\ UNCHANGED <<est, sol, vista, peticion, ligaVigente>>
        \/ /\ sol[k] = "pendiente" /\ ~Parado /\ herr[k] = "ninguna" /\ Exige /\ k \in Ids
           \* rama `pregunta` de necesidades.atender: capacidades.ejecutar devuelve "pregunta"
           \* sin `autorizado`; _cerrar_con_resultado anota la resolución `pregunta`. La
           \* petición sigue en el buzón y el encargo ya está en necesita_usuario (marcar_pregunta).
           /\ sol' = [sol EXCEPT ![k] = "pregunta"]
-          /\ UNCHANGED <<est, vista, peticion, herr, aqui, ligaVigente, sinInfo>>
+          /\ UNCHANGED <<est, vista, peticion, herr, aqui, ligaVigente>>
        \/ /\ sol[k] = "respuesta_si" /\ ~Parado
           \* camino `autorizado`: previa en `respuesta` y _afirmativa. _ejecutar corre la
           \* herramienta (aquí en el acto), _anotar_resolucion `resuelta` y _reanudar_inspeccion.
@@ -309,7 +306,6 @@ Atender ==
           /\ vista' = [vista EXCEPT ![k] = FALSE]
           /\ peticion' = peticion \ {k}
           /\ est' = Reanuda(k, [sol EXCEPT ![k] = "resuelta"], [vista EXCEPT ![k] = FALSE])
-          /\ sinInfo' = SinInfoTras([sol EXCEPT ![k] = "resuelta"])
           /\ UNCHANGED <<herr, aqui, ligaVigente>>
        \/ /\ sol[k] = "respuesta_no" /\ ~Parado
           \* camino `denegada`: previa en `respuesta` no afirmativa. _anotar_resolucion
@@ -319,9 +315,8 @@ Atender ==
           /\ vista' = [vista EXCEPT ![k] = FALSE]
           /\ peticion' = peticion \ {k}
           /\ est' = Reanuda(k, [sol EXCEPT ![k] = "denegada"], [vista EXCEPT ![k] = FALSE])
-          /\ sinInfo' = SinInfoTras([sol EXCEPT ![k] = "denegada"])
           /\ UNCHANGED <<herr, aqui, ligaVigente>>
-  /\ UNCHANGED <<proc, juicio, pend, liga, ajuste, imped, carrera, corridaMuerta, cuenta>>
+  /\ UNCHANGED <<proc, juicio, pend, liga, ajuste, imped, carrera, corridaMuerta, cuenta, reabierto>>
   /\ UNCHANGED fijas
 
 \* La herramienta de CI termina por su cuenta (capacidades.main deja resultado.json en
@@ -350,8 +345,7 @@ RecogerDe(k) ==
   /\ peticion' = peticion \ {k}
   /\ UNCHANGED <<proc, juicio, pend, liga, ajuste, imped, carrera>>
   /\ UNCHANGED <<aqui, corridaMuerta>>
-  /\ sinInfo' = SinInfoTras([sol EXCEPT ![k] = "resuelta"])
-  /\ UNCHANGED <<fijas, cuenta, ligaVigente>>
+  /\ UNCHANGED <<fijas, cuenta, ligaVigente, reabierto>>
 
 Recoger == \E k \in Todos : RecogerDe(k)
 
@@ -388,7 +382,6 @@ MatarTurno ==
   /\ proc' = FALSE
   /\ IF SoloMataLoDelTurno
        THEN /\ UNCHANGED <<sol, vista, herr, corridaMuerta>>
-            /\ UNCHANGED sinInfo
        ELSE /\ herr' = [k \in Todos |-> IF herr[k] = "corre" /\ aqui[k] THEN "ninguna" ELSE herr[k]]
             /\ sol' = [k \in Todos |->
                          IF herr[k] = "corre" /\ aqui[k] /\ sol[k] = "pendiente"
@@ -397,11 +390,8 @@ MatarTurno ==
                            IF herr[k] = "corre" /\ aqui[k] /\ sol[k] = "pendiente"
                              THEN FALSE ELSE vista[k]]
             /\ corridaMuerta' = (corridaMuerta \/ \E k \in Todos : herr[k] = "corre" /\ aqui[k])
-            /\ sinInfo' = SinInfoTras([k \in Todos |->
-                                         IF herr[k] = "corre" /\ aqui[k] /\ sol[k] = "pendiente"
-                                           THEN "detenida" ELSE sol[k]])
   /\ UNCHANGED <<est, juicio, pend, liga, peticion, ajuste, imped, carrera, aqui>>
-  /\ UNCHANGED <<fijas, cuenta, ligaVigente>>
+  /\ UNCHANGED <<fijas, cuenta, ligaVigente, reabierto>>
 
 \* ciclo.barrer con la parada o la orden parar/cancelar vigente:
 \* necesidades.cerrar_herramientas_del_encargo cierra las herramientas de todos los
@@ -413,11 +403,9 @@ CerrarHerramientas ==
                IF herr[k] = "corre" /\ sol[k] = "pendiente" THEN "detenida" ELSE sol[k]]
   /\ vista' = [k \in Todos |->
                  IF herr[k] = "corre" /\ sol[k] = "pendiente" THEN FALSE ELSE vista[k]]
-  /\ sinInfo' = SinInfoTras([k \in Todos |->
-                               IF herr[k] = "corre" /\ sol[k] = "pendiente" THEN "detenida" ELSE sol[k]])
   /\ UNCHANGED <<est, proc, juicio, pend, liga, peticion, ajuste, imped, carrera>>
   /\ UNCHANGED <<aqui, corridaMuerta>>
-  /\ UNCHANGED <<fijas, cuenta, ligaVigente>>
+  /\ UNCHANGED <<fijas, cuenta, ligaVigente, reabierto>>
 
 \* dominio.decision_proceso: espera_inspeccion_consumida -> evento impedimento
 Impedir ==
@@ -478,7 +466,8 @@ Continuar ==
   /\ est = "detenido"
   /\ est' = IF AvisaPregunta /\ PreguntaAbierta THEN "necesita_usuario" ELSE "recibido"
   /\ UNCHANGED <<proc, juicio, pend, liga, sol, peticion, vista, ajuste, imped, carrera>>
-  /\ UNCHANGED <<nuevas, fijas, contadores>>
+  /\ reabierto' = (reabierto \/ cuenta >= Tope)
+  /\ UNCHANGED <<nuevas, fijas, cuenta, ligaVigente>>
 
 \* motor corregir -> reducción "ajuste": suma el ajuste, _soltar_impedimento_de_inspeccion
 \* y _sin_repeticiones (la cuenta del freno empieza de nuevo). Con el encargo en
@@ -488,7 +477,7 @@ Ajustar ==
   /\ est /= "terminado"
   /\ ajuste' = TRUE
   /\ imped' = IF AjusteSuelta THEN FALSE ELSE imped
-  /\ cuenta' = 0 /\ sinInfo' = 0
+  /\ cuenta' = 0 /\ reabierto' = FALSE
   /\ est' = IF est = "necesita_usuario"
               THEN (IF AvisaPregunta /\ PreguntaEn(pend, liga, sol, vista, TRUE)
                       THEN "necesita_usuario" ELSE "recibido")
@@ -513,13 +502,13 @@ Responder ==
                         IN /\ sol' = nueva
                            /\ est' = Reanuda(liga, nueva, vista)
                    /\ peticion' = peticion \cup {liga}
-                   /\ imped' = FALSE /\ cuenta' = 0 /\ sinInfo' = 0
+                   /\ imped' = FALSE /\ cuenta' = 0 /\ reabierto' = FALSE
                    /\ UNCHANGED vista
-              ELSE UNCHANGED <<est, sol, peticion, vista, imped, cuenta, sinInfo>>
+              ELSE UNCHANGED <<est, sol, peticion, vista, imped, cuenta, reabierto>>
        ELSE /\ RespuestaReabre
             /\ vista' = [vista EXCEPT ![liga] = FALSE]
             /\ est' = Reanuda(liga, sol, [vista EXCEPT ![liga] = FALSE])
-            /\ imped' = FALSE /\ cuenta' = 0 /\ sinInfo' = 0
+            /\ imped' = FALSE /\ cuenta' = 0 /\ reabierto' = FALSE
             /\ UNCHANGED <<sol, peticion>>
   /\ UNCHANGED <<proc, juicio, pend, liga, ajuste, carrera, ligaVigente>>
   /\ UNCHANGED <<nuevas, fijas>>
@@ -599,10 +588,14 @@ FrenoVisible == (cuenta >= Tope) => ~pend
 EsperaConSalida ==
   (est = "necesita_usuario") => ENABLED ((Ajustar \/ Responder) /\ est' = "recibido")
 
-\* Regla 10. El revisor no corre más de Tope veces seguidas sin información nueva (un ajuste,
-\* una respuesta o la resolución de la solicitud ligada empiezan la cuenta de nuevo).
-\* Parar y continuar no cuentan como información: ver hallazgo-freno-continuar.cfg.
-FrenoRevisor == sinInfo <= Tope
+\* Regla 10. El revisor no corre más de Tope veces seguidas sin información nueva. Para el freno
+\* (dominio._contar_no_concluyentes) la información nueva es un ajuste o una respuesta del
+\* propietario: cada revisión consumida pidiendo lo mismo, aunque sea con otra consulta (traba 4),
+\* suma a `cuenta`. Parar y continuar con el encargo en el tope deja correr una vuelta más
+\* (hallazgo): FrenoRevisor la admite (`reabierto`); FrenoSinReabrir, la variante estricta, no
+\* (hallazgo-freno-continuar.cfg).
+FrenoRevisor == cuenta <= Tope \/ reabierto
+FrenoSinReabrir == cuenta <= Tope
 
 \* Variante estricta de la regla 6, sin contar la quietud: una pregunta abierta con el encargo
 \* en recibido o ejecutando y nadie corriendo ni esperando una herramienta. Ver
