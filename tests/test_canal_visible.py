@@ -333,6 +333,26 @@ class VerYSenal(Banco):
         _, err = self._arranca_el_supervisor()
         self.assertNotIn("sin MOTOR_KUMA_ENCARGOS_URL", err)
 
+    def test_la_direccion_del_supervisor_en_el_home_instalado_tambien_cuenta(self):
+        casa = Path(self._tmp.name) / "casa"
+        (casa / ".motor").mkdir(parents=True)
+        secretos = casa / ".motor" / "secretos.env"
+        secretos.write_text("MOTOR_KUMA_ENCARGOS_URL=http://127.0.0.1:1/api/push/tk-encargos\n")
+        secretos.chmod(0o600)
+        self.assertFalse((self.base / "secretos.env").exists(), "la base no la trae")
+        capturado, err = self._arranca_el_supervisor()
+        self.assertNotIn("sin MOTOR_KUMA_ENCARGOS_URL", err)
+        self.assertEqual(capturado["respaldo"], casa / ".motor")
+
+    def test_un_secretos_ilegible_en_el_home_instalado_se_trata_como_sin_direccion(self):
+        casa = Path(self._tmp.name) / "casa"
+        (casa / ".motor").mkdir(parents=True)
+        secretos = casa / ".motor" / "secretos.env"
+        secretos.write_text("MOTOR_KUMA_ENCARGOS_URL=http://127.0.0.1:1/api/push/tk-encargos\n")
+        secretos.chmod(0o644)
+        _, err = self._arranca_el_supervisor()
+        self.assertIn("sin MOTOR_KUMA_ENCARGOS_URL", err, "permisos abiertos: load_secretos lo rechaza")
+
     def test_ninguna_direccion_de_kuma_llega_al_entorno_de_los_agentes_ni_de_las_comprobaciones(self):
         secretos = (
             ("MOTOR_KUMA_URL", "http://kuma/push/daemon"),
