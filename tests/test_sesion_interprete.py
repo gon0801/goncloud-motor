@@ -6,6 +6,7 @@ comprobador ya lo resolvía (#142); la sesión del responsable y la del revisor 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -17,7 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from motor.encargos import aislamiento, sesion
+from motor.encargos import aislamiento, comprobacion, sesion
 from motor.encargos.aislamiento import (
     ComandoAislado,
     lecturas_del_interprete,
@@ -25,6 +26,7 @@ from motor.encargos.aislamiento import (
 )
 from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
 from tests.test_comprobador_interprete import EXIGIDA, FLUJO, JAULA_REAL, SANDBOX
+from tests.test_flujo_revisiones import Recorrido
 
 ROLES = ("responsable", "revisor")
 PRUEBA = "import sys, tomllib, encodings; print(sys.version)"
@@ -167,12 +169,14 @@ class ConLaJaulaRealDeMacOS(unittest.TestCase):
                 self.assertEqual(resultado.returncode, 0, resultado.stderr)
                 self.assertEqual(resultado.stdout, sys.version + "\n")
 
-    def _sesion_del_incidente(self, rol: str, con_arreglo: bool):
+    @contextlib.contextmanager
+    def _incidente(self, con_arreglo: bool):
         """La Mini: el intérprete del supervisor se declara por un enlace del
         home (~/.local/bin/python3) a un directorio que es otro enlace, y el
         primer `python3` del PATH es el 3.9 del sistema, sin `tomllib`. Se arma
-        esa cadena bajo el home real sobre la instalación que corre la prueba y
-        se lanza la sesión por `preparar_administrado`."""
+        esa cadena bajo el home real sobre la instalación que corre la prueba.
+        Sin el arreglo, `aislar` se llama con `interprete=False` en la sesión y
+        en el comprobador."""
         home = Path.home().resolve()
         instalacion = Path(sys.base_prefix).resolve()
         binario = Path(sys.executable).resolve()
@@ -197,15 +201,22 @@ class ConLaJaulaRealDeMacOS(unittest.TestCase):
         def sin_interprete(cmd, espacio, runtime, **kw):
             return real(cmd, espacio, runtime, **{**kw, "interprete": False})
 
+        aislar = real if con_arreglo else sin_interprete
         with mock.patch.object(sys, "executable", str(enlace_bin)), mock.patch.object(
             sys, "base_prefix", str(enlace_dir)
         ), mock.patch.object(sys, "prefix", str(enlace_dir)), mock.patch.object(
             sys, "base_exec_prefix", str(enlace_dir)
         ), mock.patch.object(sys, "exec_prefix", str(enlace_dir)), mock.patch.dict(
             os.environ, {"PATH": "/usr/bin:/bin"}
-        ), mock.patch.object(
-            aislamiento, "aislar", real if con_arreglo else sin_interprete
-        ), tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        ), mock.patch.object(aislamiento, "aislar", aislar), mock.patch.object(
+            comprobacion, "aislar", aislar
+        ):
+            yield
+
+    def _sesion_del_incidente(self, rol: str, con_arreglo: bool):
+        with self._incidente(con_arreglo), tempfile.TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as tmp:
             spec = _preparar(Path(tmp).resolve(), rol, ["python3", "-c", PRUEBA])
             return subprocess.run(
                 spec["cmd"],
@@ -215,6 +226,30 @@ class ConLaJaulaRealDeMacOS(unittest.TestCase):
                 text=True,
                 timeout=60,
             )
+
+    def _comprobacion_del_incidente(self, con_arreglo: bool) -> dict:
+        """Una comprobación declarada (`argv` con `python3`), tal como la corre
+        el comprobador en la jaula."""
+        with self._incidente(con_arreglo), tempfile.TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as tmp:
+            r = Recorrido(tmp, "comp-incidente", "Crea dato.txt con 42")
+            self.addCleanup(r.reg.close)
+            comandos = [{"objetivo": "corre", "argv": ["python3", "-c", PRUEBA]}]
+            datos = comprobacion._ejecutar_declaradas(
+                comandos, r.espacio, r.d, r.d / "comprobador-t"
+            )
+        return datos["ejecuciones"][0]
+
+    def test_el_python3_de_una_comprobacion_declarada_es_el_del_supervisor(self):
+        ejecucion = self._comprobacion_del_incidente(con_arreglo=True)
+        self.assertEqual(ejecucion.get("rc"), 0, ejecucion)
+        self.assertEqual(ejecucion["stdout"], sys.version + "\n")
+
+    def test_sin_el_arreglo_la_comprobacion_declarada_usa_el_python_del_sistema(self):
+        ejecucion = self._comprobacion_del_incidente(con_arreglo=False)
+        self.assertNotEqual(ejecucion.get("rc"), 0, ejecucion)
+        self.assertNotEqual(ejecucion.get("stdout"), sys.version + "\n")
 
     def test_el_layout_del_incidente_arranca_en_la_sesion(self):
         for rol in ROLES:

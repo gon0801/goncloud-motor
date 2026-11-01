@@ -455,7 +455,9 @@ def aislar(
             "sin aislamiento efectivo; trabajador no habilitado en este host"
         )
     if interprete:
-        lecturas_extra = (*lecturas_extra, *lecturas_del_interprete())
+        lecturas_extra = tuple(
+            dict.fromkeys((*lecturas_extra, *lecturas_del_interprete()))
+        )
         env["PATH"] = path_con_interprete(env.get("PATH", ""), runtime)
     perfil = [
         "(version 1)",
