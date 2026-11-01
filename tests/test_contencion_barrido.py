@@ -148,13 +148,26 @@ class ContencionDelBarrido(unittest.TestCase):
         with Banco(self.tmp) as b:
             for _ in range(TOPE_FALLOS_BARRIDO):
                 b.vuelta()
-            antes = len(b.reg.eventos(b.malo))
+            b.vuelta()
+            b.vuelta()
+            aparcado = b.atendidos.count(b.malo)
+            self.assertEqual(aparcado, TOPE_FALLOS_BARRIDO, "aparcado: no se atiende")
+
             ordenar(b.reg, b.malo, "cancelar", "cancelar-1", ahora_iso())
+            self.assertEqual(b.reg.fold(b.malo).estado, "deteniendo")
+            antes = len(b.reg.eventos(b.malo))
             b.vuelta()
             b.vuelta()
-            self.assertEqual(b.reg.fold(b.malo).estado in ("deteniendo", "cancelado"), True)
+
+            self.assertEqual(
+                b.atendidos.count(b.malo), aparcado + 2,
+                "deteniendo se atiende aunque esté aparcado, para poder cerrar su proceso",
+            )
             nuevos = b.reg.eventos(b.malo)[antes:]
-            self.assertEqual([e for e in nuevos if e["kind"] == "instrumento_fallo"], [])
+            self.assertEqual(
+                [e for e in nuevos if e["kind"] in ("instrumento_fallo", "impedimento")], [],
+                "un fallo repetido de un encargo ya aparcado no llena el registro",
+            )
 
 
 class BucleDelSupervisor(unittest.TestCase):
