@@ -11,6 +11,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
+from .copiar import copiar_arbol
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -443,7 +444,6 @@ def _almacen_sesion(base: Path, encargo_id: str, rol: str) -> Path:
 
 def _copiar_sesion(origen: Path, destino: Path) -> None:
     import os
-    import shutil
 
     def ruta_guardada(valor) -> Path:
         texto = str(valor)
@@ -454,15 +454,7 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
     for sub in (".codex", ".grok", ".local/share/muse", ".kimi-code/sessions", ".kimi-code/file-history", ".claude/projects", ".qwen/projects", ".qwen/tmp", ".local/share/opencode"):
         fuente = origen / sub
         if fuente.is_dir():
-            shutil.copytree(
-                fuente,
-                destino / sub,
-                dirs_exist_ok=True,
-                symlinks=True,
-                ignore=lambda _d, nombres: [
-                    n for n in nombres if n == "auth.json"
-                ],
-            )
+            copiar_arbol(fuente, destino / sub, omitir=("auth.json",))
 
     indice_kimi = origen / ".kimi-code/session_index.jsonl"
     if indice_kimi.is_file() and not indice_kimi.is_symlink():
