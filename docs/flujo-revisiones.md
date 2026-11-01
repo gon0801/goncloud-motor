@@ -26,7 +26,9 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    van en `espacio/.interno/` (`contexto.md`, `evidencia.txt`, y opcionales
    `comprobaciones.json` y `pedido-efecto.json`). La firma del producto excluye
    `.interno/` (y `.git`, `__pycache__`, `.runtime`) por parte de ruta, nunca
-   por nombre: el espacio fuera de `.interno/` es solo producto.
+   por nombre: el espacio fuera de `.interno/` es solo producto. En un
+   repositorio git tambien excluye lo que git ignora, con el mismo criterio con
+   el que se decide que entra en un commit; una cache local no cambia la firma.
 4. Al morir el proceso, el supervisor anota `producto_listo` con la firma y el
    manifiesto que él calcula. Si hay comprobaciones declaradas, las ejecuta
    enjauladas y las anota como `observacion_supervisor`. Declarar ninguna es
@@ -294,7 +296,16 @@ registrado. Si el árbol cambió tras la aprobación, no hace commit ni abre
 PR ni compone el cierre: anota `producto_listo` con la versión vigente y
 pide re-revisión al revisor. Si el producto ya tiene un SHA publicado, el
 artefacto es ese commit y un cambio local posterior no se convierte en
-otro artefacto.
+otro artefacto. Un producto que perdió su SHA publicado y cuyo árbol coincide
+con la versión aprobada no abre otra revisión: la diferencia era de firma, no
+de producto.
+
+Con comprobaciones declaradas, el commit y el push esperan a que el comprobador
+registre su observación sobre la versión vigente. Si la observación trae una
+comprobación en rojo, la versión vuelve al responsable y no se publica; si el
+instrumento no pudo observar, vuelve como instrumento reparable. La ukey del
+paso de commit incluye la firma del producto, así que un producto nuevo sobre
+el mismo HEAD vuelve a ligar su `sha_git`.
 - `integrado`: con DeepSeek leído sin bloqueantes, merge con
   `--match-head-commit` sobre el SHA revisado.
 - `desplegado`: solo se marca si ya se despachó con recibo un efecto de

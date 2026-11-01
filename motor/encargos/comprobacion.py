@@ -2,7 +2,9 @@
 
 El espacio fuera de `.interno/` es solo producto. La firma excluye por parte
 de ruta (`.git`, `__pycache__`, `.runtime`, `.interno`), nunca por nombre de
-archivo: no hay lista de internos que sincronizar con los prompts.
+archivo: no hay lista de internos que sincronizar con los prompts. En un
+repositorio git tambien excluye lo que git ignora, con el mismo criterio con
+el que se decide que entra en un commit; una cache local no cambia el producto.
 """
 
 from __future__ import annotations
@@ -31,19 +33,56 @@ def interno_de(espacio: Path, crear: bool = False) -> Path:
     return path
 
 
-def version_producto(espacio: Path) -> VersionProducto:
-    entradas = []
-    for path in sorted(espacio.rglob("*")):
-        relativo = path.relative_to(espacio)
+def _rutas_del_producto(espacio: Path) -> list[Path] | None:
+    """Los archivos que entrarian en un commit, como `ciclo._commit_push`.
+
+    `ls-files --cached --others --exclude-standard` da los rastreados y los no
+    rastreados que git no ignora. Asi una cache como `.pytest_cache` no cambia
+    la firma. Fuera de un repositorio git se conserva el recorrido por disco.
+    """
+    try:
+        r = subprocess.run(
+            [
+                "git", "-C", str(espacio), "ls-files", "-z",
+                "--cached", "--others", "--exclude-standard",
+            ],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    rutas = []
+    for bruto in r.stdout.split(b"\0"):
+        if not bruto:
+            continue
+        relativo = Path(os.fsdecode(bruto))
         if any(p in _EXCLUIDAS for p in relativo.parts):
             continue
+        path = espacio / relativo
         if path.is_file():
-            entradas.append(
-                (
-                    relativo.as_posix(),
-                    hashlib.sha256(path.read_bytes()).hexdigest(),
-                )
-            )
+            rutas.append(relativo)
+    return sorted(rutas)
+
+
+def version_producto(espacio: Path) -> VersionProducto:
+    rutas = _rutas_del_producto(espacio)
+    if rutas is None:
+        rutas = [
+            path.relative_to(espacio)
+            for path in sorted(espacio.rglob("*"))
+            if not any(p in _EXCLUIDAS for p in path.relative_to(espacio).parts)
+            and path.is_file()
+        ]
+    entradas = [
+        (
+            relativo.as_posix(),
+            hashlib.sha256((espacio / relativo).read_bytes()).hexdigest(),
+        )
+        for relativo in rutas
+    ]
     h = hashlib.sha256()
     for ruta, huella in entradas:
         h.update(ruta.encode())
