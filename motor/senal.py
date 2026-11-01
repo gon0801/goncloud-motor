@@ -49,6 +49,7 @@ class Senal:
         self._ultimo_avance = reloj()
         self._planes = 0
         self._ultimo_log = float("-inf")
+        self._ultimo_log_canales = float("-inf")
         self._alto = threading.Event()
         self._hilo: threading.Thread | None = None
 
@@ -84,6 +85,7 @@ class Senal:
                 return False
             url = url_configurada(self.home)
             if not url:
+                self._anota_canales_sin_kuma()
                 return False
             self._manda(url)
             return True
@@ -117,3 +119,18 @@ class Senal:
             return
         self._ultimo_log = ahora
         print(f"motor: la señal a Kuma falló ({tipo})", file=sys.stderr, flush=True)
+
+    def _anota_canales_sin_kuma(self) -> None:
+        """Sin MOTOR_KUMA_URL la señal no sale: un canal caído se deja dicho en el log del proceso."""
+        caidos = self._canales_caidos()
+        ahora = self._reloj()
+        if not caidos or ahora - self._ultimo_log_canales < LOG_CADA_S:
+            return
+        self._ultimo_log_canales = ahora
+        for c in caidos:
+            print(
+                f"motor: canal {c['canal']} caído desde {c['fallando_desde']}: {c['ultimo_error']} "
+                "(sin MOTOR_KUMA_URL no se avisa a Kuma)",
+                file=sys.stderr,
+                flush=True,
+            )

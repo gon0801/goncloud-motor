@@ -112,6 +112,62 @@ class EstadoDelCanal(Banco):
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 5_000), [])
 
 
+class Robustez(Banco):
+    def test_un_fallos_no_numerico_en_el_estado_no_tumba_ver_ni_avisar(self):
+        ruta = self.base / "canales" / "tg.json"
+        ruta.parent.mkdir(parents=True)
+        ruta.write_text(json.dumps({
+            "canal": "tg", "fallando_desde": directores._iso(T0), "fallos": "muchos",
+            "ultimo_error": "se cortó",
+        }))
+        caidos = canales.canales_caidos(self.base, ahora=T0 + 700)
+        self.assertEqual([(c["canal"], c["fallos"]) for c in caidos], [("tg", 0)])
+        directores.drenar(self.reg, ahora=T0 + 700)
+        self.assertEqual(self.estado()["fallos"], 1)
+
+    def test_un_estado_ilegible_se_ignora(self):
+        ruta = self.base / "canales" / "tg.json"
+        ruta.parent.mkdir(parents=True)
+        ruta.write_text("{no es json")
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0), [])
+
+    def test_con_cortar_despues_el_estado_del_canal_tambien_se_actualiza(self):
+        directores.drenar(self.reg, cortar="despues", ahora=T0)
+        self.assertEqual(self.llamadas(), 1)
+        self.assertEqual(self.estado()["fallando_desde"], directores._iso(T0))
+        self.assertIn("no puedo leer el archivo del bot", self.estado()["ultimo_error"])
+
+    def test_la_redaccion_cubre_claves_y_cadenas_opacas_sin_borrar_el_mensaje(self):
+        secretos = {
+            "Authorization: Bearer abcDEF1234567890abcd": "abcDEF1234567890abcd",
+            "password: hunter2": "hunter2",
+            "falló con api_key=abc123 y reintentó": "abc123",
+            "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456789": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "clave sin numeros: abcdefghijklmnopqrstuvwxyzABCDEFGHIJ": "abcdefghijklmnopqrstuvwxyz",
+            "bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw": "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+            "ver https://api.telegram.org/bot1/sendMessage?token=zzz": "telegram.org",
+        }
+        for texto, secreto in secretos.items():
+            with self.subTest(texto=texto):
+                self.assertNotIn(secreto, canales.redactar(texto))
+        self.assertEqual(
+            canales.redactar("el transporte salio 1: no puedo leer el archivo del bot"),
+            "el transporte salio 1: no puedo leer el archivo del bot",
+        )
+
+    def test_sin_direccion_de_kuma_un_canal_caido_se_deja_dicho_en_el_log_una_vez(self):
+        canales.registrar_pasada(self.base, time.time() - 1000, {"tg": "no puedo leer el archivo del bot"}, set())
+        senal = Senal(self.base, lambda: {}, canales=lambda: canales.canales_caidos(self.base))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(senal.una_vez(), "sin MOTOR_KUMA_URL no sale la señal")
+            self.assertFalse(senal.una_vez())
+        lineas = [x for x in err.getvalue().splitlines() if "canal tg caído desde" in x]
+        self.assertEqual(len(lineas), 1, "una sola vez por periodo")
+        self.assertIn("no puedo leer el archivo del bot", lineas[0])
+        self.assertIn("sin MOTOR_KUMA_URL", lineas[0])
+
+
 class VerYSenal(Banco):
     def _ver(self) -> dict:
         salida = io.StringIO()

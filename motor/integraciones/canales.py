@@ -15,14 +15,34 @@ from pathlib import Path
 UMBRAL_CAIDO_S = 600
 TOPE_ERROR = 200
 
-_SECRETO = re.compile(r"https?://\S+|\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
+_SECRETOS = (
+    (re.compile(r"https?://\S+"), "[oculto]"),
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [oculto]"),
+    (
+        re.compile(
+            r"(?i)\b(token|api[_-]?key|apikey|secret|password|passwd|clave|authorization|cookie)\b(\s*[=:]\s*)\S+"
+        ),
+        r"\1\2[oculto]",
+    ),
+    (re.compile(r"\b\w{6,}:[A-Za-z0-9_-]{20,}\b"), "[oculto]"),
+    (re.compile(r"[A-Za-z0-9_\-+/=]{32,}"), "[oculto]"),
+)
 
 
 def redactar(texto: str, tope: int = TOPE_ERROR) -> str:
-    """Un error de transporte sin direcciones ni tokens, en una línea y acotado."""
-    t = _SECRETO.sub("[oculto]", str(texto or ""))
+    """Un error de transporte sin direcciones, tokens, claves ni cadenas opacas largas, en una línea y acotado."""
+    t = str(texto or "")
+    for patron, cambio in _SECRETOS:
+        t = patron.sub(cambio, t)
     t = re.sub(r"\s+", " ", t).strip()
     return t if len(t) <= tope else t[: tope - 1].rstrip() + "…"
+
+
+def _entero(valor) -> int:
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _iso(epoch: float) -> str:
@@ -61,7 +81,7 @@ def registrar_pasada(base: Path, ahora: float, fallaron: dict[str, str], respond
         path = _ruta(base, canal)
         doc = _leer(path) or {"canal": canal}
         doc.setdefault("fallando_desde", _iso(ahora))
-        doc["fallos"] = int(doc.get("fallos") or 0) + 1
+        doc["fallos"] = _entero(doc.get("fallos")) + 1
         doc["ultimo_intento"] = _iso(ahora)
         doc["ultimo_error"] = redactar(error)
         _guardar(path, doc)
@@ -74,8 +94,12 @@ def registrar_pasada(base: Path, ahora: float, fallaron: dict[str, str], respond
 def canales_caidos(base: Path, ahora: float | None = None, umbral_s: float = UMBRAL_CAIDO_S) -> list[dict]:
     """Los canales que llevan fallando al menos `umbral_s`, con desde cuándo y su último error."""
     ahora = time.time() if ahora is None else ahora
-    caidos = []
-    for path in sorted((Path(base) / "canales").glob("*.json")):
+    caidos: list[dict] = []
+    try:
+        rutas = sorted((Path(base) / "canales").glob("*.json"))
+    except OSError:
+        return caidos
+    for path in rutas:
         doc = _leer(path)
         desde = _epoch(doc.get("fallando_desde") or "")
         if desde is None or ahora - desde < umbral_s:
@@ -85,7 +109,7 @@ def canales_caidos(base: Path, ahora: float | None = None, umbral_s: float = UMB
                 "canal": doc.get("canal") or path.stem,
                 "fallando_desde": doc["fallando_desde"],
                 "ultimo_intento": doc.get("ultimo_intento", ""),
-                "fallos": int(doc.get("fallos") or 0),
+                "fallos": _entero(doc.get("fallos")),
                 "ultimo_error": redactar(doc.get("ultimo_error", "")),
             }
         )

@@ -1259,7 +1259,11 @@ def _publicar_aviso(
     if cortar == "despues" and not guardado.get("recibo"):
         if comando:
             _registrar_intento(path, guardado)
-            _ejecutar_transporte(registro, comando, guardado, cuerpo)
+            _, error, caido = _correr_transporte(registro, comando, guardado, cuerpo)
+            if caido:
+                vuelta.fallo_el_transporte(nombre, error)
+            else:
+                vuelta.respondieron.add(nombre)
             guardado["estado"] = "incierto"
             guardado["alcance"] = "externo"
             guardado["motivo"] = "envio hecho sin recibo; falta conciliar"
