@@ -35,7 +35,7 @@ DECISION = "decision.registrar"
 
 OPERACIONES_SIN_RECURSO = (DECISION,)
 # Operaciones cuyo resultado incluye un archivo que el supervisor publica en el espacio.
-CON_ARCHIVO = (SNAPSHOT, CI)
+CON_ARCHIVO = (SNAPSHOT, CI, REMOTO)
 
 MAX_SQL = 20_000
 MAX_FILAS = 500
@@ -373,6 +373,18 @@ def _ruta_relativa(valor: str) -> str:
     return relativa.as_posix()
 
 
+def _texto_de(crudo: bytes, legible: bool = True) -> tuple[str, bool]:
+    """Los primeros MAX_TEXTO caracteres del archivo y si eso no es todo: un
+    archivo que no es texto no llega en `texto` y cuenta como recortado."""
+    if legible:
+        try:
+            completo = crudo.decode("utf-8")
+        except UnicodeDecodeError:
+            return "", bool(crudo)
+        return completo[:MAX_TEXTO], len(completo) > MAX_TEXTO
+    return "", bool(crudo)
+
+
 def _leer_archivo(raiz: Path, relativa: str, destino: Path) -> dict:
     origen = (raiz / relativa).resolve()
     if not origen.is_relative_to(raiz.resolve()):
@@ -384,18 +396,16 @@ def _leer_archivo(raiz: Path, relativa: str, destino: Path) -> dict:
     copia = destino / "remoto" / origen.name
     crudo = origen.read_bytes()
     _escribir_seguro(copia, crudo)
-    texto = ""
-    try:
-        texto = crudo.decode("utf-8")[:MAX_TEXTO]
-    except UnicodeDecodeError:
-        texto = ""
+    texto, recortado = _texto_de(crudo)
     return {
         "estado": "ok",
         "datos": {
             "ruta": relativa,
             "bytes": len(crudo),
             "texto": texto,
+            "texto_recortado": recortado,
             "copia": str(copia),
+            "copia_host": str(copia),
         },
         "evidencia": {
             "tipo": "remoto",
@@ -439,19 +449,16 @@ def _leer_http(recurso: dict, relativa: str, destino: Path) -> dict:
         raise ValueError(f"la respuesta supera {MAX_BYTES} bytes")
     copia = destino / "remoto" / (Path(quote(relativa)).name or "respuesta")
     _escribir_seguro(copia, crudo)
-    texto = ""
-    if "json" in tipo or "text" in tipo or not tipo:
-        try:
-            texto = crudo.decode("utf-8")[:MAX_TEXTO]
-        except UnicodeDecodeError:
-            texto = ""
+    texto, recortado = _texto_de(crudo, "json" in tipo or "text" in tipo or not tipo)
     return {
         "estado": "ok",
         "datos": {
             "ruta": relativa,
             "bytes": len(crudo),
             "texto": texto,
+            "texto_recortado": recortado,
             "copia": str(copia),
+            "copia_host": str(copia),
         },
         "evidencia": {
             "tipo": "remoto",
