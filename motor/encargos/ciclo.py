@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import socket
 import subprocess
 import uuid
@@ -2936,13 +2937,23 @@ _ENTRE_REINTENTOS = (
 )
 
 
+def _clase_de_fallo(causa: str) -> str:
+    """La operación que falló, sin el detalle que cambia entre reintentos (la
+    salida de git con rutas temporales, pids o hashes): tras el primer `: ` va
+    el detalle, y los hashes sueltos del encabezado tampoco cuentan."""
+    operacion = str(causa).split(": ", 1)[0]
+    return re.sub(r"[0-9a-f]{7,40}", "#", operacion).strip().lower()
+
+
 def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) -> int:
-    """Esperas seguidas por la misma causa, sin nada distinto entre ellas. Un
-    ajuste, una respuesta, una orden o un intento que sí arrancó las cortan."""
+    """Esperas seguidas por el mismo fallo (la misma operación), sin nada
+    distinto entre ellas. Un ajuste, una respuesta, una orden o un intento que sí
+    arrancó las cortan."""
+    clase = _clase_de_fallo(causa)
     seguidos = 0
     for ev in reversed(registro.eventos(encargo_id)):
         if ev["kind"] == "espera":
-            if ev["data"].get("motivo") != causa:
+            if _clase_de_fallo(ev["data"].get("motivo") or "") != clase:
                 break
             seguidos += 1
         elif ev["kind"] not in _ENTRE_REINTENTOS:
@@ -2967,8 +2978,8 @@ def _fallo_de_repo(
     marcar_pregunta(
         registro,
         enc.id,
-        f"Git falló {veces} veces seguidas con la misma causa y el motor dejó de "
-        f"reintentar: {causa}. Corrige el repositorio o el espacio y manda un "
+        f"Git falló {veces} veces seguidas en la misma operación y el motor dejó "
+        f"de reintentar. Último error: {causa}. Corrige el repositorio o el espacio y manda un "
         "ajuste con director corregir para que reintente; también sirve director "
         "parar y después director continuar.",
         True,

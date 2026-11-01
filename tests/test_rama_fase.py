@@ -222,6 +222,44 @@ class UnFalloDeGitRepetidoPideAyuda(_Repo):
         self.assertNotEqual(enc.estado, "necesita_usuario")
         self.assertEqual(enc.motivo, "causa cuatro")
 
+    def test_el_mismo_fallo_con_detalle_variable_cuenta_como_el_mismo(self):
+        r = self.encargo("rama-10")
+        causas = iter(
+            [
+                "no se pudo crear la rama x desde origin/main: error: lock "
+                "/tmp/clon-1a2b3c/.git/index.lock (pid 4411) a1b2c3d4e5f60718",
+                "no se pudo crear la rama x desde origin/main: error: lock "
+                "/tmp/clon-9f8e7d/.git/index.lock (pid 5920) 0f9e8d7c6b5a4938",
+                "no se pudo crear la rama x desde origin/main: error: lock "
+                "/tmp/clon-5c4d3e/.git/index.lock (pid 6107) 1122334455667788",
+            ]
+        )
+        with mock.patch.object(
+            ciclo, "_asegurar_repo", side_effect=lambda *a, **k: next(causas)
+        ):
+            for _ in range(3):
+                self.reintentar(r)
+        enc = r.fold()
+        self.assertEqual(enc.estado, "necesita_usuario")
+        self.assertIn("3 veces seguidas", enc.motivo)
+        self.assertIn("1122334455667788", enc.motivo)
+
+    def test_otra_operacion_que_falla_no_suma_a_la_anterior(self):
+        r = self.encargo("rama-11")
+        causas = iter(
+            [
+                "no se pudo crear la rama x desde origin/main: error uno",
+                "no se pudo clonar gon0801/repo: error dos",
+                "no se pudo crear la rama x desde origin/main: error tres",
+            ]
+        )
+        with mock.patch.object(
+            ciclo, "_asegurar_repo", side_effect=lambda *a, **k: next(causas)
+        ):
+            for _ in range(3):
+                self.reintentar(r)
+        self.assertNotEqual(r.fold().estado, "necesita_usuario")
+
     def test_un_ajuste_del_propietario_vuelve_a_intentarlo(self):
         r = self.encargo("rama-7")
         with mock.patch.object(ciclo, "_asegurar_repo", return_value=self.CAUSA):

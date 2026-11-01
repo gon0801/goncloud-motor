@@ -287,8 +287,11 @@ otra o una rama de fase que ya existe siguen el camino de siempre.
 
 Si el repo no queda listo (clonado, rama o remoto), el encargo espera 5
 minutos y reintenta. El mismo fallo tres veces seguidas
-(`TOPE_FALLOS_REPO`), sin nada distinto entre ellos, deja de reintentar:
-queda en `necesita_usuario` con la causa. No abre una solicitud, así que
+(`TOPE_FALLOS_REPO`), sin nada distinto entre ellos, deja de reintentar. Es el
+mismo fallo cuando falla la misma operación (el texto antes del primer `: `
+del mensaje); el detalle que cambia entre reintentos, como rutas temporales,
+pids u otra salida de git, no reinicia la cuenta. Queda en `necesita_usuario`
+con el último error. No abre una solicitud, así que
 `director responder` no tiene a qué contestar y `director continuar` solo
 vale desde `detenido`. Las salidas son un ajuste (`director corregir`) o
 `director parar` y después `director continuar`; la pregunta las nombra. Las
