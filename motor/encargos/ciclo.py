@@ -3963,12 +3963,19 @@ def _requiere_veredicto(enc: Encargo) -> bool:
 
 
 def _sha_final_sin_leer(enc: Encargo, gh) -> bool:
+    """El nivel pr ya se alcanzó pero el commit final no está leído por DeepSeek: o hay un
+    commit nuevo sin leer, o el producto cambió después del commit del PR y aún no se publicó.
+    Cerrar por el atajo daría por bueno un PR que no es el producto aprobado; se sigue por
+    el camino normal (commit, push, lectura)."""
     return bool(
         gh is not None
         and enc.entrega.nivel == "pr"
         and enc.nivel_alcanzado == "pr"
         and enc.pr_numero
-        and enc.deepseek_sha != enc.pr_sha
+        and (
+            enc.deepseek_sha != enc.pr_sha
+            or (enc.producto is not None and not enc.producto.sha_git)
+        )
     )
 
 

@@ -351,6 +351,40 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             self.assertEqual(e.fase_actual.fallas_checks, ("lint",))
 
 
+class CommitNuevoConElNivelPrYaAlcanzado(unittest.TestCase):
+    """`_sha_final_sin_leer`: con el nivel pr ya alcanzado, un commit que DeepSeek aún no
+    leyó no cierra por el atajo de `_paso_entrega`: se lee primero."""
+
+    def test_el_commit_nuevo_se_lee_antes_de_cerrar(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "fr-sha", _GhPorCommit)
+            gh = vuelta.gh
+            gh.textos = [_comentario(), _comentario()]
+            real = gh.comentarios_deepseek
+            llamadas = []
+
+            def falla_la_segunda(repo, numero, sha=""):
+                llamadas.append(sha)
+                if len(llamadas) == 2:
+                    raise RuntimeError("gh api: 502")
+                return real(repo, numero, sha)
+
+            gh.comentarios_deepseek = falla_la_segunda
+            e = vuelta("uno")
+            viejo = e.producto.sha_git
+            # La comprobación previa falló: el nivel pr está alcanzado y la fase sigue abierta.
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertNotEqual(e.estado, "terminado")
+
+            gh.comentarios_deepseek = real
+            e = vuelta("dos")
+            nuevo = e.producto.sha_git
+            self.assertNotEqual(viejo, nuevo)
+            self.assertEqual(e.deepseek_sha, nuevo)
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(gh.vistos, [viejo, nuevo])
+
+
 class EsperaDeChecksEnLaEntrega(unittest.TestCase):
     """`_paso_entrega` anota `checks_esperando` solo si algún requerido está en marcha."""
 
