@@ -3568,11 +3568,26 @@ def _releer_deepseek(
     return registro.fold(enc.id)
 
 
+def _cierre_sin_aplicar(
+    registro: Registro, enc: Encargo, que: str, sha: str, hora: str
+) -> Encargo:
+    """Un evento que el registro no aplicó no deja cerrar: DeepSeek tiene un
+    veredicto que el estado del encargo no recoge. Se anota y se reintenta."""
+    causa = f"no se pudo anotar {que} antes de cerrar"
+    _anotar_instrumento(
+        registro, enc, "github", causa,
+        "reintentar la comprobación del veredicto de DeepSeek antes de cerrar",
+        hora, f"deepseek-sin-aplicar-{sha[:12]}",
+    )
+    marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+    return registro.fold(enc.id)
+
+
 def _veredicto_antes_de_cerrar(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> Encargo | None:
-    """Antes de terminar una fase con entrega pr, el veredicto vigente de
-    DeepSeek sobre el SHA final de su PR; y, si es la última fase, sobre el de
+    """Antes de terminar una fase con entrega pr (con integrado o desplegado,
+    antes del merge), el veredicto vigente de DeepSeek sobre el SHA final de su PR; y, si es la última fase, sobre el de
     cada PR de las anteriores: DeepSeek puede publicar un hallazgo después de
     que el motor leyó, y la fase ya cerrada no volvería a mirarse.
 
@@ -3580,7 +3595,7 @@ def _veredicto_antes_de_cerrar(
     fase de ese PR vuelve al responsable y se devuelve el encargo así."""
     if (
         gh is None
-        or enc.entrega.nivel != "pr"
+        or enc.entrega.nivel not in ("pr", "integrado", "desplegado")
         or enc.nivel_alcanzado != "pr"
         or not enc.pr_numero
         or not enc.pr_sha
@@ -3617,6 +3632,10 @@ def _veredicto_antes_de_cerrar(
         enc = _anotar_lectura_deepseek(
             registro, enc, enc.pr_numero, sha, comentarios, hora
         )
+        if enc.fase_actual.deepseek_huella != _huella_comentarios(comentarios):
+            return _cierre_sin_aplicar(
+                registro, enc, "la lectura de DeepSeek", sha, hora
+            )
         abiertos = bloqueantes_abiertos(enc, "deepseek")
         if abiertos:
             _devolver(
@@ -3655,7 +3674,9 @@ def _veredicto_antes_de_cerrar(
         )
         enc = registro.fold(enc.id)
         if enc.fase_activa != previa.id:
-            return None
+            return _cierre_sin_aplicar(
+                registro, enc, f"reabrir la fase {previa.id}", previa.pr_sha, hora
+            )
         enc = _anotar_lectura_deepseek(
             registro, enc, previa.pr_numero, previa.pr_sha, comentarios, hora
         )
@@ -4099,6 +4120,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     if enc.entrega.nivel in ("integrado", "desplegado") and enc.nivel_alcanzado == "pr":
+        devuelto = _veredicto_antes_de_cerrar(registro, enc, gh, hora)
+        if devuelto is not None:
+            return devuelto
         try:
             vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
             if vista_pr.base != enc.entrega.base:

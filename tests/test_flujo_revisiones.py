@@ -191,7 +191,7 @@ def _contiene(letra: str) -> str:
     )
 
 
-def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None):
+def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, nivel: str = "pr"):
     """Encargo de nivel pr sobre un repo bare real. `vuelta(contenido)` hace
     de implementador y de revisor que aprueba, y devuelve el encargo tras el
     paso de entrega contra el GitHub falso."""
@@ -214,7 +214,7 @@ def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None):
         subprocess.run(["git", "-C", str(semilla), *args], check=True)
     r = Recorrido(
         tmp, clave, "agrega saludo.txt con hola",
-        entrega_nivel="pr", repo=str(bare), base_rama="main",
+        entrega_nivel=nivel, repo=str(bare), base_rama="main",
     )
     caso.addCleanup(r.reg.close)
     caso.assertEqual(_asegurar_repo(r.fold(), r.espacio), "")
