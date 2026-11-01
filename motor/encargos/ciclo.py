@@ -3568,7 +3568,12 @@ def _releer_deepseek(
         # marca, sin tocar motivo, siguiente ni causa: el próximo turno del
         # agente no se redirige.
         error = f"{type(exc).__name__}: {exc}"
+        nuevo_tramo = not marca.get("error") or int(epoch // 600) != int(
+            float(marca.get("epoch") or 0) // 600
+        )
         _marcar_lectura_deepseek(directorio, sha, epoch, error)
+        if not nuevo_tramo:
+            return enc
         registro.anotar(
             enc.id,
             {
@@ -3581,10 +3586,26 @@ def _releer_deepseek(
                     "hora": hora,
                 },
             },
-            f"lectura-fallida:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch // 600)}",
+            f"lectura-fallida:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch)}",
         )
-        return enc
+        return registro.fold(enc.id) or enc
     _marcar_lectura_deepseek(directorio, sha, epoch)
+    if marca.get("error"):
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "lectura_fallida",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "fuente": "deepseek",
+                    "sha": sha,
+                    "causa": "",
+                    "hora": hora,
+                },
+            },
+            f"lectura-recuperada:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch)}",
+        )
+        enc = registro.fold(enc.id) or enc
     if not comentarios:
         return enc
     huella = _huella_comentarios(comentarios)
