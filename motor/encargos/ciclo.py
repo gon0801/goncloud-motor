@@ -3377,16 +3377,10 @@ def _anotar_checks_verdes(
 
 
 def _requeridos_en_marcha(veredicto) -> bool:
-    """Un check requerido que aún no terminó tiene una corrida en marcha o en cola.
-    Uno sin ninguna corrida (nadie lo corre) no está en marcha: no hay qué esperar."""
-    for requerido in veredicto.faltan:
-        for corrida in veredicto.corridas:
-            nombre = str(corrida.get("nombre") or "")
-            if (nombre == requerido or nombre.startswith(requerido + " (")) and (
-                corrida.get("status") != "completed" or corrida.get("conclusion") is None
-            ):
-                return True
-    return False
+    """Un check requerido que aún no terminó tiene una corrida sin completar o un estado
+    legacy pendiente (`veredicto.en_marcha`). Uno sin ninguna corrida (nadie lo corre)
+    no está en marcha: no hay qué esperar."""
+    return bool(veredicto.en_marcha)
 
 
 def _anotar_checks_esperando(

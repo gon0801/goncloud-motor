@@ -47,6 +47,9 @@ class ChecksVerdict:
     )
     corridas: tuple = ()  # {"nombre", "run_id", "url", "status", "conclusion"} de cada check run
     corridas_fallidas: tuple = ()  # las corridas terminadas en rojo, con su url y run_id
+    # Requeridos que faltan y están en marcha o en cola: una corrida sin completar o un
+    # estado legacy «pending». Uno que nadie corre está en `faltan` pero no aquí.
+    en_marcha: tuple[str, ...] = ()
 
 
 
@@ -143,7 +146,7 @@ def veredicto(
             corridas=corridas,
             corridas_fallidas=(),
         )
-    faltan, fallas = [], []
+    faltan, fallas, en_marcha = [], [], []
     for c in requeridos:
         partes = [
             r
@@ -159,10 +162,13 @@ def veredicto(
                 fallas.append(c)
             else:
                 faltan.append(c)
+                if any(e.get("state") == "pending" for e in sts):
+                    en_marcha.append(c)
         elif any(
             r["status"] != "completed" or r.get("conclusion") is None for r in partes
         ):
             faltan.append(c)
+            en_marcha.append(c)
         elif any(
             r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
         ):
@@ -181,6 +187,7 @@ def veredicto(
         and all(e.get("state") != "pending" for e in estados),
         corridas=corridas,
         corridas_fallidas=fallidas,
+        en_marcha=tuple(en_marcha),
     )
 
 
