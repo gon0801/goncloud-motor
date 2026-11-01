@@ -24,10 +24,13 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   caído se escribe en el log del proceso (stderr), una vez por hora, y `motor director ver` sigue mostrándolo. Al
   arrancar, el supervisor deja en el log si no tiene la dirección ("sin MOTOR_KUMA_ENCARGOS_URL, el supervisor de
   encargos no manda señal a Kuma"), para que la falta no pase en silencio.
-- **Pendiente de operación (no lo hace este cambio).** Crear el monitor push del supervisor en Kuma y escribir su
-  dirección como `MOTOR_KUMA_ENCARGOS_URL`. `ops/senal-kuma.sh` hoy solo da de alta los monitores `mini` y `pc` y
-  `motor doctor` solo verifica `MOTOR_KUMA_URL`; extenderlos toca el servidor de Kuma y sus pruebas de ssh, y se deja
-  para un cambio de ops que se pueda ensayar.
+- **Cómo se pone la dirección (operación, la hace una persona).** 1) Crear en Kuma un monitor push para el supervisor
+  de encargos, conectado al aviso "Server Alerts" (`ops/senal-kuma.sh` solo da de alta los de `mini` y `pc`, y no se
+  tocó: escribe en la base de Kuma por ssh). 2) Con su token de 32 letras y números por stdin:
+  `printf '%s\n' "$TOKEN" | ops/senal-kuma-encargos.sh poner`. Escribe `MOTOR_KUMA_ENCARGOS_URL` en
+  `~/.motor/secretos.env` de la Mini (600, atómico), sin tocar `MOTOR_KUMA_URL` ni imprimir el token; `quitar` la
+  retira. 3) Reiniciar el supervisor para que deje de avisar en el log de que le falta. `motor doctor` sigue
+  verificando solo `MOTOR_KUMA_URL`. Prueba: `ops/tests/test-senal-kuma-encargos.sh`.
 - **Un estado dañado no rompe nada.** Un archivo de estado ilegible se ignora y un `fallos` que no es número cuenta como 0.
 - **Límite.** El estado se actualiza cuando hay un aviso que enviar. Si un canal falla y no quedan avisos pendientes,
   sigue figurando caído hasta el siguiente envío; `ultimo_intento` dice cuándo fue la última prueba.
