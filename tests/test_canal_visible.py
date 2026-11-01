@@ -146,6 +146,34 @@ class EstadoDelCanal(Banco):
                 for ruta in (self.base / "avisos").glob("*.json"):
                     ruta.unlink()
 
+    def test_un_envio_que_sale_bien_pero_sin_recibo_no_recupera_un_canal_caido(self):
+        self.modo("caido")
+        directores.drenar(self.reg, ahora=T0)
+        inicio = self.estado()["fallando_desde"]
+        self.modo("sin_recibo")
+        directores.drenar(self.reg, ahora=T0 + 700)
+        self.assertEqual(self.llamadas(), 2, "el reintento sí salió")
+        self.assertEqual(self.estado()["fallando_desde"], inicio, "sin recibo no hay entrega probada")
+        self.assertEqual([c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 700)], ["tg"])
+        self.modo("ok")
+        directores.drenar(self.reg, ahora=T0 + 20_000)
+        self.assertNotIn("fallando_desde", self.estado(), "un envío con recibo sí lo recupera")
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 30_000), [])
+
+    def test_con_cortar_despues_solo_un_envio_con_recibo_recupera_el_canal(self):
+        self.modo("caido")
+        directores.drenar(self.reg, ahora=T0)
+        self.modo("sin_recibo")
+        directores.drenar(self.reg, cortar="despues", ahora=T0 + 700)
+        self.assertIn("fallando_desde", self.estado(), "el hook no recibió recibo")
+        for ruta in (self.base / "avisos").glob("*.json"):
+            ruta.unlink()
+        for ruta in (self.base / "canal" / "tg").glob("*"):
+            ruta.unlink()
+        self.modo("ok")
+        directores.drenar(self.reg, cortar="despues", ahora=T0 + 20_000)
+        self.assertNotIn("fallando_desde", self.estado(), "el hook sí recibió recibo")
+
     def test_una_conciliacion_que_halla_el_aviso_recupera_el_canal(self):
         self.modo("caido")
         self._con_conciliacion('{"recibo": "r-1"}')
