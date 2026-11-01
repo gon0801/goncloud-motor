@@ -592,8 +592,130 @@ def _aplicar(
         )
 
 
+# Veces que el mismo error al atender un encargo se anota antes de dejar de
+# atenderlo: reintentar cada vuelta lo que no cambia solo llena el registro.
+TOPE_FALLOS_BARRIDO = 3
+_FUENTE_BARRIDO = "barrido"
+_CLASE_BARRIDO = "barrido:"
+_SIN_REGISTRO: set[tuple[str, str]] = set()
+
+
+def _causa_de_excepcion(exc: BaseException) -> str:
+    import traceback
+
+    marco = traceback.extract_tb(exc.__traceback__)[-1:]
+    donde = f" en {Path(marco[0].filename).name}:{marco[0].lineno} ({marco[0].name})" if marco else ""
+    return f"{type(exc).__name__}: {exc}{donde}"[:2000]
+
+
+def _contener_fallo_de_barrido(
+    registro: Registro, encargo_id: str, exc: Exception, hora: str
+) -> dict | None:
+    """El error de un encargo se queda en ese encargo.
+
+    Se anota `instrumento_fallo` (fuente `barrido`, clase `barrido:<Excepción>`). La
+    TOPE_FALLOS_BARRIDO.ª vez seguida con la misma clase se anota además un impedimento
+    que no se puede comprobar solo: `barrer` deja de atender el encargo hasta que el
+    operador mande un ajuste (director corregir), que lo levanta. Después de un ajuste
+    la cuenta vuelve a empezar. Devuelve la vista del encargo, o None si no se pudo leer."""
+    import sys
+    import traceback
+
+    clase = _CLASE_BARRIDO + type(exc).__name__
+    causa = _causa_de_excepcion(exc)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    try:
+        enc = registro.fold(encargo_id)
+        if enc is None:
+            return None
+        if any(i.clase == clase for i in enc.impedimentos):
+            return _vista_o_minima(enc)  # ya aparcado: no se llena el registro
+        eventos = registro.eventos(encargo_id)
+        total = seguidos = 0
+        for ev in eventos:
+            if ev["kind"] == "impedimento" and ev["data"].get("clase") == clase:
+                seguidos = 0
+            elif (
+                ev["kind"] == "instrumento_fallo"
+                and ev["data"].get("fuente") == _FUENTE_BARRIDO
+            ):
+                total += 1
+                seguidos += ev["data"].get("clase") == clase
+        siguiente = "no se atiende hasta que el operador mande un ajuste (director corregir)"
+        _anotar_instrumento(
+            registro, enc, _FUENTE_BARRIDO, causa,
+            "reintentar en la vuelta siguiente"
+            if seguidos + 1 < TOPE_FALLOS_BARRIDO
+            else siguiente,
+            hora, str(total + 1), clase=clase,
+        )
+        if seguidos + 1 >= TOPE_FALLOS_BARRIDO:
+            _anotar_impedimento(
+                registro, enc, clase,
+                f"el supervisor falló {seguidos + 1} veces seguidas al atender este encargo: {causa}",
+                "que el operador arregle la causa y mande un ajuste (director corregir); "
+                "mientras tanto el supervisor no atiende este encargo",
+                hora,
+            )
+        return _vista_o_minima(registro.fold(encargo_id) or enc)
+    except Exception as segundo:
+        if (encargo_id, clase) not in _SIN_REGISTRO:
+            _SIN_REGISTRO.add((encargo_id, clase))
+            print(
+                f"no se pudo anotar el fallo de {encargo_id} ({clase}): "
+                f"{type(segundo).__name__}: {segundo}",
+                file=sys.stderr,
+            )
+        return None
+
+
+def _vista_o_minima(enc: Encargo) -> dict:
+    try:
+        return vista(enc)
+    except TransicionIlegal:
+        return {"id": enc.id, "estado": enc.estado}
+
+
+def _aparcado_por_barrido(enc: Encargo | None) -> bool:
+    """Aparcado no se atiende, salvo que se esté deteniendo: parar o cancelar un
+    encargo aparcado tiene que poder cerrar su proceso."""
+    return (
+        enc is not None
+        and enc.estado != "deteniendo"
+        and any(i.clase.startswith(_CLASE_BARRIDO) for i in enc.impedimentos)
+    )
+
+
 def barrer(
     registro: Registro,
+    hora: str,
+    epoch: float,
+    lanzador,
+    umbral_s: float = _UMBRAL_S,
+    gh=None,
+) -> list[dict]:
+    """Un paso sobre todos los encargos. Cada uno se atiende por separado: lo que
+    lance uno no detiene a los demás ni al supervisor (ver `_contener_fallo_de_barrido`)."""
+    informes = []
+    for encargo_id in registro.ids():
+        try:
+            previo = registro.fold(encargo_id)
+            if _aparcado_por_barrido(previo):
+                informes.append(_vista_o_minima(previo))
+                continue
+            informes += _barrer_encargos(
+                registro, [encargo_id], hora, epoch, lanzador, umbral_s, gh
+            )
+        except Exception as exc:
+            informe = _contener_fallo_de_barrido(registro, encargo_id, exc, hora)
+            if informe is not None:
+                informes.append(informe)
+    return informes
+
+
+def _barrer_encargos(
+    registro: Registro,
+    ids: list[str],
     hora: str,
     epoch: float,
     lanzador,
@@ -608,7 +730,7 @@ def barrer(
     informes = []
     base = registro.base
     parada = leer_parada_local(base) is not None
-    for encargo_id in registro.ids():
+    for encargo_id in ids:
         enc = registro.fold(encargo_id)
         if enc is None:
             continue
