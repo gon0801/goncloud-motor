@@ -45,6 +45,8 @@ def guardar():
     json.dump(estado, open(ruta, "w"))
 def git(*a):
     return subprocess.run(["git", "--git-dir", bare, *a], capture_output=True, text=True).stdout
+def git_rc(*a):
+    return subprocess.run(["git", "--git-dir", bare, *a], capture_output=True, text=True)
 if modo == "red":
     guardar()
     sys.stderr.write("error connecting to api.github.com\n")
@@ -60,13 +62,26 @@ if args[:2] == ["pr", "create"]:
 elif args[:2] == ["pr", "view"]:
     visto = int(estado.get("pr_view") or 0)
     estado["pr_view"] = visto + 1
+    if os.environ.get("FAKE_GH_MEZCLA") == "TARDE" and visto < 2:
+        mezcla = "UNKNOWN"
+    else:
+        choque = git_rc("merge-tree", "--write-tree", "--no-messages", "--name-only",
+                        "refs/heads/" + estado["base"], estado["commit"])
+        mezcla = "CONFLICTING" if choque.returncode == 1 else "MERGEABLE"
+    if mezcla == "UNKNOWN":
+        estado["estado_mezcla"] = "UNKNOWN"
+    elif estado.get("borrador"):
+        estado["estado_mezcla"] = "DRAFT"
+    elif mezcla == "CONFLICTING":
+        estado["estado_mezcla"] = "DIRTY"
+    else:
+        estado["estado_mezcla"] = "CLEAN"
+    estado["borrador_visto"] = bool(estado.get("borrador"))
     guardar()
-    mezcla = os.environ.get("FAKE_GH_MEZCLA", "MERGEABLE")
-    if mezcla == "TARDE":
-        mezcla = "UNKNOWN" if visto < 2 else "CONFLICTING"
     print(json.dumps({{"mergeable": mezcla,
-        "mergeStateStatus": "DIRTY" if mezcla == "CONFLICTING" else "CLEAN",
-        "baseRefOid": git("rev-parse", "main").strip(),
+        "mergeStateStatus": estado["estado_mezcla"],
+        "isDraft": bool(estado.get("borrador")),
+        "baseRefOid": git("rev-parse", estado["base"]).strip(),
         "headRefOid": estado.get("commit", "")}}))
 elif args[:2] == ["run", "list"]:
     guardar()
@@ -339,8 +354,7 @@ class ElConflictoSeVeAntesDeEsperar(_Ci):
         _git(otro, "push", "--quiet", "origin", "main")
 
     def pedir_en_conflicto(self) -> dict:
-        with mock.patch.dict(os.environ, {"FAKE_GH_MEZCLA": "CONFLICTING"}), \
-             mock.patch.object(cap, "CI_MEZCLA_S", 0.2), \
+        with mock.patch.object(cap, "CI_MEZCLA_S", 0.2), \
              mock.patch.object(cap, "CI_MEZCLA_SONDEO_S", 0.01):
             return self.pedir()
 
@@ -351,6 +365,9 @@ class ElConflictoSeVeAntesDeEsperar(_Ci):
         self.assertIn("no se puede mezclar", r["motivo"])
         self.assertIn("base.txt", r["motivo"])
         self.assertIn("traer main", r["alternativa"])
+        gh = self.estado_gh()
+        self.assertTrue(gh["borrador_visto"], "la deteccion corre sobre un PR borrador")
+        self.assertEqual(gh["estado_mezcla"], "DRAFT", "GitHub no marca DIRTY un borrador")
 
     def test_no_espera_una_corrida_que_no_va_a_llegar(self):
         self.pedir_en_conflicto()

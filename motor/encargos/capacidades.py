@@ -726,8 +726,10 @@ def _comprobar_mezcla(
     gh: str, repo: str, remoto: str, base: str, numero: str, cabeza: str,
     espacio: Path, limite: float,
 ) -> None:
-    """Un PR que choca con su base no dispara `pull_request`: esperar el run
-    gastaría el plazo sin causa. Se corta aquí con los archivos del choque."""
+    """Un PR que choca con su base no dispara `pull_request`, y el PR temporal es
+    un borrador: GitHub puede dejarlo en `mergeStateStatus: DRAFT`, pero
+    `mergeable` sigue siendo `CONFLICTING`. Se corta aquí con los archivos del
+    choque antes de esperar un run que no va a llegar."""
     vista = _vista_mezcla(gh, repo, numero, limite)
     mergeable = str(vista.get("mergeable") or "").strip().upper()
     estado = str(vista.get("mergeStateStatus") or "").strip().upper()
