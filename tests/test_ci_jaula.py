@@ -3,6 +3,7 @@
 Esas pruebas se saltan donde no hay bubblewrap: si ningún check las corre, el salto es
 silencioso. Esta prueba falla si una de ellas sale del comando de CI."""
 
+import re
 import unittest
 from pathlib import Path
 
@@ -16,11 +17,17 @@ PRUEBAS = (
 
 
 class PruebasDeLaJaulaEnCi(unittest.TestCase):
+    def job(self, nombre: str) -> list[str]:
+        lineas = FLUJO.read_text(encoding="utf-8").splitlines()
+        inicio = lineas.index(f"  {nombre}:")
+        fin = next(
+            (i for i in range(inicio + 1, len(lineas)) if re.match(r"  \S.*:$", lineas[i])),
+            len(lineas),
+        )
+        return lineas[inicio:fin]
+
     def comando(self) -> str:
-        lineas = [
-            linea for linea in FLUJO.read_text(encoding="utf-8").splitlines()
-            if "python -m unittest" in linea
-        ]
+        lineas = [linea for linea in self.job("jaula-linux") if "python -m unittest" in linea]
         self.assertEqual(len(lineas), 1, lineas)
         return lineas[0]
 
@@ -31,7 +38,7 @@ class PruebasDeLaJaulaEnCi(unittest.TestCase):
             self.assertTrue((FLUJO.parents[2] / (prueba.replace(".", "/") + ".py")).is_file())
 
     def test_el_check_exige_bubblewrap_en_lugar_de_saltar(self):
-        self.assertIn('MOTOR_EXIGE_BWRAP: "1"', FLUJO.read_text(encoding="utf-8"))
+        self.assertIn('      MOTOR_EXIGE_BWRAP: "1"', self.job("jaula-linux"))
 
 
 if __name__ == "__main__":
