@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import gc
 import io
+import json
 import os
 import subprocess
 import tempfile
@@ -220,7 +221,11 @@ class Banco(unittest.TestCase):
         return [e for e in Store(self.home / "motor.db").events() if e.kind == kind]
 
     def avisos(self) -> list[Path]:
-        return list((self.home / "avisos" / "pendientes").glob("*confmala*"))
+        return [
+            p
+            for p in (self.home / "avisos" / "pendientes").glob("*.json")
+            if "confmala" in json.loads(p.read_text(encoding="utf-8")).get("key", "")
+        ]
 
 
 class TraeConfTest(Banco):

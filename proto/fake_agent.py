@@ -206,6 +206,12 @@ def main() -> int:
     resultado = {"sha": sha, "resumen": "hecho"}
     if repro:
         resultado["repro"] = repro
+    if "Este intento aclara el peligro" in brief:
+        resultado["aclaracion"] = {
+            "resuelta": True,
+            "fundamento": "el criterio vigente ya cubre el caso que propuso el asesor",
+            "evidencia": "las filas del encargo y su Acepta pasan sobre este SHA",
+        }
     Path(os.environ["MOTOR_RESULT"]).write_text(json.dumps(resultado))
     if modo == "panel_tras_entrega":
         panel()

@@ -75,21 +75,21 @@ def _estado_recibo(resultado: str) -> str:
     return "tomado"
 
 
-def _en_bandeja(home: Path, cmd_id: str) -> bool:
-    inbox = home / "inbox"
-    if not inbox.is_dir():
-        return False
-    for f in inbox.glob("*.json"):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+def _en_bandeja(home: Path, cmd_id: str, buzon: Path | None = None) -> bool:
+    for inbox in (home / "inbox", buzon):
+        if inbox is None or not inbox.is_dir():
             continue
-        if isinstance(data, dict) and data.get("cmd_id") == cmd_id:
-            return True
+        for f in inbox.glob("*.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("cmd_id") == cmd_id:
+                return True
     return False
 
 
-def _recibo(home: Path, cmd_id: str) -> dict:
+def _recibo(home: Path, cmd_id: str, buzon: Path | None = None) -> dict:
     local = home / "recibos" / f"{cmd_id}.json"
     if local.is_file():
         try:
@@ -115,7 +115,7 @@ def _recibo(home: Path, cmd_id: str) -> dict:
                     }
         finally:
             con.close()
-    if _en_bandeja(home, cmd_id):
+    if _en_bandeja(home, cmd_id, buzon):
         return {
             "cmd_id": cmd_id,
             "estado": "encolado",
@@ -795,16 +795,17 @@ def main(argv: list[str] | None = None) -> int:
                 + ", ".join(f"{b.id}({b.lane})" for b in plan.blocks)
             )
             return 0
+        buzon = getattr(a, "buzon", None)
         cmd_id = _encola(
             a.home,
             {"tipo": "plan", "plan": plan.to_dict(), "por": a.por},
-            getattr(a, "buzon", None),
+            buzon,
         )
         fin = time.time() + a.espera
-        rec = _recibo(a.home, cmd_id)
+        rec = _recibo(a.home, cmd_id, buzon)
         while rec["estado"] == "encolado" and time.time() < fin:
             time.sleep(0.3)
-            rec = _recibo(a.home, cmd_id)
+            rec = _recibo(a.home, cmd_id, buzon)
         rec["plan"] = plan.id
         print(
             json.dumps(rec, ensure_ascii=False)

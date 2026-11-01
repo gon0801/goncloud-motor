@@ -15,7 +15,7 @@ from motor import machine as m
 from motor.conf import RepoConf
 from motor.diagnostico import Causa, diagnostico, encargo
 from motor.plan import Plan, parse_plan
-from tests.test_no_caerse import Banco
+from tests.test_no_caerse import Banco, texto_aviso
 from tests.test_puro import PLAN, entregado, ev, pol
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -931,8 +931,8 @@ class MergeTicketTest(Banco):
             (ajeno, True, True),
         )
         (aviso,) = self.avisos("externo")
-        self.assertIn("Alguien integró el bloque", aviso.read_text())
-        self.assertIn("por fuera; sigo con eso", aviso.read_text())
+        self.assertIn("Alguien integró el bloque", texto_aviso(aviso))
+        self.assertIn("por fuera; sigo con eso", texto_aviso(aviso))
         self.d.fx.open_pr(plan, self.d._fold(plan), m.OpenPr("A", ajeno))
         self.assertEqual(len(self.eventos("Merged")), 1)
         self.assertEqual(len(self.avisos("externo")), 1, "avisa una vez")
@@ -1343,7 +1343,7 @@ class BloqueadoTest(Banco):
         self.assertEqual([a for a in lanzados if a.block == "A"], [])
         atorados = [
             e
-            for e in self.eventos("NoticeQueued")
+            for e in self.eventos_aviso()
             if e.block == "A" and e.data["key"].startswith("atorado:A:bloqueado")
         ]
         self.assertEqual(len(atorados), 1)

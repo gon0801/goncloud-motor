@@ -457,7 +457,7 @@ class JaulaRealTest(unittest.TestCase):
         marca = f"33{os.getpid()}.5"
         jaula = self.jaula()
         p = subprocess.Popen(
-            jaula_linux.argv_jaula(jaula, ["/bin/bash", "-c", f"(sleep {marca} &) ; wait"]),
+            jaula_linux.argv_jaula(jaula, ["/bin/bash", "-c", f"(sleep {marca} &) ; sleep 60 & wait"]),
             env=jaula_linux.entorno_jaula(jaula),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

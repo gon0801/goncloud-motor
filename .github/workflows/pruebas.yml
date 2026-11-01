@@ -41,3 +41,20 @@ jobs:
         run: /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
       - name: Comprobador con la jaula real de macOS (con MOTOR_EXIGE_SEATBELT=1 un skip es un fallo)
         run: python3 -m unittest -v tests.test_comprobador_interprete
+
+  bateria:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Instalar bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 veda los espacios de nombres de usuario sin perfil de AppArmor.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Bateria completa
+        run: python -m unittest discover -s tests -t . -v

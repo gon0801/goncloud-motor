@@ -998,7 +998,8 @@ class DespliegueTest(unittest.TestCase):
         )
         lanzados = []
         original = fxmod.plataforma.lanzar_separado
-        fxmod.plataforma.lanzar_separado = lambda *a, **k: lanzados.append(a) or {}
+        proc = {"pid": 42, "inicio": "2026-10-25T00:00:00+00:00", "boot_id": "boot-prueba"}
+        fxmod.plataforma.lanzar_separado = lambda *a, **k: lanzados.append(a) or dict(proc)
         try:
             fx.env_base = lambda extra=None: {}
             fx.deploy(plan, snap, m.Deploy("A", SHA))

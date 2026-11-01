@@ -406,7 +406,7 @@ class RachaTest(Banco):
         return [
             ev_.data["key"]
             for ev_ in d.store.events("demo")
-            if ev_.kind == "NoticeQueued"
+            if ev_.kind in ("NoticeQueued", "NoticeRequested")
             and ev_.data["key"].startswith("atorado:A:efecto:")
         ]
 
@@ -725,7 +725,7 @@ class EscaleraTest(unittest.TestCase):
                 claves = [
                     x.data["key"]
                     for x in ev
-                    if x.kind == "NoticeQueued"
+                    if x.kind in ("NoticeQueued", "NoticeRequested")
                     and x.data["key"].startswith("humano:auth:")
                 ]
                 cuentas = {d.cx.policy.para(p).cuenta.get(mo, mo) for mo in imp}
@@ -886,12 +886,12 @@ class AvisosColaTest(unittest.TestCase):
         n.encola("b", "bueno")
         self.assertEqual(n.envia_pendientes(), 1)
         self.assertEqual(
-            [p.name.split("-", 1)[1] for p in (h / "avisos/fallidos").iterdir()],
-            ["a.txt"],
+            [p.name for p in (h / "avisos/fallidos").iterdir()],
+            ["a.json"],
         )
         self.assertEqual(
-            [p.name.split("-", 1)[1] for p in (h / "avisos/enviados").iterdir()],
-            ["b.txt"],
+            [p.name for p in (h / "avisos/enviados").iterdir()],
+            ["b.json"],
         )
         self.assertEqual(list((h / "avisos/pendientes").iterdir()), [])
         self.assertEqual(len(recibidos), 2)

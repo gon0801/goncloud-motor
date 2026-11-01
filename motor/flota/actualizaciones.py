@@ -488,7 +488,7 @@ def preparar(
         if (
             recibo.exists()
             and runtime_path.is_file()
-            and json.loads(recibo.read_text()).get("estado") == "preparada"
+            and json.loads(recibo.read_text(encoding="utf-8")).get("estado") == "preparada"
         ):
             comprobar_runtime(gen)
             return {

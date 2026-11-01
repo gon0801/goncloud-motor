@@ -458,25 +458,49 @@ class ProcesosTest(unittest.TestCase):
         self,
     ):
         snap = m.fold(self.plan, self.d.store.events("demo"))
-        a = m.StartAttempt("A", "implementar", "glm", 1, "", (), False)
-        with mock.patch(
-            "motor.effects.plataforma.lanzar_separado", side_effect=OSError("cae")
-        ):
-            with self.assertRaises(OSError):
-                self.d.fx.start_attempt(self.plan, snap, a)
-        self.d.fx.start_attempt(
-            self.plan, snap, a
-        )  # el daemon vuelve: no lanza otra vez
+        casos = (
+            (1, SystemExit("cae"), "arranque_por_conciliar"),
+            (2, OSError("cae"), "creacion_fallida"),
+        )
+        for n, falla, estado in casos:
+            with self.subTest(estado=estado):
+                a = m.StartAttempt("A", "implementar", "glm", n, "", (), False)
+                with mock.patch(
+                    "motor.effects.plataforma.lanzar_separado", side_effect=falla
+                ) as lanza:
+                    if isinstance(falla, SystemExit):
+                        with self.assertRaises(SystemExit):
+                            self.d.fx.start_attempt(self.plan, snap, a)
+                    else:
+                        self.d.fx.start_attempt(self.plan, snap, a)
+                    self.d.fx.start_attempt(
+                        self.plan, snap, a
+                    )  # el daemon vuelve: no lanza otra vez
+                self.assertEqual(lanza.call_count, 1)
+                marca = json.loads(
+                    (
+                        self.home / "intentos" / "demo" / f"A-implementar-{n}" / "started"
+                    ).read_text()
+                )
+                self.assertEqual(marca["estado"], estado)
+                self.assertEqual(marca["proc"], {})
         iniciados = [
             e for e in self.d.store.events("demo") if e.kind == "AttemptStarted"
         ]
-        self.assertEqual(len(iniciados), 1)
-        att = m.fold(self.plan, self.d.store.events("demo")).blocks["A"].running()
-        self.assertEqual(self.collect(att)["kind"], "perdido")
+        self.assertEqual(iniciados, [], "sin proceso observado no hay intento en marcha")
+        self.assertIsNone(
+            m.fold(self.plan, self.d.store.events("demo")).blocks["A"].running()
+        )
 
     def test_perdido_mata_el_grupo_del_agente_antes_de_otro_intento(self):
+        supervisor = self.hijo()
+        proc = self.proc_de(supervisor)
+        supervisor.kill()
+        supervisor.wait()
         agente = self.hijo()
-        att = self.intento("a", {})
+        att = self.intento(
+            "a", proc, hace_s=self.d.cx.policy.timeout_s + HOLGURA_VIVO_S + 60
+        )
         carpeta = Path(att.dir)
         (carpeta / "agent.inicio").write_text(plataforma.hora_inicio(agente.pid))
         (carpeta / "agent.pid").write_text(str(agente.pid))

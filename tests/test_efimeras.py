@@ -599,11 +599,19 @@ class LimpiezaCarpetasTest(unittest.TestCase):
         otra.mkdir()
         snap = m.Snapshot(
             plan=self.plan,
-            blocks={"A": m.BlockView(block=self.plan.block("A"))},
+            blocks={
+                "A": m.BlockView(
+                    block=self.plan.block("A"),
+                    merged=[{"sha": SHA, "commit": SHA}],
+                    proved={SHA: {"ok": True}},
+                    deployed={SHA: {"ok": True}},
+                )
+            },
             cooldowns={},
             plan_notices=set(),
             repos={},
         )
+        self.assertTrue(m.puede_cerrar(snap))
         with mock.patch("motor.effects.git", side_effect=self._git_ok):
             self.fx.limpia(self.plan, snap, m.Limpia(pid))
         self.assertFalse((self.t / efimeras.WT / pid).exists())

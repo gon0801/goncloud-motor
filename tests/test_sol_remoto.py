@@ -84,6 +84,10 @@ class SolRemotoTest(unittest.TestCase):
                     f" args[0] = {str(falso)!r}\n"
                     " return _real(args, **kwargs)\nsubprocess.Popen = _codex\n"
                 )
+                kwargs["env"] = {
+                    **(kwargs.get("env") or os.environ),
+                    "PYTHONPATH": str(ruta.parents[1]),
+                }
                 return popen(["python3", "-c", prefijo + remoto[2]], **kwargs)
 
             esperado = {
