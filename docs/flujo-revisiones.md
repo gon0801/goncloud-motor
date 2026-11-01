@@ -322,6 +322,29 @@ de DeepSeek son hallazgos del mismo encargo y usan la misma vuelta de
 corrección; sus correcciones solo reabren al revisor interno si tocan rutas
 que él había aprobado.
 
+El comentario de DeepSeek sobre un SHA puede cambiar sin que cambie el SHA:
+un hallazgo descartado (`ai-review: descartar Fn`) o resuelto, una generación
+nueva o una re-revisión. Cada barrido, con un espaciado de 60 s por SHA
+(`_RELECTURA_DEEPSEEK_S`), el supervisor compara la huella del comentario con
+la de la última lectura (`Fase.deepseek_huella`). Si cambió, anota la lectura
+(`revision` de DeepSeek y `entrega_externa` `deepseek_leido`, con la huella y
+el número de lectura del SHA en la clave): lo que el comentario ya no trae
+queda resuelto y llega al estado del encargo en ese barrido. Si no cambió, no
+anota nada. Una lectura con un bloqueante abierto baja el nivel alcanzado de
+`pr` a `pr_abierto`: la fase no se da por cumplida con un High o un Medium
+abierto. Con un agente en curso solo se anota; devolver el trabajo es cosa de
+quien incorpora su vuelta.
+
+Antes de terminar una fase con entrega `pr`, el supervisor vuelve a leer, sin
+espaciado, el comentario de DeepSeek sobre el SHA final de su PR. Si cambió y
+trae un High o un Medium abierto, la fase vuelve al responsable. Si DeepSeek
+todavía no revisó ese SHA, espera como siempre. Al cerrar la última fase
+(lo que termina el encargo) lee también el PR de cada fase anterior, porque
+DeepSeek puede publicar un hallazgo después de que esa fase cerró. Si hay un
+High o un Medium abierto, el evento `fase_reabierta` devuelve esa fase al
+responsable en su misma rama y su mismo PR; al prepararla de nuevo, el
+encargo sigue con la fase que quedaba.
+
 Un repo sin los workflows `ai-review-worker.yml` / `ai-review-publish.yml` o
 sin secretos no finge una revisión leída. La espera de DeepSeek no vence:
 el encargo sigue esperando ese SHA, con la recuperación por dispatch del
