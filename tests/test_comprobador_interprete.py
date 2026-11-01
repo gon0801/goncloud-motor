@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -191,13 +192,15 @@ class ConLaJaulaRealDeMacOS(unittest.TestCase):
             self.fail("MOTOR_EXIGE_SEATBELT=1 y la jaula real no se puede aplicar: " + causa)
         self.skipTest(causa)
 
-    def _correr(self, lecturas: tuple[Path, ...]) -> subprocess.CompletedProcess:
+    def _correr(
+        self, lecturas: tuple[Path, ...], ejecutable: str | None = None
+    ) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             espacio = Path(tmp) / "espacio" / "enc_x"
             espacio.mkdir(parents=True)
             comando = aislar(
                 [
-                    sys.executable,
+                    ejecutable or sys.executable,
                     "-c",
                     "import encodings, sys; print('arranco', sys.version_info[:2])",
                 ],
@@ -216,6 +219,43 @@ class ConLaJaulaRealDeMacOS(unittest.TestCase):
 
     def test_el_interprete_del_supervisor_arranca_dentro_de_la_jaula(self):
         resultado = self._correr(lecturas_del_interprete())
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn("arranco", resultado.stdout)
+
+    def test_el_layout_del_incidente_arranca_dentro_de_la_jaula(self):
+        """El intérprete de la Mini se declara por un enlace del home
+        (~/.local/bin/python3) que apunta a un directorio que es otro enlace
+        (cpython-3.12-macos-aarch64-none). Se arma esa misma cadena bajo el home
+        real, sobre la instalación de Python que corre la prueba, y se ejecuta
+        dentro de la jaula con lo que concede el comprobador."""
+        home = Path.home().resolve()
+        instalacion = Path(sys.base_prefix).resolve()
+        binario = Path(sys.executable).resolve()
+        if instalacion not in binario.parents:
+            self.skipTest("el ejecutable no vive dentro del prefijo de su instalación")
+        try:
+            raiz = Path(tempfile.mkdtemp(prefix=".motor-jaula-", dir=home))
+        except OSError as exc:
+            self.skipTest(f"no se puede escribir bajo el home: {exc}")
+        self.addCleanup(shutil.rmtree, raiz, True)
+        enlace_dir = raiz / "python" / "cpython-3.12-macos-aarch64-none"
+        enlace_dir.parent.mkdir()
+        enlace_dir.symlink_to(instalacion)
+        enlace_bin = raiz / ".local" / "bin" / "python3"
+        enlace_bin.parent.mkdir(parents=True)
+        enlace_bin.symlink_to(enlace_dir / binario.relative_to(instalacion))
+
+        with mock.patch.object(sys, "executable", str(enlace_bin)), mock.patch.object(
+            sys, "base_prefix", str(enlace_dir)
+        ), mock.patch.object(sys, "prefix", str(enlace_dir)), mock.patch.object(
+            sys, "base_exec_prefix", str(enlace_dir)
+        ), mock.patch.object(sys, "exec_prefix", str(enlace_dir)):
+            lecturas = lecturas_del_interprete()
+        self.assertIn(enlace_bin, lecturas)
+        self.assertIn(enlace_dir, lecturas)
+
+        resultado = self._correr(lecturas, str(enlace_bin))
+
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertIn("arranco", resultado.stdout)
 
