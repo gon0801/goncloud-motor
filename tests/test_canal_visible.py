@@ -160,19 +160,43 @@ class EstadoDelCanal(Banco):
         self.assertNotIn("fallando_desde", self.estado(), "un envío con recibo sí lo recupera")
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 30_000), [])
 
-    def test_con_cortar_despues_solo_un_envio_con_recibo_recupera_el_canal(self):
-        self.modo("caido")
-        directores.drenar(self.reg, ahora=T0)
-        self.modo("sin_recibo")
-        directores.drenar(self.reg, cortar="despues", ahora=T0 + 700)
-        self.assertIn("fallando_desde", self.estado(), "el hook no recibió recibo")
+    def _aviso_nuevo(self) -> None:
+        """Deja el aviso como si fuera nuevo (sin archivo de aviso ni entrega), que es cuando corre el hook `despues`."""
         for ruta in (self.base / "avisos").glob("*.json"):
             ruta.unlink()
         for ruta in (self.base / "canal" / "tg").glob("*"):
             ruta.unlink()
+
+    def _motivo_del_aviso(self) -> str:
+        return json.loads(next((self.base / "avisos").glob("*.json")).read_text()).get("motivo", "")
+
+    def test_con_cortar_despues_solo_un_envio_con_recibo_recupera_el_canal(self):
+        hook = "envio hecho sin recibo; falta conciliar"
+        self.modo("caido")
+        directores.drenar(self.reg, ahora=T0)
+        inicio = self.estado()["fallando_desde"]
+        llamadas = self.llamadas()
+
+        self._aviso_nuevo()
+        self.modo("sin_recibo")
+        directores.drenar(self.reg, cortar="despues", ahora=T0 + 700)
+        self.assertEqual(self.llamadas(), llamadas + 1, "el hook envió")
+        self.assertEqual(self._motivo_del_aviso(), hook, "corrió la rama del hook, no la del reintento")
+        self.assertEqual(self.estado()["fallando_desde"], inicio, "el hook no recibió recibo: no hay entrega probada")
+        self.assertEqual([c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 700)], ["tg"])
+
+        self._aviso_nuevo()
         self.modo("ok")
         directores.drenar(self.reg, cortar="despues", ahora=T0 + 20_000)
+        self.assertEqual(self._motivo_del_aviso(), hook, "otra vez la rama del hook")
         self.assertNotIn("fallando_desde", self.estado(), "el hook sí recibió recibo")
+
+    def test_con_cortar_despues_un_transporte_que_cae_marca_el_canal(self):
+        self.modo("caido")
+        directores.drenar(self.reg, cortar="despues", ahora=T0)
+        self.assertEqual(self._motivo_del_aviso(), "envio hecho sin recibo; falta conciliar")
+        self.assertEqual(self.estado()["fallando_desde"], directores._iso(T0))
+
 
     def test_una_conciliacion_que_halla_el_aviso_recupera_el_canal(self):
         self.modo("caido")
