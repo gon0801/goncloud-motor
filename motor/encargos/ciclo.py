@@ -515,6 +515,28 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
                         )
 
 
+def _copiar_sesion_sin_caer(
+    registro: Registro, enc: Encargo, origen: Path, destino: Path, sitio: str, hora: str
+) -> None:
+    """Una copia de sesión que falla queda anotada en el encargo y el turno sigue:
+    la sesión es continuidad, no el resultado, y no justifica tumbar el barrido."""
+    import sqlite3
+
+    try:
+        _copiar_sesion(origen, destino)
+    except (OSError, sqlite3.Error) as exc:
+        _anotar_instrumento(
+            registro,
+            enc,
+            "copia_sesion",
+            f"no se pudo copiar la sesión ({sitio}): {type(exc).__name__}: {exc}"[:2000],
+            "seguir sin esa copia; se reintenta en el siguiente turno",
+            hora,
+            f"{sitio}:{enc.generacion}",
+            clase="copia_sesion",
+        )
+
+
 def _leer_proc(directorio: Path) -> dict | None:
     path = directorio / "proc.json"
     if not path.exists():
@@ -2113,9 +2135,13 @@ def _incorporar(
         agente = spec.get("agente") or enc.agente or "externo"
         token_intento = str(spec.get("token") or "")
         if token_intento:
-            _copiar_sesion(
+            _copiar_sesion_sin_caer(
+                registro,
+                enc,
                 registro.base / "runtime" / enc.id / token_intento,
                 _almacen_sesion(registro.base, enc.id, enc.rol),
+                "guardar",
+                hora,
             )
         if outcome.get("autenticacion_expirada"):
             marcar_espera(
@@ -4096,7 +4122,9 @@ def _lanzar_uno_en_turno(
         directorio.mkdir(parents=True, exist_ok=True)
         runtime = registro.base / "runtime" / enc.id / token
         runtime.mkdir(parents=True, exist_ok=True)
-        _copiar_sesion(_almacen_sesion(registro.base, enc.id, rol), runtime)
+        _copiar_sesion_sin_caer(
+            registro, enc, _almacen_sesion(registro.base, enc.id, rol), runtime, "restaurar", hora
+        )
         if enc.entrega.nivel != "terminado" and rol == "responsable":
             causa_repo = _asegurar_repo(enc, espacio, registro, hora)
             if causa_repo:
