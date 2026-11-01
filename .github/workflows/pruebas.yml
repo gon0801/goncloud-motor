@@ -40,7 +40,20 @@ jobs:
       - name: La jaula seatbelt se aplica
         run: /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
       - name: Comprobador y sesión de agente con la jaula real de macOS (con MOTOR_EXIGE_SEATBELT=1 un skip es un fallo)
-        run: python3 -m unittest -v tests.test_comprobador_interprete tests.test_sesion_interprete
+        run: python3 -m unittest -v tests.test_comprobador_interprete tests.test_comprobador_temporal tests.test_sesion_interprete
+
+  ops-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Pruebas de shell de ops/tests
+        run: bash ops/tests/correr.sh
 
   bateria:
     runs-on: ubuntu-latest

@@ -8,11 +8,7 @@ mkdir -p "$S/bin" "$S/mac" "$S/mini"
 export FAKE_LOG="$S/ssh.log" S
 : >"$FAKE_LOG"
 PATH="$S/bin:$PATH"
-cat >"$S/bin/ssh" <<'FAKE'
-#!/usr/bin/env bash
-echo "ssh real en una prueba" >&2
-exit 99
-FAKE
+printf '%s\n' '#!/usr/bin/env bash' 'echo "ssh real en una prueba" >&2' 'exit 99' >"$S/bin/ssh"
 chmod +x "$S/bin/ssh"
 fallos=0
 
