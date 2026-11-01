@@ -9,6 +9,7 @@ import unittest
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from motor.encargos.arranque import Observacion
 from motor.encargos.ciclo import _copiar_sesion, _copiar_sesion_sin_caer, ahora_iso, recibir
@@ -221,6 +222,50 @@ class CopiaQueFalla(unittest.TestCase):
         self.assertEqual(fallos[0]["data"]["fuente"], "copia_sesion")
         self.assertIn("privado", fallos[0]["data"]["causa"])
         self.assertEqual((self.tmp / "almacen/.local/share/opencode/opencode.db").read_text(), "v1")
+
+    def _encargo(self):
+        registro = Registro(self.tmp / "base")
+        hora = ahora_iso()
+        ident = recibir(registro, "copia", "copia-1", hora)["encargo"]
+        return registro, registro.fold(ident), hora
+
+    def _fallos(self, registro, enc):
+        return [e for e in registro.eventos(enc.id) if e["kind"] == "instrumento_fallo"]
+
+    def test_un_valueerror_de_la_copia_tampoco_sube_al_barrido(self):
+        registro, enc, hora = self._encargo()
+        with mock.patch(
+            "motor.encargos.ciclo._copiar_sesion", side_effect=ValueError("ruta fuera del origen")
+        ):
+            _copiar_sesion_sin_caer(
+                registro, enc, self.origen, self.tmp / "almacen", "guardar", hora
+            )
+        (fallo,) = self._fallos(registro, enc)
+        self.assertIn("ValueError", fallo["data"]["causa"])
+
+    def test_una_copia_a_medias_no_se_restaura_hasta_que_un_guardado_completo_la_repone(self):
+        registro, enc, hora = self._encargo()
+        almacen, runtime = self.tmp / "almacen", self.tmp / "runtime"
+        _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
+        self.assertTrue((almacen / ".copia-incompleta").exists())
+
+        _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        self.assertFalse((runtime / ".local").exists())
+        causas = [f["data"]["causa"] for f in self._fallos(registro, enc)]
+        self.assertTrue(any("incompleta" in c for c in causas))
+
+        self.ilegible.chmod(0o755)
+        _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
+        self.assertFalse((almacen / ".copia-incompleta").exists())
+        _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        self.assertEqual((runtime / ".local/share/opencode/opencode.db").read_text(), "v1")
+
+    def test_si_falla_al_restaurar_el_runtime_queda_sin_sesion_parcial(self):
+        registro, enc, hora = self._encargo()
+        runtime = self.tmp / "runtime"
+        _copiar_sesion_sin_caer(registro, enc, self.origen, runtime, "restaurar", hora)
+        self.assertEqual(list(runtime.iterdir()), [])
+        self.assertEqual(len(self._fallos(registro, enc)), 1)
 
 
 if __name__ == "__main__":
