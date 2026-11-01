@@ -383,6 +383,13 @@ def _supervisor(reg: Registro, args) -> int:
                      proximo(replace(enc, agentes=candidatas), hora, set(disponibles)), hora)
         return None
 
+    # En el bucle los avisos corren en un hilo aparte con tope por pasada: la cadencia del barrido no
+    # depende del canal, ni cuando funciona. Con --una-vez no hay cadencia que cuidar ni pasada siguiente
+    # que retome lo que un tope dejara sin enviar: drena en línea y por completo.
+    from motor.integraciones.directores import DrenadoAparte
+
+    drenador = None if args.una_vez else DrenadoAparte(reg.base)
+
     def paso() -> list[dict]:
         hora = ahora_iso()
         if ruta:
@@ -413,9 +420,12 @@ def _supervisor(reg: Registro, args) -> int:
             gh=_puerto_github(reg.base),
         )
         try:
-            from motor.integraciones.directores import drenar
+            if drenador is None:
+                from motor.integraciones.directores import drenar
 
-            drenar(reg)
+                drenar(reg)
+            else:
+                drenador.lanzar()
         except Exception:
             pass
         try:
