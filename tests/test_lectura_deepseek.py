@@ -199,6 +199,24 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             self.assertEqual(_ids(e), ["F6"])
             self.assertEqual(e.nivel_alcanzado, "pr_abierto")
 
+    def test_sin_puerto_de_github_no_se_da_por_comprobado_el_veredicto(self):
+        def texto(n):
+            if n == 2:
+                raise RuntimeError("gh api: 502")
+            return _comentario()
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-sin-puerto", _GhComentarios)
+            vuelta.gh.textos[None] = texto
+            e = vuelta("uno")
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertNotEqual(e.estado, "terminado")
+
+            e = ciclo._paso_entrega(r.reg, e, None, ahora_iso())
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.estado, "esperando_reintento")
+            self.assertIn("sin puerto GitHub", e.motivo)
+
     def test_un_medium_en_el_pr_de_una_fase_anterior_la_reabre_al_cerrar_el_encargo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-fases", _GhComentarios)

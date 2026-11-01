@@ -349,7 +349,9 @@ DeepSeek puede publicar un hallazgo después de que esa fase cerró. Si hay un
 High o un Medium abierto, el evento `fase_reabierta` devuelve esa fase al
 responsable en su misma rama y su mismo PR; al prepararla de nuevo, el
 encargo sigue con la fase que quedaba. Si el registro no aplica la lectura o
-la reapertura, el encargo no cierra: anota el fallo y reintenta a los 2 minutos.
+la reapertura, el encargo no cierra: anota el fallo y reintenta a los 2 minutos. Sin puerto de
+GitHub tampoco cierra una fase con PR y nivel `pr` alcanzado: no hay veredicto
+que comprobar, y el encargo espera visible en el paso de entrega.
 
 Un repo sin los workflows `ai-review-worker.yml` / `ai-review-publish.yml` o
 sin secretos no finge una revisión leída. La espera de DeepSeek no vence:
