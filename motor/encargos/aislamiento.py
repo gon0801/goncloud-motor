@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -60,6 +61,33 @@ def lecturas_del_interprete() -> tuple[Path, ...]:
             if recorrido.is_symlink() and home in recorrido.parents:
                 agregar(recorrido)
     return tuple(salida)
+
+
+def _es_carpeta_de_shims(ruta: str) -> bool:
+    return os.path.isfile(os.path.join(ruta or ".", "llamada_guard.py"))
+
+
+def path_con_interprete(path: str, runtime: Path) -> str:
+    """`python3` de la sesión es el intérprete que corre este supervisor, no el
+    primero que halle el PATH (el 3.9 del sistema no trae `tomllib`; el de uv
+    bajo el home no arranca en la jaula sin `lecturas_del_interprete`). Se deja
+    en `runtime/bin` un `python3` que lo ejecuta y esa carpeta va justo después
+    de los shims del motor, que siguen al frente."""
+    carpeta = runtime / "bin"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    contenido = f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n'
+    destino = carpeta / "python3"
+    if not destino.is_file() or destino.read_text(encoding="utf-8") != contenido:
+        temporal = carpeta / ".python3.tmp"
+        temporal.write_text(contenido, encoding="utf-8")
+        temporal.chmod(0o755)
+        os.replace(temporal, destino)
+    partes = path.split(os.pathsep) if path else []
+    n = 0
+    while n < len(partes) and _es_carpeta_de_shims(partes[n]):
+        n += 1
+    partes.insert(n, str(carpeta))
+    return os.pathsep.join(partes)
 
 
 def _codex_windows() -> Path:
@@ -332,6 +360,7 @@ def aislar(
     suscripcion: bool = False,
     lecturas_extra: tuple[Path, ...] = (),
     agente: str | None = None,
+    interprete: bool = False,
 ) -> ComandoAislado:
     espacio, runtime = espacio.resolve(), runtime.resolve()
     if espacio.parent.name != "espacio" or runtime.is_relative_to(espacio):
@@ -425,6 +454,9 @@ def aislar(
         raise RuntimeError(
             "sin aislamiento efectivo; trabajador no habilitado en este host"
         )
+    if interprete:
+        lecturas_extra = (*lecturas_extra, *lecturas_del_interprete())
+        env["PATH"] = path_con_interprete(env.get("PATH", ""), runtime)
     perfil = [
         "(version 1)",
         "(allow default)",
