@@ -184,6 +184,9 @@ FASE_IMPLICITA = "fase_unica"
 # Revisiones no_concluyente seguidas, sobre la misma versión y pidiendo lo mismo,
 # tras las cuales el encargo pide ayuda al propietario en vez de otro turno.
 TOPE_NO_CONCLUYENTES = 3
+# Vueltas seguidas de una fase que traen bloqueantes nuevos sin cerrar ninguno antes de
+# escalar al propietario. Una serie que siempre trae hallazgos nuevos no gira sin fin.
+TOPE_VUELTAS_NUEVAS = 4
 ESTADOS_FASE = ("pendiente", "trabajo", "revision", "entrega", "preparada")
 
 
@@ -210,6 +213,12 @@ class Fase:
     pr_numero: int = 0
     pr_sha: str = ""
     deepseek_sha: str = ""
+    # Huella del comentario de DeepSeek que se leyó para `deepseek_sha`: el
+    # motor relee el SHA vigente cuando el comentario cambia, no solo el SHA.
+    deepseek_huella: str = ""
+    # Último fallo de la relectura de GitHub, hasta que una lectura vuelva a salir
+    # bien. Es para quien mira (`ver`): ningún prompt lo lee.
+    deepseek_error: str = ""
     integrado_sha: str = ""
     rama: str = ""
     base: str = ""
@@ -221,6 +230,8 @@ class Fase:
     entrega_bloqueada_sha: str = ""
     fallas_checks: tuple[str, ...] = ()
     cerrados: tuple[str, ...] = ()
+    # SHA cuyos checks requeridos siguen corriendo (aún no terminan, ni verdes ni rojos).
+    checks_esperando_sha: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -247,7 +258,11 @@ class Fase:
             else None,
             "nivel_alcanzado": self.nivel_alcanzado,
             "pr": {"numero": self.pr_numero, "sha": self.pr_sha},
-            "deepseek": {"sha": self.deepseek_sha, "leida": bool(self.deepseek_sha)},
+            "deepseek": {
+                "sha": self.deepseek_sha,
+                "leida": bool(self.deepseek_sha),
+                "error": self.deepseek_error,
+            },
             "rama": self.rama,
             "base": self.base,
             "evidencia": self.evidencia,
@@ -445,6 +460,16 @@ class Encargo:
     poteto_digest: str = ""
     bloqueo_huella: str = ""
     sin_progreso: int = 0
+    # Los bloqueos (ids) abiertos cuando el trabajo volvió al responsable por última
+    # vez: lo que el responsable ya sabe. Uno abierto que no está aquí es información
+    # nueva, no «el mismo bloqueo».
+    devuelto_con: tuple[str, ...] = ()
+    # Generación de la última vuelta que el freno ya resolvió: una vuelta cuenta una
+    # sola vez, entren las fuentes que entren en el barrido.
+    vuelta_contada: int = 0
+    # Vueltas seguidas que solo trajeron bloqueantes nuevos, sin cerrar ninguno.
+    # Acota la serie en la fase: al llegar a TOPE_VUELTAS_NUEVAS la siguiente escala.
+    vueltas_nuevas: int = 0
     # Revisiones no_concluyente seguidas sobre la misma versión que piden lo
     # mismo, y qué pidió la última (fase, versión, texto, recurso, objetivo, huella).
     no_concluyentes: int = 0
@@ -521,6 +546,11 @@ class Encargo:
     def deepseek_sha(self) -> str:
         fase = self.fase_actual
         return fase.deepseek_sha if fase else ""
+
+    @property
+    def deepseek_error(self) -> str:
+        fase = self.fase_actual
+        return fase.deepseek_error if fase else ""
 
     @property
     def rama_entrega(self) -> str:
@@ -692,6 +722,28 @@ def _bloqueos_cerrados(e: Encargo) -> set[str]:
     return set(fase.cerrados) if fase is not None else set()
 
 
+def bloqueos_nuevos(e: Encargo) -> set[str]:
+    """Bloqueos abiertos que el responsable no ha visto: ni se le devolvieron ni se
+    cerraron antes. Uno que se cerró y se reabrió no es nuevo."""
+    return _bloqueos_abiertos(e) - set(e.devuelto_con) - _bloqueos_cerrados(e)
+
+
+def revision_externa_pendiente(e: Encargo) -> bool:
+    """Falta el veredicto de una revisión externa sobre el commit vigente: DeepSeek no
+    ha leído ese SHA (si los checks no están en rojo; entonces el motor ni llega a
+    DeepSeek) o sus checks requeridos siguen corriendo. Mientras tanto una vuelta
+    sin novedad no es una vuelta sin avance."""
+    fase = e.fase_actual
+    if fase is None or e.entrega.nivel == "terminado" or not fase.pr_numero:
+        return False
+    sha = fase.producto.sha_git if fase.producto else ""
+    if not sha:
+        return False
+    if fase.checks_esperando_sha == sha:
+        return True
+    return not fase.fallas_checks and fase.deepseek_sha != sha
+
+
 def hubo_avance(previo: Encargo, e: Encargo) -> bool:
     """Hay avance si entre `previo` y `e` se cerro un bloqueante o un check en
     rojo, o si aparece el primero (no hay con que compararlo). Uno nuevo junto
@@ -720,7 +772,7 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
         return e
     # Un avance, venga de la revisión o de un check que se puso verde, cierra
     # también la cuenta de revisiones no_concluyente repetidas.
-    return _sin_repeticiones(replace(e, sin_progreso=0))
+    return _sin_repeticiones(replace(e, sin_progreso=0, vueltas_nuevas=0))
 
 
 def fuente_de_impedimento(clase: str) -> str:
@@ -1314,6 +1366,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                         fase,
                         entrega_bloqueada_sha=str(d.get("sha") or ""),
                         fallas_checks=fallas,
+                        checks_esperando_sha="",
                     ),
                 ),
                 ultimo_hecho=str(
@@ -1322,6 +1375,16 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 hora=hora or e.hora,
             ),
         )
+    if kind == "lectura_fallida":
+        # Se ve en `ver` (deepseek.error) y no toca motivo, siguiente ni causa,
+        # que son lo que lee el próximo turno del agente. Una causa vacía anota
+        # que la lectura volvió a salir bien.
+        fase = e.fase_actual
+        if fase is None or str(d.get("fase") or fase.id) != fase.id:
+            return e
+        return con_fase(e, replace(fase, deepseek_error=str(d.get("causa") or "")))
+    if kind == "fase_reabierta":
+        return _fase_reabierta(e, d, hora)
     if kind == "entrada_incorporada":
         e = _fase_de_evento(e, d)
         fase = e.fase_actual
@@ -1347,7 +1410,16 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
     if kind == "sin_progreso":
         huella = str(d.get("huella") or "")
         veces = e.sin_progreso + 1 if huella and huella == e.bloqueo_huella else 1
+        if d.get("nueva"):
+            # La vuelta trajo bloqueantes nuevos: es información nueva, no «el mismo
+            # bloqueo». La escalera empieza de cero y la serie de vueltas así se cuenta.
+            veces = 0
         diagnostico = str(d.get("diagnostico") or d.get("causa") or "")
+        e = replace(
+            e,
+            vuelta_contada=e.generacion,
+            vueltas_nuevas=e.vueltas_nuevas + 1 if d.get("nueva") else e.vueltas_nuevas,
+        )
         if d.get("escalar"):
             return replace(
                 e,
@@ -1358,6 +1430,14 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 motivo=diagnostico or "el mismo bloqueo sin progreso",
                 siguiente="hace falta una decisión del usuario",
                 ultimo_hecho=diagnostico or "el mismo bloqueo sin progreso",
+                hora=hora or e.hora,
+            )
+        if d.get("nueva"):
+            return replace(
+                e,
+                bloqueo_huella=huella or e.bloqueo_huella,
+                sin_progreso=0,
+                ultimo_hecho="la vuelta trajo bloqueantes nuevos: vuelven al responsable",
                 hora=hora or e.hora,
             )
         return replace(
@@ -1431,6 +1511,10 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             hora=hora or e.hora,
         )
     if kind == "estrategia":
+        if d["estrategia"] in ("investigar", "diagnosticar_bloqueo") and (
+            d.get("rol") or "responsable"
+        ) == "responsable":
+            e = replace(e, devuelto_con=tuple(sorted(_bloqueos_abiertos(e))))
         return replace(
             e,
             estrategia=d["estrategia"],
@@ -2253,28 +2337,49 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         raise TransicionIlegal("no hay fase para la entrega")
     paso = str(d.get("paso") or "")
     sha = str(d.get("sha") or "")
+    bajar = False
     candidato = fase.nivel_alcanzado
     if paso in ("pr_abierto", "pr_listo"):
         candidato = "pr_abierto"
     elif paso == "deepseek_leido":
         if not bloqueantes_abiertos(e, "deepseek"):
             candidato = "pr"
+        elif d.get("huella") and fase.nivel_alcanzado == "pr":
+            # Una relectura que trae un bloqueante deja de dar la fase por
+            # cumplida: sigue sin cerrar hasta que DeepSeek lo dé por resuelto.
+            candidato = "pr_abierto"
+            bajar = True
     elif paso == "integrado":
         candidato = "integrado"
     elif paso == "desplegado":
         candidato = "desplegado"
     elif paso == "sin_cambios":
         candidato = "sin_cambios"
-    if paso != "sin_cambios" and _ORDEN_NIVEL.get(candidato, 0) < _ORDEN_NIVEL.get(fase.nivel_alcanzado, 0):
+    if (
+        paso != "sin_cambios"
+        and not bajar
+        and _ORDEN_NIVEL.get(candidato, 0) < _ORDEN_NIVEL.get(fase.nivel_alcanzado, 0)
+    ):
         candidato = fase.nivel_alcanzado
     producto = fase.producto
     if paso == "commit" and producto is not None and sha:
         producto = replace(producto, sha_git=sha)
     nueva = replace(
         fase,
-        fallas_checks=() if paso == "checks_verdes" else fase.fallas_checks,
+        fallas_checks=(
+            tuple(sorted(str(x) for x in d["fallas"]))
+            if paso == "checks_rojos" and "fallas" in d
+            else () if paso == "checks_verdes" else fase.fallas_checks
+        ),
         entrega_bloqueada_sha=(
             "" if paso == "checks_verdes" else fase.entrega_bloqueada_sha
+        ),
+        checks_esperando_sha=(
+            sha
+            if paso == "checks_esperando"
+            else ""
+            if paso in ("checks_verdes", "checks_rojos")
+            else fase.checks_esperando_sha
         ),
         nivel_alcanzado=candidato,
         pr_numero=int(d.get("numero") or fase.pr_numero or 0),
@@ -2282,6 +2387,11 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         if paso in ("commit", "push", "pr_abierto", "pr_listo") and sha
         else fase.pr_sha,
         deepseek_sha=sha if paso == "deepseek_leido" and sha else fase.deepseek_sha,
+        deepseek_huella=(
+            str(d.get("huella") or "")
+            if paso == "deepseek_leido"
+            else fase.deepseek_huella
+        ),
         integrado_sha=(
             str(d.get("recibo") or sha)
             if paso == "integrado" and (d.get("recibo") or sha)
@@ -2302,7 +2412,37 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         ultimo_hecho=f"entrega externa: {paso}",
         hora=hora or e.hora,
     )
-    return _con_progreso(e, resultado) if paso == "checks_verdes" else resultado
+    if paso in ("checks_verdes", "checks_rojos"):
+        return _con_progreso(e, resultado)
+    return resultado
+
+
+def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:
+    """DeepSeek dejó un High o un Medium abierto en el PR de una fase ya
+    preparada, cuando el encargo iba a terminar. La fase vuelve al responsable
+    en su misma rama y su mismo PR; las demás conservan lo que tienen."""
+    pedida = str(d.get("fase") or "")
+    fase = next((f for f in e.fases if f.id == pedida), None)
+    if fase is None or fase.estado != "preparada":
+        raise TransicionIlegal("solo se reabre una fase preparada")
+    if e.estado in ("terminado", "cancelado", "deteniendo", "detenido"):
+        raise TransicionIlegal("el encargo ya no admite reabrir una fase")
+    causa = str(d.get("causa") or "DeepSeek dejó un hallazgo abierto")
+    return replace(
+        con_fase(e, replace(fase, estado="entrega", nivel_alcanzado="pr_abierto")),
+        fase_activa=fase.id,
+        estado="recibido",
+        rol="responsable",
+        estrategia="investigar",
+        motivo=causa,
+        siguiente=f"corregir la fase {fase.id}",
+        intentos_nuevos=True,
+        escrituras=e.autoridad,
+        ultimo_hecho=causa,
+        devuelto_con=(),
+        vueltas_nuevas=0,
+        hora=hora or e.hora,
+    )
 
 
 def _preparar_con_entrada(
@@ -2393,6 +2533,8 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 intentos_nuevos=True,
                 escrituras=e.autoridad,
                 ultimo_hecho=f"fase {fase.id} preparada; continúa la fase {siguiente}",
+                devuelto_con=(),
+                vueltas_nuevas=0,
                 hora=hora or e.hora,
             )
         if pendientes:
@@ -2409,6 +2551,8 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 intentos_nuevos=True,
                 escrituras=e.autoridad,
                 ultimo_hecho=f"fase {fase.id} preparada; quedan dependencias sin preparar",
+                devuelto_con=(),
+                vueltas_nuevas=0,
                 hora=hora or e.hora,
             )
         # Quien cierra anota cuántas correcciones cubre (vistas o dichas en la
@@ -2628,7 +2772,11 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             "rama": e.rama_entrega,
             "base": e.entrega.base,
             "pr": {"numero": e.pr_numero, "sha": e.pr_sha},
-            "deepseek": {"sha": e.deepseek_sha, "leida": bool(e.deepseek_sha)},
+            "deepseek": {
+                "sha": e.deepseek_sha,
+                "leida": bool(e.deepseek_sha),
+                "error": e.deepseek_error,
+            },
         },
         "fases": [f.como_dict() for f in e.fases],
         "fase_activa": e.fase_activa,

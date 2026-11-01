@@ -154,10 +154,11 @@ No hay tope de rondas mientras haya avance. Una vuelta es avance solo si
 cierra al menos un bloqueante: del revisor independiente, de DeepSeek o de
 los checks requeridos del PR. Cambiar archivos no es avance, y la firma del
 producto no entra en la cuenta. Que aparezca un bloqueante nuevo junto con
-uno cerrado sí es avance; uno nuevo sin cerrar ninguno no, y volver a cerrar
-algo que ya se cerró y se reabrió (por ejemplo un check que alterna rojo y
-verde) tampoco. El primer bloqueante que se ve no tiene con qué compararse y
-cuenta como avance.
+uno cerrado sí es avance. Uno nuevo sin cerrar ninguno no es avance, pero
+tampoco es «el mismo bloqueo»: es información nueva (ver más abajo). Volver a
+cerrar algo que ya se cerró y se reabrió (por ejemplo un check que alterna rojo
+y verde) no es avance ni información nueva. El primer bloqueante que se ve no
+tiene con qué compararse y cuenta como avance.
 
 Una vuelta sin avance incluye al revisor que no concluye (`no_concluyente`
 sin inspección faltante), al implementador que cambia archivos con el mismo
@@ -180,6 +181,45 @@ la lectura falla queda pendiente, la causa queda en la marca y se reintenta
 a los 15 s. Cerrar un bloqueante o una
 aprobación sin nada abierto reinicia la cuenta, también al pasar a la fase
 siguiente. Nunca se declara éxito ni se vuelve a crear el encargo.
+
+### El freno no cuenta de más
+
+Tres reglas evitan que el freno pare un encargo por error (casos del 1-nov):
+
+- **Una vuelta cuenta una sola vez.** La vuelta es la generación del agente. Si en
+  el mismo barrido entran varias fuentes (la observación del supervisor, el
+  revisor, DeepSeek, los checks), la primera que no es información nueva la
+  resuelve y las demás no suman ni escalan (`Encargo.vuelta_contada`). Antes dos
+  fuentes del mismo barrido llevaban el encargo de «diagnosticar» a
+  `necesita_usuario` sin dar el turno de diagnóstico.
+- **No cuenta con una revisión externa pendiente.** Mientras DeepSeek no haya
+  leído el commit vigente, o sus checks requeridos sigan corriendo
+  (`Fase.checks_esperando_sha`, que anota `checks_esperando` y cierran
+  `checks_verdes` o `checks_rojos`; solo vale mientras algún check
+  requerido tiene una corrida en marcha o en cola para ese SHA: una lectura a
+  mitad de corrida no se toma por terminada ni refresca los checks en rojo, y
+  `checks_rojos` los adopta cuando los requeridos acaban, aunque GitHub siga
+  corriendo otros workflows que no lo son), una vuelta del responsable sin cambios no
+  se cuenta: el encargo espera (60 s con DeepSeek, 120 s con checks) en vez de
+  contar un bloqueante que su fuente puede haber cerrado ya. Un bloqueante que la
+  fuente cerró (resuelto o descartado) deja de estar abierto con la relectura
+  de DeepSeek y los `checks_verdes`, y tampoco cuenta. Con los checks en rojo
+  y nada corriendo sí cuenta: DeepSeek no se lee mientras los checks están en rojo.
+- **Un bloqueante nuevo es información nueva.** `Encargo.devuelto_con` guarda los
+  bloqueos abiertos la última vez que el trabajo volvió al responsable. Si una
+  vuelta sin avance trae uno que no estaba ahí (ni se cerró antes), el trabajo
+  vuelve al responsable para corregir con todo lo abierto, la escalera de
+  diagnóstico empieza de cero y no se escala como «el mismo bloqueo». Escalar
+  sigue siendo la salida cuando los mismos bloqueantes siguen abiertos tras el
+  diagnóstico.
+
+**Tope por fase.** Una serie que siempre trae hallazgos nuevos no gira sin fin:
+al cabo de `TOPE_VUELTAS_NUEVAS` (4) vueltas seguidas que traen bloqueantes nuevos
+sin cerrar ninguno (`Encargo.vueltas_nuevas`), la siguiente deja el encargo en
+`necesita_usuario` con el último diagnóstico. Cerrar un bloqueante, cualquier
+avance, reinicia la serie, y pasar a otra fase también. Se eligió contar solo
+las vueltas que no cierran nada: una fase que sigue cerrando hallazgos avanza y
+no tiene tope (así lo exige «No hay tope de rondas mientras haya avance»).
 
 ## Inspecciones y respuestas del propietario
 
@@ -321,6 +361,42 @@ de siempre); todo lo demás entra como observación visible. Los bloqueantes
 de DeepSeek son hallazgos del mismo encargo y usan la misma vuelta de
 corrección; sus correcciones solo reabren al revisor interno si tocan rutas
 que él había aprobado.
+
+El comentario de DeepSeek sobre un SHA puede cambiar sin que cambie el SHA:
+un hallazgo descartado (`ai-review: descartar Fn`) o resuelto, una generación
+nueva o una re-revisión. Cada barrido, con un espaciado de 60 s por SHA
+(`_RELECTURA_DEEPSEEK_S`), el supervisor compara la huella del comentario con
+la de la última lectura (`Fase.deepseek_huella`). Si cambió, anota la lectura
+(`revision` de DeepSeek y `entrega_externa` `deepseek_leido`, con la huella y
+el número de lectura del SHA en la clave): lo que el comentario ya no trae
+queda resuelto y llega al estado del encargo en ese barrido. Si no cambió, no
+anota nada. Una lectura con un bloqueante abierto baja el nivel alcanzado de
+`pr` a `pr_abierto`: la fase no se da por cumplida con un High o un Medium
+abierto. Con un agente en curso solo se anota; devolver el trabajo es cosa de
+quien incorpora su vuelta. Si GitHub falla
+al releer, el espaciado no se consume (se reintenta a los 15 s) y el fallo queda
+en el evento `lectura_fallida` (uno por tramo de fallos, más otro cada 10 minutos
+si dura) y se ve en `ver` (`entrega.deepseek.error`) hasta que una lectura sale
+bien. No toca el motivo ni el siguiente trabajo del encargo, que lee el próximo
+turno del agente: siguen siendo los suyos.
+
+Antes de terminar una fase con entrega `pr` (con `integrado` o `desplegado`, antes
+del merge), el supervisor vuelve a leer, sin espaciado, el comentario de
+DeepSeek sobre el SHA final de su PR. Si cambió y
+trae un High o un Medium abierto, la fase vuelve al responsable. Si DeepSeek
+todavía no revisó ese SHA, espera como siempre. Al cerrar la última fase
+(lo que termina el encargo) lee también el PR de cada fase anterior, porque
+DeepSeek puede publicar un hallazgo después de que esa fase cerró. Si hay un
+High o un Medium abierto, el evento `fase_reabierta` devuelve esa fase al
+responsable en su misma rama y su mismo PR; al prepararla de nuevo, el
+encargo sigue con la fase que quedaba. Si el registro no aplica la lectura o
+la reapertura, el encargo no cierra: anota el fallo y reintenta a los 2 minutos. Sin puerto de
+GitHub tampoco cierra una fase con PR y nivel `pr` alcanzado: no hay veredicto
+que comprobar, y el encargo espera visible en el paso de entrega. Con entrega
+`integrado` o `desplegado`, las fases anteriores ya se fusionaron y no se
+reabren: si el comentario de DeepSeek sobre su PR trae un High o un Medium
+abierto al cerrar la última fase, el encargo no termina en silencio, sino que
+pregunta una vez al propietario (`necesita_usuario`) si abre un encargo aparte.
 
 Un repo sin los workflows `ai-review-worker.yml` / `ai-review-publish.yml` o
 sin secretos no finge una revisión leída. La espera de DeepSeek no vence:
