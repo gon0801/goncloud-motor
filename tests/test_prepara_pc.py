@@ -110,6 +110,27 @@ class DoblesTest(unittest.TestCase):
     def descargador(self, url):
         return ZIP_BYTES if url.endswith("jdk.zip") else JAR_FALSO
 
+    def _con_herramientas(self):
+        prepara_pc._ruta_java_marker(self.base).parent.mkdir(parents=True, exist_ok=True)
+        prepara_pc._ruta_java_marker(self.base).write_text(
+            json.dumps({"release": RELEASE_FALSA, "java": str(self.tmp / "java.exe")}),
+            encoding="utf-8",
+        )
+        Path(str(self.tmp / "java.exe")).write_bytes(b"MZ")
+        prepara_pc.jar_tlc(self.base).parent.mkdir(parents=True, exist_ok=True)
+        prepara_pc.jar_tlc(self.base).write_bytes(b"jar")
+
+    def _raiz_de_verificacion(self, fin: bytes) -> Path:
+        raiz = self.tmp / "repo"
+        inspeccion = raiz / "verificacion" / "inspeccion"
+        inspeccion.mkdir(parents=True)
+        (inspeccion / "verificar.sh").write_bytes(b"#!/usr/bin/env bash" + fin)
+        (inspeccion / "FlujoInspeccion.tla").write_bytes(
+            b"---- MODULE FlujoInspeccion ----" + fin
+        )
+        (inspeccion / "main.cfg").write_bytes(b"Tope = 6" + fin)
+        return raiz
+
     def _instalar(self, corredor, descargador=None):
         with mock.patch.object(prepara_pc, "TLC_SHA256", self.jar_sha):
             return prepara_pc.instalar(
@@ -252,14 +273,8 @@ class SumasYVerificacion(DoblesTest):
         self.assertEqual(prepara_pc.verificar("main.cfg", self.base, self.tmp), 2)
 
     def test_verificar_no_usa_el_bash_de_wsl(self):
-        prepara_pc._ruta_java_marker(self.base).parent.mkdir(parents=True, exist_ok=True)
-        prepara_pc._ruta_java_marker(self.base).write_text(
-            json.dumps({"release": RELEASE_FALSA, "java": str(self.tmp / "java.exe")}),
-            encoding="utf-8",
-        )
-        Path(str(self.tmp / "java.exe")).write_bytes(b"MZ")
-        prepara_pc.jar_tlc(self.base).parent.mkdir(parents=True, exist_ok=True)
-        prepara_pc.jar_tlc(self.base).write_bytes(b"jar")
+        self._con_herramientas()
+        raiz = self._raiz_de_verificacion(b"\n")
         capturadas = []
 
         def falso_run(argv, **kwargs):
@@ -275,10 +290,76 @@ class SumasYVerificacion(DoblesTest):
         con_wsl = r"C:\Windows\System32\bash.exe"
         con_mock = mock.patch.object(prepara_pc.subprocess, "run", falso_run)
         with con_mock, mock.patch.object(prepara_pc, "BASH_POR_OMISION", "git-bash.exe"):
-            prepara_pc.verificar("main.cfg", self.base, self.tmp, bash=con_wsl)
+            prepara_pc.verificar("main.cfg", self.base, raiz, bash=con_wsl)
             self.assertEqual(capturadas[-1][0], "git-bash.exe")
-            prepara_pc.verificar("main.cfg", self.base, self.tmp, bash="bash-real.exe")
+            prepara_pc.verificar("main.cfg", self.base, raiz, bash="bash-real.exe")
             self.assertEqual(capturadas[-1][0], "bash-real.exe")
+            self.assertTrue(capturadas[-1][1].replace("\\", "/").endswith("verificar.sh"))
+            self.assertEqual(capturadas[-1][2], "main.cfg")
+
+
+class VerificarConCrlf(DoblesTest):
+    def _correr_con(self, fin: bytes) -> tuple[Path, list[list]]:
+        self._con_herramientas()
+        raiz = self._raiz_de_verificacion(fin)
+        capturadas = []
+
+        def falso_run(argv, **kwargs):
+            capturadas.append(list(argv))
+
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return R()
+
+        inspeccion = raiz / "verificacion" / "inspeccion"
+        with mock.patch.object(prepara_pc.subprocess, "run", falso_run):
+            prepara_pc.verificar("main.cfg", self.base, raiz, bash="bash-real.exe")
+        return inspeccion, capturadas
+
+    def test_un_checkout_crlf_queda_normalizado_antes_de_correr_bash(self):
+        inspeccion, capturadas = self._correr_con(b"\r\n")
+        for nombre in ("verificar.sh", "FlujoInspeccion.tla", "main.cfg"):
+            crudo = (inspeccion / nombre).read_bytes()
+            self.assertNotIn(b"\r\n", crudo, nombre)
+            self.assertTrue(crudo.endswith(b"\n"), nombre)
+        self.assertEqual(capturadas[-1][0], "bash-real.exe")
+
+    def test_lo_que_ya_esta_en_lf_no_se_toca(self):
+        inspeccion, _ = self._correr_con(b"\n")
+        antes = {n: (inspeccion / n).read_bytes() for n in ("verificar.sh", "FlujoInspeccion.tla", "main.cfg")}
+        despues = {n: (inspeccion / n).read_bytes() for n in antes}
+        self.assertEqual(antes, despues)
+
+    def test_la_normalizacion_es_idempotente(self):
+        ruta = self.tmp / "uno.tla"
+        ruta.write_bytes(b"a\r\nb\r\n")
+        self.assertTrue(prepara_pc._a_lf(ruta))
+        self.assertEqual(ruta.read_bytes(), b"a\nb\n")
+        self.assertFalse(prepara_pc._a_lf(ruta))
+        self.assertEqual(ruta.read_bytes(), b"a\nb\n")
+
+    def test_un_archivo_ausente_no_detiene_la_verificacion(self):
+        self._con_herramientas()
+        raiz = self._raiz_de_verificacion(b"\r\n")
+        (raiz / "verificacion" / "inspeccion" / "main.cfg").unlink()
+        capturadas = []
+
+        def falso_run(argv, **kwargs):
+            capturadas.append(list(argv))
+
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return R()
+
+        with mock.patch.object(prepara_pc.subprocess, "run", falso_run):
+            self.assertEqual(prepara_pc.verificar("main.cfg", self.base, raiz, bash="bash-real.exe"), 0)
+        self.assertTrue((raiz / "verificacion" / "inspeccion" / "FlujoInspeccion.tla").read_bytes().endswith(b"\n"))
 
 
 if __name__ == "__main__":

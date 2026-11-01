@@ -1,5 +1,9 @@
 """Prepara la PC (Windows) con las mismas capacidades que la Mini para encargos.
 
+Córralo desde el código instalado por el flujo de etiquetas (C:\\Users\\ehven\\motor
+tras ops/instala-todo.sh), no desde un checkout a mano: la llave Run queda atada
+al ops/ del directorio desde donde se corra este script.
+
 Deja, de forma idempotente (correrlo dos veces no cambia nada la segunda):
 
 - Java temurin 25 (zip GA de Adoptium, sha256 verificado por descarga) y
@@ -20,7 +24,8 @@ Modos:
 - Sin banderas: deja lo que falte y reporta cada paso.
 - --comprobar: solo comprueba y dice qué falta; no toca nada.
 - --verificar [cfg]: además corre verificar.sh con las herramientas dejadas
-  (por Git Bash si bash no está en PATH).
+  (por Git Bash si bash no está en PATH). Antes de correrlo, normaliza a LF
+  verificar.sh, el modelo y la cfg si un checkout CRLF los trajo así.
 - --json: imprime el reporte como JSON.
 
 Nunca lee, escribe ni imprime secretos: secretos.env no se toca. Fuera de
@@ -446,19 +451,40 @@ def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
     return salida
 
 
+def _a_lf(ruta: Path) -> bool:
+    """Un checkout CRLF deja '---- MODULE FlujoInspeccion ----\\r' y verificar.sh
+    sale 2 en el grep de la línea MODULE antes de llamar a TLC. Normaliza a LF
+    solo si hace falta (el archivo queda igual al índice de git) y dice si
+    escribió."""
+    try:
+        crudo = ruta.read_bytes()
+    except OSError:
+        return False
+    if b"\r\n" not in crudo:
+        return False
+    temporal = ruta.with_name(ruta.name + ".lf.tmp")
+    temporal.write_bytes(crudo.replace(b"\r\n", b"\n"))
+    os.replace(temporal, ruta)
+    return True
+
+
 def verificar(cfg: str, base: Path, raiz: Path, bash: str = "") -> int:
     jar = jar_tlc(base)
     java = java_instalado(base)
     if java is None or not jar.is_file():
         print("falta java o tla2tools: corre sin --verificar primero", file=sys.stderr)
         return 2
+    inspeccion = raiz / "verificacion" / "inspeccion"
+    normalizados = [n for n in ("verificar.sh", "FlujoInspeccion.tla", cfg) if _a_lf(inspeccion / n)]
+    if normalizados:
+        print("normalizados a LF (un checkout CRLF deja verificar.sh en 2): " + ", ".join(normalizados))
     bash = bash or shutil.which("bash") or BASH_POR_OMISION
     baja = bash.lower().replace("/", "\\")
     if baja.endswith(r"\system32\bash.exe") or r"\windowsapps\bash.exe" in baja:
         # El bash de WSL correría el script dentro de Linux con una ruta C:/...
         bash = BASH_POR_OMISION
     env = {**os.environ, "JAVA": java["java"], "TLA2TOOLS": str(jar)}
-    script = (raiz / "verificacion" / "inspeccion" / "verificar.sh").as_posix()
+    script = (inspeccion / "verificar.sh").as_posix()
     try:
         r = subprocess.run(
             [bash, script, cfg], cwd=str(raiz), env=env,
