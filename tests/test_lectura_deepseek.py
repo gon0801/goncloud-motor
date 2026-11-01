@@ -8,21 +8,26 @@ fase, o el encargo, con un Medium abierto (enc_19680d773791f339, PR #147)."""
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 import unittest
-import tempfile
+from unittest import mock
 
 from motor.encargos.dominio import bloqueantes_abiertos
 from motor.github import FakeGitHub
 from tests.test_entrega_misma_version import _barrido, _pasos
-from tests.test_flujo_revisiones import (
-    _entrega_pr,
-    sonda_sin_aislamiento_del_host,
-)
+from motor.encargos.aislamiento import SondaEntorno
+from tests.test_flujo_revisiones import _entrega_pr
 
 
 def setUpModule():
-    sonda_sin_aislamiento_del_host()
+    # Estas pruebas no ejercen la jaula: la sonda se da por buena también donde
+    # sandbox-exec existe pero no se puede anidar (sesión de agente, jaula del comprobador).
+    parche = mock.patch(
+        "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
+    )
+    parche.start()
+    unittest.addModuleCleanup(parche.stop)
 
 
 def _hallazgo(ident: str, severidad: str = "high", estado: str = "open") -> dict:
@@ -192,6 +197,58 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             self.assertEqual(e.estrategia, "investigar")
             self.assertEqual(_ids(e), ["F9"])
             self.assertEqual(e.fases[1].estado, "entrega")
+
+    def test_si_la_fase_no_se_puede_reabrir_el_encargo_no_termina(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-fases-ilegal", _GhComentarios)
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {"id": "dos", "resultado": "saludo.txt con dos", "requiere": ["uno"]},
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-dos",
+            )
+            vuelta.gh.textos[None] = _comentario()
+            e = vuelta("uno")
+            vuelta.gh.textos[e.fases[0].pr_numero] = _comentario(_hallazgo("F9", "medium"))
+
+            anotar = r.reg.anotar
+
+            def sin_aplicar(encargo, evento, ukey):
+                if evento["kind"] == "fase_reabierta":
+                    return "ilegal"
+                return anotar(encargo, evento, ukey)
+
+            with mock.patch.object(r.reg, "anotar", sin_aplicar):
+                e = vuelta("dos")
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.fase_activa, "dos")
+            self.assertEqual(e.estado, "esperando_reintento")
+            self.assertIn("antes de cerrar", e.motivo)
+
+    def test_un_medium_tardio_impide_el_merge_con_entrega_integrada(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-integrado", _GhComentarios, nivel="integrado"
+            )
+            vuelta.gh.textos[None] = lambda n: (
+                _comentario() if n == 1 else _comentario(_hallazgo("F6", "medium"))
+            )
+            e = vuelta("uno")
+            self.assertNotEqual(e.nivel_alcanzado, "integrado")
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(_ids(e), ["F6"])
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(_pasos(r, "integrado"), [])
+            pr = vuelta.gh.ver(e.entrega.repo, e.pr_numero)
+            self.assertEqual(pr.estado, "abierto")
 
 
 if __name__ == "__main__":
