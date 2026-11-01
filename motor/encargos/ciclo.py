@@ -515,6 +515,9 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
                         )
 
 
+_NOTA_COPIA_SESION = "copia de sesión "
+
+
 def _copiar_sesion_sin_caer(
     registro: Registro, enc: Encargo, origen: Path, destino: Path, sitio: str, hora: str
 ) -> None:
@@ -535,7 +538,7 @@ def _copiar_sesion_sin_caer(
     def anotar(texto: str) -> None:
         registro.anotar(
             enc.id,
-            {"kind": "procedimiento", "data": {"nota": f"copia de sesión ({sitio}): {texto}"[:2000]}},
+            {"kind": "procedimiento", "data": {"nota": f"{_NOTA_COPIA_SESION}({sitio}): {texto}"[:2000]}},
             f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}",
         )
 
@@ -552,11 +555,15 @@ def _copiar_sesion_sin_caer(
         if sitio == "guardar":
             (destino / marca).unlink(missing_ok=True)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        if sitio == "restaurar":
-            try:
+        try:
+            if sitio == "restaurar":
                 vaciar_arbol(destino)
-            except OSError:
-                pass
+            else:
+                # Vaciar el almacén pudo llevarse la marca antes de fallar.
+                destino.mkdir(parents=True, exist_ok=True)
+                (destino / marca).touch()
+        except OSError:
+            pass
         anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
 
 
@@ -3000,6 +3007,10 @@ def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) ->
             if _clase_de_fallo(ev["data"].get("motivo") or "") != clase:
                 break
             seguidos += 1
+        elif ev["kind"] == "procedimiento" and str(ev["data"].get("nota") or "").startswith(
+            _NOTA_COPIA_SESION
+        ):
+            continue  # el aviso de una copia de sesión fallida no es un cambio
         elif ev["kind"] not in _ENTRE_REINTENTOS:
             break
     return seguidos

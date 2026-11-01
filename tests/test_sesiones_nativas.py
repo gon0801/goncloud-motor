@@ -12,7 +12,14 @@ from pathlib import Path
 from unittest import mock
 
 from motor.encargos.arranque import Observacion
-from motor.encargos.ciclo import _copiar_sesion, _copiar_sesion_sin_caer, ahora_iso, recibir
+from motor.encargos.ciclo import (
+    _copiar_sesion,
+    _copiar_sesion_sin_caer,
+    _fallos_de_repo_seguidos,
+    ahora_iso,
+    marcar_espera,
+    recibir,
+)
 from motor.encargos.copiar import copiar_arbol
 from motor.encargos.registro import Registro
 from motor.encargos.dominio import Encargo, decision_proceso
@@ -244,6 +251,36 @@ class CopiaQueFalla(unittest.TestCase):
             for e in registro.eventos(enc.id)
             if e["kind"] == "procedimiento" and "copia de sesión" in e["data"]["nota"]
         ]
+
+    def test_el_aviso_de_la_copia_no_corta_la_racha_de_fallos_de_repo(self):
+        registro, enc, hora = self._encargo()
+        causa = "git fetch: no se alcanza el remoto"
+        marcar_espera(registro, enc.id, causa, "2026-11-01T10:00:00Z", hora)
+        _copiar_sesion_sin_caer(registro, enc, self.origen, self.tmp / "almacen", "restaurar", hora)
+        marcar_espera(registro, enc.id, causa, "2026-11-01T10:05:00Z", hora)
+        self.assertEqual(len(self._fallos(registro, enc)), 1)
+        self.assertEqual(_fallos_de_repo_seguidos(registro, enc.id, causa), 2)
+
+        registro.anotar(
+            enc.id, {"kind": "procedimiento", "data": {"nota": "otra cosa"}}, "otra:1"
+        )
+        self.assertEqual(_fallos_de_repo_seguidos(registro, enc.id, causa), 0)
+
+    def test_si_vaciar_el_almacen_falla_la_marca_sigue_y_no_se_restaura(self):
+        registro, enc, hora = self._encargo()
+        almacen, runtime = self.tmp / "almacen", self.tmp / "runtime"
+        _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
+        self.ilegible.chmod(0o755)
+
+        def borra_la_marca_y_falla(ruta):
+            (ruta / ".copia-incompleta").unlink()
+            raise PermissionError("no se pudo vaciar")
+
+        with mock.patch("motor.encargos.ciclo.vaciar_arbol", side_effect=borra_la_marca_y_falla):
+            _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
+        self.assertTrue((almacen / ".copia-incompleta").exists())
+        _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        self.assertFalse(runtime.exists() and any(runtime.iterdir()))
 
     def test_si_no_se_puede_quitar_la_marca_tampoco_sube_al_barrido(self):
         registro, enc, hora = self._encargo()
