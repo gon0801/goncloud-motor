@@ -11,11 +11,12 @@ import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from motor.encargos.registro import Registro
 from motor.integraciones import canales, directores
 from motor.integraciones.cli import main as director
-from motor.senal import Senal
+from motor.senal import VARIABLE_ENCARGOS, Senal
 
 HORA = "2026-11-01T10:00:00Z"
 T0 = 1_000_000.0
@@ -34,6 +35,10 @@ TRANSPORTE = (
     " sys.exit(0)\n"
     "print(json.dumps({'recibo':'ok-'+os.environ['MOTOR_AVISO_ID']}))\n"
 )
+
+
+class _Alto(BaseException):
+    pass
 
 
 class Banco(unittest.TestCase):
@@ -188,7 +193,7 @@ class VerYSenal(Banco):
         canales.registrar_pasada(self.base, time.time() - 30, {"tg": "se cortó"}, set())
         self.assertNotIn("canales_caidos", self._ver())
 
-    def _kuma(self):
+    def _kuma(self, *variables):
         pedidos = []
 
         class H(BaseHTTPRequestHandler):
@@ -206,9 +211,11 @@ class VerYSenal(Banco):
         self.addCleanup(servidor.server_close)
         self.addCleanup(servidor.shutdown)
         secretos = self.base / "secretos.env"
-        secretos.write_text(
-            f"MOTOR_TELEGRAM_TOKEN=prueba\nMOTOR_KUMA_URL=http://127.0.0.1:{servidor.server_port}/api/push/tk\n"
-        )
+        lineas = ["MOTOR_TELEGRAM_TOKEN=prueba"]
+        for variable in variables or ("MOTOR_KUMA_URL",):
+            token = "tk" if variable == "MOTOR_KUMA_URL" else "tk-encargos"
+            lineas.append(f"{variable}=http://127.0.0.1:{servidor.server_port}/api/push/{token}")
+        secretos.write_text("\n".join(lineas) + "\n")
         secretos.chmod(0o600)
         return pedidos
 
@@ -227,6 +234,81 @@ class VerYSenal(Banco):
         self.assertIn("canal tg caído desde", consulta["msg"][0])
         self.assertIn("no puedo leer el archivo del bot", consulta["msg"][0])
         self.assertEqual(self.llamadas(), 0, "la señal no usa el transporte del canal caído")
+
+    def _supervisor(self, **extra) -> Senal:
+        return Senal(
+            self.base,
+            lambda: {},
+            canales=lambda: canales.canales_caidos(self.base),
+            variable=VARIABLE_ENCARGOS,
+            **extra,
+        )
+
+    def test_el_supervisor_no_usa_la_direccion_del_daemon_de_planes(self):
+        pedidos = self._kuma("MOTOR_KUMA_URL")
+        canales.registrar_pasada(self.base, time.time() - 1000, {"tg": "x"}, set())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(self._supervisor().una_vez(), "con la dirección del daemon no manda nada")
+        self.assertEqual(pedidos, [])
+        self.assertIn("sin MOTOR_KUMA_ENCARGOS_URL", err.getvalue())
+        self.assertTrue(Senal(self.base, lambda: {}).una_vez(), "el daemon sigue con la suya")
+        self.assertEqual(pedidos, ["/api/push/tk?status=up&msg=0%20planes"])
+
+    def test_cada_proceso_manda_a_su_propio_monitor_y_no_se_pisan(self):
+        pedidos = self._kuma("MOTOR_KUMA_URL", "MOTOR_KUMA_ENCARGOS_URL")
+        canales.registrar_pasada(self.base, time.time() - 1000, {"tg": "x"}, set())
+        daemon = Senal(self.base, lambda: {})
+        supervisor = self._supervisor()
+        for _ in range(2):
+            self.assertTrue(daemon.una_vez())
+            self.assertTrue(supervisor.una_vez())
+        del_daemon = [p for p in pedidos if p.startswith("/api/push/tk?")]
+        del_supervisor = [p for p in pedidos if p.startswith("/api/push/tk-encargos?")]
+        self.assertEqual(len(del_daemon), 2)
+        self.assertEqual(len(del_supervisor), 2)
+        self.assertTrue(all("status=up" in p for p in del_daemon), "el monitor del daemon no ve el canal caído")
+        self.assertTrue(all("status=down" in p for p in del_supervisor))
+
+    def test_la_direccion_del_supervisor_puede_estar_en_el_home_instalado(self):
+        pedidos = self._kuma("MOTOR_KUMA_ENCARGOS_URL")
+        instalado = Path(self._tmp.name) / "motor-instalado"
+        instalado.mkdir()
+        (instalado / "secretos.env").write_text((self.base / "secretos.env").read_text())
+        (instalado / "secretos.env").chmod(0o600)
+        (self.base / "secretos.env").unlink()
+        canales.registrar_pasada(self.base, time.time() - 1000, {"tg": "se cortó"}, set())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(self._supervisor().una_vez(), "sin respaldo no hay dirección")
+        self.assertEqual(pedidos, [])
+        self.assertTrue(self._supervisor(respaldo=instalado).una_vez())
+        consulta = urllib.parse.parse_qs(urllib.parse.urlsplit(pedidos[-1]).query)
+        self.assertEqual(consulta["status"], ["down"])
+        self.assertIn("se cortó", consulta["msg"][0])
+
+    def test_el_supervisor_cablea_su_propia_variable_y_el_home_instalado_como_respaldo(self):
+        from motor.encargos.cli import main
+
+        capturado = {}
+
+        class SenalFalsa:
+            def __init__(self, home, tiempos, **kwargs):
+                capturado.update(home=home, **kwargs)
+
+            def arranca(self):
+                raise _Alto
+
+        with mock.patch("motor.senal.Senal", SenalFalsa), mock.patch(
+            "motor.encargos.cli.barrer", return_value=[]
+        ):
+            with self.assertRaises(_Alto):
+                main(["supervisor", "--base", str(self.base), "--agente", "sleep"])
+        self.assertEqual(capturado["home"], self.base.resolve())
+        self.assertEqual(capturado["variable"], "MOTOR_KUMA_ENCARGOS_URL")
+        self.assertNotEqual(capturado["variable"], "MOTOR_KUMA_URL")
+        self.assertEqual(capturado["respaldo"], Path.home() / ".motor")
+        self.assertEqual(capturado["canales"](), [])
 
     def test_sin_canales_la_senal_no_cambia(self):
         pedidos = self._kuma()

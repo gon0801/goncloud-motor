@@ -16,9 +16,16 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   `Bearer`/`Basic`, de `token`, `api_key`, `password`, `clave`, `authorization` o `cookie` tras `=` o `:`, tokens con
   forma `id:secreto` y cualquier cadena opaca de 32 caracteres o más. Queda en una línea y acotado a 200 caracteres,
   porque un error de transporte puede traer la dirección o la clave del bot.
-- **Kuma necesita su dirección.** La señal solo sale si el `secretos.env` de la base del supervisor tiene
-  `MOTOR_KUMA_URL` (permisos 600). Sin ella, un canal caído se escribe en el log del proceso (stderr), una vez por hora,
-  y `motor director ver` sigue mostrándolo.
+- **Un monitor y una dirección propios.** `MOTOR_KUMA_URL` (la que escribe `ops/senal-kuma.sh` en
+  `~/.motor/secretos.env`) es del daemon del modo planes: con ella compartida, los dos procesos mandarían al mismo
+  monitor, el estado oscilaría entre `up` y `down` y cada uno taparía la caída del otro. El supervisor de encargos usa
+  `MOTOR_KUMA_ENCARGOS_URL`, de un monitor push aparte, y nunca lee `MOTOR_KUMA_URL`. La busca primero en el
+  `secretos.env` de su base y, si no está, en el de `~/.motor` (permisos 600 en los dos). Sin esa dirección, un canal
+  caído se escribe en el log del proceso (stderr), una vez por hora, y `motor director ver` sigue mostrándolo.
+- **Pendiente de operación (no lo hace este cambio).** Crear el monitor push del supervisor en Kuma y escribir su
+  dirección como `MOTOR_KUMA_ENCARGOS_URL`. `ops/senal-kuma.sh` hoy solo da de alta los monitores `mini` y `pc` y
+  `motor doctor` solo verifica `MOTOR_KUMA_URL`; extenderlos toca el servidor de Kuma y sus pruebas de ssh, y se deja
+  para un cambio de ops que se pueda ensayar.
 - **Un estado dañado no rompe nada.** Un archivo de estado ilegible se ignora y un `fallos` que no es número cuenta como 0.
 - **Límite.** El estado se actualiza cuando hay un aviso que enviar. Si un canal falla y no quedan avisos pendientes,
   sigue figurando caído hasta el siguiente envío; `ultimo_intento` dice cuándo fue la última prueba.
