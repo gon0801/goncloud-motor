@@ -2926,6 +2926,71 @@ def _incorporar_entradas(
     return ""
 
 
+# Veces seguidas que el mismo fallo de git deja esperar al encargo antes de
+# pedir ayuda: reintentar cada 5 minutos sin fin no arregla lo que no cambia.
+TOPE_FALLOS_REPO = 3
+# Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
+_ENTRE_REINTENTOS = (
+    "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
+    "contexto_entrega",
+)
+
+
+def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) -> int:
+    """Esperas seguidas por la misma causa, sin nada distinto entre ellas. Un
+    ajuste, una respuesta, una orden o un intento que sí arrancó las cortan."""
+    seguidos = 0
+    for ev in reversed(registro.eventos(encargo_id)):
+        if ev["kind"] == "espera":
+            if ev["data"].get("motivo") != causa:
+                break
+            seguidos += 1
+        elif ev["kind"] not in _ENTRE_REINTENTOS:
+            break
+    return seguidos
+
+
+def _fallo_de_repo(
+    registro: Registro, enc: Encargo, causa: str, hora: str, serie: str
+) -> None:
+    """El repo no quedó listo: espera y reintenta. El mismo fallo
+    TOPE_FALLOS_REPO veces seguidas pide ayuda al propietario con la causa."""
+    _anotar_instrumento(
+        registro, enc, "github", causa,
+        "dejar accesible el repo declarado y reintentar",
+        hora, serie,
+    )
+    marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+    veces = _fallos_de_repo_seguidos(registro, enc.id, causa)
+    if veces < TOPE_FALLOS_REPO:
+        return
+    marcar_pregunta(
+        registro,
+        enc.id,
+        f"Git falló {veces} veces seguidas con la misma causa y el motor dejó de "
+        f"reintentar: {causa}. Corrige el repositorio o el espacio y manda un "
+        "ajuste con director corregir para que reintente; también sirve director "
+        "parar y después director continuar.",
+        True,
+        hora,
+        f"pregunta-repo:{enc.id}:{hora}",
+    )
+
+
+def _es_rama_sin_fase(enc: Encargo, fase, actual: str, rama: str) -> bool:
+    """La rama actual es la rama sin fase de este encargo y `fase` es la
+    primera: no depende de ninguna otra, así que su rama es la misma con sufijo."""
+    return (
+        fase is not None
+        and bool(enc.entrega.rama)
+        and actual == enc.entrega.rama
+        and rama != actual
+        and bool(enc.fases)
+        and enc.fases[0].id == fase.id
+        and not _deps_de(enc, fase)
+    )
+
+
 def _asegurar_repo(
     enc: Encargo,
     espacio: Path,
@@ -2965,6 +3030,20 @@ def _asegurar_repo(
         actual = _git(espacio, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         if actual != rama:
             fase = enc.fase_actual
+            if _es_rama_sin_fase(enc, fase, actual, rama) and _git(
+                espacio, "rev-parse", "--verify", "--quiet", f"refs/heads/{rama}"
+            ).returncode != 0:
+                # El trabajo empezó en la rama sin fase y las fases se
+                # declararon después: la primera fase es esa misma rama con otro
+                # nombre. Se conserva el trabajo, con o sin commit, en vez de
+                # crear la rama desde la base y perderlo.
+                r = _git(espacio, "branch", "-m", actual, rama)
+                if r.returncode != 0:
+                    return (
+                        f"no se pudo renombrar la rama {actual} a {rama}: "
+                        f"{r.stderr.strip()[-300:]}"
+                    )
+                return _incorporar_entradas(enc, espacio, registro, hora)
             candidatos = [f"origin/{rama}", rama]
             for dep in _deps_de(enc, fase):
                 candidatos += [
@@ -3349,12 +3428,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 hora, f"entrada-{enc.generacion}",
             )
             return registro.fold(enc.id)
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "dejar accesible el repo declarado y reintentar",
-            hora, "repo-entrega",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+        _fallo_de_repo(registro, enc, causa, hora, "repo-entrega")
         return registro.fold(enc.id)
     enc = registro.fold(enc.id) or enc
     stale = _producto_no_aprobado(enc, espacio)
@@ -4032,12 +4106,7 @@ def _lanzar_uno_en_turno(
                         hora, f"entrada-{generacion}",
                     )
                 else:
-                    _anotar_instrumento(
-                        registro, enc, "github", causa_repo,
-                        "dejar accesible el repo declarado y reintentar",
-                        hora, f"repo-{generacion}",
-                    )
-                    marcar_espera(registro, enc.id, causa_repo, _reanuda_en(300), hora)
+                    _fallo_de_repo(registro, enc, causa_repo, hora, f"repo-{generacion}")
                     return
             # Las entradas incorporadas tocan las fases; el replace local de
             # generacion y conductor sigue vigente para este lanzamiento.

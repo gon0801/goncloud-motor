@@ -275,6 +275,25 @@ El puerto GitHub del supervisor se configura en `github.json` de la base:
 para ensayos y repos locales. Sin puerto, los encargos con nivel `pr` o más
 esperan visibles en el paso de entrega.
 
+### Rama de fase y fallos de git
+
+Un encargo que empieza sin fases trabaja en la rama `encargo/<id>`. Si las
+fases se declaran después, la primera (la que no depende de ninguna otra) usa
+`encargo/<id>-<fase>`. Cuando el espacio sigue en la rama sin fase del mismo
+encargo, el supervisor la renombra con `git branch -m` en vez de crear la rama
+de la fase desde la base. Así se conserva el trabajo, con o sin commit, y un
+merge que solo vivía en esa rama. Una rama distinta, una fase que depende de
+otra o una rama de fase que ya existe siguen el camino de siempre.
+
+Si el repo no queda listo (clonado, rama o remoto), el encargo espera 5
+minutos y reintenta. El mismo fallo tres veces seguidas
+(`TOPE_FALLOS_REPO`), sin nada distinto entre ellos, deja de reintentar:
+queda en `necesita_usuario` con la causa. No abre una solicitud, así que
+`director responder` no tiene a qué contestar y `director continuar` solo
+vale desde `detenido`. Las salidas son un ajuste (`director corregir`) o
+`director parar` y después `director continuar`; la pregunta las nombra. Las
+dos devuelven el trabajo y empiezan la cuenta de nuevo.
+
 ## Ejemplos
 
 ```sh
