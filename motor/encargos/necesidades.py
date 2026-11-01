@@ -33,6 +33,9 @@ MAX_MOTIVO = 2_000
 MAX_PARAMETROS = 32 * 1024
 MAX_RESPUESTA = 256 * 1024
 TIMEOUT_S = float(os.environ.get("MOTOR_HERRAMIENTA_TIMEOUT") or 120)
+# Un run de CI tarda minutos: el barrido solo espera esto a que termine y sigue
+# con los demás encargos. La herramienta continúa por su cuenta.
+ESPERA_CI_S = float(os.environ.get("MOTOR_CI_ESPERA") or 5)
 LEASE_S = 30.0
 
 _AFIRMATIVAS = (
@@ -530,14 +533,15 @@ def _herramienta_viva(marca: dict) -> bool:
 
 
 def _esperar_herramienta(
-    registro: Registro, enc, destino: Path, marca: dict
+    registro: Registro, enc, destino: Path, marca: dict, espera: float | None = None
 ) -> dict:
-    """Espera a la herramienta que ya estaba en marcha; no lanza otra."""
+    """Espera a la herramienta que ya estaba en marcha; no lanza otra. `espera`
+    acota cuánto: una herramienta lenta que ya espera no retiene el barrido."""
     from motor import plataforma
 
     pid = int(marca.get("pid") or 0)
     inicio = str(marca.get("inicio") or "")
-    fin = time.time() + TIMEOUT_S
+    fin = time.time() + (TIMEOUT_S if espera is None else espera)
     while time.time() < fin:
         resultado = _leer(destino / "resultado.json")
         if resultado is not None:
@@ -640,6 +644,10 @@ def _publicar_snapshot(
     return actualizado
 
 
+def _espera_de(sol: Solicitud) -> float | None:
+    return ESPERA_CI_S if sol.operacion == capacidades.CI else None
+
+
 def _completar_entrega(
     espacio: Path, sol: Solicitud, resultado: dict, directorio: Path
 ) -> dict:
@@ -677,7 +685,10 @@ def _ejecutar(
     previa = _leer(marca)
     if previa and _herramienta_viva(previa):
         return _completar_entrega(
-            espacio, sol, _esperar_herramienta(registro, enc, destino, previa), directorio
+            espacio,
+            sol,
+            _esperar_herramienta(registro, enc, destino, previa, _espera_de(sol)),
+            directorio,
         )
 
     _publica(
@@ -725,7 +736,10 @@ def _ejecutar(
             )
     if proc is None and previa is not None:
         return _completar_entrega(
-            espacio, sol, _esperar_herramienta(registro, enc, destino, previa), directorio
+            espacio,
+            sol,
+            _esperar_herramienta(registro, enc, destino, previa, _espera_de(sol)),
+            directorio,
         )
     if proc is None:
         return {
@@ -734,7 +748,8 @@ def _ejecutar(
             "alternativa": "revisar el marcador y reintentar",
         }
 
-    fin = time.time() + TIMEOUT_S
+    espera = _espera_de(sol)
+    fin = time.time() + (TIMEOUT_S if espera is None else espera)
     detenida = False
     sigue_viva = False
     try:
@@ -762,8 +777,16 @@ def _ejecutar(
             time.sleep(0.2)
     finally:
         if proc.poll() is None and not sigue_viva:
-            proc.kill()
-            proc.wait(5)
+            if sol.operacion == capacidades.CI:
+                # SIGTERM primero: la herramienta de CI cierra su rama y su PR.
+                proc.terminate()
+                try:
+                    proc.wait(60)
+                except subprocess.TimeoutExpired:
+                    pass
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(5)
         actual = _leer(marca)
         if not sigue_viva and actual and int(actual.get("pid") or 0) == proc.pid:
             marca.unlink(missing_ok=True)

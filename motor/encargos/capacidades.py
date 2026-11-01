@@ -589,6 +589,14 @@ def _repo_de(concedido: dict, espacio: Path) -> tuple[str, str]:
     return repo, remoto
 
 
+_INTERNO = (".interno", "__pycache__", ".runtime")
+
+
+def _es_interno(ruta: str) -> bool:
+    """Lo que no es producto: lo interno del encargo y lo generado."""
+    return any(parte in _INTERNO for parte in ruta.split("/"))
+
+
 def _commit_temporal(espacio: Path, destino: Path, ident: str) -> tuple[str, str]:
     """Commit con la versión vigente del producto (con o sin commit propio) en un
     índice aparte: ni el índice ni la rama ni el árbol del espacio se tocan."""
@@ -610,6 +618,15 @@ def _commit_temporal(espacio: Path, destino: Path, ident: str) -> tuple[str, str
             ":(exclude)**/__pycache__", ":(exclude)**/.runtime",
             env=env,
         )
+        # `read-tree` trae lo que HEAD ya rastrea y un pathspec de exclusión no
+        # lo quita: un `.interno` que alguien commiteó saldría publicado.
+        rastreados = [p for p in _git_ci(espacio, "ls-files", "-z", env=env).split("\0") if p]
+        fuera = [p for p in rastreados if _es_interno(p)]
+        for i in range(0, len(fuera), 200):
+            _git_ci(
+                espacio, "rm", "--cached", "-q", "--ignore-unmatch", "--", *fuera[i : i + 200],
+                env=env,
+            )
         arbol = _git_ci(espacio, "write-tree", env=env).strip()
         sha = _git_ci(
             espacio, "commit-tree", arbol, "-p", cabeza, "-m", f"ci-prueba {ident}", env=env
@@ -652,27 +669,34 @@ def _limpiar_ci(gh: str, repo: str, remoto: str, espacio: Path, rama: str, numer
         try:
             _gh(gh, repo, "pr", "close", numero, "--delete-branch", plazo=60)
             limpieza["pr_cerrado"] = True
-        except CiFallo as exc:
-            limpieza["pr_error"] = exc.motivo
+        except Exception as exc:  # la limpieza sigue aunque falle un paso
+            limpieza["pr_error"] = getattr(exc, "motivo", None) or f"{type(exc).__name__}: {exc}"
     try:
         presente = _git_ci(espacio, "ls-remote", "--heads", remoto, f"refs/heads/{rama}", plazo=60).strip()
         if presente:
             _git_ci(espacio, "push", "--quiet", remoto, "--delete", f"refs/heads/{rama}", plazo=60)
         limpieza["rama_borrada"] = True
-    except CiFallo as exc:
-        limpieza["rama_error"] = exc.motivo
+    except Exception as exc:
+        limpieza["rama_error"] = getattr(exc, "motivo", None) or f"{type(exc).__name__}: {exc}"
     return limpieza
 
 
 def _barrer_restos(remoto: str, espacio: Path, ident: str) -> None:
     """Un run anterior que murió sin limpiar deja su rama (y con ella su PR, que
-    GitHub cierra al borrarla). Se borran las de este encargo antes de empezar."""
+    GitHub cierra al borrarla). Se borran las de este encargo que ya no pueden
+    pertenecer a un run vivo: el nombre lleva la hora de salida, y un run vivo
+    no pasa de CI_MAX_S. La rama de un run en curso no se toca."""
+    import re
+
     prefijo = "refs/heads/ci-prueba/" + re_sub_ci(ident) + "-"
     try:
         filas = _git_ci(espacio, "ls-remote", "--heads", remoto, prefijo + "*", plazo=60).splitlines()
         for fila in filas:
-            ref = fila.split("	")[-1].strip()
-            if ref.startswith(prefijo):
+            ref = fila.split("\t")[-1].strip()
+            salida = re.search(r"-(\d{9,})$", ref)
+            if not ref.startswith(prefijo) or not salida:
+                continue
+            if time.time() - int(salida.group(1)) > CI_MAX_S + 300:
                 _git_ci(espacio, "push", "--quiet", remoto, "--delete", ref, plazo=60)
     except CiFallo:
         pass
@@ -682,6 +706,32 @@ def re_sub_ci(texto: str) -> str:
     import re
 
     return re.sub(r"[^A-Za-z0-9_.-]", "-", texto)
+
+
+def _manejar_sigterm():
+    """Un SIGTERM (la parada del encargo) se vuelve una salida normal para que
+    corra la limpieza. Solo en el hilo principal, que es donde corre la herramienta."""
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        return None
+
+    def interrumpir(signum, frame):
+        raise CiFallo(
+            "el supervisor detuvo la herramienta de CI; la rama y el PR temporales se cerraron",
+            "volver a pedir ci.correr cuando el encargo continúe",
+        )
+
+    return signal.signal(signal.SIGTERM, interrumpir)
+
+
+def _restaurar_sigterm(previo) -> None:
+    import signal
+    import threading
+
+    if previo is not None and threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, previo)
 
 
 def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) -> dict:
@@ -719,10 +769,9 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
     sha, arbol = _commit_temporal(espacio, destino, ident)
     rama = f"ci-prueba/{re_sub_ci(ident)}-{sha[:7]}-{int(time.time())}"
     numero = ""
-    subida = False
+    previo = _manejar_sigterm()
     try:
         _git_ci(espacio, "push", "--quiet", remoto, f"{sha}:refs/heads/{rama}", plazo=180)
-        subida = True
         url_pr = _gh(
             gh, repo, "pr", "create", "--draft", "--base", base, "--head", rama,
             "--title", f"ci-prueba: {ident} {sha[:7]}",
@@ -774,11 +823,12 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
             "bytes": copia.stat().st_size,
             "cola": log[-MAX_TEXTO:].decode("utf-8", errors="replace"),
         }
-    except CiFallo:
-        if subida:
-            _limpiar_ci(gh, repo, remoto, espacio, rama, numero)
-        raise
-    resultado["limpieza"] = _limpiar_ci(gh, repo, remoto, espacio, rama, numero)
+    finally:
+        # Siempre, sea cual sea la salida: un CiFallo, un error inesperado o un
+        # SIGTERM del supervisor. La rama y el PR temporales no se quedan.
+        limpieza = _limpiar_ci(gh, repo, remoto, espacio, rama, numero)
+        _restaurar_sigterm(previo)
+    resultado["limpieza"] = limpieza
     return {
         "estado": "ok",
         "datos": resultado,
@@ -903,7 +953,16 @@ def ejecutar(
             ruta = _ruta_absoluta(concedido.get("ruta") or "")
             return _snapshot(ruta, destino)
         if operacion == CI:
-            return _correr_ci(concedido, parametros, espacio, destino)
+            try:
+                return _correr_ci(concedido, parametros, espacio, destino)
+            except (CiFallo, ConfigInvalida):
+                raise
+            except Exception as exc:
+                return {
+                    "estado": "error",
+                    "motivo": f"fallo inesperado en ci.correr: {type(exc).__name__}: {exc}",
+                    "alternativa": "la rama y el PR temporales se cerraron; reintentar o pedir el log al operador",
+                }
         if operacion == REMOTO:
             relativa = _ruta_relativa(str(parametros.get("ruta") or ""))
             if str(concedido.get("transporte") or "fichero") == "http":

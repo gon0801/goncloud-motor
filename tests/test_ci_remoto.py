@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -218,13 +220,50 @@ class CorreElCiSobreLaVersionVigente(_Ci):
             {"pr_cerrado": True, "rama_borrada": True},
         )
 
+    def _subir_rama(self, nombre: str) -> None:
+        _git(self.espacio, "push", "--quiet", str(self.bare), f"HEAD:refs/heads/{nombre}")
+
     def test_borra_las_ramas_que_dejo_un_run_anterior_muerto(self):
-        _git(self.espacio, "push", "--quiet", str(self.bare), "HEAD:refs/heads/ci-prueba/enc_x-abc1234-1")
+        self._subir_rama("ci-prueba/enc_x-abc1234-1000000000")
         self.assertEqual(len(self.ramas_remotas()), 1)
 
         self.pedir()
 
         self.assertEqual(self.ramas_remotas(), [])
+
+    def test_no_borra_la_rama_de_un_run_en_curso_del_mismo_encargo(self):
+        viva = f"ci-prueba/enc_x-abc1234-{int(time.time()) - 60}"
+        muerta = "ci-prueba/enc_x-def5678-1000000000"
+        ajena = "ci-prueba/enc_otro-abc1234-1000000000"
+        for nombre in (viva, muerta, ajena):
+            self._subir_rama(nombre)
+
+        self.pedir()
+
+        self.assertEqual(
+            sorted(self.ramas_remotas()),
+            sorted(["refs/heads/" + viva, "refs/heads/" + ajena]),
+        )
+
+    def test_lo_interno_que_ya_estaba_rastreado_no_se_publica(self):
+        (self.espacio / ".interno").mkdir(exist_ok=True)
+        (self.espacio / "sub" / ".interno").mkdir(parents=True)
+        (self.espacio / "pkg" / "__pycache__").mkdir(parents=True)
+        (self.espacio / ".interno" / "viejo.md").write_text("secreto\n")
+        (self.espacio / "sub" / ".interno" / "x.md").write_text("x\n")
+        (self.espacio / "pkg" / "__pycache__" / "a.pyc").write_text("x")
+        (self.espacio / "pkg" / "mod.py").write_text("x = 1\n")
+        _git(self.espacio, "add", "-f", "-A")
+        _git(self.espacio, "commit", "--quiet", "-m", "alguien commiteo lo interno")
+        self.assertIn(".interno/viejo.md", _git(self.espacio, "ls-files"))
+
+        self.pedir()
+
+        arbol = self.estado_gh()["arbol"]
+        self.assertIn("pkg/mod.py", arbol)
+        self.assertIn("nuevo.txt", arbol)
+        self.assertFalse([x for x in arbol if ".interno" in x or "__pycache__" in x], arbol)
+        self.assertIn(".interno/viejo.md", _git(self.espacio, "ls-files"))
 
 
 class CausaClaraSiFalta(_Ci):
@@ -274,6 +313,49 @@ class CausaClaraSiFalta(_Ci):
 
         self.assertEqual(r["estado"], "error")
         self.assertIn("parámetro job", r["motivo"])
+
+
+class LaLimpiezaEsSiempre(_Ci):
+    def test_un_error_que_no_es_de_ci_tambien_limpia(self):
+        with mock.patch.object(cap, "_esperar_run", side_effect=KeyError("databaseId")):
+            r = self.pedir()
+
+        self.assertEqual(r["estado"], "error")
+        self.assertIn("fallo inesperado", r["motivo"])
+        self.assertIn("KeyError", r["motivo"])
+        self.assertEqual(self.ramas_remotas(), [])
+        self.assertFalse(self.estado_gh()["pr_abierto"])
+
+    def test_un_sigterm_del_supervisor_limpia_y_restaura_el_manejador(self):
+        antes = signal.getsignal(signal.SIGTERM)
+
+        def parada(*a, **k):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)
+
+        with mock.patch.object(cap, "_esperar_run", side_effect=parada):
+            r = self.pedir()
+
+        self.assertEqual(r["estado"], "error")
+        self.assertIn("detuvo la herramienta de CI", r["motivo"])
+        self.assertEqual(self.ramas_remotas(), [])
+        self.assertFalse(self.estado_gh()["pr_abierto"])
+        self.assertEqual(signal.getsignal(signal.SIGTERM), antes)
+
+    def test_si_falla_el_cierre_del_pr_igual_borra_la_rama(self):
+        def sin_cerrar(gh, repo, *args, **kw):
+            if args[:2] == ("pr", "close"):
+                raise OSError("disco lleno")
+            return real(gh, repo, *args, **kw)
+
+        real = cap._gh
+        with mock.patch.object(cap, "_gh", side_effect=sin_cerrar):
+            r = self.pedir()
+
+        self.assertEqual(r["estado"], "ok")
+        self.assertEqual(self.ramas_remotas(), [])
+        self.assertIn("disco lleno", r["datos"]["limpieza"]["pr_error"])
+        self.assertFalse(r["datos"]["limpieza"]["pr_cerrado"])
 
 
 class ElPuenteLaConoce(_Ci):
@@ -400,20 +482,36 @@ class UnRunLargoNoSeMata(unittest.TestCase):
                 start_new_session=True,
             )
             self.addCleanup(lenta.kill)
-            with mock.patch.object(nec, "TIMEOUT_S", 0.3), mock.patch.object(
+            with mock.patch.object(nec, "TIMEOUT_S", 60), mock.patch.object(
+                nec, "ESPERA_CI_S", 0.3
+            ), mock.patch.object(
                 nec, "_detenida_ahora", return_value=False
             ), mock.patch.object(nec.subprocess, "Popen", return_value=lenta), mock.patch(
                 "motor.plataforma.hora_inicio", return_value="t0"
+            ), mock.patch(
+                "motor.plataforma.pid_vivo", side_effect=lambda pid: lenta.poll() is None
             ):
+                inicio = time.time()
                 resultado = nec._ejecutar(
                     registro, enc, sol, {"ci-linux": {"tipo": "ci"}},
                     raiz / "espacio", raiz / "ejecucion", False, "2026-10-31T12:00:00Z",
                 )
+                primera = time.time() - inicio
+
+                inicio = time.time()
+                otra = nec._ejecutar(
+                    registro, enc, sol, {"ci-linux": {"tipo": "ci"}},
+                    raiz / "espacio", raiz / "ejecucion", False, "2026-10-31T12:00:05Z",
+                )
+                segunda = time.time() - inicio
 
             self.assertEqual(resultado["estado"], "pendiente")
             self.assertIsNone(lenta.poll(), "la herramienta de CI debe seguir viva")
             marca = nec._marca_herramienta(raiz / "ejecucion", "ci-1")
             self.assertTrue(marca.is_file())
+            self.assertLess(primera, 5, "el barrido solo espera ESPERA_CI_S, no TIMEOUT_S")
+            self.assertEqual(otra["estado"], "pendiente")
+            self.assertLess(segunda, 1, "un CI que ya espera no retiene el barrido")
 
     def test_otra_operacion_que_pasa_del_plazo_si_se_mata(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

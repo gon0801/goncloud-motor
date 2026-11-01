@@ -225,23 +225,29 @@ El juicio declara `"inspeccion": {"operacion": "ci.correr", "recurso":
 `gh` y el git que ya tiene (sin tokens nuevos):
 
 1. Arma un commit con la versión vigente del producto, con o sin commit propio,
-   en un índice aparte: no toca el índice, la rama ni el árbol del espacio, y
-   deja fuera `.interno/`.
+   en un índice aparte: no toca el índice, la rama ni el árbol del espacio. Deja
+   fuera `.interno/`, `__pycache__` y `.runtime`, también si HEAD ya los
+   rastrea.
 2. Lo sube a `ci-prueba/<encargo>-<sha7>-<hora>` y abre un PR borrador.
 3. Espera el run del workflow para ese SHA y el job pedido.
 4. Entrega el log literal, byte a byte, como archivo en
    `.interno/entregas/<solicitud>/<job>-<sha7>-run<N>.log`, con el SHA, el árbol,
    el número de run, la URL y la conclusión del job. Un job en rojo también
    entrega su log.
-5. Cierra el PR y borra la rama, siempre, también si algo falla. Las ramas
-   `ci-prueba/<encargo>-*` que dejó un run muerto se borran al empezar el
-   siguiente.
+5. Cierra el PR y borra la rama, siempre: con un fallo de CI, con un error
+   inesperado y con el SIGTERM de la parada del encargo. Si falla un paso de la
+   limpieza, los demás siguen y la respuesta dice cuál falló. Las ramas
+   `ci-prueba/<encargo>-*` de un run que murió sin limpiar (el nombre lleva la
+   hora de salida) se borran al empezar el siguiente, solo cuando ya pasaron el
+   plazo de un run (`MOTOR_CI_MAX` más 5 minutos): la rama de un run en curso no
+   se toca.
 
 Sin `gh`, sin red, sin sesión de `gh` o con un job que no existe, el revisor
 recibe la causa y qué hacer: `gh no está instalado`, `sin red hacia GitHub`,
 `el acceso de gh o git del supervisor no basta` o la lista de jobs del run. Un
-run tarda minutos: pasado el plazo de la herramienta la respuesta queda
-`pendiente` y la herramienta sigue por su cuenta, con su propio plazo
+run tarda minutos: el barrido solo espera `MOTOR_CI_ESPERA` (5 s) a que la
+herramienta termine y la respuesta queda `pendiente`; en los barridos siguientes
+no espera nada. La herramienta sigue por su cuenta, con su propio plazo
 (`MOTOR_CI_MAX`, 45 minutos) y su limpieza. El recurso no es observable: pedir el
 mismo job sobre la misma versión sí cuenta como repetir.
 
