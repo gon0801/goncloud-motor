@@ -8,6 +8,8 @@ from pathlib import Path
 
 from motor.encargos.registro import Registro, exigir_base
 from motor.encargos.seleccion import solicitar_modelos
+from motor.capacidades_maquina import reporte as reporte_capacidades
+from motor.capacidades_maquina import texto as texto_capacidades
 
 from .directores import (
     capacidades_openbot,
@@ -123,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--cli", required=True)
 
+    s = sub.add_parser("capacidades")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--home", type=Path, default=None)
+    s.add_argument("--json", action="store_true")
+
     args = ap.parse_args(argv)
     try:
         return _correr(args)
@@ -136,6 +143,13 @@ def _registro(base: Path) -> Registro:
 
 
 def _correr(args) -> int:
+    if args.cmd == "capacidades":
+        datos = reporte_capacidades(args.base, args.home)
+        if args.json:
+            print(json.dumps(datos, ensure_ascii=False, indent=2))
+        else:
+            print(texto_capacidades(datos))
+        return 1 if datos["faltas"] else 0
     if args.cmd == "capacidades-openbot":
         doc = capacidades_openbot(args.cli.split())
         base = exigir_base(args.base)
