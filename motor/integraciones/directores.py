@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -862,93 +863,74 @@ def _entregado(aviso: dict) -> bool:
     )
 
 
+def _llano(texto: str, tope: int = 240) -> str:
+    """Deja una frase de un agente apta para una persona no técnica: sin código, rutas, ids ni hashes."""
+    t = re.sub(r"`[^`]*`", " ", str(texto or ""))
+    t = re.sub(r"\b(?:enc|av|p|h|f|s)_[0-9a-f]{6,}\b", " ", t)
+    t = re.sub(r"\S*[/\\]\S*", " ", t)
+    t = re.sub(r"\b[\w-]+\.(?:py|json|md|txt|yml|yaml|toml|sh|ts|js|log)\b", " ", t)
+    t = re.sub(r"\b[0-9a-f]{7,64}\b", " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" .,;:-")
+    return t if len(t) <= tope else t[: tope - 1].rstrip() + "…"
+
+
 def hechos_de_avance(enc) -> list[dict]:
-    """Hechos ya registrados que merecen un aviso. La identidad es el hecho, no el reloj."""
+    """Hechos ya registrados que merecen un aviso a una persona no técnica. La identidad es el hecho.
+
+    Van: el encargo arrancó, necesita una decisión, el PR está listo para decidir el merge y se trabó.
+    El cierre es otro aviso (`_aviso_de`). Decisiones del agente, esperas de reintento, revisiones,
+    comprobaciones y fases intermedias quedan en el registro y no salen al canal.
+    """
     if enc.estado in ("cancelado", "detenido", "deteniendo", "terminado"):
         return []
     hechos = []
     fase = enc.fase_actual
-    if fase is not None:
+    if fase is not None or enc.estado in ("ejecutando", "esperando_reintento", "conciliando"):
+        hechos.append(
+            {"tipo": "inicio", "identidad": "inicio", "texto": "Empecé a trabajar en tu encargo."}
+        )
+    if fase is not None and fase.pr_numero and fase.nivel_alcanzado == "pr":
         hechos.append(
             {
-                "tipo": "fase",
-                "identidad": f"{fase.id}:{fase.estado}:{fase.resultado}:{fase.evidencia}",
-                "texto": (
-                    f"Fase {fase.id} ({fase.estado}). "
-                    f"Resultado: {fase.resultado or 'sin resultado todavía'}."
-                ),
+                "tipo": "pr",
+                "identidad": str(fase.pr_numero),
+                "texto": f"El PR #{fase.pr_numero} está listo para que decidas si lo integras.",
             }
         )
-        if fase.revision_vigente is not None:
-            ref = fase.revision_vigente
-            hechos.append(
-                {
-                    "tipo": "revision",
-                    "identidad": f"{ref.revision_id}:{ref.veredicto}:{ref.version}",
-                    "texto": f"Revisión de {fase.id}: {ref.veredicto} sobre {ref.version}.",
-                }
-            )
-        if fase.pr_numero:
-            hechos.append(
-                {
-                    "tipo": "pr",
-                    "identidad": f"{fase.pr_numero}:{fase.pr_sha}",
-                    "texto": f"PR #{fase.pr_numero} de {fase.id} en {fase.pr_sha}.",
-                }
-            )
     for sol in enc.solicitudes:
         if sol.estado != "pregunta":
             continue
+        pregunta = _llano(sol.pregunta or sol.motivo)
         hechos.append(
             {
                 "tipo": "pregunta",
                 "identidad": sol.id,
                 "solicitud": sol.id,
-                "texto": (
-                    f"Pregunta {sol.id} del encargo {enc.id}, fase {sol.fase}: "
-                    f"{sol.pregunta or sol.motivo}"
-                ),
+                "texto": "Necesito tu decisión para seguir."
+                + (f" {pregunta}" if pregunta else ""),
             }
         )
-    for dec in enc.decisiones:
+    if enc.estado == "necesita_usuario" and enc.motivo:
         hechos.append(
             {
-                "tipo": "decision",
-                "identidad": dec.id,
-                "texto": (
-                    f"Decisión: {dec.eleccion}. Motivo: {dec.motivo}. "
-                    f"Evidencia: {dec.evidencia or 'sin evidencia'}."
-                ),
+                "tipo": "pregunta",
+                "identidad": "usuario:" + hashlib.sha256(enc.motivo.encode()).hexdigest()[:12],
+                "texto": "Necesito tu decisión para seguir. " + _llano(enc.motivo),
             }
         )
-    if enc.estado == "esperando_reintento" and (enc.motivo or enc.reanuda_en):
-        hechos.append(
-            {
-                "tipo": "espera",
-                "identidad": f"reintento:{enc.reanuda_en}:{enc.motivo}",
-                "texto": (
-                    f"Espera: {enc.motivo or 'servicio'}. "
-                    f"Reanuda: {enc.reanuda_en or 'sin hora'}."
-                ),
-            }
-        )
-    elif enc.impedimento and (enc.impedimento_causa or enc.impedimento_condicion):
-        hechos.append(
-            {
-                "tipo": "espera",
-                "identidad": f"impedimento:{enc.impedimento}:{enc.impedimento_causa}",
-                "texto": (
-                    f"Espera de {enc.impedimento}: {enc.impedimento_causa}. "
-                    f"Condición: {enc.impedimento_condicion}."
-                ),
-            }
-        )
+    clase, condicion = "", ""
+    if enc.impedimento and (enc.impedimento_causa or enc.impedimento_condicion):
+        clase, condicion = enc.impedimento, enc.impedimento_condicion
     elif (espera := espera_inspeccion_consumida(enc)) is not None:
+        clase, condicion = espera["clase"], ""
+    if clase:
+        hace_falta = _llano(condicion)
         hechos.append(
             {
-                "tipo": "espera",
-                "identidad": f"impedimento:{espera['clase']}:{espera['causa']}",
-                "texto": f"Espera de {espera['clase']}: {espera['causa']}. Condición: {espera['condicion']}.",
+                "tipo": "trabado",
+                "identidad": clase,
+                "texto": "Tu encargo se trabó y no puede avanzar solo."
+                + (f" Hace falta: {hace_falta}." if hace_falta else ""),
             }
         )
     return hechos
@@ -1175,10 +1157,10 @@ def _publicar_aviso(
             return _cerrar_aviso(guardado, True)
         if nombre in vuelta.caidos or _por_esperar(guardado, vuelta.ahora):
             return _cerrar_aviso(guardado, False)
-        if _declara_idempotencia(cfg):
-            _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
-            return _cerrar_aviso(guardado, True)
         if not conciliacion:
+            if _declara_idempotencia(cfg):
+                _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
+                return _cerrar_aviso(guardado, True)
             guardado["motivo"] = "aviso incierto sin conciliacion; no se reenvia"
             _atomico(path, guardado)
             return _cerrar_aviso(guardado, True)
@@ -1277,7 +1259,7 @@ def drenar(registro: Registro, cortar: str = "", ahora: float | None = None) -> 
         historicos = {
             _aviso_de_hecho(anterior, hecho)["id"]
             for hecho in hechos_de_avance(anterior) if hecho["tipo"] in (
-                "fase", "revision", "pr", "decision"
+                "inicio", "pr"
             )
         } if anterior is not None else set()
         trabajos: list[tuple[dict, str | None]] = []
