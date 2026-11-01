@@ -2,18 +2,23 @@
 ni un comando del comprobador la heredan en su entorno, aunque el supervisor la tenga en el entorno de su proceso o
 en el `secretos.env` de su base. Si alguien la exporta al entorno de los agentes, estas pruebas fallan."""
 
+import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos import aislamiento
-from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
+from motor.encargos import aislamiento, comprobacion
+from motor.encargos.aislamiento import lecturas_del_interprete
+from tests.test_comprobador_interprete import EXIGIDA, FLUJO, JAULA_REAL
+from tests.test_flujo_revisiones import Recorrido
 
-SANDBOX = Path("/usr/bin/sandbox-exec")
 # Armada al correr: ningún literal con forma de llave entra al repo.
 DIRECCION = "http://127.0.0.1:1/api/push/" + "sentinela" * 3
+VER_ENTORNO = "import json, os; print(json.dumps(dict(os.environ)))"
 
 
 class Base(unittest.TestCase):
@@ -66,16 +71,75 @@ class EntornoDeLosAgentes(Base):
                     self.exige_limpio(roto)
 
 
-@unittest.skipUnless(HAY_AISLAMIENTO and SANDBOX.is_file(), SIN_AISLAMIENTO)
-class ComandoAisladoReal(Base):
-    def test_el_comando_que_lanza_el_motor_no_lleva_la_direccion_de_kuma(self):
+class LaPruebaCorreEnCi(unittest.TestCase):
+    """Una prueba que en CI siempre se salta no es evidencia: el job de macOS tiene que correr este archivo."""
+
+    def test_el_job_de_macos_corre_este_archivo_junto_al_del_comprobador(self):
+        texto = FLUJO.read_text(encoding="utf-8")
+        lineas = [l for l in texto.splitlines() if "tests.test_kuma_fuera_del_entorno_de_agentes" in l]
+        self.assertEqual(len(lineas), 1, lineas)
+        self.assertIn("unittest", lineas[0])
+        self.assertIn("tests.test_comprobador_interprete", lineas[0])
+        job = texto.split("  jaula-macos:")[1].split("\n  bateria:")[0]
+        self.assertIn(lineas[0], job.splitlines())
+        self.assertIn('MOTOR_EXIGE_SEATBELT: "1"', job)
+
+    def test_la_parte_sin_jaula_corre_en_la_bateria_normal(self):
+        # EntornoDeLosAgentes no se salta en ningún host y la batería de ubuntu descubre todo tests/test_*.py.
+        texto = FLUJO.read_text(encoding="utf-8")
+        bateria = texto.split("\n  bateria:")[1]
+        self.assertIn("python -m unittest discover -s tests -t . -v", bateria)
+        self.assertTrue(Path(__file__).name.startswith("test_"))
+        for nombre in (
+            "test_la_sesion_de_un_agente_no_hereda_la_direccion_de_kuma",
+            "test_un_comando_del_comprobador_no_hereda_la_direccion_de_kuma",
+        ):
+            self.assertTrue(callable(getattr(EntornoDeLosAgentes, nombre, None)), nombre)
+        self.assertFalse(getattr(EntornoDeLosAgentes, "__unittest_skip__", False))
+
+
+class ConLaJaulaRealDeMacOS(Base):
+    def setUp(self):
+        super().setUp()
+        if JAULA_REAL:
+            return
+        causa = "hace falta sandbox-exec aplicable (macOS fuera de otra jaula)"
+        if EXIGIDA:
+            self.fail("MOTOR_EXIGE_SEATBELT=1 y la jaula real no se puede aplicar: " + causa)
+        self.skipTest(causa)
+
+    def test_la_sesion_de_un_agente_lanzada_en_la_jaula_real_no_ve_la_direccion_de_kuma(self):
         with self.supervisor_con_la_direccion():
             for lectura in (False, True):
                 with self.subTest(lectura=lectura):
                     comando = aislamiento.aislar(
-                        ["python3", "-c", "pass"], self.espacio, self.runtime / f"r{int(lectura)}", lectura=lectura
+                        [sys.executable, "-c", VER_ENTORNO],
+                        self.espacio,
+                        self.runtime / f"r{int(lectura)}",
+                        lectura=lectura,
+                        lecturas_extra=lecturas_del_interprete(),
                     )
-                    self.exige_limpio(comando.entorno)
+                    hecho = subprocess.run(
+                        comando.argv,
+                        cwd=self.espacio,
+                        env=comando.entorno,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    self.assertEqual(hecho.returncode, 0, hecho.stderr)
+                    self.exige_limpio(json.loads(hecho.stdout))
+
+    def test_un_comando_del_comprobador_en_la_jaula_real_no_ve_la_direccion_de_kuma(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "kuma-1", "Crea dato.txt con 42")
+            self.addCleanup(r.reg.close)
+            comandos = [{"objetivo": "entorno", "argv": [sys.executable, "-c", VER_ENTORNO]}]
+            with self.supervisor_con_la_direccion():
+                datos = comprobacion._ejecutar_declaradas(comandos, r.espacio, r.d, r.d / "comprobador-t")
+        ejecucion = datos["ejecuciones"][0]
+        self.assertEqual(ejecucion.get("rc"), 0, ejecucion)
+        self.exige_limpio(json.loads(ejecucion["stdout"]))
 
 
 if __name__ == "__main__":
