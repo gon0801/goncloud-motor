@@ -3500,6 +3500,19 @@ def _marca_deepseek(directorio: Path) -> dict:
     return marca if isinstance(marca, dict) else {}
 
 
+def _marcar_lectura_deepseek(
+    directorio: Path, sha: str, epoch: float, error: str = ""
+) -> None:
+    try:
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "deepseek_lectura.json").write_text(
+            json.dumps({"sha": sha, "epoch": epoch, "error": error}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 def _releer_deepseek(
     registro: Registro, enc: Encargo, gh, directorio: Path, hora: str, epoch: float,
     devolver: bool = True,
@@ -3530,19 +3543,24 @@ def _releer_deepseek(
         desde = epoch - float(marca.get("epoch") or 0)
     except (TypeError, ValueError):
         desde = _RELECTURA_DEEPSEEK_S
-    if marca.get("sha") == sha and 0 <= desde < _RELECTURA_DEEPSEEK_S:
+    espaciado = _REINTENTO_FORZADO_S if marca.get("error") else _RELECTURA_DEEPSEEK_S
+    if marca.get("sha") == sha and 0 <= desde < espaciado:
         return enc
-    try:
-        directorio.mkdir(parents=True, exist_ok=True)
-        (directorio / "deepseek_lectura.json").write_text(
-            json.dumps({"sha": sha, "epoch": epoch}), encoding="utf-8"
-        )
-    except OSError:
-        pass
     try:
         comentarios = gh.comentarios_deepseek(enc.entrega.repo, fase.pr_numero, sha)
-    except Exception:
-        return enc
+    except Exception as exc:
+        # El espaciado no se consume con una lectura que falló: se reintenta
+        # pronto y la causa queda a la vista, sin cambiar el estado del encargo.
+        error = f"{type(exc).__name__}: {exc}"
+        _marcar_lectura_deepseek(directorio, sha, epoch, error)
+        _anotar_instrumento(
+            registro, enc, "github",
+            f"no se pudo releer el comentario de DeepSeek: {error}",
+            "reintentar la relectura de DeepSeek del mismo SHA",
+            hora, f"deepseek-releer-{sha[:12]}-{int(epoch // 600)}",
+        )
+        return registro.fold(enc.id) or enc
+    _marcar_lectura_deepseek(directorio, sha, epoch)
     if not comentarios:
         return enc
     huella = _huella_comentarios(comentarios)
@@ -3587,9 +3605,12 @@ def _veredicto_antes_de_cerrar(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> Encargo | None:
     """Antes de terminar una fase con entrega pr (con integrado o desplegado,
-    antes del merge), el veredicto vigente de DeepSeek sobre el SHA final de su PR; y, si es la última fase, sobre el de
-    cada PR de las anteriores: DeepSeek puede publicar un hallazgo después de
-    que el motor leyó, y la fase ya cerrada no volvería a mirarse.
+    antes del merge), el veredicto vigente de DeepSeek sobre el SHA final de su
+    PR; y, si es la última fase, sobre el de cada PR de las anteriores:
+    DeepSeek puede publicar un hallazgo después de que el motor leyó, y la fase
+    ya cerrada no volvería a mirarse. Solo se reabre una fase cuyo PR sigue
+    abierto (nivel alcanzado pr): con integrado o desplegado las anteriores ya
+    se fusionaron y su corrección no cabe en ese PR.
 
     Devuelve None si se puede cerrar. Si hay un High o un Medium abierto, la
     fase de ese PR vuelve al responsable y se devuelve el encargo así."""
@@ -4120,6 +4141,14 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     if enc.entrega.nivel in ("integrado", "desplegado") and enc.nivel_alcanzado == "pr":
+        if enc.deepseek_sha != enc.pr_sha:
+            # No se integra un SHA que DeepSeek no revisó.
+            marcar_espera(
+                registro, enc.id,
+                f"esperando revisión de DeepSeek para el SHA {enc.pr_sha}",
+                _reanuda_desde(hora, 60), hora,
+            )
+            return registro.fold(enc.id)
         devuelto = _veredicto_antes_de_cerrar(registro, enc, gh, hora)
         if devuelto is not None:
             return devuelto
