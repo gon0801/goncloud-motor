@@ -2366,7 +2366,11 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         producto = replace(producto, sha_git=sha)
     nueva = replace(
         fase,
-        fallas_checks=() if paso == "checks_verdes" else fase.fallas_checks,
+        fallas_checks=(
+            tuple(sorted(str(x) for x in d["fallas"]))
+            if paso == "checks_rojos" and "fallas" in d
+            else () if paso == "checks_verdes" else fase.fallas_checks
+        ),
         entrega_bloqueada_sha=(
             "" if paso == "checks_verdes" else fase.entrega_bloqueada_sha
         ),
@@ -2408,7 +2412,9 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         ultimo_hecho=f"entrega externa: {paso}",
         hora=hora or e.hora,
     )
-    return _con_progreso(e, resultado) if paso == "checks_verdes" else resultado
+    if paso in ("checks_verdes", "checks_rojos"):
+        return _con_progreso(e, resultado)
+    return resultado
 
 
 def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:

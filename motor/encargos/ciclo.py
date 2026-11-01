@@ -3533,8 +3533,10 @@ def _reconciliar_checks(
     if not veredicto.green:
         if not veredicto.fallas:
             return _anotar_checks_esperando(registro, enc, enc.pr_numero, sha, hora)
-        if fase.checks_esperando_sha == sha:
-            # La corrida que esperaba terminó en rojo: ya no hay revisión pendiente.
+        fallas = tuple(sorted(str(x) for x in veredicto.fallas))
+        if fase.checks_esperando_sha == sha or fallas != tuple(sorted(fase.fallas_checks)):
+            # La corrida terminó en rojo: ya no hay revisión pendiente y los checks
+            # en rojo son los de esta lectura, no los de la anterior.
             esperas = sum(
                 1
                 for ev in registro.eventos(enc.id)
@@ -3553,10 +3555,11 @@ def _reconciliar_checks(
                         "repo": enc.entrega.repo,
                         "numero": enc.pr_numero,
                         "sha": sha,
+                        "fallas": list(fallas),
                         "hora": hora,
                     },
                 },
-                f"entrega:{enc.id}:{enc.fase_activa}:checks_rojos:{sha}:{esperas}",
+                f"entrega:{enc.id}:{enc.fase_activa}:checks_rojos:{sha}:{esperas}:{'+'.join(fallas)}",
             )
             return registro.fold(enc.id)
         return enc
