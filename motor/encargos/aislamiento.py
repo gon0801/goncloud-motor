@@ -29,6 +29,39 @@ class ComandoAislado:
     ejecutable: dict | None = None
 
 
+def lecturas_del_interprete() -> tuple[Path, ...]:
+    """La instalación del intérprete que corre este supervisor, para leerla y
+    nada más. En la Mini el Python 3.12 de uv vive bajo el home, que la jaula
+    niega: sin esto arranca con "No module named encodings" y el comprobador
+    se queda con el Python 3.9 del sistema. Se concede el ejecutable (y su
+    enlace) y los prefijos de la instalación; nunca el home ni sus padres."""
+    home = Path.home().resolve()
+    amplios = {home, *home.parents}
+    candidatos = [Path(sys.executable)]
+    candidatos += [
+        Path(p) for p in (sys.base_prefix, sys.prefix, sys.base_exec_prefix, sys.exec_prefix)
+    ]
+    salida: list[Path] = []
+
+    def agregar(ruta: Path) -> None:
+        if ruta.exists() and ruta not in amplios and ruta not in salida:
+            salida.append(ruta)
+
+    for candidato in candidatos:
+        agregar(candidato)
+        agregar(candidato.resolve())
+        # `~/.local/bin/python3` apunta a un directorio que a su vez es un
+        # enlace: cada salto bajo el home se concede como tal, porque la jaula
+        # solo conoce las rutas resueltas.
+        actual = Path(os.path.abspath(candidato))
+        recorrido = Path(actual.anchor)
+        for parte in actual.parts[1:]:
+            recorrido = recorrido / parte
+            if recorrido.is_symlink() and home in recorrido.parents:
+                agregar(recorrido)
+    return tuple(salida)
+
+
 def _codex_windows() -> Path:
     directo = shutil.which("codex.exe")
     if directo:
@@ -413,6 +446,11 @@ def aislar(
         }
     for path in (espacio, runtime, *(p.resolve() for p in lecturas_extra)):
         perfil.append(f"(allow file-read* (subpath {json.dumps(str(path))}))")
+    for path in lecturas_extra:
+        # Un enlace concedido se lee como enlace además de su destino resuelto.
+        sin_resolver = Path(os.path.abspath(path))
+        if sin_resolver != sin_resolver.resolve():
+            perfil.append(f"(allow file-read* (literal {json.dumps(str(sin_resolver))}))")
     for path in (runtime,) if lectura else (espacio, runtime):
         perfil.append(f"(allow file-write* (subpath {json.dumps(str(path))}))")
     for path in ("/dev/null", "/dev/tty"):

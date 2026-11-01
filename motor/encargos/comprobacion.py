@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, replace as _replace
 from pathlib import Path
 
-from .aislamiento import aislar
+from .aislamiento import aislar, lecturas_del_interprete
 from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_hallazgo
 
 INTERNO = ".interno"
@@ -152,7 +152,12 @@ def _ejecutar_declaradas(
             from .registro import Registro
             from .sesion import _base_de, descendientes
 
-            comando = aislar(c["argv"], espacio, contenedor / f"runtime-{i}")
+            comando = aislar(
+                c["argv"],
+                espacio,
+                contenedor / f"runtime-{i}",
+                lecturas_extra=() if os.name == "nt" else lecturas_del_interprete(),
+            )
             base = _base_de(espacio)
             reg = Registro(base)
             try:

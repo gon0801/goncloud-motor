@@ -33,6 +33,15 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    válido: para cambiar una cifra basta leer el valor final y dejarlo en
    `evidencia.txt`. No hay `procedimiento.json` obligatorio ni cobertura
    forzada.
+   El comprobador corre cada comando en la jaula seatbelt con lectura de solo
+   lectura a la instalación del intérprete que usa el propio supervisor
+   (`aislamiento.lecturas_del_interprete`: el ejecutable, su enlace y los
+   prefijos de Python; nunca el home ni sus padres). Sin eso, un Python
+   instalado bajo el home, como el 3.12 de uv en la Mini, no arranca dentro de
+   la jaula ("No module named encodings") y solo queda el del sistema.
+   Cada enlace de esa instalación bajo el home se concede también como
+   enlace. El job `jaula-macos` del CI corre `tests.test_comprobador_interprete`
+   con la jaula real y `MOTOR_EXIGE_SEATBELT=1`: ahí un skip es un fallo.
 5. Otro modelo revisa. "Otro" es por identidad `proveedor/modelo`, derivada de
    las cadenas de la política común (`codigo` implementa, `planear` revisa) y
    excluyendo los modelos que ya implementaron en este encargo. Una sesión
