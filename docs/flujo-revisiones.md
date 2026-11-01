@@ -351,7 +351,11 @@ responsable en su misma rama y su mismo PR; al prepararla de nuevo, el
 encargo sigue con la fase que quedaba. Si el registro no aplica la lectura o
 la reapertura, el encargo no cierra: anota el fallo y reintenta a los 2 minutos. Sin puerto de
 GitHub tampoco cierra una fase con PR y nivel `pr` alcanzado: no hay veredicto
-que comprobar, y el encargo espera visible en el paso de entrega.
+que comprobar, y el encargo espera visible en el paso de entrega. Con entrega
+`integrado` o `desplegado`, las fases anteriores ya se fusionaron y no se
+reabren: si el comentario de DeepSeek sobre su PR trae un High o un Medium
+abierto al cerrar la última fase, el encargo no termina en silencio, sino que
+pregunta una vez al propietario (`necesita_usuario`) si abre un encargo aparte.
 
 Un repo sin los workflows `ai-review-worker.yml` / `ai-review-publish.yml` o
 sin secretos no finge una revisión leída. La espera de DeepSeek no vence:
