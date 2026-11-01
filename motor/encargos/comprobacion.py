@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, replace as _replace
 from pathlib import Path
 
-from .aislamiento import aislar
+from .aislamiento import aislar, lecturas_del_interprete
 from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_hallazgo
 
 INTERNO = ".interno"
@@ -152,7 +152,12 @@ def _ejecutar_declaradas(
             from .registro import Registro
             from .sesion import _base_de, descendientes
 
-            comando = aislar(c["argv"], espacio, contenedor / f"runtime-{i}")
+            comando = aislar(
+                c["argv"],
+                espacio,
+                contenedor / f"runtime-{i}",
+                lecturas_extra=() if os.name == "nt" else lecturas_del_interprete(),
+            )
             base = _base_de(espacio)
             reg = Registro(base)
             try:
@@ -398,7 +403,7 @@ Escribe SOLO tu juicio en {resultado}, con este objeto JSON interno.
 "aprobadas":["ruta revisada y aprobada"],
 "efectos_pendientes":["id exacto de cada solicitud de efecto que apruebas"],
 "inspeccion_faltante":"inspeccion concreta que falta, solo si el veredicto es no_concluyente",
-"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
+"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer|ci.correr", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
 "ampliacion":"motivo si revisaste fuera de las rutas tocadas",
 "instrumento":{{"causa":"que fallo del instrumento, si aplica"}}}}
 Si el producto cumple y solo faltan efectos del adaptador, aprueba y enumera en
@@ -562,7 +567,13 @@ def _inspeccion_de(crudo) -> InspeccionPedido:
     if not isinstance(crudo, dict):
         raise DefectoJuicio("inspeccion", "la inspección declarada debe ser un objeto")
     operacion = str(crudo.get("operacion") or "").strip()
-    conocidas = (capacidades.TABLAS, capacidades.CONSULTAR, capacidades.SNAPSHOT, capacidades.REMOTO)
+    conocidas = (
+        capacidades.TABLAS,
+        capacidades.CONSULTAR,
+        capacidades.SNAPSHOT,
+        capacidades.REMOTO,
+        capacidades.CI,
+    )
     if operacion not in conocidas:
         raise DefectoJuicio(
             "inspeccion",

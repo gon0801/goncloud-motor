@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -18,7 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import capacidades
-from .dominio import Solicitud, TransicionIlegal
+from .dominio import Solicitud, TransicionIlegal, respuesta_vigente
 from .frontera import leer_parada_local
 from .registro import Registro
 
@@ -33,6 +34,12 @@ MAX_MOTIVO = 2_000
 MAX_PARAMETROS = 32 * 1024
 MAX_RESPUESTA = 256 * 1024
 TIMEOUT_S = float(os.environ.get("MOTOR_HERRAMIENTA_TIMEOUT") or 120)
+# Un run de CI tarda minutos: el barrido solo espera esto a que termine y sigue
+# con los demás encargos. La herramienta continúa por su cuenta.
+ESPERA_CI_S = float(os.environ.get("MOTOR_CI_ESPERA") or 5)
+# Lo que se le da a una herramienta de CI entre el SIGTERM y el SIGKILL: su
+# limpieza (cerrar el PR, borrar la rama) son varias llamadas de red.
+CI_GRACIA_S = float(os.environ.get("MOTOR_CI_GRACIA") or 90)
 LEASE_S = 30.0
 
 _AFIRMATIVAS = (
@@ -142,6 +149,7 @@ Operaciones:
 - `sqlite.consultar --recurso <r> --parametro sql="SELECT ..."`: solo lectura, una sentencia.
 - `sqlite.snapshot --recurso <r>`: copia consistente con origen y huella; la ruta queda en la respuesta.
 - `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado.
+- `ci.correr --recurso <r> --parametro job="nombre-del-job"`: corre el workflow de pruebas de GitHub sobre la versión vigente del producto y devuelve el log literal de ese job, con el SHA y el número de run. Tarda minutos: la respuesta puede quedar `pendiente`. La rama y el PR temporales se cierran solos.
 Añade `--motivo` con para qué la necesitas. Si la respuesta es `pregunta`, queda una autorización
 pendiente con su id: sigue con lo demás o espera con `python3 {cliente} ver <id>`. Una respuesta
 `error` trae la causa y la alternativa; corrige la solicitud en lugar de repetirla igual.
@@ -197,6 +205,7 @@ def _solicitud_de(enc, crudo: dict) -> Solicitud:
         capacidades.CONSULTAR,
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
+        capacidades.CI,
         capacidades.DECISION,
     )
     if operacion not in conocidas:
@@ -253,9 +262,13 @@ def _afirmativa(texto: str) -> bool:
 
 def _vigente(enc, sol: Solicitud) -> bool:
     """La solicitud sigue correspondiendo al trabajo que se va a ejecutar."""
-    from .dominio import solicitud_vigente
+    from .dominio import solicitud_ligada, solicitud_vigente
 
-    return solicitud_vigente(enc, sol.fase, sol.intento)
+    return solicitud_vigente(enc, sol.fase, sol.intento) or (
+        # La inspección que la fase espera sigue siendo el trabajo aunque otra
+        # vuelta del revisor haya abierto su intento después de pedirla.
+        solicitud_ligada(enc, sol) and sol.fase == enc.fase_activa
+    )
 
 
 def _autorizado(enc, recurso: str, operacion: str, fase: str, intento: str) -> bool:
@@ -324,6 +337,14 @@ def _marca_herramienta(directorio: Path, solicitud_id: str) -> Path:
     return Path(directorio) / HERRAMIENTAS / f"{solicitud_id}.json"
 
 
+def _archivo_de(sol: Solicitud, datos: dict) -> tuple[str, str, str]:
+    """(clave pública, clave del host, nombre) del archivo que publica la operación."""
+    if sol.operacion == capacidades.CI:
+        nombre = Path(str(datos.get("log_nombre") or "ci.log")).name
+        return "log", "log_host", nombre
+    return "snapshot", "snapshot_host", "snapshot.db"
+
+
 def _respuesta_de_registro(
     espacio: Path, sol: Solicitud, directorio: Path | None = None
 ) -> dict:
@@ -336,16 +357,17 @@ def _respuesta_de_registro(
     if directorio is not None:
         resultado = _leer(_destino_host(directorio, sol.id) / "resultado.json")
     datos = (resultado or {}).get("datos")
-    if isinstance(datos, dict) and sol.operacion == capacidades.SNAPSHOT:
-        publico = Path(espacio) / ENTREGAS / sol.id / "snapshot.db"
-        host = Path(str(datos.get("snapshot_host") or ""))
+    if isinstance(datos, dict) and sol.operacion in capacidades.CON_ARCHIVO:
+        clave, clave_host, nombre = _archivo_de(sol, datos)
+        publico = Path(espacio) / ENTREGAS / sol.id / nombre
+        host = Path(str(datos.get(clave_host) or ""))
         if publico.is_file() and host.is_file() and _mismo_contenido(publico, host):
-            datos = {**datos, "snapshot": str(publico)}
+            datos = {**datos, clave: str(publico)}
         elif publico.is_file():
             datos = {
                 **datos,
-                "snapshot": "",
-                "snapshot_invalido": "la copia pública no coincide con el snapshot del host",
+                clave: "",
+                clave + "_invalido": "la copia pública no coincide con la del host",
             }
     return _respuesta(
         sol,
@@ -379,6 +401,46 @@ def _escribir_respuesta(
     if preservar and destino.exists():
         destino = carpeta / f"{sol.id}.{doc.get('estado') or 'aviso'}-{int(time.time())}.json"
     _publica(destino, doc, raiz=Path(espacio))
+
+
+_ESTADOS_SUPERADOS = ("error", "detenida", "pendiente", "pregunta", "conflicto", "tardia")
+
+
+def _con_respuestas_propietario(doc: dict, sol: Solicitud) -> dict:
+    """El documento del buzón dice lo que el propietario contestó, completo.
+
+    Un error o una detención anterior no es el estado actual de lo que el
+    propietario ya respondió: pasa a `anterior`. Un resultado real (`resuelta`)
+    o una denegación conservan su estado y su contenido.
+    """
+    textos = sol.respuestas_propietario
+    if not textos:
+        return doc
+    nuevo = dict(doc)
+    if nuevo.get("estado") in _ESTADOS_SUPERADOS:
+        nuevo["anterior"] = {
+            "estado": nuevo.get("estado"),
+            "motivo": nuevo.get("motivo", ""),
+        }
+        nuevo["estado"] = "respuesta"
+        nuevo["motivo"] = "el propietario respondió; su respuesta completa va en respuesta"
+    nuevo["respuesta"] = "\n\n".join(textos)
+    nuevo["respuestas_propietario"] = list(textos)
+    return nuevo
+
+
+def _reflejar_respuesta_propietario(
+    espacio: Path, sol: Solicitud, directorio: Path | None = None
+) -> bool:
+    """Reescribe el JSON del buzón para que refleje la respuesta del propietario."""
+    destino = Path(espacio) / BUZON / RESPUESTAS / f"{sol.id}.json"
+    actual = _leer(destino)
+    base = actual if actual is not None else _respuesta_de_registro(espacio, sol, directorio)
+    doc = _con_respuestas_propietario(base, sol)
+    if doc == actual:
+        return False
+    _publica(destino, doc, raiz=Path(espacio))
+    return True
 
 
 def _archivar(path: Path) -> None:
@@ -474,21 +536,45 @@ def _herramienta_viva(marca: dict) -> bool:
     return plataforma.hora_inicio(pid) == inicio
 
 
+def _matar_herramienta(pid: int, inicio: str, operacion: str = "") -> bool:
+    """Termina la herramienta. Una de CI recibe SIGTERM solo ella (no su grupo,
+    que incluiría el gh o el git de la limpieza) y CI_GRACIA_S para cerrar su rama
+    y su PR; `matar_proc` solo corta lo que siga vivo. El resto, como siempre."""
+    from motor import plataforma
+
+    marca = {"pid": pid, "inicio": inicio}
+    if operacion == capacidades.CI and os.name != "nt" and _herramienta_viva(marca):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        fin = time.time() + CI_GRACIA_S
+        while time.time() < fin and _herramienta_viva(marca):
+            time.sleep(0.2)
+    return plataforma.matar_proc(pid, inicio)
+
+
 def _esperar_herramienta(
-    registro: Registro, enc, destino: Path, marca: dict
+    registro: Registro,
+    enc,
+    destino: Path,
+    marca: dict,
+    espera: float | None = None,
+    operacion: str = "",
 ) -> dict:
-    """Espera a la herramienta que ya estaba en marcha; no lanza otra."""
+    """Espera a la herramienta que ya estaba en marcha; no lanza otra. `espera`
+    acota cuánto: una herramienta lenta que ya espera no retiene el barrido."""
     from motor import plataforma
 
     pid = int(marca.get("pid") or 0)
     inicio = str(marca.get("inicio") or "")
-    fin = time.time() + TIMEOUT_S
+    fin = time.time() + (TIMEOUT_S if espera is None else espera)
     while time.time() < fin:
         resultado = _leer(destino / "resultado.json")
         if resultado is not None:
             return resultado
         if _detenida_ahora(registro, enc.id):
-            plataforma.matar_proc(pid, inicio)
+            _matar_herramienta(pid, inicio, operacion)
             return {
                 "estado": "detenida",
                 "motivo": "el encargo se detuvo mientras la herramienta anterior seguía viva",
@@ -545,17 +631,18 @@ def _publicar_snapshot(
     datos = resultado.get("datos")
     if not isinstance(datos, dict):
         return resultado
-    host = str(datos.get("snapshot_host") or "")
-    origen = Path(host) if host else Path(str(datos.get("snapshot") or ""))
+    clave, clave_host, nombre = _archivo_de(sol, datos)
+    host = str(datos.get(clave_host) or "")
+    origen = Path(host) if host else Path(str(datos.get(clave) or ""))
     if not origen.is_file():
         return resultado
     if not host and origen.resolve().is_relative_to(Path(espacio).resolve()):
         return {
             "estado": "error",
-            "motivo": "no hay una copia confiable del host para reparar el snapshot",
-            "alternativa": "volver a solicitar el snapshot en un intento nuevo",
+            "motivo": "no hay una copia confiable del host para reparar el archivo entregado",
+            "alternativa": "volver a solicitar la operación en un intento nuevo",
         }
-    copia = Path(espacio) / ENTREGAS / sol.id / "snapshot.db"
+    copia = Path(espacio) / ENTREGAS / sol.id / nombre
     if copia.is_symlink():
         copia.unlink()
     if not copia.is_file() or not _mismo_contenido(copia, origen):
@@ -566,16 +653,16 @@ def _publicar_snapshot(
         except (OSError, ValueError) as exc:
             return {
                 "estado": "pendiente",
-                "motivo": f"no se pudo publicar el snapshot completo en el espacio: {exc}",
+                "motivo": f"no se pudo publicar el archivo completo en el espacio: {exc}",
                 "alternativa": "corregir el destino del entregable y reintentar",
             }
         if not _mismo_contenido(copia, origen):
             return {
                 "estado": "pendiente",
-                "motivo": "la copia publicada no coincide con el snapshot del host",
+                "motivo": "la copia publicada no coincide con la del host",
                 "alternativa": "corregir el destino del entregable y reintentar",
             }
-    publico = {**datos, "snapshot": str(copia), "snapshot_host": str(origen)}
+    publico = {**datos, clave: str(copia), clave_host: str(origen)}
     actualizado = {**resultado, "datos": publico}
     try:
         _publica(_destino_host(directorio, sol.id) / "resultado.json", actualizado)
@@ -584,11 +671,15 @@ def _publicar_snapshot(
     return actualizado
 
 
+def _espera_de(sol: Solicitud) -> float | None:
+    return ESPERA_CI_S if sol.operacion == capacidades.CI else None
+
+
 def _completar_entrega(
     espacio: Path, sol: Solicitud, resultado: dict, directorio: Path
 ) -> dict:
     """Deja el snapshot en el espacio también cuando llega por recuperación."""
-    if sol.operacion == capacidades.SNAPSHOT and resultado.get("estado") == "ok":
+    if sol.operacion in capacidades.CON_ARCHIVO and resultado.get("estado") == "ok":
         return _publicar_snapshot(espacio, sol, resultado, directorio)
     return resultado
 
@@ -621,7 +712,12 @@ def _ejecutar(
     previa = _leer(marca)
     if previa and _herramienta_viva(previa):
         return _completar_entrega(
-            espacio, sol, _esperar_herramienta(registro, enc, destino, previa), directorio
+            espacio,
+            sol,
+            _esperar_herramienta(
+                registro, enc, destino, previa, _espera_de(sol), sol.operacion
+            ),
+            directorio,
         )
 
     _publica(
@@ -633,6 +729,7 @@ def _ejecutar(
             "parametros": dict(sol.parametros),
             "destino": str(destino),
             "autorizado": autorizado,
+            "espacio": str(espacio),
         },
     )
 
@@ -663,12 +760,18 @@ def _ejecutar(
                     "pid": proc.pid,
                     "inicio": plataforma.hora_inicio(proc.pid),
                     "solicitud": sol.id,
+                    "operacion": sol.operacion,
                     "hora": hora,
                 },
             )
     if proc is None and previa is not None:
         return _completar_entrega(
-            espacio, sol, _esperar_herramienta(registro, enc, destino, previa), directorio
+            espacio,
+            sol,
+            _esperar_herramienta(
+                registro, enc, destino, previa, _espera_de(sol), sol.operacion
+            ),
+            directorio,
         )
     if proc is None:
         return {
@@ -677,13 +780,24 @@ def _ejecutar(
             "alternativa": "revisar el marcador y reintentar",
         }
 
-    fin = time.time() + TIMEOUT_S
+    espera = _espera_de(sol)
+    fin = time.time() + (TIMEOUT_S if espera is None else espera)
     detenida = False
+    sigue_viva = False
     try:
         while proc.poll() is None:
             if _detenida_ahora(registro, enc.id):
                 detenida = True
                 break
+            if time.time() > fin and sol.operacion == capacidades.CI:
+                # Un run de CI tarda minutos: la herramienta sigue por su cuenta
+                # (con su propio plazo y su limpieza) y el siguiente paso recoge
+                # el resultado. Matarla dejaría la rama y el PR temporales.
+                sigue_viva = True
+                return {
+                    "estado": "pendiente",
+                    "motivo": "el CI sigue corriendo; el resultado se recogerá en el siguiente paso",
+                }
             if time.time() > fin:
                 proc.kill()
                 proc.wait(5)
@@ -694,11 +808,19 @@ def _ejecutar(
                 }
             time.sleep(0.2)
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(5)
+        if proc.poll() is None and not sigue_viva:
+            if sol.operacion == capacidades.CI:
+                # SIGTERM primero: la herramienta de CI cierra su rama y su PR.
+                proc.terminate()
+                try:
+                    proc.wait(CI_GRACIA_S)
+                except subprocess.TimeoutExpired:
+                    pass
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(5)
         actual = _leer(marca)
-        if actual and int(actual.get("pid") or 0) == proc.pid:
+        if not sigue_viva and actual and int(actual.get("pid") or 0) == proc.pid:
             marca.unlink(missing_ok=True)
     if detenida:
         return {
@@ -711,9 +833,15 @@ def _ejecutar(
         "motivo": "la herramienta terminó sin resultado legible",
         "alternativa": "volver a pedir la operación con un id nuevo",
     }
-    if sol.operacion == capacidades.SNAPSHOT and resultado.get("estado") == "ok":
+    if sol.operacion in capacidades.CON_ARCHIVO and resultado.get("estado") == "ok":
         resultado = _publicar_snapshot(espacio, sol, resultado, directorio)
     return resultado
+
+
+def registrar_pedida(registro: Registro, enc, crudo: dict, hora: str) -> str:
+    """Registra la petición que el motor dejó en el buzón, con la misma
+    identidad que usará `atender`: no se duplica ni se ejecuta dos veces."""
+    return _registrar_solicitud(registro, enc, _solicitud_de(enc, crudo), hora)
 
 
 def _registrar_solicitud(registro: Registro, enc, sol: Solicitud, hora: str) -> str:
@@ -841,7 +969,7 @@ def atender(
             "detenida",
         ):
             reparacion = None
-            if previa.estado == "resuelta" and previa.operacion == capacidades.SNAPSHOT:
+            if previa.estado == "resuelta" and previa.operacion in capacidades.CON_ARCHIVO:
                 durable = _leer(
                     _destino_host(directorio, previa.id) / "resultado.json"
                 )
@@ -910,6 +1038,16 @@ def atender(
             resumen["errores"] += 1
             continue
         if _detenida_ahora(registro, enc.id):
+            if previa is not None and previa.estado == "pendiente":
+                # Registrada pero sin despachar: queda detenida, no colgada.
+                _anotar_resolucion(
+                    registro,
+                    enc,
+                    previa,
+                    "detenida",
+                    detalle="el encargo se detuvo antes de despachar",
+                    hora=hora,
+                )
             _anotar(
                 registro,
                 enc.id,
@@ -1060,7 +1198,7 @@ def atender(
         )
         if previo is not None and str(previo.get("estado") or "") != "pregunta":
             resultado = previo
-            if sol.operacion == capacidades.SNAPSHOT and resultado.get("estado") == "ok":
+            if sol.operacion in capacidades.CON_ARCHIVO and resultado.get("estado") == "ok":
                 resultado = _publicar_snapshot(espacio, sol, resultado, directorio)
             _anotar(
                 registro,
@@ -1198,13 +1336,32 @@ def continuar_respuestas(
     El cierre, la vigencia y la publicación los hace `atender`. Una entrega que
     no llega al espacio queda pendiente y el resultado del host no se repite.
     """
-    resumen = {"continuadas": 0, "denegadas": 0, "omitidas": 0, "pendientes": 0}
+    resumen = {
+        "continuadas": 0,
+        "denegadas": 0,
+        "omitidas": 0,
+        "pendientes": 0,
+        "reflejadas": 0,
+    }
     actual = registro.fold(enc.id) or enc
     for sol in tuple(actual.solicitudes):
         if sol.estado != "respuesta":
-            resumen["omitidas"] += 1
+            if sol.tardias and respuesta_vigente(actual, sol):
+                # Ya tenía resultado: la respuesta no lo repite, pero el buzón
+                # tiene que decirla en vez de seguir mostrando el error viejo.
+                resumen["reflejadas"] += int(
+                    _reflejar_respuesta_propietario(espacio, sol, directorio)
+                )
+            else:
+                resumen["omitidas"] += 1
             continue
         if not _vigente(actual, sol):
+            # El intento que la pidió ya no existe: no se ejecuta, pero el
+            # buzón dice lo que el propietario contestó.
+            if respuesta_vigente(actual, sol):
+                resumen["reflejadas"] += int(
+                    _reflejar_respuesta_propietario(espacio, sol, directorio)
+                )
             resumen["omitidas"] += 1
             continue
         _reponer_peticion(espacio, sol)
@@ -1216,6 +1373,12 @@ def continuar_respuestas(
         paso = atender(registro, actual, espacio, directorio, hora)
         actual = registro.fold(enc.id) or actual
         nuevo = _buscar(actual, sol.id)
+        if nuevo is not None and nuevo.respuestas_propietario:
+            # `atender` puede cerrar con el error del pedido (operación no
+            # concedida): el buzón igual dice la respuesta completa.
+            resumen["reflejadas"] += int(
+                _reflejar_respuesta_propietario(espacio, nuevo, directorio)
+            )
         if nuevo is not None and nuevo.estado == "resuelta":
             resumen["continuadas"] += 1
         elif nuevo is not None and nuevo.estado == "denegada":
@@ -1265,8 +1428,20 @@ def responder(
         return {"conflicto": True, "motivo": "esa clave ya respondió otra cosa"}
     actual = registro.fold(encargo_id)
     nueva = _buscar(actual, solicitud_id)
-    aplicada = bool(nueva and nueva.estado == "respuesta" and nueva.respuesta == texto)
-    if aplicada and nueva is not None and nueva.recurso and _afirmativa(texto):
+    aplicada = bool(
+        nueva
+        and (
+            (nueva.estado == "respuesta" and nueva.respuesta == texto)
+            or str(texto) in nueva.tardias
+        )
+    )
+    if (
+        aplicada
+        and nueva is not None
+        and nueva.estado == "respuesta"
+        and nueva.recurso
+        and _afirmativa(texto)
+    ):
         _anotar(
             registro,
             encargo_id,
@@ -1294,14 +1469,12 @@ def responder(
 
 def cerrar_herramientas(directorio: Path) -> int:
     """Cierra las herramientas que el motor lanzó para este intento."""
-    from motor import plataforma
-
     cerrados = 0
     for path in sorted((Path(directorio) / "herramientas").glob("*.json")):
         doc = _leer(path) or {}
         pid, inicio = doc.get("pid"), doc.get("inicio")
         if pid and inicio:
-            plataforma.matar_proc(int(pid), str(inicio))
+            _matar_herramienta(int(pid), str(inicio), str(doc.get("operacion") or ""))
             cerrados += 1
         _archivar(path)
     return cerrados

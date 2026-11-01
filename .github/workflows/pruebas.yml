@@ -26,3 +26,18 @@ jobs:
         run: bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 --proc /proc --dev /dev -- /usr/bin/true
       - name: Jaula de bubblewrap (con MOTOR_EXIGE_BWRAP=1 un skip es un fallo)
         run: python -m unittest tests.test_jaula_linux tests.test_jaula_wsl tests.test_rutas_wsl tests.test_ci_jaula tests.test_bucle_instrumento.ShellDeGitAlLanzar tests.test_bucle_instrumento.SondaDeWsl tests.test_bucle_instrumento.ElShellDelCli tests.test_bucle_instrumento.EnsayoDelOperador tests.test_bucle_instrumento.SondaDelShellDeGit -v
+
+  jaula-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    env:
+      MOTOR_EXIGE_SEATBELT: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: La jaula seatbelt se aplica
+        run: /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
+      - name: Comprobador con la jaula real de macOS (con MOTOR_EXIGE_SEATBELT=1 un skip es un fallo)
+        run: python3 -m unittest -v tests.test_comprobador_interprete

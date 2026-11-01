@@ -33,6 +33,15 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    válido: para cambiar una cifra basta leer el valor final y dejarlo en
    `evidencia.txt`. No hay `procedimiento.json` obligatorio ni cobertura
    forzada.
+   El comprobador corre cada comando en la jaula seatbelt con lectura de solo
+   lectura a la instalación del intérprete que usa el propio supervisor
+   (`aislamiento.lecturas_del_interprete`: el ejecutable, su enlace y los
+   prefijos de Python; nunca el home ni sus padres). Sin eso, un Python
+   instalado bajo el home, como el 3.12 de uv en la Mini, no arranca dentro de
+   la jaula ("No module named encodings") y solo queda el del sistema.
+   Cada enlace de esa instalación bajo el home se concede también como
+   enlace. El job `jaula-macos` del CI corre `tests.test_comprobador_interprete`
+   con la jaula real y `MOTOR_EXIGE_SEATBELT=1`: ahí un skip es un fallo.
 5. Otro modelo revisa. "Otro" es por identidad `proveedor/modelo`, derivada de
    las cadenas de la política común (`codigo` implementa, `planear` revisa) y
    excluyendo los modelos que ya implementaron en este encargo. Una sesión
@@ -172,6 +181,98 @@ a los 15 s. Cerrar un bloqueante o una
 aprobación sin nada abierto reinicia la cuenta, también al pasar a la fase
 siguiente. Nunca se declara éxito ni se vuelve a crear el encargo.
 
+## Inspecciones y respuestas del propietario
+
+Cuando el revisor no concluye y nombra una inspección, la fase queda ligada a
+su solicitud y el revisor no vuelve a correr sin información nueva. La
+información nueva es la respuesta del propietario, la resolución de la
+solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
+
+- **La respuesta llega completa.** `director responder` guarda el texto entero.
+  Si la solicitud ya tenía resultado (un error, una denegación, una detención),
+  la respuesta no lo reescribe: queda en `tardias` y el JSON de
+  `.interno/buzon/respuestas/<id>.json` pasa a `estado: respuesta` con la
+  respuesta completa, y el estado anterior en `anterior`. El prompt del revisor
+  y del responsable lleva cada respuesta de la fase, sin recortar y aunque no
+  sea la solicitud ligada.
+- **Un ajuste abre el turno una sola vez.** Con la pregunta abierta, con el
+  impedimento `inspeccion:<id>` o con el encargo detenido, un ajuste cuenta como
+  información nueva. El revisor corre una vez y, al abrirse su intento, el
+  ajuste queda visto: si repite el mismo pedido, el gate vuelve a cerrar.
+- **`continuar` no deja un `recibido` mudo.** Si la pregunta sigue abierta y
+  nada la contestó, el encargo queda en `necesita_usuario` con esa pregunta.
+- **Un recurso cambiado no es una repetición.** La identidad de la inspección
+  incluye el tamaño, la fecha y el hash de lo que leería el recurso (un
+  archivo local o una base sqlite). Pedirlo de nuevo tras subir otro archivo es
+  una solicitud nueva.
+- **Una solicitud tardía no cuelga la fase.** Una liga a una solicitud que no
+  existe no bloquea. Una solicitud detenida antes de despachar queda
+  `detenida`, y pedir lo mismo otra vez es una solicitud nueva.
+
+### Evidencia de CI sin el operador (`ci.correr`)
+
+Cuando el revisor necesita el log de un job que solo existe en el CI (Linux
+real, bwrap, WSL), lo pide por el puente con `ci.correr` sobre un recurso de
+tipo `ci` que el host concede en `capacidades.json`:
+
+```json
+{"recursos": {"ci-linux": {"tipo": "ci", "repo": "gon0801/goncloud-motor",
+                           "workflow": "pruebas.yml", "base": "main"}}}
+```
+
+El juicio declara `"inspeccion": {"operacion": "ci.correr", "recurso":
+"ci-linux", "parametros": {"job": "jaula-linux"}}`. El supervisor, con el
+`gh` y el git que ya tiene (sin tokens nuevos):
+
+1. Arma un commit con la versión vigente del producto, con o sin commit propio,
+   en un índice aparte: no toca el índice, la rama ni el árbol del espacio. Deja
+   fuera `.interno/`, `__pycache__` y `.runtime`, también si HEAD ya los
+   rastrea.
+2. Lo sube a `ci-prueba/<encargo>-<sha7>-<hora>` y abre un PR borrador.
+3. Espera el run del workflow para ese SHA y el job pedido.
+4. Entrega el log literal, byte a byte, como archivo en
+   `.interno/entregas/<solicitud>/<job>-<sha7>-run<N>.log`, con el SHA, el árbol,
+   el número de run, la URL y la conclusión del job. Un job en rojo también
+   entrega su log.
+5. Cierra el PR y borra la rama, siempre: con un fallo de CI, con un error
+   inesperado y con el SIGTERM de la parada del encargo. Si falla un paso de la
+   limpieza, los demás siguen y la respuesta dice cuál falló. Las ramas
+   `ci-prueba/<encargo>-*` de un run que murió sin limpiar (el nombre lleva la
+   hora de salida) se borran al empezar el siguiente, solo cuando ya pasaron el
+   plazo de un run (`MOTOR_CI_MAX` más 5 minutos): la rama de un run en curso no
+   se toca.
+
+Sin `gh`, sin red, sin sesión de `gh` o con un job que no existe, el revisor
+recibe la causa y qué hacer: `gh no está instalado`, `sin red hacia GitHub`,
+`el acceso de gh o git del supervisor no basta` o la lista de jobs del run. Un
+run tarda minutos: el barrido solo espera `MOTOR_CI_ESPERA` (5 s) a que la
+herramienta termine y la respuesta queda `pendiente`; en los barridos siguientes
+no espera nada. La herramienta sigue por su cuenta, con su propio plazo
+(`MOTOR_CI_MAX`, 45 minutos) y su limpieza. El recurso no es observable: pedir el
+mismo job sobre la misma versión sí cuenta como repetir.
+
+Parar el encargo no corta la limpieza: la herramienta de CI recibe SIGTERM (solo
+ella, no el `gh` o el git de su limpieza) y `MOTOR_CI_GRACIA` (90 s) antes del
+SIGKILL, en las tres rutas que la terminan (el primer lanzamiento, la espera de
+una herramienta que ya estaba viva y `cerrar_herramientas`). La marca de la
+herramienta guarda su operación para que esta última sepa que es de CI.
+
+### Revisiones `no_concluyente` repetidas
+
+Una revisión `no_concluyente` que nombra una inspección no cierra ni abre
+bloqueantes, así que el freno de `sin_progreso` por bloqueos no la veía. Ahora
+el encargo cuenta las revisiones independientes `no_concluyente` seguidas que
+piden lo mismo sobre la misma versión: el mismo texto de inspección o el mismo
+recurso. La cuenta es propia (`no_concluyentes`) y no toca `sin_progreso`,
+la escalera de diagnóstico de los bloqueos. A la tercera
+(`TOPE_NO_CONCLUYENTES`) el encargo queda en `necesita_usuario` con la causa
+de la última revisión y no gasta otro turno del revisor.
+
+La cuenta empieza de nuevo con otra versión del producto, otro pedido, un
+bloqueante cerrado o un check que pasó a verde (aunque ocurra fuera de la revisión), otro veredicto, un ajuste o una respuesta del propietario.
+Si el recurso pedido cambió desde la última lectura (otra huella del mismo
+archivo), pedirlo de nuevo no cuenta como repetir.
+
 ## Niveles de entrega
 
 El nivel se fija al encargar (`--entrega`), no a mitad de camino. Los niveles
@@ -230,6 +331,28 @@ El puerto GitHub del supervisor se configura en `github.json` de la base:
 `{"real": true}` usa `gh` de verdad; `{"falso": "/ruta"}` usa `FakeGitHub`
 para ensayos y repos locales. Sin puerto, los encargos con nivel `pr` o más
 esperan visibles en el paso de entrega.
+
+### Rama de fase y fallos de git
+
+Un encargo que empieza sin fases trabaja en la rama `encargo/<id>`. Si las
+fases se declaran después, la primera (la que no depende de ninguna otra) usa
+`encargo/<id>-<fase>`. Cuando el espacio sigue en la rama sin fase del mismo
+encargo, el supervisor la renombra con `git branch -m` en vez de crear la rama
+de la fase desde la base. Así se conserva el trabajo, con o sin commit, y un
+merge que solo vivía en esa rama. Una rama distinta, una fase que depende de
+otra o una rama de fase que ya existe siguen el camino de siempre.
+
+Si el repo no queda listo (clonado, rama o remoto), el encargo espera 5
+minutos y reintenta. El mismo fallo tres veces seguidas
+(`TOPE_FALLOS_REPO`), sin nada distinto entre ellos, deja de reintentar. Es el
+mismo fallo cuando falla la misma operación (el texto antes del primer `: `
+del mensaje); el detalle que cambia entre reintentos, como rutas temporales,
+pids u otra salida de git, no reinicia la cuenta. Queda en `necesita_usuario`
+con el último error. No abre una solicitud, así que
+`director responder` no tiene a qué contestar y `director continuar` solo
+vale desde `detenido`. Las salidas son un ajuste (`director corregir`) o
+`director parar` y después `director continuar`; la pregunta las nombra. Las
+dos devuelven el trabajo y empiezan la cuenta de nuevo.
 
 ## Ejemplos
 

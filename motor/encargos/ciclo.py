@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import socket
 import subprocess
 import uuid
@@ -29,6 +30,7 @@ from . import capacidades, necesidades
 from .dominio import (
     Encargo,
     FASE_IMPLICITA,
+    TOPE_NO_CONCLUYENTES,
     TransicionIlegal,
     alcance_de,
     ajustes_cubiertos,
@@ -1324,7 +1326,7 @@ def _verificar_impedimento(
             return False
         if juicio.veredicto != "no_concluyente" or not juicio.inspeccion_faltante:
             return True
-        ident = _id_inspeccion(enc, juicio)
+        ident = _id_inspeccion(enc, juicio, base)
         fase = enc.fase_actual
         if fase is None:
             return False
@@ -1679,9 +1681,37 @@ def _intentar_cierre(
     return enc
 
 
-def _id_inspeccion(enc: Encargo, juicio: JuicioValidado) -> str:
+def _huella_del_pedido(base: Path, juicio: JuicioValidado) -> str:
+    pedido = juicio.inspeccion
+    if pedido is None:
+        return ""
+    try:
+        recursos = capacidades.cargar(base)
+    except capacidades.ConfigInvalida:
+        return ""
+    return capacidades.huella_recurso(
+        recursos, pedido.operacion, pedido.recurso, dict(pedido.parametros)
+    )
+
+
+def _pedido_de_inspeccion(base: Path, juicio: JuicioValidado) -> dict:
+    """Lo que el juicio pide al buzón y el estado actual de lo que leería."""
+    pedido = juicio.inspeccion
+    if pedido is None:
+        return {}
+    return {
+        "operacion": pedido.operacion,
+        "recurso": pedido.recurso,
+        "parametros": [list(x) for x in sorted(pedido.parametros)],
+        "huella": _huella_del_pedido(base, juicio),
+    }
+
+
+def _id_inspeccion(enc: Encargo, juicio: JuicioValidado, base: Path) -> str:
     """La identidad incluye la descripción y el pedido: corregir la consulta
-    (otro SQL, otro recurso) es otra inspección, no la ya lanzada."""
+    (otro SQL, otro recurso) es otra inspección, no la ya lanzada. También el
+    estado del recurso: si cambió desde la última lectura, pedirlo no repite."""
+    huella = _huella_del_pedido(base, juicio)
     pedido = juicio.inspeccion
     estructura = (
         ""
@@ -1695,10 +1725,17 @@ def _id_inspeccion(enc: Encargo, juicio: JuicioValidado) -> str:
             sort_keys=True,
         )
     )
-    return "insp-" + hashlib.sha256(
-        f"{enc.id}:{enc.fase_activa}:{juicio.version}"
-        f":{juicio.inspeccion_faltante}:{estructura}".encode()
-    ).hexdigest()[:16]
+    clave = f"{enc.id}:{enc.fase_activa}:{juicio.version}:{juicio.inspeccion_faltante}:{estructura}"
+    if huella:
+        clave += f":{huella}"
+    ident = "insp-" + hashlib.sha256(clave.encode()).hexdigest()[:16]
+    # Una solicitud detenida antes de despachar nunca se ejecutó: pedir lo mismo
+    # otra vez es una solicitud nueva, no la ya consumida.
+    reintento = 0
+    while any(s.id == ident and s.estado == "detenida" for s in enc.solicitudes):
+        reintento += 1
+        ident = "insp-" + hashlib.sha256(f"{clave}:reintento{reintento}".encode()).hexdigest()[:16]
+    return ident
 
 
 def _texto_inspeccion_resuelta(enc: Encargo) -> str:
@@ -1718,11 +1755,30 @@ def _texto_inspeccion_resuelta(enc: Encargo) -> str:
         f"resultado accesible en el espacio: {respuesta}",
         f"leer el resultado ya obtenido con el cliente {cliente}, subcomando ver {sol.id}",
     ]
-    if sol.respuesta:
-        partes.append("respuesta: " + sol.respuesta[:400])
     if sol.detalle:
         partes.append("detalle: " + sol.detalle[:400])
     return "; ".join(partes)
+
+
+def _texto_respuestas_propietario(enc: Encargo) -> str:
+    """Lo que el propietario contestó en esta fase, completo y sin recortar.
+
+    No depende de que la solicitud sea la ligada a la inspección: una respuesta
+    a otra solicitud de la fase también es información para quien revisa.
+    """
+    lineas = []
+    for sol in enc.solicitudes:
+        if sol.fase != enc.fase_activa:
+            continue
+        for texto in sol.respuestas_propietario:
+            lineas.append(f"- a la solicitud {sol.id} ({sol.estado}):\n{texto}")
+    if not lineas:
+        return ""
+    return (
+        "Respuestas del propietario en esta fase. Son su palabra completa y vigente: "
+        "si dan por hecho o aportan la evidencia que faltaba, úsala.\n"
+        + "\n".join(lineas)
+    )
 
 
 def _ligar_inspeccion(
@@ -1733,10 +1789,21 @@ def _ligar_inspeccion(
     fase = enc.fase_actual
     if fase is None:
         return
-    ident = _id_inspeccion(enc, juicio)
-    if fase.inspeccion_solicitud == ident:
-        return
+    ident = _id_inspeccion(enc, juicio, registro.base)
     previa = next((s for s in enc.solicitudes if s.id == ident), None)
+    if fase.inspeccion_solicitud == ident and previa is not None:
+        if previa.estado == "pregunta" and enc.estado in ("recibido", "ejecutando"):
+            marcar_pregunta(
+                registro,
+                enc.id,
+                previa.pregunta or juicio.inspeccion_faltante,
+                True,
+                hora,
+                f"pregunta-inspeccion:{enc.id}:{ident}:{enc.generacion}",
+            )
+        return
+    # Con la liga puesta pero sin solicitud registrada (llegó tarde, con el
+    # encargo detenido) el pedido se vuelve a encolar en vez de darse por atendido.
     if previa is not None:
         if respuesta_consumida(fase, marca_inspeccion_entregada(previa)):
             # La respuesta de esa solicitud ya se entregó y consumió: el mismo
@@ -1805,6 +1872,8 @@ def _ligar_inspeccion(
             # vía que queda y se registra abajo.
             pass
         else:
+            # La liga nace con su solicitud: una liga sin solicitud no bloquea.
+            necesidades.registrar_pedida(registro, enc, crudo, hora)
             if recursos[pedido.recurso].get("autorizacion") == "propietario":
                 marcar_pregunta(
                     registro,
@@ -1933,6 +2002,7 @@ def _cerrar_con_juicio(
                 "evidencia": juicio.evidencia,
                 "efectos_pendientes": list(juicio.efectos_pendientes),
                 "inspeccion_faltante": juicio.inspeccion_faltante,
+                "pedido": _pedido_de_inspeccion(registro.base, juicio),
                 "fase": enc.fase_activa,
                 "intento": enc.intento,
                 "hora": hora,
@@ -1979,7 +2049,11 @@ def _cerrar_con_juicio(
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     if juicio.veredicto == "no_concluyente":
-        if juicio.inspeccion_faltante:
+        if enc.estado == "necesita_usuario" and enc.no_concluyentes >= TOPE_NO_CONCLUYENTES:
+            # El mismo pedido sin avance N veces seguidas: el encargo ya pidió
+            # ayuda al propietario con la causa; no se gasta otro turno.
+            pass
+        elif juicio.inspeccion_faltante:
             _devolver(
                 registro, enc, "inspeccionar",
                 juicio.inspeccion_faltante,
@@ -2334,7 +2408,7 @@ def _juicio_de_referencia(enc: Encargo, directorio: Path):
         return None
 
 
-def _juicio_repite_inspeccion(enc: Encargo, directorio: Path) -> bool:
+def _juicio_repite_inspeccion(enc: Encargo, directorio: Path, base: Path) -> bool:
     """Un pedido corregido (otra identidad) es información nueva y se consume
     aunque la solicitud anterior ya tenga su respuesta entregada. Repite cuando
     la identidad es la ligada, o coincide con otra solicitud de inspección cuya
@@ -2346,7 +2420,7 @@ def _juicio_repite_inspeccion(enc: Encargo, directorio: Path) -> bool:
     resultado = _juicio_de_referencia(enc, directorio)
     if not isinstance(resultado, JuicioValidado):
         return True
-    ident = _id_inspeccion(enc, resultado)
+    ident = _id_inspeccion(enc, resultado, base)
     if ident == fase.inspeccion_solicitud:
         return True
     otra = next((s for s in enc.solicitudes if s.id == ident), None)
@@ -2404,7 +2478,7 @@ def _salta_inspeccion(
     resultado = _juicio_de_referencia(enc, directorio)
     if not isinstance(resultado, JuicioValidado):
         return inspeccion_bloquea(enc) and _juicio_repite_inspeccion(
-            enc, directorio
+            enc, directorio, registro.base
         )
     if (
         registro.por_ukey(
@@ -2414,7 +2488,7 @@ def _salta_inspeccion(
         is not None
     ):
         return True
-    ident = _id_inspeccion(enc, resultado)
+    ident = _id_inspeccion(enc, resultado, registro.base)
     if ident != fase.inspeccion_solicitud:
         _consumir_ligada(registro, enc, hora)
         enc = registro.fold(enc.id) or enc
@@ -2424,7 +2498,12 @@ def _salta_inspeccion(
             fase, marca_inspeccion_entregada(otra)
         )
     sol = next((s for s in enc.solicitudes if s.id == ident), None)
-    if sol is not None and sol.estado not in ("pendiente", "pregunta"):
+    if sol is None:
+        # La liga apunta a una solicitud que nunca se registró: no hay respuesta
+        # que el juicio acredite como consumida. Se consume para que
+        # `_ligar_inspeccion` vuelva a encolar el pedido en vez de descartarlo.
+        return False
+    if sol.estado not in ("pendiente", "pregunta"):
         marca = marca_inspeccion_entregada(sol)
         if fase.inspeccion_entregada != marca:
             registro.anotar(
@@ -2848,6 +2927,81 @@ def _incorporar_entradas(
     return ""
 
 
+# Veces seguidas que el mismo fallo de git deja esperar al encargo antes de
+# pedir ayuda: reintentar cada 5 minutos sin fin no arregla lo que no cambia.
+TOPE_FALLOS_REPO = 3
+# Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
+_ENTRE_REINTENTOS = (
+    "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
+    "contexto_entrega",
+)
+
+
+def _clase_de_fallo(causa: str) -> str:
+    """La operación que falló, sin el detalle que cambia entre reintentos (la
+    salida de git con rutas temporales, pids o hashes): tras el primer `: ` va
+    el detalle, y los hashes sueltos del encabezado tampoco cuentan."""
+    operacion = str(causa).split(": ", 1)[0]
+    return re.sub(r"[0-9a-f]{7,40}", "#", operacion).strip().lower()
+
+
+def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) -> int:
+    """Esperas seguidas por el mismo fallo (la misma operación), sin nada
+    distinto entre ellas. Un ajuste, una respuesta, una orden o un intento que sí
+    arrancó las cortan."""
+    clase = _clase_de_fallo(causa)
+    seguidos = 0
+    for ev in reversed(registro.eventos(encargo_id)):
+        if ev["kind"] == "espera":
+            if _clase_de_fallo(ev["data"].get("motivo") or "") != clase:
+                break
+            seguidos += 1
+        elif ev["kind"] not in _ENTRE_REINTENTOS:
+            break
+    return seguidos
+
+
+def _fallo_de_repo(
+    registro: Registro, enc: Encargo, causa: str, hora: str, serie: str
+) -> None:
+    """El repo no quedó listo: espera y reintenta. El mismo fallo
+    TOPE_FALLOS_REPO veces seguidas pide ayuda al propietario con la causa."""
+    _anotar_instrumento(
+        registro, enc, "github", causa,
+        "dejar accesible el repo declarado y reintentar",
+        hora, serie,
+    )
+    marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+    veces = _fallos_de_repo_seguidos(registro, enc.id, causa)
+    if veces < TOPE_FALLOS_REPO:
+        return
+    marcar_pregunta(
+        registro,
+        enc.id,
+        f"Git falló {veces} veces seguidas en la misma operación y el motor dejó "
+        f"de reintentar. Último error: {causa}. Corrige el repositorio o el espacio y manda un "
+        "ajuste con director corregir para que reintente; también sirve director "
+        "parar y después director continuar.",
+        True,
+        hora,
+        f"pregunta-repo:{enc.id}:{hora}",
+    )
+
+
+def _es_rama_sin_fase(enc: Encargo, fase, actual: str, rama: str) -> bool:
+    """La rama actual es la rama sin fase de este encargo y `fase` es la
+    primera: no depende de ninguna otra, así que su rama es la misma con sufijo."""
+    return (
+        fase is not None
+        and bool(enc.entrega.rama)
+        and actual == enc.entrega.rama
+        and rama != actual
+        and bool(enc.fases)
+        and enc.fases[0].id == fase.id
+        and not _deps_de(enc, fase)
+    )
+
+
 def _asegurar_repo(
     enc: Encargo,
     espacio: Path,
@@ -2887,6 +3041,20 @@ def _asegurar_repo(
         actual = _git(espacio, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         if actual != rama:
             fase = enc.fase_actual
+            if _es_rama_sin_fase(enc, fase, actual, rama) and _git(
+                espacio, "rev-parse", "--verify", "--quiet", f"refs/heads/{rama}"
+            ).returncode != 0:
+                # El trabajo empezó en la rama sin fase y las fases se
+                # declararon después: la primera fase es esa misma rama con otro
+                # nombre. Se conserva el trabajo, con o sin commit, en vez de
+                # crear la rama desde la base y perderlo.
+                r = _git(espacio, "branch", "-m", actual, rama)
+                if r.returncode != 0:
+                    return (
+                        f"no se pudo renombrar la rama {actual} a {rama}: "
+                        f"{r.stderr.strip()[-300:]}"
+                    )
+                return _incorporar_entradas(enc, espacio, registro, hora)
             candidatos = [f"origin/{rama}", rama]
             for dep in _deps_de(enc, fase):
                 candidatos += [
@@ -3271,12 +3439,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 hora, f"entrada-{enc.generacion}",
             )
             return registro.fold(enc.id)
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "dejar accesible el repo declarado y reintentar",
-            hora, "repo-entrega",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+        _fallo_de_repo(registro, enc, causa, hora, "repo-entrega")
         return registro.fold(enc.id)
     enc = registro.fold(enc.id) or enc
     stale = _producto_no_aprobado(enc, espacio)
@@ -3954,12 +4117,7 @@ def _lanzar_uno_en_turno(
                         hora, f"entrada-{generacion}",
                     )
                 else:
-                    _anotar_instrumento(
-                        registro, enc, "github", causa_repo,
-                        "dejar accesible el repo declarado y reintentar",
-                        hora, f"repo-{generacion}",
-                    )
-                    marcar_espera(registro, enc.id, causa_repo, _reanuda_en(300), hora)
+                    _fallo_de_repo(registro, enc, causa_repo, hora, f"repo-{generacion}")
                     return
             # Las entradas incorporadas tocan las fases; el replace local de
             # generacion y conductor sigue vigente para este lanzamiento.
@@ -4025,6 +4183,19 @@ def _lanzar_uno_en_turno(
                     "por el buzon: " + resuelta
                     + ". Continua esta revision sobre la misma version con ese dato."
                 )
+            contestado = _texto_respuestas_propietario(enc)
+            if contestado:
+                contenido += "\n\n" + contestado
+            observables = capacidades.recursos_observables(recursos)
+            if observables:
+                contenido += (
+                    "\n\nSi un recurso observable del catalogo ("
+                    + ", ".join(observables)
+                    + ") cambio desde la ultima lectura (otro tamano, hash o fecha), "
+                    "pedirlo de nuevo no es repetir la inspeccion: declaralo otra vez "
+                    "en inspeccion. Los demas recursos (por ejemplo los remotos por "
+                    "http) no se pueden observar: pedir lo mismo sí cuenta como repetir."
+                )
         else:
             interno_de(espacio, crear=True)
             contenido = prompt_responsable(enc)
@@ -4046,6 +4217,9 @@ def _lanzar_uno_en_turno(
             contenido += "\n\n" + instrucciones_responsable(
                 interno_de(espacio), necesidades.bloque_capacidades(espacio, recursos)
             )
+            contestado = _texto_respuestas_propietario(enc)
+            if contestado:
+                contenido += "\n\n" + contestado
         # Sólo observaciones de este encargo; la autoridad sigue fuera de la jaula.
         copias_observadas = []
         for fuente in sorted(raiz.glob("intento-*/observaciones*.json")):
@@ -4297,7 +4471,12 @@ def marcar_espera(
 
 
 def marcar_pregunta(
-    registro: Registro, encargo_id: str, texto: str, bloquea: bool, hora: str
+    registro: Registro,
+    encargo_id: str,
+    texto: str,
+    bloquea: bool,
+    hora: str,
+    ukey: str = "",
 ) -> dict:
     registro.anotar(
         encargo_id,
@@ -4305,7 +4484,8 @@ def marcar_pregunta(
             "kind": "pregunta",
             "data": {"texto": texto, "bloquea_todo": bloquea, "hora": hora},
         },
-        f"pregunta:{encargo_id}:{hashlib.sha256(texto.encode()).hexdigest()[:12]}",
+        ukey
+        or f"pregunta:{encargo_id}:{hashlib.sha256(texto.encode()).hexdigest()[:12]}",
     )
     return vista(registro.fold(encargo_id))
 
