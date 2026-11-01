@@ -156,32 +156,109 @@ class ElResultadoDeUnIntentoAnteriorLlega(_CiAsincrono):
         self.assertEqual(self.sol(r, ident).estado, "resuelta")
         self.assertEqual(self.buzon(r, ident)["estado"], "resuelta")
 
-    def test_una_corrida_en_curso_no_se_da_por_tardia_al_cambiar_el_intento(self):
-        r, ident = self.montar("tarde-5")
-        self.intento(r, "intento-2-b")
+    def marca_de(self, r, ident: str, **campos) -> Path:
         marca = r.d / "intento-1-a" / "herramientas" / f"{ident}.json"
         marca.parent.mkdir(parents=True, exist_ok=True)
-        marca.write_text(json.dumps({"pid": 1, "inicio": "t0", "solicitud": ident}))
+        marca.write_text(
+            json.dumps({"pid": 1, "inicio": "t0", "solicitud": ident, **campos})
+        )
+        return marca
 
-        with mock.patch.object(nec, "_herramienta_viva", return_value=True):
+    def pedida_aparte(self, r, ident: str) -> None:
+        """Una segunda solicitud, que no es la inspección ligada, hecha en el
+        intento vigente: al cambiar el intento deja de ser vigente."""
+        enc = r.fold()
+        peticiones = r.espacio / ".interno" / "buzon" / "peticiones"
+        (peticiones / f"{ident}.json").write_text(
+            json.dumps(
+                {
+                    "id": ident,
+                    "encargo": enc.id,
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "generacion": enc.generacion,
+                    "conductor": "",
+                    "operacion": "ci.correr",
+                    "recurso": "ci-linux",
+                    "parametros": {"job": "otro-job"},
+                    "motivo": "otra línea base",
+                }
+            )
+        )
+        corriendo = {"estado": "pendiente", "motivo": "el CI sigue corriendo"}
+        with mock.patch.object(nec, "_ejecutar", return_value=corriendo):
+            self.barrer(r)
+        self.assertEqual(self.sol(r, ident).estado, "pendiente")
+
+    def test_una_corrida_en_curso_no_se_da_por_tardia_al_cambiar_el_intento(self):
+        r, _ligada = self.montar("tarde-5")
+        ident = "ci_aparte"
+        self.pedida_aparte(r, ident)
+        self.abrir_turno(r)
+        self.cerrar_turno(r)
+        self.marca_de(r, ident)
+        enc = r.fold()
+        self.assertFalse(nec._vigente(enc, self.sol(r, ident)), "el intento ya cambió")
+        pedidas: list[str] = []
+
+        def ejecutar(registro, enc, sol, *resto):
+            pedidas.append(sol.id)
+            return {"estado": "pendiente", "motivo": "el CI sigue corriendo"}
+
+        with mock.patch.object(nec, "_ejecutar", side_effect=ejecutar), mock.patch(
+            "motor.plataforma.pid_vivo", return_value=True
+        ), mock.patch("motor.plataforma.hora_inicio", return_value="t0"):
             self.barrer(r)
 
+        self.assertNotIn(ident, pedidas)
         self.assertEqual(self.sol(r, ident).estado, "pendiente")
-        self.assertEqual(self.buzon(r, ident)["estado"], "pendiente")
+        doc = self.buzon(r, ident)
+        self.assertEqual(doc["estado"], "pendiente")
+        self.assertIn("sigue en curso", doc["motivo"])
 
     def test_una_herramienta_muerta_sin_resultado_no_deja_la_solicitud_pendiente(self):
         r, ident = self.montar("tarde-6")
         self.peticion_archivada(r, ident)
         self.intento(r, "intento-2-b")
-        marca = r.d / "intento-1-a" / "herramientas" / f"{ident}.json"
-        marca.parent.mkdir(parents=True, exist_ok=True)
-        marca.write_text(json.dumps({"pid": 1, "inicio": "t0", "solicitud": ident}))
+        self.marca_de(r, ident)
 
-        with mock.patch.object(nec, "_herramienta_viva", return_value=False):
+        with mock.patch("motor.plataforma.pid_vivo", return_value=False):
             self.barrer(r)
 
         self.assertEqual(self.sol(r, ident).estado, "error")
         self.assertEqual(self.buzon(r, ident)["estado"], "error")
+
+    def test_un_pid_reusado_cuenta_como_herramienta_muerta(self):
+        r, ident = self.montar("tarde-7")
+        self.peticion_archivada(r, ident)
+        self.intento(r, "intento-2-b")
+        self.marca_de(r, ident)
+
+        with mock.patch("motor.plataforma.pid_vivo", return_value=True), mock.patch(
+            "motor.plataforma.hora_inicio", return_value="otro-proceso"
+        ):
+            self.barrer(r)
+
+        self.assertEqual(self.sol(r, ident).estado, "error")
+
+    def test_si_no_se_puede_comprobar_que_murio_la_solicitud_espera(self):
+        for clave, campos, hora_inicio in (
+            ("tarde-8", {"inicio": ""}, "t0"),
+            ("tarde-9", {}, ""),
+            ("tarde-10", {"pid": 0}, "t0"),
+        ):
+            with self.subTest(clave):
+                r, ident = self.montar(clave)
+                self.peticion_archivada(r, ident)
+                self.intento(r, "intento-2-b")
+                self.marca_de(r, ident, **campos)
+
+                with mock.patch("motor.plataforma.pid_vivo", return_value=True), mock.patch(
+                    "motor.plataforma.hora_inicio", return_value=hora_inicio
+                ), mock.patch.object(nec, "_ejecutar", side_effect=AssertionError("no se relanza")):
+                    self.barrer(r)
+
+                self.assertEqual(self.sol(r, ident).estado, "pendiente")
 
 
 class UnaHerramientaMatadaNoDejaLaSolicitudPendiente(_CiAsincrono):

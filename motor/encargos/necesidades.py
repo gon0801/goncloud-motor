@@ -561,17 +561,28 @@ def _detenida_ahora(registro: Registro, encargo_id: str) -> bool:
     return accion in ("parar", "cancelar")
 
 
-def _herramienta_viva(marca: dict) -> bool:
+def _vitalidad(marca: dict) -> str:
+    """`viva`, `muerta` o `incierta` cuando la marca o el host no permiten saberlo
+    (sin pid, sin hora de inicio, o una hora que el host no sabe leer)."""
     from motor import plataforma
 
     try:
         pid = int(marca.get("pid") or 0)
         inicio = str(marca.get("inicio") or "")
     except (TypeError, ValueError):
-        return False
-    if not pid or not inicio or not plataforma.pid_vivo(pid):
-        return False
-    return plataforma.hora_inicio(pid) == inicio
+        return "incierta"
+    if not pid:
+        return "incierta"
+    if not plataforma.pid_vivo(pid):
+        return "muerta"
+    actual = plataforma.hora_inicio(pid)
+    if not inicio or not actual:
+        return "incierta"
+    return "viva" if actual == inicio else "muerta"
+
+
+def _herramienta_viva(marca: dict) -> bool:
+    return _vitalidad(marca) == "viva"
 
 
 def _matar_herramienta(pid: int, inicio: str, operacion: str = "") -> bool:
@@ -1070,12 +1081,16 @@ def _recoger(
             continue
         carpeta = _carpeta_de(sol, directorio)
         marca = _leer(_marca_de(carpeta))
-        viva = bool(marca) and _herramienta_viva(marca)
+        vitalidad = _vitalidad(marca) if marca else "ausente"
         resultado = _leer(carpeta / "resultado.json")
         if resultado is None:
             # La marca `.hecha` es la de una herramienta que `cerrar_herramientas` mató.
-            lanzada = marca is not None or _marca_cerrada(carpeta).is_file()
-            if not lanzada or viva or sol.estado != "pendiente":
+            muerta = vitalidad == "muerta" or (
+                vitalidad == "ausente" and _marca_cerrada(carpeta).is_file()
+            )
+            # Si no se puede comprobar que murió (`incierta`), la solicitud espera:
+            # un error en falso la cerraría con la corrida todavía en marcha.
+            if not muerta or sol.estado != "pendiente":
                 continue
             resultado = {
                 "estado": "error",
