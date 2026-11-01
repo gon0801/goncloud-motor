@@ -521,44 +521,43 @@ def _copiar_sesion_sin_caer(
     """Una copia de sesión que falla queda anotada en el encargo y el turno sigue:
     la sesión es continuidad, no el resultado, y no justifica tumbar el barrido.
 
-    Una copia a medias no se usa como sesión. Al guardar, un fallo deja `.copia-incompleta`
-    en el almacén hasta que un guardado completo la quite, y mientras exista no se restaura:
-    el turno arranca sin sesión en vez de con una mezcla de archivos nuevos y viejos. Al
-    restaurar, un fallo vacía el runtime del turno."""
+    La nota va como `procedimiento`, que solo suma una línea: un `instrumento_fallo`
+    reescribiría la causa y el motivo del encargo por un fallo que no lo detiene.
+
+    Una copia a medias no se usa como sesión. Guardar deja `.copia-incompleta` en el almacén
+    mientras copia y la quita al terminar; si el guardado anterior no terminó, vacía el
+    almacén antes, para que lo viejo no se mezcle con lo nuevo. Con la marca puesta no se
+    restaura: el turno arranca sin sesión. Si falla restaurar, se vacía el runtime del turno."""
     import sqlite3
 
     marca = ".copia-incompleta"
 
-    def anotar(causa: str, siguiente: str) -> None:
-        _anotar_instrumento(
-            registro, enc, "copia_sesion", causa[:2000], siguiente, hora,
-            f"{sitio}:{enc.generacion}", clase="copia_sesion",
+    def anotar(texto: str) -> None:
+        registro.anotar(
+            enc.id,
+            {"kind": "procedimiento", "data": {"nota": f"copia de sesión ({sitio}): {texto}"[:2000]}},
+            f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}",
         )
 
     if sitio == "restaurar" and (origen / marca).exists():
-        anotar(
-            "la sesión guardada quedó incompleta (falló una copia anterior): no se restaura",
-            "arrancar sin sesión; un guardado completo del siguiente turno la repone",
-        )
+        anotar("la sesión guardada quedó incompleta (falló una copia anterior); el turno arranca sin ella")
         return
     try:
-        _copiar_sesion(origen, destino)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        try:
-            if sitio == "guardar":
-                destino.mkdir(parents=True, exist_ok=True)
-                (destino / marca).touch()
-            else:
+        if sitio == "guardar":
+            if (destino / marca).exists():
                 vaciar_arbol(destino)
-        except OSError:
-            pass
-        anotar(
-            f"no se pudo copiar la sesión ({sitio}): {type(exc).__name__}: {exc}",
-            "seguir sin esa copia; se reintenta en el siguiente turno",
-        )
-    else:
+            destino.mkdir(parents=True, exist_ok=True)
+            (destino / marca).touch()
+        _copiar_sesion(origen, destino)
         if sitio == "guardar":
             (destino / marca).unlink(missing_ok=True)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        if sitio == "restaurar":
+            try:
+                vaciar_arbol(destino)
+            except OSError:
+                pass
+        anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
 
 
 def _leer_proc(directorio: Path) -> dict | None:

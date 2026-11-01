@@ -217,11 +217,20 @@ class CopiaQueFalla(unittest.TestCase):
             _copiar_sesion_sin_caer(
                 registro, enc, self.origen, self.tmp / "almacen", "guardar", hora
             )
-        fallos = [e for e in registro.eventos(ident) if e["kind"] == "instrumento_fallo"]
-        self.assertEqual(len(fallos), 1)
-        self.assertEqual(fallos[0]["data"]["fuente"], "copia_sesion")
-        self.assertIn("privado", fallos[0]["data"]["causa"])
+        (nota,) = self._fallos(registro, enc)
+        self.assertIn("privado", nota)
         self.assertEqual((self.tmp / "almacen/.local/share/opencode/opencode.db").read_text(), "v1")
+
+    def test_el_fallo_de_la_copia_no_reescribe_la_causa_ni_el_motivo_del_encargo(self):
+        registro, enc, hora = self._encargo()
+        antes = registro.fold(enc.id)
+        _copiar_sesion_sin_caer(
+            registro, enc, self.origen, self.tmp / "almacen", "guardar", hora
+        )
+        despues = registro.fold(enc.id)
+        self.assertEqual((despues.causa, despues.motivo, despues.siguiente),
+                         (antes.causa, antes.motivo, antes.siguiente))
+        self.assertEqual(len(despues.procedimiento), len(antes.procedimiento) + 1)
 
     def _encargo(self):
         registro = Registro(self.tmp / "base")
@@ -230,7 +239,34 @@ class CopiaQueFalla(unittest.TestCase):
         return registro, registro.fold(ident), hora
 
     def _fallos(self, registro, enc):
-        return [e for e in registro.eventos(enc.id) if e["kind"] == "instrumento_fallo"]
+        return [
+            e["data"]["nota"]
+            for e in registro.eventos(enc.id)
+            if e["kind"] == "procedimiento" and "copia de sesión" in e["data"]["nota"]
+        ]
+
+    def test_si_no_se_puede_quitar_la_marca_tampoco_sube_al_barrido(self):
+        registro, enc, hora = self._encargo()
+        with mock.patch("motor.encargos.ciclo._copiar_sesion"), mock.patch.object(
+            Path, "unlink", side_effect=PermissionError("sin permiso")
+        ):
+            _copiar_sesion_sin_caer(
+                registro, enc, self.origen, self.tmp / "almacen", "guardar", hora
+            )
+        (nota,) = self._fallos(registro, enc)
+        self.assertIn("PermissionError", nota)
+
+    def test_el_guardado_completo_no_conserva_lo_que_dejo_la_copia_fallida(self):
+        registro, enc, hora = self._encargo()
+        almacen = self.tmp / "almacen"
+        _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
+        viejo = almacen / ".local/share/opencode/solo-de-la-copia-fallida"
+        viejo.write_text("resto")
+        self.ilegible.chmod(0o755)
+        _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
+        self.assertFalse(viejo.exists())
+        self.assertFalse((almacen / ".copia-incompleta").exists())
+        self.assertEqual((almacen / ".local/share/opencode/opencode.db").read_text(), "v1")
 
     def test_un_valueerror_de_la_copia_tampoco_sube_al_barrido(self):
         registro, enc, hora = self._encargo()
@@ -240,8 +276,8 @@ class CopiaQueFalla(unittest.TestCase):
             _copiar_sesion_sin_caer(
                 registro, enc, self.origen, self.tmp / "almacen", "guardar", hora
             )
-        (fallo,) = self._fallos(registro, enc)
-        self.assertIn("ValueError", fallo["data"]["causa"])
+        (nota,) = self._fallos(registro, enc)
+        self.assertIn("ValueError", nota)
 
     def test_una_copia_a_medias_no_se_restaura_hasta_que_un_guardado_completo_la_repone(self):
         registro, enc, hora = self._encargo()
@@ -251,7 +287,7 @@ class CopiaQueFalla(unittest.TestCase):
 
         _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
         self.assertFalse((runtime / ".local").exists())
-        causas = [f["data"]["causa"] for f in self._fallos(registro, enc)]
+        causas = self._fallos(registro, enc)
         self.assertTrue(any("incompleta" in c for c in causas))
 
         self.ilegible.chmod(0o755)
