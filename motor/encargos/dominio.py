@@ -1325,6 +1325,10 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 hora=hora or e.hora,
             ),
         )
+    if kind == "lectura_fallida":
+        # Queda en el registro y no toca el estado: ni motivo, ni siguiente, ni
+        # causa, que son lo que lee el próximo turno del agente.
+        return e
     if kind == "fase_reabierta":
         return _fase_reabierta(e, d, hora)
     if kind == "entrada_incorporada":

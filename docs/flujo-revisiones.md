@@ -333,7 +333,11 @@ queda resuelto y llega al estado del encargo en ese barrido. Si no cambió, no
 anota nada. Una lectura con un bloqueante abierto baja el nivel alcanzado de
 `pr` a `pr_abierto`: la fase no se da por cumplida con un High o un Medium
 abierto. Con un agente en curso solo se anota; devolver el trabajo es cosa de
-quien incorpora su vuelta.
+quien incorpora su vuelta. Si GitHub falla
+al releer, el espaciado no se consume (se reintenta a los 15 s) y el fallo queda
+en el evento `lectura_fallida`, que no toca el estado: el motivo y el siguiente
+trabajo del encargo, que lee el próximo turno del agente, siguen siendo los
+suyos.
 
 Antes de terminar una fase con entrega `pr` (con `integrado` o `desplegado`, antes
 del merge), el supervisor vuelve a leer, sin espaciado, el comentario de
