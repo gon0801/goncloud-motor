@@ -35,6 +35,7 @@ from motor.encargos.comprobacion import (
 from motor.encargos.dominio import (
     AlcanceRevision,
     Hallazgo,
+    TOPE_VUELTAS_NUEVAS,
     TransicionIlegal,
     alcance_de,
     bloqueantes_abiertos,
@@ -460,7 +461,7 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertTrue(e.preguntas)
             self.assertFalse(_lanzaria(e))
 
-    def test_bloqueantes_nuevos_sin_cerrar_ninguno_escalan(self):
+    def test_bloqueantes_nuevos_devuelven_al_responsable_y_una_serie_sin_fin_escala(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-4", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -480,11 +481,19 @@ class FlujoRevisiones(unittest.TestCase):
 
             e = vuelta(1)
             self.assertEqual(e.estrategia, "investigar")
-            e = vuelta(2)
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
-            e = vuelta(3)
+            # Cada vuelta trae un bloqueante que el responsable no habia visto: es
+            # informacion nueva, vuelve a corregir y la escalera no avanza.
+            for i in range(2, 2 + TOPE_VUELTAS_NUEVAS):
+                e = vuelta(i)
+                self.assertEqual(e.estrategia, "investigar", i)
+                self.assertEqual(e.sin_progreso, 0, i)
+                self.assertNotEqual(e.estado, "necesita_usuario", i)
+                self.assertTrue(_lanzaria(e), i)
+            self.assertEqual(e.vueltas_nuevas, TOPE_VUELTAS_NUEVAS)
+            # La serie que nunca cierra nada tiene tope por fase: la siguiente escala.
+            e = vuelta(2 + TOPE_VUELTAS_NUEVAS)
             self.assertEqual(e.estado, "necesita_usuario")
+            self.assertIn("vueltas seguidas", e.motivo)
             self.assertFalse(_lanzaria(e))
 
     def test_revisor_que_no_concluye_dos_vueltas_escala(self):
@@ -667,7 +676,7 @@ class FlujoRevisiones(unittest.TestCase):
                 self.assertNotEqual(e.estado, "necesita_usuario")
                 self.assertTrue(_lanzaria(e))
 
-    def test_check_que_vuelve_a_rojo_con_deepseek_abierto_escala(self):
+    def test_check_que_se_pone_rojo_con_deepseek_abierto_es_informacion_nueva_y_luego_escala(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "ci-3", _GhConDeepSeek,
@@ -680,7 +689,18 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertEqual(e.sin_progreso, 1)
             self.assertNotEqual(e.estado, "necesita_usuario")
+            # El check en rojo es un bloqueante que el responsable no habia visto:
+            # informacion nueva. Vuelve a corregir; no escala como «el mismo bloqueo».
             e = vuelta("x3")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            # Los mismos bloqueantes siguen abiertos tras la vuelta: diagnostico y despues escala.
+            e = vuelta("x4")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = vuelta("x5")
             self.assertEqual(e.estado, "necesita_usuario")
             self.assertIn("checks requeridos en rojo: ci", e.motivo)
             self.assertFalse(_lanzaria(e))

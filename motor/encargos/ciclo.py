@@ -31,10 +31,12 @@ from .dominio import (
     Encargo,
     FASE_IMPLICITA,
     TOPE_NO_CONCLUYENTES,
+    TOPE_VUELTAS_NUEVAS,
     TransicionIlegal,
     alcance_de,
     ajustes_cubiertos,
     bloqueantes_abiertos,
+    bloqueos_nuevos,
     correcciones_sin_ver,
     puede_recibir_intento,
     revision_independiente_cubre_producto,
@@ -49,6 +51,7 @@ from .dominio import (
     inspeccion_bloquea,
     marca_inspeccion_entregada,
     respuesta_consumida,
+    revision_externa_pendiente,
     nivel_cumplido,
     sin_nada_en_curso,
     prompt_responsable,
@@ -1063,9 +1066,60 @@ def _sin_avance(
 ) -> None:
     """Escalera de una vuelta que no cerro ningun bloqueante: la primera vuelve
     a diagnosticar, la segunda seguida deja el encargo en necesita_usuario.
-    `enc` ya incorpora el hallazgo de la vuelta."""
+    `enc` ya incorpora el hallazgo de la vuelta.
+
+    Una vuelta cuenta una sola vez: si otra fuente del mismo barrido ya la
+    resolvio, esta no suma ni escala. Un bloqueante que el responsable no habia
+    visto es informacion nueva: la vuelta vuelve a el para corregir y la escalera
+    empieza de cero; solo una serie de `TOPE_VUELTAS_NUEVAS` vueltas asi, sin
+    cerrar nada, escala."""
     huella = huella_bloqueo(enc)
     base = f"sin-progreso:{enc.id}:{huella}:{enc.generacion}:{serie}"
+    nuevos = sorted(bloqueos_nuevos(enc))
+    if not nuevos and enc.generacion and enc.vuelta_contada == enc.generacion:
+        return
+    if nuevos:
+        if enc.vueltas_nuevas >= TOPE_VUELTAS_NUEVAS:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "sin_progreso",
+                    "data": {
+                        "huella": huella,
+                        "diagnostico": (
+                            f"{TOPE_VUELTAS_NUEVAS} vueltas seguidas en esta fase trajeron "
+                            f"bloqueantes nuevos sin cerrar ninguno: {abierto}. "
+                            f"Se intento: {intentado}"
+                        ),
+                        "nueva": True,
+                        "escalar": True,
+                        "hora": hora,
+                    },
+                },
+                base + ":tope",
+            )
+            return
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "sin_progreso",
+                "data": {
+                    "huella": huella,
+                    "nueva": True,
+                    "nuevos": nuevos,
+                    "escalar": False,
+                    "hora": hora,
+                },
+            },
+            base + ":nueva",
+        )
+        _devolver(
+            registro, enc, "investigar", abierto,
+            "corregir los bloqueantes nuevos de esta vuelta (" + ", ".join(nuevos)
+            + ") junto con los que siguen abiertos; lo aprobado que no cambio se conserva",
+            hora, f"nuevos-{serie}",
+        )
+        return
     if enc.sin_progreso >= 1:
         registro.anotar(
             enc.id,
@@ -2386,6 +2440,19 @@ def _incorporar_responsable(
         enc = registro.fold(enc.id)
     if commit_entregado and not _deepseek_por_releer(enc):
         abierto = _bloqueo_externo_abierto(enc)
+        if abierto and revision_externa_pendiente(enc):
+            # Falta el veredicto de DeepSeek o de los checks sobre este commit: una
+            # vuelta sin novedad del supervisor no es una vuelta sin avance, y el
+            # bloqueante abierto puede ser uno que su fuente ya cerró. No cuenta;
+            # se espera, sin lanzar otro turno que devolvería lo mismo.
+            marcar_espera(
+                registro, enc.id,
+                f"esperando la revisión externa del commit {commit_entregado[:12]} "
+                "(DeepSeek o checks) antes de contar otra vuelta",
+                _reanuda_en(120 if enc.fase_actual.checks_esperando_sha else 60), hora,
+            )
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
         if abierto:
             _sin_avance(
                 registro, enc, abierto,
@@ -3309,6 +3376,47 @@ def _anotar_checks_verdes(
     return registro.fold(enc.id)
 
 
+def _anotar_checks_esperando(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> Encargo:
+    """Los checks requeridos de este SHA siguen corriendo: queda dicho para que el
+    freno no cuente vueltas mientras tanto. Un solo evento por tramo de espera: lo
+    cierra un verde o un rojo, y la ronda distingue una espera de la siguiente."""
+    fase = enc.fase_actual
+    if fase is None or fase.checks_esperando_sha == sha:
+        return enc
+    ronda = sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["data"].get("sha") == sha
+        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+        and (
+            ev["kind"] == "entrega_bloqueada"
+            or (
+                ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") in ("checks_verdes", "checks_rojos")
+            )
+        )
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "checks_esperando",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:checks_esperando:{sha}:ronda{ronda}",
+    )
+    return registro.fold(enc.id)
+
+
 def _marca_checks(directorio: Path) -> dict:
     try:
         marca = json.loads(
@@ -3423,6 +3531,34 @@ def _reconciliar_checks(
         return enc
     _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
     if not veredicto.green:
+        if not veredicto.fallas:
+            return _anotar_checks_esperando(registro, enc, enc.pr_numero, sha, hora)
+        if fase.checks_esperando_sha == sha:
+            # La corrida que esperaba terminó en rojo: ya no hay revisión pendiente.
+            esperas = sum(
+                1
+                for ev in registro.eventos(enc.id)
+                if ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") == "checks_esperando"
+                and ev["data"].get("sha") == sha
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "paso": "checks_rojos",
+                        "repo": enc.entrega.repo,
+                        "numero": enc.pr_numero,
+                        "sha": sha,
+                        "hora": hora,
+                    },
+                },
+                f"entrega:{enc.id}:{enc.fase_activa}:checks_rojos:{sha}:{esperas}",
+            )
+            return registro.fold(enc.id)
         return enc
     return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
 
@@ -4139,6 +4275,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     hora, f"checks-{sha[:12]}",
                 )
         else:
+            _anotar_checks_esperando(registro, enc, numero, sha, hora)
             marcar_espera(
                 registro, enc.id,
                 "esperando checks requeridos del PR "
