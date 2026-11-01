@@ -321,7 +321,10 @@ def comprobar(base: Path, correr=correr) -> list[dict]:
     base = Path(base)
     java = java_instalado(base)
     jar = jar_tlc(base)
-    suma_jar = sha256_de(jar) if jar.is_file() else ""
+    try:
+        suma_jar = sha256_de(jar) if jar.is_file() else ""
+    except OSError:
+        suma_jar = ""
     entorno = entorno_persistente(correr)
     try:
         capacidades_actual = json.loads(
@@ -383,8 +386,8 @@ def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
     if java is None:
         try:
             estado, detalle = instalar_java(base, catalogo, descargador)
-        except RuntimeError as exc:
-            estado, detalle = "error", str(exc)
+        except (RuntimeError, OSError, ValueError) as exc:
+            estado, detalle = "error", f"{type(exc).__name__}: {exc}"
         java = java_instalado(base)
         if java is None:
             estado, detalle = "error", detalle + " (marker no utilizable)"
@@ -396,8 +399,8 @@ def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
         })
     try:
         estado, detalle = instalar_jar(base, descargador)
-    except RuntimeError as exc:
-        estado, detalle = "error", str(exc)
+    except (RuntimeError, OSError, ValueError) as exc:
+        estado, detalle = "error", f"{type(exc).__name__}: {exc}"
     salida.append({"paso": "tla2tools", "estado": estado, "detalle": detalle})
     if java is None:
         salida.append({
@@ -407,15 +410,15 @@ def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
     else:
         try:
             estado, detalle = fijar_entorno(java["java"], str(jar_tlc(base)), correr)
-        except RuntimeError as exc:
-            estado, detalle = "error", str(exc)
+        except (RuntimeError, OSError) as exc:
+            estado, detalle = "error", f"{type(exc).__name__}: {exc}"
         salida.append({"paso": "entorno", "estado": estado, "detalle": detalle})
     estado, detalle = instalar_capacidades(base)
     salida.append({"paso": "capacidades", "estado": estado, "detalle": detalle})
     try:
         estado, detalle = fijar_llave(correr, python)
-    except RuntimeError as exc:
-        estado, detalle = "error", str(exc)
+    except (RuntimeError, OSError) as exc:
+        estado, detalle = "error", f"{type(exc).__name__}: {exc}"
     salida.append({"paso": "llave-run", "estado": estado, "detalle": detalle})
     return salida
 
@@ -445,6 +448,10 @@ def verificar(cfg: str, base: Path, raiz: Path, bash: str = "") -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if os.name == "nt":
+        for flujo in (sys.stdout, sys.stderr):
+            if hasattr(flujo, "reconfigure"):
+                flujo.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", type=Path, default=Path.home() / BASE)
     ap.add_argument("--comprobar", action="store_true")

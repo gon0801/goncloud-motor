@@ -94,8 +94,14 @@ def _agentes(which) -> list[dict]:
             })
             continue
         version = ""
+        if os.name == "nt":
+            from motor.plataforma.windows import resolve_shim
+
+            argv = [*resolve_shim(cliente, os.environ.get("PATH", "")), "--version"]
+        else:
+            argv = [ruta, "--version"]
         try:
-            r = _correr([ruta, "--version"], 20)
+            r = _correr(argv, 20)
             if r.returncode == 0:
                 version = _primera(r)
         except (OSError, subprocess.TimeoutExpired):
