@@ -290,10 +290,12 @@ class VerYSenal(Banco):
         self.assertEqual(consulta["status"], ["down"])
         self.assertIn("se cortó", consulta["msg"][0])
 
-    def test_el_supervisor_cablea_su_propia_variable_y_el_home_instalado_como_respaldo(self):
+    def _arranca_el_supervisor(self) -> tuple[dict, str]:
         from motor.encargos.cli import main
 
         capturado = {}
+        casa = Path(self._tmp.name) / "casa"
+        casa.mkdir(exist_ok=True)
 
         class SenalFalsa:
             def __init__(self, home, tiempos, **kwargs):
@@ -302,16 +304,34 @@ class VerYSenal(Banco):
             def arranca(self):
                 raise _Alto
 
+        err = io.StringIO()
         with mock.patch("motor.senal.Senal", SenalFalsa), mock.patch(
             "motor.encargos.cli.barrer", return_value=[]
-        ):
+        ), mock.patch("pathlib.Path.home", return_value=casa), contextlib.redirect_stderr(err):
             with self.assertRaises(_Alto):
                 main(["supervisor", "--base", str(self.base), "--agente", "sleep"])
+        capturado["casa"] = casa
+        return capturado, err.getvalue()
+
+    def test_el_supervisor_cablea_su_propia_variable_y_el_home_instalado_como_respaldo(self):
+        capturado, _ = self._arranca_el_supervisor()
         self.assertEqual(capturado["home"], self.base.resolve())
         self.assertEqual(capturado["variable"], "MOTOR_KUMA_ENCARGOS_URL")
         self.assertNotEqual(capturado["variable"], "MOTOR_KUMA_URL")
-        self.assertEqual(capturado["respaldo"], Path.home() / ".motor")
+        self.assertEqual(capturado["respaldo"], capturado["casa"] / ".motor")
         self.assertEqual(capturado["canales"](), [])
+
+    def test_el_supervisor_dice_al_arrancar_que_no_manda_señal_si_no_tiene_su_direccion(self):
+        _, err = self._arranca_el_supervisor()
+        self.assertIn("sin MOTOR_KUMA_ENCARGOS_URL, el supervisor de encargos no manda señal a Kuma", err)
+        self._kuma("MOTOR_KUMA_URL")
+        _, err = self._arranca_el_supervisor()
+        self.assertIn("sin MOTOR_KUMA_ENCARGOS_URL", err, "la dirección del daemon no cuenta")
+
+    def test_el_supervisor_con_su_direccion_no_avisa_de_que_falta(self):
+        self._kuma("MOTOR_KUMA_ENCARGOS_URL")
+        _, err = self._arranca_el_supervisor()
+        self.assertNotIn("sin MOTOR_KUMA_ENCARGOS_URL", err)
 
     def test_ninguna_direccion_de_kuma_llega_al_entorno_de_los_agentes_ni_de_las_comprobaciones(self):
         secretos = (
