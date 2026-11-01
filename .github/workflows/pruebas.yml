@@ -58,3 +58,17 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Bateria completa
         run: python -m unittest discover -s tests -t . -v
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      # Con esta marca, una prueba propia de Windows que se salte es un fallo.
+      MOTOR_EXIGE_WINDOWS: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Pruebas propias de Windows
+        run: python -m unittest -v tests.test_windows tests.test_windows_identidad tests.test_windows_wsl tests.test_relanzamiento_pc tests.test_prepara_pc tests.test_director_capacidades

@@ -5,6 +5,7 @@ from unittest import mock
 
 from motor import plataforma
 from motor.plataforma import posix, windows
+from tests import entorno
 
 
 class ArranqueTest(unittest.TestCase):
@@ -169,7 +170,7 @@ class ShellTest(unittest.TestCase):
         self.assertNotIn("WindowsApps", salida)
         self.assertIn("motor-python", salida.split(";")[0])
 
-    @unittest.skipUnless(os.name == "nt", "en la PC corre con cmd real")
+    @entorno.requiere_windows
     def test_pc_env_del_agente_con_shims_python_y_gh(self):
         import subprocess
         import types
@@ -203,7 +204,7 @@ class ShellTest(unittest.TestCase):
         self.assertEqual(gh.returncode, 3, gh.stdout + gh.stderr)
         self.assertIn("prohibido", gh.stderr)
 
-    @unittest.skipUnless(os.name == "nt", "en la PC corre con Git Bash real")
+    @entorno.requiere_windows
     def test_pc_test_f_sustitucion_y_python3(self):
         import tempfile
         from pathlib import Path
@@ -341,7 +342,7 @@ class WslTest(unittest.TestCase):
             any(n == "PATH" or n.startswith("PATH/") for n in nombres), nombres
         )
 
-    @unittest.skipUnless(os.name == "nt", "lanza wsl.exe real en la PC")
+    @entorno.requiere_windows
     def test_wsl_python3_y_shims_resuelven_en_linux(self):
         import subprocess
 

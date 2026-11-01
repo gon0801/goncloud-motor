@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 from motor.plataforma import windows
+from tests import entorno
 
 ES_WINDOWS = os.name == "nt"
 RAIZ = Path(__file__).resolve().parent.parent
@@ -40,10 +41,7 @@ def _distro_wsl() -> str:
     return ""
 
 
-@unittest.skipUnless(
-    ES_WINDOWS,
-    "solo corre en Windows (la PC); en la Mac se prueba con ops/prueba-pc.sh",
-)
+@entorno.requiere_windows
 class WindowsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="motor-win-"))
