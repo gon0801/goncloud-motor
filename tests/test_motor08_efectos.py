@@ -99,7 +99,7 @@ class RecuperaEfectosTest(unittest.TestCase):
                     }
                 )
             )
-            return {}
+            return {"pid": 42, "inicio": "2026-10-25T00:00:00+00:00", "boot_id": "boot-prueba"}
 
         with patch("motor.effects.plataforma.lanzar_separado", side_effect=lanzar) as lanzamientos:
             for insumo, maquina in [("nueva", "maquina"), ("nueva", "otra-maquina")]:
@@ -126,7 +126,7 @@ class RecuperaEfectosTest(unittest.TestCase):
         usuario = self.home / "usuario"
         usuario.mkdir()
         (usuario / ".motor").symlink_to(self.home, target_is_directory=True)
-        fuente, remoto, conf = (self.home / n for n in ("fuente", "remoto.git", "conf"))
+        fuente, remoto, conf = (self.home / n for n in ("fuente", "remoto.git", "conf-origen"))
 
         def git(*args):
             return subprocess.run(
@@ -162,6 +162,11 @@ class RecuperaEfectosTest(unittest.TestCase):
         git("-C", str(fuente), "tag", "anterior", viejo)
         for nombre in ("formato.py", "store.py"):
             shutil.copy2(RAIZ / "motor" / nombre, paquete / nombre)
+        shutil.copytree(
+            RAIZ / "motor" / "plataforma",
+            paquete / "plataforma",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
         (fuente / "ops").mkdir()
         shutil.copy2(RAIZ / "ops/sol_remoto.py", fuente / "ops/sol_remoto.py")
         actual = commit(fuente, "Candidato")
@@ -177,16 +182,17 @@ class RecuperaEfectosTest(unittest.TestCase):
         commit(conf, "Conf local")
         conf_remota = self.home / "conf.git"
         git("clone", "-q", "--bare", str(conf), str(conf_remota))
-        ops = self.home / "ops"
-        ops.mkdir()
-        for nombre in ("instala-todo.sh", "vuelve-a-la-anterior.sh"):
+        ops = fuente / "ops"
+        for nombre in ("instala-todo.sh", "vuelve-a-la-anterior.sh", "maquina_local.py"):
             shutil.copy2(RAIZ / "ops" / nombre, ops / nombre)
         (ops / "lib.sh").write_text(
-            "MAQUINAS=mac\nETIQUETA=candidato\n"
+            (RAIZ / "ops/lib.sh").read_text(encoding="utf-8")
+            + "\nMAQUINAS=mac\nETIQUETA=candidato\n"
             'REPO_URL="$PRUEBA_REPO"\nCONF_URL="$PRUEBA_CONF"\n'
             'en_posix() { shift; bash -s -- "$@"; }\n'
             'reintenta() { shift; "$@"; }\n'
-            'sha_publicado() { git -C "$1" ls-remote --tags origin "refs/tags/$ETIQUETA" | cut -f1; }\n'
+            'sha_publicado() { git -C "$1" ls-remote --tags origin "refs/tags/$ETIQUETA" | cut -f1; }\n',
+            encoding="utf-8",
         )
         (self.home / "etiqueta-anterior").write_text("anterior")
         propia = self.fx._confirma_intencion(self.plan, "A", "instalar", actual, "recibo")
@@ -220,6 +226,10 @@ class RecuperaEfectosTest(unittest.TestCase):
         self.assertEqual(git("-C", str(instalado), "rev-parse", "HEAD"), actual)
         self.assertIsNone(self.fx._ultimo_efecto(self.plan, propia))
         self.assertFalse(puede_volver(self.home, self.store.events())[0])
+        (self.home / "instalacion.json").unlink()
+        (self.home / "formato").write_text(
+            json.dumps({"version": 2, "nombre": "motor09"}), encoding="utf-8"
+        )
         (self.home / "etiqueta-anterior").write_text("anterior")
         self.assertFalse(
             self.fx._rollback(str(ops / "vuelve-a-la-anterior.sh"), fuente, env, 30, pasos)

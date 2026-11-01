@@ -15,7 +15,16 @@ from unittest import mock
 from motor.encargos import ciclo
 from motor.encargos.ciclo import _aplica_entrega, _paso_entrega, ahora_iso, barrer
 from motor.github import FakeGitHub
-from tests.test_flujo_revisiones import _entrega_pr, _GhConDeepSeek, _lanzaria
+from tests.test_flujo_revisiones import (
+    _entrega_pr,
+    _GhConDeepSeek,
+    _lanzaria,
+    sonda_sin_aislamiento_del_host,
+)
+
+
+def setUpModule():
+    sonda_sin_aislamiento_del_host()
 
 
 def _turno_sin_llm(r, gh):

@@ -46,6 +46,23 @@ from motor.encargos.dominio import (
 from motor.encargos.registro import Registro
 from motor.flota.runtime import exigir_poteto
 from motor.github import FakeGitHub, GhGitHub
+from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
+
+
+def sonda_sin_aislamiento_del_host() -> None:
+    """Donde el host no aísla (Linux) `aislar` se niega y la sonda de entorno frena el
+    encargo antes de producir nada. El flujo no prueba la jaula: se da la sonda por buena."""
+    if HAY_AISLAMIENTO:
+        return
+    parche = mock.patch(
+        "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
+    )
+    parche.start()
+    unittest.addModuleCleanup(parche.stop)
+
+
+def setUpModule():
+    sonda_sin_aislamiento_del_host()
 
 
 class Recorrido:
@@ -332,6 +349,7 @@ class FlujoRevisiones(unittest.TestCase):
             e = r.incorporar()
             self.assertEqual(e.estado, "terminado")
 
+    @unittest.skipUnless(HAY_AISLAMIENTO, SIN_AISLAMIENTO)
     def test_argv_roto_e_invalido_son_instrumento(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "inst-2", "Crea dato.txt con 42")

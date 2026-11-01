@@ -17,9 +17,19 @@ from motor.encargos.ciclo import (
     barrer,
     marcar_espera,
 )
-from tests.test_flujo_revisiones import Recorrido, _entrega_pr, _GhConDeepSeek, _lanzaria
+from tests.test_flujo_revisiones import (
+    Recorrido,
+    _entrega_pr,
+    _GhConDeepSeek,
+    _lanzaria,
+    sonda_sin_aislamiento_del_host,
+)
 
 PASO_S = 30
+
+
+def setUpModule():
+    sonda_sin_aislamiento_del_host()
 
 
 def _barrido(r, gh, t):

@@ -457,7 +457,7 @@ class ElRevisorLaPideYLaRecibe(_Flujo):
         self.assertEqual(sol.estado, "resuelta")
         doc = self.buzon(r, ident)
         publico = Path(doc["datos"]["log"])
-        self.assertTrue(publico.is_relative_to(r.espacio))
+        self.assertTrue(publico.resolve().is_relative_to(r.espacio.resolve()))
         self.assertEqual(publico.read_bytes(), LOG.encode("utf-8"))
         self.assertEqual(doc["datos"]["run"], "1234")
         self.assertEqual(self.ramas_remotas(), [])

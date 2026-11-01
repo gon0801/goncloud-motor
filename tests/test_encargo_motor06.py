@@ -12,6 +12,7 @@ from motor.encargos.ciclo import _incorporar, ahora_iso, recibir
 from motor.encargos.comprobacion import firma_producto
 from motor.encargos.frontera import DestinoEnsayo, despachar
 from motor.encargos.registro import Registro
+from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
 
 TOML = """
 [modelos.k3]
@@ -25,6 +26,7 @@ provider = "managed:kimi-code"
 
 
 class Motor06(unittest.TestCase):
+    @unittest.skipUnless(HAY_AISLAMIENTO, SIN_AISLAMIENTO)
     def test_el_grep_no_cambia_el_producto_ni_repite_el_efecto(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"

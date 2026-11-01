@@ -274,7 +274,7 @@ class GuiaFaltanteTest(unittest.TestCase):
                 a = m.StartAttempt("A", role, "sonnet", 1, "a" * 40, (), False)
                 with self.assertRaises(FileNotFoundError) as cm:
                     self.fx.start_attempt(
-                        parse_plan(PLAN), SimpleNamespace(repos={}), a
+                        parse_plan(PLAN), SimpleNamespace(repos={}, blocks={}), a
                     )
                 self.assertIn(FEATURE, str(cm.exception))
                 self.ws.prepara.assert_not_called()
@@ -286,7 +286,9 @@ class GuiaFaltanteTest(unittest.TestCase):
         os.remove(self.conf_dir / BUGFIX)
         a = m.StartAttempt("A", "implementar", "sonnet", 1, "a" * 40, (), True)
         with self.assertRaises(FileNotFoundError) as cm:
-            self.fx.start_attempt(parse_plan(PLAN), SimpleNamespace(repos={}), a)
+            self.fx.start_attempt(
+                parse_plan(PLAN), SimpleNamespace(repos={}, blocks={}), a
+            )
         self.assertIn(BUGFIX, str(cm.exception))
         self.ws.prepara.assert_not_called()
         self.ws.copia.assert_not_called()

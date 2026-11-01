@@ -19,9 +19,13 @@ import sandbox  # noqa: E402
 import motor  # noqa: E402
 from motor import machine as m  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
-from motor.notify import PLANTILLAS, lint_plain, render  # noqa: E402
+from motor.notify import PLANTILLAS, _sano, lint_plain, render  # noqa: E402
 from motor.plan import PlanError, parse_plan  # noqa: E402
 from motor.store import Store  # noqa: E402
+
+
+def texto_aviso(path: Path) -> str:
+    return json.loads(path.read_text(encoding="utf-8"))["texto"]
 
 
 class Banco(unittest.TestCase):
@@ -40,7 +44,23 @@ class Banco(unittest.TestCase):
         return d
 
     def avisos(self, parte: str) -> list[Path]:
-        return sorted((self.home / "avisos" / "pendientes").glob(f"*{parte}*.txt"))
+        """Los avisos pendientes cuyo notice_id o cuya clave (saneada como el nombre del archivo) lleva `parte`."""
+        encontrados = []
+        for p in sorted((self.home / "avisos" / "pendientes").glob("*.json")):
+            datos = json.loads(p.read_text(encoding="utf-8"))
+            if any(
+                parte in _sano(str(datos.get(campo) or ""))
+                for campo in ("notice_id", "key")
+            ):
+                encontrados.append(p)
+        return encontrados
+
+    def eventos_aviso(self):
+        return [
+            e
+            for e in Store(self.home / "motor.db").events()
+            if e.kind in ("NoticeQueued", "NoticeRequested")
+        ]
 
     def eventos(self, kind: str):
         return [e for e in Store(self.home / "motor.db").events() if e.kind == kind]
@@ -400,7 +420,7 @@ class VersionTest(Banco):
         self.assertEqual(len(avisos), 1, "un solo aviso aunque pasen muchos ticks")
         self.assertIn(
             "esta máquina necesita la versión 99.0.0 del motor",
-            avisos[0].read_text(encoding="utf-8"),
+            texto_aviso(avisos[0]),
         )
         self.assertEqual(len(self.eventos("VersionFaltante")), 1)
         self.assertEqual(self.daemon().run(0.01, False, 0.1), 3)

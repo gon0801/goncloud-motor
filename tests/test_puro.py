@@ -1176,15 +1176,17 @@ class ServicioTest(unittest.TestCase):
 
     def test_todo_el_motor_lee_y_escribe_utf8(self):
         """En Windows el texto por omisión es cp1252: Grok no pudo leer el encargo (MOTOR 01, PC)."""
-        import re
+        import ast
 
         raiz = Path(__file__).resolve().parent.parent / "motor"
         sin = [
-            f"{f.name}:{n}"
+            f"{f.name}:{nodo.lineno}"
             for f in raiz.rglob("*.py")
-            for n, linea in enumerate(f.read_text(encoding="utf-8").splitlines(), 1)
-            if re.search(r"\.(read_text|write_text)\(", linea)
-            and "encoding=" not in linea
+            for nodo in ast.walk(ast.parse(f.read_text(encoding="utf-8")))
+            if isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Attribute)
+            and nodo.func.attr in ("read_text", "write_text")
+            and not any(k.arg == "encoding" for k in nodo.keywords)
         ]
         self.assertEqual(sin, [])
 
@@ -1343,7 +1345,7 @@ class CorreccionTest(unittest.TestCase):
 class FeedbackRevisorTest(unittest.TestCase):
     """Un revisor que terminó por algo que su sucesor no puede corregir no le deja feedback."""
 
-    def siguiente_revisor(self, fin: dict):
+    def siguiente_revisor(self, fin: dict, hecho_nuevo: bool = False):
         eventos = entregado() + [
             ev("Verified", "A", {"sha": "a" * 40, "ok": True}),
             ev("PrOpened", "A", {"numero": 7}),
@@ -1358,6 +1360,13 @@ class FeedbackRevisorTest(unittest.TestCase):
                 {"n": 1, "role": "revisar", "outcome": fin},
             ),
         ]
+        ahora = time.time()
+        if hecho_nuevo:
+            nuevo = ev("Verified", "A", {"sha": "a" * 40, "ok": True})
+            eventos.append(
+                Event(nuevo.id, ahora + 60, nuevo.plan, nuevo.block, nuevo.kind, nuevo.data)
+            )
+            ahora += 120
         pedido = PLAN.replace(
             "repo: git@github.com:x/app.git\n",
             "repo: git@github.com:x/app.git\nrevisa: opus, k3\n",
@@ -1366,7 +1375,7 @@ class FeedbackRevisorTest(unittest.TestCase):
         s = m.fold(parse_plan(pedido), eventos)
         return next(
             a
-            for a in m.decide(s, pol(), time.time())
+            for a in m.decide(s, pol(), ahora)
             if isinstance(a, m.StartAttempt) and a.role == "revisar"
         )
 
@@ -1374,11 +1383,23 @@ class FeedbackRevisorTest(unittest.TestCase):
         for kind in sorted(m.FINES_AJENOS_AL_REVISOR):
             with self.subTest(kind=kind):
                 self.assertEqual(
-                    self.siguiente_revisor({"kind": kind, "detalle": "x"}).feedback, ()
+                    self.siguiente_revisor(
+                        {"kind": kind, "detalle": "x"},
+                        hecho_nuevo=kind == "creacion_fallida",
+                    ).feedback,
+                    (),
                 )
         self.assertEqual(
             m.FINES_AJENOS_AL_REVISOR,
-            {"cuota", "rate_limit", "auth", "corte", "perdido", "interrumpido"},
+            {
+                "cuota",
+                "rate_limit",
+                "auth",
+                "corte",
+                "perdido",
+                "interrumpido",
+                "creacion_fallida",
+            },
         )
 
     def test_un_veredicto_invalido_si_se_le_pasa(self):

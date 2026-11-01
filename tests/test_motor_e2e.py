@@ -85,6 +85,22 @@ def eventos(home: Path):
     return Store(home / "motor.db").events("demo")
 
 
+def avisos_pendientes(home: Path, prefijo: str) -> list[dict]:
+    """Avisos de `avisos/pendientes` cuya clave (o cuyo id) empieza por `prefijo`."""
+    encontrados = []
+    for f in sorted((home / "avisos" / "pendientes").glob("*.json")):
+        try:
+            aviso = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(aviso, dict) and any(
+            str(aviso.get(campo) or "").startswith(prefijo)
+            for campo in ("key", "notice_id")
+        ):
+            encontrados.append(aviso)
+    return encontrados
+
+
 class Banco(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="motor-e2e-"))
@@ -176,7 +192,7 @@ class Banco(unittest.TestCase):
         gh = json.loads((self.tmp / "b" / "github" / "github.json").read_text())
         self.assertEqual(len(gh["prs"]), 4, "un PR por bloque de código")
         for e in evs:
-            if e.kind == "NoticeQueued":
+            if e.kind in ("NoticeQueued", "NoticeRequested"):
                 lint_plain(e.data["texto"])
                 self.assertTrue(e.data["texto"].startswith("En la Mac (prueba)"))
         cargas = [e for e in evs if e.kind == "PlanLoaded"]
@@ -388,7 +404,7 @@ class TestEntregaSegura(Banco):
             "role": "implementar",
             "modelo": "glm",
             "cuenta": "zai",
-            "proc": {"pid": 1, "boot_id": "x"},
+            "proc": {"pid": 1, "inicio": "x", "boot_id": "x"},
             "dir": str(carpeta),
             "sha": "",
             "conf_sha": "c",
@@ -424,9 +440,9 @@ class TestEntregaSegura(Banco):
         # La previa paso, pero el repo desaparece antes de que el daemon tome el plan.
         shutil.rmtree(self.tmp / "b" / "app.git")
         Daemon(self.home).ingest_inbox()
-        avisos = list((self.home / "avisos" / "pendientes").glob("*rechazo*"))
+        avisos = avisos_pendientes(self.home, "rechazo:")
         self.assertEqual(len(avisos), 1)
-        texto = avisos[0].read_text(encoding="utf-8")
+        texto = avisos[0]["texto"]
         self.assertIn("En la Mac (prueba) · Demo de saludo:", texto)
         self.assertIn("claw", texto)
         lint_plain(texto)
@@ -721,7 +737,7 @@ class TestConfSeActualizaSola(Banco):
         evs = Store(self.home / "motor.db").events()
         self.assertEqual(len([e for e in evs if e.kind == "ConfRechazada"]), 1)
         self.assertTrue(
-            list((self.home / "avisos" / "pendientes").glob("*confmala*")),
+            avisos_pendientes(self.home, "confmala:"),
             "se avisa una vez",
         )
         d.tick(ahora + 1900)
@@ -1274,7 +1290,7 @@ class TestFallas(Banco):
         p = daemon(self.home)
         ok = esperar(
             lambda: any(
-                e.kind == "NoticeQueued"
+                e.kind in ("NoticeQueued", "NoticeRequested")
                 and e.data["key"].startswith("atorado:A:agotada:")
                 for e in eventos(self.home)
             ),
@@ -1495,7 +1511,8 @@ class TestApagon(Banco):
         )
         self.assertTrue(
             any(
-                e.kind == "NoticeQueued" and e.data["key"].startswith("retome:")
+                e.kind in ("NoticeQueued", "NoticeRequested")
+                and e.data["key"].startswith("retome:")
                 for e in evs
             )
         )
@@ -1835,10 +1852,7 @@ class TestPstack(BancoPstack):
             True, {}
         )  # los agentes falsos en modo ok no dejan registro legible
         self.assertEqual([o["kind"] for o in self.fines("implementar")], ["entregado"])
-        avisos = [
-            f.read_text(encoding="utf-8")
-            for f in (self.home / "avisos" / "pendientes").glob("*pstack-ilegible*")
-        ]
+        avisos = [a["texto"] for a in avisos_pendientes(self.home, "pstack:")]
         self.assertEqual(len(avisos), 1, "implementar y revisar usan claude: un aviso")
         self.assertIn("claude", avisos[0])
         h = json.loads(

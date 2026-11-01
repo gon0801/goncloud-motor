@@ -167,7 +167,7 @@ class DaemonTest(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertEqual(
-            len(list((self.home / "avisos" / "pendientes").glob("*.txt"))), 1
+            len(list((self.home / "avisos" / "pendientes").glob("*.json"))), 1
         )
 
     def test_un_cambio_de_version_en_la_conf_se_nota_sin_reiniciar(self):
