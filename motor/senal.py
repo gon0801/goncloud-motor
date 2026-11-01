@@ -19,6 +19,8 @@ from .conf import load_secretos
 VARIABLE = "MOTOR_KUMA_URL"
 # El supervisor de encargos tiene su propio monitor: con la dirección del daemon de planes los dos se taparían.
 VARIABLE_ENCARGOS = "MOTOR_KUMA_ENCARGOS_URL"
+# Las direcciones push son secretos: ningún agente ni comprobación las hereda en su entorno.
+VARIABLES = (VARIABLE, VARIABLE_ENCARGOS)
 CADA_S = 60.0
 SILENCIO_MIN_S = 900.0
 TOPE_GET_S = 5.0
