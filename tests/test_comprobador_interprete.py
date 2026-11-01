@@ -129,6 +129,8 @@ class ElCiCorreLaJaulaRealDeMacOS(unittest.TestCase):
         lineas = [l for l in texto.splitlines() if "tests.test_comprobador_interprete" in l]
         self.assertEqual(len(lineas), 1, lineas)
         self.assertIn("unittest", lineas[0])
+        # Quien saque de ese comando la prueba de que MOTOR_KUMA_URL no llega a los agentes rompe esto.
+        self.assertIn("tests.test_kuma_fuera_del_entorno_de_agentes", lineas[0])
 
     def test_sin_jaula_aplicable_la_exigencia_la_convierte_en_fallo(self):
         # Documenta el contrato: con MOTOR_EXIGE_SEATBELT=1 ConLaJaulaRealDeMacOS

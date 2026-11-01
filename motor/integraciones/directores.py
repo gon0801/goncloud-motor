@@ -20,6 +20,7 @@ from motor.encargos.ciclo import (
 )
 from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida, reducir
 from motor.encargos.registro import Registro
+from motor.integraciones import canales
 
 
 def _atomico(path: Path, doc: dict) -> None:
@@ -842,6 +843,7 @@ def _enviar_aviso(
         guardado["estado"] = "publicado"
         guardado["alcance"] = "externo"
         guardado["recibo"] = recibo
+        vuelta.respondieron.add(guardado["canal"])
         for campo in ("motivo", "proximo_intento", "fallos"):
             guardado.pop(campo, None)
     else:
@@ -851,7 +853,9 @@ def _enviar_aviso(
         guardado["motivo"] = error
         _diferir(guardado, vuelta.ahora)
         if caido:
-            vuelta.caidos.add(guardado["canal"])
+            vuelta.fallo_el_transporte(guardado["canal"], error)
+        else:
+            vuelta.respondieron.add(guardado["canal"])
     _atomico(path, guardado)
 
 
@@ -1132,6 +1136,12 @@ class Vuelta:
 
     ahora: float
     caidos: set[str] = field(default_factory=set)
+    errores: dict[str, str] = field(default_factory=dict)
+    respondieron: set[str] = field(default_factory=set)
+
+    def fallo_el_transporte(self, canal: str, error: str) -> None:
+        self.caidos.add(canal)
+        self.errores[canal] = error
 
 
 def _publicar_aviso(
@@ -1215,6 +1225,7 @@ def _publicar_aviso(
             registro, conciliacion, guardado, cuerpo
         )
         if resultado_con == "hallado":
+            vuelta.respondieron.add(nombre)
             guardado["estado"] = "publicado"
             guardado["alcance"] = "externo"
             guardado["recibo"] = dato
@@ -1226,7 +1237,7 @@ def _publicar_aviso(
             guardado["motivo"] = dato
             _diferir(guardado, vuelta.ahora)
             if caido:
-                vuelta.caidos.add(nombre)
+                vuelta.fallo_el_transporte(nombre, dato)
             _atomico(path, guardado)
             return _cerrar_aviso(guardado, True)
         _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
@@ -1248,7 +1259,11 @@ def _publicar_aviso(
     if cortar == "despues" and not guardado.get("recibo"):
         if comando:
             _registrar_intento(path, guardado)
-            _ejecutar_transporte(registro, comando, guardado, cuerpo)
+            _, error, caido = _correr_transporte(registro, comando, guardado, cuerpo)
+            if caido:
+                vuelta.fallo_el_transporte(nombre, error)
+            else:
+                vuelta.respondieron.add(nombre)
             guardado["estado"] = "incierto"
             guardado["alcance"] = "externo"
             guardado["motivo"] = "envio hecho sin recibo; falta conciliar"
@@ -1325,6 +1340,10 @@ def drenar(registro: Registro, cortar: str = "", ahora: float | None = None) -> 
             trabajos.append((aviso, hecho["texto"]))
         for aviso, cuerpo in trabajos:
             publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
+    try:
+        canales.registrar_pasada(registro.base, vuelta.ahora, vuelta.errores, vuelta.respondieron)
+    except OSError:
+        pass
     return {"avisos": publicados}
 
 
