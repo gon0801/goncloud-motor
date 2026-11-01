@@ -1976,8 +1976,12 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
                 "motor.encargos.ciclo.recuperar_arranque",
                 return_value=("ausente", None),
             ):
-                with self.assertRaises(OSError):
-                    barrer(r.reg, ahora_iso(), time.time(), lanzador)
+                barrer(r.reg, ahora_iso(), time.time(), lanzador)
+                (fallo,) = [
+                    x for x in r.eventos("instrumento_fallo")
+                    if x["data"].get("fuente") == "barrido"
+                ]
+                self.assertEqual(fallo["data"]["clase"], "barrido:OSError")
                 barrer(r.reg, ahora_iso(), time.time(), lanzador)
             e = r.fold()
             self.assertEqual(

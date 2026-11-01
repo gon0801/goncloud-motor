@@ -888,10 +888,13 @@ class ShellDeGitAlLanzar(unittest.TestCase):
                 side_effect=lambda _home: contextlib.nullcontext(),
             ),
         ):
-            with self.assertRaises(RuntimeError):
-                banco.barrer(1)
+            banco.barrer(1)
         self.assertEqual(visto, [False])
         self.assertFalse(reserva.exists())
+        (fallo,) = [
+            e for e in banco.eventos("instrumento_fallo") if e["data"].get("fuente") == "barrido"
+        ]
+        self.assertEqual(fallo["data"]["clase"], "barrido:RuntimeError")
 
     def test_el_impedimento_se_vuelve_a_probar_con_el_agente_que_fallo_no_con_uno_supuesto(self):
         """El impedimento del shell no se ata a claude por el texto de la causa (#110 F2)."""
