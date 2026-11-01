@@ -27,7 +27,7 @@ HORA = "2026-11-01T10:00:00Z"
 T0 = 1_000_000.0
 
 TRANSPORTE = (
-    "import os,sys,json\n"
+    "import os,sys,json,time\n"
     "from pathlib import Path\n"
     "base=Path(os.environ['MOTOR_AVISO_BASE'])\n"
     "sys.stdin.read()\n"
@@ -36,6 +36,8 @@ TRANSPORTE = (
     "if modo=='caido':\n"
     " sys.stderr.write('no puedo leer el archivo del bot en https://api.telegram.org/bot123456789:' + 'A'*10 + 'b'*25 + '/sendMessage')\n"
     " sys.exit(1)\n"
+    "if modo=='lento':\n"
+    " time.sleep(5)\n"
     "if modo=='sin_recibo':\n"
     " sys.exit(0)\n"
     "print(json.dumps({'recibo':'ok-'+os.environ['MOTOR_AVISO_ID']}))\n"
@@ -113,6 +115,27 @@ class EstadoDelCanal(Banco):
         estado = self.estado()
         self.assertNotIn("fallando_desde", estado)
         self.assertEqual(estado["ultimo_exito"], directores._iso(T0 + 10_000))
+
+    def test_un_envio_que_no_responde_a_tiempo_marca_el_canal_caido_y_un_recibo_lo_recupera(self):
+        self.modo("lento")
+        with mock.patch.object(directores, "TRANSPORTE_TIMEOUT_S", 1.0):
+            directores.drenar(self.reg, ahora=T0)
+        estado = self.estado()
+        self.assertEqual(estado["fallando_desde"], directores._iso(T0))
+        self.assertIn("timed out", estado["ultimo_error"])
+        self.assertEqual([c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 700)], ["tg"])
+        self.modo("ok")
+        directores.drenar(self.reg, ahora=T0 + 20_000)
+        self.assertNotIn("fallando_desde", self.estado(), "el envío con recibo lo recupera")
+
+    def test_un_transporte_que_no_arranca_marca_el_canal_caido(self):
+        cfg = {"tg": {"comando": [str(Path(self._tmp.name) / "no-existe"), "x"], "idempotente": True}}
+        (self.base / "canal.json").write_text(json.dumps(cfg), encoding="utf-8")
+        directores.drenar(self.reg, ahora=T0)
+        estado = self.estado()
+        self.assertEqual(estado["fallando_desde"], directores._iso(T0))
+        self.assertTrue(estado["ultimo_error"])
+        self.assertEqual(self.llamadas(), 0, "el proceso nunca corrió")
 
     def test_un_mensaje_sin_recibo_no_marca_caido_el_canal(self):
         self.modo("sin_recibo")
