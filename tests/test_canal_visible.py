@@ -32,7 +32,7 @@ TRANSPORTE = (
     "with open(base/'llamadas.log','a') as f: f.write(os.environ['MOTOR_AVISO_ID']+'\\n')\n"
     "modo=(base/'modo').read_text().strip()\n"
     "if modo=='caido':\n"
-    " sys.stderr.write('no puedo leer el archivo del bot en https://api.telegram.org/bot123456789:ABCdefGhIJKlmNoPQRsTUVwxyz0123456789/sendMessage')\n"
+    " sys.stderr.write('no puedo leer el archivo del bot en https://api.telegram.org/bot123456789:' + 'A'*10 + 'b'*25 + '/sendMessage')\n"
     " sys.exit(1)\n"
     "if modo=='sin_recibo':\n"
     " sys.exit(0)\n"
@@ -83,7 +83,7 @@ class EstadoDelCanal(Banco):
         self.assertEqual(estado["fallando_desde"], directores._iso(T0))
         self.assertEqual(estado["fallos"], 1)
         self.assertIn("no puedo leer el archivo del bot", estado["ultimo_error"])
-        for secreto in ("telegram.org", "ABCdef", "123456789"):
+        for secreto in ("telegram.org", "AAAAAAAAAA", "123456789"):
             self.assertNotIn(secreto, estado["ultimo_error"])
 
     def test_solo_es_un_canal_caido_pasado_el_umbral(self):
@@ -146,13 +146,18 @@ class Robustez(Banco):
         self.assertIn("no puedo leer el archivo del bot", self.estado()["ultimo_error"])
 
     def test_la_redaccion_cubre_claves_y_cadenas_opacas_sin_borrar_el_mensaje(self):
+        # Los secretos de prueba se arman en la ejecución: ningún literal con forma de llave entra al repo.
+        clave = "abcDEF" + "1234567890" + "abcd"
+        opaco = "A" * 26 + "b" * 6 + "0123456789"
+        solo_letras = "q" * 26 + "R" * 9
+        telegram = "123456789:" + "A" + "x" * 34
         secretos = {
-            "Authorization: Bearer abcDEF1234567890abcd": "abcDEF1234567890abcd",
+            f"Authorization: Bearer {clave}": clave,
             "password: hunter2": "hunter2",
             "falló con api_key=abc123 y reintentó": "abc123",
-            "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456789": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-            "clave sin numeros: abcdefghijklmnopqrstuvwxyzABCDEFGHIJ": "abcdefghijklmnopqrstuvwxyz",
-            "bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw": "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+            f"sk-{opaco}": opaco,
+            f"clave sin numeros: {solo_letras}": solo_letras,
+            f"bot {telegram}": telegram.split(":")[1],
             "ver https://api.telegram.org/bot1/sendMessage?token=zzz": "telegram.org",
         }
         for texto, secreto in secretos.items():
