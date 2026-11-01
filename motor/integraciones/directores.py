@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -37,6 +38,8 @@ def _leer(path: Path) -> dict | None:
 
 ESPERA_BASE_S = 60
 ESPERA_TOPE_S = 3600
+TRANSPORTE_TIMEOUT_S = 30.0
+TOPE_DRENAR_S = 20.0
 
 
 def espera_s(fallos: int) -> int:
@@ -720,7 +723,7 @@ def _correr_transporte(
             argv,
             input=cuerpo.encode("utf-8"),
             capture_output=True,
-            timeout=30,
+            timeout=TRANSPORTE_TIMEOUT_S,
             env=env,
         )
         texto = hecho.stdout.decode("utf-8") if hecho.returncode == 0 else ""
@@ -745,7 +748,10 @@ def _conciliar_transporte(
 
 
 def _correr_conciliacion(
-    registro: Registro, comando: list, aviso: dict, cuerpo: str
+    registro: Registro,
+    comando: list,
+    aviso: dict,
+    cuerpo: str,
 ) -> tuple[str, str, bool]:
     """(estado, dato, canal_caido), con el mismo criterio de canal caído que `_correr_transporte`."""
     env = os.environ.copy()
@@ -762,7 +768,7 @@ def _correr_conciliacion(
     argv = [str(x) for x in comando] + [str(aviso.get("id") or "")]
     try:
         hecho = subprocess.run(
-            argv, input=cuerpo.encode("utf-8"), capture_output=True, timeout=30, env=env,
+            argv, input=cuerpo.encode("utf-8"), capture_output=True, timeout=TRANSPORTE_TIMEOUT_S, env=env,
         )
         texto = hecho.stdout.decode("utf-8") if hecho.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1132,6 +1138,10 @@ class Vuelta:
 
     ahora: float
     caidos: set[str] = field(default_factory=set)
+    limite: float | None = None
+
+    def agotada(self) -> bool:
+        return self.limite is not None and time.monotonic() >= self.limite
 
 
 def _publicar_aviso(
@@ -1291,8 +1301,20 @@ def _descartar_avances_de_terminados(registro: Registro, terminados: set[str]) -
         _atomico(path, doc)
 
 
-def drenar(registro: Registro, cortar: str = "", ahora: float | None = None) -> dict:
-    vuelta = Vuelta(time.time() if ahora is None else ahora)
+def drenar(
+    registro: Registro,
+    cortar: str = "",
+    ahora: float | None = None,
+    tope_s: float | None = None,
+) -> dict:
+    """Una pasada de avisos. Con `tope_s`, no empieza avisos nuevos pasado ese tiempo; lo que queda sin
+    intentar se retoma en la pasada siguiente. Un envío ya empezado conserva su timeout propio: matarlo
+    por el tope podría cortar un mensaje que ya salió y duplicarlo, y marcaría caído un canal sano."""
+    vuelta = Vuelta(
+        time.time() if ahora is None else ahora,
+        limite=None if tope_s is None else time.monotonic() + tope_s,
+    )
+    cortada = False
     publicados = []
     corte = registro.corte_avisos()
     encargos = {ident: registro.fold(ident) for ident in registro.ids()}
@@ -1324,8 +1346,49 @@ def drenar(registro: Registro, cortar: str = "", ahora: float | None = None) -> 
                 continue
             trabajos.append((aviso, hecho["texto"]))
         for aviso, cuerpo in trabajos:
+            if vuelta.agotada():
+                cortada = True
+                break
             publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
-    return {"avisos": publicados}
+        if cortada:
+            break
+    return {"avisos": publicados, "cortada_por_tope": cortada}
+
+
+class DrenadoAparte:
+    """Corre `drenar` en un hilo propio para que la vuelta del supervisor no espere a los avisos.
+
+    El hilo abre su propio `Registro` (una conexión sqlite no cruza hilos) y hay una sola pasada viva a la
+    vez: si la anterior sigue, `lanzar` no hace nada. Cada pasada lleva el tope de `drenar`.
+    """
+
+    def __init__(self, base: Path, tope_s: float = TOPE_DRENAR_S):
+        self._base = base
+        self._tope_s = tope_s
+        self._hilo: threading.Thread | None = None
+        self.ultimo_error = ""
+
+    def lanzar(self) -> bool:
+        if self._hilo is not None and self._hilo.is_alive():
+            return False
+        self._hilo = threading.Thread(target=self._pasada, name="drenado-avisos", daemon=True)
+        self._hilo.start()
+        return True
+
+    def esperar(self, timeout: float | None = None) -> None:
+        if self._hilo is not None:
+            self._hilo.join(timeout)
+
+    def _pasada(self) -> None:
+        try:
+            registro = Registro(self._base)
+            try:
+                drenar(registro, tope_s=self._tope_s)
+            finally:
+                registro.close()
+            self.ultimo_error = ""
+        except Exception as exc:  # noqa: BLE001  los avisos nunca detienen al supervisor
+            self.ultimo_error = f"{type(exc).__name__}: {exc}"[:200]
 
 
 def capacidades_openbot(argv: list[str]) -> dict:
