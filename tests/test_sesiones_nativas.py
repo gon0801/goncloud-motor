@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -91,6 +92,95 @@ class SesionesNativas(unittest.TestCase):
                     "SELECT rollout_path FROM threads WHERE id=?", ("hilo",)
                 ).fetchone()[0]
             self.assertEqual(Path(ruta).read_text(), contexto)
+
+
+class CopiaConArchivosDeSoloLectura(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(self._limpiar)
+        self.origen = self.tmp / "intento"
+        self.almacen = self.tmp / "sesion-responsable"
+        self.snapshot = self.origen / ".local/share/opencode/snapshot/abc/objects/ab"
+
+    def _limpiar(self):
+        for ruta in [self.tmp, *self.tmp.rglob("*")]:
+            if ruta.is_dir() and not ruta.is_symlink():
+                ruta.chmod(0o755)
+        for ruta in self.tmp.rglob("*"):
+            if ruta.is_file():
+                ruta.chmod(0o644)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _objeto(self, nombre, contenido, modo=0o444):
+        self.snapshot.mkdir(parents=True, exist_ok=True)
+        ruta = self.snapshot / nombre
+        if ruta.exists():
+            ruta.chmod(0o644)
+        ruta.write_text(contenido)
+        ruta.chmod(modo)
+        return ruta
+
+    def test_copiar_dos_veces_con_objetos_0444_en_el_destino(self):
+        objeto = self._objeto("cd34", "contenido-git")
+        db = self.origen / ".local/share/opencode/opencode.db"
+        db.write_text("v1")
+        _copiar_sesion(self.origen, self.almacen)
+        copiado = self.almacen / ".local/share/opencode/snapshot/abc/objects/ab/cd34"
+        self.assertEqual(copiado.stat().st_mode & 0o222, 0)
+        inodo = copiado.stat().st_ino
+
+        _copiar_sesion(self.origen, self.almacen)
+
+        self.assertEqual(copiado.read_text(), "contenido-git")
+        self.assertEqual(copiado.stat().st_ino, inodo)
+        self.assertEqual(objeto.read_text(), "contenido-git")
+
+    def test_un_archivo_que_cambio_se_reemplaza_aunque_el_destino_sea_0444(self):
+        db = self.origen / ".local/share/opencode/opencode.db"
+        db.parent.mkdir(parents=True)
+        db.write_text("v1")
+        db.chmod(0o444)
+        _copiar_sesion(self.origen, self.almacen)
+        copiado = self.almacen / ".local/share/opencode/opencode.db"
+        self.assertEqual(copiado.stat().st_mode & 0o222, 0)
+
+        db.chmod(0o644)
+        db.write_text("v2-mas-largo")
+        db.chmod(0o444)
+        nuevo = self._objeto("ef56", "otro-objeto")
+        _copiar_sesion(self.origen, self.almacen)
+
+        self.assertEqual(copiado.read_text(), "v2-mas-largo")
+        self.assertEqual(
+            (copiado.parent / "snapshot/abc/objects/ab/ef56").read_text(), nuevo.read_text()
+        )
+
+    def test_mismo_tamano_y_otro_contenido_tambien_se_reemplaza(self):
+        db = self.origen / ".local/share/opencode/opencode.db"
+        db.parent.mkdir(parents=True)
+        db.write_text("aaaa")
+        db.chmod(0o444)
+        _copiar_sesion(self.origen, self.almacen)
+        marca = db.stat().st_mtime_ns
+        db.chmod(0o644)
+        db.write_text("bbbb")
+        os.utime(db, ns=(marca, marca))
+        db.chmod(0o444)
+        copiado = self.almacen / ".local/share/opencode/opencode.db"
+        self.assertEqual(copiado.stat().st_mtime_ns, db.stat().st_mtime_ns)
+        _copiar_sesion(self.origen, self.almacen)
+        self.assertEqual(
+            (self.almacen / ".local/share/opencode/opencode.db").read_text(), "bbbb"
+        )
+
+    def test_las_credenciales_no_se_copian(self):
+        auth = self.origen / ".local/share/opencode/auth.json"
+        auth.parent.mkdir(parents=True)
+        auth.write_text("secreto")
+        (auth.parent / "otro.json").write_text("{}")
+        _copiar_sesion(self.origen, self.almacen)
+        self.assertFalse((self.almacen / ".local/share/opencode/auth.json").exists())
+        self.assertTrue((self.almacen / ".local/share/opencode/otro.json").exists())
 
 
 if __name__ == "__main__":
