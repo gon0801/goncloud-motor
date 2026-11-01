@@ -21,7 +21,9 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   monitor, el estado oscilaría entre `up` y `down` y cada uno taparía la caída del otro. El supervisor de encargos usa
   `MOTOR_KUMA_ENCARGOS_URL`, de un monitor push aparte, y nunca lee `MOTOR_KUMA_URL`. La busca primero en el
   `secretos.env` de su base y, si no está, en el de `~/.motor` (permisos 600 en los dos). Sin esa dirección, un canal
-  caído se escribe en el log del proceso (stderr), una vez por hora, y `motor director ver` sigue mostrándolo.
+  caído se escribe en el log del proceso (stderr), una vez por hora, y `motor director ver` sigue mostrándolo. Al
+  arrancar, el supervisor deja en el log si no tiene la dirección ("sin MOTOR_KUMA_ENCARGOS_URL, el supervisor de
+  encargos no manda señal a Kuma"), para que la falta no pase en silencio.
 - **Pendiente de operación (no lo hace este cambio).** Crear el monitor push del supervisor en Kuma y escribir su
   dirección como `MOTOR_KUMA_ENCARGOS_URL`. `ops/senal-kuma.sh` hoy solo da de alta los monitores `mini` y `pc` y
   `motor doctor` solo verifica `MOTOR_KUMA_URL`; extenderlos toca el servidor de Kuma y sus pruebas de ssh, y se deja
