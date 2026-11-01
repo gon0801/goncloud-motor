@@ -108,3 +108,9 @@ def copiar_arbol(origen: Path, destino: Path, omitir: tuple[str, ...] = ()) -> N
                 errores.append((str(fuente), str(meta), str(exc)))
     if errores:
         raise shutil.Error(errores)
+
+
+def vaciar_arbol(ruta: Path) -> None:
+    """Deja `ruta` como directorio vacío, aunque contenga archivos de solo lectura."""
+    _quitar(ruta)
+    ruta.mkdir(parents=True, exist_ok=True)

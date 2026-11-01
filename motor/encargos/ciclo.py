@@ -11,7 +11,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
-from .copiar import copiar_arbol
+from .copiar import copiar_arbol, vaciar_arbol
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -519,22 +519,46 @@ def _copiar_sesion_sin_caer(
     registro: Registro, enc: Encargo, origen: Path, destino: Path, sitio: str, hora: str
 ) -> None:
     """Una copia de sesión que falla queda anotada en el encargo y el turno sigue:
-    la sesión es continuidad, no el resultado, y no justifica tumbar el barrido."""
+    la sesión es continuidad, no el resultado, y no justifica tumbar el barrido.
+
+    Una copia a medias no se usa como sesión. Al guardar, un fallo deja `.copia-incompleta`
+    en el almacén hasta que un guardado completo la quite, y mientras exista no se restaura:
+    el turno arranca sin sesión en vez de con una mezcla de archivos nuevos y viejos. Al
+    restaurar, un fallo vacía el runtime del turno."""
     import sqlite3
 
+    marca = ".copia-incompleta"
+
+    def anotar(causa: str, siguiente: str) -> None:
+        _anotar_instrumento(
+            registro, enc, "copia_sesion", causa[:2000], siguiente, hora,
+            f"{sitio}:{enc.generacion}", clase="copia_sesion",
+        )
+
+    if sitio == "restaurar" and (origen / marca).exists():
+        anotar(
+            "la sesión guardada quedó incompleta (falló una copia anterior): no se restaura",
+            "arrancar sin sesión; un guardado completo del siguiente turno la repone",
+        )
+        return
     try:
         _copiar_sesion(origen, destino)
-    except (OSError, sqlite3.Error) as exc:
-        _anotar_instrumento(
-            registro,
-            enc,
-            "copia_sesion",
-            f"no se pudo copiar la sesión ({sitio}): {type(exc).__name__}: {exc}"[:2000],
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        try:
+            if sitio == "guardar":
+                destino.mkdir(parents=True, exist_ok=True)
+                (destino / marca).touch()
+            else:
+                vaciar_arbol(destino)
+        except OSError:
+            pass
+        anotar(
+            f"no se pudo copiar la sesión ({sitio}): {type(exc).__name__}: {exc}",
             "seguir sin esa copia; se reintenta en el siguiente turno",
-            hora,
-            f"{sitio}:{enc.generacion}",
-            clase="copia_sesion",
         )
+    else:
+        if sitio == "guardar":
+            (destino / marca).unlink(missing_ok=True)
 
 
 def _leer_proc(directorio: Path) -> dict | None:
