@@ -555,6 +555,12 @@ def ejecutar(spec_path: Path) -> int:
         return 1
     finally:
         reg.close()
+        entorno = spec.get("env") or {}
+        runtime = Path(str(entorno.get("HOME") or ""))
+        if isinstance(entorno.get("TMPDIR"), str) and str(runtime / "tmp") == entorno["TMPDIR"]:
+            from motor.encargos.aislamiento import limpiar_temporal
+
+            limpiar_temporal(runtime)
 
 
 if __name__ == "__main__":
