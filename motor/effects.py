@@ -109,8 +109,7 @@ def entorno_maquina(maquina, extra: dict | None = None) -> dict:
     env["MOTOR_RAIZ"] = str(RAIZ)
     if extra:
         env.update(dict(extra))
-    for variable in senal.VARIABLES:
-        env.pop(variable, None)
+    env.pop(senal.VARIABLE, None)
     env.pop("MOTOR_LLAMADA", None)
     if os.name == "nt":
         return con_python(env)

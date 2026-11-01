@@ -16,21 +16,16 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   `Bearer`/`Basic`, de `token`, `api_key`, `password`, `clave`, `authorization` o `cookie` tras `=` o `:`, tokens con
   forma `id:secreto` y cualquier cadena opaca de 32 caracteres o más. Queda en una línea y acotado a 200 caracteres,
   porque un error de transporte puede traer la dirección o la clave del bot.
-- **Un monitor y una dirección propios.** `MOTOR_KUMA_URL` (la que escribe `ops/senal-kuma.sh` en
-  `~/.motor/secretos.env`) es del daemon del modo planes: con ella compartida, los dos procesos mandarían al mismo
-  monitor, el estado oscilaría entre `up` y `down` y cada uno taparía la caída del otro. El supervisor de encargos usa
-  `MOTOR_KUMA_ENCARGOS_URL`, de un monitor push aparte, y nunca lee `MOTOR_KUMA_URL`. La busca primero en el
-  `secretos.env` de su base y, si no está, en el de `~/.motor` (permisos 600 en los dos). Sin esa dirección, un canal
-  caído se escribe en el log del proceso (stderr), una vez por hora, y `motor director ver` sigue mostrándolo. Al
-  arrancar, el supervisor deja en el log si no tiene la dirección ("sin MOTOR_KUMA_ENCARGOS_URL, el supervisor de
-  encargos no manda señal a Kuma"), para que la falta no pase en silencio.
-- **Cómo se pone la dirección (operación, la hace una persona).** 1) Crear en Kuma un monitor push para el supervisor
-  de encargos, conectado al aviso "Server Alerts" (`ops/senal-kuma.sh` solo da de alta los de `mini` y `pc`, y no se
-  tocó: escribe en la base de Kuma por ssh). 2) Con su token de 32 letras y números por stdin:
-  `printf '%s\n' "$TOKEN" | ops/senal-kuma-encargos.sh poner`. Escribe `MOTOR_KUMA_ENCARGOS_URL` en
-  `~/.motor/secretos.env` de la Mini (600, atómico), sin tocar `MOTOR_KUMA_URL` ni imprimir el token; `quitar` la
-  retira. 3) Reiniciar el supervisor para que deje de avisar en el log de que le falta. `motor doctor` sigue
-  verificando solo `MOTOR_KUMA_URL`. Prueba: `ops/tests/test-senal-kuma-encargos.sh`.
+- **De dónde sale la dirección de Kuma (sin variable nueva).** El supervisor de encargos lee `MOTOR_KUMA_URL` del
+  `secretos.env` de su propia base (`reg.base`; en la Mini, `~/.motor-encargos/secretos.env`, con permisos 600), como
+  hoy. El daemon del modo planes lee el de `~/.motor/secretos.env`: cada proceso, su archivo, y por eso los dos procesos no se pisan en
+  el monitor. El supervisor **nunca** lee `~/.motor` ni hay respaldo allí. No se creó ninguna dirección ni secreto nuevo.
+- **"Canal caído" usa esa misma señal.** Con un canal caído, la señal de vida sale con `status=down` y el motivo
+  (`N planes; canal <canal> caído desde <hora>: <último error>`), por la misma dirección; sin canal caído, `status=up`.
+- **Sin `MOTOR_KUMA_URL` en la base** (o con el archivo ilegible o con permisos abiertos), el supervisor no manda señal:
+  lo dice en el log al arrancar ("sin MOTOR_KUMA_URL en el secretos.env de la base, el supervisor de encargos no manda
+  señal a Kuma") y, mientras haya un canal caído, lo escribe en el log una vez por hora. `motor director ver` lo
+  muestra siempre.
 - **Un estado dañado no rompe nada.** Un archivo de estado ilegible se ignora y un `fallos` que no es número cuenta como 0.
 - **Límite.** El estado se actualiza cuando hay un aviso que enviar. Si un canal falla y no quedan avisos pendientes,
   sigue figurando caído hasta el siguiente envío; `ultimo_intento` dice cuándo fue la última prueba.
