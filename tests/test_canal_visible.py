@@ -121,6 +121,65 @@ class EstadoDelCanal(Banco):
         self.assertFalse((self.base / "canales" / "tg.json").exists())
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 5_000), [])
 
+    def _con_conciliacion(self, respuesta: str) -> None:
+        """El canal declara `conciliacion`: un script que contesta `respuesta` (JSON) y sale 0."""
+        script = Path(self._tmp.name) / "conciliacion.py"
+        script.write_text(f"import sys\nsys.stdin.read()\nprint({respuesta!r})\n", encoding="utf-8")
+        cfg = json.loads((self.base / "canal.json").read_text())
+        cfg["tg"]["conciliacion"] = [sys.executable, "-B", str(script)]
+        (self.base / "canal.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    def test_una_conciliacion_sin_veredicto_no_oculta_un_canal_caido_pasado_el_umbral(self):
+        # Transporte de envío roto + conciliación que contesta sin decidir: el aviso se difiere sin enviar, el canal no
+        # recupera ni falla de nuevo, y sigue figurando caído (ocultar un canal caído es peor que mostrar tarde uno recuperado).
+        for respuesta in ('{"estado": "desconocido"}', "esto no es json", '{"ausente": false}'):
+            with self.subTest(respuesta=respuesta):
+                self.modo("caido")
+                self._con_conciliacion(respuesta)
+                directores.drenar(self.reg, ahora=T0)
+                inicio = self.estado()["fallando_desde"]
+                directores.drenar(self.reg, ahora=T0 + 700)
+                self.assertEqual(self.estado()["fallando_desde"], inicio, "la conciliación sin veredicto no borra el estado")
+                caidos = canales.canales_caidos(self.base, ahora=T0 + 700)
+                self.assertEqual([c["canal"] for c in caidos], ["tg"], "pasado el umbral el canal sigue visible")
+                (self.base / "canales" / "tg.json").unlink()
+                for ruta in (self.base / "avisos").glob("*.json"):
+                    ruta.unlink()
+
+    def test_una_conciliacion_que_halla_el_aviso_recupera_el_canal(self):
+        self.modo("caido")
+        self._con_conciliacion('{"recibo": "r-1"}')
+        directores.drenar(self.reg, ahora=T0)
+        self.assertIn("fallando_desde", self.estado())
+        directores.drenar(self.reg, ahora=T0 + 700)
+        self.assertNotIn("fallando_desde", self.estado(), "'hallado' es prueba de entrega")
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 5_000), [])
+
+    def test_con_ausente_decide_el_envio_que_sigue_en_la_misma_pasada(self):
+        self._con_conciliacion('{"ausente": true}')
+        self.modo("caido")
+        directores.drenar(self.reg, ahora=T0)
+        directores.drenar(self.reg, ahora=T0 + 700)
+        estado = self.estado()
+        self.assertIn("fallando_desde", estado, "el envío que sigue a 'ausente' falla: gana el fallo")
+        self.assertEqual(estado["fallos"], 2)
+        self.modo("ok")
+        directores.drenar(self.reg, ahora=T0 + 20_000)
+        self.assertNotIn("fallando_desde", self.estado(), "el envío con recibo recupera el canal")
+
+    def test_una_conciliacion_que_falla_no_marca_el_canal_como_recuperado(self):
+        script = Path(self._tmp.name) / "conciliacion_rota.py"
+        script.write_text("import sys\nsys.stdin.read()\nsys.exit(7)\n", encoding="utf-8")
+        cfg = json.loads((self.base / "canal.json").read_text())
+        cfg["tg"]["conciliacion"] = [sys.executable, "-B", str(script)]
+        (self.base / "canal.json").write_text(json.dumps(cfg), encoding="utf-8")
+        self.modo("caido")
+        directores.drenar(self.reg, ahora=T0)
+        directores.drenar(self.reg, ahora=T0 + 4_000)
+        estado = self.estado()
+        self.assertIn("fallando_desde", estado)
+        self.assertEqual(estado["fallos"], 2)
+
 
 class Robustez(Banco):
     def test_un_fallos_no_numerico_en_el_estado_no_tumba_ver_ni_avisar(self):

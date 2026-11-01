@@ -31,4 +31,7 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   muestra siempre.
 - **Un estado dañado no rompe nada.** Un archivo de estado ilegible se ignora y un `fallos` que no es número cuenta como 0.
 - **Límite.** El estado se actualiza cuando hay un aviso que enviar. Si un canal falla y no quedan avisos pendientes,
-  sigue figurando caído hasta el siguiente envío; `ultimo_intento` dice cuándo fue la última prueba.
+  sigue figurando caído hasta el siguiente envío; `ultimo_intento` dice cuándo fue la última prueba. Solo se recupera con una entrega probada
+  (un envío con recibo o una conciliación `hallado`); con `ausente` decide el envío que sigue en la misma pasada, y una conciliación
+  que contesta sin veredicto no marca ni fallo ni recuperación. Un canal sano cuyos pendientes solo concilian como incierto sigue
+  figurando caído hasta el siguiente envío con recibo.

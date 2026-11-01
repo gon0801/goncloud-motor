@@ -860,8 +860,6 @@ def _enviar_aviso(
         _diferir(guardado, vuelta.ahora)
         if caido:
             vuelta.fallo_el_transporte(guardado["canal"], error)
-        else:
-            vuelta.respondieron.add(guardado["canal"])
     _atomico(path, guardado)
 
 
@@ -1235,6 +1233,8 @@ def _publicar_aviso(
             registro, conciliacion, guardado, cuerpo
         )
         if resultado_con == "hallado":
+            # Solo una entrega probada recupera el canal: un envío con recibo o una conciliación que lo halla.
+            # Una conciliación sin veredicto no marca ni fallo ni recuperación; con "ausente" decide el envío que sigue.
             vuelta.respondieron.add(nombre)
             guardado["estado"] = "publicado"
             guardado["alcance"] = "externo"
@@ -1269,10 +1269,10 @@ def _publicar_aviso(
     if cortar == "despues" and not guardado.get("recibo"):
         if comando:
             _registrar_intento(path, guardado)
-            _, error, caido = _correr_transporte(registro, comando, guardado, cuerpo)
+            recibo, error, caido = _correr_transporte(registro, comando, guardado, cuerpo)
             if caido:
                 vuelta.fallo_el_transporte(nombre, error)
-            else:
+            elif recibo:
                 vuelta.respondieron.add(nombre)
             guardado["estado"] = "incierto"
             guardado["alcance"] = "externo"
