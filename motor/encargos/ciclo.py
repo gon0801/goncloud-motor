@@ -806,8 +806,11 @@ def barrer(
             enc = registro.fold(encargo_id)
         if decision["matar"] and proc:
             cerrar(directorio, proc)
-        if decision["matar"] or parada:
-            necesidades.cerrar_herramientas(directorio)
+        if parada or necesidades.detenida_ahora(registro, encargo_id):
+            necesidades.cerrar_herramientas_del_encargo(directorio)
+        elif decision["matar"]:
+            # Matar el turno (colgado, vencido) no mata una corrida de CI: no depende de él.
+            necesidades.cerrar_herramientas(directorio, solo_del_turno=True)
         if decision["lanzar"] and lanzador is not None and not parada:
             _lanzar_uno(registro, enc, directorio, espacio, hora, lanzador)
             enc = registro.fold(encargo_id)

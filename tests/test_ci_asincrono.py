@@ -355,5 +355,202 @@ class ElResultadoConElEncargoDetenido(_CiAsincrono):
         self.assertEqual(self.sol(r, ident).estado, "detenida")
 
 
+class _CorridaViva(_CiAsincrono):
+    """Procesos de verdad como herramientas: la prueba mide quién sigue vivo."""
+
+    def setUp(self):
+        self.herramientas: list[subprocess.Popen] = []
+        for parche in (
+            mock.patch("motor.plataforma.hora_inicio", return_value="t0"),
+            mock.patch(
+                "motor.plataforma.pid_vivo",
+                side_effect=lambda pid: any(
+                    p.pid == pid and p.poll() is None for p in self.herramientas
+                ),
+            ),
+            mock.patch("motor.plataforma.matar_proc", side_effect=self.matar),
+            mock.patch.object(nec, "CI_GRACIA_S", 10),
+        ):
+            parche.start()
+            self.addCleanup(parche.stop)
+
+    def matar(self, pid, inicio):
+        for p in self.herramientas:
+            if p.pid == pid:
+                p.kill()
+                p.wait()
+        return True
+
+    def lanzar(self, r, ident: str, operacion: str, intento: str = "intento-1-a"):
+        proceso = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"], start_new_session=True
+        )
+        self.herramientas.append(proceso)
+        self.addCleanup(proceso.wait)
+        self.addCleanup(proceso.kill)
+        marca = r.d / intento / "herramientas" / f"{ident}.json"
+        marca.parent.mkdir(parents=True, exist_ok=True)
+        marca.write_text(
+            json.dumps(
+                {"pid": proceso.pid, "inicio": "t0", "solicitud": ident, "operacion": operacion}
+            )
+        )
+        return proceso, marca
+
+
+class MatarElTurnoNoMataLaCorridaDeCi(_CorridaViva):
+    """ci_base_2: la sesión del responsable se marcó `colgada`, `ciclo.barrer`
+    cerró las herramientas del intento y mató también la corrida de CI."""
+
+    def matar_el_turno(self, r):
+        matar = {"matar": True, "lanzar": False, "eventos": []}
+        with mock.patch("motor.encargos.ciclo._decision", return_value=matar):
+            self.barrer(r)
+
+    def test_matar_el_turno_no_mata_la_corrida_de_ci_pero_si_las_demas_herramientas(self):
+        r, ident = self.montar("sobrevive-1")
+        ci, marca_ci = self.lanzar(r, ident, "ci.correr")
+        otra, marca_otra = self.lanzar(r, "consulta_1", "sqlite.consultar")
+
+        self.matar_el_turno(r)
+
+        self.assertIsNone(ci.poll(), "la corrida de CI sigue viva")
+        self.assertTrue(marca_ci.is_file(), "su marca queda para recoger el resultado")
+        self.assertIsNotNone(otra.poll(), "una consulta sí depende del turno")
+        self.assertTrue(marca_otra.with_suffix(".hecha").is_file())
+        self.assertEqual(self.sol(r, ident).estado, "pendiente")
+
+    def test_la_corrida_que_sobrevivio_entrega_su_resultado_despues(self):
+        r, ident = self.montar("sobrevive-2")
+        ci, _marca = self.lanzar(r, ident, "ci.correr")
+        self.matar_el_turno(r)
+        self.intento(r, "intento-2-b")
+        self.termina(r.d / "intento-1-a", ident)
+        ci.kill()
+        ci.wait()
+
+        self.barrer(r)
+
+        self.assertEqual(self.sol(r, ident).estado, "resuelta")
+        self.assertEqual(self.buzon(r, ident)["datos"]["run"], "41274694053")
+
+
+class ParoCancelarSiDetienenLaCorrida(_CorridaViva):
+    def test_parar_cierra_la_corrida_de_un_intento_anterior(self):
+        r, ident = self.montar("detiene-1")
+        ci, marca = self.lanzar(r, ident, "ci.correr")
+        self.intento(r, "intento-2-b")
+
+        ordenar(r.reg, r.enc, "parar", "parar-1", ahora_iso())
+        self.barrer(r)
+
+        self.assertIsNotNone(ci.poll(), "parar detiene la corrida aunque sea de otro intento")
+        self.assertTrue(marca.with_suffix(".hecha").is_file())
+
+    def test_cancelar_tambien(self):
+        r, ident = self.montar("detiene-2")
+        ci, marca = self.lanzar(r, ident, "ci.correr")
+
+        ordenar(r.reg, r.enc, "cancelar", "cancelar-1", ahora_iso())
+        self.barrer(r)
+
+        self.assertIsNotNone(ci.poll())
+        self.assertTrue(marca.with_suffix(".hecha").is_file())
+
+
+class UnCiIgualReusaLaCorridaViva(_CorridaViva):
+    """El agente pidió dos veces la misma línea base porque la primera no
+    llegaba: 18 minutos de CI cada una."""
+
+    def pedir_otra(self, r, ident: str, job: str = "jaula-linux") -> list[list[str]]:
+        enc = r.fold()
+        peticiones = r.espacio / ".interno" / "buzon" / "peticiones"
+        (peticiones / f"{ident}.json").write_text(
+            json.dumps(
+                {
+                    "id": ident,
+                    "encargo": enc.id,
+                    "fase": enc.fase_activa,
+                    "intento": enc.intento,
+                    "generacion": enc.generacion,
+                    "conductor": "",
+                    "operacion": "ci.correr",
+                    "recurso": "ci-linux",
+                    "parametros": {"job": job},
+                    "motivo": "la línea base otra vez",
+                }
+            )
+        )
+        lanzadas: list[list[str]] = []
+
+        def falso_popen(argv, **kw):
+            lanzadas.append(argv)
+            return mock.Mock(pid=2**22, poll=lambda: None)
+
+        with mock.patch.object(nec, "ESPERA_CI_S", 0.2), mock.patch.object(
+            nec.subprocess, "Popen", side_effect=falso_popen
+        ):
+            self.barrer(r)
+        return lanzadas
+
+    def corrida_en_curso(self, clave: str):
+        r, ident = self.montar(clave)
+        self.lanzar(r, ident, "ci.correr")
+        return r, ident
+
+    def test_el_mismo_recurso_job_y_version_no_lanza_otra_corrida(self):
+        r, primera = self.corrida_en_curso("reuso-1")
+
+        lanzadas = self.pedir_otra(r, "ci_base_2")
+
+        self.assertEqual(lanzadas, [])
+        segunda = self.sol(r, "ci_base_2")
+        self.assertEqual(segunda.carpeta, self.sol(r, primera).carpeta)
+        self.assertEqual(segunda.estado, "pendiente")
+        self.assertEqual(self.buzon(r, "ci_base_2")["estado"], "pendiente")
+
+    def test_al_terminar_la_corrida_las_dos_solicitudes_reciben_su_resultado(self):
+        r, primera = self.corrida_en_curso("reuso-2")
+        self.pedir_otra(r, "ci_base_2")
+        self.intento(r, "intento-2-b")
+        self.termina(r.d / "intento-1-a", primera)
+        self.herramientas[0].kill()
+        self.herramientas[0].wait()
+
+        self.barrer(r)
+
+        for ident in (primera, "ci_base_2"):
+            self.assertEqual(self.sol(r, ident).estado, "resuelta", ident)
+            doc = self.buzon(r, ident)
+            self.assertEqual(doc["datos"]["run"], "41274694053")
+            self.assertTrue(Path(doc["datos"]["log"]).is_relative_to(r.espacio))
+
+    def test_otro_job_si_lanza_su_propia_corrida(self):
+        r, _primera = self.corrida_en_curso("reuso-3")
+
+        lanzadas = self.pedir_otra(r, "ci_otro_job", job="otro-job")
+
+        self.assertEqual(len(lanzadas), 1)
+
+    def test_otra_version_del_producto_si_lanza_su_propia_corrida(self):
+        r, _primera = self.corrida_en_curso("reuso-4")
+        (r.espacio / "dato.txt").write_text("43")
+
+        lanzadas = self.pedir_otra(r, "ci_nueva_version")
+
+        self.assertEqual(len(lanzadas), 1)
+
+    def test_si_la_primera_ya_murio_se_lanza_una_nueva(self):
+        r, primera = self.corrida_en_curso("reuso-5")
+        self.herramientas[0].kill()
+        self.herramientas[0].wait()
+
+        lanzadas = self.pedir_otra(r, "ci_base_2")
+
+        self.assertEqual(len(lanzadas), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

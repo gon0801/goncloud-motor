@@ -321,6 +321,9 @@ class Solicitud:
     # Carpeta del host donde su herramienta deja `resultado.json`. El intento
     # que la lanzó puede no ser el vigente cuando termina: la solicitud la recuerda.
     carpeta: str = ""
+    # Firma del producto cuando se lanzó la herramienta: dos ci.correr iguales
+    # son los que piden lo mismo sobre la misma versión.
+    version: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -347,6 +350,7 @@ class Solicitud:
             "detalle": self.detalle,
             "tardias": list(self.tardias),
             "carpeta": self.carpeta,
+            "version": self.version,
         }
 
     @property
@@ -1616,7 +1620,10 @@ def _herramienta(e: Encargo, d: dict, hora: str) -> Encargo:
     return replace(
         e,
         solicitudes=tuple(
-            replace(s, carpeta=carpeta) if s.id == ident else s for s in e.solicitudes
+            replace(s, carpeta=carpeta, version=str(d.get("version") or ""))
+            if s.id == ident
+            else s
+            for s in e.solicitudes
         ),
         hora=hora or e.hora,
     )

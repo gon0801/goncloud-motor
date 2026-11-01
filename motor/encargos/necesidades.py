@@ -955,20 +955,70 @@ def _atender_decision(
     return {"estado": "registrada", "datos": {"decision": sol.id}}
 
 
-def _recordar_carpeta(registro: Registro, enc, sol: Solicitud, directorio: Path) -> Solicitud:
+def _corrida_igual(enc, sol: Solicitud, version: str, directorio: Path) -> Solicitud | None:
+    """La corrida de CI que sigue viva y pide lo mismo: mismo recurso, mismo job
+    y misma versión del producto. Repetirla cuesta otra corrida de minutos."""
+    job = dict(sol.parametros).get("job")
+    return next(
+        (
+            otra
+            for otra in enc.solicitudes
+            if otra.id != sol.id
+            and otra.operacion == capacidades.CI
+            and otra.recurso == sol.recurso
+            and otra.estado == "pendiente"
+            and otra.carpeta
+            and otra.version == version
+            and dict(otra.parametros).get("job") == job
+            and _en_curso(otra, directorio)
+        ),
+        None,
+    )
+
+
+def _recordar_carpeta(
+    registro: Registro, enc, sol: Solicitud, espacio: Path, directorio: Path, hora: str
+) -> Solicitud:
     """Anota dónde correrá la herramienta antes de lanzarla. `sol` viene de la
-    petición o del registro: la que ya recuerda su carpeta la conserva."""
+    petición o del registro: la que ya recuerda su carpeta la conserva.
+
+    Un `ci.correr` igual a uno que sigue vivo se une a esa corrida: su carpeta
+    es la de la corrida en marcha y no se lanza otra."""
     if sol.carpeta:
         return sol
-    carpeta = str(_carpeta_de(sol, directorio))
+    version = ""
+    otra = None
+    if sol.operacion == capacidades.CI:
+        from .comprobacion import firma_producto
+
+        version = firma_producto(Path(espacio))
+        otra = _corrida_igual(enc, sol, version, directorio)
+    carpeta = otra.carpeta if otra else str(_carpeta_de(sol, directorio))
     _anotar(
         registro,
         enc.id,
-        {"kind": "herramienta", "data": {"id": sol.id, "carpeta": carpeta}},
+        {"kind": "herramienta", "data": {"id": sol.id, "carpeta": carpeta, "version": version}},
         f"herramienta:{enc.id}:{sol.id}",
     )
+    if otra:
+        _anotar(
+            registro,
+            enc.id,
+            {
+                "kind": "procedimiento",
+                "data": {
+                    "nota": f"{sol.id} pide lo mismo que {otra.id}, que sigue corriendo: reusa esa corrida y no lanza otra",
+                    "hora": hora,
+                },
+            },
+            f"reuso:{enc.id}:{sol.id}",
+        )
     actual = _buscar(registro.fold(enc.id) or enc, sol.id)
-    return replace(sol, carpeta=(actual.carpeta if actual else "") or carpeta)
+    return replace(
+        sol,
+        carpeta=(actual.carpeta if actual else "") or carpeta,
+        version=(actual.version if actual else "") or version,
+    )
 
 
 def _cerrar_con_resultado(
@@ -1450,7 +1500,7 @@ def atender(
             )
         else:
             if not sol.carpeta:
-                sol = _recordar_carpeta(registro, enc, previa or sol, directorio)
+                sol = _recordar_carpeta(registro, enc, previa or sol, espacio, directorio, hora)
             resultado = _ejecutar(
                 registro, enc, sol, recursos, espacio, directorio, autorizado, hora
             )
@@ -1630,14 +1680,34 @@ def responder(
     }
 
 
-def cerrar_herramientas(directorio: Path) -> int:
-    """Cierra las herramientas que el motor lanzó para este intento."""
+def cerrar_herramientas(directorio: Path, solo_del_turno: bool = False) -> int:
+    """Cierra las herramientas que el motor lanzó para este intento.
+
+    Con `solo_del_turno` (el turno del agente terminó o se mató) deja correr la
+    de CI: una corrida dura más que un turno y no depende de él. Su marca queda
+    en su sitio para que el siguiente paso recoja el resultado. Parar o cancelar
+    el encargo las cierra todas, con la limpieza de rama y PR de la de CI."""
     cerrados = 0
     for path in sorted((Path(directorio) / "herramientas").glob("*.json")):
         doc = _leer(path) or {}
+        operacion = str(doc.get("operacion") or "")
+        if solo_del_turno and operacion == capacidades.CI:
+            continue
         pid, inicio = doc.get("pid"), doc.get("inicio")
         if pid and inicio:
-            _matar_herramienta(int(pid), str(inicio), str(doc.get("operacion") or ""))
+            _matar_herramienta(int(pid), str(inicio), operacion)
             cerrados += 1
         _archivar(path)
     return cerrados
+
+
+def cerrar_herramientas_del_encargo(directorio: Path) -> int:
+    """Parar o cancelar: cierra las herramientas de todos los intentos del encargo,
+    no solo las del vigente. Una corrida de CI lanzada en un intento anterior sigue
+    viva y no la alcanzaría el cierre de este."""
+    return sum(cerrar_herramientas(d) for d in _intentos(directorio) if d.is_dir())
+
+
+def detenida_ahora(registro: Registro, encargo_id: str) -> bool:
+    """El propietario paró o canceló el encargo y no lo ha continuado."""
+    return _detenida_ahora(registro, encargo_id)
