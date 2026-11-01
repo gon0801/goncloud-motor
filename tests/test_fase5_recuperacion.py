@@ -75,9 +75,10 @@ class RecuperacionFase5(unittest.TestCase):
                     reg.anotar(ident, {"kind": "fases", "data": {
                         "fases": [{"id": "A", "resultado": "fase comprobada"}], "hora": HORA,
                     }}, "fase")
-                    reg.anotar(ident, {"kind": "decision", "data": {
-                        "id": "decision", "eleccion": "seguir", "motivo": "nueva evidencia", "hora": HORA,
-                    }}, "decision")
+                    reg.anotar(ident, {"kind": "impedimento", "data": {
+                        "clase": "entorno", "causa": "falta un entorno",
+                        "condicion": "conseguir el equipo", "hora": HORA,
+                    }}, "impedimento")
                     enc = reg.fold(ident)
                     hechos = directores.hechos_de_avance(enc)
                     malo, bueno = [directores._aviso_de_hecho(enc, h) for h in hechos]
@@ -333,19 +334,20 @@ class RecuperacionFase5(unittest.TestCase):
                 avisos = directores.drenar(reg)["avisos"]
                 enviados = {(a["encargo"], a.get("tipo")) for a in avisos if a["entregado"]}
                 self.assertEqual(enviados, {
-                    ("antiguo", "pregunta"), ("cerrado", None), (nuevo, "fase"),
+                    ("antiguo", "pregunta"), ("cerrado", None), (nuevo, "inicio"),
                 })
                 anterior = reg.fold("antiguo", hasta=corte)
-                historico = next(h for h in directores.hechos_de_avance(anterior) if h["tipo"] == "fase")
+                historico = next(h for h in directores.hechos_de_avance(anterior) if h["tipo"] == "inicio")
                 aviso_historico = directores._aviso_de_hecho(anterior, historico)
                 self.assertFalse((base / "avisos" / f"{aviso_historico['id']}.json").exists())
                 self.assertTrue(all(a.get("recibo") for a in avisos))
-                reg.anotar("antiguo", {"kind": "fases", "data": {
-                    "fases": [{"id": "A", "resultado": "fase con evidencia nueva"}], "hora": HORA,
+                reg.anotar("antiguo", {"kind": "impedimento", "data": {
+                    "clase": "entorno", "causa": "falta un entorno",
+                    "condicion": "conseguir el equipo", "hora": HORA,
                 }}, "avance-posterior")
                 avisos = directores.drenar(reg)["avisos"]
                 nuevos = [a for a in avisos if a["novedad"]]
-                self.assertEqual([(a["encargo"], a["tipo"]) for a in nuevos], [("antiguo", "fase")])
+                self.assertEqual([(a["encargo"], a["tipo"]) for a in nuevos], [("antiguo", "trabado")])
                 self.assertFalse(any(a["novedad"] for a in directores.drenar(reg)["avisos"]))
             finally:
                 reg.close()

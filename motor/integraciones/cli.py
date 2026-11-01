@@ -27,6 +27,8 @@ from .directores import (
 )
 from motor.encargos.ciclo import resolver_entrega
 
+from .canales import canales_caidos
+
 
 def _json(datos: dict) -> int:
     print(json.dumps(datos, ensure_ascii=False))
@@ -197,7 +199,11 @@ def _correr(args) -> int:
             }
             return _json(registrar_identidad(reg, args.encargo, identidad))
         if args.cmd == "ver":
-            return _json(consultar_canonico(reg, args.encargo))
+            salida = dict(consultar_canonico(reg, args.encargo))
+            caidos = canales_caidos(reg.base)
+            if caidos:
+                salida["canales_caidos"] = caidos
+            return _json(salida)
         if args.cmd in ("parar", "continuar", "cancelar"):
             return _json(relay(reg, args.encargo, args.cmd, args.clave, marca))
         if args.cmd == "promover":

@@ -383,6 +383,13 @@ def _supervisor(reg: Registro, args) -> int:
                      proximo(replace(enc, agentes=candidatas), hora, set(disponibles)), hora)
         return None
 
+    # En el bucle los avisos corren en un hilo aparte con tope por pasada: la cadencia del barrido no
+    # depende del canal, ni cuando funciona. Con --una-vez no hay cadencia que cuidar ni pasada siguiente
+    # que retome lo que un tope dejara sin enviar: drena en línea y por completo.
+    from motor.integraciones.directores import DrenadoAparte
+
+    drenador = None if args.una_vez else DrenadoAparte(reg.base)
+
     def paso() -> list[dict]:
         hora = ahora_iso()
         if ruta:
@@ -413,9 +420,12 @@ def _supervisor(reg: Registro, args) -> int:
             gh=_puerto_github(reg.base),
         )
         try:
-            from motor.integraciones.directores import drenar
+            if drenador is None:
+                from motor.integraciones.directores import drenar
 
-            drenar(reg)
+                drenar(reg)
+            else:
+                drenador.lanzar()
         except Exception:
             pass
         try:
@@ -447,9 +457,25 @@ def _supervisor(reg: Registro, args) -> int:
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))
         return 0
-    from motor.senal import Senal
+    from motor.senal import Senal, url_configurada
 
-    senal = Senal(reg.base, lambda: {})
+    from motor.integraciones.canales import canales_caidos
+
+    base = reg.base
+    # La señal del supervisor lee MOTOR_KUMA_URL del secretos.env de su propia base (en la Mini,
+    # ~/.motor-encargos/secretos.env). El daemon del modo planes lee el de ~/.motor: cada proceso, su archivo.
+    try:
+        configurada = bool(url_configurada(base))
+    except Exception:  # noqa: BLE001  un secretos.env ilegible tampoco da señal
+        configurada = False
+    if not configurada:
+        print(
+            "motor: sin MOTOR_KUMA_URL en el secretos.env de la base, el supervisor de encargos no manda señal a Kuma "
+            "(un canal caído solo se ve en `motor director ver` y en este log)",
+            file=sys.stderr,
+            flush=True,
+        )
+    senal = Senal(base, lambda: {}, canales=lambda: canales_caidos(base))
     senal.arranca()
     try:
         fallidas = 0
