@@ -31,6 +31,8 @@ CONSTANTS
                        \* Sin ella mata también la corrida de CI.
 
 Ids == 1..MaxIds
+PedAg == MaxIds + 1   \* el pedido de ci.correr que el agente hace por el buzón (no es de la inspección)
+Todos == 1..PedAg
 Estados == {"recibido", "ejecutando", "deteniendo", "detenido", "terminado"}
 Herramientas == {"ninguna", "corre", "termino", "entregada"}
 
@@ -62,8 +64,8 @@ Abierto == est \in {"recibido", "ejecutando"}
 Sol(k) == IF k = 0 THEN "ausente" ELSE sol[k]
 Terminal(s) == s \in {"resuelta", "detenida"}
 Parado == est \in {"deteniendo", "detenido"}   \* necesidades._detenida_ahora: última orden parar
-Corriendo == \E k \in Ids : herr[k] = "corre"
-SinIntentoAnterior == [k \in Ids |-> FALSE]    \* ningún resultado queda en el intento vigente
+Corriendo == \E k \in Todos : herr[k] = "corre"
+SinIntentoAnterior == [k \in Todos |-> FALSE]    \* ningún resultado queda en el intento vigente
 
 \* dominio.ajuste_sin_ver_por_inspeccion
 AjusteSinVer == AjusteAbre /\ pend /\ ajuste
@@ -84,20 +86,26 @@ Consumida ==
 \* ciclo._id_inspeccion: el mismo pedido; una "detenida" pasa al siguiente reintento
 IdPedido == CHOOSE k \in Ids : sol[k] /= "detenida" /\ \A j \in 1..(k - 1) : sol[j] = "detenida"
 
+\* necesidades._recoger puede registrar el resultado de la herramienta de k
+HayQueRecoger(k) ==
+  /\ est /= "terminado"
+  /\ herr[k] = "termino" /\ sol[k] \in {"pendiente", "detenida"}
+  /\ (RecuerdaCarpeta \/ aqui[k])
+
 TypeOK ==
   /\ est \in Estados /\ proc \in BOOLEAN /\ juicio \in {"ninguno", "aprueba", "pide"}
   /\ pend \in BOOLEAN /\ liga \in 0..MaxIds
-  /\ sol \in [Ids -> {"ausente", "pendiente", "resuelta", "detenida"}]
-  /\ peticion \subseteq Ids /\ vista \in [Ids -> BOOLEAN]
+  /\ sol \in [Todos -> {"ausente", "pendiente", "resuelta", "detenida"}]
+  /\ peticion \subseteq Todos /\ vista \in [Todos -> BOOLEAN]
   /\ ajuste \in BOOLEAN /\ imped \in BOOLEAN /\ carrera \in BOOLEAN
-  /\ herr \in [Ids -> Herramientas] /\ aqui \in [Ids -> BOOLEAN] /\ corridaMuerta \in BOOLEAN
+  /\ herr \in [Todos -> Herramientas] /\ aqui \in [Todos -> BOOLEAN] /\ corridaMuerta \in BOOLEAN
 
 Init ==
   /\ est = "ejecutando" /\ proc = TRUE /\ juicio = "ninguno"
-  /\ pend = FALSE /\ liga = 0 /\ sol = [k \in Ids |-> "ausente"]
-  /\ peticion = {} /\ vista = [k \in Ids |-> FALSE]
+  /\ pend = FALSE /\ liga = 0 /\ sol = [k \in Todos |-> "ausente"]
+  /\ peticion = {} /\ vista = [k \in Todos |-> FALSE]
   /\ ajuste = FALSE /\ imped = FALSE /\ carrera = FALSE
-  /\ herr = [k \in Ids |-> "ninguna"] /\ aqui = SinIntentoAnterior /\ corridaMuerta = FALSE
+  /\ herr = [k \in Todos |-> "ninguna"] /\ aqui = SinIntentoAnterior /\ corridaMuerta = FALSE
 
 \* El supervisor lanza al revisor: dominio.decision_proceso devuelve lanzar (sin
 \* impedimento, sin espera_inspeccion_consumida, sin inspeccion_bloquea). Al abrir el
@@ -106,6 +114,7 @@ Init ==
 \* con el mismo dato. El intento nuevo deja atrás la carpeta de las herramientas anteriores.
 Lanzar ==
   /\ Abierto /\ ~proc /\ juicio = "ninguno" /\ ~imped /\ ~Consumida /\ ~Bloquea
+  /\ \A k \in Todos : ~HayQueRecoger(k)   \* ciclo.barrer: atender (y su _recoger) corre antes de decidir el lanzamiento
   /\ proc' = TRUE /\ est' = "ejecutando" /\ ajuste' = FALSE
   /\ carrera' = (carrera \/ (pend /\ liga \in peticion /\ ~Terminal(Sol(liga)) /\ ~AjusteSinVer))
   /\ aqui' = SinIntentoAnterior
@@ -199,7 +208,7 @@ Atender ==
 \* su carpeta). No depende del turno ni del estado del encargo: puede ser después de que
 \* el turno murió, de que cambió el intento o con el encargo detenido.
 HerramientaTermina ==
-  /\ \E k \in Ids :
+  /\ \E k \in Todos :
        /\ herr[k] = "corre"
        /\ herr' = [herr EXCEPT ![k] = "termino"]
   /\ UNCHANGED <<est, proc, juicio, pend, liga, sol, peticion, vista, ajuste, imped, carrera>>
@@ -208,12 +217,11 @@ HerramientaTermina ==
 \* necesidades._recoger (primer paso de atender): la solicitud pendiente, o detenida, cuya
 \* herramienta terminó se resuelve con ese resultado (un `ok`; uno que no lo es deja la
 \* detenida como está) y le llega a la fase. Con RecuerdaCarpeta lo busca donde se lanzó;
-\* sin ella solo lo encuentra si el intento vigente es el que la lanzó. El código de
-\* e0f06a2 además exigía la petición sin archivar; el modelo no (más favorable a hoy).
+\* sin ella solo lo encuentra si el intento vigente es el que la lanzó (HayQueRecoger).
+\* El código de e0f06a2 además exigía la petición sin archivar; el modelo no (más
+\* favorable a hoy).
 RecogerDe(k) ==
-  /\ est /= "terminado"
-  /\ herr[k] = "termino" /\ sol[k] \in {"pendiente", "detenida"}
-  /\ RecuerdaCarpeta \/ aqui[k]
+  /\ HayQueRecoger(k)
   /\ sol' = [sol EXCEPT ![k] = "resuelta"]
   /\ vista' = [vista EXCEPT ![k] = FALSE]
   /\ herr' = [herr EXCEPT ![k] = "entregada"]
@@ -221,43 +229,48 @@ RecogerDe(k) ==
   /\ UNCHANGED <<est, proc, juicio, pend, liga, ajuste, imped, carrera>>
   /\ UNCHANGED <<aqui, corridaMuerta>>
 
-Recoger == \E k \in Ids : RecogerDe(k)
+Recoger == \E k \in Todos : RecogerDe(k)
 
-\* El turno del agente termina (o se vence) y el siguiente abre otro intento:
-\* ciclo._directorio apunta a la carpeta nueva y las herramientas lanzadas antes quedan
-\* en la del intento anterior.
-CambiaIntento ==
-  /\ Abierto
-  /\ aqui' = SinIntentoAnterior
-  /\ UNCHANGED <<est, proc, juicio, pend, liga, sol, peticion, vista, ajuste, imped, carrera>>
-  /\ UNCHANGED <<herr, corridaMuerta>>
+\* El agente, con su turno vivo, pide ci.correr por el buzón (cliente.py pedir) y espera:
+\* la petición queda en peticiones/ y necesidades.atender la registra y la lanza. No es la
+\* inspección del revisor: no la liga ni bloquea al revisor. Un solo pedido de este tipo.
+PedirCi ==
+  /\ Abierto /\ proc /\ sol[PedAg] = "ausente" /\ PedAg \notin peticion
+  /\ peticion' = peticion \cup {PedAg}
+  /\ UNCHANGED <<est, proc, juicio, pend, liga, sol, vista, ajuste, imped, carrera>>
+  /\ UNCHANGED nuevas
 
-\* ciclo.barrer con `decision["matar"]` sin parada (la sesión se marcó colgada): mata el
-\* turno y cierra las herramientas. Con SoloMataLoDelTurno la corrida de CI sigue; sin ella
-\* muere con el turno (en el código su solicitud acaba en error; aquí, sin resultado).
+\* ciclo.barrer con `decision["matar"]` sin parada: dominio.decision_proceso llega a la rama
+\* "colgada" (árbol vivo, sin herramienta ni hecho nuevo) solo si no hay impedimento, ni
+\* espera_inspeccion_consumida, ni inspeccion_bloquea. Mata el turno (cerrar) y cierra las
+\* herramientas del intento vigente (las con `aqui`, e0f06a2 solo cerraba `directorio`).
+\* Con SoloMataLoDelTurno la corrida de CI sigue; sin ella muere con el turno (en el código
+\* su solicitud acaba en error; aquí, detenida: sin resultado). El intento no cambia aquí
+\* sino cuando el motor lanza el turno siguiente (Lanzar).
 MatarTurno ==
-  /\ Abierto
+  /\ Abierto /\ proc /\ juicio = "ninguno" /\ ~imped /\ ~Consumida /\ ~Bloquea
   /\ proc' = FALSE
-  /\ aqui' = SinIntentoAnterior
   /\ IF SoloMataLoDelTurno
        THEN UNCHANGED <<sol, vista, herr, corridaMuerta>>
-       ELSE /\ herr' = [k \in Ids |-> IF herr[k] = "corre" THEN "ninguna" ELSE herr[k]]
-            /\ sol' = [k \in Ids |->
-                         IF herr[k] = "corre" /\ sol[k] = "pendiente" THEN "detenida" ELSE sol[k]]
-            /\ vista' = [k \in Ids |->
-                           IF herr[k] = "corre" /\ sol[k] = "pendiente" THEN FALSE ELSE vista[k]]
-            /\ corridaMuerta' = (corridaMuerta \/ Corriendo)
-  /\ UNCHANGED <<est, juicio, pend, liga, peticion, ajuste, imped, carrera>>
+       ELSE /\ herr' = [k \in Todos |-> IF herr[k] = "corre" /\ aqui[k] THEN "ninguna" ELSE herr[k]]
+            /\ sol' = [k \in Todos |->
+                         IF herr[k] = "corre" /\ aqui[k] /\ sol[k] = "pendiente"
+                           THEN "detenida" ELSE sol[k]]
+            /\ vista' = [k \in Todos |->
+                           IF herr[k] = "corre" /\ aqui[k] /\ sol[k] = "pendiente"
+                             THEN FALSE ELSE vista[k]]
+            /\ corridaMuerta' = (corridaMuerta \/ \E k \in Todos : herr[k] = "corre" /\ aqui[k])
+  /\ UNCHANGED <<est, juicio, pend, liga, peticion, ajuste, imped, carrera, aqui>>
 
 \* ciclo.barrer con la parada o la orden parar/cancelar vigente:
 \* necesidades.cerrar_herramientas_del_encargo cierra las herramientas de todos los
 \* intentos, con la limpieza de rama y PR de la de CI. Su solicitud queda detenida.
 CerrarHerramientas ==
   /\ Parado /\ Corriendo
-  /\ herr' = [k \in Ids |-> IF herr[k] = "corre" THEN "ninguna" ELSE herr[k]]
-  /\ sol' = [k \in Ids |->
+  /\ herr' = [k \in Todos |-> IF herr[k] = "corre" THEN "ninguna" ELSE herr[k]]
+  /\ sol' = [k \in Todos |->
                IF herr[k] = "corre" /\ sol[k] = "pendiente" THEN "detenida" ELSE sol[k]]
-  /\ vista' = [k \in Ids |->
+  /\ vista' = [k \in Todos |->
                  IF herr[k] = "corre" /\ sol[k] = "pendiente" THEN FALSE ELSE vista[k]]
   /\ UNCHANGED <<est, proc, juicio, pend, liga, peticion, ajuste, imped, carrera>>
   /\ UNCHANGED <<aqui, corridaMuerta>>
@@ -318,7 +331,7 @@ Terminado ==
   /\ UNCHANGED vars
 
 Motor == Lanzar \/ Termina \/ Incorporar \/ Atender \/ Impedir \/ Matar \/ Detener
-         \/ HerramientaTermina \/ Recoger \/ CambiaIntento \/ MatarTurno \/ CerrarHerramientas
+         \/ HerramientaTermina \/ Recoger \/ PedirCi \/ MatarTurno \/ CerrarHerramientas
 Propietario == Parar \/ Continuar \/ Ajustar \/ Responder
 Next == Motor \/ Propietario \/ Terminado
 
@@ -341,7 +354,7 @@ ImpedimentoConSalida == imped => ENABLED (Propietario /\ ~imped')
 \* Regla 4. Una herramienta que terminó siempre entrega su resultado a la fase: el
 \* motor puede registrarlo en su solicitud, sea cual sea el intento vigente.
 ResultadoEntregado ==
-  \A k \in Ids : (herr[k] = "termino" /\ est /= "terminado") => ENABLED RecogerDe(k)
+  \A k \in Todos : (herr[k] = "termino" /\ est /= "terminado") => ENABLED RecogerDe(k)
 
 \* Regla 5. Una corrida de CI en marcha no muere porque muera el turno del agente: solo
 \* la detienen parar o cancelar el encargo.

@@ -65,14 +65,14 @@ Con `-W` cada trozo trae la función entera: la función que contiene el cambio 
 Para la corrida:
 
 - Necesita `mise` (`brew install mise`). La primera vez baja Java Temurin 25 y TLC 1.7.4 con checksum fijo. Sin `mise`, exporta `TLA2TOOLS` (ruta a `tla2tools.jar`) y `JAVA`.
-- Tarda unos segundos con `MaxIds = 3` (29 610 estados distintos).
+- Tarda unos segundos con `MaxIds = 3` (479 052 estados distintos).
 - Sale 0 con `Model checking completed. No error has been found.` y sale 12 si una regla se rompe.
 - TLC se detiene en la primera regla rota. Si quieres saber si hay otra, quítale a una copia la regla que ya conoces. Es opcional y solo sirve para diagnosticar: un cambio que rompe una regla no queda bueno porque la copia sin esa regla pase.
 
 Lee los resultados con la skill `/statechart` si la tienes. Es de pstack (cursor/plugins), no de este repo; en las máquinas de David está instalada como skill de usuario. Pásale el modelo, la configuración y la vista `verificacion/inspeccion/vista.mjs`. Así:
 
 - una regla rota sale como el camino más corto, en palabras;
-- una corrida limpia con `MaxIds = 3` ya no cabe en un diagrama (29 610 estados con la herramienta asíncrona; eran 366 sin ella). La vista sirve para los caminos de las reglas rotas.
+- una corrida limpia con `MaxIds = 3` ya no cabe en un diagrama (479 052 estados con la herramienta asíncrona; eran 366 sin ella). La vista sirve para los caminos de las reglas rotas.
 
 Sin `/statechart`, la salida de `verificar.sh` ya trae el camino. Cada `State N: <Acción ...>` nombra la acción del modelo, y la tabla de cobertura dice qué función del motor la hace. Debajo vienen las variables de ese estado. Basta para decidir; `/statechart` solo lo pone en palabras.
 
@@ -91,14 +91,14 @@ Cada constante de `main.cfg` es una rama concreta del código. Cada acción del 
 | `RespuestaReabre` | `dominio._respuesta` a una solicitud que no es `pregunta`: suma `tardias` (marca nueva en `marca_inspeccion_entregada`) y suelta el impedimento | TRUE |
 | `RecuerdaCarpeta` | `Solicitud.carpeta` (evento `herramienta`, anotado por `necesidades._recordar_carpeta` antes de lanzar); `necesidades._recoger` y `_carpeta_de` buscan el resultado en esa carpeta y no en el intento vigente | TRUE |
 | `SoloMataLoDelTurno` | `ciclo.barrer`, rama `elif decision["matar"]`: `necesidades.cerrar_herramientas(directorio, solo_del_turno=True)`, que salta `ci.correr` | TRUE |
-| `Lanzar` | `dominio.decision_proceso` (orden: impedimento, `espera_inspeccion_consumida`, `inspeccion_bloquea`); al abrir el intento el ajuste queda visto | |
+| `Lanzar` | `dominio.decision_proceso` (orden: impedimento, `espera_inspeccion_consumida`, `inspeccion_bloquea`); al abrir el intento el ajuste queda visto y las herramientas lanzadas antes quedan en la carpeta del intento anterior; no corre mientras haya un resultado que recoger (`ciclo.barrer` llama a `atender` antes de decidir el lanzamiento) | |
 | `Salta`, `VistaAlCambiar` | `ciclo._salta_inspeccion` (antes de incorporar): un juicio que vuelve a pedir la consulta ligada no gasta revisión y, si la solicitud ya tiene resultado, anota `inspeccion_entregada`; `ciclo._consumir_ligada` la anota al cambiar de consulta. Un revisor muerto sin juicio no anota nada y se relanza con el mismo dato | |
 | `Incorporar`, `LigarPide` | guarda `por_incorporar` en `ciclo.barrer` (no incorpora con el encargo deteniendo o detenido); `ciclo._incorporar_revisor`, rama `no_concluyente` con `inspeccion_faltante`: `_devolver(..., "inspeccionar")` deja el encargo `recibido`; reducción `revision` (pone `inspeccion_pendiente`); `ciclo._ligar_inspeccion` con `ciclo._id_inspeccion`, `necesidades.pedir_inspeccion` y `necesidades.registrar_pedida` | |
 | `Atender` | `necesidades.atender`: previa con resultado (responde y archiva), rama `_detenida_ahora` (con la reducción `solicitud_tardia`, que solo anota en `procedimiento`), `_registrar_solicitud`, y la herramienta síncrona que termina con `_anotar_resolucion` → reducción `resolucion` (`dominio._resolucion`). Para `ci.correr`: `_recordar_carpeta` y `_ejecutar` la lanzan (`herr = corre`) y la solicitud sigue `pendiente` con la petición en el buzón | |
 | `HerramientaTermina` | `capacidades.main` deja `resultado.json` en la carpeta de la herramienta; no depende del turno ni del estado del encargo | |
 | `Recoger` | `necesidades._recoger` (primer paso de `atender`): resuelve con `_cerrar_con_resultado` la solicitud `pendiente` o `detenida` cuya herramienta terminó; un `ok` sobre una `detenida` la pasa a `resuelta`, un resultado que no es `ok` la deja `detenida` (el modelo solo trae el `ok`). El código de e0f06a2 además exigía la petición sin archivar; el modelo no | |
-| `CambiaIntento` | el turno del agente termina o se vence y el siguiente abre otro intento: `ciclo._directorio` apunta a la carpeta nueva | |
-| `MatarTurno` | `ciclo.barrer` con `decision["matar"]` sin parada (sesión `colgada`): `cerrar(directorio, proc)` y `necesidades.cerrar_herramientas`. En e0f06a2 la corrida de CI moría con el turno; su solicitud acababa en `error` y el modelo la deja `detenida` (sin resultado) | |
+| `PedirCi` | el agente, con su turno vivo, pide `ci.correr` por el buzón (`cliente.py pedir`): la petición queda en `peticiones/` y `necesidades.atender` la registra y la lanza. No es la inspección: no la liga ni bloquea al revisor. Un solo pedido de este tipo (id `PedAg`, fuera de los de la inspección) |
+| `MatarTurno` | `ciclo.barrer` con `decision["matar"]` sin parada: `dominio.decision_proceso` solo llega a la rama `colgada` (árbol vivo, sin herramienta ni hecho nuevo) si no hay impedimento, ni `espera_inspeccion_consumida`, ni `inspeccion_bloquea`; luego `cerrar(directorio, proc)` y `necesidades.cerrar_herramientas` (e0f06a2: solo las del `directorio` vigente, y la corrida de CI moría; su solicitud acababa `error` y el modelo la deja `detenida`, sin resultado). El intento cambia cuando el motor lanza el turno siguiente (`Lanzar`), no aquí |
 | `CerrarHerramientas` | `ciclo.barrer` con `parada` o `necesidades.detenida_ahora`: `necesidades.cerrar_herramientas_del_encargo`, todos los intentos, con la limpieza de rama y PR de la de CI | |
 | `Impedir` | `dominio.decision_proceso` → evento `impedimento` de `espera_inspeccion_consumida` | |
 | `Parar`, `Continuar` | `dominio._orden` (`parar`, `continuar` → `_retomar`) | |
@@ -138,7 +138,7 @@ Qué pasa al invertir cada constante en `main.cfg`, medido en `295fa5a` (largo e
 | `RegistraAlLigar` | `SinCarrera` se rompe (4 estados) |
 | `DetieneLaPendiente` | `SinAtascoMudo` se rompe (7 estados) |
 | `AjusteSuelta` y `RespuestaReabre` juntas | `ImpedimentoConSalida` se rompe (8 estados) |
-| `RecuerdaCarpeta` | `ResultadoEntregado` se rompe (6 estados; en el mismo estado se rompe también `SinAtascoMudo`) |
+| `RecuerdaCarpeta` | `ResultadoEntregado` se rompe (7 estados; en el mismo estado se rompe también `SinAtascoMudo`) |
 | `SoloMataLoDelTurno` | `CorridaSobreviveAlTurno` se rompe (5 estados) |
 | `RecuerdaCarpeta` y `SoloMataLoDelTurno` juntas (`antes-e0f06a2.cfg`) | `CorridaSobreviveAlTurno` se rompe primero (5 estados) |
 | `ReligaSinSolicitud`, `LigaHuerfanaBloquea`, `AjusteAbre`, o `AjusteSuelta` o `RespuestaReabre` sola | pasa |
@@ -155,9 +155,10 @@ Por qué pasan esas últimas:
 - Recursos concedidos: el camino de `pregunta` y autorización del propietario no está modelado.
 - El freno `TOPE_NO_CONCLUYENTES` (necesita_usuario tras N no concluyentes), cancelar, varias fases y varios encargos.
 - De la herramienta asíncrona: una sola operación (`ci.correr`) por solicitud y solo el resultado `ok`. No hay resultado de error: una corrida muerta por el turno o por parar queda `detenida` sin resultado (en el código acaba `error`), y un resultado que no es `ok` tras la detención no se modela (el código lo deja `detenida`).
+- El turno del responsable aparte del revisor: el modelo tiene un solo turno de agente (`proc`), el del primer turno y el del revisor. ci_base_1 y ci_base_2 fueron del responsable; el modelo reproduce el mismo mecanismo (una corrida viva, un intento que cambia, un turno matado) con ese turno único: ci_base_2 con `PedirCi` y `MatarTurno`, ci_base_1 con el revisor que un ajuste reabre mientras la corrida sigue.
 - El reuso de una corrida viva (`necesidades._corrida_igual`, mismo recurso, job, versión del producto y configuración): lo cubre `tests/test_ci_asincrono.py`, no el modelo.
 - La petición sin archivar: el código de e0f06a2 solo encontraba el resultado si la petición seguía en el buzón; el modelo no lo exige, así que es más favorable a ese código y aun así rompe `ResultadoEntregado`.
 - La solicitud que `_vigente` da por tardía (otro intento que no es el de la inspección ligada) y su respuesta `tardia`: el modelo no la distingue.
 - Que parar cierre solo las herramientas del intento vigente (e0f06a2 solo cerraba `directorio`); el modelo cierra las de todos los intentos.
 - Ningún job de CI corre esta verificación; hay que correrla a mano según "Cuándo correrla".
-- La cota: hasta `MaxIds = 3` identidades del mismo pedido (29 610 estados distintos); también se comprobó con 5 (1 219 548 estados). Un pase cubre el modelo dentro de la cota, no todo el motor.
+- La cota: hasta `MaxIds = 3` identidades del mismo pedido (479 052 estados distintos); también se comprobó con 5 (14 945 196 estados). Un pase cubre el modelo dentro de la cota, no todo el motor.

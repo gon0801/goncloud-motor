@@ -61,8 +61,8 @@ export const step = (action, from, to) => {
       return "la corrida de CI termina";
     case "Recoger":
       return "el motor recoge el resultado de la corrida";
-    case "CambiaIntento":
-      return "el turno del agente termina y abre otro intento";
+    case "PedirCi":
+      return "el agente pide una corrida de CI por el buzón";
     case "MatarTurno":
       return "el motor mata el turno del agente";
     case "CerrarHerramientas":
