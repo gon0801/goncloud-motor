@@ -28,7 +28,7 @@ from motor.encargos.dominio import (
     revision_externa_pendiente,
 )
 from motor.github import ChecksVerdict, FakeGitHub
-from tests.test_entrega_misma_version import _barrido
+from tests.test_entrega_misma_version import _barrido, _rerun_del_check
 from tests.test_flujo_revisiones import _entrega_pr, _lanzaria
 from tests.test_lectura_deepseek import _comentario, _hallazgo, _ids
 
@@ -209,6 +209,56 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             e = r.fold()
             self.assertEqual(e.sin_progreso, 1)
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+
+
+    def test_la_corrida_que_termina_en_rojo_refresca_los_checks_en_rojo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "fr-2d", _GhPorCommit,
+                {
+                    "requeridos": ["ci", "lint"],
+                    "checks": {"ci": "exit 1", "lint": "exit 1"},
+                },
+            )
+            gh = vuelta.gh
+            e = vuelta("uno")
+            sha = e.producto.sha_git
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci", "lint"))
+            repo = str(e.entrega.repo)
+
+            real = gh.checks
+            gh.checks = lambda *a, **k: ChecksVerdict(
+                sha=sha, terminal=False, green=False, faltan=("ci", "lint"), fallas=()
+            )
+            t0 = time.time()
+            e = _barrido(r, gh, t0)
+            self.assertEqual(e.fase_actual.checks_esperando_sha, sha)
+
+            # La corrida nueva termina: lint pasa a verde y ci sigue en rojo.
+            gh.checks = real
+            _rerun_del_check(gh, repo, "lint", "exit 0")
+            e = _barrido(r, gh, t0 + ciclo._RELECTURA_CHECKS_S + 1)
+            self.assertEqual(e.fase_actual.checks_esperando_sha, "")
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
+            self.assertEqual(e.fase_actual.entrega_bloqueada_sha, sha)
+            self.assertIn("check:lint", e.fase_actual.cerrados)
+            self.assertEqual(e.sin_progreso, 0)
+
+    def test_una_corrida_que_termina_con_otros_checks_en_rojo_sin_haberla_visto_pendiente_tambien_refresca(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "fr-2e", _GhPorCommit,
+                {
+                    "requeridos": ["ci", "lint"],
+                    "checks": {"ci": "exit 1", "lint": "exit 1"},
+                },
+            )
+            gh = vuelta.gh
+            e = vuelta("uno")
+            self.assertEqual(e.fase_actual.fallas_checks, ("ci", "lint"))
+            _rerun_del_check(gh, str(e.entrega.repo), "ci", "exit 0")
+            e = _barrido(r, gh, time.time())
+            self.assertEqual(e.fase_actual.fallas_checks, ("lint",))
 
 
 class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
