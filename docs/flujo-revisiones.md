@@ -42,6 +42,12 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    Cada enlace de esa instalación bajo el home se concede también como
    enlace. El job `jaula-macos` del CI corre `tests.test_comprobador_interprete`
    con la jaula real y `MOTOR_EXIGE_SEATBELT=1`: ahí un skip es un fallo.
+   Cada comprobación puede declarar `tope` en segundos enteros; sin declararlo
+   vale 120 s y el máximo admitido es 900 s. Un tope mayor no valida. Al pasarse,
+   el fallo del instrumento nombra el comando, su tope, la salida parcial
+   recortada y la alternativa de partir la comprobación o declarar un tope
+   mayor dentro del máximo. La jaula, el cierre del árbol y la clasificación
+   como fallo del instrumento no cambian.
 5. Otro modelo revisa. "Otro" es por identidad `proveedor/modelo`, derivada de
    las cadenas de la política común (`codigo` implementa, `planear` revisa) y
    excluyendo los modelos que ya implementaron en este encargo. Una sesión

@@ -23,6 +23,9 @@ from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_h
 INTERNO = ".interno"
 _EXCLUIDAS = (".git", "__pycache__", ".runtime", INTERNO)
 
+TOPE_POR_OMISION_S = 120
+TOPE_MAXIMO_S = 900
+
 
 def interno_de(espacio: Path, crear: bool = False) -> Path:
     path = espacio / INTERNO
@@ -60,6 +63,8 @@ def firma_producto(espacio: Path) -> str:
 def leer_declaradas(interno: Path) -> list[dict] | None:
     """Comprobaciones declaradas en `.interno/comprobaciones.json`.
 
+    Cada comprobacion puede declarar `tope` en segundos enteros. Sin el, vale
+    TOPE_POR_OMISION_S; por encima de TOPE_MAXIMO_S el archivo no valida.
     None si el archivo no existe o declara una lista vacia: no declarar
     ninguna es valido. Un archivo presente pero invalido levanta ValueError.
     """
@@ -85,6 +90,17 @@ def leer_declaradas(interno: Path) -> list[dict] | None:
             or not all(isinstance(x, str) for x in c["argv"])
         ):
             raise ValueError("cada comprobacion necesita objetivo y argv no vacio")
+        tope = c.get("tope", TOPE_POR_OMISION_S)
+        if isinstance(tope, bool) or not isinstance(tope, int) or tope <= 0:
+            raise ValueError(
+                f"la comprobacion {c['objetivo']!r} necesita un tope entero de "
+                "segundos mayor que cero"
+            )
+        if tope > TOPE_MAXIMO_S:
+            raise ValueError(
+                f"la comprobacion {c['objetivo']!r} declara un tope de {tope} s; "
+                f"el maximo es {TOPE_MAXIMO_S} s"
+            )
     return comandos
 
 
@@ -137,13 +153,34 @@ def observar_procedimiento(espacio: Path, directorio: Path, contenedor: Path) ->
     return datos
 
 
+def _tope_de(comprobacion: dict) -> int:
+    return comprobacion.get("tope", TOPE_POR_OMISION_S)
+
+
+def _mensaje_tope(argv: list[str], tope: int, stdout: str, stderr: str) -> str:
+    completa = (stdout or "") + (stderr or "")
+    recortada = len(completa) > 4000
+    salida = completa[-4000:]
+    if not salida.strip():
+        salida = "(sin salida)"
+    unidad = "segundo" if tope == 1 else "segundos"
+    etiqueta = "salida parcial (recortada)" if recortada else "salida parcial"
+    return (
+        f"la comprobacion {' '.join(argv)} excedio su tope de {tope} {unidad}; "
+        f"arbol cerrado; {etiqueta}: {salida}; "
+        f"puedes partir el comando o declarar un tope mayor "
+        f"(maximo {TOPE_MAXIMO_S} segundos)"
+    )
+
+
 def _ejecutar_declaradas(
     comandos: list[dict], espacio: Path, directorio: Path, contenedor: Path
 ) -> dict:
     procedimiento = {"comprobaciones": comandos}
     ejecuciones = []
     for i, c in enumerate(comandos):
-        observado = {"objetivo": c["objetivo"], "argv": c["argv"]}
+        tope = _tope_de(c)
+        observado = {"objetivo": c["objetivo"], "argv": c["argv"], "tope": tope}
         try:
             from motor import plataforma
             from motor.runwrap import _publica
@@ -203,7 +240,7 @@ def _ejecutar_declaradas(
                             comando.argv, start_new_session=False, **opciones
                         )
                 try:
-                    stdout, stderr = p.communicate(timeout=30)
+                    stdout, stderr = p.communicate(timeout=tope)
                     observado.update(
                         rc=p.returncode, stdout=stdout[-16000:], stderr=stderr[-16000:]
                     )
@@ -237,9 +274,12 @@ def _ejecutar_declaradas(
                                 except ProcessLookupError:
                                     pass
                         p.kill()
-                    p.communicate()
-                    observado["error_instrumento"] = (
-                        "la comprobacion excedio 30 segundos; arbol cerrado"
+                    stdout, stderr = p.communicate()
+                    observado.update(
+                        rc=p.returncode, stdout=stdout[-16000:], stderr=stderr[-16000:]
+                    )
+                    observado["error_instrumento"] = _mensaje_tope(
+                        c["argv"], tope, stdout, stderr
                     )
                 finally:
                     if os.name == "nt":
@@ -331,7 +371,9 @@ contexto.md con hechos, decisiones y pendientes; evidencia.txt con lo que observ
 Comprobar es proporcional al pedido. Para cambiar una cifra puede bastar leer el valor final y
 dejarlo en evidencia.txt. Si una comprobacion ejecutable aporta, declarala en
 .interno/comprobaciones.json como {{"comprobaciones":[{{"objetivo":"parte del pedido que demuestra",
-"argv":["ejecutable","argumento"]}}]}}. Son comandos argv, no shell implicito. Declarar ninguna es
+"argv":["ejecutable","argumento"],"tope":120}}]}}. Son comandos argv, no shell implicito.
+Cada comprobacion puede declarar su "tope" en segundos enteros; sin declararlo vale 120 s.
+El maximo admitido es 900 s y un tope mayor no valida. Declarar ninguna es
 valido; no hay un archivo de procedimiento obligatorio.
 El supervisor ejecuta lo declarado y conserva sus salidas. Un revisor de otro modelo compara el
 pedido, el producto real y esas observaciones. Un rc=0 o una nota no demuestran por si solos el pedido.
