@@ -210,6 +210,9 @@ class Fase:
     pr_numero: int = 0
     pr_sha: str = ""
     deepseek_sha: str = ""
+    # Huella del comentario de DeepSeek que se leyó para `deepseek_sha`: el
+    # motor relee el SHA vigente cuando el comentario cambia, no solo el SHA.
+    deepseek_huella: str = ""
     integrado_sha: str = ""
     rama: str = ""
     base: str = ""
@@ -1322,6 +1325,8 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 hora=hora or e.hora,
             ),
         )
+    if kind == "fase_reabierta":
+        return _fase_reabierta(e, d, hora)
     if kind == "entrada_incorporada":
         e = _fase_de_evento(e, d)
         fase = e.fase_actual
@@ -2253,19 +2258,29 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         raise TransicionIlegal("no hay fase para la entrega")
     paso = str(d.get("paso") or "")
     sha = str(d.get("sha") or "")
+    bajar = False
     candidato = fase.nivel_alcanzado
     if paso in ("pr_abierto", "pr_listo"):
         candidato = "pr_abierto"
     elif paso == "deepseek_leido":
         if not bloqueantes_abiertos(e, "deepseek"):
             candidato = "pr"
+        elif d.get("huella") and fase.nivel_alcanzado == "pr":
+            # Una relectura que trae un bloqueante deja de dar la fase por
+            # cumplida: sigue sin cerrar hasta que DeepSeek lo dé por resuelto.
+            candidato = "pr_abierto"
+            bajar = True
     elif paso == "integrado":
         candidato = "integrado"
     elif paso == "desplegado":
         candidato = "desplegado"
     elif paso == "sin_cambios":
         candidato = "sin_cambios"
-    if paso != "sin_cambios" and _ORDEN_NIVEL.get(candidato, 0) < _ORDEN_NIVEL.get(fase.nivel_alcanzado, 0):
+    if (
+        paso != "sin_cambios"
+        and not bajar
+        and _ORDEN_NIVEL.get(candidato, 0) < _ORDEN_NIVEL.get(fase.nivel_alcanzado, 0)
+    ):
         candidato = fase.nivel_alcanzado
     producto = fase.producto
     if paso == "commit" and producto is not None and sha:
@@ -2282,6 +2297,11 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         if paso in ("commit", "push", "pr_abierto", "pr_listo") and sha
         else fase.pr_sha,
         deepseek_sha=sha if paso == "deepseek_leido" and sha else fase.deepseek_sha,
+        deepseek_huella=(
+            str(d.get("huella") or "")
+            if paso == "deepseek_leido"
+            else fase.deepseek_huella
+        ),
         integrado_sha=(
             str(d.get("recibo") or sha)
             if paso == "integrado" and (d.get("recibo") or sha)
@@ -2303,6 +2323,32 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         hora=hora or e.hora,
     )
     return _con_progreso(e, resultado) if paso == "checks_verdes" else resultado
+
+
+def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:
+    """DeepSeek dejó un High o un Medium abierto en el PR de una fase ya
+    preparada, cuando el encargo iba a terminar. La fase vuelve al responsable
+    en su misma rama y su mismo PR; las demás conservan lo que tienen."""
+    pedida = str(d.get("fase") or "")
+    fase = next((f for f in e.fases if f.id == pedida), None)
+    if fase is None or fase.estado != "preparada":
+        raise TransicionIlegal("solo se reabre una fase preparada")
+    if e.estado in ("terminado", "cancelado", "deteniendo", "detenido"):
+        raise TransicionIlegal("el encargo ya no admite reabrir una fase")
+    causa = str(d.get("causa") or "DeepSeek dejó un hallazgo abierto")
+    return replace(
+        con_fase(e, replace(fase, estado="entrega", nivel_alcanzado="pr_abierto")),
+        fase_activa=fase.id,
+        estado="recibido",
+        rol="responsable",
+        estrategia="investigar",
+        motivo=causa,
+        siguiente=f"corregir la fase {fase.id}",
+        intentos_nuevos=True,
+        escrituras=e.autoridad,
+        ultimo_hecho=causa,
+        hora=hora or e.hora,
+    )
 
 
 def _preparar_con_entrada(

@@ -1,0 +1,198 @@
+"""El motor lee el veredicto vigente de DeepSeek, no solo el primero por SHA.
+
+Casos del 1-nov: un descarte (`ai-review: descartar Fn`) o una re-revisión sobre
+el mismo commit nunca llegaban al motor (la lectura se anotaba una vez por SHA),
+y una revisión que DeepSeek publicaba después de que el motor leyó cerraba la
+fase, o el encargo, con un Medium abierto (enc_19680d773791f339, PR #147)."""
+
+from __future__ import annotations
+
+import json
+import time
+import unittest
+import tempfile
+
+from motor.encargos.dominio import bloqueantes_abiertos
+from motor.github import FakeGitHub
+from tests.test_entrega_misma_version import _barrido, _pasos
+from tests.test_flujo_revisiones import (
+    _entrega_pr,
+    sonda_sin_aislamiento_del_host,
+)
+
+
+def setUpModule():
+    sonda_sin_aislamiento_del_host()
+
+
+def _hallazgo(ident: str, severidad: str = "high", estado: str = "open") -> dict:
+    return {
+        "id": ident,
+        "severity": severidad,
+        "status": estado,
+        "title": f"hallazgo {ident}",
+        "file": "saludo.txt",
+    }
+
+
+def _comentario(*hallazgos: dict, nota: str = "DeepSeek") -> str:
+    return nota + "\nai-review:findings=" + json.dumps(list(hallazgos))
+
+
+class _GhComentarios(FakeGitHub):
+    """DeepSeek publica el texto de `textos[numero]`, o el de `textos[None]`.
+    Un texto puede ser una función del número de llamada, para que cambie entre
+    dos lecturas."""
+
+    def __init__(self, d):
+        super().__init__(d)
+        self.textos: dict = {}
+        self.llamadas: list = []
+
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        self.llamadas.append((numero, sha))
+        texto = self.textos.get(numero, self.textos.get(None))
+        if callable(texto):
+            texto = texto(len(self.llamadas))
+        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}] if texto else []
+
+
+def _ids(e) -> list[str]:
+    return [h.id for h in bloqueantes_abiertos(e, "deepseek")]
+
+
+class RelecturaDelMismoSha(unittest.TestCase):
+    def _devuelto_por_f1(self, tmp, clave):
+        vuelta, r = _entrega_pr(self, tmp, clave, _GhComentarios)
+        vuelta.gh.textos[None] = _comentario(_hallazgo("F1"))
+        e = vuelta("uno")
+        self.assertEqual(e.estrategia, "investigar")
+        self.assertEqual(_ids(e), ["F1"])
+        self.assertEqual(e.deepseek_sha, e.pr_sha)
+        return vuelta, r
+
+    def test_un_descarte_sobre_el_mismo_sha_llega_en_el_siguiente_barrido(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._devuelto_por_f1(tmp, "ds-descarte")
+            vuelta.gh.textos[None] = _comentario(_hallazgo("F1", estado="dismissed"))
+            e = _barrido(r, vuelta.gh, time.time())
+            self.assertEqual(_ids(e), [])
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(len(_pasos(r, "deepseek_leido")), 2)
+
+    def test_una_resolucion_sobre_el_mismo_sha_llega_en_el_siguiente_barrido(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._devuelto_por_f1(tmp, "ds-resuelto")
+            vuelta.gh.textos[None] = _comentario(_hallazgo("F1", estado="resolved"))
+            e = _barrido(r, vuelta.gh, time.time())
+            self.assertEqual(_ids(e), [])
+
+    def test_un_hallazgo_nuevo_sobre_el_mismo_sha_llega_y_devuelve_el_trabajo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._devuelto_por_f1(tmp, "ds-nuevo")
+            vuelta.gh.textos[None] = _comentario(_hallazgo("F1"), _hallazgo("F2", "medium"))
+            e = _barrido(r, vuelta.gh, time.time())
+            self.assertEqual(_ids(e), ["F1", "F2"])
+            self.assertEqual(e.estrategia, "investigar")
+
+    def test_el_mismo_comentario_no_anota_eventos_repetidos(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._devuelto_por_f1(tmp, "ds-igual")
+            antes = len(r.reg.eventos(r.enc))
+            llamadas = len(vuelta.gh.llamadas)
+            t0 = time.time()
+            for i in range(3):
+                e = _barrido(r, vuelta.gh, t0 + 61 * i)
+            self.assertEqual(len(vuelta.gh.llamadas) - llamadas, 3)
+            self.assertEqual(len(r.reg.eventos(r.enc)), antes)
+            self.assertEqual(_ids(e), ["F1"])
+
+    def test_barridos_seguidos_no_golpean_a_github(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._devuelto_por_f1(tmp, "ds-cuota")
+            llamadas = len(vuelta.gh.llamadas)
+            t0 = time.time()
+            for i in range(10):
+                _barrido(r, vuelta.gh, t0 + i)
+            self.assertEqual(len(vuelta.gh.llamadas) - llamadas, 1)
+
+    def test_una_re_revision_con_los_mismos_hallazgos_se_lee_una_vez_por_comentario(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._devuelto_por_f1(tmp, "ds-rerevision")
+            t0 = time.time()
+            vuelta.gh.textos[None] = _comentario(_hallazgo("F1"), nota="DeepSeek: generacion 2")
+            _barrido(r, vuelta.gh, t0)
+            self.assertEqual(len(_pasos(r, "deepseek_leido")), 2)
+            _barrido(r, vuelta.gh, t0 + 61)
+            self.assertEqual(len(_pasos(r, "deepseek_leido")), 2)
+            vuelta.gh.textos[None] = _comentario(_hallazgo("F1"))
+            e = _barrido(r, vuelta.gh, t0 + 122)
+            self.assertEqual(len(_pasos(r, "deepseek_leido")), 3)
+            self.assertEqual(_ids(e), ["F1"])
+
+
+class VeredictoVigenteAlCerrar(unittest.TestCase):
+    def test_un_medium_publicado_tras_la_lectura_impide_cerrar_la_fase(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-tardio", _GhComentarios)
+            vuelta.gh.textos[None] = lambda n: (
+                _comentario() if n == 1 else _comentario(_hallazgo("F6", "medium"))
+            )
+            e = vuelta("uno")
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(_ids(e), ["F6"])
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+
+    def test_sin_cambios_en_el_comentario_la_fase_cierra(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-limpio", _GhComentarios)
+            vuelta.gh.textos[None] = _comentario()
+            e = vuelta("uno")
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(_ids(e), [])
+
+    def test_si_deepseek_no_reviso_el_sha_final_el_motor_espera(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-espera", _GhComentarios)
+            e = vuelta("uno")
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.estado, "esperando_reintento")
+            self.assertIn("esperando revisión de DeepSeek", e.motivo)
+
+    def test_un_medium_en_el_pr_de_una_fase_anterior_la_reabre_al_cerrar_el_encargo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ds-fases", _GhComentarios)
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {"id": "dos", "resultado": "saludo.txt con dos", "requiere": ["uno"]},
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-dos",
+            )
+            vuelta.gh.textos[None] = _comentario()
+            e = vuelta("uno")
+            self.assertEqual(e.fase_activa, "dos")
+            primera = e.fases[0]
+            self.assertEqual(primera.estado, "preparada")
+            self.assertTrue(primera.pr_numero)
+
+            vuelta.gh.textos[primera.pr_numero] = _comentario(_hallazgo("F9", "medium"))
+            e = vuelta("dos")
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.fase_activa, "uno")
+            self.assertEqual(e.fases[0].estado, "entrega")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(_ids(e), ["F9"])
+            self.assertEqual(e.fases[1].estado, "entrega")
+
+
+if __name__ == "__main__":
+    unittest.main()
