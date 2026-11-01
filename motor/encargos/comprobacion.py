@@ -157,6 +157,7 @@ def _ejecutar_declaradas(
                 espacio,
                 contenedor / f"runtime-{i}",
                 lecturas_extra=() if os.name == "nt" else lecturas_del_interprete(),
+                interprete=True,
             )
             base = _base_de(espacio)
             reg = Registro(base)
