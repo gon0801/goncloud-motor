@@ -449,7 +449,10 @@ def _supervisor(reg: Registro, args) -> int:
         return 0
     from motor.senal import Senal
 
-    senal = Senal(reg.base, lambda: {})
+    from motor.integraciones.canales import canales_caidos
+
+    base = reg.base
+    senal = Senal(base, lambda: {}, canales=lambda: canales_caidos(base))
     senal.arranca()
     try:
         while True:
