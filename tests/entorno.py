@@ -18,8 +18,8 @@ SIN_AISLAMIENTO = "el motor solo aísla con AppContainer o sandbox-exec; este ho
 
 EXIGE_WINDOWS = os.environ.get("MOTOR_EXIGE_WINDOWS") == "1"
 SIN_WINDOWS = (
-    "solo corre en Windows (la PC); en la Mac lo prueba ops/prueba-pc.sh"
-    " y en el CI lo corre el job windows"
+    "solo corre en Windows (la PC); lo corre el job windows del CI y, en la PC"
+    " real, ops/prueba-pc.sh"
 )
 SIN_BREAKAWAY = (
     "este host corre dentro de un Job sin breakaway (WinError 5 al lanzar):"

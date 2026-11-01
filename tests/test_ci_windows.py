@@ -65,7 +65,9 @@ class PruebasDeWindowsEnCi(unittest.TestCase):
             decorada = entorno.requiere_windows(clase)
             with self.assertRaises(AssertionError):
                 decorada.setUpClass()
-        with mock.patch.object(os, "name", "posix"):
+        with mock.patch.object(entorno, "EXIGE_WINDOWS", False), mock.patch.object(
+            os, "name", "posix"
+        ):
             saltada = entorno.requiere_windows(clase)
             self.assertTrue(saltada.__unittest_skip__)
             self.assertIn("job windows", saltada.__unittest_skip_why__)

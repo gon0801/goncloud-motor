@@ -50,5 +50,8 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
 ## Qué hace falta en cada máquina hoy
 
 - Mini (macOS): completa; el reporte debe salir 0.
-- PC (Windows): `ops/prepara_pc.py` deja lo que faltaba (Java y TLC, `capacidades.json`,
-  arranque por el vigilante); después de prepararla, el reporte debe salir 0.
+- PC (Windows): `ops/prepara_pc.py` deja lo que faltaba (Java y TLC,
+  `capacidades.json`, arranque por el vigilante). Después de prepararla ya no
+  deben faltar `java_tlc`, `capacidades`, `evidencia-ci` ni `arranque`; `gh`
+  con sesión y el home del motor (avisos, señal) dependen de la instalación de
+  la PC y el reporte lo dice si falta.

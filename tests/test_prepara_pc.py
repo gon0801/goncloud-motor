@@ -43,8 +43,12 @@ LLAVE_SUPERVISOR_DIRECTO = (
 )
 
 
-def _reg_falso(entorno=None, llave=""):
-    """Un correr que guarda HKCU\\Environment y la llave Run en memoria."""
+def _reg_falso(entorno=None, llave="", sin_powershell=False):
+    """Un correr que guarda HKCU\\Environment y la llave Run en memoria, con la
+    misma cara que le toca a cada herramienta: PowerShell para leer el registro
+    (con reg.exe de respaldo) y setx/reg add para escribir."""
+    import re as _re
+
     estado = {"env": dict(entorno or {}), "llave": llave, "setx": [], "reg_add": []}
 
     def correr(argv, timeout=prepara_pc.TIMEOUT_CORTO):
@@ -54,6 +58,20 @@ def _reg_falso(entorno=None, llave=""):
             stderr = ""
 
         r = R()
+        if argv[0] == "powershell":
+            if sin_powershell:
+                raise FileNotFoundError("powershell")
+            guion = argv[-1]
+            clave = _re.search(r"-LiteralPath '([^']+)'", guion).group(1)
+            nombre = _re.search(r"\$p\.(\w+);", guion).group(1)
+            if "Environment" in clave:
+                valor = estado["env"].get(nombre)
+                if valor is not None:
+                    r.stdout = valor + "\n"
+                return r
+            if nombre == prepara_pc.NOMBRE_LLAVE and estado["llave"]:
+                r.stdout = estado["llave"] + "\n"
+            return r
         if argv[:2] == ["reg", "query"] and "Environment" in argv[2]:
             nombre = argv[-1]
             valor = estado["env"].get(nombre)
@@ -232,6 +250,35 @@ class SumasYVerificacion(DoblesTest):
 
     def test_verificar_sin_herramientas_no_corre_bash(self):
         self.assertEqual(prepara_pc.verificar("main.cfg", self.base, self.tmp), 2)
+
+    def test_verificar_no_usa_el_bash_de_wsl(self):
+        prepara_pc._ruta_java_marker(self.base).parent.mkdir(parents=True, exist_ok=True)
+        prepara_pc._ruta_java_marker(self.base).write_text(
+            json.dumps({"release": RELEASE_FALSA, "java": str(self.tmp / "java.exe")}),
+            encoding="utf-8",
+        )
+        Path(str(self.tmp / "java.exe")).write_bytes(b"MZ")
+        prepara_pc.jar_tlc(self.base).parent.mkdir(parents=True, exist_ok=True)
+        prepara_pc.jar_tlc(self.base).write_bytes(b"jar")
+        capturadas = []
+
+        def falso_run(argv, **kwargs):
+            capturadas.append(list(argv))
+
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return R()
+
+        con_wsl = r"C:\Windows\System32\bash.exe"
+        con_mock = mock.patch.object(prepara_pc.subprocess, "run", falso_run)
+        with con_mock, mock.patch.object(prepara_pc, "BASH_POR_OMISION", "git-bash.exe"):
+            prepara_pc.verificar("main.cfg", self.base, self.tmp, bash=con_wsl)
+            self.assertEqual(capturadas[-1][0], "git-bash.exe")
+            prepara_pc.verificar("main.cfg", self.base, self.tmp, bash="bash-real.exe")
+            self.assertEqual(capturadas[-1][0], "bash-real.exe")
 
 
 if __name__ == "__main__":

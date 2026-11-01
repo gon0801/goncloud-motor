@@ -80,6 +80,38 @@ def correr(argv, timeout=TIMEOUT_CORTO):
     )
 
 
+def _cita_ps(texto) -> str:
+    return "'" + str(texto).replace("'", "''") + "'"
+
+
+def _leer_registro(clave: str, valor: str, correr=correr) -> str:
+    """Un valor de HKCU sin la trampa de la página de códigos: PowerShell saca
+    el valor con salida UTF-8 (un perfil como C:\\Users\\José mangleado con
+    utf-8 haría que la misma corrida nunca quedara 'ok'). Si no hay PowerShell,
+    reg query tal cual."""
+    guion = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        f"$p=Get-ItemProperty -LiteralPath {_cita_ps(clave)};"
+        f"$v=$p.{valor};"
+        "if ($null -ne $v) { [string]$v }"
+    )
+    try:
+        r = correr([
+            "powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", guion,
+        ])
+    except (OSError, subprocess.TimeoutExpired):
+        r = None
+    if r is not None and r.returncode == 0:
+        return (r.stdout or "").strip()
+    try:
+        r2 = correr(["reg", "query", clave, "/v", valor])
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if r2.returncode != 0:
+        return ""
+    return _campo_de_reg(r2.stdout or "", valor)
+
+
 def descargar(url: str, descargador=None) -> bytes:
     if descargador is not None:
         return descargador(url)
@@ -218,15 +250,10 @@ def _campo_de_reg(salida: str, nombre: str) -> str:
 
 def entorno_persistente(correr=correr) -> dict:
     """TLA2TOOLS y JAVA tal como quedó setx (no las de este proceso)."""
-    salida = {}
-    for nombre in ("TLA2TOOLS", "JAVA"):
-        try:
-            r = correr(["reg", "query", r"HKCU\Environment", "/v", nombre])
-        except (OSError, subprocess.TimeoutExpired):
-            salida[nombre] = ""
-            continue
-        salida[nombre] = _campo_de_reg(r.stdout or "", nombre) if r.returncode == 0 else ""
-    return salida
+    return {
+        nombre: _leer_registro(r"HKCU\Environment", nombre, correr)
+        for nombre in ("TLA2TOOLS", "JAVA")
+    }
 
 
 def fijar_entorno(java: str, jar: str, correr=correr) -> tuple[str, str]:
@@ -287,11 +314,7 @@ def valor_llave_deseado(python: str = "") -> str:
 
 
 def valor_llave(correr=correr) -> str:
-    try:
-        r = correr(["reg", "query", LLAVE, "/v", NOMBRE_LLAVE])
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return _campo_de_reg(r.stdout or "", NOMBRE_LLAVE) if r.returncode == 0 else ""
+    return _leer_registro(LLAVE, NOMBRE_LLAVE, correr)
 
 
 def _script_de_la_llave(valor: str) -> Path | None:
@@ -430,6 +453,10 @@ def verificar(cfg: str, base: Path, raiz: Path, bash: str = "") -> int:
         print("falta java o tla2tools: corre sin --verificar primero", file=sys.stderr)
         return 2
     bash = bash or shutil.which("bash") or BASH_POR_OMISION
+    baja = bash.lower().replace("/", "\\")
+    if baja.endswith(r"\system32\bash.exe") or r"\windowsapps\bash.exe" in baja:
+        # El bash de WSL correría el script dentro de Linux con una ruta C:/...
+        bash = BASH_POR_OMISION
     env = {**os.environ, "JAVA": java["java"], "TLA2TOOLS": str(jar)}
     script = (raiz / "verificacion" / "inspeccion" / "verificar.sh").as_posix()
     try:
@@ -459,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bash", default="")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
+    args.base = Path(args.base).expanduser().resolve()
     filas = (
         comprobar(args.base, correr) if args.comprobar else instalar(args.base, correr)
     )

@@ -224,40 +224,57 @@ class SeccionesPorSistemaTest(unittest.TestCase):
 
             return R()
 
-        with mock.patch.object(cm.os, "name", "nt"):
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
             jaula = cm._jaula(correr)
         self.assertEqual((jaula["estado"], jaula["mecanismo"]), ("ok", "wsl"))
 
     def test_jaula_windows_sin_distro_es_falta(self):
         def correr(argv, timeout=20):
             class R:
-                returncode = 0
-                stdout = "".encode("utf-16-le")
+                returncode = 1
+                stdout = "Windows Subsystem for Linux has no installed distributions.".encode("utf-16-le")
                 stderr = b""
 
             return R()
 
-        with mock.patch.object(cm.os, "name", "nt"):
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
             jaula = cm._jaula(correr)
         self.assertEqual(jaula["estado"], "falta")
+        self.assertIn("no installed", jaula["detalle"])
 
     def test_arranque_windows_llave_del_vigilante(self):
-        dobles = Dobles()
+        vigia = Path(__file__).resolve().parents[1] / "ops" / "iniciar_encargos_pc.py"
 
         def correr(argv, timeout=20):
             class R:
                 returncode = 0
                 stdout = (
                     f"\n    {cm.NOMBRE_LLAVE}    REG_SZ    "
-                    '"C:\\\\py\\\\python.exe" -B "C:\\\\motor\\\\ops\\\\iniciar_encargos_pc.py"\n'
+                    f'"C:\\\\py\\\\python.exe" -B "{vigia}"\n'
                 ).encode("utf-8")
                 stderr = b""
 
             return R()
 
-        with mock.patch.object(cm.os, "name", "nt"):
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
             arranque = cm._arranque(correr)
         self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "vigilante"))
+
+    def test_arranque_windows_con_vigilante_inexistente_es_falta(self):
+        def correr(argv, timeout=20):
+            class R:
+                returncode = 0
+                stdout = (
+                    f"\n    {cm.NOMBRE_LLAVE}    REG_SZ    "
+                    '"C:\\\\py\\\\python.exe" -B "C:\\\\borrado\\\\iniciar_encargos_pc.py"\n'
+                ).encode("utf-8")
+                stderr = b""
+
+            return R()
+
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
+            arranque = cm._arranque(correr)
+        self.assertEqual(arranque["estado"], "falta")
 
     def test_arranque_windows_con_supervisor_directo_es_falta(self):
         def correr(argv, timeout=20):
@@ -271,7 +288,7 @@ class SeccionesPorSistemaTest(unittest.TestCase):
 
             return R()
 
-        with mock.patch.object(cm.os, "name", "nt"):
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
             arranque = cm._arranque(correr)
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("supervisor.ps1", arranque["detalle"])
@@ -284,9 +301,7 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         (dir_fake / "com.goncloud.motor.plist").write_bytes(
             plistlib.dumps({"Label": "com.goncloud.motor", "KeepAlive": True})
         )
-        with mock.patch.object(cm.os, "name", "posix"), mock.patch.object(
-            cm.sys, "platform", "darwin"
-        ):
+        with mock.patch.object(cm, "sistema", lambda: "macos"):
             arranque = cm._arranque(lambda *a, **k: None, dir_fake)
         self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "launchd"))
 
@@ -298,17 +313,13 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         (dir_fake / "com.goncloud.motor.plist").write_bytes(
             plistlib.dumps({"Label": "com.goncloud.motor"})
         )
-        with mock.patch.object(cm.os, "name", "posix"), mock.patch.object(
-            cm.sys, "platform", "darwin"
-        ):
+        with mock.patch.object(cm, "sistema", lambda: "macos"):
             arranque = cm._arranque(lambda *a, **k: None, dir_fake)
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("sin KeepAlive", arranque["detalle"])
 
     def test_arranque_linux_es_aviso_y_no_falta(self):
-        with mock.patch.object(cm.os, "name", "posix"), mock.patch.object(
-            cm.sys, "platform", "linux"
-        ):
+        with mock.patch.object(cm, "sistema", lambda: "linux"):
             arranque = cm._arranque(lambda *a, **k: None)
         self.assertEqual(arranque["estado"], "aviso")
 

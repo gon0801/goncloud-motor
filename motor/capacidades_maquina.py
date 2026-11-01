@@ -43,7 +43,15 @@ def _texto(crudo) -> str:
     if isinstance(crudo, bytes):
         crudo = crudo.decode("utf-8", errors="replace")
     texto = " ".join(str(crudo or "").split())
-    return texto[:200]
+    return texto.replace("\x00", "")[:200]
+
+
+def sistema() -> str:
+    """macos | windows | linux: una sola fuente para las ramas del reporte."""
+    return (
+        "macos" if sys.platform == "darwin"
+        else "windows" if os.name == "nt" else "linux"
+    )
 
 
 def _primera(r) -> str:
@@ -55,11 +63,14 @@ def _primera(r) -> str:
 
 
 def _jaula(correr, sandbox_exec: Path = Path("/usr/bin/sandbox-exec")) -> dict:
-    if os.name == "nt":
+    if sistema() == "windows":
         try:
             r = correr(["wsl.exe", "-l", "-q"], 30)
         except (OSError, subprocess.TimeoutExpired):
             return {"mecanismo": "wsl", "estado": "falta", "detalle": "wsl.exe no corre"}
+        if r.returncode != 0:
+            detalle = _texto((r.stdout or b"") + (r.stderr or b""))
+            return {"mecanismo": "wsl", "estado": "falta", "detalle": detalle or "wsl.exe falló"}
         distros = [
             linea.strip("\x00 ﻿\r\n")
             for linea in r.stdout.decode("utf-16-le", errors="replace").splitlines()
@@ -68,7 +79,7 @@ def _jaula(correr, sandbox_exec: Path = Path("/usr/bin/sandbox-exec")) -> dict:
         if distros:
             return {"mecanismo": "wsl", "estado": "ok", "detalle": f"distro WSL: {distros[0]}"}
         return {"mecanismo": "wsl", "estado": "falta", "detalle": "sin distro WSL instalada"}
-    if sys.platform == "darwin":
+    if sistema() == "macos":
         if sandbox_exec.is_file():
             return {"mecanismo": "seatbelt", "estado": "ok", "detalle": str(sandbox_exec)}
         return {"mecanismo": "seatbelt", "estado": "falta", "detalle": f"falta {sandbox_exec}"}
@@ -245,7 +256,7 @@ def _avisos_y_senal(home: Path) -> tuple[dict, dict]:
 
 
 def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dict:
-    if os.name == "nt":
+    if sistema() == "windows":
         try:
             r = correr(["reg", "query", LLAVE_RUN, "/v", NOMBRE_LLAVE], 15)
         except (OSError, subprocess.TimeoutExpired):
@@ -257,6 +268,13 @@ def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dic
                 if partes and partes[0] == NOMBRE_LLAVE and len(partes) >= 3:
                     valor = partes[-1]
         if VIGILANTE in valor.lower():
+            for parte in re.findall(r'"([^"]+)"', valor):
+                if parte.lower().endswith(VIGILANTE):
+                    if Path(parte).is_file():
+                        return {"mecanismo": "vigilante", "estado": "ok",
+                                "detalle": "la llave Run lanza iniciar_encargos_pc.py"}
+                    return {"mecanismo": "vigilante", "estado": "falta",
+                            "detalle": f"el vigilante de la llave Run no existe: {parte}"}
             return {"mecanismo": "vigilante", "estado": "ok",
                     "detalle": "la llave Run lanza iniciar_encargos_pc.py"}
         return {
@@ -264,7 +282,7 @@ def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dic
             "detalle": "la llave Run no lanza el vigilante"
             + (f": {valor}" if valor else " (llave ausente)"),
         }
-    if sys.platform == "darwin":
+    if sistema() == "macos":
         causas = []
         for etiqueta in ETIQUETAS_LAUNCHD:
             ruta = launchd_dir / f"{etiqueta}.plist"
@@ -336,10 +354,7 @@ def reporte(base: Path, home: Path | None = None, correr=None, which=None) -> di
     ]
     return {
         "maquina": {
-            "sistema": (
-                "macos" if sys.platform == "darwin"
-                else "windows" if os.name == "nt" else "linux"
-            ),
+            "sistema": sistema(),
             "nombre": nombre,
             "python": sys.version.split()[0],
             "ejecutable": sys.executable,
