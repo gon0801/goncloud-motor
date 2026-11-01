@@ -7,18 +7,16 @@ set -uo pipefail
 unset MOTOR_SSH_MAC MOTOR_SSH_MINI MOTOR_SSH_PC
 . "$RAIZ/ops/lib.sh"
 
-cat >"$S/bin/ssh" <<'FAKE'
-#!/usr/bin/env bash
-while [ "$1" = -o ]; do shift 2; done
-host=$1; shift
-echo "$host :: $*" >>"$FAKE_LOG"
-{
-  echo "=== $host $*"
-  cat
-  echo "=== fin"
-} >>"$S/stdin.log"
-exit 0
-FAKE
+printf '%s\n' '#!/usr/bin/env bash' \
+  'while [ "$1" = -o ]; do shift 2; done' \
+  'host=$1; shift' \
+  'echo "$host :: $*" >>"$FAKE_LOG"' \
+  '{' \
+  '  echo "=== $host $*"' \
+  '  cat' \
+  '  echo "=== fin"' \
+  '} >>"$S/stdin.log"' \
+  'exit 0' >"$S/bin/ssh"
 chmod +x "$S/bin/ssh"
 
 desde() { # desde <origen>
@@ -63,7 +61,7 @@ ataja() {
   o="$(bash -c '. "$1/ops/tests/lib-prueba.sh"; ssh maquina-real' _ "$RAIZ" 2>&1)"
   rc=$?
   [ "$rc" = 99 ] || return 1
-  grep -qF "ssh real en una prueba" <<<"$o"
+  printf '%s\n' "$o" | grep -qF "ssh real en una prueba"
 }
 espera "lib-prueba ataja el ssh real" 0 ataja
 
