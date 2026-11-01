@@ -14,8 +14,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from motor.encargos import comprobacion
+from motor.encargos import aislamiento, comprobacion
 from motor.encargos.aislamiento import (
     aislar,
     lecturas_del_interprete,
@@ -80,6 +81,31 @@ class ElEntornoApuntaAlTemporalDelRuntime(unittest.TestCase):
             (runtime / "tmp" / "resto.txt").write_text("x", encoding="utf-8")
             aislar([sys.executable], espacio, runtime, lecturas_extra=())
             self.assertFalse((runtime / "tmp" / "resto.txt").exists())
+
+    def test_el_atajo_no_depende_de_la_opcion_p(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp)
+            real = base / "mktemp-real"
+            real.write_text(
+                "#!/bin/sh\n"
+                'for a in "$@"; do [ "$a" = -p ] && exit 64; done\n'
+                'exec /usr/bin/mktemp "$@"\n',
+                encoding="utf-8",
+            )
+            real.chmod(0o755)
+            runtime = base / "runtime"
+            with mock.patch.object(aislamiento.shutil, "which", return_value=str(real)):
+                bin_dir = aislamiento._atajo_mktemp(runtime)
+            atajo = bin_dir / "mktemp"
+            hecho = subprocess.run(
+                [str(atajo), "-d"],
+                env={**os.environ, "TMPDIR": str(temporal_de(runtime))},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(hecho.returncode, 0, hecho.stderr)
+            self.assertTrue(Path(hecho.stdout.strip()).is_relative_to(runtime.resolve()))
 
 
 class ConLaJaulaReal(unittest.TestCase):
