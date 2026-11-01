@@ -130,7 +130,7 @@ Qué cuenta en el modelo:
 
 - **"Espera visible"**: un impedimento registrado (`imped`), o un estado que no es `recibido` ni `ejecutando` (`necesita_usuario`, `deteniendo`, `detenido`, `terminado`). Lo que solo se ve si alguien consulta el estado (por ejemplo, la `necesidad_actual` de `seguimiento_de`) no cuenta: nadie recibe un aviso. `Abierto` deja fuera esos estados a propósito.
 - **"Información nueva"** para el revisor, según `dominio.inspeccion_bloquea`: un ajuste, una respuesta del propietario o un resultado nuevo de la solicitud ligada. La variable `sinInfo` cuenta las revisiones consumidas desde la última. El contador del freno (`cuenta`) es el del código y solo lo reinician un ajuste o una respuesta.
-- **`Tope`**: el modelo usa el valor del código (3). También se comprobó `main.cfg` con `MaxIds = 4`: 1 413 700 estados, unos 22 s.
+- **`Tope`**: el modelo usa el valor del código (3). Si `dominio.TOPE_NO_CONCLUYENTES` cambia y el `.cfg` no, `verificar.sh` sale con 2 y `tests/test_tope_del_modelo.py` (la batería del motor) falla; cambia `Tope` en todos los `.cfg` y revisa el modelo. También se comprobó `main.cfg` con `MaxIds = 4`: 1 413 700 estados, unos 22 s.
 - **Largo de un camino**: los estados que imprime TLC (`State 1` … `State N`). Hay N - 1 acciones.
 - **Dos caminos con las mismas acciones** pueden ser fallos distintos: compara las variables del último estado. Por ejemplo, la traba 9 de `antes-139.cfg` termina con la solicitud ligada `ausente`; invertir `DetieneLaPendiente` termina con la misma secuencia, pero con la solicitud `pendiente` y sin petición en el buzón.
 
