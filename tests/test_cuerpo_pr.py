@@ -385,6 +385,48 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
             _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
             self.assertEqual(vuelta.gh.actualizaciones, 2)
 
+    def test_un_fallo_al_publicar_el_cuerpo_deja_evento_y_la_entrega_sigue(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "cuerpo-fallo-visible", _GhFallaCuerpo)
+            (_interno(r) / "cuerpo-pr.md").write_text(
+                "primera version", encoding="utf-8"
+            )
+
+            e = vuelta("uno")
+
+            self.assertTrue(e.pr_numero)
+            eventos = r.reg.eventos(r.enc)
+            fallos = [
+                ev
+                for ev in eventos
+                if ev["kind"] == "instrumento_fallo"
+                and "actualizar el cuerpo" in str(ev["data"].get("causa") or "")
+            ]
+            self.assertEqual(len(fallos), 1)
+            self.assertEqual(fallos[0]["data"].get("fuente"), "github")
+            self.assertIn(
+                "próxima publicación", str(fallos[0]["data"].get("siguiente") or "")
+            )
+            self.assertFalse(
+                any(
+                    "abrir o preparar el PR" in str(ev["data"].get("causa") or "")
+                    for ev in eventos
+                    if ev["kind"] == "instrumento_fallo"
+                )
+            )
+            self.assertTrue(
+                any(
+                    ev["kind"] == "espera"
+                    and "DeepSeek" in str(ev["data"].get("motivo") or "")
+                    for ev in eventos
+                ),
+                "la entrega no siguió hasta la espera de DeepSeek",
+            )
+            self.assertEqual(
+                _pr_unico(vuelta.gh).get("cuerpo"),
+                f"primera version\n\nEncargo {r.enc}. Fase: {e.fase_activa}.",
+            )
+
     def test_fallo_al_actualizar_no_detiene_y_se_reintenta(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
