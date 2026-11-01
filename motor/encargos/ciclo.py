@@ -11,6 +11,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
+from .copiar import copiar_arbol, vaciar_arbol
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -443,7 +444,6 @@ def _almacen_sesion(base: Path, encargo_id: str, rol: str) -> Path:
 
 def _copiar_sesion(origen: Path, destino: Path) -> None:
     import os
-    import shutil
 
     def ruta_guardada(valor) -> Path:
         texto = str(valor)
@@ -454,15 +454,7 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
     for sub in (".codex", ".grok", ".local/share/muse", ".kimi-code/sessions", ".kimi-code/file-history", ".claude/projects", ".qwen/projects", ".qwen/tmp", ".local/share/opencode"):
         fuente = origen / sub
         if fuente.is_dir():
-            shutil.copytree(
-                fuente,
-                destino / sub,
-                dirs_exist_ok=True,
-                symlinks=True,
-                ignore=lambda _d, nombres: [
-                    n for n in nombres if n == "auth.json"
-                ],
-            )
+            copiar_arbol(fuente, destino / sub, omitir=("auth.json",))
 
     indice_kimi = origen / ".kimi-code/session_index.jsonl"
     if indice_kimi.is_file() and not indice_kimi.is_symlink():
@@ -521,6 +513,58 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
                             "UPDATE threads SET rollout_path=? WHERE id=?",
                             (str(rollouts[nombre]), ident),
                         )
+
+
+_NOTA_COPIA_SESION = "copia de sesión "
+
+
+def _copiar_sesion_sin_caer(
+    registro: Registro, enc: Encargo, origen: Path, destino: Path, sitio: str, hora: str
+) -> None:
+    """Una copia de sesión que falla queda anotada en el encargo y el turno sigue:
+    la sesión es continuidad, no el resultado, y no justifica tumbar el barrido.
+
+    La nota va como `procedimiento`, que solo suma una línea: un `instrumento_fallo`
+    reescribiría la causa y el motivo del encargo por un fallo que no lo detiene.
+
+    Una copia a medias no se usa como sesión. Guardar deja `.copia-incompleta` en el almacén
+    mientras copia y la quita al terminar; si el guardado anterior no terminó, vacía el
+    almacén antes, para que lo viejo no se mezcle con lo nuevo. Con la marca puesta no se
+    restaura: el turno arranca sin sesión. Si falla restaurar, se vacía el runtime del turno."""
+    import sqlite3
+
+    marca = ".copia-incompleta"
+
+    def anotar(texto: str) -> None:
+        registro.anotar(
+            enc.id,
+            {"kind": "procedimiento", "data": {"nota": f"{_NOTA_COPIA_SESION}({sitio}): {texto}"[:2000]}},
+            f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}",
+        )
+
+    if sitio == "restaurar" and (origen / marca).exists():
+        anotar("la sesión guardada quedó incompleta (falló una copia anterior); el turno arranca sin ella")
+        return
+    try:
+        if sitio == "guardar":
+            if (destino / marca).exists():
+                vaciar_arbol(destino)
+            destino.mkdir(parents=True, exist_ok=True)
+            (destino / marca).touch()
+        _copiar_sesion(origen, destino)
+        if sitio == "guardar":
+            (destino / marca).unlink(missing_ok=True)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        try:
+            if sitio == "restaurar":
+                vaciar_arbol(destino)
+            else:
+                # Vaciar el almacén pudo llevarse la marca antes de fallar.
+                destino.mkdir(parents=True, exist_ok=True)
+                (destino / marca).touch()
+        except OSError:
+            pass
+        anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
 
 
 def _leer_proc(directorio: Path) -> dict | None:
@@ -2121,9 +2165,13 @@ def _incorporar(
         agente = spec.get("agente") or enc.agente or "externo"
         token_intento = str(spec.get("token") or "")
         if token_intento:
-            _copiar_sesion(
+            _copiar_sesion_sin_caer(
+                registro,
+                enc,
                 registro.base / "runtime" / enc.id / token_intento,
                 _almacen_sesion(registro.base, enc.id, enc.rol),
+                "guardar",
+                hora,
             )
         if outcome.get("autenticacion_expirada"):
             marcar_espera(
@@ -2959,6 +3007,10 @@ def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) ->
             if _clase_de_fallo(ev["data"].get("motivo") or "") != clase:
                 break
             seguidos += 1
+        elif ev["kind"] == "procedimiento" and str(ev["data"].get("nota") or "").startswith(
+            _NOTA_COPIA_SESION
+        ):
+            continue  # el aviso de una copia de sesión fallida no es un cambio
         elif ev["kind"] not in _ENTRE_REINTENTOS:
             break
     return seguidos
@@ -4104,7 +4156,9 @@ def _lanzar_uno_en_turno(
         directorio.mkdir(parents=True, exist_ok=True)
         runtime = registro.base / "runtime" / enc.id / token
         runtime.mkdir(parents=True, exist_ok=True)
-        _copiar_sesion(_almacen_sesion(registro.base, enc.id, rol), runtime)
+        _copiar_sesion_sin_caer(
+            registro, enc, _almacen_sesion(registro.base, enc.id, rol), runtime, "restaurar", hora
+        )
         if enc.entrega.nivel != "terminado" and rol == "responsable":
             causa_repo = _asegurar_repo(enc, espacio, registro, hora)
             if causa_repo:
