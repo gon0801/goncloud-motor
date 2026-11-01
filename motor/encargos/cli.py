@@ -452,8 +452,20 @@ def _supervisor(reg: Registro, args) -> int:
     senal = Senal(reg.base, lambda: {})
     senal.arranca()
     try:
+        fallidas = 0
         while True:
-            informes = paso()
+            try:
+                informes = paso()
+            except Exception:
+                # Un paso que no se pudo dar no tumba al supervisor ni cuenta como
+                # avance para la señal; el error de un encargo ya queda en su encargo.
+                import traceback
+
+                traceback.print_exc()
+                fallidas = min(fallidas + 1, 10)
+                time.sleep(min(args.intervalo * 2**fallidas, 300))
+                continue
+            fallidas = 0
             senal.avanzo(
                 sum(i["estado"] not in ("terminado", "cancelado") for i in informes)
             )
