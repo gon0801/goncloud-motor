@@ -36,6 +36,10 @@ TRANSPORTE = (
     "if modo=='caido':\n"
     " sys.stderr.write('no puedo leer el archivo del bot en https://api.telegram.org/bot123456789:' + 'A'*10 + 'b'*25 + '/sendMessage')\n"
     " sys.exit(1)\n"
+    "if modo=='ok_y_cae':\n"
+    " open(base/'cae.log','a').write('x')\n"
+    " if len((base/'cae.log').read_text())>1:\n"
+    "  sys.stderr.write('se cayó a mitad'); sys.exit(1)\n"
     "if modo=='lento':\n"
     " time.sleep(5)\n"
     "if modo=='sin_recibo':\n"
@@ -136,6 +140,38 @@ class EstadoDelCanal(Banco):
         self.assertEqual(estado["fallando_desde"], directores._iso(T0))
         self.assertTrue(estado["ultimo_error"])
         self.assertEqual(self.llamadas(), 0, "el proceso nunca corrió")
+
+    def _otro_aviso(self) -> None:
+        ident = directores.encargar(self.reg, "pedido dos", "dos", HORA, "hermes", "tg", "directa")["encargo"]
+        self.reg.anotar(ident, {"kind": "fases", "data": {
+            "fases": [{"id": "A", "resultado": "otra fase"}], "hora": HORA,
+        }}, "fase-dos")
+
+    def test_en_una_pasada_con_un_envio_bueno_y_otro_roto_gana_el_fallo(self):
+        # Un recibo no basta para dar por sano un canal que en esa misma pasada vuelve a fallar.
+        self._otro_aviso()
+        self.modo("caido")
+        directores.drenar(self.reg, ahora=T0)
+        inicio = self.estado()["fallando_desde"]
+        fallos = self.estado()["fallos"]
+        self.modo("ok_y_cae")
+        directores.drenar(self.reg, ahora=T0 + 700)
+        entregados = [a for a in (self.base / "avisos").glob("*.json") if json.loads(a.read_text()).get("recibo")]
+        self.assertEqual(len(entregados), 1, "uno salió con recibo y el otro se cayó")
+        estado = self.estado()
+        self.assertEqual(estado["fallando_desde"], inicio, "el fallo de la misma pasada gana al recibo")
+        self.assertEqual(estado["fallos"], fallos + 1)
+        self.assertEqual([c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 700)], ["tg"])
+        self.modo("ok")
+        directores.drenar(self.reg, ahora=T0 + 20_000)
+        self.assertNotIn("fallando_desde", self.estado(), "con todo entregado el canal se recupera")
+
+    def test_registrar_pasada_da_prioridad_al_fallo_sobre_la_respuesta(self):
+        canales.registrar_pasada(self.base, T0, {"tg": "se cayó"}, {"tg"})
+        self.assertEqual(self.estado()["fallando_desde"], directores._iso(T0))
+        canales.registrar_pasada(self.base, T0 + 60, {}, {"tg"})
+        self.assertNotIn("fallando_desde", self.estado())
+        self.assertEqual(self.estado()["ultimo_exito"], directores._iso(T0 + 60))
 
     def test_un_mensaje_sin_recibo_no_marca_caido_el_canal(self):
         self.modo("sin_recibo")
