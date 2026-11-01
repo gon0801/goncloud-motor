@@ -447,35 +447,25 @@ def _supervisor(reg: Registro, args) -> int:
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))
         return 0
-    from motor.senal import VARIABLE_ENCARGOS, Senal, url_configurada
+    from motor.senal import Senal, url_configurada
 
     from motor.integraciones.canales import canales_caidos
 
     base = reg.base
-    # El supervisor vigila con su propio monitor de Kuma (MOTOR_KUMA_ENCARGOS_URL): MOTOR_KUMA_URL es del
-    # daemon del modo planes y, compartida, cada proceso taparía la caída del otro. La dirección se busca
-    # en el secretos.env de la base y, si no, en el de ~/.motor, donde ya viven los secretos de la máquina.
-    respaldo = Path.home() / ".motor"
+    # La señal del supervisor lee MOTOR_KUMA_URL del secretos.env de su propia base (en la Mini,
+    # ~/.motor-encargos/secretos.env). El daemon del modo planes lee el de ~/.motor: cada proceso, su archivo.
     try:
-        provisionada = bool(
-            url_configurada(base, VARIABLE_ENCARGOS) or url_configurada(respaldo, VARIABLE_ENCARGOS)
-        )
+        configurada = bool(url_configurada(base))
     except Exception:  # noqa: BLE001  un secretos.env ilegible tampoco da señal
-        provisionada = False
-    if not provisionada:
+        configurada = False
+    if not configurada:
         print(
-            f"motor: sin {VARIABLE_ENCARGOS}, el supervisor de encargos no manda señal a Kuma "
+            "motor: sin MOTOR_KUMA_URL en el secretos.env de la base, el supervisor de encargos no manda señal a Kuma "
             "(un canal caído solo se ve en `motor director ver` y en este log)",
             file=sys.stderr,
             flush=True,
         )
-    senal = Senal(
-        base,
-        lambda: {},
-        canales=lambda: canales_caidos(base),
-        respaldo=respaldo,
-        variable=VARIABLE_ENCARGOS,
-    )
+    senal = Senal(base, lambda: {}, canales=lambda: canales_caidos(base))
     senal.arranca()
     try:
         while True:

@@ -17,10 +17,6 @@ from pathlib import Path
 from .conf import load_secretos
 
 VARIABLE = "MOTOR_KUMA_URL"
-# El supervisor de encargos tiene su propio monitor: con la dirección del daemon de planes los dos se taparían.
-VARIABLE_ENCARGOS = "MOTOR_KUMA_ENCARGOS_URL"
-# Las direcciones push son secretos: ningún agente ni comprobación las hereda en su entorno.
-VARIABLES = (VARIABLE, VARIABLE_ENCARGOS)
 CADA_S = 60.0
 SILENCIO_MIN_S = 900.0
 TOPE_GET_S = 5.0
@@ -32,9 +28,9 @@ class _SinRedireccion(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def url_configurada(home: Path, variable: str = VARIABLE) -> str:
+def url_configurada(home: Path) -> str:
     """La dirección en `secretos.env`, leída en este momento; "" si no hay. Puede lanzar ConfError."""
-    return load_secretos(home).get(variable, "")
+    return load_secretos(home).get(VARIABLE, "")
 
 
 def silencio_s(tiempos: dict[str, float]) -> float:
@@ -43,22 +39,11 @@ def silencio_s(tiempos: dict[str, float]) -> float:
 
 
 class Senal:
-    def __init__(
-        self,
-        home: Path,
-        tiempos,
-        reloj=time.monotonic,
-        canales=None,
-        respaldo: Path | None = None,
-        variable: str = VARIABLE,
-    ):
+    def __init__(self, home: Path, tiempos, reloj=time.monotonic, canales=None):
         """`canales` devuelve los canales de avisos caídos (lectura local, sin tocar el canal): si hay
-        alguno, la señal sale con status=down y el último error. `respaldo` es otro home cuyo
-        secretos.env se consulta si el principal no trae la dirección. `variable` es la clave de
-        secretos.env con la dirección push de este proceso."""
+        alguno, la señal sale con status=down y el último error. La dirección es `MOTOR_KUMA_URL` del
+        `secretos.env` de `home`: cada proceso lee el de su propio home."""
         self.home = home
-        self._respaldo = respaldo
-        self._variable = variable
         self._canales = canales
         self._tiempos = tiempos
         self._reloj = reloj
@@ -99,9 +84,7 @@ class Senal:
             tiempos = self._tiempos()
             if self._reloj() - self._ultimo_avance >= silencio_s(tiempos):
                 return False
-            url = url_configurada(self.home, self._variable)
-            if not url and self._respaldo is not None:
-                url = url_configurada(self._respaldo, self._variable)
+            url = url_configurada(self.home)
             if not url:
                 self._anota_canales_sin_kuma()
                 return False
@@ -148,7 +131,7 @@ class Senal:
         for c in caidos:
             print(
                 f"motor: canal {c['canal']} caído desde {c['fallando_desde']}: {c['ultimo_error']} "
-                f"(sin {self._variable} no se avisa a Kuma)",
+                "(sin MOTOR_KUMA_URL no se avisa a Kuma)",
                 file=sys.stderr,
                 flush=True,
             )
