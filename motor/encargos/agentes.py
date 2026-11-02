@@ -205,13 +205,7 @@ def _llavero_antigravity() -> bool:
         return aguja.encode("utf-8") in datos or aguja.encode("utf-16-le") in datos
     try:
         corrida = subprocess.run(
-            [
-                "sh",
-                "-c",
-                "secret-tool search service gemini username antigravity"
-                " 2>&1 >/dev/null"
-                " | grep -q 'attribute.username = antigravity'",
-            ],
+            ["secret-tool", "lookup", "service", "gemini", "username", "antigravity"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
@@ -220,9 +214,9 @@ def _llavero_antigravity() -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    # libsecret manda `attribute.*` por stderr y el secreto por stdout. El
-    # hijo duplica stderr al pipe y descarta stdout: grep ve los atributos y
-    # el valor del secreto no llega ni a Python ni al propio grep.
+    # `lookup` sale 0 solo si el ítem existe y escribe el secreto por stdout;
+    # el hijo lo manda a /dev/null. Solo se mira el código de salida, sin
+    # depender del reparto de streams de libsecret ni traer el valor a Python.
     return corrida.returncode == 0
 
 

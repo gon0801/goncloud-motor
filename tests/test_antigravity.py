@@ -254,8 +254,6 @@ class EntornoYHerramientas(unittest.TestCase):
                     return subprocess.CompletedProcess(
                         argv, 0, "gemini:antigravity".encode("utf-16-le"), b""
                     )
-                if argv and argv[0] == "sh":
-                    return subprocess.CompletedProcess(argv, 0, b"", b"")
                 return subprocess.CompletedProcess(argv, 0, b"", b"")
 
             with mock.patch.dict(
@@ -267,7 +265,6 @@ class EntornoYHerramientas(unittest.TestCase):
             self.assertNotIn("-w", argv)
             self.assertNotIn("-g", argv)
             self.assertNotIn("--all", argv)
-            self.assertNotIn("lookup", argv)
             if sys.platform == "darwin":
                 self.assertEqual(
                     argv,
@@ -288,14 +285,16 @@ class EntornoYHerramientas(unittest.TestCase):
                 self.assertEqual(
                     argv,
                     [
-                        "sh",
-                        "-c",
-                        "secret-tool search service gemini username antigravity"
-                        " 2>&1 >/dev/null"
-                        " | grep -q 'attribute.username = antigravity'",
+                        "secret-tool",
+                        "lookup",
+                        "service",
+                        "gemini",
+                        "username",
+                        "antigravity",
                     ],
                 )
                 self.assertIs(vistos["kwargs"]["stdout"], subprocess.DEVNULL)
+                self.assertIs(vistos["kwargs"]["stderr"], subprocess.DEVNULL)
 
     def test_linux_y_windows_no_confunden_el_codigo_de_salida_con_sesion(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -309,26 +308,21 @@ class EntornoYHerramientas(unittest.TestCase):
                     )
                 return subprocess.CompletedProcess(argv, 0, b"", b"")
 
-            def sin_atributo(argv, **kwargs):
-                # El filtro del hijo no hallo el atributo: sale 1 aunque
-                # `secret-tool search` por dentro salga 0 sin items.
+            def sin_item(argv, **kwargs):
+                # `secret-tool lookup` sale 1 cuando no hay ítem.
                 return subprocess.CompletedProcess(argv, 1, b"", b"")
 
             with mock.patch.dict(os.environ, entorno):
                 with mock.patch("sys.platform", "linux"):
-                    with mock.patch("subprocess.run", side_effect=sin_atributo):
+                    with mock.patch("subprocess.run", side_effect=sin_item):
                         self.assertFalse(agentes.sesion_antigravity_presente(home))
                 with mock.patch("sys.platform", "win32"):
                     with mock.patch("subprocess.run", side_effect=vacio):
                         self.assertFalse(agentes.sesion_antigravity_presente(home))
 
             def hit(argv, **kwargs):
-                return subprocess.CompletedProcess(
-                    argv,
-                    0,
-                    b"",
-                    b"attribute.service = gemini\nattribute.username = antigravity\n",
-                )
+                # lookup imprime el secreto por stdout; el código lo descarta.
+                return subprocess.CompletedProcess(argv, 0, b"SECRETO-FALSO\n", b"")
 
             with mock.patch.dict(os.environ, entorno):
                 with mock.patch("sys.platform", "linux"):
@@ -350,12 +344,12 @@ class EntornoYHerramientas(unittest.TestCase):
                     with mock.patch("subprocess.run", side_effect=hit_windows):
                         self.assertTrue(agentes.sesion_antigravity_presente(home))
 
-    def test_el_llavero_de_linux_lee_los_atributos_que_libsecret_manda_por_stderr(
+    def test_el_llavero_de_linux_usa_el_codigo_de_salida_sin_leer_el_secreto(
         self,
     ):
-        """libsecret imprime el secreto por stdout y `attribute.*` por stderr.
-        Un doble en PATH con ese reparto demuestra que el filtro del hijo ve
-        el atributo sin traer el valor a Python."""
+        """`secret-tool lookup` sale 0 si el ítem existe, sin importar el
+        reparto de streams. El doble manda el secreto por stdout y el código
+        lo descarta en /dev/null: solo cuenta el código de salida."""
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             home.mkdir()
@@ -364,11 +358,7 @@ class EntornoYHerramientas(unittest.TestCase):
             falso = bin_ / "secret-tool"
             falso.write_text(
                 "#!/bin/sh\n"
-                "echo 'label: gemini'\n"
-                "echo 'secret = SECRETO-FALSO'\n"
-                "echo 'created = 1762123456'\n"
-                "echo 'attribute.service = gemini' >&2\n"
-                "echo 'attribute.username = antigravity' >&2\n"
+                "echo 'SECRETO-FALSO'\n"
                 "exit 0\n",
                 encoding="utf-8",
             )
@@ -382,14 +372,7 @@ class EntornoYHerramientas(unittest.TestCase):
                 with mock.patch("sys.platform", "linux"):
                     self.assertTrue(agentes.sesion_antigravity_presente(home))
 
-            falso.write_text(
-                "#!/bin/sh\n"
-                "echo 'label: otro'\n"
-                "echo 'secret = SECRETO-FALSO'\n"
-                "echo 'attribute.service = otro' >&2\n"
-                "exit 0\n",
-                encoding="utf-8",
-            )
+            falso.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
             falso.chmod(0o755)
             with mock.patch.dict(os.environ, entorno):
                 with mock.patch("sys.platform", "linux"):
