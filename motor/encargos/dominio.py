@@ -3020,7 +3020,8 @@ def prompt_responsable(e: Encargo) -> str:
     lineas = [
         (
             "Eres el responsable de este encargo. Sigue poteto-mode en este espacio. "
-            "Carga la skill empaquetada del runtime y limita las herramientas al espacio concedido. "
+            "Carga la skill empaquetada del runtime y trabaja como el usuario, con las "
+            "herramientas y los accesos de su máquina. "
             "Sharpen, Architect, Arena y Figure-it-out se usan cuando el trabajo los necesita; "
             "no son una cadena obligatoria. Una hipótesis del plan no es una prohibición: "
             "las decisiones técnicas dentro del objetivo y los permisos concedidos las tomas tú "
@@ -3077,7 +3078,9 @@ def prompt_responsable(e: Encargo) -> str:
     lineas.append(
         "Comprueba el comportamiento pedido y deja la evidencia en .interno/evidencia.txt. "
         "No declares el encargo terminado: el supervisor mira el destino. "
-        "Una escritura fuera de este espacio se pide en .interno/pedido-efecto.json. "
+        "Si el nivel de entrega autorizado incluye desplegado, declara ese efecto en "
+        ".interno/pedido-efecto.json y el supervisor lo despacha por el adaptador y "
+        "sella el nivel con su recibo; para todo lo demás trabajas directamente. "
         "No repitas un efecto que ya tenga recibo."
     )
     return "\n\n".join(lineas)
