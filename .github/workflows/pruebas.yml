@@ -27,21 +27,6 @@ jobs:
       - name: Jaula de bubblewrap (con MOTOR_EXIGE_BWRAP=1 un skip es un fallo)
         run: python -m unittest tests.test_jaula_linux tests.test_jaula_wsl tests.test_rutas_wsl tests.test_ci_jaula tests.test_bucle_instrumento.ShellDeGitAlLanzar tests.test_bucle_instrumento.SondaDeWsl tests.test_bucle_instrumento.ElShellDelCli tests.test_bucle_instrumento.EnsayoDelOperador tests.test_bucle_instrumento.SondaDelShellDeGit -v
 
-  jaula-macos:
-    runs-on: macos-latest
-    timeout-minutes: 10
-    env:
-      MOTOR_EXIGE_SEATBELT: "1"
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: La jaula seatbelt se aplica
-        run: /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
-      - name: Comprobador, sesión de agente, temporal y Kuma fuera del entorno con la jaula real de macOS (con MOTOR_EXIGE_SEATBELT=1 un skip es un fallo)
-        run: python3 -m unittest -v tests.test_comprobador_interprete tests.test_comprobador_temporal tests.test_sesion_interprete tests.test_kuma_fuera_del_entorno_de_agentes
-
   ops-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -71,6 +56,18 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Bateria completa
         run: python -m unittest discover -s tests -t . -v
+
+  macos:
+    name: Lanzamiento directo en macOS
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: El lanzamiento directo y su entorno en la Mac
+        run: python -m unittest -v tests.test_lanzamiento_directo tests.test_director_capacidades tests.test_sesion_interprete tests.test_comprobador_temporal
 
   windows:
     runs-on: windows-latest

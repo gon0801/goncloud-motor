@@ -1,15 +1,14 @@
-"""Traba del 1 de noviembre (enc_58c92a2e04e1a8a7): la sesión de agente se lanzaba
-con `aislar(...)` sin las lecturas del intérprete. En la Mini el Python 3.12 de
-uv vive bajo el home, que la jaula niega ("No module named encodings"), y el
-`python3` que quedaba a mano era el 3.9 del sistema, sin `tomllib`. El
-comprobador ya lo resolvía (#142); la sesión del responsable y la del revisor no."""
+"""El `python3` de cada sesión es el intérprete que corre el supervisor.
+
+El primer `python3` del PATH puede ser el del sistema (el 3.9 en la Mini, sin
+`tomllib`): la sesión pide `interprete=True` y `aislar` antepone en el PATH un
+`python3` del runtime que ejecuta el intérprete del supervisor.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,15 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from motor.encargos import aislamiento, comprobacion, sesion
-from motor.encargos.aislamiento import (
-    ComandoAislado,
-    lecturas_del_interprete,
-    path_con_interprete,
-)
-from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
-from tests.test_comprobador_interprete import EXIGIDA, FLUJO, JAULA_REAL, SANDBOX
-from tests.test_flujo_revisiones import Recorrido
+from motor.encargos import sesion
+from motor.encargos.aislamiento import ComandoAislado, path_con_interprete
 
 ROLES = ("responsable", "revisor")
 PRUEBA = "import sys, tomllib, encodings; print(sys.version)"
@@ -97,7 +89,7 @@ class LaSesionPideElInterprete(unittest.TestCase):
 
                 def falso(cmd, espacio, runtime, **kw):
                     pedidos.append(kw)
-                    return ComandoAislado(list(cmd), {}, "prueba")
+                    return ComandoAislado(list(cmd), {}, "directo")
 
                 with mock.patch("motor.encargos.aislamiento.aislar", falso):
                     _preparar(Path(tmp).resolve(), rol, ["python3", "-c", "pass"])
@@ -106,187 +98,76 @@ class LaSesionPideElInterprete(unittest.TestCase):
                 self.assertIs(pedidos[0]["lectura"], rol == "revisor")
 
 
-@unittest.skipUnless(HAY_AISLAMIENTO and SANDBOX.is_file(), SIN_AISLAMIENTO)
-class PerfilDeLaSesion(unittest.TestCase):
-    def test_solo_se_concede_la_lectura_de_la_instalacion(self):
-        home = Path.home().resolve()
-        amplios = {str(home), *(str(p) for p in home.parents)}
-        for rol in ROLES:
-            with self.subTest(rol=rol), tempfile.TemporaryDirectory(
-                ignore_cleanup_errors=True
-            ) as tmp:
-                base = Path(tmp).resolve()
-                spec = _preparar(base, rol, ["python3", "-c", "pass"])
-                perfil = (base / "runtime" / "jaula.sb").read_text(encoding="utf-8").splitlines()
-                espacio = str(base / "base" / "espacio" / "enc_x")
-                runtime = str(base / "runtime")
-                self.assertEqual(spec["aislamiento"], "seatbelt")
+@unittest.skipIf(os.name == "nt", "el delta del entorno es de la rama directa POSIX")
+class ElArranqueGuardadoNoTraeElEntornoDelSupervisor(unittest.TestCase):
+    """En lanzamiento directo el agente hereda el entorno del supervisor del
+    wrapper que lo lanza; `arranque.json` solo guarda la parte que el motor
+    añade o cambia. El entorno completo del usuario llega igual al agente sin
+    escribirse entero en el intento."""
 
-            def rutas(prefijo: str) -> list[str]:
-                return [
-                    json.loads(l.split("subpath ", 1)[1].rstrip(")"))
-                    for l in perfil
-                    if l.startswith(prefijo) and "subpath" in l
-                ]
-
-            negar = next(i for i, l in enumerate(perfil) if "deny file-read*" in l)
-            for ruta in lecturas_del_interprete():
-                regla = f"(allow file-read* (subpath {json.dumps(str(ruta.resolve()))}))"
-                self.assertIn(regla, perfil)
-                self.assertGreater(perfil.index(regla), negar)
-            self.assertFalse(amplios & set(rutas("(allow file-read*")))
-            self.assertEqual(
-                sorted(rutas("(allow file-write*")),
-                sorted([runtime] if rol == "revisor" else [espacio, runtime]),
-            )
-
-
-class ConLaJaulaRealDeMacOS(unittest.TestCase):
-    def setUp(self):
-        if JAULA_REAL:
-            return
-        causa = "hace falta sandbox-exec aplicable (macOS fuera de otra jaula)"
-        if EXIGIDA:
-            self.fail("MOTOR_EXIGE_SEATBELT=1 y la jaula real no se puede aplicar: " + causa)
-        self.skipTest(causa)
-
-    def _correr(self, rol: str, cmd: list[str]) -> subprocess.CompletedProcess:
+    def test_el_arranque_json_guarda_solo_el_delta_y_el_agente_ve_todo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            spec = _preparar(Path(tmp).resolve(), rol, cmd)
-            return subprocess.run(
-                spec["cmd"],
-                cwd=spec["cwd"],
-                env=spec["env"],
-                capture_output=True,
-                text=True,
-                timeout=60,
+            raiz = Path(tmp).resolve()
+            espacio = raiz / "base" / "espacio" / "enc_x"
+            espacio.mkdir(parents=True)
+            directorio = raiz / "base" / "ejecucion" / "enc_x" / "intento-1"
+            directorio.mkdir(parents=True)
+            with mock.patch.dict(
+                os.environ,
+                {"MOTOR_SECRETO_SUPERVISOR": "no-en-disco", "HOME": "/home/real"},
+            ):
+                sesion.preparar_administrado(
+                    ["python3", "-c", "pass"],
+                    espacio,
+                    directorio,
+                    _encargo("responsable"),
+                    "s1",
+                    "2026-11-01T00:00:00Z",
+                    raiz / "runtime",
+                )
+                spec = json.loads(
+                    (directorio / "arranque.json").read_text(encoding="utf-8")
+                )
+                lanzado = {**os.environ, **spec["env"]}
+            self.assertNotIn("HOME", spec["env"])
+            self.assertNotIn("MOTOR_SECRETO_SUPERVISOR", spec["env"])
+            runtime = (raiz / "runtime").resolve()
+            self.assertEqual(Path(spec["env"]["TMPDIR"]), runtime / "tmp")
+            self.assertIn(str(runtime / "bin"), spec["env"]["PATH"])
+            self.assertEqual(lanzado["MOTOR_SECRETO_SUPERVISOR"], "no-en-disco")
+            self.assertEqual(lanzado["HOME"], "/home/real")
+            self.assertEqual(Path(lanzado["TMPDIR"]), runtime / "tmp")
+
+
+@unittest.skipIf(os.name == "nt", "el merge del entorno es de la rama directa POSIX")
+class ElLanzamientoComponeElEntornoDelSupervisorMasElDelta(unittest.TestCase):
+    """F6: `crear_agente` ejerce el merge en la rama directa: el proceso se
+    lanza con el entorno heredado del wrapper más lo que `arranque.json`
+    guarda. Si el merge desaparece, el agente pierde el entorno del usuario."""
+
+    def test_crear_agente_lanza_con_el_entorno_heredado_mas_el_delta(self):
+        from motor.encargos import arranque
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            spec = {
+                "aislamiento": "directo",
+                "cmd": ["true"],
+                "cwd": str(tmp),
+                "env": {"TMPDIR": str((Path(tmp).resolve()) / "tmp")},
+            }
+            with mock.patch.dict(os.environ, {"MOTOR_SECRETO_SUPERVISOR": "visible"}):
+                esperado = {**os.environ, **spec["env"]}
+                with mock.patch("subprocess.Popen") as popen:
+                    arranque.crear_agente(
+                        spec, Path(tmp), {"cwd": spec["cwd"], "env": spec["env"]}
+                    )
+            self.assertEqual(popen.call_args.kwargs["env"], esperado)
+            self.assertEqual(
+                popen.call_args.kwargs["env"]["MOTOR_SECRETO_SUPERVISOR"], "visible"
             )
-
-    def test_python3_de_la_sesion_es_el_del_supervisor_y_arranca_en_la_jaula(self):
-        for rol in ROLES:
-            with self.subTest(rol=rol):
-                resultado = self._correr(rol, ["python3", "-c", PRUEBA])
-                self.assertEqual(resultado.returncode, 0, resultado.stderr)
-                self.assertEqual(resultado.stdout, sys.version + "\n")
-
-    @contextlib.contextmanager
-    def _incidente(self, con_arreglo: bool):
-        """La Mini: el intérprete del supervisor se declara por un enlace del
-        home (~/.local/bin/python3) a un directorio que es otro enlace, y el
-        primer `python3` del PATH es el 3.9 del sistema, sin `tomllib`. Se arma
-        esa cadena bajo el home real sobre la instalación que corre la prueba.
-        Sin el arreglo, `aislar` se llama con `interprete=False` en la sesión y
-        en el comprobador."""
-        home = Path.home().resolve()
-        instalacion = Path(sys.base_prefix).resolve()
-        binario = Path(sys.executable).resolve()
-        if instalacion not in binario.parents:
-            self.skipTest("el ejecutable no vive dentro del prefijo de su instalación")
-        if not Path("/usr/bin/python3").exists():
-            self.skipTest("no hay /usr/bin/python3 con el que contrastar")
-        try:
-            raiz = Path(tempfile.mkdtemp(prefix=".motor-sesion-", dir=home))
-        except OSError as exc:
-            self.skipTest(f"no se puede escribir bajo el home: {exc}")
-        self.addCleanup(shutil.rmtree, raiz, True)
-        enlace_dir = raiz / "python" / "cpython-3.12-macos-aarch64-none"
-        enlace_dir.parent.mkdir()
-        enlace_dir.symlink_to(instalacion)
-        enlace_bin = raiz / ".local" / "bin" / "python3"
-        enlace_bin.parent.mkdir(parents=True)
-        enlace_bin.symlink_to(enlace_dir / binario.relative_to(instalacion))
-
-        real = aislamiento.aislar
-
-        def sin_interprete(cmd, espacio, runtime, **kw):
-            return real(cmd, espacio, runtime, **{**kw, "interprete": False})
-
-        aislar = real if con_arreglo else sin_interprete
-        with mock.patch.object(sys, "executable", str(enlace_bin)), mock.patch.object(
-            sys, "base_prefix", str(enlace_dir)
-        ), mock.patch.object(sys, "prefix", str(enlace_dir)), mock.patch.object(
-            sys, "base_exec_prefix", str(enlace_dir)
-        ), mock.patch.object(sys, "exec_prefix", str(enlace_dir)), mock.patch.dict(
-            os.environ, {"PATH": "/usr/bin:/bin"}
-        ), mock.patch.object(aislamiento, "aislar", aislar), mock.patch.object(
-            comprobacion, "aislar", aislar
-        ):
-            yield
-
-    def _sesion_del_incidente(self, rol: str, con_arreglo: bool):
-        with self._incidente(con_arreglo), tempfile.TemporaryDirectory(
-            ignore_cleanup_errors=True
-        ) as tmp:
-            spec = _preparar(Path(tmp).resolve(), rol, ["python3", "-c", PRUEBA])
-            return subprocess.run(
-                spec["cmd"],
-                cwd=spec["cwd"],
-                env=spec["env"],
-                capture_output=True,
-                text=True,
-                timeout=60,
+            self.assertEqual(
+                popen.call_args.kwargs["env"]["TMPDIR"], spec["env"]["TMPDIR"]
             )
-
-    def _comprobacion_del_incidente(self, con_arreglo: bool) -> dict:
-        """Una comprobación declarada (`argv` con `python3`), tal como la corre
-        el comprobador en la jaula."""
-        with self._incidente(con_arreglo), tempfile.TemporaryDirectory(
-            ignore_cleanup_errors=True
-        ) as tmp:
-            r = Recorrido(tmp, "comp-incidente", "Crea dato.txt con 42")
-            self.addCleanup(r.reg.close)
-            comandos = [{"objetivo": "corre", "argv": ["python3", "-c", PRUEBA]}]
-            datos = comprobacion._ejecutar_declaradas(
-                comandos, r.espacio, r.d, r.d / "comprobador-t"
-            )
-        return datos["ejecuciones"][0]
-
-    def test_el_python3_de_una_comprobacion_declarada_es_el_del_supervisor(self):
-        ejecucion = self._comprobacion_del_incidente(con_arreglo=True)
-        self.assertEqual(ejecucion.get("rc"), 0, ejecucion)
-        self.assertEqual(ejecucion["stdout"], sys.version + "\n")
-
-    def test_sin_el_arreglo_la_comprobacion_declarada_usa_el_python_del_sistema(self):
-        ejecucion = self._comprobacion_del_incidente(con_arreglo=False)
-        self.assertNotEqual(ejecucion.get("rc"), 0, ejecucion)
-        self.assertNotEqual(ejecucion.get("stdout"), sys.version + "\n")
-
-    def test_el_layout_del_incidente_arranca_en_la_sesion(self):
-        for rol in ROLES:
-            with self.subTest(rol=rol):
-                resultado = self._sesion_del_incidente(rol, con_arreglo=True)
-                self.assertEqual(resultado.returncode, 0, resultado.stderr)
-                self.assertEqual(resultado.stdout, sys.version + "\n")
-
-    def test_sin_el_arreglo_el_layout_del_incidente_falla(self):
-        for rol in ROLES:
-            with self.subTest(rol=rol):
-                resultado = self._sesion_del_incidente(rol, con_arreglo=False)
-                self.assertNotEqual(resultado.returncode, 0)
-                self.assertNotEqual(resultado.stdout, sys.version + "\n")
-
-    def test_la_jaula_sigue_negando_el_home(self):
-        try:
-            descriptor, nombre = tempfile.mkstemp(prefix=".motor-sesion-", dir=Path.home().resolve())
-        except OSError as exc:
-            self.skipTest(f"no se puede escribir bajo el home: {exc}")
-        os.close(descriptor)
-        self.addCleanup(os.unlink, nombre)
-        for rol in ROLES:
-            with self.subTest(rol=rol):
-                resultado = self._correr(rol, ["python3", "-c", f"open({nombre!r}).read(1)"])
-                self.assertNotEqual(resultado.returncode, 0)
-                self.assertIn("PermissionError", resultado.stderr)
-
-
-class ElCiCorreLaSesionEnLaJaulaDeMacOS(unittest.TestCase):
-    def test_el_job_de_macos_corre_esta_prueba(self):
-        texto = FLUJO.read_text(encoding="utf-8")
-        lineas = [l for l in texto.splitlines() if "tests.test_sesion_interprete" in l]
-        self.assertEqual(len(lineas), 1, lineas)
-        self.assertIn("unittest", lineas[0])
-        macos = texto.split("jaula-macos:", 1)[1].split("\n  bateria:", 1)[0]
-        self.assertIn(lineas[0], macos)
 
 
 if __name__ == "__main__":

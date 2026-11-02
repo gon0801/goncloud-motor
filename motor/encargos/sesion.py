@@ -168,7 +168,7 @@ def preparar_administrado(
 ) -> None:
     from motor.runwrap import _publica
 
-    from .aislamiento import aislar
+    from .aislamiento import aislar, entorno_persistente
     from .catalogo_agentes import cliente_para
 
     generacion = (entorno_extra or {}).get("MOTOR_GENERACION_RUTA")
@@ -185,7 +185,7 @@ def preparar_administrado(
     spec = {
         "cmd": comando.argv,
         "cwd": str(cwd),
-        "env": comando.entorno,
+        "env": entorno_persistente(comando),
         "aislamiento": comando.mecanismo,
         "jaula": comando.jaula,
         "ejecutable": comando.ejecutable,

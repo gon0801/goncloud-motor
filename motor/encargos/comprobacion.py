@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, replace as _replace
 from pathlib import Path
 
-from .aislamiento import aislar, lecturas_del_interprete, limpiar_temporal
+from .aislamiento import aislar, limpiar_temporal
 from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_hallazgo
 
 INTERNO = ".interno"
@@ -340,7 +340,6 @@ def _ejecutar_declaradas(
                 c["argv"],
                 espacio,
                 runtime_cmd,
-                lecturas_extra=() if os.name == "nt" else lecturas_del_interprete(),
                 interprete=True,
             )
             base = _base_de(espacio)

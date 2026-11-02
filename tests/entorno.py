@@ -1,7 +1,9 @@
-"""Qué aislamiento tiene el host que corre la batería. El motor solo aísla con AppContainer
-(Windows) o con sandbox-exec (macOS): en Linux `aislar` levanta RuntimeError y las pruebas
-que lanzan un trabajador real no pueden correr. La jaula de bubblewrap es de WSL y la prueba
-`tests.test_jaula_linux`.
+"""Qué lanzamiento de trabajadores tiene el host que corre la batería.
+
+Desde la decisión del 2 de noviembre, en macOS y Linux el motor lanza directo,
+sin jaula y con el entorno del usuario: un trabajador arranca en cualquier host
+POSIX. Windows sigue con su jaula nativa (psec o AppContainer); `requiere_windows`
+marca esas pruebas.
 
 `requiere_windows` marca las pruebas propias de Windows: corren en Windows, se saltan fuera
 con el motivo, y con MOTOR_EXIGE_WINDOWS=1 (el job `windows` del CI) un salto es un fallo,
@@ -13,8 +15,8 @@ import os
 import unittest
 from pathlib import Path
 
-HAY_AISLAMIENTO = os.name == "nt" or Path("/usr/bin/sandbox-exec").is_file()
-SIN_AISLAMIENTO = "el motor solo aísla con AppContainer o sandbox-exec; este host no tiene ninguno"
+HAY_AISLAMIENTO = True
+SIN_AISLAMIENTO = "el motor lanza trabajadores en este host"
 
 EXIGE_WINDOWS = os.environ.get("MOTOR_EXIGE_WINDOWS") == "1"
 SIN_WINDOWS = (
