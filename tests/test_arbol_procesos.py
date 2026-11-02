@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 from unittest import mock
 
@@ -70,6 +71,15 @@ class InstantaneaPosixTest(unittest.TestCase):
         snapshot = posix.instantanea_procesos(lectura=lambda: salida)
         self.assertIsNone(snapshot[20][1])
         self.assertEqual(descendientes_validos(snapshot, 10), [])
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "ps real se valida en Linux")
+class InstantaneaRealLinuxTest(unittest.TestCase):
+    def test_lee_el_proceso_actual_y_su_hora(self):
+        snapshot = posix.instantanea_procesos()
+        self.assertIsNotNone(snapshot)
+        self.assertIn(os.getpid(), snapshot)
+        self.assertIsNotNone(snapshot[os.getpid()][1])
 
 
 @unittest.skipIf(os.name == "nt", "la rama POSIX no corre en Windows")
