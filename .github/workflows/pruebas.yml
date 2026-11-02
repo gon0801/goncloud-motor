@@ -57,6 +57,18 @@ jobs:
       - name: Bateria completa
         run: python -m unittest discover -s tests -t . -v
 
+  macos:
+    name: Lanzamiento directo en macOS
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: El lanzamiento directo y su entorno en la Mac
+        run: python -m unittest -v tests.test_lanzamiento_directo tests.test_director_capacidades tests.test_sesion_interprete tests.test_comprobador_temporal
+
   windows:
     runs-on: windows-latest
     timeout-minutes: 30

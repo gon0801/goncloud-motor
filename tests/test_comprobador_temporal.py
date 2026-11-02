@@ -7,7 +7,9 @@ sin mezclar sus temporales con los de otra corrida.
 
 from __future__ import annotations
 
+import json
 import os
+import socket
 import sys
 import tempfile
 import unittest
@@ -50,6 +52,42 @@ class ElTemporalDelIntentoSeLimpiaSinDependerDelHome(unittest.TestCase):
     def test_un_tmpdir_ajeno_al_runtime_no_se_limita(self):
         arranque._limpiar_temporal_de({"env": {"TMPDIR": "/tmp"}})
         self.assertTrue(Path("/tmp").exists())
+
+
+@unittest.skipIf(os.name == "nt", "el wrapper del intento es de la rama POSIX")
+class ElCierreDelWrapperBorraElTemporal(unittest.TestCase):
+    """La prueba del propietario para F1: `arranque.ejecutar` corre de verdad
+    (el encargo no existe, así que el wrapper sale por la puerta temprana) y el
+    temporal del intento desaparece aunque el HOME sea el real del usuario."""
+
+    def test_arranque_ejecutar_deja_el_temporal_del_intento_borrado(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp).resolve()
+            runtime = raiz / "runtime"
+            temporal = temporal_de(runtime)
+            (temporal / "resto.txt").write_text("x", encoding="utf-8")
+            spec = {
+                "base": str(raiz / "base"),
+                "encargo": "enc_inexistente",
+                "token": "tok",
+                "host": socket.gethostname(),
+                "aislamiento": "directo",
+                "cwd": str(raiz),
+                "hora": "2026-11-02T00:00:00Z",
+                "sesion": "",
+                "rol": "responsable",
+                "agente": "python3",
+                "env": {"TMPDIR": str(temporal), "CLAUDE_CODE_TMPDIR": str(temporal)},
+                "cmd": ["true"],
+            }
+            intento = raiz / "intento"
+            intento.mkdir()
+            (intento / "arranque.json").write_text(
+                json.dumps(spec), encoding="utf-8"
+            )
+            rc = arranque.ejecutar(intento / "arranque.json")
+            self.assertEqual(rc, 0)
+            self.assertFalse((runtime / "tmp").exists())
 
 
 @unittest.skipIf(os.name == "nt", "el entorno de la rama POSIX")

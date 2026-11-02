@@ -81,9 +81,10 @@ bloqueantes nuevos sobre rutas conservadas fuera de lo cubierto.
 La sesión del implementador se conserva cuando el runtime lo permite: grok
 reusa su `--session-id` por rol; codex ya no corre `--ephemeral` — se captura
 el id de hilo de su salida `--json` y las vueltas siguientes reanudan con
-`codex exec resume`. Como cada intento corre con un `HOME` nuevo, el
+`codex exec resume`. Como el runtime de cada intento es nuevo y efímero, el
 supervisor guarda el estado de sesión del CLI (los rollouts de `.codex`, el
-equivalente de `.grok`) en un almacén por encargo y rol fuera de la jaula, y
+equivalente de `.grok`) en un almacén por encargo y rol en la base, fuera del
+runtime del intento, y
 lo restaura antes de cada intento; sin esa copia, `resume` no encuentra el
 hilo. La autenticación no entra al almacén. Un error del proveedor al
 reanudar (cuota, 429, rate limit, auth, modelo o transitorio) no borra la
@@ -357,7 +358,7 @@ encargo termina solo cuando el alcanzado iguala al autorizado.
 - `terminado` (defecto): revisión independiente aprobada sobre la versión
   vigente + recibos de los efectos pedidos. No se toca GitHub.
 - `pr`: además, el espacio es un clon del repo en la rama del encargo y el
-  supervisor, fuera de la jaula y sin sesiones LLM, hace commit del producto
+  supervisor, sin sesiones LLM, hace commit del producto
   (sin `.interno/`), push, abre el PR con `motor/github.py`, lo marca listo
   (la revisión automática ignora borradores) y espera la revisión de DeepSeek
   para ese SHA. Cada hecho es un evento `entrega_externa`.
