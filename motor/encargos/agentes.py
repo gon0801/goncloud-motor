@@ -209,6 +209,7 @@ def _llavero_antigravity() -> bool:
                 "sh",
                 "-c",
                 "secret-tool search service gemini username antigravity"
+                " 2>&1 >/dev/null"
                 " | grep -q 'attribute.username = antigravity'",
             ],
             stdout=subprocess.DEVNULL,
@@ -219,8 +220,9 @@ def _llavero_antigravity() -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    # grep filtra el atributo en el hijo: el valor del secreto nunca llega a
-    # Python. El código de salida de `search` solo no basta: sale 0 sin ítems.
+    # libsecret manda `attribute.*` por stderr y el secreto por stdout. El
+    # hijo duplica stderr al pipe y descarta stdout: grep ve los atributos y
+    # el valor del secreto no llega ni a Python ni al propio grep.
     return corrida.returncode == 0
 
 
@@ -244,23 +246,21 @@ def sesion_antigravity_presente(home: Path | None = None) -> bool:
     llavero cuando el home es el del proceso. `GEMINI_API_KEY` habla
     con la API de Gemini y no es la suscripción.
 
-    `home` es el que trae el reporte; la sesión de agy vive en el home
-    del usuario, así que también se prueba ese cuando se puede resolver.
+    Con `home` explícito, ese es el único home que se mira: un home de
+    prueba no consulta el token ni el llavero reales. Sin `home`, se usa
+    el del usuario si se puede resolver; si no, no hay sesión.
     """
-    bases: list[Path] = [Path(home)] if home is not None else []
-    usuario = _home_usuario()
-    if usuario is not None and usuario not in bases:
-        bases.append(usuario)
-    for base in bases:
-        token = base / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-        try:
-            if token.is_file() and token.stat().st_size > 0:
-                return True
-        except OSError:
-            pass
-    for base in bases:
-        if _home_del_proceso(base):
-            return _llavero_antigravity()
+    base = Path(home) if home is not None else _home_usuario()
+    if base is None:
+        return False
+    token = base / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    try:
+        if token.is_file() and token.stat().st_size > 0:
+            return True
+    except OSError:
+        pass
+    if _home_del_proceso(base):
+        return _llavero_antigravity()
     return False
 
 

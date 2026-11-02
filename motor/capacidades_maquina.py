@@ -132,11 +132,13 @@ def _agentes(
             f"{cliente} {version or '(--version no respondió)'} en {' '.join(lanzador)}"
         )
         if agente == "antigravity":
-            detalle += (
-                " (con sesión)"
-                if sesion_antigravity_presente(home)
-                else " (sin sesión)"
-            )
+            con_sesion = sesion_antigravity_presente(home)
+            if not con_sesion and home is not None:
+                # El home del reporte es el del motor (~/.motor); la sesión de
+                # agy vive en el home del usuario. Sin home resoluble no hay
+                # sesión, y el reporte no truena.
+                con_sesion = sesion_antigravity_presente()
+            detalle += " (con sesión)" if con_sesion else " (sin sesión)"
         filas.append({
             "agente": agente,
             "estado": "ok",

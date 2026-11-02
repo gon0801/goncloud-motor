@@ -291,6 +291,7 @@ class EntornoYHerramientas(unittest.TestCase):
                         "sh",
                         "-c",
                         "secret-tool search service gemini username antigravity"
+                        " 2>&1 >/dev/null"
                         " | grep -q 'attribute.username = antigravity'",
                     ],
                 )
@@ -325,8 +326,8 @@ class EntornoYHerramientas(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     argv,
                     0,
-                    b"attribute.service = gemini\nattribute.username = antigravity\n",
                     b"",
+                    b"attribute.service = gemini\nattribute.username = antigravity\n",
                 )
 
             with mock.patch.dict(os.environ, entorno):
@@ -348,6 +349,51 @@ class EntornoYHerramientas(unittest.TestCase):
                 with mock.patch("sys.platform", "win32"):
                     with mock.patch("subprocess.run", side_effect=hit_windows):
                         self.assertTrue(agentes.sesion_antigravity_presente(home))
+
+    def test_el_llavero_de_linux_lee_los_atributos_que_libsecret_manda_por_stderr(
+        self,
+    ):
+        """libsecret imprime el secreto por stdout y `attribute.*` por stderr.
+        Un doble en PATH con ese reparto demuestra que el filtro del hijo ve
+        el atributo sin traer el valor a Python."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            bin_ = Path(tmp) / "bin"
+            bin_.mkdir()
+            falso = bin_ / "secret-tool"
+            falso.write_text(
+                "#!/bin/sh\n"
+                "echo 'label: gemini'\n"
+                "echo 'secret = SECRETO-FALSO'\n"
+                "echo 'created = 1762123456'\n"
+                "echo 'attribute.service = gemini' >&2\n"
+                "echo 'attribute.username = antigravity' >&2\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            falso.chmod(0o755)
+            entorno = {
+                "HOME": str(home),
+                "USERPROFILE": str(home),
+                "PATH": f"{bin_}{os.pathsep}{os.environ.get('PATH', '')}",
+            }
+            with mock.patch.dict(os.environ, entorno):
+                with mock.patch("sys.platform", "linux"):
+                    self.assertTrue(agentes.sesion_antigravity_presente(home))
+
+            falso.write_text(
+                "#!/bin/sh\n"
+                "echo 'label: otro'\n"
+                "echo 'secret = SECRETO-FALSO'\n"
+                "echo 'attribute.service = otro' >&2\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            falso.chmod(0o755)
+            with mock.patch.dict(os.environ, entorno):
+                with mock.patch("sys.platform", "linux"):
+                    self.assertFalse(agentes.sesion_antigravity_presente(home))
 
     def test_dos_escritores_usan_temporales_distintos(self):
         with tempfile.TemporaryDirectory() as tmp:
