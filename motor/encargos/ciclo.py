@@ -1102,7 +1102,7 @@ def _pedidos_efecto(espacio: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
-        datos = json.loads(path.read_text(encoding="utf-8"))
+        datos = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"pedido-efecto.json no se puede leer: {exc}") from exc
     if isinstance(datos, dict):
