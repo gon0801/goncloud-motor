@@ -3078,9 +3078,9 @@ def prompt_responsable(e: Encargo) -> str:
     lineas.append(
         "Comprueba el comportamiento pedido y deja la evidencia en .interno/evidencia.txt. "
         "No declares el encargo terminado: el supervisor mira el destino. "
-        "Para los efectos que corren por el propio motor (publicar el PR, un aviso), "
-        "decláralos en .interno/pedido-efecto.json y el supervisor los ejecuta por el "
-        "adaptador; para todo lo demás trabajas directamente. "
+        "Si el nivel de entrega autorizado incluye desplegado, declara ese efecto en "
+        ".interno/pedido-efecto.json y el supervisor lo despacha por el adaptador y "
+        "sella el nivel con su recibo; para todo lo demás trabajas directamente. "
         "No repitas un efecto que ya tenga recibo."
     )
     return "\n\n".join(lineas)

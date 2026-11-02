@@ -520,9 +520,10 @@ Si un bloqueante de DeepSeek no aplica, no lo ignores ni lo descartes por tu cue
 y entrega. El motor pedira autorizacion al propietario; solo el puede descartarlo.
 No cambies el objetivo ni despliegues sin autorizacion. Trabaja como el usuario: puedes leer y
 escribir fuera del espacio y usar las herramientas de la maquina cuando el pedido lo pida.
-Para los efectos que corren por el propio motor (publicar el PR, un aviso), declaralos en
-.interno/pedido-efecto.json y el supervisor los ejecuta por el adaptador. Su formato interno es
-{{"id":"identidad-estable-del-efecto", "operacion":"publicar",
+El unico efecto que el propio motor ejecuta por el adaptador es el despliegue: si el nivel de
+entrega autorizado incluye desplegado, declara en .interno/pedido-efecto.json el efecto con
+"operacion":"desplegar" y el supervisor lo despacha y sella el nivel con su recibo. Su formato
+interno es {{"id":"identidad-estable-del-efecto", "operacion":"desplegar",
 "clave":"clave-autorizada-del-destino", "cuerpo":"texto-exacto-autorizado"}}.
 Los cuatro campos son textos no vacios. Para varios efectos usa una lista de esos objetos,
 con IDs distintos. Conserva id, operacion, clave y cuerpo al reintentar o conciliar.

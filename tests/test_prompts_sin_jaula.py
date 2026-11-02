@@ -54,6 +54,21 @@ class PromptsSinJaula(unittest.TestCase):
         self.assertIn("pedido-efecto.json", texto)
         self.assertIn("repitas efectos con recibo", texto)
 
+    def test_el_canal_nombra_solo_el_uso_real_del_motor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            enc = reg.fold(recibir(reg, "pedido", "sin-jaula", ahora_iso())["encargo"])
+            textos = (
+                prompt_responsable(enc),
+                instrucciones_responsable(Path(tmp) / ".interno"),
+            )
+            for texto in textos:
+                self.assertNotIn("publicar el PR", texto)
+                self.assertNotIn("un aviso", texto)
+                self.assertIn("desplegado", texto)
+                self.assertIn("pedido-efecto.json", texto)
+
     def test_el_revisor_sigue_con_su_papel(self):
         texto = instrucciones_revision(_ALCANCE, Path("/tmp/juicio.json"))
         self.assertIn("No modifiques el producto", texto)
