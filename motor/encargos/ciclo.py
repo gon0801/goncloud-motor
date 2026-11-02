@@ -4414,25 +4414,47 @@ def _esperar_checks_requeridos(
     )
 
 
+_TOPE_LOG_JOB = 80
+
+
+def _recorte_log_job(texto: str, nombre: str) -> str:
+    """El literal completo del job es la evidencia y viaja intacto en el
+    puerto; en el motivo se acota sin perder el fallo: se conservan el
+    principio (donde vive el error y su encabezado) y el final, y lo omitido
+    queda anotado. El literal íntegro sale con `ci.log`."""
+    lineas = texto.splitlines()
+    if len(lineas) <= _TOPE_LOG_JOB:
+        return "\n".join(lineas)
+    omitidas = len(lineas) - _TOPE_LOG_JOB
+    nota = (
+        f"[log de {nombre}: se omiten {omitidas} líneas intermedias; "
+        "el literal completo sale con ci.log]"
+    )
+    return "\n".join([*lineas[:55], nota, *lineas[-24:]])
+
+
 def _logs_de_fallidos(gh, repo: str, veredicto_ci) -> str:
-    """El log literal de cada job en rojo, como hace `ci.log`: el log del job
-    exacto, no la cola agregada de la corrida. El `--log-failed` de la corrida
-    mezcla los jobs y la cola puede no traer ni una línea del job que falló y
-    atribuirle las de otro (h_a8968fb0). Un log que no se pudo leer no frena la
-    devolución: queda el nombre y la url."""
+    """El log literal de cada job en rojo, como hace `ci.log`: el job exacto
+    por su ID (el check-run de Actions comparte el ID del job), no su nombre
+    (con el nombre `gh` intenta /actions/jobs/<nombre> y falla, h_a8968fb0) y
+    sin la cola agregada de la corrida, que mezcla los jobs. Un log que no se
+    pudo leer no frena la devolución: queda el nombre y la url."""
     partes = []
     for corrida in veredicto_ci.corridas_fallidas:
         nombre = str(corrida.get("nombre") or "")
         url = str(corrida.get("url") or "")
         run_id = str(corrida.get("run_id") or "")
+        job_id = str(corrida.get("job_id") or "")
         texto = ""
         if run_id and nombre:
             try:
-                texto = gh.log_fallido_job(repo, run_id, nombre)
+                texto = gh.log_fallido_job(repo, run_id, nombre, job_id)
             except Exception:
                 texto = ""
         if texto:
-            partes.append(f"log de {nombre} ({url}):\n{texto}".rstrip())
+            partes.append(
+                f"log de {nombre} ({url}):\n{_recorte_log_job(texto, nombre)}".rstrip()
+            )
         else:
             partes.append(f"corrida en rojo: {nombre} ({url})".rstrip())
     return "\n\n".join(partes)

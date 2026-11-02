@@ -70,6 +70,8 @@ class GhGrabado(GhGitHub):
         self.reglas = reglas
         self.runs = runs
         self.estados = estados or {"state": "success", "statuses": []}
+        self.jobs = {}
+        self.logs_job = {}
         self.llamadas = []
         self.relanzadas = []
         self.relanzadas_fallidas = []
@@ -84,6 +86,17 @@ class GhGrabado(GhGitHub):
             )
             return ""
         if a[0] == "run" and a[1] == "view":
+            if "--json" in a:
+                return json.dumps(
+                    {
+                        "jobs": [
+                            {"name": nombre, "databaseId": jid}
+                            for nombre, jid in self.jobs.items()
+                        ]
+                    }
+                )
+            if "--job" in a:
+                return self.logs_job.get(a[a.index("--job") + 1], "")
             return "\n".join(f"linea-{i:03d}" for i in range(1, 101))
         if a[0] != "api":
             raise AssertionError(a)
@@ -176,6 +189,59 @@ class ChecksTest(unittest.TestCase):
         self.assertTrue(v.green)
         self.assertTrue(v.terminal)
         self.assertEqual(v.fallas, ())
+
+    def test_estado_del_mismo_nombre_que_una_corrida_verde_cuenta(self):
+        """Un check-run en verde no esconde al estado del mismo contexto: los
+        dos resultados se evalúan y el peor manda (h_f05e0491, 2.ª ronda)."""
+        for estado in ("failure", "error", "pending"):
+            with self.subTest(estado=estado):
+                gh = GhGrabado(
+                    proteccion="[]",
+                    runs=json.dumps([_run("windows")]),
+                    estados={
+                        "state": estado,
+                        "statuses": [{"context": "windows", "state": estado}],
+                    },
+                )
+                v = gh.checks("o/r", 7, SHA, ())
+                self.assertFalse(v.green)
+                if estado == "pending":
+                    self.assertFalse(v.terminal)
+                    self.assertEqual(v.faltan, ("windows",))
+                    self.assertEqual(v.en_marcha, ("windows",))
+                else:
+                    self.assertTrue(v.terminal)
+                    self.assertEqual(v.fallas, ("windows",))
+
+    def test_el_log_del_job_usa_el_id_del_job_y_viaja_literal(self):
+        """`--job` pide el ID del job, no su nombre (h_a8968fb0, 2.ª ronda): el
+        ID viene del check-run o se resuelve por nombre; el texto vuelve
+        completo, sin recorte ciego de cola."""
+        log = "WINDOWS_FAILURE_DETAIL\n" + "\n".join(
+            f"limpieza {i}" for i in range(100)
+        )
+        gh = GhGrabado(proteccion="[]")
+        gh.jobs = {"windows": 2500, "bateria": 2501}
+        gh.logs_job = {"2500": log}
+        self.assertEqual(gh.log_fallido_job("o/r", "7", "windows", "2500"), log)
+        args = next(a for a in gh.llamadas if "--job" in a)
+        self.assertEqual(args[args.index("--job") + 1], "2500")
+
+        gh2 = GhGrabado(proteccion="[]")
+        gh2.jobs = {"windows": 2500}
+        gh2.logs_job = {"2500": log}
+        self.assertEqual(gh2.log_fallido_job("o/r", "7", "windows"), log)
+        args = next(a for a in gh2.llamadas if "--job" in a)
+        self.assertEqual(args[args.index("--job") + 1], "2500")
+        self.assertNotIn(
+            "windows",
+            [str(x) for x in args[: args.index("--job") + 2]],
+        )
+
+        gh3 = GhGrabado(proteccion="[]")
+        gh3.jobs = {"windows": 2500}
+        self.assertEqual(gh3.log_fallido_job("o/r", "7", "desconocido"), "")
+        self.assertEqual(gh3.log_fallido_job("o/r", "", "windows"), "")
 
     def test_proteccion_con_otro_error_es_falla_del_efecto(self):
         gh = GhGrabado(proteccion=RuntimeError("gh api: HTTP 500: boom"))

@@ -72,12 +72,13 @@ class _GhConCorridas(_GhConDeepSeek):
             tuple(dict.fromkeys([*cfg.get("requeridos", []), *extra])),
             runs,
             "",
+            list(cfg.get("estados") or []),
         )
 
     def log_fallido(self, repo, run_id) -> str:
         return str((self._cfg(repo).get("logs") or {}).get(str(run_id), ""))
 
-    def log_fallido_job(self, repo, run_id, job) -> str:
+    def log_fallido_job(self, repo, run_id, job, job_id="") -> str:
         return str((self._cfg(repo).get("logs_job") or {}).get(job, ""))
 
 
@@ -311,6 +312,96 @@ class ElLogDelJobEnRojoEsElDelJob(unittest.TestCase):
             self.assertIn(LOG_BATERIA, por_job["bateria"])
             self.assertNotIn(LOG_WINDOWS, por_job["bateria"])
             self.assertNotIn("BATERIA_FALLA", e.motivo)
+
+
+class ElEstadoDelMismoNombreNoLoEscondeLaCorrida(unittest.TestCase):
+    """Un check-run verde y un estado del mismo contexto se evalúan los dos:
+    el peor manda (h_f05e0491, segunda ronda). La corrida verde no esconde al
+    estado en rojo o pendiente del mismo nombre."""
+
+    def test_corrida_verde_con_estado_en_rojo_no_termina(self):
+        for estado in ("failure", "error"):
+            with self.subTest(estado=estado), tempfile.TemporaryDirectory(
+                ignore_cleanup_errors=True
+            ) as tmp:
+                vuelta, r = _entrega_pr(
+                    self,
+                    tmp,
+                    f"ck-estado-{estado}",
+                    _GhConCorridas,
+                    {
+                        "corridas": {"windows": "success"},
+                        "estados": [{"context": "windows", "state": estado}],
+                    },
+                )
+                e = vuelta("uno")
+                self.assertNotEqual(e.estado, "terminado")
+                self.assertEqual(e.estrategia, "investigar")
+                self.assertIn(
+                    "checks requeridos en rojo: windows", e.motivo
+                )
+                self.assertEqual(e.fase_actual.fallas_checks, ("windows",))
+
+    def test_corrida_verde_con_estado_pendiente_espera(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-estado-pendiente",
+                _GhConCorridas,
+                {
+                    "corridas": {"windows": "success"},
+                    "estados": [{"context": "windows", "state": "pending"}],
+                },
+            )
+            e = vuelta("uno")
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertIn("esperando checks requeridos del PR #", e.motivo)
+            self.assertEqual(
+                e.fase_actual.checks_esperando_sha, e.producto.sha_git
+            )
+
+    def test_corrida_verde_con_estado_verde_termina(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-estado-verde",
+                _GhConCorridas,
+                {
+                    "corridas": {"windows": "success"},
+                    "estados": [{"context": "windows", "state": "success"}],
+                },
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.estado, "terminado")
+
+
+class ElLogDelJobConservaElFallo(unittest.TestCase):
+    """El log del job viaja sin recorte ciego: el fallo que vive en el
+    principio del log no puede perderse por el recorte de la cola
+    (h_a8968fb0, segunda ronda)."""
+
+    def test_el_error_de_la_cabeza_del_log_llega_al_motivo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            log_largo = "\n".join(
+                [LOG_WINDOWS] + [f"limpieza {i}" for i in range(100)]
+            )
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-log-cabeza",
+                _GhConCorridas,
+                {
+                    "corridas": {"windows": "failure"},
+                    "logs_job": {"windows": log_largo},
+                },
+            )
+            e = vuelta("uno")
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertIn(LOG_WINDOWS, e.motivo)
+            self.assertIn("se omiten", e.motivo)
+            self.assertIn("el literal completo sale con ci.log", e.motivo)
 
 
 if __name__ == "__main__":
