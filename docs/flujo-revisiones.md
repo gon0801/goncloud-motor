@@ -35,12 +35,12 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    válido: para cambiar una cifra basta leer el valor final y dejarlo en
    `evidencia.txt`. No hay `procedimiento.json` obligatorio ni cobertura
    forzada.
-   Las comprobaciones se lanzan como cualquier trabajador: en macOS y Linux,
-   directo y sin jaula (decisión del 2-nov). Cada una corre con el `PATH`
-   antepuesto al intérprete que usa el propio supervisor
-   (`aislamiento.path_con_interprete`): el primer `python3` del PATH puede ser
-   el del sistema (el 3.9 en la Mini, sin `tomllib`) y el comprobador necesita
-   el de la instalación del supervisor.
+   Las comprobaciones se lanzan como cualquier trabajador: directo y sin jaula
+   (decisión del 2-nov). Cada una corre con el `PATH` antepuesto al intérprete
+   que usa el propio supervisor (`aislamiento.path_con_interprete` en POSIX;
+   en Windows, la carpeta del ejecutable de Python): el primer `python3` del
+   PATH puede ser el del sistema (el 3.9 en la Mini, sin `tomllib`) y el
+   comprobador necesita el de la instalación del supervisor.
    Cada comprobación puede declarar `tope` en segundos enteros; sin declararlo
    vale 120 s y el máximo admitido es 900 s. Un tope mayor no valida. Al pasarse,
    el fallo del instrumento nombra el comando, su tope, la salida parcial
