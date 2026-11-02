@@ -12,6 +12,7 @@ from motor.encargos import agentes, suscripciones
 from motor.encargos.aislamiento import _entorno
 from motor.encargos.comprobacion import instrucciones_revision
 from motor.encargos.dominio import AlcanceRevision
+from motor.plataforma import jaula_linux
 
 SESION = "00000000-0000-4000-8000-000000000001"
 
@@ -78,6 +79,29 @@ class EntornoDelLanzamiento(unittest.TestCase):
     def test_el_entorno_del_lanzamiento_apaga_las_tareas_de_fondo(self):
         env = self._entorno_de_lanzamiento()
         self.assertEqual(env.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"), "1")
+
+
+class EntornoWsl(unittest.TestCase):
+    """En Windows el lanzamiento de claude corre dentro de la distro: el entorno
+    lo arma el guardián (jaula_linux._preparar_runtime), que no pasa por
+    suscripciones.preparar. La restricción tiene que llegar por ese camino."""
+
+    def _preparar(self, credencial: str) -> dict[str, str]:
+        with tempfile.TemporaryDirectory() as t:
+            with mock.patch.object(
+                jaula_linux, "credencial_de_claude", return_value={}, create=True
+            ):
+                env = jaula_linux._preparar_runtime(str(Path(t)), credencial, "")
+        return env
+
+    def test_el_guardian_de_wsl_apaga_las_tareas_de_fondo_para_claude(self):
+        env = self._preparar("claude")
+        self.assertEqual(env.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"), "1")
+
+    def test_la_credencial_de_otro_agente_no_recibe_la_variable(self):
+        self.assertNotIn(
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", self._preparar("")
+        )
 
 
 class PromptRevisor(unittest.TestCase):
