@@ -40,6 +40,7 @@ def _leer(path: Path) -> dict | None:
 
 ESPERA_BASE_S = 60
 ESPERA_TOPE_S = 3600
+TOPE_AVISO_VIEJO_S = 6 * 3600
 TRANSPORTE_TIMEOUT_S = 30.0
 TOPE_DRENAR_S = 20.0
 
@@ -614,7 +615,12 @@ def resultado_directo(
 
 
 def _aviso_de(enc) -> dict:
-    evidencia = enc.evidencia[-1]
+    if enc.estado == "cancelado":
+        # La identidad del cierre de cancelado no depende de la evidencia:
+        # si creciera, cambiaría el id y el mensaje se enviaría otra vez.
+        evidencia = "cierre:cancelado"
+    else:
+        evidencia = enc.evidencia[-1] if enc.evidencia else f"cierre:{enc.estado}"
     return {
         "id": id_aviso(enc.id, evidencia),
         "encargo": enc.id,
@@ -645,6 +651,44 @@ def _cuerpo_del_aviso(registro: Registro, encargo: str, evidencia: str) -> str |
     if es_hash:
         return None
     return evidencia
+
+
+def _titulo_del_pedido(texto: str, clave: str) -> str:
+    """El primer encabezado del pedido, sin `#`; si el pedido no tiene, la clave."""
+    for linea in str(texto or "").splitlines():
+        encontrado = re.match(r"#{1,6}\s+(.+?)\s*$", linea)
+        if encontrado:
+            return encontrado.group(1).strip()
+    return clave
+
+
+def _cuerpo_de_cierre(enc) -> str:
+    """El cierre que lee una persona no técnica: una o dos líneas llanas.
+
+    El título viene del pedido y el desenlace del nivel alcanzado. Los ids, las
+    rutas y las versiones se quedan en el registro y en el PR. La nota de
+    correcciones que ningún intento recibió viaja en el cierre: es texto del
+    propietario que debe volverle (la escribe el cierre en dos versiones, con
+    y sin tildes).
+    """
+    titulo = _titulo_del_pedido(enc.texto, enc.clave)
+    if enc.estado == "cancelado":
+        cuerpo = f"Terminó tu encargo «{titulo}». Quedó cancelado y no se completó."
+    elif enc.nivel_alcanzado == "desplegado":
+        cuerpo = f"Terminó tu encargo «{titulo}». Quedó desplegado."
+    elif enc.nivel_alcanzado == "integrado":
+        cuerpo = f"Terminó tu encargo «{titulo}». Quedó integrado."
+    elif enc.pr_numero:
+        cuerpo = (
+            f"Terminó tu encargo «{titulo}». "
+            f"El PR #{enc.pr_numero} está listo para que decidas el merge."
+        )
+    else:
+        cuerpo = f"Terminó tu encargo «{titulo}»."
+    nota = " ".join(
+        nota for nota in enc.procedimiento if "intento pudo recibir" in nota
+    )
+    return f"{cuerpo} {nota}".rstrip()
 
 
 def _config_canal(registro: Registro, canal: str) -> dict | None:
@@ -809,8 +853,9 @@ def _declara_idempotencia(cfg: dict | None) -> bool:
     return marca is True or str(marca or "") == "MOTOR_AVISO_ID"
 
 
-def _registrar_intento(path: Path, guardado: dict) -> None:
+def _registrar_intento(path: Path, guardado: dict, ahora: float) -> None:
     guardado["estado"] = "incierto"
+    guardado.setdefault("primer_intento", _epoca_primer_envio(guardado) or ahora)
     try:
         previos = int(guardado.get("intentos") or 0)
     except (TypeError, ValueError):
@@ -835,6 +880,53 @@ def _por_esperar(guardado: dict, ahora: float) -> bool:
     return toca is not None and ahora < toca
 
 
+def _espera_acumulada(fallos: int) -> int:
+    """Segundos mínimos entre el primer fallo y el último: cada reintento espera
+    al menos su espera, y con el tope de una hora once fallos ya cubren las seis
+    horas aunque el motor reintentara sin parar."""
+    return sum(espera_s(i) for i in range(1, max(fallos - 1, 0) + 1))
+
+
+def _epoca_primer_envio(guardado: dict) -> float | None:
+    """La época del primer envío: la que el aviso guarda o, en los de la versión
+    anterior (que no la guardan), el primer fallo que implican sus reintentos.
+
+    El ancla NO es el último fallo: con el canal caído el motor de la versión
+    anterior reintentaba cada hora, así que el último fallo es siempre reciente
+    y los avisos de ayer volverían a salir en ráfaga."""
+    primero = guardado.get("primer_intento")
+    try:
+        primero = float(primero) if primero is not None else None
+    except (TypeError, ValueError):
+        primero = None
+    if primero is None:
+        proximo = _epoch(guardado.get("proximo_intento") or "")
+        if proximo is None:
+            return None
+        try:
+            fallos = int(guardado.get("fallos", guardado.get("intentos")) or 0)
+        except (TypeError, ValueError):
+            fallos = 0
+        primero = proximo - espera_s(fallos) - _espera_acumulada(fallos)
+    return primero if primero and primero > 0 else None
+
+
+def _vencido(guardado: dict, ahora: float, path: Path | None = None) -> bool:
+    """True si el aviso lleva más de seis horas sin poder enviarse.
+
+    Los avisos de la versión anterior no guardan la época del primer envío: se
+    infiere del reintento guardado y, si tampoco lo hay, del archivo del aviso,
+    cuya última escritura es de cuando quedó atorado.
+    """
+    primero = _epoca_primer_envio(guardado)
+    if primero is None and path is not None:
+        try:
+            primero = path.stat().st_mtime
+        except OSError:
+            return False
+    return primero is not None and ahora - primero > TOPE_AVISO_VIEJO_S
+
+
 def _enviar_aviso(
     registro: Registro,
     comando: list,
@@ -844,7 +936,7 @@ def _enviar_aviso(
     vuelta: "Vuelta",
 ) -> None:
     """Un envío. Si el transporte no da recibo, difiere el aviso y corta el canal en esta vuelta."""
-    _registrar_intento(path, guardado)
+    _registrar_intento(path, guardado, vuelta.ahora)
     recibo, error, caido = _correr_transporte(registro, comando, guardado, cuerpo)
     if recibo:
         guardado["estado"] = "publicado"
@@ -1168,6 +1260,20 @@ def _publicar_aviso(
         return _cerrar_aviso(guardado, False)
     if guardado.get("estado") == "descartado":
         return _cerrar_aviso(guardado, False)
+    if (
+        path.exists()
+        and guardado.get("estado") in ("incierto", "pendiente")
+        and _vencido(guardado, vuelta.ahora, path)
+    ):
+        # Un aviso que lleva más de seis horas atorado — también los de la
+        # versión anterior, que no guardan su época — no se reenvía: queda en
+        # el registro y desplegar o reconectar el canal no dispara una ráfaga.
+        guardado["estado"] = "descartado"
+        guardado["motivo"] = "canal caído demasiado tiempo; queda en el registro"
+        for campo in ("proximo_intento", "fallos"):
+            guardado.pop(campo, None)
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, False)
     if guardado.get("estado") == "local-pendiente" and guardado.get("alcance") == "local":
         try:
             nombre_previo = nombre_canal(str(guardado.get("canal") or ""))
@@ -1269,7 +1375,7 @@ def _publicar_aviso(
         return _cerrar_aviso(guardado, True)
     if cortar == "despues" and not guardado.get("recibo"):
         if comando:
-            _registrar_intento(path, guardado)
+            _registrar_intento(path, guardado, vuelta.ahora)
             recibo, error, caido = _correr_transporte(registro, comando, guardado, cuerpo)
             if caido:
                 vuelta.fallo_el_transporte(nombre, error)
@@ -1333,6 +1439,7 @@ def drenar(
     cortada = False
     publicados = []
     corte = registro.corte_avisos()
+    corte_cierres = registro.corte_avisos("cierres-cancelados-v1")
     encargos = {ident: registro.fold(ident) for ident in registro.ids()}
     terminados = {i for i, e in encargos.items() if e is not None and e.estado == "terminado"}
     if terminados:
@@ -1362,11 +1469,25 @@ def drenar(
             )
         } if anterior is not None else set()
         trabajos: list[tuple[dict, str | None]] = []
-        if enc.estado == "terminado" and enc.evidencia:
+        cerrar_cancelado = False
+        if enc.estado == "cancelado":
+            al_corte = registro.fold(encargo, hasta=corte_cierres)
+            cerrar_cancelado = al_corte is None or al_corte.estado != "cancelado"
+        if (enc.estado == "terminado" and enc.evidencia) or cerrar_cancelado:
+            # Un cancelado que ya lo era cuando este código abrió la base es
+            # historia: main nunca le escribió aviso de cierre y avisarlo ahora
+            # sería una ráfaga al desplegar.
             aviso = _aviso_de(enc)
-            trabajos.append(
-                (aviso, _cuerpo_del_aviso(registro, encargo, str(aviso["evidencia"])))
-            )
+            cuerpo = _cuerpo_de_cierre(enc)
+            if enc.via == "directa" and enc.estado == "terminado":
+                # En la vía directa el cierre es la única entrega del resultado:
+                # se lo debe al propietario, verificado contra la evidencia.
+                resultado = _cuerpo_del_aviso(
+                    registro, encargo, str(aviso["evidencia"])
+                )
+                if resultado:
+                    cuerpo = f"{cuerpo} {resultado}"
+            trabajos.append((aviso, cuerpo))
         apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
         for hecho in hechos_de_avance(enc, apariciones):
             aviso = _aviso_de_hecho(enc, hecho)

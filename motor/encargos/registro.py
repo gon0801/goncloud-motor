@@ -56,6 +56,13 @@ class Registro:
             "INSERT OR IGNORE INTO cortes_avisos (version, evento) "
             "SELECT 'avances-v1', COALESCE(MAX(id), 0) FROM events"
         )
+        # El corte de los cierres de cancelados se fija la primera vez que esta
+        # versión abre la base: todo cancelado anterior es historia (main nunca
+        # le escribió aviso de cierre) y avisarlo al desplegar sería una ráfaga.
+        self.db.execute(
+            "INSERT OR IGNORE INTO cortes_avisos (version, evento) "
+            "SELECT 'cierres-cancelados-v1', COALESCE(MAX(id), 0) FROM events"
+        )
 
     def close(self) -> None:
         self.db.close()
@@ -129,10 +136,11 @@ class Registro:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def corte_avisos(self) -> int:
-        return self.db.execute(
-            "SELECT evento FROM cortes_avisos WHERE version = 'avances-v1'"
-        ).fetchone()[0]
+    def corte_avisos(self, version: str = "avances-v1") -> int:
+        fila = self.db.execute(
+            "SELECT evento FROM cortes_avisos WHERE version = ?", (version,)
+        ).fetchone()
+        return int(fila[0])
 
     def fold(self, encargo: str, hasta: int | None = None) -> Encargo | None:
         estado = None
