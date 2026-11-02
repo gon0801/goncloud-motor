@@ -202,10 +202,19 @@ def temurin_mas_nuevo(catalogo=None) -> dict:
     raise RuntimeError("la API de Adoptium no trae un paquete jdk de Windows")
 
 
+def _carpeta_de_release(release: str) -> str:
+    """Carpeta determinista por release: el marker siempre apunta a la jdk
+    que dejó ESTE zip, no a una jdk sobrante de otra corrida (F9)."""
+    limpio = re.sub(r"[^A-Za-z0-9.+-]", "_", release).strip("._") or "jdk"
+    return limpio if limpio.startswith("jdk-") else f"jdk-{limpio}"
+
+
 def instalar_java(base: Path, nuevo: dict, descargador=None) -> tuple[str, str]:
     """Instala el GA `nuevo` (de temurin_mas_nuevo) si difiere del marker.
-    Extrae y deja el marker nuevo ANTES de borrar la jdk vieja: si algo falla
-    a mitad de la actualización, la máquina sigue con java utilizable (F7)."""
+    Extrae a un staging y renombra a la carpeta de la release, deja el marker
+    utilizable y solo entonces borra la jdk vieja: si algo falla a mitad de la
+    actualización, la máquina sigue con java utilizable (F7) y el exe del
+    marker siempre sale de este zip (F9)."""
     previo = java_instalado(base)
     if previo and previo.get("release") == nuevo["release"]:
         return "ok", f"java {previo['release']} ya está en {previo['java']}"
@@ -217,16 +226,25 @@ def instalar_java(base: Path, nuevo: dict, descargador=None) -> tuple[str, str]:
             f"declara {nuevo['sha256']}; no se instala"
         )
     carpeta = herramientas(base) / "java"
-    _extraer_zip(crudo, carpeta)
-    candidatos = sorted(carpeta.rglob("bin/java.exe"))
-    if previo:
-        candidatos = [
-            c for c in candidatos
-            if os.path.normcase(str(c)) != os.path.normcase(previo["java"])
-        ]
-    exe = next(iter(candidatos), None)
-    if exe is None:
-        raise RuntimeError("el zip de temurin no trae bin/java.exe")
+    carpeta.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="nueva-", dir=carpeta, ignore_cleanup_errors=True
+    ) as staging:
+        _extraer_zip(crudo, Path(staging))
+        raiz = next(
+            (
+                r for r in sorted(Path(staging).iterdir())
+                if r.is_dir() and (r / "bin" / "java.exe").is_file()
+            ),
+            None,
+        )
+        if raiz is None:
+            raise RuntimeError("el zip de temurin no trae bin/java.exe")
+        destino = carpeta / _carpeta_de_release(nuevo["release"])
+        if destino.exists():
+            shutil.rmtree(destino)
+        shutil.move(str(raiz), str(destino))
+    exe = destino / "bin" / "java.exe"
     marker = {"release": nuevo["release"], "sha256": suma, "java": str(exe)}
     _escribir_atomico(
         _ruta_java_marker(base), json.dumps(marker, ensure_ascii=False, indent=2) + "\n"
@@ -234,7 +252,7 @@ def instalar_java(base: Path, nuevo: dict, descargador=None) -> tuple[str, str]:
     if previo:
         vieja = Path(previo["java"]).parent.parent
         if (
-            vieja != exe.parent.parent
+            vieja != destino
             and vieja.parent == carpeta
             and vieja.name.startswith("jdk-")
         ):

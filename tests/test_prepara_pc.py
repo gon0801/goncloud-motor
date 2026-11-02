@@ -316,6 +316,45 @@ class LaActualizacionDeJavaCorre(DoblesTest):
         self.assertEqual(prepara_pc.java_instalado(self.base)["release"], "jdk-25.0.5+9")
         self.assertFalse(exe_viejo.exists())
 
+    def test_el_marker_no_rotula_una_jdk_sobrante(self):
+        """F9: elegir el exe con rglob podía tomar una jdk sobrante (de una
+        actualización interrumpida) y rotularla en el marker con la release
+        nueva; el exe del marker tiene que salir del zip que trajo esa
+        release."""
+        vieja = self.base / "herramientas" / "java" / "jdk-25.0.0+1"
+        exe_viejo = vieja / "bin" / "java.exe"
+        exe_viejo.parent.mkdir(parents=True)
+        exe_viejo.write_bytes(b"MZ")
+        sobrante = self.base / "herramientas" / "java" / "jdk-25.0.4+7"
+        (sobrante / "bin").mkdir(parents=True)
+        (sobrante / "bin" / "java.exe").write_bytes(b"MZ sobrante vieja")
+        prepara_pc._ruta_java_marker(self.base).write_text(
+            json.dumps({"release": "jdk-25.0.0+1", "java": str(exe_viejo)}),
+            encoding="utf-8",
+        )
+        zip_nuevo = _zip_de_temurin()
+        catalogo = lambda: [{
+            "release_name": "jdk-25.0.5+9",
+            "binary": {"package": {
+                "link": "https://adoptium.example/jdk-nuevo.zip",
+                "checksum": sha256(zip_nuevo).hexdigest(),
+            }},
+        }]
+
+        def descargador(url):
+            return zip_nuevo if url.endswith("jdk-nuevo.zip") else JAR_FALSO
+
+        with mock.patch.object(prepara_pc, "TLC_SHA256", self.jar_sha):
+            filas = prepara_pc.instalar(
+                self.base, correr=_reg_falso(), catalogo=catalogo, descargador=descargador,
+            )
+        java = next(f for f in filas if f["paso"] == "java")
+        self.assertEqual(java["estado"], "hecho")
+        datos = prepara_pc.java_instalado(self.base)
+        self.assertEqual(datos["release"], "jdk-25.0.5+9")
+        self.assertEqual(Path(datos["java"]).parent.parent.name, "jdk-25.0.5+9")
+        self.assertTrue(Path(datos["java"]).is_file())
+
     def test_una_extraccion_fallida_deja_la_jdk_vieja_utilizable(self):
         """F7: la actualización borraba la jdk vieja antes de extraer la
         nueva; si la extracción fallaba (disco lleno, zip a medias), la
