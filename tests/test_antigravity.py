@@ -7,7 +7,9 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -165,21 +167,219 @@ class EntornoYHerramientas(unittest.TestCase):
             self.assertNotIn("--sandbox", argv)
             self.assertNotIn("--mode", argv)
 
-    def test_disponible_exige_el_directorio_de_sesion_sin_leerlo(self):
+    def test_la_cache_no_habilita_y_el_token_no_se_reescribe(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             with mock.patch("motor.encargos.agentes.resolver_binario", return_value="/falso/agy"):
                 with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
                     self.assertFalse(agentes._disponible("antigravity"))
                     sesion = home / ".gemini" / "antigravity-cli"
-                    sesion.mkdir(parents=True)
-                    (sesion / "secreto.json").write_text(
-                        '{"token":"no-leer"}', encoding="utf-8"
-                    )
+                    cache = sesion / "cache"
+                    cache.mkdir(parents=True)
+                    (cache / "CHANGELOG.md").write_text("changelog", encoding="utf-8")
+                    self.assertFalse(agentes._disponible("antigravity"))
+                    marca = b'{"token":"no-leer"}'
+                    (sesion / "secreto.json").write_bytes(marca)
+                    self.assertFalse(agentes._disponible("antigravity"))
+                    self.assertEqual((sesion / "secreto.json").read_bytes(), marca)
+                    token = sesion / "antigravity-oauth-token"
+                    token.write_bytes(b"")
+                    self.assertFalse(agentes._disponible("antigravity"))
+                    token.write_bytes(b"marca")
                     self.assertTrue(agentes._disponible("antigravity"))
+                    self.assertEqual(token.read_bytes(), b"marca")
             with mock.patch("motor.encargos.agentes.resolver_binario", return_value=None):
                 with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
                     self.assertFalse(agentes._disponible("antigravity"))
+
+    def test_la_clave_de_api_exige_proveedor_y_valor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            cli = home / ".gemini" / "antigravity-cli"
+            cli.mkdir(parents=True)
+            (cli / "settings.json").write_text(
+                '{"modelProvider": "gemini", "theme": "dark"}',
+                encoding="utf-8",
+            )
+            for valor in ("", "   "):
+                with mock.patch.dict(os.environ, {"GEMINI_API_KEY": valor}):
+                    self.assertFalse(agentes.sesion_antigravity_presente(home))
+            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "clave-de-prueba"}):
+                self.assertTrue(agentes.sesion_antigravity_presente(home))
+            (cli / "settings.json").write_text(
+                '{"modelProvider": "vertex"}', encoding="utf-8"
+            )
+            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "clave-de-prueba"}):
+                self.assertFalse(agentes.sesion_antigravity_presente(home))
+
+    def test_el_llavero_cuenta_solo_en_el_home_del_proceso(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            cache = home / ".gemini" / "antigravity-cli" / "cache"
+            cache.mkdir(parents=True)
+            (cache / "CHANGELOG.md").write_text("changelog", encoding="utf-8")
+            self.assertFalse(agentes.sesion_antigravity_presente(home))
+
+            def ausente(argv, **kwargs):
+                return subprocess.CompletedProcess(argv, 44, b"", b"")
+
+            entorno = {"HOME": str(home), "USERPROFILE": str(home)}
+            with mock.patch.dict(os.environ, entorno):
+                with mock.patch("subprocess.run", side_effect=ausente):
+                    self.assertFalse(agentes.sesion_antigravity_presente(home))
+
+            solo = Path(tmp) / "solo-llavero"
+            vistos = {}
+
+            def presente(argv, **kwargs):
+                vistos["argv"] = list(argv)
+                vistos["kwargs"] = kwargs
+                if argv and argv[0] == "cmdkey":
+                    return subprocess.CompletedProcess(
+                        argv, 0, "gemini:antigravity".encode("utf-16-le"), b""
+                    )
+                if argv and argv[0] == "secret-tool":
+                    return subprocess.CompletedProcess(
+                        argv,
+                        0,
+                        b"attribute.service = gemini\nattribute.username = antigravity\n",
+                        b"",
+                    )
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+            with mock.patch.dict(
+                os.environ, {"HOME": str(solo), "USERPROFILE": str(solo)}
+            ):
+                with mock.patch("subprocess.run", side_effect=presente):
+                    self.assertTrue(agentes.sesion_antigravity_presente(solo))
+            argv = vistos["argv"]
+            self.assertNotIn("-w", argv)
+            self.assertNotIn("-g", argv)
+            self.assertNotIn("--all", argv)
+            self.assertNotIn("lookup", argv)
+            if sys.platform == "darwin":
+                self.assertEqual(
+                    argv,
+                    [
+                        "security",
+                        "find-generic-password",
+                        "-s",
+                        "gemini",
+                        "-a",
+                        "antigravity",
+                    ],
+                )
+                self.assertIs(vistos["kwargs"]["stdout"], subprocess.DEVNULL)
+                self.assertIs(vistos["kwargs"]["stderr"], subprocess.DEVNULL)
+            elif sys.platform == "win32":
+                self.assertEqual(argv, ["cmdkey", "/list"])
+            else:
+                self.assertEqual(
+                    argv,
+                    [
+                        "secret-tool",
+                        "search",
+                        "service",
+                        "gemini",
+                        "username",
+                        "antigravity",
+                    ],
+                )
+
+    def test_linux_y_windows_no_confunden_el_codigo_de_salida_con_sesion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            entorno = {"HOME": str(home), "USERPROFILE": str(home)}
+
+            def vacio(argv, **kwargs):
+                if argv and argv[0] == "cmdkey":
+                    return subprocess.CompletedProcess(
+                        argv, 0, b"Target: LegacyGeneric:target=otro\r\n", b""
+                    )
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+            with mock.patch.dict(os.environ, entorno):
+                with mock.patch("sys.platform", "linux"):
+                    with mock.patch("subprocess.run", side_effect=vacio):
+                        self.assertFalse(agentes.sesion_antigravity_presente(home))
+                with mock.patch("sys.platform", "win32"):
+                    with mock.patch("subprocess.run", side_effect=vacio):
+                        self.assertFalse(agentes.sesion_antigravity_presente(home))
+
+            def hit(argv, **kwargs):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    b"attribute.service = gemini\nattribute.username = antigravity\n",
+                    b"",
+                )
+
+            with mock.patch.dict(os.environ, entorno):
+                with mock.patch("sys.platform", "linux"):
+                    with mock.patch("subprocess.run", side_effect=hit):
+                        self.assertTrue(agentes.sesion_antigravity_presente(home))
+
+            def hit_windows(argv, **kwargs):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    "Target: LegacyGeneric:target=gemini:antigravity\r\n".encode(
+                        "utf-16-le"
+                    ),
+                    b"",
+                )
+
+            with mock.patch.dict(os.environ, entorno):
+                with mock.patch("sys.platform", "win32"):
+                    with mock.patch("subprocess.run", side_effect=hit_windows):
+                        self.assertTrue(agentes.sesion_antigravity_presente(home))
+
+    def test_dos_escritores_usan_temporales_distintos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            vistos = []
+            errores = []
+            barrera = threading.Barrier(2)
+            real = os.replace
+
+            def reemplazo(origen, destino):
+                vistos.append(Path(origen).name)
+                if str(origen).endswith(".tmp"):
+                    barrera.wait(timeout=5)
+                return real(origen, destino)
+
+            def escribir(runtime):
+                try:
+                    _entorno(runtime, True, ["agy", "--print"], agente="antigravity")
+                except Exception as exc:
+                    errores.append(exc)
+
+            with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
+                with mock.patch(
+                    "motor.encargos.agentes.os.replace", side_effect=reemplazo
+                ):
+                    hilos = [
+                        threading.Thread(
+                            target=escribir, args=(Path(tmp) / f"run-{n}",)
+                        )
+                        for n in (1, 2)
+                    ]
+                    for hilo in hilos:
+                        hilo.start()
+                    for hilo in hilos:
+                        hilo.join(timeout=10)
+            self.assertEqual(errores, [])
+            self.assertEqual(len(vistos), 2)
+            self.assertNotEqual(vistos[0], vistos[1])
+            self.assertNotIn("motor-turno.md.tmp", vistos)
+            markdown = (
+                home / ".gemini" / "config" / "agents" / "motor-turno.md"
+            ).read_text(encoding="utf-8")
+            self.assertIn("excludeDefaultComponents: true", markdown)
+            self.assertNotIn("schedule", _herramientas(markdown))
+            self.assertEqual(
+                list((home / ".gemini" / "config" / "agents").glob("*.tmp")), []
+            )
 
 
 class StreamJson(unittest.TestCase):
@@ -250,7 +450,10 @@ class Capacidades(unittest.TestCase):
     def test_con_y_sin_agy(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
-            (home / ".gemini" / "antigravity-cli").mkdir(parents=True)
+            cli = home / ".gemini" / "antigravity-cli"
+            cache = cli / "cache"
+            cache.mkdir(parents=True)
+            (cache / "CHANGELOG.md").write_text("changelog", encoding="utf-8")
 
             def which(nombre):
                 if nombre == "agy":
@@ -260,7 +463,13 @@ class Capacidades(unittest.TestCase):
             with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
                 filas = {f["agente"]: f for f in _agentes(which)}
             self.assertEqual(filas["antigravity"]["estado"], "ok")
-            self.assertIn("agy", filas["antigravity"]["detalle"])
+            self.assertIn("/falso/bin/agy", filas["antigravity"]["detalle"])
+            self.assertIn("sin sesión", filas["antigravity"]["detalle"])
+            self.assertNotIn("con sesión", filas["antigravity"]["detalle"])
+            (cli / "antigravity-oauth-token").write_bytes(b"marca")
+            with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
+                filas = {f["agente"]: f for f in _agentes(which)}
+            self.assertEqual(filas["antigravity"]["estado"], "ok")
             self.assertIn("con sesión", filas["antigravity"]["detalle"])
             with mock.patch(
                 "motor.encargos.agentes.Path.home", return_value=home / "vacio"
@@ -271,6 +480,67 @@ class Capacidades(unittest.TestCase):
             filas = {f["agente"]: f for f in _agentes(lambda nombre: None)}
             self.assertEqual(filas["antigravity"]["estado"], "falta")
             self.assertIn("agy", filas["antigravity"]["detalle"])
+
+    def test_sin_agy_en_la_generacion_sigue_el_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            generacion = Path(tmp) / "generacion"
+            generacion.mkdir()
+            (generacion / "runtime.json").write_text(
+                '{"lanzadores": {}}', encoding="utf-8"
+            )
+
+            def which(nombre):
+                return {
+                    "agy": "/usuario/bin/agy",
+                    "muse": "/usuario/bin/muse",
+                }.get(nombre)
+
+            self.assertEqual(
+                agentes.resolver_lanzador("antigravity", generacion, which=which),
+                ["/usuario/bin/agy"],
+            )
+            self.assertEqual(
+                agentes.resolver_lanzador("muse", generacion, which=which),
+                ["/usuario/bin/muse"],
+            )
+            self.assertIsNone(
+                agentes.resolver_lanzador("claude", generacion, which=which)
+            )
+            with mock.patch(
+                "motor.encargos.agentes.Path.home", return_value=Path(tmp) / "vacio"
+            ):
+                filas = {f["agente"]: f for f in _agentes(which, generacion)}
+            self.assertEqual(filas["antigravity"]["estado"], "ok")
+            self.assertIn("/usuario/bin/agy", filas["antigravity"]["detalle"])
+            self.assertIn("sin sesión", filas["antigravity"]["detalle"])
+            self.assertNotIn("no está en la generación", filas["antigravity"]["detalle"])
+
+    def test_el_lanzador_de_la_generacion_manda_y_el_roto_no_cae_al_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            generacion = Path(tmp) / "generacion"
+            binario = generacion / "bin" / "agy"
+            binario.parent.mkdir(parents=True)
+            binario.write_text("#!/bin/sh\nprintf 'agy 9\\n'\n", encoding="utf-8")
+            binario.chmod(0o755)
+            (generacion / "runtime.json").write_text(
+                json.dumps({"lanzadores": {"agy": ["bin/agy"]}}),
+                encoding="utf-8",
+            )
+
+            def which(nombre):
+                return "/usuario/bin/agy" if nombre == "agy" else None
+
+            self.assertEqual(
+                agentes.resolver_lanzador("antigravity", generacion, which=which),
+                [str(binario.resolve())],
+            )
+            (generacion / "runtime.json").write_text(
+                json.dumps({"lanzadores": {"agy": ["bin/ausente"]}}),
+                encoding="utf-8",
+            )
+            self.assertIsNone(
+                agentes.resolver_lanzador("antigravity", generacion, which=which)
+            )
 
 
 if __name__ == "__main__":
