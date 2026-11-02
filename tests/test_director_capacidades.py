@@ -242,54 +242,84 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         self.assertEqual(jaula["estado"], "falta")
         self.assertIn("no installed", jaula["detalle"])
 
+    def _correr_llave(self, valor, sin_powershell=False):
+        """Un correr que responde como PowerShell (y como reg.exe de respaldo)
+        sobre la llave Run; valor None es llave ausente."""
+
+        import re as _re
+
+        def correr(argv, timeout=20):
+            class R:
+                returncode = 0
+                stdout = b""
+                stderr = b""
+
+            r = R()
+            if argv[0] == "powershell":
+                if sin_powershell:
+                    raise FileNotFoundError("powershell")
+                guion = argv[-1]
+                clave = _re.search(r"-LiteralPath '([^']+)'", guion).group(1)
+                nombre = _re.search(r"\$p\.(\w+);", guion).group(1)
+                if clave != cm.LLAVE_RUN:
+                    r.returncode = 1
+                elif nombre == cm.NOMBRE_LLAVE and valor is not None:
+                    r.stdout = valor.encode("utf-8") + b"\n"
+                return r
+            if argv[:2] == ["reg", "query"]:
+                if valor is None:
+                    r.returncode = 1
+                else:
+                    r.stdout = (
+                        f"\n    {cm.NOMBRE_LLAVE}    REG_SZ    {valor}\n"
+                    ).encode("utf-8")
+            return r
+
+        return correr
+
     def test_arranque_windows_llave_del_vigilante(self):
         vigia = Path(__file__).resolve().parents[1] / "ops" / "iniciar_encargos_pc.py"
-
-        def correr(argv, timeout=20):
-            class R:
-                returncode = 0
-                stdout = (
-                    f"\n    {cm.NOMBRE_LLAVE}    REG_SZ    "
-                    f'"C:\\\\py\\\\python.exe" -B "{vigia}"\n'
-                ).encode("utf-8")
-                stderr = b""
-
-            return R()
-
+        valor = f'"C:\\py\\python.exe" -B "{vigia}"'
         with mock.patch.object(cm, "sistema", lambda: "windows"):
-            arranque = cm._arranque(correr)
+            arranque = cm._arranque(self._correr_llave(valor))
         self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "vigilante"))
 
-    def test_arranque_windows_con_vigilante_inexistente_es_falta(self):
-        def correr(argv, timeout=20):
-            class R:
-                returncode = 0
-                stdout = (
-                    f"\n    {cm.NOMBRE_LLAVE}    REG_SZ    "
-                    '"C:\\\\py\\\\python.exe" -B "C:\\\\borrado\\\\iniciar_encargos_pc.py"\n'
-                ).encode("utf-8")
-                stderr = b""
-
-            return R()
-
+    def test_arranque_windows_con_acentos_en_la_ruta_no_se_manglea(self):
+        carpeta = self.tmp / "José"
+        carpeta.mkdir()
+        vigia = carpeta / "ops" / "iniciar_encargos_pc.py"
+        vigia.parent.mkdir()
+        vigia.write_bytes(b"x")
+        valor = f'"C:\\Users\\José\\py\\python.exe" -B "{vigia}"'
         with mock.patch.object(cm, "sistema", lambda: "windows"):
-            arranque = cm._arranque(correr)
+            arranque = cm._arranque(self._correr_llave(valor))
+        self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "vigilante"))
+
+    def test_arranque_windows_sin_powershell_cae_a_reg(self):
+        vigia = Path(__file__).resolve().parents[1] / "ops" / "iniciar_encargos_pc.py"
+        valor = f'"C:\\py\\python.exe" -B "{vigia}"'
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
+            arranque = cm._arranque(self._correr_llave(valor, sin_powershell=True))
+        self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "vigilante"))
+
+    def test_arranque_windows_llave_ausente_es_falta(self):
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
+            arranque = cm._arranque(self._correr_llave(None))
+        self.assertEqual(arranque["estado"], "falta")
+        self.assertIn("llave ausente", arranque["detalle"])
+
+    def test_arranque_windows_con_vigilante_inexistente_es_falta(self):
+        valor = '"C:\\py\\python.exe" -B "C:\\borrado\\iniciar_encargos_pc.py"'
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
+            arranque = cm._arranque(self._correr_llave(valor))
         self.assertEqual(arranque["estado"], "falta")
 
     def test_arranque_windows_con_supervisor_directo_es_falta(self):
-        def correr(argv, timeout=20):
-            class R:
-                returncode = 0
-                stdout = (
-                    f"\n    {cm.NOMBRE_LLAVE}    REG_SZ    "
-                    '"C:\\\\...\\\\powershell.exe" -File "C:\\\\u\\\\.motor-encargos\\\\supervisor.ps1"\n'
-                ).encode("utf-8")
-                stderr = b""
-
-            return R()
-
+        valor = (
+            '"C:\\...\\powershell.exe" -File "C:\\u\\.motor-encargos\\supervisor.ps1"'
+        )
         with mock.patch.object(cm, "sistema", lambda: "windows"):
-            arranque = cm._arranque(correr)
+            arranque = cm._arranque(self._correr_llave(valor))
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("supervisor.ps1", arranque["detalle"])
 
@@ -317,6 +347,26 @@ class SeccionesPorSistemaTest(unittest.TestCase):
             arranque = cm._arranque(lambda *a, **k: None, dir_fake)
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("sin KeepAlive", arranque["detalle"])
+
+    def test_arranque_plist_que_no_es_diccionario_no_tumba_el_reporte(self):
+        import plistlib
+
+        dir_fake = self.tmp / "LaunchDaemons"
+        dir_fake.mkdir()
+        (dir_fake / "com.goncloud.motor.plist").write_bytes(plistlib.dumps("solo texto"))
+        with mock.patch.object(cm, "sistema", lambda: "macos"):
+            arranque = cm._arranque(lambda *a, **k: None, dir_fake)
+        self.assertEqual(arranque["estado"], "falta")
+        self.assertIn("no es un diccionario", arranque["detalle"])
+
+    def test_arranque_plist_mal_formado_es_falta_legible(self):
+        dir_fake = self.tmp / "LaunchDaemons"
+        dir_fake.mkdir()
+        (dir_fake / "com.goncloud.motor.plist").write_bytes(b"esto no es un plist")
+        with mock.patch.object(cm, "sistema", lambda: "macos"):
+            arranque = cm._arranque(lambda *a, **k: None, dir_fake)
+        self.assertEqual(arranque["estado"], "falta")
+        self.assertIn("ilegible", arranque["detalle"])
 
     def test_arranque_linux_es_aviso_y_no_falta(self):
         with mock.patch.object(cm, "sistema", lambda: "linux"):

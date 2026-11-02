@@ -255,18 +255,47 @@ def _avisos_y_senal(home: Path) -> tuple[dict, dict]:
     return avisos, senal
 
 
+def _cita_ps(texto) -> str:
+    return "'" + str(texto).replace("'", "''") + "'"
+
+
+def _leer_registro(clave: str, valor: str, correr) -> str:
+    """Un valor de HKCU sin la trampa de la página de códigos (el mismo camino
+    que ops/prepara_pc.py): reg.exe escribe en la página local y un perfil con
+    acentos llegaría mangleado — el is_file del vigilante fallaría y el
+    arranque saldría falta. PowerShell saca el valor en UTF-8; sin PowerShell,
+    reg query tal cual."""
+    guion = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        f"$p=Get-ItemProperty -LiteralPath {_cita_ps(clave)};"
+        f"$v=$p.{valor};"
+        "if ($null -ne $v) { [string]$v }"
+    )
+    try:
+        r = correr(
+            ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", guion],
+            15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        r = None
+    if r is not None and r.returncode == 0:
+        return _texto(r.stdout).strip()
+    try:
+        r2 = correr(["reg", "query", clave, "/v", valor], 15)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if r2.returncode != 0:
+        return ""
+    for linea in (r2.stdout or b"").decode("utf-8", errors="replace").splitlines():
+        partes = re.split(r"\s{2,}", linea.strip())
+        if partes and partes[0].upper() == valor.upper() and len(partes) >= 3:
+            return partes[-1]
+    return ""
+
+
 def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dict:
     if sistema() == "windows":
-        try:
-            r = correr(["reg", "query", LLAVE_RUN, "/v", NOMBRE_LLAVE], 15)
-        except (OSError, subprocess.TimeoutExpired):
-            return {"mecanismo": "vigilante", "estado": "falta", "detalle": "reg no consultó la llave Run"}
-        valor = ""
-        if r.returncode == 0:
-            for linea in (r.stdout or b"").decode("utf-8", errors="replace").splitlines():
-                partes = re.split(r"\s{2,}", linea.strip())
-                if partes and partes[0] == NOMBRE_LLAVE and len(partes) >= 3:
-                    valor = partes[-1]
+        valor = _leer_registro(LLAVE_RUN, NOMBRE_LLAVE, correr)
         if VIGILANTE in valor.lower():
             for parte in re.findall(r'"([^"]+)"', valor):
                 if parte.lower().endswith(VIGILANTE):
@@ -294,6 +323,9 @@ def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dic
                 continue
             except ValueError as exc:
                 causas.append(f"{etiqueta}: plist ilegible ({exc})")
+                continue
+            if not isinstance(datos, dict):
+                causas.append(f"{etiqueta}: el plist no es un diccionario")
                 continue
             if datos.get("KeepAlive") is True:
                 return {"mecanismo": "launchd", "estado": "ok",

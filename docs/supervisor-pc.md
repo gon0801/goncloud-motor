@@ -66,9 +66,12 @@ puente 60 s y el comando completo 75 s.
 
 ## Lo que no hace
 
-No sobrevive a un reinicio de la PC ni al cierre de la sesión de Windows: sigue haciendo
-falta ejecutar el comando de arranque después, como hasta ahora. Instalarlo como tarea al
-inicio de sesión es otro cambio.
+No arranca sin sesión iniciada: la llave Run deja el vigilante cuando `ehven` inicia
+sesión, no antes (arrancar aunque nadie inicie sesión lo tiene la tarea programada del
+servicio de planes, no el encargo). Si la sesión se cierra, el vigilante y el supervisor
+terminan con ella; al iniciar sesión otra vez, la llave los deja otra vez (después de la
+preparación de la PC, `ops/prepara_pc.py`). Antes de esa preparación, un reinicio dejaba al
+motor apagado hasta que alguien corriera el arranque a mano.
 
 ## Arranque al iniciar sesión (llave Run)
 
