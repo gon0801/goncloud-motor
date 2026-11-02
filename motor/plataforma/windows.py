@@ -1007,22 +1007,23 @@ def matar_grupo(p: subprocess.Popen) -> None:  # pragma: no cover
     j = _jobs.pop(p.pid, None)
     if j is not None:
         j.cerrar()
-    for hijo in _descendientes(p.pid) or ():
-        subprocess.run(
-            ["taskkill", "/PID", str(hijo), "/F"],
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
-        )
-    try:
-        subprocess.run(
-            ["taskkill", "/PID", str(p.pid), "/F"],
-            capture_output=True,
-            timeout=4,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    else:
+        for hijo in _descendientes(p.pid) or ():
+            subprocess.run(
+                ["taskkill", "/PID", str(hijo), "/F"],
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                creationflags=CREATE_NO_WINDOW,
+            )
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(p.pid), "/F"],
+                capture_output=True,
+                timeout=4,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     try:
         if p.poll() is None:
             p.kill()
