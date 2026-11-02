@@ -503,7 +503,13 @@ def partir(texto: str, tope: int = TOPE_MENSAJE) -> list[str]:
     return [parte for parte in partes if parte]
 
 
+def _canal_con_transporte(valor: object) -> bool:
+    return isinstance(valor, dict) and bool(valor.get("comando"))
+
+
 def config_envio(base: Path) -> tuple[str, int]:
+    """Canal e intervalo del envío. `activo: false` lo apaga y un canal pedido
+    sin transporte no se usa: no hay envío en vez de un envío a un canal fantasma."""
     cfg = _leer_json(Path(base) / "resumen-config.json")
     if not cfg:
         return "", 60
@@ -512,16 +518,16 @@ def config_envio(base: Path) -> tuple[str, int]:
         intervalo = max(1, int(intervalo))
     except (TypeError, ValueError):
         intervalo = 60
-    canal = str(cfg.get("canal") or "")
-    if not canal:
-        canales = _leer_json(Path(base) / "canal.json")
-        for nombre, valor in canales.items():
-            if not isinstance(valor, dict):
-                continue
-            if valor.get("comando"):
-                canal = str(nombre)
-                break
-    return canal, intervalo
+    if cfg.get("activo") is False:
+        return "", intervalo
+    canales = _leer_json(Path(base) / "canal.json")
+    if "canal" in cfg:
+        canal = str(cfg.get("canal") or "")
+        return (canal, intervalo) if _canal_con_transporte(canales.get(canal)) else ("", intervalo)
+    for nombre, valor in canales.items():
+        if _canal_con_transporte(valor):
+            return str(nombre), intervalo
+    return "", intervalo
 
 
 def asegurar_config(base: Path) -> bool:

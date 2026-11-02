@@ -82,6 +82,15 @@ class Banco:
         path = self.base / "resumen.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
+    def avisos(self) -> list[dict]:
+        carpeta = self.base / "avisos"
+        if not carpeta.is_dir():
+            return []
+        return [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(carpeta.glob("*.json"))
+        ]
+
 
 def activo(banco: Banco, clave: str) -> str:
     ident = banco.encargo(clave)
@@ -500,6 +509,32 @@ class Envio(Base):
         self.assertEqual(resumen.config_envio(self.b.base), ("tg", 60))
         self.assertFalse(resumen.asegurar_config(self.b.base))
 
+    def test_config_envio_apaga_el_envio_con_activo_false(self):
+        (self.b.base / "resumen-config.json").write_text(
+            json.dumps({"canal": "tg", "intervalo_min": 30, "activo": False}),
+            encoding="utf-8",
+        )
+        self.assertEqual(resumen.config_envio(self.b.base), ("", 30))
+        self.b.encargo("uno")
+        directores.drenar(self.b.reg, ahora=T0)
+        self.assertEqual(self.b.resumenes(), [])
+
+    def test_config_envio_no_usa_un_canal_sin_transporte(self):
+        (self.b.base / "resumen-config.json").write_text(
+            json.dumps({"canal": "fantasma", "intervalo_min": 60}), encoding="utf-8"
+        )
+        self.assertEqual(resumen.config_envio(self.b.base), ("", 60))
+        canales = json.loads((self.b.base / "canal.json").read_text(encoding="utf-8"))
+        canales["sin_transporte"] = {"idempotente": True}
+        (self.b.base / "canal.json").write_text(json.dumps(canales), encoding="utf-8")
+        (self.b.base / "resumen-config.json").write_text(
+            json.dumps({"canal": "sin_transporte", "intervalo_min": 60}), encoding="utf-8"
+        )
+        self.assertEqual(resumen.config_envio(self.b.base), ("", 60))
+        self.b.encargo("uno")
+        directores.drenar(self.b.reg, ahora=T0)
+        self.assertEqual(self.b.resumenes(), [])
+
     def test_si_se_pierde_el_estado_no_duplica_ni_se_atasca(self):
         ident = self.b.encargo("uno")
         self.b.evento(
@@ -618,9 +653,22 @@ class Envio(Base):
         ):
             directores.drenar(self.b.reg, ahora=T0 + 120 * 60)
         self.assertEqual(len(self.b.resumenes()), 3)
-        directores.drenar(self.b.reg, ahora=T0 + 120 * 60 + 1)
+        publicados = [
+            doc
+            for doc in self.b.avisos()
+            if doc.get("tipo") == "resumen" and doc.get("estado") == "publicado"
+        ]
+        ultimo = max(publicados, key=lambda doc: int(doc.get("episodio") or 0))
+        firma = ultimo["firma"]
+        self.assertNotEqual(
+            self.b.estado().get("ultima_firma"), firma, "cerrar no corrió en el envío"
+        )
+        directores.drenar(self.b.reg, ahora=T0 + 181 * 60)
         self.assertEqual(len(self.b.resumenes()), 3, "el aviso publicado no se reenvía")
-        self.assertIn("ultima_firma", self.b.estado())
+        self.assertEqual(
+            self.b.estado().get("ultima_firma"), firma, "el siguiente drenado sana el estado"
+        )
+        self.assertEqual(self.b.estado().get("ultimo_episodio"), int(ultimo["episodio"]))
 
     def test_cerrar_fallido_en_el_envio_intermedio_no_pierde_la_vuelta(self):
         from unittest import mock
