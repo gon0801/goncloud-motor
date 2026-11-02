@@ -168,6 +168,55 @@ class FirmaDelProducto(unittest.TestCase):
             (espacio / "producto.txt").write_text("otra\n", encoding="utf-8")
             self.assertNotEqual(version_producto(espacio).firma, primera.firma)
 
+    def test_un_espacio_dentro_de_un_repo_ajeno_no_cuenta_sus_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            padre = Path(tmp) / "padre"
+            padre.mkdir()
+            _git(padre, "init", "-b", "main", "--quiet")
+            espacio = padre / "espacio"
+            espacio.mkdir()
+            (espacio / "producto.txt").write_text("hola\n", encoding="utf-8")
+
+            antes = version_producto(espacio)
+            self.assertEqual(
+                [ruta for ruta, _ in antes.manifiesto], ["producto.txt"]
+            )
+
+            _cache_de_pytest(espacio)
+            despues = version_producto(espacio)
+            self.assertEqual(
+                [ruta for ruta, _ in despues.manifiesto], ["producto.txt"]
+            )
+            self.assertEqual(despues.firma, antes.firma)
+
+            (espacio / "producto.txt").write_text("otra\n", encoding="utf-8")
+            self.assertNotEqual(version_producto(espacio).firma, antes.firma)
+
+    def test_un_espacio_ignorado_por_su_repo_de_arriba_no_cuenta_sus_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            padre = Path(tmp) / "padre"
+            padre.mkdir()
+            _git(padre, "init", "-b", "main", "--quiet")
+            (padre / ".gitignore").write_text("espacio/\n", encoding="utf-8")
+            espacio = padre / "espacio"
+            espacio.mkdir()
+            (espacio / "producto.txt").write_text("hola\n", encoding="utf-8")
+
+            antes = version_producto(espacio)
+            self.assertEqual(
+                [ruta for ruta, _ in antes.manifiesto], ["producto.txt"]
+            )
+
+            _cache_de_pytest(espacio)
+            despues = version_producto(espacio)
+            self.assertEqual(
+                [ruta for ruta, _ in despues.manifiesto], ["producto.txt"]
+            )
+            self.assertEqual(despues.firma, antes.firma)
+
+            (espacio / "producto.txt").write_text("otra\n", encoding="utf-8")
+            self.assertNotEqual(version_producto(espacio).firma, antes.firma)
+
 
 class EntregaSinEfecto(unittest.TestCase):
     def _con_commit_sin_sha(self, tmp: str, clave: str):

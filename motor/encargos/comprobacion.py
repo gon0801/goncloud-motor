@@ -3,11 +3,11 @@
 El espacio fuera de `.interno/` es solo producto. La firma excluye por parte
 de ruta (`.git`, `__pycache__`, `.runtime`, `.interno`), nunca por nombre de
 archivo: no hay lista de internos que sincronizar con los prompts. Cuando el
-espacio es la raiz de su propio repositorio tambien excluye lo que su git
-ignora, con el mismo criterio con el que se decide que entra en un commit; una
-cache local no cambia el producto. Dentro de un repositorio ajeno se recorre el
-disco: el `ls-files` de arriba puede ignorar el espacio entero y devolver una
-firma constante.
+espacio esta en un repositorio git tambien excluye lo que sus propias reglas
+ignoran, con el mismo criterio con el que se decide que entra en un commit; una
+cache local no cambia el producto. Dentro de un repositorio ajeno no hereda el
+ignore de arriba, que puede ocultar el espacio entero y devolver una firma
+constante.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass, replace as _replace
 from pathlib import Path
@@ -50,42 +51,92 @@ def _es_repo_propio(espacio: Path) -> bool:
     return (espacio / ".git").exists()
 
 
-def _rutas_del_producto(espacio: Path) -> list[Path] | None:
-    """Los archivos que entrarian en un commit, como `ciclo._commit_push`.
-
-    `ls-files --cached --others --exclude-standard` da los rastreados y los no
-    rastreados que git no ignora. Asi una cache como `.pytest_cache` no cambia
-    la firma. Solo se usa cuando el espacio es la raiz de su propio
-    repositorio; dentro de uno ajeno se conserva el recorrido por disco, porque
-    el ignore de arriba puede ocultar el producto entero.
-    """
-    if not _es_repo_propio(espacio):
-        return None
+def _git(argumentos: list[str]) -> subprocess.CompletedProcess | None:
     try:
-        r = subprocess.run(
-            [
-                "git", "-C", str(espacio), "ls-files", "-z",
-                "--cached", "--others", "--exclude-standard",
-            ],
+        return subprocess.run(
+            argumentos,
             capture_output=True,
             stdin=subprocess.DEVNULL,
             timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if r.returncode != 0:
-        return None
+
+
+def _rutas_del_listado(salida: bytes, espacio: Path) -> list[Path]:
     rutas = []
-    for bruto in r.stdout.split(b"\0"):
+    for bruto in salida.split(b"\0"):
         if not bruto:
             continue
         relativo = Path(os.fsdecode(bruto))
         if any(p in _EXCLUIDAS for p in relativo.parts):
             continue
-        path = espacio / relativo
-        if path.is_file():
+        if (espacio / relativo).is_file():
             rutas.append(relativo)
     return sorted(rutas)
+
+
+def _rutas_por_git(espacio: Path) -> list[Path] | None:
+    r = _git(
+        [
+            "git", "-C", str(espacio), "ls-files", "-z",
+            "--cached", "--others", "--exclude-standard",
+        ]
+    )
+    if r is None or r.returncode != 0:
+        return None
+    return _rutas_del_listado(r.stdout, espacio)
+
+
+def _dentro_de_repo(espacio: Path) -> bool:
+    r = _git(
+        ["git", "-C", str(espacio), "rev-parse", "--is-inside-work-tree"]
+    )
+    return r is not None and r.returncode == 0 and r.stdout.strip() == b"true"
+
+
+def _rutas_con_ignore_propio(espacio: Path) -> list[Path] | None:
+    """Enumera el espacio como raiz de su propio arbol.
+
+    Se usa cuando el espacio vive dentro de un repositorio ajeno. El listado
+    normal heredaria el ignore de arriba, que puede ocultar el espacio entero y
+    devolver una firma constante. Aqui el espacio es la raiz, asi que sus
+    `.gitignore` y los de sus subdirectorios siguen valiendo: una cache que se
+    ignora a si misma tampoco cambia la firma, como en un repositorio propio.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = _git(["git", "init", "-q", "--bare", tmp])
+            if r is None or r.returncode != 0:
+                return None
+            r = _git(
+                [
+                    "git", "--git-dir", tmp, "--work-tree", str(espacio),
+                    "-c", "core.excludesFile=", "ls-files", "-z",
+                    "--others", "--exclude-standard",
+                ]
+            )
+            if r is None or r.returncode != 0:
+                return None
+            return _rutas_del_listado(r.stdout, espacio)
+    except OSError:
+        return None
+
+
+def _rutas_del_producto(espacio: Path) -> list[Path] | None:
+    """Los archivos que entrarian en un commit, como `ciclo._commit_push`.
+
+    En un repositorio propio, `ls-files --cached --others --exclude-standard`
+    da los rastreados y los que git no ignora. Dentro de uno ajeno se enumera
+    con las reglas del propio espacio y no con las de arriba, que pueden
+    ocultar el producto o contar caches. `None` deja el recorrido por disco
+    para cuando no hay repositorio.
+    """
+    if _es_repo_propio(espacio):
+        return _rutas_por_git(espacio)
+    if not _dentro_de_repo(espacio):
+        return None
+    return _rutas_con_ignore_propio(espacio)
 
 
 def version_producto(espacio: Path) -> VersionProducto:
