@@ -879,9 +879,20 @@ def _por_esperar(guardado: dict, ahora: float) -> bool:
     return toca is not None and ahora < toca
 
 
+def _espera_acumulada(fallos: int) -> int:
+    """Segundos mínimos entre el primer fallo y el último: cada reintento espera
+    al menos su espera, y con el tope de una hora once fallos ya cubren las seis
+    horas aunque el motor reintentara sin parar."""
+    return sum(espera_s(i) for i in range(1, max(fallos - 1, 0) + 1))
+
+
 def _epoca_primer_envio(guardado: dict) -> float | None:
     """La época del primer envío: la que el aviso guarda o, en los de la versión
-    anterior (que no la guardan), la del último fallo según su reintento."""
+    anterior (que no la guardan), el primer fallo que implican sus reintentos.
+
+    El ancla NO es el último fallo: con el canal caído el motor de la versión
+    anterior reintentaba cada hora, así que el último fallo es siempre reciente
+    y los avisos de ayer volverían a salir en ráfaga."""
     primero = guardado.get("primer_intento")
     try:
         primero = float(primero) if primero is not None else None
@@ -895,7 +906,7 @@ def _epoca_primer_envio(guardado: dict) -> float | None:
             fallos = int(guardado.get("fallos", guardado.get("intentos")) or 0)
         except (TypeError, ValueError):
             fallos = 0
-        primero = proximo - espera_s(fallos)
+        primero = proximo - espera_s(fallos) - _espera_acumulada(fallos)
     return primero if primero and primero > 0 else None
 
 

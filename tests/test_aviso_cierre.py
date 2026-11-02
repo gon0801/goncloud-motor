@@ -340,6 +340,26 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
         self.assertTrue(avisos[0]["entregado"])
         self.assertEqual(len(self.b.cuerpos()), 2, "el fallo y el reintento que sí salió")
 
+    def test_los_avisos_de_ayer_no_salen_cuando_el_canal_vuelve(self):
+        # Telegram caído un día: la versión anterior reintentó cada hora y el
+        # último fallo es reciente; la edad se cuenta desde el primer fallo.
+        self.encargo_terminado("de-ayer")
+        self.b.caer()
+        primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
+        aviso_id = primera[0]["id"]
+        guardado = self.b.aviso_guardado(aviso_id)
+        del guardado["primer_intento"]
+        guardado["fallos"] = 20
+        guardado["proximo_intento"] = directores._iso(T0)
+        self.b.escribir_aviso(aviso_id, guardado)
+        self.b.levantar()
+        avisos = directores.drenar(self.b.reg, ahora=T0 + 3600)["avisos"]
+        self.assertEqual(self.b.aviso_guardado(aviso_id)["estado"], "descartado")
+        self.assertFalse(avisos[0]["entregado"])
+        self.assertEqual(
+            len(self.b.cuerpos()), 1, "el reintento nocturno y ningún envío nuevo"
+        )
+
     def test_un_aviso_previo_al_despliegue_envejece_desde_su_fallo_original(self):
         self.encargo_terminado("legado-5h")
         self.b.caer()
