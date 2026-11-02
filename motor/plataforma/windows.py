@@ -1003,7 +1003,7 @@ def contener(p: subprocess.Popen) -> None:  # pragma: no cover
 
 
 def matar_grupo(p: subprocess.Popen) -> None:  # pragma: no cover
-    """Termina el árbol confirmado por PPID y horas: cierra el Job y mata cada PID confirmado."""
+    """Cierra el Job o, sin Job, mata cada PID confirmado por PPID y horas."""
     j = _jobs.pop(p.pid, None)
     if j is not None:
         j.cerrar()
