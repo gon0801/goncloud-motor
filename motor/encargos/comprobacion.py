@@ -466,7 +466,10 @@ def instrucciones_revision(ref: AlcanceRevision, resultado: Path) -> str:
             "Esta es la revision completa. Compara TODO el pedido con el producto real "
             "y las ejecuciones observadas por el supervisor."
         )
-    return f'''Inspecciona el producto real. No inventes observaciones. Un comando tautologico,
+    return f'''Tu turno termina cuando respondes y nadie te despierta, asi que no dejes nada
+corriendo en segundo plano. La bateria completa no se corre en local: si hace falta, se
+pide con la inspeccion ci.correr.
+Inspecciona el producto real. No inventes observaciones. Un comando tautologico,
 una nota o una fraccion del objetivo no basta para aprobar.
 {alcance_txt}
 Entrega juntos los hallazgos y distingue bloqueantes de observaciones. Explica el impacto real

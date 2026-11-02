@@ -9,6 +9,15 @@ from pathlib import Path
 
 from .catalogo_agentes import ADAPTADORES, cliente_para, modelo_canonico
 
+# El lanzamiento corre con --print: el proceso sale cuando el agente responde y
+# nadie lo despierta, asi que una tarea en segundo plano se queda sin dueno.
+# `Bash(run_in_background:true)` es una regla de parametro que niega esas
+# llamadas; `Monitor` a secas quita del registro de la sesion la herramienta
+# que se queda esperando lo que ocurre despues del turno. Las reglas de negacion
+# siguen vigentes bajo --dangerously-skip-permissions. El valor va junto y
+# antes de otro flag: --disallowedTools es variadica y se tragaria el prompt.
+PROHIBIDO_SEGUNDO_PLANO = "Bash(run_in_background:true),Monitor"
+
 
 def _disponible(agente: str, generacion: Path | None = None) -> bool:
     if agente in ("sleep", "ensayo"):
@@ -319,6 +328,8 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
                 pelado or "claude-sonnet-5-5",
                 "--effort",
                 "high",
+                "--disallowedTools",
+                PROHIBIDO_SEGUNDO_PLANO,
                 "--dangerously-skip-permissions",
                 *(["--resume", previa] if reanudar else ["--session-id", sesion]),
                 texto,
