@@ -98,5 +98,46 @@ class LaSesionPideElInterprete(unittest.TestCase):
                 self.assertIs(pedidos[0]["lectura"], rol == "revisor")
 
 
+@unittest.skipIf(os.name == "nt", "el delta del entorno es de la rama directa POSIX")
+class ElArranqueGuardadoNoTraeElEntornoDelSupervisor(unittest.TestCase):
+    """En lanzamiento directo el agente hereda el entorno del supervisor del
+    wrapper que lo lanza; `arranque.json` solo guarda la parte que el motor
+    añade o cambia. El entorno completo del usuario llega igual al agente sin
+    escribirse entero en el intento."""
+
+    def test_el_arranque_json_guarda_solo_el_delta_y_el_agente_ve_todo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp).resolve()
+            espacio = raiz / "base" / "espacio" / "enc_x"
+            espacio.mkdir(parents=True)
+            directorio = raiz / "base" / "ejecucion" / "enc_x" / "intento-1"
+            directorio.mkdir(parents=True)
+            with mock.patch.dict(
+                os.environ,
+                {"MOTOR_SECRETO_SUPERVISOR": "no-en-disco", "HOME": "/home/real"},
+            ):
+                sesion.preparar_administrado(
+                    ["python3", "-c", "pass"],
+                    espacio,
+                    directorio,
+                    _encargo("responsable"),
+                    "s1",
+                    "2026-11-01T00:00:00Z",
+                    raiz / "runtime",
+                )
+                spec = json.loads(
+                    (directorio / "arranque.json").read_text(encoding="utf-8")
+                )
+                lanzado = {**os.environ, **spec["env"]}
+            self.assertNotIn("HOME", spec["env"])
+            self.assertNotIn("MOTOR_SECRETO_SUPERVISOR", spec["env"])
+            runtime = (raiz / "runtime").resolve()
+            self.assertEqual(Path(spec["env"]["TMPDIR"]), runtime / "tmp")
+            self.assertIn(str(runtime / "bin"), spec["env"]["PATH"])
+            self.assertEqual(lanzado["MOTOR_SECRETO_SUPERVISOR"], "no-en-disco")
+            self.assertEqual(lanzado["HOME"], "/home/real")
+            self.assertEqual(Path(lanzado["TMPDIR"]), runtime / "tmp")
+
+
 if __name__ == "__main__":
     unittest.main()
