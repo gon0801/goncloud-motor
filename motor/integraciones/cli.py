@@ -101,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--cortar", default="")
 
+    s = sub.add_parser("resumen")
+    s.add_argument("--base", type=Path, required=True)
+
     s = sub.add_parser("responder")
     s.add_argument("encargo")
     s.add_argument("--base", type=Path, required=True)
@@ -214,6 +217,11 @@ def _correr(args) -> int:
             return _json(resultado_directo(reg, args.encargo, args.texto, marca))
         if args.cmd == "avisar":
             return _json(drenar(reg, args.cortar))
+        if args.cmd == "resumen":
+            from motor.encargos import resumen as resumen_encargos
+
+            print(resumen_encargos.texto(reg))
+            return 0
         if args.cmd == "responder":
             salida = responder_canal(
                 reg,
