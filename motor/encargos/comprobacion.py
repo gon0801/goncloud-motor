@@ -94,7 +94,8 @@ def leer_disputa(interno: Path) -> tuple[dict, ...] | None:
     Formato: `{"hallazgo": "F1", "evidencia": "..."}` o
     `{"disputas": [{"hallazgo": "F1", "evidencia": "..."}]}`. No descarta
     nada: el motor lo convierte en una pregunta al propietario, que es el
-    único que puede autorizar el descarte.
+    único que puede autorizar el descarte. Una lista vacía es una retirada
+    de la disputa: no hay nada que preguntar y no es un error.
     """
     path = interno / "disputa.json"
     if not path.is_file():
@@ -109,7 +110,9 @@ def leer_disputa(interno: Path) -> tuple[dict, ...] | None:
         crudo = doc
     if isinstance(crudo, dict):
         crudo = [crudo]
-    if not isinstance(crudo, (list, tuple)) or not crudo:
+    if isinstance(crudo, (list, tuple)) and not crudo:
+        return ()
+    if not isinstance(crudo, (list, tuple)):
         raise ValueError("disputa.json necesita una lista no vacia de disputas")
     salida = []
     for item in crudo:

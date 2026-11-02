@@ -241,6 +241,44 @@ class DisputaConEvidencia(unittest.TestCase):
             self.assertIn(hallazgo.titulo, e.preguntas[-1])
             self.assertIn("identificador publico de prueba", e.preguntas[-1])
 
+    def test_una_disputa_invalida_repetida_termina_en_impedimento(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "disputa-invalida", _GhConDeepSeek)
+            vuelta("uno")
+            (_interno(r) / "disputa.json").write_text(
+                json.dumps({"hallazgo": "", "evidencia": ""})
+            )
+            e = r.incorporar()
+            self.assertEqual(e.estrategia, "reparar_instrumento")
+            self.assertEqual(e.impedimento, "")
+            e = r.incorporar()
+            self.assertEqual(e.impedimento, "disputa.json")
+            self.assertEqual(
+                e.siguiente,
+                "esperar a que se cumpla: que .interno/disputa.json vuelva a validar",
+            )
+            self.assertFalse(_lanzaria(e))
+            e = r.incorporar()
+            self.assertEqual(e.impedimento, "disputa.json")
+            self.assertFalse(_lanzaria(e))
+
+    def test_una_lista_de_disputas_vacia_es_sin_disputa(self):
+        for contenido in ({"disputas": []}, []):
+            with self.subTest(contenido=contenido), tempfile.TemporaryDirectory(
+                ignore_cleanup_errors=True
+            ) as tmp:
+                vuelta, r = _entrega_pr(self, tmp, "disputa-vacia", _GhConDeepSeek)
+                vuelta("uno")
+                (_interno(r) / "disputa.json").write_text(json.dumps(contenido))
+                e = r.incorporar()
+                fallos = [
+                    f
+                    for f in r.eventos("instrumento_fallo")
+                    if f["data"].get("clase") == "disputa.json"
+                ]
+                self.assertEqual(fallos, [])
+                self.assertEqual(e.impedimento, "")
+
 
 class SesionNuevaPorFase(unittest.TestCase):
     def _con_fases(self, tmp: str):
