@@ -143,8 +143,9 @@ def _atajo_mktemp(runtime: Path) -> Path | None:
         "prefijo=tmp\n"
         'while [ "$#" -gt 0 ]; do\n'
         "  case \"$1\" in\n"
-        "    -p|--tmpdir*)\n"
-        '      exec "$real" $flags "$@"\n'
+        "    --tmpdir*)\n"
+        "      flags=\"$flags $1\"\n"
+        "      shift\n"
         "      ;;\n"
         "    -t)\n"
         '      if [ "$#" -ge 2 ]; then\n'
