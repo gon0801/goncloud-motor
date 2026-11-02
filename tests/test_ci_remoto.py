@@ -627,6 +627,51 @@ class UnRunLargoNoSeMata(unittest.TestCase):
             self.assertIsNone(lenta.poll(), "el log sigue dentro de su plazo de 300 s")
             self.assertTrue(nec._marca_herramienta(raiz / "ejecucion", "log-1").is_file())
 
+    def test_el_cierre_del_turno_no_mata_el_log_que_el_barrido_dejo_vivo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp)
+            directorio = raiz / "ejecucion"
+            log = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(log.wait)
+            self.addCleanup(log.kill)
+            otra = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(otra.wait)
+            self.addCleanup(otra.kill)
+            marca_log = nec._marca_herramienta(directorio, "log-1")
+            marca_log.parent.mkdir(parents=True)
+            marca_log.write_text(
+                json.dumps(
+                    {"pid": log.pid, "inicio": "t0", "solicitud": "log-1", "operacion": cap.CI_LOG}
+                )
+            )
+            marca_otra = nec._marca_herramienta(directorio, "r-1")
+            marca_otra.write_text(
+                json.dumps(
+                    {"pid": otra.pid, "inicio": "t0", "solicitud": "r-1", "operacion": cap.REMOTO}
+                )
+            )
+
+            matadas = []
+            with mock.patch(
+                "motor.plataforma.matar_proc",
+                side_effect=lambda pid, inicio: matadas.append(pid) or True,
+            ):
+                cerrados = nec.cerrar_herramientas(directorio, solo_del_turno=True)
+
+            self.assertEqual(cerrados, 1, "solo la operación que no es asíncrona se cierra")
+            self.assertEqual(matadas, [otra.pid])
+            self.assertIsNone(
+                log.poll(), "el turno colgado no mata el log que el barrido dejó vivo"
+            )
+            self.assertTrue(marca_log.is_file(), "la marca queda para recoger el resultado")
+            self.assertFalse(marca_otra.exists(), "la operación común sí se cierra y archiva")
+
     def test_otra_operacion_que_pasa_del_plazo_si_se_mata(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             raiz = Path(tmp)
