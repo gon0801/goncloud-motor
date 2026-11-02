@@ -22,14 +22,19 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
 ## Qué mira cada sección
 
 - `maquina`: sistema, nombre de `maquina.toml` si se puede leer, y versión de Python.
-- `jaula`: el mecanismo de aislamiento que el motor usaría aquí. En macOS, seatbelt
-  (`sandbox-exec`); en Linux, bubblewrap; en Windows, WSL (la jaula de los agentes corre
-  dentro de la distro). Sin mecanismo, un encargo que necesite aislar al trabajador no
-  puede correr.
+- `jaula`: el mecanismo de aislamiento que el motor usaría aquí, sondeado como lo usa el
+  motor. En macOS, seatbelt (`sandbox-exec`); en Linux, bubblewrap; en Windows hay dos y
+  se reportan por separado: la jaula nativa (psec o AppContainer, según el adaptador de
+  cada agente) y la jaula de WSL, que la decide la sonda del motor sobre la distro
+  (`jaula_wsl.causa_no_disponible`) y no el hecho de que haya una distro listada. Si falta
+  uno de los dos la sección queda en aviso; si no hay ninguno, falta.
 - `agentes`: los CLI de agentes del catálogo (codex, grok, muse, kimi, claude, opencode,
-  qwen), solo presencia en PATH y su `--version`. Nunca consulta autenticación ni gastan
-  cuota: que el binario esté no dice que la suscripción esté viva, y eso lo descubre el
-  encargo al arrancar.
+  qwen), solo presencia y su `--version`. Nunca consulta autenticación ni gasta cuota: que
+  el binario esté no dice que la suscripción esté viva, y eso lo descubre el encargo al
+  arrancar. En Windows, los agentes de shell (hoy claude) corren dentro de la distro WSL:
+  su fila la decide la sonda de la jaula de WSL del motor (jaula y ejecutable de la
+  distro), no el PATH de Windows; los demás exigen su jaula nativa (psec o AppContainer)
+  antes de buscar el binario.
 - `java_tlc`: si `verificacion/inspeccion/verificar.sh` puede correr aquí. Con `TLA2TOOLS`
   y Java utilizable, o con mise en PATH (verificar.sh instala las herramientas solo), está;
   si no, un encargo de verificación formal no puede ir a esta máquina.
