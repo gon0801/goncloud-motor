@@ -33,6 +33,19 @@ python3 -B -m motor continuar ID --base /tmp/encargo-personal --clave orden-segu
 
 `corregir` no necesita parar antes: se acepta con el encargo en cualquier estado salvo `cancelado` y `terminado`, no interrumpe al agente que corre y la recibe el siguiente intento. Para aplicarla de inmediato, usa `parar` y `continuar`. Ver [Corregir un encargo en curso](flujo-revisiones.md#corregir-un-encargo-en-curso).
 
+Para un encargo largo que se alejó de su base, el host puede traer la rama
+principal a la rama del encargo sin abrir otro turno:
+
+```sh
+python3 -B -m motor traer-main ID --base /tmp/encargo-personal
+```
+
+Corre solo con el encargo activo (`recibido` o `ejecutando`) y sin agente en
+curso. Con mezcla limpia publica la rama del encargo; con conflicto deja la
+mezcla en el espacio, anota los archivos y devuelve el encargo al responsable.
+Se usa al empezar una fase nueva o antes de pedir una entrega que lleva horas
+esperando.
+
 Una retransmisión de una orden conserva su recibo y no repite la transición. `parada-local --base ... --clave ...` cierra la admisión local aunque la autoridad no responda. Una operación ya enviada puede terminar después de aceptar parar.
 
 ## Recuperar la ruta autorizada
