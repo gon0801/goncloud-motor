@@ -53,7 +53,8 @@ def leer_propuesta(interno: Path) -> tuple[dict, ...] | None:
     if not path.is_file():
         return None
     try:
-        datos = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: en Windows los agentes escriben JSON con BOM y utf-8 lo rechaza.
+        datos = json.loads(path.read_text(encoding="utf-8-sig"))
     except ValueError as exc:
         raise ValueError(f"{NOMBRE} no es JSON válido: {exc}") from exc
     crudo = datos.get("fases") if isinstance(datos, dict) else datos

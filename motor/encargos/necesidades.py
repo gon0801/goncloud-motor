@@ -73,7 +73,8 @@ def _publica(path: Path, doc: dict, raiz: Path | None = None) -> None:
 
 def _leer(path: Path) -> dict | None:
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: el buzón lo escriben agentes, y en Windows su JSON trae BOM.
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return doc if isinstance(doc, dict) else None

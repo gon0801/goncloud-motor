@@ -1102,7 +1102,7 @@ def _pedidos_efecto(espacio: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
-        datos = json.loads(path.read_text(encoding="utf-8"))
+        datos = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"pedido-efecto.json no se puede leer: {exc}") from exc
     if isinstance(datos, dict):
@@ -5702,7 +5702,7 @@ def _soltar_conductor(registro: Registro, enc: Encargo, hora: str) -> bool:
     ):
         try:
             ref = json.loads((directorio / "revision.json").read_text(encoding="utf-8"))
-            juicio = json.loads(Path(ref["resultado"]).read_text(encoding="utf-8"))
+            juicio = json.loads(Path(ref["resultado"]).read_text(encoding="utf-8-sig"))
             pendiente = pendiente or juicio.get("clase") in (
                 "confirmado",
                 "producto_aprobado",
@@ -5876,7 +5876,7 @@ def _resultado_desde_fold(
         observacion = json.loads(
             Path(referencia["observaciones"]).read_text(encoding="utf-8")
         )
-        juicio = json.loads(Path(referencia["resultado"]).read_text(encoding="utf-8"))
+        juicio = json.loads(Path(referencia["resultado"]).read_text(encoding="utf-8-sig"))
         return observacion, juicio
     except (OSError, ValueError, KeyError):
         return {}, None

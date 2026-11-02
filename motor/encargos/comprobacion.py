@@ -72,7 +72,7 @@ def leer_declaradas(interno: Path) -> list[dict] | None:
     if not path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"comprobaciones.json no se puede leer: {exc}") from exc
     comandos = doc.get("comprobaciones") if isinstance(doc, dict) else doc
@@ -848,7 +848,7 @@ def validar_juicio(
 
 def leer_juicio(path: Path, alcance: AlcanceRevision) -> JuicioValidado | FalloInstrumento:
     try:
-        texto = path.read_text(encoding="utf-8")
+        texto = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         return FalloInstrumento("juicio", f"juicio no utilizable: {exc}", "lectura")
     try:
