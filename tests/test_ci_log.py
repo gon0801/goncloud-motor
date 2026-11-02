@@ -289,6 +289,19 @@ class _CiLog(unittest.TestCase):
 
         self.assertIn("ci.correr|ci.log", texto)
 
+    def test_el_prompt_del_revisor_explica_los_parametros_de_ci_log(self):
+        from motor.encargos import comprobacion
+
+        texto = comprobacion.instrucciones_revision(
+            AlcanceRevision(clase="completa", version="v", base_version="b"),
+            Path("resultado.json"),
+        )
+
+        self.assertIn("Si la inspeccion es ci.log", texto)
+        self.assertIn("pr (el numero del PR del encargo)", texto)
+        self.assertIn("job (el nombre exacto del job)", texto)
+        self.assertIn("sha (el SHA esperado)", texto)
+
     def test_el_catalogo_la_ofrece_y_no_es_observable(self):
         self.assertEqual(
             cap.operaciones_de(self.recursos, "ci-linux"), (cap.CI, cap.CI_LOG)
