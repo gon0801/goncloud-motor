@@ -388,6 +388,10 @@ def _supervisor(reg: Registro, args) -> int:
     # que retome lo que un tope dejara sin enviar: drena en línea y por completo.
     from motor.integraciones.directores import DrenadoAparte
 
+    if not args.una_vez:
+        from motor.encargos import resumen as resumen_encargos
+
+        resumen_encargos.asegurar_config(reg.base)
     drenador = None if args.una_vez else DrenadoAparte(reg.base)
 
     def paso() -> list[dict]:

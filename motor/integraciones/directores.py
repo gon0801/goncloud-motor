@@ -19,6 +19,7 @@ from motor.encargos.ciclo import (
     recibir,
     resolver_entrega,
 )
+from motor.encargos import resumen as resumen_encargos
 from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida, reducir
 from motor.encargos.registro import Registro
 from motor.integraciones import canales
@@ -1336,7 +1337,21 @@ def drenar(
     terminados = {i for i, e in encargos.items() if e is not None and e.estado == "terminado"}
     if terminados:
         _descartar_avances_de_terminados(registro, terminados)
-    for encargo, enc in encargos.items():
+    envios_resumen: set[tuple[str, int]] = set()
+    try:
+        trabajos_resumen = resumen_encargos.preparar(registro, vuelta.ahora)
+    except Exception:  # noqa: BLE001  el resumen no puede tumbar la pasada de avisos
+        trabajos_resumen = []
+    for aviso, cuerpo in trabajos_resumen:
+        if vuelta.agotada():
+            cortada = True
+            break
+        publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
+        if aviso.get("firma"):
+            envios_resumen.add(
+                (str(aviso["firma"]), int(aviso.get("episodio") or 0))
+            )
+    for encargo, enc in ([] if cortada else encargos.items()):
         if enc is None or not enc.canal:
             continue
         anterior = registro.fold(encargo, hasta=corte)
@@ -1367,6 +1382,11 @@ def drenar(
             publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
         if cortada:
             break
+    for firma, episodio in envios_resumen:
+        try:
+            resumen_encargos.cerrar(registro, vuelta.ahora, firma, episodio)
+        except Exception:  # noqa: BLE001  marcar el envio no tumba la pasada
+            pass
     try:
         canales.registrar_pasada(registro.base, vuelta.ahora, vuelta.errores, vuelta.respondieron)
     except OSError:

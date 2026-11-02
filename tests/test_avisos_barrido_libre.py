@@ -173,11 +173,15 @@ class HiloAparte(Base):
         return duracion
 
     def test_la_vuelta_del_supervisor_no_depende_del_canal_ni_cuando_funciona(self):
-        self.b.encargo("uno")
+        ident = self.b.encargo("uno")
         (self.b.base / "demora").write_text("4")
         duracion = self._tres_vueltas_del_supervisor()
         self.assertLess(duracion, 3.0, "tres vueltas sin esperar los 4 s del transporte")
-        self.assertEqual(len(self.b.entregados()), 1, "el aviso salió igual, desde el hilo")
+        self.assertIn(
+            directores.id_aviso(ident, "avance:inicio:inicio"),
+            self.b.entregados(),
+            "el aviso del encargo salió igual, desde el hilo",
+        )
 
     def test_la_vuelta_del_supervisor_no_espera_a_un_transporte_que_tarda_y_falla(self):
         self.b.encargo("uno")
