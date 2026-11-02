@@ -109,7 +109,7 @@ class ElEntornoApuntaAlTemporalDelRuntime(unittest.TestCase):
                 Path(hecho.stdout.strip()).resolve().is_relative_to(runtime.resolve())
             )
 
-    def test_las_banderas_se_conservan_con_plantilla_y_con_p(self):
+    def test_las_banderas_se_conservan_con_plantilla_y_prefijo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             base = Path(tmp)
             runtime = base / "runtime"
@@ -119,7 +119,6 @@ class ElEntornoApuntaAlTemporalDelRuntime(unittest.TestCase):
             atajo = aislamiento._atajo_mktemp(runtime) / "mktemp"
             casos = (
                 ("plantilla", ["-d", str(temporal / "propia.XXXXXX")]),
-                ("con -p", ["-d", "-p", str(temporal)]),
                 ("prefijo", ["-dt", "pre"]),
             )
             for nombre, argumentos in casos:
@@ -137,6 +136,48 @@ class ElEntornoApuntaAlTemporalDelRuntime(unittest.TestCase):
                     self.assertTrue(salida.is_dir(), salida)
                     self.assertTrue(salida.is_relative_to(temporal.resolve()))
                     self.assertEqual(list(cwd.iterdir()), [])
+
+    def test_la_rama_p_reenvia_las_banderas(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp)
+            runtime = base / "runtime"
+            cwd = base / "cwd"
+            cwd.mkdir()
+            temporal = temporal_de(runtime)
+            registro = base / "argumentos.txt"
+            real = base / "mktemp-falso"
+            real.write_text(
+                "#!/bin/sh\n"
+                'printf "%s\\n" "$@" > "$REGISTRO"\n'
+                "dir=''\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  case \"$1\" in\n"
+                "    -d) shift ;;\n"
+                "    -p) dir=\"$2\"; shift 2 ;;\n"
+                "    *) break ;;\n"
+                "  esac\n"
+                "done\n"
+                'test -n "$dir" || exit 2\n'
+                'mkdir "$dir/tmp.$$" && printf "%s\\n" "$dir/tmp.$$"\n',
+                encoding="utf-8",
+            )
+            real.chmod(0o755)
+            with mock.patch.object(aislamiento.shutil, "which", return_value=str(real)):
+                atajo = aislamiento._atajo_mktemp(runtime) / "mktemp"
+            hecho = subprocess.run(
+                [str(atajo), "-d", "-p", str(temporal)],
+                cwd=cwd,
+                env={**os.environ, "TMPDIR": str(temporal), "REGISTRO": str(registro)},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(hecho.returncode, 0, hecho.stderr)
+            salida = Path(hecho.stdout.strip()).resolve()
+            self.assertTrue(salida.is_dir(), salida)
+            self.assertTrue(salida.is_relative_to(temporal.resolve()))
+            self.assertEqual(list(cwd.iterdir()), [])
+            self.assertEqual(registro.read_text().split(), ["-d", "-p", str(temporal)])
 
     def test_las_formas_de_t_terminan_sin_colgarse(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
