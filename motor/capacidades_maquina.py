@@ -62,23 +62,77 @@ def _primera(r) -> str:
 # ----------------------------------------------------------------- secciones
 
 
+def _jaula_windows_disponible() -> bool:
+    from motor.plataforma.jaula_windows import disponible
+
+    return disponible()
+
+
+def _psec_disponible() -> bool:
+    from motor.plataforma.psec_windows import disponible
+
+    return disponible()
+
+
+def _causa_jaula_wsl(agente: str) -> str:
+    from motor.plataforma import jaula_wsl
+
+    return jaula_wsl.causa_no_disponible(agente)
+
+
+def _usa_wsl(agente: str) -> bool:
+    from motor.encargos.aislamiento import usa_wsl
+
+    return usa_wsl(agente)
+
+
 def _jaula(correr, sandbox_exec: Path = Path("/usr/bin/sandbox-exec")) -> dict:
     if sistema() == "windows":
+        # Los mismos sondeos que el motor: los agentes de shell corren en la
+        # jaula de WSL (distro) y los demás en la jaula de Windows (psec o
+        # AppContainer). Listar una distro no la da por buena.
+        filas = []
+        if _psec_disponible():
+            filas.append({"mecanismo": "psec", "estado": "ok",
+                          "detalle": "CreateProcessSecurityEnvironment disponible"})
+        elif _jaula_windows_disponible():
+            filas.append({"mecanismo": "appcontainer", "estado": "ok",
+                          "detalle": "AppContainer disponible"})
+        else:
+            filas.append({"mecanismo": "psec", "estado": "falta",
+                          "detalle": "ni psec ni AppContainer: la jaula de codex, grok, muse, "
+                          "kimi, opencode y qwen no está disponible"})
         try:
             r = correr(["wsl.exe", "-l", "-q"], 30)
         except (OSError, subprocess.TimeoutExpired):
-            return {"mecanismo": "wsl", "estado": "falta", "detalle": "wsl.exe no corre"}
-        if r.returncode != 0:
-            detalle = _texto((r.stdout or b"") + (r.stderr or b""))
-            return {"mecanismo": "wsl", "estado": "falta", "detalle": detalle or "wsl.exe falló"}
-        distros = [
-            linea.strip("\x00 ﻿\r\n")
-            for linea in r.stdout.decode("utf-16-le", errors="replace").splitlines()
-            if linea.strip("\x00 ﻿\r\n")
-        ]
-        if distros:
-            return {"mecanismo": "wsl", "estado": "ok", "detalle": f"distro WSL: {distros[0]}"}
-        return {"mecanismo": "wsl", "estado": "falta", "detalle": "sin distro WSL instalada"}
+            r = None
+        distro_nombre = ""
+        if r is not None and r.returncode == 0:
+            distros = [
+                linea.strip("\x00 ﻿\r\n")
+                for linea in r.stdout.decode("utf-16-le", errors="replace").splitlines()
+                if linea.strip("\x00 ﻿\r\n")
+            ]
+            if distros:
+                distro_nombre = distros[0]
+        causa_wsl = _causa_jaula_wsl("claude")
+        detalle_wsl = causa_wsl or (
+            f"distro WSL: {distro_nombre}" if distro_nombre else "distro WSL lista"
+        )
+        filas.append({"mecanismo": "wsl", "estado": "ok" if not causa_wsl else "falta",
+                      "detalle": detalle_wsl})
+        buenas = sum(1 for f in filas if f["estado"] == "ok")
+        if buenas == len(filas):
+            seccion = {"mecanismo": "psec+wsl", "estado": "ok",
+                       "detalle": "jaula de Windows y jaula de WSL disponibles"}
+        elif buenas:
+            seccion = {"mecanismo": "psec+wsl", "estado": "aviso",
+                       "detalle": "; ".join(f["detalle"] for f in filas if f["estado"] != "ok")}
+        else:
+            seccion = {"mecanismo": "psec+wsl", "estado": "falta",
+                       "detalle": "; ".join(f["detalle"] for f in filas)}
+        seccion["filas"] = filas
+        return seccion
     if sistema() == "macos":
         if sandbox_exec.is_file():
             return {"mecanismo": "seatbelt", "estado": "ok", "detalle": str(sandbox_exec)}
@@ -94,8 +148,33 @@ def _jaula(correr, sandbox_exec: Path = Path("/usr/bin/sandbox-exec")) -> dict:
 
 def _agentes(which) -> list[dict]:
     filas = []
+    en_windows = sistema() == "windows"
     for agente in sorted(ADAPTADORES):
         cliente = cliente_para(agente)
+        if en_windows and _usa_wsl(agente):
+            # El motor corre estos agentes dentro de la distro: cuentan la
+            # jaula y el ejecutable de allí, no el PATH de Windows.
+            causa = _causa_jaula_wsl(agente)
+            filas.append({
+                "agente": agente,
+                "estado": "ok" if not causa else "falta",
+                "detalle": f"{cliente} corre en la distro WSL (jaula y ejecutable de la distro)"
+                if not causa else f"jaula de WSL: {causa}",
+            })
+            continue
+        if en_windows:
+            # La misma puerta que agentes._disponible: según el adaptador, psec
+            # o AppContainer.
+            jaula_ok = (
+                _psec_disponible() if ADAPTADORES[agente].psec else _jaula_windows_disponible()
+            )
+            if not jaula_ok:
+                filas.append({
+                    "agente": agente,
+                    "estado": "falta",
+                    "detalle": "sin jaula de Windows para el agente (ni psec ni AppContainer)",
+                })
+                continue
         ruta = which(cliente)
         if not ruta:
             filas.append({
@@ -279,7 +358,10 @@ def _leer_registro(clave: str, valor: str, correr) -> str:
     except (OSError, subprocess.TimeoutExpired):
         r = None
     if r is not None and r.returncode == 0:
-        return _texto(r.stdout).strip()
+        # El valor va entero: _texto colapsa espacios y corta en 200, y una
+        # llave Run de más de 200 caracteres perdía la comilla de cierre y el
+        # nombre del vigilante (hallazgo h_ca90a1b7).
+        return (r.stdout or b"").decode("utf-8", errors="replace").strip()
     try:
         r2 = correr(["reg", "query", clave, "/v", valor], 15)
     except (OSError, subprocess.TimeoutExpired):
@@ -408,7 +490,7 @@ def texto(datos: dict) -> str:
         seccion = datos.get(clave) or {}
         lineas.append(f"{clave:<10} {seccion.get('estado', '?'):<5}  {seccion.get('detalle') or ''}")
         for fila in seccion.get("filas", []):
-            nombre = fila.get("recurso") or fila.get("agente") or ""
+            nombre = fila.get("recurso") or fila.get("agente") or fila.get("mecanismo") or ""
             lineas.append(f"  {nombre:<10} {fila.get('estado', '?'):<5}  {fila.get('detalle') or ''}")
     if datos.get("faltas"):
         lineas.append("faltas:")
