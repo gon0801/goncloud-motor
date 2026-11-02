@@ -1403,7 +1403,12 @@ def drenar(
             )
         } if anterior is not None else set()
         trabajos: list[tuple[dict, str | None]] = []
-        if (enc.estado == "terminado" and enc.evidencia) or enc.estado == "cancelado":
+        if (enc.estado == "terminado" and enc.evidencia) or (
+            enc.estado == "cancelado"
+            and (anterior is None or anterior.estado != "cancelado")
+        ):
+            # Un cancelado que ya lo era en el corte es historia: main nunca le
+            # escribió aviso de cierre y avisarlo ahora sería una ráfaga al desplegar.
             aviso = _aviso_de(enc)
             trabajos.append((aviso, _cuerpo_de_cierre(enc)))
         apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None

@@ -109,6 +109,14 @@ class Banco:
             f"arbol-{ident}",
         )
 
+    def subir_corte(self) -> None:
+        """El corte histórico sube al último evento, como queda en una base migrada."""
+        self.reg.db.execute(
+            "UPDATE cortes_avisos SET evento = (SELECT MAX(id) FROM events) "
+            "WHERE version = 'avances-v1'"
+        )
+        self.reg.db.commit()
+
 
 class Base(unittest.TestCase):
     def setUp(self):
@@ -250,6 +258,21 @@ class ElCierreEnLlano(Base):
 
 
 class UnAvisoViejoNoSaleDeGolpe(Base):
+    def test_un_cancelado_anterior_al_corte_no_se_envia(self):
+        for n in range(2):
+            ident = self.b.encargo(f"# Pedido viejo {n}\n\ntexto", f"viejo-{n}")
+            self.b.cancelar(ident)
+        self.b.subir_corte()
+        self.assertEqual(directores.drenar(self.b.reg, ahora=T0)["avisos"], [])
+        self.assertEqual(self.b.cuerpos(), [], "los cancelados históricos no se envían")
+        ident = self.b.encargo("# Pedido nuevo\n\ntexto", "nuevo-uno")
+        self.b.cancelar(ident)
+        avisos = directores.drenar(self.b.reg, ahora=T0 + 60)["avisos"]
+        self.assertEqual([a["encargo"] for a in avisos if a["entregado"]], [ident])
+        self.assertIn("Quedó cancelado", self.b.cuerpos()[0]["cuerpo"])
+        directores.drenar(self.b.reg, ahora=T0 + 120)
+        self.assertEqual(len(self.b.cuerpos()), 1, "y el cierre no se repite")
+
     def test_un_aviso_incierto_de_hace_7_horas_se_descarta_y_no_se_envia(self):
         self.encargo_terminado("viejo-uno")
         self.b.caer()
