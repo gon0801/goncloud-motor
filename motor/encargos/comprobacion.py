@@ -2,7 +2,12 @@
 
 El espacio fuera de `.interno/` es solo producto. La firma excluye por parte
 de ruta (`.git`, `__pycache__`, `.runtime`, `.interno`), nunca por nombre de
-archivo: no hay lista de internos que sincronizar con los prompts.
+archivo: no hay lista de internos que sincronizar con los prompts. Cuando el
+espacio esta en un repositorio git tambien excluye lo que sus propias reglas
+ignoran, con el mismo criterio con el que se decide que entra en un commit; una
+cache local no cambia el producto. Dentro de un repositorio ajeno no hereda el
+ignore de arriba, que puede ocultar el espacio entero y devolver una firma
+constante.
 """
 
 from __future__ import annotations
@@ -13,15 +18,19 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass, replace as _replace
 from pathlib import Path
 
-from .aislamiento import aislar, lecturas_del_interprete
+from .aislamiento import aislar, lecturas_del_interprete, limpiar_temporal
 from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_hallazgo
 
 INTERNO = ".interno"
 _EXCLUIDAS = (".git", "__pycache__", ".runtime", INTERNO)
+
+TOPE_POR_OMISION_S = 120
+TOPE_MAXIMO_S = 900
 
 
 def interno_de(espacio: Path, crear: bool = False) -> Path:
@@ -31,19 +40,121 @@ def interno_de(espacio: Path, crear: bool = False) -> Path:
     return path
 
 
-def version_producto(espacio: Path) -> VersionProducto:
-    entradas = []
-    for path in sorted(espacio.rglob("*")):
-        relativo = path.relative_to(espacio)
+def _es_repo_propio(espacio: Path) -> bool:
+    """El mismo criterio con el que `ciclo._asegurar_repo` reconoce un clon.
+
+    Un `.git` de archivo tambien vale: es el de un worktree, que sigue siendo
+    la raiz de su propio repositorio. Comparar `rev-parse --show-toplevel`
+    exigiria normalizar rutas resueltas, con `/tmp` frente a `/private/tmp` en
+    macOS y separadores distintos en Windows.
+    """
+    return (espacio / ".git").exists()
+
+
+def _git(argumentos: list[str]) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(
+            argumentos,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _rutas_del_listado(salida: bytes, espacio: Path) -> list[Path]:
+    rutas = []
+    for bruto in salida.split(b"\0"):
+        if not bruto:
+            continue
+        relativo = Path(os.fsdecode(bruto))
         if any(p in _EXCLUIDAS for p in relativo.parts):
             continue
-        if path.is_file():
-            entradas.append(
-                (
-                    relativo.as_posix(),
-                    hashlib.sha256(path.read_bytes()).hexdigest(),
-                )
+        if (espacio / relativo).is_file():
+            rutas.append(relativo)
+    return sorted(rutas)
+
+
+def _rutas_por_git(espacio: Path) -> list[Path] | None:
+    r = _git(
+        [
+            "git", "-C", str(espacio), "ls-files", "-z",
+            "--cached", "--others", "--exclude-standard",
+        ]
+    )
+    if r is None or r.returncode != 0:
+        return None
+    return _rutas_del_listado(r.stdout, espacio)
+
+
+def _dentro_de_repo(espacio: Path) -> bool:
+    r = _git(
+        ["git", "-C", str(espacio), "rev-parse", "--is-inside-work-tree"]
+    )
+    return r is not None and r.returncode == 0 and r.stdout.strip() == b"true"
+
+
+def _rutas_con_ignore_propio(espacio: Path) -> list[Path] | None:
+    """Enumera el espacio como raiz de su propio arbol.
+
+    Se usa cuando el espacio vive dentro de un repositorio ajeno. El listado
+    normal heredaria el ignore de arriba, que puede ocultar el espacio entero y
+    devolver una firma constante. Aqui el espacio es la raiz, asi que sus
+    `.gitignore` y los de sus subdirectorios siguen valiendo: una cache que se
+    ignora a si misma tampoco cambia la firma, como en un repositorio propio.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = _git(["git", "init", "-q", "--bare", tmp])
+            if r is None or r.returncode != 0:
+                return None
+            r = _git(
+                [
+                    "git", "--git-dir", tmp, "--work-tree", str(espacio),
+                    "-c", "core.excludesFile=", "ls-files", "-z",
+                    "--others", "--exclude-standard",
+                ]
             )
+            if r is None or r.returncode != 0:
+                return None
+            return _rutas_del_listado(r.stdout, espacio)
+    except OSError:
+        return None
+
+
+def _rutas_del_producto(espacio: Path) -> list[Path] | None:
+    """Los archivos que entrarian en un commit, como `ciclo._commit_push`.
+
+    En un repositorio propio, `ls-files --cached --others --exclude-standard`
+    da los rastreados y los que git no ignora. Dentro de uno ajeno se enumera
+    con las reglas del propio espacio y no con las de arriba, que pueden
+    ocultar el producto o contar caches. `None` deja el recorrido por disco
+    para cuando no hay repositorio.
+    """
+    if _es_repo_propio(espacio):
+        return _rutas_por_git(espacio)
+    if not _dentro_de_repo(espacio):
+        return None
+    return _rutas_con_ignore_propio(espacio)
+
+
+def version_producto(espacio: Path) -> VersionProducto:
+    rutas = _rutas_del_producto(espacio)
+    if rutas is None:
+        rutas = [
+            path.relative_to(espacio)
+            for path in sorted(espacio.rglob("*"))
+            if not any(p in _EXCLUIDAS for p in path.relative_to(espacio).parts)
+            and path.is_file()
+        ]
+    entradas = [
+        (
+            relativo.as_posix(),
+            hashlib.sha256((espacio / relativo).read_bytes()).hexdigest(),
+        )
+        for relativo in rutas
+    ]
     h = hashlib.sha256()
     for ruta, huella in entradas:
         h.update(ruta.encode())
@@ -60,6 +171,8 @@ def firma_producto(espacio: Path) -> str:
 def leer_declaradas(interno: Path) -> list[dict] | None:
     """Comprobaciones declaradas en `.interno/comprobaciones.json`.
 
+    Cada comprobacion puede declarar `tope` en segundos enteros. Sin el, vale
+    TOPE_POR_OMISION_S; por encima de TOPE_MAXIMO_S el archivo no valida.
     None si el archivo no existe o declara una lista vacia: no declarar
     ninguna es valido. Un archivo presente pero invalido levanta ValueError.
     """
@@ -67,7 +180,7 @@ def leer_declaradas(interno: Path) -> list[dict] | None:
     if not path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"comprobaciones.json no se puede leer: {exc}") from exc
     comandos = doc.get("comprobaciones") if isinstance(doc, dict) else doc
@@ -85,7 +198,56 @@ def leer_declaradas(interno: Path) -> list[dict] | None:
             or not all(isinstance(x, str) for x in c["argv"])
         ):
             raise ValueError("cada comprobacion necesita objetivo y argv no vacio")
+        tope = c.get("tope", TOPE_POR_OMISION_S)
+        if isinstance(tope, bool) or not isinstance(tope, int) or tope <= 0:
+            raise ValueError(
+                f"la comprobacion {c['objetivo']!r} necesita un tope entero de "
+                "segundos mayor que cero"
+            )
+        if tope > TOPE_MAXIMO_S:
+            raise ValueError(
+                f"la comprobacion {c['objetivo']!r} declara un tope de {tope} s; "
+                f"el maximo es {TOPE_MAXIMO_S} s"
+            )
     return comandos
+
+
+def leer_disputa(interno: Path) -> tuple[dict, ...] | None:
+    """Un bloqueante de DeepSeek que el responsable sostiene que no aplica.
+
+    Formato: `{"hallazgo": "F1", "evidencia": "..."}` o
+    `{"disputas": [{"hallazgo": "F1", "evidencia": "..."}]}`. No descarta
+    nada: el motor lo convierte en una pregunta al propietario, que es el
+    único que puede autorizar el descarte. Una lista vacía es una retirada
+    de la disputa: no hay nada que preguntar y no es un error.
+    """
+    path = interno / "disputa.json"
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"disputa.json no se puede leer: {exc}") from exc
+    if isinstance(doc, dict) and "disputas" in doc:
+        crudo = doc["disputas"]
+    else:
+        crudo = doc
+    if isinstance(crudo, dict):
+        crudo = [crudo]
+    if isinstance(crudo, (list, tuple)) and not crudo:
+        return ()
+    if not isinstance(crudo, (list, tuple)):
+        raise ValueError("disputa.json necesita una lista no vacia de disputas")
+    salida = []
+    for item in crudo:
+        if not isinstance(item, dict):
+            raise ValueError("cada disputa debe ser un objeto")
+        hallazgo = str(item.get("hallazgo") or "").strip()
+        evidencia = " ".join(str(item.get("evidencia") or "").split())
+        if not hallazgo or not evidencia:
+            raise ValueError("cada disputa necesita hallazgo y evidencia no vacios")
+        salida.append({"hallazgo": hallazgo, "evidencia": evidencia})
+    return tuple(salida)
 
 
 def observar_comprobaciones(
@@ -137,13 +299,35 @@ def observar_procedimiento(espacio: Path, directorio: Path, contenedor: Path) ->
     return datos
 
 
+def _tope_de(comprobacion: dict) -> int:
+    return comprobacion.get("tope", TOPE_POR_OMISION_S)
+
+
+def _mensaje_tope(argv: list[str], tope: int, stdout: str, stderr: str) -> str:
+    completa = (stdout or "") + (stderr or "")
+    recortada = len(completa) > 4000
+    salida = completa[-4000:]
+    if not salida.strip():
+        salida = "(sin salida)"
+    unidad = "segundo" if tope == 1 else "segundos"
+    etiqueta = "salida parcial (recortada)" if recortada else "salida parcial"
+    return (
+        f"la comprobacion {' '.join(argv)} excedio su tope de {tope} {unidad}; "
+        f"arbol cerrado; {etiqueta}: {salida}; "
+        f"puedes partir el comando o declarar un tope mayor "
+        f"(maximo {TOPE_MAXIMO_S} segundos)"
+    )
+
+
 def _ejecutar_declaradas(
     comandos: list[dict], espacio: Path, directorio: Path, contenedor: Path
 ) -> dict:
     procedimiento = {"comprobaciones": comandos}
     ejecuciones = []
     for i, c in enumerate(comandos):
-        observado = {"objetivo": c["objetivo"], "argv": c["argv"]}
+        tope = _tope_de(c)
+        runtime_cmd = contenedor / f"runtime-{i}"
+        observado = {"objetivo": c["objetivo"], "argv": c["argv"], "tope": tope}
         try:
             from motor import plataforma
             from motor.runwrap import _publica
@@ -155,7 +339,7 @@ def _ejecutar_declaradas(
             comando = aislar(
                 c["argv"],
                 espacio,
-                contenedor / f"runtime-{i}",
+                runtime_cmd,
                 lecturas_extra=() if os.name == "nt" else lecturas_del_interprete(),
                 interprete=True,
             )
@@ -203,7 +387,7 @@ def _ejecutar_declaradas(
                             comando.argv, start_new_session=False, **opciones
                         )
                 try:
-                    stdout, stderr = p.communicate(timeout=30)
+                    stdout, stderr = p.communicate(timeout=tope)
                     observado.update(
                         rc=p.returncode, stdout=stdout[-16000:], stderr=stderr[-16000:]
                     )
@@ -237,9 +421,12 @@ def _ejecutar_declaradas(
                                 except ProcessLookupError:
                                     pass
                         p.kill()
-                    p.communicate()
-                    observado["error_instrumento"] = (
-                        "la comprobacion excedio 30 segundos; arbol cerrado"
+                    stdout, stderr = p.communicate()
+                    observado.update(
+                        rc=p.returncode, stdout=stdout[-16000:], stderr=stderr[-16000:]
+                    )
+                    observado["error_instrumento"] = _mensaje_tope(
+                        c["argv"], tope, stdout, stderr
                     )
                 finally:
                     if os.name == "nt":
@@ -248,6 +435,8 @@ def _ejecutar_declaradas(
                 reg.close()
         except (OSError, RuntimeError) as exc:
             observado["error_instrumento"] = str(exc)
+        finally:
+            limpiar_temporal(runtime_cmd)
         ejecuciones.append(observado)
     runtime_path = directorio / "ejecuciones-runtime.jsonl"
     runtime = []
@@ -328,10 +517,14 @@ def instrucciones_responsable(interno: Path, capacidades: str = "") -> str:
     return f"""Investiga, implementa y comprueba el pedido completo con las herramientas adecuadas al trabajo.
 El espacio fuera de .interno/ es solo el producto que se entrega. Todo lo interno va en {interno}:
 contexto.md con hechos, decisiones y pendientes; evidencia.txt con lo que observaste al comprobar.
+Escribe .interno/cuerpo-pr.md con el cuerpo del PR: que cambio, como se comprueba y la salida
+de las pruebas en rojo y en verde. Ese texto sera la descripcion del PR.
 Comprobar es proporcional al pedido. Para cambiar una cifra puede bastar leer el valor final y
 dejarlo en evidencia.txt. Si una comprobacion ejecutable aporta, declarala en
 .interno/comprobaciones.json como {{"comprobaciones":[{{"objetivo":"parte del pedido que demuestra",
-"argv":["ejecutable","argumento"]}}]}}. Son comandos argv, no shell implicito. Declarar ninguna es
+"argv":["ejecutable","argumento"],"tope":120}}]}}. Son comandos argv, no shell implicito.
+Cada comprobacion puede declarar su "tope" en segundos enteros; sin declararlo vale 120 s.
+El maximo admitido es 900 s y un tope mayor no valida. Declarar ninguna es
 valido; no hay un archivo de procedimiento obligatorio.
 El supervisor ejecuta lo declarado y conserva sus salidas. Un revisor de otro modelo compara el
 pedido, el producto real y esas observaciones. Un rc=0 o una nota no demuestran por si solos el pedido.
@@ -339,6 +532,9 @@ Si falla un comando de comprobacion, corrige ese comando y vuelve a observar. No
 valido por un error del instrumento ni repitas efectos con recibo.
 Si hay hallazgos bloqueantes abiertos, corrige solo esos y sus efectos. Lo aprobado que no cambio
 conserva su aprobacion; no reescribas producto valido.
+Si un bloqueante de DeepSeek no aplica, no lo ignores ni lo descartes por tu cuenta: escribe
+.interno/disputa.json como {{"hallazgo":"<id>","evidencia":"<por que no aplica, con la comprobacion>"}}
+y entrega. El motor pedira autorizacion al propietario; solo el puede descartarlo.
 No cambies el objetivo ni despliegues. Las escrituras externas se piden en .interno/pedido-efecto.json.
 Su formato interno es {{"id":"identidad-estable-del-efecto", "operacion":"publicar",
 "clave":"clave-autorizada-del-destino", "cuerpo":"texto-exacto-autorizado"}}.
@@ -378,7 +574,10 @@ def instrucciones_revision(ref: AlcanceRevision, resultado: Path) -> str:
             "Esta es la revision completa. Compara TODO el pedido con el producto real "
             "y las ejecuciones observadas por el supervisor."
         )
-    return f'''Inspecciona el producto real. No inventes observaciones. Un comando tautologico,
+    return f'''Tu turno termina cuando respondes y nadie te despierta, asi que no dejes nada
+corriendo en segundo plano. La bateria completa no se corre en local: si hace falta, se
+pide con la inspeccion ci.correr.
+Inspecciona el producto real. No inventes observaciones. Un comando tautologico,
 una nota o una fraccion del objetivo no basta para aprobar.
 {alcance_txt}
 Entrega juntos los hallazgos y distingue bloqueantes de observaciones. Explica el impacto real
@@ -404,9 +603,11 @@ Escribe SOLO tu juicio en {resultado}, con este objeto JSON interno.
 "aprobadas":["ruta revisada y aprobada"],
 "efectos_pendientes":["id exacto de cada solicitud de efecto que apruebas"],
 "inspeccion_faltante":"inspeccion concreta que falta, solo si el veredicto es no_concluyente",
-"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer|ci.correr", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
+"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer|ci.correr|ci.log", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
 "ampliacion":"motivo si revisaste fuera de las rutas tocadas",
 "instrumento":{{"causa":"que fallo del instrumento, si aplica"}}}}
+Si la inspeccion es ci.log, sus parametros son pr (el numero del PR del encargo),
+job (el nombre exacto del job) y sha (el SHA esperado); no uses el ejemplo de sql.
 Si el producto cumple y solo faltan efectos del adaptador, aprueba y enumera en
 efectos_pendientes los IDs exactos de solicitudes_efecto. Eso autoriza al supervisor a
 mediarlos; NO afirma que ya ocurrieron. No pidas al responsable acceso al registro, al
@@ -574,6 +775,7 @@ def _inspeccion_de(crudo) -> InspeccionPedido:
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
         capacidades.CI,
+        capacidades.CI_LOG,
     )
     if operacion not in conocidas:
         raise DefectoJuicio(
@@ -760,7 +962,7 @@ def validar_juicio(
 
 def leer_juicio(path: Path, alcance: AlcanceRevision) -> JuicioValidado | FalloInstrumento:
     try:
-        texto = path.read_text(encoding="utf-8")
+        texto = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         return FalloInstrumento("juicio", f"juicio no utilizable: {exc}", "lectura")
     try:

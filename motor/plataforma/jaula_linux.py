@@ -565,6 +565,11 @@ def _preparar_runtime(runtime: str, credencial: str, ejecutable: str) -> dict:
     if credencial == "claude":
         entorno.update(credencial_de_claude(ejecutable))
         entorno["CLAUDE_CONFIG_DIR"] = runtime + "/.claude"
+        # Misma restriccion que motor/encargos/agentes.py (SIN_SEGUNDO_PLANO):
+        # el guardián corre en la distro sin el motor y no puede importarla, el
+        # literal viaja duplicado a proposito. Sin esto el subagente (Agent/Task)
+        # arranca en segundo plano y su trabajo sobrevive al turno.
+        entorno["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
         _publica(
             runtime + "/.claude/settings.json", {"skipDangerousModePermissionPrompt": True}
         )

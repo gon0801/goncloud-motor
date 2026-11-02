@@ -16,6 +16,7 @@ import re
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
@@ -47,6 +48,9 @@ class ChecksVerdict:
     )
     corridas: tuple = ()  # {"nombre", "run_id", "url", "status", "conclusion"} de cada check run
     corridas_fallidas: tuple = ()  # las corridas terminadas en rojo, con su url y run_id
+    # Requeridos que faltan y están en marcha o en cola: una corrida sin completar o un
+    # estado legacy «pending». Uno que nadie corre está en `faltan` pero no aquí.
+    en_marcha: tuple[str, ...] = ()
 
 
 
@@ -143,7 +147,7 @@ def veredicto(
             corridas=corridas,
             corridas_fallidas=(),
         )
-    faltan, fallas = [], []
+    faltan, fallas, en_marcha = [], [], []
     for c in requeridos:
         partes = [
             r
@@ -159,10 +163,13 @@ def veredicto(
                 fallas.append(c)
             else:
                 faltan.append(c)
+                if any(e.get("state") == "pending" for e in sts):
+                    en_marcha.append(c)
         elif any(
             r["status"] != "completed" or r.get("conclusion") is None for r in partes
         ):
             faltan.append(c)
+            en_marcha.append(c)
         elif any(
             r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
         ):
@@ -181,6 +188,7 @@ def veredicto(
         and all(e.get("state") != "pending" for e in estados),
         corridas=corridas,
         corridas_fallidas=fallidas,
+        en_marcha=tuple(en_marcha),
     )
 
 
@@ -246,6 +254,7 @@ class GitHubPort(Protocol):
     ) -> PrView: ...
     def marcar_listo(self, repo: str, numero: int) -> None: ...
     def cambiar_base(self, repo: str, numero: int, base: str) -> None: ...
+    def actualizar_cuerpo(self, repo: str, numero: int, cuerpo: str) -> None: ...
     def checks(
         self,
         repo: str,
@@ -280,6 +289,23 @@ AUN_NO_LLEGA = (
 )
 REINTENTOS_PR = 6
 ESPERA_PR_S = 3.0
+
+
+@contextmanager
+def _cuerpo_en_archivo(cuerpo: str):
+    """El cuerpo viaja a `gh` en un archivo, no como un argv gigante."""
+    archivo = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", newline="", suffix=".md", delete=False
+    )
+    try:
+        with archivo:
+            archivo.write(cuerpo)
+        yield archivo.name
+    finally:
+        try:
+            os.unlink(archivo.name)
+        except OSError:
+            pass
 
 
 class GhGitHub:
@@ -358,31 +384,32 @@ class GhGitHub:
                 self.cambiar_base(repo, numero, base)
                 vista = self._vista(repo, numero)
             return vista
-        for intento in range(REINTENTOS_PR):
-            try:
-                url = self._gh(
-                    "pr",
-                    "create",
-                    "-R",
-                    n,
-                    "--draft",
-                    "--head",
-                    rama,
-                    "--base",
-                    base,
-                    "--title",
-                    titulo,
-                    "--body",
-                    cuerpo,
-                ).strip()
-                break
-            except RuntimeError as e:
-                # Recién empujada, la rama tarda unos segundos en verse del lado de GitHub.
-                if intento == REINTENTOS_PR - 1 or not any(
-                    x in str(e) for x in AUN_NO_LLEGA
-                ):
-                    raise
-                self.dormir(ESPERA_PR_S)
+        with _cuerpo_en_archivo(cuerpo) as ruta_cuerpo:
+            for intento in range(REINTENTOS_PR):
+                try:
+                    url = self._gh(
+                        "pr",
+                        "create",
+                        "-R",
+                        n,
+                        "--draft",
+                        "--head",
+                        rama,
+                        "--base",
+                        base,
+                        "--title",
+                        titulo,
+                        "--body-file",
+                        ruta_cuerpo,
+                    ).strip()
+                    break
+                except RuntimeError as e:
+                    # Recién empujada, la rama tarda unos segundos en verse del lado de GitHub.
+                    if intento == REINTENTOS_PR - 1 or not any(
+                        x in str(e) for x in AUN_NO_LLEGA
+                    ):
+                        raise
+                    self.dormir(ESPERA_PR_S)
         return self._vista(repo, int(url.rstrip("/").split("/")[-1]))
 
     def marcar_listo(self, repo, numero):
@@ -393,6 +420,13 @@ class GhGitHub:
         if self._vista(repo, numero).base != base:
             self._gh(
                 "pr", "edit", str(numero), "--base", base,
+                "-R", self.nombre(repo),
+            )
+
+    def actualizar_cuerpo(self, repo, numero, cuerpo):
+        with _cuerpo_en_archivo(cuerpo) as ruta_cuerpo:
+            self._gh(
+                "pr", "edit", str(numero), "--body-file", ruta_cuerpo,
                 "-R", self.nombre(repo),
             )
 
@@ -677,6 +711,7 @@ class FakeGitHub:
                 "borrador": True,
                 "estado": "abierto",
                 "titulo": titulo,
+                "cuerpo": cuerpo,
             }
             self._guardar(s)
         elif s["prs"][k]["base"] != base:
@@ -701,6 +736,11 @@ class FakeGitHub:
         if pr["base"] != base:
             pr["base"] = base
             self._guardar(s)
+
+    def actualizar_cuerpo(self, repo, numero, cuerpo):
+        s = self._cargar()
+        self._pr(s, repo, numero)["cuerpo"] = cuerpo
+        self._guardar(s)
 
     def _correr(self, repo: str, sha: str, cmd: str) -> bool:
         with tempfile.TemporaryDirectory() as t:

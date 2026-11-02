@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import socket
+import stat
 import subprocess
 import uuid
 from dataclasses import replace
@@ -16,6 +18,7 @@ from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
     VERSION_LECTOR_DEEPSEEK,
+    _argv_del_intento,
     digest,
     firma_producto,
     hallazgos_deepseek,
@@ -24,6 +27,7 @@ from .comprobacion import (
     instrucciones_revision,
     interno_de,
     leer_declaradas,
+    leer_disputa,
     leer_juicio,
     version_producto,
 )
@@ -36,6 +40,7 @@ from .dominio import (
     alcance_de,
     ajustes_cubiertos,
     bloqueantes_abiertos,
+    bloqueos_nuevos,
     correcciones_sin_ver,
     puede_recibir_intento,
     revision_independiente_cubre_producto,
@@ -50,6 +55,7 @@ from .dominio import (
     inspeccion_bloquea,
     marca_inspeccion_entregada,
     respuesta_consumida,
+    revision_externa_pendiente,
     nivel_cumplido,
     sin_nada_en_curso,
     prompt_responsable,
@@ -89,6 +95,8 @@ _UMBRAL_S = 30
 _QUIETUD_S = 600
 _QUIETUD_VUELTAS = 3
 _RELECTURA_CHECKS_S = 120
+_RELECTURA_DEEPSEEK_S = 60
+_AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
 
 
@@ -878,6 +886,11 @@ def _barrer_encargos(
             enc = _reconciliar_checks(
                 registro, enc, gh, espacio, hora, epoch, forzar=por_incorporar
             )
+        if not parada and enc.via != "directa":
+            enc = _releer_deepseek(
+                registro, enc, gh, _directorio(base, encargo_id), hora, epoch,
+                devolver=not por_incorporar,
+            )
         if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
             arbol = observar(directorio, proc)
@@ -905,8 +918,12 @@ def _barrer_encargos(
             ) and _devolver_correcciones(registro, enc, hora):
                 enc = registro.fold(encargo_id)
             elif _aplica_entrega(enc):
+                antes = len(registro.eventos(encargo_id))
                 enc = _paso_entrega(registro, enc, gh, hora)
-                sin_llm = True
+                sin_llm = (
+                    len(registro.eventos(encargo_id)) > antes
+                    or bool(enc.reanuda_en)
+                )
             elif _revision_aprobada_vigente(enc):
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
                 sin_llm = enc.estado == "terminado" or (
@@ -1090,7 +1107,7 @@ def _pedidos_efecto(espacio: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
-        datos = json.loads(path.read_text(encoding="utf-8"))
+        datos = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"pedido-efecto.json no se puede leer: {exc}") from exc
     if isinstance(datos, dict):
@@ -1224,9 +1241,40 @@ def _sin_avance(
 ) -> None:
     """Escalera de una vuelta que no cerro ningun bloqueante: la primera vuelve
     a diagnosticar, la segunda seguida deja el encargo en necesita_usuario.
-    `enc` ya incorpora el hallazgo de la vuelta."""
+    `enc` ya incorpora el hallazgo de la vuelta.
+
+    Una vuelta cuenta una sola vez: si otra fuente del mismo barrido ya la
+    resolvio, esta no suma ni escala. Un bloqueante que el responsable no habia
+    visto es informacion nueva: la vuelta vuelve a el para corregir y la escalera
+    empieza de cero. No hay tope para esa serie: mientras cada vuelta traiga
+    informacion nueva, el encargo sigue hasta cerrar los bloqueantes."""
     huella = huella_bloqueo(enc)
     base = f"sin-progreso:{enc.id}:{huella}:{enc.generacion}:{serie}"
+    nuevos = sorted(bloqueos_nuevos(enc))
+    if not nuevos and enc.generacion and enc.vuelta_contada == enc.generacion:
+        return
+    if nuevos:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "sin_progreso",
+                "data": {
+                    "huella": huella,
+                    "nueva": True,
+                    "nuevos": nuevos,
+                    "escalar": False,
+                    "hora": hora,
+                },
+            },
+            base + ":nueva",
+        )
+        _devolver(
+            registro, enc, "investigar", abierto,
+            "corregir los bloqueantes nuevos de esta vuelta (" + ", ".join(nuevos)
+            + ") junto con los que siguen abiertos; lo aprobado que no cambio se conserva",
+            hora, f"nuevos-{serie}",
+        )
+        return
     if enc.sin_progreso >= 1:
         registro.anotar(
             enc.id,
@@ -1259,6 +1307,66 @@ def _sin_avance(
         "no repetir la misma accion",
         hora, f"diagnostico-{serie}",
     )
+
+
+def _disputa_de_deepseek(
+    registro: Registro, enc: Encargo, interno: Path, hora: str
+) -> bool:
+    """Convierte en pregunta al propietario una disputa con evidencia.
+
+    El responsable no descarta un hallazgo de DeepSeek: si sostiene que no
+    aplica, deja en `.interno/disputa.json` el id y la evidencia. El motor
+    para y pide autorización; el hallazgo sigue abierto hasta que el
+    propietario decida.
+    """
+    if not bloqueantes_abiertos(enc, "deepseek"):
+        return False
+    try:
+        disputas = leer_disputa(interno)
+    except ValueError as exc:
+        _anotar_instrumento(
+            registro, enc, "disputa", str(exc),
+            "corregir .interno/disputa.json con hallazgo y evidencia",
+            hora, f"disputa-{enc.generacion}", clase="disputa.json",
+        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "disputa.json", str(exc),
+            "que .interno/disputa.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir la disputa sin descartar el hallazgo por cuenta propia",
+                hora, "disputa",
+            )
+        return True
+    if not disputas:
+        return False
+    abiertos = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
+    partes = [
+        f"{abiertos[d['hallazgo']].id} «{abiertos[d['hallazgo']].titulo}»: "
+        f"{d['evidencia']}"
+        for d in disputas
+        if d["hallazgo"] in abiertos
+    ]
+    if not partes:
+        return False
+    texto = (
+        "El responsable sostiene, con evidencia, que estos hallazgos de "
+        "DeepSeek no aplican: " + "; ".join(partes)
+        + ". No los descarto sin tu autorización. Dime si los descartamos "
+        "o cómo seguir."
+    )
+    ukey = (
+        f"disputa:{enc.id}:{enc.fase_activa}:"
+        + hashlib.sha256(texto.encode()).hexdigest()[:12]
+    )
+    if registro.por_ukey(ukey) is not None:
+        # La misma disputa ya se preguntó. Si el propietario ordenó corregir,
+        # el archivo viejo no vuelve a bloquear la corrección; una evidencia
+        # nueva cambia el texto y la vuelve a preguntar.
+        return False
+    marcar_pregunta(registro, enc.id, texto, True, hora, ukey=ukey)
+    return True
 
 
 _NOTA_SIN_INTENTO = "Correcciones que ningún intento pudo recibir:"
@@ -1327,7 +1435,13 @@ def _decision(
     )
 
 
-_VERIFICABLES = ("entorno", "comprobaciones.json", "fases.json", "pedido-efecto.json")
+_VERIFICABLES = (
+    "entorno",
+    "comprobaciones.json",
+    "fases.json",
+    "pedido-efecto.json",
+    "disputa.json",
+)
 
 _EVIDENCIA_DE = {
     "entorno": (
@@ -1339,6 +1453,7 @@ _EVIDENCIA_DE = {
         "sobre las fases vigentes"
     ),
     "pedido-efecto.json": ".interno/pedido-efecto.json vuelve a validar",
+    "disputa.json": ".interno/disputa.json vuelve a validar",
 }
 
 
@@ -1524,6 +1639,9 @@ def _verificar_impedimento(
         if clase == "pedido-efecto.json":
             _pedidos_efecto(espacio)
             return True
+        if clase == "disputa.json":
+            leer_disputa(interno)
+            return True
     except (OSError, UnicodeError, ValueError, TypeError, KeyError):
         return False
     return None
@@ -1616,7 +1734,6 @@ def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
         )
         and enc.rol != "revisor"
         and not bloqueantes_abiertos(enc, "independiente")
-        and not (set(alcance_de(enc).tocadas) & {r for r, _h in enc.aprobadas})
     )
 
 
@@ -1687,10 +1804,21 @@ def _evidencia_revision(registro: Registro, enc: Encargo) -> str:
 
 def _producto_no_aprobado(enc: Encargo, espacio: Path):
     """La version vigente en disco si ya no es la aprobada. Ninguna si
-    coincide con el producto registrado y con la referencia aprobada."""
+    coincide con el producto registrado y con la referencia aprobada.
+
+    Un producto que perdio su `sha_git` (firma vieja que contaba archivos
+    ignorados) y cuyo arbol coincide con la version aprobada no abre otra
+    revision: la diferencia era de firma, no de producto.
+    """
     if enc.producto is None:
         return None
     actual = version_producto(espacio)
+    if (
+        not enc.producto.sha_git
+        and enc.revision_vigente is not None
+        and actual.firma == enc.revision_vigente.version
+    ):
+        return None
     referencias = {enc.producto.firma}
     if not _correccion_deepseek_conserva_aprobadas(enc):
         if enc.revisado is not None:
@@ -1743,12 +1871,26 @@ def _intentar_cierre(
     espacio: Path,
     directorio: Path,
     hora: str,
+    veredicto_comprobado: bool = False,
 ) -> Encargo:
     """Despacha efectos con recibo y compone el cierre si el nivel se cumplio.
 
     Lo usan _cerrar_con_juicio y el reintento sin LLM de barrer: un efecto
     sin asentar reintenta este paso, nunca rehace el producto.
+
+    Con entrega pr y el nivel pr alcanzado, el cierre pasa por
+    `_cerrar_con_veredicto`, que relee a DeepSeek con el puerto de GitHub. Quien
+    llega aquí sin ese paso (`veredicto_comprobado` falso) no cierra: el
+    siguiente paso de entrega lo hace con el veredicto vigente.
     """
+    if (
+        not veredicto_comprobado
+        and enc.entrega.nivel in ("pr", "integrado", "desplegado")
+        and enc.nivel_alcanzado == "pr"
+        and enc.pr_numero
+        and enc.estado != "terminado"
+    ):
+        return enc
     from motor.runwrap import _publica
 
     if _devolver_correcciones(registro, enc, hora):
@@ -2453,6 +2595,9 @@ def _incorporar_responsable(
         f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
     )
     enc = registro.fold(enc.id)
+    if _disputa_de_deepseek(registro, enc, interno, hora):
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     if error_declaradas:
         _anotar_instrumento(
             registro, enc, "comprobacion", error_declaradas,
@@ -2492,14 +2637,15 @@ def _incorporar_responsable(
     if declaradas is not None:
         path = directorio / "observaciones.json"
         observacion = None
+        esperadas = _argv_del_intento(declaradas, directorio)
         if path.is_file():
             try:
                 candidata = json.loads(path.read_text(encoding="utf-8"))
             except ValueError:
                 candidata = None
-            if candidata and (
-                candidata.get("version") or candidata.get("producto")
-            ) == version.firma:
+            if candidata and _observacion_corresponde(
+                candidata, version.firma, esperadas
+            ):
                 observacion = candidata
         if observacion is None:
             iniciar_comprobacion(espacio, directorio)
@@ -2522,21 +2668,36 @@ def _incorporar_responsable(
                 )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
+        ident = digest({"comprobaciones": esperadas})[:16]
         registro.anotar(
             enc.id,
             {
                 "kind": "observacion_supervisor",
                 "data": {
                     "version": version.firma,
+                    "comprobaciones": observacion.get("comprobaciones") or [],
                     "ejecuciones": observacion.get("ejecuciones") or [],
                     "hora": hora,
                 },
             },
-            f"observacion:{enc.id}:{version.firma}",
+            f"observacion:{enc.id}:{version.firma}:{ident}",
         )
         enc = registro.fold(enc.id)
     if commit_entregado and not _deepseek_por_releer(enc):
         abierto = _bloqueo_externo_abierto(enc)
+        if abierto and revision_externa_pendiente(enc):
+            # Falta el veredicto de DeepSeek o de los checks sobre este commit: una
+            # vuelta sin novedad del supervisor no es una vuelta sin avance, y el
+            # bloqueante abierto puede ser uno que su fuente ya cerró. No cuenta;
+            # se espera, sin lanzar otro turno que devolvería lo mismo.
+            marcar_espera(
+                registro, enc.id,
+                f"esperando la revisión externa del commit {commit_entregado[:12]} "
+                "(DeepSeek o checks) antes de contar otra vuelta",
+                _reanuda_en(120 if enc.fase_actual.checks_esperando_sha else 60), hora,
+            )
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
         if abierto:
             _sin_avance(
                 registro, enc, abierto,
@@ -2996,6 +3157,8 @@ def _incorporar_entradas(
     squash la reescribe) y se une con `-s ours`, árbol intacto. Devuelve la
     causa si no se pudo.
     """
+    if _git(espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
+        return ""
     fase = enc.fase_actual
     deps = _deps_de(enc, fase)
     if any(dep.integrado_sha for dep in deps):
@@ -3464,6 +3627,54 @@ def _anotar_checks_verdes(
     return registro.fold(enc.id)
 
 
+def _requeridos_en_marcha(veredicto) -> bool:
+    """Un check requerido que aún no terminó tiene una corrida sin completar o un estado
+    legacy pendiente (`veredicto.en_marcha`). Uno sin ninguna corrida (nadie lo corre)
+    no está en marcha: no hay qué esperar."""
+    return bool(veredicto.en_marcha)
+
+
+def _anotar_checks_esperando(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> Encargo:
+    """Los checks requeridos de este SHA siguen corriendo: queda dicho para que el
+    freno no cuente vueltas mientras tanto. Un solo evento por tramo de espera: lo
+    cierra un verde o un rojo, y la ronda distingue una espera de la siguiente."""
+    fase = enc.fase_actual
+    if fase is None or fase.checks_esperando_sha == sha:
+        return enc
+    ronda = sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["data"].get("sha") == sha
+        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+        and (
+            ev["kind"] == "entrega_bloqueada"
+            or (
+                ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") in ("checks_verdes", "checks_rojos")
+            )
+        )
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "checks_esperando",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:checks_esperando:{sha}:ronda{ronda}",
+    )
+    return registro.fold(enc.id)
+
+
 def _marca_checks(directorio: Path) -> dict:
     try:
         marca = json.loads(
@@ -3578,8 +3789,769 @@ def _reconciliar_checks(
         return enc
     _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
     if not veredicto.green:
+        if _requeridos_en_marcha(veredicto):
+            # Algún check requerido sigue corriendo: lo que se lee es una corrida a
+            # medias, aunque otro ya esté en rojo. No se toma por terminada ni se
+            # refrescan los checks en rojo con ella. Las corridas ajenas a los
+            # requeridos no cuentan: no tienen por qué terminar para leer los rojos.
+            return _anotar_checks_esperando(registro, enc, enc.pr_numero, sha, hora)
+        if not veredicto.fallas:
+            return enc
+        fallas = tuple(sorted(str(x) for x in veredicto.fallas))
+        if fase.checks_esperando_sha == sha or fallas != tuple(sorted(fase.fallas_checks)):
+            # La corrida terminó en rojo: ya no hay revisión pendiente y los checks
+            # en rojo son los de esta lectura, no los de la anterior.
+            esperas = sum(
+                1
+                for ev in registro.eventos(enc.id)
+                if ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") == "checks_esperando"
+                and ev["data"].get("sha") == sha
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "paso": "checks_rojos",
+                        "repo": enc.entrega.repo,
+                        "numero": enc.pr_numero,
+                        "sha": sha,
+                        "fallas": list(fallas),
+                        "hora": hora,
+                    },
+                },
+                f"entrega:{enc.id}:{enc.fase_activa}:checks_rojos:{sha}:{esperas}:{'+'.join(fallas)}",
+            )
+            return registro.fold(enc.id)
         return enc
     return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
+
+
+_LIMITE_CUERPO_PR = 65_536
+_NOTA_CUERPO_RECORTADO = (
+    "\n\n[Nota: el cuerpo supera el límite de GitHub y se recortó. "
+    "El texto completo está en `.interno/cuerpo-pr.md`, en el espacio del "
+    "encargo y fuera del PR.]"
+)
+
+
+def _leer_cuerpo_del_espacio(espacio: Path) -> str | None:
+    """Lee `.interno/cuerpo-pr.md` sin seguir enlaces ni aceptar un archivo
+    compartido con otro lugar del host. Devuelve None si no es un archivo
+    regular propio del espacio."""
+    ruta = espacio / ".interno" / "cuerpo-pr.md"
+    try:
+        if capacidades._es_enlace(ruta):
+            return None
+        info = os.lstat(ruta)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return None
+        if not ruta.resolve().is_relative_to(espacio.resolve()):
+            return None
+        fd = os.open(
+            ruta,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+    except (OSError, ValueError, RuntimeError):
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return None
+        entrada = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+        fd = -1
+        with entrada:
+            try:
+                return entrada.read(_LIMITE_CUERPO_PR + 1)
+            except OSError:
+                return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _cabe_en_el_limite(cuerpo: str) -> bool:
+    """GitHub acepta 65 536 caracteres, pero el API también se queja por bytes
+    (64 KiB en varios casos): se respetan las dos medidas."""
+    return (
+        len(cuerpo) <= _LIMITE_CUERPO_PR
+        and len(cuerpo.encode("utf-8")) <= _LIMITE_CUERPO_PR
+    )
+
+
+def _cuerpo_recortado(texto: str, resto: str) -> str:
+    max_caracteres = _LIMITE_CUERPO_PR - len(resto)
+    max_bytes = _LIMITE_CUERPO_PR - len(resto.encode("utf-8"))
+    if max_caracteres <= 0 or max_bytes <= 0:
+        return resto[:_LIMITE_CUERPO_PR]
+    candidato = texto[:max_caracteres]
+    if len(candidato.encode("utf-8")) > max_bytes:
+        candidato = candidato.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+    return f"{candidato}{resto}"
+
+
+def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
+    """El cuerpo del PR: lo que el responsable dejó en `.interno/cuerpo-pr.md`,
+    con una línea final que identifica el encargo y la fase. Sin archivo o vacío
+    se conserva el cuerpo de siempre."""
+    defecto = f"Encargo {enc.id}. Revision independiente aprobada."
+    texto = _leer_cuerpo_del_espacio(espacio)
+    if texto is None:
+        return defecto
+    texto = texto.replace("\x00", "").rstrip()
+    if not texto.strip():
+        return defecto
+    linea = f"Encargo {enc.id}. Fase: {enc.fase_activa or FASE_IMPLICITA}."
+    cuerpo = f"{texto}\n\n{linea}"
+    if _cabe_en_el_limite(cuerpo):
+        return cuerpo
+    resto = f"{_NOTA_CUERPO_RECORTADO}\n\n{linea}"
+    return _cuerpo_recortado(texto, resto)
+
+
+def _cuerpo_ya_publicado(registro: Registro, enc: Encargo, sha: str) -> bool:
+    return any(
+        ev["kind"] == "entrega_externa"
+        and ev["data"].get("paso") == "pr_cuerpo"
+        and ev["data"].get("sha") == sha
+        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+        for ev in registro.eventos(enc.id)
+    )
+
+
+def _anotar_cuerpo_publicado(
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+) -> None:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "pr_cuerpo",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:pr_cuerpo:{sha}",
+    )
+
+
+def _actualizar_cuerpo_pr(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    numero: int,
+    sha: str,
+    espacio: Path,
+    hora: str,
+) -> Encargo:
+    if _cuerpo_ya_publicado(registro, enc, sha):
+        return enc
+    try:
+        gh.actualizar_cuerpo(enc.entrega.repo, numero, _cuerpo_pr(enc, espacio))
+    except Exception as exc:
+        _anotar_instrumento(
+            registro,
+            enc,
+            "github",
+            f"no se pudo actualizar el cuerpo del PR #{numero}: {exc}",
+            "reintentar el cuerpo en la próxima publicación",
+            hora,
+            f"cuerpo-{sha[:12]}",
+        )
+        return registro.fold(enc.id) or enc
+    _anotar_cuerpo_publicado(registro, enc, numero, sha, hora)
+    return registro.fold(enc.id) or enc
+
+
+def _huella_comentarios(comentarios: list[dict]) -> str:
+    """Identidad del comentario que DeepSeek tiene hoy sobre un SHA. Cambia con
+    el estado de un hallazgo, una generación nueva o una re-revisión."""
+    h = hashlib.sha256()
+    for c in comentarios:
+        h.update(str(c.get("texto") or "").encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()[:16]
+
+
+def _anotar_lectura_deepseek(
+    registro: Registro, enc: Encargo, numero: int, sha: str,
+    comentarios: list[dict], hora: str,
+) -> Encargo:
+    """Anota lo que DeepSeek dice hoy del SHA de la fase activa. Un hallazgo
+    abierto que el comentario ya no trae queda resuelto. Cada lectura distinta
+    tiene su clave (huella del comentario y número de lectura del SHA): el
+    mismo comentario no anota nada dos veces y un comentario que vuelve a un
+    texto anterior sí se lee otra vez."""
+    hallazgos = hallazgos_deepseek(comentarios, sha)
+    nuevos_bloq = {h.id for h in hallazgos if h.gravedad == "bloqueante"}
+    fusion = list(hallazgos)
+    for h in bloqueantes_abiertos(enc, "deepseek"):
+        if h.id not in nuevos_bloq:
+            fusion.append(replace(h, estado="resuelto"))
+    huella = _huella_comentarios(comentarios)
+    lecturas = sum(
+        1
+        for ev in registro.eventos(enc.id)
+        if ev["kind"] == "entrega_externa"
+        and ev["data"].get("paso") == "deepseek_leido"
+        and ev["data"].get("sha") == sha
+        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+    )
+    serie = f"{sha}:lector{VERSION_LECTOR_DEEPSEEK}:{huella}:{lecturas}"
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "revision",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "revision_id": "rev_ds_" + sha[:12],
+                "version": enc.producto.firma if enc.producto else "",
+                "base_version": enc.deepseek_sha,
+                "alcance": "correccion" if enc.deepseek_sha else "completa",
+                "veredicto": "cambios" if nuevos_bloq else "aprobado",
+                "revisor": "deepseek",
+                "origen": "deepseek",
+                "lector_version": VERSION_LECTOR_DEEPSEEK,
+                "cubre": [h.id for h in bloqueantes_abiertos(enc, "deepseek")],
+                "hallazgos": [h.como_dict() for h in fusion],
+                "hora": hora,
+            },
+        },
+        f"revision-ds:{enc.id}:{enc.fase_activa}:{serie}",
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "deepseek_leido",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "huella": huella,
+                "recibo": sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:deepseek_leido:{serie}",
+    )
+    return registro.fold(enc.id)
+
+
+def _marca_deepseek(directorio: Path) -> dict:
+    try:
+        marca = json.loads(
+            (directorio / "deepseek_lectura.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return {}
+    return marca if isinstance(marca, dict) else {}
+
+
+def _marcar_lectura_deepseek(
+    directorio: Path, sha: str, epoch: float, error: str = "", aviso: float = 0.0
+) -> None:
+    try:
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "deepseek_lectura.json").write_text(
+            json.dumps(
+                {"sha": sha, "epoch": epoch, "error": error, "aviso": aviso}
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _releer_deepseek(
+    registro: Registro, enc: Encargo, gh, directorio: Path, hora: str, epoch: float,
+    devolver: bool = True,
+) -> Encargo:
+    """El comentario de DeepSeek sobre el SHA vigente puede cambiar sin que
+    cambie el SHA: un hallazgo descartado o resuelto, una generación nueva, una
+    re-revisión. Cada barrido, con el espaciado de `_RELECTURA_DEEPSEEK_S`, se
+    mira el comentario; si es el mismo que se leyó no se anota nada. Con un
+    agente en curso solo se anota: devolver el trabajo es cosa de quien
+    incorpora su vuelta."""
+    fase = enc.fase_actual
+    if (
+        gh is None
+        or fase is None
+        or enc.via == "directa"
+        or enc.entrega.nivel not in ("pr", "integrado", "desplegado")
+        or fase.nivel_alcanzado not in ("pr_abierto", "pr")
+        or fase.estado == "preparada"
+        or not fase.pr_numero
+        or not fase.pr_sha
+        or fase.deepseek_sha != fase.pr_sha
+        or enc.estado in ("terminado", "cancelado", "deteniendo", "detenido")
+    ):
+        return enc
+    sha = fase.pr_sha
+    marca = _marca_deepseek(directorio)
+    try:
+        desde = epoch - float(marca.get("epoch") or 0)
+    except (TypeError, ValueError):
+        desde = _RELECTURA_DEEPSEEK_S
+    espaciado = _REINTENTO_FORZADO_S if marca.get("error") else _RELECTURA_DEEPSEEK_S
+    if marca.get("sha") == sha and 0 <= desde < espaciado:
+        return enc
+    try:
+        comentarios = gh.comentarios_deepseek(enc.entrega.repo, fase.pr_numero, sha)
+    except Exception as exc:
+        # El espaciado no se consume con una lectura que falló: se reintenta
+        # pronto. La causa queda en el registro (`lectura_fallida`) y en la
+        # marca, sin tocar motivo, siguiente ni causa: el próximo turno del
+        # agente no se redirige.
+        error = f"{type(exc).__name__}: {exc}"
+        # Un aviso al empezar el tramo de fallos y otro cuando pasan
+        # `_AVISO_LECTURA_DEEPSEEK_S` desde el último, no según el reloj.
+        try:
+            ultimo_aviso = float(marca.get("aviso") or 0)
+        except (TypeError, ValueError):
+            ultimo_aviso = 0.0
+        nuevo_tramo = (
+            not marca.get("error") or epoch - ultimo_aviso >= _AVISO_LECTURA_DEEPSEEK_S
+        )
+        _marcar_lectura_deepseek(
+            directorio, sha, epoch, error, epoch if nuevo_tramo else ultimo_aviso
+        )
+        if not nuevo_tramo:
+            return enc
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "lectura_fallida",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "fuente": "deepseek",
+                    "sha": sha,
+                    "causa": f"no se pudo releer el comentario de DeepSeek: {error}",
+                    "hora": hora,
+                },
+            },
+            f"lectura-fallida:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch)}",
+        )
+        return registro.fold(enc.id) or enc
+    _marcar_lectura_deepseek(directorio, sha, epoch)
+    if marca.get("error"):
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "lectura_fallida",
+                "data": {
+                    "fase": enc.fase_activa,
+                    "fuente": "deepseek",
+                    "sha": sha,
+                    "causa": "",
+                    "hora": hora,
+                },
+            },
+            f"lectura-recuperada:{enc.id}:{enc.fase_activa}:{sha}:{int(epoch)}",
+        )
+        enc = registro.fold(enc.id) or enc
+    if not comentarios:
+        return enc
+    huella = _huella_comentarios(comentarios)
+    if huella == fase.deepseek_huella:
+        return enc
+    enc = _anotar_lectura_deepseek(
+        registro, enc, fase.pr_numero, sha, comentarios, hora
+    )
+    abiertos = bloqueantes_abiertos(enc, "deepseek")
+    if (
+        devolver
+        and abiertos
+        and enc.estado in ("recibido", "ejecutando")
+        and enc.proc is None
+        and not enc.reserva
+    ):
+        _devolver(
+            registro, enc, "investigar", abiertos[0].titulo,
+            "corregir " + ", ".join(h.id for h in abiertos)
+            + " (DeepSeek); lo aprobado que no cambio se conserva",
+            hora, f"deepseek-{huella}",
+        )
+    elif (
+        devolver
+        and not abiertos
+        and enc.estado not in (
+            "terminado", "cancelado", "deteniendo", "detenido", "necesita_usuario"
+        )
+        and enc.proc is None
+        and not enc.reserva
+        and enc.revision_vigente is not None
+        and enc.revision_vigente.veredicto == "aprobado"
+        and not bloqueantes_abiertos(enc, "independiente")
+        and not _revision_aprobada_vigente(enc)
+    ):
+        # DeepSeek quedó limpio. Si la corrección cambió el producto desde la
+        # última aprobación de Opus, el tramo acumulado necesita su única
+        # revisión final antes de integrar o cerrar. Con un bloqueante de Opus
+        # abierto o un veredicto que no es «aprobado», sigue el ciclo normal:
+        # el turno es del responsable, no otra revisión sobre lo ya rechazado.
+        _devolver(
+            registro, enc, "revisar_evidencia",
+            "DeepSeek quedó sin bloqueantes; falta la revisión final del tramo corregido",
+            "revisar solo lo que cambió desde la última aprobación de Opus "
+            "antes de integrar o cerrar",
+            hora,
+            f"revision-final-{enc.producto.firma if enc.producto else ''}",
+            rol="revisor",
+        )
+    return registro.fold(enc.id)
+
+
+def _cierre_sin_aplicar(
+    registro: Registro, enc: Encargo, que: str, sha: str, hora: str
+) -> Encargo:
+    """Un evento que el registro no aplicó no deja cerrar: DeepSeek tiene un
+    veredicto que el estado del encargo no recoge. Se anota y se reintenta."""
+    causa = f"no se pudo anotar {que} antes de cerrar"
+    _anotar_instrumento(
+        registro, enc, "github", causa,
+        "reintentar la comprobación del veredicto de DeepSeek antes de cerrar",
+        hora, f"deepseek-sin-aplicar-{sha[:12]}",
+    )
+    marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+    return registro.fold(enc.id)
+
+
+def _veredicto_antes_de_cerrar(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> Encargo | None:
+    """Antes de terminar una fase con entrega pr (con integrado o desplegado,
+    antes del merge), el veredicto vigente de DeepSeek sobre el SHA final de su
+    PR; y, si es la última fase, sobre el de cada PR de las anteriores:
+    DeepSeek puede publicar un hallazgo después de que el motor leyó, y la fase
+    ya cerrada no volvería a mirarse. Se reabre la fase cuyo PR sigue abierto
+    (nivel alcanzado pr); con integrado o desplegado las anteriores ya se
+    fusionaron y su corrección no cabe en ese PR: se pregunta al propietario.
+
+    Devuelve None si se puede cerrar. Si hay un High o un Medium abierto, la
+    fase de ese PR vuelve al responsable y se devuelve el encargo así."""
+    if (
+        gh is None
+        or enc.entrega.nivel not in ("pr", "integrado", "desplegado")
+        or enc.nivel_alcanzado != "pr"
+        or not enc.pr_numero
+        or not enc.pr_sha
+        or enc.deepseek_sha != enc.pr_sha
+    ):
+        return None
+    fase = enc.fase_actual
+    sha = enc.pr_sha
+    try:
+        comentarios = gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha)
+        previas = []
+        if all(f.estado == "preparada" for f in enc.fases if f.id != enc.fase_activa):
+            for f in enc.fases:
+                if (
+                    f.id == enc.fase_activa
+                    or f.nivel_alcanzado not in ("pr", "integrado", "desplegado")
+                    or not f.pr_numero
+                    or not f.pr_sha
+                ):
+                    continue
+                previas.append(
+                    (f, gh.comentarios_deepseek(enc.entrega.repo, f.pr_numero, f.pr_sha))
+                )
+    except Exception as exc:
+        causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura de DeepSeek antes de cerrar",
+            hora, f"deepseek-cerrar-{sha[:12]}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return registro.fold(enc.id)
+    if comentarios and _huella_comentarios(comentarios) != fase.deepseek_huella:
+        enc = _anotar_lectura_deepseek(
+            registro, enc, enc.pr_numero, sha, comentarios, hora
+        )
+        if enc.fase_actual.deepseek_huella != _huella_comentarios(comentarios):
+            return _cierre_sin_aplicar(
+                registro, enc, "la lectura de DeepSeek", sha, hora
+            )
+        abiertos = bloqueantes_abiertos(enc, "deepseek")
+        if abiertos:
+            _devolver(
+                registro, enc, "investigar", abiertos[0].titulo,
+                "corregir " + ", ".join(h.id for h in abiertos)
+                + " (DeepSeek); lo aprobado que no cambio se conserva",
+                hora, f"deepseek-{_huella_comentarios(comentarios)}",
+            )
+            return registro.fold(enc.id)
+    for previa, comentarios in previas:
+        if not comentarios or _huella_comentarios(comentarios) == previa.deepseek_huella:
+            continue
+        abiertos = [
+            h for h in hallazgos_deepseek(comentarios, previa.pr_sha)
+            if h.gravedad == "bloqueante"
+        ]
+        if not abiertos:
+            continue
+        huella = _huella_comentarios(comentarios)
+        if previa.nivel_alcanzado != "pr":
+            # El PR ya se fusionó: la corrección no cabe en él. No se termina
+            # en silencio con el hallazgo abierto: se avisa al propietario una vez.
+            clave = (
+                f"pregunta:{enc.id}:fusionado:{previa.id}:{previa.pr_sha}:{huella}"
+            )
+            if registro.por_ukey(clave) is not None:
+                continue
+            marcar_pregunta(
+                registro, enc.id,
+                f"DeepSeek dejó abierto en el PR #{previa.pr_numero}, ya fusionado, "
+                f"de la fase {previa.id}: " + "; ".join(h.titulo for h in abiertos)
+                + ". Esa fase no se puede reabrir en su PR. Decide si abrir un "
+                "encargo aparte para corregirlo o seguir sin corregirlo.",
+                True, hora, ukey=clave,
+            )
+            return registro.fold(enc.id)
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "fase_reabierta",
+                "data": {
+                    "fase": previa.id,
+                    "sha": previa.pr_sha,
+                    "numero": previa.pr_numero,
+                    "causa": (
+                        f"DeepSeek dejó abierto en el PR #{previa.pr_numero} de la "
+                        f"fase {previa.id}: " + "; ".join(h.titulo for h in abiertos)
+                    ),
+                    "hora": hora,
+                },
+            },
+            f"reabierta:{enc.id}:{previa.id}:{previa.pr_sha}:{huella}",
+        )
+        enc = registro.fold(enc.id)
+        if enc.fase_activa != previa.id:
+            return _cierre_sin_aplicar(
+                registro, enc, f"reabrir la fase {previa.id}", previa.pr_sha, hora
+            )
+        enc = _anotar_lectura_deepseek(
+            registro, enc, previa.pr_numero, previa.pr_sha, comentarios, hora
+        )
+        abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
+        _devolver(
+            registro, enc, "investigar",
+            abiertos_ds[0].titulo if abiertos_ds else abiertos[0].titulo,
+            "corregir " + ", ".join(h.id for h in abiertos_ds)
+            + f" (DeepSeek) en el PR #{previa.pr_numero}; lo aprobado que no "
+            "cambio se conserva",
+            hora, f"deepseek-{huella}",
+        )
+        return registro.fold(enc.id)
+    return None
+
+
+def _cerrar_con_veredicto(
+    registro: Registro, enc: Encargo, gh, espacio: Path, directorio: Path, hora: str
+) -> Encargo:
+    if gh is None and _requiere_veredicto(enc):
+        # Sin puerto de GitHub no hay veredicto que comprobar: no se cierra.
+        return enc
+    devuelto = _veredicto_antes_de_cerrar(registro, enc, gh, hora)
+    if devuelto is not None:
+        return devuelto
+    return _intentar_cierre(
+        registro, enc, espacio, directorio, hora, veredicto_comprobado=True
+    )
+
+
+def _requiere_veredicto(enc: Encargo) -> bool:
+    """Cerrar esta fase exige releer a DeepSeek: entrega con PR y nivel pr alcanzado."""
+    return bool(
+        enc.entrega.nivel in ("pr", "integrado", "desplegado")
+        and enc.nivel_alcanzado == "pr"
+        and enc.pr_numero
+    )
+
+
+def _sha_final_sin_leer(enc: Encargo, gh) -> bool:
+    """El nivel pr ya se alcanzó pero el commit final no está leído por DeepSeek: o hay un
+    commit nuevo sin leer, o el producto cambió después del commit del PR y aún no se publicó.
+    Cerrar por el atajo daría por bueno un PR que no es el producto aprobado; se sigue por
+    el camino normal (commit, push, lectura)."""
+    return bool(
+        gh is not None
+        and enc.entrega.nivel == "pr"
+        and enc.nivel_alcanzado == "pr"
+        and enc.pr_numero
+        and (
+            enc.deepseek_sha != enc.pr_sha
+            or (enc.producto is not None and not enc.producto.sha_git)
+        )
+    )
+
+
+def _esperar_checks_requeridos(
+    registro: Registro, enc: Encargo, veredicto, numero: int, sha: str, hora: str
+) -> None:
+    """Ningún check requerido está en rojo y aún no están todos en verde: el PR espera.
+    Solo si alguno corre o está en cola (`veredicto.en_marcha`) queda anotado
+    `checks_esperando`, y con él el freno no cuenta vueltas; si el que falta no lo corre
+    nadie, se espera a la vista pero el freno sigue contando. Lo cubre
+    `tests/test_freno_vueltas.py::EsperaDeChecksEnLaEntrega`."""
+    if _requeridos_en_marcha(veredicto):
+        _anotar_checks_esperando(registro, enc, numero, sha, hora)
+    marcar_espera(
+        registro, enc.id,
+        f"esperando checks requeridos del PR #{numero}: {', '.join(veredicto.faltan)}",
+        _reanuda_en(120), hora,
+    )
+
+
+def _observacion_corresponde(
+    observacion, version: str, declaradas: list[dict]
+) -> bool:
+    """La observacion es de esta version y de estas comprobaciones declaradas."""
+    if not isinstance(observacion, dict):
+        return False
+    if (observacion.get("version") or observacion.get("producto")) != version:
+        return False
+    return observacion.get("comprobaciones") == declaradas
+
+
+def _observacion_de_la_version(
+    registro: Registro,
+    enc: Encargo,
+    version: str,
+    declaradas: list[dict],
+    directorio: Path,
+) -> dict | None:
+    for ev in reversed(registro.eventos(enc.id)):
+        if (
+            ev["kind"] == "observacion_supervisor"
+            and _observacion_corresponde(ev["data"], version, declaradas)
+        ):
+            return ev["data"]
+    path = directorio / "observaciones.json"
+    if not path.is_file():
+        return None
+    try:
+        candidata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if _observacion_corresponde(candidata, version, declaradas):
+        return candidata
+    return None
+
+
+def _fallas_de_observacion(
+    observacion: dict,
+) -> tuple[list[str], list[str]]:
+    """Separa una comprobacion en rojo de un instrumento que no pudo observar."""
+    rojas = []
+    instrumentos = []
+    error = str(observacion.get("error_instrumento") or "")
+    if error:
+        instrumentos.append(error)
+    for ejecucion in observacion.get("ejecuciones") or []:
+        if not isinstance(ejecucion, dict):
+            continue
+        objetivo = str(ejecucion.get("objetivo") or "comprobacion")
+        error = str(ejecucion.get("error_instrumento") or "")
+        if error:
+            instrumentos.append(f"{objetivo}: {error}")
+        elif ejecucion.get("rc") is None or str(ejecucion.get("rc")) != "0":
+            rojas.append(f"{objetivo}: rc {ejecucion.get('rc')}")
+    return rojas, instrumentos
+
+
+def _espera_por_observacion(
+    registro: Registro,
+    enc: Encargo,
+    espacio: Path,
+    directorio: Path,
+    hora: str,
+) -> Encargo | None:
+    """None si la version vigente ya tiene una observacion verde del comprobador.
+
+    Con comprobaciones declaradas, commit y push esperan a que el comprobador
+    registre su observacion sobre esta version. Si la observacion trae una
+    comprobacion en rojo, la version vuelve al responsable y no se publica.
+    """
+    try:
+        declaradas = leer_declaradas(interno_de(espacio))
+    except ValueError as exc:
+        _anotar_instrumento(
+            registro, enc, "comprobacion", str(exc),
+            "corregir .interno/comprobaciones.json sin tocar el producto",
+            hora, f"obs-publicacion-{enc.generacion}", clase="comprobaciones.json",
+        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "comprobaciones.json", str(exc),
+            "que .interno/comprobaciones.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir .interno/comprobaciones.json sin tocar el producto",
+                hora, f"comprobaciones-{enc.generacion}",
+            )
+        return registro.fold(enc.id)
+    if declaradas is None or enc.producto is None:
+        return None
+    version = version_producto(espacio).firma
+    esperadas = _argv_del_intento(declaradas, directorio)
+    observacion = _observacion_de_la_version(
+        registro, enc, version, esperadas, directorio
+    )
+    if observacion is None:
+        iniciar_comprobacion(espacio, directorio)
+        marcar_espera(
+            registro,
+            enc.id,
+            "esperando la observacion del comprobador sobre la version "
+            f"{version[:12]} antes de publicar",
+            _reanuda_en(30),
+            hora,
+        )
+        return registro.fold(enc.id)
+    fallas, instrumentos = _fallas_de_observacion(observacion)
+    if instrumentos:
+        causa = "la observacion del comprobador no se pudo usar: " + "; ".join(
+            instrumentos
+        )
+        _devolver(
+            registro,
+            enc,
+            "reparar_instrumento",
+            causa,
+            "reparar el comando de comprobacion sin tocar el producto",
+            hora,
+            f"observacion-instrumento-{version[:12]}",
+        )
+        return registro.fold(enc.id)
+    if not fallas:
+        return None
+    causa = "la comprobacion del supervisor esta en rojo: " + "; ".join(fallas)
+    _devolver(
+        registro,
+        enc,
+        "investigar",
+        causa,
+        "corregir la comprobacion en rojo antes de publicar; lo aprobado que "
+        "no cambio se conserva",
+        hora,
+        f"observacion-roja-{version[:12]}",
+    )
+    return registro.fold(enc.id)
 
 
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
@@ -3587,9 +4559,16 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
     if _devolver_correcciones(registro, enc, hora):
         return registro.fold(enc.id)
-    if nivel_cumplido(enc) and enc.estado != "terminado" and not _deepseek_por_releer(enc):
-        return _intentar_cierre(
-            registro, enc, _espacio(registro.base, enc.id),
+    if (
+        nivel_cumplido(enc)
+        and enc.estado != "terminado"
+        and _revision_aprobada_vigente(enc)
+        and not _deepseek_por_releer(enc)
+        and not _sha_final_sin_leer(enc, gh)
+        and not (gh is None and _requiere_veredicto(enc))
+    ):
+        return _cerrar_con_veredicto(
+            registro, enc, gh, _espacio(registro.base, enc.id),
             _directorio(registro.base, enc.id), hora,
         )
     if gh is None:
@@ -3607,6 +4586,14 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     espacio = _espacio(registro.base, enc.id)
     directorio = _directorio(registro.base, enc.id)
+    if _git(espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
+        causa = "hay una mezcla en curso con la base; resuélvela antes de entregar"
+        _devolver(
+            registro, enc, "integrar_main", causa,
+            "resolver el conflicto, 'git add' y 'git commit'; después continuar la entrega",
+            hora, f"mezcla-{enc.generacion}",
+        )
+        return registro.fold(enc.id)
     causa = _asegurar_repo(enc, espacio, registro, hora)
     if causa:
         if causa.startswith("conflicto al incorporar la entrada"):
@@ -3624,6 +4611,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     stale = _producto_no_aprobado(enc, espacio)
     if stale is not None:
         return _reabrir_revision(registro, enc, stale, hora)
+    espera = _espera_por_observacion(registro, enc, espacio, directorio, hora)
+    if espera is not None:
+        return espera
     sha, causa = _commit_push(enc, espacio)
     if causa:
         _anotar_instrumento(
@@ -3638,6 +4628,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         enc.entrega.base if enc.entrega.nivel in ("integrado", "desplegado")
         else _base_fase(enc)
     )
+    firma = enc.producto.firma if enc.producto is not None else ""
     for paso in ("commit", "push"):
         registro.anotar(
             enc.id,
@@ -3655,7 +4646,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:{enc.fase_activa}:{paso}:{sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:{paso}:{sha}:{firma}",
         )
     if enc.pr_numero:
         # El PR ya registrado se consulta antes que cualquier operación nueva:
@@ -3709,6 +4700,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     registro, enc, espacio, directorio, hora
                 )
             return enc
+        if vista_pr.estado == "abierto":
+            enc = _actualizar_cuerpo_pr(
+                registro, enc, gh, numero, sha, espacio, hora
+            )
     if not enc.pr_numero or (
         vista_pr.estado == "mergeado" and vista_pr.base != base
     ):
@@ -3790,7 +4785,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 rama,
                 base,
                 f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
-                f"Encargo {enc.id}. Revision independiente aprobada.",
+                _cuerpo_pr(enc, espacio),
             )
             numero = int(pr.numero)
             registro.anotar(
@@ -3833,6 +4828,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     },
                 },
                 f"entrega:{enc.id}:{enc.fase_activa}:pr_listo:{numero}:{sha}",
+            )
+            enc = _actualizar_cuerpo_pr(
+                registro, enc, gh, numero, sha, espacio, hora
             )
         except Exception as exc:
             causa = f"no se pudo abrir o preparar el PR: {exc}"
@@ -3895,12 +4893,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     hora, f"checks-{sha[:12]}",
                 )
         else:
-            marcar_espera(
-                registro, enc.id,
-                "esperando checks requeridos del PR "
-                f"#{numero}: {', '.join(veredicto_ci.faltan)}",
-                _reanuda_en(120), hora,
-            )
+            _esperar_checks_requeridos(registro, enc, veredicto_ci, numero, sha, hora)
         return registro.fold(enc.id)
     fase_ci = enc.fase_actual
     if fase_ci is not None and fase_ci.fallas_checks:
@@ -3962,55 +4955,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 hora,
             )
             return registro.fold(enc.id)
-        hallazgos = hallazgos_deepseek(comentarios, sha)
-        nuevos_bloq = {h.id for h in hallazgos if h.gravedad == "bloqueante"}
         relectura_ds = enc.deepseek_sha == sha
-        fusion = list(hallazgos)
-        for h in bloqueantes_abiertos(enc, "deepseek"):
-            if h.id not in nuevos_bloq:
-                fusion.append(replace(h, estado="resuelto"))
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "revision",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "revision_id": "rev_ds_" + sha[:12],
-                    "version": enc.producto.firma if enc.producto else "",
-                    "base_version": enc.deepseek_sha,
-                    "alcance": "correccion" if enc.deepseek_sha else "completa",
-                    "veredicto": "cambios" if nuevos_bloq else "aprobado",
-                    "revisor": "deepseek",
-                    "origen": "deepseek",
-                    "lector_version": VERSION_LECTOR_DEEPSEEK,
-                    "cubre": [
-                        h.id for h in bloqueantes_abiertos(enc, "deepseek")
-                    ],
-                    "hallazgos": [h.como_dict() for h in fusion],
-                    "hora": hora,
-                },
-            },
-            f"revision-ds:{enc.id}:{enc.fase_activa}:{sha}:lector{VERSION_LECTOR_DEEPSEEK}",
-        )
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "entrega_externa",
-                "data": {
-                    "fase": enc.fase_activa,
-                    "intento": enc.intento,
-                    "paso": "deepseek_leido",
-                    "repo": enc.entrega.repo,
-                    "numero": numero,
-                    "sha": sha,
-                    "recibo": sha,
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:{enc.fase_activa}:deepseek_leido:{sha}:lector{VERSION_LECTOR_DEEPSEEK}",
-        )
-        enc = registro.fold(enc.id)
+        enc = _anotar_lectura_deepseek(registro, enc, numero, sha, comentarios, hora)
         abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
         if abiertos_ds:
             if relectura_ds or hubo_avance(inicio_vuelta, enc):
@@ -4031,7 +4977,32 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 )
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
+    if not _revision_aprobada_vigente(enc):
+        if bloqueantes_abiertos(enc, "deepseek"):
+            # Sigue siendo el turno de DeepSeek: no se adelanta Opus ni se
+            # integra nada con un High o Medium abierto.
+            return registro.fold(enc.id)
+        # DeepSeek ya no tiene bloqueantes, pero la corrección cambió el
+        # producto desde la última aprobación de Opus. Ninguna corrección se
+        # integra ni se cierra sin que Opus vea el tramo final; si no cambió
+        # nada, la aprobación vigente ya cubre el producto y este paso no aplica.
+        _devolver(
+            registro, enc, "revisar_evidencia",
+            "DeepSeek quedó sin bloqueantes; falta la revisión final del tramo corregido",
+            "revisar solo lo que cambió desde la última aprobación de Opus "
+            "antes de integrar o cerrar",
+            hora,
+            f"revision-final-{enc.producto.firma if enc.producto else ''}",
+            rol="revisor",
+        )
+        return registro.fold(enc.id)
     if enc.entrega.nivel in ("integrado", "desplegado") and enc.nivel_alcanzado == "pr":
+        # Aquí `deepseek_sha == pr_sha` por construcción: el bloque de lectura de
+        # arriba espera o lee cuando DeepSeek no ha revisado el SHA, así que no
+        # se integra uno sin leer.
+        devuelto = _veredicto_antes_de_cerrar(registro, enc, gh, hora)
+        if devuelto is not None:
+            return devuelto
         try:
             vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
             if vista_pr.base != enc.entrega.base:
@@ -4080,7 +5051,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         enc = registro.fold(enc.id)
     enc = _paso_despliegue(registro, enc, espacio, hora)
     if nivel_cumplido(enc):
-        return _intentar_cierre(registro, enc, espacio, directorio, hora)
+        return _cerrar_con_veredicto(registro, enc, gh, espacio, directorio, hora)
     return enc
 
 
@@ -4891,7 +5862,7 @@ def _soltar_conductor(registro: Registro, enc: Encargo, hora: str) -> bool:
     ):
         try:
             ref = json.loads((directorio / "revision.json").read_text(encoding="utf-8"))
-            juicio = json.loads(Path(ref["resultado"]).read_text(encoding="utf-8"))
+            juicio = json.loads(Path(ref["resultado"]).read_text(encoding="utf-8-sig"))
             pendiente = pendiente or juicio.get("clase") in (
                 "confirmado",
                 "producto_aprobado",
@@ -5065,7 +6036,7 @@ def _resultado_desde_fold(
         observacion = json.loads(
             Path(referencia["observaciones"]).read_text(encoding="utf-8")
         )
-        juicio = json.loads(Path(referencia["resultado"]).read_text(encoding="utf-8"))
+        juicio = json.loads(Path(referencia["resultado"]).read_text(encoding="utf-8-sig"))
         return observacion, juicio
     except (OSError, ValueError, KeyError):
         return {}, None

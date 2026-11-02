@@ -7,6 +7,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from motor.encargos.ciclo import (
     _QUIETUD_S,
@@ -35,6 +36,16 @@ def setUpModule():
 def _barrido(r, gh, t):
     barrer(r.reg, ahora_iso(t), t, None, gh=gh)
     return r.fold()
+
+
+def _barrido_quieto(r, gh, t):
+    """La entrega ya vuelve a lanzar cuando su paso no tiene efecto; para probar
+    el detector de quietud se deja ese lanzamiento fuera de la decision."""
+    with mock.patch(
+        "motor.encargos.ciclo._decision",
+        return_value={"matar": False, "lanzar": False, "eventos": []},
+    ):
+        return _barrido(r, gh, t)
 
 
 def _quieto_como_en_el_incidente(caso, tmp):
@@ -72,14 +83,14 @@ class QuietudDelEncargo(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _quieto_como_en_el_incidente(self, tmp)
             t = time.time()
-            e = _barrido(r, vuelta.gh, t)
+            e = _barrido_quieto(r, vuelta.gh, t)
             self.assertNotEqual(e.estado, "necesita_usuario")
             for i in range(1, _QUIETUD_S // PASO_S):
-                e = _barrido(r, vuelta.gh, t + i * PASO_S)
+                e = _barrido_quieto(r, vuelta.gh, t + i * PASO_S)
                 self.assertNotEqual(e.estado, "necesita_usuario", f"vuelta {i}")
             self.assertEqual(r.eventos("quietud"), [])
 
-            e = _barrido(r, vuelta.gh, t + _QUIETUD_S)
+            e = _barrido_quieto(r, vuelta.gh, t + _QUIETUD_S)
             self.assertEqual(e.estado, "necesita_usuario")
             [evento] = r.eventos("quietud")
             causa = evento["data"]["causa"]
@@ -92,7 +103,7 @@ class QuietudDelEncargo(unittest.TestCase):
             self.assertGreaterEqual(evento["data"]["vueltas"], _QUIETUD_VUELTAS)
 
             total = len(r.reg.eventos(r.enc))
-            _barrido(r, vuelta.gh, t + _QUIETUD_S + PASO_S)
+            _barrido_quieto(r, vuelta.gh, t + _QUIETUD_S + PASO_S)
             self.assertEqual(len(r.reg.eventos(r.enc)), total)
             self.assertFalse(_lanzaria(r.fold()))
 
@@ -101,18 +112,18 @@ class QuietudDelEncargo(unittest.TestCase):
             vuelta, r = _quieto_como_en_el_incidente(self, tmp)
             t = time.time()
             for i in range(0, _QUIETUD_S - PASO_S, PASO_S):
-                _barrido(r, vuelta.gh, t + i)
+                _barrido_quieto(r, vuelta.gh, t + i)
             r.reg.anotar(
                 r.enc,
                 {"kind": "procedimiento", "data": {"nota": "algo cambio", "hora": ahora_iso()}},
                 "t-evento-intermedio",
             )
             reinicio = t + _QUIETUD_S - PASO_S
-            e = _barrido(r, vuelta.gh, reinicio)
-            e = _barrido(r, vuelta.gh, reinicio + _QUIETUD_S - PASO_S)
+            e = _barrido_quieto(r, vuelta.gh, reinicio)
+            e = _barrido_quieto(r, vuelta.gh, reinicio + _QUIETUD_S - PASO_S)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(r.eventos("quietud"), [])
-            e = _barrido(r, vuelta.gh, reinicio + _QUIETUD_S)
+            e = _barrido_quieto(r, vuelta.gh, reinicio + _QUIETUD_S)
             self.assertEqual(e.estado, "necesita_usuario")
             self.assertEqual(len(r.eventos("quietud")), 1)
 
@@ -152,14 +163,13 @@ class QuietudDelEncargo(unittest.TestCase):
     def test_sin_el_detector_el_incidente_sigue_quieto(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _quieto_como_en_el_incidente(self, tmp)
-            from unittest import mock
 
             t = time.time()
             with mock.patch(
                 "motor.encargos.ciclo._vigilar_quietud", side_effect=lambda *a: a[1]
             ):
                 for i in range(0, 3 * _QUIETUD_S, PASO_S):
-                    e = _barrido(r, vuelta.gh, t + i)
+                    e = _barrido_quieto(r, vuelta.gh, t + i)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(r.eventos("quietud"), [])
 

@@ -170,6 +170,21 @@ def vincular_base(base: Path, flota_home: Path, canal: Path | None = None) -> di
             json.dumps(doc, ensure_ascii=False), encoding="utf-8"
         )
         salida["canales"] = sorted(doc)
+        canal_resumen = next(
+            (
+                nombre
+                for nombre, cfg in doc.items()
+                if isinstance(cfg, dict) and cfg.get("comando")
+            ),
+            "",
+        )
+        if canal_resumen and not (base / "resumen-config.json").exists():
+            (base / "resumen-config.json").write_text(
+                json.dumps(
+                    {"canal": canal_resumen, "intervalo_min": 60}, ensure_ascii=False
+                ),
+                encoding="utf-8",
+            )
     return salida
 
 

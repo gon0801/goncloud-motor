@@ -48,6 +48,14 @@ class ServicioEncargos(unittest.TestCase):
                 str(flota.resolve()),
             )
             self.assertEqual(salida["canales"], ["openbot"])
+            self.assertEqual(
+                json.loads((base / "resumen-config.json").read_text())["canal"],
+                "openbot",
+            )
+            self.assertEqual(
+                json.loads((base / "resumen-config.json").read_text())["intervalo_min"],
+                60,
+            )
             with self.assertRaises(ValueError):
                 vincular_base(base, raiz / "sin-flota")
             malo = raiz / "canal-malo.json"

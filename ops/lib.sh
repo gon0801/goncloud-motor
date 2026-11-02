@@ -60,8 +60,7 @@ _pc_b64() {
 
 # argv[1] es este programa; argv[2] es el nombre bajo ~/.motor.
 # 0 leído, 2 ausente, 1 error (vacío, ilegible o no es archivo).
-LEE_ARCHIVO_PC_B64="$(_pc_b64 <<'PY'
-import pathlib, sys
+LEE_ARCHIVO_PC_B64="$(printf '%s' 'import pathlib, sys
 p = pathlib.Path.home() / ".motor" / sys.argv[2]
 if not p.exists():
     raise SystemExit(2)
@@ -74,12 +73,10 @@ except OSError:
 if raw == b"":
     raise SystemExit(1)
 sys.stdout.buffer.write(raw)
-PY
-)"
+' | _pc_b64)"
 
 # ausente | ilegible | entero. 1 si el archivo existe y no se puede leer.
-LEE_FORMATO_PC_B64="$(_pc_b64 <<'PY'
-import json, pathlib, sys
+LEE_FORMATO_PC_B64="$(printf '%s' 'import json, pathlib, sys
 p = pathlib.Path.home() / ".motor" / "formato"
 if not p.exists():
     sys.stdout.write("ausente")
@@ -93,12 +90,10 @@ try:
     sys.stdout.write(str(v) if type(v) is int else "ilegible")
 except Exception:
     sys.stdout.write("ilegible")
-PY
-)"
+' | _pc_b64)"
 
 # tres líneas: sha del toml efectivo, sha del toml en la conf, ok|no.
-ESTADO_TOML_PC_B64="$(_pc_b64 <<'PY'
-import hashlib, pathlib, sys
+ESTADO_TOML_PC_B64="$(printf '%s' 'import hashlib, pathlib, sys
 home = pathlib.Path.home()
 
 def sha(p):
@@ -121,8 +116,7 @@ sys.stdout.write(
     + estado
     + "\n"
 )
-PY
-)"
+' | _pc_b64)"
 
 py_pc_prog() {
   local b64=$1

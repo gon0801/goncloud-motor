@@ -45,6 +45,8 @@ def guardar():
     json.dump(estado, open(ruta, "w"))
 def git(*a):
     return subprocess.run(["git", "--git-dir", bare, *a], capture_output=True, text=True).stdout
+def git_rc(*a):
+    return subprocess.run(["git", "--git-dir", bare, *a], capture_output=True, text=True)
 if modo == "red":
     guardar()
     sys.stderr.write("error connecting to api.github.com\n")
@@ -57,11 +59,38 @@ if args[:2] == ["pr", "create"]:
     estado["commit"] = git("rev-parse", rama).strip()
     guardar()
     print("https://github.com/o/r/pull/7")
+elif args[:2] == ["pr", "view"]:
+    visto = int(estado.get("pr_view") or 0)
+    estado["pr_view"] = visto + 1
+    if os.environ.get("FAKE_GH_MEZCLA") == "TARDE" and visto < 2:
+        mezcla = "UNKNOWN"
+    else:
+        choque = git_rc("merge-tree", "--write-tree", "--no-messages", "--name-only",
+                        "refs/heads/" + estado["base"], estado["commit"])
+        mezcla = "CONFLICTING" if choque.returncode == 1 else "MERGEABLE"
+    if mezcla == "UNKNOWN":
+        estado["estado_mezcla"] = "UNKNOWN"
+    elif estado.get("borrador"):
+        estado["estado_mezcla"] = "DRAFT"
+    elif mezcla == "CONFLICTING":
+        estado["estado_mezcla"] = "DIRTY"
+    else:
+        estado["estado_mezcla"] = "CLEAN"
+    estado["borrador_visto"] = bool(estado.get("borrador"))
+    guardar()
+    print(json.dumps({{"mergeable": mezcla,
+        "mergeStateStatus": estado["estado_mezcla"],
+        "isDraft": bool(estado.get("borrador")),
+        "baseRefOid": git("rev-parse", estado["base"]).strip(),
+        "headRefOid": estado.get("commit", "")}}))
 elif args[:2] == ["run", "list"]:
     guardar()
-    print(json.dumps([{{"databaseId": 1234, "status": "completed", "conclusion": "success",
-        "headSha": val("--commit"), "event": "pull_request",
-        "url": "https://github.com/o/r/actions/runs/1234", "workflowName": "Pruebas"}}]))
+    if os.environ.get("FAKE_GH_MEZCLA") == "TARDE" and int(estado.get("pr_view") or 0) < 3:
+        print("[]")
+    else:
+        print(json.dumps([{{"databaseId": 1234, "status": "completed", "conclusion": "success",
+            "headSha": val("--commit"), "event": "pull_request",
+            "url": "https://github.com/o/r/actions/runs/1234", "workflowName": "Pruebas"}}]))
 elif args[:2] == ["run", "view"] and "--log" not in args:
     guardar()
     print(json.dumps({{"status": "completed", "conclusion": "success",
@@ -315,6 +344,54 @@ class CausaClaraSiFalta(_Ci):
         self.assertIn("parámetro job", r["motivo"])
 
 
+class ElConflictoSeVeAntesDeEsperar(_Ci):
+    def setUp(self):
+        super().setUp()
+        otro = self.raiz / "otro"
+        subprocess.run(["git", "clone", "--quiet", str(self.bare), str(otro)], check=True)
+        (otro / "base.txt").write_text("main cambio\n")
+        _git(otro, "commit", "-am", "main cambia")
+        _git(otro, "push", "--quiet", "origin", "main")
+
+    def pedir_en_conflicto(self) -> dict:
+        with mock.patch.object(cap, "CI_MEZCLA_S", 0.2), \
+             mock.patch.object(cap, "CI_MEZCLA_SONDEO_S", 0.01):
+            return self.pedir()
+
+    def test_dice_los_archivos_y_que_hay_que_traer_main(self):
+        r = self.pedir_en_conflicto()
+
+        self.assertEqual(r["estado"], "error")
+        self.assertIn("no se puede mezclar", r["motivo"])
+        self.assertIn("base.txt", r["motivo"])
+        self.assertIn("traer main", r["alternativa"])
+        gh = self.estado_gh()
+        self.assertTrue(gh["borrador_visto"], "la deteccion corre sobre un PR borrador")
+        self.assertEqual(gh["estado_mezcla"], "DRAFT", "GitHub no marca DIRTY un borrador")
+
+    def test_no_espera_una_corrida_que_no_va_a_llegar(self):
+        self.pedir_en_conflicto()
+
+        llamadas = [args[:2] for args in self.estado_gh()["llamadas"]]
+        self.assertNotIn(["run", "list"], llamadas)
+
+    def test_limpia_la_rama_y_el_pr_temporales(self):
+        self.pedir_en_conflicto()
+
+        self.assertEqual(self.ramas_remotas(), [])
+        self.assertFalse(self.estado_gh()["pr_abierto"])
+
+    def test_un_conflicto_que_github_calcula_tarde_tambien_corta_la_espera(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_MEZCLA": "TARDE"}), \
+             mock.patch.object(cap, "CI_MEZCLA_S", 0.0), \
+             mock.patch.object(cap, "CI_MEZCLA_SONDEO_S", 0.01):
+            r = self.pedir()
+
+        self.assertEqual(r["estado"], "error")
+        self.assertIn("base.txt", r["motivo"])
+        self.assertNotIn("no inició", r["motivo"])
+
+
 class LaLimpiezaEsSiempre(_Ci):
     def test_un_error_que_no_es_de_ci_tambien_limpia(self):
         with mock.patch.object(cap, "_esperar_run", side_effect=KeyError("databaseId")):
@@ -361,7 +438,7 @@ class LaLimpiezaEsSiempre(_Ci):
 class ElPuenteLaConoce(_Ci):
     def test_el_catalogo_la_ofrece_y_no_es_observable(self):
         recursos = {"ci-linux": {**self.recursos["ci-linux"]}}
-        self.assertEqual(cap.operaciones_de(recursos, "ci-linux"), (cap.CI,))
+        self.assertEqual(cap.operaciones_de(recursos, "ci-linux"), (cap.CI, cap.CI_LOG))
         self.assertEqual(cap.recursos_observables(recursos), ())
         self.assertEqual(
             cap.huella_recurso(recursos, cap.CI, "ci-linux", {"job": "jaula-linux"}), ""
@@ -378,7 +455,8 @@ class ElPuenteLaConoce(_Ci):
     def test_el_bloque_de_capacidades_explica_como_pedirla(self):
         texto = nec.bloque_capacidades(self.raiz, self.recursos)
         self.assertIn("ci.correr --recurso <r> --parametro job=", texto)
-        self.assertIn("ci-linux (ci): ci.correr", texto)
+        self.assertIn("ci.log --recurso <r> --parametro pr=", texto)
+        self.assertIn("ci-linux (ci): ci.correr, ci.log", texto)
 
     def test_una_peticion_ci_correr_es_una_solicitud_valida(self):
         enc = SimpleNamespace(id="enc_x")
@@ -593,6 +671,83 @@ class UnRunLargoNoSeMata(unittest.TestCase):
             self.assertLess(primera, 5, "el barrido solo espera ESPERA_CI_S, no TIMEOUT_S")
             self.assertEqual(otra["estado"], "pendiente")
             self.assertLess(segunda, 1, "un CI que ya espera no retiene el barrido")
+
+    def test_un_log_que_sigue_en_plazo_no_se_corta_al_plazo_del_barrido(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp)
+            sol = Solicitud(
+                id="log-1", operacion=cap.CI_LOG, recurso="ci-linux", fase="f", intento="i",
+                generacion=1, conductor="",
+                parametros=(("pr", "189"), ("job", "jaula-linux"), ("sha", "a" * 7)),
+            )
+            registro = SimpleNamespace(base=raiz)
+            lenta = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(lenta.kill)
+            with mock.patch.object(nec, "TIMEOUT_S", 0.3), mock.patch.object(
+                nec, "ESPERA_CI_S", 0.3
+            ), mock.patch.object(
+                nec, "_detenida_ahora", return_value=False
+            ), mock.patch.object(nec.subprocess, "Popen", return_value=lenta), mock.patch(
+                "motor.plataforma.hora_inicio", return_value="t0"
+            ), mock.patch(
+                "motor.plataforma.pid_vivo", side_effect=lambda pid: lenta.poll() is None
+            ):
+                resultado = nec._ejecutar(
+                    registro, SimpleNamespace(id="enc_x"), sol, {"ci-linux": {"tipo": "ci"}},
+                    raiz / "espacio", raiz / "ejecucion", False, "2026-10-31T12:00:00Z",
+                )
+
+            self.assertEqual(resultado["estado"], "pendiente")
+            self.assertIsNone(lenta.poll(), "el log sigue dentro de su plazo de 300 s")
+            self.assertTrue(nec._marca_herramienta(raiz / "ejecucion", "log-1").is_file())
+
+    def test_el_cierre_del_turno_no_mata_el_log_que_el_barrido_dejo_vivo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp)
+            directorio = raiz / "ejecucion"
+            log = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(log.wait)
+            self.addCleanup(log.kill)
+            otra = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(otra.wait)
+            self.addCleanup(otra.kill)
+            marca_log = nec._marca_herramienta(directorio, "log-1")
+            marca_log.parent.mkdir(parents=True)
+            marca_log.write_text(
+                json.dumps(
+                    {"pid": log.pid, "inicio": "t0", "solicitud": "log-1", "operacion": cap.CI_LOG}
+                )
+            )
+            marca_otra = nec._marca_herramienta(directorio, "r-1")
+            marca_otra.write_text(
+                json.dumps(
+                    {"pid": otra.pid, "inicio": "t0", "solicitud": "r-1", "operacion": cap.REMOTO}
+                )
+            )
+
+            matadas = []
+            with mock.patch(
+                "motor.plataforma.matar_proc",
+                side_effect=lambda pid, inicio: matadas.append(pid) or True,
+            ):
+                cerrados = nec.cerrar_herramientas(directorio, solo_del_turno=True)
+
+            self.assertEqual(cerrados, 1, "solo la operación que no es asíncrona se cierra")
+            self.assertEqual(matadas, [otra.pid])
+            self.assertIsNone(
+                log.poll(), "el turno colgado no mata el log que el barrido dejó vivo"
+            )
+            self.assertTrue(marca_log.is_file(), "la marca queda para recoger el resultado")
+            self.assertFalse(marca_otra.exists(), "la operación común sí se cierra y archiva")
 
     def test_otra_operacion_que_pasa_del_plazo_si_se_mata(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

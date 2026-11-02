@@ -191,7 +191,7 @@ def _contiene(letra: str) -> str:
     )
 
 
-def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None):
+def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, nivel: str = "pr"):
     """Encargo de nivel pr sobre un repo bare real. `vuelta(contenido)` hace
     de implementador y de revisor que aprueba, y devuelve el encargo tras el
     paso de entrega contra el GitHub falso."""
@@ -214,7 +214,7 @@ def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None):
         subprocess.run(["git", "-C", str(semilla), *args], check=True)
     r = Recorrido(
         tmp, clave, "agrega saludo.txt con hola",
-        entrega_nivel="pr", repo=str(bare), base_rama="main",
+        entrega_nivel=nivel, repo=str(bare), base_rama="main",
     )
     caso.addCleanup(r.reg.close)
     caso.assertEqual(_asegurar_repo(r.fold(), r.espacio), "")
@@ -460,7 +460,12 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertTrue(e.preguntas)
             self.assertFalse(_lanzaria(e))
 
-    def test_bloqueantes_nuevos_sin_cerrar_ninguno_escalan(self):
+    def test_bloqueantes_nuevos_devuelven_al_responsable_sin_tope(self):
+        parche = mock.patch(
+            "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
+        )
+        parche.start()
+        self.addCleanup(parche.stop)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-4", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -478,14 +483,14 @@ class FlujoRevisiones(unittest.TestCase):
                 )
                 return r.incorporar()
 
-            e = vuelta(1)
-            self.assertEqual(e.estrategia, "investigar")
-            e = vuelta(2)
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
-            e = vuelta(3)
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertFalse(_lanzaria(e))
+            # Cada vuelta trae un bloqueante que el responsable no habia visto: es
+            # informacion nueva y vuelve a corregir. No hay tope por serie.
+            for i in range(1, 7):
+                e = vuelta(i)
+                self.assertEqual(e.estrategia, "investigar", i)
+                self.assertEqual(e.sin_progreso, 0, i)
+                self.assertNotEqual(e.estado, "necesita_usuario", i)
+                self.assertTrue(_lanzaria(e), i)
 
     def test_revisor_que_no_concluye_dos_vueltas_escala(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -667,7 +672,7 @@ class FlujoRevisiones(unittest.TestCase):
                 self.assertNotEqual(e.estado, "necesita_usuario")
                 self.assertTrue(_lanzaria(e))
 
-    def test_check_que_vuelve_a_rojo_con_deepseek_abierto_escala(self):
+    def test_check_que_se_pone_rojo_con_deepseek_abierto_es_informacion_nueva_y_luego_escala(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "ci-3", _GhConDeepSeek,
@@ -680,7 +685,18 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertEqual(e.sin_progreso, 1)
             self.assertNotEqual(e.estado, "necesita_usuario")
+            # El check en rojo es un bloqueante que el responsable no habia visto:
+            # informacion nueva. Vuelve a corregir; no escala como «el mismo bloqueo».
             e = vuelta("x3")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            # Los mismos bloqueantes siguen abiertos tras la vuelta: diagnostico y despues escala.
+            e = vuelta("x4")
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = vuelta("x5")
             self.assertEqual(e.estado, "necesita_usuario")
             self.assertIn("checks requeridos en rojo: ci", e.motivo)
             self.assertFalse(_lanzaria(e))

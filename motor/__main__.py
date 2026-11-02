@@ -636,6 +636,7 @@ _CMDS_ENCARGO = {
     "supervisor",
     "encargos-aplicar",
     "encargos-migrar",
+    "traer-main",
 }
 
 

@@ -53,7 +53,7 @@ done
 for m in mini pc; do
   senal_configurada "$m" || problemas+=("$m: motor doctor no dice '$SENAL_OK'")
 done
-modo="$(corre mini 'stat -f %Lp "$HOME/.motor/secretos.env" 2>/dev/null || stat -c %a "$HOME/.motor/secretos.env"' x </dev/null 2>/dev/null | tr -d '[:space:]')"
+modo="$(corre mini 'stat -c %a "$HOME/.motor/secretos.env" 2>/dev/null || stat -f %Lp "$HOME/.motor/secretos.env"' x </dev/null 2>/dev/null | tr -d '[:space:]')"
 [ "$modo" = 600 ] || problemas+=("mini: secretos.env no está en 600 (modo: ${modo:-desconocido})")
 
 if [ "${#problemas[@]}" -gt 0 ]; then
