@@ -1,8 +1,11 @@
 """El resumen de encargos: contenido para cada estado, envio por cambio, corte y escapado."""
 
 import json
+import os
+import re
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
@@ -30,7 +33,8 @@ TRANSPORTE = (
     " sys.stderr.write('no salio'); sys.exit(1)\n"
     "with open(base/'entregados.jsonl','a',encoding='utf-8') as f:\n"
     " f.write(json.dumps({'id':os.environ['MOTOR_AVISO_ID'],"
-    "'evidencia':os.environ['MOTOR_AVISO_EVIDENCIA'],'cuerpo':cuerpo},"
+    "'evidencia':os.environ['MOTOR_AVISO_EVIDENCIA'],'cuerpo':cuerpo,"
+    "'formato':os.environ.get('MOTOR_AVISO_FORMATO','')},"
     " ensure_ascii=False)+'\\n')\n"
     "print(json.dumps({'recibo':'ok-'+os.environ['MOTOR_AVISO_ID']}))\n"
 )
@@ -227,7 +231,7 @@ class Contenido(Base):
 
         ahora = T0 + 16 * 60
         construido = resumen.construir(self.b.reg, ahora=ahora, host="pc-ensayo")
-        html = construido.html
+        html = construido.cuerpo
         self.assertIn("pc-ensayo", html)
         self.assertIn(f"{construido.activos} activos", html)
         self.assertIn("Sonnet implementando", html)
@@ -237,7 +241,7 @@ class Contenido(Base):
         self.assertIn("necesita tu decisión: ¿Publico el informe?", html)
         self.assertIn("freno", html)
         self.assertIn("2 de 3", html)
-        self.assertIn("gon0801/goncloud-motor#12", html)
+        self.assertIn("goncloud-motor #12", html)
         self.assertIn("Desde: hace", html)
         self.assertIn("más de 15 minutos", html)
         self.assertIn("Necesitan tu decisión", html)
@@ -248,13 +252,6 @@ class Contenido(Base):
         self.assertEqual(construido.activos, 10)
         self.assertIn(conciliando[:12], html)
         self.assertIn("conciliando", html)
-
-    def test_el_escapado_conserva_el_texto_y_no_abre_etiquetas(self):
-        ident = self.b.encargo("escapa", texto="Título <b>crudo</b> & demás")
-        self.b.evento(ident, "fases", {"fases": [{"id": "A", "resultado": "x"}]}, "f-escapa")
-        html = resumen.texto(self.b.reg, ahora=T0, host="pc")
-        self.assertIn("Título &lt;b&gt;crudo&lt;/b&gt; &amp; demás", html)
-        self.assertNotIn("<b>crudo</b>", html)
 
     def test_el_comando_del_director_imprime_el_resumen(self):
         from motor.integraciones.cli import main
@@ -790,6 +787,107 @@ class Envio(Base):
         self.assertEqual(len(self.b.resumenes()), 1)
         self.assertIn("ultima_firma", self.b.estado())
 
+
+class FormatoLegible(Base):
+    """El resumen va con negritas de Telegram. Su aviso se declara `html` para que el
+    transporte no lo escape; sin esa marca las etiquetas llegaban a la vista."""
+
+    def _con_modelo(self, clave: str, modelo: str, rol: str = "responsable") -> str:
+        ident = self.b.encargo(clave, repo="git@github.com:gon0801/goncloud-motor.git")
+        self.b.evento(
+            ident,
+            "intento_abierto",
+            {"id": "i-" + clave, "pid": 21, "inicio": "x", "rol": rol, "agente": "opencode", "modelo": modelo},
+            "i-" + clave,
+        )
+        self.b.evento(ident, "actividad", {"observada": True, "hecho": "trabajando"}, "a-" + clave)
+        return ident
+
+    def test_el_resumen_solo_usa_negritas(self):
+        self._con_modelo("negritas", "zai-coding-plan/glm-5.3-flash")
+        texto = resumen.texto(self.b.reg, ahora=T0, host="pc")
+        self.assertIn("<b>Resumen de encargos</b>", texto)
+        etiquetas = set(re.findall(r"</?([a-z]+)", texto))
+        self.assertEqual(etiquetas, {"b"})
+        self.assertEqual(texto.count("<b>"), texto.count("</b>"))
+
+    def test_el_texto_variable_se_escapa(self):
+        self.b.encargo("escapa", texto="Título <b>crudo</b> & demás")
+        texto = resumen.texto(self.b.reg, ahora=T0, host="pc")
+        self.assertIn("Título &lt;b&gt;crudo&lt;/b&gt; &amp; demás", texto)
+        self.assertNotIn("<b>crudo</b>", texto)
+
+    def test_el_transporte_recibe_el_resumen_marcado_como_html(self):
+        # Con fases el encargo tambien emite su aviso de inicio, que debe ir como texto.
+        activo(self.b, "marca")
+        directores.drenar(self.b.reg, ahora=T0 + 2 * 60 * 60)
+        enviados = self.b.resumenes()
+        self.assertTrue(enviados)
+        self.assertEqual({e["formato"] for e in enviados}, {"html"})
+        self.assertIn("<b>Resumen de encargos</b>", enviados[-1]["cuerpo"])
+        log = self.b.base / "entregados.jsonl"
+        otros = [
+            json.loads(linea) for linea in log.read_text(encoding="utf-8").splitlines()
+            if linea and not json.loads(linea)["evidencia"].startswith("resumen:")
+        ]
+        self.assertTrue(otros, "el escenario debe enviar al menos un aviso que no es resumen")
+        for aviso in otros:
+            self.assertEqual(aviso["formato"], "texto", aviso["evidencia"])
+
+    def test_el_modelo_sale_con_su_nombre_llano(self):
+        for clave, modelo, rol, esperado in (
+            ("glm", "zai-coding-plan/glm-5.3-flash", "responsable", "GLM implementando"),
+            ("ds", "opencode-go/deepseek-v4.1-flash", "responsable", "DeepSeek implementando"),
+            ("op", "anthropic/claude-opus-5-5", "revisor", "Opus revisando"),
+            ("kimi", "kimi-k3.1-pro", "responsable", "Kimi implementando"),
+        ):
+            self._con_modelo(clave, modelo, rol)
+            texto = resumen.texto(self.b.reg, ahora=T0, host="pc")
+            self.assertIn(esperado, texto, modelo)
+        self.assertNotIn("Zai-coding-plan", texto)
+        for proveedor in ("coding-plan", "opencode-go/", "anthropic/"):
+            self.assertNotIn(proveedor, texto)
+
+    def test_el_pr_sale_con_el_nombre_corto_del_repo(self):
+        self.assertEqual(resumen._repo_corto("git@github.com:gon0801/goncloud-motor.git"), "goncloud-motor")
+        self.assertEqual(resumen._repo_corto("https://github.com/gon0801/goncloud-motor"), "goncloud-motor")
+        self.assertEqual(resumen._repo_corto("gon0801/goncloud-motor"), "goncloud-motor")
+        self.assertEqual(resumen._repo_corto(""), "")
+
+    @unittest.skipUnless(hasattr(time, "tzset"), "cambiar la zona del proceso necesita tzset")
+    def test_la_hora_es_la_misma_en_todas_las_maquinas(self):
+        # 04:24 UTC del 2-nov es 21:24 del 1-nov en Vancouver (UTC-7 todo el año),
+        # sin importar la zona configurada en la máquina que arma el resumen.
+        epoch = datetime(2026, 11, 2, 4, 24, tzinfo=timezone.utc).timestamp()
+        anterior = os.environ.get("TZ")
+        try:
+            for zona in ("America/Los_Angeles", "UTC", "Asia/Tokyo"):
+                os.environ["TZ"] = zona
+                time.tzset()
+                self.assertEqual(resumen._hora_legible(epoch), "1 nov, 21:24", zona)
+        finally:
+            if anterior is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = anterior
+            time.tzset()
+
+    def test_la_espera_del_comprobador_sale_sin_version(self):
+        motivo = "esperando la observacion del comprobador sobre la version 08d860918226 antes de publicar"
+        self.assertEqual(
+            resumen._espera_en_palabras(motivo),
+            "esperando las comprobaciones antes de publicar",
+        )
+        self.assertEqual(
+            resumen._espera_en_palabras("esperando el turno del agente"),
+            "esperando el turno del agente",
+        )
+
+    def test_la_maquina_sale_con_un_nombre_legible(self):
+        self.assertEqual(resumen._maquina("Gons-Mac-Mini-2.local"), "Mac Mini")
+        self.assertEqual(resumen._maquina("Gon-PC"), "PC")
+        self.assertEqual(resumen._maquina("Davids-MacBook-Pro"), "MacBook")
+        self.assertEqual(resumen._maquina("pc-ensayo"), "pc-ensayo")
 
 if __name__ == "__main__":
     unittest.main()

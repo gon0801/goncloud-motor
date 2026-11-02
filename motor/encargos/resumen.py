@@ -1,4 +1,10 @@
-"""Resumen legible de los encargos activos y su envio periodico por el canal de avisos."""
+"""Resumen legible de los encargos activos y su envio periodico por el canal de avisos.
+
+El resumen va en HTML de Telegram (solo `<b>`) y su aviso lo declara con
+`formato: html`: el motor pasa `MOTOR_AVISO_FORMATO=html` al transporte, que entonces
+no lo escapa. Todo texto variable se escapa aqui; un `<` suelto haria que Telegram
+rechazara el mensaje.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,7 @@ import json
 import socket
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .dominio import FASE_IMPLICITA, Encargo, reducir
@@ -29,17 +35,28 @@ ALERTA_ESPERA = f"la misma espera lleva más de {ALERTA_ESPERA_S // 3600} h"
 TOPE_TITULO = 70
 TOPE_FRASE = 220
 
+# Hora de David: Vancouver, UTC-7 todo el año. Fija para que las tres máquinas
+# muestren la misma hora; la PC no trae base de zonas para `America/Vancouver`.
+ZONA = timezone(timedelta(hours=-7))
+MESES = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+NUMEROS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟")
+
+# Se busca cada clave dentro del nombre del modelo sin proveedor: `zai-coding-plan/glm-5.3-flash` es GLM.
 NOMBRES = {
+    "deepseek": "DeepSeek",
     "sonnet": "Sonnet",
     "opus": "Opus",
+    "haiku": "Haiku",
+    "fable": "Fable",
+    "kimi": "Kimi",
     "k3": "Kimi",
     "glm": "GLM",
     "grok": "Grok",
     "qwen": "Qwen",
-    "deepseek": "DeepSeek",
     "muse": "Muse",
-    "haiku": "Haiku",
-    "fable": "Fable",
+    "gemini": "Gemini",
+    "codex": "Codex",
+    "gpt": "GPT",
 }
 
 _AVANCES = frozenset(
@@ -71,7 +88,7 @@ class Entrada:
 
 @dataclass(frozen=True)
 class Resumen:
-    html: str
+    cuerpo: str
     firma: str
     activos: int
     entradas: tuple[Entrada, ...]
@@ -105,7 +122,29 @@ def _iso(epoch: float) -> str:
 
 
 def _hora_legible(epoch: float) -> str:
-    return datetime.fromtimestamp(epoch).astimezone().strftime("%Y-%m-%d %H:%M")
+    momento = datetime.fromtimestamp(epoch, ZONA)
+    return f"{momento.day} {MESES[momento.month - 1]}, {momento:%H:%M}"
+
+
+def _maquina(host: str) -> str:
+    nombre = str(host or "").removesuffix(".local")
+    llano = nombre.lower()
+    if "mini" in llano:
+        return "Mac Mini"
+    if "macbook" in llano:
+        return "MacBook"
+    if llano == "pc" or llano.endswith("-pc"):
+        return "PC"
+    return nombre
+
+
+def _nombre_modelo(modelo: str) -> str:
+    pelado = str(modelo or "").strip().rsplit("/", 1)[-1]
+    llano = pelado.lower()
+    for clave, nombre in NOMBRES.items():
+        if clave in llano:
+            return nombre
+    return pelado
 
 
 def _hace(segundos: float) -> str:
@@ -125,10 +164,10 @@ def _hace(segundos: float) -> str:
 def _modelo(enc: Encargo, rol: str) -> str:
     for registro_rol, _agente, modelo in reversed(enc.modelos):
         if registro_rol == rol and modelo:
-            return NOMBRES.get(str(modelo).lower(), str(modelo).capitalize())
+            return _nombre_modelo(modelo)
     for _registro_rol, _agente, modelo in reversed(enc.modelos):
         if modelo:
-            return NOMBRES.get(str(modelo).lower(), str(modelo).capitalize())
+            return _nombre_modelo(modelo)
     return "un agente"
 
 
@@ -147,14 +186,20 @@ def _fase(enc: Encargo) -> str:
     nombre = actual.id if actual is not None else ""
     if nombre == FASE_IMPLICITA:
         nombre = "" if total > 1 else "única"
-    return f"{nombre}, {posicion} de {total}" if nombre else f"{posicion} de {total}"
+    return f"{posicion} de {total} · {nombre}" if nombre else f"{posicion} de {total}"
 
 
 def _pr(enc: Encargo) -> str:
     if not enc.pr_numero:
         return "sin abrir"
-    repo = str(enc.entrega.repo or "").strip()
-    return f"{repo}#{enc.pr_numero}" if repo else f"#{enc.pr_numero}"
+    repo = _repo_corto(enc.entrega.repo)
+    return f"{repo} #{enc.pr_numero}" if repo else f"#{enc.pr_numero}"
+
+
+def _repo_corto(valor: object) -> str:
+    """`goncloud-motor` desde `git@github.com:o/goncloud-motor.git`, una URL u `o/nombre`."""
+    texto = str(valor or "").strip().rstrip("/").removesuffix(".git")
+    return texto.replace(":", "/").rsplit("/", 1)[-1]
 
 
 def _espera_en_palabras(motivo: str) -> str:
@@ -166,8 +211,12 @@ def _espera_en_palabras(motivo: str) -> str:
         return "esperando la revisión de DeepSeek"
     if "checks requeridos" in llano:
         return "esperando checks"
+    if "comprobador" in llano:
+        return "esperando las comprobaciones antes de publicar"
     if not texto.strip():
         return "esperando para reintentar"
+    if llano.startswith("esperando"):
+        return _frase(texto, 160)
     return "esperando para reintentar: " + _frase(texto, 160)
 
 
@@ -383,31 +432,34 @@ def _componer(
     host: str,
     ahora: float,
 ) -> str:
+    activos = len(entradas)
     cabecera = "\n".join(
         (
-            "<b>Resumen de encargos</b>",
-            f"<i>{_esc(host)}</i> · {_esc(_hora_legible(ahora))} · "
-            f"<b>{len(entradas)} activos</b>",
+            "📋 <b>Resumen de encargos</b>",
+            f"🖥️ {_esc(_maquina(host))} · {_esc(_hora_legible(ahora))} · <b>"
+            + (f"{activos} activo" if activos == 1 else f"{activos} activos")
+            + "</b>",
         )
     )
     bloques = [cabecera]
     for indice, entrada in enumerate(entradas, 1):
+        numero = NUMEROS[indice - 1] if indice <= len(NUMEROS) else f"{indice}."
         filas = [
-            f"<b>{indice}. {_esc(entrada.titulo)}</b> <code>{_esc(entrada.id_corto)}</code>",
-            f"Fase: <b>{_esc(entrada.fase)}</b>",
-            f"PR: <code>{_esc(entrada.pr)}</code>",
-            f"Ahora: {_esc(entrada.paso)}",
-            f"Desde: {_esc(entrada.desde)}",
+            f"{numero} <b>{_esc(entrada.titulo)}</b> ({_esc(entrada.id_corto)})",
+            f"📍 Fase: <b>{_esc(entrada.fase)}</b>",
+            f"🔗 PR: {_esc(entrada.pr)}",
+            f"⏳ Ahora: {_esc(entrada.paso)}",
+            f"🕐 Desde: {_esc(entrada.desde)}",
         ]
         for alerta in entrada.alertas:
-            filas.append(f"<b>Alerta:</b> {_esc(alerta)}")
+            filas.append(f"⚠️ <b>Alerta:</b> {_esc(alerta)}")
         bloques.append("\n".join(filas))
-    pie = ["<b>Necesitan tu decisión</b>"]
     if decisiones:
+        pie = ["🙋 <b>Necesitan tu decisión</b>"]
         for titulo, motivo in decisiones:
-            pie.append(f"- <b>{_esc(titulo)}</b>: {_esc(motivo)}")
+            pie.append(f"• <b>{_esc(titulo)}</b>: {_esc(motivo)}")
     else:
-        pie.append("Nada espera tu decisión.")
+        pie = ["✅ Nada espera tu decisión."]
     bloques.append("\n".join(pie))
     return "\n\n".join(bloques)
 
@@ -453,7 +505,7 @@ def construir(registro: Registro, ahora: float | None = None, host: str = "") ->
     tuplas = tuple(entradas)
     decididas = tuple(decisiones)
     return Resumen(
-        html=_componer(tuplas, decididas, host or socket.gethostname(), momento),
+        cuerpo=_componer(tuplas, decididas, host or socket.gethostname(), momento),
         firma=_firma(tuplas, decididas),
         activos=len(tuplas),
         entradas=tuplas,
@@ -462,7 +514,7 @@ def construir(registro: Registro, ahora: float | None = None, host: str = "") ->
 
 
 def texto(registro: Registro, ahora: float | None = None, host: str = "") -> str:
-    return construir(registro, ahora=ahora, host=host).html
+    return construir(registro, ahora=ahora, host=host).cuerpo
 
 
 def _trocear(texto: str, tope: int) -> list[str]:
@@ -715,7 +767,7 @@ def preparar(registro: Registro, ahora: float | None = None) -> list[tuple[dict,
             ]
         )
         episodio_actual = max(int(momento * 1_000_000_000), maximo + 1)
-    partes = partir(actual.html)
+    partes = partir(actual.cuerpo)
     salida: list[tuple[dict, str]] = []
     for indice, parte in enumerate(partes, 1):
         ident = "av_" + hashlib.sha256(
@@ -735,6 +787,7 @@ def preparar(registro: Registro, ahora: float | None = None) -> list[tuple[dict,
             "estado": "pendiente",
             "recibo": "",
             "tipo": "resumen",
+            "formato": "html",
             "firma": actual.firma,
             "episodio": episodio_actual,
             "parte": indice,
