@@ -2,9 +2,12 @@
 
 El espacio fuera de `.interno/` es solo producto. La firma excluye por parte
 de ruta (`.git`, `__pycache__`, `.runtime`, `.interno`), nunca por nombre de
-archivo: no hay lista de internos que sincronizar con los prompts. En un
-repositorio git tambien excluye lo que git ignora, con el mismo criterio con
-el que se decide que entra en un commit; una cache local no cambia el producto.
+archivo: no hay lista de internos que sincronizar con los prompts. Cuando el
+espacio es la raiz de su propio repositorio tambien excluye lo que su git
+ignora, con el mismo criterio con el que se decide que entra en un commit; una
+cache local no cambia el producto. Dentro de un repositorio ajeno se recorre el
+disco: el `ls-files` de arriba puede ignorar el espacio entero y devolver una
+firma constante.
 """
 
 from __future__ import annotations
@@ -36,13 +39,28 @@ def interno_de(espacio: Path, crear: bool = False) -> Path:
     return path
 
 
+def _es_repo_propio(espacio: Path) -> bool:
+    """El mismo criterio con el que `ciclo._asegurar_repo` reconoce un clon.
+
+    Un `.git` de archivo tambien vale: es el de un worktree, que sigue siendo
+    la raiz de su propio repositorio. Comparar `rev-parse --show-toplevel`
+    exigiria normalizar rutas resueltas, con `/tmp` frente a `/private/tmp` en
+    macOS y separadores distintos en Windows.
+    """
+    return (espacio / ".git").exists()
+
+
 def _rutas_del_producto(espacio: Path) -> list[Path] | None:
     """Los archivos que entrarian en un commit, como `ciclo._commit_push`.
 
     `ls-files --cached --others --exclude-standard` da los rastreados y los no
     rastreados que git no ignora. Asi una cache como `.pytest_cache` no cambia
-    la firma. Fuera de un repositorio git se conserva el recorrido por disco.
+    la firma. Solo se usa cuando el espacio es la raiz de su propio
+    repositorio; dentro de uno ajeno se conserva el recorrido por disco, porque
+    el ignore de arriba puede ocultar el producto entero.
     """
+    if not _es_repo_propio(espacio):
+        return None
     try:
         r = subprocess.run(
             [
