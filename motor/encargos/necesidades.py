@@ -151,6 +151,7 @@ Operaciones:
 - `sqlite.snapshot --recurso <r>`: copia consistente con origen y huella; la ruta queda en la respuesta.
 - `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado. `texto` trae solo los primeros 64 KB; si `texto_recortado` es true, el archivo completo está en `copia`, dentro del espacio.
 - `ci.correr --recurso <r> --parametro job="nombre-del-job"`: corre el workflow de pruebas de GitHub sobre la versión vigente del producto y devuelve el log literal de ese job, con el SHA y el número de run. Tarda minutos: la respuesta puede quedar `pendiente`. La rama y el PR temporales se cierran solos.
+- `ci.log --recurso <r> --parametro pr="numero" --parametro job="nombre-del-job" --parametro sha="commit"`: solo lectura. Devuelve el log literal del job de la corrida del PR del encargo. Si la corrida no es del SHA pedido, dice cuál hay. No sirve para otro repo ni para un PR ajeno al encargo.
 Añade `--motivo` con para qué la necesitas. Si la respuesta es `pregunta`, queda una autorización
 pendiente con su id: sigue con lo demás o espera con `python3 {cliente} ver <id>`. Una respuesta
 `error` trae la causa y la alternativa; corrige la solicitud en lugar de repetirla igual.
@@ -207,6 +208,7 @@ def _solicitud_de(enc, crudo: dict) -> Solicitud:
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
         capacidades.CI,
+        capacidades.CI_LOG,
         capacidades.DECISION,
     )
     if operacion not in conocidas:
@@ -378,7 +380,7 @@ def _en_curso(sol: Solicitud, directorio: Path) -> bool:
 
 def _archivo_de(sol: Solicitud, datos: dict) -> tuple[str, str, str]:
     """(clave pública, clave del host, nombre) del archivo que publica la operación."""
-    if sol.operacion == capacidades.CI:
+    if sol.operacion in (capacidades.CI, capacidades.CI_LOG):
         nombre = Path(str(datos.get("log_nombre") or "ci.log")).name
         return "log", "log_host", nombre
     if sol.operacion == capacidades.REMOTO:
@@ -786,6 +788,7 @@ def _ejecutar(
             "destino": str(destino),
             "autorizado": autorizado,
             "espacio": str(espacio),
+            "contexto": contexto_de(enc),
         },
     )
 
@@ -960,6 +963,16 @@ def _atender_decision(
     if resultado == "ilegal":
         return {"estado": "error", "motivo": "la decisión no se pudo registrar"}
     return {"estado": "registrada", "datos": {"decision": sol.id}}
+
+
+def contexto_de(enc) -> dict:
+    """PR, SHA, rama y repo del encargo que autorizan una lectura de su CI."""
+    return {
+        "pr": int(getattr(enc, "pr_numero", 0) or 0),
+        "sha": str(getattr(enc, "pr_sha", "") or ""),
+        "rama": str(getattr(enc, "rama_entrega", "") or ""),
+        "repo": str(getattr(getattr(enc, "entrega", None), "repo", "") or ""),
+    }
 
 
 def _huella_config(concedido: dict) -> str:

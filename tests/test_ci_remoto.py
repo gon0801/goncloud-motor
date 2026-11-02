@@ -361,7 +361,7 @@ class LaLimpiezaEsSiempre(_Ci):
 class ElPuenteLaConoce(_Ci):
     def test_el_catalogo_la_ofrece_y_no_es_observable(self):
         recursos = {"ci-linux": {**self.recursos["ci-linux"]}}
-        self.assertEqual(cap.operaciones_de(recursos, "ci-linux"), (cap.CI,))
+        self.assertEqual(cap.operaciones_de(recursos, "ci-linux"), (cap.CI, cap.CI_LOG))
         self.assertEqual(cap.recursos_observables(recursos), ())
         self.assertEqual(
             cap.huella_recurso(recursos, cap.CI, "ci-linux", {"job": "jaula-linux"}), ""
@@ -378,7 +378,8 @@ class ElPuenteLaConoce(_Ci):
     def test_el_bloque_de_capacidades_explica_como_pedirla(self):
         texto = nec.bloque_capacidades(self.raiz, self.recursos)
         self.assertIn("ci.correr --recurso <r> --parametro job=", texto)
-        self.assertIn("ci-linux (ci): ci.correr", texto)
+        self.assertIn("ci.log --recurso <r> --parametro pr=", texto)
+        self.assertIn("ci-linux (ci): ci.correr, ci.log", texto)
 
     def test_una_peticion_ci_correr_es_una_solicitud_valida(self):
         enc = SimpleNamespace(id="enc_x")

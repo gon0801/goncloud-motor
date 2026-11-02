@@ -31,11 +31,12 @@ CONSULTAR = "sqlite.consultar"
 SNAPSHOT = "sqlite.snapshot"
 REMOTO = "remoto.leer"
 CI = "ci.correr"
+CI_LOG = "ci.log"
 DECISION = "decision.registrar"
 
 OPERACIONES_SIN_RECURSO = (DECISION,)
 # Operaciones cuyo resultado incluye un archivo que el supervisor publica en el espacio.
-CON_ARCHIVO = (SNAPSHOT, CI, REMOTO)
+CON_ARCHIVO = (SNAPSHOT, CI, CI_LOG, REMOTO)
 
 MAX_SQL = 20_000
 MAX_FILAS = 500
@@ -172,7 +173,7 @@ def catalogo(recursos: dict[str, dict]) -> list[dict]:
         if recurso["tipo"] == "sqlite":
             operaciones = [TABLAS, CONSULTAR, SNAPSHOT]
         elif recurso["tipo"] == "ci":
-            operaciones = [CI]
+            operaciones = [CI, CI_LOG]
         else:
             operaciones = [REMOTO]
         salida.append(
@@ -577,6 +578,19 @@ def _gh(gh: str, repo: str, *args: str, plazo: float = 120, binario: bool = Fals
     return r.stdout
 
 
+def _repo_github(valor: str) -> str:
+    """owner/nombre para gh; acepta owner/nombre, SSH, HTTPS o una ruta local."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return ""
+    try:
+        from motor.repositorios import resolver_repositorio
+
+        return str(resolver_repositorio(texto).github or texto)
+    except Exception:  # la normalización es best-effort; el recurso manda
+        return texto
+
+
 def _repo_de(concedido: dict, espacio: Path) -> tuple[str, str]:
     """(owner/nombre para gh, remoto de git). Sale del recurso o del origin del espacio."""
     import re
@@ -584,7 +598,7 @@ def _repo_de(concedido: dict, espacio: Path) -> tuple[str, str]:
     remoto = str(concedido.get("remoto") or "").strip()
     if not remoto:
         remoto = _git_ci(espacio, "remote", "get-url", "origin").strip()
-    repo = str(concedido.get("repo") or "").strip()
+    repo = _repo_github(str(concedido.get("repo") or "").strip())
     if not repo:
         m = re.search(r"github\.com[:/]+([^/]+/[^/]+?)(?:\.git)?/?$", remoto)
         if not m:
@@ -593,7 +607,7 @@ def _repo_de(concedido: dict, espacio: Path) -> tuple[str, str]:
                 "pedir al host que declare repo en el recurso ci",
             )
         repo = m.group(1)
-    return repo, remoto
+    return _repo_github(repo), remoto
 
 
 _INTERNO = (".interno", "__pycache__", ".runtime")
@@ -854,6 +868,209 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
     }
 
 
+def _entero_pr(valor) -> int:
+    texto = str(valor or "").strip()
+    if not texto.isdigit() or int(texto) <= 0 or len(texto) > 12:
+        raise CiFallo(
+            "ci.log necesita el parámetro pr con el número del PR del encargo",
+            "volver a pedirla con --parametro pr=<numero>",
+        )
+    return int(texto)
+
+
+def _sha_esperado(valor) -> str:
+    import re
+
+    texto = str(valor or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{7,40}", texto):
+        raise CiFallo(
+            "ci.log necesita el parámetro sha con el SHA esperado (7 a 40 hex)",
+            "volver a pedirla con --parametro sha=<commit>",
+        )
+    return texto
+
+
+def _correr_ci_log(
+    concedido: dict,
+    parametros: dict,
+    espacio: Path | None,
+    destino: Path,
+    contexto: dict | None,
+) -> dict:
+    """Lee el log de un job de una corrida del PR del encargo. No crea ramas ni
+    PRs: solo consulta el recurso ci y publica la copia en el espacio."""
+    import re
+    import shutil
+
+    job = str(parametros.get("job") or "").strip()
+    if not job or not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", job):
+        raise CiFallo(
+            "ci.log necesita el parámetro job con el nombre exacto del job",
+            "volver a pedirla con --parametro job=<nombre>",
+        )
+    pr = _entero_pr(parametros.get("pr"))
+    sha_pedido = _sha_esperado(parametros.get("sha"))
+    gh = shutil.which("gh")
+    if not gh:
+        raise CiFallo("gh no está instalado en el host del supervisor", "instalar y autenticar gh")
+    repo = _repo_github(str(concedido.get("repo") or ""))
+    if not repo:
+        repo, _remoto = _repo_de(concedido, espacio or Path.cwd())
+        repo = _repo_github(repo)
+    workflow = str(concedido.get("workflow") or "pruebas.yml").strip()
+    if not isinstance(contexto, dict):
+        raise CiFallo(
+            "ci.log necesita el PR del encargo y el host no lo trajo",
+            "pedir la operación por el buzón del encargo",
+        )
+    autorizado = int(contexto.get("pr") or 0)
+    if not autorizado:
+        raise CiFallo(
+            "el encargo todavía no tiene un PR de entrega; ci.log solo lee el PR del encargo",
+            "abrir la entrega del encargo y volver a pedir el log",
+        )
+    if pr != autorizado:
+        raise CiFallo(
+            f"el PR #{pr} no es el del encargo (#{autorizado}); ci.log no lee PRs ajenos",
+            "pedir el log del PR del encargo",
+        )
+    rama = str(contexto.get("rama") or "").strip()
+    repo_contexto = _repo_github(str(contexto.get("repo") or ""))
+    if repo_contexto and repo_contexto != repo:
+        raise CiFallo(
+            f"el PR del encargo es de {repo_contexto}, no de {repo}; ci.log no cruza repos",
+            "pedir el log con el recurso ci del repo del encargo",
+        )
+    vista_pr = _json_gh(
+        gh, repo, "pr", "view", str(pr),
+        "--json", "number,state,headRefName,headRefOid,headRepository",
+    )
+    if not isinstance(vista_pr, dict):
+        raise CiFallo("gh no devolvió el PR del encargo", "reintentar")
+    rama_pr = str(vista_pr.get("headRefName") or "").strip()
+    if rama and rama_pr != rama:
+        raise CiFallo(
+            f"el PR #{pr} es de la rama {rama_pr or '(vacia)'}, no de {rama}; ci.log no lee PRs ajenos",
+            "pedir el log del PR de la rama del encargo",
+        )
+    repo_pr = ""
+    if isinstance(vista_pr.get("headRepository"), dict):
+        repo_pr = _repo_github(
+            str(vista_pr["headRepository"].get("nameWithOwner") or "")
+        )
+    if repo_pr and repo_pr != repo:
+        raise CiFallo(
+            f"el PR #{pr} viene de {repo_pr}, no de {repo}; ci.log no cruza repos",
+            "pedir el log del PR del encargo",
+        )
+    head = str(vista_pr.get("headRefOid") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise CiFallo("gh no devolvió el SHA vigente del PR", "reintentar")
+    if len(sha_pedido) < 40:
+        if not head.startswith(sha_pedido):
+            raise CiFallo(
+                f"el PR #{pr} está en {head[:12]}; no hay corrida para {sha_pedido}",
+                "pedir el log del SHA vigente del PR",
+            )
+        sha_buscar = head
+    else:
+        sha_buscar = sha_pedido
+
+    def runs_de(sha: str) -> list[dict]:
+        argumentos = [
+            "run", "list", "--commit", sha,
+            "--json", "databaseId,status,conclusion,headSha,headBranch,event,url,workflowName",
+            "--limit", "20",
+        ]
+        if workflow:
+            argumentos += ["--workflow", workflow]
+        return [
+            r for r in (_json_gh(gh, repo, *argumentos) or [])
+            if str(r.get("headSha") or "").lower() == sha
+        ]
+
+    runs = [
+        r for r in runs_de(sha_buscar)
+        if str(r.get("event") or "") in ("", "pull_request")
+    ]
+    if rama_pr:
+        runs = [
+            r for r in runs
+            if str(r.get("headBranch") or "") in ("", rama_pr)
+        ]
+    if not runs:
+        disponibles = sorted(
+            {
+                str(r.get("headSha") or "")[:12]
+                for r in runs_de(head)
+                if r.get("headSha")
+            }
+        )
+        detalle = f"; corridas del PR: {', '.join(disponibles)}" if disponibles else ""
+        raise CiFallo(
+            f"no hay corrida del SHA {sha_buscar[:12]} en el PR #{pr}; "
+            f"el PR está en {head[:12]}{detalle}",
+            "pedir el log del SHA vigente del PR",
+        )
+    run = max(runs, key=lambda r: int(r.get("databaseId") or 0))
+    numero_run = str(run["databaseId"])
+    vista = _json_gh(
+        gh, repo, "run", "view", numero_run,
+        "--json", "status,conclusion,jobs,url",
+    )
+    if not isinstance(vista, dict):
+        raise CiFallo("gh no devolvió la corrida del PR", "reintentar")
+    trabajos = vista.get("jobs") or []
+    elegido = next((j for j in trabajos if str(j.get("name")) == job), None)
+    if elegido is None:
+        nombres = ", ".join(sorted(str(j.get("name")) for j in trabajos)) or "ninguno"
+        raise CiFallo(
+            f"la corrida {numero_run} no tiene un job llamado {job!r}; jobs: {nombres}",
+            "volver a pedirla con el nombre exacto de uno de esos jobs",
+        )
+    log = _gh(
+        gh, repo, "run", "view", numero_run, "--job", str(elegido["databaseId"]), "--log",
+        plazo=300, binario=True,
+    )
+    if len(log) > MAX_LOG:
+        raise CiFallo(f"el log del job supera {MAX_LOG} bytes", "pedir otro job")
+    nombre = f"{re.sub(r'[^A-Za-z0-9_.-]', '-', job)}-{sha_buscar[:7]}-run{numero_run}.log"
+    copia = destino / "remoto" / nombre
+    _escribir_seguro(copia, log)
+    datos = {
+        "pr": pr,
+        "job": job,
+        "sha": sha_buscar,
+        "run": numero_run,
+        "estado": str(vista.get("status") or ""),
+        "conclusion": str(elegido.get("conclusion") or vista.get("conclusion") or ""),
+        "url": str(vista.get("url") or run.get("url") or ""),
+        "log_nombre": nombre,
+        "log_host": str(copia),
+        "log": str(copia),
+        "bytes": copia.stat().st_size,
+        "cola": log[-MAX_TEXTO:].decode("utf-8", errors="replace"),
+    }
+    return {
+        "estado": "ok",
+        "datos": datos,
+        "evidencia": {
+            "tipo": "ci_log",
+            "repo": repo,
+            "pr": pr,
+            "sha": sha_buscar,
+            "run": numero_run,
+            "job": job,
+            "estado": datos["estado"],
+            "conclusion": datos["conclusion"],
+            "url": datos["url"],
+            "ruta_copia": str(copia),
+            "sha256": _huella(copia),
+            "bytes": datos["bytes"],
+        },
+    }
+
+
 def recursos_observables(recursos: dict[str, dict]) -> tuple[str, ...]:
     """Recursos cuyo cambio detecta `huella_recurso`: sqlite y remotos por fichero."""
     return tuple(
@@ -907,6 +1124,7 @@ def ejecutar(
     destino: Path,
     autorizado: bool = False,
     espacio: Path | None = None,
+    contexto: dict | None = None,
 ) -> dict:
     """Ejecuta una operación conocida. Devuelve resultado, pregunta o error con causa."""
     destino = Path(destino)
@@ -970,6 +1188,17 @@ def ejecutar(
                     "motivo": f"fallo inesperado en ci.correr: {type(exc).__name__}: {exc}",
                     "alternativa": "la rama y el PR temporales se cerraron; reintentar o pedir el log al operador",
                 }
+        if operacion == CI_LOG:
+            try:
+                return _correr_ci_log(concedido, parametros, espacio, destino, contexto)
+            except (CiFallo, ConfigInvalida):
+                raise
+            except Exception as exc:
+                return {
+                    "estado": "error",
+                    "motivo": f"fallo inesperado en ci.log: {type(exc).__name__}: {exc}",
+                    "alternativa": "reintentar o pedir el log al operador",
+                }
         if operacion == REMOTO:
             relativa = _ruta_relativa(str(parametros.get("ruta") or ""))
             if str(concedido.get("transporte") or "fichero") == "http":
@@ -1019,6 +1248,7 @@ def main(argv: list[str]) -> int:
             destino,
             autorizado=bool(spec.get("autorizado")),
             espacio=Path(spec["espacio"]) if spec.get("espacio") else None,
+            contexto=spec.get("contexto"),
         )
     destino.mkdir(parents=True, exist_ok=True)
     _escribir_seguro(
