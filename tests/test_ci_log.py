@@ -17,7 +17,13 @@ from unittest import mock
 
 from motor.encargos import capacidades as cap
 from motor.encargos import necesidades as nec
-from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, Solicitud
+from motor.encargos.dominio import (
+    AlcanceRevision,
+    Encargo,
+    EntregaAutorizada,
+    Fase,
+    Solicitud,
+)
 
 SHA = "835b2f1a0c3d4e5f60718293a4b5c6d7e8f90123"
 LOG = (
@@ -272,6 +278,16 @@ class _CiLog(unittest.TestCase):
 
         self.assertEqual(inspeccion.operacion, cap.CI_LOG)
         self.assertEqual(dict(inspeccion.parametros)["pr"], "189")
+
+    def test_el_prompt_del_revisor_ofrece_ci_log_como_inspeccion(self):
+        from motor.encargos import comprobacion
+
+        texto = comprobacion.instrucciones_revision(
+            AlcanceRevision(clase="completa", version="v", base_version="b"),
+            Path("resultado.json"),
+        )
+
+        self.assertIn("ci.correr|ci.log", texto)
 
     def test_el_catalogo_la_ofrece_y_no_es_observable(self):
         self.assertEqual(
