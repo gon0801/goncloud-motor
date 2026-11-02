@@ -19,6 +19,7 @@ import time
 import uuid
 from pathlib import Path
 
+from .arbol import descendientes_validos
 from .rutas_wsl import argv_a_wsl
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -701,7 +702,7 @@ def _abrir_job(nombre: str):  # pragma: no cover
     return None, "ausente" if ctypes.get_last_error() in (2, 3) else "incierto"
 
 
-def _descendientes(pid: int) -> list[int] | None:  # pragma: no cover
+def _padres_procesos() -> dict[int, int] | None:  # pragma: no cover
     import ctypes
     from ctypes import wintypes
 
@@ -738,14 +739,16 @@ def _descendientes(pid: int) -> list[int] | None:  # pragma: no cover
             ok = k.Process32NextW(snap, ctypes.byref(ent))
     finally:
         k.CloseHandle(snap)
-    if not padres:
-        return None
+    return padres or None
+
+
+def _candidatos_por_ppid(padres: dict[int, int], raiz: int) -> list[int]:
     hijos = []
     for candidato, padre in padres.items():
         visto = {candidato}
         actual = padre
-        for _ in range(32):
-            if actual == pid:
+        for _ in range(64):
+            if actual == raiz:
                 hijos.append(candidato)
                 break
             if actual in visto or actual == 0:
@@ -755,6 +758,27 @@ def _descendientes(pid: int) -> list[int] | None:  # pragma: no cover
                 break
             actual = padres[actual]
     return hijos
+
+
+def _hora_creacion(pid: int) -> int | None:
+    texto = hora_inicio(pid)
+    return int(texto) if texto.isdigit() else None
+
+
+def _descendientes(pid: int, inicio: str = "") -> list[int] | None:  # pragma: no cover
+    padres = _padres_procesos()
+    if not padres:
+        return None
+    candidatos = _candidatos_por_ppid(padres, pid)
+    if inicio:
+        raiz_creada = int(inicio) if inicio.isdigit() else None
+    else:
+        raiz_creada = _hora_creacion(pid)
+    if raiz_creada is None:
+        return []
+    snapshot = {c: (padres[c], _hora_creacion(c)) for c in candidatos}
+    snapshot[pid] = (padres.get(pid, 0), raiz_creada)
+    return descendientes_validos(snapshot, pid)
 
 
 def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no cover
@@ -793,7 +817,7 @@ def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no 
         if pids is None:
             return "incierto"
         return "vivo" if pids else "ausente"
-    hijos = _descendientes(pid)
+    hijos = _descendientes(pid, inicio)
     if hijos is None:
         return "incierto"
     if reutilizado:
@@ -838,9 +862,9 @@ def cerrar_huerfanos(pid: int, inicio: str, job: str = "") -> None:  # pragma: n
         return
     if visto == "incierto":
         return
-    for hijo in _descendientes(pid) or ():
+    for hijo in _descendientes(pid, inicio) or ():
         subprocess.run(
-            ["taskkill", "/PID", str(hijo), "/T", "/F"],
+            ["taskkill", "/PID", str(hijo), "/F"],
             capture_output=True,
             stdin=subprocess.DEVNULL,
             creationflags=CREATE_NO_WINDOW,
@@ -848,9 +872,16 @@ def cerrar_huerfanos(pid: int, inicio: str, job: str = "") -> None:  # pragma: n
 
 
 def matar_grupo_pid(pid: int, inicio: str = "") -> None:  # pragma: no cover
-    """Termina el árbol de `pid` (taskkill /T /F)."""
+    """Termina el árbol confirmado de `pid`, sin `/T` sobre PIDs ajenos."""
+    for hijo in _descendientes(pid, inicio) or ():
+        subprocess.run(
+            ["taskkill", "/PID", str(hijo), "/F"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+        )
     subprocess.run(
-        ["taskkill", "/PID", str(pid), "/T", "/F"],
+        ["taskkill", "/PID", str(pid), "/F"],
         capture_output=True,
         stdin=subprocess.DEVNULL,
         creationflags=CREATE_NO_WINDOW,
@@ -972,13 +1003,20 @@ def contener(p: subprocess.Popen) -> None:  # pragma: no cover
 
 
 def matar_grupo(p: subprocess.Popen) -> None:  # pragma: no cover
-    """Termina el árbol completo: cierra el Job (mata al árbol) y taskkill /T /F de respaldo."""
+    """Termina el árbol confirmado por PPID y horas: cierra el Job y mata cada PID confirmado."""
     j = _jobs.pop(p.pid, None)
     if j is not None:
         j.cerrar()
+    for hijo in _descendientes(p.pid) or ():
+        subprocess.run(
+            ["taskkill", "/PID", str(hijo), "/F"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+        )
     try:
         subprocess.run(
-            ["taskkill", "/PID", str(p.pid), "/T", "/F"],
+            ["taskkill", "/PID", str(p.pid), "/F"],
             capture_output=True,
             timeout=4,
             check=False,
