@@ -30,47 +30,13 @@ class ComandoAislado:
     ejecutable: dict | None = None
 
 
-def lecturas_del_interprete() -> tuple[Path, ...]:
-    """La instalación del intérprete que corre este supervisor, para leerla y
-    nada más. En la Mini el Python 3.12 de uv vive bajo el home, que la jaula
-    niega: sin esto arranca con "No module named encodings" y el comprobador
-    se queda con el Python 3.9 del sistema. Se concede el ejecutable (y su
-    enlace) y los prefijos de la instalación; nunca el home ni sus padres."""
-    home = Path.home().resolve()
-    amplios = {home, *home.parents}
-    candidatos = [Path(sys.executable)]
-    candidatos += [
-        Path(p) for p in (sys.base_prefix, sys.prefix, sys.base_exec_prefix, sys.exec_prefix)
-    ]
-    salida: list[Path] = []
-
-    def agregar(ruta: Path) -> None:
-        if ruta.exists() and ruta not in amplios and ruta not in salida:
-            salida.append(ruta)
-
-    for candidato in candidatos:
-        agregar(candidato)
-        agregar(candidato.resolve())
-        # `~/.local/bin/python3` apunta a un directorio que a su vez es un
-        # enlace: cada salto bajo el home se concede como tal, porque la jaula
-        # solo conoce las rutas resueltas.
-        actual = Path(os.path.abspath(candidato))
-        recorrido = Path(actual.anchor)
-        for parte in actual.parts[1:]:
-            recorrido = recorrido / parte
-            if recorrido.is_symlink() and home in recorrido.parents:
-                agregar(recorrido)
-    return tuple(salida)
-
-
 def _es_carpeta_de_shims(ruta: str) -> bool:
     return os.path.isfile(os.path.join(ruta or ".", "llamada_guard.py"))
 
 
 def path_con_interprete(path: str, runtime: Path) -> str:
     """`python3` de la sesión es el intérprete que corre este supervisor, no el
-    primero que halle el PATH (el 3.9 del sistema no trae `tomllib`; el de uv
-    bajo el home no arranca en la jaula sin `lecturas_del_interprete`). Se deja
+    primero que halle el PATH (el 3.9 del sistema no trae `tomllib`). Se deja
     en `runtime/bin` un `python3` que lo ejecuta y esa carpeta va justo después
     de los shims del motor, que siguen al frente."""
     carpeta = runtime / "bin"
@@ -124,72 +90,8 @@ def limpiar_temporal(runtime: Path) -> None:
         shutil.rmtree(temporal, ignore_errors=True)
 
 
-def _atajo_mktemp(runtime: Path) -> Path | None:
-    """En macOS, BSD mktemp ignora TMPDIR sin una plantilla y usa /var/folders,
-    que la jaula niega. Un mktemp propio en el PATH arma una plantilla dentro
-    del TMPDIR de la corrida, sin depender de la opción -p."""
-    if sys.platform != "darwin":
-        return None
-    real = shutil.which("mktemp")
-    if not real:
-        return None
-    bin_dir = runtime / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    atajo = bin_dir / "mktemp"
-    atajo.write_text(
-        "#!/bin/sh\n"
-        f"real={shlex.quote(str(Path(real).resolve()))}\n"
-        "flags=''\n"
-        "prefijo=tmp\n"
-        'while [ "$#" -gt 0 ]; do\n'
-        "  case \"$1\" in\n"
-        "    -p|--tmpdir*)\n"
-        '      exec "$real" $flags "$@"\n'
-        "      ;;\n"
-        "    -t)\n"
-        '      if [ "$#" -ge 2 ]; then\n'
-        '        prefijo="$2"\n'
-        "        shift 2\n"
-        "      else\n"
-        '        exec "$real" $flags "$@"\n'
-        "      fi\n"
-        "      ;;\n"
-        "    -*t*)\n"
-        '      sin_t="${1%%t*}"\n'
-        '      resto="${1#*t}"\n'
-        '      if [ -n "$resto" ]; then\n'
-        '        prefijo="$resto"\n'
-        '        [ "$sin_t" = "-" ] || flags="$flags $sin_t"\n'
-        "        shift\n"
-        '      elif [ "$#" -ge 2 ]; then\n'
-        '        prefijo="$2"\n'
-        '        [ "$sin_t" = "-" ] || flags="$flags $sin_t"\n'
-        "        shift 2\n"
-        "      else\n"
-        '        exec "$real" $flags "$@"\n'
-        "      fi\n"
-        "      ;;\n"
-        "    -*)\n"
-        "      flags=\"$flags $1\"\n"
-        "      shift\n"
-        "      ;;\n"
-        "    *)\n"
-        '      exec "$real" $flags "$@"\n'
-        "      ;;\n"
-        "  esac\n"
-        "done\n"
-        '# Sin plantilla propia, el archivo vive en el TMPDIR de la corrida.\n'
-        'exec "$real" $flags "${TMPDIR:?}/$prefijo.XXXXXXXXXX"\n',
-        encoding="utf-8",
-    )
-    atajo.chmod(0o755)
-    return bin_dir
-
-
-def _entorno(
-    runtime: Path, suscripcion: bool, cmd: list[str], *, agente: str | None = None
-) -> dict[str, str]:
-    permitidas = {
+_PERMITIDAS_WINDOWS = frozenset(
+    {
         "PATH",
         "SYSTEMROOT",
         "SYSTEMDRIVE",
@@ -204,45 +106,61 @@ def _entorno(
         "PROGRAMFILES(X86)",
         "PROGRAMW6432",
     }
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k.upper() in permitidas or k.upper().startswith("LC_")
-    }
+)
+
+
+def _entorno(
+    runtime: Path, suscripcion: bool, cmd: list[str], *, agente: str | None = None
+) -> dict[str, str]:
     if os.name == "nt":
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k.upper() in _PERMITIDAS_WINDOWS or k.upper().startswith("LC_")
+        }
         env["PATH"] = (
             str(Path(sys.executable).resolve().parent)
             + os.pathsep
             + env.get("PATH", "")
         )
+        env.update(
+            HOME=str(runtime),
+            USERPROFILE=str(runtime),
+            APPDATA=str(runtime / "AppData" / "Roaming"),
+            LOCALAPPDATA=str(runtime / "AppData" / "Local"),
+            XDG_CONFIG_HOME=str(runtime / ".config"),
+            XDG_DATA_HOME=str(runtime / ".local" / "share"),
+        )
+    else:
+        # macOS y Linux: el agente trabaja con el entorno del usuario, como él
+        # (decisión del 2-nov). Solo se aparta lo que el motor necesita para
+        # darle a cada agente su suscripción y su temporal, que no bloquea nada.
+        env = dict(os.environ)
     temporal = temporal_de(runtime)
-    atajo = _atajo_mktemp(runtime)
-    if atajo is not None:
-        env["PATH"] = str(atajo) + os.pathsep + env.get("PATH", "")
     env.update(
-        HOME=str(runtime),
-        USERPROFILE=str(runtime),
-        APPDATA=str(runtime / "AppData" / "Roaming"),
-        LOCALAPPDATA=str(runtime / "AppData" / "Local"),
-        XDG_CONFIG_HOME=str(runtime / ".config"),
-        XDG_DATA_HOME=str(runtime / ".local" / "share"),
         TMPDIR=str(temporal),
         TEMP=str(temporal),
         TMP=str(temporal),
         # El CLI de Claude no mira TMPDIR para el temporal de su shell: usa
-        # CLAUDE_CODE_TMPDIR y, si falta, cae en /tmp. Fuera de la jaula eso es
-        # EPERM en cada orden. Ver incidente-mini-cuota-20261029.
+        # CLAUDE_CODE_TMPDIR y, si falta, cae en /tmp. Ver incidente-mini-cuota-20261029.
         CLAUDE_CODE_TMPDIR=str(temporal),
+        # OpenCode guarda en XDG_DATA_HOME el auth.json que el motor preparó
+        # para este intento (suscripciones.preparar).
+        XDG_DATA_HOME=str(runtime / ".local" / "share"),
         PYTHONDONTWRITEBYTECODE="1",
         CODEX_HOME=str(runtime / ".codex"),
     )
-    for path in (
-        env["APPDATA"],
-        env["LOCALAPPDATA"],
-        env["CODEX_HOME"],
-        env["XDG_CONFIG_HOME"],
-        env["XDG_DATA_HOME"],
-    ):
+    if os.name == "nt":
+        carpetas = (
+            env["APPDATA"],
+            env["LOCALAPPDATA"],
+            env["CODEX_HOME"],
+            env["XDG_CONFIG_HOME"],
+            env["XDG_DATA_HOME"],
+        )
+    else:
+        carpetas = (env["CODEX_HOME"], env["XDG_DATA_HOME"])
+    for path in carpetas:
         Path(path).mkdir(parents=True, exist_ok=True)
     if suscripcion:
         nombre = agente or Path(cmd[0]).stem.lower()
@@ -268,6 +186,10 @@ def _entorno(
                 encoding="utf-8",
             )
             destino.chmod(0o600)
+            # La carpeta de sesión de Muse: la cuenta del intento vive en el
+            # runtime y el CLI la halla por la convención XDG. El resto del
+            # entorno conserva la configuración real del usuario.
+            env["XDG_CONFIG_HOME"] = str(runtime / ".config")
             return env
         if nombre == "kimi":
             expira = _preparar_kimi(runtime, cmd)
@@ -447,7 +369,7 @@ def aislar(
 ) -> ComandoAislado:
     espacio, runtime = espacio.resolve(), runtime.resolve()
     if espacio.parent.name != "espacio" or runtime.is_relative_to(espacio):
-        raise RuntimeError("la jaula necesita espacio concedido y runtime separado")
+        raise RuntimeError("el lanzamiento necesita espacio concedido y runtime separado")
     runtime.mkdir(parents=True, exist_ok=True)
     nombre = agente or Path(cmd[0]).stem.lower()
     if suscripcion and usa_wsl(nombre):
@@ -532,51 +454,24 @@ def aislar(
 
             limites["enumeracion"] = enumeracion_para(limites)
         return ComandoAislado(argv, env, "appcontainer", limites, procedencia)
-    sandbox = Path("/usr/bin/sandbox-exec")
-    if not sandbox.is_file():
-        raise RuntimeError(
-            "sin aislamiento efectivo; trabajador no habilitado en este host"
-        )
+    # macOS y Linux: lanzamiento directo, sin jaula (decisión del 2-nov). El
+    # agente corre como el usuario, con su entorno. Se conservan el cambio a
+    # muse nativo con su procedencia y el PATH con el intérprete del supervisor.
     if interprete:
-        lecturas_extra = tuple(
-            dict.fromkeys((*lecturas_extra, *lecturas_del_interprete()))
-        )
         env["PATH"] = path_con_interprete(env.get("PATH", ""), runtime)
-    perfil = [
-        "(version 1)",
-        "(allow default)",
-        "(deny file-write*)",
-        f"(deny file-read* (subpath {json.dumps(str(Path.home()))}))",
-        "(allow file-read-metadata)",
-    ]
+    procedencia = None
     if nombre == "muse":
         from .autenticacion_muse import ejecutable_muse
 
         nativo = ejecutable_muse()
         cmd = [str(nativo), *cmd[1:]]
-        perfil.append(f"(allow file-read* (literal {json.dumps(str(nativo))}))")
         procedencia = {
             "origen": str(nativo),
             "ejecutable": str(nativo),
             "sha256": hashlib.sha256(nativo.read_bytes()).hexdigest(),
             "tipo": "instalacion-local-firmada",
         }
-    for path in (espacio, runtime, *(p.resolve() for p in lecturas_extra)):
-        perfil.append(f"(allow file-read* (subpath {json.dumps(str(path))}))")
-    for path in lecturas_extra:
-        # Un enlace concedido se lee como enlace además de su destino resuelto.
-        sin_resolver = Path(os.path.abspath(path))
-        if sin_resolver != sin_resolver.resolve():
-            perfil.append(f"(allow file-read* (literal {json.dumps(str(sin_resolver))}))")
-    for path in (runtime,) if lectura else (espacio, runtime):
-        perfil.append(f"(allow file-write* (subpath {json.dumps(str(path))}))")
-    for path in ("/dev/null", "/dev/tty"):
-        perfil.append(f'(allow file-write* (literal "{path}"))')
-    path = runtime / "jaula.sb"
-    path.write_text("\n".join(perfil), encoding="utf-8")
-    return ComandoAislado(
-        [str(sandbox), "-f", str(path), *cmd], env, "seatbelt", ejecutable=procedencia
-    )
+    return ComandoAislado(cmd, env, "directo", ejecutable=procedencia)
 
 
 def usa_wsl(agente: str | None) -> bool:
@@ -796,10 +691,10 @@ def sondear(
     `git push` a un bare local; el AppContainer, donde msys no arranca, no se
     prueba para él porque no lo ejecuta.
 
-    No acredita lo que no pudo ejecutar: sin jaula, o con una fuente declarada
-    que ya no está, el resultado es un fallo con su condición. Nunca propaga una
-    excepción: la llama el supervisor, que en la PC arranca una vez desde una
-    tarea programada y no se reinicia solo.
+    No acredita lo que no pudo ejecutar: sin aislamiento disponible, o con una
+    fuente declarada que ya no está, el resultado es un fallo con su condición.
+    Nunca propaga una excepción: la llama el supervisor, que en la PC arranca
+    una vez desde una tarea programada y no se reinicia solo.
     """
     import uuid
 

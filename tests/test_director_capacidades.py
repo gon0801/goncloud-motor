@@ -131,7 +131,7 @@ class ReporteCompletoTest(unittest.TestCase):
         ):
             (self.base / "tla2tools.jar").write_bytes(b"jar")
             with mock.patch.object(cm, "_jaula", lambda *a, **k: {
-                "mecanismo": "seatbelt", "estado": "ok", "detalle": "seatbelt listo",
+                "mecanismo": "directo", "estado": "ok", "detalle": "lanzamiento directo listo",
             }), mock.patch.object(cm, "_arranque", lambda *a, **k: {
                 "mecanismo": "launchd", "estado": "ok", "detalle": "plist con KeepAlive",
             }), _puertas_de_windows():
@@ -182,7 +182,7 @@ class ReporteIncompletoTest(unittest.TestCase):
     def _reporte(self, dobles):
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch.object(cm, "_jaula", lambda *a, **k: {
-                "mecanismo": "seatbelt", "estado": "falta", "detalle": "falta sandbox-exec",
+                "mecanismo": "directo", "estado": "falta", "detalle": "sin lanzamiento de trabajadores",
             }), mock.patch.object(cm, "_arranque", lambda *a, **k: {
                 "mecanismo": "launchd", "estado": "falta", "detalle": "sin plist",
             }), _puertas_de_windows():
@@ -311,31 +311,31 @@ class SeccionesPorSistemaTest(unittest.TestCase):
             arranque = cm._arranque(self._correr_llave(valor))
         self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "vigilante"))
 
-    def test_jaula_linux_es_falta_porque_el_motor_no_aisla_alli(self):
-        """F2: bubblewrap solo es jaula dentro de la distro WSL; en Linux el
-        motor no puede aislar a un trabajador (aislar levanta RuntimeError)."""
-        def correr(argv, timeout=20):
-            class R:
-                returncode = 0
-                stdout = b"bubblewrap 0.9.0\n"
-                stderr = b""
+    def test_jaula_directa_es_ok_en_macos_aunque_falte_sandbox_exec(self):
+        """Decisión del 2-nov: en las Mac los agentes corren sin jaula; el
+        reporte no exige sandbox-exec."""
+        es_archivo = Path.is_file
 
-            return R()
+        def sin_sandbox(ruta):
+            return False if str(ruta) == "/usr/bin/sandbox-exec" else es_archivo(ruta)
 
-        with mock.patch.object(cm, "sistema", lambda: "linux"):
-            jaula = cm._jaula(correr)
-        self.assertEqual((jaula["estado"], jaula["mecanismo"]), ("falta", "ninguno"))
-        self.assertIn("no aísla en Linux", jaula["detalle"])
-        self.assertIn("bubblewrap 0.9.0", jaula["detalle"])
+        with mock.patch.object(cm, "sistema", lambda: "macos"), mock.patch.object(
+            Path, "is_file", sin_sandbox
+        ):
+            jaula = cm._jaula(lambda *a, **k: None)
+        self.assertEqual((jaula["estado"], jaula["mecanismo"]), ("ok", "directo"))
+        self.assertIn("sin aislamiento", jaula["detalle"])
 
-    def test_jaula_linux_sin_bwrap_tamano_es_falta(self):
+    def test_jaula_directa_es_ok_en_linux(self):
+        """Decisión del 2-nov: en Linux el motor lanza directo; ya no reporta
+        falta por no aislar (bubblewrap sigue siendo jaula solo en la distro WSL)."""
         def correr(argv, timeout=20):
             raise FileNotFoundError("bwrap")
 
         with mock.patch.object(cm, "sistema", lambda: "linux"):
             jaula = cm._jaula(correr)
-        self.assertEqual(jaula["estado"], "falta")
-        self.assertIn("no aísla en Linux", jaula["detalle"])
+        self.assertEqual((jaula["estado"], jaula["mecanismo"]), ("ok", "directo"))
+        self.assertIn("sin aislamiento", jaula["detalle"])
 
     def _correr_llave(self, valor, sin_powershell=False, pagina_reg="cp1252",
                       capturadas=None):

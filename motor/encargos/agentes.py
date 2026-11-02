@@ -35,7 +35,7 @@ SIN_SEGUNDO_PLANO = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
 def _disponible(agente: str, generacion: Path | None = None) -> bool:
     if agente in ("sleep", "ensayo"):
-        return os.name != "nt" and Path("/usr/bin/sandbox-exec").is_file()
+        return os.name != "nt"
     if agente not in ADAPTADORES:
         return False
     from .aislamiento import usa_wsl
@@ -66,8 +66,6 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
         if agente == "muse" and not shutil.which(agente):
             return False
     elif not shutil.which(cliente_para(agente)):
-        return False
-    if os.name != "nt" and not Path("/usr/bin/sandbox-exec").is_file():
         return False
     if agente == "codex":
         path = (

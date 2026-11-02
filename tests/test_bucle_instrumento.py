@@ -40,7 +40,7 @@ IMPEDIMENTO = SondaEntorno(
     "que el temporal del CLI caiga en una ruta escribible del aislamiento",
 )
 RECUPERADO = SondaEntorno(True)
-HAY_JAULA = Path("/usr/bin/sandbox-exec").is_file()
+ES_POSIX = os.name != "nt"
 
 
 class Banco:
@@ -598,7 +598,7 @@ class BucleInstrumento(unittest.TestCase):
         self.assertTrue(e.impedimento)
         self.assertIn("temporal del CLI", e.impedimento_causa)
 
-    @unittest.skipUnless(HAY_JAULA, "hace falta el aislamiento de macOS")
+    @unittest.skipUnless(ES_POSIX, "la sonda POSIX corre directo")
     def test_la_sonda_no_toca_archivos_del_producto(self):
         espacio = Path(self._tmp.name) / "espacio" / "producto"
         espacio.mkdir(parents=True)
@@ -614,7 +614,7 @@ class BucleInstrumento(unittest.TestCase):
         self.assertEqual(ajeno.read_text(), "contenido del usuario\n")
         self.assertEqual(sorted(p.name for p in espacio.iterdir()), antes)
 
-    @unittest.skipUnless(HAY_JAULA, "hace falta el aislamiento de macOS")
+    @unittest.skipUnless(ES_POSIX, "la sonda POSIX corre directo")
     def test_una_fuente_declarada_ausente_no_es_exito(self):
         espacio = Path(self._tmp.name) / "espacio" / "producto"
         espacio.mkdir(parents=True)

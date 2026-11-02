@@ -31,40 +31,26 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    el que se decide que entra en un commit; una cache local no cambia la firma.
 4. Al morir el proceso, el supervisor anota `producto_listo` con la firma y el
    manifiesto que él calcula. Si hay comprobaciones declaradas, las ejecuta
-   enjauladas y las anota como `observacion_supervisor`. Declarar ninguna es
+   las ejecuta y las anota como `observacion_supervisor`. Declarar ninguna es
    válido: para cambiar una cifra basta leer el valor final y dejarlo en
    `evidencia.txt`. No hay `procedimiento.json` obligatorio ni cobertura
    forzada.
-   El comprobador corre cada comando en la jaula seatbelt con lectura de solo
-   lectura a la instalación del intérprete que usa el propio supervisor
-   (`aislamiento.lecturas_del_interprete`: el ejecutable, su enlace y los
-   prefijos de Python; nunca el home ni sus padres). Sin eso, un Python
-   instalado bajo el home, como el 3.12 de uv en la Mini, no arranca dentro de
-   la jaula ("No module named encodings") y solo queda el del sistema.
-   Cada enlace de esa instalación bajo el home se concede también como
-   enlace. El job `jaula-macos` del CI corre `tests.test_comprobador_interprete`
-   con la jaula real y `MOTOR_EXIGE_SEATBELT=1`: ahí un skip es un fallo.
+   Las comprobaciones se lanzan como cualquier trabajador: en macOS y Linux,
+   directo y sin jaula (decisión del 2-nov). Cada una corre con el `PATH`
+   antepuesto al intérprete que usa el propio supervisor
+   (`aislamiento.path_con_interprete`): el primer `python3` del PATH puede ser
+   el del sistema (el 3.9 en la Mini, sin `tomllib`) y el comprobador necesita
+   el de la instalación del supervisor.
    Cada comprobación puede declarar `tope` en segundos enteros; sin declararlo
    vale 120 s y el máximo admitido es 900 s. Un tope mayor no valida. Al pasarse,
    el fallo del instrumento nombra el comando, su tope, la salida parcial
    recortada y la alternativa de partir la comprobación o declarar un tope
-   mayor dentro del máximo. La jaula, el cierre del árbol y la clasificación
+   mayor dentro del máximo. El cierre del árbol y la clasificación
    como fallo del instrumento no cambian.
    Cada corrida del comprobador y cada sesión de agente reciben un `TMPDIR`
-   propio, vacío, dentro de su runtime; se borra al terminar. En macOS un
-   `mktemp` propio en el PATH lo lleva a ese temporal, porque BSD `mktemp` sin
-   plantilla usa `/var/folders`, que la jaula niega. La jaula no concede otra
-   escritura de temporales. Las pruebas de shell de `ops/tests` corren en el job
-   `ops-tests`; una que no pueda correr en Linux se omite con su motivo en
-   `ops/tests/omitidas.txt`.
-   En macOS, bash 3.2 ignora `TMPDIR` para here-documents y here-strings y usa
-   `/tmp`; como la jaula sigue negando `/tmp`, una prueba que los use no puede
-   correr ahí. `ops/tests/test-lib.sh` y las librerías que carga ya no los usan
-   y pasan dentro de la jaula. El resto de pruebas de `ops/tests` todavía usa
-   here-documents, así que no se declara como comprobación en macOS. El límite
-   queda escalado al operador: instalar bash 5.1 o posterior, que usa una tubería
-   para los here-documents pequeños, o permitir escritura en `/private/tmp`.
-   Por defecto se mantiene `/tmp` cerrado.
+   propio, vacío, dentro de su runtime; se borra al terminar. Las pruebas de
+   shell de `ops/tests` corren en el job `ops-tests`; una que no pueda correr
+   en Linux se omite con su motivo en `ops/tests/omitidas.txt`.
 5. Otro modelo revisa. "Otro" es por identidad `proveedor/modelo`, derivada de
    las cadenas de la política común (`codigo` implementa, `planear` revisa) y
    excluyendo los modelos que ya implementaron en este encargo. Una sesión

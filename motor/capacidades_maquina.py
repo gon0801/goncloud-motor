@@ -87,7 +87,7 @@ def _usa_wsl(agente: str) -> bool:
     return usa_wsl(agente)
 
 
-def _jaula(correr, sandbox_exec: Path = Path("/usr/bin/sandbox-exec")) -> dict:
+def _jaula(correr) -> dict:
     if sistema() == "windows":
         # Los mismos sondeos que el motor: los agentes de shell corren en la
         # jaula de WSL (distro) y los demás en la jaula de Windows (psec o
@@ -134,28 +134,13 @@ def _jaula(correr, sandbox_exec: Path = Path("/usr/bin/sandbox-exec")) -> dict:
                        "detalle": "; ".join(f["detalle"] for f in filas)}
         seccion["filas"] = filas
         return seccion
-    if sistema() == "macos":
-        if sandbox_exec.is_file():
-            return {"mecanismo": "seatbelt", "estado": "ok", "detalle": str(sandbox_exec)}
-        return {"mecanismo": "seatbelt", "estado": "falta", "detalle": f"falta {sandbox_exec}"}
-    # En Linux el motor no puede aislar a un trabajador: aislar levanta
-    # "sin aislamiento efectivo; trabajador no habilitado en este host" porque
-    # sandbox-exec es de macOS y psec/AppContainer de Windows. bubblewrap solo
-    # es jaula dentro de la distro WSL (aislamiento.py), no aquí.
-    causa_bwrap = ""
-    try:
-        r = correr(["bwrap", "--version"], 15)
-    except (OSError, subprocess.TimeoutExpired):
-        r = None
-    if r is not None and r.returncode == 0:
-        causa_bwrap = f"bubblewrap {_primera(r)} presente, pero solo es jaula dentro de la distro WSL"
-    else:
-        causa_bwrap = "bubblewrap no corre"
+    # macOS y Linux: los agentes corren sin aislamiento, como el propio
+    # usuario, con el entorno completo (decisión del 2-nov). No se exige
+    # sandbox-exec; bubblewrap sigue siendo jaula solo dentro de la distro WSL.
     return {
-        "mecanismo": "ninguno",
-        "estado": "falta",
-        "detalle": "el motor no aísla en Linux (aislar levanta 'sin aislamiento efectivo; "
-        "trabajador no habilitado en este host'); " + causa_bwrap,
+        "mecanismo": "directo",
+        "estado": "ok",
+        "detalle": "los agentes corren sin aislamiento, con el entorno del usuario",
     }
 
 
