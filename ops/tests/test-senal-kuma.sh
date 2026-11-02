@@ -144,7 +144,7 @@ verifica_archivos() { # verifica_archivos <etapa>
   [ "$url" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$(sql "SELECT push_token FROM monitor WHERE name='Motor de la Mini'")" ] || fallo "$1: la URL de la Mini no es la del monitor"
   url="$(tr -d '\r' <"$HOME_PC/.motor/secretos.env" | grep '^MOTOR_KUMA_URL=')"
   [ "$url" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$(sql "SELECT push_token FROM monitor WHERE name='Motor de la PC'")" ] || fallo "$1: la URL de la PC no es la del monitor"
-  [ "$(stat -f %Lp "$HOME_MINI/.motor/secretos.env" 2>/dev/null || stat -c %a "$HOME_MINI/.motor/secretos.env")" = 600 ] || fallo "$1: secretos.env de la Mini debe quedar en 600"
+  [ "$(stat -c %a "$HOME_MINI/.motor/secretos.env" 2>/dev/null || stat -f %Lp "$HOME_MINI/.motor/secretos.env")" = 600 ] || fallo "$1: secretos.env de la Mini debe quedar en 600"
   compgen -G "$HOME_MINI/.motor/*nuevo*" >/dev/null && fallo "$1: quedó un temporal en la Mini"
   compgen -G "$HOME_PC/.motor/*nuevo*" >/dev/null && fallo "$1: quedó un temporal en la PC"
 }
@@ -206,7 +206,7 @@ un_reinicio rollback "$r0"
 grep -q MOTOR_KUMA_URL "$HOME_MINI/.motor/secretos.env" "$HOME_PC/.motor/secretos.env" && fallo "rollback: la línea debe salir de la Mini y la PC"
 grep -q '^MOTOR_X=1' "$HOME_MINI/.motor/secretos.env" || fallo "rollback: la Mini perdió otra línea"
 grep -q 'MOTOR_N=ñandú' "$HOME_PC/.motor/secretos.env" || fallo "rollback: la PC perdió los caracteres no ASCII"
-[ "$(stat -f %Lp "$HOME_MINI/.motor/secretos.env" 2>/dev/null || stat -c %a "$HOME_MINI/.motor/secretos.env")" = 600 ] || fallo "rollback: secretos.env de la Mini debe seguir en 600"
+[ "$(stat -c %a "$HOME_MINI/.motor/secretos.env" 2>/dev/null || stat -f %Lp "$HOME_MINI/.motor/secretos.env")" = 600 ] || fallo "rollback: secretos.env de la Mini debe seguir en 600"
 respaldo_de_antes "rollback"
 
 r0=$(reinicios)

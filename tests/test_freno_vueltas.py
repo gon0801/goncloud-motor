@@ -23,13 +23,12 @@ from motor.encargos import ciclo
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso
 from motor.encargos.dominio import (
-    TOPE_VUELTAS_NUEVAS,
     bloqueantes_abiertos,
     revision_externa_pendiente,
 )
 from motor.github import ChecksVerdict, FakeGitHub, veredicto
 from tests.test_entrega_misma_version import _barrido, _rerun_del_check
-from tests.test_flujo_revisiones import _entrega_pr, _lanzaria
+from tests.test_flujo_revisiones import Recorrido, _entrega_pr, _lanzaria
 from tests.test_lectura_deepseek import _comentario, _hallazgo, _ids
 
 
@@ -516,7 +515,6 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(e.estrategia, "investigar")
             self.assertEqual(e.sin_progreso, 0)
-            self.assertEqual(e.vueltas_nuevas, 1)
             self.assertTrue(_lanzaria(e))
 
     def test_los_mismos_bloqueantes_tras_el_diagnostico_siguen_escalando(self):
@@ -543,7 +541,7 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             r.incorporar()
             self.assertEqual(r.fold().estado, "necesita_usuario")
 
-    def test_una_serie_que_siempre_trae_hallazgos_nuevos_tiene_tope_por_fase(self):
+    def test_una_serie_que_siempre_trae_hallazgos_nuevos_no_escala_por_si_sola(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "fr-5d", _GhPorCommit)
             gh = vuelta.gh
@@ -551,21 +549,16 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             gh.textos = [_comentario(*acumulados)]
             e = vuelta("v0")
             self.assertEqual(e.estrategia, "investigar")
-            for i in range(1, 1 + TOPE_VUELTAS_NUEVAS):
+            # Seis vueltas seguidas, cada una con un hallazgo nuevo y sin cerrar
+            # ninguno: informacion nueva, no «el mismo bloqueo». No hay tope.
+            for i in range(1, 7):
                 acumulados = acumulados + [_hallazgo(f"F{i}")]
                 gh.textos.append(_comentario(*acumulados))
                 e = vuelta(f"v{i}")
                 self.assertEqual(e.estrategia, "investigar", i)
                 self.assertEqual(e.sin_progreso, 0, i)
                 self.assertNotEqual(e.estado, "necesita_usuario", i)
-            self.assertEqual(e.vueltas_nuevas, TOPE_VUELTAS_NUEVAS)
-
-            acumulados = acumulados + [_hallazgo("F99")]
-            gh.textos.append(_comentario(*acumulados))
-            e = vuelta("v-tope")
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertIn("vueltas seguidas", e.motivo)
-            self.assertFalse(_lanzaria(e))
+                self.assertTrue(_lanzaria(e), i)
 
     def test_cerrar_un_bloqueante_reinicia_la_serie(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -578,11 +571,54 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             ]
             vuelta("v0")
             e = vuelta("v1")
-            self.assertEqual(e.vueltas_nuevas, 1)
+            self.assertEqual(e.estrategia, "investigar")
             e = vuelta("v2")
             self.assertEqual(_ids(e), ["F1"])
-            self.assertEqual(e.vueltas_nuevas, 0)
             self.assertEqual(e.sin_progreso, 0)
+
+
+class SinTopeDeVueltasNuevas(unittest.TestCase):
+    def test_seis_vueltas_con_hallazgos_nuevos_no_escalan(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sin-tope-nuevos", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "malo.txt").write_text("X")
+            r.incorporar()
+            for i in range(1, 7):
+                e = r.fold()
+                r.reg.anotar(
+                    r.enc,
+                    {
+                        "kind": "revision",
+                        "data": {
+                            "version": e.producto.firma,
+                            "alcance": "completa",
+                            "veredicto": "cambios",
+                            "origen": "independiente",
+                            "revisor": "opus",
+                            "hallazgos": [
+                                {
+                                    "id": f"F{i}",
+                                    "gravedad": "bloqueante",
+                                    "criterio": "comportamiento",
+                                    "titulo": f"falla nueva {i}",
+                                    "reproduccion": "cat malo.txt",
+                                    "ancla": "malo.txt:1",
+                                    "origen": "independiente",
+                                    "estado": "abierto",
+                                }
+                            ],
+                        },
+                    },
+                    f"rev-sin-tope-{i}",
+                )
+                e = r.fold()
+                ciclo._sin_avance(
+                    r.reg, e, f"falla nueva {i}", "intento", ahora_iso(), f"r{i}"
+                )
+                e = r.fold()
+                self.assertNotEqual(e.estado, "necesita_usuario", i)
+                self.assertEqual(e.estrategia, "investigar", i)
 
 
 if __name__ == "__main__":

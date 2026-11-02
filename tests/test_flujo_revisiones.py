@@ -35,7 +35,6 @@ from motor.encargos.comprobacion import (
 from motor.encargos.dominio import (
     AlcanceRevision,
     Hallazgo,
-    TOPE_VUELTAS_NUEVAS,
     TransicionIlegal,
     alcance_de,
     bloqueantes_abiertos,
@@ -461,7 +460,12 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertTrue(e.preguntas)
             self.assertFalse(_lanzaria(e))
 
-    def test_bloqueantes_nuevos_devuelven_al_responsable_y_una_serie_sin_fin_escala(self):
+    def test_bloqueantes_nuevos_devuelven_al_responsable_sin_tope(self):
+        parche = mock.patch(
+            "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
+        )
+        parche.start()
+        self.addCleanup(parche.stop)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-4", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -479,22 +483,14 @@ class FlujoRevisiones(unittest.TestCase):
                 )
                 return r.incorporar()
 
-            e = vuelta(1)
-            self.assertEqual(e.estrategia, "investigar")
             # Cada vuelta trae un bloqueante que el responsable no habia visto: es
-            # informacion nueva, vuelve a corregir y la escalera no avanza.
-            for i in range(2, 2 + TOPE_VUELTAS_NUEVAS):
+            # informacion nueva y vuelve a corregir. No hay tope por serie.
+            for i in range(1, 7):
                 e = vuelta(i)
                 self.assertEqual(e.estrategia, "investigar", i)
                 self.assertEqual(e.sin_progreso, 0, i)
                 self.assertNotEqual(e.estado, "necesita_usuario", i)
                 self.assertTrue(_lanzaria(e), i)
-            self.assertEqual(e.vueltas_nuevas, TOPE_VUELTAS_NUEVAS)
-            # La serie que nunca cierra nada tiene tope por fase: la siguiente escala.
-            e = vuelta(2 + TOPE_VUELTAS_NUEVAS)
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertIn("vueltas seguidas", e.motivo)
-            self.assertFalse(_lanzaria(e))
 
     def test_revisor_que_no_concluye_dos_vueltas_escala(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

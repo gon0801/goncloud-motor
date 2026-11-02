@@ -19,11 +19,14 @@ import uuid
 from dataclasses import dataclass, replace as _replace
 from pathlib import Path
 
-from .aislamiento import aislar, lecturas_del_interprete
+from .aislamiento import aislar, lecturas_del_interprete, limpiar_temporal
 from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_hallazgo
 
 INTERNO = ".interno"
 _EXCLUIDAS = (".git", "__pycache__", ".runtime", INTERNO)
+
+TOPE_POR_OMISION_S = 120
+TOPE_MAXIMO_S = 900
 
 
 def interno_de(espacio: Path, crear: bool = False) -> Path:
@@ -99,6 +102,8 @@ def firma_producto(espacio: Path) -> str:
 def leer_declaradas(interno: Path) -> list[dict] | None:
     """Comprobaciones declaradas en `.interno/comprobaciones.json`.
 
+    Cada comprobacion puede declarar `tope` en segundos enteros. Sin el, vale
+    TOPE_POR_OMISION_S; por encima de TOPE_MAXIMO_S el archivo no valida.
     None si el archivo no existe o declara una lista vacia: no declarar
     ninguna es valido. Un archivo presente pero invalido levanta ValueError.
     """
@@ -124,7 +129,56 @@ def leer_declaradas(interno: Path) -> list[dict] | None:
             or not all(isinstance(x, str) for x in c["argv"])
         ):
             raise ValueError("cada comprobacion necesita objetivo y argv no vacio")
+        tope = c.get("tope", TOPE_POR_OMISION_S)
+        if isinstance(tope, bool) or not isinstance(tope, int) or tope <= 0:
+            raise ValueError(
+                f"la comprobacion {c['objetivo']!r} necesita un tope entero de "
+                "segundos mayor que cero"
+            )
+        if tope > TOPE_MAXIMO_S:
+            raise ValueError(
+                f"la comprobacion {c['objetivo']!r} declara un tope de {tope} s; "
+                f"el maximo es {TOPE_MAXIMO_S} s"
+            )
     return comandos
+
+
+def leer_disputa(interno: Path) -> tuple[dict, ...] | None:
+    """Un bloqueante de DeepSeek que el responsable sostiene que no aplica.
+
+    Formato: `{"hallazgo": "F1", "evidencia": "..."}` o
+    `{"disputas": [{"hallazgo": "F1", "evidencia": "..."}]}`. No descarta
+    nada: el motor lo convierte en una pregunta al propietario, que es el
+    único que puede autorizar el descarte. Una lista vacía es una retirada
+    de la disputa: no hay nada que preguntar y no es un error.
+    """
+    path = interno / "disputa.json"
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"disputa.json no se puede leer: {exc}") from exc
+    if isinstance(doc, dict) and "disputas" in doc:
+        crudo = doc["disputas"]
+    else:
+        crudo = doc
+    if isinstance(crudo, dict):
+        crudo = [crudo]
+    if isinstance(crudo, (list, tuple)) and not crudo:
+        return ()
+    if not isinstance(crudo, (list, tuple)):
+        raise ValueError("disputa.json necesita una lista no vacia de disputas")
+    salida = []
+    for item in crudo:
+        if not isinstance(item, dict):
+            raise ValueError("cada disputa debe ser un objeto")
+        hallazgo = str(item.get("hallazgo") or "").strip()
+        evidencia = " ".join(str(item.get("evidencia") or "").split())
+        if not hallazgo or not evidencia:
+            raise ValueError("cada disputa necesita hallazgo y evidencia no vacios")
+        salida.append({"hallazgo": hallazgo, "evidencia": evidencia})
+    return tuple(salida)
 
 
 def observar_comprobaciones(
@@ -176,13 +230,35 @@ def observar_procedimiento(espacio: Path, directorio: Path, contenedor: Path) ->
     return datos
 
 
+def _tope_de(comprobacion: dict) -> int:
+    return comprobacion.get("tope", TOPE_POR_OMISION_S)
+
+
+def _mensaje_tope(argv: list[str], tope: int, stdout: str, stderr: str) -> str:
+    completa = (stdout or "") + (stderr or "")
+    recortada = len(completa) > 4000
+    salida = completa[-4000:]
+    if not salida.strip():
+        salida = "(sin salida)"
+    unidad = "segundo" if tope == 1 else "segundos"
+    etiqueta = "salida parcial (recortada)" if recortada else "salida parcial"
+    return (
+        f"la comprobacion {' '.join(argv)} excedio su tope de {tope} {unidad}; "
+        f"arbol cerrado; {etiqueta}: {salida}; "
+        f"puedes partir el comando o declarar un tope mayor "
+        f"(maximo {TOPE_MAXIMO_S} segundos)"
+    )
+
+
 def _ejecutar_declaradas(
     comandos: list[dict], espacio: Path, directorio: Path, contenedor: Path
 ) -> dict:
     procedimiento = {"comprobaciones": comandos}
     ejecuciones = []
     for i, c in enumerate(comandos):
-        observado = {"objetivo": c["objetivo"], "argv": c["argv"]}
+        tope = _tope_de(c)
+        runtime_cmd = contenedor / f"runtime-{i}"
+        observado = {"objetivo": c["objetivo"], "argv": c["argv"], "tope": tope}
         try:
             from motor import plataforma
             from motor.runwrap import _publica
@@ -194,7 +270,7 @@ def _ejecutar_declaradas(
             comando = aislar(
                 c["argv"],
                 espacio,
-                contenedor / f"runtime-{i}",
+                runtime_cmd,
                 lecturas_extra=() if os.name == "nt" else lecturas_del_interprete(),
                 interprete=True,
             )
@@ -242,7 +318,7 @@ def _ejecutar_declaradas(
                             comando.argv, start_new_session=False, **opciones
                         )
                 try:
-                    stdout, stderr = p.communicate(timeout=30)
+                    stdout, stderr = p.communicate(timeout=tope)
                     observado.update(
                         rc=p.returncode, stdout=stdout[-16000:], stderr=stderr[-16000:]
                     )
@@ -276,9 +352,12 @@ def _ejecutar_declaradas(
                                 except ProcessLookupError:
                                     pass
                         p.kill()
-                    p.communicate()
-                    observado["error_instrumento"] = (
-                        "la comprobacion excedio 30 segundos; arbol cerrado"
+                    stdout, stderr = p.communicate()
+                    observado.update(
+                        rc=p.returncode, stdout=stdout[-16000:], stderr=stderr[-16000:]
+                    )
+                    observado["error_instrumento"] = _mensaje_tope(
+                        c["argv"], tope, stdout, stderr
                     )
                 finally:
                     if os.name == "nt":
@@ -287,6 +366,8 @@ def _ejecutar_declaradas(
                 reg.close()
         except (OSError, RuntimeError) as exc:
             observado["error_instrumento"] = str(exc)
+        finally:
+            limpiar_temporal(runtime_cmd)
         ejecuciones.append(observado)
     runtime_path = directorio / "ejecuciones-runtime.jsonl"
     runtime = []
@@ -372,7 +453,9 @@ de las pruebas en rojo y en verde. Ese texto sera la descripcion del PR.
 Comprobar es proporcional al pedido. Para cambiar una cifra puede bastar leer el valor final y
 dejarlo en evidencia.txt. Si una comprobacion ejecutable aporta, declarala en
 .interno/comprobaciones.json como {{"comprobaciones":[{{"objetivo":"parte del pedido que demuestra",
-"argv":["ejecutable","argumento"]}}]}}. Son comandos argv, no shell implicito. Declarar ninguna es
+"argv":["ejecutable","argumento"],"tope":120}}]}}. Son comandos argv, no shell implicito.
+Cada comprobacion puede declarar su "tope" en segundos enteros; sin declararlo vale 120 s.
+El maximo admitido es 900 s y un tope mayor no valida. Declarar ninguna es
 valido; no hay un archivo de procedimiento obligatorio.
 El supervisor ejecuta lo declarado y conserva sus salidas. Un revisor de otro modelo compara el
 pedido, el producto real y esas observaciones. Un rc=0 o una nota no demuestran por si solos el pedido.
@@ -380,6 +463,9 @@ Si falla un comando de comprobacion, corrige ese comando y vuelve a observar. No
 valido por un error del instrumento ni repitas efectos con recibo.
 Si hay hallazgos bloqueantes abiertos, corrige solo esos y sus efectos. Lo aprobado que no cambio
 conserva su aprobacion; no reescribas producto valido.
+Si un bloqueante de DeepSeek no aplica, no lo ignores ni lo descartes por tu cuenta: escribe
+.interno/disputa.json como {{"hallazgo":"<id>","evidencia":"<por que no aplica, con la comprobacion>"}}
+y entrega. El motor pedira autorizacion al propietario; solo el puede descartarlo.
 No cambies el objetivo ni despliegues. Las escrituras externas se piden en .interno/pedido-efecto.json.
 Su formato interno es {{"id":"identidad-estable-del-efecto", "operacion":"publicar",
 "clave":"clave-autorizada-del-destino", "cuerpo":"texto-exacto-autorizado"}}.

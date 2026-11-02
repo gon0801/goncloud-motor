@@ -44,6 +44,27 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    Cada enlace de esa instalación bajo el home se concede también como
    enlace. El job `jaula-macos` del CI corre `tests.test_comprobador_interprete`
    con la jaula real y `MOTOR_EXIGE_SEATBELT=1`: ahí un skip es un fallo.
+   Cada comprobación puede declarar `tope` en segundos enteros; sin declararlo
+   vale 120 s y el máximo admitido es 900 s. Un tope mayor no valida. Al pasarse,
+   el fallo del instrumento nombra el comando, su tope, la salida parcial
+   recortada y la alternativa de partir la comprobación o declarar un tope
+   mayor dentro del máximo. La jaula, el cierre del árbol y la clasificación
+   como fallo del instrumento no cambian.
+   Cada corrida del comprobador y cada sesión de agente reciben un `TMPDIR`
+   propio, vacío, dentro de su runtime; se borra al terminar. En macOS un
+   `mktemp` propio en el PATH lo lleva a ese temporal, porque BSD `mktemp` sin
+   plantilla usa `/var/folders`, que la jaula niega. La jaula no concede otra
+   escritura de temporales. Las pruebas de shell de `ops/tests` corren en el job
+   `ops-tests`; una que no pueda correr en Linux se omite con su motivo en
+   `ops/tests/omitidas.txt`.
+   En macOS, bash 3.2 ignora `TMPDIR` para here-documents y here-strings y usa
+   `/tmp`; como la jaula sigue negando `/tmp`, una prueba que los use no puede
+   correr ahí. `ops/tests/test-lib.sh` y las librerías que carga ya no los usan
+   y pasan dentro de la jaula. El resto de pruebas de `ops/tests` todavía usa
+   here-documents, así que no se declara como comprobación en macOS. El límite
+   queda escalado al operador: instalar bash 5.1 o posterior, que usa una tubería
+   para los here-documents pequeños, o permitir escritura en `/private/tmp`.
+   Por defecto se mantiene `/tmp` cerrado.
 5. Otro modelo revisa. "Otro" es por identidad `proveedor/modelo`, derivada de
    las cadenas de la política común (`codigo` implementa, `planear` revisa) y
    excluyendo los modelos que ya implementaron en este encargo. Una sesión
@@ -89,6 +110,33 @@ olvida el id y la siguiente vuelta corre en modo `reconstruida`, declarado
 en `intento_abierto`, con el prompt armado desde el fold (pedido,
 hallazgos abiertos, referencia de revisión). Reconstruir es válido; fingir
 continuidad, no.
+
+Al empezar otra fase, el responsable y el revisor estrenan sesión: se olvidan
+los ids guardados, las dos épocas cambian (el id de sesión sale de la época) y
+el lanzamiento no reanuda la conversación anterior. El prompt se arma desde el
+fold con el pedido, los ajustes, las fases cerradas con su resultado y los
+hallazgos abiertos.
+
+## DeepSeek es una compuerta aparte
+
+DeepSeek no va antes de Opus: revisa el PR como una compuerta previa al merge.
+Después de que Opus aprobó, si DeepSeek pide cambios (High o Medium), el
+responsable corrige y el motor espera su nueva lectura sobre el SHA nuevo. Ese
+ciclo es solo entre el responsable y DeepSeek: Opus no vuelve a revisar cada
+vuelta, y no se integra ni se cierra nada mientras DeepSeek tenga un
+bloqueante abierto.
+
+Cuando DeepSeek ya no tiene High ni Medium abiertos, Opus hace una sola
+revisión final de lo que cambió desde su última aprobación. Es una revisión de
+la corrección acumulada, con el alcance `correccion` y la versión aprobada como
+base; si el producto no cambió, el tramo está vacío y no hay revisión final.
+Ninguna corrección se integra sin que Opus haya visto ese tramo final.
+
+Si el responsable sostiene con evidencia que un bloqueante de DeepSeek no
+aplica, lo deja en `.interno/disputa.json`
+(`{"hallazgo": "<id>", "evidencia": "<por qué no aplica>"}`). El motor no lo
+descarta: pasa a `necesita_usuario` con el hallazgo y la evidencia en palabras
+simples. Solo el propietario autoriza descartarlo.
 
 ## Corregir un encargo en curso
 
@@ -215,13 +263,11 @@ Tres reglas evitan que el freno pare un encargo por error (casos del 1-nov):
   sigue siendo la salida cuando los mismos bloqueantes siguen abiertos tras el
   diagnóstico.
 
-**Tope por fase.** Una serie que siempre trae hallazgos nuevos no gira sin fin:
-al cabo de `TOPE_VUELTAS_NUEVAS` (4) vueltas seguidas que traen bloqueantes nuevos
-sin cerrar ninguno (`Encargo.vueltas_nuevas`), la siguiente deja el encargo en
-`necesita_usuario` con el último diagnóstico. Cerrar un bloqueante, cualquier
-avance, reinicia la serie, y pasar a otra fase también. Se eligió contar solo
-las vueltas que no cierran nada: una fase que sigue cerrando hallazgos avanza y
-no tiene tope (así lo exige «No hay tope de rondas mientras haya avance»).
+**Sin tope para hallazgos nuevos.** Una vuelta que trae un bloqueante que el
+responsable no había visto es información nueva y vuelve a él para corregir.
+No hay tope para esa serie: mientras cada vuelta aporte información nueva, el
+encargo sigue hasta cerrar los bloqueantes o hasta que el propietario decida.
+El freno por el mismo bloqueo sin información nueva (`_sin_avance`) se mantiene.
 
 ## Inspecciones y respuestas del propietario
 

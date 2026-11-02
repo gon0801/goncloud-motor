@@ -27,6 +27,7 @@ from .comprobacion import (
     instrucciones_revision,
     interno_de,
     leer_declaradas,
+    leer_disputa,
     leer_juicio,
     version_producto,
 )
@@ -35,7 +36,6 @@ from .dominio import (
     Encargo,
     FASE_IMPLICITA,
     TOPE_NO_CONCLUYENTES,
-    TOPE_VUELTAS_NUEVAS,
     TransicionIlegal,
     alcance_de,
     ajustes_cubiertos,
@@ -1246,34 +1246,14 @@ def _sin_avance(
     Una vuelta cuenta una sola vez: si otra fuente del mismo barrido ya la
     resolvio, esta no suma ni escala. Un bloqueante que el responsable no habia
     visto es informacion nueva: la vuelta vuelve a el para corregir y la escalera
-    empieza de cero; solo una serie de `TOPE_VUELTAS_NUEVAS` vueltas asi, sin
-    cerrar nada, escala."""
+    empieza de cero. No hay tope para esa serie: mientras cada vuelta traiga
+    informacion nueva, el encargo sigue hasta cerrar los bloqueantes."""
     huella = huella_bloqueo(enc)
     base = f"sin-progreso:{enc.id}:{huella}:{enc.generacion}:{serie}"
     nuevos = sorted(bloqueos_nuevos(enc))
     if not nuevos and enc.generacion and enc.vuelta_contada == enc.generacion:
         return
     if nuevos:
-        if enc.vueltas_nuevas >= TOPE_VUELTAS_NUEVAS:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "sin_progreso",
-                    "data": {
-                        "huella": huella,
-                        "diagnostico": (
-                            f"{TOPE_VUELTAS_NUEVAS} vueltas seguidas en esta fase trajeron "
-                            f"bloqueantes nuevos sin cerrar ninguno: {abierto}. "
-                            f"Se intento: {intentado}"
-                        ),
-                        "nueva": True,
-                        "escalar": True,
-                        "hora": hora,
-                    },
-                },
-                base + ":tope",
-            )
-            return
         registro.anotar(
             enc.id,
             {
@@ -1327,6 +1307,66 @@ def _sin_avance(
         "no repetir la misma accion",
         hora, f"diagnostico-{serie}",
     )
+
+
+def _disputa_de_deepseek(
+    registro: Registro, enc: Encargo, interno: Path, hora: str
+) -> bool:
+    """Convierte en pregunta al propietario una disputa con evidencia.
+
+    El responsable no descarta un hallazgo de DeepSeek: si sostiene que no
+    aplica, deja en `.interno/disputa.json` el id y la evidencia. El motor
+    para y pide autorización; el hallazgo sigue abierto hasta que el
+    propietario decida.
+    """
+    if not bloqueantes_abiertos(enc, "deepseek"):
+        return False
+    try:
+        disputas = leer_disputa(interno)
+    except ValueError as exc:
+        _anotar_instrumento(
+            registro, enc, "disputa", str(exc),
+            "corregir .interno/disputa.json con hallazgo y evidencia",
+            hora, f"disputa-{enc.generacion}", clase="disputa.json",
+        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "disputa.json", str(exc),
+            "que .interno/disputa.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir la disputa sin descartar el hallazgo por cuenta propia",
+                hora, "disputa",
+            )
+        return True
+    if not disputas:
+        return False
+    abiertos = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
+    partes = [
+        f"{abiertos[d['hallazgo']].id} «{abiertos[d['hallazgo']].titulo}»: "
+        f"{d['evidencia']}"
+        for d in disputas
+        if d["hallazgo"] in abiertos
+    ]
+    if not partes:
+        return False
+    texto = (
+        "El responsable sostiene, con evidencia, que estos hallazgos de "
+        "DeepSeek no aplican: " + "; ".join(partes)
+        + ". No los descarto sin tu autorización. Dime si los descartamos "
+        "o cómo seguir."
+    )
+    ukey = (
+        f"disputa:{enc.id}:{enc.fase_activa}:"
+        + hashlib.sha256(texto.encode()).hexdigest()[:12]
+    )
+    if registro.por_ukey(ukey) is not None:
+        # La misma disputa ya se preguntó. Si el propietario ordenó corregir,
+        # el archivo viejo no vuelve a bloquear la corrección; una evidencia
+        # nueva cambia el texto y la vuelve a preguntar.
+        return False
+    marcar_pregunta(registro, enc.id, texto, True, hora, ukey=ukey)
+    return True
 
 
 _NOTA_SIN_INTENTO = "Correcciones que ningún intento pudo recibir:"
@@ -1395,7 +1435,13 @@ def _decision(
     )
 
 
-_VERIFICABLES = ("entorno", "comprobaciones.json", "fases.json", "pedido-efecto.json")
+_VERIFICABLES = (
+    "entorno",
+    "comprobaciones.json",
+    "fases.json",
+    "pedido-efecto.json",
+    "disputa.json",
+)
 
 _EVIDENCIA_DE = {
     "entorno": (
@@ -1407,6 +1453,7 @@ _EVIDENCIA_DE = {
         "sobre las fases vigentes"
     ),
     "pedido-efecto.json": ".interno/pedido-efecto.json vuelve a validar",
+    "disputa.json": ".interno/disputa.json vuelve a validar",
 }
 
 
@@ -1592,6 +1639,9 @@ def _verificar_impedimento(
         if clase == "pedido-efecto.json":
             _pedidos_efecto(espacio)
             return True
+        if clase == "disputa.json":
+            leer_disputa(interno)
+            return True
     except (OSError, UnicodeError, ValueError, TypeError, KeyError):
         return False
     return None
@@ -1684,7 +1734,6 @@ def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
         )
         and enc.rol != "revisor"
         and not bloqueantes_abiertos(enc, "independiente")
-        and not (set(alcance_de(enc).tocadas) & {r for r, _h in enc.aprobadas})
     )
 
 
@@ -2546,6 +2595,9 @@ def _incorporar_responsable(
         f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
     )
     enc = registro.fold(enc.id)
+    if _disputa_de_deepseek(registro, enc, interno, hora):
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     if error_declaradas:
         _anotar_instrumento(
             registro, enc, "comprobacion", error_declaradas,
@@ -4131,6 +4183,33 @@ def _releer_deepseek(
             + " (DeepSeek); lo aprobado que no cambio se conserva",
             hora, f"deepseek-{huella}",
         )
+    elif (
+        devolver
+        and not abiertos
+        and enc.estado not in (
+            "terminado", "cancelado", "deteniendo", "detenido", "necesita_usuario"
+        )
+        and enc.proc is None
+        and not enc.reserva
+        and enc.revision_vigente is not None
+        and enc.revision_vigente.veredicto == "aprobado"
+        and not bloqueantes_abiertos(enc, "independiente")
+        and not _revision_aprobada_vigente(enc)
+    ):
+        # DeepSeek quedó limpio. Si la corrección cambió el producto desde la
+        # última aprobación de Opus, el tramo acumulado necesita su única
+        # revisión final antes de integrar o cerrar. Con un bloqueante de Opus
+        # abierto o un veredicto que no es «aprobado», sigue el ciclo normal:
+        # el turno es del responsable, no otra revisión sobre lo ya rechazado.
+        _devolver(
+            registro, enc, "revisar_evidencia",
+            "DeepSeek quedó sin bloqueantes; falta la revisión final del tramo corregido",
+            "revisar solo lo que cambió desde la última aprobación de Opus "
+            "antes de integrar o cerrar",
+            hora,
+            f"revision-final-{enc.producto.firma if enc.producto else ''}",
+            rol="revisor",
+        )
     return registro.fold(enc.id)
 
 
@@ -4481,6 +4560,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     if (
         nivel_cumplido(enc)
         and enc.estado != "terminado"
+        and _revision_aprobada_vigente(enc)
         and not _deepseek_por_releer(enc)
         and not _sha_final_sin_leer(enc, gh)
         and not (gh is None and _requiere_veredicto(enc))
@@ -4887,6 +4967,25 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 )
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
+    if not _revision_aprobada_vigente(enc):
+        if bloqueantes_abiertos(enc, "deepseek"):
+            # Sigue siendo el turno de DeepSeek: no se adelanta Opus ni se
+            # integra nada con un High o Medium abierto.
+            return registro.fold(enc.id)
+        # DeepSeek ya no tiene bloqueantes, pero la corrección cambió el
+        # producto desde la última aprobación de Opus. Ninguna corrección se
+        # integra ni se cierra sin que Opus vea el tramo final; si no cambió
+        # nada, la aprobación vigente ya cubre el producto y este paso no aplica.
+        _devolver(
+            registro, enc, "revisar_evidencia",
+            "DeepSeek quedó sin bloqueantes; falta la revisión final del tramo corregido",
+            "revisar solo lo que cambió desde la última aprobación de Opus "
+            "antes de integrar o cerrar",
+            hora,
+            f"revision-final-{enc.producto.firma if enc.producto else ''}",
+            rol="revisor",
+        )
+        return registro.fold(enc.id)
     if enc.entrega.nivel in ("integrado", "desplegado") and enc.nivel_alcanzado == "pr":
         # Aquí `deepseek_sha == pr_sha` por construcción: el bloque de lectura de
         # arriba espera o lee cuando DeepSeek no ha revisado el SHA, así que no
