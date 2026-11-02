@@ -1430,7 +1430,13 @@ def _decision(
     )
 
 
-_VERIFICABLES = ("entorno", "comprobaciones.json", "fases.json", "pedido-efecto.json")
+_VERIFICABLES = (
+    "entorno",
+    "comprobaciones.json",
+    "fases.json",
+    "pedido-efecto.json",
+    "disputa.json",
+)
 
 _EVIDENCIA_DE = {
     "entorno": (
@@ -1442,6 +1448,7 @@ _EVIDENCIA_DE = {
         "sobre las fases vigentes"
     ),
     "pedido-efecto.json": ".interno/pedido-efecto.json vuelve a validar",
+    "disputa.json": ".interno/disputa.json vuelve a validar",
 }
 
 
@@ -1626,6 +1633,9 @@ def _verificar_impedimento(
             return not defecto_al_adoptar_fases(enc, propuesta)
         if clase == "pedido-efecto.json":
             _pedidos_efecto(espacio)
+            return True
+        if clase == "disputa.json":
+            leer_disputa(interno)
             return True
     except (OSError, UnicodeError, ValueError, TypeError, KeyError):
         return False

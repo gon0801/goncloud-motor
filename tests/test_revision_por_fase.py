@@ -279,6 +279,37 @@ class DisputaConEvidencia(unittest.TestCase):
                 self.assertEqual(fallos, [])
                 self.assertEqual(e.impedimento, "")
 
+    def test_el_impedimento_de_disputa_se_levanta_al_reparar_el_archivo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "disputa-reparada", _GhConDeepSeek)
+            vuelta("uno")
+            archivo = _interno(r) / "disputa.json"
+            archivo.write_text(json.dumps({"hallazgo": "", "evidencia": ""}))
+            r.incorporar()
+            e = r.incorporar()
+            self.assertEqual(e.impedimento, "disputa.json")
+            self.assertFalse(
+                ciclo._verificar_impedimento(
+                    e.impedimento, e, r.espacio, r.base, r.reg
+                )
+            )
+            hallazgo = bloqueantes_abiertos(e, "deepseek")[0]
+            archivo.write_text(
+                json.dumps(
+                    {
+                        "hallazgo": hallazgo.id,
+                        "evidencia": "el token del log es un identificador publico",
+                    }
+                )
+            )
+            self.assertTrue(
+                ciclo._verificar_impedimento(
+                    e.impedimento, e, r.espacio, r.base, r.reg
+                )
+            )
+            ciclo._resolver_impedimento(r.reg, e, e.impedimento, ahora_iso())
+            self.assertEqual(r.fold().impedimento, "")
+
 
 class SesionNuevaPorFase(unittest.TestCase):
     def _con_fases(self, tmp: str):
