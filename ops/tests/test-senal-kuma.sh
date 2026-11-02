@@ -352,6 +352,23 @@ un_reinicio "tras rollback" "$r0"
 respaldo_de_antes "tras rollback"
 verifica_archivos "tras rollback"
 
+# F8: si se borra el monitor de encargos de la MacBook, la siguiente corrida lo recrea con token nuevo.
+token_enc_viejo="$(tokens_encargos)"
+python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM monitor_notification WHERE monitor_id IN (SELECT id FROM monitor WHERE name = \"Motor de encargos de la MacBook\")"); c.execute("DELETE FROM heartbeat WHERE monitor_id IN (SELECT id FROM monitor WHERE name = \"Motor de encargos de la MacBook\")"); c.execute("DELETE FROM monitor WHERE name = \"Motor de encargos de la MacBook\""); c.commit()' "$S/kuma.db"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name='Motor de encargos de la MacBook'")" = 0 ] || fallo "F8: no se pudo simular el borrado del monitor de encargos"
+r0=$(reinicios)
+corre_y_guarda "recrea el monitor de encargos borrado de la MacBook" 0 bash "$RAIZ/ops/senal-kuma.sh"
+un_reinicio "recreación" "$r0"
+token_enc_nuevo="$(tokens_encargos)"
+[ -n "$token_enc_nuevo" ] && [ "$token_enc_nuevo" != "$token_enc_viejo" ] || fallo "F8: el monitor de encargos recreado debe tener un token nuevo"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name='Motor de encargos de la MacBook' AND active=1 AND interval=300 AND retry_interval=60 AND maxretries=2 AND length(push_token)=32")" = 1 ] || fallo "F8: el monitor de encargos recreado debe quedar activo y completo"
+[ "$(sql "SELECT count(*) FROM monitor_notification mn JOIN monitor m ON m.id=mn.monitor_id JOIN notification n ON n.id=mn.notification_id WHERE m.name='Motor de encargos de la MacBook' AND n.name='Server Alerts'")" = 1 ] || fallo "F8: el monitor recreado debe estar conectado a Server Alerts"
+[ "$(sql "SELECT count(*) FROM monitor WHERE type='push'")" = 5 ] || fallo "F8: no debe duplicar monitores al recrear"
+url="$(grep '^MOTOR_KUMA_URL=' "$HOME_MAC/.motor-encargos/secretos.env")"
+[ "$url" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$token_enc_nuevo" ] || fallo "F8: el secreto de encargos de la Mac debe quedar con el token del monitor recreado"
+latido "Motor de encargos de la MacBook" 5
+corre_y_guarda "checklist tras recrear el monitor de encargos" 0 bash "$RAIZ/ops/senal-kuma-checklist.sh"
+
 grep -q 'docker restart uptime-kuma' "$FAKE_LOG" || fallo "falta docker restart uptime-kuma"
 grep -Eq 'docker (stop|kill|rm)' "$FAKE_LOG" && fallo "nunca se llama docker stop"
 grep -q 'docker: no se espera' "$FAKE_LOG" && fallo "docker recibió un subcomando inesperado"
