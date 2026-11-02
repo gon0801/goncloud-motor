@@ -574,6 +574,7 @@ def _inspeccion_de(crudo) -> InspeccionPedido:
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
         capacidades.CI,
+        capacidades.CI_LOG,
     )
     if operacion not in conocidas:
         raise DefectoJuicio(

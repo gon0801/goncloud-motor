@@ -259,6 +259,20 @@ class _CiLog(unittest.TestCase):
         self.assertEqual(sol.operacion, cap.CI_LOG)
         self.assertEqual(dict(sol.parametros)["pr"], "189")
 
+    def test_una_inspeccion_ci_log_del_revisor_es_valida(self):
+        from motor.encargos import comprobacion
+
+        inspeccion = comprobacion._inspeccion_de(
+            {
+                "operacion": "ci.log",
+                "recurso": "ci-linux",
+                "parametros": {"pr": "189", "job": "jaula-macos", "sha": SHA},
+            }
+        )
+
+        self.assertEqual(inspeccion.operacion, cap.CI_LOG)
+        self.assertEqual(dict(inspeccion.parametros)["pr"], "189")
+
     def test_el_catalogo_la_ofrece_y_no_es_observable(self):
         self.assertEqual(
             cap.operaciones_de(self.recursos, "ci-linux"), (cap.CI, cap.CI_LOG)
