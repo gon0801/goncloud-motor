@@ -97,7 +97,6 @@ class CadaAgenteRecibeSuSesionWindows(unittest.TestCase):
                 "clave-prueba",
             )
         parches = [
-            mock.patch.object(aislamiento, "leer_cuenta", return_value=retorno),
             mock.patch(
                 "motor.encargos.suscripciones.leer_cuenta", return_value=retorno
             ),
@@ -132,7 +131,6 @@ class CadaAgenteRecibeSuSesionWindows(unittest.TestCase):
             "kimi": "KIMI_CODE_HOME",
             "opencode": "XDG_DATA_HOME",
             "qwen": "QWEN_HOME",
-            "muse": "XDG_CONFIG_HOME",
         }
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             base = Path(tmp).resolve()
@@ -153,6 +151,64 @@ class CadaAgenteRecibeSuSesionWindows(unittest.TestCase):
                     self.assertEqual(
                         env["USERPROFILE"], os.environ["USERPROFILE"], agente
                     )
+                    self.assertEqual(
+                        env.get("XDG_CONFIG_HOME"),
+                        os.environ.get("XDG_CONFIG_HOME"),
+                        agente,
+                    )
+
+    def test_ningun_agente_cambia_las_variables_generales_del_usuario(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            home = base / "home"
+            (home / ".config" / "muse").mkdir(parents=True)
+            (home / ".config" / "muse" / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "providers": {
+                            "meta": {
+                                "subs_active": True,
+                                "access_token": "prueba",
+                                "storage": "file",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            centinelas = {
+                "HOME": str(home),
+                "USERPROFILE": str(base / "perfil-real"),
+                "APPDATA": str(base / "appdata-real"),
+                "LOCALAPPDATA": str(base / "localappdata-real"),
+                "XDG_CONFIG_HOME": str(base / "config-real"),
+                "GH_CONFIG_DIR": str(base / "gh-real"),
+                "CODEX_HOME": str(base / "codex-real"),
+            }
+            for agente in (
+                "claude",
+                "codex",
+                "grok",
+                "kimi",
+                "muse",
+                "opencode",
+                "qwen",
+            ):
+                with self.subTest(agente=agente):
+                    _, runtime = _coincidencia(base / agente)
+                    with mock.patch.object(
+                        Path, "home", return_value=home
+                    ), mock.patch.dict(os.environ, centinelas):
+                        env = self._entorno_de(agente, runtime)
+                    for variable, valor in centinelas.items():
+                        if agente == "codex" and variable == "CODEX_HOME":
+                            continue
+                        self.assertEqual(
+                            env.get(variable), valor, f"{agente}:{variable}"
+                        )
+                    if agente == "codex":
+                        self.assertEqual(env["CODEX_HOME"], str(runtime / ".codex"))
 
 
 class ArranqueGuardaDelta(unittest.TestCase):

@@ -111,16 +111,7 @@ class MuseSigueNativo(unittest.TestCase):
             nativo.write_text("#!/bin/sh\n", encoding="utf-8")
             nativo.chmod(0o755)
             espacio, runtime = _coincidencia(base)
-            cuenta = {"subs_active": True, "access_token": "prueba", "storage": "file"}
-            home = base / "home"
-            (home / ".config" / "muse").mkdir(parents=True)
-            (home / ".config" / "muse" / "auth.json").write_text(
-                json.dumps({"schema_version": 3, "providers": {"meta": cuenta}}),
-                encoding="utf-8",
-            )
-            with mock.patch.object(Path, "home", return_value=home), mock.patch.object(
-                aislamiento, "leer_cuenta", return_value=cuenta
-            ), mock.patch(
+            with mock.patch(
                 "motor.encargos.autenticacion_muse.ejecutable_muse",
                 return_value=nativo,
             ):
@@ -161,7 +152,6 @@ class CadaAgenteSigueRecibiendoSuSesion(unittest.TestCase):
                 "clave-prueba",
             )
         parches = [
-            mock.patch.object(aislamiento, "leer_cuenta", return_value=retorno),
             mock.patch(
                 "motor.encargos.suscripciones.leer_cuenta", return_value=retorno
             ),
@@ -190,7 +180,6 @@ class CadaAgenteSigueRecibiendoSuSesion(unittest.TestCase):
             "kimi": "KIMI_CODE_HOME",
             "opencode": "XDG_DATA_HOME",
             "qwen": "QWEN_HOME",
-            "muse": "XDG_CONFIG_HOME",
         }
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             base = Path(tmp).resolve()
@@ -209,17 +198,173 @@ class CadaAgenteSigueRecibiendoSuSesion(unittest.TestCase):
                     self.assertIn(variable, env, agente)
                     self.assertTrue(env[variable].startswith(str(runtime)), agente)
                     self.assertNotEqual(env["HOME"], str(runtime), agente)
-                    if agente == "muse":
-                        # La carpeta de sesión de Muse: su propia XDG del
-                        # intento; el resto del entorno conserva la real.
+                    self.assertNotEqual(
+                        env.get("XDG_CONFIG_HOME", ""), str(runtime / ".config"),
+                        agente,
+                    )
+
+    def test_ningun_agente_cambia_las_variables_generales_del_usuario(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            home = base / "home"
+            (home / ".config" / "muse").mkdir(parents=True)
+            (home / ".config" / "muse" / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "providers": {
+                            "meta": {
+                                "subs_active": True,
+                                "access_token": "prueba",
+                                "storage": "file",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            centinelas = {
+                "HOME": str(home),
+                "USERPROFILE": str(base / "perfil-real"),
+                "APPDATA": str(base / "appdata-real"),
+                "LOCALAPPDATA": str(base / "localappdata-real"),
+                "XDG_CONFIG_HOME": str(base / "config-real"),
+                "GH_CONFIG_DIR": str(base / "gh-real"),
+                "CODEX_HOME": str(base / "codex-real"),
+            }
+            for agente in (
+                "claude",
+                "codex",
+                "grok",
+                "kimi",
+                "muse",
+                "opencode",
+                "qwen",
+            ):
+                with self.subTest(agente=agente):
+                    _, runtime = _coincidencia(base / agente)
+                    with mock.patch.object(
+                        Path, "home", return_value=home
+                    ), mock.patch.dict(os.environ, centinelas):
+                        env = self._entorno_de(agente, runtime)
+                    for variable, valor in centinelas.items():
+                        if agente == "codex" and variable == "CODEX_HOME":
+                            continue
                         self.assertEqual(
-                            env["XDG_CONFIG_HOME"], str(runtime / ".config")
+                            env.get(variable), valor, f"{agente}:{variable}"
                         )
-                    else:
-                        self.assertNotEqual(
-                            env.get("XDG_CONFIG_HOME", ""), str(runtime / ".config"),
-                            agente,
-                        )
+                    if agente == "codex":
+                        self.assertEqual(env["CODEX_HOME"], str(runtime / ".codex"))
+
+
+@unittest.skipUnless(ES_POSIX, "el entorno del usuario es de la rama POSIX")
+class MuseUsaLaConfiguracionReal(unittest.TestCase):
+    """Muse no tiene variable ni bandera propia para su carpeta de cuenta. El
+    motor no la copia ni desvía XDG_CONFIG_HOME: el CLI lee la configuración
+    real del usuario, como cuando el propietario lo corre a mano."""
+
+    def _auth(self, home: Path, xdg: Path | None = None) -> tuple[Path, str]:
+        carpeta = (xdg if xdg is not None else home / ".config") / "muse"
+        carpeta.mkdir(parents=True)
+        auth = carpeta / "auth.json"
+        contenido = json.dumps(
+            {
+                "schema_version": 3,
+                "providers": {
+                    "meta": {
+                        "subs_active": True,
+                        "storage": "file",
+                        "access_token": "cuenta-real",
+                    }
+                },
+            }
+        )
+        auth.write_text(contenido, encoding="utf-8")
+        return auth, contenido
+
+    def test_conserva_el_xdg_config_home_del_supervisor(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            home = base / "home"
+            home.mkdir()
+            xdg = base / "config-real"
+            auth, contenido = self._auth(home, xdg)
+            _, runtime = _coincidencia(base)
+            with mock.patch.dict(
+                os.environ, {"HOME": str(home), "XDG_CONFIG_HOME": str(xdg)},
+                clear=True,
+            ):
+                env = aislamiento._entorno(runtime, True, ["muse"], agente="muse")
+            self.assertEqual(env["XDG_CONFIG_HOME"], str(xdg))
+            self.assertEqual(env["HOME"], str(home))
+            self.assertFalse((runtime / ".config" / "muse" / "auth.json").exists())
+            self.assertTrue((Path(env["XDG_CONFIG_HOME"]) / "muse/auth.json").is_file())
+            self.assertEqual(auth.read_text(encoding="utf-8"), contenido)
+
+    def test_disponible_usa_la_misma_precedencia_que_el_cliente_nativo(self):
+        from motor.encargos.agentes import _disponible
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            home = base / "home"
+            home.mkdir()
+            xdg = base / "config-real"
+            self._auth(home, xdg)
+            with (
+                mock.patch.object(Path, "home", return_value=home),
+                mock.patch.dict(
+                    os.environ,
+                    {"HOME": str(home), "XDG_CONFIG_HOME": str(xdg)},
+                    clear=True,
+                ),
+                mock.patch(
+                    "motor.encargos.agentes.resolver_binario",
+                    return_value="/cliente/muse",
+                ),
+            ):
+                self.assertTrue(_disponible("muse"))
+
+            self._auth(home)
+            xdg_vacio = base / "config-sin-cuenta"
+            xdg_vacio.mkdir()
+            with (
+                mock.patch.object(Path, "home", return_value=home),
+                mock.patch.dict(
+                    os.environ,
+                    {"HOME": str(home), "XDG_CONFIG_HOME": str(xdg_vacio)},
+                    clear=True,
+                ),
+                mock.patch(
+                    "motor.encargos.agentes.resolver_binario",
+                    return_value="/cliente/muse",
+                ),
+            ):
+                self.assertFalse(_disponible("muse"))
+
+            with (
+                mock.patch.object(Path, "home", return_value=home),
+                mock.patch.dict(os.environ, {"HOME": str(home)}, clear=True),
+                mock.patch(
+                    "motor.encargos.agentes.resolver_binario",
+                    return_value="/cliente/muse",
+                ),
+            ):
+                self.assertTrue(_disponible("muse"))
+
+    def test_sin_xdg_config_home_lo_deja_sin_definir(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            home = base / "home"
+            home.mkdir()
+            auth, contenido = self._auth(home)
+            _, runtime = _coincidencia(base)
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=True):
+                env = aislamiento._entorno(runtime, True, ["muse"], agente="muse")
+            self.assertNotIn("XDG_CONFIG_HOME", env)
+            self.assertEqual(env["HOME"], str(home))
+            self.assertFalse((runtime / ".config" / "muse" / "auth.json").exists())
+            self.assertTrue((Path(env["HOME"]) / ".config/muse/auth.json").is_file())
+            self.assertEqual(auth.read_text(encoding="utf-8"), contenido)
 
 
 if __name__ == "__main__":
