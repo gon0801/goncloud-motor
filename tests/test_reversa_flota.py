@@ -178,6 +178,14 @@ class ReversaFlota(unittest.TestCase):
         (base / "flota-home.json").write_text(
             json.dumps({"home": str(self.home)}), encoding="utf-8"
         )
+        # El lanzamiento exige poteto-mode; la prueba aporta el suyo en la
+        # política de su base en vez de depender del home del operador.
+        poteto = base / "politica" / "poteto" / "skills" / "poteto-mode"
+        poteto.mkdir(parents=True, exist_ok=True)
+        (poteto / "SKILL.md").write_text(
+            "---\nname: poteto-mode\n---\nSkill de ensayo para esta prueba.\n",
+            encoding="utf-8",
+        )
         hora = ahora_iso()
         eid = recibir(reg, "reserva concurrente", clave, hora)["encargo"]
         espacio = base / "espacio" / eid
