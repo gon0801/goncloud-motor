@@ -202,9 +202,11 @@ def temurin_mas_nuevo(catalogo=None) -> dict:
     raise RuntimeError("la API de Adoptium no trae un paquete jdk de Windows")
 
 
-def instalar_java(base: Path, catalogo=None, descargador=None) -> tuple[str, str]:
+def instalar_java(base: Path, nuevo: dict, descargador=None) -> tuple[str, str]:
+    """Instala el GA `nuevo` (de temurin_mas_nuevo) si difiere del marker.
+    Extrae y deja el marker nuevo ANTES de borrar la jdk vieja: si algo falla
+    a mitad de la actualización, la máquina sigue con java utilizable (F7)."""
     previo = java_instalado(base)
-    nuevo = temurin_mas_nuevo(catalogo)
     if previo and previo.get("release") == nuevo["release"]:
         return "ok", f"java {previo['release']} ya está en {previo['java']}"
     crudo = descargar(nuevo["url"], descargador)
@@ -215,18 +217,28 @@ def instalar_java(base: Path, catalogo=None, descargador=None) -> tuple[str, str
             f"declara {nuevo['sha256']}; no se instala"
         )
     carpeta = herramientas(base) / "java"
-    if previo:
-        vieja = Path(previo["java"]).parent.parent
-        if vieja.parent == carpeta and vieja.name.startswith("jdk-"):
-            shutil.rmtree(vieja, ignore_errors=True)
     _extraer_zip(crudo, carpeta)
-    exe = next(iter(sorted(carpeta.rglob("bin/java.exe"))), None)
+    candidatos = sorted(carpeta.rglob("bin/java.exe"))
+    if previo:
+        candidatos = [
+            c for c in candidatos
+            if os.path.normcase(str(c)) != os.path.normcase(previo["java"])
+        ]
+    exe = next(iter(candidatos), None)
     if exe is None:
         raise RuntimeError("el zip de temurin no trae bin/java.exe")
     marker = {"release": nuevo["release"], "sha256": suma, "java": str(exe)}
     _escribir_atomico(
         _ruta_java_marker(base), json.dumps(marker, ensure_ascii=False, indent=2) + "\n"
     )
+    if previo:
+        vieja = Path(previo["java"]).parent.parent
+        if (
+            vieja != exe.parent.parent
+            and vieja.parent == carpeta
+            and vieja.name.startswith("jdk-")
+        ):
+            shutil.rmtree(vieja, ignore_errors=True)
     return "hecho", f"java {nuevo['release']} instalado en {exe}"
 
 
@@ -445,21 +457,37 @@ def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
     base = Path(base)
     salida = []
     # La política documentada es el último GA de temurin 25: preguntar en cada
-    # corrida, instalar solo si hay parche nuevo (F2). Con el java ya
-    # utilizable, no poder consultar la API no tumba la corrida.
+    # corrida, instalar solo si hay parche nuevo (F2). No poder consultar la
+    # API con java ya utilizable no tumba la corrida; un fallo de la
+    # actualización sí se reporta, y la jdk vieja queda utilizable (F7).
     try:
-        estado, detalle = instalar_java(base, catalogo, descargador)
+        nuevo = temurin_mas_nuevo(catalogo)
     except (RuntimeError, OSError, ValueError) as exc:
-        estado, detalle = "error", f"{type(exc).__name__}: {exc}"
+        nuevo = None
+        motivo = f"{type(exc).__name__}: {exc}"
+    if nuevo is None:
+        java = java_instalado(base)
+        if java is not None:
+            salida.append({
+                "paso": "java", "estado": "ok",
+                "detalle": f"java {java['release']} en {java['java']} "
+                f"(sin poder consultar parches: {motivo})",
+            })
+        else:
+            salida.append({
+                "paso": "java", "estado": "error",
+                "detalle": "no se pudo consultar temurin 25 y no hay java "
+                f"utilizable: {motivo}",
+            })
+    else:
+        try:
+            estado, detalle = instalar_java(base, nuevo, descargador)
+        except (RuntimeError, OSError, ValueError) as exc:
+            estado, detalle = "error", f"{type(exc).__name__}: {exc}"
+        if java_instalado(base) is None:
+            estado, detalle = "error", detalle + " (marker no utilizable)"
+        salida.append({"paso": "java", "estado": estado, "detalle": detalle})
     java = java_instalado(base)
-    if estado == "error" and java is not None:
-        estado, detalle = "ok", (
-            f"java {java['release']} en {java['java']} "
-            f"(sin poder consultar parches: {detalle})"
-        )
-    if java is None:
-        estado, detalle = "error", detalle + " (marker no utilizable)"
-    salida.append({"paso": "java", "estado": estado, "detalle": detalle})
     try:
         estado, detalle = instalar_jar(base, descargador)
     except (RuntimeError, OSError, ValueError) as exc:

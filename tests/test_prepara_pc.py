@@ -316,6 +316,41 @@ class LaActualizacionDeJavaCorre(DoblesTest):
         self.assertEqual(prepara_pc.java_instalado(self.base)["release"], "jdk-25.0.5+9")
         self.assertFalse(exe_viejo.exists())
 
+    def test_una_extraccion_fallida_deja_la_jdk_vieja_utilizable(self):
+        """F7: la actualización borraba la jdk vieja antes de extraer la
+        nueva; si la extracción fallaba (disco lleno, zip a medias), la
+        máquina quedaba sin java utilizable y sin marker."""
+        vieja = self.base / "herramientas" / "java" / "jdk-25.0.0+1"
+        exe_viejo = vieja / "bin" / "java.exe"
+        exe_viejo.parent.mkdir(parents=True)
+        exe_viejo.write_bytes(b"MZ")
+        prepara_pc._ruta_java_marker(self.base).write_text(
+            json.dumps({"release": "jdk-25.0.0+1", "java": str(exe_viejo)}),
+            encoding="utf-8",
+        )
+        zip_nuevo = _zip_de_temurin()
+        catalogo = lambda: [{
+            "release_name": "jdk-25.0.5+9",
+            "binary": {"package": {
+                "link": "https://adoptium.example/jdk-nuevo.zip",
+                "checksum": sha256(zip_nuevo).hexdigest(),
+            }},
+        }]
+
+        def descargador(url):
+            return zip_nuevo if url.endswith("jdk-nuevo.zip") else JAR_FALSO
+
+        with mock.patch.object(
+            prepara_pc, "_extraer_zip", mock.Mock(side_effect=OSError("disco lleno"))
+        ), mock.patch.object(prepara_pc, "TLC_SHA256", self.jar_sha):
+            filas = prepara_pc.instalar(
+                self.base, correr=_reg_falso(), catalogo=catalogo, descargador=descargador,
+            )
+        java = next(f for f in filas if f["paso"] == "java")
+        self.assertEqual(java["estado"], "error")
+        self.assertTrue(exe_viejo.exists())
+        self.assertEqual(prepara_pc.java_instalado(self.base)["release"], "jdk-25.0.0+1")
+
     def test_misma_release_no_descarga_de_nuevo(self):
         self._con_herramientas()
         prepara_pc.jar_tlc(self.base).write_bytes(JAR_FALSO)
