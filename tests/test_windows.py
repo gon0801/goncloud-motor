@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 from motor.plataforma import windows
+from tests import entorno
 
 ES_WINDOWS = os.name == "nt"
 RAIZ = Path(__file__).resolve().parent.parent
@@ -40,10 +41,7 @@ def _distro_wsl() -> str:
     return ""
 
 
-@unittest.skipUnless(
-    ES_WINDOWS,
-    "solo corre en Windows (la PC); en la Mac se prueba con ops/prueba-pc.sh",
-)
+@entorno.requiere_windows
 class WindowsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="motor-win-"))
@@ -68,6 +66,7 @@ class WindowsTest(unittest.TestCase):
         self.assertTrue(a)
         self.assertEqual(a, plataforma.boot_id())
 
+    @entorno.requiere_breakaway
     def test_estado_proc_vivo_muerto_corte(self):
         p = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -82,6 +81,7 @@ class WindowsTest(unittest.TestCase):
         windows.matar_grupo(p)
         self.assertTrue(self._esperar(lambda: plataforma.estado_proc(proc) == "muerto"))
 
+    @entorno.requiere_breakaway
     def test_proceso_separado_sobrevive_al_cierre_del_daemon(self):
         marca = self.tmp / "vivo.txt"
         hijo = self.tmp / "hijo.py"
@@ -122,6 +122,7 @@ class WindowsTest(unittest.TestCase):
         )
         self.assertEqual(plataforma.estado_proc(proc), "vivo")
 
+    @entorno.requiere_breakaway
     def test_matar_grupo_termina_el_arbol(self):
         nieto_pid = self.tmp / "nieto.pid"
         padre = self.tmp / "padre.py"
@@ -146,6 +147,7 @@ class WindowsTest(unittest.TestCase):
             "el nieto sobrevivió a matar_grupo",
         )
 
+    @entorno.requiere_breakaway
     def test_job_mata_al_arbol_al_cerrar_el_handle(self):
         nieto_pid = self.tmp / "nieto.pid"
         padre = self.tmp / "padre.py"
