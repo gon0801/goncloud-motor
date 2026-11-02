@@ -109,6 +109,33 @@ en `intento_abierto`, con el prompt armado desde el fold (pedido,
 hallazgos abiertos, referencia de revisión). Reconstruir es válido; fingir
 continuidad, no.
 
+Al empezar otra fase, el responsable y el revisor estrenan sesión: se olvidan
+los ids guardados, las dos épocas cambian (el id de sesión sale de la época) y
+el lanzamiento no reanuda la conversación anterior. El prompt se arma desde el
+fold con el pedido, los ajustes, las fases cerradas con su resultado y los
+hallazgos abiertos.
+
+## DeepSeek es una compuerta aparte
+
+DeepSeek no va antes de Opus: revisa el PR como una compuerta previa al merge.
+Después de que Opus aprobó, si DeepSeek pide cambios (High o Medium), el
+responsable corrige y el motor espera su nueva lectura sobre el SHA nuevo. Ese
+ciclo es solo entre el responsable y DeepSeek: Opus no vuelve a revisar cada
+vuelta, y no se integra ni se cierra nada mientras DeepSeek tenga un
+bloqueante abierto.
+
+Cuando DeepSeek ya no tiene High ni Medium abiertos, Opus hace una sola
+revisión final de lo que cambió desde su última aprobación. Es una revisión de
+la corrección acumulada, con el alcance `correccion` y la versión aprobada como
+base; si el producto no cambió, el tramo está vacío y no hay revisión final.
+Ninguna corrección se integra sin que Opus haya visto ese tramo final.
+
+Si el responsable sostiene con evidencia que un bloqueante de DeepSeek no
+aplica, lo deja en `.interno/disputa.json`
+(`{"hallazgo": "<id>", "evidencia": "<por qué no aplica>"}`). El motor no lo
+descarta: pasa a `necesita_usuario` con el hallazgo y la evidencia en palabras
+simples. Solo el propietario autoriza descartarlo.
+
 ## Corregir un encargo en curso
 
 `motor corregir` y `motor director corregir` aceptan una corrección en
@@ -234,13 +261,11 @@ Tres reglas evitan que el freno pare un encargo por error (casos del 1-nov):
   sigue siendo la salida cuando los mismos bloqueantes siguen abiertos tras el
   diagnóstico.
 
-**Tope por fase.** Una serie que siempre trae hallazgos nuevos no gira sin fin:
-al cabo de `TOPE_VUELTAS_NUEVAS` (4) vueltas seguidas que traen bloqueantes nuevos
-sin cerrar ninguno (`Encargo.vueltas_nuevas`), la siguiente deja el encargo en
-`necesita_usuario` con el último diagnóstico. Cerrar un bloqueante, cualquier
-avance, reinicia la serie, y pasar a otra fase también. Se eligió contar solo
-las vueltas que no cierran nada: una fase que sigue cerrando hallazgos avanza y
-no tiene tope (así lo exige «No hay tope de rondas mientras haya avance»).
+**Sin tope para hallazgos nuevos.** Una vuelta que trae un bloqueante que el
+responsable no había visto es información nueva y vuelve a él para corregir.
+No hay tope para esa serie: mientras cada vuelta aporte información nueva, el
+encargo sigue hasta cerrar los bloqueantes o hasta que el propietario decida.
+El freno por el mismo bloqueo sin información nueva (`_sin_avance`) se mantiene.
 
 ## Inspecciones y respuestas del propietario
 

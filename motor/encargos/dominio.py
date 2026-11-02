@@ -184,9 +184,6 @@ FASE_IMPLICITA = "fase_unica"
 # Revisiones no_concluyente seguidas, sobre la misma versión y pidiendo lo mismo,
 # tras las cuales el encargo pide ayuda al propietario en vez de otro turno.
 TOPE_NO_CONCLUYENTES = 3
-# Vueltas seguidas de una fase que traen bloqueantes nuevos sin cerrar ninguno antes de
-# escalar al propietario. Una serie que siempre trae hallazgos nuevos no gira sin fin.
-TOPE_VUELTAS_NUEVAS = 4
 ESTADOS_FASE = ("pendiente", "trabajo", "revision", "entrega", "preparada")
 
 
@@ -467,9 +464,6 @@ class Encargo:
     # Generación de la última vuelta que el freno ya resolvió: una vuelta cuenta una
     # sola vez, entren las fuentes que entren en el barrido.
     vuelta_contada: int = 0
-    # Vueltas seguidas que solo trajeron bloqueantes nuevos, sin cerrar ninguno.
-    # Acota la serie en la fase: al llegar a TOPE_VUELTAS_NUEVAS la siguiente escala.
-    vueltas_nuevas: int = 0
     # Revisiones no_concluyente seguidas sobre la misma versión que piden lo
     # mismo, y qué pidió la última (fase, versión, texto, recurso, objetivo, huella).
     no_concluyentes: int = 0
@@ -591,6 +585,26 @@ def asegurar_fase(e: Encargo) -> Encargo:
         return e
     fase = fase_implicita(e)
     return replace(e, fases=(fase,), fase_activa=fase.id)
+
+
+def sesiones_de_fase_nueva(e: Encargo) -> Encargo:
+    """Al empezar otra fase, ninguna sesión de la anterior continúa.
+
+    Las dos épocas cambian para que el id de sesión de cada rol sea nuevo; los
+    ids guardados se olvidan para que el lanzamiento no reanude un contexto que
+    ya no corresponde. El resumen de lo anterior va en el prompt, armado desde
+    el fold (pedido, ajustes, fases cerradas y hallazgos abiertos).
+    """
+    return replace(
+        e,
+        sesion_responsable="",
+        sesion_revisor="",
+        viva_responsable=False,
+        viva_revisor=False,
+        epoca_responsable=e.epoca_responsable + 1,
+        epoca_revisor=e.epoca_revisor + 1,
+        sesion_modo="nueva",
+    )
 
 
 def huella_entrega(
@@ -772,7 +786,7 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
         return e
     # Un avance, venga de la revisión o de un check que se puso verde, cierra
     # también la cuenta de revisiones no_concluyente repetidas.
-    return _sin_repeticiones(replace(e, sin_progreso=0, vueltas_nuevas=0))
+    return _sin_repeticiones(replace(e, sin_progreso=0))
 
 
 def fuente_de_impedimento(clase: str) -> str:
@@ -836,24 +850,18 @@ def alcance_de(e: Encargo) -> AlcanceRevision:
 
 
 def revision_independiente_cubre_producto(e: Encargo) -> bool:
+    """Solo la aprobación de Opus sobre la firma vigente cubre el producto.
+
+    Una corrección que cambió el producto después de esa aprobación necesita
+    su revisión final, aunque DeepSeek ya la haya aprobado: DeepSeek es una
+    compuerta aparte del PR, no sustituye al revisor independiente.
+    """
     ref, producto = e.revision_vigente, e.producto
-    if ref is None or ref.veredicto != "aprobado" or producto is None:
-        return False
-    if ref.version == producto.firma:
-        return True
-    ds = e.deepseek_vigente
-    actual = dict(producto.manifiesto)
     return bool(
-        e.entrega.nivel != "terminado"
-        and e.rol != "revisor"
-        and e.revisado is not None
-        and ref.version == e.revisado.firma
-        and ds is not None
-        and ds.veredicto == "aprobado"
-        and ds.version == producto.firma
-        and producto.sha_git
-        and producto.sha_git == e.pr_sha == e.deepseek_sha
-        and all(actual.get(ruta) == firma for ruta, firma in e.aprobadas)
+        ref is not None
+        and ref.veredicto == "aprobado"
+        and producto is not None
+        and ref.version == producto.firma
     )
 
 
@@ -1412,14 +1420,11 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         veces = e.sin_progreso + 1 if huella and huella == e.bloqueo_huella else 1
         if d.get("nueva"):
             # La vuelta trajo bloqueantes nuevos: es información nueva, no «el mismo
-            # bloqueo». La escalera empieza de cero y la serie de vueltas así se cuenta.
+            # bloqueo». La escalera empieza de cero y no tiene tope mientras siga
+            # llegando información nueva.
             veces = 0
         diagnostico = str(d.get("diagnostico") or d.get("causa") or "")
-        e = replace(
-            e,
-            vuelta_contada=e.generacion,
-            vueltas_nuevas=e.vueltas_nuevas + 1 if d.get("nueva") else e.vueltas_nuevas,
-        )
+        e = replace(e, vuelta_contada=e.generacion)
         if d.get("escalar"):
             return replace(
                 e,
@@ -2015,13 +2020,16 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
         activa = disponible.id
     else:
         activa = e.fase_activa if any(f.id == e.fase_activa for f in nuevas) else nuevas[0].id
-    return replace(
+    resultado = replace(
         e,
         fases=tuple(nuevas),
         fase_activa=activa,
         hora=hora or e.hora,
         ultimo_hecho=f"fases organizadas: {len(nuevas)}",
     )
+    if activa != e.fase_activa:
+        resultado = sesiones_de_fase_nueva(resultado)
+    return resultado
 
 
 def defecto_al_adoptar_fases(e: Encargo, fases) -> str:
@@ -2107,7 +2115,7 @@ def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:
     disponible = _fase_disponible(e.fases)
     if disponible is not None:
         rol, estrategia = _rol_de_continuacion(e, disponible)
-        return replace(
+        resultado = replace(
             e,
             estado="recibido",
             fase_activa=disponible.id,
@@ -2120,6 +2128,9 @@ def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:
             ultimo_hecho="se continuó el encargo",
             hora=hora or e.hora,
         )
+        if disponible.id != e.fase_activa:
+            return sesiones_de_fase_nueva(resultado)
+        return resultado
     if e.fases and all(f.estado == "preparada" for f in e.fases):
         return replace(
             e,
@@ -2428,20 +2439,21 @@ def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:
     if e.estado in ("terminado", "cancelado", "deteniendo", "detenido"):
         raise TransicionIlegal("el encargo ya no admite reabrir una fase")
     causa = str(d.get("causa") or "DeepSeek dejó un hallazgo abierto")
-    return replace(
-        con_fase(e, replace(fase, estado="entrega", nivel_alcanzado="pr_abierto")),
-        fase_activa=fase.id,
-        estado="recibido",
-        rol="responsable",
-        estrategia="investigar",
-        motivo=causa,
-        siguiente=f"corregir la fase {fase.id}",
-        intentos_nuevos=True,
-        escrituras=e.autoridad,
-        ultimo_hecho=causa,
-        devuelto_con=(),
-        vueltas_nuevas=0,
-        hora=hora or e.hora,
+    return sesiones_de_fase_nueva(
+        replace(
+            con_fase(e, replace(fase, estado="entrega", nivel_alcanzado="pr_abierto")),
+            fase_activa=fase.id,
+            estado="recibido",
+            rol="responsable",
+            estrategia="investigar",
+            motivo=causa,
+            siguiente=f"corregir la fase {fase.id}",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            ultimo_hecho=causa,
+            devuelto_con=(),
+            hora=hora or e.hora,
+        )
     )
 
 
@@ -2511,7 +2523,7 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
         pendientes = [f for f in fases if f.estado != "preparada"]
         if e.estado in ("cancelado", "deteniendo", "detenido"):
             activa = siguiente or (pendientes[0].id if pendientes else fase.id)
-            return replace(
+            resultado = replace(
                 e,
                 fases=fases,
                 fase_activa=activa,
@@ -2519,26 +2531,32 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 hora=hora or e.hora,
                 ultimo_hecho=evidencia,
             )
+            return (
+                sesiones_de_fase_nueva(resultado)
+                if activa != fase.id
+                else resultado
+            )
         if disponible is not None:
-            return replace(
-                e,
-                fases=fases,
-                estado="recibido",
-                fase_activa=siguiente,
-                rol="responsable",
-                estrategia="investigar",
-                motivo="",
-                siguiente=f"trabajar la fase {siguiente}",
-                evidencia=evidencias,
-                intentos_nuevos=True,
-                escrituras=e.autoridad,
-                ultimo_hecho=f"fase {fase.id} preparada; continúa la fase {siguiente}",
-                devuelto_con=(),
-                vueltas_nuevas=0,
-                hora=hora or e.hora,
+            return sesiones_de_fase_nueva(
+                replace(
+                    e,
+                    fases=fases,
+                    estado="recibido",
+                    fase_activa=siguiente,
+                    rol="responsable",
+                    estrategia="investigar",
+                    motivo="",
+                    siguiente=f"trabajar la fase {siguiente}",
+                    evidencia=evidencias,
+                    intentos_nuevos=True,
+                    escrituras=e.autoridad,
+                    ultimo_hecho=f"fase {fase.id} preparada; continúa la fase {siguiente}",
+                    devuelto_con=(),
+                    hora=hora or e.hora,
+                )
             )
         if pendientes:
-            return replace(
+            resultado = replace(
                 e,
                 fases=fases,
                 estado="recibido",
@@ -2552,8 +2570,12 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 escrituras=e.autoridad,
                 ultimo_hecho=f"fase {fase.id} preparada; quedan dependencias sin preparar",
                 devuelto_con=(),
-                vueltas_nuevas=0,
                 hora=hora or e.hora,
+            )
+            return (
+                sesiones_de_fase_nueva(resultado)
+                if pendientes[0].id != fase.id
+                else resultado
             )
         # Quien cierra anota cuántas correcciones cubre (vistas o dichas en la
         # nota). Una que entró después no la atendió nadie: el registro rechaza
@@ -3036,6 +3058,13 @@ def prompt_responsable(e: Encargo) -> str:
             + ". Corrige solo estos y sus efectos; lo demás aprobado se conserva:\n"
             + "\n".join(detalle)
         )
+        if any(h.origen == "deepseek" for h in abiertos):
+            lineas.append(
+                "Si sostienes con evidencia que un hallazgo de DeepSeek no aplica, "
+                "no lo descartes por tu cuenta: deja la evidencia en "
+                ".interno/disputa.json con el id del hallazgo y el motor pedirá "
+                "autorización al propietario."
+            )
     if e.aprobadas:
         lineas.append(
             "Rutas ya aprobadas; no las reescribas sin necesidad:\n"
