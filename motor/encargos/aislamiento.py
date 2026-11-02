@@ -16,7 +16,7 @@ import tomllib
 
 from .autenticacion_kimi import acceso_kimi
 from .catalogo_agentes import cliente_para
-from .suscripciones import CuentaNoDisponible, leer_cuenta
+from .suscripciones import CuentaNoDisponible
 
 
 @dataclass(frozen=True)
@@ -116,10 +116,8 @@ def _entorno(
         # para este intento (suscripciones.preparar).
         XDG_DATA_HOME=str(runtime / ".local" / "share"),
         PYTHONDONTWRITEBYTECODE="1",
-        CODEX_HOME=str(runtime / ".codex"),
     )
-    for path in (env["CODEX_HOME"], env["XDG_DATA_HOME"]):
-        Path(path).mkdir(parents=True, exist_ok=True)
+    Path(env["XDG_DATA_HOME"]).mkdir(parents=True, exist_ok=True)
     if suscripcion:
         nombre = agente or Path(cmd[0]).stem.lower()
         if nombre in ("claude", "opencode", "qwen", "grok"):
@@ -128,26 +126,12 @@ def _entorno(
             preparar(nombre, runtime, cmd, env)
             return env
         if nombre == "muse":
-            cuenta = leer_cuenta(nombre)
-            documento = json.loads(
-                (Path.home() / ".config/muse/auth.json").read_text(encoding="utf-8")
-            )
-            destino = runtime / ".config/muse/auth.json"
-            destino.parent.mkdir(parents=True, exist_ok=True)
-            destino.write_text(
-                json.dumps(
-                    {
-                        "schema_version": documento.get("schema_version", 1),
-                        "providers": {"meta": cuenta},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            destino.chmod(0o600)
-            # La carpeta de sesión de Muse: la cuenta del intento vive en el
-            # runtime y el CLI la halla por la convención XDG. El resto del
-            # entorno conserva la configuración real del usuario.
-            env["XDG_CONFIG_HOME"] = str(runtime / ".config")
+            # Muse no tiene variable ni bandera propia para su carpeta de
+            # cuenta: el binario nativo lee $XDG_CONFIG_HOME/muse/auth.json y,
+            # sin esa variable, ~/.config/muse/auth.json. Se deja el entorno
+            # real del usuario y el CLI usa su login, como cuando se corre a
+            # mano. MUSE_AUTH_PATH solo la entiende el lanzador bash, que no es
+            # el que el motor ejecuta.
             return env
         if nombre == "kimi":
             expira = _preparar_kimi(runtime, cmd)
@@ -166,6 +150,8 @@ def _entorno(
         if nombre == "codex":
             origen = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
             destino = runtime / ".codex"
+            destino.mkdir(parents=True, exist_ok=True)
+            env["CODEX_HOME"] = str(destino)
         else:
             return env
         auth = origen / "auth.json"
@@ -182,7 +168,6 @@ def _entorno(
                         nombre,
                         "el encargo necesita autenticacion por suscripcion de ChatGPT",
                     )
-            destino.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(auth, destino / "auth.json")
             (destino / "auth.json").chmod(0o600)
     return env

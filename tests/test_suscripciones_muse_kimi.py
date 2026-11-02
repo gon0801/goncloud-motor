@@ -107,10 +107,18 @@ capabilities = ["thinking", "tool_use"]
             ):
                 runtime = Path(temporal) / "runtime"
                 env_meta = _entorno(runtime / "meta", True, ["muse"], agente="muse")
-                copiada = json.loads(
-                    (Path(env_meta["XDG_CONFIG_HOME"]) / "muse/auth.json").read_text()
+                self.assertNotIn("XDG_CONFIG_HOME", env_meta)
+                self.assertFalse(
+                    (runtime / "meta" / ".config" / "muse" / "auth.json").exists()
                 )
-                self.assertEqual(set(copiada["providers"]), {"meta"})
+                self.assertEqual(
+                    set(
+                        json.loads(
+                            (home / ".config/muse/auth.json").read_text()
+                        )["providers"]
+                    ),
+                    {"meta", "otro"},
+                )
                 env_kimi = _entorno(
                     runtime / "kimi",
                     True,

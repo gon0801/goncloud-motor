@@ -11,8 +11,20 @@ import sys
 from pathlib import Path
 
 
+def ruta_cuenta() -> Path:
+    """El archivo de cuenta con la precedencia del cliente nativo: si
+    XDG_CONFIG_HOME está definido lo usa sin caer a ~/.config, y si no, usa
+    ~/.config. Comprobado con `muse-bin-1.4.14-R7309.1`: con la variable
+    definida y el archivo solo en ~/.config reporta faltantes en
+    XDG_CONFIG_HOME/muse/auth.json."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "muse" / "auth.json"
+    return Path.home() / ".config" / "muse" / "auth.json"
+
+
 def cuenta_muse(*, exportar: bool = False) -> dict:
-    path = Path.home() / ".config/muse/auth.json"
+    path = ruta_cuenta()
     datos = json.loads(path.read_text(encoding="utf-8"))
     cuenta = datos.get("providers", {}).get("meta", {})
     if (
