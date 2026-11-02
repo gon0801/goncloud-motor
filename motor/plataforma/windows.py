@@ -765,20 +765,92 @@ def _hora_creacion(pid: int) -> int | None:
     return int(texto) if texto.isdigit() else None
 
 
+def _hora_raiz(pid: int, inicio: str) -> int | None:
+    """Hora de la raíz: la guardada si es legible; si no, la del proceso actual."""
+    if inicio:
+        return int(inicio) if inicio.isdigit() else None
+    return _hora_creacion(pid)
+
+
 def _descendientes(pid: int, inicio: str = "") -> list[int] | None:  # pragma: no cover
     padres = _padres_procesos()
     if not padres:
         return None
     candidatos = _candidatos_por_ppid(padres, pid)
-    if inicio:
-        raiz_creada = int(inicio) if inicio.isdigit() else None
-    else:
-        raiz_creada = _hora_creacion(pid)
+    raiz_creada = _hora_raiz(pid, inicio)
     if raiz_creada is None:
-        return []
-    snapshot = {c: (padres[c], _hora_creacion(c)) for c in candidatos}
+        return None
+    horas = {c: _hora_creacion(c) for c in candidatos}
+    snapshot = {c: (padres[c], horas[c]) for c in candidatos}
     snapshot[pid] = (padres.get(pid, 0), raiz_creada)
-    return descendientes_validos(snapshot, pid)
+    validos = descendientes_validos(snapshot, pid)
+    if not validos and any(hora is None for hora in horas.values()):
+        # Hay candidatos que no se pueden datar: no es ausencia, es incertidumbre.
+        return None
+    return validos
+
+
+def _matar_pid_confirmado(pid: int, esperado: int | None) -> bool:  # pragma: no cover
+    """Mata `pid` solo si sigue siendo el proceso nacido en `esperado`. No usa `/T`."""
+    if esperado is None or _hora_creacion(pid) != esperado:
+        return False
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return True
+
+
+def _matar_descendientes_confirmados(  # pragma: no cover
+    pid: int, raiz_creada: int
+) -> bool:
+    """Una pasada: enumera el árbol, filtra por la regla pura y mata lo confirmado."""
+    padres = _padres_procesos()
+    if not padres:
+        return False
+    candidatos = _candidatos_por_ppid(padres, pid)
+    if not candidatos:
+        return False
+    horas = {c: _hora_creacion(c) for c in candidatos}
+    snapshot = {c: (padres[c], horas[c]) for c in candidatos}
+    snapshot[pid] = (padres.get(pid, 0), raiz_creada)
+    validos = descendientes_validos(snapshot, pid)
+    for hijo in validos:
+        _matar_pid_confirmado(hijo, horas[hijo])
+    return bool(validos)
+
+
+def _matar_arbol_confirmado(  # pragma: no cover
+    pid: int, inicio: str = "", *, terminar_raiz: bool = True, intentos: int = 4
+) -> None:
+    """Enumera y mata en varias pasadas para no dejar hijos nacidos durante el cierre.
+
+    Cada PID se vuelve a datar justo antes de matarlo: si Windows reusó el número, no se toca.
+    """
+    raiz_creada = _hora_raiz(pid, inicio)
+    if raiz_creada is None:
+        return
+    if terminar_raiz and _hora_creacion(pid) != raiz_creada:
+        # La raíz ya no es la que se quería cerrar: no hay cadena que confirmar.
+        return
+    for _ in range(intentos):
+        if not _matar_descendientes_confirmados(pid, raiz_creada):
+            break
+        time.sleep(0.05)
+    if not terminar_raiz:
+        return
+    _matar_pid_confirmado(pid, raiz_creada)
+    for _ in range(intentos):
+        if not _matar_descendientes_confirmados(pid, raiz_creada):
+            break
+        time.sleep(0.05)
 
 
 def presencia_grupo(pid: int, inicio: str, job: str = "") -> str:  # pragma: no cover
@@ -862,30 +934,16 @@ def cerrar_huerfanos(pid: int, inicio: str, job: str = "") -> None:  # pragma: n
         return
     if visto == "incierto":
         return
-    for hijo in _descendientes(pid, inicio) or ():
-        subprocess.run(
-            ["taskkill", "/PID", str(hijo), "/F"],
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
-        )
+    _matar_arbol_confirmado(pid, inicio, terminar_raiz=False)
 
 
 def matar_grupo_pid(pid: int, inicio: str = "") -> None:  # pragma: no cover
-    """Termina el árbol confirmado de `pid`, sin `/T` sobre PIDs ajenos."""
-    for hijo in _descendientes(pid, inicio) or ():
-        subprocess.run(
-            ["taskkill", "/PID", str(hijo), "/F"],
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
-        )
-    subprocess.run(
-        ["taskkill", "/PID", str(pid), "/F"],
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-        creationflags=CREATE_NO_WINDOW,
-    )
+    """Termina el árbol confirmado de `pid`, sin `/T` sobre PIDs ajenos.
+
+    Enumera en varias pasadas para alcanzar hijos nacidos durante el cierre y vuelve a
+    datar cada PID antes de matarlo, para no tocar un número reutilizado.
+    """
+    _matar_arbol_confirmado(pid, inicio, terminar_raiz=True)
 
 
 def candado_exclusivo(f) -> bool:  # pragma: no cover
@@ -1008,22 +1066,11 @@ def matar_grupo(p: subprocess.Popen) -> None:  # pragma: no cover
     if j is not None:
         j.cerrar()
     else:
-        for hijo in _descendientes(p.pid) or ():
-            subprocess.run(
-                ["taskkill", "/PID", str(hijo), "/F"],
-                capture_output=True,
-                stdin=subprocess.DEVNULL,
-                creationflags=CREATE_NO_WINDOW,
-            )
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(p.pid), "/F"],
-                capture_output=True,
-                timeout=4,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        # Solo se enumera el árbol si la raíz sigue siendo la que lanzamos: con el PID
+        # reusado no hay cadena que confirmar y matar por número sería a ciegas.
+        inicio = hora_inicio(p.pid) if p.poll() is None else ""
+        if inicio:
+            _matar_arbol_confirmado(p.pid, inicio, terminar_raiz=True)
     try:
         if p.poll() is None:
             p.kill()
