@@ -120,16 +120,43 @@ def hora_inicio(pid: int) -> str:
     return " ".join(r.stdout.split())
 
 
+_MESES_LSTART = {
+    nombre: numero
+    for numero, nombre in enumerate(
+        (
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+        ),
+        start=1,
+    )
+}
+
+
 def _epoch_lstart(texto: str) -> int | None:
     from datetime import datetime
 
+    partes = texto.split()
+    if len(partes) != 5:
+        return None
+    _, mes, dia, hora, anio = partes
     try:
+        h, m, s = (int(x) for x in hora.split(":"))
         return int(
-            datetime.strptime(
-                " ".join(texto.split()), "%a %b %d %H:%M:%S %Y"
+            datetime(
+                int(anio), _MESES_LSTART[mes], int(dia), h, m, s
             ).timestamp()
         )
-    except (ValueError, OverflowError):
+    except (KeyError, ValueError, OverflowError):
         return None
 
 
