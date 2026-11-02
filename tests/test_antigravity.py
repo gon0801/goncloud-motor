@@ -192,25 +192,41 @@ class EntornoYHerramientas(unittest.TestCase):
                 with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
                     self.assertFalse(agentes._disponible("antigravity"))
 
-    def test_la_clave_de_api_exige_proveedor_y_valor(self):
+    def test_la_clave_de_api_no_es_la_suscripcion(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             cli = home / ".gemini" / "antigravity-cli"
             cli.mkdir(parents=True)
             (cli / "settings.json").write_text(
-                '{"modelProvider": "gemini", "theme": "dark"}',
-                encoding="utf-8",
+                '{"modelProvider": "gemini"}', encoding="utf-8"
             )
-            for valor in ("", "   "):
-                with mock.patch.dict(os.environ, {"GEMINI_API_KEY": valor}):
-                    self.assertFalse(agentes.sesion_antigravity_presente(home))
-            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "clave-de-prueba"}):
-                self.assertTrue(agentes.sesion_antigravity_presente(home))
-            (cli / "settings.json").write_text(
-                '{"modelProvider": "vertex"}', encoding="utf-8"
-            )
-            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "clave-de-prueba"}):
-                self.assertFalse(agentes.sesion_antigravity_presente(home))
+            self.assertFalse((cli / "antigravity-oauth-token").exists())
+
+            def llavero_ausente(argv, **kwargs):
+                return subprocess.CompletedProcess(argv, 44, b"", b"")
+
+            entorno = {
+                "HOME": str(home),
+                "USERPROFILE": str(home),
+                "GEMINI_API_KEY": "clave-de-prueba",
+            }
+
+            def which(nombre):
+                return "/falso/agy" if nombre == "agy" else None
+
+            with mock.patch.dict(os.environ, entorno):
+                with mock.patch("subprocess.run", side_effect=llavero_ausente):
+                    with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
+                        with mock.patch(
+                            "motor.encargos.agentes.resolver_binario",
+                            return_value="/falso/agy",
+                        ):
+                            self.assertFalse(agentes.sesion_antigravity_presente())
+                            self.assertFalse(agentes._disponible("antigravity"))
+                        filas = {f["agente"]: f for f in _agentes(which)}
+                    self.assertIn("sin sesión", filas["antigravity"]["detalle"])
+                    self.assertNotIn("con sesión", filas["antigravity"]["detalle"])
+                    self.assertTrue((os.environ.get("GEMINI_API_KEY") or "").strip())
 
     def test_el_llavero_cuenta_solo_en_el_home_del_proceso(self):
         with tempfile.TemporaryDirectory() as tmp:
