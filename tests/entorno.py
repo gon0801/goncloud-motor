@@ -1,13 +1,11 @@
 """Qué lanzamiento de trabajadores tiene el host que corre la batería.
 
-Desde la decisión del 2 de noviembre, en macOS y Linux el motor lanza directo,
-sin jaula y con el entorno del usuario: un trabajador arranca en cualquier host
-POSIX. Windows sigue con su jaula nativa (psec o AppContainer); `requiere_windows`
-marca esas pruebas.
+Desde la decisión del 2 de noviembre, en macOS, Linux y Windows el motor lanza
+directo, sin jaula y con el entorno del usuario.
 
-`requiere_windows` marca las pruebas propias de Windows: corren en Windows, se saltan fuera
-con el motivo, y con MOTOR_EXIGE_WINDOWS=1 (el job `windows` del CI) un salto es un fallo,
-igual que MOTOR_EXIGE_BWRAP hace con la jaula de Linux.
+`requiere_windows` marca las pruebas propias de Windows: corren en Windows, se
+saltan fuera con el motivo, y con MOTOR_EXIGE_WINDOWS=1 (el job `windows` del
+CI) un salto es un fallo.
 """
 
 import functools

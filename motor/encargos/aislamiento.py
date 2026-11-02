@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import os
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -17,7 +15,7 @@ from pathlib import Path
 import tomllib
 
 from .autenticacion_kimi import acceso_kimi
-from .catalogo_agentes import ADAPTADORES, cliente_para
+from .catalogo_agentes import cliente_para
 from .suscripciones import CuentaNoDisponible, leer_cuenta
 
 
@@ -26,7 +24,6 @@ class ComandoAislado:
     argv: list[str]
     entorno: dict[str, str]
     mecanismo: str
-    jaula: dict | None = None
     ejecutable: dict | None = None
 
 
@@ -74,21 +71,6 @@ def path_con_interprete(path: str, runtime: Path) -> str:
     return os.pathsep.join(partes)
 
 
-def _codex_windows() -> Path:
-    directo = shutil.which("codex.exe")
-    if directo:
-        return Path(directo).resolve()
-    shim = shutil.which("codex.cmd")
-    if shim:
-        paquete = Path(shim).parent / "node_modules" / "@openai" / "codex"
-        for arquitectura in ("x64", "arm64"):
-            raiz = paquete / "node_modules" / "@openai" / f"codex-win32-{arquitectura}"
-            candidatos = list(raiz.glob("vendor/*/bin/codex.exe"))
-            if len(candidatos) == 1:
-                return candidatos[0].resolve()
-    raise RuntimeError("no se encontro el ejecutable nativo instalado de Codex/MXC")
-
-
 def temporal_de(runtime: Path) -> Path:
     """Temporal propio de una corrida: vacío, dentro de su runtime."""
     temporal = runtime / "tmp"
@@ -108,52 +90,20 @@ def limpiar_temporal(runtime: Path) -> None:
         shutil.rmtree(temporal, ignore_errors=True)
 
 
-_PERMITIDAS_WINDOWS = frozenset(
-    {
-        "PATH",
-        "SYSTEMROOT",
-        "SYSTEMDRIVE",
-        "WINDIR",
-        "COMSPEC",
-        "PATHEXT",
-        "LANG",
-        "TERM",
-        "TZ",
-        "PROGRAMDATA",
-        "PROGRAMFILES",
-        "PROGRAMFILES(X86)",
-        "PROGRAMW6432",
-    }
-)
-
-
 def _entorno(
     runtime: Path, suscripcion: bool, cmd: list[str], *, agente: str | None = None
 ) -> dict[str, str]:
+    # El agente trabaja con el entorno del usuario, como él (decisión del
+    # 2-nov). Solo se aparta lo que el motor necesita para darle a cada agente
+    # su suscripción y su temporal, que no bloquea nada.
+    env = dict(os.environ)
     if os.name == "nt":
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if k.upper() in _PERMITIDAS_WINDOWS or k.upper().startswith("LC_")
-        }
+        # El PATH conserva el intérprete del supervisor por delante.
         env["PATH"] = (
             str(Path(sys.executable).resolve().parent)
             + os.pathsep
             + env.get("PATH", "")
         )
-        env.update(
-            HOME=str(runtime),
-            USERPROFILE=str(runtime),
-            APPDATA=str(runtime / "AppData" / "Roaming"),
-            LOCALAPPDATA=str(runtime / "AppData" / "Local"),
-            XDG_CONFIG_HOME=str(runtime / ".config"),
-            XDG_DATA_HOME=str(runtime / ".local" / "share"),
-        )
-    else:
-        # macOS y Linux: el agente trabaja con el entorno del usuario, como él
-        # (decisión del 2-nov). Solo se aparta lo que el motor necesita para
-        # darle a cada agente su suscripción y su temporal, que no bloquea nada.
-        env = dict(os.environ)
     temporal = temporal_de(runtime)
     env.update(
         TMPDIR=str(temporal),
@@ -168,17 +118,7 @@ def _entorno(
         PYTHONDONTWRITEBYTECODE="1",
         CODEX_HOME=str(runtime / ".codex"),
     )
-    if os.name == "nt":
-        carpetas = (
-            env["APPDATA"],
-            env["LOCALAPPDATA"],
-            env["CODEX_HOME"],
-            env["XDG_CONFIG_HOME"],
-            env["XDG_DATA_HOME"],
-        )
-    else:
-        carpetas = (env["CODEX_HOME"], env["XDG_DATA_HOME"])
-    for path in carpetas:
+    for path in (env["CODEX_HOME"], env["XDG_DATA_HOME"]):
         Path(path).mkdir(parents=True, exist_ok=True)
     if suscripcion:
         nombre = agente or Path(cmd[0]).stem.lower()
@@ -337,6 +277,19 @@ def _preparar_kimi(runtime: Path, cmd: list[str]) -> float:
     return acceso.expira
 
 
+def _bash_de_git(entorno: dict[str, str]) -> str:
+    """El bash de la instalación de Git que resuelve el PATH del agente. Si no
+    está, la ruta habitual de la PC: la sonda y Claude la nombran si falla."""
+    from motor.plataforma.windows import BASH_GIT_POR_OMISION
+
+    git = shutil.which("git", path=entorno.get("PATH"))
+    if git:
+        raiz = Path(git).resolve().parent.parent
+        if (raiz / "bin" / "bash.exe").is_file():
+            return str(raiz / "bin" / "bash.exe")
+    return BASH_GIT_POR_OMISION
+
+
 def _muse_local(
     argv: list[str], runtime: Path, entorno: dict[str, str]
 ) -> tuple[list[str], dict]:
@@ -390,88 +343,27 @@ def aislar(
         raise RuntimeError("el lanzamiento necesita espacio concedido y runtime separado")
     runtime.mkdir(parents=True, exist_ok=True)
     nombre = agente or Path(cmd[0]).stem.lower()
-    if suscripcion and usa_wsl(nombre):
-        return _comando_wsl(cmd, espacio, runtime, lectura, lecturas_extra, nombre)
     env = _entorno(runtime, suscripcion, cmd, agente=agente)
-    procedencia = None
     if os.name == "nt":
-        raices = [
-            Path(sys.executable).resolve().parent,
-            Path(os.environ["SystemRoot"]),
-        ]
-        if Path(cmd[0]).stem.lower() == "codex":
-            ejecutable = Path(cmd[0])
-            broker = (
-                ejecutable.resolve() if ejecutable.is_absolute() else _codex_windows()
-            )
-            if broker.is_relative_to(espacio) or broker.is_relative_to(runtime):
-                raise RuntimeError("el broker de aislamiento pertenece al trabajador")
-            raices.append(broker.parent)
-            argv = [str(broker), *cmd[1:]]
-        else:
-            from motor.plataforma.windows import argv_windows
+        # Windows lanza directo, como POSIX: sin AppContainer ni WSL y con el
+        # entorno del usuario. Solo se resuelven los shims .cmd de npm y se le
+        # da a Claude el bash de Git que usa para sus órdenes.
+        from motor.plataforma.windows import argv_windows
 
-            argv = argv_windows(cmd, env)
-            if not Path(argv[0]).is_absolute():
-                ejecutable = shutil.which(argv[0], path=env.get("PATH"))
-                if not ejecutable:
-                    raise FileNotFoundError(argv[0])
-                argv = [str(Path(ejecutable).resolve()), *argv[1:]]
+        argv = argv_windows(cmd, env)
+        if not Path(argv[0]).is_absolute():
+            ejecutable = shutil.which(argv[0], path=env.get("PATH"))
+            if not ejecutable:
+                raise FileNotFoundError(argv[0])
+            argv = [str(Path(ejecutable).resolve()), *argv[1:]]
+        if nombre == "claude":
+            env["CLAUDE_CODE_GIT_BASH_PATH"] = _bash_de_git(env)
+        procedencia = None
         if nombre == "muse":
             argv, procedencia = _muse_local(argv, runtime, env)
-        raices.extend(path.resolve() for path in lecturas_extra)
-        if nombre in ADAPTADORES and ADAPTADORES[nombre].psec:
-            raices.append(Path(argv[0]).parent)
-            env["NODE_OPTIONS"] = "--preserve-symlinks --preserve-symlinks-main"
-        raices.extend(
-            Path(os.environ[k])
-            for k in ("ProgramFiles", "ProgramFiles(x86)")
-            if k in os.environ
+        return ComandoAislado(
+            argv, env, MECANISMO_DIRECTO, ejecutable=procedencia
         )
-        if suscripcion and nombre not in ADAPTADORES:
-            raise RuntimeError("el agente no tiene adaptador Windows de suscripcion")
-        if suscripcion and nombre == "codex":
-            capacidades = [
-                'web_search="disabled"',
-                "projects." + json.dumps(str(espacio)) + '.trust_level="untrusted"',
-                *(
-                    "features." + nombre + "=false"
-                    for nombre in (
-                        "apps",
-                        "plugins",
-                        "hooks",
-                        "multi_agent",
-                        "image_generation",
-                        "standalone_web_search",
-                    )
-                ),
-            ]
-            argv = [argv[0], *(x for c in capacidades for x in ("-c", c)), *argv[1:]]
-        limites = {
-            "lectura": [str(x) for x in raices] + ([str(espacio)] if lectura else []),
-            "escritura": [str(runtime)] + ([] if lectura else [str(espacio)]),
-            "internet": suscripcion,
-            "proveedor": sorted(
-                {
-                    str(ipaddress.ip_address(fila[4][0]))
-                    for host in ADAPTADORES[nombre].dominios
-                    for fila in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-                    if ipaddress.ip_address(fila[4][0]).is_global
-                }
-            )
-            if suscripcion
-            else [],
-            "runtime": str(runtime),
-        }
-        if suscripcion and not limites["proveedor"]:
-            raise RuntimeError(
-                "no hay direcciones publicas del proveedor para la suscripcion"
-            )
-        if nombre in ADAPTADORES and ADAPTADORES[nombre].psec:
-            from motor.plataforma.psec_windows import enumeracion_para
-
-            limites["enumeracion"] = enumeracion_para(limites)
-        return ComandoAislado(argv, env, "appcontainer", limites, procedencia)
     # macOS y Linux: lanzamiento directo, sin jaula (decisión del 2-nov). El
     # agente corre como el usuario, con su entorno. Se conservan el cambio a
     # muse nativo con su procedencia y el PATH con el intérprete del supervisor.
@@ -492,45 +384,9 @@ def aislar(
     return ComandoAislado(cmd, env, MECANISMO_DIRECTO, ejecutable=procedencia)
 
 
-def usa_wsl(agente: str | None) -> bool:
-    """En Windows, el agente que necesita shell corre dentro de WSL con la jaula de
-    bubblewrap: el bash de Git (msys) no arranca en un AppContainer. Los demás agentes
-    siguen en la jaula de Windows."""
-    return _en_windows() and usa_shell_de_git(agente)
-
-
-def _comando_wsl(
-    cmd: list[str],
-    espacio: Path,
-    runtime: Path,
-    lectura: bool,
-    lecturas_extra: tuple[Path, ...],
-    agente: str,
-) -> ComandoAislado:
-    """Describe el lanzamiento en la distro. `argv` es el comando del agente tal como lo
-    arma el motor, con rutas de Windows; las rutas y el entorno de la distro los resuelve
-    `jaula_wsl.argv_guardian` al lanzar, cuando ya se sumó el entorno extra del intento.
-    La jaula no tiene red propia: sale solo a los dominios del proveedor del agente, por el
-    proxy del guardián, igual que el AppContainer solo concede las direcciones del proveedor."""
-    from motor.plataforma import jaula_linux, jaula_wsl
-
-    if agente not in ADAPTADORES:
-        raise RuntimeError("el agente no tiene adaptador de suscripcion")
-    jaula = jaula_wsl.jaula_de(
-        espacio,
-        runtime,
-        lectura=lectura,
-        lecturas=tuple(p.resolve() for p in lecturas_extra),
-        agente=agente,
-        red=jaula_linux.RED_PROVEEDOR,
-        dominios=ADAPTADORES[agente].dominios,
-    )
-    return ComandoAislado(list(cmd), {}, jaula_wsl.MECANISMO, jaula)
-
-
 @dataclass(frozen=True)
 class SondaEntorno:
-    """Resultado de comprobar, bajo el aislamiento real, lo que el trabajador
+    """Resultado de comprobar, bajo el lanzamiento real, lo que el trabajador
     necesita para empezar. `ok` es la única evidencia de recuperación válida:
     una fecha, una generación o un cambio de modelo no la sustituyen."""
 
@@ -569,44 +425,19 @@ done
 
 _GUION_SONDA = _GUION_SONDA_BASE + "echo ok\n"
 
-# Lo que el agente de WSL usa: bash, sh y un `git push` a un bare local. Cada fallo nombra
-# la operacion (shell | git) y trae el codigo y la salida en una linea.
-_GUION_SHELL_WSL = r"""
-una_linea() { tr '\n' ' ' | cut -c1-300; }
-probar() {
-  clase="$1"; shift
-  salida=$("$@" 2>&1); rc=$?
-  if [ "$rc" != 0 ] || [ "$(printf %s "$salida" | tail -n 1)" != ok ]; then
-    echo "$clase:codigo $rc: $(printf %s "$salida" | una_linea)"; rm -rf "${carpeta:-/nonexistent}"; exit 7
-  fi
-}
-probar shell /bin/bash -c 'echo ok'
-probar shell /bin/sh -c 'echo ok'
-carpeta="$TMPDIR/git-sonda-$marca"
-rm -rf "$carpeta"
-if mkdir -p "$carpeta" 2>/dev/null; then :; else echo "temp-shell:$TMPDIR"; exit 4; fi
-probar git /bin/bash -c 'cd "$1" && git init -q a && git init -q --bare b.git && cd a && git -c user.email=sonda@motor -c user.name=sonda commit -q --allow-empty -m sonda && git push -q ../b.git HEAD:main && echo ok' sonda "$carpeta"
-rm -rf "$carpeta"
-echo ok
-"""
-
-_GUION_SONDA_WSL = _GUION_SONDA_BASE + _GUION_SHELL_WSL
-PLAZO_SONDA_WSL_S = 60
-
-
 def _sonda_de(marca: str) -> SondaEntorno:
     clase, _, detalle = marca.partition(":")
     if clase == "temp-cli":
         return SondaEntorno(
             False,
             f"no se puede crear el temporal del CLI en {detalle}",
-            "que el temporal del CLI caiga en una ruta escribible del aislamiento",
+            "que el temporal del CLI caiga en una ruta escribible del lanzamiento",
         )
     if clase == "temp-shell":
         return SondaEntorno(
             False,
             f"no se puede escribir en el temporal del shell ({detalle})",
-            "que el temporal del shell caiga en una ruta escribible del aislamiento",
+            "que el temporal del shell caiga en una ruta escribible del lanzamiento",
         )
     if clase == "espacio":
         return SondaEntorno(
@@ -620,17 +451,10 @@ def _sonda_de(marca: str) -> SondaEntorno:
             f"no se puede leer la fuente autorizada {detalle}",
             "que la fuente autorizada exista y se conceda al trabajador",
         )
-    if clase in ("shell", "git"):
-        quien = "bash" if clase == "shell" else "git"
-        return SondaEntorno(
-            False,
-            f"{quien} no funciona en la jaula de WSL ({detalle})",
-            f"que {quien} funcione dentro de la jaula de WSL con el entorno del agente",
-        )
     return SondaEntorno(
         False,
         f"la sonda del entorno no terminó: {detalle or 'sin detalle'}",
-        "que el aislamiento del host funcione",
+        "que el lanzamiento directo del host funcione",
     )
 
 
@@ -682,48 +506,28 @@ print("ok")
 """
 
 
-def _en_windows() -> bool:
-    return os.name == "nt"
-
-
-SHELL_DE_GIT = frozenset({"claude"})
-
-
-def usa_shell_de_git(agente: str | None) -> bool:
-    """Claude Code corre sus órdenes con el bash de Git. Decide el agente que se
-    va a lanzar en ese intento, no la lista de agentes autorizados."""
-    return agente in SHELL_DE_GIT
-
-
 def sondear(
     espacio: Path,
     runtime: Path,
     lecturas: tuple[Path, ...] = (),
-    agente: str | None = None,
 ) -> SondaEntorno:
     """Comprueba con comandos locales, y sin llamar a ningún modelo, las
     operaciones que el trabajador necesita al arrancar: su temporal de shell,
-    la escritura en el espacio y la lectura de las fuentes autorizadas. En
-    Windows corre dentro de la jaula. Un agente que usa el bash de Git (`usa_wsl`)
-    corre en la distro, así que su sonda es la de WSL, con bash, `sh` y un
-    `git push` a un bare local; el AppContainer, donde msys no arranca, no se
-    prueba para él porque no lo ejecuta.
+    la escritura en el espacio y la lectura de las fuentes autorizadas. Corre
+    con el mismo lanzamiento que el agente: directo, con su entorno.
 
-    No acredita lo que no pudo ejecutar: sin aislamiento disponible, o con una
-    fuente declarada que ya no está, el resultado es un fallo con su condición.
-    Nunca propaga una excepción: la llama el supervisor, que en la PC arranca
-    una vez desde una tarea programada y no se reinicia solo.
+    No acredita lo que no pudo ejecutar: con una fuente declarada que ya no
+    está, el resultado es un fallo con su condición. Nunca propaga una
+    excepción: la llama el supervisor, que en la PC arranca una vez desde una
+    tarea programada y no se reinicia solo.
     """
     import uuid
 
     espacio, runtime = Path(espacio).resolve(), Path(runtime).resolve()
     fuentes = tuple(Path(p).expanduser().resolve() for p in lecturas)
     marca = uuid.uuid4().hex[:16]
-    windows = _en_windows()
-    if usa_wsl(agente):
-        return _sondear_en_wsl(espacio, runtime, fuentes, marca)
     try:
-        if windows:
+        if os.name == "nt":
             argv_sonda = [
                 sys.executable,
                 "-c",
@@ -747,26 +551,34 @@ def sondear(
     except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
         return SondaEntorno(
             False,
-            f"no se pudo preparar el aislamiento: {type(exc).__name__}: {exc}",
-            "que el aislamiento del host esté disponible",
+            f"no se pudo preparar el lanzamiento: {type(exc).__name__}: {exc}",
+            "que el lanzamiento directo del host esté disponible",
         )
     try:
         entorno = dict(comando.entorno)
         entorno["MOTOR_SONDA_ESPACIO"] = str(espacio)
         entorno["MOTOR_SONDA_MARCA"] = marca
-        codigo, salida, error = _ejecutar_en_jaula(comando, espacio, entorno, plazo=90)
+        hecho = subprocess.run(
+            comando.argv,
+            cwd=str(espacio),
+            env=entorno,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+        )
     except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
         return SondaEntorno(
             False,
-            f"no se pudo ejecutar la sonda bajo el aislamiento: {type(exc).__name__}: {exc}",
-            "que el aislamiento del host esté disponible",
+            f"no se pudo ejecutar la sonda bajo el lanzamiento: {type(exc).__name__}: {exc}",
+            "que el lanzamiento directo del host esté disponible",
         )
-    return _resultado_de_sonda(codigo, salida, error)
+    return _resultado_de_sonda(hecho.returncode, hecho.stdout or "", hecho.stderr or "")
 
 
-def _resultado_de_sonda(
-    codigo: int, salida: str, error: str, wsl: bool = False
-) -> SondaEntorno:
+def _resultado_de_sonda(codigo: int, salida: str, error: str) -> SondaEntorno:
     lineas = [linea for linea in (salida or "").splitlines() if linea.strip()]
     if codigo == 0 and lineas and lineas[-1].strip() == "ok":
         return SondaEntorno(True)
@@ -776,109 +588,6 @@ def _resultado_de_sonda(
             False,
             f"la sonda del entorno no terminó: codigo {codigo}"
             + (f": {detalle}" if detalle else ""),
-            "que la jaula de WSL funcione" if wsl else "que el aislamiento del host funcione",
+            "que el lanzamiento directo del host funcione",
         )
     return _sonda_de(lineas[-1].strip())
-
-
-def _sondear_en_wsl(
-    espacio: Path, runtime: Path, fuentes: tuple[Path, ...], marca: str
-) -> SondaEntorno:
-    """La sonda de un agente que corre en WSL, dentro de la misma jaula en que correrá: temporal
-    del CLI y del shell, escritura en el espacio, lectura de las fuentes autorizadas, bash, sh
-    y un `git push` a un bare local. Con la misma regla que la de Windows: no acredita lo que
-    no pudo ejecutar y nunca propaga una excepción."""
-    try:
-        from motor.plataforma import jaula_wsl
-
-        runtime.mkdir(parents=True, exist_ok=True)
-        jaula = jaula_wsl.jaula_de(
-            espacio, runtime, lecturas=tuple(p for p in fuentes if p.exists())
-        )
-        entorno = {
-            "MOTOR_SONDA_ESPACIO": jaula_wsl.a_wsl(str(espacio)),
-            "MOTOR_SONDA_MARCA": marca,
-        }
-        cmd = ["/bin/sh", "-c", _GUION_SONDA_WSL, "sonda", *(jaula_wsl.a_wsl(str(p)) for p in fuentes)]
-        codigo, salida, error = jaula_wsl.ejecutar(
-            jaula, cmd, entorno, control=runtime.with_name(runtime.name + "-control"),
-            cwd=espacio, plazo=PLAZO_SONDA_WSL_S,
-        )
-    except Exception as exc:  # noqa: BLE001  la sonda informa, no propaga
-        return SondaEntorno(
-            False,
-            f"no se pudo ejecutar la sonda en la jaula de WSL: {type(exc).__name__}: {exc}",
-            "que la jaula de WSL esté disponible",
-        )
-    return _resultado_de_sonda(codigo, salida, error, wsl=True)
-
-
-def _herramientas_git(entorno: dict[str, str]) -> dict[str, str]:
-    """Git y los shells de su instalación, donde los busca Claude Code: el
-    `bin\\bash.exe` de la instalación que resuelve `git` por el PATH del agente,
-    y en su defecto el de la ruta habitual. Una ruta que no existe no se omite:
-    la sonda la prueba y falla con su nombre."""
-    from motor.plataforma.windows import BASH_GIT_POR_OMISION
-
-    git = shutil.which("git", path=entorno.get("PATH"))
-    raiz = Path(git).resolve().parent.parent if git else None
-    if raiz is not None and (raiz / "bin" / "bash.exe").is_file():
-        bash = raiz / "bin" / "bash.exe"
-    else:
-        bash = Path(BASH_GIT_POR_OMISION)
-    return {
-        "MOTOR_SONDA_SHELL": str(bash),
-        "MOTOR_SONDA_SH": str(bash.parent.parent / "usr" / "bin" / "sh.exe"),
-        "MOTOR_SONDA_GIT": git or str(bash.parent.parent / "cmd" / "git.exe"),
-    }
-
-
-def lanzar_en_jaula(
-    comando: ComandoAislado, cwd: Path, entorno: dict[str, str], *, plazo: float
-) -> tuple[int, str]:
-    codigo, salida, _error = _ejecutar_en_jaula(comando, cwd, entorno, plazo=plazo)
-    return codigo, salida
-
-
-def _ejecutar_en_jaula(
-    comando: ComandoAislado, cwd: Path, entorno: dict[str, str], *, plazo: float
-) -> tuple[int, str, str]:
-    """Corre `comando` como lo lanza el motor y devuelve código, salida y error.
-    En Windows eso es dentro del AppContainer (`aislar` solo lo describe);
-    `subprocess.run` lo ejecutaría sin jaula y la sonda daría por bueno un
-    entorno que el agente no tiene."""
-    if comando.mecanismo == "wsl-bwrap":  # jaula_wsl.MECANISMO
-        raise RuntimeError("un comando de la jaula de WSL no se ejecuta con subprocess.run")
-    if comando.mecanismo != "appcontainer":
-        hecho = subprocess.run(
-            comando.argv,
-            cwd=str(cwd),
-            env=entorno,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=plazo,
-        )
-        return hecho.returncode, hecho.stdout or "", hecho.stderr or ""
-    from motor import plataforma
-    from motor.plataforma.jaula_windows import crear
-
-    creado = crear(
-        comando.argv,
-        comando.jaula,
-        cwd=cwd,
-        env=entorno,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    p = creado.proceso
-    try:
-        creado.liberar()
-        salida, error = p.communicate(timeout=plazo)
-        return p.returncode, salida or "", error or ""
-    finally:
-        plataforma.matar_grupo(p)

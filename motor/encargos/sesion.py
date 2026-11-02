@@ -19,17 +19,6 @@ class Marca:
         self.proc = proc or {}
 
 
-def _en_distro(directorio: Path) -> bool:
-    """El intento corre dentro de WSL: Windows solo ve a `wsl.exe`, el resto vive en la distro."""
-    try:
-        spec = json.loads((Path(directorio) / "arranque.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    from motor.plataforma.jaula_wsl import MECANISMO
-
-    return spec.get("aislamiento") == MECANISMO
-
-
 def observar(directorio: Path, proc: dict | None) -> str:
     comprobador = comprobador_actual(directorio)
     if comprobador:
@@ -45,12 +34,6 @@ def observar(directorio: Path, proc: dict | None) -> str:
     estado = observar_arbol(Marca(directorio, proc))
     if estado != "ausente":
         return estado
-    if _en_distro(directorio):
-        from motor.plataforma import jaula_wsl
-
-        en_distro = jaula_wsl.estado_en_distro(directorio, jaula_wsl.distro())
-        if en_distro != "ausente":
-            return en_distro
     try:
         identidades = json.loads(
             (directorio / "arbol.json").read_text(encoding="utf-8")
@@ -68,10 +51,6 @@ def observar(directorio: Path, proc: dict | None) -> str:
                 return "vivo"
     except (OSError, ValueError, TypeError):
         pass
-    if os.name == "nt":
-        from motor.plataforma.jaula_windows import limpiar
-
-        limpiar(directorio)
     return estado
 
 
@@ -98,10 +77,6 @@ def herramienta_en_curso(directorio: Path) -> bool | None:
             if "modelo_en_curso" in datos and datos["modelo_en_curso"] is None:
                 return None
             return False
-        if _en_distro(directorio):
-            # Windows solo ve a wsl.exe: los hijos de la herramienta no se enumeran desde
-            # aqui. Una herramienta abierta en el flujo del agente cuenta como en curso.
-            return True
         try:
             agente = int((directorio / "agent.pid").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -110,7 +85,7 @@ def herramienta_en_curso(directorio: Path) -> bool | None:
         if actuales is None:
             return None
         if os.name == "nt":
-            from motor.plataforma.jaula_windows import imagen_proceso
+            from motor.plataforma.windows import imagen_proceso
 
             consola = (
                 Path(os.environ["SystemRoot"]) / "System32" / "conhost.exe"
@@ -137,7 +112,7 @@ def herramienta_en_curso(directorio: Path) -> bool | None:
 
 
 def _base_de(cwd: Path) -> Path | None:
-    """El trabajador del ciclo vive en base/espacio/<encargo>. Otro cwd no se enjaula aquí."""
+    """El trabajador del ciclo vive en base/espacio/<encargo>. Otro cwd no se administra aquí."""
     cwd = Path(cwd).resolve()
     if cwd.parent.name == "espacio":
         return cwd.parent.parent
@@ -187,7 +162,6 @@ def preparar_administrado(
         "cwd": str(cwd),
         "env": entorno_persistente(comando),
         "aislamiento": comando.mecanismo,
-        "jaula": comando.jaula,
         "ejecutable": comando.ejecutable,
         "base": str(_base_de(cwd)),
         "encargo": enc.id,
@@ -287,10 +261,6 @@ def cerrar(directorio: Path, proc: dict | None) -> str:
         if proc and int(ident.get("pid") or 0) == int(proc.get("pid") or 0):
             continue
         _cerrar_identidad(ident)
-    if _en_distro(directorio):
-        from motor.plataforma import jaula_wsl
-
-        jaula_wsl.cerrar_en_distro(directorio, jaula_wsl.distro())
     fin = time.time() + 2
     visto = observar_arbol(att)
     while visto == "vivo" and time.time() < fin:
