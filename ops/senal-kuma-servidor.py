@@ -10,8 +10,7 @@ del operador y se conserva; en la MacBook falta y se crea aquí.
 alta   respalda kuma.db una vez por día, deja los monitores push activos y conectados al aviso,
        reinicia Kuma y escribe en stdout `<clave> <token>` por monitor. Las claves extra que llegan
        en argv son las máquinas cuyo monitor de encargos hay que crear o reusar.
-baja   respalda, deja los monitores con active 0, reinicia Kuma y escribe `<máquina>-encargos` por
-       cada monitor de encargos gestionado que existía. No escribe tokens.
+baja   respalda, deja los monitores con active 0, reinicia Kuma. No escribe tokens.
 estado escribe `<clave> <active> <avisos> <señales>` por monitor; nunca lee config ni push_token.
 
 Kuma sigue corriendo todo el tiempo: se escribe con la base abierta (WAL) y busy_timeout de 30 s,
@@ -185,11 +184,6 @@ def alta(db: Path, extras: list[str] | None = None) -> None:
 def baja(db: Path) -> None:
     respaldar(db)
     con = conectar(db)
-    existentes = [
-        clave
-        for clave, nombre in MONITORES_ENCARGOS.items()
-        if con.execute("SELECT 1 FROM monitor WHERE name = ?", (nombre,)).fetchone()
-    ]
     con.execute("BEGIN IMMEDIATE")
     try:
         nombres = list(MONITORES.values()) + list(MONITORES_ENCARGOS.values())
@@ -206,8 +200,6 @@ def baja(db: Path) -> None:
     finally:
         con.close()
     reiniciar_kuma()
-    for clave in existentes:
-        print(f"{clave}-encargos")
 
 
 def estado(db: Path) -> None:
@@ -237,8 +229,8 @@ def estado(db: Path) -> None:
             """,
             (AVISO, nombre),
         ).fetchone()
-        if fila is not None:
-            print(f"{clave}-encargos", *tuple(fila))
+        if fila is not None or clave == "mac":
+            print(f"{clave}-encargos", *(tuple(fila) if fila else (0, 0, 0)))
     con.close()
 
 

@@ -12,7 +12,9 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DIR/lib.sh"
 . "$DIR/lib-kuma.sh"
 
-crear=""
+# El monitor de encargos de la MacBook es del script: se asegura en cada corrida para recrearlo si
+# alguien lo borró. En la Mini y la PC solo se crea si falta la dirección o si es la de planes.
+crear=" mac"
 fallos=0
 for m in mac mini pc; do
   linea_en "$m" asegurar_distinto .motor-encargos </dev/null >/dev/null 2>&1

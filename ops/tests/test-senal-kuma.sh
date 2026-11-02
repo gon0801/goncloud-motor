@@ -36,9 +36,12 @@ import sys
 from pathlib import Path
 raiz, accion, sub = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 f = raiz / sub / "secretos.env"
+marca = raiz / sub / ".senal-kuma-encargos"
 tok = sys.stdin.readline().strip() if accion == "poner" else ""
 original = f.read_text(encoding="utf-8").splitlines() if f.exists() else []
 linea = next((l for l in original if re.match(r"^\s*MOTOR_KUMA_URL=.", l)), None)
+if accion == "quitar" and sub == ".motor-encargos" and not marca.exists():
+    sys.exit(3)
 if accion in ("asegurar", "asegurar_distinto") and not linea:
     sys.exit(3)
 if accion == "asegurar_distinto":
@@ -56,6 +59,10 @@ if accion in ("asegurar", "asegurar_distinto"):
     lineas.append(linea)
 f.parent.mkdir(parents=True, exist_ok=True)
 f.write_text("\n".join(lineas) + ("\n" if lineas else ""), encoding="utf-8")
+if accion == "poner" and sub == ".motor-encargos":
+    marca.write_text("creado por ops/senal-kuma.sh\n", encoding="utf-8")
+if accion == "quitar" and sub == ".motor-encargos":
+    marca.unlink(missing_ok=True)
 PYEOF
 TODO="$S/todo.out"
 : >"$TODO"
@@ -251,6 +258,12 @@ contiene "checklist sin señal de encargos de la MacBook" "$S/salida" "de encarg
 latido "Motor de encargos de la MacBook" 5
 corre_y_guarda "checklist con las señales de los cuatro monitores pasa" 0 bash "$RAIZ/ops/senal-kuma-checklist.sh"
 
+# F6: si el monitor de encargos de la MacBook desaparece, el checklist no puede darlo por bueno.
+python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE monitor SET name = \"Motor de encargos de la MacBook (ausente)\" WHERE name = \"Motor de encargos de la MacBook\""); c.commit()' "$S/kuma.db"
+espera "checklist sin el monitor de encargos de la MacBook falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+contiene "checklist monitor de encargos ausente" "$S/salida" "el monitor de encargos de mac no existe o no está activo"
+python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE monitor SET name = \"Motor de encargos de la MacBook\" WHERE name = \"Motor de encargos de la MacBook (ausente)\""); c.commit()' "$S/kuma.db"
+
 # La primera señal puede tardar: el checklist la espera en vez de rendirse en la primera mirada.
 python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM heartbeat WHERE monitor_id IN (SELECT id FROM monitor WHERE name = \"Motor de la PC\")"); c.commit()' "$S/kuma.db"
 ( sleep 3; latido "Motor de la PC" 1 ) &
@@ -301,6 +314,15 @@ contiene "checklist mismo monitor" "$S/salida" "los dos secretos apuntan al mism
 [ "$?" = 6 ] || fallo "el escritor debe avisar que los dos secretos apuntan al mismo monitor para crear uno propio"
 cp "$S/mini-enc-ok" "$HOME_MINI/.motor-encargos/secretos.env"
 chmod 600 "$HOME_MINI/.motor-encargos/secretos.env"
+
+# F5: sin la marca de creación, el rollback no borra la dirección del supervisor del operador.
+(
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  HOME="$HOME_MINI" linea_en mini quitar .motor-encargos
+)
+[ "$?" = 3 ] || fallo "el rollback no debe borrar el secreto de encargos sin la marca de creación"
+grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" || fallo "la Mini perdió la dirección propia de su supervisor sin marca de creación"
 
 r0=$(reinicios)
 corre_y_guarda "rollback" 0 bash "$RAIZ/ops/senal-kuma-rollback.sh"

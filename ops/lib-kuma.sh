@@ -58,7 +58,9 @@ escritor_posix() {
 umask 077
 accion='$1'
 f="\$HOME/$2/secretos.env"; t="\$f.nuevo.\$\$"
+marca="\$HOME/$2/.senal-kuma-encargos"
 tok= linea=
+if [ "\$accion" = quitar ] && [ '$2' = .motor-encargos ] && [ ! -f "\$marca" ]; then exit 3; fi
 if [ "\$accion" = poner ]; then IFS= read -r tok; [ -n "\$tok" ] || exit 3; fi
 if [ "\$accion" = asegurar ] || [ "\$accion" = asegurar_distinto ]; then
   linea=\$(grep '^[[:space:]]*MOTOR_KUMA_URL=.' "\$f" 2>/dev/null | head -n 1)
@@ -76,6 +78,8 @@ if [ -s "\$t" ] && [ "\$(tail -c1 "\$t" | wc -l)" -eq 0 ]; then echo >>"\$t"; fi
 if [ "\$accion" = poner ]; then printf 'MOTOR_KUMA_URL=%s%s\n' '$KUMA_PUSH_BASE' "\$tok" >>"\$t"; fi
 if [ "\$accion" = asegurar ] || [ "\$accion" = asegurar_distinto ]; then printf '%s\n' "\$linea" >>"\$t"; fi
 chmod 600 "\$t" && mv "\$t" "\$f" || exit 5
+if [ "\$accion" = poner ] && [ '$2' = .motor-encargos ]; then : >"\$marca" && chmod 600 "\$marca" || exit 5; fi
+if [ "\$accion" = quitar ] && [ '$2' = .motor-encargos ]; then rm -f "\$marca"; fi
 SCRIPT
 }
 
@@ -92,6 +96,8 @@ if (\$accion -eq 'poner') { \$tok = [Console]::In.ReadLine(); if (-not \$tok) { 
 \$dir = Join-Path \$env:USERPROFILE \$sub
 \$f = Join-Path \$dir 'secretos.env'
 \$t = "\${f}.nuevo"
+\$marca = Join-Path \$dir '.senal-kuma-encargos'
+if (\$accion -eq 'quitar' -and \$sub -eq '.motor-encargos' -and -not (Test-Path -LiteralPath \$marca)) { exit 3 }
 \$linea = \$null
 if (\$accion -eq 'asegurar' -or \$accion -eq 'asegurar_distinto') {
   if (Test-Path -LiteralPath \$f) { \$linea = Get-Content -LiteralPath \$f -Encoding UTF8 | Where-Object { \$_ -cmatch '^\s*MOTOR_KUMA_URL=.' } | Select-Object -First 1 }
@@ -112,6 +118,8 @@ if (\$accion -eq 'poner') { \$lineas += ('MOTOR_KUMA_URL=$KUMA_PUSH_BASE' + \$to
 if (\$accion -eq 'asegurar' -or \$accion -eq 'asegurar_distinto') { \$lineas += \$linea }
 [IO.File]::WriteAllLines(\$t, [string[]]\$lineas)
 Move-Item -LiteralPath \$t -Destination \$f -Force
+if (\$accion -eq 'poner' -and \$sub -eq '.motor-encargos') { Set-Content -LiteralPath \$marca -Value 'creado por ops/senal-kuma.sh' }
+if (\$accion -eq 'quitar' -and \$sub -eq '.motor-encargos') { Remove-Item -LiteralPath \$marca -Force }
 SCRIPT
 }
 
