@@ -17,6 +17,8 @@ Kuma sigue corriendo todo el tiempo: se escribe con la base abierta (WAL) y busy
 y se reinicia con `docker restart`, nunca `docker stop`.
 """
 
+from __future__ import annotations
+
 import datetime
 import os
 import secrets
