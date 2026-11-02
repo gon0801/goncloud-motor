@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sale 0 solo si Kuma recibe de verdad la señal del motor de la MacBook, la Mini y la PC: Kuma corre,
-# los tres monitores están activos y conectados al aviso "Server Alerts" (activo), y cada uno tiene una
-# señal UP en los últimos 3 min. Kuma guarda heartbeat.time en UTC, igual que datetime('now') de sqlite
+# los monitores de planes de las tres máquinas y los de encargos que el script gestiona están activos
+# y conectados al aviso "Server Alerts" (activo), y cada uno tiene una señal UP en los últimos 3 min.
+# Kuma guarda heartbeat.time en UTC, igual que datetime('now') de sqlite
 # (medido en el servidor; ver el commit G.2), así que la comparación vive en la consulta, sin zonas de
 # por medio. Espera hasta MOTOR_KUMA_TOPE s (8 min) por la primera señal. Además: `motor doctor` dice
 # "configurada" en las tres máquinas y los dos secretos.env de la Mac y la Mini siguen en 600 con la
@@ -40,6 +41,15 @@ for clave in ("mac", "mini", "pc"):
         print(f"el monitor de {clave} no está conectado a un aviso Server Alerts activo")
     if not senales:
         print(f"el monitor de {clave} no tiene señal UP en los últimos 3 min")
+for clave in sorted(k for k in vistos if k.endswith("-encargos")):
+    maquina = clave[: -len("-encargos")]
+    activo, avisos, senales = vistos[clave]
+    if not activo:
+        print(f"el monitor de encargos de {maquina} no existe o no está activo")
+    if not avisos:
+        print(f"el monitor de encargos de {maquina} no está conectado a un aviso Server Alerts activo")
+    if not senales:
+        print(f"el monitor de encargos de {maquina} no tiene señal UP en los últimos 3 min")
 '
 }
 

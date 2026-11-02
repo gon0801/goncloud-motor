@@ -1,8 +1,17 @@
 """Lado servidor de la señal a Kuma. Se manda por stdin: `python3 - <kuma.db> <alta|baja|estado>`.
 
-alta   respalda kuma.db una vez por día, deja los monitores push del motor activos y conectados al
-       aviso, reinicia Kuma y escribe en stdout `<clave> <token>` por monitor.
-baja   respalda, deja los monitores con active 0, reinicia Kuma. No escribe tokens.
+Cada máquina tiene dos monitores: el del motor de planes (`Motor de la <máquina>`, token en
+~/.motor/secretos.env) y el del supervisor de encargos (`Motor de encargos de la <máquina>`, token
+en ~/.motor-encargos/secretos.env). Son monitores distintos: si compartieran token, el proceso vivo
+taparía la caída del otro. El de planes lo gestiona el script siempre. El de encargos se crea solo
+cuando el secreto del supervisor no tiene ya una dirección propia: en la Mini y la PC ese monitor es
+del operador y se conserva; en la MacBook falta y se crea aquí.
+
+alta   respalda kuma.db una vez por día, deja los monitores push activos y conectados al aviso,
+       reinicia Kuma y escribe en stdout `<clave> <token>` por monitor. Las claves extra que llegan
+       en argv son las máquinas cuyo monitor de encargos hay que crear o reusar.
+baja   respalda, deja los monitores con active 0, reinicia Kuma y escribe `<máquina>-encargos` por
+       cada monitor de encargos gestionado que existía. No escribe tokens.
 estado escribe `<clave> <active> <avisos> <señales>` por monitor; nunca lee config ni push_token.
 
 Kuma sigue corriendo todo el tiempo: se escribe con la base abierta (WAL) y busy_timeout de 30 s,
@@ -22,6 +31,11 @@ MONITORES = {
     "mini": "Motor de la Mini",
     "pc": "Motor de la PC",
     "mac": "Motor de la MacBook",
+}
+MONITORES_ENCARGOS = {
+    "mini": "Motor de encargos de la Mini",
+    "pc": "Motor de encargos de la PC",
+    "mac": "Motor de encargos de la MacBook",
 }
 PLANTILLA = "backup orbit"
 AVISO = "Server Alerts"
@@ -141,16 +155,21 @@ def asegurar_monitor(
     return token
 
 
-def alta(db: Path) -> None:
+def alta(db: Path, extras: list[str] | None = None) -> None:
     respaldar(db)
     con = conectar(db)
     tokens = {}
+    encargos = [c for c in (extras or []) if c in MONITORES_ENCARGOS]
     con.execute("BEGIN IMMEDIATE")
     try:
         aviso = id_aviso(con)
         base = copiado_de_plantilla(con, aviso)
         for clave, nombre in MONITORES.items():
             tokens[clave] = asegurar_monitor(con, nombre, aviso, base)
+        for clave in encargos:
+            tokens[f"{clave}-encargos"] = asegurar_monitor(
+                con, MONITORES_ENCARGOS[clave], aviso, base
+            )
         con.execute("COMMIT")
     except BaseException:
         if con.in_transaction:
@@ -166,12 +185,18 @@ def alta(db: Path) -> None:
 def baja(db: Path) -> None:
     respaldar(db)
     con = conectar(db)
+    existentes = [
+        clave
+        for clave, nombre in MONITORES_ENCARGOS.items()
+        if con.execute("SELECT 1 FROM monitor WHERE name = ?", (nombre,)).fetchone()
+    ]
     con.execute("BEGIN IMMEDIATE")
     try:
-        marcas = ", ".join("?" * len(MONITORES))
+        nombres = list(MONITORES.values()) + list(MONITORES_ENCARGOS.values())
+        marcas = ", ".join("?" * len(nombres))
         con.execute(
             f"UPDATE monitor SET active = 0 WHERE name IN ({marcas})",
-            list(MONITORES.values()),
+            nombres,
         )
         con.execute("COMMIT")
     except BaseException:
@@ -181,10 +206,12 @@ def baja(db: Path) -> None:
     finally:
         con.close()
     reiniciar_kuma()
+    for clave in existentes:
+        print(f"{clave}-encargos")
 
 
 def estado(db: Path) -> None:
-    con = conectar(db, True)
+    con = conectar(db, solo_lectura=True)
     for clave, nombre in MONITORES.items():
         fila = con.execute(
             """
@@ -198,10 +225,29 @@ def estado(db: Path) -> None:
             (AVISO, nombre),
         ).fetchone()
         print(clave, *(tuple(fila) if fila else (0, 0, 0)))
+    for clave, nombre in MONITORES_ENCARGOS.items():
+        fila = con.execute(
+            """
+            SELECT m.active AS active,
+              (SELECT count(*) FROM monitor_notification mn JOIN notification n ON n.id = mn.notification_id
+                WHERE mn.monitor_id = m.id AND n.name = ? AND n.active = 1) AS avisos,
+              (SELECT count(*) FROM heartbeat h
+                WHERE h.monitor_id = m.id AND h.status = 1 AND h.time >= datetime('now', '-3 minutes')) AS senales
+            FROM monitor m WHERE m.name = ? ORDER BY m.id LIMIT 1
+            """,
+            (AVISO, nombre),
+        ).fetchone()
+        if fila is not None:
+            print(f"{clave}-encargos", *tuple(fila))
     con.close()
 
 
 if __name__ == "__main__":
     os.umask(0o077)
-    db, modo = Path(sys.argv[1]), sys.argv[2]
-    {"alta": alta, "baja": baja, "estado": estado}[modo](db)
+    db = Path(sys.argv[1])
+    modo = sys.argv[2]
+    extras = sys.argv[3:]
+    if modo == "alta":
+        alta(db, extras)
+    else:
+        {"baja": baja, "estado": estado}[modo](db)

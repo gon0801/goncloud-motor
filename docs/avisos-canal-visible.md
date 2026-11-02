@@ -18,11 +18,13 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   porque un error de transporte puede traer la dirección o la clave del bot.
 - **De dónde sale la dirección de Kuma (sin variable nueva).** El supervisor de encargos lee `MOTOR_KUMA_URL` del
   `secretos.env` de su propia base (`reg.base`; en la Mini, `~/.motor-encargos/secretos.env`, con permisos 600), como
-  hoy. El daemon del modo planes lee el de `~/.motor/secretos.env`: cada proceso, su archivo, y por eso los dos procesos no se pisan en
-  el monitor. El supervisor **nunca** lee `~/.motor` ni hay respaldo allí. No se creó ninguna dirección ni secreto nuevo.
-  `ops/senal-kuma.sh` da de alta los monitores de la MacBook, la Mini y la PC y escribe `MOTOR_KUMA_URL` en los dos
-  `secretos.env` de cada máquina: `~/.motor` (el home del motor de planes) y `~/.motor-encargos` (el de la base del
-  supervisor). La Mac escribe en local, sin ssh a sí misma.
+  hoy. El daemon del modo planes lee el de `~/.motor/secretos.env`: cada proceso, su archivo y su monitor. Por eso
+  `ops/senal-kuma.sh` da de alta el monitor de planes de las tres máquinas y escribe su token en `~/.motor`, y
+  conserva la dirección propia del supervisor en `~/.motor-encargos` (el monitor de encargos que ya tiene la Mini y
+  la PC). En la MacBook, donde faltaba, crea el monitor «Motor de encargos de la MacBook» y escribe su token. Nunca el
+  mismo token en los dos: con el mismo monitor, el proceso vivo taparía la caída del otro. La Mac escribe en local, sin
+  ssh a sí misma. El supervisor **nunca** lee `~/.motor` ni hay respaldo allí. No se creó ninguna variable ni archivo
+  de secretos nuevo.
 - **"Canal caído" usa esa misma señal.** Con un canal caído, la señal de vida sale con `status=down` y el motivo
   (`N planes; canal <canal> caído desde <hora>: <último error>`), por la misma dirección; sin canal caído, `status=up`.
 - **Sin `MOTOR_KUMA_URL` en la base** (o con el archivo ilegible o con permisos abiertos), el supervisor no manda señal:

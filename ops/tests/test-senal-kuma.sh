@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # ops/senal-kuma.sh, senal-kuma-checklist.sh y senal-kuma-rollback.sh con ssh y docker falsos y una
-# base SQLite con las tablas reales de Kuma (kuma-esquema.sql). La Mac y la Mini corren su script en
-# un HOME falso; con pwsh, la PC corre el PowerShell de verdad con un USERPROFILE falso; sin pwsh,
+# base SQLite con las tablas reales de Kuma (kuma-esquema.sql). El motor de planes y el supervisor de
+# encargos tienen monitores distintos. La Mini y la PC ya traen la dirección del supervisor y se
+# conserva; la MacBook no la tiene y el script le crea su monitor. La Mac y la Mini corren su script
+# en un HOME falso; con pwsh, la PC corre el PowerShell de verdad con un USERPROFILE falso; sin pwsh,
 # un sustituto en Python prueba todo menos la escritura de la PC. Un uname y un hostname falsos
 # deciden si la Mac es local: con Linux va por ssh; con Darwin y el hostname de la Mini también va
 # por ssh; solo con Darwin y otro hostname es la MacBook y escribe en su HOME sin ssh a sí misma.
@@ -29,18 +31,31 @@ case "${HOME:-}" in
 esac
 FAKE
 cat >"$S/escribe-pc.py" <<'PYEOF'
+import re
 import sys
 from pathlib import Path
-raiz, accion, base = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+raiz, accion, sub = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+f = raiz / sub / "secretos.env"
 tok = sys.stdin.readline().strip() if accion == "poner" else ""
-for d in (raiz / ".motor", raiz / ".motor-encargos"):
-    f = d / "secretos.env"
-    lineas = f.read_text(encoding="utf-8").splitlines() if f.exists() else []
-    lineas = [l for l in lineas if not l.lstrip().startswith("MOTOR_KUMA_URL=")]
-    if accion == "poner":
-        lineas.append("MOTOR_KUMA_URL=" + base + tok)
-    d.mkdir(parents=True, exist_ok=True)
-    f.write_text("\n".join(lineas) + ("\n" if lineas else ""), encoding="utf-8")
+original = f.read_text(encoding="utf-8").splitlines() if f.exists() else []
+linea = next((l for l in original if re.match(r"^\s*MOTOR_KUMA_URL=.", l)), None)
+if accion in ("asegurar", "asegurar_distinto") and not linea:
+    sys.exit(3)
+if accion == "asegurar_distinto":
+    plan = raiz / ".motor" / "secretos.env"
+    plan_linea = None
+    if plan.exists():
+        plan_linea = next((l for l in plan.read_text(encoding="utf-8").splitlines() if re.match(r"^\s*MOTOR_KUMA_URL=.", l)), None)
+    token_de = lambda l: re.sub(r"[?#].*$", "", l.rsplit("/", 1)[-1])
+    if plan_linea and token_de(plan_linea) == token_de(linea):
+        sys.exit(6)
+lineas = [l for l in original if not l.lstrip().startswith("MOTOR_KUMA_URL=")]
+if accion == "poner":
+    lineas.append("MOTOR_KUMA_URL=" + sys.argv[4] + tok)
+if accion in ("asegurar", "asegurar_distinto"):
+    lineas.append(linea)
+f.parent.mkdir(parents=True, exist_ok=True)
+f.write_text("\n".join(lineas) + ("\n" if lineas else ""), encoding="utf-8")
 PYEOF
 TODO="$S/todo.out"
 : >"$TODO"
@@ -89,8 +104,9 @@ case "$host" in
         if ! command -v pwsh >/dev/null 2>&1; then
           _script="$(printf '%s' "${*##* }" | python3 -I -c 'import base64,sys; print(base64.b64decode(sys.stdin.read()).decode("utf-16-le"))')"
           _accion="$(printf '%s\n' "$_script" | sed -n "s/.*accion = '\([^']*\)'.*/\1/p" | head -1)"
+          _sub="$(printf '%s\n' "$_script" | sed -n "s/.*sub = '\([^']*\)'.*/\1/p" | head -1)"
           _base="$(printf '%s\n' "$_script" | sed -n "s/.*MOTOR_KUMA_URL=\([^']*\)'.*/\1/p" | grep -F http | head -1)"
-          exec python3 -I "$S/escribe-pc.py" "$HOME_PC" "$_accion" "$_base"
+          exec python3 -I "$S/escribe-pc.py" "$HOME_PC" "$_accion" "$_sub" "$_base"
         fi
         python3 -I -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode("utf-16-le"))' "${*##* }" >>"$FAKE_LOG"
         USERPROFILE="$HOME_PC" exec pwsh ${1#powershell } ;;
@@ -142,6 +158,8 @@ un_reinicio() { # un_reinicio <etapa> <cuenta antes>
   [ "$(( $(reinicios) - $2 ))" = 1 ] || fallo "$1: la corrida del servidor debe reiniciar Kuma exactamente una vez"
 }
 tokens() { sql "SELECT push_token FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC') ORDER BY name"; }
+tokens_encargos() { sql "SELECT push_token FROM monitor WHERE name='Motor de encargos de la MacBook'"; }
+todos_los_tokens() { tokens; tokens_encargos; }
 respaldo_de_antes() { # respaldo_de_antes <etiqueta>: el respaldo del día sigue siendo el de antes de los cambios
   [ "$(python3 -I -c 'import sqlite3,glob,sys; print(sqlite3.connect(glob.glob(sys.argv[1])[0]).execute("select count(*) from monitor").fetchone()[0])' "$S/kuma.db.antes-motor-03-*")" = 1 ] || fallo "$1: el respaldo de antes de motor-03 se pisó con los cambios"
 }
@@ -156,40 +174,46 @@ mkdir -p "$HOME_MAC/.motor-encargos"
 printf 'MOTOR_TELEGRAM_TOKEN=mac\nMOTOR_X=3\n' >"$HOME_MAC/.motor-encargos/secretos.env"
 printf '# nota de la señal\r\nMOTOR_TELEGRAM_TOKEN=pc\r\nMOTOR_X=2\r\nMOTOR_N=ñandú' >"$HOME_PC/.motor/secretos.env"
 mkdir -p "$HOME_PC/.motor-encargos"
-printf '# nota de la señal\r\nMOTOR_TELEGRAM_TOKEN=pc\r\nMOTOR_X=2\r\nMOTOR_N=ñandú' >"$HOME_PC/.motor-encargos/secretos.env"
+printf '# nota de la señal\r\nMOTOR_TELEGRAM_TOKEN=pc\r\nMOTOR_KUMA_URL=http://viejo/api/push/VIEJO-PC-ENCARGOS\r\nMOTOR_X=2\r\nMOTOR_N=ñandú' >"$HOME_PC/.motor-encargos/secretos.env"
 
 r0=$(reinicios)
 corre_y_guarda "primera corrida" 0 bash "$RAIZ/ops/senal-kuma.sh"
-[ "$(sql "SELECT count(*) FROM monitor WHERE type='push'")" = 4 ] || fallo "primera: debe haber 4 monitores push (la plantilla y los 3 nuevos)"
+[ "$(sql "SELECT count(*) FROM monitor WHERE type='push'")" = 5 ] || fallo "primera: debe haber 5 monitores push (la plantilla, 3 de planes y el de encargos de la MacBook)"
 [ "$(sql "SELECT count(*) FROM monitor WHERE name='Motor de la MacBook'")" = 1 ] || fallo "primera: el alta debe incluir el monitor Motor de la MacBook"
-[ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC') AND active=1 AND interval=300 AND retry_interval=60 AND maxretries=2 AND push_token GLOB '[A-Za-z0-9]*' AND length(push_token)=32 AND push_token NOT GLOB '*[^A-Za-z0-9]*'")" = 3 ] || fallo "primera: los tres monitores deben quedar activos, 300/60/2 y con token de 32 letras y números"
-[ "$(sql "SELECT count(*) FROM monitor_notification mn JOIN monitor m ON m.id=mn.monitor_id JOIN notification n ON n.id=mn.notification_id WHERE m.name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC') AND n.name='Server Alerts'")" = 3 ] || fallo "primera: los tres monitores deben estar conectados a Server Alerts"
-[ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC') AND type='push' AND user_id=1 AND timeout=48 AND description='copiame' AND accepted_statuscodes_json='[\"200-299\"]'")" = 3 ] || fallo "primera: los monitores nuevos deben copiar los campos de 'backup orbit'"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name='Motor de encargos de la MacBook'")" = 1 ] || fallo "primera: el alta debe incluir el monitor de encargos de la MacBook"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC','Motor de encargos de la MacBook') AND active=1 AND interval=300 AND retry_interval=60 AND maxretries=2 AND push_token GLOB '[A-Za-z0-9]*' AND length(push_token)=32 AND push_token NOT GLOB '*[^A-Za-z0-9]*'")" = 4 ] || fallo "primera: los cuatro monitores gestionados deben quedar activos, 300/60/2 y con token de 32 letras y números"
+[ "$(sql "SELECT count(*) FROM monitor_notification mn JOIN monitor m ON m.id=mn.monitor_id JOIN notification n ON n.id=mn.notification_id WHERE m.name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC','Motor de encargos de la MacBook') AND n.name='Server Alerts'")" = 4 ] || fallo "primera: los cuatro monitores gestionados deben estar conectados a Server Alerts"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC','Motor de encargos de la MacBook') AND type='push' AND user_id=1 AND timeout=48 AND description='copiame' AND accepted_statuscodes_json='[\"200-299\"]'")" = 4 ] || fallo "primera: los monitores nuevos deben copiar los campos de 'backup orbit'"
 [ "$(sql "SELECT push_token FROM monitor WHERE id=26")" = ORBITTOKENDEPRUEBA ] || fallo "primera: no debe tocar 'backup orbit'"
 compgen -G "$S/kuma.db.antes-motor-03-*" >/dev/null || fallo "primera: falta el respaldo kuma.db.antes-motor-03-<fecha>"
 respaldo_de_antes "primera"
 un_reinicio primera "$r0"
 tokens_1="$(tokens)"
+tokens_enc_1="$(tokens_encargos)"
+[ "$(printf '%s\n%s\n' "$tokens_1" "$tokens_enc_1" | sort -u | grep -c .)" = 4 ] || fallo "primera: los cuatro tokens gestionados deben ser distintos"
 
 verifica_archivos() { # verifica_archivos <etapa>
-  local m f1 f2 f url nombre
+  local m f1 f2 f url1 url2 plan enc
   for m in MAC MINI PC; do
     case "$m" in
-      MAC) f1="$HOME_MAC/.motor/secretos.env"; f2="$HOME_MAC/.motor-encargos/secretos.env"; nombre="Motor de la MacBook" ;;
-      MINI) f1="$HOME_MINI/.motor/secretos.env"; f2="$HOME_MINI/.motor-encargos/secretos.env"; nombre="Motor de la Mini" ;;
-      PC) f1="$HOME_PC/.motor/secretos.env"; f2="$HOME_PC/.motor-encargos/secretos.env"; nombre="Motor de la PC" ;;
+      MAC) f1="$HOME_MAC/.motor/secretos.env"; f2="$HOME_MAC/.motor-encargos/secretos.env"; plan="Motor de la MacBook"; enc="MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$(sql "SELECT push_token FROM monitor WHERE name='Motor de encargos de la MacBook'")" ;;
+      MINI) f1="$HOME_MINI/.motor/secretos.env"; f2="$HOME_MINI/.motor-encargos/secretos.env"; plan="Motor de la Mini"; enc="MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS" ;;
+      PC) f1="$HOME_PC/.motor/secretos.env"; f2="$HOME_PC/.motor-encargos/secretos.env"; plan="Motor de la PC"; enc="MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-PC-ENCARGOS" ;;
     esac
     for f in "$f1" "$f2"; do
       [ "$(tr -d '\r' <"$f" | grep -c '^MOTOR_KUMA_URL=')" = 1 ] || fallo "$1: $m debe tener una sola línea MOTOR_KUMA_URL en $f"
       tr -d '\r' <"$f" | grep -q '^MOTOR_X=' || fallo "$1: $m perdió otra línea de secretos.env en $f"
       tr -d '\r' <"$f" | grep -q '^MOTOR_TELEGRAM_TOKEN=' || fallo "$1: $m perdió MOTOR_TELEGRAM_TOKEN en $f"
-      url="$(tr -d '\r' <"$f" | grep '^MOTOR_KUMA_URL=')"
-      [ "$url" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$(sql "SELECT push_token FROM monitor WHERE name='$nombre'")" ] || fallo "$1: la URL de $m no es la del monitor en $f"
       if [ "$m" = PC ]; then
         grep -q 'nota de la señal' "$f" && grep -q 'MOTOR_N=ñandú' "$f" || fallo "$1: la PC debe conservar los caracteres no ASCII en $f"
       fi
       compgen -G "$(dirname "$f")/*nuevo*" >/dev/null && fallo "$1: quedó un temporal en $m"
     done
+    url1="$(tr -d '\r' <"$f1" | grep '^MOTOR_KUMA_URL=')"
+    url2="$(tr -d '\r' <"$f2" | grep '^MOTOR_KUMA_URL=')"
+    [ "$url1" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$(sql "SELECT push_token FROM monitor WHERE name='$plan'")" ] || fallo "$1: la URL de planes de $m no es la de su monitor en $f1"
+    [ "$url2" = "$enc" ] || fallo "$1: la URL de encargos de $m no es la esperada en $f2"
+    [ "$url1" != "$url2" ] || fallo "$1: $m tiene la misma URL en los dos secretos (daemon y supervisor comparten monitor)"
     if [ "$m" != PC ]; then
       [ "$(stat -c %a "$f1" 2>/dev/null || stat -f %Lp "$f1")" = 600 ] || fallo "$1: $f1 debe quedar en 600"
       [ "$(stat -c %a "$f2" 2>/dev/null || stat -f %Lp "$f2")" = 600 ] || fallo "$1: $f2 debe quedar en 600"
@@ -201,9 +225,10 @@ verifica_archivos "primera"
 r0=$(reinicios)
 corre_y_guarda "segunda corrida" 0 bash "$RAIZ/ops/senal-kuma.sh"
 un_reinicio segunda "$r0"
-[ "$(tokens)" = "$tokens_1" ] || fallo "segunda: debe reusar los tokens"
-[ "$(sql "SELECT count(*) FROM monitor WHERE type='push'")" = 4 ] || fallo "segunda: no debe duplicar monitores"
-[ "$(sql "SELECT count(*) FROM monitor_notification")" = 4 ] || fallo "segunda: no debe duplicar monitor_notification"
+[ "$(tokens)" = "$tokens_1" ] || fallo "segunda: debe reusar los tokens de planes"
+[ "$(tokens_encargos)" = "$tokens_enc_1" ] || fallo "segunda: debe reusar el token de encargos de la MacBook"
+[ "$(sql "SELECT count(*) FROM monitor WHERE type='push'")" = 5 ] || fallo "segunda: no debe duplicar monitores"
+[ "$(sql "SELECT count(*) FROM monitor_notification")" = 5 ] || fallo "segunda: no debe duplicar monitor_notification"
 [ "$(find "$S" -maxdepth 1 -name 'kuma.db.antes-motor-03-*' | wc -l | tr -d ' ')" = 1 ] || fallo "segunda: el respaldo es uno por día"
 respaldo_de_antes "segunda"
 verifica_archivos "segunda"
@@ -221,7 +246,10 @@ latido "Motor de la PC" 170
 espera "checklist sin señal de la MacBook falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
 contiene "checklist sin señal de la MacBook" "$S/salida" "de mac no tiene señal UP"
 latido "Motor de la MacBook" 5
-corre_y_guarda "checklist con las tres señales pasa" 0 bash "$RAIZ/ops/senal-kuma-checklist.sh"
+espera "checklist sin señal de encargos de la MacBook falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+contiene "checklist sin señal de encargos de la MacBook" "$S/salida" "de encargos de mac no tiene señal UP"
+latido "Motor de encargos de la MacBook" 5
+corre_y_guarda "checklist con las señales de los cuatro monitores pasa" 0 bash "$RAIZ/ops/senal-kuma-checklist.sh"
 
 # La primera señal puede tardar: el checklist la espera en vez de rendirse en la primera mirada.
 python3 -I -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM heartbeat WHERE monitor_id IN (SELECT id FROM monitor WHERE name = \"Motor de la PC\")"); c.commit()' "$S/kuma.db"
@@ -255,13 +283,35 @@ espera "checklist sin la línea de encargos en la Mac falla" '!0' bash "$RAIZ/op
 contiene "checklist sin línea de encargos en la Mac" "$S/salida" "sin MOTOR_KUMA_URL"
 bash "$RAIZ/ops/senal-kuma.sh" >/dev/null 2>&1
 
+# F1: el mismo token en los dos secretos hace que daemon y supervisor compartan monitor y uno tape la
+# caída del otro. El checklist lo tiene que ver.
+cp "$HOME_MINI/.motor-encargos/secretos.env" "$S/mini-enc-ok"
+grep -v '^MOTOR_KUMA_URL=' "$S/mini-enc-ok" >"$S/mini-enc"
+plan_url="$(grep '^MOTOR_KUMA_URL=' "$HOME_MINI/.motor/secretos.env")"
+printf 'MOTOR_KUMA_URL=http://otro-espejo/api/push/%s\n' "${plan_url##*/}" >>"$S/mini-enc"
+cp "$S/mini-enc" "$HOME_MINI/.motor-encargos/secretos.env"
+chmod 600 "$HOME_MINI/.motor-encargos/secretos.env"
+espera "checklist con los dos secretos en el mismo monitor falla" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+contiene "checklist mismo monitor" "$S/salida" "los dos secretos apuntan al mismo monitor"
+(
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  HOME="$HOME_MINI" linea_en mini asegurar_distinto .motor-encargos
+)
+[ "$?" = 6 ] || fallo "el escritor debe avisar que los dos secretos apuntan al mismo monitor para crear uno propio"
+cp "$S/mini-enc-ok" "$HOME_MINI/.motor-encargos/secretos.env"
+chmod 600 "$HOME_MINI/.motor-encargos/secretos.env"
+
 r0=$(reinicios)
 corre_y_guarda "rollback" 0 bash "$RAIZ/ops/senal-kuma-rollback.sh"
 un_reinicio rollback "$r0"
-[ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC') AND active=0")" = 3 ] || fallo "rollback: los tres monitores deben quedar con active 0"
-[ "$(sql "SELECT count(*) FROM monitor")" = 4 ] || fallo "rollback: no borra monitores"
-[ "$(tokens)" = "$tokens_1" ] || fallo "rollback: no cambia tokens"
-grep -q MOTOR_KUMA_URL "$HOME_MAC/.motor/secretos.env" "$HOME_MAC/.motor-encargos/secretos.env" "$HOME_MINI/.motor/secretos.env" "$HOME_MINI/.motor-encargos/secretos.env" "$HOME_PC/.motor/secretos.env" "$HOME_PC/.motor-encargos/secretos.env" && fallo "rollback: la línea debe salir de los dos secretos de las tres máquinas"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC','Motor de encargos de la MacBook') AND active=0")" = 4 ] || fallo "rollback: los cuatro monitores gestionados deben quedar con active 0"
+[ "$(sql "SELECT count(*) FROM monitor")" = 5 ] || fallo "rollback: no borra monitores"
+[ "$(tokens)" = "$tokens_1" ] || fallo "rollback: no cambia los tokens de planes"
+[ "$(tokens_encargos)" = "$tokens_enc_1" ] || fallo "rollback: no cambia el token de encargos de la MacBook"
+grep -q MOTOR_KUMA_URL "$HOME_MAC/.motor/secretos.env" "$HOME_MINI/.motor/secretos.env" "$HOME_PC/.motor/secretos.env" "$HOME_MAC/.motor-encargos/secretos.env" && fallo "rollback: la línea debe salir de los secretos de planes de las tres máquinas y del de encargos de la Mac"
+grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" || fallo "rollback: la Mini perdió la dirección propia de su supervisor"
+grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-PC-ENCARGOS' "$HOME_PC/.motor-encargos/secretos.env" || fallo "rollback: la PC perdió la dirección propia de su supervisor"
 for f in "$HOME_MAC/.motor/secretos.env" "$HOME_MAC/.motor-encargos/secretos.env" "$HOME_MINI/.motor/secretos.env" "$HOME_MINI/.motor-encargos/secretos.env" "$HOME_PC/.motor/secretos.env" "$HOME_PC/.motor-encargos/secretos.env"; do
   grep -q '^MOTOR_X=' "$f" || fallo "rollback: se perdió otra línea en $f"
 done
@@ -273,9 +323,10 @@ respaldo_de_antes "rollback"
 r0=$(reinicios)
 corre_y_guarda "otra corrida después del rollback" 0 bash "$RAIZ/ops/senal-kuma.sh"
 un_reinicio "tras rollback" "$r0"
-[ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC') AND active=1")" = 3 ] || fallo "tras rollback: los monitores deben volver a activarse"
-[ "$(tokens)" = "$tokens_1" ] || fallo "tras rollback: debe reusar los tokens"
-[ "$(sql "SELECT count(*) FROM monitor")" = 4 ] || fallo "tras rollback: no debe duplicar monitores"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name IN ('Motor de la MacBook','Motor de la Mini','Motor de la PC','Motor de encargos de la MacBook') AND active=1")" = 4 ] || fallo "tras rollback: los monitores gestionados deben volver a activarse"
+[ "$(tokens)" = "$tokens_1" ] || fallo "tras rollback: debe reusar los tokens de planes"
+[ "$(tokens_encargos)" = "$tokens_enc_1" ] || fallo "tras rollback: debe reusar el token de encargos de la MacBook"
+[ "$(sql "SELECT count(*) FROM monitor")" = 5 ] || fallo "tras rollback: no debe duplicar monitores"
 respaldo_de_antes "tras rollback"
 verifica_archivos "tras rollback"
 
@@ -294,7 +345,9 @@ for f in "$HOME_MAC/.motor/secretos.env" "$HOME_MAC/.motor-encargos/secretos.env
   [ "$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")" = 600 ] || fallo "$f no quedó en 600"
 done
 url="$(grep '^MOTOR_KUMA_URL=' "$HOME_MAC/.motor/secretos.env")"
-[ "$url" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$(sql "SELECT push_token FROM monitor WHERE name='Motor de la MacBook'")" ] || fallo "la URL local de la Mac no es la del monitor"
+[ "$url" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$(sql "SELECT push_token FROM monitor WHERE name='Motor de la MacBook'")" ] || fallo "la URL local de planes de la Mac no es la del monitor"
+url="$(grep '^MOTOR_KUMA_URL=' "$HOME_MAC/.motor-encargos/secretos.env")"
+[ "$url" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$(sql "SELECT push_token FROM monitor WHERE name='Motor de encargos de la MacBook'")" ] || fallo "la URL local de encargos de la Mac no es la del monitor"
 
 # La Mini también es Darwin: no se debe confundir con la MacBook. Se identifica por hostname y la
 # escritura de la Mac va por ssh a su HOME, no al de la Mini.
@@ -303,12 +356,15 @@ rm -rf "$HOME_MAC/.motor" "$HOME_MAC/.motor-encargos"
 corre_y_guarda "desde la Mini la Mac se escribe por ssh" 0 env FAKE_UNAME_S=Darwin HOME="$HOME_MINI" bash "$RAIZ/ops/senal-kuma.sh"
 grep -q '^mac ::' "$FAKE_LOG" || fallo "desde la Mini se debe hacer ssh a mac para escribir sus secretos"
 token_mac="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la MacBook'")"
-for f in "$HOME_MAC/.motor/secretos.env" "$HOME_MAC/.motor-encargos/secretos.env"; do
+token_mac_enc="$(sql "SELECT push_token FROM monitor WHERE name='Motor de encargos de la MacBook'")"
+for par in "$HOME_MAC/.motor/secretos.env $token_mac" "$HOME_MAC/.motor-encargos/secretos.env $token_mac_enc"; do
+  f=${par% *}; tok=${par##* }
   [ -f "$f" ] || { fallo "desde la Mini no se creó $f en la Mac"; continue; }
-  grep -q "^MOTOR_KUMA_URL=.*$token_mac$" "$f" || fallo "desde la Mini, $f no quedó con la URL del monitor de la MacBook"
+  grep -q "^MOTOR_KUMA_URL=.*$tok$" "$f" || fallo "desde la Mini, $f no quedó con la URL del monitor que le toca"
 done
 for f in "$HOME_MINI/.motor/secretos.env" "$HOME_MINI/.motor-encargos/secretos.env"; do
-  grep -q "^MOTOR_KUMA_URL=.*$token_mac$" "$f" && fallo "la Mini quedó con el token de la MacBook en $f"
+  grep -q "^MOTOR_KUMA_URL=.*$token_mac$" "$f" && fallo "la Mini quedó con el token de planes de la MacBook en $f"
+  grep -q "^MOTOR_KUMA_URL=.*$token_mac_enc$" "$f" && fallo "la Mini quedó con el token de encargos de la MacBook en $f"
 done
 
 # Sin -X utf8 la PC contesta en cp1252: la lectura con respaldo lo tiene que tolerar igual.
@@ -319,9 +375,9 @@ done
     senal_configurada pc
 ) || fallo "la señal se debe poder leer aunque la PC conteste en cp1252"
 
-for t in $tokens_1; do
+for t in $(todos_los_tokens); do
   grep -qF "$t" "$TODO" && fallo "una salida contiene el token $t"
-  grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene el token"
+  grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene el token $t"
 done
 grep -q "VIEJO" "$TODO" && fallo "una salida contiene un valor de secretos.env"
 
