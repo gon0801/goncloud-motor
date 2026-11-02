@@ -18,6 +18,7 @@ from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
     VERSION_LECTOR_DEEPSEEK,
+    _argv_del_intento,
     digest,
     firma_producto,
     hallazgos_deepseek,
@@ -917,8 +918,12 @@ def _barrer_encargos(
             ) and _devolver_correcciones(registro, enc, hora):
                 enc = registro.fold(encargo_id)
             elif _aplica_entrega(enc):
+                antes = len(registro.eventos(encargo_id))
                 enc = _paso_entrega(registro, enc, gh, hora)
-                sin_llm = True
+                sin_llm = (
+                    len(registro.eventos(encargo_id)) > antes
+                    or bool(enc.reanuda_en)
+                )
             elif _revision_aprobada_vigente(enc):
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
                 sin_llm = enc.estado == "terminado" or (
@@ -1750,10 +1755,21 @@ def _evidencia_revision(registro: Registro, enc: Encargo) -> str:
 
 def _producto_no_aprobado(enc: Encargo, espacio: Path):
     """La version vigente en disco si ya no es la aprobada. Ninguna si
-    coincide con el producto registrado y con la referencia aprobada."""
+    coincide con el producto registrado y con la referencia aprobada.
+
+    Un producto que perdio su `sha_git` (firma vieja que contaba archivos
+    ignorados) y cuyo arbol coincide con la version aprobada no abre otra
+    revision: la diferencia era de firma, no de producto.
+    """
     if enc.producto is None:
         return None
     actual = version_producto(espacio)
+    if (
+        not enc.producto.sha_git
+        and enc.revision_vigente is not None
+        and actual.firma == enc.revision_vigente.version
+    ):
+        return None
     referencias = {enc.producto.firma}
     if not _correccion_deepseek_conserva_aprobadas(enc):
         if enc.revisado is not None:
@@ -2569,14 +2585,15 @@ def _incorporar_responsable(
     if declaradas is not None:
         path = directorio / "observaciones.json"
         observacion = None
+        esperadas = _argv_del_intento(declaradas, directorio)
         if path.is_file():
             try:
                 candidata = json.loads(path.read_text(encoding="utf-8"))
             except ValueError:
                 candidata = None
-            if candidata and (
-                candidata.get("version") or candidata.get("producto")
-            ) == version.firma:
+            if candidata and _observacion_corresponde(
+                candidata, version.firma, esperadas
+            ):
                 observacion = candidata
         if observacion is None:
             iniciar_comprobacion(espacio, directorio)
@@ -2599,17 +2616,19 @@ def _incorporar_responsable(
                 )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
+        ident = digest({"comprobaciones": esperadas})[:16]
         registro.anotar(
             enc.id,
             {
                 "kind": "observacion_supervisor",
                 "data": {
                     "version": version.firma,
+                    "comprobaciones": observacion.get("comprobaciones") or [],
                     "ejecuciones": observacion.get("ejecuciones") or [],
                     "hora": hora,
                 },
             },
-            f"observacion:{enc.id}:{version.firma}",
+            f"observacion:{enc.id}:{version.firma}:{ident}",
         )
         enc = registro.fold(enc.id)
     if commit_entregado and not _deepseek_por_releer(enc):
@@ -4317,6 +4336,143 @@ def _esperar_checks_requeridos(
     )
 
 
+def _observacion_corresponde(
+    observacion, version: str, declaradas: list[dict]
+) -> bool:
+    """La observacion es de esta version y de estas comprobaciones declaradas."""
+    if not isinstance(observacion, dict):
+        return False
+    if (observacion.get("version") or observacion.get("producto")) != version:
+        return False
+    return observacion.get("comprobaciones") == declaradas
+
+
+def _observacion_de_la_version(
+    registro: Registro,
+    enc: Encargo,
+    version: str,
+    declaradas: list[dict],
+    directorio: Path,
+) -> dict | None:
+    for ev in reversed(registro.eventos(enc.id)):
+        if (
+            ev["kind"] == "observacion_supervisor"
+            and _observacion_corresponde(ev["data"], version, declaradas)
+        ):
+            return ev["data"]
+    path = directorio / "observaciones.json"
+    if not path.is_file():
+        return None
+    try:
+        candidata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if _observacion_corresponde(candidata, version, declaradas):
+        return candidata
+    return None
+
+
+def _fallas_de_observacion(
+    observacion: dict,
+) -> tuple[list[str], list[str]]:
+    """Separa una comprobacion en rojo de un instrumento que no pudo observar."""
+    rojas = []
+    instrumentos = []
+    error = str(observacion.get("error_instrumento") or "")
+    if error:
+        instrumentos.append(error)
+    for ejecucion in observacion.get("ejecuciones") or []:
+        if not isinstance(ejecucion, dict):
+            continue
+        objetivo = str(ejecucion.get("objetivo") or "comprobacion")
+        error = str(ejecucion.get("error_instrumento") or "")
+        if error:
+            instrumentos.append(f"{objetivo}: {error}")
+        elif ejecucion.get("rc") is None or str(ejecucion.get("rc")) != "0":
+            rojas.append(f"{objetivo}: rc {ejecucion.get('rc')}")
+    return rojas, instrumentos
+
+
+def _espera_por_observacion(
+    registro: Registro,
+    enc: Encargo,
+    espacio: Path,
+    directorio: Path,
+    hora: str,
+) -> Encargo | None:
+    """None si la version vigente ya tiene una observacion verde del comprobador.
+
+    Con comprobaciones declaradas, commit y push esperan a que el comprobador
+    registre su observacion sobre esta version. Si la observacion trae una
+    comprobacion en rojo, la version vuelve al responsable y no se publica.
+    """
+    try:
+        declaradas = leer_declaradas(interno_de(espacio))
+    except ValueError as exc:
+        _anotar_instrumento(
+            registro, enc, "comprobacion", str(exc),
+            "corregir .interno/comprobaciones.json sin tocar el producto",
+            hora, f"obs-publicacion-{enc.generacion}", clase="comprobaciones.json",
+        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "comprobaciones.json", str(exc),
+            "que .interno/comprobaciones.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir .interno/comprobaciones.json sin tocar el producto",
+                hora, f"comprobaciones-{enc.generacion}",
+            )
+        return registro.fold(enc.id)
+    if declaradas is None or enc.producto is None:
+        return None
+    version = version_producto(espacio).firma
+    esperadas = _argv_del_intento(declaradas, directorio)
+    observacion = _observacion_de_la_version(
+        registro, enc, version, esperadas, directorio
+    )
+    if observacion is None:
+        iniciar_comprobacion(espacio, directorio)
+        marcar_espera(
+            registro,
+            enc.id,
+            "esperando la observacion del comprobador sobre la version "
+            f"{version[:12]} antes de publicar",
+            _reanuda_en(30),
+            hora,
+        )
+        return registro.fold(enc.id)
+    fallas, instrumentos = _fallas_de_observacion(observacion)
+    if instrumentos:
+        causa = "la observacion del comprobador no se pudo usar: " + "; ".join(
+            instrumentos
+        )
+        _devolver(
+            registro,
+            enc,
+            "reparar_instrumento",
+            causa,
+            "reparar el comando de comprobacion sin tocar el producto",
+            hora,
+            f"observacion-instrumento-{version[:12]}",
+        )
+        return registro.fold(enc.id)
+    if not fallas:
+        return None
+    causa = "la comprobacion del supervisor esta en rojo: " + "; ".join(fallas)
+    _devolver(
+        registro,
+        enc,
+        "investigar",
+        causa,
+        "corregir la comprobacion en rojo antes de publicar; lo aprobado que "
+        "no cambio se conserva",
+        hora,
+        f"observacion-roja-{version[:12]}",
+    )
+    return registro.fold(enc.id)
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
@@ -4365,6 +4521,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     stale = _producto_no_aprobado(enc, espacio)
     if stale is not None:
         return _reabrir_revision(registro, enc, stale, hora)
+    espera = _espera_por_observacion(registro, enc, espacio, directorio, hora)
+    if espera is not None:
+        return espera
     sha, causa = _commit_push(enc, espacio)
     if causa:
         _anotar_instrumento(
@@ -4379,6 +4538,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         enc.entrega.base if enc.entrega.nivel in ("integrado", "desplegado")
         else _base_fase(enc)
     )
+    firma = enc.producto.firma if enc.producto is not None else ""
     for paso in ("commit", "push"):
         registro.anotar(
             enc.id,
@@ -4396,7 +4556,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "hora": hora,
                 },
             },
-            f"entrega:{enc.id}:{enc.fase_activa}:{paso}:{sha}",
+            f"entrega:{enc.id}:{enc.fase_activa}:{paso}:{sha}:{firma}",
         )
     if enc.pr_numero:
         # El PR ya registrado se consulta antes que cualquier operación nueva:
