@@ -373,27 +373,20 @@ def _autenticacion_expirada(spec: dict, fallo: str) -> bool:
 
 
 def crear_agente(spec: dict, d: Path, opciones: dict):
-    """Crea el proceso del agente según el aislamiento que describe `spec`."""
-    from motor.plataforma import jaula_wsl
+    """Crea el proceso del agente con lanzamiento directo, sin jaula.
 
-    if spec["aislamiento"] == jaula_wsl.MECANISMO:
-        # El Job de Windows contiene a wsl.exe; lo de dentro de la distro lo cierra el
-        # guardián, y `sesion.cerrar` lo mata además de forma explícita.
-        argv = jaula_wsl.argv_guardian(
-            spec["jaula"], spec["cmd"], spec["env"], control=d, cwd=Path(spec["cwd"])
-        )
-        return plataforma.crear_proceso(
-            argv,
-            plataforma.Propiedad.COMANDO_CONTENIDO,
-            **{**opciones, "env": jaula_wsl.entorno_windows()},
-        )
-    if os.name == "nt":
-        from motor.plataforma.jaula_windows import crear
-
-        return crear(spec["cmd"], spec["jaula"], control=d, **opciones)
-    # Lanzamiento directo: el wrapper heredó el entorno del supervisor al ser
-    # lanzado y `arranque.json` solo guarda lo que el motor añade o cambia.
+    El wrapper heredó el entorno del supervisor al ser lanzado y
+    `arranque.json` solo guarda lo que el motor añade o cambia. En Windows el
+    Job de la plataforma es solo para cerrar el árbol al terminar: sin límites
+    de memoria, de procesos ni de permisos.
+    """
     opciones = {**opciones, "env": {**os.environ, **spec["env"]}}
+    if os.name == "nt":
+        return plataforma.crear_proceso(
+            spec["cmd"],
+            plataforma.Propiedad.COMANDO_CONTENIDO,
+            **opciones,
+        )
     # Hereda el grupo ya identificado del wrapper. No hay una ventana de hijo huérfano.
     p = subprocess.Popen(spec["cmd"], start_new_session=False, **opciones)
     return plataforma.ProcesoCreado(p, "grupo")

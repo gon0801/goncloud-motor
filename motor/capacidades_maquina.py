@@ -1,7 +1,7 @@
 """Qué puede correr esta máquina y esta base, antes de mandar un encargo.
 
 `motor director capacidades --base B [--json]` mira Python, el mecanismo de
-jaula, los agentes instalados (presencia y versión; nunca autenticación ni
+lanzamiento, los agentes instalados (presencia y versión; nunca autenticación ni
 cuota), Java y TLC (si verificar.sh puede correr), los recursos de
 capacidades.json y si son usables, el canal de avisos, la presencia de
 MOTOR_KUMA_URL (nunca su valor) y el arranque con relanzamiento
@@ -63,80 +63,10 @@ def _primera(r) -> str:
 # ----------------------------------------------------------------- secciones
 
 
-def _jaula_windows_disponible() -> bool:
-    from motor.plataforma.jaula_windows import disponible
-
-    return disponible()
-
-
-def _psec_disponible() -> bool:
-    from motor.plataforma.psec_windows import disponible
-
-    return disponible()
-
-
-def _causa_jaula_wsl(agente: str) -> str:
-    from motor.plataforma import jaula_wsl
-
-    return jaula_wsl.causa_no_disponible(agente)
-
-
-def _usa_wsl(agente: str) -> bool:
-    from motor.encargos.aislamiento import usa_wsl
-
-    return usa_wsl(agente)
-
-
 def _jaula(correr) -> dict:
-    if sistema() == "windows":
-        # Los mismos sondeos que el motor: los agentes de shell corren en la
-        # jaula de WSL (distro) y los demás en la jaula de Windows (psec o
-        # AppContainer). Listar una distro no la da por buena.
-        filas = []
-        if _psec_disponible():
-            filas.append({"mecanismo": "psec", "estado": "ok",
-                          "detalle": "CreateProcessSecurityEnvironment disponible"})
-        elif _jaula_windows_disponible():
-            filas.append({"mecanismo": "appcontainer", "estado": "ok",
-                          "detalle": "AppContainer disponible"})
-        else:
-            filas.append({"mecanismo": "psec", "estado": "falta",
-                          "detalle": "ni psec ni AppContainer: la jaula de codex, grok, muse, "
-                          "kimi, opencode y qwen no está disponible"})
-        try:
-            r = correr(["wsl.exe", "-l", "-q"], 30)
-        except (OSError, subprocess.TimeoutExpired):
-            r = None
-        distro_nombre = ""
-        if r is not None and r.returncode == 0:
-            distros = [
-                linea.strip("\x00 ﻿\r\n")
-                for linea in r.stdout.decode("utf-16-le", errors="replace").splitlines()
-                if linea.strip("\x00 ﻿\r\n")
-            ]
-            if distros:
-                distro_nombre = distros[0]
-        causa_wsl = _causa_jaula_wsl("claude")
-        detalle_wsl = causa_wsl or (
-            f"distro WSL: {distro_nombre}" if distro_nombre else "distro WSL lista"
-        )
-        filas.append({"mecanismo": "wsl", "estado": "ok" if not causa_wsl else "falta",
-                      "detalle": detalle_wsl})
-        buenas = sum(1 for f in filas if f["estado"] == "ok")
-        if buenas == len(filas):
-            seccion = {"mecanismo": "psec+wsl", "estado": "ok",
-                       "detalle": "jaula de Windows y jaula de WSL disponibles"}
-        elif buenas:
-            seccion = {"mecanismo": "psec+wsl", "estado": "aviso",
-                       "detalle": "; ".join(f["detalle"] for f in filas if f["estado"] != "ok")}
-        else:
-            seccion = {"mecanismo": "psec+wsl", "estado": "falta",
-                       "detalle": "; ".join(f["detalle"] for f in filas)}
-        seccion["filas"] = filas
-        return seccion
-    # macOS y Linux: los agentes corren sin aislamiento, como el propio
-    # usuario, con el entorno completo (decisión del 2-nov). No se exige
-    # sandbox-exec; bubblewrap sigue siendo jaula solo dentro de la distro WSL.
+    del correr
+    # Todas las máquinas lanzan directo desde el 2-nov: los agentes trabajan
+    # como el usuario, con su entorno. No hay jaula que sondear.
     return {
         "mecanismo": "directo",
         "estado": "ok",
@@ -146,33 +76,8 @@ def _jaula(correr) -> dict:
 
 def _agentes(which) -> list[dict]:
     filas = []
-    en_windows = sistema() == "windows"
     for agente in sorted(ADAPTADORES):
         cliente = cliente_para(agente)
-        if en_windows and _usa_wsl(agente):
-            # El motor corre estos agentes dentro de la distro: cuentan la
-            # jaula y el ejecutable de allí, no el PATH de Windows.
-            causa = _causa_jaula_wsl(agente)
-            filas.append({
-                "agente": agente,
-                "estado": "ok" if not causa else "falta",
-                "detalle": f"{cliente} corre en la distro WSL (jaula y ejecutable de la distro)"
-                if not causa else f"jaula de WSL: {causa}",
-            })
-            continue
-        if en_windows:
-            # La misma puerta que agentes._disponible: según el adaptador, psec
-            # o AppContainer.
-            jaula_ok = (
-                _psec_disponible() if ADAPTADORES[agente].psec else _jaula_windows_disponible()
-            )
-            if not jaula_ok:
-                filas.append({
-                    "agente": agente,
-                    "estado": "falta",
-                    "detalle": "sin jaula de Windows para el agente (ni psec ni AppContainer)",
-                })
-                continue
         ruta = which(cliente)
         if not ruta:
             filas.append({
