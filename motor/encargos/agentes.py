@@ -12,11 +12,25 @@ from .catalogo_agentes import ADAPTADORES, cliente_para, modelo_canonico
 # El lanzamiento corre con --print: el proceso sale cuando el agente responde y
 # nadie lo despierta, asi que una tarea en segundo plano se queda sin dueno.
 # `Bash(run_in_background:true)` es una regla de parametro que niega esas
-# llamadas; `Monitor` a secas quita del registro de la sesion la herramienta
-# que se queda esperando lo que ocurre despues del turno. Las reglas de negacion
+# llamadas; a secas, cada nombre quita del registro de la sesion la herramienta
+# que espera o deja trabajo para despues del turno: Monitor (esperar), CronCreate
+# (agendar), ScheduleWakeup (despertar despues) y Workflow (equipos de agentes
+# en segundo plano, con run para reanudar despues). Las reglas de negacion
 # siguen vigentes bajo --dangerously-skip-permissions. El valor va junto y
 # antes de otro flag: --disallowedTools es variadica y se tragaria el prompt.
-PROHIBIDO_SEGUNDO_PLANO = "Bash(run_in_background:true),Monitor"
+PROHIBIDO_SEGUNDO_PLANO = (
+    "Bash(run_in_background:true),Monitor,CronCreate,ScheduleWakeup,Workflow"
+)
+
+# El subagente (Agent/Task) arranca en segundo plano por defecto y su resultado
+# llega en un turno posterior, asi que ninguna regla de --disallowedTools lo
+# cubre: un parametro omitido nunca coincide con una regla de parametro, y la
+# regla del nombre pelado apagaria el subagente entero. Medido en el 2.1.310 de
+# este host con una API local y documentado en env-vars: con esta variable el
+# esquema de Bash y del subagente deja de tener run_in_background, la llamada
+# explicita falla y el subagente corre en primer plano, dentro del turno.
+# suscripciones.preparar lo pone en el entorno del lanzamiento de claude.
+SIN_SEGUNDO_PLANO = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
 
 def _disponible(agente: str, generacion: Path | None = None) -> bool:

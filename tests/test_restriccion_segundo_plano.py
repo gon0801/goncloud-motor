@@ -1,11 +1,15 @@
 """El lanzamiento de claude no deja trabajo en segundo plano y el prompt del
 revisor lo dice: el turno termina al responder y la bateria va por ci.correr."""
 
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
-from motor.encargos import agentes
+from motor.encargos import agentes, suscripciones
+from motor.encargos.aislamiento import _entorno
 from motor.encargos.comprobacion import instrucciones_revision
 from motor.encargos.dominio import AlcanceRevision
 
@@ -35,8 +39,14 @@ class RestriccionSegundoPlano(unittest.TestCase):
                         self.assertIn("--session-id", argv)
                     posicion = argv.index("--disallowedTools")
                     regla = argv[posicion + 1]
-                    self.assertIn("Bash(run_in_background:true)", regla)
-                    self.assertIn("Monitor", regla)
+                    # Un solo argumento, separado por comas: la opcion es
+                    # variadica y un valor con espacios se comeria el prompt.
+                    self.assertNotIn(" ", regla)
+                    self.assertEqual(
+                        regla,
+                        "Bash(run_in_background:true),Monitor,CronCreate,"
+                        "ScheduleWakeup,Workflow",
+                    )
                     self.assertEqual(argv[posicion + 2], "--dangerously-skip-permissions")
                     self.assertTrue(argv[-1].startswith("Lee el pedido"))
 
@@ -45,6 +55,29 @@ class RestriccionSegundoPlano(unittest.TestCase):
         regla = argv[argv.index("--disallowedTools") + 1]
         self.assertNotEqual(regla.strip(), "Bash")
         self.assertIn("Monitor", regla.split(","))
+
+
+class EntornoDelLanzamiento(unittest.TestCase):
+    """El subagente (Agent/Task) arranca en segundo plano por defecto y ninguna
+    regla de --disallowedTools lo cubre: el entorno del lanzamiento trae
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, medida en el binario de este host."""
+
+    def _entorno_de_lanzamiento(self) -> dict[str, str]:
+        with tempfile.TemporaryDirectory() as t:
+            with mock.patch.object(
+                suscripciones,
+                "leer_cuenta",
+                return_value={
+                    "accessToken": "sk-ant-oat01-prueba",
+                    "expiresAt": (time.time() + 3600) * 1000,
+                },
+            ):
+                env = _entorno(Path(t), True, ["claude", "--print"], agente="claude")
+        return env
+
+    def test_el_entorno_del_lanzamiento_apaga_las_tareas_de_fondo(self):
+        env = self._entorno_de_lanzamiento()
+        self.assertEqual(env.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"), "1")
 
 
 class PromptRevisor(unittest.TestCase):
