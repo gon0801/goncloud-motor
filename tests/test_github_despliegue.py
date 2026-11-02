@@ -248,14 +248,29 @@ class ChecksTest(unittest.TestCase):
         v = gh.checks("o/r", 7, SHA, ())
         self.assertEqual(v.corridas_fallidas[0]["run_id"], "7")
 
-    def test_veredicto_sin_requeridos_exige_que_todo_termine_y_pase(self):
+    def test_sin_requeridos_una_corrida_que_corre_o_falla_cuenta(self):
+        """enc_25d22b9bfce242f9 cerró terminado con `windows` en rojo: con la
+        lista fija vacía, toda corrida que corre en el SHA entra al veredicto."""
         v = veredicto(SHA, (), [_run("ci", status="in_progress", conclusion=None)])
-        self.assertTrue(v.terminal)
-        self.assertTrue(v.green)
+        self.assertFalse(v.terminal)
+        self.assertFalse(v.green)
+        self.assertEqual(v.faltan, ("ci",))
+        self.assertEqual(v.en_marcha, ("ci",))
         v = veredicto(SHA, (), [_run("ci", conclusion="failure")])
         self.assertTrue(v.terminal)
+        self.assertFalse(v.green)
+        self.assertEqual(v.fallas, ("ci",))
+        self.assertEqual(len(v.corridas_fallidas), 1)
+
+    def test_sin_requeridos_skipped_y_neutral_no_cuentan(self):
+        v = veredicto(
+            SHA, (),
+            [_run("ci"), _run("CodeRabbit", conclusion="skipped", rid=2),
+             _run("lint", conclusion="neutral", rid=3)],
+            "",
+        )
+        self.assertTrue(v.terminal)
         self.assertTrue(v.green)
-        self.assertEqual(v.corridas_fallidas, ())
 
     def _fx(self, gh):
         t = Path(tempfile.mkdtemp(prefix="h-checks-"))

@@ -117,6 +117,11 @@ def veredicto(
     """Un check requerido "completa" cubre también una matriz "completa (1, 6)" … "completa (6, 6)":
     está terminado cuando todas sus partes terminaron, y verde cuando todas salieron bien.
 
+    No solo la lista fija cuenta: toda corrida que corre en el SHA entra al veredicto
+    (enc_25d22b9bfce242f9 cerró terminado con `windows` en rojo porque nadie lo tenía
+    como requerido). Un check se ignora por su conclusión, no por su nombre: salto del
+    borrador, `skipped` o `neutral` no cuentan; lo que corre o falla sí.
+
     Un check saltado cuenta solo si se saltó después de que el PR dejó el borrador (`listo_desde`,
     hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
     no prueba nada (MOTOR 01, PR #484); el salto a propósito de un PR listo sí (Orbit salta
@@ -133,9 +138,21 @@ def veredicto(
         if r.get("status") == "completed"
         and r.get("conclusion") not in ("success", "skipped", "neutral", None)
     )
-    estados_malos = tuple(
-        e.get("context", "") for e in estados if e.get("state") in ("failure", "error")
-    )
+    corren = []
+    for r in runs:
+        nombre = str(r.get("name") or "")
+        if (
+            not nombre
+            or _salto_del_borrador(r, listo_desde, relanzadas_set)
+            or (
+                r.get("status") == "completed"
+                and r.get("conclusion") in ("skipped", "neutral")
+            )
+            or any(nombre == c or nombre.startswith(c + " (") for c in requeridos)
+        ):
+            continue
+        corren.append(nombre)
+    requeridos = tuple(dict.fromkeys([*requeridos, *sorted(set(corren))]))
     if not requeridos:
         return ChecksVerdict(
             sha,

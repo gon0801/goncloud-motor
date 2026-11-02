@@ -4414,6 +4414,95 @@ def _esperar_checks_requeridos(
     )
 
 
+def _logs_de_fallidos(gh, repo: str, veredicto_ci) -> str:
+    """El log literal de cada corrida en rojo, como el modo planes con
+    `_detalle_rojo`: el responsable ve por qué falló el job, no solo su nombre.
+    Un log que no se pudo leer no frena la devolución: queda el nombre y la url."""
+    partes = []
+    for corrida in veredicto_ci.corridas_fallidas:
+        nombre = str(corrida.get("nombre") or "")
+        url = str(corrida.get("url") or "")
+        run_id = str(corrida.get("run_id") or "")
+        texto = ""
+        if run_id:
+            try:
+                texto = gh.log_fallido(repo, run_id)
+            except Exception:
+                texto = ""
+        if texto:
+            partes.append(f"log de {nombre} ({url}):\n{texto}".rstrip())
+        else:
+            partes.append(f"corrida en rojo: {nombre} ({url})".rstrip())
+    return "\n\n".join(partes)
+
+
+def _chequeo_previo_cierre(
+    registro: Registro, enc: Encargo, gh, espacio: Path, hora: str,
+    numero: int, sha: str,
+) -> Encargo | None:
+    """Lee los checks del SHA entregado antes de seguir hacia DeepSeek o el
+    cierre. None si están verdes. En rojo bloquea la entrega y devuelve el
+    trabajo con el nombre del job y su log literal; si algo sigue corriendo,
+    espera con relectura; si no se pueden leer, deja la espera anotada."""
+    inicio_vuelta = enc
+    try:
+        veredicto_ci = gh.checks(
+            enc.entrega.repo, numero, sha, _checks_extra(enc, espacio),
+            base_politica=enc.entrega.base,
+        )
+    except Exception as exc:
+        causa = f"no se pudieron leer los checks del PR #{numero}: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura de checks del mismo SHA",
+            hora, f"checks-leer-{sha[:12]}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return registro.fold(enc.id)
+    if not veredicto_ci.green:
+        if veredicto_ci.fallas:
+            fallas = sorted(str(x) for x in veredicto_ci.fallas)
+            causa_ci = "checks requeridos en rojo: " + ", ".join(fallas)
+            logs = _logs_de_fallidos(gh, enc.entrega.repo, veredicto_ci)
+            if logs:
+                causa_ci += "\n" + logs
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_bloqueada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "sha": sha,
+                        "causa": causa_ci,
+                        "fallas": fallas,
+                        "hora": hora,
+                    },
+                },
+                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}"
+                + _ronda_checks(registro, enc, sha),
+            )
+            enc = registro.fold(enc.id)
+            if hubo_avance(inicio_vuelta, enc):
+                _devolver(
+                    registro, enc, "investigar", causa_ci,
+                    "corregir los checks requeridos en rojo del PR de esta fase; "
+                    "lo aprobado que no cambio se conserva",
+                    hora, f"checks-{sha[:12]}",
+                )
+            else:
+                _sin_avance(
+                    registro, enc, causa_ci,
+                    "se corrigio y se volvio a publicar el PR, pero siguen en "
+                    "rojo los mismos checks requeridos",
+                    hora, f"checks-{sha[:12]}",
+                )
+        else:
+            _esperar_checks_requeridos(registro, enc, veredicto_ci, numero, sha, hora)
+        return registro.fold(enc.id)
+    return None
+
+
 def _observacion_corresponde(
     observacion, version: str, declaradas: list[dict]
 ) -> bool:
@@ -4564,6 +4653,16 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         and not _sha_final_sin_leer(enc, gh)
         and not (gh is None and _requiere_veredicto(enc))
     ):
+        if gh is not None and _requiere_veredicto(enc) and enc.pr_sha:
+            # El cierre por el atajo también mira los checks del head: DeepSeek
+            # pudo aprobar mientras una corrida seguía en marcha o un job se
+            # puso en rojo después de la lectura de la entrega (enc_25d22b9bfce242f9).
+            frenado = _chequeo_previo_cierre(
+                registro, enc, gh, _espacio(registro.base, enc.id), hora,
+                enc.pr_numero, enc.pr_sha,
+            )
+            if frenado is not None:
+                return frenado
         return _cerrar_con_veredicto(
             registro, enc, gh, _espacio(registro.base, enc.id),
             _directorio(registro.base, enc.id), hora,
@@ -4840,58 +4939,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     inicio_vuelta = enc
-    try:
-        veredicto_ci = gh.checks(
-            enc.entrega.repo, numero, sha, _checks_extra(enc, espacio),
-            base_politica=enc.entrega.base,
-        )
-    except Exception as exc:
-        causa = f"no se pudieron leer los checks del PR #{numero}: {exc}"
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "reintentar la lectura de checks del mismo SHA",
-            hora, f"checks-leer-{sha[:12]}",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-        return registro.fold(enc.id)
-    if not veredicto_ci.green:
-        if veredicto_ci.fallas:
-            fallas = sorted(str(x) for x in veredicto_ci.fallas)
-            causa_ci = "checks requeridos en rojo: " + ", ".join(fallas)
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "entrega_bloqueada",
-                    "data": {
-                        "fase": enc.fase_activa,
-                        "intento": enc.intento,
-                        "sha": sha,
-                        "causa": causa_ci,
-                        "fallas": fallas,
-                        "hora": hora,
-                    },
-                },
-                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}"
-                + _ronda_checks(registro, enc, sha),
-            )
-            enc = registro.fold(enc.id)
-            if hubo_avance(inicio_vuelta, enc):
-                _devolver(
-                    registro, enc, "investigar", causa_ci,
-                    "corregir los checks requeridos en rojo del PR de esta fase; "
-                    "lo aprobado que no cambio se conserva",
-                    hora, f"checks-{sha[:12]}",
-                )
-            else:
-                _sin_avance(
-                    registro, enc, causa_ci,
-                    "se corrigio y se volvio a publicar el PR, pero siguen en "
-                    "rojo los mismos checks requeridos",
-                    hora, f"checks-{sha[:12]}",
-                )
-        else:
-            _esperar_checks_requeridos(registro, enc, veredicto_ci, numero, sha, hora)
-        return registro.fold(enc.id)
+    frenado = _chequeo_previo_cierre(registro, enc, gh, espacio, hora, numero, sha)
+    if frenado is not None:
+        return frenado
     fase_ci = enc.fase_actual
     if fase_ci is not None and fase_ci.fallas_checks:
         enc = _anotar_checks_verdes(registro, enc, numero, sha, hora)
