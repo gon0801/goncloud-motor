@@ -28,6 +28,7 @@ from motor.encargos.catalogo_agentes import ADAPTADORES, cliente_para
 HOME_MOTOR = Path.home() / ".motor"
 ETIQUETAS_LAUNCHD = ("com.goncloud.motor", "com.goncloud.motor-encargos")
 LLAVE_RUN = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
+ENTORNO_HKCU = r"HKCU\Environment"
 NOMBRE_LLAVE = "GoncloudMotorEncargos"
 VIGILANTE = "iniciar_encargos_pc.py"
 TOKEN_ENV = "MOTOR_TELEGRAM_TOKEN"
@@ -216,8 +217,20 @@ def _agentes(which) -> list[dict]:
     return filas
 
 
+def _variable_persistente(nombre: str, correr) -> str:
+    """El valor persistente de una variable de usuario (HKCU\\Environment),
+    donde escribe setx: existe en las consolas que se abran después, no en la
+    que corrió prepara_pc. Sin esto, el reporte corría en la misma consola que
+    setx y marcaba java_tlc falta justo después de dejarlo (h_887b7ff6)."""
+    return _leer_registro(ENTORNO_HKCU, nombre, correr)
+
+
 def _java_tlc(correr, which) -> dict:
     jar = os.environ.get("TLA2TOOLS", "")
+    persistente = False
+    if not jar and sistema() == "windows":
+        jar = _variable_persistente("TLA2TOOLS", correr)
+        persistente = bool(jar)
     if not jar:
         if which("mise"):
             return {
@@ -230,14 +243,20 @@ def _java_tlc(correr, which) -> dict:
         }
     if not Path(jar).is_file():
         return {"estado": "falta", "detalle": f"TLA2TOOLS apunta a {jar} y no existe"}
-    java_cmd = os.environ.get("JAVA") or "java"
+    java_cmd = os.environ.get("JAVA") or ""
+    if not java_cmd and sistema() == "windows":
+        java_cmd = _variable_persistente("JAVA", correr)
+    java_cmd = java_cmd or "java"
     try:
         r = correr([java_cmd, "-version"], 15)
     except (OSError, subprocess.TimeoutExpired):
         return {"estado": "falta", "detalle": f"java ({java_cmd}) no corre"}
     if r.returncode != 0:
         return {"estado": "falta", "detalle": f"java ({java_cmd}) terminó con código {r.returncode}"}
-    return {"estado": "ok", "detalle": f"{_primera(r)}; tla2tools en {jar}"}
+    detalle = f"{_primera(r)}; tla2tools en {jar}"
+    if persistente:
+        detalle += " (HKCU\\Environment: vale en las consolas nuevas, no en esta)"
+    return {"estado": "ok", "detalle": detalle}
 
 
 def _recursos(base: Path, correr, which) -> tuple[str, list[dict]]:

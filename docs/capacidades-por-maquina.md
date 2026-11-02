@@ -37,7 +37,10 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   antes de buscar el binario.
 - `java_tlc`: si `verificacion/inspeccion/verificar.sh` puede correr aquí. Con `TLA2TOOLS`
   y Java utilizable, o con mise en PATH (verificar.sh instala las herramientas solo), está;
-  si no, un encargo de verificación formal no puede ir a esta máquina.
+  si no, un encargo de verificación formal no puede ir a esta máquina. En Windows también
+  mira las variables de usuario persistentes (`HKCU\Environment`, donde escribe `setx`):
+  valen en las consolas que se abran después, no en la que corrió `prepara_pc.py`, y el
+  reporte lo dice cuando las toma de ahí.
 - `recursos`: los recursos de `capacidades.json` de la base y si son usables: un sqlite se
   abre en solo lectura y se le hace una consulta mínima; un remoto por fichero exige su
   `raiz` presente y legible; un `ci` se sondea con `gh repo view` contra su repo (usa la

@@ -431,6 +431,66 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         self.assertTrue(capturadas)
         self.assertTrue(all("HKCU:" in g for g in capturadas), capturadas)
 
+    def test_java_tlc_lee_el_entorno_persistente_de_windows(self):
+        """h_887b7ff6: setx escribe HKCU\\Environment y eso existe en las
+        consolas que se abran después, no en la que corrió prepara_pc. El
+        reporte corre en la misma consola que setx y sin esto marcaba
+        java_tlc falta justo después de dejarlo."""
+        import re as _re
+
+        jar = self.tmp / "tla2tools.jar"
+        jar.write_bytes(b"jar")
+        java = self.tmp / "java.exe"
+        java.write_bytes(b"MZ")
+
+        def correr(argv, timeout=20):
+            class R:
+                returncode = 0
+                stdout = b""
+                stderr = b""
+
+            r = R()
+            if argv[0] == "powershell":
+                guion = argv[-1]
+                clave = _re.search(r"-LiteralPath '([^']+)'", guion).group(1)
+                nombre = _re.search(r"\$p\.(\w+);", guion).group(1)
+                if clave == "HKCU:" + cm.ENTORNO_HKCU[4:] and nombre == "TLA2TOOLS":
+                    r.stdout = str(jar).encode("utf-8") + b"\n"
+                elif clave == "HKCU:" + cm.ENTORNO_HKCU[4:] and nombre == "JAVA":
+                    r.stdout = str(java).encode("utf-8") + b"\n"
+                else:
+                    r.returncode = 1
+                return r
+            if argv[:1] == [str(java)]:
+                r.stderr = b'openjdk version "25" 2025-10-21\n'
+                return r
+            r.returncode = 1
+            return r
+
+        with mock.patch.object(cm, "sistema", lambda: "windows"), mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            fila = cm._java_tlc(correr, lambda nombre: None)
+        self.assertEqual(fila["estado"], "ok")
+        self.assertIn("tla2tools", fila["detalle"])
+        self.assertIn("HKCU", fila["detalle"])
+
+    def test_java_tlc_sin_nada_en_windows_sigue_en_falta(self):
+        def correr(argv, timeout=20):
+            class R:
+                returncode = 1
+                stdout = b""
+                stderr = b""
+
+            return R()
+
+        with mock.patch.object(cm, "sistema", lambda: "windows"), mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            fila = cm._java_tlc(correr, lambda nombre: None)
+        self.assertEqual(fila["estado"], "falta")
+        self.assertIn("sin TLA2TOOLS", fila["detalle"])
+
     def test_arranque_windows_con_vigilante_inexistente_es_falta(self):
         valor = '"C:\\py\\python.exe" -B "C:\\borrado\\iniciar_encargos_pc.py"'
         with mock.patch.object(cm, "sistema", lambda: "windows"):
