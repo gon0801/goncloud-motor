@@ -152,17 +152,13 @@ def _epoch_lstart(texto: str) -> int | None:
     try:
         h, m, s = (int(x) for x in hora.split(":"))
         return int(
-            datetime(
-                int(anio), _MESES_LSTART[mes], int(dia), h, m, s
-            ).timestamp()
+            datetime(int(anio), _MESES_LSTART[mes], int(dia), h, m, s).timestamp()
         )
     except (KeyError, ValueError, OverflowError):
         return None
 
 
-def instantanea_procesos(
-    lectura=None,
-) -> dict[int, tuple[int, int | None]] | None:
+def instantanea_procesos(lectura=None) -> dict[int, tuple[int, int | None]] | None:
     """PID -> (PPID, epoch de creación). None si no se pudo leer la lista."""
     if lectura is not None:
         salida = lectura()
