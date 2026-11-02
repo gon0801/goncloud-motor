@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Sale 0 solo si Kuma recibe de verdad la señal del motor de la Mini y de la PC: Kuma corre, los dos
-# monitores están activos y conectados al aviso "Server Alerts" (activo), y cada uno tiene una señal UP
-# en los últimos 3 min. Kuma guarda heartbeat.time en UTC, igual que datetime('now') de sqlite (medido
-# en el servidor; ver el commit G.2), así que la comparación vive en la consulta, sin zonas de por medio.
-# Espera hasta MOTOR_KUMA_TOPE s (8 min) por la primera señal. Además: `motor doctor` dice "configurada"
-# en las dos máquinas y secretos.env de la Mini sigue en 600. Nunca lee config ni push_token.
+# Sale 0 solo si Kuma recibe de verdad la señal del motor de la MacBook, la Mini y la PC: Kuma corre,
+# los monitores de planes de las tres máquinas y los de encargos que el script gestiona están activos
+# y conectados al aviso "Server Alerts" (activo), y cada uno tiene una señal UP en los últimos 3 min.
+# Kuma guarda heartbeat.time en UTC, igual que datetime('now') de sqlite
+# (medido en el servidor; ver el commit G.2), así que la comparación vive en la consulta, sin zonas de
+# por medio. Espera hasta MOTOR_KUMA_TOPE s (8 min) por la primera señal. Además: `motor doctor` dice
+# "configurada" en las tres máquinas y los dos secretos.env de la Mac y la Mini siguen en 600 con la
+# línea puesta. Nunca lee config ni push_token.
 set -uo pipefail
 export LC_ALL=C
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,7 +33,7 @@ for linea in sys.stdin:
     p = linea.split()
     if len(p) == 4:
         vistos[p[0]] = [int(x) for x in p[1:]]
-for clave in ("mini", "pc"):
+for clave in ("mac", "mini", "pc"):
     activo, avisos, senales = vistos.get(clave, [0, 0, 0])
     if not activo:
         print(f"el monitor del motor de {clave} no existe o no está activo")
@@ -39,6 +41,15 @@ for clave in ("mini", "pc"):
         print(f"el monitor de {clave} no está conectado a un aviso Server Alerts activo")
     if not senales:
         print(f"el monitor de {clave} no tiene señal UP en los últimos 3 min")
+for clave in sorted(k for k in vistos if k.endswith("-encargos")):
+    maquina = clave[: -len("-encargos")]
+    activo, avisos, senales = vistos[clave]
+    if not activo:
+        print(f"el monitor de encargos de {maquina} no existe o no está activo")
+    if not avisos:
+        print(f"el monitor de encargos de {maquina} no está conectado a un aviso Server Alerts activo")
+    if not senales:
+        print(f"el monitor de encargos de {maquina} no tiene señal UP en los últimos 3 min")
 '
 }
 
@@ -50,14 +61,17 @@ while :; do
 done
 [ -z "$fallas" ] || while IFS= read -r l; do problemas+=("$l"); done <<<"$fallas"
 
-for m in mini pc; do
+for m in mac mini pc; do
   senal_configurada "$m" || problemas+=("$m: motor doctor no dice '$SENAL_OK'")
 done
-modo="$(corre mini 'stat -c %a "$HOME/.motor/secretos.env" 2>/dev/null || stat -f %Lp "$HOME/.motor/secretos.env"' x </dev/null 2>/dev/null | tr -d '[:space:]')"
-[ "$modo" = 600 ] || problemas+=("mini: secretos.env no está en 600 (modo: ${modo:-desconocido})")
+for m in mac mini; do
+  while IFS= read -r l; do
+    [ -z "$l" ] || problemas+=("$m: $l")
+  done < <(revisa_secretos "$m" </dev/null 2>/dev/null)
+done
 
 if [ "${#problemas[@]}" -gt 0 ]; then
   printf 'checklist: %s\n' "${problemas[@]}" >&2
   exit 1
 fi
-echo "checklist: Kuma recibe la señal del motor de la Mini y de la PC"
+echo "checklist: Kuma recibe la señal del motor de la MacBook, de la Mini y de la PC"
