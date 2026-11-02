@@ -13,8 +13,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from motor.encargos import comprobacion, fases, necesidades
+from motor.encargos import ciclo, comprobacion, fases, necesidades, transporte
 from types import SimpleNamespace
+from unittest import mock
 
 from motor.encargos.ciclo import _pedidos_efecto, _resultado_desde_fold
 from motor.encargos.comprobacion import interno_de
@@ -99,6 +100,39 @@ class JsonDelAgenteConBom(unittest.TestCase):
         observacion, juicio = _resultado_desde_fold(RegistroSinEventos(), enc, directorio)
         self.assertEqual(juicio, {"version": "v1", "veredicto": "aprobado"})
         self.assertEqual(observacion, {"version": "v1"})
+
+    def test_juicio_con_bom_al_soltar_el_conductor(self) -> None:
+        # _soltar_conductor lee el juicio para saber si el revisor ya aprobo. Si aprobo,
+        # primero pregunta a la autoridad si el encargo termino y no suelta al conductor
+        # mientras siga corriendo. Con utf-8 el juicio con BOM fallaba en silencio y el
+        # conductor se soltaba con una aprobacion en camino.
+        directorio = Path(self._tmp.name) / "intento"
+        directorio.mkdir()
+        resultado = directorio / "resultado.json"
+        _escribir_con_bom(resultado, {"version": "v1", "veredicto": "aprobado"})
+        (directorio / "revision.json").write_text(
+            json.dumps({"resultado": str(resultado)}), encoding="utf-8"
+        )
+        ops: list[str] = []
+
+        def operar(_base, mensaje, timeout=30):
+            ops.append(mensaje["op"])
+            if mensaje["op"] == "ver":
+                return {"alcanzada": True, "salida": {"estado": "corriendo"}}
+            return {"alcanzada": True, "salida": {"cerrado": True}}
+
+        enc = SimpleNamespace(
+            id="enc_prueba", estado="corriendo", candidato=None, conductor="tok"
+        )
+        registro = SimpleNamespace(base=Path(self._tmp.name))
+        with mock.patch.object(transporte, "cargar", return_value={}), mock.patch.object(
+            transporte, "operar", operar
+        ), mock.patch.object(ciclo, "_directorio", return_value=directorio), mock.patch.object(
+            ciclo, "_revision_aprobada_vigente", return_value=False
+        ):
+            soltado = ciclo._soltar_conductor(registro, enc, "2026-11-02T00:00:00Z")
+        self.assertEqual(ops, ["ver"])
+        self.assertFalse(soltado)
 
 
 if __name__ == "__main__":
