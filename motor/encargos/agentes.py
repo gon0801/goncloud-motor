@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import uuid
 from pathlib import Path
 
 from .catalogo_agentes import ADAPTADORES, cliente_para, modelo_canonico
@@ -85,22 +86,6 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
         return os.name != "nt"
     if agente not in ADAPTADORES:
         return False
-    from .aislamiento import usa_wsl
-
-    if usa_wsl(agente):
-        # El agente corre en la distro: cuentan su jaula, su ejecutable y su suscripcion
-        # de alli, no los de Windows.
-        from motor.plataforma import jaula_wsl
-
-        return jaula_wsl.causa_no_disponible(agente) == ""
-    if os.name == "nt":
-        if ADAPTADORES[agente].psec:
-            from motor.plataforma.psec_windows import disponible
-        else:
-            from motor.plataforma.jaula_windows import disponible
-
-        if not disponible():
-            return False
     if resolver_binario(agente, generacion) is None:
         return False
     if agente == "codex":
@@ -209,6 +194,13 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             if (enc.rol or "responsable") == "revisor"
             else enc.sesion_responsable
         )
+        # Cada intento que no reanuda estrena id: repetir el de un intento
+        # fallido hace que Grok lo rechace con "Session ID already in use".
+        identidad = (
+            previa
+            if sesion_modo == "reanudada" and previa
+            else str(uuid.uuid4())
+        )
         return [
             "grok",
             "--model",
@@ -220,15 +212,12 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             *(
                 ["--resume", previa]
                 if sesion_modo == "reanudada" and previa
-                else ["--session-id", sesion]
+                else ["--session-id", identidad]
             ),
             "--permission-mode",
             "bypassPermissions",
             "--always-approve",
             "--no-plan",
-            "--max-turns",
-            "24",
-            "--disable-web-search",
             "--output-format",
             "streaming-json",
             "--prompt-file",
