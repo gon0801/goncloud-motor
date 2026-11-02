@@ -63,6 +63,35 @@ def resolve_shim(
 BASH_GIT_POR_OMISION = r"C:\Program Files\Git\bin\bash.exe"
 
 
+def imagen_proceso(pid: int, inicio: str) -> str | None:  # pragma: no cover
+    """Ruta de la imagen del proceso, solo si sigue siendo el nacido en `inicio`."""
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    k.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = k.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        texto = ctypes.create_unicode_buffer(32768)
+        tamano = wintypes.DWORD(len(texto))
+        if not k.QueryFullProcessImageNameW(handle, 0, texto, ctypes.byref(tamano)):
+            return None
+        return texto.value if hora_inicio(pid) == inicio else None
+    finally:
+        k.CloseHandle(handle)
+
+
 def resuelve_bash(configurado: str = "") -> str:
     return (
         configurado.strip()
