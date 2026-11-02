@@ -93,3 +93,76 @@ class IdentidadGrupoTest(unittest.TestCase):
                 patch.object(windows, "_descendientes", return_value=hijos),
             ):
                 self.assertEqual(windows.presencia_grupo(10, "100"), esperado)
+
+
+class HoraIlegibleNoEsAusenciaTest(unittest.TestCase):
+    """F1: una hora de creación ilegible deja el árbol en duda, no sin descendientes."""
+
+    def test_presencia_con_candidato_ilegible_es_incierto(self):
+        with (
+            patch.dict(windows._jobs, {}, clear=True),
+            patch.object(windows, "_consulta_pid", return_value="muerto"),
+            patch.object(windows, "_abrir_job", return_value=(None, "ausente")),
+            patch.object(windows, "_padres_procesos", return_value={20: 10}),
+            patch.object(windows, "hora_inicio", return_value=""),
+        ):
+            self.assertEqual(windows.presencia_grupo(10, "100"), "incierto")
+
+    def test_descendientes_con_raiz_ilegible_es_incierto(self):
+        with patch.object(windows, "_padres_procesos", return_value={20: 10}):
+            self.assertIsNone(windows._descendientes(10, "no-es-hora"))
+
+
+class MatarSinTocarPidReutilizadoTest(unittest.TestCase):
+    """F2: reenumerar y volver a datar antes de matar, sin /T."""
+
+    def test_reenumera_y_alcanza_al_hijo_nacido_durante_el_cierre(self):
+        pasadas = 0
+
+        def padres_por_pasada():
+            nonlocal pasadas
+            pasadas += 1
+            return {10: 0, 20: 10, 50: 20} if pasadas > 1 else {10: 0, 20: 10}
+
+        horas = {10: "100", 20: "110", 50: "130"}
+        with (
+            patch.object(windows, "_padres_procesos", side_effect=padres_por_pasada),
+            patch.object(windows, "hora_inicio", side_effect=lambda pid: horas.get(pid, "")),
+            patch.object(windows, "_matar_pid_confirmado") as matar,
+            patch.object(windows.time, "sleep"),
+        ):
+            windows._matar_arbol_confirmado(10, "100")
+        self.assertIn(50, [llamada.args[0] for llamada in matar.call_args_list])
+        self.assertIn(10, [llamada.args[0] for llamada in matar.call_args_list])
+
+    def test_no_mata_un_pid_cuya_hora_cambio_antes_del_kill(self):
+        with (
+            patch.object(windows, "hora_inicio", return_value="999"),
+            patch.object(windows.subprocess, "run") as correr,
+        ):
+            self.assertFalse(windows._matar_pid_confirmado(40, 120))
+        self.assertEqual(correr.call_args_list, [])
+
+    def test_mata_el_pid_confirmado_sin_t(self):
+        with (
+            patch.object(windows, "hora_inicio", return_value="120"),
+            patch.object(windows.subprocess, "run") as correr,
+        ):
+            self.assertTrue(windows._matar_pid_confirmado(40, 120))
+        ordenes = [llamada.args[0] for llamada in correr.call_args_list]
+        self.assertEqual(ordenes, [["taskkill", "/PID", "40", "/F"]])
+
+    def test_matar_grupo_con_la_raiz_ya_muerta_no_enumera_ni_mata(self):
+        proceso = MagicMock(pid=10)
+        proceso.poll.return_value = 1
+        with (
+            patch.dict(windows._jobs, {}, clear=True),
+            patch.object(windows, "_padres_procesos") as padres,
+            patch.object(windows.subprocess, "run") as correr,
+        ):
+            windows.matar_grupo(proceso)
+        padres.assert_not_called()
+        self.assertEqual(correr.call_args_list, [])
+        proceso.kill.assert_not_called()
+
+
