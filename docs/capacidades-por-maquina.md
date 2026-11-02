@@ -38,10 +38,10 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   y eso lo descubre el encargo al arrancar. Antigravity es la excepción de texto: si
   `agy` está, el detalle añade `con sesión` o `sin sesión`. La carpeta
   `~/.gemini/antigravity-cli` (en Windows, `%USERPROFILE%\.gemini\antigravity-cli`) y su
-  caché no cuentan: `agy changelog` las crea sin login. Hay sesión si el archivo
-  `antigravity-oauth-token` existe y no está vacío (no se abre), si `settings.json` tiene `modelProvider`
-  `gemini` y `GEMINI_API_KEY` no está vacía, o si el llavero del usuario del proceso
-  tiene el ítem de servicio `gemini` y cuenta `antigravity` (en macOS `security` sin
+  caché no cuentan: `agy changelog` las crea sin login. `GEMINI_API_KEY` con
+  `modelProvider` `gemini` habla con la API de Gemini y no es la suscripción. Hay sesión si el archivo
+  `antigravity-oauth-token` existe y no está vacío (no se abre), o si el llavero del
+  usuario del proceso tiene el ítem de servicio `gemini` y cuenta `antigravity` (en macOS `security` sin
   `-w` ni `-g`, en Windows el nombre en `cmdkey /list`, en Linux `secret-tool search`
   sin `--all`). No se imprime el secreto. El estado de la fila sigue al ejecutable, como el resto.
   En Windows el cliente es `agy` y el shim resuelve `agy.exe`. No se exige jaula ni distro.

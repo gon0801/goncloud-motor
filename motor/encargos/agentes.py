@@ -165,17 +165,6 @@ def _home_del_proceso(base: Path) -> bool:
     return False
 
 
-def _sesion_por_clave(cli: Path) -> bool:
-    clave = os.environ.get("GEMINI_API_KEY") or ""
-    if not clave.strip():
-        return False
-    try:
-        datos = json.loads((cli / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
-        return False
-    return isinstance(datos, dict) and datos.get("modelProvider") == "gemini"
-
-
 def _llavero_antigravity() -> bool:
     """El ítem service=gemini account=antigravity existe. No lee el secreto."""
     if sys.platform == "darwin":
@@ -241,9 +230,9 @@ def sesion_antigravity_presente(home: Path | None = None) -> bool:
     """Hay sesión de agy. No lee ni registra secretos.
 
     La carpeta y su caché no autentican: `agy changelog` las crea sin
-    login. Cuenta el archivo de token sin abrirlo, el par
-    modelProvider=gemini con GEMINI_API_KEY no vacía, o el ítem del
-    llavero cuando el home es el del proceso.
+    login. Cuenta el archivo de token sin abrirlo, o el ítem del
+    llavero cuando el home es el del proceso. `GEMINI_API_KEY` habla
+    con la API de Gemini y no es la suscripción.
     """
     base = Path.home() if home is None else home
     cli = base / ".gemini" / "antigravity-cli"
@@ -253,8 +242,6 @@ def sesion_antigravity_presente(home: Path | None = None) -> bool:
             return True
     except OSError:
         pass
-    if _sesion_por_clave(cli):
-        return True
     if _home_del_proceso(base):
         return _llavero_antigravity()
     return False
