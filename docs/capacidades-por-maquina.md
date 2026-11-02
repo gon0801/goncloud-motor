@@ -43,7 +43,8 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   `antigravity-oauth-token` existe y no está vacío (no se abre), o si el llavero del
   usuario del proceso tiene el ítem de servicio `gemini` y cuenta `antigravity` (en macOS `security` sin
   `-w` ni `-g`, en Windows el nombre en `cmdkey /list`, en Linux `secret-tool search`
-  sin `--all`). No se imprime el secreto. El estado de la fila sigue al ejecutable, como el resto.
+  filtrado con `grep -q` a la línea del atributo). El valor del secreto nunca pasa por
+  el motor. El estado de la fila sigue al ejecutable, como el resto.
   En Windows el cliente es `agy` y el shim resuelve `agy.exe`. No se exige jaula ni distro.
 - `java_tlc`: si `verificacion/inspeccion/verificar.sh` puede correr aquí. Con `TLA2TOOLS`
   y Java utilizable, o con mise en PATH (verificar.sh instala las herramientas solo), está;

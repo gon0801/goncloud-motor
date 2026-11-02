@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from motor import plataforma
+from motor.encargos.agentes import HERRAMIENTAS_TRAS_EL_TURNO
 from motor.encargos.frontera import leer_parada_local, turno
 from motor.encargos.registro import Registro
 from motor.runwrap import _publica
@@ -30,11 +31,38 @@ class Observacion:
         self.hecho = ""
         self.llamadas_grok: dict[str, dict] = {}
         self.modelo_en_curso: bool | None = None
+        self.herramientas_tras_el_turno: tuple[str, ...] | None = None
+
+    def _anotar_herramientas_de_agy(self, data: dict) -> None:
+        """El `init` de agy trae las herramientas que el CLI dejó disponibles.
+        Se guardan las de espera y agendado que aparezcan: con el agente
+        `motor-turno` deben ser ninguna."""
+        init = data.get("init")
+        if not isinstance(init, dict):
+            return
+        tools = init.get("tools")
+        if not isinstance(tools, list):
+            return
+        self.herramientas_tras_el_turno = tuple(
+            sorted(
+                nombre
+                for nombre in tools
+                if isinstance(nombre, str) and nombre in HERRAMIENTAS_TRAS_EL_TURNO
+            )
+        )
 
     def _evento_antigravity(self, data: dict) -> None:
         evento = data.get("event")
         if evento == "init":
             self.modelo_en_curso = True
+            self._anotar_herramientas_de_agy(data)
+            if self.herramientas_tras_el_turno:
+                self.secuencia += 1
+                self.hora = time.time()
+                self.hecho = (
+                    "init con herramientas tras el turno: "
+                    + ", ".join(self.herramientas_tras_el_turno)
+                )
             self.publicar()
             return
         if evento == "step_update":
@@ -251,6 +279,11 @@ class Observacion:
                     "secuencia": self.secuencia,
                     "hora": self.hora,
                     "hecho": self.hecho,
+                    "herramientas_tras_el_turno": (
+                        list(self.herramientas_tras_el_turno)
+                        if self.herramientas_tras_el_turno is not None
+                        else None
+                    ),
                 }
             ),
         )

@@ -254,13 +254,8 @@ class EntornoYHerramientas(unittest.TestCase):
                     return subprocess.CompletedProcess(
                         argv, 0, "gemini:antigravity".encode("utf-16-le"), b""
                     )
-                if argv and argv[0] == "secret-tool":
-                    return subprocess.CompletedProcess(
-                        argv,
-                        0,
-                        b"attribute.service = gemini\nattribute.username = antigravity\n",
-                        b"",
-                    )
+                if argv and argv[0] == "sh":
+                    return subprocess.CompletedProcess(argv, 0, b"", b"")
                 return subprocess.CompletedProcess(argv, 0, b"", b"")
 
             with mock.patch.dict(
@@ -293,14 +288,13 @@ class EntornoYHerramientas(unittest.TestCase):
                 self.assertEqual(
                     argv,
                     [
-                        "secret-tool",
-                        "search",
-                        "service",
-                        "gemini",
-                        "username",
-                        "antigravity",
+                        "sh",
+                        "-c",
+                        "secret-tool search service gemini username antigravity"
+                        " | grep -q 'attribute.username = antigravity'",
                     ],
                 )
+                self.assertIs(vistos["kwargs"]["stdout"], subprocess.DEVNULL)
 
     def test_linux_y_windows_no_confunden_el_codigo_de_salida_con_sesion(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -314,9 +308,14 @@ class EntornoYHerramientas(unittest.TestCase):
                     )
                 return subprocess.CompletedProcess(argv, 0, b"", b"")
 
+            def sin_atributo(argv, **kwargs):
+                # El filtro del hijo no hallo el atributo: sale 1 aunque
+                # `secret-tool search` por dentro salga 0 sin items.
+                return subprocess.CompletedProcess(argv, 1, b"", b"")
+
             with mock.patch.dict(os.environ, entorno):
                 with mock.patch("sys.platform", "linux"):
-                    with mock.patch("subprocess.run", side_effect=vacio):
+                    with mock.patch("subprocess.run", side_effect=sin_atributo):
                         self.assertFalse(agentes.sesion_antigravity_presente(home))
                 with mock.patch("sys.platform", "win32"):
                     with mock.patch("subprocess.run", side_effect=vacio):
@@ -442,6 +441,41 @@ class StreamJson(unittest.TestCase):
         )
         self.assertEqual(salida.sesion_runtime, "abc")
         self.assertIn("se corto el turno", salida.terminal)
+
+    def test_el_init_de_agy_deja_ver_las_herramientas_tras_el_turno(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directorio = Path(tmp)
+            observacion = Observacion(directorio, "antigravity")
+            observacion.evento(
+                {
+                    "event": "init",
+                    "conversation_id": CONVERSACION,
+                    "init": {
+                        "tools": ["view_file", "wait", "schedule", "manage_task"]
+                    },
+                }
+            )
+            datos = json.loads(
+                (directorio / "herramienta.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                datos["herramientas_tras_el_turno"],
+                ["manage_task", "schedule", "wait"],
+            )
+            self.assertIn("init con herramientas tras el turno", datos["hecho"])
+            limpia = Observacion(directorio, "antigravity")
+            limpia.evento(
+                {
+                    "event": "init",
+                    "conversation_id": CONVERSACION,
+                    "init": {"tools": ["view_file", "run_command", "finish"]},
+                }
+            )
+            datos = json.loads(
+                (directorio / "herramienta.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(datos["herramientas_tras_el_turno"], [])
+            self.assertEqual(datos["hecho"], "")
 
     def test_una_herramienta_activa_mantiene_el_turno(self):
         with tempfile.TemporaryDirectory() as tmp:

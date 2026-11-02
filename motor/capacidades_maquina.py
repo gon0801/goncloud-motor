@@ -101,7 +101,9 @@ def _generacion_vigente(base: Path) -> Path | None:
     return None
 
 
-def _agentes(which, generacion: Path | None = None) -> list[dict]:
+def _agentes(
+    which, generacion: Path | None = None, home: Path | None = None
+) -> list[dict]:
     filas = []
     for agente in sorted(ADAPTADORES):
         cliente = cliente_para(agente)
@@ -130,7 +132,11 @@ def _agentes(which, generacion: Path | None = None) -> list[dict]:
             f"{cliente} {version or '(--version no respondió)'} en {' '.join(lanzador)}"
         )
         if agente == "antigravity":
-            detalle += " (con sesión)" if sesion_antigravity_presente() else " (sin sesión)"
+            detalle += (
+                " (con sesión)"
+                if sesion_antigravity_presente(home)
+                else " (sin sesión)"
+            )
         filas.append({
             "agente": agente,
             "estado": "ok",
@@ -429,7 +435,7 @@ def reporte(base: Path, home: Path | None = None, correr=None, which=None) -> di
         recursos_causa = (
             "sin capacidades.json en la base: los agentes no pueden pedir recursos"
         )
-    agentes = _agentes(which, generacion)
+    agentes = _agentes(which, generacion, home)
     secciones = {
         "jaula": _jaula(correr),
         "java_tlc": _java_tlc(correr, which, base),
