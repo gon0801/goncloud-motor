@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -327,3 +328,74 @@ class _CiLog(unittest.TestCase):
         self.assertIn("entregas", copia.parts)
         self.assertEqual(copia.read_bytes(), LOG.encode("utf-8"))
         self.assertEqual(publicado["datos"]["log_host"], r["datos"]["log_host"])
+
+    def spec_del_script(self, contexto: dict, destino: Path) -> Path:
+        spec = {
+            "operacion": cap.CI_LOG,
+            "recurso": "ci-linux",
+            "recurso_config": self.recursos["ci-linux"],
+            "parametros": {"pr": "189", "job": "jaula-macos", "sha": SHA[:7]},
+            "destino": str(destino),
+            "autorizado": True,
+            "espacio": str(self.espacio),
+            "contexto": contexto,
+        }
+        ruta = self.raiz / "spec.json"
+        ruta.write_text(json.dumps(spec))
+        return ruta
+
+    def correr_el_script(self, spec: Path) -> subprocess.CompletedProcess:
+        """El mismo argv con el que `necesidades._ejecutar` lanza la herramienta."""
+        return subprocess.run(
+            [sys.executable, "-P", str(Path(cap.__file__)), "--spec", str(spec)],
+            capture_output=True,
+            text=True,
+            env=os.environ,
+        )
+
+    def test_el_script_real_importa_el_motor_y_acepta_el_repo_en_url(self):
+        for repo in ("git@github.com:o/r.git", "https://github.com/o/r.git"):
+            with self.subTest(repo=repo):
+                self.estado["llamadas"] = []
+                (self.fake / "estado.json").write_text(json.dumps(self.estado))
+                destino = self.raiz / "destino-url"
+                contexto = nec.contexto_de(_encargo_con_repo(repo))
+                corrida = self.correr_el_script(self.spec_del_script(contexto, destino))
+
+                self.assertEqual(corrida.returncode, 0, corrida.stderr)
+                resultado = json.loads((destino / "resultado.json").read_text())
+                self.assertEqual(resultado["estado"], "ok", resultado)
+                self.assertEqual(resultado["datos"]["pr"], 189)
+                self.assertEqual(
+                    Path(resultado["datos"]["log"]).read_bytes(), LOG.encode("utf-8")
+                )
+                repos = {
+                    llamada[llamada.index("--repo") + 1]
+                    for llamada in self.estado_gh()["llamadas"]
+                    if "--repo" in llamada
+                }
+                self.assertEqual(repos, {"o/r"}, "el repo SSH o HTTPS se normaliza a owner/nombre")
+
+    def test_una_solicitud_ejecutada_lleva_el_contexto_del_encargo_hasta_la_herramienta(self):
+        enc = _encargo_con_repo("git@github.com:o/r.git")
+        sol = Solicitud(
+            id="log-1", operacion=cap.CI_LOG, recurso="ci-linux", fase="f", intento="i",
+            generacion=1, conductor="",
+            parametros=(("pr", "189"), ("job", "jaula-macos"), ("sha", SHA[:7])),
+        )
+        directorio = self.raiz / "ejecucion"
+
+        with mock.patch.object(nec, "ESPERA_CI_S", 60), mock.patch.object(
+            nec, "_detenida_ahora", return_value=False
+        ):
+            resultado = nec._ejecutar(
+                SimpleNamespace(base=self.raiz), enc, sol, self.recursos,
+                self.espacio, directorio, True, "2026-11-01T12:00:00Z",
+            )
+
+        destino = nec._carpeta_de(sol, directorio)
+        spec = json.loads((destino / "spec.json").read_text())
+        self.assertEqual(spec["contexto"], nec.contexto_de(enc))
+        self.assertEqual(resultado["estado"], "ok", resultado)
+        self.assertEqual(resultado["datos"]["pr"], 189)
+        self.assertEqual(Path(resultado["datos"]["log"]).read_bytes(), LOG.encode("utf-8"))
