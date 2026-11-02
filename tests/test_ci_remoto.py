@@ -595,6 +595,38 @@ class UnRunLargoNoSeMata(unittest.TestCase):
             self.assertEqual(otra["estado"], "pendiente")
             self.assertLess(segunda, 1, "un CI que ya espera no retiene el barrido")
 
+    def test_un_log_que_sigue_en_plazo_no_se_corta_al_plazo_del_barrido(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp)
+            sol = Solicitud(
+                id="log-1", operacion=cap.CI_LOG, recurso="ci-linux", fase="f", intento="i",
+                generacion=1, conductor="",
+                parametros=(("pr", "189"), ("job", "jaula-linux"), ("sha", "a" * 7)),
+            )
+            registro = SimpleNamespace(base=raiz)
+            lenta = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(lenta.kill)
+            with mock.patch.object(nec, "TIMEOUT_S", 0.3), mock.patch.object(
+                nec, "ESPERA_CI_S", 0.3
+            ), mock.patch.object(
+                nec, "_detenida_ahora", return_value=False
+            ), mock.patch.object(nec.subprocess, "Popen", return_value=lenta), mock.patch(
+                "motor.plataforma.hora_inicio", return_value="t0"
+            ), mock.patch(
+                "motor.plataforma.pid_vivo", side_effect=lambda pid: lenta.poll() is None
+            ):
+                resultado = nec._ejecutar(
+                    registro, SimpleNamespace(id="enc_x"), sol, {"ci-linux": {"tipo": "ci"}},
+                    raiz / "espacio", raiz / "ejecucion", False, "2026-10-31T12:00:00Z",
+                )
+
+            self.assertEqual(resultado["estado"], "pendiente")
+            self.assertIsNone(lenta.poll(), "el log sigue dentro de su plazo de 300 s")
+            self.assertTrue(nec._marca_herramienta(raiz / "ejecucion", "log-1").is_file())
+
     def test_otra_operacion_que_pasa_del_plazo_si_se_mata(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             raiz = Path(tmp)

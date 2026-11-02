@@ -24,6 +24,12 @@ from urllib.request import (
     build_opener,
 )
 
+# El script se lanza con `-P`, que no agrega la raíz del repo al camino de
+# importación. Sin esta línea `import motor` falla dentro del subproceso real.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from motor.repositorios import resolver_repositorio
+
 CONFIG = "capacidades.json"
 
 TABLAS = "sqlite.tablas"
@@ -37,6 +43,9 @@ DECISION = "decision.registrar"
 OPERACIONES_SIN_RECURSO = (DECISION,)
 # Operaciones cuyo resultado incluye un archivo que el supervisor publica en el espacio.
 CON_ARCHIVO = (SNAPSHOT, CI, CI_LOG, REMOTO)
+# Operaciones que pueden durar más que un barrido: el supervisor las deja
+# terminar y recoge el resultado en el paso siguiente.
+ASINCRONAS = (CI, CI_LOG)
 
 MAX_SQL = 20_000
 MAX_FILAS = 500
@@ -583,12 +592,7 @@ def _repo_github(valor: str) -> str:
     texto = str(valor or "").strip()
     if not texto:
         return ""
-    try:
-        from motor.repositorios import resolver_repositorio
-
-        return str(resolver_repositorio(texto).github or texto)
-    except Exception:  # la normalización es best-effort; el recurso manda
-        return texto
+    return str(resolver_repositorio(texto).github or texto)
 
 
 def _repo_de(concedido: dict, espacio: Path) -> tuple[str, str]:

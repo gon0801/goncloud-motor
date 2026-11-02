@@ -35,8 +35,8 @@ MAX_MOTIVO = 2_000
 MAX_PARAMETROS = 32 * 1024
 MAX_RESPUESTA = 256 * 1024
 TIMEOUT_S = float(os.environ.get("MOTOR_HERRAMIENTA_TIMEOUT") or 120)
-# Un run de CI tarda minutos: el barrido solo espera esto a que termine y sigue
-# con los demás encargos. La herramienta continúa por su cuenta.
+# Un run de CI o un log grande tardan minutos: el barrido solo espera esto a que
+# terminen y sigue con los demás encargos. La herramienta continúa por su cuenta.
 ESPERA_CI_S = float(os.environ.get("MOTOR_CI_ESPERA") or 5)
 # Lo que se le da a una herramienta de CI entre el SIGTERM y el SIGKILL: su
 # limpieza (cerrar el PR, borrar la rama) son varias llamadas de red.
@@ -730,7 +730,7 @@ def _publicar_snapshot(
 
 
 def _espera_de(sol: Solicitud) -> float | None:
-    return ESPERA_CI_S if sol.operacion == capacidades.CI else None
+    return ESPERA_CI_S if sol.operacion in capacidades.ASINCRONAS else None
 
 
 def _completar_entrega(
@@ -848,10 +848,11 @@ def _ejecutar(
             if _detenida_ahora(registro, enc.id):
                 detenida = True
                 break
-            if time.time() > fin and sol.operacion == capacidades.CI:
-                # Un run de CI tarda minutos: la herramienta sigue por su cuenta
-                # (con su propio plazo y su limpieza) y el siguiente paso recoge
-                # el resultado. Matarla dejaría la rama y el PR temporales.
+            if time.time() > fin and sol.operacion in capacidades.ASINCRONAS:
+                # Un run de CI o un log grande tardan minutos: la herramienta
+                # sigue por su cuenta (con su propio plazo y su limpieza) y el
+                # siguiente paso recoge el resultado. Matarla dejaría la rama,
+                # el PR temporales o el `gh` hijo huérfanos.
                 sigue_viva = True
                 return {
                     "estado": "pendiente",
