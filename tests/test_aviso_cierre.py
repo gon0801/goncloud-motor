@@ -109,13 +109,20 @@ class Banco:
             f"arbol-{ident}",
         )
 
-    def subir_corte(self) -> None:
-        """El corte histórico sube al último evento, como queda en una base migrada."""
+    def olvidar_corte_de_cierres(self) -> None:
+        """La base de la versión anterior no tenía el corte de cierres de cancelados."""
         self.reg.db.execute(
-            "UPDATE cortes_avisos SET evento = (SELECT MAX(id) FROM events) "
-            "WHERE version = 'avances-v1'"
+            "DELETE FROM cortes_avisos WHERE version = 'cierres-cancelados-v1'"
         )
         self.reg.db.commit()
+
+    def reabrir(self) -> None:
+        """Cierra y vuelve a abrir la base, como el primer arranque tras el despliegue."""
+        self.reg.close()
+        self.reg = Registro(self.base)
+
+    def cerrar(self) -> None:
+        self.reg.close()
 
 
 class Base(unittest.TestCase):
@@ -123,7 +130,7 @@ class Base(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.b = Banco(self._tmp.name)
-        self.addCleanup(self.b.reg.close)
+        self.addCleanup(self.b.cerrar)
 
     def encargo_terminado(self, clave: str, pasos: list[dict] | None = None) -> str:
         ident = self.b.encargo(
@@ -258,14 +265,21 @@ class ElCierreEnLlano(Base):
 
 
 class UnAvisoViejoNoSaleDeGolpe(Base):
-    def test_un_cancelado_anterior_al_corte_no_se_envia(self):
+    def test_una_base_existente_con_cancelados_no_sale_en_rafaga_al_abrirse(self):
         for n in range(2):
-            ident = self.b.encargo(f"# Pedido viejo {n}\n\ntexto", f"viejo-{n}")
+            ident = self.b.encargo(
+                f"# Cancelado tras el corte {n}\n\ntexto", f"tras-corte-{n}"
+            )
             self.b.cancelar(ident)
-        self.b.subir_corte()
+        self.b.olvidar_corte_de_cierres()
+        self.b.reabrir()
         self.assertEqual(directores.drenar(self.b.reg, ahora=T0)["avisos"], [])
-        self.assertEqual(self.b.cuerpos(), [], "los cancelados históricos no se envían")
-        ident = self.b.encargo("# Pedido nuevo\n\ntexto", "nuevo-uno")
+        self.assertEqual(
+            self.b.cuerpos(), [], "los cancelados de antes no se envían al abrir"
+        )
+        ident = self.b.encargo(
+            "# Cancelado después del despliegue\n\ntexto", "despliegue-uno"
+        )
         self.b.cancelar(ident)
         avisos = directores.drenar(self.b.reg, ahora=T0 + 60)["avisos"]
         self.assertEqual([a["encargo"] for a in avisos if a["entregado"]], [ident])

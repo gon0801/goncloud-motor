@@ -1388,6 +1388,7 @@ def drenar(
     cortada = False
     publicados = []
     corte = registro.corte_avisos()
+    corte_cierres = registro.corte_avisos("cierres-cancelados-v1")
     encargos = {ident: registro.fold(ident) for ident in registro.ids()}
     terminados = {i for i, e in encargos.items() if e is not None and e.estado == "terminado"}
     if terminados:
@@ -1403,12 +1404,14 @@ def drenar(
             )
         } if anterior is not None else set()
         trabajos: list[tuple[dict, str | None]] = []
-        if (enc.estado == "terminado" and enc.evidencia) or (
-            enc.estado == "cancelado"
-            and (anterior is None or anterior.estado != "cancelado")
-        ):
-            # Un cancelado que ya lo era en el corte es historia: main nunca le
-            # escribió aviso de cierre y avisarlo ahora sería una ráfaga al desplegar.
+        cerrar_cancelado = False
+        if enc.estado == "cancelado":
+            al_corte = registro.fold(encargo, hasta=corte_cierres)
+            cerrar_cancelado = al_corte is None or al_corte.estado != "cancelado"
+        if (enc.estado == "terminado" and enc.evidencia) or cerrar_cancelado:
+            # Un cancelado que ya lo era cuando este código abrió la base es
+            # historia: main nunca le escribió aviso de cierre y avisarlo ahora
+            # sería una ráfaga al desplegar.
             aviso = _aviso_de(enc)
             trabajos.append((aviso, _cuerpo_de_cierre(enc)))
         apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
