@@ -1,10 +1,12 @@
 """El aviso de cierre se lee en lenguaje llano y un aviso viejo no sale de golpe."""
 
+import hashlib
 import json
 import re
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from motor.encargos.registro import Registro
@@ -77,6 +79,11 @@ class Banco:
     def aviso_guardado(self, ident: str) -> dict:
         return json.loads(
             (self.base / "avisos" / f"{ident}.json").read_text(encoding="utf-8")
+        )
+
+    def escribir_aviso(self, ident: str, guardado: dict) -> None:
+        (self.base / "avisos" / f"{ident}.json").write_text(
+            json.dumps(guardado), encoding="utf-8"
         )
 
     def encargo(self, texto: str, clave: str) -> str:
@@ -154,7 +161,7 @@ class ElCierreEnLlano(Base):
         self.assertEqual(
             cuerpo,
             "Terminó tu encargo «avisos-caidos listo para revisar». "
-            "El PR #160 está listo para que decidas el merge.",
+            "El PR #160 está listo para que decidas el merge. listo",
         )
         self.assertLess(len(cuerpo), 300)
         for prohibido in PROHIBIDOS:
@@ -186,11 +193,11 @@ class ElCierreEnLlano(Base):
         cuerpos = {c["id"]: c["cuerpo"] for c in self.b.cuerpos()}
         self.assertEqual(
             cuerpos[ids[uno]],
-            "Terminó tu encargo «fase-a listo para revisar». Quedó integrado.",
+            "Terminó tu encargo «fase-a listo para revisar». Quedó integrado. listo",
         )
         self.assertEqual(
             cuerpos[ids[dos]],
-            "Terminó tu encargo «fase-b listo para revisar». Quedó desplegado.",
+            "Terminó tu encargo «fase-b listo para revisar». Quedó desplegado. listo",
         )
 
     def test_un_encargo_cancelado_lo_dice_en_una_frase_simple(self):
@@ -218,7 +225,41 @@ class ElCierreEnLlano(Base):
         self.assertTrue(avisos[0]["entregado"])
         self.assertEqual(
             self.b.cuerpos()[0]["cuerpo"],
-            "Terminó tu encargo «pedido-desnudo».",
+            "Terminó tu encargo «pedido-desnudo». listo",
+        )
+
+    def test_el_cierre_de_la_via_directa_vuelve_a_llevar_el_resultado(self):
+        ident = self.b.encargo("# Crea dato.txt con 42\n\ntexto", "directa-uno")
+        resultado = "leí dato.txt: 42"
+        huella = hashlib.sha256(resultado.encode()).hexdigest()
+        self.b.reg.anotar(
+            ident,
+            {"kind": "resultado_directo", "data": {"evidencia": huella, "hora": HORA}},
+            f"fin-{ident}",
+        )
+        espacio = self.b.base / "espacio" / ident
+        espacio.mkdir(parents=True)
+        (espacio / "resultado.txt").write_text(resultado, encoding="utf-8")
+        otro = self.b.encargo("# Sin resultado legible\n\ntexto", "directa-dos")
+        self.b.reg.anotar(
+            otro,
+            {"kind": "resultado_directo", "data": {"evidencia": "a" * 64, "hora": HORA}},
+            f"fin-{otro}",
+        )
+        salida = {
+            a["encargo"]: a
+            for a in directores.drenar(self.b.reg, ahora=T0)["avisos"]
+        }
+        self.assertTrue(salida[ident]["entregado"])
+        self.assertTrue(salida[otro]["entregado"])
+        cuerpos = {c["id"]: c["cuerpo"] for c in self.b.cuerpos()}
+        self.assertEqual(
+            cuerpos[salida[ident]["id"]],
+            f"Terminó tu encargo «Crea dato.txt con 42». {resultado}",
+        )
+        self.assertEqual(
+            cuerpos[salida[otro]["id"]],
+            "Terminó tu encargo «Sin resultado legible».",
         )
 
     def test_el_cierre_lleva_las_correcciones_que_ningun_intento_recibio(self):
@@ -241,7 +282,7 @@ class ElCierreEnLlano(Base):
             self.b.cuerpos()[0]["cuerpo"],
             "Terminó tu encargo «con-correccion listo para revisar». "
             "El PR #5 está listo para que decidas el merge. "
-            "Correcciones que ningún intento pudo recibir: el dato debe ser 43",
+            "Correcciones que ningún intento pudo recibir: el dato debe ser 43 listo",
         )
 
     def test_la_nota_legada_sin_tildes_tambien_llega_en_el_cierre(self):
@@ -265,6 +306,49 @@ class ElCierreEnLlano(Base):
 
 
 class UnAvisoViejoNoSaleDeGolpe(Base):
+    def test_un_aviso_previo_al_despliegue_de_hace_7_horas_se_descarta(self):
+        self.encargo_terminado("legado-viejo")
+        self.b.caer()
+        primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
+        aviso_id = primera[0]["id"]
+        guardado = self.b.aviso_guardado(aviso_id)
+        del guardado["primer_intento"]
+        self.b.escribir_aviso(aviso_id, guardado)
+        segunda = directores.drenar(self.b.reg, ahora=T0 + 7 * 3600)["avisos"]
+        guardado = self.b.aviso_guardado(aviso_id)
+        self.assertEqual(guardado["estado"], "descartado")
+        self.assertEqual(
+            guardado["motivo"],
+            "canal caído demasiado tiempo; queda en el registro",
+        )
+        self.assertFalse(segunda[0]["entregado"])
+        self.assertEqual(
+            len(self.b.cuerpos()), 1, "el aviso de la versión anterior no se reenvía"
+        )
+
+    def test_un_aviso_previo_al_despliegue_de_hace_1_hora_si_se_envia(self):
+        self.encargo_terminado("legado-reciente")
+        self.b.caer()
+        primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
+        aviso_id = primera[0]["id"]
+        guardado = self.b.aviso_guardado(aviso_id)
+        del guardado["primer_intento"]
+        self.b.escribir_aviso(aviso_id, guardado)
+        self.b.levantar()
+        avisos = directores.drenar(self.b.reg, ahora=T0 + 3600)["avisos"]
+        self.assertTrue(avisos[0]["entregado"])
+        self.assertEqual(len(self.b.cuerpos()), 2, "el fallo y el reintento que sí salió")
+
+    def test_el_id_del_cierre_de_cancelado_no_depende_de_la_evidencia(self):
+        ident = self.b.encargo("# Se cancela con evidencia\n\ntexto", "cancela-evid")
+        self.b.cancelar(ident)
+        enc = self.b.reg.fold(ident)
+        con_evidencia = directores._aviso_de(
+            replace(enc, evidencia=("huella-1", "huella-2"))
+        )
+        self.assertEqual(con_evidencia["id"], directores._aviso_de(enc)["id"])
+        self.assertTrue(con_evidencia["id"].startswith("av_"))
+
     def test_una_base_existente_con_cancelados_no_sale_en_rafaga_al_abrirse(self):
         for n in range(2):
             ident = self.b.encargo(

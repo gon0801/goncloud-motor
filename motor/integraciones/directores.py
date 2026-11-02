@@ -614,7 +614,12 @@ def resultado_directo(
 
 
 def _aviso_de(enc) -> dict:
-    evidencia = enc.evidencia[-1] if enc.evidencia else f"cierre:{enc.estado}"
+    if enc.estado == "cancelado":
+        # La identidad del cierre de cancelado no depende de la evidencia:
+        # si creciera, cambiaría el id y el mensaje se enviaría otra vez.
+        evidencia = "cierre:cancelado"
+    else:
+        evidencia = enc.evidencia[-1] if enc.evidencia else f"cierre:{enc.estado}"
     return {
         "id": id_aviso(enc.id, evidencia),
         "encargo": enc.id,
@@ -875,9 +880,24 @@ def _por_esperar(guardado: dict, ahora: float) -> bool:
 
 
 def _vencido(guardado: dict, ahora: float) -> bool:
-    """True si el aviso lleva más de seis horas sin poder enviarse."""
+    """True si el aviso lleva más de seis horas sin poder enviarse.
+
+    Los avisos de la versión anterior no guardan la época del primer envío:
+    se infiere del reintento guardado (proximo = último fallo + espera), así el
+    descarte también cubre lo que quedó `incierto` antes del despliegue.
+    """
+    primero = guardado.get("primer_intento")
+    if primero is None:
+        proximo = _epoch(guardado.get("proximo_intento") or "")
+        if proximo is None:
+            return False
+        try:
+            fallos = int(guardado.get("fallos", guardado.get("intentos")) or 0)
+        except (TypeError, ValueError):
+            fallos = 0
+        primero = proximo - espera_s(fallos)
     try:
-        primero = float(guardado.get("primer_intento") or 0.0)
+        primero = float(primero)
     except (TypeError, ValueError):
         return False
     return primero > 0 and ahora - primero > TOPE_AVISO_VIEJO_S
@@ -1413,7 +1433,16 @@ def drenar(
             # historia: main nunca le escribió aviso de cierre y avisarlo ahora
             # sería una ráfaga al desplegar.
             aviso = _aviso_de(enc)
-            trabajos.append((aviso, _cuerpo_de_cierre(enc)))
+            cuerpo = _cuerpo_de_cierre(enc)
+            if enc.via == "directa" and enc.estado == "terminado":
+                # En la vía directa el cierre es la única entrega del resultado:
+                # se lo debe al propietario, verificado contra la evidencia.
+                resultado = _cuerpo_del_aviso(
+                    registro, encargo, str(aviso["evidencia"])
+                )
+                if resultado:
+                    cuerpo = f"{cuerpo} {resultado}"
+            trabajos.append((aviso, cuerpo))
         apariciones = _apariciones_de_impedimentos(registro, encargo) if enc.impedimento else None
         for hecho in hechos_de_avance(enc, apariciones):
             aviso = _aviso_de_hecho(enc, hecho)
