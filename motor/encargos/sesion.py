@@ -397,9 +397,7 @@ def recuperar_arranque(directorio: Path) -> tuple[str, dict | None]:
 
 
 def descendientes(raiz: int) -> list[dict] | None:
-    """Consulta PID/PPID, sin leer argumentos ni entornos de procesos ajenos."""
-    import subprocess
-
+    """Consulta PID, PPID y hora de creación, sin leer argumentos ni entornos ajenos."""
     if os.name == "nt":
         from motor.plataforma.windows import _consulta_pid, _descendientes
 
@@ -422,31 +420,14 @@ def descendientes(raiz: int) -> list[dict] | None:
                 {"pid": pid, "inicio": inicio, "boot_id": plataforma.boot_id()}
             )
         return identidades
-    try:
-        p = subprocess.run(
-            ["/bin/ps", "-ax", "-o", "pid=,ppid="],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if p.returncode != 0:
-            return None
-        padres = {
-            int(x[0]): int(x[1])
-            for linea in p.stdout.splitlines()
-            if len(x := linea.split()) == 2
-        }
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    from motor.plataforma import posix
+    from motor.plataforma.arbol import descendientes_validos
+
+    snapshot = posix.instantanea_procesos()
+    if snapshot is None:
         return None
-    vistos = {raiz}
-    while True:
-        nuevos = {pid for pid, padre in padres.items() if padre in vistos} - vistos
-        if not nuevos:
-            break
-        vistos.update(nuevos)
     identidades = []
-    for pid in sorted(vistos - {raiz}):
+    for pid in descendientes_validos(snapshot, raiz):
         inicio = plataforma.hora_inicio(pid)
         if inicio:
             identidades.append(

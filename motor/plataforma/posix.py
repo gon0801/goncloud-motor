@@ -120,6 +120,78 @@ def hora_inicio(pid: int) -> str:
     return " ".join(r.stdout.split())
 
 
+_MESES_LSTART = {
+    nombre: numero
+    for numero, nombre in enumerate(
+        (
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+        ),
+        start=1,
+    )
+}
+
+
+def _epoch_lstart(texto: str) -> int | None:
+    from datetime import datetime
+
+    partes = texto.split()
+    if len(partes) != 5:
+        return None
+    _, mes, dia, hora, anio = partes
+    try:
+        h, m, s = (int(x) for x in hora.split(":"))
+        return int(
+            datetime(int(anio), _MESES_LSTART[mes], int(dia), h, m, s).timestamp()
+        )
+    except (KeyError, ValueError, OverflowError):
+        return None
+
+
+def instantanea_procesos(lectura=None) -> dict[int, tuple[int, int | None]] | None:
+    """PID -> (PPID, epoch de creación). None si no se pudo leer la lista."""
+    if lectura is not None:
+        salida = lectura()
+    else:
+        ps = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
+        try:
+            r = subprocess.run(
+                [ps, "-ax", "-o", "pid=,ppid=,lstart="],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+                env={**os.environ, "LC_ALL": "C"},
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if r.returncode != 0:
+            return None
+        salida = r.stdout
+    snapshot = {}
+    for linea in (salida or "").splitlines():
+        partes = linea.split(None, 2)
+        if len(partes) != 3:
+            continue
+        try:
+            pid, ppid = int(partes[0]), int(partes[1])
+        except ValueError:
+            continue
+        snapshot[pid] = (ppid, _epoch_lstart(partes[2]))
+    return snapshot or None
+
+
 def _miembros_grupo(pgid: int) -> list[int] | None:
     """Pids del grupo. None si no se pudo leer la lista."""
     ps = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
