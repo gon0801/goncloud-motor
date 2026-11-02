@@ -854,7 +854,7 @@ def _declara_idempotencia(cfg: dict | None) -> bool:
 
 def _registrar_intento(path: Path, guardado: dict, ahora: float) -> None:
     guardado["estado"] = "incierto"
-    guardado.setdefault("primer_intento", ahora)
+    guardado.setdefault("primer_intento", _epoca_primer_envio(guardado) or ahora)
     try:
         previos = int(guardado.get("intentos") or 0)
     except (TypeError, ValueError):
@@ -879,28 +879,40 @@ def _por_esperar(guardado: dict, ahora: float) -> bool:
     return toca is not None and ahora < toca
 
 
-def _vencido(guardado: dict, ahora: float) -> bool:
-    """True si el aviso lleva más de seis horas sin poder enviarse.
-
-    Los avisos de la versión anterior no guardan la época del primer envío:
-    se infiere del reintento guardado (proximo = último fallo + espera), así el
-    descarte también cubre lo que quedó `incierto` antes del despliegue.
-    """
+def _epoca_primer_envio(guardado: dict) -> float | None:
+    """La época del primer envío: la que el aviso guarda o, en los de la versión
+    anterior (que no la guardan), la del último fallo según su reintento."""
     primero = guardado.get("primer_intento")
+    try:
+        primero = float(primero) if primero is not None else None
+    except (TypeError, ValueError):
+        primero = None
     if primero is None:
         proximo = _epoch(guardado.get("proximo_intento") or "")
         if proximo is None:
-            return False
+            return None
         try:
             fallos = int(guardado.get("fallos", guardado.get("intentos")) or 0)
         except (TypeError, ValueError):
             fallos = 0
         primero = proximo - espera_s(fallos)
-    try:
-        primero = float(primero)
-    except (TypeError, ValueError):
-        return False
-    return primero > 0 and ahora - primero > TOPE_AVISO_VIEJO_S
+    return primero if primero and primero > 0 else None
+
+
+def _vencido(guardado: dict, ahora: float, path: Path | None = None) -> bool:
+    """True si el aviso lleva más de seis horas sin poder enviarse.
+
+    Los avisos de la versión anterior no guardan la época del primer envío: se
+    infiere del reintento guardado y, si tampoco lo hay, del archivo del aviso,
+    cuya última escritura es de cuando quedó atorado.
+    """
+    primero = _epoca_primer_envio(guardado)
+    if primero is None and path is not None:
+        try:
+            primero = path.stat().st_mtime
+        except OSError:
+            return False
+    return primero is not None and ahora - primero > TOPE_AVISO_VIEJO_S
 
 
 def _enviar_aviso(
@@ -1236,6 +1248,20 @@ def _publicar_aviso(
         return _cerrar_aviso(guardado, False)
     if guardado.get("estado") == "descartado":
         return _cerrar_aviso(guardado, False)
+    if (
+        path.exists()
+        and guardado.get("estado") in ("incierto", "pendiente")
+        and _vencido(guardado, vuelta.ahora, path)
+    ):
+        # Un aviso que lleva más de seis horas atorado — también los de la
+        # versión anterior, que no guardan su época — no se reenvía: queda en
+        # el registro y desplegar o reconectar el canal no dispara una ráfaga.
+        guardado["estado"] = "descartado"
+        guardado["motivo"] = "canal caído demasiado tiempo; queda en el registro"
+        for campo in ("proximo_intento", "fallos"):
+            guardado.pop(campo, None)
+        _atomico(path, guardado)
+        return _cerrar_aviso(guardado, False)
     if guardado.get("estado") == "local-pendiente" and guardado.get("alcance") == "local":
         try:
             nombre_previo = nombre_canal(str(guardado.get("canal") or ""))
@@ -1285,13 +1311,6 @@ def _publicar_aviso(
     comando = list(cfg.get("comando") or []) if cfg else []
     conciliacion = list(cfg.get("conciliacion") or []) if cfg else []
     if guardado.get("estado") == "incierto":
-        if _vencido(guardado, vuelta.ahora):
-            guardado["estado"] = "descartado"
-            guardado["motivo"] = "canal caído demasiado tiempo; queda en el registro"
-            for campo in ("proximo_intento", "fallos"):
-                guardado.pop(campo, None)
-            _atomico(path, guardado)
-            return _cerrar_aviso(guardado, False)
         if not comando:
             guardado["motivo"] = "sin transporte configurado; no se reenvia"
             _atomico(path, guardado)

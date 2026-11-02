@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -338,6 +339,48 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
         avisos = directores.drenar(self.b.reg, ahora=T0 + 3600)["avisos"]
         self.assertTrue(avisos[0]["entregado"])
         self.assertEqual(len(self.b.cuerpos()), 2, "el fallo y el reintento que sí salió")
+
+    def test_un_aviso_previo_al_despliegue_envejece_desde_su_fallo_original(self):
+        self.encargo_terminado("legado-5h")
+        self.b.caer()
+        primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
+        aviso_id = primera[0]["id"]
+        guardado = self.b.aviso_guardado(aviso_id)
+        del guardado["primer_intento"]
+        guardado["proximo_intento"] = directores._iso(T0 - 5 * 3600 + 60)
+        guardado["fallos"] = 1
+        self.b.escribir_aviso(aviso_id, guardado)
+        directores.drenar(self.b.reg, ahora=T0 + 1)
+        guardado = self.b.aviso_guardado(aviso_id)
+        self.assertLess(
+            guardado["primer_intento"],
+            T0,
+            "la época del primer envío no se reancla al despliegue",
+        )
+        self.b.levantar()
+        directores.drenar(self.b.reg, ahora=T0 + 2 * 3600)
+        guardado = self.b.aviso_guardado(aviso_id)
+        self.assertEqual(guardado["estado"], "descartado")
+        self.assertEqual(
+            len(self.b.cuerpos()), 2, "los dos fallos previos y ningún envío"
+        )
+
+    def test_un_aviso_pendiente_previo_al_despliegue_no_se_envia(self):
+        self.encargo_terminado("pendiente-viejo")
+        directores.drenar(self.b.reg, ahora=T0, cortar="antes")
+        aviso_id = directores.drenar(self.b.reg, ahora=T0, cortar="antes")["avisos"][0][
+            "id"
+        ]
+        guardado = self.b.aviso_guardado(aviso_id)
+        self.assertEqual(guardado["estado"], "pendiente")
+        self.assertEqual(self.b.cuerpos(), [], "el corte antes no intenta envíos")
+        ruta = self.b.base / "avisos" / f"{aviso_id}.json"
+        viejo = T0 - 7 * 3600
+        os.utime(ruta, (viejo, viejo))
+        avisos = directores.drenar(self.b.reg, ahora=T0)["avisos"]
+        self.assertEqual(self.b.aviso_guardado(aviso_id)["estado"], "descartado")
+        self.assertFalse(avisos[0]["entregado"])
+        self.assertEqual(self.b.cuerpos(), [], "un pendiente de ayer no se envía")
 
     def test_el_id_del_cierre_de_cancelado_no_depende_de_la_evidencia(self):
         ident = self.b.encargo("# Se cancela con evidencia\n\ntexto", "cancela-evid")
