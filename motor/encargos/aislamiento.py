@@ -105,6 +105,87 @@ def _codex_windows() -> Path:
     raise RuntimeError("no se encontro el ejecutable nativo instalado de Codex/MXC")
 
 
+def temporal_de(runtime: Path) -> Path:
+    """Temporal propio de una corrida: vacío, dentro de su runtime."""
+    temporal = runtime / "tmp"
+    if temporal.is_symlink() or temporal.is_file():
+        temporal.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(temporal, ignore_errors=True)
+    temporal.mkdir(parents=True, exist_ok=True)
+    return temporal
+
+
+def limpiar_temporal(runtime: Path) -> None:
+    temporal = runtime / "tmp"
+    if temporal.is_symlink() or temporal.is_file():
+        temporal.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(temporal, ignore_errors=True)
+
+
+def _atajo_mktemp(runtime: Path) -> Path | None:
+    """En macOS, BSD mktemp ignora TMPDIR sin una plantilla y usa /var/folders,
+    que la jaula niega. Un mktemp propio en el PATH arma una plantilla dentro
+    del TMPDIR de la corrida, sin depender de la opción -p."""
+    if sys.platform != "darwin":
+        return None
+    real = shutil.which("mktemp")
+    if not real:
+        return None
+    bin_dir = runtime / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    atajo = bin_dir / "mktemp"
+    atajo.write_text(
+        "#!/bin/sh\n"
+        f"real={shlex.quote(str(Path(real).resolve()))}\n"
+        "flags=''\n"
+        "prefijo=tmp\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        "  case \"$1\" in\n"
+        "    -p|--tmpdir*)\n"
+        '      exec "$real" $flags "$@"\n'
+        "      ;;\n"
+        "    -t)\n"
+        '      if [ "$#" -ge 2 ]; then\n'
+        '        prefijo="$2"\n'
+        "        shift 2\n"
+        "      else\n"
+        '        exec "$real" $flags "$@"\n'
+        "      fi\n"
+        "      ;;\n"
+        "    -*t*)\n"
+        '      sin_t="${1%%t*}"\n'
+        '      resto="${1#*t}"\n'
+        '      if [ -n "$resto" ]; then\n'
+        '        prefijo="$resto"\n'
+        '        [ "$sin_t" = "-" ] || flags="$flags $sin_t"\n'
+        "        shift\n"
+        '      elif [ "$#" -ge 2 ]; then\n'
+        '        prefijo="$2"\n'
+        '        [ "$sin_t" = "-" ] || flags="$flags $sin_t"\n'
+        "        shift 2\n"
+        "      else\n"
+        '        exec "$real" $flags "$@"\n'
+        "      fi\n"
+        "      ;;\n"
+        "    -*)\n"
+        "      flags=\"$flags $1\"\n"
+        "      shift\n"
+        "      ;;\n"
+        "    *)\n"
+        '      exec "$real" $flags "$@"\n'
+        "      ;;\n"
+        "  esac\n"
+        "done\n"
+        '# Sin plantilla propia, el archivo vive en el TMPDIR de la corrida.\n'
+        'exec "$real" $flags "${TMPDIR:?}/$prefijo.XXXXXXXXXX"\n',
+        encoding="utf-8",
+    )
+    atajo.chmod(0o755)
+    return bin_dir
+
+
 def _entorno(
     runtime: Path, suscripcion: bool, cmd: list[str], *, agente: str | None = None
 ) -> dict[str, str]:
@@ -134,8 +215,10 @@ def _entorno(
             + os.pathsep
             + env.get("PATH", "")
         )
-    temporal = runtime / "tmp"
-    temporal.mkdir(parents=True, exist_ok=True)
+    temporal = temporal_de(runtime)
+    atajo = _atajo_mktemp(runtime)
+    if atajo is not None:
+        env["PATH"] = str(atajo) + os.pathsep + env.get("PATH", "")
     env.update(
         HOME=str(runtime),
         USERPROFILE=str(runtime),
