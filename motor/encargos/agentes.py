@@ -33,6 +33,53 @@ PROHIBIDO_SEGUNDO_PLANO = (
 SIN_SEGUNDO_PLANO = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
 
+def resolver_lanzador(
+    agente: str,
+    generacion: Path | None = None,
+    *,
+    which=None,
+) -> list[str] | None:
+    """El argv con el que el motor lanzaría al agente.
+
+    Con una generación vigente manda su `runtime.json`; sin ella, o sin
+    lanzador propio para el cliente, cae al PATH del proceso. Es la misma
+    resolución que usa el supervisor al lanzar, sin mirar autenticación.
+    """
+    which = which or shutil.which
+    if agente not in ADAPTADORES:
+        return None
+    cliente = cliente_para(agente)
+    if generacion is not None and (generacion / "runtime.json").is_file():
+        from motor.flota.runtime import resolver_ejecutable
+
+        try:
+            argv = resolver_ejecutable(
+                generacion, [cliente], requerido=agente != "muse"
+            )
+        except (OSError, ValueError, TypeError):
+            return None
+        if agente == "muse":
+            ruta = which(agente)
+            if not ruta:
+                return None
+            if argv[0] == cliente:
+                return [ruta]
+        return argv
+    ruta = which(cliente)
+    return [ruta] if ruta else None
+
+
+def resolver_binario(
+    agente: str,
+    generacion: Path | None = None,
+    *,
+    which=shutil.which,
+) -> str | None:
+    """La ruta del ejecutable que el motor lanzaría para el agente."""
+    argv = resolver_lanzador(agente, generacion, which=which)
+    return argv[0] if argv else None
+
+
 def _disponible(agente: str, generacion: Path | None = None) -> bool:
     if agente in ("sleep", "ensayo"):
         return os.name != "nt"
@@ -54,18 +101,7 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
 
         if not disponible():
             return False
-    if generacion is not None and (generacion / "runtime.json").is_file():
-        from motor.flota.runtime import resolver_ejecutable
-
-        try:
-            resolver_ejecutable(
-                generacion, [cliente_para(agente)], requerido=agente != "muse"
-            )
-        except (OSError, ValueError, TypeError):
-            return False
-        if agente == "muse" and not shutil.which(agente):
-            return False
-    elif not shutil.which(cliente_para(agente)):
+    if resolver_binario(agente, generacion) is None:
         return False
     if agente == "codex":
         path = (

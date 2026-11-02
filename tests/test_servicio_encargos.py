@@ -9,12 +9,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import hashlib
 
+from motor import capacidades_maquina as cm
 from motor.encargos.registro import Registro
 from motor.integraciones.directores import _cuerpo_del_aviso
-from motor.servicio import instalable_encargos, vincular_base
+from motor.servicio import ETIQUETA_ENCARGOS, instalable_encargos, vincular_base
 
 
 class ServicioEncargos(unittest.TestCase):
@@ -33,6 +35,34 @@ class ServicioEncargos(unittest.TestCase):
             "pc", "u", "/py", "/base", "/raiz", agente="codex"
         )
         self.assertIn("--agente codex", pc)
+
+    def test_plantilla_mac_es_el_launchagent_que_el_reporte_exige(self):
+        mac = instalable_encargos(
+            "mac", "u", "/py", "/base", "/raiz", agente="grok"
+        )
+        self.assertEqual(ETIQUETA_ENCARGOS, cm.ETIQUETA_ENCARGOS)
+        self.assertIn(f"<key>Label</key><string>{ETIQUETA_ENCARGOS}</string>", mac)
+        self.assertIn(f"LaunchAgents/{ETIQUETA_ENCARGOS}.plist", mac)
+        self.assertIn("<key>RunAtLoad</key><true/>", mac)
+        self.assertNotIn("UserName", mac)
+        self.assertNotIn("/Library/LaunchDaemons", mac)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            carpeta = Path(tmp) / "LaunchAgents"
+            carpeta.mkdir()
+            (carpeta / f"{ETIQUETA_ENCARGOS}.plist").write_text(mac, encoding="utf-8")
+
+            def correr(argv, timeout=20):
+                class R:
+                    returncode = 0
+                    stdout = b""
+                    stderr = b""
+
+                return R()
+
+            with mock.patch.object(cm, "sistema", lambda: "macos"):
+                fila = cm._arranque(correr, carpeta)
+        self.assertEqual(fila["estado"], "ok")
 
     def test_vincular_base_escribe_flota_y_canal(self):
         with tempfile.TemporaryDirectory() as tmp:

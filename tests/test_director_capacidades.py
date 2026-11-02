@@ -17,8 +17,10 @@ from unittest import mock
 from motor import capacidades_maquina as cm
 from motor.integraciones import cli
 
+ETIQUETA_ENCARGOS = "ai.goncloud.motor-encargos"
 
-def _conf_de_prueba(raiz: Path) -> tuple[Path, Path]:
+
+def _conf_de_prueba(raiz: Path, path_extra: tuple[str, ...] = ()) -> tuple[Path, Path]:
     """(home, base): motor home con maquina.toml, conf y secretos; base con recursos."""
     home = raiz / ".motor"
     conf = raiz / "conf"
@@ -34,8 +36,12 @@ def _conf_de_prueba(raiz: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     home.mkdir()
+    extra = ""
+    if path_extra:
+        extra = "path_extra = [" + ", ".join(f'"{p}"' for p in path_extra) + "]\n"
     (home / "maquina.toml").write_text(
-        f'nombre = "maquina-de-prueba"\nconf = "{conf.as_posix()}"\n', encoding="utf-8"
+        f'nombre = "maquina-de-prueba"\nconf = "{conf.as_posix()}"\n{extra}',
+        encoding="utf-8",
     )
     secretos = home / "secretos.env"
     secretos.write_text(
@@ -168,6 +174,72 @@ class ReporteCompletoTest(unittest.TestCase):
         self.assertFalse(datos["ok"])
         self.assertTrue(any("ci-linux" in f for f in datos["faltas"]))
         self.assertIn("faltas:", cm.texto(datos))
+
+
+class AgentesFueraDelPathDelServicioTest(unittest.TestCase):
+    """El reporte resuelve el cliente con la misma función que el supervisor
+    de encargos: el lanzador de la generación vigente o, sin generación, el
+    PATH del proceso. No inventa un PATH con `path_extra` que el servicio no
+    aplica a los agentes."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="cap-agentes-"))
+        self.addCleanup(_limpiar, self.tmp)
+
+    def _flota_con(self, lanzadores: dict) -> Path:
+        flota = self.tmp / "flota"
+        generacion = flota / "generaciones" / "g1"
+        generacion.mkdir(parents=True)
+        (generacion / "runtime.json").write_text(
+            json.dumps({"lanzadores": lanzadores}), encoding="utf-8"
+        )
+        (flota / "actual").symlink_to(generacion, target_is_directory=True)
+        return generacion
+
+    def _reporte(self, home: Path, base: Path) -> dict:
+        dobles = Dobles()
+        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}), mock.patch.object(
+            cm, "_correr", dobles.correr
+        ), mock.patch.object(cm, "_jaula", lambda *a, **k: {
+            "mecanismo": "directo", "estado": "ok", "detalle": "lanzamiento directo listo",
+        }), mock.patch.object(cm, "_arranque", lambda *a, **k: {
+            "mecanismo": "launchd", "estado": "ok", "detalle": "servicio cargado",
+        }), _puertas_de_windows():
+            return cm.reporte(base, home, dobles.correr, which=None)
+
+    def _fila(self, datos: dict, agente: str) -> dict:
+        return next(f for f in datos["agentes"]["filas"] if f["agente"] == agente)
+
+    @unittest.skipUnless(os.name == "posix", "el cliente falso es un script POSIX")
+    def test_lanzador_de_la_generacion_fuera_del_path_sale_ok_con_su_ruta(self):
+        generacion = self._flota_con(
+            {"opencode": ["herramientas/opencode/bin/opencode"]}
+        )
+        lanzador = generacion / "herramientas" / "opencode" / "bin" / "opencode"
+        lanzador.parent.mkdir(parents=True)
+        lanzador.write_text("#!/bin/sh\necho opencode 9.9.9\n", encoding="utf-8")
+        lanzador.chmod(0o755)
+        home, base = _conf_de_prueba(self.tmp)
+        (base / "flota-home.json").write_text(
+            json.dumps({"home": str(generacion.parent.parent)}), encoding="utf-8"
+        )
+        datos = self._reporte(home, base)
+        fila = self._fila(datos, "opencode")
+        self.assertEqual(fila["estado"], "ok")
+        self.assertIn(str(lanzador), fila["detalle"])
+
+    @unittest.skipUnless(os.name == "posix", "el cliente falso es un script POSIX")
+    def test_cliente_solo_en_path_extra_sale_falta_como_lo_ve_el_servicio(self):
+        extra = self.tmp / "bin-extra"
+        extra.mkdir()
+        opencode = extra / "opencode"
+        opencode.write_text("#!/bin/sh\necho opencode 9.9.9\n", encoding="utf-8")
+        opencode.chmod(0o755)
+        home, base = _conf_de_prueba(self.tmp, path_extra=(str(extra),))
+        datos = self._reporte(home, base)
+        fila = self._fila(datos, "opencode")
+        self.assertEqual(fila["estado"], "falta")
+        self.assertIn("generación vigente", fila["detalle"])
 
 
 class ReporteIncompletoTest(unittest.TestCase):
@@ -491,6 +563,35 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         self.assertEqual(fila["estado"], "falta")
         self.assertIn("sin TLA2TOOLS", fila["detalle"])
 
+    def test_java_tlc_halla_las_herramientas_de_la_base_sin_entorno(self):
+        """El servicio de launchd no hereda las variables del shell. La
+        preparación deja Java y TLA2TOOLS en <base>/herramientas y el reporte
+        los halla ahí, igual que verificar.sh."""
+        base = self.tmp / "base-herramientas"
+        jar = base / "herramientas" / "tla2tools" / "1.7.4" / "tla2tools.jar"
+        jar.parent.mkdir(parents=True)
+        jar.write_bytes(b"jar")
+        java = base / "herramientas" / "java" / "actual" / "bin" / "java"
+        java.parent.mkdir(parents=True)
+        java.write_bytes(b"#!/bin/sh\n")
+        java.chmod(0o755)
+
+        def correr(argv, timeout=20):
+            class R:
+                returncode = 0
+                stdout = b""
+                stderr = b'openjdk version "25.0.5" 2025-10-21\n'
+
+            return R()
+
+        with mock.patch.object(cm, "sistema", lambda: "macos"), mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            fila = cm._java_tlc(correr, lambda nombre: None, base)
+        self.assertEqual(fila["estado"], "ok")
+        self.assertIn("tla2tools", fila["detalle"])
+        self.assertIn(str(jar), fila["detalle"])
+
     def test_arranque_windows_con_vigilante_inexistente_es_falta(self):
         valor = '"C:\\py\\python.exe" -B "C:\\borrado\\iniciar_encargos_pc.py"'
         with mock.patch.object(cm, "sistema", lambda: "windows"):
@@ -506,48 +607,90 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("supervisor.ps1", arranque["detalle"])
 
-    def test_arranque_launchd_con_keepalive(self):
+    def _arranque_mac(self, agentes: Path, launchctl_ok=True):
         import plistlib
 
-        dir_fake = self.tmp / "LaunchDaemons"
-        dir_fake.mkdir()
-        (dir_fake / "com.goncloud.motor.plist").write_bytes(
+        def correr(argv, timeout=20):
+            class R:
+                returncode = 1
+                stdout = b""
+                stderr = b""
+
+            r = R()
+            if argv[:1] == ["launchctl"] and launchctl_ok and ETIQUETA_ENCARGOS in argv[-1]:
+                r.returncode = 0
+            return r
+
+        with mock.patch.object(cm, "sistema", lambda: "macos"):
+            return cm._arranque(correr, agentes)
+
+    def _agente(self, datos: dict, etiqueta: str = ""):
+        import plistlib
+
+        carpeta = self.tmp / "LaunchAgents"
+        carpeta.mkdir(exist_ok=True)
+        nombre = etiqueta or ETIQUETA_ENCARGOS
+        (carpeta / f"{nombre}.plist").write_bytes(
+            plistlib.dumps({"Label": nombre, **datos})
+        )
+        return carpeta
+
+    def test_arranque_macos_con_el_launchagent_de_encargos_y_runatload(self):
+        carpeta = self._agente({"RunAtLoad": True})
+        arranque = self._arranque_mac(carpeta)
+        self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "launchd"))
+        self.assertIn(ETIQUETA_ENCARGOS, arranque["detalle"])
+
+    def test_arranque_macos_con_keepalive_tambien_es_ok(self):
+        carpeta = self._agente({"KeepAlive": True})
+        self.assertEqual(self._arranque_mac(carpeta)["estado"], "ok")
+
+    def test_arranque_macos_con_solo_el_launchdaemon_viejo_es_falta(self):
+        import plistlib
+
+        viejos = self.tmp / "LaunchDaemons"
+        viejos.mkdir()
+        (viejos / "com.goncloud.motor.plist").write_bytes(
             plistlib.dumps({"Label": "com.goncloud.motor", "KeepAlive": True})
         )
+        agentes = self.tmp / "LaunchAgents"
+        agentes.mkdir()
         with mock.patch.object(cm, "sistema", lambda: "macos"):
-            arranque = cm._arranque(lambda *a, **k: None, dir_fake)
-        self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "launchd"))
-
-    def test_arranque_launchd_sin_keepalive_es_falta(self):
-        import plistlib
-
-        dir_fake = self.tmp / "LaunchDaemons"
-        dir_fake.mkdir()
-        (dir_fake / "com.goncloud.motor.plist").write_bytes(
-            plistlib.dumps({"Label": "com.goncloud.motor"})
-        )
-        with mock.patch.object(cm, "sistema", lambda: "macos"):
-            arranque = cm._arranque(lambda *a, **k: None, dir_fake)
+            arranque = cm._arranque(lambda *a, **k: None, agentes)
         self.assertEqual(arranque["estado"], "falta")
-        self.assertIn("sin KeepAlive", arranque["detalle"])
+        self.assertIn(ETIQUETA_ENCARGOS, arranque["detalle"])
+
+    def test_arranque_macos_sin_keepalive_ni_runatload_es_falta(self):
+        carpeta = self._agente({})
+        arranque = self._arranque_mac(carpeta)
+        self.assertEqual(arranque["estado"], "falta")
+        self.assertIn("KeepAlive", arranque["detalle"])
+
+    def test_arranque_macos_con_el_plist_pero_sin_cargar_en_launchd_es_falta(self):
+        carpeta = self._agente({"RunAtLoad": True})
+        arranque = self._arranque_mac(carpeta, launchctl_ok=False)
+        self.assertEqual(arranque["estado"], "falta")
+        self.assertIn("cargado", arranque["detalle"])
 
     def test_arranque_plist_que_no_es_diccionario_no_tumba_el_reporte(self):
         import plistlib
 
-        dir_fake = self.tmp / "LaunchDaemons"
-        dir_fake.mkdir()
-        (dir_fake / "com.goncloud.motor.plist").write_bytes(plistlib.dumps("solo texto"))
+        carpeta = self.tmp / "LaunchAgents"
+        carpeta.mkdir()
+        (carpeta / f"{ETIQUETA_ENCARGOS}.plist").write_bytes(
+            plistlib.dumps("solo texto")
+        )
         with mock.patch.object(cm, "sistema", lambda: "macos"):
-            arranque = cm._arranque(lambda *a, **k: None, dir_fake)
+            arranque = cm._arranque(lambda *a, **k: None, carpeta)
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("no es un diccionario", arranque["detalle"])
 
     def test_arranque_plist_mal_formado_es_falta_legible(self):
-        dir_fake = self.tmp / "LaunchDaemons"
-        dir_fake.mkdir()
-        (dir_fake / "com.goncloud.motor.plist").write_bytes(b"esto no es un plist")
+        carpeta = self.tmp / "LaunchAgents"
+        carpeta.mkdir()
+        (carpeta / f"{ETIQUETA_ENCARGOS}.plist").write_bytes(b"esto no es un plist")
         with mock.patch.object(cm, "sistema", lambda: "macos"):
-            arranque = cm._arranque(lambda *a, **k: None, dir_fake)
+            arranque = cm._arranque(lambda *a, **k: None, carpeta)
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("ilegible", arranque["detalle"])
 
@@ -567,11 +710,11 @@ class SeccionesPorSistemaTest(unittest.TestCase):
             crudo = plistlib.dumps(obj, fmt=plistlib.FMT_BINARY)
         finally:
             sys.setrecursionlimit(limite)
-        dir_fake = self.tmp / "LaunchDaemons"
-        dir_fake.mkdir()
-        (dir_fake / "com.goncloud.motor.plist").write_bytes(crudo)
+        carpeta = self.tmp / "LaunchAgents"
+        carpeta.mkdir()
+        (carpeta / f"{ETIQUETA_ENCARGOS}.plist").write_bytes(crudo)
         with mock.patch.object(cm, "sistema", lambda: "macos"):
-            arranque = cm._arranque(lambda *a, **k: None, dir_fake)
+            arranque = cm._arranque(lambda *a, **k: None, carpeta)
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("ilegible", arranque["detalle"])
         self.assertIn("maximum recursion depth exceeded", arranque["detalle"])

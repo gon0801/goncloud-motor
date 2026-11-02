@@ -116,6 +116,9 @@ class DoblesTest(unittest.TestCase):
         self.secreto.write_text("MOTOR_CANARIO=no-borrar\n", encoding="utf-8")
         self.catalogo = lambda: json.loads(json.dumps(CATALOGO_FALSO))
         self.jar_sha = sha256(JAR_FALSO).hexdigest()
+        plataforma = mock.patch.object(prepara_pc, "sistema", lambda: "windows")
+        plataforma.start()
+        self.addCleanup(plataforma.stop)
 
     def descargador(self, url):
         return ZIP_BYTES if url.endswith("jdk.zip") else JAR_FALSO

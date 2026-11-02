@@ -1,36 +1,42 @@
-"""Prepara la PC (Windows) con las mismas capacidades que la Mini para encargos.
+"""Prepara la PC (Windows) y las Mac con las mismas capacidades para encargos.
 
 Córralo desde el código instalado por el flujo de etiquetas (C:\\Users\\ehven\\motor
-tras ops/instala-todo.sh), no desde un checkout a mano: la llave Run queda atada
-al ops/ del directorio desde donde se corra este script.
+tras ops/instala-todo.sh en la PC, ~/motor en las Mac), no desde un checkout a
+mano: la llave Run de Windows queda atada al ops/ del directorio desde donde se
+corra este script.
 
 Deja, de forma idempotente (correrlo dos veces no cambia nada la segunda):
 
-- Java temurin 25 (zip GA de Adoptium, sha256 verificado por descarga) y
+- Java temurin 25 (zip GA de Adoptium en Windows, tar.gz en Mac) y
   tla2tools.jar 1.7.4 con el sha256 que fija verificacion/inspeccion/verificar.sh,
   ambos en <base>/herramientas/. La política de versión de Java es la misma que
   `java@temurin-25` en mise: el último GA de la 25. Un parche nuevo de temurin 25
   sí actualiza en la siguiente corrida; el jar está fijado por su suma.
-- JAVA y TLA2TOOLS persistentes para el usuario (setx), apuntando a lo anterior:
-  es el camino sin mise que el propio verificar.sh documenta (`exporta TLA2TOOLS
-  y JAVA`). No toca PATH del sistema ni secretos.
+- En Windows, JAVA y TLA2TOOLS persistentes para el usuario (setx), apuntando a
+  lo anterior: es el camino sin mise que el propio verificar.sh documenta
+  (`exporta TLA2TOOLS y JAVA`). No toca PATH del sistema ni secretos.
+- En Mac, un enlace estable <base>/herramientas/java/actual al JDK instalado.
+  Ni launchd ni un shell de servicio heredan variables de la terminal, así que
+  verificar.sh y `motor director capacidades` buscan ahí sin necesitarlas.
 - <base>/capacidades.json con los recursos ci-linux y ci-github, y la carpeta
-  <base>/evidencia-ci que declara ci-github.
-- La llave HKCU\\...\\Run\\GoncloudMotorEncargos lanzando el vigilante
-  (ops/iniciar_encargos_pc.py) en lugar de supervisor.ps1 directo. supervisor.ps1
-  no se borra: sigue siendo lo que el vigilante lanza y vigila (fixed_paths).
+  <base>/evidencia-ci que declara ci-github, sin pisar los recursos que el
+  operador ya haya declarado.
+- En Windows, la llave HKCU\\...\\Run\\GoncloudMotorEncargos lanzando el
+  vigilante (ops/iniciar_encargos_pc.py) en lugar de supervisor.ps1 directo.
+  supervisor.ps1 no se borra: sigue siendo lo que el vigilante lanza y vigila
+  (fixed_paths).
 
 Modos:
 - Sin banderas: deja lo que falte y reporta cada paso.
 - --comprobar: solo comprueba y dice qué falta; no toca nada.
-- --verificar [cfg]: además corre verificar.sh con las herramientas dejadas
-  (por Git Bash si bash no está en PATH). Antes de correrlo, normaliza a LF
-  verificar.sh, el modelo y la cfg si un checkout CRLF los trajo así.
+- --verificar [cfg]: además corre verificar.sh con las herramientas dejadas.
+  Antes de correrlo, normaliza a LF verificar.sh, el modelo y la cfg si un
+  checkout CRLF los trajo así.
 - --json: imprime el reporte como JSON.
 
 Nunca lee, escribe ni imprime secretos: secretos.env no se toca. Fuera de
 herramientas/ solo escribe capacidades.json, evidencia-ci, la llave Run y las
-variables TLA2TOOLS/JAVA del usuario.
+variables TLA2TOOLS/JAVA del usuario en Windows.
 """
 
 from __future__ import annotations
@@ -40,10 +46,12 @@ import hashlib
 import io
 import json
 import os
+import platform as _platform
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
@@ -84,6 +92,25 @@ def correr(argv, timeout=TIMEOUT_CORTO):
         argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=timeout,
     )
+
+
+def sistema() -> str:
+    return "macos" if sys.platform == "darwin" else "windows"
+
+
+def _arquitectura_temurin() -> str:
+    maquina = _platform.machine().lower()
+    return "aarch64" if maquina in ("arm64", "aarch64") else "x64"
+
+
+def temurin_api() -> str:
+    """El GA más nuevo de temurin 25 para la plataforma y arquitectura."""
+    if sistema() == "macos":
+        return (
+            "https://api.adoptium.net/v3/assets/latest/25/hotspot"
+            f"?architecture={_arquitectura_temurin()}&image_type=jdk&os=mac&vendor=eclipse"
+        )
+    return TEMURIN_API
 
 
 def _cita_ps(texto) -> str:
@@ -163,6 +190,39 @@ def _extraer_zip(crudo: bytes, destino: Path) -> None:
         z.extractall(destino)
 
 
+def _extraer_tar(crudo: bytes, destino: Path) -> None:
+    """El JDK de Adoptium para Mac es un tar.gz. El filtro `data` de tarfile
+    rechaza rutas absolutas, `..` y enlaces que salen del destino."""
+    destino.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(crudo), mode="r:gz") as t:
+        t.extractall(destino, filter="data")
+
+
+def _ejecutable_java(raiz: Path) -> Path | None:
+    for relativa in ("bin/java.exe", "bin/java", "Contents/Home/bin/java"):
+        candidato = raiz / relativa
+        if candidato.is_file():
+            return candidato
+    return None
+
+
+def _enlazar_actual(base: Path, java: Path) -> None:
+    """`herramientas/java/actual` estable para quien no lee el marker: el
+    servicio de launchd y verificar.sh. En Windows no se crean enlaces."""
+    if os.name == "nt":
+        return
+    enlace = herramientas(base) / "java" / "actual"
+    enlace.parent.mkdir(parents=True, exist_ok=True)
+    casa = java.parent.parent.resolve()
+    if enlace.is_symlink() and Path(os.readlink(enlace)).resolve() == casa:
+        return
+    temporal = enlace.with_name(".actual.tmp")
+    if temporal.is_symlink() or temporal.exists():
+        temporal.unlink()
+    os.symlink(casa, temporal, target_is_directory=True)
+    os.replace(temporal, enlace)
+
+
 # --------------------------------------------------------------------- java
 
 
@@ -184,12 +244,13 @@ def java_instalado(base: Path) -> dict | None:
     return datos
 
 
-def temurin_mas_nuevo(catalogo=None) -> dict:
-    """El GA más nuevo de temurin 25 para Windows x64, con el sha256 que la API declara."""
+def temurin_mas_nuevo(catalogo=None, api: str | None = None) -> dict:
+    """El GA más nuevo de temurin 25 para esta plataforma, con el sha256 que
+    la API declara."""
     if catalogo is not None:
         filas = catalogo()
     else:
-        with _abre(TEMURIN_API, 60) as r:
+        with _abre(api or TEMURIN_API, 60) as r:
             filas = json.loads(r.read().decode("utf-8"))
     for fila in filas:
         paquete = (fila.get("binary") or {}).get("package") or {}
@@ -199,7 +260,7 @@ def temurin_mas_nuevo(catalogo=None) -> dict:
                 "url": paquete["link"],
                 "sha256": str(paquete["checksum"]).lower(),
             }
-    raise RuntimeError("la API de Adoptium no trae un paquete jdk de Windows")
+    raise RuntimeError("la API de Adoptium no trae un paquete jdk para esta plataforma")
 
 
 def _carpeta_de_release(release: str) -> str:
@@ -214,15 +275,17 @@ def instalar_java(base: Path, nuevo: dict, descargador=None) -> tuple[str, str]:
     Extrae a un staging y renombra a la carpeta de la release, deja el marker
     utilizable y solo entonces borra la jdk vieja: si algo falla a mitad de la
     actualización, la máquina sigue con java utilizable (F7) y el exe del
-    marker siempre sale de este zip (F9)."""
+    marker siempre sale de este zip (F9). En Mac deja además el enlace
+    estable `herramientas/java/actual`."""
     previo = java_instalado(base)
     if previo and previo.get("release") == nuevo["release"]:
+        _enlazar_actual(base, Path(previo["java"]))
         return "ok", f"java {previo['release']} ya está en {previo['java']}"
     crudo = descargar(nuevo["url"], descargador)
     suma = hashlib.sha256(crudo).hexdigest()
     if suma != nuevo["sha256"]:
         raise RuntimeError(
-            f"el zip de temurin {nuevo['release']} trae sha256 {suma} y la API "
+            f"el paquete de temurin {nuevo['release']} trae sha256 {suma} y la API "
             f"declara {nuevo['sha256']}; no se instala"
         )
     carpeta = herramientas(base) / "java"
@@ -230,32 +293,34 @@ def instalar_java(base: Path, nuevo: dict, descargador=None) -> tuple[str, str]:
     with tempfile.TemporaryDirectory(
         prefix="nueva-", dir=carpeta, ignore_cleanup_errors=True
     ) as staging:
-        _extraer_zip(crudo, Path(staging))
+        if str(nuevo["url"]).endswith((".tar.gz", ".tgz")):
+            _extraer_tar(crudo, Path(staging))
+        else:
+            _extraer_zip(crudo, Path(staging))
         raiz = next(
             (
                 r for r in sorted(Path(staging).iterdir())
-                if r.is_dir() and (r / "bin" / "java.exe").is_file()
+                if r.is_dir() and _ejecutable_java(r) is not None
             ),
             None,
         )
         if raiz is None:
-            raise RuntimeError("el zip de temurin no trae bin/java.exe")
+            raise RuntimeError("el paquete de temurin no trae un java ejecutable")
         destino = carpeta / _carpeta_de_release(nuevo["release"])
         if destino.exists():
             shutil.rmtree(destino)
         shutil.move(str(raiz), str(destino))
-    exe = destino / "bin" / "java.exe"
+    exe = _ejecutable_java(destino)
+    if exe is None:
+        raise RuntimeError("el paquete de temurin no trae un java ejecutable")
+    _enlazar_actual(base, exe)
     marker = {"release": nuevo["release"], "sha256": suma, "java": str(exe)}
     _escribir_atomico(
         _ruta_java_marker(base), json.dumps(marker, ensure_ascii=False, indent=2) + "\n"
     )
     if previo:
-        vieja = Path(previo["java"]).parent.parent
-        if (
-            vieja != destino
-            and vieja.parent == carpeta
-            and vieja.name.startswith("jdk-")
-        ):
+        vieja = carpeta / _carpeta_de_release(str(previo.get("release") or ""))
+        if vieja != destino and vieja.parent == carpeta and vieja.name.startswith("jdk-"):
             shutil.rmtree(vieja, ignore_errors=True)
     return "hecho", f"java {nuevo['release']} instalado en {exe}"
 
@@ -317,6 +382,24 @@ def fijar_entorno(java: str, jar: str, correr=correr) -> tuple[str, str]:
     if not cambios:
         return "ok", "TLA2TOOLS y JAVA persistentes ya apuntan a las herramientas"
     return "hecho", "setx fijó " + " y ".join(cambios)
+
+
+def java_servicio(base: Path) -> Path:
+    return herramientas(base) / "java" / "actual" / "bin" / "java"
+
+
+def _entorno_servicio_mac(base: Path) -> tuple[str, str]:
+    """launchd no hereda variables del shell: verificar.sh y el reporte hallan
+    el java y el jar por el enlace estable y la ruta que fija verificar.sh."""
+    java = java_instalado(base)
+    if java is None:
+        return "error", "sin java utilizable no hay enlace para el servicio"
+    _enlazar_actual(base, Path(java["java"]))
+    actual = java_servicio(base)
+    jar = jar_tlc(base)
+    if not actual.is_file() or not jar.is_file():
+        return "error", f"falta {actual} o {jar} para el servicio"
+    return "ok", f"verificar.sh y el reporte hallan {actual} y {jar}"
 
 
 # ------------------------------------------------------- capacidades.json
@@ -409,8 +492,61 @@ def fijar_llave(correr=correr, python: str = "") -> tuple[str, str]:
 # ------------------------------------------------------------------- pasos
 
 
+def _comprobar_mac(base: Path) -> list[dict]:
+    base = Path(base)
+    java = java_instalado(base)
+    jar = jar_tlc(base)
+    try:
+        suma_jar = sha256_de(jar) if jar.is_file() else ""
+    except OSError:
+        suma_jar = ""
+    actual = java_servicio(base)
+    entorno_ok = bool(java) and actual.is_file() and jar.is_file()
+    try:
+        capacidades_actual = json.loads(
+            (base / "capacidades.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        capacidades_actual = None
+    deseado = capacidades_deseadas(base)
+    return [
+        {
+            "paso": "java",
+            "estado": "ok" if java else "falta",
+            "detalle": f"java {java['release']} en {java['java']}" if java
+            else "sin temurin 25 utilizable (falta marker o java)",
+        },
+        {
+            "paso": "tla2tools",
+            "estado": "ok" if suma_jar == TLC_SHA256 else "falta",
+            "detalle": f"{jar} sha256 {suma_jar or 'ausente'}"
+            + ("" if suma_jar == TLC_SHA256 else f" (verificar.sh fija {TLC_SHA256})"),
+        },
+        {
+            "paso": "entorno",
+            "estado": "ok" if entorno_ok else "falta",
+            "detalle": f"enlace del servicio: {actual}"
+            if entorno_ok else "falta el enlace herramientas/java/actual o el jar",
+        },
+        {
+            "paso": "capacidades",
+            "estado": "ok" if capacidades_suficiente(capacidades_actual, deseado) else "falta",
+            "detalle": "capacidades.json con ci-linux y ci-github"
+            if capacidades_suficiente(capacidades_actual, deseado)
+            else "capacidades.json no coincide con lo esperado",
+        },
+        {
+            "paso": "evidencia-ci",
+            "estado": "ok" if (base / "evidencia-ci").is_dir() else "falta",
+            "detalle": str(base / "evidencia-ci"),
+        },
+    ]
+
+
 def comprobar(base: Path, correr=correr) -> list[dict]:
     base = Path(base)
+    if sistema() == "macos":
+        return _comprobar_mac(base)
     java = java_instalado(base)
     jar = jar_tlc(base)
     try:
@@ -473,13 +609,14 @@ def comprobar(base: Path, correr=correr) -> list[dict]:
 def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
              python: str = "") -> list[dict]:
     base = Path(base)
+    mac = sistema() == "macos"
     salida = []
     # La política documentada es el último GA de temurin 25: preguntar en cada
     # corrida, instalar solo si hay parche nuevo (F2). No poder consultar la
     # API con java ya utilizable no tumba la corrida; un fallo de la
     # actualización sí se reporta, y la jdk vieja queda utilizable (F7).
     try:
-        nuevo = temurin_mas_nuevo(catalogo)
+        nuevo = temurin_mas_nuevo(catalogo, temurin_api() if mac else TEMURIN_API)
     except (RuntimeError, OSError, ValueError) as exc:
         nuevo = None
         motivo = f"{type(exc).__name__}: {exc}"
@@ -511,7 +648,13 @@ def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
     except (RuntimeError, OSError, ValueError) as exc:
         estado, detalle = "error", f"{type(exc).__name__}: {exc}"
     salida.append({"paso": "tla2tools", "estado": estado, "detalle": detalle})
-    if java is None:
+    if mac:
+        try:
+            estado, detalle = _entorno_servicio_mac(base)
+        except (RuntimeError, OSError) as exc:
+            estado, detalle = "error", f"{type(exc).__name__}: {exc}"
+        salida.append({"paso": "entorno", "estado": estado, "detalle": detalle})
+    elif java is None:
         salida.append({
             "paso": "entorno", "estado": "error",
             "detalle": "sin java utilizable no se fijan JAVA ni TLA2TOOLS",
@@ -524,11 +667,12 @@ def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
         salida.append({"paso": "entorno", "estado": estado, "detalle": detalle})
     estado, detalle = instalar_capacidades(base)
     salida.append({"paso": "capacidades", "estado": estado, "detalle": detalle})
-    try:
-        estado, detalle = fijar_llave(correr, python)
-    except (RuntimeError, OSError) as exc:
-        estado, detalle = "error", f"{type(exc).__name__}: {exc}"
-    salida.append({"paso": "llave-run", "estado": estado, "detalle": detalle})
+    if not mac:
+        try:
+            estado, detalle = fijar_llave(correr, python)
+        except (RuntimeError, OSError) as exc:
+            estado, detalle = "error", f"{type(exc).__name__}: {exc}"
+        salida.append({"paso": "llave-run", "estado": estado, "detalle": detalle})
     return salida
 
 

@@ -5,7 +5,8 @@ jaula, los agentes instalados (presencia y versión; nunca autenticación ni
 cuota), Java y TLC (si verificar.sh puede correr), los recursos de
 capacidades.json y si son usables, el canal de avisos, la presencia de
 MOTOR_KUMA_URL (nunca su valor) y el arranque con relanzamiento
-(launchd con KeepAlive en macOS, el vigilante en Windows).
+(el LaunchAgent `ai.goncloud.motor-encargos` cargado en macOS, el vigilante
+en Windows).
 
 Sale con código distinto de 0 si falta algo de lo que la máquina declara.
 La lectura se documenta en docs/capacidades-por-maquina.md.
@@ -13,6 +14,7 @@ La lectura se documenta en docs/capacidades-por-maquina.md.
 
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import re
@@ -22,11 +24,13 @@ import sys
 import tomllib
 from pathlib import Path
 
+from motor.encargos.agentes import resolver_lanzador
 from motor.encargos.capacidades import ConfigInvalida, cargar, abrir_lectura
 from motor.encargos.catalogo_agentes import ADAPTADORES, cliente_para
 
 HOME_MOTOR = Path.home() / ".motor"
-ETIQUETAS_LAUNCHD = ("com.goncloud.motor", "com.goncloud.motor-encargos")
+ETIQUETA_ENCARGOS = "ai.goncloud.motor-encargos"
+LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 LLAVE_RUN = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 ENTORNO_HKCU = r"HKCU\Environment"
 NOMBRE_LLAVE = "GoncloudMotorEncargos"
@@ -144,7 +148,29 @@ def _jaula(correr) -> dict:
     }
 
 
-def _agentes(which) -> list[dict]:
+def _generacion_vigente(base: Path) -> Path | None:
+    """La generación de flota con la que el servicio de encargos lanza hoy.
+
+    `flota-home.json` de la base apunta al home de la flota y su enlace
+    `actual` a la generación vigente. Sin flota vinculada no hay generación.
+    """
+    try:
+        doc = json.loads((base / "flota-home.json").read_text(encoding="utf-8"))
+        home = Path(str(doc["home"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not home.is_absolute():
+        home = base / home
+    actual = home / "actual"
+    try:
+        if actual.is_symlink():
+            return actual.resolve()
+    except OSError:
+        return None
+    return None
+
+
+def _agentes(which, generacion: Path | None = None) -> list[dict]:
     filas = []
     en_windows = sistema() == "windows"
     for agente in sorted(ADAPTADORES):
@@ -173,12 +199,12 @@ def _agentes(which) -> list[dict]:
                     "detalle": "sin jaula de Windows para el agente (ni psec ni AppContainer)",
                 })
                 continue
-        ruta = which(cliente)
-        if not ruta:
+        lanzador = resolver_lanzador(agente, generacion, which=which)
+        if not lanzador:
             filas.append({
                 "agente": agente,
                 "estado": "falta",
-                "detalle": f"{cliente}: no está en PATH",
+                "detalle": f"{cliente}: no está en la generación vigente ni en PATH",
             })
             continue
         version = ""
@@ -187,7 +213,7 @@ def _agentes(which) -> list[dict]:
 
             argv = [*resolve_shim(cliente, os.environ.get("PATH", "")), "--version"]
         else:
-            argv = [ruta, "--version"]
+            argv = [*lanzador, "--version"]
         try:
             r = _correr(argv, 20)
             if r.returncode == 0:
@@ -197,7 +223,7 @@ def _agentes(which) -> list[dict]:
         filas.append({
             "agente": agente,
             "estado": "ok",
-            "detalle": f"{cliente} {version or '(--version no respondió)'} en {ruta}",
+            "detalle": f"{cliente} {version or '(--version no respondió)'} en {' '.join(lanzador)}",
         })
     return filas
 
@@ -210,8 +236,20 @@ def _variable_persistente(nombre: str, correr) -> str:
     return _leer_registro(ENTORNO_HKCU, nombre, correr)
 
 
-def _java_tlc(correr, which) -> dict:
+def _java_tlc(correr, which, base: Path | None = None) -> dict:
     jar = os.environ.get("TLA2TOOLS", "")
+    java_cmd = os.environ.get("JAVA") or ""
+    if not jar and base is not None and sistema() != "windows":
+        # La preparación deja las herramientas en <base>/herramientas; launchd
+        # no hereda las variables del shell, así que aquí no hay TLA2TOOLS.
+        herramientas = Path(base) / "herramientas"
+        candidato = herramientas / "tla2tools" / "1.7.4" / "tla2tools.jar"
+        if candidato.is_file():
+            jar = str(candidato)
+            if not java_cmd:
+                actual = herramientas / "java" / "actual" / "bin" / "java"
+                if actual.is_file():
+                    java_cmd = str(actual)
     persistente = False
     if not jar and sistema() == "windows":
         jar = _variable_persistente("TLA2TOOLS", correr)
@@ -228,7 +266,6 @@ def _java_tlc(correr, which) -> dict:
         }
     if not Path(jar).is_file():
         return {"estado": "falta", "detalle": f"TLA2TOOLS apunta a {jar} y no existe"}
-    java_cmd = os.environ.get("JAVA") or ""
     if not java_cmd and sistema() == "windows":
         java_cmd = _variable_persistente("JAVA", correr)
     java_cmd = java_cmd or "java"
@@ -400,7 +437,17 @@ def _leer_registro(clave: str, valor: str, correr) -> str:
     return ""
 
 
-def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dict:
+def _launchd_cargado(correr, etiqueta: str) -> bool:
+    """launchd tiene cargado el servicio en el dominio del usuario."""
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    try:
+        r = correr(["launchctl", "print", f"gui/{uid}/{etiqueta}"], 15)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def _arranque(correr, launch_agents_dir: Path | None = None) -> dict:
     if sistema() == "windows":
         valor = _leer_registro(LLAVE_RUN, NOMBRE_LLAVE, correr)
         if VIGILANTE in valor.lower():
@@ -419,27 +466,32 @@ def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dic
             + (f": {valor}" if valor else " (llave ausente)"),
         }
     if sistema() == "macos":
+        carpeta = (
+            Path(launch_agents_dir) if launch_agents_dir is not None else LAUNCH_AGENTS
+        )
+        ruta = carpeta / f"{ETIQUETA_ENCARGOS}.plist"
+        try:
+            with open(ruta, "rb") as f:
+                datos = plistlib.load(f)
+        except OSError as exc:
+            return {"mecanismo": "launchd", "estado": "falta",
+                    "detalle": f"{ETIQUETA_ENCARGOS}: {exc.strerror or exc}"}
+        except Exception as exc:  # noqa: BLE001 - un plist hostil no tumba el reporte
+            return {"mecanismo": "launchd", "estado": "falta",
+                    "detalle": f"{ETIQUETA_ENCARGOS}: plist ilegible ({exc})"}
+        if not isinstance(datos, dict):
+            return {"mecanismo": "launchd", "estado": "falta",
+                    "detalle": f"{ETIQUETA_ENCARGOS}: el plist no es un diccionario"}
         causas = []
-        for etiqueta in ETIQUETAS_LAUNCHD:
-            ruta = launchd_dir / f"{etiqueta}.plist"
-            try:
-                with open(ruta, "rb") as f:
-                    datos = plistlib.load(f)
-            except OSError as exc:
-                causas.append(f"{etiqueta}: {exc.strerror or exc}")
-                continue
-            except Exception as exc:  # noqa: BLE001 - un plist hostil no tumba el reporte
-                causas.append(f"{etiqueta}: plist ilegible ({exc})")
-                continue
-            if not isinstance(datos, dict):
-                causas.append(f"{etiqueta}: el plist no es un diccionario")
-                continue
-            if datos.get("KeepAlive") is True:
-                return {"mecanismo": "launchd", "estado": "ok",
-                        "detalle": f"{ruta} con KeepAlive"}
-            causas.append(f"{etiqueta}: sin KeepAlive")
-        return {"mecanismo": "launchd", "estado": "falta",
-                "detalle": "; ".join(causas) or "sin LaunchDaemon del motor"}
+        if not (datos.get("KeepAlive") or datos.get("RunAtLoad")):
+            causas.append("sin KeepAlive ni RunAtLoad")
+        if not _launchd_cargado(correr, ETIQUETA_ENCARGOS):
+            causas.append("launchd no tiene cargado el servicio")
+        if causas:
+            return {"mecanismo": "launchd", "estado": "falta",
+                    "detalle": f"{ruta}: " + "; ".join(causas)}
+        return {"mecanismo": "launchd", "estado": "ok",
+                "detalle": f"{ruta} con KeepAlive o RunAtLoad y cargado en launchd"}
     return {"mecanismo": "ninguno", "estado": "aviso",
             "detalle": "sin política de arranque declarada para Linux"}
 
@@ -449,18 +501,27 @@ def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dic
 
 def reporte(base: Path, home: Path | None = None, correr=None, which=None) -> dict:
     correr = correr or _correr
-    which = which or shutil.which
     base = Path(base)
-    avisos, senal = _avisos_y_senal(Path(home) if home else HOME_MOTOR)
+    which = which or shutil.which
+    home = Path(home) if home else HOME_MOTOR
+    maquina = None
+    try:
+        from motor.conf import load_maquina
+
+        maquina = load_maquina(home)
+    except Exception:  # noqa: BLE001 - sin maquina.toml el reporte sigue con el PATH del proceso
+        pass
+    generacion = _generacion_vigente(base)
+    avisos, senal = _avisos_y_senal(home)
     recursos_causa, recursos_filas = _recursos(base, correr, which)
     if not (base / "capacidades.json").is_file():
         recursos_causa = (
             "sin capacidades.json en la base: los agentes no pueden pedir recursos"
         )
-    agentes = _agentes(which)
+    agentes = _agentes(which, generacion)
     secciones = {
         "jaula": _jaula(correr),
-        "java_tlc": _java_tlc(correr, which),
+        "java_tlc": _java_tlc(correr, which, base),
         "avisos": avisos,
         "senal": senal,
         "arranque": _arranque(correr),
@@ -476,14 +537,12 @@ def reporte(base: Path, home: Path | None = None, correr=None, which=None) -> di
     secciones["recursos"] = recursos
     secciones["agentes"] = {
         "estado": "falta" if any(f["estado"] == "falta" for f in agentes) else "ok",
-        "detalle": f"{sum(1 for f in agentes if f['estado'] == 'ok')} de {len(agentes)} clientes en PATH",
+        "detalle": f"{sum(1 for f in agentes if f['estado'] == 'ok')} de {len(agentes)} clientes disponibles",
         "filas": agentes,
     }
     nombre = ""
     try:
-        from motor.conf import ConfError, load_maquina
-
-        nombre = load_maquina(Path(home) if home else HOME_MOTOR).nombre
+        nombre = maquina.nombre if maquina is not None else ""
     except Exception:  # noqa: BLE001 - el nombre es informativo, no una condición
         pass
     faltas = [
