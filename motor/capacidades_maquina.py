@@ -137,13 +137,25 @@ def _jaula(correr, sandbox_exec: Path = Path("/usr/bin/sandbox-exec")) -> dict:
         if sandbox_exec.is_file():
             return {"mecanismo": "seatbelt", "estado": "ok", "detalle": str(sandbox_exec)}
         return {"mecanismo": "seatbelt", "estado": "falta", "detalle": f"falta {sandbox_exec}"}
+    # En Linux el motor no puede aislar a un trabajador: aislar levanta
+    # "sin aislamiento efectivo; trabajador no habilitado en este host" porque
+    # sandbox-exec es de macOS y psec/AppContainer de Windows. bubblewrap solo
+    # es jaula dentro de la distro WSL (aislamiento.py), no aquí.
+    causa_bwrap = ""
     try:
         r = correr(["bwrap", "--version"], 15)
     except (OSError, subprocess.TimeoutExpired):
-        return {"mecanismo": "bubblewrap", "estado": "falta", "detalle": "bwrap no corre"}
-    if r.returncode == 0:
-        return {"mecanismo": "bubblewrap", "estado": "ok", "detalle": _primera(r)}
-    return {"mecanismo": "bubblewrap", "estado": "falta", "detalle": _primera(r)}
+        r = None
+    if r is not None and r.returncode == 0:
+        causa_bwrap = f"bubblewrap {_primera(r)} presente, pero solo es jaula dentro de la distro WSL"
+    else:
+        causa_bwrap = "bubblewrap no corre"
+    return {
+        "mecanismo": "ninguno",
+        "estado": "falta",
+        "detalle": "el motor no aísla en Linux (aislar levanta 'sin aislamiento efectivo; "
+        "trabajador no habilitado en este host'); " + causa_bwrap,
+    }
 
 
 def _agentes(which) -> list[dict]:
@@ -344,11 +356,20 @@ def _leer_registro(clave: str, valor: str, correr) -> str:
     acentos llegaría mangleado — el is_file del vigilante fallaría y el
     arranque saldría falta. PowerShell saca el valor en UTF-8; sin PowerShell,
     reg query tal cual."""
+    # En PowerShell el registro cuelga de la unidad HKCU:; sin los dos puntos
+    # la ruta cae en el disco actual y Get-ItemProperty falla con un error no
+    # terminante que deja el código 0 y la salida vacía, sin respaldo (F1).
+    if clave.upper().startswith("HKCU\\"):
+        clave_ps = "HKCU:" + clave[4:]
+    else:
+        clave_ps = clave
     guion = (
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-        f"$p=Get-ItemProperty -LiteralPath {_cita_ps(clave)};"
+        "try {"
+        f"$p=Get-ItemProperty -LiteralPath {_cita_ps(clave_ps)} -ErrorAction Stop;"
         f"$v=$p.{valor};"
-        "if ($null -ne $v) { [string]$v }"
+        "if ($null -ne $v) { [string]$v } else { exit 1 }"
+        "} catch { exit 1 }"
     )
     try:
         r = correr(
