@@ -18,6 +18,7 @@ PRUEBAS = (
     "tests.test_windows",
     "tests.test_windows_identidad",
     "tests.test_windows_wsl",
+    "tests.test_lanzamiento_directo_windows",
     "tests.test_relanzamiento_pc",
     "tests.test_prepara_pc",
     "tests.test_director_capacidades",

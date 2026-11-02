@@ -18,7 +18,6 @@ from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
     VERSION_LECTOR_DEEPSEEK,
-    _argv_del_intento,
     digest,
     firma_producto,
     hallazgos_deepseek,
@@ -1409,16 +1408,14 @@ def _devolver_correcciones(registro: Registro, enc: Encargo, hora: str) -> bool:
     return True
 
 
-def _sonda_entorno(enc: Encargo, espacio: Path, base: Path, agente: str | None = None):
-    """`agente` es el que se lanzará en ese intento. Sin él la sonda no prueba el
-    shell del CLI: antes de elegir agente no se sabe cuál usará."""
+def _sonda_entorno(enc: Encargo, espacio: Path, base: Path):
+    """El entorno se prueba con el mismo lanzamiento directo que el agente."""
     from .aislamiento import sondear
 
     return sondear(
         espacio,
         base / "runtime" / enc.id / "sonda",
         fuentes_autorizadas(enc),
-        agente,
     )
 
 
@@ -1526,9 +1523,9 @@ def _resolver_impedimento(registro, enc: Encargo, clase: str, hora: str) -> None
 
 
 def _bloqueo_entorno(registro, enc: Encargo, espacio: Path, hora: str) -> bool:
-    """La jaula manda sobre el trabajador: si no deja trabajar, el fallo de
+    """El entorno manda sobre el trabajador: si no deja trabajar, el fallo de
     instrumento no es una corrección que el trabajador pueda hacer."""
-    sonda = _sonda_entorno(enc, espacio, registro.base, enc.agente or None)
+    sonda = _sonda_entorno(enc, espacio, registro.base)
     if sonda.ok:
         return False
     _anotar_impedimento(
@@ -1603,7 +1600,7 @@ def _verificar_impedimento(
         candidatas = candidatas_de(enc, enc.rol or "responsable")
         if agente and candidatas and agente not in candidatas:
             return True
-        return _sonda_entorno(enc, espacio, base, agente or None).ok
+        return _sonda_entorno(enc, espacio, base).ok
     if clase.startswith("inspeccion:"):
         juicio = _juicio_de_referencia(enc, _directorio(base, enc.id))
         if not isinstance(juicio, JuicioValidado):
@@ -2637,7 +2634,7 @@ def _incorporar_responsable(
     if declaradas is not None:
         path = directorio / "observaciones.json"
         observacion = None
-        esperadas = _argv_del_intento(declaradas, directorio)
+        esperadas = declaradas
         if path.is_file():
             try:
                 candidata = json.loads(path.read_text(encoding="utf-8"))
@@ -4508,7 +4505,7 @@ def _espera_por_observacion(
     if declaradas is None or enc.producto is None:
         return None
     version = version_producto(espacio).firma
-    esperadas = _argv_del_intento(declaradas, directorio)
+    esperadas = declaradas
     observacion = _observacion_de_la_version(
         registro, enc, version, esperadas, directorio
     )
@@ -5166,62 +5163,18 @@ def _paso_despliegue(
     return registro.fold(enc.id) or enc
 
 
-def _consultar_wsl(enc: Encargo) -> None:
-    """Pregunta a la distro, sin turno, si puede correr a los agentes que este encargo podría
-    usar. El lanzador, que sí corre con el turno, solo lee la respuesta recordada: una distro
-    lenta, parada o colgada tarda aquí y no detiene a los demás encargos."""
-    from motor.plataforma import jaula_wsl
-
-    from .aislamiento import usa_wsl
-
-    candidatos = dict.fromkeys(
-        [*(a for _r, a, _m in enc.modelos_solicitados), *enc.agentes]
-    )
-    for agente in candidatos:
-        if usa_wsl(agente):
-            jaula_wsl.causa_no_disponible(agente)
-
-
-class _FaltaSonda(Exception):
-    """El lanzamiento necesita la sonda de `agente` y no puede correrla con el turno tomado."""
-
-    def __init__(self, agente: str, restos: tuple[Path, ...]):
-        super().__init__(agente)
-        self.agente = agente
-        self.restos = restos
-
-
 def _lanzar_uno(
     registro, enc: Encargo, directorio: Path, espacio: Path, hora: str, lanzador
 ) -> None:
-    """La sonda del entorno puede tardar un minuto (una distro que arranca, un `git push`) o
-    colgarse: no corre dentro del turno, que es el de todos los encargos. Si el agente que se
-    va a lanzar la necesita, el primer paso se deshace, la sonda corre sin turno y el segundo
-    paso empieza de cero con su resultado, releyendo el estado bajo el turno."""
-    import shutil
-
-    from motor.plataforma import jaula_wsl
-
-    sonda = None
-    for _ in range(3):
-        _consultar_wsl(enc)
-        try:
-            with jaula_wsl.sin_consultar():
-                return _lanzar_uno_en_turno(
-                    registro, enc, directorio, espacio, hora, lanzador, sonda
-                )
-        except _FaltaSonda as falta:
-            for resto in falta.restos:
-                shutil.rmtree(resto, ignore_errors=True)
-            sonda = (
-                falta.agente,
-                _sonda_entorno(enc, espacio, registro.base, falta.agente),
-            )
+    """Todos los agentes se lanzan directo: no hay distro ni jaula que consultar
+    antes del turno. La sonda del entorno corre en el barrido, antes de consumirlo."""
+    return _lanzar_uno_en_turno(
+        registro, enc, directorio, espacio, hora, lanzador
+    )
 
 
 def _lanzar_uno_en_turno(
-    registro, enc: Encargo, directorio: Path, espacio: Path, hora: str, lanzador,
-    sonda: tuple | None = None,
+    registro, enc: Encargo, directorio: Path, espacio: Path, hora: str, lanzador
 ) -> None:
     from motor.runwrap import _publica
 
@@ -5485,17 +5438,7 @@ def _lanzar_uno_en_turno(
             agente_lanzado = str(meta.get("agente") or "") or (
                 Path(cmd[0]).stem.lower() if cmd else ""
             )
-            from motor.plataforma.rutas_wsl import texto_a_wsl
-
-            from .aislamiento import usa_wsl
-
-            en_wsl = usa_wsl(agente_lanzado)
-            if en_wsl:
-                # El agente lee su pedido dentro de la distro: las rutas de Windows del texto
-                # (el .interno, el buzon, las observaciones) pasan a /mnt/<unidad>/. El
-                # ejecutable es el de la distro; el de la generacion es de Windows.
-                _publica(prompt, texto_a_wsl(contenido))
-            if cmd and gen_path is not None and not en_wsl:
+            if cmd and gen_path is not None:
                 cmd = vincular(
                     gen_path, cmd, funcion="planear" if rol == "revisor" else "codigo",
                     modelo_explicito=any(r == rol for r, _a, _m in enc.modelos_solicitados),
@@ -5506,19 +5449,6 @@ def _lanzar_uno_en_turno(
         if not cmd:
             _liberar_flota()
             return
-        if en_wsl:
-            if sonda is None or sonda[0] != agente_lanzado:
-                # La sonda no corre con el turno tomado ni con la flota reservada: se suelta
-                # todo, se prueba fuera y se vuelve a empezar con el resultado.
-                _liberar_flota()
-                raise _FaltaSonda(agente_lanzado, (directorio, runtime))
-            if not sonda[1].ok:
-                _liberar_flota()
-                _anotar_impedimento(
-                    registro, enc, "entorno", sonda[1].causa, sonda[1].condicion, hora,
-                    agente_lanzado,
-                )
-                return
         modelo_lanzado = str(meta.get("modelo") or "") or _modelo_en_argv(cmd)
         sesion_modo = str(meta.get("sesion_modo") or "nueva")
         entorno_gen = (
