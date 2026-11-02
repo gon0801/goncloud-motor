@@ -1,8 +1,10 @@
 """Arranque al prender la máquina y supervisor que relanza el daemon.
 
-- Mac y Mini: LaunchDaemon con UserName (corre aunque nadie inicie sesión). Credenciales por
-  `secretos.env`, no por llavero. En la MacBook con FileVault, nada arranca hasta escribir la
-  contraseña de arranque; en cuanto se escribe, esto sigue solo.
+- Mac y Mini: el motor de planes usa un LaunchDaemon con UserName (corre
+  aunque nadie inicie sesión). El supervisor de encargos usa un LaunchAgent
+  `ai.goncloud.motor-encargos` en `~/Library/LaunchAgents`, que es el que el
+  reporte de capacidades exige y el que se recarga con
+  `launchctl kickstart -k gui/<uid>/ai.goncloud.motor-encargos`.
 - PC: tarea programada al arrancar, aunque nadie inicie sesión (ver plataforma.windows.tarea_xml).
 - El supervisor relanza el daemon si muere; código 75 = "me actualicé, reiníciame".
 """
@@ -20,6 +22,7 @@ from .version import espera_antes_de_relanzar
 
 # El PATH con el que launchd lanza el servicio (y por tanto los agentes); `doctor --como-servicio` lo reutiliza.
 PATH_SERVICIO = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+ETIQUETA_ENCARGOS = "ai.goncloud.motor-encargos"
 
 
 def plist_launchd(
@@ -77,7 +80,7 @@ def plist_encargos(
     python: str,
     home: str,
     raiz: str,
-    etiqueta: str = "com.goncloud.motor-encargos",
+    etiqueta: str = ETIQUETA_ENCARGOS,
     agente: str = "",
     respaldos: tuple[str, ...] = (),
 ) -> str:
@@ -90,11 +93,10 @@ def plist_encargos(
     )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Va en /Library/LaunchDaemons/{etiqueta}.plist: arranca al prender, sin sesión iniciada. -->
+<!-- Va en ~/Library/LaunchAgents/{etiqueta}.plist: arranca al iniciar sesión y el reporte lo exige ahí. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>{etiqueta}</string>
-  <key>UserName</key><string>{usuario}</string>
   <key>ProgramArguments</key>
   <array><string>{python}</string><string>-m</string><string>motor</string><string>supervisor</string><string>--base</string><string>{home}</string>{argumentos}</array>
   <key>WorkingDirectory</key><string>{raiz}</string>
