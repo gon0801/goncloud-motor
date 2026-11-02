@@ -621,5 +621,59 @@ class SinTopeDeVueltasNuevas(unittest.TestCase):
                 self.assertEqual(e.estrategia, "investigar", i)
 
 
+    def test_dos_fuentes_con_hallazgos_nuevos_en_un_barrido_no_escalan(self):
+        # F5 de la revision de DeepSeek sobre #254: con el contador de vueltas nuevas
+        # y su tope, dos fuentes del mismo barrido que traian un bloqueante nuevo cada
+        # una contaban la vuelta dos veces y el encargo escalaba a la tercera. Sin
+        # tope, ninguna vuelta asi escala y el responsable recibe lo de las dos.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "dos-fuentes-nuevos", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "malo.txt").write_text("X")
+            r.incorporar()
+
+            def fuente(hallazgo: str, serie: str) -> None:
+                e = r.fold()
+                r.reg.anotar(
+                    r.enc,
+                    {
+                        "kind": "revision",
+                        "data": {
+                            "version": e.producto.firma,
+                            "alcance": "completa",
+                            "veredicto": "cambios",
+                            "origen": "independiente",
+                            "revisor": "opus",
+                            "hallazgos": [
+                                {
+                                    "id": hallazgo,
+                                    "gravedad": "bloqueante",
+                                    "criterio": "comportamiento",
+                                    "titulo": f"falla nueva {hallazgo}",
+                                    "reproduccion": "cat malo.txt",
+                                    "ancla": "malo.txt:1",
+                                    "origen": "independiente",
+                                    "estado": "abierto",
+                                }
+                            ],
+                        },
+                    },
+                    f"rev-dos-fuentes-{hallazgo}",
+                )
+                ciclo._sin_avance(
+                    r.reg, r.fold(), f"falla nueva {hallazgo}", "intento",
+                    ahora_iso(), serie,
+                )
+
+            for i in range(1, 7):
+                fuente(f"A{i}", f"supervisor-{i}")
+                fuente(f"B{i}", f"deepseek-{i}")
+                e = r.fold()
+                self.assertNotEqual(e.estado, "necesita_usuario", i)
+                self.assertEqual(e.sin_progreso, 0, i)
+                self.assertEqual(e.estrategia, "investigar", i)
+                self.assertLessEqual({f"A{i}", f"B{i}"}, set(e.devuelto_con), i)
+                self.assertTrue(_lanzaria(e), i)
+
 if __name__ == "__main__":
     unittest.main()
