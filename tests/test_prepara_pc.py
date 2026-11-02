@@ -278,6 +278,107 @@ class InstalacionDejaLoPrometido(DoblesTest):
         self.assertEqual(prepara_pc._ruta_java_marker(self.base).read_bytes(), marker_antes)
 
 
+class LaActualizacionDeJavaCorre(DoblesTest):
+    def test_un_parche_nuevo_de_temurin_actualiza_en_la_siguiente_corrida(self):
+        """F2: instalar solo preguntaba a Adoptium cuando no había java; el doc
+        promete que un parche nuevo de temurin 25 actualiza en la siguiente
+        corrida y esa ruta era inalcanzable desde instalar()."""
+        vieja = self.base / "herramientas" / "java" / "jdk-25.0.0+1"
+        exe_viejo = vieja / "bin" / "java.exe"
+        exe_viejo.parent.mkdir(parents=True)
+        exe_viejo.write_bytes(b"MZ")
+        prepara_pc._ruta_java_marker(self.base).write_text(
+            json.dumps({"release": "jdk-25.0.0+1", "java": str(exe_viejo)}),
+            encoding="utf-8",
+        )
+        zip_nuevo = _zip_de_temurin()
+        catalogo = lambda: [{
+            "release_name": "jdk-25.0.5+9",
+            "binary": {"package": {
+                "link": "https://adoptium.example/jdk-nuevo.zip",
+                "checksum": sha256(zip_nuevo).hexdigest(),
+            }},
+        }]
+        pedidos = []
+
+        def descargador(url):
+            pedidos.append(url)
+            return zip_nuevo if url.endswith("jdk-nuevo.zip") else JAR_FALSO
+
+        with mock.patch.object(prepara_pc, "TLC_SHA256", self.jar_sha):
+            filas = prepara_pc.instalar(
+                self.base, correr=_reg_falso(), catalogo=catalogo, descargador=descargador,
+            )
+        self.assertIn("https://adoptium.example/jdk-nuevo.zip", pedidos)
+        java = next(f for f in filas if f["paso"] == "java")
+        self.assertEqual(java["estado"], "hecho")
+        self.assertIn("jdk-25.0.5+9", java["detalle"])
+        self.assertEqual(prepara_pc.java_instalado(self.base)["release"], "jdk-25.0.5+9")
+        self.assertFalse(exe_viejo.exists())
+
+    def test_misma_release_no_descarga_de_nuevo(self):
+        self._con_herramientas()
+        prepara_pc.jar_tlc(self.base).write_bytes(JAR_FALSO)
+        descargas = []
+
+        def descargador(url):
+            descargas.append(url)
+            return self.descargador(url)
+
+        with mock.patch.object(prepara_pc, "TLC_SHA256", self.jar_sha):
+            filas = prepara_pc.instalar(
+                self.base, correr=_reg_falso(), catalogo=self.catalogo,
+                descargador=descargador,
+            )
+        java = next(f for f in filas if f["paso"] == "java")
+        self.assertEqual(java["estado"], "ok")
+        self.assertEqual(descargas, [])
+
+    def test_sin_poder_consultar_la_api_el_java_instalado_sigue_ok(self):
+        self._con_herramientas()
+
+        def catalogo():
+            raise OSError("sin red")
+
+        with mock.patch.object(prepara_pc, "TLC_SHA256", self.jar_sha):
+            filas = prepara_pc.instalar(
+                self.base, correr=_reg_falso(), catalogo=catalogo,
+                descargador=self.descargador,
+            )
+        java = next(f for f in filas if f["paso"] == "java")
+        self.assertEqual(java["estado"], "ok")
+        self.assertIn("consultar", java["detalle"])
+
+
+class CapacidadesNoPisaLoDelOperador(DoblesTest):
+    def _propios(self):
+        return {"mi-base": {"tipo": "sqlite", "ruta": str(self.base / "x.db")}}
+
+    def test_agrega_los_suyos_y_conserva_los_del_operador(self):
+        """F3: instalar_capacidades escribía el archivo completo y borraba los
+        recursos que el operador hubiera declarado en su base."""
+        ruta = self.base / "capacidades.json"
+        ruta.write_text(json.dumps({"recursos": self._propios()}), encoding="utf-8")
+        estado, _ = prepara_pc.instalar_capacidades(self.base)
+        self.assertEqual(estado, "hecho")
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        self.assertEqual(datos["recursos"]["mi-base"], self._propios()["mi-base"])
+        esperado = prepara_pc.capacidades_deseadas(self.base)["recursos"]
+        for nombre, recurso in esperado.items():
+            self.assertEqual(datos["recursos"][nombre], recurso)
+
+    def test_comprobar_da_ok_con_recursos_extra_del_operador(self):
+        esperado = prepara_pc.capacidades_deseadas(self.base)["recursos"]
+        combinado = {"recursos": {**esperado, **self._propios()}}
+        (self.base / "capacidades.json").write_text(
+            json.dumps(combinado), encoding="utf-8"
+        )
+        (self.base / "evidencia-ci").mkdir()
+        filas = prepara_pc.comprobar(self.base, correr=_reg_falso())
+        capacidades = next(f for f in filas if f["paso"] == "capacidades")
+        self.assertEqual(capacidades["estado"], "ok")
+
+
 class SumasYVerificacion(DoblesTest):
     def test_un_jar_con_otra_suma_que_fija_verificar_sh_no_se_instala(self):
         filas = prepara_pc.instalar(

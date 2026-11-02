@@ -305,6 +305,19 @@ def capacidades_deseadas(base: Path) -> dict:
     }
 
 
+def capacidades_suficiente(actual, deseado: dict) -> bool:
+    """La base puede tener recursos propios del operador: lo que prepara_pc
+    exige es que sus dos recursos estén con los valores que declara, no que el
+    archivo sea exactamente el suyo (F3)."""
+    recursos = actual.get("recursos") if isinstance(actual, dict) else None
+    if not isinstance(recursos, dict):
+        return False
+    return all(
+        recursos.get(nombre) == recurso
+        for nombre, recurso in deseado["recursos"].items()
+    )
+
+
 def instalar_capacidades(base: Path) -> tuple[str, str]:
     base = Path(base)
     deseado = capacidades_deseadas(base)
@@ -314,9 +327,17 @@ def instalar_capacidades(base: Path) -> tuple[str, str]:
         actual = json.loads(ruta.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         actual = None
-    if actual == deseado:
+    if capacidades_suficiente(actual, deseado):
         return "ok", "capacidades.json y evidencia-ci ya están"
-    _escribir_atomico(ruta, json.dumps(deseado, ensure_ascii=False, indent=2) + "\n")
+    recursos = (
+        dict(actual["recursos"])
+        if isinstance(actual, dict) and isinstance(actual.get("recursos"), dict)
+        else {}
+    )
+    recursos.update(deseado["recursos"])
+    combinado = dict(actual) if isinstance(actual, dict) else {}
+    combinado["recursos"] = recursos
+    _escribir_atomico(ruta, json.dumps(combinado, ensure_ascii=False, indent=2) + "\n")
     return "hecho", "capacidades.json escrito con ci-linux y ci-github"
 
 
@@ -401,9 +422,9 @@ def comprobar(base: Path, correr=correr) -> list[dict]:
         },
         {
             "paso": "capacidades",
-            "estado": "ok" if capacidades_actual == deseado else "falta",
+            "estado": "ok" if capacidades_suficiente(capacidades_actual, deseado) else "falta",
             "detalle": "capacidades.json con ci-linux y ci-github"
-            if capacidades_actual == deseado
+            if capacidades_suficiente(capacidades_actual, deseado)
             else "capacidades.json no coincide con lo esperado",
         },
         {
@@ -423,21 +444,22 @@ def instalar(base: Path, correr=correr, catalogo=None, descargador=None,
              python: str = "") -> list[dict]:
     base = Path(base)
     salida = []
+    # La política documentada es el último GA de temurin 25: preguntar en cada
+    # corrida, instalar solo si hay parche nuevo (F2). Con el java ya
+    # utilizable, no poder consultar la API no tumba la corrida.
+    try:
+        estado, detalle = instalar_java(base, catalogo, descargador)
+    except (RuntimeError, OSError, ValueError) as exc:
+        estado, detalle = "error", f"{type(exc).__name__}: {exc}"
     java = java_instalado(base)
+    if estado == "error" and java is not None:
+        estado, detalle = "ok", (
+            f"java {java['release']} en {java['java']} "
+            f"(sin poder consultar parches: {detalle})"
+        )
     if java is None:
-        try:
-            estado, detalle = instalar_java(base, catalogo, descargador)
-        except (RuntimeError, OSError, ValueError) as exc:
-            estado, detalle = "error", f"{type(exc).__name__}: {exc}"
-        java = java_instalado(base)
-        if java is None:
-            estado, detalle = "error", detalle + " (marker no utilizable)"
-        salida.append({"paso": "java", "estado": estado, "detalle": detalle})
-    else:
-        salida.append({
-            "paso": "java", "estado": "ok",
-            "detalle": f"java {java['release']} en {java['java']}",
-        })
+        estado, detalle = "error", detalle + " (marker no utilizable)"
+    salida.append({"paso": "java", "estado": estado, "detalle": detalle})
     try:
         estado, detalle = instalar_jar(base, descargador)
     except (RuntimeError, OSError, ValueError) as exc:
