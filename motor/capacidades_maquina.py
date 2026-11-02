@@ -2,7 +2,8 @@
 
 `motor director capacidades --base B [--json]` mira Python, el mecanismo de
 lanzamiento, los agentes instalados (presencia y versión; nunca autenticación ni
-cuota), Java y TLC (si verificar.sh puede correr), los recursos de
+cuota; Antigravity además dice si hay sesión, sin leer secretos),
+Java y TLC (si verificar.sh puede correr), los recursos de
 capacidades.json y si son usables, el canal de avisos, la presencia de
 MOTOR_KUMA_URL (nunca su valor) y el arranque con relanzamiento
 (el LaunchAgent `ai.goncloud.motor-encargos` cargado en macOS, el vigilante
@@ -24,7 +25,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from motor.encargos.agentes import resolver_lanzador
+from motor.encargos.agentes import resolver_lanzador, sesion_antigravity_presente
 from motor.encargos.capacidades import ConfigInvalida, cargar, abrir_lectura
 from motor.encargos.catalogo_agentes import ADAPTADORES, cliente_para
 
@@ -100,7 +101,9 @@ def _generacion_vigente(base: Path) -> Path | None:
     return None
 
 
-def _agentes(which, generacion: Path | None = None) -> list[dict]:
+def _agentes(
+    which, generacion: Path | None = None, home: Path | None = None
+) -> list[dict]:
     filas = []
     for agente in sorted(ADAPTADORES):
         cliente = cliente_para(agente)
@@ -125,10 +128,21 @@ def _agentes(which, generacion: Path | None = None) -> list[dict]:
                 version = _primera(r)
         except (OSError, subprocess.TimeoutExpired):
             pass
+        detalle = (
+            f"{cliente} {version or '(--version no respondió)'} en {' '.join(lanzador)}"
+        )
+        if agente == "antigravity":
+            con_sesion = sesion_antigravity_presente(home)
+            if not con_sesion and home is not None:
+                # El home del reporte es el del motor (~/.motor); la sesión de
+                # agy vive en el home del usuario. Sin home resoluble no hay
+                # sesión, y el reporte no truena.
+                con_sesion = sesion_antigravity_presente()
+            detalle += " (con sesión)" if con_sesion else " (sin sesión)"
         filas.append({
             "agente": agente,
             "estado": "ok",
-            "detalle": f"{cliente} {version or '(--version no respondió)'} en {' '.join(lanzador)}",
+            "detalle": detalle,
         })
     return filas
 
@@ -423,7 +437,7 @@ def reporte(base: Path, home: Path | None = None, correr=None, which=None) -> di
         recursos_causa = (
             "sin capacidades.json en la base: los agentes no pueden pedir recursos"
         )
-    agentes = _agentes(which, generacion)
+    agentes = _agentes(which, generacion, home)
     secciones = {
         "jaula": _jaula(correr),
         "java_tlc": _java_tlc(correr, which, base),

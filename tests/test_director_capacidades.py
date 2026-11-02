@@ -95,14 +95,14 @@ class Dobles:
                 r.returncode = 1
             else:
                 r.stderr = b'openjdk version "25.0.5" 2025-10-21\n'
-        elif programa in ("codex", "grok", "muse", "kimi", "claude", "opencode", "qwen"):
+        elif programa in ("codex", "grok", "muse", "kimi", "claude", "opencode", "qwen", "agy"):
             r.stdout = f"{programa} 1.2.3\n".encode()
         return r
 
     def which(self, nombre):
         if nombre == "gh" and not self.gh_ok:
             return None
-        if nombre in ("codex", "grok", "muse", "kimi", "claude", "opencode", "qwen", "gh"):
+        if nombre in ("codex", "grok", "muse", "kimi", "claude", "opencode", "qwen", "agy", "gh"):
             return f"/falso/bin/{nombre}"
         return None
 
@@ -144,7 +144,7 @@ class ReporteCompletoTest(unittest.TestCase):
         for clave in ("jaula", "java_tlc", "avisos", "senal", "recursos", "agentes", "arranque"):
             self.assertEqual(datos[clave]["estado"], "ok", clave)
         agentes = {f["agente"]: f["estado"] for f in datos["agentes"]["filas"]}
-        self.assertEqual(set(agentes), {"claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"})
+        self.assertEqual(set(agentes), {"antigravity", "claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"})
 
     def test_nunca_imprime_un_valor_de_secretos(self):
         for formato in ("texto", "json"):
@@ -266,6 +266,34 @@ class ReporteIncompletoTest(unittest.TestCase):
         recursos = datos["recursos"]
         self.assertEqual(recursos["estado"], "falta")
         self.assertIn("no se puede leer", recursos["detalle"])
+
+    def test_la_sesion_de_antigravity_sale_del_home_del_reporte(self):
+        cli = self.home / ".gemini" / "antigravity-cli"
+        cli.mkdir(parents=True)
+        (cli / "antigravity-oauth-token").write_bytes(b"marca")
+        with mock.patch(
+            "motor.encargos.agentes.Path.home",
+            side_effect=RuntimeError("Could not determine home directory."),
+        ):
+            datos = self._reporte(Dobles())
+        fila = next(f for f in datos["agentes"]["filas"] if f["agente"] == "antigravity")
+        self.assertIn("con sesión", fila["detalle"])
+
+    def test_sin_home_resoluble_no_truena_y_antigravity_queda_sin_sesion(self):
+        """En Windows sin USERPROFILE, Path.home() lanza RuntimeError. El
+        reporte recibe un home y no puede depender de Path.home() para la
+        fila de Antigravity."""
+        dobles = Dobles()
+        with mock.patch(
+            "motor.encargos.agentes.Path.home",
+            side_effect=RuntimeError("Could not determine home directory."),
+        ), mock.patch(
+            "motor.encargos.agentes._llavero_antigravity", return_value=False
+        ):
+            datos = self._reporte(dobles)
+        fila = next(f for f in datos["agentes"]["filas"] if f["agente"] == "antigravity")
+        self.assertEqual(fila["estado"], "ok")
+        self.assertIn("sin sesión", fila["detalle"])
 
     def test_recurso_ci_sin_gh_o_inalcanzable_es_falta(self):
         (self.base / "capacidades.json").write_text(json.dumps({
@@ -668,13 +696,13 @@ class AgentesEnWindowsTest(unittest.TestCase):
 
     def test_cada_agente_con_su_ejecutable_es_ok_sin_jaula(self):
         filas = self._agentes(lambda nombre: "/falso/bin/" + nombre)
-        for agente in ("claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"):
+        for agente in ("antigravity", "claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"):
             self.assertEqual(filas[agente]["estado"], "ok", agente)
             self.assertNotIn("jaula", filas[agente]["detalle"])
 
     def test_sin_ejecutable_es_falta_por_el_path(self):
         filas = self._agentes(lambda nombre: None)
-        for agente in ("claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"):
+        for agente in ("antigravity", "claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"):
             self.assertEqual(filas[agente]["estado"], "falta", agente)
             self.assertIn(
                 "no está en la generación vigente ni en PATH",
