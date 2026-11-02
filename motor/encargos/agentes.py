@@ -9,6 +9,29 @@ from pathlib import Path
 
 from .catalogo_agentes import ADAPTADORES, cliente_para, modelo_canonico
 
+# El lanzamiento corre con --print: el proceso sale cuando el agente responde y
+# nadie lo despierta, asi que una tarea en segundo plano se queda sin dueno.
+# `Bash(run_in_background:true)` es una regla de parametro que niega esas
+# llamadas; a secas, cada nombre quita del registro de la sesion la herramienta
+# que espera o deja trabajo para despues del turno: Monitor (esperar), CronCreate
+# (agendar), ScheduleWakeup (despertar despues) y Workflow (equipos de agentes
+# en segundo plano, con run para reanudar despues). Las reglas de negacion
+# siguen vigentes bajo --dangerously-skip-permissions. El valor va junto y
+# antes de otro flag: --disallowedTools es variadica y se tragaria el prompt.
+PROHIBIDO_SEGUNDO_PLANO = (
+    "Bash(run_in_background:true),Monitor,CronCreate,ScheduleWakeup,Workflow"
+)
+
+# El subagente (Agent/Task) arranca en segundo plano por defecto y su resultado
+# llega en un turno posterior, asi que ninguna regla de --disallowedTools lo
+# cubre: un parametro omitido nunca coincide con una regla de parametro, y la
+# regla del nombre pelado apagaria el subagente entero. Medido en el 2.1.310 de
+# este host con una API local y documentado en env-vars: con esta variable el
+# esquema de Bash y del subagente deja de tener run_in_background, la llamada
+# explicita falla y el subagente corre en primer plano, dentro del turno.
+# suscripciones.preparar lo pone en el entorno del lanzamiento de claude.
+SIN_SEGUNDO_PLANO = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+
 
 def _disponible(agente: str, generacion: Path | None = None) -> bool:
     if agente in ("sleep", "ensayo"):
@@ -319,6 +342,8 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
                 pelado or "claude-sonnet-5-5",
                 "--effort",
                 "high",
+                "--disallowedTools",
+                PROHIBIDO_SEGUNDO_PLANO,
                 "--dangerously-skip-permissions",
                 *(["--resume", previa] if reanudar else ["--session-id", sesion]),
                 texto,

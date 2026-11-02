@@ -14,6 +14,8 @@ from pathlib import Path
 
 import tomllib
 
+from .agentes import SIN_SEGUNDO_PLANO
+
 _TOKEN_PLAN = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 _OPENCODE_PLANES = ("opencode-go", "zai-coding-plan")
 _GROK_CUENTA = "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"
@@ -271,6 +273,12 @@ def preparar(agente: str, runtime: Path, cmd: list[str], env: dict[str, str]) ->
             DISABLE_AUTOUPDATER="1",
             DISABLE_TELEMETRY="1",
             DISABLE_ERROR_REPORTING="1",
+            # El lanzamiento corre con --print: nada en segundo plano puede
+            # sobrevivir al turno. El argv trae --disallowedTools para las
+            # herramientas de espera y agendado; esto quita run_in_background
+            # del esquema de Bash y del subagente
+            # (motor/encargos/agentes.py, SIN_SEGUNDO_PLANO).
+            **SIN_SEGUNDO_PLANO,
         )
         if expira:
             env["MOTOR_CLAUDE_ACCESS_EXPIRES_AT"] = str(expira)
