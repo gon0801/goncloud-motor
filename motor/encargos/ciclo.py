@@ -4417,28 +4417,57 @@ def _esperar_checks_requeridos(
 _TOPE_LOG_JOB = 80
 
 
-def _recorte_log_job(texto: str, nombre: str) -> str:
-    """El literal completo del job es la evidencia y viaja intacto en el
-    puerto; en el motivo se acota sin perder el fallo: se conservan el
-    principio (donde vive el error y su encabezado) y el final, y lo omitido
-    queda anotado. El literal íntegro sale con `ci.log`."""
+def _copia_log_job(espacio: Path, nombre: str, run_id: str, texto: str) -> str:
+    """El literal completo del log del job queda en el espacio del responsable
+    (`.interno/logs/`, que no viaja en el producto: _commit_push lo excluye).
+    Un fallo que vive en medio del log no puede perderse en un recorte: la
+    devolución referencia la copia y el extracto la acompaña sin sustituirla
+    (h_a8968fb0). Devuelve la ruta relativa al espacio, o "" si no se pudo."""
+    if not texto:
+        return ""
+    if len(texto.encode("utf-8", errors="replace")) > capacidades.MAX_LOG:
+        return ""
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "-", nombre) or "job"
+    destino = espacio / ".interno" / "logs"
+    try:
+        destino.mkdir(parents=True, exist_ok=True)
+        ruta = destino / f"{slug}-run{run_id or 'sin-run'}.log"
+        temporal = ruta.with_name(ruta.name + ".tmp")
+        with open(temporal, "w", encoding="utf-8") as f:
+            f.write(texto)
+        os.replace(temporal, ruta)
+    except OSError:
+        return ""
+    return f".interno/logs/{ruta.name}"
+
+
+def _recorte_log_job(texto: str, nombre: str, copia: str = "") -> str:
+    """El literal completo del job queda copiado en el espacio (o es la
+    evidencia que `ci.log` puede traer); en el motivo se acota para no
+    inundarlo: se conservan el principio y el final, y lo omitido queda
+    anotado con dónde está el literal. El extracto acompaña a la copia, no la
+    sustituye."""
     lineas = texto.splitlines()
     if len(lineas) <= _TOPE_LOG_JOB:
         return "\n".join(lineas)
     omitidas = len(lineas) - _TOPE_LOG_JOB
+    literal = copia or "ci.log"
     nota = (
         f"[log de {nombre}: se omiten {omitidas} líneas intermedias; "
-        "el literal completo sale con ci.log]"
+        f"el literal completo queda en {literal}]"
     )
     return "\n".join([*lineas[:55], nota, *lineas[-24:]])
 
 
-def _logs_de_fallidos(gh, repo: str, veredicto_ci) -> str:
+def _logs_de_fallidos(gh, repo: str, veredicto_ci, espacio: Path) -> str:
     """El log literal de cada job en rojo, como hace `ci.log`: el job exacto
     por su ID (el check-run de Actions comparte el ID del job), no su nombre
     (con el nombre `gh` intenta /actions/jobs/<nombre> y falla, h_a8968fb0) y
-    sin la cola agregada de la corrida, que mezcla los jobs. Un log que no se
-    pudo leer no frena la devolución: queda el nombre y la url."""
+    sin la cola agregada de la corrida, que mezcla los jobs. El literal
+    completo queda copiado en el espacio del responsable y el motivo lo
+    referencia; un fallo en medio del log no depende de dónde caiga en el
+    extracto. Un log que no se pudo leer no frena la devolución: queda el
+    nombre y la url."""
     partes = []
     for corrida in veredicto_ci.corridas_fallidas:
         nombre = str(corrida.get("nombre") or "")
@@ -4452,8 +4481,12 @@ def _logs_de_fallidos(gh, repo: str, veredicto_ci) -> str:
             except Exception:
                 texto = ""
         if texto:
+            copia = _copia_log_job(espacio, nombre, run_id, texto)
+            cabeza = f"log de {nombre} ({url}):"
+            if copia:
+                cabeza += f"\ncopia literal: {copia}"
             partes.append(
-                f"log de {nombre} ({url}):\n{_recorte_log_job(texto, nombre)}".rstrip()
+                f"{cabeza}\n{_recorte_log_job(texto, nombre, copia)}".rstrip()
             )
         else:
             partes.append(f"corrida en rojo: {nombre} ({url})".rstrip())
@@ -4502,7 +4535,7 @@ def _chequeo_previo_cierre(
         if veredicto_ci.fallas:
             fallas = sorted(str(x) for x in veredicto_ci.fallas)
             causa_ci = "checks requeridos en rojo: " + ", ".join(fallas)
-            logs = _logs_de_fallidos(gh, enc.entrega.repo, veredicto_ci)
+            logs = _logs_de_fallidos(gh, enc.entrega.repo, veredicto_ci, espacio)
             if logs:
                 causa_ci += "\n" + logs
             registro.anotar(

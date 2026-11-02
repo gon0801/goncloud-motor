@@ -378,9 +378,16 @@ class ElEstadoDelMismoNombreNoLoEscondeLaCorrida(unittest.TestCase):
 
 
 class ElLogDelJobConservaElFallo(unittest.TestCase):
-    """El log del job viaja sin recorte ciego: el fallo que vive en el
-    principio del log no puede perderse por el recorte de la cola
-    (h_a8968fb0, segunda ronda)."""
+    """El literal completo del log del job queda en el espacio del responsable
+    (.interno/logs, que no viaja en el producto) y la devolución lo
+    referencia: un fallo puede vivir en cualquier parte del log y no depende
+    del recorte del motivo (h_a8968fb0)."""
+
+    def _log_con_fallo_en(self, linea: int) -> str:
+        lineas = [f"preparacion {i}" for i in range(100)]
+        lineas.insert(linea, "WINDOWS_FAILURE_DETAIL: AssertionError en tests/test_director_capacidades.py")
+        del lineas[101:]
+        return "\n".join(lineas)
 
     def test_el_error_de_la_cabeza_del_log_llega_al_motivo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -401,7 +408,40 @@ class ElLogDelJobConservaElFallo(unittest.TestCase):
             self.assertNotEqual(e.estado, "terminado")
             self.assertIn(LOG_WINDOWS, e.motivo)
             self.assertIn("se omiten", e.motivo)
-            self.assertIn("el literal completo sale con ci.log", e.motivo)
+            self.assertIn(
+                "copia literal: .interno/logs/windows-run40000.log", e.motivo
+            )
+            copia = r.espacio / ".interno" / "logs" / "windows-run40000.log"
+            self.assertTrue(copia.is_file())
+            self.assertEqual(len(copia.read_text().splitlines()), 101)
+            self.assertIn(LOG_WINDOWS, copia.read_text())
+
+    def test_el_error_en_medio_del_log_queda_en_la_copia(self):
+        """La cronología de la revisión: 60 líneas de setup, el fallo en la
+        línea 61 y 40 de limpieza. El extracto puede omitirlo; la copia no."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            log_medio = self._log_con_fallo_en(60)
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-log-medio",
+                _GhConCorridas,
+                {
+                    "corridas": {"windows": "failure"},
+                    "logs_job": {"windows": log_medio},
+                },
+            )
+            e = vuelta("uno")
+            self.assertNotEqual(e.estado, "terminado")
+            fallo = "WINDOWS_FAILURE_DETAIL: AssertionError"
+            self.assertIn("copia literal: .interno/logs/windows-run40000.log", e.motivo)
+            self.assertIn("queda en .interno/logs/windows-run40000.log", e.motivo)
+            copia = r.espacio / ".interno" / "logs" / "windows-run40000.log"
+            self.assertTrue(copia.is_file())
+            literal = copia.read_text()
+            self.assertEqual(len(literal.splitlines()), 101)
+            self.assertIn(fallo, literal)
+            self.assertNotIn(fallo, e.motivo)
 
 
 if __name__ == "__main__":
