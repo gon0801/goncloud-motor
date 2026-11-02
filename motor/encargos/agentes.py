@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -136,10 +138,126 @@ def markdown_agente_turno() -> str:
     )
 
 
+# El llavero es del usuario del sistema. Un home de prueba no lo tiene, y
+# `secret-tool lookup` / `security -w` imprimirían el secreto.
+_TOPE_LLAVERO_S = 3
+
+
+def _home_del_proceso(base: Path) -> bool:
+    candidatos = [
+        valor
+        for valor in (os.environ.get("HOME"), os.environ.get("USERPROFILE"))
+        if valor
+    ]
+    if not candidatos:
+        return True
+    try:
+        actual = base.resolve()
+    except OSError:
+        actual = base
+    for valor in candidatos:
+        try:
+            if actual == Path(valor).resolve():
+                return True
+        except OSError:
+            if actual == Path(valor):
+                return True
+    return False
+
+
+def _sesion_por_clave(cli: Path) -> bool:
+    clave = os.environ.get("GEMINI_API_KEY") or ""
+    if not clave.strip():
+        return False
+    try:
+        datos = json.loads((cli / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return isinstance(datos, dict) and datos.get("modelProvider") == "gemini"
+
+
+def _llavero_antigravity() -> bool:
+    """El ítem service=gemini account=antigravity existe. No lee el secreto."""
+    if sys.platform == "darwin":
+        argv = [
+            "security",
+            "find-generic-password",
+            "-s",
+            "gemini",
+            "-a",
+            "antigravity",
+        ]
+        try:
+            corrida = subprocess.run(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=_TOPE_LLAVERO_S,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return corrida.returncode == 0
+    if sys.platform == "win32":
+        try:
+            corrida = subprocess.run(
+                ["cmdkey", "/list"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=_TOPE_LLAVERO_S,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        datos = corrida.stdout or b""
+        aguja = "gemini:antigravity"
+        return aguja.encode("utf-8") in datos or aguja.encode("utf-16-le") in datos
+    try:
+        corrida = subprocess.run(
+            [
+                "secret-tool",
+                "search",
+                "service",
+                "gemini",
+                "username",
+                "antigravity",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            timeout=_TOPE_LLAVERO_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    datos = corrida.stdout or b""
+    # Sin --all no va el secreto. El código 0 tampoco basta: sale 0 sin ítems.
+    return b"gemini" in datos and b"antigravity" in datos
+
+
 def sesion_antigravity_presente(home: Path | None = None) -> bool:
-    """La carpeta de sesión existe. No lee credenciales ni el llavero."""
+    """Hay sesión de agy. No lee ni registra secretos.
+
+    La carpeta y su caché no autentican: `agy changelog` las crea sin
+    login. Cuenta el archivo de token sin abrirlo, el par
+    modelProvider=gemini con GEMINI_API_KEY no vacía, o el ítem del
+    llavero cuando el home es el del proceso.
+    """
     base = Path.home() if home is None else home
-    return (base / ".gemini" / "antigravity-cli").is_dir()
+    cli = base / ".gemini" / "antigravity-cli"
+    token = cli / "antigravity-oauth-token"
+    try:
+        if token.is_file() and token.stat().st_size > 0:
+            return True
+    except OSError:
+        pass
+    if _sesion_por_clave(cli):
+        return True
+    if _home_del_proceso(base):
+        return _llavero_antigravity()
+    return False
 
 
 def ruta_agente_turno(home: Path | None = None) -> Path:
@@ -150,8 +268,9 @@ def ruta_agente_turno(home: Path | None = None) -> Path:
 def asegurar_agente_turno(home: Path | None = None) -> Path:
     """Deja el agente del turno donde agy descubre los agentes globales.
 
-    No es la carpeta de sesión (`antigravity-cli`). El mismo texto se
-    reemplaza en atómico: dos lanzamientos a la vez escriben lo mismo.
+    No es la carpeta de sesión (`antigravity-cli`). El destino es uno
+    solo; cada escritor usa un temporal propio porque dos reemplazos
+    del mismo nombre se pisan.
     """
     destino = ruta_agente_turno(home)
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -162,9 +281,14 @@ def asegurar_agente_turno(home: Path | None = None) -> Path:
                 return destino
         except OSError:
             pass
-    temporal = destino.with_name(destino.name + ".tmp")
-    temporal.write_text(texto, encoding="utf-8")
-    os.replace(temporal, destino)
+    temporal = destino.with_name(
+        f".{destino.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        temporal.write_text(texto, encoding="utf-8")
+        os.replace(temporal, destino)
+    finally:
+        temporal.unlink(missing_ok=True)
     return destino
 
 
@@ -176,9 +300,11 @@ def resolver_lanzador(
 ) -> list[str] | None:
     """El argv con el que el motor lanzaría al agente.
 
-    Con una generación vigente manda su `runtime.json`; sin ella, o sin
-    lanzador propio para el cliente, cae al PATH del proceso. Es la misma
-    resolución que usa el supervisor al lanzar, sin mirar autenticación.
+    Sin generación, el PATH. Con generación, el lanzador de runtime.json.
+    Antigravity y Muse, si esa generación no trae el cliente, siguen en
+    el PATH: el paquete de flota no publica `agy`. Un lanzador declarado
+    pero inválido no cae al PATH. Muse además exige su binario en el PATH
+    aunque la generación lo traiga. No mira autenticación.
     """
     which = which or shutil.which
     if agente not in ADAPTADORES:
@@ -189,7 +315,9 @@ def resolver_lanzador(
 
         try:
             argv = resolver_ejecutable(
-                generacion, [cliente], requerido=agente != "muse"
+                generacion,
+                [cliente],
+                requerido=agente not in ("muse", "antigravity"),
             )
         except (OSError, ValueError, TypeError):
             return None
@@ -199,6 +327,9 @@ def resolver_lanzador(
                 return None
             if argv[0] == cliente:
                 return [ruta]
+        if agente == "antigravity" and argv[0] == cliente:
+            ruta = which(cliente)
+            return [ruta] if ruta else None
         return argv
     ruta = which(cliente)
     return [ruta] if ruta else None

@@ -2,7 +2,7 @@
 
 `motor director capacidades --base B [--json]` mira Python, el mecanismo de
 lanzamiento, los agentes instalados (presencia y versión; nunca autenticación ni
-cuota; Antigravity además dice si existe la carpeta de sesión, sin leerla),
+cuota; Antigravity además dice si hay sesión, sin leer secretos),
 Java y TLC (si verificar.sh puede correr), los recursos de
 capacidades.json y si son usables, el canal de avisos, la presencia de
 MOTOR_KUMA_URL (nunca su valor) y el arranque con relanzamiento
