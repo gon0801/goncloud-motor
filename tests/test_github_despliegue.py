@@ -137,25 +137,44 @@ class ChecksTest(unittest.TestCase):
             runs=json.dumps([_run("ci")]),
             estados={
                 "state": "pending",
-                "statuses": [{"context": "viejo", "state": "pending"}],
+                "statuses": [{"context": "externo", "state": "pending"}],
             },
         )
         v = gh.checks("o/r", 7, SHA, ())
-        self.assertTrue(v.terminal)
-        self.assertTrue(v.green)
+        self.assertFalse(v.terminal)
+        self.assertFalse(v.green)
+        self.assertEqual(v.faltan, ("externo",))
+        self.assertEqual(v.en_marcha, ("externo",))
+        self.assertFalse(v.github_termino)
 
     def test_sin_requeridos_un_estado_en_rojo_es_falla(self):
+        for estado in ("failure", "error"):
+            with self.subTest(estado=estado):
+                gh = GhGrabado(
+                    proteccion=RuntimeError("HTTP 404: Branch not protected"),
+                    runs=json.dumps([_run("ci")]),
+                    estados={
+                        "state": estado,
+                        "statuses": [{"context": "externo", "state": estado}],
+                    },
+                )
+                v = gh.checks("o/r", 7, SHA, ())
+                self.assertTrue(v.terminal)
+                self.assertFalse(v.green)
+                self.assertEqual(v.fallas, ("externo",))
+
+    def test_sin_requeridos_un_estado_en_success_no_cuenta(self):
         gh = GhGrabado(
             proteccion=RuntimeError("HTTP 404: Branch not protected"),
             runs=json.dumps([_run("ci")]),
             estados={
-                "state": "failure",
-                "statuses": [{"context": "viejo", "state": "failure"}],
+                "state": "success",
+                "statuses": [{"context": "externo", "state": "success"}],
             },
         )
         v = gh.checks("o/r", 7, SHA, ())
-        self.assertTrue(v.terminal)
         self.assertTrue(v.green)
+        self.assertTrue(v.terminal)
         self.assertEqual(v.fallas, ())
 
     def test_proteccion_con_otro_error_es_falla_del_efecto(self):

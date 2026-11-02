@@ -119,8 +119,11 @@ def veredicto(
 
     No solo la lista fija cuenta: toda corrida que corre en el SHA entra al veredicto
     (enc_25d22b9bfce242f9 cerró terminado con `windows` en rojo porque nadie lo tenía
-    como requerido). Un check se ignora por su conclusión, no por su nombre: salto del
-    borrador, `skipped` o `neutral` no cuentan; lo que corre o falla sí.
+    como requerido), y también cada contexto de estado del SHA que no esté todo en
+    `success` (h_f05e0491: un `external-ci` en failure/error/pending con corridas
+    verdes sigue siendo rojo o pendiente). Un check se ignora por su conclusión, no
+    por su nombre: salto del borrador, `skipped` o `neutral` no cuentan; lo que corre
+    o falla sí.
 
     Un check saltado cuenta solo si se saltó después de que el PR dejó el borrador (`listo_desde`,
     hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
@@ -152,6 +155,13 @@ def veredicto(
         ):
             continue
         corren.append(nombre)
+    for ctx in {str(e.get("context") or "") for e in estados}:
+        if not ctx:
+            continue
+        sts = [e for e in estados if str(e.get("context") or "") == ctx]
+        if all(e.get("state") == "success" for e in sts):
+            continue
+        corren.append(ctx)
     requeridos = tuple(dict.fromkeys([*requeridos, *sorted(set(corren))]))
     if not requeridos:
         return ChecksVerdict(
@@ -289,6 +299,7 @@ class GitHubPort(Protocol):
     def relanzar_corrida(self, repo: str, run_id: str) -> None: ...
     def relanzar_fallidas(self, repo: str, run_id: str) -> None: ...
     def log_fallido(self, repo: str, run_id: str) -> str: ...
+    def log_fallido_job(self, repo: str, run_id: str, job: str) -> str: ...
     def comentarios_deepseek(
         self, repo: str, numero: int, sha: str = ""
     ) -> list[dict]: ...
@@ -557,6 +568,21 @@ class GhGitHub:
         try:
             texto = self._gh(
                 "run", "view", str(run_id), "--log-failed", "-R", self.nombre(repo)
+            )
+        except RuntimeError:
+            return ""
+        return "\n".join(texto.splitlines()[-80:])
+
+    def log_fallido_job(self, repo, run_id, job) -> str:
+        """El log literal del job concreto de la corrida, como hace `ci.log`:
+        `--log-failed` devuelve la cola agregada de la corrida, que mezcla los
+        jobs y puede no traer ni una línea del job que falló (h_a8968fb0)."""
+        if not run_id or not job:
+            return ""
+        try:
+            texto = self._gh(
+                "run", "view", str(run_id), "--job", str(job), "--log",
+                "-R", self.nombre(repo),
             )
         except RuntimeError:
             return ""
@@ -834,6 +860,9 @@ class FakeGitHub:
         self._guardar(s)
 
     def log_fallido(self, repo, run_id) -> str:
+        return ""
+
+    def log_fallido_job(self, repo, run_id, job) -> str:
         return ""
 
     def comentarios_deepseek(self, repo, numero, sha=""):

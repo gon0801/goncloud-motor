@@ -4415,18 +4415,20 @@ def _esperar_checks_requeridos(
 
 
 def _logs_de_fallidos(gh, repo: str, veredicto_ci) -> str:
-    """El log literal de cada corrida en rojo, como el modo planes con
-    `_detalle_rojo`: el responsable ve por qué falló el job, no solo su nombre.
-    Un log que no se pudo leer no frena la devolución: queda el nombre y la url."""
+    """El log literal de cada job en rojo, como hace `ci.log`: el log del job
+    exacto, no la cola agregada de la corrida. El `--log-failed` de la corrida
+    mezcla los jobs y la cola puede no traer ni una línea del job que falló y
+    atribuirle las de otro (h_a8968fb0). Un log que no se pudo leer no frena la
+    devolución: queda el nombre y la url."""
     partes = []
     for corrida in veredicto_ci.corridas_fallidas:
         nombre = str(corrida.get("nombre") or "")
         url = str(corrida.get("url") or "")
         run_id = str(corrida.get("run_id") or "")
         texto = ""
-        if run_id:
+        if run_id and nombre:
             try:
-                texto = gh.log_fallido(repo, run_id)
+                texto = gh.log_fallido_job(repo, run_id, nombre)
             except Exception:
                 texto = ""
         if texto:
@@ -4440,14 +4442,29 @@ def _chequeo_previo_cierre(
     registro: Registro, enc: Encargo, gh, espacio: Path, hora: str,
     numero: int, sha: str,
 ) -> Encargo | None:
-    """Lee los checks del SHA entregado antes de seguir hacia DeepSeek o el
-    cierre. None si están verdes. En rojo bloquea la entrega y devuelve el
-    trabajo con el nombre del job y su log literal; si algo sigue corriendo,
-    espera con relectura; si no se pueden leer, deja la espera anotada."""
+    """Lee los checks del head vigente del PR antes de seguir hacia DeepSeek o
+    el cierre. El head vigente, no el SHA pedido: un push posterior a la rama
+    del PR deja el SHA guardado viejo y su CI aprobado ya no dice nada del
+    head nuevo (h_9d9b387c). None si están verdes. En rojo bloquea la entrega
+    y devuelve el trabajo con el nombre del job y su log literal; si algo sigue
+    corriendo, espera con relectura; si no se pueden leer, deja la espera
+    anotada."""
     inicio_vuelta = enc
     try:
+        vista = gh.ver(enc.entrega.repo, numero)
+    except Exception as exc:
+        causa = f"no se pudo leer la vista del PR #{numero}: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura de la vista del PR",
+            hora, f"pr-ver-{enc.generacion}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return registro.fold(enc.id)
+    sha_vigente = str(getattr(vista, "head", "") or "").strip() or sha
+    try:
         veredicto_ci = gh.checks(
-            enc.entrega.repo, numero, sha, _checks_extra(enc, espacio),
+            enc.entrega.repo, numero, sha_vigente, _checks_extra(enc, espacio),
             base_politica=enc.entrega.base,
         )
     except Exception as exc:
@@ -4455,7 +4472,7 @@ def _chequeo_previo_cierre(
         _anotar_instrumento(
             registro, enc, "github", causa,
             "reintentar la lectura de checks del mismo SHA",
-            hora, f"checks-leer-{sha[:12]}",
+            hora, f"checks-leer-{sha_vigente[:12]}",
         )
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return registro.fold(enc.id)
@@ -4473,14 +4490,14 @@ def _chequeo_previo_cierre(
                     "data": {
                         "fase": enc.fase_activa,
                         "intento": enc.intento,
-                        "sha": sha,
+                        "sha": sha_vigente,
                         "causa": causa_ci,
                         "fallas": fallas,
                         "hora": hora,
                     },
                 },
-                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}"
-                + _ronda_checks(registro, enc, sha),
+                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha_vigente}"
+                + _ronda_checks(registro, enc, sha_vigente),
             )
             enc = registro.fold(enc.id)
             if hubo_avance(inicio_vuelta, enc):
@@ -4488,17 +4505,19 @@ def _chequeo_previo_cierre(
                     registro, enc, "investigar", causa_ci,
                     "corregir los checks requeridos en rojo del PR de esta fase; "
                     "lo aprobado que no cambio se conserva",
-                    hora, f"checks-{sha[:12]}",
+                    hora, f"checks-{sha_vigente[:12]}",
                 )
             else:
                 _sin_avance(
                     registro, enc, causa_ci,
                     "se corrigio y se volvio a publicar el PR, pero siguen en "
                     "rojo los mismos checks requeridos",
-                    hora, f"checks-{sha[:12]}",
+                    hora, f"checks-{sha_vigente[:12]}",
                 )
         else:
-            _esperar_checks_requeridos(registro, enc, veredicto_ci, numero, sha, hora)
+            _esperar_checks_requeridos(
+                registro, enc, veredicto_ci, numero, sha_vigente, hora
+            )
         return registro.fold(enc.id)
     return None
 
