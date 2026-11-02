@@ -103,6 +103,19 @@ class Dobles:
         return None
 
 
+@contextlib.contextmanager
+def _puertas_de_windows():
+    """Las puertas de Windows con dobles deterministas: sin ellas, en un host
+    Windows el reporte consultaría wsl.exe y el registro de verdad y las filas
+    de agentes dependerían del host (F3)."""
+    with mock.patch.object(cm, "_usa_wsl", lambda agente: False), mock.patch.object(
+        cm, "_psec_disponible", lambda: True
+    ), mock.patch.object(cm, "_jaula_windows_disponible", lambda: True), mock.patch.object(
+        cm, "_causa_jaula_wsl", lambda agente: ""
+    ):
+        yield
+
+
 class ReporteCompletoTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="cap-maquina-"))
@@ -121,7 +134,7 @@ class ReporteCompletoTest(unittest.TestCase):
                 "mecanismo": "seatbelt", "estado": "ok", "detalle": "seatbelt listo",
             }), mock.patch.object(cm, "_arranque", lambda *a, **k: {
                 "mecanismo": "launchd", "estado": "ok", "detalle": "plist con KeepAlive",
-            }):
+            }), _puertas_de_windows():
                 return cm.reporte(self.base, self.home, dobles.correr, dobles.which)
 
     def test_maquina_completa_no_tiene_faltas(self):
@@ -172,7 +185,7 @@ class ReporteIncompletoTest(unittest.TestCase):
                 "mecanismo": "seatbelt", "estado": "falta", "detalle": "falta sandbox-exec",
             }), mock.patch.object(cm, "_arranque", lambda *a, **k: {
                 "mecanismo": "launchd", "estado": "falta", "detalle": "sin plist",
-            }):
+            }), _puertas_de_windows():
                 return cm.reporte(self.base, self.home, dobles.correr, dobles.which)
 
     def test_base_vacia_y_home_vacio_acumula_faltas(self):
@@ -201,7 +214,7 @@ class ReporteIncompletoTest(unittest.TestCase):
         self.assertEqual(sin_gh["recursos"]["estado"], "falta")
         dobles = Dobles()
         dobles.gh_ok = False
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ, {}, clear=True), _puertas_de_windows():
             datos = cm.reporte(self.base, self.home, dobles.correr, dobles.which)
         fila = next(f for f in datos["recursos"]["filas"] if f["recurso"] == "ci-linux")
         self.assertEqual(fila["estado"], "falta")
@@ -213,9 +226,16 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="cap-secciones-"))
         self.addCleanup(_limpiar, self.tmp)
 
-    def test_jaula_windows_con_distro_wsl(self):
-        dobles = Dobles()
+    def _jaula_windows(self, correr, psec=True, appcontainer=False, causa_wsl=""):
+        """La sección jaula de Windows con los sondeos del motor en dobles."""
+        with mock.patch.object(cm, "sistema", lambda: "windows"), mock.patch.object(
+            cm, "_psec_disponible", lambda: psec
+        ), mock.patch.object(
+            cm, "_jaula_windows_disponible", lambda: appcontainer
+        ), mock.patch.object(cm, "_causa_jaula_wsl", lambda agente: causa_wsl):
+            return cm._jaula(correr)
 
+    def test_jaula_windows_con_todo_disponible_es_ok(self):
         def correr(argv, timeout=20):
             class R:
                 returncode = 0
@@ -224,11 +244,12 @@ class SeccionesPorSistemaTest(unittest.TestCase):
 
             return R()
 
-        with mock.patch.object(cm, "sistema", lambda: "windows"):
-            jaula = cm._jaula(correr)
-        self.assertEqual((jaula["estado"], jaula["mecanismo"]), ("ok", "wsl"))
+        jaula = self._jaula_windows(correr, psec=True, causa_wsl="")
+        self.assertEqual(jaula["estado"], "ok")
+        mecanismos = {f["mecanismo"]: f["estado"] for f in jaula["filas"]}
+        self.assertEqual(mecanismos, {"psec": "ok", "wsl": "ok"})
 
-    def test_jaula_windows_sin_distro_es_falta(self):
+    def test_jaula_windows_sin_distro_wsl_es_falta_con_la_causa_del_motor(self):
         def correr(argv, timeout=20):
             class R:
                 returncode = 1
@@ -237,19 +258,97 @@ class SeccionesPorSistemaTest(unittest.TestCase):
 
             return R()
 
+        jaula = self._jaula_windows(
+            correr, psec=True, causa_wsl="no se pudo consultar a WSL (wsl.exe no respondio)"
+        )
+        self.assertEqual(jaula["estado"], "aviso")
+        wsl = next(f for f in jaula["filas"] if f["mecanismo"] == "wsl")
+        self.assertEqual(wsl["estado"], "falta")
+        self.assertIn("WSL", wsl["detalle"])
+
+    def test_jaula_windows_sin_jaula_nativa_ni_wsl_es_falta(self):
+        jaula = self._jaula_windows(lambda *a, **k: None, psec=False, appcontainer=False,
+                                    causa_wsl="sin distro")
+        self.assertEqual(jaula["estado"], "falta")
+        self.assertIn("ni psec ni AppContainer", jaula["detalle"])
+
+    def test_jaula_windows_solo_appcontainer_queda_aviso(self):
+        jaula = self._jaula_windows(lambda *a, **k: None, psec=False, appcontainer=True,
+                                    causa_wsl="sin distro WSL")
+        self.assertEqual(jaula["estado"], "aviso")
+        mecanismos = {f["mecanismo"]: f["estado"] for f in jaula["filas"]}
+        self.assertEqual(mecanismos, {"appcontainer": "ok", "wsl": "falta"})
+
+    def test_jaula_windows_distro_listada_no_la_da_por_buena(self):
+        """Listar una distro no basta: la jaula de WSL la decide la sonda del motor."""
+        def correr(argv, timeout=20):
+            class R:
+                returncode = 0
+                stdout = "Ubuntu\r\n\x00".encode("utf-16-le")
+                stderr = b""
+
+            return R()
+
+        jaula = self._jaula_windows(correr, psec=True, causa_wsl="sin bubblewrap en la distro")
+        self.assertEqual(jaula["estado"], "aviso")
+        wsl = next(f for f in jaula["filas"] if f["mecanismo"] == "wsl")
+        self.assertEqual(wsl["estado"], "falta")
+        self.assertIn("sin bubblewrap", wsl["detalle"])
+
+    def test_llave_run_de_mas_de_200_caracteres_no_se_recorta(self):
+        """h_ca90a1b7: un valor largo (intérprete de uv en AppData + ruta del
+        repo) pasaba por _texto, que corta en 200 y colapsa espacios: la
+        comilla de cierre y el nombre del vigilante se perdían y el arranque
+        salía falta con la llave bien puesta."""
+        carpeta = self.tmp / "larga"
+        (carpeta / "ops").mkdir(parents=True)
+        vigia = carpeta / "ops" / "iniciar_encargos_pc.py"
+        vigia.write_bytes(b"x")
+        python = "C:\\" + "a" * 150 + "\\python.exe"
+        valor = f'"{python}"  -B  "{vigia}"'
+        self.assertGreater(len(valor), 200)
         with mock.patch.object(cm, "sistema", lambda: "windows"):
+            arranque = cm._arranque(self._correr_llave(valor))
+        self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "vigilante"))
+
+    def test_jaula_linux_es_falta_porque_el_motor_no_aisla_alli(self):
+        """F2: bubblewrap solo es jaula dentro de la distro WSL; en Linux el
+        motor no puede aislar a un trabajador (aislar levanta RuntimeError)."""
+        def correr(argv, timeout=20):
+            class R:
+                returncode = 0
+                stdout = b"bubblewrap 0.9.0\n"
+                stderr = b""
+
+            return R()
+
+        with mock.patch.object(cm, "sistema", lambda: "linux"):
+            jaula = cm._jaula(correr)
+        self.assertEqual((jaula["estado"], jaula["mecanismo"]), ("falta", "ninguno"))
+        self.assertIn("no aísla en Linux", jaula["detalle"])
+        self.assertIn("bubblewrap 0.9.0", jaula["detalle"])
+
+    def test_jaula_linux_sin_bwrap_tamano_es_falta(self):
+        def correr(argv, timeout=20):
+            raise FileNotFoundError("bwrap")
+
+        with mock.patch.object(cm, "sistema", lambda: "linux"):
             jaula = cm._jaula(correr)
         self.assertEqual(jaula["estado"], "falta")
-        self.assertIn("no installed", jaula["detalle"])
+        self.assertIn("no aísla en Linux", jaula["detalle"])
 
-    def _correr_llave(self, valor, sin_powershell=False, pagina_reg="cp1252"):
+    def _correr_llave(self, valor, sin_powershell=False, pagina_reg="cp1252",
+                      capturadas=None):
         """Un correr que responde como PowerShell (y como reg.exe de respaldo)
         sobre la llave Run; valor None es llave ausente. PowerShell sale en
         UTF-8 (OutputEncoding=UTF8, como el código lo pide) y reg.exe sale en
         una página de códigos local (cp1252): con el código que decodificaba
         reg.exe como UTF-8, un valor con acentos llegaba mangleado y el
         arranque salía falta. Un doble que codificara UTF-8 en ambos caminos
-        pasaría con el código viejo y no reproduciría nada (DeepSeek F8)."""
+        pasaría con el código viejo y no reproduciría nada (DeepSeek F8).
+        La ruta de PowerShell solo es válida con la unidad HKCU: (F1); con una
+        ruta sin unidad, PowerShell real falla con error no terminante (código
+        0, salida vacía) y así lo simula el doble."""
 
         import re as _re
 
@@ -264,12 +363,16 @@ class SeccionesPorSistemaTest(unittest.TestCase):
                 if sin_powershell:
                     raise FileNotFoundError("powershell")
                 guion = argv[-1]
+                if capturadas is not None:
+                    capturadas.append(guion)
                 clave = _re.search(r"-LiteralPath '([^']+)'", guion).group(1)
                 nombre = _re.search(r"\$p\.(\w+);", guion).group(1)
-                if clave != cm.LLAVE_RUN:
-                    r.returncode = 1
-                elif nombre == cm.NOMBRE_LLAVE and valor is not None:
+                if clave != "HKCU:" + cm.LLAVE_RUN[4:]:
+                    return r
+                if nombre == cm.NOMBRE_LLAVE and valor is not None:
                     r.stdout = valor.encode("utf-8") + b"\n"
+                else:
+                    r.returncode = 1
                 return r
             if argv[:2] == ["reg", "query"]:
                 if valor is None:
@@ -312,6 +415,21 @@ class SeccionesPorSistemaTest(unittest.TestCase):
             arranque = cm._arranque(self._correr_llave(None))
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("llave ausente", arranque["detalle"])
+
+    def test_la_ruta_de_powershell_lleva_la_unidad_hkcu(self):
+        """F1: sin 'HKCU:' la ruta cae en el disco actual y PowerShell real
+        falla con error no terminante (código 0, salida vacía), sin respaldo:
+        el arranque saldría falta con la llave bien puesta."""
+        capturadas = []
+        vigia = Path(__file__).resolve().parents[1] / "ops" / "iniciar_encargos_pc.py"
+        valor = f'"C:\\py\\python.exe" -B "{vigia}"'
+        with mock.patch.object(cm, "sistema", lambda: "windows"):
+            arranque = cm._arranque(
+                self._correr_llave(valor, capturadas=capturadas)
+            )
+        self.assertEqual((arranque["estado"], arranque["mecanismo"]), ("ok", "vigilante"))
+        self.assertTrue(capturadas)
+        self.assertTrue(all("HKCU:" in g for g in capturadas), capturadas)
 
     def test_arranque_windows_con_vigilante_inexistente_es_falta(self):
         valor = '"C:\\py\\python.exe" -B "C:\\borrado\\iniciar_encargos_pc.py"'
@@ -402,6 +520,52 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         with mock.patch.object(cm, "sistema", lambda: "linux"):
             arranque = cm._arranque(lambda *a, **k: None)
         self.assertEqual(arranque["estado"], "aviso")
+
+
+class AgentesEnWindowsTest(unittest.TestCase):
+    """h_1ddf17a3: en Windows, los agentes de shell (claude) se deciden con la
+    sonda de la jaula de WSL del motor y los nativos exigen su jaula (psec o
+    AppContainer según el adaptador) antes de mirar el PATH."""
+
+    def _agentes(self, which, causa_claude="", psec=True, appcontainer=True):
+        with mock.patch.object(cm, "sistema", lambda: "windows"), mock.patch.object(
+            cm, "_usa_wsl", lambda agente: agente == "claude"
+        ), mock.patch.object(
+            cm, "_causa_jaula_wsl", lambda agente: causa_claude
+        ), mock.patch.object(cm, "_psec_disponible", lambda: psec), mock.patch.object(
+            cm, "_jaula_windows_disponible", lambda: appcontainer
+        ):
+            filas = cm._agentes(which)
+        return {f["agente"]: f for f in filas}
+
+    def test_claude_corre_en_la_distro_sin_estar_en_el_path_de_windows(self):
+        filas = self._agentes(lambda nombre: None, causa_claude="")
+        self.assertEqual(filas["claude"]["estado"], "ok")
+        self.assertIn("distro WSL", filas["claude"]["detalle"])
+
+    def test_claude_sin_jaula_wsl_es_falta_con_la_causa_del_motor(self):
+        filas = self._agentes(lambda nombre: None, causa_claude="sin bubblewrap en la distro")
+        self.assertEqual(filas["claude"]["estado"], "falta")
+        self.assertIn("sin bubblewrap", filas["claude"]["detalle"])
+
+    def test_nativo_sin_jaula_de_windows_es_falta_aunque_el_binario_este(self):
+        filas = self._agentes(lambda nombre: "/falso/bin/" + nombre, psec=False, appcontainer=False)
+        for agente in ("codex", "grok", "kimi", "muse", "opencode", "qwen"):
+            self.assertEqual(filas[agente]["estado"], "falta", agente)
+            self.assertIn("sin jaula de Windows", filas[agente]["detalle"])
+
+    def test_nativo_con_jaula_y_binario_es_ok(self):
+        filas = self._agentes(lambda nombre: "/falso/bin/" + nombre, psec=True)
+        for agente in ("codex", "grok", "kimi", "muse", "opencode", "qwen"):
+            self.assertEqual(filas[agente]["estado"], "ok", agente)
+
+    def test_codex_exige_appcontainer_y_los_demas_psec(self):
+        filas = self._agentes(
+            lambda nombre: "/falso/bin/" + nombre, psec=False, appcontainer=True
+        )
+        self.assertEqual(filas["codex"]["estado"], "ok")
+        self.assertEqual(filas["kimi"]["estado"], "falta")
+        self.assertIn("sin jaula de Windows", filas["kimi"]["detalle"])
 
 
 class CliTest(unittest.TestCase):

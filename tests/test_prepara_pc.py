@@ -64,13 +64,23 @@ def _reg_falso(entorno=None, llave="", sin_powershell=False):
             guion = argv[-1]
             clave = _re.search(r"-LiteralPath '([^']+)'", guion).group(1)
             nombre = _re.search(r"\$p\.(\w+);", guion).group(1)
+            if clave.upper().startswith("HKCU\\"):
+                # Sin la unidad HKCU: la ruta cae en el disco actual; con
+                # -ErrorAction Stop el error es terminante (exit 1) y sin ella
+                # no terminante (código 0, salida vacía), como PowerShell real.
+                r.returncode = 1 if "-ErrorAction Stop" in guion else 0
+                return r
             if "Environment" in clave:
                 valor = estado["env"].get(nombre)
                 if valor is not None:
                     r.stdout = valor + "\n"
+                elif "-ErrorAction Stop" in guion:
+                    r.returncode = 1
                 return r
             if nombre == prepara_pc.NOMBRE_LLAVE and estado["llave"]:
                 r.stdout = estado["llave"] + "\n"
+            elif "-ErrorAction Stop" in guion:
+                r.returncode = 1
             return r
         if argv[:2] == ["reg", "query"] and "Environment" in argv[2]:
             nombre = argv[-1]
@@ -143,6 +153,29 @@ def _limpiar(tmp):
     import shutil
 
     shutil.rmtree(tmp, ignore_errors=True)
+
+
+class LaLlaveSeLeeConLaUnidadHkcu(DoblesTest):
+    def test_el_guion_de_powershell_lleva_la_unidad_hkcu(self):
+        """F1: sin 'HKCU:' la ruta cae en el disco actual y Get-ItemProperty
+        falla con un error no terminante (código 0, salida vacía) que deja una
+        llave bien puesta como ausente, sin respaldo por reg query."""
+        capturadas = []
+
+        def corredor(argv, timeout=prepara_pc.TIMEOUT_CORTO):
+            capturadas.append(list(argv))
+
+            class R:
+                returncode = 1
+                stdout = ""
+                stderr = ""
+
+            return R()
+
+        prepara_pc._leer_registro(prepara_pc.LLAVE, prepara_pc.NOMBRE_LLAVE, corredor)
+        guiones = [a[-1] for a in capturadas if a[0] == "powershell"]
+        self.assertTrue(guiones)
+        self.assertTrue(all("HKCU:" in g for g in guiones), guiones)
 
 
 class ModoComprobacionDetectaLoQueFalta(DoblesTest):

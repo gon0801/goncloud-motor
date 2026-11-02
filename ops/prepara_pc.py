@@ -91,15 +91,21 @@ def _cita_ps(texto) -> str:
 
 
 def _leer_registro(clave: str, valor: str, correr=correr) -> str:
-    """Un valor de HKCU sin la trampa de la página de códigos: PowerShell saca
-    el valor con salida UTF-8 (un perfil como C:\\Users\\José mangleado con
-    utf-8 haría que la misma corrida nunca quedara 'ok'). Si no hay PowerShell,
-    reg query tal cual."""
+    """Un valor de HKCU sin la trampa de la página de códigos (el mismo camino
+    que motor/capacidades_maquina.py): PowerShell saca el valor con salida
+    UTF-8; reg.exe escribe en la página local y un perfil con acentos llegaría
+    mangleado. En PowerShell el registro cuelga de la unidad HKCU:; sin los dos
+    puntos la ruta cae en el disco actual y Get-ItemProperty falla con un error
+    no terminante que deja el código 0 y la salida vacía, sin respaldo. Si no
+    hay PowerShell, reg query tal cual."""
+    clave_ps = "HKCU:" + clave[4:] if clave.upper().startswith("HKCU\\") else clave
     guion = (
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-        f"$p=Get-ItemProperty -LiteralPath {_cita_ps(clave)};"
+        "try {"
+        f"$p=Get-ItemProperty -LiteralPath {_cita_ps(clave_ps)} -ErrorAction Stop;"
         f"$v=$p.{valor};"
-        "if ($null -ne $v) { [string]$v }"
+        "if ($null -ne $v) { [string]$v } else { exit 1 }"
+        "} catch { exit 1 }"
     )
     try:
         r = correr([
