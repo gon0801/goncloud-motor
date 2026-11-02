@@ -1324,11 +1324,15 @@ def _disputa_de_deepseek(
             "corregir .interno/disputa.json con hallazgo y evidencia",
             hora, f"disputa-{enc.generacion}", clase="disputa.json",
         )
-        _devolver(
-            registro, enc, "reparar_instrumento", str(exc),
-            "corregir la disputa sin descartar el hallazgo por cuenta propia",
-            hora, "disputa",
-        )
+        if not _impedimento_de_instrumento(
+            registro, enc, "disputa.json", str(exc),
+            "que .interno/disputa.json vuelva a validar", hora,
+        ):
+            _devolver(
+                registro, enc, "reparar_instrumento", str(exc),
+                "corregir la disputa sin descartar el hallazgo por cuenta propia",
+                hora, "disputa",
+            )
         return True
     if not disputas:
         return False
