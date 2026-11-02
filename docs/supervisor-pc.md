@@ -66,9 +66,29 @@ puente 60 s y el comando completo 75 s.
 
 ## Lo que no hace
 
-No sobrevive a un reinicio de la PC ni al cierre de la sesión de Windows: sigue haciendo
-falta ejecutar el comando de arranque después, como hasta ahora. Instalarlo como tarea al
-inicio de sesión es otro cambio.
+No arranca sin sesión iniciada: la llave Run deja el vigilante cuando `ehven` inicia
+sesión, no antes (arrancar aunque nadie inicie sesión lo tiene la tarea programada del
+servicio de planes, no el encargo). Si la sesión se cierra, el vigilante y el supervisor
+terminan con ella; al iniciar sesión otra vez, la llave los deja otra vez (después de la
+preparación de la PC, `ops/prepara_pc.py`). Antes de esa preparación, un reinicio dejaba al
+motor apagado hasta que alguien corriera el arranque a mano.
+
+## Arranque al iniciar sesión (llave Run)
+
+Desde la preparación de la PC (`ops/prepara_pc.py`), la llave
+`HKCU\...\Run\GoncloudMotorEncargos` no lanza `supervisor.ps1` directo: lanza
+`<python> -B <repo>\ops\iniciar_encargos_pc.py`, y el vigilante queda instalado al iniciar
+sesión sin que nadie corra nada a mano. `supervisor.ps1` no se borra ni se toca: sigue
+siendo lo que el vigilante lanza y vigila (`fixed_paths` lo exige).
+
+Ese camino deja al supervisor fuera de cualquier Job, y lo comprueba en cada lanzamiento:
+el vigilante valida la identidad de cada supervisor que lanza (mismo SID, misma sesión de
+Explorer, `in_job: false`) y cierra el que no la cumpla. Un `supervisor.ps1` directo desde
+la llave no valida nada: si alguien corría el arranque desde SSH, o si el proceso moría,
+no había nada que lo relanzara con identidad garantizada. Con el vigilante, un supervisor
+caído vuelve en 5 s y siempre libre del Job; es la única pieza que sabe romper el Job de
+SSH (Explorer COM y `CREATE_BREAKAWAY_FROM_JOB`), y procesos que la llave lanza por su
+cuenta quedan a merced del Job de quien los lance.
 
 ## Comprobación real en la PC (después del despliegue)
 
