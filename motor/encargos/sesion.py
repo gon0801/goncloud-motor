@@ -397,7 +397,7 @@ def recuperar_arranque(directorio: Path) -> tuple[str, dict | None]:
 
 
 def descendientes(raiz: int) -> list[dict] | None:
-    """Consulta PID/PPID, sin leer argumentos ni entornos de procesos ajenos."""
+    """Consulta PID, PPID y hora de creación, sin leer argumentos ni entornos ajenos."""
     if os.name == "nt":
         from motor.plataforma.windows import _consulta_pid, _descendientes
 
