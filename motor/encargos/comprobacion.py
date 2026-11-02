@@ -88,6 +88,41 @@ def leer_declaradas(interno: Path) -> list[dict] | None:
     return comandos
 
 
+def leer_disputa(interno: Path) -> tuple[dict, ...] | None:
+    """Un bloqueante de DeepSeek que el responsable sostiene que no aplica.
+
+    Formato: `{"hallazgo": "F1", "evidencia": "..."}` o
+    `{"disputas": [{"hallazgo": "F1", "evidencia": "..."}]}`. No descarta
+    nada: el motor lo convierte en una pregunta al propietario, que es el
+    único que puede autorizar el descarte.
+    """
+    path = interno / "disputa.json"
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"disputa.json no se puede leer: {exc}") from exc
+    if isinstance(doc, dict) and "disputas" in doc:
+        crudo = doc["disputas"]
+    else:
+        crudo = doc
+    if isinstance(crudo, dict):
+        crudo = [crudo]
+    if not isinstance(crudo, (list, tuple)) or not crudo:
+        raise ValueError("disputa.json necesita una lista no vacia de disputas")
+    salida = []
+    for item in crudo:
+        if not isinstance(item, dict):
+            raise ValueError("cada disputa debe ser un objeto")
+        hallazgo = str(item.get("hallazgo") or "").strip()
+        evidencia = " ".join(str(item.get("evidencia") or "").split())
+        if not hallazgo or not evidencia:
+            raise ValueError("cada disputa necesita hallazgo y evidencia no vacios")
+        salida.append({"hallazgo": hallazgo, "evidencia": evidencia})
+    return tuple(salida)
+
+
 def observar_comprobaciones(
     espacio: Path, interno: Path, directorio: Path, contenedor: Path
 ) -> dict | None:
@@ -341,6 +376,9 @@ Si falla un comando de comprobacion, corrige ese comando y vuelve a observar. No
 valido por un error del instrumento ni repitas efectos con recibo.
 Si hay hallazgos bloqueantes abiertos, corrige solo esos y sus efectos. Lo aprobado que no cambio
 conserva su aprobacion; no reescribas producto valido.
+Si un bloqueante de DeepSeek no aplica, no lo ignores ni lo descartes por tu cuenta: escribe
+.interno/disputa.json como {{"hallazgo":"<id>","evidencia":"<por que no aplica, con la comprobacion>"}}
+y entrega. El motor pedira autorizacion al propietario; solo el puede descartarlo.
 No cambies el objetivo ni despliegues. Las escrituras externas se piden en .interno/pedido-efecto.json.
 Su formato interno es {{"id":"identidad-estable-del-efecto", "operacion":"publicar",
 "clave":"clave-autorizada-del-destino", "cuerpo":"texto-exacto-autorizado"}}.
