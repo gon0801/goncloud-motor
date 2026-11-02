@@ -845,7 +845,7 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
     job = str(parametros.get("job") or "").strip()
     if not job or not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", job):
         raise CiFallo(
-            "ci.correr necesita el parámetro job con el nombre exacto del job (por ejemplo jaula-linux)",
+            "ci.correr necesita el parámetro job con el nombre exacto del job (por ejemplo windows)",
             "volver a pedirla con --parametro job=<nombre>",
         )
     if espacio is None or not (Path(espacio) / ".git").exists():

@@ -47,7 +47,6 @@ class SinSandboxExec(unittest.TestCase):
         comando = _comando_directo()
         self.assertEqual(comando.mecanismo, "directo")
         self.assertEqual(comando.argv, ["true"])
-        self.assertIsNone(comando.jaula)
 
     def test_en_macos_el_argv_lanzado_no_empieza_por_sandbox_exec(self):
         """El argv que la Mac lanza es el de la rama POSIX, compartida con
