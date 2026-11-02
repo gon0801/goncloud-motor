@@ -1,12 +1,15 @@
 """Resumen legible de los encargos activos y su envio periodico por el canal de avisos.
 
-El resumen es texto plano, como los demas avisos: cada transporte lo escapa antes de
-mandarlo a Telegram como HTML, asi que una etiqueta propia llegaria a la vista.
+El resumen va en HTML de Telegram (solo `<b>`) y su aviso lo declara con
+`formato: html`: el motor pasa `MOTOR_AVISO_FORMATO=html` al transporte, que entonces
+no lo escapa. Todo texto variable se escapa aqui; un `<` suelto haria que Telegram
+rechazara el mensaje.
 """
 
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import socket
 import time
@@ -25,8 +28,7 @@ ESTADOS_ACTIVOS = (
     "necesita_usuario",
     "deteniendo",
 )
-# Telegram admite 4096 caracteres; el transporte escapa `<`, `>` y `&` y el texto crece.
-TOPE_MENSAJE = 3800
+TOPE_MENSAJE = 4096
 ALERTA_RECIBIDO_S = 15 * 60
 ALERTA_ESPERA_S = 2 * 60 * 60
 ALERTA_ESPERA = f"la misma espera lleva más de {ALERTA_ESPERA_S // 3600} h"
@@ -102,6 +104,10 @@ def _titulo(enc: Encargo) -> str:
     lineas = [linea.strip() for linea in str(enc.texto or "").splitlines() if linea.strip()]
     titulo = lineas[0].lstrip("#").strip() if lineas else str(enc.clave or "")
     return _frase(titulo or enc.clave or enc.id, TOPE_TITULO)
+
+
+def _esc(texto: object) -> str:
+    return html.escape(str(texto or ""), quote=False)
 
 
 def _epoch(hora: str) -> float | None:
@@ -429,28 +435,29 @@ def _componer(
     activos = len(entradas)
     cabecera = "\n".join(
         (
-            "📋 Resumen de encargos",
-            f"🖥️ {_maquina(host)} · {_hora_legible(ahora)} · "
-            + (f"{activos} activo" if activos == 1 else f"{activos} activos"),
+            "📋 <b>Resumen de encargos</b>",
+            f"🖥️ {_esc(_maquina(host))} · {_esc(_hora_legible(ahora))} · <b>"
+            + (f"{activos} activo" if activos == 1 else f"{activos} activos")
+            + "</b>",
         )
     )
     bloques = [cabecera]
     for indice, entrada in enumerate(entradas, 1):
         numero = NUMEROS[indice - 1] if indice <= len(NUMEROS) else f"{indice}."
         filas = [
-            f"{numero} {entrada.titulo} ({entrada.id_corto})",
-            f"📍 Fase: {entrada.fase}",
-            f"🔗 PR: {entrada.pr}",
-            f"⏳ Ahora: {entrada.paso}",
-            f"🕐 Desde: {entrada.desde}",
+            f"{numero} <b>{_esc(entrada.titulo)}</b> ({_esc(entrada.id_corto)})",
+            f"📍 Fase: <b>{_esc(entrada.fase)}</b>",
+            f"🔗 PR: {_esc(entrada.pr)}",
+            f"⏳ Ahora: {_esc(entrada.paso)}",
+            f"🕐 Desde: {_esc(entrada.desde)}",
         ]
         for alerta in entrada.alertas:
-            filas.append(f"⚠️ Alerta: {alerta}")
+            filas.append(f"⚠️ <b>Alerta:</b> {_esc(alerta)}")
         bloques.append("\n".join(filas))
     if decisiones:
-        pie = ["🙋 Necesitan tu decisión"]
+        pie = ["🙋 <b>Necesitan tu decisión</b>"]
         for titulo, motivo in decisiones:
-            pie.append(f"• {titulo}: {motivo}")
+            pie.append(f"• <b>{_esc(titulo)}</b>: {_esc(motivo)}")
     else:
         pie = ["✅ Nada espera tu decisión."]
     bloques.append("\n".join(pie))
@@ -780,6 +787,7 @@ def preparar(registro: Registro, ahora: float | None = None) -> list[tuple[dict,
             "estado": "pendiente",
             "recibo": "",
             "tipo": "resumen",
+            "formato": "html",
             "firma": actual.firma,
             "episodio": episodio_actual,
             "parte": indice,

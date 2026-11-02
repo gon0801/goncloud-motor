@@ -715,6 +715,8 @@ def _correr_transporte(
             "MOTOR_AVISO_CANAL": str(aviso.get("canal") or ""),
             "MOTOR_AVISO_EVIDENCIA": str(aviso.get("evidencia") or ""),
             "MOTOR_AVISO_BASE": str(registro.base),
+            # `html`: el cuerpo ya viene escapado y con etiquetas; el transporte no lo escapa.
+            "MOTOR_AVISO_FORMATO": "html" if aviso.get("formato") == "html" else "texto",
         }
     )
     argv = [str(x) for x in comando]
@@ -765,6 +767,8 @@ def _correr_conciliacion(
             "MOTOR_AVISO_CANAL": str(aviso.get("canal") or ""),
             "MOTOR_AVISO_EVIDENCIA": str(aviso.get("evidencia") or ""),
             "MOTOR_AVISO_BASE": str(registro.base),
+            # `html`: el cuerpo ya viene escapado y con etiquetas; el transporte no lo escapa.
+            "MOTOR_AVISO_FORMATO": "html" if aviso.get("formato") == "html" else "texto",
         }
     )
     argv = [str(x) for x in comando] + [str(aviso.get("id") or "")]

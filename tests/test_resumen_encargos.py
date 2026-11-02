@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -32,7 +33,8 @@ TRANSPORTE = (
     " sys.stderr.write('no salio'); sys.exit(1)\n"
     "with open(base/'entregados.jsonl','a',encoding='utf-8') as f:\n"
     " f.write(json.dumps({'id':os.environ['MOTOR_AVISO_ID'],"
-    "'evidencia':os.environ['MOTOR_AVISO_EVIDENCIA'],'cuerpo':cuerpo},"
+    "'evidencia':os.environ['MOTOR_AVISO_EVIDENCIA'],'cuerpo':cuerpo,"
+    "'formato':os.environ.get('MOTOR_AVISO_FORMATO','')},"
     " ensure_ascii=False)+'\\n')\n"
     "print(json.dumps({'recibo':'ok-'+os.environ['MOTOR_AVISO_ID']}))\n"
 )
@@ -787,8 +789,8 @@ class Envio(Base):
 
 
 class FormatoLegible(Base):
-    """El canal recibe texto plano: cada transporte lo escapa antes de mandarlo a
-    Telegram como HTML. Un resumen con etiquetas llegaba con `<b>` a la vista."""
+    """El resumen va con negritas de Telegram. Su aviso se declara `html` para que el
+    transporte no lo escape; sin esa marca las etiquetas llegaban a la vista."""
 
     def _con_modelo(self, clave: str, modelo: str, rol: str = "responsable") -> str:
         ident = self.b.encargo(clave, repo="git@github.com:gon0801/goncloud-motor.git")
@@ -801,18 +803,34 @@ class FormatoLegible(Base):
         self.b.evento(ident, "actividad", {"observada": True, "hecho": "trabajando"}, "a-" + clave)
         return ident
 
-    def test_el_resumen_no_lleva_etiquetas_html(self):
-        self._con_modelo("plano", "zai-coding-plan/glm-5.3-flash")
+    def test_el_resumen_solo_usa_negritas(self):
+        self._con_modelo("negritas", "zai-coding-plan/glm-5.3-flash")
         texto = resumen.texto(self.b.reg, ahora=T0, host="pc")
-        for etiqueta in ("<b>", "</b>", "<i>", "<code>"):
-            self.assertNotIn(etiqueta, texto)
-        self.assertIn("Resumen de encargos", texto)
+        self.assertIn("<b>Resumen de encargos</b>", texto)
+        etiquetas = set(re.findall(r"</?([a-z]+)", texto))
+        self.assertEqual(etiquetas, {"b"})
+        self.assertEqual(texto.count("<b>"), texto.count("</b>"))
 
-    def test_el_titulo_sale_tal_cual_y_lo_escapa_el_transporte(self):
+    def test_el_texto_variable_se_escapa(self):
         self.b.encargo("escapa", texto="Título <b>crudo</b> & demás")
         texto = resumen.texto(self.b.reg, ahora=T0, host="pc")
-        self.assertIn("Título <b>crudo</b> & demás", texto)
-        self.assertNotIn("&lt;", texto)
+        self.assertIn("Título &lt;b&gt;crudo&lt;/b&gt; &amp; demás", texto)
+        self.assertNotIn("<b>crudo</b>", texto)
+
+    def test_el_transporte_recibe_el_resumen_marcado_como_html(self):
+        self.b.encargo("marca")
+        directores.drenar(self.b.reg, ahora=T0 + 2 * 60 * 60)
+        enviados = self.b.resumenes()
+        self.assertTrue(enviados)
+        self.assertEqual({e["formato"] for e in enviados}, {"html"})
+        self.assertIn("<b>Resumen de encargos</b>", enviados[-1]["cuerpo"])
+        log = self.b.base / "entregados.jsonl"
+        otros = [
+            json.loads(linea) for linea in log.read_text(encoding="utf-8").splitlines()
+            if linea and not json.loads(linea)["evidencia"].startswith("resumen:")
+        ]
+        for aviso in otros:
+            self.assertEqual(aviso["formato"], "texto", aviso["evidencia"])
 
     def test_el_modelo_sale_con_su_nombre_llano(self):
         for clave, modelo, rol, esperado in (
@@ -825,7 +843,8 @@ class FormatoLegible(Base):
             texto = resumen.texto(self.b.reg, ahora=T0, host="pc")
             self.assertIn(esperado, texto, modelo)
         self.assertNotIn("Zai-coding-plan", texto)
-        self.assertNotIn("/", texto.split("Resumen de encargos", 1)[1].replace("Fase", ""))
+        for proveedor in ("coding-plan", "opencode-go/", "anthropic/"):
+            self.assertNotIn(proveedor, texto)
 
     def test_el_pr_sale_con_el_nombre_corto_del_repo(self):
         self.assertEqual(resumen._repo_corto("git@github.com:gon0801/goncloud-motor.git"), "goncloud-motor")
