@@ -139,5 +139,36 @@ class ElArranqueGuardadoNoTraeElEntornoDelSupervisor(unittest.TestCase):
             self.assertEqual(Path(lanzado["TMPDIR"]), runtime / "tmp")
 
 
+@unittest.skipIf(os.name == "nt", "el merge del entorno es de la rama directa POSIX")
+class ElLanzamientoComponeElEntornoDelSupervisorMasElDelta(unittest.TestCase):
+    """F6: `crear_agente` ejerce el merge en la rama directa: el proceso se
+    lanza con el entorno heredado del wrapper más lo que `arranque.json`
+    guarda. Si el merge desaparece, el agente pierde el entorno del usuario."""
+
+    def test_crear_agente_lanza_con_el_entorno_heredado_mas_el_delta(self):
+        from motor.encargos import arranque
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            spec = {
+                "aislamiento": "directo",
+                "cmd": ["true"],
+                "cwd": str(tmp),
+                "env": {"TMPDIR": str((Path(tmp).resolve()) / "tmp")},
+            }
+            with mock.patch.dict(os.environ, {"MOTOR_SECRETO_SUPERVISOR": "visible"}):
+                esperado = {**os.environ, **spec["env"]}
+                with mock.patch("subprocess.Popen") as popen:
+                    arranque.crear_agente(
+                        spec, Path(tmp), {"cwd": spec["cwd"], "env": spec["env"]}
+                    )
+            self.assertEqual(popen.call_args.kwargs["env"], esperado)
+            self.assertEqual(
+                popen.call_args.kwargs["env"]["MOTOR_SECRETO_SUPERVISOR"], "visible"
+            )
+            self.assertEqual(
+                popen.call_args.kwargs["env"]["TMPDIR"], spec["env"]["TMPDIR"]
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
