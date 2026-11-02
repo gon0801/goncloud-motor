@@ -11,13 +11,12 @@ class Adaptador:
     prefijos: tuple[str, ...]
     modelo: str
     dominios: tuple[str, ...]
-    psec: bool = True
     cliente_windows: str = ""
 
 
 ADAPTADORES = {
     "codex": Adaptador(
-        ("openai/",), "openai/gpt-6.1-sol", ("chatgpt.com", "auth.openai.com"), False
+        ("openai/",), "openai/gpt-6.1-sol", ("chatgpt.com", "auth.openai.com"),
     ),
     "grok": Adaptador(
         ("xai/",), "xai/grok-4.7", ("cli-chat-proxy.grok.com", "api.x.ai")
