@@ -5593,7 +5593,7 @@ def _soltar_conductor(registro: Registro, enc: Encargo, hora: str) -> bool:
     ):
         try:
             ref = json.loads((directorio / "revision.json").read_text(encoding="utf-8"))
-            juicio = json.loads(Path(ref["resultado"]).read_text(encoding="utf-8"))
+            juicio = json.loads(Path(ref["resultado"]).read_text(encoding="utf-8-sig"))
             pendiente = pendiente or juicio.get("clase") in (
                 "confirmado",
                 "producto_aprobado",
@@ -5767,7 +5767,7 @@ def _resultado_desde_fold(
         observacion = json.loads(
             Path(referencia["observaciones"]).read_text(encoding="utf-8")
         )
-        juicio = json.loads(Path(referencia["resultado"]).read_text(encoding="utf-8"))
+        juicio = json.loads(Path(referencia["resultado"]).read_text(encoding="utf-8-sig"))
         return observacion, juicio
     except (OSError, ValueError, KeyError):
         return {}, None

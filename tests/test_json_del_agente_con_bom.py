@@ -14,7 +14,9 @@ import unittest
 from pathlib import Path
 
 from motor.encargos import comprobacion, fases, necesidades
-from motor.encargos.ciclo import _pedidos_efecto
+from types import SimpleNamespace
+
+from motor.encargos.ciclo import _pedidos_efecto, _resultado_desde_fold
 from motor.encargos.comprobacion import interno_de
 from motor.encargos.dominio import AlcanceRevision
 
@@ -74,6 +76,29 @@ class JsonDelAgenteConBom(unittest.TestCase):
         alcance = AlcanceRevision(clase="completa", version="v1", base_version="")
         resultado = comprobacion.leer_juicio(path, alcance)
         self.assertNotIsInstance(resultado, comprobacion.FalloInstrumento, resultado)
+
+    def test_juicio_con_bom_en_el_respaldo_de_revision_json(self) -> None:
+        # _resultado_desde_fold sin una revision en el registro cae a leer revision.json
+        # y el juicio que dejo el agente; antes leia ese juicio con utf-8 y fallaba en silencio.
+        directorio = Path(self._tmp.name) / "intento"
+        directorio.mkdir()
+        observaciones = directorio / "observaciones.json"
+        observaciones.write_text(json.dumps({"version": "v1"}), encoding="utf-8")
+        resultado = directorio / "resultado.json"
+        _escribir_con_bom(resultado, {"version": "v1", "veredicto": "aprobado"})
+        (directorio / "revision.json").write_text(
+            json.dumps({"observaciones": str(observaciones), "resultado": str(resultado)}),
+            encoding="utf-8",
+        )
+
+        class RegistroSinEventos:
+            def eventos(self, _encargo):
+                return []
+
+        enc = SimpleNamespace(id="enc_prueba", fase_activa="unica")
+        observacion, juicio = _resultado_desde_fold(RegistroSinEventos(), enc, directorio)
+        self.assertEqual(juicio, {"version": "v1", "veredicto": "aprobado"})
+        self.assertEqual(observacion, {"version": "v1"})
 
 
 if __name__ == "__main__":
