@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Deja a Kuma vigilando el motor de la Mini y el de la PC: crea (o reusa) sus dos monitores push en el
-# servidor y escribe MOTOR_KUMA_URL en secretos.env de cada máquina. No reinicia ningún motor: la señal
+# Deja a Kuma vigilando el motor de la MacBook, la Mini y la PC: crea (o reusa) sus monitores push en
+# el servidor y escribe MOTOR_KUMA_URL en los dos secretos.env de cada máquina (el del motor de planes
+# y el del supervisor). La Mac escribe en local, sin ssh a sí misma. No reinicia ningún motor: la señal
 # lee el archivo en cada vuelta. Sin argumentos; se puede repetir. Nunca imprime un token.
 set -uo pipefail
 export LC_ALL=C
@@ -11,7 +12,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tokens="$(servidor_kuma alta)" || { echo "senal-kuma: el servidor no dejó los monitores" >&2; exit 1; }
 
 fallos=0
-for m in mini pc; do
+for m in mac mini pc; do
   token="$(printf '%s\n' "$tokens" | awk -v m="$m" '$1 == m {print $2}')"
   if ! printf '%s' "$token" | grep -Eq '^[A-Za-z0-9]{32}$'; then
     echo "senal-kuma: $m: el servidor no devolvió un token válido" >&2
@@ -19,7 +20,7 @@ for m in mini pc; do
     continue
   fi
   if ! printf '%s\n' "$token" | linea_en "$m" poner >/dev/null; then
-    echo "senal-kuma: $m: no pude escribir secretos.env" >&2
+    echo "senal-kuma: $m: no pude escribir los secretos.env" >&2
     fallos=$((fallos + 1))
     continue
   fi

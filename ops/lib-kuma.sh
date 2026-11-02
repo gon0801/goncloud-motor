@@ -13,19 +13,51 @@ servidor_kuma() {
   ssh_a "$KUMA_SSH" "$(printf '%q ' python3 - "$KUMA_DB" "$1")" <"$KUMA_SERVIDOR_PY"
 }
 
-# Escritura atómica de la línea MOTOR_KUMA_URL en ~/.motor/secretos.env (temporal y reemplazo).
-# poner: el token entra por stdin. quitar: no hay token. Termina con el archivo en 600.
+# es_local_kuma <m>: la MacBook es esta misma máquina, no la Mini ni otra macOS.
+# macOS no basta: la Mini también es Darwin. En la flota solo la MacBook y la Mini corren macOS
+# (ops/lib.sh, maquinas_canario), así que en Darwin se compara el hostname local con el de la Mini:
+# si difieren, esta máquina es la MacBook. Preguntar a la Mini, en vez de a `mac`, deja que la
+# MacBook escriba sus secretos sin hacerse ssh a sí misma. Desde la Mini el hostname coincide y la
+# Mac se alcanza por ssh como cualquier otra. En la PC o el CI ni se sondea: uname no es Darwin.
+# El sondeo se hace una sola vez por proceso.
+es_local_kuma() {
+  [ "$1" = mac ] || return 1
+  [ "$(uname -s 2>/dev/null)" = Darwin ] || return 1
+  if [ -z "${_kuma_es_macbook:-}" ]; then
+    local propio remoto
+    propio="$(hostname 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
+    remoto="$(corre mini hostname </dev/null 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
+    if [ -n "$propio" ] && [ -n "$remoto" ] && [ "$propio" != "$remoto" ]; then
+      _kuma_es_macbook=si
+    else
+      _kuma_es_macbook=no
+    fi
+  fi
+  [ "$_kuma_es_macbook" = si ]
+}
+
+# corre_kuma <m> <posix> <pc>: como corre, pero la Mac se ejecuta en local.
+corre_kuma() {
+  if es_local_kuma "$1"; then bash -c "$2"; else corre "$@"; fi
+}
+
+# Escritura atómica de MOTOR_KUMA_URL en los dos secretos de la máquina:
+# ~/.motor/secretos.env (motor de planes) y ~/.motor-encargos/secretos.env (supervisor).
+# poner: el token entra por stdin una sola vez. quitar: no hay token. Cada archivo queda en 600.
 escritor_posix() {
   cat <<SCRIPT
 umask 077
 accion='$1'
-f="\$HOME/.motor/secretos.env"; t="\$f.nuevo.\$\$"
-mkdir -p "\$HOME/.motor"
+tok=
 if [ "\$accion" = poner ]; then IFS= read -r tok; [ -n "\$tok" ] || exit 3; fi
-if [ -f "\$f" ]; then grep -v '^[[:space:]]*MOTOR_KUMA_URL=' "\$f" >"\$t"; [ \$? -le 1 ] || exit 4; else : >"\$t"; fi
-if [ -s "\$t" ] && [ "\$(tail -c1 "\$t" | wc -l)" -eq 0 ]; then echo >>"\$t"; fi
-if [ "\$accion" = poner ]; then printf 'MOTOR_KUMA_URL=%s%s\n' '$KUMA_PUSH_BASE' "\$tok" >>"\$t"; fi
-chmod 600 "\$t" && mv "\$t" "\$f"
+for d in "\$HOME/.motor" "\$HOME/.motor-encargos"; do
+  f="\$d/secretos.env"; t="\$f.nuevo.\$\$"
+  mkdir -p "\$d" || exit 4
+  if [ -f "\$f" ]; then grep -v '^[[:space:]]*MOTOR_KUMA_URL=' "\$f" >"\$t"; [ \$? -le 1 ] || exit 4; else : >"\$t"; fi
+  if [ -s "\$t" ] && [ "\$(tail -c1 "\$t" | wc -l)" -eq 0 ]; then echo >>"\$t"; fi
+  if [ "\$accion" = poner ]; then printf 'MOTOR_KUMA_URL=%s%s\n' '$KUMA_PUSH_BASE' "\$tok" >>"\$t"; fi
+  chmod 600 "\$t" && mv "\$t" "\$f" || exit 5
+done
 SCRIPT
 }
 
@@ -34,24 +66,28 @@ escritor_pc() {
 \$ErrorActionPreference = 'Stop'
 \$accion = '$1'
 if (\$accion -eq 'poner') { \$tok = [Console]::In.ReadLine(); if (-not \$tok) { exit 3 } }
-\$dir = Join-Path \$env:USERPROFILE '.motor'
-\$f = Join-Path \$dir 'secretos.env'
-\$t = "\${f}.nuevo"
-New-Item -ItemType Directory -Force -Path \$dir | Out-Null
-\$lineas = @()
-if (Test-Path -LiteralPath \$f) { \$lineas = @(Get-Content -LiteralPath \$f -Encoding UTF8 | Where-Object { \$_ -notmatch '^\s*MOTOR_KUMA_URL=' }) }
-if (\$accion -eq 'poner') { \$lineas += ('MOTOR_KUMA_URL=$KUMA_PUSH_BASE' + \$tok) }
-[IO.File]::WriteAllLines(\$t, [string[]]\$lineas)
-Move-Item -LiteralPath \$t -Destination \$f -Force
+\$linea = 'MOTOR_KUMA_URL=$KUMA_PUSH_BASE' + \$tok
+foreach (\$d in @((Join-Path \$env:USERPROFILE '.motor'), (Join-Path \$env:USERPROFILE '.motor-encargos'))) {
+  New-Item -ItemType Directory -Force -Path \$d | Out-Null
+  \$f = Join-Path \$d 'secretos.env'
+  \$t = "\${f}.nuevo"
+  \$lineas = @()
+  if (Test-Path -LiteralPath \$f) { \$lineas = @(Get-Content -LiteralPath \$f -Encoding UTF8 | Where-Object { \$_ -notmatch '^\s*MOTOR_KUMA_URL=' }) }
+  if (\$accion -eq 'poner') { \$lineas += \$linea }
+  [IO.File]::WriteAllLines(\$t, [string[]]\$lineas)
+  Move-Item -LiteralPath \$t -Destination \$f -Force
+}
 SCRIPT
 }
 
-# linea_en <mini|pc> <poner|quitar>: el token (si poner) llega por stdin, nunca en la línea de comandos.
+# linea_en <mac|mini|pc> <poner|quitar>: el token (si poner) llega por stdin, nunca en la línea de comandos.
 linea_en() {
   local m=$1 accion=$2 codificado
   if [ "$m" = pc ]; then
     codificado="$(escritor_pc "$accion" | python3 -I -c 'import base64,sys; print(base64.b64encode(sys.stdin.read().encode("utf-16-le")).decode())')"
     corre pc x "powershell -NoProfile -NonInteractive -EncodedCommand $codificado"
+  elif es_local_kuma "$m"; then
+    bash -c "$(escritor_posix "$accion")"
   else
     corre "$m" "$(escritor_posix "$accion")" x
   fi
@@ -65,7 +101,7 @@ pc_motor="cd /d %USERPROFILE%\\motor && $PC_UV run --python 3.12 python -X utf8 
 # bytes y se decodifica utf-8 con respaldo cp1252: la PC escribe la ñ en su página ANSI (medido en MOTOR 01).
 senal_configurada() {
   local m=$1 salida
-  salida="$(corre "$m" "$posix_motor doctor --home \"\$HOME/.motor\" --json" "$pc_motor doctor --home %USERPROFILE%\\.motor --json" </dev/null 2>/dev/null | tr -d '\r')" || true
+  salida="$(corre_kuma "$m" "$posix_motor doctor --home \"\$HOME/.motor\" --json" "$pc_motor doctor --home %USERPROFILE%\\.motor --json" </dev/null 2>/dev/null | tr -d '\r')" || true
   printf '%s' "$salida" | python3 -I -c 'import json,sys
 try:
     datos = sys.stdin.buffer.read()
@@ -76,4 +112,17 @@ try:
     sys.exit(0 if json.loads(texto).get("senal") == sys.argv[1] else 1)
 except ValueError:
     sys.exit(1)' "$SENAL_OK"
+}
+
+# revisa_secretos <mac|mini>: una línea por problema en los dos secretos POSIX (vacío si están bien).
+revisa_secretos() {
+  local salida
+  salida="$(corre_kuma "$1" 'for d in "$HOME/.motor" "$HOME/.motor-encargos"; do
+  f="$d/secretos.env"
+  [ -f "$f" ] || { echo "falta $f"; continue; }
+  grep -q "^[[:space:]]*MOTOR_KUMA_URL=." "$f" || echo "sin MOTOR_KUMA_URL en $f"
+  modo=$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")
+  [ "$modo" = 600 ] || echo "$f no está en 600 (modo: ${modo:-desconocido})"
+done' x)" || { echo "no pude revisar los secretos"; return; }
+  printf '%s\n' "$salida"
 }

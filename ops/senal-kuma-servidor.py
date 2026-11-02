@@ -18,7 +18,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-MONITORES = {"mini": "Motor de la Mini", "pc": "Motor de la PC"}
+MONITORES = {
+    "mini": "Motor de la Mini",
+    "pc": "Motor de la PC",
+    "mac": "Motor de la MacBook",
+}
 PLANTILLA = "backup orbit"
 AVISO = "Server Alerts"
 CONTENEDOR = "uptime-kuma"
