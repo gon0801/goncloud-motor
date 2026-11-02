@@ -818,7 +818,8 @@ class FormatoLegible(Base):
         self.assertNotIn("<b>crudo</b>", texto)
 
     def test_el_transporte_recibe_el_resumen_marcado_como_html(self):
-        self.b.encargo("marca")
+        # Con fases el encargo tambien emite su aviso de inicio, que debe ir como texto.
+        activo(self.b, "marca")
         directores.drenar(self.b.reg, ahora=T0 + 2 * 60 * 60)
         enviados = self.b.resumenes()
         self.assertTrue(enviados)
@@ -829,6 +830,7 @@ class FormatoLegible(Base):
             json.loads(linea) for linea in log.read_text(encoding="utf-8").splitlines()
             if linea and not json.loads(linea)["evidencia"].startswith("resumen:")
         ]
+        self.assertTrue(otros, "el escenario debe enviar al menos un aviso que no es resumen")
         for aviso in otros:
             self.assertEqual(aviso["formato"], "texto", aviso["evidencia"])
 
