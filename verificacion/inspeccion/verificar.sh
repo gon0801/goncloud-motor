@@ -21,6 +21,15 @@ tope_cfg="$(sed -n 's/^[[:space:]]*Tope[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).
 TLC_TOOL='http:tla2tools[url=https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar,checksum=sha256:936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88]@1.7.4'
 JAVA_TOOL='java@temurin-25'
 
+# launchd no hereda las variables del shell. La preparación deja un enlace
+# estable en la base; si existe, verificar.sh corre sin depender de mise.
+base_herramientas="${MOTOR_BASE:-$HOME/.motor-encargos}/herramientas"
+if [ -z "${TLA2TOOLS:-}" ] && [ -f "$base_herramientas/tla2tools/1.7.4/tla2tools.jar" ] \
+   && [ -x "$base_herramientas/java/actual/bin/java" ]; then
+  export TLA2TOOLS="$base_herramientas/tla2tools/1.7.4/tla2tools.jar"
+  export JAVA="$base_herramientas/java/actual/bin/java"
+fi
+
 if [ -n "${TLA2TOOLS:-}" ]; then
   jar="$TLA2TOOLS"; java="${JAVA:-java}"
 else

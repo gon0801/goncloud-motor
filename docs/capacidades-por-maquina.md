@@ -31,7 +31,11 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   (`jaula_wsl.causa_no_disponible`) y no el hecho de que haya una distro listada. Si falta
   uno de los dos la sección queda en aviso; si no hay ninguno, falta.
 - `agentes`: los CLI de agentes del catálogo (codex, grok, muse, kimi, claude, opencode,
-  qwen), solo presencia y su `--version`. Nunca consulta autenticación ni gasta cuota: que
+  qwen), solo presencia y su `--version`. La ruta sale de `agentes.resolver_binario`, la
+  misma función con la que el supervisor de encargos decide y lanza: el lanzador de la
+  generación vigente de la flota (`runtime.json` de su `actual`) o, sin generación, el
+  PATH del proceso. `path_extra` de `maquina.toml` no entra aquí porque el servicio de
+  encargos no lo aplica a los agentes. Nunca consulta autenticación ni gasta cuota: que
   el binario esté no dice que la suscripción esté viva, y eso lo descubre el encargo al
   arrancar. En Windows, los agentes de shell (hoy claude) corren dentro de la distro WSL:
   su fila la decide la sonda de la jaula de WSL del motor (jaula y ejecutable de la
@@ -52,10 +56,13 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   `secretos.env`). Nunca imprime el token.
 - `senal`: si `MOTOR_KUMA_URL` está presente en el entorno o en `secretos.env`. Nunca
   imprime su valor.
-- `arranque`: el relanzamiento al prender. En macOS, un LaunchDaemon del motor con
-  `KeepAlive` verdadero; en Windows, la llave `HKCU\...\Run\GoncloudMotorEncargos` lanzando
-  el vigilante (`ops/iniciar_encargos_pc.py`) y no `supervisor.ps1` directo. En Linux no
-  hay política declarada: aviso, no falta.
+- `arranque`: el relanzamiento al prender. En macOS, el LaunchAgent de encargos
+  `~/Library/LaunchAgents/ai.goncloud.motor-encargos.plist`, con `KeepAlive` o
+  `RunAtLoad`, y cargado en launchd (`launchctl print gui/<uid>/ai.goncloud.motor-encargos`);
+  un LaunchDaemon viejo ya no alcanza. En Windows, la llave
+  `HKCU\...\Run\GoncloudMotorEncargos` lanzando el vigilante
+  (`ops/iniciar_encargos_pc.py`) y no `supervisor.ps1` directo. En Linux no hay política
+  declarada: aviso, no falta.
 
 ## Qué hacer con lo que falta
 
@@ -65,6 +72,10 @@ con sus recursos y su carpeta, la llave Run apuntando al vigilante, `gh` con ses
 para el CI, y el canal de avisos y la señal en el home del motor.
 
 En la PC (Windows), `ops/prepara_pc.py` deja lo que faltaba (Java y TLC,
-`capacidades.json`, arranque por el vigilante). Después de prepararla ya no deben faltar
-`java_tlc`, `capacidades`, `evidencia-ci` ni `arranque`; `gh` con sesión y el home del
-motor (avisos, señal) dependen de la instalación de la PC y el reporte lo dice si falta.
+`capacidades.json`, arranque por el vigilante). En macOS el mismo script toma su rama
+(`ops/prepara_pc.py --base ~/.motor-encargos`) y deja Java y TLC en
+`<base>/herramientas`, `capacidades.json` con `ci-linux` y `ci-github`, la carpeta
+`evidencia-ci` y el enlace `herramientas/java/actual`; no toca el LaunchAgent ni los
+secretos. Después de prepararla ya no deben faltar `java_tlc`, `capacidades`,
+`evidencia-ci` ni `arranque`; `gh` con sesión y el home del motor (avisos, señal)
+dependen de la instalación de la máquina y el reporte lo dice si falta.
