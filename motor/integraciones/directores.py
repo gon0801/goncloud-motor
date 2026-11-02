@@ -660,20 +660,29 @@ def _cuerpo_de_cierre(enc) -> str:
     """El cierre que lee una persona no técnica: una o dos líneas llanas.
 
     El título viene del pedido y el desenlace del nivel alcanzado. Los ids, las
-    rutas y las versiones se quedan en el registro y en el PR.
+    rutas y las versiones se quedan en el registro y en el PR. La nota de
+    correcciones que ningún intento recibió viaja en el cierre: es texto del
+    propietario que debe volverle (la escribe el cierre en dos versiones, con
+    y sin tildes).
     """
     titulo = _titulo_del_pedido(enc.texto, enc.clave)
     if enc.estado == "cancelado":
-        return f"Terminó tu encargo «{titulo}». Quedó cancelado y no se completó."
-    if enc.nivel_alcanzado == "desplegado":
-        desenlace = "Quedó desplegado."
+        cuerpo = f"Terminó tu encargo «{titulo}». Quedó cancelado y no se completó."
+    elif enc.nivel_alcanzado == "desplegado":
+        cuerpo = f"Terminó tu encargo «{titulo}». Quedó desplegado."
     elif enc.nivel_alcanzado == "integrado":
-        desenlace = "Quedó integrado."
+        cuerpo = f"Terminó tu encargo «{titulo}». Quedó integrado."
     elif enc.pr_numero:
-        desenlace = f"El PR #{enc.pr_numero} está listo para que decidas el merge."
+        cuerpo = (
+            f"Terminó tu encargo «{titulo}». "
+            f"El PR #{enc.pr_numero} está listo para que decidas el merge."
+        )
     else:
-        return f"Terminó tu encargo «{titulo}»."
-    return f"Terminó tu encargo «{titulo}». {desenlace}"
+        cuerpo = f"Terminó tu encargo «{titulo}»."
+    nota = " ".join(
+        nota for nota in enc.procedimiento if "intento pudo recibir" in nota
+    )
+    return f"{cuerpo} {nota}".rstrip()
 
 
 def _config_canal(registro: Registro, canal: str) -> dict | None:

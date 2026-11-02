@@ -206,6 +206,48 @@ class ElCierreEnLlano(Base):
             "Terminó tu encargo «pedido-desnudo».",
         )
 
+    def test_el_cierre_lleva_las_correcciones_que_ningun_intento_recibio(self):
+        ident = self.encargo_terminado(
+            "con-correccion",
+            [{"paso": "pr_listo", "numero": 5}, {"paso": "deepseek_leido"}],
+        )
+        self.b.reg.anotar(
+            ident,
+            {"kind": "procedimiento", "data": {
+                "nota": "Correcciones que ningún intento pudo recibir: el dato debe ser 43",
+                "ajustes_anotados": 1,
+                "hora": HORA,
+            }},
+            f"sin-intento-{ident}",
+        )
+        salida = directores.drenar(self.b.reg, ahora=T0)["avisos"]
+        self.assertTrue(salida[0]["entregado"])
+        self.assertEqual(
+            self.b.cuerpos()[0]["cuerpo"],
+            "Terminó tu encargo «con-correccion listo para revisar». "
+            "El PR #5 está listo para que decidas el merge. "
+            "Correcciones que ningún intento pudo recibir: el dato debe ser 43",
+        )
+
+    def test_la_nota_legada_sin_tildes_tambien_llega_en_el_cierre(self):
+        ident = self.b.encargo(
+            "# Un cierre legado\n\npedido", "legado-uno"
+        )
+        self.b.terminar(ident)
+        self.b.reg.anotar(
+            ident,
+            {"kind": "procedimiento", "data": {
+                "nota": "correcciones que ningun intento pudo recibir: el dato debe ser 43",
+                "ajustes_anotados": 1,
+                "hora": HORA,
+            }},
+            f"legado-{ident}",
+        )
+        salida = directores.drenar(self.b.reg, ahora=T0)["avisos"]
+        self.assertTrue(salida[0]["entregado"])
+        self.assertIn("ningun intento pudo recibir", self.b.cuerpos()[0]["cuerpo"])
+        self.assertIn("el dato debe ser 43", self.b.cuerpos()[0]["cuerpo"])
+
 
 class UnAvisoViejoNoSaleDeGolpe(Base):
     def test_un_aviso_incierto_de_hace_7_horas_se_descarta_y_no_se_envia(self):
