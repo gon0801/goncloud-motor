@@ -391,9 +391,24 @@ def crear_agente(spec: dict, d: Path, opciones: dict):
         from motor.plataforma.jaula_windows import crear
 
         return crear(spec["cmd"], spec["jaula"], control=d, **opciones)
+    # Lanzamiento directo: el wrapper heredó el entorno del supervisor al ser
+    # lanzado y `arranque.json` solo guarda lo que el motor añade o cambia.
+    opciones = {**opciones, "env": {**os.environ, **spec["env"]}}
     # Hereda el grupo ya identificado del wrapper. No hay una ventana de hijo huérfano.
     p = subprocess.Popen(spec["cmd"], start_new_session=False, **opciones)
     return plataforma.ProcesoCreado(p, "grupo")
+
+
+def _limpiar_temporal_de(spec: dict) -> None:
+    """El temporal de cada intento vive en <runtime>/tmp y se borra al terminar.
+    El HOME del agente ya no lo delata (es el real del usuario desde el 2-nov):
+    el TMPDIR que el motor fijó apunta al mismo sitio y no depende de nadie."""
+    tmp = str((spec.get("env") or {}).get("TMPDIR") or "")
+    runtime = Path(tmp).parent if tmp else None
+    if runtime is not None and runtime.name and runtime != runtime.parent:
+        from motor.encargos.aislamiento import limpiar_temporal
+
+        limpiar_temporal(runtime)
 
 
 def ejecutar(spec_path: Path) -> int:
@@ -555,12 +570,7 @@ def ejecutar(spec_path: Path) -> int:
         return 1
     finally:
         reg.close()
-        entorno = spec.get("env") or {}
-        runtime = Path(str(entorno.get("HOME") or ""))
-        if isinstance(entorno.get("TMPDIR"), str) and str(runtime / "tmp") == entorno["TMPDIR"]:
-            from motor.encargos.aislamiento import limpiar_temporal
-
-            limpiar_temporal(runtime)
+        _limpiar_temporal_de(spec)
 
 
 if __name__ == "__main__":

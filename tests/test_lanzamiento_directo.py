@@ -23,7 +23,6 @@ from motor.encargos.aislamiento import aislar
 
 SANDBOX = "/usr/bin/sandbox-exec"
 ES_POSIX = os.name != "nt"
-ES_MACOS = sys.platform == "darwin"
 FUTURO = "2999-01-01T00:00:00+00:00"
 
 
@@ -50,8 +49,10 @@ class SinSandboxExec(unittest.TestCase):
         self.assertEqual(comando.argv, ["true"])
         self.assertIsNone(comando.jaula)
 
-    @unittest.skipUnless(ES_MACOS, "el pedido exige la prueba del argv en macOS")
     def test_en_macos_el_argv_lanzado_no_empieza_por_sandbox_exec(self):
+        """El argv que la Mac lanza es el de la rama POSIX, compartida con
+        Linux: sin job propio de macOS, esta prueba corre en la batería de
+        ubuntu y cubre por construcción el camino que usa la Mac."""
         comando = _comando_directo(["/usr/bin/true"])
         self.assertNotEqual(comando.argv[0], SANDBOX)
         self.assertFalse(any(SANDBOX in parte for parte in comando.argv))

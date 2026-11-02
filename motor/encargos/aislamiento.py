@@ -30,6 +30,24 @@ class ComandoAislado:
     ejecutable: dict | None = None
 
 
+MECANISMO_DIRECTO = "directo"
+
+
+def entorno_persistente(comando: ComandoAislado) -> dict[str, str]:
+    """Lo que `arranque.json` guarda del entorno. En lanzamiento directo el
+    agente hereda el entorno del supervisor del wrapper que lo lanza, así que
+    en disco solo queda la parte que el motor añade o cambia (el temporal del
+    intento, la suscripción, el intérprete en el PATH): el entorno completo
+    del usuario llega igual al agente sin escribirse entero en el intento."""
+    if comando.mecanismo != MECANISMO_DIRECTO:
+        return dict(comando.entorno)
+    return {
+        clave: valor
+        for clave, valor in comando.entorno.items()
+        if os.environ.get(clave) != valor
+    }
+
+
 def _es_carpeta_de_shims(ruta: str) -> bool:
     return os.path.isfile(os.path.join(ruta or ".", "llamada_guard.py"))
 
@@ -471,7 +489,7 @@ def aislar(
             "sha256": hashlib.sha256(nativo.read_bytes()).hexdigest(),
             "tipo": "instalacion-local-firmada",
         }
-    return ComandoAislado(cmd, env, "directo", ejecutable=procedencia)
+    return ComandoAislado(cmd, env, MECANISMO_DIRECTO, ejecutable=procedencia)
 
 
 def usa_wsl(agente: str | None) -> bool:
