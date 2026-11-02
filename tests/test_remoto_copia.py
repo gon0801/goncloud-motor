@@ -210,7 +210,9 @@ class ElSupervisorPublicaElArchivoCompleto(_Base):
         self.assertEqual(Path(publicado["datos"]["copia"]).name, "remoto-datos.json")
 
     def test_la_operacion_publica_su_archivo_como_las_otras_dos(self):
-        self.assertEqual(set(cap.CON_ARCHIVO), {cap.SNAPSHOT, cap.CI, cap.REMOTO})
+        self.assertEqual(
+            set(cap.CON_ARCHIVO), {cap.SNAPSHOT, cap.CI, cap.CI_LOG, cap.REMOTO}
+        )
 
 
 class ElRevisorPideUnLogGrandeYLoRecibeCompleto(_Flujo):

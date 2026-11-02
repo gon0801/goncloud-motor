@@ -600,9 +600,11 @@ Escribe SOLO tu juicio en {resultado}, con este objeto JSON interno.
 "aprobadas":["ruta revisada y aprobada"],
 "efectos_pendientes":["id exacto de cada solicitud de efecto que apruebas"],
 "inspeccion_faltante":"inspeccion concreta que falta, solo si el veredicto es no_concluyente",
-"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer|ci.correr", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
+"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer|ci.correr|ci.log", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
 "ampliacion":"motivo si revisaste fuera de las rutas tocadas",
 "instrumento":{{"causa":"que fallo del instrumento, si aplica"}}}}
+Si la inspeccion es ci.log, sus parametros son pr (el numero del PR del encargo),
+job (el nombre exacto del job) y sha (el SHA esperado); no uses el ejemplo de sql.
 Si el producto cumple y solo faltan efectos del adaptador, aprueba y enumera en
 efectos_pendientes los IDs exactos de solicitudes_efecto. Eso autoriza al supervisor a
 mediarlos; NO afirma que ya ocurrieron. No pidas al responsable acceso al registro, al
@@ -770,6 +772,7 @@ def _inspeccion_de(crudo) -> InspeccionPedido:
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
         capacidades.CI,
+        capacidades.CI_LOG,
     )
     if operacion not in conocidas:
         raise DefectoJuicio(

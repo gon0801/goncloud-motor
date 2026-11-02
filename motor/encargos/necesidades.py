@@ -35,8 +35,8 @@ MAX_MOTIVO = 2_000
 MAX_PARAMETROS = 32 * 1024
 MAX_RESPUESTA = 256 * 1024
 TIMEOUT_S = float(os.environ.get("MOTOR_HERRAMIENTA_TIMEOUT") or 120)
-# Un run de CI tarda minutos: el barrido solo espera esto a que termine y sigue
-# con los demás encargos. La herramienta continúa por su cuenta.
+# Un run de CI o un log grande tardan minutos: el barrido solo espera esto a que
+# terminen y sigue con los demás encargos. La herramienta continúa por su cuenta.
 ESPERA_CI_S = float(os.environ.get("MOTOR_CI_ESPERA") or 5)
 # Lo que se le da a una herramienta de CI entre el SIGTERM y el SIGKILL: su
 # limpieza (cerrar el PR, borrar la rama) son varias llamadas de red.
@@ -152,6 +152,7 @@ Operaciones:
 - `sqlite.snapshot --recurso <r>`: copia consistente con origen y huella; la ruta queda en la respuesta.
 - `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado. `texto` trae solo los primeros 64 KB; si `texto_recortado` es true, el archivo completo está en `copia`, dentro del espacio.
 - `ci.correr --recurso <r> --parametro job="nombre-del-job"`: corre el workflow de pruebas de GitHub sobre la versión vigente del producto y devuelve el log literal de ese job, con el SHA y el número de run. Tarda minutos: la respuesta puede quedar `pendiente`. La rama y el PR temporales se cierran solos.
+- `ci.log --recurso <r> --parametro pr="numero" --parametro job="nombre-del-job" --parametro sha="commit"`: solo lectura. Devuelve el log literal del job de la corrida del PR del encargo. Si la corrida no es del SHA pedido, dice cuál hay. No sirve para otro repo ni para un PR ajeno al encargo.
 Añade `--motivo` con para qué la necesitas. Si la respuesta es `pregunta`, queda una autorización
 pendiente con su id: sigue con lo demás o espera con `python3 {cliente} ver <id>`. Una respuesta
 `error` trae la causa y la alternativa; corrige la solicitud en lugar de repetirla igual.
@@ -208,6 +209,7 @@ def _solicitud_de(enc, crudo: dict) -> Solicitud:
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
         capacidades.CI,
+        capacidades.CI_LOG,
         capacidades.DECISION,
     )
     if operacion not in conocidas:
@@ -379,7 +381,7 @@ def _en_curso(sol: Solicitud, directorio: Path) -> bool:
 
 def _archivo_de(sol: Solicitud, datos: dict) -> tuple[str, str, str]:
     """(clave pública, clave del host, nombre) del archivo que publica la operación."""
-    if sol.operacion == capacidades.CI:
+    if sol.operacion in (capacidades.CI, capacidades.CI_LOG):
         nombre = Path(str(datos.get("log_nombre") or "ci.log")).name
         return "log", "log_host", nombre
     if sol.operacion == capacidades.REMOTO:
@@ -729,7 +731,7 @@ def _publicar_snapshot(
 
 
 def _espera_de(sol: Solicitud) -> float | None:
-    return ESPERA_CI_S if sol.operacion == capacidades.CI else None
+    return ESPERA_CI_S if sol.operacion in capacidades.ASINCRONAS else None
 
 
 def _completar_entrega(
@@ -787,6 +789,7 @@ def _ejecutar(
             "destino": str(destino),
             "autorizado": autorizado,
             "espacio": str(espacio),
+            "contexto": contexto_de(enc),
         },
     )
 
@@ -846,10 +849,11 @@ def _ejecutar(
             if _detenida_ahora(registro, enc.id):
                 detenida = True
                 break
-            if time.time() > fin and sol.operacion == capacidades.CI:
-                # Un run de CI tarda minutos: la herramienta sigue por su cuenta
-                # (con su propio plazo y su limpieza) y el siguiente paso recoge
-                # el resultado. Matarla dejaría la rama y el PR temporales.
+            if time.time() > fin and sol.operacion in capacidades.ASINCRONAS:
+                # Un run de CI o un log grande tardan minutos: la herramienta
+                # sigue por su cuenta (con su propio plazo y su limpieza) y el
+                # siguiente paso recoge el resultado. Matarla dejaría la rama,
+                # el PR temporales o el `gh` hijo huérfanos.
                 sigue_viva = True
                 return {
                     "estado": "pendiente",
@@ -961,6 +965,16 @@ def _atender_decision(
     if resultado == "ilegal":
         return {"estado": "error", "motivo": "la decisión no se pudo registrar"}
     return {"estado": "registrada", "datos": {"decision": sol.id}}
+
+
+def contexto_de(enc) -> dict:
+    """PR, SHA, rama y repo del encargo que autorizan una lectura de su CI."""
+    return {
+        "pr": int(getattr(enc, "pr_numero", 0) or 0),
+        "sha": str(getattr(enc, "pr_sha", "") or ""),
+        "rama": str(getattr(enc, "rama_entrega", "") or ""),
+        "repo": str(getattr(getattr(enc, "entrega", None), "repo", "") or ""),
+    }
 
 
 def _huella_config(concedido: dict) -> str:
@@ -1727,15 +1741,15 @@ def responder(
 def cerrar_herramientas(directorio: Path, solo_del_turno: bool = False) -> int:
     """Cierra las herramientas que el motor lanzó para este intento.
 
-    Con `solo_del_turno` (el turno del agente terminó o se mató) deja correr la
-    de CI: una corrida dura más que un turno y no depende de él. Su marca queda
-    en su sitio para que el siguiente paso recoja el resultado. Parar o cancelar
-    el encargo las cierra todas, con la limpieza de rama y PR de la de CI."""
+    Con `solo_del_turno` (el turno del agente terminó o se mató) deja correr las
+    asíncronas (CI y log de CI): duran más que un turno y no dependen de él. Su
+    marca queda en su sitio para que el siguiente paso recoja el resultado. Parar
+    o cancelar el encargo las cierra todas, con la limpieza de rama y PR de CI."""
     cerrados = 0
     for path in sorted((Path(directorio) / "herramientas").glob("*.json")):
         doc = _leer(path) or {}
         operacion = str(doc.get("operacion") or "")
-        if solo_del_turno and operacion == capacidades.CI:
+        if solo_del_turno and operacion in capacidades.ASINCRONAS:
             continue
         pid, inicio = doc.get("pid"), doc.get("inicio")
         if pid and inicio:

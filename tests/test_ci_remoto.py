@@ -438,7 +438,7 @@ class LaLimpiezaEsSiempre(_Ci):
 class ElPuenteLaConoce(_Ci):
     def test_el_catalogo_la_ofrece_y_no_es_observable(self):
         recursos = {"ci-linux": {**self.recursos["ci-linux"]}}
-        self.assertEqual(cap.operaciones_de(recursos, "ci-linux"), (cap.CI,))
+        self.assertEqual(cap.operaciones_de(recursos, "ci-linux"), (cap.CI, cap.CI_LOG))
         self.assertEqual(cap.recursos_observables(recursos), ())
         self.assertEqual(
             cap.huella_recurso(recursos, cap.CI, "ci-linux", {"job": "jaula-linux"}), ""
@@ -455,7 +455,8 @@ class ElPuenteLaConoce(_Ci):
     def test_el_bloque_de_capacidades_explica_como_pedirla(self):
         texto = nec.bloque_capacidades(self.raiz, self.recursos)
         self.assertIn("ci.correr --recurso <r> --parametro job=", texto)
-        self.assertIn("ci-linux (ci): ci.correr", texto)
+        self.assertIn("ci.log --recurso <r> --parametro pr=", texto)
+        self.assertIn("ci-linux (ci): ci.correr, ci.log", texto)
 
     def test_una_peticion_ci_correr_es_una_solicitud_valida(self):
         enc = SimpleNamespace(id="enc_x")
@@ -670,6 +671,83 @@ class UnRunLargoNoSeMata(unittest.TestCase):
             self.assertLess(primera, 5, "el barrido solo espera ESPERA_CI_S, no TIMEOUT_S")
             self.assertEqual(otra["estado"], "pendiente")
             self.assertLess(segunda, 1, "un CI que ya espera no retiene el barrido")
+
+    def test_un_log_que_sigue_en_plazo_no_se_corta_al_plazo_del_barrido(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp)
+            sol = Solicitud(
+                id="log-1", operacion=cap.CI_LOG, recurso="ci-linux", fase="f", intento="i",
+                generacion=1, conductor="",
+                parametros=(("pr", "189"), ("job", "jaula-linux"), ("sha", "a" * 7)),
+            )
+            registro = SimpleNamespace(base=raiz)
+            lenta = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(lenta.kill)
+            with mock.patch.object(nec, "TIMEOUT_S", 0.3), mock.patch.object(
+                nec, "ESPERA_CI_S", 0.3
+            ), mock.patch.object(
+                nec, "_detenida_ahora", return_value=False
+            ), mock.patch.object(nec.subprocess, "Popen", return_value=lenta), mock.patch(
+                "motor.plataforma.hora_inicio", return_value="t0"
+            ), mock.patch(
+                "motor.plataforma.pid_vivo", side_effect=lambda pid: lenta.poll() is None
+            ):
+                resultado = nec._ejecutar(
+                    registro, SimpleNamespace(id="enc_x"), sol, {"ci-linux": {"tipo": "ci"}},
+                    raiz / "espacio", raiz / "ejecucion", False, "2026-10-31T12:00:00Z",
+                )
+
+            self.assertEqual(resultado["estado"], "pendiente")
+            self.assertIsNone(lenta.poll(), "el log sigue dentro de su plazo de 300 s")
+            self.assertTrue(nec._marca_herramienta(raiz / "ejecucion", "log-1").is_file())
+
+    def test_el_cierre_del_turno_no_mata_el_log_que_el_barrido_dejo_vivo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp)
+            directorio = raiz / "ejecucion"
+            log = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(log.wait)
+            self.addCleanup(log.kill)
+            otra = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True,
+            )
+            self.addCleanup(otra.wait)
+            self.addCleanup(otra.kill)
+            marca_log = nec._marca_herramienta(directorio, "log-1")
+            marca_log.parent.mkdir(parents=True)
+            marca_log.write_text(
+                json.dumps(
+                    {"pid": log.pid, "inicio": "t0", "solicitud": "log-1", "operacion": cap.CI_LOG}
+                )
+            )
+            marca_otra = nec._marca_herramienta(directorio, "r-1")
+            marca_otra.write_text(
+                json.dumps(
+                    {"pid": otra.pid, "inicio": "t0", "solicitud": "r-1", "operacion": cap.REMOTO}
+                )
+            )
+
+            matadas = []
+            with mock.patch(
+                "motor.plataforma.matar_proc",
+                side_effect=lambda pid, inicio: matadas.append(pid) or True,
+            ):
+                cerrados = nec.cerrar_herramientas(directorio, solo_del_turno=True)
+
+            self.assertEqual(cerrados, 1, "solo la operación que no es asíncrona se cierra")
+            self.assertEqual(matadas, [otra.pid])
+            self.assertIsNone(
+                log.poll(), "el turno colgado no mata el log que el barrido dejó vivo"
+            )
+            self.assertTrue(marca_log.is_file(), "la marca queda para recoger el resultado")
+            self.assertFalse(marca_otra.exists(), "la operación común sí se cierra y archiva")
 
     def test_otra_operacion_que_pasa_del_plazo_si_se_mata(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
