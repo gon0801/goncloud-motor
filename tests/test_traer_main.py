@@ -12,6 +12,8 @@ import io
 import json
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +21,7 @@ from unittest import mock
 
 from motor.__main__ import main as motor_main
 from motor.encargos import ciclo
-from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase
+from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto
 from motor.encargos.integracion import traer_main
 
 HORA = "2026-11-01T12:00:00Z"
@@ -244,6 +246,58 @@ class _TraerMain(unittest.TestCase):
         ]
         self.assertEqual(estrategias[-1]["estrategia"], "integrar_main")
         self.assertIn("mezcla en curso", estrategias[-1]["motivo"])
+
+    def test_toma_el_turno_antes_de_tocar_el_espacio(self):
+        empezado = threading.Event()
+        liberar = threading.Event()
+
+        def retener():
+            with ciclo.turno(self.base):
+                empezado.set()
+                liberar.wait(3)
+
+        hilo = threading.Thread(target=retener)
+        hilo.start()
+        self.assertTrue(empezado.wait(2), "el test no consiguió el turno")
+        resultado = []
+        trabajador = threading.Thread(
+            target=lambda: resultado.append(traer_main(self.reg, "enc_x", HORA))
+        )
+        trabajador.start()
+        time.sleep(0.3)
+        self.assertTrue(trabajador.is_alive(), "traer-main debe esperar el turno")
+        liberar.set()
+        trabajador.join(5)
+        hilo.join(5)
+
+        self.assertFalse(trabajador.is_alive())
+        self.assertEqual(resultado[0]["estado"], "al-dia", resultado[0])
+
+    def test_incorporar_entradas_no_mezcla_con_merge_en_curso(self):
+        self._avanzar_main("base.txt", "main cambia\n")
+        traer_main(self.reg, "enc_x", HORA)
+        merge_head = _git(
+            self.espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD"
+        ).strip()
+        self.assertTrue(merge_head)
+        dep = Fase(
+            id="f1", resultado="uno", estado="pendiente",
+            producto=VersionProducto(firma="v1", manifiesto=(), sha_git=self.antes),
+        )
+        fase = Fase(
+            id="f2", resultado="dos", estado="trabajo",
+            requiere=(("f1", "v0"),),
+        )
+
+        causa = ciclo._incorporar_entradas(_encargo_real([dep, fase], "f2"), self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertEqual(
+            _git(self.espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").strip(),
+            merge_head,
+            "la guarda no deja que otra mezcla aborte la que está en curso",
+        )
+        self.assertIn("<<<<<<<", (self.espacio / "base.txt").read_text())
 
     def test_sin_agente_en_curso(self):
         self.enc.proc = SimpleNamespace(pid=123, inicio="t0")

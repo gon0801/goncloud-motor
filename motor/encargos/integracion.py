@@ -19,6 +19,7 @@ from .ciclo import (
     _git,
     _rama_fase,
 )
+from .frontera import turno
 
 _MOTOR = ("-c", "user.name=motor de encargos", "-c", "user.email=motor@localhost")
 _CERRADOS = ("terminado", "cancelado", "deteniendo", "detenido")
@@ -115,6 +116,15 @@ def _conflicto(
 
 def traer_main(
     registro, encargo: str, hora: str, contra: str = "", remoto: str = "origin"
+) -> dict:
+    """Toma el turno del supervisor: la comprobación de agente y la mezcla son
+    una sola operación, y el lanzador no puede abrir un turno en medio."""
+    with turno(registro.base):
+        return _traer_main(registro, encargo, hora, contra, remoto)
+
+
+def _traer_main(
+    registro, encargo: str, hora: str, contra: str, remoto: str
 ) -> dict:
     enc = registro.fold(encargo)
     if enc is None:
