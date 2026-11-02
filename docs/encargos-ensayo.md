@@ -96,23 +96,21 @@ Los eventos estructurados del CLI y los procesos observados distinguen herramien
 
 El supervisor renueva OAuth de Kimi en el archivo canónico. El runtime recibe solo el JWT de acceso, enviado como Bearer al endpoint de suscripción `https://api.kimi.com/coding/v1`. El campo `api_key` del SDK transporta ese JWT temporal; no contiene una llave de pago por consumo. El runtime no recibe el refresh token. Si Kimi devuelve un error de autenticación después del vencimiento, el supervisor conserva su sesión y continúa con un acceso renovado. Ese vencimiento no cuenta como cuota ni vuelve a ejecutar la implementación.
 
-En macOS, Seatbelt niega escrituras globales y la lectura del HOME original. El responsable puede escribir su espacio y runtime; el revisor tiene el producto de solo lectura.
+Los párrafos siguientes describen el aislamiento del ensayo 1.0.35 y no el motor actual: macOS y Linux lo retiraron con el PR #309 y Windows con el lanzamiento directo del 2-nov, donde los agentes corren como el usuario, con su entorno y sin jaula.
 
-En Windows, Codex conserva `Experimental_CreateProcessInSandbox` de `processmodel.dll` y el contrato SBOX 0.1.0. Muse y Kimi usan `CreateProcessSecurityEnvironment` con PSEC 1.1 para permitir consultas y enumeración de directorios antecesores sin conceder lectura de sus archivos. Ambos caminos conservan el Job, la estación y el escritorio privados. Las ejecuciones comprobadas de la PC se inician en la sesión normal del usuario, fuera del Job de OpenSSH.
+En macOS, Seatbelt negaba escrituras globales y la lectura del HOME original. El responsable podía escribir su espacio y runtime; el revisor tenía el producto de solo lectura.
 
-El ensayo comparativo comprueba las denegaciones sobre registro, destino, credenciales privadas y otros espacios, y que el revisor no puede escribir el producto. Un fichero ajeno publicado por su ACL para `ALL APPLICATION PACKAGES` sigue legible en ambos caminos; no se anuncia una garantía de token LPAC que ese comportamiento no demuestra. La enumeración PSEC no autoriza leer los demás archivos de esos directorios.
+En Windows, Codex conservaba `Experimental_CreateProcessInSandbox` de `processmodel.dll` y el contrato SBOX 0.1.0. Muse y Kimi usaban `CreateProcessSecurityEnvironment` con PSEC 1.1 para permitir consultas y enumeración de directorios antecesores sin conceder lectura de sus archivos. Ambos caminos conservaban el Job, la estación y el escritorio privados. Las ejecuciones comprobadas de la PC se iniciaban en la sesión normal del usuario, fuera del Job de OpenSSH.
 
-Cada proceso se crea suspendido, entra en un Job y publica PID, inicio y Job antes de liberar al modelo o comprobador. El Job controla la vida del árbol. AppContainer y BFS controlan sus permisos. El revisor puede escribir su runtime, pero no el producto. Registro, destino, otros espacios y credenciales ajenas quedan fuera de las raíces concedidas. La estación privada permite inicializar USER32 sin abrir un escritorio ajeno. El auxiliar de consola del sistema se distingue por imagen e identidad para observar actividad, y permanece dentro del árbol que debe cerrarse.
+El ensayo comparativo comprobaba las denegaciones sobre registro, destino, credenciales privadas y otros espacios, y que el revisor no podía escribir el producto. Un fichero ajeno publicado por su ACL para `ALL APPLICATION PACKAGES` seguía legible en ambos caminos; no se anunciaba una garantía de token LPAC que ese comportamiento no demostraba. La enumeración PSEC no autorizaba leer los demás archivos de esos directorios.
 
-En Windows, los comandos del agente permiten TCP 443 hacia las direcciones públicas del proveedor al preparar el intento: `chatgpt.com` y `auth.openai.com` para Codex, `api.meta.ai` para Muse, y `api.kimi.com` y `auth.kimi.com` para Kimi. Este límite opera por direcciones IP, que pueden compartirse entre dominios. Los comprobadores no tienen red. Se comprobaron denegaciones reales hacia la Mini, otro destino de Internet y un listener de loopback. No se modifican ACL de instalaciones, reglas globales de firewall, usuarios, servicios ni la selección guardada de sandbox de Codex. Un host sin la capacidad de aislamiento necesaria no ofrece esa ejecución administrada. Grok no se ofrece como respaldo en Windows.
+Cada proceso se creaba suspendido, entraba en un Job y publicaba PID, inicio y Job antes de liberar al modelo o comprobador. El Job controlaba la vida del árbol. AppContainer y BFS controlaban sus permisos. El revisor podía escribir su runtime, pero no el producto. Registro, destino, otros espacios y credenciales ajenas quedaban fuera de las raíces concedidas. La estación privada permitía inicializar USER32 sin abrir un escritorio ajeno. El auxiliar de consola del sistema se distinguía por imagen e identidad para observar actividad, y permanecía dentro del árbol que debía cerrarse.
 
-Para repetir la comprobación de permisos y cierre en otra base propia de Windows, ejecuta lo siguiente. La segunda variante usa el perfil de red del agente sin invocar un modelo.
+En Windows, los comandos del agente permitían TCP 443 hacia las direcciones públicas del proveedor al preparar el intento: `chatgpt.com` y `auth.openai.com` para Codex, `api.meta.ai` para Muse, y `api.kimi.com` y `auth.kimi.com` para Kimi. Ese límite operaba por direcciones IP, que pueden compartirse entre dominios. Los comprobadores no tenían red. Se comprobaron denegaciones reales hacia la Mini, otro destino de Internet y un listener de loopback. No se modificaban ACL de instalaciones, reglas globales de firewall, usuarios, servicios ni la selección guardada de sandbox de Codex. Un host sin la capacidad de aislamiento necesaria no ofrecía esa ejecución administrada. Grok no se ofrecía como respaldo en Windows.
 
-```powershell
-py -3 ops/ensayo_aislamiento.py --base C:\ruta\propia\jaula-comprobador
-py -3 ops/ensayo_aislamiento.py --base C:\ruta\propia\jaula-agente --internet-suscripcion --tcp IP_DE_ENSAYO:PUERTO
-py -3 ops/ensayo_aislamiento.py --base C:\ruta\propia\jaula-psec --psec
-```
+Los ensayos de ese aislamiento (`ops/ensayo_aislamiento.py` y las variantes de objetos, shell y WSL) se retiraron con el lanzamiento directo del 2-nov; ya no hay un comando para repetirlos.
+
+Para repetir el transporte y el ingreso de stdin del ensayo histórico:
 
 ```sh
 python3 -B ops/ensayo_encargos.py --remoto-local /ruta/temporal/nueva
