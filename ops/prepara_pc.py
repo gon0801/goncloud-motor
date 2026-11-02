@@ -50,6 +50,7 @@ import zipfile
 from pathlib import Path
 
 BASE = ".motor-encargos"
+USER_AGENT = "goncloud-motor-prepara-pc/1.0"
 TLC_URL = "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar"
 TLC_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 TLC_VERSION = "1.7.4"
@@ -117,11 +118,17 @@ def _leer_registro(clave: str, valor: str, correr=correr) -> str:
     return _campo_de_reg(r2.stdout or "", valor)
 
 
+def _abre(url: str, segundos: int = 300):
+    """El user-agent de urllib (Python-urllib/x) recibe 403 de la API de
+    Adoptium (run 41364149301); un UA propio pasa."""
+    peticion = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    return urllib.request.urlopen(peticion, timeout=segundos)
+
+
 def descargar(url: str, descargador=None) -> bytes:
     if descargador is not None:
         return descargador(url)
-    with urllib.request.urlopen(url, timeout=300) as r:
-        return r.read()
+    return _abre(url, 300).read()
 
 
 def sha256_de(ruta: Path) -> str:
@@ -176,7 +183,7 @@ def temurin_mas_nuevo(catalogo=None) -> dict:
     if catalogo is not None:
         filas = catalogo()
     else:
-        with urllib.request.urlopen(TEMURIN_API, timeout=60) as r:
+        with _abre(TEMURIN_API, 60) as r:
             filas = json.loads(r.read().decode("utf-8"))
     for fila in filas:
         paquete = (fila.get("binary") or {}).get("package") or {}
