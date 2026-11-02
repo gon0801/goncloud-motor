@@ -522,8 +522,13 @@ class UnCiIgualReusaLaCorridaViva(_CorridaViva):
             )
         )
         lanzadas: list[list[str]] = []
+        real_popen = nec.subprocess.Popen
 
         def falso_popen(argv, **kw):
+            # El espía cuenta lanzamientos de herramientas; el `git ls-files` de
+            # la firma corre de verdad y no es una corrida de CI.
+            if "--spec" not in argv:
+                return real_popen(argv, **kw)
             lanzadas.append(argv)
             return mock.Mock(pid=2**22, poll=lambda: None)
 
