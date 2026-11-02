@@ -95,14 +95,14 @@ class Dobles:
                 r.returncode = 1
             else:
                 r.stderr = b'openjdk version "25.0.5" 2025-10-21\n'
-        elif programa in ("codex", "grok", "muse", "kimi", "claude", "opencode", "qwen"):
+        elif programa in ("codex", "grok", "muse", "kimi", "claude", "opencode", "qwen", "agy"):
             r.stdout = f"{programa} 1.2.3\n".encode()
         return r
 
     def which(self, nombre):
         if nombre == "gh" and not self.gh_ok:
             return None
-        if nombre in ("codex", "grok", "muse", "kimi", "claude", "opencode", "qwen", "gh"):
+        if nombre in ("codex", "grok", "muse", "kimi", "claude", "opencode", "qwen", "agy", "gh"):
             return f"/falso/bin/{nombre}"
         return None
 
@@ -144,7 +144,7 @@ class ReporteCompletoTest(unittest.TestCase):
         for clave in ("jaula", "java_tlc", "avisos", "senal", "recursos", "agentes", "arranque"):
             self.assertEqual(datos[clave]["estado"], "ok", clave)
         agentes = {f["agente"]: f["estado"] for f in datos["agentes"]["filas"]}
-        self.assertEqual(set(agentes), {"claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"})
+        self.assertEqual(set(agentes), {"antigravity", "claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"})
 
     def test_nunca_imprime_un_valor_de_secretos(self):
         for formato in ("texto", "json"):
@@ -668,13 +668,13 @@ class AgentesEnWindowsTest(unittest.TestCase):
 
     def test_cada_agente_con_su_ejecutable_es_ok_sin_jaula(self):
         filas = self._agentes(lambda nombre: "/falso/bin/" + nombre)
-        for agente in ("claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"):
+        for agente in ("antigravity", "claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"):
             self.assertEqual(filas[agente]["estado"], "ok", agente)
             self.assertNotIn("jaula", filas[agente]["detalle"])
 
     def test_sin_ejecutable_es_falta_por_el_path(self):
         filas = self._agentes(lambda nombre: None)
-        for agente in ("claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"):
+        for agente in ("antigravity", "claude", "codex", "grok", "kimi", "muse", "opencode", "qwen"):
             self.assertEqual(filas[agente]["estado"], "falta", agente)
             self.assertIn(
                 "no está en la generación vigente ni en PATH",

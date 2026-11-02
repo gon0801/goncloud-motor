@@ -240,6 +240,7 @@ class CadaAgenteSigueRecibiendoSuSesion(unittest.TestCase):
                 "muse",
                 "opencode",
                 "qwen",
+                "antigravity",
             ):
                 with self.subTest(agente=agente):
                     _, runtime = _coincidencia(base / agente)

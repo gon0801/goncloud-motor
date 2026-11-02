@@ -21,8 +21,9 @@ from motor.runwrap import _publica
 
 
 class Observacion:
-    def __init__(self, directorio: Path):
+    def __init__(self, directorio: Path, agente: str = ""):
         self.directorio = directorio
+        self.agente = agente
         self.abiertas: set[str] = set()
         self.secuencia = 0
         self.hora = time.time()
@@ -30,7 +31,46 @@ class Observacion:
         self.llamadas_grok: dict[str, dict] = {}
         self.modelo_en_curso: bool | None = None
 
+    def _evento_antigravity(self, data: dict) -> None:
+        evento = data.get("event")
+        if evento == "init":
+            self.modelo_en_curso = True
+            self.publicar()
+            return
+        if evento == "step_update":
+            paso = data.get("step_update")
+            if not isinstance(paso, dict):
+                return
+            estado = paso.get("state")
+            tipo = str(paso.get("step_type") or "")
+            ident = f"{paso.get('step_index')}:{tipo}"
+            if estado == "ACTIVE" and tipo not in ("user_input", "agent_response"):
+                self.abiertas.add(ident)
+                self.modelo_en_curso = True
+            elif estado == "DONE" and tipo not in ("user_input", "agent_response"):
+                self.abiertas.discard(ident)
+                self.modelo_en_curso = True
+            elif estado in ("ACTIVE", "DONE"):
+                self.modelo_en_curso = True
+            else:
+                return
+            self.secuencia += 1
+            self.hora = time.time()
+            self.hecho = f"step_update {tipo} {estado}".strip()
+            self.publicar()
+            return
+        if evento == "result":
+            self.abiertas.clear()
+            self.modelo_en_curso = False
+            self.secuencia += 1
+            self.hora = time.time()
+            self.hecho = "result"
+            self.publicar()
+
     def evento(self, data: dict) -> None:
+        if self.agente == "antigravity":
+            self._evento_antigravity(data)
+            return
         if data.get("payload_type"):
             tipo = data["payload_type"]
             payload = data.get("payload") or {}
@@ -222,8 +262,46 @@ class SalidaRuntime:
         self.terminal = ""
         self.ultimo_error = ""
         self.sesion_runtime = ""
+        self.respuesta = ""
+
+    def _evento_antigravity(self, data: dict) -> None:
+        evento = data.get("event")
+        if evento == "init":
+            conv = data.get("conversation_id")
+            if isinstance(conv, str) and conv:
+                self.sesion_runtime = conv
+            return
+        if evento == "step_update":
+            paso = data.get("step_update")
+            if isinstance(paso, dict) and not self.sesion_runtime:
+                conv = paso.get("conversation_id")
+                if isinstance(conv, str) and conv:
+                    self.sesion_runtime = conv
+            return
+        if evento != "result":
+            return
+        resultado = data.get("result")
+        if not isinstance(resultado, dict):
+            self.terminal = self.ultimo_error = "antigravity no completo el turno"
+            return
+        conv = resultado.get("conversation_id")
+        if isinstance(conv, str) and conv and not self.sesion_runtime:
+            self.sesion_runtime = conv
+        respuesta = resultado.get("response")
+        self.respuesta = respuesta if isinstance(respuesta, str) else ""
+        if resultado.get("status") == "SUCCESS":
+            self.terminal = self.ultimo_error = ""
+            return
+        self.terminal = self.ultimo_error = str(
+            self.respuesta
+            or resultado.get("status")
+            or "antigravity no completo el turno"
+        )[-1000:]
 
     def evento(self, data: dict) -> None:
+        if self.agente == "antigravity":
+            self._evento_antigravity(data)
+            return
         if not self.sesion_runtime:
             for clave in ("thread_id", "session_id", "sessionID", "sessionId"):
                 valor = data.get(clave)
@@ -502,7 +580,7 @@ def ejecutar(spec_path: Path) -> int:
                 guardar_descendientes(d, os.getpid())
 
         threading.Thread(target=observar_hijos, daemon=True).start()
-        observacion = Observacion(d)
+        observacion = Observacion(d, spec.get("agente") or "")
         observacion.publicar()
         runtime = SalidaRuntime(spec["agente"])
         errores = deque(maxlen=40)

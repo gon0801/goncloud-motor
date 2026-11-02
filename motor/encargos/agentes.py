@@ -33,6 +33,140 @@ PROHIBIDO_SEGUNDO_PLANO = (
 # suscripciones.preparar lo pone en el entorno del lanzamiento de claude.
 SIN_SEGUNDO_PLANO = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
+# Herramientas que el init de agy 1.4.12 anunció y que esperan o agendan
+# después del turno. El esquema de permisos de settings.json no puede
+# nombrarlas (solo command, read_file, write_file, read_url, execute_url,
+# mcp y unsandboxed) y --mode no es un filtro de herramientas. El agente
+# propio las omite de `tools` y pone excludeDefaultComponents, que el
+# changelog 1.2.1 documenta como salida de las herramientas de fábrica.
+HERRAMIENTAS_TRAS_EL_TURNO = frozenset(
+    {
+        "schedule",
+        "wait",
+        "wait_5_seconds",
+        "manage_task",
+        "send_command_input",
+        "command_status",
+        "run_workflow",
+        "manage_inbox",
+    }
+)
+HERRAMIENTAS_MEDIDAS = (
+    "ask_custom_permission",
+    "ask_permission",
+    "ask_question",
+    "browser_click_element",
+    "browser_drag_pixel_to_pixel",
+    "browser_get_dom",
+    "browser_get_network_request",
+    "browser_input",
+    "browser_list_network_requests",
+    "browser_mouse_down",
+    "browser_mouse_up",
+    "browser_move_mouse",
+    "browser_press_key",
+    "browser_refresh_page",
+    "browser_resize_window",
+    "browser_scroll",
+    "browser_scroll_dom",
+    "browser_select_option",
+    "browser_subagent",
+    "call_mcp_tool",
+    "capture_browser_console_logs",
+    "capture_browser_screenshot",
+    "click_browser_pixel",
+    "command_status",
+    "define_subagent",
+    "delete_knowledge",
+    "execute_browser_javascript",
+    "find_by_name",
+    "finish",
+    "generate_image",
+    "grep_search",
+    "invoke_subagent",
+    "list_browser_pages",
+    "list_dir",
+    "list_permissions",
+    "list_plugin_accounts",
+    "list_resources",
+    "manage_inbox",
+    "manage_subagents",
+    "manage_task",
+    "multi_replace_file_content",
+    "notebook_edit",
+    "notebook_execution",
+    "open_browser_url",
+    "read_browser_page",
+    "read_resource",
+    "read_url_content",
+    "replace_file_content",
+    "run_command",
+    "run_workflow",
+    "schedule",
+    "search_marketplace",
+    "search_web",
+    "sed_file",
+    "send_command_input",
+    "send_message",
+    "view_file",
+    "wait",
+    "wait_5_seconds",
+    "write_to_file",
+)
+HERRAMIENTAS_DEL_TURNO = tuple(
+    nombre for nombre in HERRAMIENTAS_MEDIDAS if nombre not in HERRAMIENTAS_TRAS_EL_TURNO
+)
+AGENTE_TURNO = "motor-turno"
+
+
+def markdown_agente_turno() -> str:
+    herramientas = "\n".join(f"  - {nombre}" for nombre in HERRAMIENTAS_DEL_TURNO)
+    return (
+        "---\n"
+        f"name: {AGENTE_TURNO}\n"
+        "description: Turno del motor. Solo las herramientas de esta sesion.\n"
+        "mainAgent: true\n"
+        "subagent: false\n"
+        "excludeDefaultComponents: true\n"
+        "tools:\n"
+        f"{herramientas}\n"
+        "---\n"
+        "\n"
+        "Ejecuta el pedido de este turno.\n"
+    )
+
+
+def sesion_antigravity_presente(home: Path | None = None) -> bool:
+    """La carpeta de sesión existe. No lee credenciales ni el llavero."""
+    base = Path.home() if home is None else home
+    return (base / ".gemini" / "antigravity-cli").is_dir()
+
+
+def ruta_agente_turno(home: Path | None = None) -> Path:
+    base = Path.home() if home is None else home
+    return base / ".gemini" / "config" / "agents" / f"{AGENTE_TURNO}.md"
+
+
+def asegurar_agente_turno(home: Path | None = None) -> Path:
+    """Deja el agente del turno donde agy descubre los agentes globales.
+
+    No es la carpeta de sesión (`antigravity-cli`). El mismo texto se
+    reemplaza en atómico: dos lanzamientos a la vez escriben lo mismo.
+    """
+    destino = ruta_agente_turno(home)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    texto = markdown_agente_turno()
+    if destino.is_file():
+        try:
+            if destino.read_text(encoding="utf-8") == texto:
+                return destino
+        except OSError:
+            pass
+    temporal = destino.with_name(destino.name + ".tmp")
+    temporal.write_text(texto, encoding="utf-8")
+    os.replace(temporal, destino)
+    return destino
+
 
 def resolver_lanzador(
     agente: str,
@@ -130,6 +264,8 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
         from .suscripciones import disponible
 
         return disponible(agente)
+    if agente == "antigravity":
+        return sesion_antigravity_presente()
     return False
 
 
@@ -167,7 +303,7 @@ def _sesion_modo(enc, agente: str, rol: str) -> str:
     viva = enc.viva_revisor if rol == "revisor" else enc.viva_responsable
     if not viva:
         return "reconstruida"
-    if agente in ("codex", "muse", "kimi", "claude", "opencode", "qwen"):
+    if agente in ("codex", "muse", "kimi", "claude", "opencode", "qwen", "antigravity"):
         previa = enc.sesion_revisor if rol == "revisor" else enc.sesion_responsable
         if (
             agente == "kimi"
@@ -388,6 +524,33 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             ]
         return opencode(enc, prompt, modelo or ADAPTADORES[agente].modelo)
 
+    def antigravity(enc, prompt: Path, espacio: Path, sesion: str):
+        del espacio, sesion
+        previa = (
+            enc.sesion_revisor
+            if (enc.rol or "responsable") == "revisor"
+            else enc.sesion_responsable
+        )
+        reanudar = sesion_modo == "reanudada" and previa
+        texto = (
+            "Lee el pedido y las instrucciones en "
+            + str(prompt)
+            + ". Ejecuta el trabajo autorizado."
+        )
+        return [
+            "agy",
+            "--print",
+            texto,
+            "--model",
+            pelado or "gemini-4-argon-high",
+            "--output-format",
+            "stream-json",
+            "--agent",
+            AGENTE_TURNO,
+            "--dangerously-skip-permissions",
+            *(["--conversation", previa] if reanudar else []),
+        ]
+
     if agente == "sleep":
         return dormir
     if agente == "grok":
@@ -400,6 +563,8 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
         return kimi
     if agente in ("claude", "opencode", "qwen"):
         return suscripcion
+    if agente == "antigravity":
+        return antigravity
     if agente == "ensayo":
         return ensayo
     return None

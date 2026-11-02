@@ -27,14 +27,17 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   macOS, Linux y Windows: la fila es `directo` con estado ok y no se exige
   `sandbox-exec`, `bubblewrap`, psec, AppContainer ni WSL.
 - `agentes`: los CLI de agentes del catálogo (codex, grok, muse, kimi, claude, opencode,
-  qwen), solo presencia y su `--version`. La ruta sale de `agentes.resolver_binario`, la
-  misma función con la que el supervisor de encargos decide y lanza: el lanzador de la
-  generación vigente de la flota (`runtime.json` de su `actual`) o, sin generación, el
-  PATH del proceso. `path_extra` de `maquina.toml` no entra aquí porque el servicio de
-  encargos no lo aplica a los agentes. Nunca consulta autenticación ni gasta cuota: que
-  el binario esté no dice que la suscripción esté viva, y eso lo descubre el encargo al
-  arrancar. En Windows, igual que en macOS y Linux, la fila depende solo del ejecutable
-  del PATH: no se exige jaula ni distro.
+  qwen, antigravity), solo presencia y su `--version`. La ruta sale de
+  `agentes.resolver_binario`, la misma función con la que el supervisor de encargos
+  decide y lanza: el lanzador de la generación vigente de la flota (`runtime.json` de su
+  `actual`) o, sin generación, el PATH del proceso. `path_extra` de `maquina.toml` no
+  entra aquí porque el servicio de encargos no lo aplica a los agentes. Nunca consulta
+  autenticación ni gasta cuota: que el binario esté no dice que la suscripción esté viva,
+  y eso lo descubre el encargo al arrancar. Antigravity es la excepción de texto: si
+  `agy` está, el detalle añade `con sesión` o `sin sesión` según exista el directorio
+  `~/.gemini/antigravity-cli` (en Windows, `%USERPROFILE%\.gemini\antigravity-cli`), sin
+  abrirlo ni leer credenciales. El estado de la fila sigue al ejecutable, como el resto.
+  En Windows el cliente es `agy` y el shim resuelve `agy.exe`. No se exige jaula ni distro.
 - `java_tlc`: si `verificacion/inspeccion/verificar.sh` puede correr aquí. Con `TLA2TOOLS`
   y Java utilizable, o con mise en PATH (verificar.sh instala las herramientas solo), está;
   si no, un encargo de verificación formal no puede ir a esta máquina. En Windows también

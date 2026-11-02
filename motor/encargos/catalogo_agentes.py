@@ -12,6 +12,9 @@ class Adaptador:
     modelo: str
     dominios: tuple[str, ...]
     cliente_windows: str = ""
+    # Nombre del ejecutable cuando no coincide con la clave del catálogo.
+    # En Windows, `agy` resuelve `agy.exe` por PATHEXT; no hace falta el sufijo.
+    cliente: str = ""
 
 
 ADAPTADORES = {
@@ -40,6 +43,12 @@ ADAPTADORES = {
     ),
     "qwen": Adaptador(
         ("qwen/",), "qwen/qwen3.8-max", ("token-plan.ap-southeast-1.maas.aliyuncs.com",)
+    ),
+    "antigravity": Adaptador(
+        ("antigravity/",),
+        "antigravity/gemini-4-argon-high",
+        (),
+        cliente="agy",
     ),
 }
 
@@ -70,8 +79,10 @@ def identidad_modelo(referencia: str) -> str:
 
 def cliente_para(agente: str) -> str:
     adaptador = ADAPTADORES.get(agente)
-    return (
-        adaptador.cliente_windows
-        if os.name == "nt" and adaptador and adaptador.cliente_windows
-        else agente
-    )
+    if adaptador is None:
+        return agente
+    if os.name == "nt" and adaptador.cliente_windows:
+        return adaptador.cliente_windows
+    if adaptador.cliente:
+        return adaptador.cliente
+    return agente

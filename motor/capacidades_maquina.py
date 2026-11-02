@@ -2,7 +2,8 @@
 
 `motor director capacidades --base B [--json]` mira Python, el mecanismo de
 lanzamiento, los agentes instalados (presencia y versión; nunca autenticación ni
-cuota), Java y TLC (si verificar.sh puede correr), los recursos de
+cuota; Antigravity además dice si existe la carpeta de sesión, sin leerla),
+Java y TLC (si verificar.sh puede correr), los recursos de
 capacidades.json y si son usables, el canal de avisos, la presencia de
 MOTOR_KUMA_URL (nunca su valor) y el arranque con relanzamiento
 (el LaunchAgent `ai.goncloud.motor-encargos` cargado en macOS, el vigilante
@@ -24,7 +25,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from motor.encargos.agentes import resolver_lanzador
+from motor.encargos.agentes import resolver_lanzador, sesion_antigravity_presente
 from motor.encargos.capacidades import ConfigInvalida, cargar, abrir_lectura
 from motor.encargos.catalogo_agentes import ADAPTADORES, cliente_para
 
@@ -125,10 +126,15 @@ def _agentes(which, generacion: Path | None = None) -> list[dict]:
                 version = _primera(r)
         except (OSError, subprocess.TimeoutExpired):
             pass
+        detalle = (
+            f"{cliente} {version or '(--version no respondió)'} en {' '.join(lanzador)}"
+        )
+        if agente == "antigravity":
+            detalle += " (con sesión)" if sesion_antigravity_presente() else " (sin sesión)"
         filas.append({
             "agente": agente,
             "estado": "ok",
-            "detalle": f"{cliente} {version or '(--version no respondió)'} en {' '.join(lanzador)}",
+            "detalle": detalle,
         })
     return filas
 

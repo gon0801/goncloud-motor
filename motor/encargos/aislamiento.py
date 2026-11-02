@@ -133,6 +133,22 @@ def _entorno(
             # mano. MUSE_AUTH_PATH solo la entiende el lanzador bash, que no es
             # el que el motor ejecuta.
             return env
+        if nombre in ("antigravity", "agy"):
+            # agy tampoco tiene variable ni bandera para su carpeta de sesión
+            # (~/.gemini/antigravity-cli; en Windows, bajo %USERPROFILE%\.gemini).
+            # --settings es un overlay de claves de settings.json que no se
+            # guarda, y --log-file solo mueve el log. No se copia la sesión.
+            # El prefijo común de arriba apunta XDG_DATA_HOME al runtime; aquí
+            # se devuelve el valor del usuario. HOME y USERPROFILE no se tocan.
+            previo = os.environ.get("XDG_DATA_HOME")
+            if previo is None:
+                env.pop("XDG_DATA_HOME", None)
+            else:
+                env["XDG_DATA_HOME"] = previo
+            from .agentes import asegurar_agente_turno
+
+            asegurar_agente_turno()
+            return env
         if nombre == "kimi":
             expira = _preparar_kimi(runtime, cmd)
             env.update(
