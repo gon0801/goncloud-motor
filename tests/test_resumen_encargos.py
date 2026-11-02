@@ -851,6 +851,17 @@ class FormatoLegible(Base):
                 os.environ["TZ"] = anterior
             time.tzset()
 
+    def test_la_espera_del_comprobador_sale_sin_version(self):
+        motivo = "esperando la observacion del comprobador sobre la version 08d860918226 antes de publicar"
+        self.assertEqual(
+            resumen._espera_en_palabras(motivo),
+            "esperando las comprobaciones antes de publicar",
+        )
+        self.assertEqual(
+            resumen._espera_en_palabras("esperando el turno del agente"),
+            "esperando el turno del agente",
+        )
+
     def test_la_maquina_sale_con_un_nombre_legible(self):
         self.assertEqual(resumen._maquina("Gons-Mac-Mini-2.local"), "Mac Mini")
         self.assertEqual(resumen._maquina("Gon-PC"), "PC")

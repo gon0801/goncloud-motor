@@ -205,8 +205,12 @@ def _espera_en_palabras(motivo: str) -> str:
         return "esperando la revisión de DeepSeek"
     if "checks requeridos" in llano:
         return "esperando checks"
+    if "comprobador" in llano:
+        return "esperando las comprobaciones antes de publicar"
     if not texto.strip():
         return "esperando para reintentar"
+    if llano.startswith("esperando"):
+        return _frase(texto, 160)
     return "esperando para reintentar: " + _frase(texto, 160)
 
 
