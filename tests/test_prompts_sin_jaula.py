@@ -69,6 +69,11 @@ class PromptsSinJaula(unittest.TestCase):
                 self.assertIn("desplegado", texto)
                 self.assertIn("pedido-efecto.json", texto)
 
+    def test_el_canal_no_afirma_unicidad_y_el_prompt_conserva_la_higiene_de_secretos(self):
+        texto = instrucciones_responsable(Path("/espacio/.interno"))
+        self.assertNotIn("unico efecto que el propio motor", texto)
+        self.assertIn("Nunca subas credenciales", texto)
+
     def test_el_revisor_sigue_con_su_papel(self):
         texto = instrucciones_revision(_ALCANCE, Path("/tmp/juicio.json"))
         self.assertIn("No modifiques el producto", texto)

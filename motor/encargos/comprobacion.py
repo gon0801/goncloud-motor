@@ -520,7 +520,9 @@ Si un bloqueante de DeepSeek no aplica, no lo ignores ni lo descartes por tu cue
 y entrega. El motor pedira autorizacion al propietario; solo el puede descartarlo.
 No cambies el objetivo ni despliegues sin autorizacion. Trabaja como el usuario: puedes leer y
 escribir fuera del espacio y usar las herramientas de la maquina cuando el pedido lo pida.
-El unico efecto que el propio motor ejecuta por el adaptador es el despliegue: si el nivel de
+Nunca subas credenciales ni llaves a un repo: usalas de la maquina cuando el trabajo las
+necesite, sin copiarlas al producto ni a la evidencia.
+El efecto que el propio motor necesita para su entrega es el despliegue: si el nivel de
 entrega autorizado incluye desplegado, declara en .interno/pedido-efecto.json el efecto con
 "operacion":"desplegar" y el supervisor lo despacha y sella el nivel con su recibo. Su formato
 interno es {{"id":"identidad-estable-del-efecto", "operacion":"desplegar",
