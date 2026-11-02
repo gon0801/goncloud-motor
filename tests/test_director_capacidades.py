@@ -242,9 +242,14 @@ class SeccionesPorSistemaTest(unittest.TestCase):
         self.assertEqual(jaula["estado"], "falta")
         self.assertIn("no installed", jaula["detalle"])
 
-    def _correr_llave(self, valor, sin_powershell=False):
+    def _correr_llave(self, valor, sin_powershell=False, pagina_reg="cp1252"):
         """Un correr que responde como PowerShell (y como reg.exe de respaldo)
-        sobre la llave Run; valor None es llave ausente."""
+        sobre la llave Run; valor None es llave ausente. PowerShell sale en
+        UTF-8 (OutputEncoding=UTF8, como el código lo pide) y reg.exe sale en
+        una página de códigos local (cp1252): con el código que decodificaba
+        reg.exe como UTF-8, un valor con acentos llegaba mangleado y el
+        arranque salía falta. Un doble que codificara UTF-8 en ambos caminos
+        pasaría con el código viejo y no reproduciría nada (DeepSeek F8)."""
 
         import re as _re
 
@@ -272,7 +277,7 @@ class SeccionesPorSistemaTest(unittest.TestCase):
                 else:
                     r.stdout = (
                         f"\n    {cm.NOMBRE_LLAVE}    REG_SZ    {valor}\n"
-                    ).encode("utf-8")
+                    ).encode(pagina_reg)
             return r
 
         return correr
@@ -367,6 +372,31 @@ class SeccionesPorSistemaTest(unittest.TestCase):
             arranque = cm._arranque(lambda *a, **k: None, dir_fake)
         self.assertEqual(arranque["estado"], "falta")
         self.assertIn("ilegible", arranque["detalle"])
+
+    def test_arranque_plist_recursivo_es_falta_legible_y_no_tumba(self):
+        """Un plist binario anidado hace que plistlib.load lance RecursionError,
+        que no es OSError ni ValueError (repro real: dumps con límite alto,
+        load con el normal). La sección queda falta legible y el reporte sigue."""
+        import plistlib
+        import sys
+
+        obj = None
+        for _ in range(5000):
+            obj = [obj]
+        limite = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(limite * 40)
+            crudo = plistlib.dumps(obj, fmt=plistlib.FMT_BINARY)
+        finally:
+            sys.setrecursionlimit(limite)
+        dir_fake = self.tmp / "LaunchDaemons"
+        dir_fake.mkdir()
+        (dir_fake / "com.goncloud.motor.plist").write_bytes(crudo)
+        with mock.patch.object(cm, "sistema", lambda: "macos"):
+            arranque = cm._arranque(lambda *a, **k: None, dir_fake)
+        self.assertEqual(arranque["estado"], "falta")
+        self.assertIn("ilegible", arranque["detalle"])
+        self.assertIn("maximum recursion depth exceeded", arranque["detalle"])
 
     def test_arranque_linux_es_aviso_y_no_falta(self):
         with mock.patch.object(cm, "sistema", lambda: "linux"):

@@ -321,7 +321,7 @@ def _arranque(correr, launchd_dir: Path = Path("/Library/LaunchDaemons")) -> dic
             except OSError as exc:
                 causas.append(f"{etiqueta}: {exc.strerror or exc}")
                 continue
-            except ValueError as exc:
+            except Exception as exc:  # noqa: BLE001 - un plist hostil no tumba el reporte
                 causas.append(f"{etiqueta}: plist ilegible ({exc})")
                 continue
             if not isinstance(datos, dict):
