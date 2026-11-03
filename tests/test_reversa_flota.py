@@ -81,7 +81,7 @@ class ReversaFlota(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_candidata_invalida_conserva_la_generacion(self) -> None:
-        self.assertEqual(aplicar(self.home, self.buena)["accion"], "aplicada")
+        self.assertEqual(aplicar(self.home, self.buena, sin_turnos=True)["accion"], "aplicada")
         antes = (self.home / "actual").resolve()
         salida = aplicar(self.home, self.mala)
         self.assertEqual(salida["accion"], "rechazada")
@@ -92,8 +92,10 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(cand["destino"], self.mala)
 
     def test_fallo_en_la_tercera_conserva_la_segunda_y_reversa_tras_completa(self) -> None:
-        self.assertEqual(aplicar(self.home, self.buena)["accion"], "aplicada")
-        self.assertEqual(aplicar(self.home, self.nueva)["accion"], "aplicada")
+        self.assertEqual(aplicar(self.home, self.buena, sin_turnos=True)["accion"], "aplicada")
+        self.assertEqual(
+            aplicar(self.home, self.nueva, sin_turnos=True)["accion"], "aplicada"
+        )
         salida = aplicar(self.home, self.mala)
         self.assertEqual(salida["accion"], "rechazada")
         self.assertEqual(salida["vigente"], self.nueva)
@@ -119,7 +121,7 @@ class ReversaFlota(unittest.TestCase):
         self.assertEqual(asignar(self.home), self.buena)
 
     def test_el_trabajo_activo_conserva_su_generacion(self) -> None:
-        aplicar(self.home, self.buena)
+        aplicar(self.home, self.buena, sin_turnos=True)
         proc = subprocess.Popen(["/bin/sleep", "300"])
         self.addCleanup(proc.kill)
         from motor import plataforma
@@ -135,7 +137,7 @@ class ReversaFlota(unittest.TestCase):
                 "boot_id": plataforma.boot_id(),
             },
         )
-        salida = aplicar(self.home, self.nueva)
+        salida = aplicar(self.home, self.nueva, sin_turnos=True)
         self.assertEqual(salida["accion"], "ocupada")
         self.assertEqual(leer_trabajo(self.home, "uno")["generacion"], self.buena)
         self.assertEqual(asignar(self.home), self.buena)
@@ -146,22 +148,24 @@ class ReversaFlota(unittest.TestCase):
             "buena\n",
         )
         (self.home / "trabajos" / "uno.json").unlink()
-        self.assertEqual(aplicar(self.home, self.nueva)["accion"], "aplicada")
+        self.assertEqual(
+            aplicar(self.home, self.nueva, sin_turnos=True)["accion"], "aplicada"
+        )
         self.assertEqual(asignar(self.home), self.nueva)
 
     def test_recuperar_completa_lo_que_ya_quedo_comprobado(self) -> None:
-        aplicar(self.home, self.buena)
+        aplicar(self.home, self.buena, sin_turnos=True)
         cortado = aplicar(self.home, self.nueva, "worktree")
         self.assertEqual(cortado["accion"], "cortado")
         self.assertTrue((self.home / "instalacion-pendiente.json").exists())
         self.assertEqual(asignar(self.home), self.buena)
-        self.assertEqual(recuperar(self.home)["accion"], "completo")
+        self.assertEqual(recuperar(self.home, sin_turnos=True)["accion"], "completo")
         self.assertEqual(asignar(self.home), self.nueva)
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
         self.assertEqual(recuperar(self.home)["accion"], "nada")
 
     def test_recuperar_revierte_si_la_candidata_no_llego_a_instalarse(self) -> None:
-        aplicar(self.home, self.buena)
+        aplicar(self.home, self.buena, sin_turnos=True)
         self.assertEqual(aplicar(self.home, self.nueva, "pendiente")["accion"], "cortado")
         self.assertFalse((self.home / "generaciones" / self.nueva).exists())
         self.assertEqual(recuperar(self.home)["accion"], "revertido")
@@ -172,7 +176,7 @@ class ReversaFlota(unittest.TestCase):
         from motor.encargos.ciclo import ahora_iso, recibir
         from motor.encargos.registro import Registro
 
-        aplicar(self.home, self.buena)
+        aplicar(self.home, self.buena, sin_turnos=True)
         base = self.tmp / "base"
         reg = Registro(base)
         (base / "flota-home.json").write_text(
@@ -238,7 +242,7 @@ class ReversaFlota(unittest.TestCase):
                 original(home, gen)
 
             control._enlace = antes_del_enlace
-            salida = control.aplicar(self.home, self.nueva)
+            salida = control.aplicar(self.home, self.nueva, sin_turnos=True)
             visto = self._esperar_visto(espacio)
             self.assertEqual(salida["accion"], "ocupada")
             self.assertEqual(salida["vigente"], self.buena)
@@ -297,7 +301,7 @@ class ReversaFlota(unittest.TestCase):
             control.asignar = asignar_pausado
             hilo.start()
             self.assertTrue(leida.wait(10))
-            aplicada = control.aplicar(self.home, self.nueva)
+            aplicada = control.aplicar(self.home, self.nueva, sin_turnos=True)
             liberar.set()
             hilo.join(10)
             self.assertFalse(hilo.is_alive())
@@ -328,7 +332,7 @@ class ReversaFlota(unittest.TestCase):
                 if operacion == "recuperar":
                     aplicar(self.home, self.nueva, "worktree")
                 else:
-                    aplicar(self.home, self.nueva)
+                    aplicar(self.home, self.nueva, sin_turnos=True)
                 if operacion == "script":
                     # La reversa observa con el runtime anterior, no con el roto.
                     shutil.copytree(Path(__file__).resolve().parents[1] / "motor",
@@ -343,8 +347,13 @@ class ReversaFlota(unittest.TestCase):
                                                 capture_output=True, text=True, check=True)
                         self.assertIn("ocupada", salida.stdout)
                     else:
-                        funcion = recuperar if operacion == "recuperar" else revertir
-                        self.assertEqual(funcion(self.home)["accion"], "ocupada")
+                        if operacion == "recuperar":
+                            self.assertEqual(
+                                recuperar(self.home, sin_turnos=True)["accion"],
+                                "ocupada",
+                            )
+                        else:
+                            self.assertEqual(revertir(self.home)["accion"], "ocupada")
                     self.assertEqual(asignar(self.home), vigente)
                     visto = self._esperar_visto(espacio)
                     self.assertEqual(visto["generacion"], vigente)
@@ -356,14 +365,20 @@ class ReversaFlota(unittest.TestCase):
                     salida = subprocess.run(["sh", str(REVERSA), "--home", str(self.home)],
                                             capture_output=True, text=True, check=True)
                     self.assertIn("revertido", salida.stdout)
+                elif operacion == "recuperar":
+                    self.assertIn(
+                        recuperar(self.home, sin_turnos=True)["accion"], ("completo",)
+                    )
                 else:
-                    self.assertIn(funcion(self.home)["accion"], ("completo", "revertido"))
+                    self.assertIn(revertir(self.home)["accion"], ("revertido",))
                 # La próxima variante usa un registro nuevo.
                 shutil.rmtree(base)
 
     def test_la_reversa_no_arranca_el_motor_nuevo(self) -> None:
-        self.assertEqual(aplicar(self.home, self.buena)["accion"], "aplicada")
-        self.assertEqual(aplicar(self.home, self.nueva)["accion"], "aplicada")
+        self.assertEqual(aplicar(self.home, self.buena, sin_turnos=True)["accion"], "aplicada")
+        self.assertEqual(
+            aplicar(self.home, self.nueva, sin_turnos=True)["accion"], "aplicada"
+        )
         self.assertEqual(
             (self.home / "actual").resolve(),
             (self.home / "generaciones" / self.nueva).resolve(),

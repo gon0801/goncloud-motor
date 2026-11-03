@@ -112,6 +112,25 @@ class ActualizacionesFlota(unittest.TestCase):
             _descargar(doc, cache)
         self.assertFalse(archivo.exists())
 
+    def test_cli_preparar_sigue_funcionando_y_actualizar_acepta_el_flag(self):
+        from motor.flota.cli import main
+
+        home = self.base / "home-cli"
+        home.mkdir()
+        catalogo = self.base / "catalogo.json"
+        catalogo.write_text('{"componentes": []}\n', encoding="utf-8")
+        with patch(
+            "motor.flota.actualizaciones.preparar",
+            return_value={"accion": "preparada"},
+        ) as preparar:
+            rc = main(["preparar", "--home", str(home), "--catalogo", str(catalogo)])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("sin_turnos", preparar.call_args.kwargs)
+        with self.assertRaises(SystemExit):
+            main(["preparar", "--home", str(home), "--sin-turnos"])
+        rc = main(["actualizar", "--home", str(home), "--catalogo", str(catalogo), "--sin-turnos"])
+        self.assertEqual(rc, 1)
+
     def test_candidata_de_componentes_se_aplica_y_revierte_con_recibo(self):
         origen = self.base / "origen"
         origen.mkdir()
@@ -129,7 +148,7 @@ class ActualizacionesFlota(unittest.TestCase):
         home = self.base / "home"
         home.mkdir()
         a, _ = _crear_generacion(home, origen, [], {}, 'generacion="A"\n')
-        self.assertEqual(aplicar(home, a)["accion"], "aplicada")
+        self.assertEqual(aplicar(home, a, sin_turnos=True)["accion"], "aplicada")
         b, gen = _crear_generacion(
             home,
             origen,
@@ -137,7 +156,9 @@ class ActualizacionesFlota(unittest.TestCase):
             {},
             'generacion="B"\n',
         )
-        self.assertEqual(aplicar(home, b)["accion"], "aplicada")
+        self.assertEqual(
+            aplicar(home, b, sin_turnos=True)["accion"], "aplicada"
+        )
         self.assertEqual(asignar(home), b)
         (gen / "comprobar.py").write_text("raise SystemExit(1)\n")
         # El recibo de la instalación completa permite volver aunque B ya falle.
@@ -205,7 +226,7 @@ class ActualizacionesFlota(unittest.TestCase):
                 home, {"componentes": [a]}, motor_origen=origen, repos={}
             )
             self.assertEqual(
-                aplicar(home, primera["generacion"])["accion"], "aplicada"
+                aplicar(home, primera["generacion"], sin_turnos=True)["accion"], "aplicada"
             )
             b = doc("2")
             cache(b, b"corrupto")

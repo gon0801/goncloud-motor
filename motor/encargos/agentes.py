@@ -330,12 +330,13 @@ def resolver_binario(
     return argv[0] if argv else None
 
 
-def _disponible(agente: str, generacion: Path | None = None) -> bool:
-    if agente in ("sleep", "ensayo"):
-        return os.name != "nt"
+def _sesion_presente(agente: str) -> bool:
+    """Hay sesión de suscripción en esta máquina, sin mirar el ejecutable.
+
+    Las mismas comprobaciones de _disponible, sin resolver_binario: la sesión
+    es de la cuenta y no depende de la generación de flota.
+    """
     if agente not in ADAPTADORES:
-        return False
-    if resolver_binario(agente, generacion) is None:
         return False
     if agente == "codex":
         path = (
@@ -382,6 +383,16 @@ def _disponible(agente: str, generacion: Path | None = None) -> bool:
     if agente == "antigravity":
         return sesion_antigravity_presente()
     return False
+
+
+def _disponible(agente: str, generacion: Path | None = None) -> bool:
+    if agente in ("sleep", "ensayo"):
+        return os.name != "nt"
+    if agente not in ADAPTADORES:
+        return False
+    if resolver_binario(agente, generacion) is None:
+        return False
+    return _sesion_presente(agente)
 
 
 def _modelos_para(agente: str, rol: str, generacion: Path | None) -> tuple[str, ...]:

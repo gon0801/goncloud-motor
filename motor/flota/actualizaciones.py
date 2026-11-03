@@ -242,7 +242,7 @@ else:
             raise ValueError("el plugin no coincide con la revision fijada")
 
 
-def _copiar_config(gen: Path, repos: dict, runtime: dict) -> None:
+def _copiar_config(gen: Path, repos: dict, runtime: dict, vigente: Path | None = None) -> None:
     permitidos = {
         "hermes": [
             "scripts",
@@ -260,6 +260,18 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict) -> None:
         "claw": ["agents", "scripts/agent-work/contexto", "docs/superpowers/specs"],
         "conf": ["flota"],
     }
+    # Una actualización parcial que no encuentra los repos reutiliza la
+    # configuración exportada de la generación vigente en vez de omitirla:
+    # el paquete completo es condición de la candidata.
+    for nombre in permitidos:
+        if nombre in repos or vigente is None:
+            continue
+        origen = Path(vigente) / "config" / nombre
+        destino = gen / "config" / nombre
+        if not origen.is_dir() or destino.exists():
+            continue
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(origen, destino)
     for nombre, spec in repos.items():
         if nombre not in permitidos:
             raise ValueError("repositorio de configuracion desconocido")
@@ -519,10 +531,10 @@ def preparar(
             {"estado": "preparando", "generacion": revision, "catalogo": catalogo},
         )
         vigentes: set[str] = set()
+        gen_vigente: Path | None = None
         try:
-            ruta_vigente = (
-                home / "generaciones" / asignar(home) / "runtime.json"
-            )
+            gen_vigente = home / "generaciones" / asignar(home)
+            ruta_vigente = gen_vigente / "runtime.json"
             if ruta_vigente.is_file():
                 vigentes = set(
                     json.loads(
@@ -531,6 +543,8 @@ def preparar(
                 )
         except (OSError, ValueError):
             vigentes = set()
+        if gen_vigente is not None and not gen_vigente.is_dir():
+            gen_vigente = None
         try:
             for doc in componentes:
                 destino = gen / "herramientas" / doc["nombre"]
@@ -590,7 +604,7 @@ def preparar(
                     "la candidata no dejo ninguna herramienta utilizable; "
                     "se conserva la generacion vigente"
                 )
-            _copiar_config(gen, fuentes, runtime)
+            _copiar_config(gen, fuentes, runtime, vigente=gen_vigente)
             runtime["archivos"] = {}
             comandos = list(runtime["lanzadores"].values())
             comandos.extend(
@@ -769,9 +783,10 @@ def actualizar(
     *,
     motor_origen: Path | None = None,
     repos: dict[str, Path] | None = None,
+    sin_turnos: bool = False,
 ) -> dict:
     candidata = preparar(home, catalogo, motor_origen=motor_origen, repos=repos)
-    resultado = aplicar(home.resolve(), candidata["generacion"])
+    resultado = aplicar(home.resolve(), candidata["generacion"], sin_turnos=sin_turnos)
     return {**resultado, "preparacion": candidata}
 
 

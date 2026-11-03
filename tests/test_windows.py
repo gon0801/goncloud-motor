@@ -255,6 +255,14 @@ class WindowsTest(unittest.TestCase):
                     muerto(p.pid) and muerto(hijo) and muerto(nieto)
                 ):
                     time.sleep(0.1)
+                observacion = presencia_grupo(p.pid, inicio, creado.job)
+                # Con KILL_ON_JOB_CLOSE el Job tarda un instante en desaparecer; mientras
+                # tanto OpenJobObject puede responder acceso denegado. Eso no es un Job
+                # vivo: se reintenta la observacion hasta que el sistema termine de cerrarlo.
+                fin = time.time() + 5
+                while observacion == "incierto" and time.time() < fin:
+                    time.sleep(0.05)
+                    observacion = presencia_grupo(p.pid, inicio, creado.job)
                 Path({str(resultado)!r}).write_text(json.dumps({{
                     "separacion": creado.separacion,
                     "job": creado.job,
@@ -264,7 +272,7 @@ class WindowsTest(unittest.TestCase):
                     "padre_muerto": muerto(p.pid),
                     "hijo_muerto": muerto(hijo),
                     "nieto_muerto": muerto(nieto),
-                    "observacion": presencia_grupo(p.pid, inicio, creado.job),
+                    "observacion": observacion,
                 }}))
                 """
             )

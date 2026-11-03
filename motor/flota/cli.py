@@ -44,9 +44,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--home", type=Path, required=True)
     s.add_argument("--destino", required=True)
     s.add_argument("--corte", default="")
+    s.add_argument("--sin-turnos", action="store_true")
 
     s = sub.add_parser("recuperar")
     s.add_argument("--home", type=Path, required=True)
+    s.add_argument("--sin-turnos", action="store_true")
 
     s = sub.add_parser("revertir")
     s.add_argument("--home", type=Path, required=True)
@@ -97,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--motor-origen", type=Path)
         for repo in ("hermes", "claw", "conf"):
             s.add_argument("--repo-" + repo, type=Path)
+        if nombre == "actualizar":
+            s.add_argument("--sin-turnos", action="store_true")
 
     s = sub.add_parser("estado")
     s.add_argument("--home", type=Path, required=True)
@@ -161,14 +165,22 @@ def _correr(args) -> int:
             for nombre in ("hermes", "claw", "conf")
             if getattr(args, "repo_" + nombre) is not None
         }
-        funcion = (
-            actualizaciones.preparar
-            if args.cmd == "preparar"
-            else actualizaciones.actualizar
-        )
+        if args.cmd == "preparar":
+            return _json(
+                actualizaciones.preparar(
+                    args.home,
+                    catalogo,
+                    motor_origen=args.motor_origen,
+                    repos=repos or None,
+                )
+            )
         return _json(
-            funcion(
-                args.home, catalogo, motor_origen=args.motor_origen, repos=repos or None
+            actualizaciones.actualizar(
+                args.home,
+                catalogo,
+                motor_origen=args.motor_origen,
+                repos=repos or None,
+                sin_turnos=args.sin_turnos,
             )
         )
     if args.cmd in ("catalogos", "actualizar-modelos"):
@@ -216,9 +228,9 @@ def _correr(args) -> int:
             publicar_proyeccion(args.home, cargar(args.manifiesto), args.paquete)
         )
     if args.cmd == "aplicar":
-        return _json(aplicar(args.home, args.destino, args.corte))
+        return _json(aplicar(args.home, args.destino, args.corte, args.sin_turnos))
     if args.cmd == "recuperar":
-        return _json(recuperar(args.home))
+        return _json(recuperar(args.home, args.sin_turnos))
     if args.cmd == "revertir":
         return _json(revertir(args.home))
     if args.cmd == "trabajo":

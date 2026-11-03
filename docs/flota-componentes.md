@@ -2,17 +2,45 @@
 
 El controlador consulta el distribuidor oficial, fija una versión exacta y prepara sus ejecutables y configuración en un directorio de generación. El cambio de versión usa la misma operación protegida del motor; no instala globalmente ni reinicia servicios operativos.
 
+## Actualizar en una máquina
+
+Cada máquina actualiza su propio home de flota pasando sus checkouts de configuración. Con los repos explícitos la candidata exporta configuración nueva; sin ellos (o con un checkout ausente) reutiliza la configuración exportada de la generación vigente, para que una actualización parcial como `--componentes codex qwen` no salga nunca sin `config/` ni poteto-mode:
+
+```
+python3 -m motor flota actualizar --home <home-flota> --componentes codex qwen \
+  --repo-hermes <ruta/goncloud-hermes> --repo-claw <ruta/goncloud-openclaw> \
+  --repo-conf <ruta/goncloud-motor-conf>
+```
+
+En Windows el comando es el mismo con `python -m motor flota actualizar --home C:\Users\<usuario>\flota ...`.
+
+Si hay trabajo vivo sobre la generación vigente, la candidata queda preparada y la activación responde ocupada; cuando el trabajo termina, la activación pendiente se completa con:
+
+```
+python3 -m motor flota recuperar --home <home-flota>
+```
+
+Y la reversa a la generación anterior sigue disponible en cualquier momento:
+
+```
+python3 -m motor flota revertir --home <home-flota>
+```
+
+## Qué se exige a una candidata antes de activar
+
+La activación (`control.aplicar` y `control.recuperar`) rechaza una candidata que omita lo que la generación vigente sí trae: la configuración exportada (`config/hermes`, `config/claw`, `config/conf`) y el paquete poteto-mode. La candidata queda preparada, no aplicada, con la causa en `candidata.json`. Antes de cambiar `actual`, el controlador corre además en la candidata un turno real y corto de cada cliente de suscripción con sesión en esa máquina, por el mismo camino del motor (el adaptador de agentes.py, lanzamiento directo y la suscripción del usuario, con un prompt que solo pide responder una palabra). Un agente sin sesión en la máquina se reporta y no bloquea. Si un turno pasa en la generación vigente y falla en la candidata, la activación se rechaza, se conserva la vigente y el usuario recibe el aviso por el canal del motor con el agente y el error literal. Un turno que también falla en la vigente es un problema de la máquina o de la cuenta: queda en el informe sin bloquear mientras al menos otro turno real termine exitoso; si ningún turno real termina en `ok`, la activación falla cerrada, se avisa con la causa ("no se probó ningún agente" o "ningún turno real exitoso") y, si había vigente, se conserva. La única excepción es el flag explícito del operador `--sin-turnos` (en `aplicar`, `recuperar` y `actualizar`), que queda escrito en el recibo (`sin_turnos: true`); el flag no perdona un turno que sí corrió y falló solo en la candidata. El primer arranque sin vigente sigue la misma regla: sin un turno real exitoso no se activa sin el flag. Los turnos de cada activación quedan en `turnos/<generacion>.json` y en el recibo de instalación.
+
 ## Entrada
 
 Las funciones públicas están en motor.flota.actualizaciones:
 
 - descubrir(componentes): consulta las versiones publicadas. Admite openclaw, codex, claude, grok, qwen, kimi, opencode y hermes. Devuelve componentes disponibles y capacidades cuyo canal no pudo comprobarse.
 - preparar(home, catalogo=None, motor_origen=None, repos=None): crea una candidata y la comprueba, sin activarla. Los repositorios hermes, claw y conf se descubren entre los checkouts vecinos o se reciben explícitamente por máquina.
-- actualizar: prepara y llama a control.aplicar. Si hay trabajo sobre la generación vigente, la candidata queda preparada y la activación responde ocupada.
+- actualizar: prepara y llama a control.aplicar. Si hay trabajo sobre la generación vigente, la candidata queda preparada y la activación responde ocupada. Admite `--sin-turnos`, el flag explícito del operador que activa sin exigir turnos reales exitosos y deja `sin_turnos: true` en el recibo.
 - comprobar_runtime(generacion): comprueba el recibo, hashes de ejecutables/configuración/skills, versiones realmente ejecutadas y configuración nativa de los directores presentes.
 - estado(home): muestra la generación aplicada, componentes y recibos de preparación.
 
-Un catálogo conservado permite reintentar las mismas versiones. No exige que David escriba nombres ni versiones a mano. Una selección parcial conserva los componentes ya aplicados; sus artefactos se reutilizan desde la caché comprobada y se instalan en la nueva generación para no depender de rutas antiguas.
+Un catálogo conservado permite reintentar las mismas versiones. No exige que David escriba nombres ni versiones a mano. Una selección parcial conserva los componentes ya aplicados; sus artefactos se reutilizan desde la caché comprobada y se instalan en la nueva generación para no depender de rutas antiguas. Cuando esa selección parcial no encuentra los repos de configuración, reutiliza el árbol exportado de la vigente en vez de omitirlo (decisión registrada del 3-nov); la guarda de activación rechaza de todos modos una candidata que haya quedado incompleta.
 
 ## Fuentes e integridad
 
@@ -44,7 +72,7 @@ La reversa independiente requiere conservar conjuntamente ops/reversa_ensayo.sh,
 
 ## Verificación de esta implementación
 
-python3 -m unittest tests.test_actualizaciones_flota -q ejecuta instalación npm real sobre un tarball local declarado, rechazo de integridad incorrecta y aplicación/reversa de una candidata con recibos. Ese artefacto local no demuestra una publicación upstream; la comprobación real de cada distribuidor y host se registra por separado en la evidencia final.
+python3 -m unittest tests.test_actualizaciones_flota -q ejecuta instalación npm real sobre un tarball local declarado, rechazo de integridad incorrecta y aplicación/reversa de una candidata con recibos. python3 -m unittest tests.test_turnos_flota -q ejecuta con dobles la guardiña de paquete completo (sin config o sin poteto-mode no se aplica), la reutilización de configuración de la vigente en una actualización parcial, y los turnos reales con clientes dobles (falla solo en la candidata bloquea y avisa, falla en ambas reporta sin bloquear, sin sesión reporta, candidata completa se aplica y la reversa regresa). Ese artefacto local no demuestra una publicación upstream; la comprobación real de cada distribuidor y host se registra por separado en la evidencia final.
 
 Fuentes primarias consultadas: [instalación de OpenClaw](https://docs.openclaw.ai/install), [validación de configuración](https://docs.openclaw.ai/cli/config), [instalación de Hermes](https://github.com/NousResearch/hermes-agent/blob/v0.22.5/website/docs/getting-started/installation.md) y [gestión de paquetes de Hermes](https://github.com/NousResearch/hermes-agent/blob/v0.22.5/website/docs/reference/package-management.md).
 
