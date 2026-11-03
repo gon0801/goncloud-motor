@@ -825,6 +825,14 @@ def _es_ai_review(run: dict) -> bool:
     return RE_AI_REVIEW in str(run.get("workflowName") or "").lower()
 
 
+def _runs_del_encargo(gh: str, repo: str, sha: str) -> list[dict]:
+    return [
+        r for r in _runs_de(gh, repo, sha)
+        if str(r.get("event") or "") in ("", "pull_request")
+        and not _es_ai_review(r)
+    ]
+
+
 def _esperar_runs(
     gh: str, repo: str, workflows: list[str], sha: str, limite: float, vigilar=None
 ) -> list[dict]:
@@ -846,11 +854,7 @@ def _esperar_runs(
     while True:
         if vigilar is not None:
             vigilar()
-        runs = [
-            r for r in _runs_de(gh, repo, sha)
-            if str(r.get("event") or "") in ("", "pull_request")
-            and not _es_ai_review(r)
-        ]
+        runs = _runs_del_encargo(gh, repo, sha)
         if runs:
             break
         if time.time() > fin_busqueda:
@@ -860,7 +864,24 @@ def _esperar_runs(
                 "y que Actions está habilitado",
             )
         time.sleep(CI_SONDEO_S)
-    while any(str(r.get("status") or "") != "completed" for r in runs):
+    while True:
+        pendientes = [
+            r for r in runs if str(r.get("status") or "") != "completed"
+        ]
+        if not pendientes:
+            # Un workflow del mismo PR puede aparecer unos segundos después de
+            # los primeros: se confirma el conjunto antes de dar el SHA por
+            # terminado.
+            time.sleep(CI_SONDEO_S)
+            if vigilar is not None:
+                vigilar()
+            nuevos = _runs_del_encargo(gh, repo, sha)
+            if {str(r.get("databaseId")) for r in nuevos} == {
+                str(r.get("databaseId")) for r in runs
+            }:
+                return runs
+            runs = nuevos
+            continue
         if time.time() > tope:
             raise CiFallo(
                 f"los workflows de pull_request del commit {sha[:12]} no terminaron "
@@ -870,12 +891,7 @@ def _esperar_runs(
         time.sleep(CI_SONDEO_S)
         if vigilar is not None:
             vigilar()
-        vistos = {str(r.get("databaseId")): r for r in runs}
-        for run in _runs_de(gh, repo, sha):
-            if str(run.get("event") or "") in ("", "pull_request") and not _es_ai_review(run):
-                vistos[str(run.get("databaseId"))] = run
-        runs = list(vistos.values())
-    return runs
+        runs = _runs_del_encargo(gh, repo, sha)
 
 
 def _vista_completa(
