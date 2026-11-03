@@ -920,18 +920,57 @@ class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
                     [],
                 )
 
-        class _GhRerunFalla(GhGrabado):
+        class _GhRerunFallaUnaVez(GhGrabado):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.fallar_rerun = True
+
             def _gh(self, *a):
                 if a[0] == "api" and "/events" in a[1]:
                     return "2026-10-21T21:00:00Z"
-                if a[:2] == ("run", "rerun"):
-                    raise RuntimeError("gh: check-run externo sin workflow de Actions")
+                if a[:2] == ("run", "rerun") and self.fallar_rerun:
+                    raise RuntimeError("gh: fallo transitorio o check externo")
                 return super()._gh(*a)
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            externo = {
+                "name": "ci",
+                "status": "completed",
+                "conclusion": "skipped",
+                "completed_at": "2026-10-21T19:00:00Z",
+                "id": 99999,
+                "html_url": "https://github.com/o/r/runs/99999",
+                "details_url": "https://external.example/checks/99999",
+            }
+            gh = _GhRerunFallaUnaVez(
+                proteccion=json.dumps(["ci"]),
+                runs=json.dumps([externo]),
+            )
+            store = Store(Path(tmp) / "motor.db")
+            plan = parse_plan(PLAN)
+            fx = Effects(
+                SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0, policy=pol())
+            )
+            store.append(
+                "demo",
+                "A",
+                "ChecksEsperando",
+                {"sha": SHA, "faltan": ["ci"], "github_termino": True},
+                ts=time.time() - 3600,
+            )
+            snap = m.fold(plan, store.events(plan.id))
+            snap.blocks["A"].pr = {"numero": 7}
+            fx.poll_checks(plan, snap, m.PollChecks("A", SHA))
+            self.assertEqual(gh.relanzadas, [])
+            self.assertEqual(
+                [e for e in store.events("demo") if e.kind == "ChecksRelanzados"],
+                [],
+            )
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             salto = _run("ci", conclusion="skipped", rid=42)
             salto["completed_at"] = "2026-10-21T19:00:00Z"
-            gh = _GhRerunFalla(
+            gh = _GhRerunFallaUnaVez(
                 proteccion=json.dumps(["ci"]),
                 runs=json.dumps([salto]),
             )
@@ -949,7 +988,15 @@ class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
             )
             snap = m.fold(plan, store.events(plan.id))
             snap.blocks["A"].pr = {"numero": 7}
+            with self.assertRaises(RuntimeError):
+                fx.poll_checks(plan, snap, m.PollChecks("A", SHA))
+            self.assertEqual(
+                [e for e in store.events("demo") if e.kind == "ChecksRelanzados"],
+                [],
+            )
+            gh.fallar_rerun = False
             fx.poll_checks(plan, snap, m.PollChecks("A", SHA))
+            self.assertEqual(gh.relanzadas, ["42"])
             self.assertEqual(
                 len([e for e in store.events("demo") if e.kind == "ChecksRelanzados"]),
                 1,

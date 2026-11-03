@@ -92,7 +92,7 @@ def _run_id(r: dict) -> str:
         partes = str(r.get(k) or "").split("/actions/runs/")
         if len(partes) == 2 and partes[1].split("/")[0].isdigit():
             return partes[1].split("/")[0]
-    rid = r.get("run_id") or r.get("id")
+    rid = r.get("run_id")
     return str(rid) if rid else ""
 
 
@@ -591,12 +591,8 @@ class GhGitHub:
         )
 
     def relanzar_corrida(self, repo, run_id):
-        if not run_id:
-            return
-        try:
+        if run_id:
             self._gh("run", "rerun", str(run_id), "-R", self.nombre(repo))
-        except RuntimeError:
-            pass
 
     def relanzar_fallidas(self, repo, run_id):
         if run_id:
