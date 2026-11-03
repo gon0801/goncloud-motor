@@ -1150,12 +1150,22 @@ def corregir_canal(
     canal: str,
     hora: str,
     sesion: str = "",
+    cierra=(),
+    evidencia: str = "",
 ) -> dict:
     """Registra la corrección si el canal es el de origen. No interrumpe al agente."""
     canal_corr, rechazo = _canal_de_origen(registro, encargo, canal, sesion)
     if rechazo is not None:
         return rechazo
-    salida = corregir(registro, encargo, texto, clave, hora)
+    salida = corregir(
+        registro,
+        encargo,
+        texto,
+        clave,
+        hora,
+        cierra=cierra,
+        evidencia=evidencia,
+    )
     salida["encargo"] = encargo
     salida["canal"] = canal_corr
     return salida

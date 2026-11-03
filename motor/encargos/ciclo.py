@@ -30,7 +30,7 @@ from .comprobacion import (
     leer_juicio,
     version_producto,
 )
-from . import capacidades, necesidades
+from . import capacidades, necesidades, trabajos_ci
 from .dominio import (
     Encargo,
     FASE_IMPLICITA,
@@ -339,12 +339,22 @@ def _ordenar(
 
 
 def corregir(
-    registro: Registro, encargo_id: str, texto: str, clave: str, hora: str
+    registro: Registro,
+    encargo_id: str,
+    texto: str,
+    clave: str,
+    hora: str,
+    cierra=(),
+    evidencia: str = "",
 ) -> dict:
     """Registra una corrección sin interrumpir al agente. La toma el siguiente
     intento. Sólo un encargo cerrado la rechaza. Un rechazo deja constancia
     pero no gasta la clave: se vuelve a evaluar al repetirla, porque la causa
-    puede haber cambiado (por ejemplo, un encargo que pasó a durable)."""
+    puede haber cambiado (por ejemplo, un encargo que pasó a durable).
+
+    `cierra` enumera hallazgos que el propietario declara cerrados; `evidencia`
+    es lo que sostiene ese cierre. Un cierre del propietario no se reabre sin
+    una reproducción nueva."""
     ukey = f"ajuste:{clave}"
     ukey_rechazo = f"ajuste-rechazo:{clave}"
     prev = registro.por_ukey(ukey)
@@ -357,9 +367,19 @@ def corregir(
     enc = registro.fold(encargo_id)
     if enc is None:
         raise TransicionIlegal("no hay encargo")
+    ids = tuple(str(x) for x in (cierra or ()) if str(x).strip())
+    datos_base = {"texto": texto, "cierra": list(ids), "evidencia": str(evidencia or "")}
+
+    def _mismo(datos: dict) -> bool:
+        return (
+            datos.get("texto") == datos_base["texto"]
+            and list(datos.get("cierra") or ()) == datos_base["cierra"]
+            and str(datos.get("evidencia") or "") == datos_base["evidencia"]
+        )
+
     if prev:
         salida = vista(enc, prev["data"]["recibo"])
-        if prev["encargo"] != encargo_id or prev["data"].get("texto") != texto:
+        if prev["encargo"] != encargo_id or not _mismo(prev["data"]):
             salida["conflicto"] = True
         else:
             salida["retransmision"] = True
@@ -401,6 +421,10 @@ def corregir(
             "la corrección; promuévelo a durable"
         )
     datos = {"texto": texto, "recibo": recibo, "hora": hora}
+    if ids:
+        datos["cierra"] = list(ids)
+    if str(evidencia or ""):
+        datos["evidencia"] = str(evidencia)
     try:
         reducir(enc, {"kind": "ajuste", "data": datos})
     except TransicionIlegal as exc:
@@ -806,6 +830,23 @@ def _barrer_encargos(
                     f"buzon-fallo:{encargo_id}:{type(exc).__name__}",
                 )
             enc = registro.fold(encargo_id) or enc
+            try:
+                enc = _aplicar_ci_producto(registro, enc, hora)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                registro.anotar(
+                    encargo_id,
+                    {
+                        "kind": "procedimiento",
+                        "data": {
+                            "nota": (
+                                "no se pudo aplicar el resultado del CI del "
+                                f"producto: {type(exc).__name__}: {exc}"
+                            ),
+                            "hora": hora,
+                        },
+                    },
+                    f"ci-aplicar-fallo:{encargo_id}:{type(exc).__name__}",
+                )
         if enc.host and enc.host != socket.gethostname() and (enc.reserva or enc.proc):
             arbol = "incierto"
         observacion_path = directorio / "herramienta.json"
@@ -892,6 +933,27 @@ def _barrer_encargos(
             )
         if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
+            # El CI del producto se pide al incorporar. Se atiende aquí, antes
+            # de que el revisor abra su intento: la petición nace con el intento
+            # del responsable y tiene que despacharse en el mismo barrido.
+            try:
+                necesidades.atender(registro, enc, espacio, directorio, hora)
+            except (OSError, ValueError) as exc:
+                registro.anotar(
+                    encargo_id,
+                    {
+                        "kind": "procedimiento",
+                        "data": {
+                            "nota": (
+                                "el buzón de necesidades falló al pedir el CI: "
+                                f"{type(exc).__name__}: {exc}"
+                            ),
+                            "hora": hora,
+                        },
+                    },
+                    f"buzon-ci-fallo:{encargo_id}:{type(exc).__name__}",
+                )
+            enc = registro.fold(encargo_id) or enc
             arbol = observar(directorio, proc)
         if arbol == "ausente" and enc.proc is not None:
             _soltar_conductor(registro, enc, hora)
@@ -902,6 +964,10 @@ def _barrer_encargos(
                 f"intento-cerrado:{encargo_id}:{enc.proc.pid}:{enc.proc.inicio}",
             )
             enc = registro.fold(encargo_id)
+        # El CI del producto se aplica cuando el turno que lo pidió ya cerró:
+        # así un rojo puede devolver el trabajo al responsable sin cambiar el
+        # rol de un proceso vivo.
+        enc = _aplicar_ci_producto(registro, enc, hora)
         sin_llm = False
         if (
             not parada
@@ -1871,6 +1937,8 @@ def _intentar_cierre(
     llega aquí sin ese paso (`veredicto_comprobado` falso) no cierra: el
     siguiente paso de entrega lo hace con el veredicto vigente.
     """
+    if _devolver_ci_rojo(registro, enc, hora, "ci-cierre"):
+        return registro.fold(enc.id)
     if (
         not veredicto_comprobado
         and enc.entrega.nivel in ("pr", "integrado", "desplegado")
@@ -2583,6 +2651,7 @@ def _incorporar_responsable(
         f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
     )
     enc = registro.fold(enc.id)
+    enc = _pedir_ci_producto(registro, enc, espacio, directorio, hora)
     if _disputa_de_deepseek(registro, enc, interno, hora):
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -2696,6 +2765,21 @@ def _incorporar_responsable(
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
     if _correccion_deepseek_conserva_aprobadas(enc):
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
+    if _ci_producto_rojo(enc):
+        # La misma version volvio a entregarse con el CI rojo: no gasta un turno
+        # del revisor en un producto que ya se sabe que no pasa. La escalera de
+        # sin_progreso evita repetir la devolucion para siempre.
+        fase_ci = enc.fase_actual
+        _sin_avance(
+            registro,
+            enc,
+            _motivo_ci(enc),
+            "se volvio a entregar la misma version con el CI del producto en rojo",
+            hora,
+            f"ci-{fase_ci.ci_version[:12] if fase_ci else ''}",
+        )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     alcance = alcance_de(enc)
@@ -2857,6 +2941,27 @@ def _incorporar_revisor(
     from motor.runwrap import _publica
 
     if _salta_inspeccion(registro, enc, directorio, hora):
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
+    if _ci_revision_rojo_pendiente(registro, enc):
+        # Esta vuelta empezó antes del rojo: su juicio no vio el job ni el log.
+        # No se acepta; la siguiente vuelta del revisor se arma con la
+        # evidencia que ya está en la fase (`_bloque_ci`).
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "procedimiento",
+                "data": {
+                    "nota": (
+                        "se descarta el juicio de esta vuelta: el CI del "
+                        "producto quedó rojo durante la revisión; la siguiente "
+                        "vuelve a revisar con el nombre del job y su log"
+                    ),
+                    "hora": hora,
+                },
+            },
+            f"ci-revision-reintento:{enc.id}:{enc.generacion}",
+        )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     ref_path = directorio / "revision.json"
@@ -3614,6 +3719,40 @@ def _anotar_checks_verdes(
         },
         f"entrega:{enc.id}:{enc.fase_activa}:checks_verdes:{sha}"
         + _ronda_checks(registro, enc, sha),
+    )
+    return registro.fold(enc.id)
+
+
+def _anotar_checks_reusados(
+    registro: Registro,
+    enc: Encargo,
+    numero: int,
+    sha: str,
+    arbol: str,
+    jobs,
+    hora: str,
+) -> Encargo:
+    """El PR real sigue corriendo, pero su árbol ya pasó el CI del producto.
+
+    No se espera otra corrida. Queda anotado qué árbol y qué jobs lo sostienen
+    para que la regla de #327 no acepte un verde de otro contenido."""
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "checks_reusados",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "arbol": arbol,
+                "jobs": list(jobs),
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:checks_reusados:{sha}:{arbol}",
     )
     return registro.fold(enc.id)
 
@@ -4526,6 +4665,517 @@ def _logs_de_fallidos(gh, repo: str, veredicto_ci, espacio: Path) -> str:
     return "\n\n".join(partes)
 
 
+def _recurso_ci(registro: Registro, enc: Encargo) -> str:
+    """El recurso ci concedido que corresponde al repo de entrega."""
+    try:
+        recursos = capacidades.cargar(registro.base)
+    except capacidades.ConfigInvalida:
+        return ""
+    entrega = capacidades._repo_github(enc.entrega.repo)
+    candidatos = []
+    for nombre, conf in recursos.items():
+        if str(conf.get("tipo")) != "ci":
+            continue
+        if capacidades.CI not in capacidades.operaciones_de(recursos, nombre):
+            continue
+        if str(conf.get("autorizacion") or "") == "propietario":
+            # El CI del producto se pide solo; un recurso que exige al
+            # propietario no se dispara en silencio.
+            continue
+        repo = capacidades._repo_github(str(conf.get("repo") or ""))
+        candidatos.append((nombre, conf, repo))
+    if not candidatos:
+        return ""
+    for nombre, conf, repo in candidatos:
+        if (not repo or not entrega or repo == entrega) and str(
+            conf.get("workflow") or "pruebas.yml"
+        ) == "pruebas.yml":
+            return nombre
+    for nombre, conf, repo in candidatos:
+        if not repo or not entrega or repo == entrega:
+            return nombre
+    return candidatos[0][0]
+
+
+def _arbol_de(espacio: Path, ref: str) -> str:
+    r = _git(espacio, "rev-parse", "--verify", f"{ref}^{{tree}}")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _rutas_entre_arboles(espacio: Path, base: str, actual: str) -> tuple[str, ...] | None:
+    if not base or not actual or base == actual:
+        return ()
+    r = _git(espacio, "diff", "--name-only", base, actual)
+    if r.returncode != 0:
+        return None
+    return tuple(linea.strip() for linea in r.stdout.splitlines() if linea.strip())
+
+
+def _ci_producto_rojo(enc: Encargo) -> bool:
+    fase = enc.fase_actual
+    return bool(
+        fase is not None
+        and fase.ci_fallas
+        and fase.producto is not None
+        and fase.ci_version == fase.producto.firma
+    )
+
+
+def _motivo_ci(enc: Encargo) -> str:
+    fase = enc.fase_actual
+    if fase is None or not fase.ci_fallas:
+        return ""
+    return "CI del producto en rojo: " + ", ".join(fase.ci_fallas)
+
+
+def _ci_revision_rojo_pendiente(registro: Registro, enc: Encargo) -> bool:
+    """El rojo llegó en esta misma vuelta del revisor, antes de su juicio."""
+    fase = enc.fase_actual
+    if fase is None or not fase.ci_fallas or fase.producto is None:
+        return False
+    for ev in reversed(registro.eventos(enc.id)):
+        if ev["kind"] != "ci_revision_rojo":
+            continue
+        d = ev.get("data") or {}
+        if str(d.get("version") or "") != fase.producto.firma:
+            continue
+        try:
+            generacion = int(d.get("generacion", -1))
+        except (TypeError, ValueError):
+            continue
+        if generacion == enc.generacion:
+            return True
+    return False
+
+
+def _ci_producto_pendiente(enc: Encargo) -> bool:
+    """Hay una corrida del CI del producto para la versión vigente sin resolver."""
+    fase = enc.fase_actual
+    version = fase.producto.firma if fase and fase.producto else ""
+    if not version:
+        return False
+    return any(
+        sol.operacion == capacidades.CI
+        and sol.conductor == "motor-ci"
+        and sol.version == version
+        and sol.estado in ("pendiente", "pregunta")
+        for sol in enc.solicitudes
+    )
+
+
+def _devolver_ci_rojo(
+    registro: Registro, enc: Encargo, hora: str, serie: str
+) -> bool:
+    """Si el CI del producto está rojo, el trabajo vuelve al responsable."""
+    if not _ci_producto_rojo(enc):
+        return False
+    fase = enc.fase_actual
+    _devolver(
+        registro,
+        enc,
+        "investigar",
+        _motivo_ci(enc),
+        "corregir " + ", ".join(fase.ci_fallas if fase else ())
+        + "; el CI volverá a correr sobre la versión nueva",
+        hora,
+        f"{serie}-{fase.ci_version[:12] if fase else ''}",
+    )
+    return True
+
+
+def _pedir_ci_producto(
+    registro: Registro, enc: Encargo, espacio: Path, directorio: Path, hora: str
+) -> Encargo:
+    """Pide el CI del producto al entregarlo, sin esperar al revisor.
+
+    Es idempotente por versión. Si el árbol no cambió respecto del último verde
+    del CI, no lanza una corrida: registra los cuatro jobs como reusados."""
+    fase = enc.fase_actual
+    if (
+        enc.entrega.nivel not in ("pr", "integrado", "desplegado")
+        or fase is None
+        or fase.producto is None
+        or enc.estado in ("detenido", "deteniendo", "cancelado", "terminado")
+    ):
+        return enc
+    version = fase.producto.firma
+    if not version:
+        return enc
+    if not enc.intento:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "procedimiento",
+                "data": {
+                    "nota": "no se pide el CI del producto: la entrega no tiene intento",
+                    "hora": hora,
+                },
+            },
+            f"ci-sin-intento:{enc.id}:{fase.id}:{version[:12]}",
+        )
+        return registro.fold(enc.id) or enc
+    if fase.ci_version == version and fase.ci_arbol:
+        return enc
+    for sol in enc.solicitudes:
+        if (
+            sol.operacion == capacidades.CI
+            and sol.conductor == "motor-ci"
+            and sol.version == version
+            and sol.estado in (
+                "pendiente",
+                "pregunta",
+                "resuelta",
+                "error",
+                "denegada",
+                "detenida",
+            )
+        ):
+            return enc
+    recurso = _recurso_ci(registro, enc)
+    if not recurso:
+        nota = (
+            "no hay un recurso ci concedido que el motor pueda usar sin "
+            "preguntar al propietario para correr el CI del producto"
+        )
+        registro.anotar(
+            enc.id,
+            {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
+            f"ci-sin-recurso:{enc.id}:{fase.id}",
+        )
+        return registro.fold(enc.id) or enc
+    try:
+        arbol = capacidades.arbol_producto(espacio, directorio)
+    except Exception as exc:
+        nota = f"no se pudo calcular el arbol del producto para el CI: {exc}"
+        registro.anotar(
+            enc.id,
+            {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
+            f"ci-arbol-fallo:{enc.id}:{fase.id}:{version[:12]}",
+        )
+        return registro.fold(enc.id) or enc
+    base = fase.ci_base_arbol
+    trabajos = tuple(trabajos_ci.TRABAJOS)
+    if base and base == arbol:
+        trabajos = ()
+    elif base:
+        rutas = _rutas_entre_arboles(espacio, base, arbol)
+        if rutas is not None:
+            trabajos = trabajos_ci.trabajos_a_correr(rutas)
+    if base and not trabajos:
+        jobs = [
+            {
+                "nombre": nombre,
+                "conclusion": "skipped",
+                "reusado": True,
+                "log": "",
+                "url": "",
+                "cola": "",
+            }
+            for nombre in trabajos_ci.TRABAJOS
+        ]
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "ci_producto",
+                "data": {
+                    "fase": fase.id,
+                    "version": version,
+                    "arbol": arbol,
+                    "run": "",
+                    "url": "",
+                    "jobs": jobs,
+                    "fallas": [],
+                    "hora": hora,
+                },
+            },
+            f"ci-producto-reuso:{enc.id}:{fase.id}:{version[:16]}",
+        )
+        return registro.fold(enc.id) or enc
+    ident = "ci-producto-" + hashlib.sha256(
+        f"{enc.id}:{fase.id}:{version}".encode()
+    ).hexdigest()[:16]
+    crudo = {
+        "id": ident,
+        "encargo": enc.id,
+        "fase": fase.id,
+        "intento": enc.intento,
+        "generacion": enc.generacion,
+        "conductor": "motor-ci",
+        "operacion": capacidades.CI,
+        "recurso": recurso,
+        "parametros": {
+            "job": "todos",
+            "base_arbol": base or "",
+        },
+        "motivo": "CI del producto al entregar, en paralelo con el revisor",
+    }
+    try:
+        marca = registro.base / "ci-producto" / f"{ident}.json"
+        marca.parent.mkdir(parents=True, exist_ok=True)
+        marca.write_text(
+            json.dumps(
+                {"version": version, "fase": fase.id, "hora": hora},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        necesidades.pedir_motor(espacio, enc, crudo)
+    except (OSError, ValueError) as exc:
+        nota = f"no se pudo pedir el CI del producto: {exc}"
+        registro.anotar(
+            enc.id,
+            {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
+            f"ci-pedido-fallo:{enc.id}:{fase.id}:{version[:12]}",
+        )
+        return registro.fold(enc.id) or enc
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "procedimiento",
+            "data": {
+                "nota": (
+                    "CI del producto pedido al entregar: corre los jobs que "
+                    "tocan las rutas y el resto reusa su verde"
+                ),
+                "hora": hora,
+            },
+        },
+        f"ci-pedido:{enc.id}:{ident}",
+    )
+    return registro.fold(enc.id) or enc
+
+
+def _aplicar_ci_producto(registro: Registro, enc: Encargo, hora: str) -> Encargo:
+    """Recoge el resultado del CI que pidió el motor y lo aplica a la fase."""
+    for sol in tuple(enc.solicitudes):
+        if sol.operacion != capacidades.CI or sol.conductor != "motor-ci":
+            continue
+        ukey = f"ci-producto:{enc.id}:{sol.id}"
+        if registro.por_ukey(ukey) is not None:
+            continue
+        # La petición del motor se reconoce por la marca que solo escribe el
+        # supervisor en su base, fuera del espacio del agente.
+        if not (registro.base / "ci-producto" / f"{sol.id}.json").is_file():
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": (
+                            f"resultado de {sol.id} ignorado: no tiene la marca "
+                            "del supervisor que lo pidió"
+                        ),
+                        "hora": hora,
+                    },
+                },
+                ukey,
+            )
+            enc = registro.fold(enc.id) or enc
+            continue
+        if sol.fase and sol.fase != enc.fase_activa:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": (
+                            f"resultado de CI de la fase {sol.fase} descartado: "
+                            f"la activa es {enc.fase_activa}"
+                        ),
+                        "hora": hora,
+                    },
+                },
+                ukey,
+            )
+            enc = registro.fold(enc.id) or enc
+            continue
+        if sol.estado in ("error", "denegada", "detenida"):
+            nota = (
+                f"el CI del producto {sol.id} no se pudo correr: "
+                f"{sol.detalle or sol.estado}"
+            )
+            registro.anotar(
+                enc.id,
+                {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
+                ukey,
+            )
+            enc = registro.fold(enc.id) or enc
+            continue
+        if sol.estado != "resuelta":
+            continue
+        try:
+            evidencia = json.loads(sol.evidencia or "{}")
+        except ValueError:
+            evidencia = {}
+        if not isinstance(evidencia, dict):
+            evidencia = {}
+        jobs = [
+            {
+                "nombre": str(j.get("nombre") or ""),
+                "conclusion": str(j.get("conclusion") or ""),
+                "reusado": bool(j.get("reusado")),
+                "log": str(j.get("log") or ""),
+                "url": str(j.get("url") or ""),
+                "cola": str(j.get("cola") or ""),
+            }
+            for j in (evidencia.get("jobs") or ())
+            if isinstance(j, dict) and str(j.get("nombre") or "")
+        ]
+        fallas = [str(x) for x in (evidencia.get("fallas") or ()) if str(x)]
+        if not fallas:
+            # El motor decide por la conclusión de cada job, no solo por la
+            # lista que traiga la evidencia: una corrida cancelada no es verde.
+            fallas = [
+                j["nombre"]
+                for j in jobs
+                if not j["reusado"] and j["conclusion"] not in ("success", "neutral")
+            ]
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "ci_producto",
+                "data": {
+                    "fase": sol.fase,
+                    "version": sol.version,
+                    "arbol": str(evidencia.get("arbol") or ""),
+                    "run": str(evidencia.get("run") or ""),
+                    "url": str(evidencia.get("url") or ""),
+                    "jobs": jobs,
+                    "fallas": fallas,
+                    "hora": hora,
+                },
+            },
+            ukey,
+        )
+        enc = registro.fold(enc.id) or enc
+        fase = enc.fase_actual
+        if (
+            fallas
+            and fase is not None
+            and fase.producto is not None
+            and sol.version == fase.producto.firma
+            and enc.estado not in ("detenido", "deteniendo", "cancelado", "terminado")
+        ):
+            # No se cambia el rol de un turno en curso. Si es el revisor, el
+            # juicio de esa vuelta se descarta al incorporarlo: no vio el rojo.
+            # La siguiente vuelta recibe el job y el log, ya en la fase. Sin
+            # turno vivo, el rojo vuelve ya al responsable.
+            if enc.proc is not None or enc.reserva:
+                if enc.rol == "revisor":
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "ci_revision_rojo",
+                            "data": {
+                                "version": sol.version,
+                                "generacion": enc.generacion,
+                                "fallas": list(fallas),
+                                "hora": hora,
+                            },
+                        },
+                        f"ci-revision-rojo:{enc.id}:{sol.version[:12]}:"
+                        f"{enc.generacion}",
+                    )
+                else:
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "procedimiento",
+                            "data": {
+                                "nota": (
+                                    "el CI del producto quedó rojo mientras "
+                                    "el responsable trabajaba; lo verá en su "
+                                    "siguiente vuelta con el job y el log"
+                                ),
+                                "hora": hora,
+                            },
+                        },
+                        f"ci-rojo-en-turno:{enc.id}:{sol.version[:12]}",
+                    )
+                enc = registro.fold(enc.id) or enc
+            else:
+                _devolver(
+                    registro,
+                    enc,
+                    "investigar",
+                    _motivo_ci(enc) or "CI del producto en rojo",
+                    "corregir " + ", ".join(fallas)
+                    + "; el CI volverá a correr sobre la versión nueva",
+                    hora,
+                    f"ci-{sol.version[:12]}",
+                )
+                enc = registro.fold(enc.id) or enc
+    return enc
+
+
+def _pre_ci_cubre(
+    enc: Encargo, espacio: Path, sha: str, veredicto_ci
+) -> bool:
+    """El CI del producto ya acreditó los jobs requeridos que siguen pendientes.
+
+    Solo cubre los jobs cuyas rutas no cambiaron desde el árbol verde del CI.
+    Un job de otro repo, `gate` o `reconcile` no se cubre: si sigue pendiente,
+    se espera. Un check en rojo nunca se cubre."""
+    fase = enc.fase_actual
+    if getattr(veredicto_ci, "fallas", ()):
+        return False
+    if (
+        fase is None
+        or fase.producto is None
+        or fase.ci_version != fase.producto.firma
+        or fase.ci_fallas
+        or not fase.ci_arbol
+    ):
+        return False
+    arbol = _arbol_de(espacio, sha)
+    if not arbol:
+        return False
+    presentes = {trabajos_ci.trabajo(nombre) for nombre, _c, _r in fase.ci_jobs}
+    if not set(trabajos_ci.TRABAJOS) <= presentes:
+        return False
+    verdes = {
+        trabajos_ci.trabajo(nombre)
+        for nombre, conclusion, reusado in fase.ci_jobs
+        if reusado or str(conclusion) in ("success", "neutral")
+    }
+    if fase.ci_arbol == arbol:
+        cubiertos = set(trabajos_ci.TRABAJOS)
+        if any(
+            str(nombre) == "gate"
+            and str(conclusion) in ("success", "skipped", "neutral")
+            for nombre, conclusion, _reusado in fase.ci_jobs
+        ):
+            cubiertos.add("gate")
+    else:
+        base = fase.ci_base_arbol
+        if not base:
+            return False
+        rutas = _rutas_entre_arboles(espacio, base, arbol)
+        if rutas is None:
+            return False
+        cubiertos = {
+            job for job in trabajos_ci.TRABAJOS if not trabajos_ci.afecta(job, rutas)
+        }
+    # Un job cubierto tiene que haber terminado verde en esa corrida. Un
+    # `cancelled` o cualquier conclusión que no sea verde no acredita el árbol.
+    if not cubiertos <= verdes:
+        return False
+    pendientes = {
+        str(x)
+        for x in (
+            tuple(getattr(veredicto_ci, "faltan", ()) or ())
+            + tuple(getattr(veredicto_ci, "fallas", ()) or ())
+            + tuple(getattr(veredicto_ci, "en_marcha", ()) or ())
+        )
+        if str(x)
+    }
+    for nombre in pendientes:
+        if trabajos_ci.trabajo(nombre) in cubiertos:
+            continue
+        return False
+    return True
+
+
 def _chequeo_previo_cierre(
     registro: Registro, enc: Encargo, gh, espacio: Path, hora: str,
     numero: int, sha: str,
@@ -4537,6 +5187,18 @@ def _chequeo_previo_cierre(
     y devuelve el trabajo con el nombre del job y su log literal; si algo sigue
     corriendo, espera con relectura; si no se pueden leer, deja la espera
     anotada."""
+    if _ci_producto_pendiente(enc):
+        # No se cierra hasta que el CI del producto sobre esta versión termine.
+        # Su resultado es la evidencia que el pedido pide; la corrida del PR
+        # real no siempre es una compuerta (main puede no tener protección).
+        marcar_espera(
+            registro,
+            enc.id,
+            "esperando el CI del producto sobre la versión revisada",
+            _reanuda_en(60),
+            hora,
+        )
+        return registro.fold(enc.id)
     inicio_vuelta = enc
     try:
         vista = gh.ver(enc.entrega.repo, numero)
@@ -4602,11 +5264,34 @@ def _chequeo_previo_cierre(
                     "rojo los mismos checks requeridos",
                     hora, f"checks-{sha_vigente[:12]}",
                 )
+            return registro.fold(enc.id)
+        if _pre_ci_cubre(enc, espacio, sha_vigente, veredicto_ci):
+            arbol = _arbol_de(espacio, sha_vigente)
+            enc = _anotar_checks_reusados(
+                registro, enc, numero, sha_vigente, arbol,
+                list(trabajos_ci.TRABAJOS), hora,
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": (
+                            "no se espera el CI del PR: el árbol "
+                            f"{arbol[:12]} ya pasó el CI del producto y los "
+                            "jobs pendientes no tocan rutas que cambiaron"
+                        ),
+                        "hora": hora,
+                    },
+                },
+                f"checks-reusados:{enc.id}:{enc.fase_activa}:{sha_vigente}",
+            )
+            enc = registro.fold(enc.id)
         else:
             _esperar_checks_requeridos(
                 registro, enc, veredicto_ci, numero, sha_vigente, hora
             )
-        return registro.fold(enc.id)
+            return registro.fold(enc.id)
     if sha_vigente != sha:
         # F6: el head vigente gobierna el cierre, no solo los checks. Con los
         # checks del head en verde, cerrar con el sha guardado (aprobado por
@@ -4811,6 +5496,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
     if _devolver_correcciones(registro, enc, hora):
+        return registro.fold(enc.id)
+    if _devolver_ci_rojo(registro, enc, hora, "ci-entrega"):
         return registro.fold(enc.id)
     if (
         nivel_cumplido(enc)

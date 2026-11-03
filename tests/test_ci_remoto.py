@@ -211,7 +211,8 @@ class CorreElCiSobreLaVersionVigente(_Ci):
         self.assertEqual(r["evidencia"]["run"], "1234")
         self.assertEqual(r["evidencia"]["sha"], datos["sha"])
         self.assertTrue(gh["borrador"])
-        self.assertEqual(gh["base"], "main")
+        self.assertEqual(datos["base"], "main")
+        self.assertTrue(gh["base"].startswith("ci-base/"))
 
     def test_el_commit_lleva_el_trabajo_sin_commit_y_deja_fuera_lo_interno(self):
         self.pedir()
@@ -773,6 +774,45 @@ class UnRunLargoNoSeMata(unittest.TestCase):
                 )
             self.assertEqual(resultado["estado"], "error")
             self.assertIn("excedió", resultado["motivo"])
+
+
+
+class DeduplicacionDeCorridas(unittest.TestCase):
+    def _sol(self, ident: str, parametros) -> Solicitud:
+        return Solicitud(
+            id=ident,
+            operacion=cap.CI,
+            recurso="ci-linux",
+            fase="f",
+            intento="i",
+            generacion=1,
+            conductor="",
+            parametros=tuple(parametros),
+            estado="pendiente",
+            carpeta="/tmp/corrida-" + ident,
+            version="v1",
+            configuracion="cfg",
+        )
+
+    def _igual(self, nueva: Solicitud, otra: Solicitud):
+        enc = SimpleNamespace(solicitudes=(otra,))
+        with mock.patch.object(nec, "_en_curso", return_value=True):
+            return nec._corrida_igual(enc, nueva, "v1", "cfg", Path("/tmp"))
+
+    def test_la_misma_corrida_se_reusa(self):
+        primera = self._sol("a", [("job", "todos"), ("base_arbol", "verde-A")])
+        segunda = self._sol("b", [("job", "todos"), ("base_arbol", "verde-A")])
+        self.assertIs(self._igual(segunda, primera), primera)
+
+    def test_distinta_base_no_se_une(self):
+        primera = self._sol("a", [("job", "todos"), ("base_arbol", "verde-A")])
+        segunda = self._sol("b", [("job", "todos"), ("base_arbol", "")])
+        self.assertIsNone(self._igual(segunda, primera))
+
+    def test_distintos_jobs_extra_no_se_unen(self):
+        primera = self._sol("a", [("job", "todos"), ("jobs_extra", "bateria")])
+        segunda = self._sol("b", [("job", "todos"), ("jobs_extra", "windows")])
+        self.assertIsNone(self._igual(segunda, primera))
 
 
 if __name__ == "__main__":

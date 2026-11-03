@@ -84,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--clave", required=True)
     s.add_argument("--texto", required=True)
+    s.add_argument("--cierra", action="append", default=[])
+    s.add_argument("--evidencia", default="")
 
     s = sub.add_parser("efecto")
     s.add_argument("--base", type=Path, required=True)
@@ -239,7 +241,17 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
                 time.sleep(0.2)
         return _json(salida)
     if args.cmd == "corregir":
-        return _json(corregir(reg, args.encargo, args.texto, args.clave, hora))
+        return _json(
+            corregir(
+                reg,
+                args.encargo,
+                args.texto,
+                args.clave,
+                hora,
+                cierra=args.cierra,
+                evidencia=args.evidencia,
+            )
+        )
     if args.cmd == "efecto":
         destino = DestinoEnsayo(reg.base / "destino")
         return _json(

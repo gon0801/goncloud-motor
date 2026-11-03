@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 
@@ -205,14 +204,25 @@ class EntregaTest(unittest.TestCase):
         self.assertEqual(self.entrega()["estado"], "rechazado")
 
     def test_motor_entrega_sale_con_2_si_el_motor_lo_rechaza(self):
+        # El cliente puede tardar en dejar la orden (imports, carga del CI).
+        # Un solo ingest a 1 s se la pierde y la entrega queda "encolada".
+        parar = threading.Event()
+
         def ingerir():
-            time.sleep(1.0)
-            Daemon(self.home).ingest_inbox()
+            d = Daemon(self.home)
+            while not parar.wait(0.1):
+                d.ingest_inbox()
 
         t = threading.Thread(target=ingerir)
         t.start()
-        r = motor("entrega", str(self.plan), "--home", str(self.home), "--espera", "20")
-        t.join()
+        try:
+            r = motor(
+                "entrega", str(self.plan), "--home", str(self.home),
+                "--espera", "20",
+            )
+        finally:
+            parar.set()
+            t.join()
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("rechazado", r.stdout)
         self.assertIn("ssh-goncloud", r.stdout)

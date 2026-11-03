@@ -104,6 +104,51 @@ el lanzamiento no reanuda la conversación anterior. El prompt se arma desde el
 fold con el pedido, los ajustes, las fases cerradas con su resultado y los
 hallazgos abiertos.
 
+## El CI corre al entregar, antes del PR
+
+Con entrega `pr`, cuando el responsable deja el producto listo el motor pide
+el CI completo del repo sobre esa versión y lo lanza en paralelo con el
+revisor. No espera la aprobación para enterarse de un rojo. El CI usa el mismo
+mecanismo de `ci-prueba`: un commit temporal, una rama y un PR borrador que se
+cierran siempre al terminar.
+
+Cada job del workflow (`ops-tests`, `bateria`, `macos`, `windows`) declara de
+qué rutas depende, sacadas de lo que ejecuta y de lo que sus pruebas leen.
+`ops-tests` depende de `ops/`; `macos` y `windows` de `motor/`, `tests/`,
+`conftest.py` y `verificacion/`, de `ops/iniciar_encargos_pc.py` y, `windows`,
+además de `ops/prepara_pc.py`. `bateria` descubre toda la suite y suma
+`conf-ejemplo/`, `proto/`, `skill/`, los dos documentos que se comprueban y los
+archivos de `ops/` que las pruebas importan o copian (incluidos
+`ops/iniciar_encargos_pc.py` y `ops/pstack/`). Si una corrección no toca las rutas de un
+job, ese job reusa su verde del último árbol que pasó; solo corre completo el
+job que el cambio puede afectar. Un cambio a `.github/workflows/**` vuelve a
+correr todos. El filtro va en el `if` de cada job, no en `paths` del
+disparador: un job saltado por su condición cuenta como éxito para la
+protección de rama, pero un workflow saltado deja los checks pendientes y
+bloquea el merge.
+
+El commit temporal abre su PR contra una rama `ci-base/` que apunta al último
+árbol verde (o a un árbol vacío en la primera corrida): el workflow compara
+base y head y su diff es la corrección. Un PR normal compara su base real. Ni
+el mensaje ni una firma de rama o autor deciden: manda el diff. Del mensaje
+solo se lee `jobs_extra`, que puede añadir un job; nunca quitarlo.
+
+Si el CI de la versión en revisión falla, el resultado queda como bloqueante
+en la fase. El revisor lo ve en su prompt con el nombre del job y el log
+literal, y el responsable lo recibe como su siguiente trabajo; una aprobación
+del revisor no cierra el encargo con ese rojo. Si el rojo llega mientras el
+revisor sigue trabajando esa versión, el juicio de esa vuelta se descarta —no
+vio la evidencia— y la siguiente vuelta del revisor se arma con el job y su
+log. Un resultado de una versión anterior se descarta: no acredita la nueva.
+Una corrida `cancelled` o `action_required` no es un verde: no acredita el
+árbol ni permite reusar sus jobs.
+
+Al abrir el PR real, si el árbol del commit ya pasó el CI del producto, el
+motor no espera otra corrida: los jobs cuyas rutas no cambiaron se dan por
+verdes con ese árbol y solo se esperan los checks ajenos al CI del producto
+(por ejemplo `gate`) y la revisión de DeepSeek. Un check en rojo del PR sigue
+bloqueando siempre.
+
 ## DeepSeek es una compuerta aparte
 
 DeepSeek no va antes de Opus: revisa el PR como una compuerta previa al merge.
@@ -167,6 +212,11 @@ y `continuar`.
   [--sesion S]` aplica la misma regla de canal y sesión que
   `director responder`: solo el canal (y la sesión) de origen corrigen el
   encargo.
+- Un ajuste puede declarar cerrados hallazgos con `--cierra ID` (repetible) y
+  `--evidencia TEXTO`. También se leen detrás de `cierro`/`cierra` en el
+  texto, por id, ancla o título. El cierre aparece en el prompt del revisor y
+  un hallazgo cerrado por el propietario no se reabre con la misma
+  reproducción: solo una evidencia nueva lo vuelve a abrir.
 
 ## Errores de instrumento y repetición sin progreso
 

@@ -151,7 +151,7 @@ Operaciones:
 - `sqlite.consultar --recurso <r> --parametro sql="SELECT ..."`: solo lectura, una sentencia.
 - `sqlite.snapshot --recurso <r>`: copia consistente con origen y huella; la ruta queda en la respuesta.
 - `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado. `texto` trae solo los primeros 64 KB; si `texto_recortado` es true, el archivo completo está en `copia`, dentro del espacio.
-- `ci.correr --recurso <r> --parametro job="nombre-del-job"`: corre el workflow de pruebas de GitHub sobre la versión vigente del producto y devuelve el log literal de ese job, con el SHA y el número de run. Tarda minutos: la respuesta puede quedar `pendiente`. La rama y el PR temporales se cierran solos.
+- `ci.correr --recurso <r> --parametro job="nombre-del-job"`: corre el workflow de pruebas de GitHub sobre la versión vigente del producto y devuelve el log literal de ese job, con el SHA y el número de run. Tarda minutos: la respuesta puede quedar `pendiente`. La rama y el PR temporales se cierran solos. Con `job="todos"` devuelve la conclusión de cada job y el log de los rojos; con `base_arbol` (el último verde) corre solo los jobs que ese diff toca y el resto se reusa, y sin `base_arbol` corre todos.
 - `ci.log --recurso <r> --parametro pr="numero" --parametro job="nombre-del-job" --parametro sha="commit"`: solo lectura. Devuelve el log literal del job de la corrida del PR del encargo. Si la corrida no es del SHA pedido, dice cuál hay. No sirve para otro repo ni para un PR ajeno al encargo.
 Añade `--motivo` con para qué la necesitas. Si la respuesta es `pregunta`, queda una autorización
 pendiente con su id: sigue con lo demás o espera con `python3 {cliente} ver <id>`. Una respuesta
@@ -173,6 +173,14 @@ def pedir_inspeccion(espacio: Path, enc, crudo: dict) -> None:
     _sin_enlaces(espacio, buzon / PETICIONES)
     (buzon / PETICIONES).mkdir(parents=True, exist_ok=True)
     _publica(buzon / PETICIONES / f"{sol.id}.json", crudo, raiz=Path(espacio))
+
+
+def pedir_motor(espacio: Path, enc, crudo: dict) -> None:
+    """Una petición que hace el propio motor, con la misma validación del buzón.
+
+    El CI del producto al entregarlo entra por aquí: no la pide el agente ni el
+    revisor, pero se ejecuta y se recoge como cualquier herramienta."""
+    pedir_inspeccion(espacio, enc, crudo)
 
 
 def _parametros(crudo) -> tuple[tuple[str, str], ...]:
@@ -988,9 +996,12 @@ def _corrida_igual(
     enc, sol: Solicitud, version: str, configuracion: str, directorio: Path
 ) -> Solicitud | None:
     """La corrida de CI que sigue viva y pide lo mismo: mismo recurso con la misma
-    configuración, mismo job y misma versión del producto. Repetirla cuesta otra
-    corrida de minutos."""
-    job = dict(sol.parametros).get("job")
+    configuración, mismos parámetros (job, base_arbol, jobs_extra...) y misma
+    versión del producto. Dos peticiones con distinta base o distintos jobs
+    extra no son la misma corrida: la primera solo corre lo afectado por su
+    diff y la segunda puede pedir otro recorte. Repetirla cuesta una corrida de
+    minutos, pero heredar un resultado recortado cuesta más."""
+    parametros = dict(sol.parametros)
     return next(
         (
             otra
@@ -1002,7 +1013,7 @@ def _corrida_igual(
             and otra.carpeta
             and otra.version == version
             and otra.configuracion == configuracion
-            and dict(otra.parametros).get("job") == job
+            and dict(otra.parametros) == parametros
             and _en_curso(otra, directorio)
         ),
         None,
