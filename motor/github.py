@@ -608,13 +608,17 @@ class GhGitHub:
         try:
             self._gh("run", "rerun", str(run_id), "-R", self.nombre(repo))
         except RuntimeError as e:
-            msg = str(e).lower()
-            if "cannot be rerun" not in msg and "already running" not in msg:
+            if "already running" not in str(e).lower():
                 raise
 
     def relanzar_fallidas(self, repo, run_id):
-        if run_id:
+        if not run_id:
+            return
+        try:
             self._gh("run", "rerun", str(run_id), "--failed", "-R", self.nombre(repo))
+        except RuntimeError as e:
+            if "already running" not in str(e).lower():
+                raise
 
     def log_fallido(self, repo, run_id) -> str:
         if not run_id:

@@ -1006,8 +1006,18 @@ class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
             def _gh(self, *a):
                 if a[0] == "api" and "/events" in a[1]:
                     return "2026-10-21T21:00:00Z"
-                if a[:2] == ("run", "rerun") and a[2] in self.relanzadas:
-                    raise RuntimeError(f"gh: run {a[2]} cannot be rerun; already running")
+                if a[:2] == ("run", "rerun"):
+                    if a[2] == "99":
+                        raise RuntimeError(
+                            "gh: run 99 cannot be rerun; its workflow file may be broken"
+                        )
+                    lista = (
+                        self.relanzadas_fallidas if "--failed" in a else self.relanzadas
+                    )
+                    if a[2] in lista:
+                        raise RuntimeError(
+                            f"gh: run {a[2]} cannot be rerun; already running"
+                        )
                 return super()._gh(*a)
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -1036,11 +1046,75 @@ class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
             snap.blocks["A"].pr = {"numero": 7}
             fx.poll_checks(plan, snap, m.PollChecks("A", SHA))
             self.assertEqual(gh.relanzadas, ["42"])
+            gh.relanzar_corrida("o/r", "42")
+            self.assertEqual(gh.relanzadas, ["42"])
+            with self.assertRaises(RuntimeError):
+                gh.relanzar_corrida("o/r", "99")
             relanzados = [
                 e for e in store.events("demo") if e.kind == "ChecksRelanzados"
             ]
             self.assertEqual(len(relanzados), 1)
             self.assertEqual(relanzados[0].data["run_ids"], ["42"])
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            roja_ci = _run("ci", conclusion="failure", rid=7)
+            roja_lint = _run("lint", conclusion="failure", rid=7)
+            roja_lint["id"] = 100008
+            gh = _GhRerunRechazaDuplicado(
+                proteccion=json.dumps(["ci", "lint"]),
+                runs=json.dumps([roja_ci, roja_lint]),
+            )
+            store = Store(Path(tmp) / "motor.db")
+            plan = parse_plan(PLAN)
+            fx = Effects(
+                SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0, policy=pol())
+            )
+            t0 = time.time() - 100
+            store.append(
+                "demo",
+                "A",
+                "AttemptStarted",
+                {"n": 1, "role": "implementar", "modelo": "glm", "proc": {}, "dir": "d"},
+                ts=t0,
+            )
+            store.append(
+                "demo",
+                "A",
+                "AttemptEnded",
+                {"n": 1, "role": "implementar", "outcome": {"kind": "entregado", "sha": SHA}},
+                ts=t0 + 1,
+            )
+            store.append(
+                "demo",
+                "A",
+                "ChecksResult",
+                {"sha": SHA, "green": False, "detalle": "fallo"},
+                ts=t0 + 10,
+            )
+            store.append(
+                "demo",
+                "A",
+                "AttemptStarted",
+                {"n": 2, "role": "implementar", "modelo": "glm", "proc": {}, "dir": "d"},
+                ts=t0 + 20,
+            )
+            store.append(
+                "demo",
+                "A",
+                "AttemptEnded",
+                {"n": 2, "role": "implementar", "outcome": {"kind": "entregado", "sha": SHA}},
+                ts=t0 + 21,
+            )
+            snap = m.fold(plan, store.events(plan.id))
+            snap.blocks["A"].pr = {"numero": 7}
+            fx.poll_checks(plan, snap, m.PollChecks("A", SHA))
+            self.assertEqual(gh.relanzadas_fallidas, ["7"])
+            relanzados_fallidas = [
+                e
+                for e in store.events("demo")
+                if e.kind == "ChecksRelanzados" and e.data.get("motivo") == "fallidas"
+            ]
+            self.assertEqual(len(relanzados_fallidas), 1)
 
     def test_timed_out_y_startup_failure_siguen_siendo_rojos(self):
         for conclusion in ("timed_out", "startup_failure"):
