@@ -550,8 +550,11 @@ for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos 
   [ -f "$casa/.motor-encargos/.senal-kuma-encargos" ] || fallo "alta: $nombre no quedó marcada como creada por el script"
   tok="$(token_de_monitor "$monitor")"
   [ -n "$tok" ] || fallo "alta: $monitor no tiene token"
-  grep -q "^MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}$" "$casa/.motor-encargos/secretos.env" \
+  [ "$(tr -d '\r' <"$casa/.motor-encargos/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}" ] \
     || fallo "alta: el secreto de encargos de $nombre no apunta al monitor creado"
+  if [ "$nombre" = PC ]; then
+    grep -q $'\r' "$casa/.motor-encargos/secretos.env" || fallo "alta: el secreto de encargos de la PC no quedó en CRLF"
+  fi
   printf '%s\n' "$tok" >"$S/tok-antes-$nombre"
 done
 borra_monitor "Motor de encargos de la Mini"
@@ -568,7 +571,7 @@ for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos 
   tok="$(token_de_monitor "$monitor")"
   viejo="$(cat "$S/tok-antes-$nombre")"
   [ -n "$tok" ] && [ "$tok" != "$viejo" ] || fallo "borrado: $monitor no quedó con un token nuevo"
-  grep -q "^MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}$" "$casa/.motor-encargos/secretos.env" \
+  [ "$(tr -d '\r' <"$casa/.motor-encargos/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}" ] \
     || fallo "borrado: el secreto de encargos de $nombre sigue apuntando al monitor que ya no existe"
   printf '%s\n' "$tok" >"$S/tok-nuevo-$nombre"
 done
@@ -580,7 +583,7 @@ for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos 
   casa="${resto#*|}"
   tok="$(token_de_monitor "$monitor")"
   [ "$tok" = "$(cat "$S/tok-nuevo-$nombre")" ] || fallo "reuso: $monitor cambió de token sin que lo borraran"
-  grep -q "^MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}$" "$casa/.motor-encargos/secretos.env" \
+  [ "$(tr -d '\r' <"$casa/.motor-encargos/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}" ] \
     || fallo "reuso: el secreto de encargos de $nombre no conserva el token repuesto"
 done
 for t in $(cat "$S"/tok-antes-* "$S"/tok-nuevo-*); do
