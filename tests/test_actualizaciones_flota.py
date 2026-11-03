@@ -112,6 +112,18 @@ class ActualizacionesFlota(unittest.TestCase):
             _descargar(doc, cache)
         self.assertFalse(archivo.exists())
 
+    def test_cli_preparar_sigue_funcionando_y_actualizar_acepta_el_flag(self):
+        from motor.flota.cli import main
+
+        home = self.base / "home-cli"
+        home.mkdir()
+        catalogo = self.base / "catalogo.json"
+        catalogo.write_text('{"componentes": []}\n', encoding="utf-8")
+        rc = main(["preparar", "--home", str(home), "--catalogo", str(catalogo)])
+        self.assertEqual(rc, 1)
+        rc = main(["actualizar", "--home", str(home), "--catalogo", str(catalogo), "--sin-turnos"])
+        self.assertEqual(rc, 1)
+
     def test_candidata_de_componentes_se_aplica_y_revierte_con_recibo(self):
         origen = self.base / "origen"
         origen.mkdir()

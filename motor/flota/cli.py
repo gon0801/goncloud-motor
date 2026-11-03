@@ -165,18 +165,22 @@ def _correr(args) -> int:
             for nombre in ("hermes", "claw", "conf")
             if getattr(args, "repo_" + nombre) is not None
         }
-        funcion = (
-            actualizaciones.preparar
-            if args.cmd == "preparar"
-            else actualizaciones.actualizar
-        )
+        if args.cmd == "preparar":
+            return _json(
+                actualizaciones.preparar(
+                    args.home,
+                    catalogo,
+                    motor_origen=args.motor_origen,
+                    repos=repos or None,
+                )
+            )
         return _json(
-            funcion(
+            actualizaciones.actualizar(
                 args.home,
                 catalogo,
                 motor_origen=args.motor_origen,
                 repos=repos or None,
-                sin_turnos=getattr(args, "sin_turnos", False),
+                sin_turnos=args.sin_turnos,
             )
         )
     if args.cmd in ("catalogos", "actualizar-modelos"):

@@ -294,13 +294,14 @@ def _turnos_de_activacion(
 
     (resumen, "") cuando todos los turnos pasan o no bloquean; (resumen,
     motivo) cuando un agente que funciona en la vigente falla en la candidata,
-    cuando ningún turno real corrió, o el propio control de turnos no pudo
-    correr. Corren cuando la candidata o la vigente traen clientes de
+    cuando ningún turno real terminó exitoso, o el propio control de turnos no
+    pudo correr. Corren cuando la candidata o la vigente traen clientes de
     suscripción: una candidata sin clientes propios igual puede retirar los
-    de la vigente. Fallo cerrado: si no corrió ningún turno real (cero
-    agentes con sesión, todos omitidos, o el par candidata+vigente sin
-    clientes) la candidata no se activa y se avisa; `sin_turnos` es la única
-    excepción, el flag explícito del operador que queda escrito en el recibo.
+    de la vigente. Fallo cerrado: al activar sobre una vigente hace falta al
+    menos un turno real exitoso (cero agentes con sesión, todos omitidos, o
+    todos los turnos fallidos también en la vigente) y la candidata no se
+    activa y se avisa; `sin_turnos` es la única excepción, el flag explícito
+    del operador que queda escrito en el recibo.
     """
     from motor.encargos.catalogo_agentes import ADAPTADORES
 
@@ -338,12 +339,19 @@ def _turnos_de_activacion(
         }
         for agente, turno in informe["turnos"].items()
     }
-    corridos = [
+    exitosos = [
         agente
         for agente, turno in informe["turnos"].items()
-        if turno.get("estado") in ("ok", "fallo", "fallo_comun")
+        if turno.get("estado") == "ok"
     ]
-    if not corridos and not sin_turnos:
+    if informe["fallidos"]:
+        motivo = "turno real fallido: " + "; ".join(
+            f"{agente}: {str(informe['turnos'][agente].get('error') or '')[:200]}"
+            for agente in informe["fallidos"]
+        )[:600]
+        avisar_rechazo(destino, informe)
+        return resumen, motivo
+    if not exitosos and sustituye and not sin_turnos:
         detalle = (
             "; ".join(
                 f"{agente}: {turno.get('estado') or 'omitido'}"
@@ -351,21 +359,23 @@ def _turnos_de_activacion(
             )
             or "sin agentes con sesion o ejecutable"
         )[:400]
-        motivo = (
-            "no se activa: ningun agente corrio un turno real en la candidata ("
-            + detalle
-            + ")"
-        )[:600]
-        avisar_rechazo(destino, informe, causa="ningun turno real en la candidata")
+        if detalle and "fallo_comun" in detalle:
+            motivo = (
+                "no se activa: ningun turno real fue exitoso en la candidata ("
+                + detalle
+                + ")"
+            )[:600]
+            causa = "ningun turno real exitoso en la candidata"
+        else:
+            motivo = (
+                "no se activa: ningun agente corrio un turno real en la candidata ("
+                + detalle
+                + ")"
+            )[:600]
+            causa = "ningun turno real en la candidata"
+        avisar_rechazo(destino, informe, causa=causa)
         return resumen, motivo
-    if not informe["fallidos"]:
-        return resumen, ""
-    motivo = "turno real fallido: " + "; ".join(
-        f"{agente}: {str(informe['turnos'][agente].get('error') or '')[:200]}"
-        for agente in informe["fallidos"]
-    )[:600]
-    avisar_rechazo(destino, informe)
-    return resumen, motivo
+    return resumen, ""
 
 
 def _poner_enlace(home: Path, gen: Path) -> None:

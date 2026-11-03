@@ -83,6 +83,25 @@ def _runtime_preparada(home: Path, gen: Path, nombre: str, version: str) -> None
     )
 
 
+def _runtime_qwen(home: Path, gen: Path) -> None:
+    """Agrega un lanzador de qwen al runtime existente de la generación."""
+    ruta = gen / "runtime.json"
+    runtime = json.loads(ruta.read_text(encoding="utf-8"))
+    argv = [sys.executable, "-c", "print('v-qwen')"]
+    runtime["lanzadores"]["qwen"] = argv
+    runtime["componentes"].append({"nombre": "qwen", "version": "v-qwen"})
+    runtime.setdefault("observaciones", {})["qwen"] = {
+        "version": "v-qwen",
+        "ejecutable": argv,
+    }
+    _atomico(ruta, runtime)
+    recibo = home / "preparaciones" / (gen.name + ".json")
+    doc = json.loads(recibo.read_text(encoding="utf-8"))
+    doc["componentes"] = sorted(set(doc.get("componentes", [])) | {"qwen"})
+    doc["integridad_runtime"] = hashlib.sha256(ruta.read_bytes()).hexdigest()
+    _atomico(recibo, doc)
+
+
 class TurnosFlota(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="turnos-flota-")
@@ -256,7 +275,7 @@ class TurnosFlota(unittest.TestCase):
         candidata = json.loads((self.home / "candidata.json").read_text())
         self.assertEqual(candidata["turnos"]["codex"]["error"], "instrumento_fallo: boom literal de codex")
 
-    def test_turno_fallido_en_ambas_generaciones_no_bloquea(self):
+    def test_todos_los_turnos_fallan_en_ambas_no_se_aplica(self):
         origen, a, gen_a = self._flota("origen-f")
         b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
         _config_poteto(gen_b)
@@ -270,10 +289,55 @@ class TurnosFlota(unittest.TestCase):
                 "error": "la cuenta no tiene cupo hoy",
             }
 
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            with (
+                patch(
+                    "motor.flota.turnos._sesion_presente",
+                    side_effect=lambda agente: agente == "codex",
+                ),
+                patch("motor.flota.turnos._turno_agente", side_effect=turno),
+                patch(
+                    "motor.flota.turnos.resolver_lanzador",
+                    side_effect=lambda agente, gen: ["/bin/true"],
+                ),
+            ):
+                salida = aplicar(self.home, b)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("ningun turno real fue exitoso", salida["motivo"])
+        self.assertIn("fallo_comun", salida["motivo"])
+        self.assertEqual(asignar(self.home), a)
+        informe = json.loads(
+            (self.home / "turnos" / (b + ".json")).read_text(encoding="utf-8")
+        )
+        self.assertEqual(informe["turnos"]["codex"]["estado"], "fallo_comun")
+        pendientes = sorted(
+            (self.motor_motor / "avisos" / "pendientes").glob("*.json")
+        )
+        self.assertEqual(len(pendientes), 1)
+        aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
+        self.assertIn("ningun turno real exitoso en la candidata", aviso["texto"])
+
+    def test_fallo_comun_con_algun_exitoso_no_bloquea(self):
+        origen, a, gen_a = self._flota("origen-l")
+        b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
+        _config_poteto(gen_b)
+        _runtime_preparada(self.home, gen_b, "codex", "v1")
+        _runtime_qwen(self.home, gen_b)
+
+        def turno(agente, gen, raiz, tope_s=150):
+            if agente == "qwen":
+                return {
+                    "estado": "fallo",
+                    "rc": 1,
+                    "segundos": 1.0,
+                    "error": "la cuenta no tiene cupo hoy",
+                }
+            return {"estado": "ok", "salida": "listo", "segundos": 1.0, "rc": 0}
+
         with (
             patch(
                 "motor.flota.turnos._sesion_presente",
-                side_effect=lambda agente: agente == "codex",
+                side_effect=lambda agente: agente in ("codex", "qwen"),
             ),
             patch("motor.flota.turnos._turno_agente", side_effect=turno),
             patch(
@@ -287,7 +351,8 @@ class TurnosFlota(unittest.TestCase):
         informe = json.loads(
             (self.home / "turnos" / (b + ".json")).read_text(encoding="utf-8")
         )
-        self.assertEqual(informe["turnos"]["codex"]["estado"], "fallo_comun")
+        self.assertEqual(informe["turnos"]["qwen"]["estado"], "fallo_comun")
+        self.assertEqual(informe["turnos"]["codex"]["estado"], "ok")
 
     def test_candidata_sin_clientes_no_retira_los_de_la_vigente(self):
         origen, a, gen_a = self._flota("origen-i")
