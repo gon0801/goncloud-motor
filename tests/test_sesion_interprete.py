@@ -155,7 +155,13 @@ class ElLanzamientoComponeElEntornoDelSupervisorMasElDelta(unittest.TestCase):
                 "cwd": str(tmp),
                 "env": {"TMPDIR": str((Path(tmp).resolve()) / "tmp")},
             }
-            with mock.patch.dict(os.environ, {"MOTOR_SECRETO_SUPERVISOR": "visible"}):
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "MOTOR_SECRETO_SUPERVISOR": "visible",
+                    "TMPDIR": "/tmp/heredado",
+                },
+            ):
                 esperado = {**os.environ, **spec["env"]}
                 with mock.patch("subprocess.Popen") as popen:
                     arranque.crear_agente(

@@ -47,7 +47,10 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   el motor. El estado de la fila sigue al ejecutable, como el resto.
   En Windows el cliente es `agy` y el shim resuelve `agy.exe`. No se exige jaula ni distro.
 - `java_tlc`: si `verificacion/inspeccion/verificar.sh` puede correr aquí. Con `TLA2TOOLS`
-  y Java utilizable, o con mise en PATH (verificar.sh instala las herramientas solo), está;
+  y Java utilizable, con las herramientas de la base en `<base>/herramientas`
+  (`tla2tools/1.7.4/tla2tools.jar` y `java/actual/bin/java`, la ruta que la preparación
+  deja y que tanto el reporte como `verificar.sh` miran sin `TLA2TOOLS` ni mise), o con
+  mise en PATH (verificar.sh instala las herramientas solo), está;
   si no, un encargo de verificación formal no puede ir a esta máquina. En Windows también
   mira las variables de usuario persistentes (`HKCU\Environment`, donde escribe `setx`):
   valen en las consolas que se abran después, no en la que corrió `prepara_pc.py`, y el
@@ -81,6 +84,8 @@ En la PC (Windows), `ops/prepara_pc.py` deja lo que faltaba (Java y TLC,
 (`ops/prepara_pc.py --base ~/.motor-encargos`) y deja Java y TLC en
 `<base>/herramientas`, `capacidades.json` con `ci-linux` y `ci-github`, la carpeta
 `evidencia-ci` y el enlace `herramientas/java/actual`; no toca el LaunchAgent ni los
-secretos. Después de prepararla ya no deben faltar `java_tlc`, `capacidades`,
-`evidencia-ci` ni `arranque`; `gh` con sesión y el home del motor (avisos, señal)
-dependen de la instalación de la máquina y el reporte lo dice si falta.
+secretos. Después de prepararla ya no deben faltar `java_tlc`, `capacidades`
+ni `evidencia-ci`; `arranque` sigue dependiendo del LaunchAgent de encargos
+instalado en `~/Library/LaunchAgents`, que la preparación no toca, y `gh` con
+sesión y el home del motor (avisos, señal) dependen de la instalación de la
+máquina y el reporte lo dice si falta.

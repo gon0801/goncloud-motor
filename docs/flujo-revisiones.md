@@ -31,7 +31,7 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    el que se decide que entra en un commit; una cache local no cambia la firma.
 4. Al morir el proceso, el supervisor anota `producto_listo` con la firma y el
    manifiesto que él calcula. Si hay comprobaciones declaradas, las ejecuta
-   las ejecuta y las anota como `observacion_supervisor`. Declarar ninguna es
+   y las anota como `observacion_supervisor`. Declarar ninguna es
    válido: para cambiar una cifra basta leer el valor final y dejarlo en
    `evidencia.txt`. No hay `procedimiento.json` obligatorio ni cobertura
    forzada.
@@ -296,7 +296,7 @@ tipo `ci` que el host concede en `capacidades.json`:
 ```
 
 El juicio declara `"inspeccion": {"operacion": "ci.correr", "recurso":
-"ci-linux", "parametros": {"job": "jaula-linux"}}`. El supervisor, con el
+"ci-linux", "parametros": {"job": "bateria"}}`. El supervisor, con el
 `gh` y el git que ya tiene (sin tokens nuevos):
 
 1. Arma un commit con la versión vigente del producto, con o sin commit propio,
