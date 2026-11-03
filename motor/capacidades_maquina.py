@@ -261,11 +261,26 @@ def _recurso_raiz(nombre: str, recurso: dict) -> dict:
 
 
 def _recurso_ci(nombre: str, recurso: dict, correr, which) -> dict:
-    repo = str(recurso.get("repo") or "")
+    repo = str(recurso.get("repo") or "").strip()
     gh = which("gh")
     if not gh:
         return {"recurso": nombre, "tipo": "ci", "estado": "falta",
-                "detalle": f"gh no está instalado: no se puede correr CI sobre {repo}"}
+                "detalle": f"gh no está instalado: no se puede correr CI sobre {repo or 'el repo del encargo'}"}
+    if not repo:
+        # Sin repo fijo, cada encargo trae el suyo (origin del espacio o repo de
+        # entrega). No hay un repositorio concreto que sondear, pero la sesión
+        # de gh sí se comprueba: sin sesión el recurso no sirve para correr CI.
+        try:
+            r = correr([gh, "auth", "status"], 30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"recurso": nombre, "tipo": "ci", "estado": "falta",
+                    "detalle": f"gh no respondió al comprobar la sesión: {exc}"}
+        if r.returncode != 0:
+            causa = _texto((r.stderr or b"") + (r.stdout or b""))
+            return {"recurso": nombre, "tipo": "ci", "estado": "falta",
+                    "detalle": f"gh sin sesión: {causa}"}
+        return {"recurso": nombre, "tipo": "ci", "estado": "ok",
+                "detalle": "sin repo fijo: usa el repo del encargo; gh tiene sesión"}
     try:
         r = correr([gh, "repo", "view", repo, "--json", "nameWithOwner"], 30)
     except (OSError, subprocess.TimeoutExpired) as exc:

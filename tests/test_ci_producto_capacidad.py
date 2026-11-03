@@ -7,10 +7,13 @@ reusados. Se usa el mismo `gh` falso que las pruebas de CI.
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from motor.encargos import capacidades as cap
 from tests.test_ci_remoto import _Ci
@@ -239,6 +242,31 @@ class CorreTodosLosJobs(_Ci):
             )
         )
 
+    def test_goncloud_motor_sin_workflow_en_el_recurso_sigue_usando_pruebas_yml(self):
+        recursos = {
+            "ci-linux": {
+                "tipo": "ci",
+                "autorizacion": "",
+                "repo": "gon0801/goncloud-motor",
+                "base": "main",
+            }
+        }
+
+        r = cap.ejecutar(
+            recursos,
+            cap.CI,
+            "ci-linux",
+            {"job": "todos"},
+            self.destino,
+            espacio=self.espacio,
+        )
+
+        self.assertEqual(r["estado"], "ok", r)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertIn("gate", jobs)
+        self.assertIn("ops-tests", jobs)
+        self.assertTrue(jobs["macos"]["reusado"])
+
     def test_un_job_exacto_sin_base_compara_con_head(self):
         r = cap.ejecutar(
             self.recursos,
@@ -292,6 +320,352 @@ class CorreTodosLosJobs(_Ci):
             "",
             "un base inválido usa el árbol vacío, no HEAD",
         )
+
+
+GH_SIN_PRUEBAS = r'''#!{python}
+import json, os, sys
+d = os.environ["FAKE_GH_DIR"]
+args = sys.argv[1:]
+def val(flag):
+    return args[args.index(flag) + 1]
+ruta = os.path.join(d, "estado.json")
+estado = json.load(open(ruta)) if os.path.exists(ruta) else {"llamadas": []}
+estado["llamadas"].append(args)
+def guardar():
+    json.dump(estado, open(ruta, "w"))
+sha = val("--commit") if "--commit" in args else ""
+runs = [
+    {{"databaseId": 1234, "status": "completed", "conclusion": "success",
+      "headSha": sha, "event": "pull_request", "workflowName": "quality",
+      "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1234"}},
+    {{"databaseId": 1235, "status": "completed", "conclusion": "failure",
+      "headSha": sha, "event": "pull_request", "workflowName": "quality-extra",
+      "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1235"}},
+    {{"databaseId": 1236, "status": "completed", "conclusion": "failure",
+      "headSha": sha, "event": "pull_request", "workflowName": "ai-review-publish",
+      "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1236"}},
+]
+if args[:2] == ["pr", "create"]:
+    guardar()
+    print("https://github.com/gon0801/goncloud-Orbit/pull/7")
+elif args[:2] == ["pr", "view"]:
+    guardar()
+    print(json.dumps({{"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}}))
+elif args[:2] == ["run", "list"]:
+    guardar()
+    print(json.dumps(runs))
+elif args[:2] == ["run", "view"] and "--log" not in args:
+    guardar()
+    rid = args[2]
+    jobs = (
+        [{{"name": "quality", "databaseId": 201, "conclusion": "success"}}]
+        if rid == "1234"
+        else [{{"name": "lint", "databaseId": 202, "conclusion": "failure"}}]
+    )
+    print(json.dumps({{"status": "completed",
+        "conclusion": "success" if rid == "1234" else "failure",
+        "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/" + rid,
+        "jobs": jobs}}))
+elif args[:2] == ["run", "view"]:
+    guardar()
+    sys.stdout.write(open(os.path.join(d, "log-" + val("--job") + ".txt")).read())
+elif args[:2] == ["pr", "close"]:
+    guardar()
+else:
+    guardar()
+    sys.exit(2)
+'''
+
+
+class EsperaTodosLosWorkflowsDelRepo(_Ci):
+    """Un repo que no tiene `pruebas.yml` no puede esperar ese workflow: el
+    veredicto cubre todos los workflows de pull_request del SHA, salvo los de
+    ai-review, que ya cubre la revisión de DeepSeek."""
+
+    def setUp(self):
+        super().setUp()
+        (self.fake / "log-202.txt").write_text("FALLA de lint\n", encoding="utf-8")
+        (self.fake / "estado.json").write_text(json.dumps({"llamadas": []}))
+        (self.bin / "gh").write_text(
+            GH_SIN_PRUEBAS.replace("{{", "{").replace("}}", "}").replace(
+                "#!{python}", "#!" + sys.executable
+            )
+        )
+        (self.bin / "gh").chmod(0o755)
+        self.recursos = {
+            "ci-linux": {"tipo": "ci", "autorizacion": "", "repo": "o/r", "base": "main"}
+        }
+
+    def llamadas_run_list(self) -> list[list[str]]:
+        return [
+            llamada
+            for llamada in json.loads((self.fake / "estado.json").read_text())["llamadas"]
+            if llamada[:2] == ["run", "list"]
+        ]
+
+    def test_espera_los_workflows_de_pull_request_y_no_pruebas_yml(self):
+        r = self.pedir("todos")
+
+        self.assertEqual(r["estado"], "ok", r)
+        for llamada in self.llamadas_run_list():
+            self.assertNotIn("--workflow", llamada)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertEqual(jobs["quality"]["conclusion"], "success")
+        self.assertEqual(jobs["lint"]["conclusion"], "failure")
+        self.assertEqual(r["datos"]["fallas"], ["lint"])
+        self.assertEqual(r["datos"]["conclusion"], "failure")
+        self.assertNotIn("ai-review-publish", jobs)
+
+    def test_un_run_rojo_con_todos_sus_jobs_verdes_no_es_verde(self):
+        guion = (self.bin / "gh").read_text(encoding="utf-8")
+        (self.bin / "gh").write_text(
+            guion.replace(
+                '{"name": "lint", "databaseId": 202, "conclusion": "failure"}',
+                '{"name": "lint", "databaseId": 202, "conclusion": "success"}',
+            ),
+            encoding="utf-8",
+        )
+        (self.bin / "gh").chmod(0o755)
+
+        r = self.pedir("todos")
+
+        self.assertEqual(r["estado"], "ok", r)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertEqual(jobs["lint"]["conclusion"], "success")
+        self.assertEqual(r["datos"]["fallas"], ["workflow:1235"])
+        self.assertEqual(r["datos"]["conclusion"], "failure")
+
+    def test_un_job_exacto_sale_del_workflow_que_lo_tiene(self):
+        r = self.pedir("lint")
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["job"], "lint")
+        self.assertEqual(r["datos"]["run"], "1235")
+        self.assertEqual(r["datos"]["conclusion"], "failure")
+
+
+GH_LENTO = r'''#!{python}
+import json, os, sys
+d = os.environ["FAKE_GH_DIR"]
+args = sys.argv[1:]
+def val(flag):
+    return args[args.index(flag) + 1]
+ruta = os.path.join(d, "estado.json")
+estado = json.load(open(ruta)) if os.path.exists(ruta) else {"llamadas": [], "sondeos": 0}
+estado["llamadas"].append(args)
+def guardar():
+    json.dump(estado, open(ruta, "w"))
+sha = val("--commit") if "--commit" in args else ""
+def runs(estado_run):
+    return [
+        {{"databaseId": 1234, "status": estado_run, "conclusion": "success",
+          "headSha": sha, "event": "pull_request", "workflowName": "quality",
+          "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1234"}},
+        {{"databaseId": 1235, "status": estado_run,
+          "conclusion": "success" if estado_run != "completed" else "failure",
+          "headSha": sha, "event": "pull_request", "workflowName": "quality-extra",
+          "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1235"}},
+    ]
+if args[:2] == ["pr", "create"]:
+    guardar()
+    print("https://github.com/gon0801/goncloud-Orbit/pull/7")
+elif args[:2] == ["pr", "view"]:
+    guardar()
+    print(json.dumps({{"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}}))
+elif args[:2] == ["run", "list"]:
+    estado["sondeos"] = int(estado.get("sondeos") or 0) + 1
+    if estado["sondeos"] == 1:
+        print("[]")
+    elif estado["sondeos"] == 2:
+        print(json.dumps(runs("in_progress")))
+    else:
+        print(json.dumps(runs("completed")))
+    guardar()
+elif args[:2] == ["run", "view"] and "--log" not in args:
+    guardar()
+    rid = args[2]
+    jobs = (
+        [{{"name": "quality", "databaseId": 201, "conclusion": "success"}}]
+        if rid == "1234"
+        else [{{"name": "lint", "databaseId": 202, "conclusion": "failure"}}]
+    )
+    print(json.dumps({{"status": "completed",
+        "conclusion": "success" if rid == "1234" else "failure",
+        "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/" + rid,
+        "jobs": jobs}}))
+elif args[:2] == ["run", "view"]:
+    guardar()
+    sys.stdout.write(open(os.path.join(d, "log-" + val("--job") + ".txt")).read())
+elif args[:2] == ["pr", "close"]:
+    guardar()
+else:
+    guardar()
+    sys.exit(2)
+'''
+
+
+class EsperaARunsQueAparecenTarde(_Ci):
+    """Recién creado el PR el repo puede no tener runs, o tenerlos en curso.
+    El plazo llega como duración: no se puede comparar con un epoch."""
+
+    def setUp(self):
+        super().setUp()
+        (self.fake / "log-202.txt").write_text("FALLA de lint\n", encoding="utf-8")
+        (self.fake / "estado.json").write_text(
+            json.dumps({"llamadas": [], "sondeos": 0})
+        )
+        (self.bin / "gh").write_text(
+            GH_LENTO.replace("{{", "{").replace("}}", "}").replace(
+                "#!{python}", "#!" + sys.executable
+            )
+        )
+        (self.bin / "gh").chmod(0o755)
+        self.recursos = {
+            "ci-linux": {"tipo": "ci", "autorizacion": "", "repo": "o/r", "base": "main"}
+        }
+
+    def test_espera_a_que_aparezcan_y_terminen_los_runs(self):
+        r = self.pedir("todos")
+
+        self.assertEqual(r["estado"], "ok", r)
+        estado = json.loads((self.fake / "estado.json").read_text())
+        self.assertGreaterEqual(estado["sondeos"], 3)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertEqual(jobs["lint"]["conclusion"], "failure")
+        self.assertEqual(r["datos"]["fallas"], ["lint"])
+
+
+GH_CAMBIA = r'''#!{python}
+import json, os, sys
+d = os.environ["FAKE_GH_DIR"]
+modo = os.environ.get("FAKE_MODO", "")
+args = sys.argv[1:]
+def val(flag):
+    return args[args.index(flag) + 1]
+ruta = os.path.join(d, "estado.json")
+estado = json.load(open(ruta)) if os.path.exists(ruta) else {"llamadas": [], "sondeos": 0}
+estado["llamadas"].append(args)
+def guardar():
+    json.dump(estado, open(ruta, "w"))
+sha = val("--commit") if "--commit" in args else ""
+def run(rid, estado_run, conclusion, nombre):
+    return {{"databaseId": rid, "status": estado_run, "conclusion": conclusion,
+        "headSha": sha, "event": "pull_request", "workflowName": nombre,
+        "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/" + str(rid)}}
+A = run(1234, "completed", "success", "quality")
+B = run(1235, "completed", "failure", "quality-extra")
+if args[:2] == ["pr", "create"]:
+    guardar()
+    print("https://github.com/gon0801/goncloud-Orbit/pull/7")
+elif args[:2] == ["pr", "view"]:
+    guardar()
+    print(json.dumps({{"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}}))
+elif args[:2] == ["run", "list"]:
+    sondeos = int(estado.get("sondeos") or 0) + 1
+    estado["sondeos"] = sondeos
+    if modo == "estancado":
+        lista = [run(1234, "in_progress", "success", "quality"),
+                 run(1235, "in_progress", "success", "quality-extra")]
+    elif modo == "tardio":
+        if sondeos == 1:
+            lista = [A]
+        elif sondeos == 2:
+            lista = [A, run(1235, "in_progress", "success", "quality-extra")]
+        else:
+            lista = [A, run(1235, "completed", "success", "quality-extra")]
+    elif sondeos == 1:
+        lista = [A, B]
+    elif modo == "omite":
+        lista = [A]
+    elif modo == "vacio":
+        lista = []
+    else:
+        lista = [A, B]
+    guardar()
+    print(json.dumps(lista))
+elif args[:2] == ["run", "view"] and "--log" not in args:
+    guardar()
+    rid = args[2]
+    verde = rid == "1234" or (rid == "1235" and modo == "tardio")
+    if verde:
+        jobs = [{{"name": "quality" if rid == "1234" else "lint",
+                  "databaseId": 201 if rid == "1234" else 202,
+                  "conclusion": "success"}}]
+    else:
+        jobs = [{{"name": "lint", "databaseId": 202, "conclusion": "failure"}}]
+    print(json.dumps({{"status": "completed",
+        "conclusion": "success" if verde else "failure",
+        "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/" + rid,
+        "jobs": jobs}}))
+elif args[:2] == ["run", "view"]:
+    guardar()
+    sys.stdout.write(open(os.path.join(d, "log-" + val("--job") + ".txt")).read())
+elif args[:2] == ["pr", "close"]:
+    guardar()
+else:
+    guardar()
+    sys.exit(2)
+'''
+
+
+class ConjuntoDeRunsEstable(_Ci):
+    """Un sondeo posterior no puede borrar del veredicto un run ya visto, y la
+    confirmación del conjunto espera al workflow que aparece tarde."""
+
+    def setUp(self):
+        super().setUp()
+        (self.fake / "log-202.txt").write_text("FALLA de lint\n", encoding="utf-8")
+        (self.fake / "estado.json").write_text(
+            json.dumps({"llamadas": [], "sondeos": 0})
+        )
+        (self.bin / "gh").write_text(
+            GH_CAMBIA.replace("{{", "{").replace("}}", "}").replace(
+                "#!{python}", "#!" + sys.executable
+            )
+        )
+        (self.bin / "gh").chmod(0o755)
+        self.recursos = {
+            "ci-linux": {"tipo": "ci", "autorizacion": "", "repo": "o/r", "base": "main"}
+        }
+
+    def pedir_en_modo(self, modo: str) -> dict:
+        with mock.patch.dict(os.environ, {"FAKE_MODO": modo}):
+            return self.pedir("todos")
+
+    def test_un_run_omitido_despues_sigue_en_el_veredicto(self):
+        r = self.pedir_en_modo("omite")
+
+        self.assertEqual(r["estado"], "ok", r)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertEqual(jobs["lint"]["conclusion"], "failure")
+        self.assertEqual(r["datos"]["fallas"], ["lint"])
+        self.assertEqual(r["datos"]["conclusion"], "failure")
+
+    def test_una_lista_vacia_posterior_no_borra_los_runs_vistos(self):
+        r = self.pedir_en_modo("vacio")
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(len(r["datos"]["jobs"]), 2)
+        self.assertEqual(r["datos"]["fallas"], ["lint"])
+        self.assertEqual(r["datos"]["conclusion"], "failure")
+
+    def test_un_workflow_que_aparece_al_confirmar_se_espera(self):
+        r = self.pedir_en_modo("tardio")
+
+        self.assertEqual(r["estado"], "ok", r)
+        estado = json.loads((self.fake / "estado.json").read_text())
+        self.assertGreaterEqual(estado["sondeos"], 4)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertEqual(jobs["quality"]["conclusion"], "success")
+        self.assertEqual(jobs["lint"]["conclusion"], "success")
+        self.assertEqual(r["datos"]["fallas"], [])
+
+    def test_los_runs_que_nunca_terminan_vencen_el_plazo(self):
+        with mock.patch.object(cap, "CI_MAX_S", 1.0):
+            r = self.pedir_en_modo("estancado")
+
+        self.assertEqual(r["estado"], "error", r)
+        self.assertIn("no terminaron", r["motivo"])
 
 
 if __name__ == "__main__":

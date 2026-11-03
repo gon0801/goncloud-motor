@@ -227,8 +227,6 @@ class InstalacionDejaLoPrometido(DoblesTest):
                 },
                 "ci-linux": {
                     "tipo": "ci",
-                    "repo": "gon0801/goncloud-motor",
-                    "workflow": "pruebas.yml",
                     "base": "main",
                 },
             }
@@ -253,6 +251,38 @@ class InstalacionDejaLoPrometido(DoblesTest):
         script = prepara_pc._script_de_la_llave(valor)
         self.assertIsNotNone(script)
         self.assertTrue(script.is_file())
+
+    def test_repreparar_quita_repo_y_workflow_fijos_y_conserva_lo_del_operador(self):
+        (self.base / "capacidades.json").write_text(
+            json.dumps(
+                {
+                    "recursos": {
+                        "ci-linux": {
+                            "tipo": "ci",
+                            "repo": "gon0801/goncloud-motor",
+                            "workflow": "pruebas.yml",
+                            "base": "main",
+                            "autorizacion": "propietario",
+                            "nota": "la puso el operador",
+                        },
+                        "mi-base": {"tipo": "sqlite", "ruta": "x.db"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        prepara_pc.instalar_capacidades(self.base)
+
+        datos = json.loads((self.base / "capacidades.json").read_text(encoding="utf-8"))
+        ci = datos["recursos"]["ci-linux"]
+        self.assertNotIn("repo", ci)
+        self.assertNotIn("workflow", ci)
+        self.assertEqual(ci["tipo"], "ci")
+        self.assertEqual(ci["base"], "main")
+        self.assertEqual(ci["autorizacion"], "propietario")
+        self.assertEqual(ci["nota"], "la puso el operador")
+        self.assertEqual(datos["recursos"]["mi-base"], {"tipo": "sqlite", "ruta": "x.db"})
 
     def test_segunda_corrida_no_cambia_nada(self):
         corredor = _reg_falso(llave=LLAVE_SUPERVISOR_DIRECTO)

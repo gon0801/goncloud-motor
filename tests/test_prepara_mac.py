@@ -145,6 +145,34 @@ class PreparacionMacTest(unittest.TestCase):
         for nombre, recurso in prepara_pc.capacidades_deseadas(self.base)["recursos"].items():
             self.assertEqual(datos["recursos"][nombre], recurso)
 
+    def test_repreparar_quita_repo_y_workflow_fijos_y_conserva_lo_del_operador(self):
+        (self.base / "capacidades.json").write_text(
+            json.dumps(
+                {
+                    "recursos": {
+                        "ci-linux": {
+                            "tipo": "ci",
+                            "repo": "gon0801/goncloud-motor",
+                            "workflow": "pruebas.yml",
+                            "base": "main",
+                            "nota": "la puso el operador",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        prepara_pc.instalar_capacidades(self.base)
+
+        ci = json.loads(
+            (self.base / "capacidades.json").read_text(encoding="utf-8")
+        )["recursos"]["ci-linux"]
+        self.assertNotIn("repo", ci)
+        self.assertNotIn("workflow", ci)
+        self.assertEqual(ci["base"], "main")
+        self.assertEqual(ci["nota"], "la puso el operador")
+
     def test_el_sha256_del_jar_es_el_que_fija_verificar_sh(self):
         texto = (RAIZ / "verificacion" / "inspeccion" / "verificar.sh").read_text(
             encoding="utf-8"

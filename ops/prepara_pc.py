@@ -77,8 +77,6 @@ RECURSOS = {
     },
     "ci-linux": {
         "tipo": "ci",
-        "repo": "gon0801/goncloud-motor",
-        "workflow": "pruebas.yml",
         "base": "main",
     },
 }
@@ -405,6 +403,12 @@ def _entorno_servicio_mac(base: Path) -> tuple[str, str]:
 # ------------------------------------------------------- capacidades.json
 
 
+# El recurso ci ya no fija el repo ni el workflow del encargo: los saca el motor
+# del repo de entrega. Al volver a preparar una máquina se quitan los que dejó
+# una preparación anterior, sin tocar lo demás que haya declarado el operador.
+CAMPOS_FIJOS_QUE_SE_QUITAN = {"ci-linux": ("repo", "workflow")}
+
+
 def capacidades_deseadas(base: Path) -> dict:
     raiz = Path(base).resolve().as_posix()
     return {
@@ -418,15 +422,24 @@ def capacidades_deseadas(base: Path) -> dict:
     }
 
 
+def _recurso_suficiente(nombre: str, actual, deseado: dict) -> bool:
+    if not isinstance(actual, dict):
+        return False
+    if any(campo in actual for campo in CAMPOS_FIJOS_QUE_SE_QUITAN.get(nombre, ())):
+        return False
+    return all(actual.get(k) == v for k, v in deseado.items())
+
+
 def capacidades_suficiente(actual, deseado: dict) -> bool:
     """La base puede tener recursos propios del operador: lo que prepara_pc
     exige es que sus dos recursos estén con los valores que declara, no que el
-    archivo sea exactamente el suyo (F3)."""
+    archivo sea exactamente el suyo (F3). Un `repo` o `workflow` fijado por una
+    preparación vieja deja el recurso insuficiente para que se limpie."""
     recursos = actual.get("recursos") if isinstance(actual, dict) else None
     if not isinstance(recursos, dict):
         return False
     return all(
-        recursos.get(nombre) == recurso
+        _recurso_suficiente(nombre, recursos.get(nombre), recurso)
         for nombre, recurso in deseado["recursos"].items()
     )
 
@@ -447,7 +460,13 @@ def instalar_capacidades(base: Path) -> tuple[str, str]:
         if isinstance(actual, dict) and isinstance(actual.get("recursos"), dict)
         else {}
     )
-    recursos.update(deseado["recursos"])
+    for nombre, recurso in deseado["recursos"].items():
+        previo = recursos.get(nombre)
+        fusion = dict(previo) if isinstance(previo, dict) else {}
+        for campo in CAMPOS_FIJOS_QUE_SE_QUITAN.get(nombre, ()):
+            fusion.pop(campo, None)
+        fusion.update(recurso)
+        recursos[nombre] = fusion
     combinado = dict(actual) if isinstance(actual, dict) else {}
     combinado["recursos"] = recursos
     _escribir_atomico(ruta, json.dumps(combinado, ensure_ascii=False, indent=2) + "\n")
