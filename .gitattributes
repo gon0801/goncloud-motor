@@ -1,4 +1,0 @@
-motor/shims/* text eol=lf
-motor/shims/*.cmd text eol=crlf
-*.sh text eol=lf
-verificacion/** text eol=lf
