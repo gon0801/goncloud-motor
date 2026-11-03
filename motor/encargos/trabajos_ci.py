@@ -4,9 +4,10 @@ La tabla sale de lo que cada job ejecuta y de lo que sus pruebas leen de
 verdad. `ops-tests` corre `ops/tests/correr.sh`; `macos` y `windows` corren
 listas acotadas de `tests/` que importan `motor/`, leen `conftest.py` y
 `verificacion/`, y `windows` además ejecuta `ops/prepara_pc.py`. `bateria`
-descubre toda la suite, así que suma `conf-ejemplo/`, `proto/`, la skill del
-director, los dos documentos que se comprueban y los archivos de `ops/` que
-las pruebas importan o copian. `gate` compila todas las rutas y escanea el
+es el check de la suite completa, cuatro partes y el job final, así que
+suma `conf-ejemplo/`, `proto/`, la skill del director, los dos documentos
+que se comprueban y los archivos de `ops/` que las pruebas importan o
+copian. `gate` compila todas las rutas y escanea el
 historial. `reconcile` no es un job de pruebas: vive en
 `ai-review-publish.yml` y corre en cada evento del PR, así que no se puede
 reusar por rutas.

@@ -199,10 +199,29 @@ class Workflow(unittest.TestCase):
         for job in trabajos_ci.TRABAJOS:
             with self.subTest(job=job):
                 lineas = _job(job)
-                self.assertIn("    needs: prep", lineas)
+                cabecera = []
+                for linea in lineas:
+                    if linea.startswith("    steps:"):
+                        break
+                    cabecera.append(linea)
+                texto = "\n".join(cabecera)
+                self.assertIn("needs:", texto)
+                self.assertIn("prep", texto)
                 condicion = next(x for x in lineas if x.strip().startswith("if:"))
                 self.assertIn("always()", condicion)
                 self.assertIn(f"needs.prep.outputs.{job.replace('-', '_')} != 'false'", condicion)
+
+    def test_la_bateria_espera_a_las_cuatro_partes(self):
+        partes = "\n".join(_job("bateria-partes"))
+        self.assertIn("needs: prep", partes)
+        self.assertIn("always()", partes)
+        self.assertIn("needs.prep.outputs.bateria != 'false'", partes)
+        self.assertIn("parte: [0, 1, 2, 3]", partes)
+        self.assertIn("fail-fast: false", partes)
+        final = "\n".join(_job("bateria"))
+        self.assertIn("bateria-partes", final)
+        self.assertIn("needs.prep.outputs.bateria != 'false'", final)
+        self.assertIn("tests.reparto exigir", final)
 
     def test_las_rutas_de_los_comandos_estan_declaradas(self):
         dependencias = {
