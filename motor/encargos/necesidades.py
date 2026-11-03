@@ -996,9 +996,12 @@ def _corrida_igual(
     enc, sol: Solicitud, version: str, configuracion: str, directorio: Path
 ) -> Solicitud | None:
     """La corrida de CI que sigue viva y pide lo mismo: mismo recurso con la misma
-    configuración, mismo job y misma versión del producto. Repetirla cuesta otra
-    corrida de minutos."""
-    job = dict(sol.parametros).get("job")
+    configuración, mismos parámetros (job, base_arbol, jobs_extra...) y misma
+    versión del producto. Dos peticiones con distinta base o distintos jobs
+    extra no son la misma corrida: la primera solo corre lo afectado por su
+    diff y la segunda puede pedir otro recorte. Repetirla cuesta una corrida de
+    minutos, pero heredar un resultado recortado cuesta más."""
+    parametros = dict(sol.parametros)
     return next(
         (
             otra
@@ -1010,7 +1013,7 @@ def _corrida_igual(
             and otra.carpeta
             and otra.version == version
             and otra.configuracion == configuracion
-            and dict(otra.parametros).get("job") == job
+            and dict(otra.parametros) == parametros
             and _en_curso(otra, directorio)
         ),
         None,
