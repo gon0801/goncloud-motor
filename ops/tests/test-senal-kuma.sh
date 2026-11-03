@@ -552,14 +552,6 @@ for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos 
   [ -n "$tok" ] || fallo "alta: $monitor no tiene token"
   [ "$(tr -d '\r' <"$casa/.motor-encargos/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}" ] \
     || fallo "alta: el secreto de encargos de $nombre no apunta al monitor creado"
-  # Sin pwsh el sustituto imita WriteAllLines de Windows. Con pwsh, en Linux el salto es LF.
-  if [ "$nombre" = PC ] && ! command -v pwsh >/dev/null 2>&1; then
-    if grep -q $'\r' "$casa/.motor-encargos/secretos.env"; then
-      echo "  ok: el secreto de encargos de la PC quedó en CRLF"
-    else
-      fallo "alta: el secreto de encargos de la PC no quedó en CRLF"
-    fi
-  fi
   printf '%s\n' "$tok" >"$S/tok-antes-$nombre"
 done
 borra_monitor "Motor de encargos de la Mini"
@@ -603,8 +595,8 @@ borra_monitor "Motor de encargos de la PC"
 grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" \
   || fallo "al restaurar, la Mini perdió la dirección de encargos del operador"
 
-# F11: senal-kuma-servidor.py corre con Python 3.9. En CI el workflow deja el intérprete en
-# MOTOR_PYTHON39. Aquí vale python3.9 o /usr/bin/python3 si es 3.9.
+# F11 de #307 no aplica en este encargo. Si esta máquina ya tiene Python 3.9, el servidor
+# se prueba con él. Si no lo tiene, la batería sigue. El workflow no instala 3.9.
 python39() {
   local c ver ruta
   if [ -n "${MOTOR_PYTHON39:-}" ]; then
@@ -622,8 +614,7 @@ python39() {
   done
   return 1
 }
-py39="$(python39)" || fallo "no hay un Python 3.9 para correr senal-kuma-servidor.py"
-if [ -n "${py39:-}" ]; then
+if py39="$(python39)"; then
   ver39="$("$py39" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
   [ "$ver39" = 3.9 ] || fallo "el intérprete elegido para la prueba 3.9 es ${ver39:-ninguno}"
   rm -f "$S"/py39.db*

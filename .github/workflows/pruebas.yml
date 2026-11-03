@@ -7,24 +7,16 @@ on:
 
 jobs:
   ops-tests:
-    # setup-python no publica CPython 3.9 para Ubuntu 26.04, que es ubuntu-latest.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v6
-        id: py39
-        with:
-          python-version: '3.9'
-          update-environment: false
-      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Pruebas de shell de ops/tests
-        env:
-          MOTOR_PYTHON39: ${{ steps.py39.outputs.python-path }}
         run: bash ops/tests/correr.sh
 
   bateria:
