@@ -346,8 +346,9 @@ def aislar(
         # El hook que niega las herramientas de espera y agendado vive en el
         # runtime del intento. `--add-dir` lo suma a los workspaces de agy sin
         # escribir en el espacio ni en la configuracion real del usuario.
-        from .agentes import preparar_hooks_turno
+        from .agentes import preparar_hooks_turno, retirar_agente_turno
 
+        retirar_agente_turno()
         cmd = [*cmd, "--add-dir", str(preparar_hooks_turno(runtime))]
     if os.name == "nt":
         # Windows lanza directo, como POSIX: sin AppContainer ni WSL y con el

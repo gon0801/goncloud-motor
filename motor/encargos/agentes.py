@@ -59,12 +59,11 @@ MOTIVO_HOOK_TURNO = (
     "herramienta deshabilitada por el motor: con --print nadie despierta "
     "al agente despues del turno"
 )
-_GUION_HOOK = (
-    "import json\n"
-    "print(json.dumps({"
-    "'decision': 'deny', "
-    f"'reason': {MOTIVO_HOOK_TURNO!r}"
-    "}))\n"
+_CODIGO_HOOK = (
+    "import json;print(json.dumps({"
+    "'decision':'deny',"
+    f"'reason':{MOTIVO_HOOK_TURNO!r}"
+    "}))"
 )
 
 
@@ -72,20 +71,24 @@ def patron_hook_turno() -> str:
     return "^(?:" + "|".join(sorted(HERRAMIENTAS_TRAS_EL_TURNO)) + ")$"
 
 
-def comando_hook_turno(guion: Path) -> str:
-    argv = [sys.executable, str(guion)]
+def comando_hook_turno() -> str:
+    argv = [sys.executable, "-c", _CODIGO_HOOK]
     if os.name == "nt":
         return subprocess.list2cmdline(argv)
     return shlex.join(argv)
 
 
-def hooks_turno(guion: Path) -> dict:
+def hooks_turno() -> dict:
     """El hook que niega las herramientas que esperan o agendan.
 
     Un agente propio con `tools:` no sirve: el registro de componentes de
     agy 1.4.12 no resuelve las herramientas de navegador ni las de MCP, y
     con `excludeDefaultComponents` el arranque falla. El hook PreToolUse si
     deja el resto de herramientas y corta solo estas.
+
+    El comando va en linea: un guion en la carpeta que se concede con
+    `--add-dir` quedaria al alcance del agente, y agy lo ejecuta en cada
+    llamada de herramienta.
     """
     return {
         CLAVE_HOOK_TURNO: {
@@ -95,7 +98,7 @@ def hooks_turno(guion: Path) -> dict:
                     "hooks": [
                         {
                             "type": "command",
-                            "command": comando_hook_turno(guion),
+                            "command": comando_hook_turno(),
                         }
                     ],
                 }
@@ -130,12 +133,25 @@ def preparar_hooks_turno(runtime: Path) -> Path:
     este archivo, que muere con el.
     """
     carpeta = runtime / "agy-hooks"
-    guion = carpeta / "negar.py"
-    _escribir_si_cambia(guion, _GUION_HOOK)
     destino = carpeta / ".agents" / "hooks.json"
-    texto = json.dumps(hooks_turno(guion), indent=2, sort_keys=True) + "\n"
+    texto = json.dumps(hooks_turno(), indent=2, sort_keys=True) + "\n"
     _escribir_si_cambia(destino, texto)
     return carpeta
+
+
+def retirar_agente_turno(home: Path | None = None) -> None:
+    """Borra el agente que escribia la version anterior del motor.
+
+    Solo ese nombre. Los hosts que ya corrieron la version rota lo tienen
+    en el directorio global, y `agy agents` lo seguiria ofreciendo.
+    """
+    base = Path.home() if home is None else home
+    try:
+        (base / ".gemini" / "config" / "agents" / "motor-turno.md").unlink(
+            missing_ok=True
+        )
+    except OSError:
+        pass
 
 
 # El llavero es del usuario del sistema. Un home de prueba no lo tiene, y

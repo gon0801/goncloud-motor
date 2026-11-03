@@ -389,6 +389,21 @@ class LanzamientoSinAgenteDelTurno(unittest.TestCase):
             self.assertFalse((home / ".gemini" / "config").exists())
             self.assertFalse((espacio / ".gemini").exists())
 
+    def test_retira_el_agente_que_dejo_la_version_anterior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            agentes_dir = home / ".gemini" / "config" / "agents"
+            agentes_dir.mkdir(parents=True)
+            viejo = agentes_dir / "motor-turno.md"
+            viejo.write_text("excludeDefaultComponents: true\n", encoding="utf-8")
+            otro = agentes_dir / "otro.md"
+            otro.write_text("---\nname: otro\n---\n", encoding="utf-8")
+            with mock.patch("pathlib.Path.home", return_value=home):
+                _aislado(base / "caso")
+            self.assertFalse(viejo.exists())
+            self.assertTrue(otro.exists())
+
     def test_el_hook_del_runtime_bloquea_solo_las_herramientas_tras_el_turno(self):
         with tempfile.TemporaryDirectory() as tmp:
             comando, espacio, runtime = _aislado(Path(tmp))
@@ -516,7 +531,8 @@ class StreamJson(unittest.TestCase):
                 datos["herramientas_tras_el_turno"],
                 ["manage_task", "schedule", "wait"],
             )
-            self.assertIn("init con herramientas tras el turno", datos["hecho"])
+            self.assertEqual(datos["hecho"], "")
+            self.assertEqual(datos["secuencia"], 0)
             limpia = Observacion(directorio, "antigravity")
             limpia.evento(
                 {

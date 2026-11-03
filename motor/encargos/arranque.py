@@ -54,15 +54,11 @@ class Observacion:
     def _evento_antigravity(self, data: dict) -> None:
         evento = data.get("event")
         if evento == "init":
+            # Con el hook del runtime, `init` siempre anuncia estas
+            # herramientas: no es un avance ni una anomalia. La lista queda
+            # en herramienta.json y el hook las niega en la llamada.
             self.modelo_en_curso = True
             self._anotar_herramientas_de_agy(data)
-            if self.herramientas_tras_el_turno:
-                self.secuencia += 1
-                self.hora = time.time()
-                self.hecho = (
-                    "init con herramientas tras el turno: "
-                    + ", ".join(self.herramientas_tras_el_turno)
-                )
             self.publicar()
             return
         if evento == "step_update":
