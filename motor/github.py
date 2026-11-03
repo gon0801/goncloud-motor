@@ -94,14 +94,24 @@ def _run_id(r: dict) -> str:
         partes = str(r.get(k) or "").split("/actions/runs/")
         if len(partes) == 2 and partes[1].split("/")[0].isdigit():
             return partes[1].split("/")[0]
-    rid = r.get("run_id") or r.get("id")
+    rid = r.get("run_id")
     return str(rid) if rid else ""
 
 
+_CONCLUSIONES_ROJAS = ("failure", "timed_out", "startup_failure")
+_CONCLUSIONES_SIN_VEREDICTO = ("cancelled", "action_required", "stale")
+
+
 def _corrida(r: dict) -> dict:
+    # `corridas[i]["run_id"]` alimenta el relanzamiento de checks saltados en
+    # borrador (`_relanza_saltada`). Las conclusiones completadas sin veredicto
+    # (`cancelled`, `action_required`, `stale`) quedan en `faltan`, pero no son
+    # saltadas del borrador: no deben exponer `run_id` a `_relanza_saltada`.
     return {
         "nombre": r.get("name", ""),
-        "run_id": _run_id(r),
+        "run_id": ""
+        if r.get("conclusion") in _CONCLUSIONES_SIN_VEREDICTO
+        else _run_id(r),
         # El ID del check-run de un job de Actions es el databaseId del job:
         # es lo que `gh run view --job` espera (h_a8968fb0).
         "job_id": str(r.get("id") or ""),
@@ -130,7 +140,10 @@ def veredicto(
     evalúan los dos: un check-run en verde no esconde a un estado del mismo contexto
     en rojo o pendiente (h_f05e0491, segunda ronda). Un check se ignora por su
     conclusión, no por su nombre: salto del borrador, `skipped` o `neutral` no
-    cuentan; lo que corre o falla sí.
+    cuentan; lo que corre o falla sí. Solo `failure`, `timed_out` y
+    `startup_failure` cuentan como rojo (`fallas`); otras conclusiones
+    completadas no verdes (`cancelled`, `action_required`, `stale`) quedan en
+    `faltan` sin abrir el cierre en verde.
 
     Un check saltado cuenta solo si se saltó después de que el PR dejó el borrador (`listo_desde`,
     hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
@@ -146,7 +159,7 @@ def veredicto(
         c
         for c, r in zip(corridas, runs)
         if r.get("status") == "completed"
-        and r.get("conclusion") not in ("success", "skipped", "neutral", None)
+        and r.get("conclusion") in _CONCLUSIONES_ROJAS
     )
     corren = []
     for r in runs:
@@ -199,14 +212,16 @@ def veredicto(
                 en_marcha.append(c)
                 continue
             if any(
-                r["conclusion"] not in ("success", "skipped", "neutral")
+                r["conclusion"] in _CONCLUSIONES_ROJAS
                 for r in partes
             ):
                 fallas.append(c)
                 continue
-        # Aquí las corridas del nombre están verdes o no hay corridas: un
-        # estado del mismo contexto no queda escondido por ellas (h_f05e0491);
-        # los dos resultados se evalúan y el peor manda.
+        # Aquí las corridas del nombre no están en marcha ni en rojo: un estado
+        # del mismo contexto no queda escondido por ellas (h_f05e0491); los dos
+        # resultados se evalúan y el peor manda. Una conclusión completada que
+        # no sea verde ni roja (cancelled, action_required, stale) tampoco
+        # cuenta como verde: queda en `faltan` sin marcar falla.
         if sts and any(e.get("state") in ("failure", "error") for e in sts):
             fallas.append(c)
         elif sts and not all(e.get("state") == "success" for e in sts):
@@ -215,6 +230,23 @@ def veredicto(
                 en_marcha.append(c)
         elif not partes and not sts:
             faltan.append(c)
+        elif any(
+            r["conclusion"] not in ("success", "skipped", "neutral")
+            for r in partes
+        ):
+            faltan.append(c)
+    faltan_set = set(faltan)
+    vistos_faltan: set[str] = set()
+    corridas_dedup = []
+    for c in corridas:
+        rid = c["run_id"]
+        if rid and c["nombre"] in faltan_set:
+            if rid in vistos_faltan or c.get("conclusion") != "skipped":
+                c = {**c, "run_id": ""}
+            else:
+                vistos_faltan.add(rid)
+        corridas_dedup.append(c)
+    corridas = tuple(corridas_dedup)
     return ChecksVerdict(
         sha,
         terminal=not faltan or bool(fallas),
@@ -223,7 +255,9 @@ def veredicto(
         fallas=tuple(fallas),
         github_termino=bool(runs or estados)
         and all(
-            r["status"] == "completed" and r.get("conclusion") is not None
+            r["status"] == "completed"
+            and r.get("conclusion") is not None
+            and r.get("conclusion") != "action_required"
             for r in runs
         )
         and all(e.get("state") != "pending" for e in estados),
@@ -571,12 +605,22 @@ class GhGitHub:
         )
 
     def relanzar_corrida(self, repo, run_id):
-        if run_id:
+        if not run_id:
+            return
+        try:
             self._gh("run", "rerun", str(run_id), "-R", self.nombre(repo))
+        except RuntimeError as e:
+            if "already running" not in str(e).lower():
+                raise
 
     def relanzar_fallidas(self, repo, run_id):
-        if run_id:
+        if not run_id:
+            return
+        try:
             self._gh("run", "rerun", str(run_id), "--failed", "-R", self.nombre(repo))
+        except RuntimeError as e:
+            if "already running" not in str(e).lower():
+                raise
 
     def log_fallido(self, repo, run_id) -> str:
         if not run_id:
