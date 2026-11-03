@@ -201,8 +201,13 @@ def turnos_candidata(
     return informe
 
 
-def avisar_rechazo(destino: str, informe: dict, home_motor: Path | None = None) -> None:
+def avisar_rechazo(
+    destino: str, informe: dict, home_motor: Path | None = None, causa: str = ""
+) -> None:
     """El aviso del motor con el agente y el error literal de cada turno fallido.
+
+    Con `causa` y sin fallidos (p. ej. ningún turno real corrió), deja un
+    aviso único con la causa cerrada.
 
     La cola es la del motor instalado (Notifier la drena y envía por Telegram);
     escribir la cola no necesita credenciales y un fallo aquí no cambia el
@@ -222,6 +227,14 @@ def avisar_rechazo(destino: str, informe: dict, home_motor: Path | None = None) 
                 "Sigo trabajando con la generación anterior; la candidata quedó preparada."
             )[:4000]
             ident = f"flota-turno-{str(destino)[:12]}-{agente}"
+            avisos.materializa(ident, texto, ident)
+        if not informe.get("fallidos") and causa:
+            texto = (
+                "En la flota de esta máquina no se activó una actualización.\n"
+                f"El control de turnos la rechazó: {causa}\n"
+                "Sigo trabajando con la generación anterior; la candidata quedó preparada."
+            )[:4000]
+            ident = f"flota-turno-{str(destino)[:12]}-sin-turnos"
             avisos.materializa(ident, texto, ident)
     except OSError:
         pass

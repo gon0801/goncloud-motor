@@ -312,6 +312,30 @@ class TurnosFlota(unittest.TestCase):
         self.assertIn("codex", aviso["texto"])
         self.assertIn("retira el ejecutable", aviso["texto"])
 
+    def test_sin_ningun_turno_real_no_se_aplica(self):
+        origen, a, gen_a = self._flota("origen-j")
+        _runtime_preparada(self.home, gen_a, "codex", "v1")
+        b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
+        _config_poteto(gen_b)
+        _runtime_preparada(self.home, gen_b, "codex", "v2")
+
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            with patch("motor.flota.turnos._sesion_presente", return_value=False):
+                salida = aplicar(self.home, b)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("ningun agente corrio un turno real", salida["motivo"])
+        self.assertIn("sin_sesion", salida["motivo"])
+        self.assertEqual(asignar(self.home), a)
+        candidata = json.loads((self.home / "candidata.json").read_text())
+        self.assertEqual(candidata["estado"], "rechazada")
+        self.assertEqual(candidata["turnos"]["codex"]["estado"], "sin_sesion")
+        pendientes = sorted(
+            (self.motor_motor / "avisos" / "pendientes").glob("*.json")
+        )
+        self.assertEqual(len(pendientes), 1)
+        aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
+        self.assertIn("ningun turno real", aviso["texto"])
+
     def test_candidata_que_retira_un_agente_con_sesion_bloquea(self):
         origen, a, gen_a = self._flota("origen-g")
         b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)

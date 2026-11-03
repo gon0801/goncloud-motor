@@ -291,11 +291,13 @@ def _turnos_de_activacion(home: Path, gen: Path, destino: str) -> tuple[dict, st
     """Los turnos reales de la candidata y el motivo de rechazo, si lo hay.
 
     (resumen, "") cuando todos los turnos pasan o no bloquean; (resumen,
-    motivo) cuando un agente que funciona en la vigente falla en la candidata
-    o el propio control de turnos no pudo correr. Corren cuando la candidata
-    o la vigente traen clientes de suscripción: una candidata sin clientes
-    propios igual puede retirar los de la vigente, y solo un par sin
-    clientes en ninguna de las dos no tiene a quién romper.
+    motivo) cuando un agente que funciona en la vigente falla en la candidata,
+    cuando ningún turno real corrió, o el propio control de turnos no pudo
+    correr. Corren cuando la candidata o la vigente traen clientes de
+    suscripción: una candidata sin clientes propios igual puede retirar los
+    de la vigente, y solo un par sin clientes en ninguna de las dos no tiene
+    a quién romper. Fallo cerrado: si no corrió ningún turno real (cero
+    agentes con sesión, o todos omitidos) la candidata no se activa.
     """
     from motor.encargos.catalogo_agentes import ADAPTADORES
 
@@ -320,6 +322,26 @@ def _turnos_de_activacion(home: Path, gen: Path, destino: str) -> tuple[dict, st
         }
         for agente, turno in informe["turnos"].items()
     }
+    corridos = [
+        agente
+        for agente, turno in informe["turnos"].items()
+        if turno.get("estado") in ("ok", "fallo", "fallo_comun")
+    ]
+    if not corridos:
+        detalle = (
+            "; ".join(
+                f"{agente}: {turno.get('estado') or 'omitido'}"
+                for agente, turno in sorted(informe["turnos"].items())
+            )
+            or "sin agentes con sesion o ejecutable"
+        )[:400]
+        motivo = (
+            "no se activa: ningun agente corrio un turno real en la candidata ("
+            + detalle
+            + ")"
+        )[:600]
+        avisar_rechazo(destino, informe, causa="ningun turno real en la candidata")
+        return resumen, motivo
     if not informe["fallidos"]:
         return resumen, ""
     motivo = "turno real fallido: " + "; ".join(
