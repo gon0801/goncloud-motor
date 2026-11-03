@@ -52,6 +52,8 @@ if accion == "asegurar_distinto":
     token_de = lambda l: re.sub(r"[?#].*$", "", l.rsplit("/", 1)[-1])
     if plan_linea and token_de(plan_linea) == token_de(linea):
         sys.exit(6)
+    if marca.exists():
+        sys.exit(7)
 lineas = [l for l in original if not l.lstrip().startswith("MOTOR_KUMA_URL=")]
 if accion == "poner":
     lineas.append("MOTOR_KUMA_URL=" + sys.argv[4] + tok)
@@ -95,6 +97,11 @@ case "$host" in
   goncloud) exec bash -c "$*" ;;
   gon@mini-fake)
     case "$*" in *doctor*) cat >/dev/null; doctor "$HOME_MINI/.motor/secretos.env" utf8; exit 0 ;; esac
+    case "$*" in
+      *"bash -c hostname"*)
+        if [ -n "${FAKE_MINI_HOSTNAME_FALLA:-}" ]; then exit 1; fi
+        ;;
+    esac
     HOME="$HOME_MINI" exec bash -c "$*" ;;
   mac)
     case "$*" in *doctor*) cat >/dev/null; doctor "$HOME_MAC/.motor/secretos.env" utf8; exit 0 ;; esac
@@ -487,6 +494,186 @@ for t in $(todos_los_tokens); do
   grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene el token $t"
 done
 grep -q "VIEJO" "$TODO" && fallo "una salida contiene un valor de secretos.env"
+
+# F3: si la Mini no contesta el hostname, esta máquina no queda clasificada como "no es la MacBook".
+# El script se niega y no escribe los secretos de la Mac por ssh.
+cp "$HOME_MAC/.motor/secretos.env" "$S/mac-motor-antes-f3"
+cp "$HOME_MAC/.motor-encargos/secretos.env" "$S/mac-enc-antes-f3"
+(
+  export FAKE_UNAME_S=Darwin HOME="$HOME_MAC" FAKE_MINI_HOSTNAME_FALLA=1
+  # shellcheck disable=SC1091
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  es_local_kuma mac
+  printf 'rc:%s\n' "$?"
+  maquinas_canario >/dev/null 2>&1
+  printf 'canario:%s\n' "$?"
+) >"$S/f3-sonda"
+[ "$(sed -n 's/^rc://p' "$S/f3-sonda")" = 2 ] || fallo "un sondeo fallido de la Mini se tomó por una respuesta sobre la Mac (rc $(sed -n 's/^rc://p' "$S/f3-sonda"))"
+[ "$(sed -n 's/^canario://p' "$S/f3-sonda")" = 1 ] || fallo "maquinas_canario debe negarse si el hostname de la Mini falla"
+: >"$FAKE_LOG"
+espera "sondeo fallido no escribe la Mac" '!0' \
+  env FAKE_UNAME_S=Darwin HOME="$HOME_MAC" FAKE_MINI_HOSTNAME_FALLA=1 bash "$RAIZ/ops/senal-kuma.sh"
+contiene "sondeo fallido" "$S/salida" "no pude saber si esta máquina es la MacBook"
+grep -q '^mac ::' "$FAKE_LOG" && fallo "un sondeo fallido hizo ssh a mac"
+cmp -s "$S/mac-motor-antes-f3" "$HOME_MAC/.motor/secretos.env" || fallo "un sondeo fallido reescribió .motor de la Mac"
+cmp -s "$S/mac-enc-antes-f3" "$HOME_MAC/.motor-encargos/secretos.env" || fallo "un sondeo fallido reescribió .motor-encargos de la Mac"
+unset FAKE_MINI_HOSTNAME_FALLA
+
+# F9: si el script creó la dirección de encargos de la Mini o la PC y borran el monitor, la
+# siguiente corrida lo repone. Una tercera corrida reusa el token. Sin la marca, no se toca.
+cp "$HOME_MINI/.motor-encargos/secretos.env" "$S/mini-enc-operador"
+cp "$HOME_PC/.motor-encargos/secretos.env" "$S/pc-enc-operador"
+rm -f "$HOME_MINI/.motor-encargos/.senal-kuma-encargos" "$HOME_PC/.motor-encargos/.senal-kuma-encargos"
+grep -v '^MOTOR_KUMA_URL=' "$S/mini-enc-operador" >"$HOME_MINI/.motor-encargos/secretos.env"
+grep -v '^MOTOR_KUMA_URL=' "$S/pc-enc-operador" >"$HOME_PC/.motor-encargos/secretos.env"
+corre_y_guarda "crea el monitor de encargos que faltaba en la Mini y la PC" 0 bash "$RAIZ/ops/senal-kuma.sh"
+borra_monitor() {
+  python3 -I -c 'import sqlite3,sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("DELETE FROM monitor_notification WHERE monitor_id IN (SELECT id FROM monitor WHERE name = ?)", (sys.argv[2],))
+c.execute("DELETE FROM heartbeat WHERE monitor_id IN (SELECT id FROM monitor WHERE name = ?)", (sys.argv[2],))
+c.execute("DELETE FROM monitor WHERE name = ?", (sys.argv[2],))
+c.commit()' "$S/kuma.db" "$1"
+}
+token_de_monitor() { sql "SELECT push_token FROM monitor WHERE name='$1'"; }
+for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos de la PC|$HOME_PC"; do
+  nombre="${par%%|*}"
+  resto="${par#*|}"
+  monitor="${resto%%|*}"
+  casa="${resto#*|}"
+  [ "$(sql "SELECT count(*) FROM monitor WHERE name='$monitor'")" = 1 ] || fallo "alta: no se creó $monitor"
+  [ -f "$casa/.motor-encargos/.senal-kuma-encargos" ] || fallo "alta: $nombre no quedó marcada como creada por el script"
+  tok="$(token_de_monitor "$monitor")"
+  [ -n "$tok" ] || fallo "alta: $monitor no tiene token"
+  grep -q "^MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}$" "$casa/.motor-encargos/secretos.env" \
+    || fallo "alta: el secreto de encargos de $nombre no apunta al monitor creado"
+  printf '%s\n' "$tok" >"$S/tok-antes-$nombre"
+done
+borra_monitor "Motor de encargos de la Mini"
+borra_monitor "Motor de encargos de la PC"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name='Motor de encargos de la Mini'")" = 0 ] || fallo "no se pudo simular el borrado del monitor de la Mini"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name='Motor de encargos de la PC'")" = 0 ] || fallo "no se pudo simular el borrado del monitor de la PC"
+corre_y_guarda "repone el monitor de encargos borrado en la Mini y la PC" 0 bash "$RAIZ/ops/senal-kuma.sh"
+for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos de la PC|$HOME_PC"; do
+  nombre="${par%%|*}"
+  resto="${par#*|}"
+  monitor="${resto%%|*}"
+  casa="${resto#*|}"
+  [ "$(sql "SELECT count(*) FROM monitor WHERE name='$monitor'")" = 1 ] || fallo "borrado: no se repuso $monitor"
+  tok="$(token_de_monitor "$monitor")"
+  viejo="$(cat "$S/tok-antes-$nombre")"
+  [ -n "$tok" ] && [ "$tok" != "$viejo" ] || fallo "borrado: $monitor no quedó con un token nuevo"
+  grep -q "^MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}$" "$casa/.motor-encargos/secretos.env" \
+    || fallo "borrado: el secreto de encargos de $nombre sigue apuntando al monitor que ya no existe"
+  printf '%s\n' "$tok" >"$S/tok-nuevo-$nombre"
+done
+corre_y_guarda "la tercera corrida reusa el monitor de encargos repuesto" 0 bash "$RAIZ/ops/senal-kuma.sh"
+for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos de la PC|$HOME_PC"; do
+  nombre="${par%%|*}"
+  resto="${par#*|}"
+  monitor="${resto%%|*}"
+  casa="${resto#*|}"
+  tok="$(token_de_monitor "$monitor")"
+  [ "$tok" = "$(cat "$S/tok-nuevo-$nombre")" ] || fallo "reuso: $monitor cambió de token sin que lo borraran"
+  grep -q "^MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}$" "$casa/.motor-encargos/secretos.env" \
+    || fallo "reuso: el secreto de encargos de $nombre no conserva el token repuesto"
+done
+for t in $(cat "$S"/tok-antes-* "$S"/tok-nuevo-*); do
+  grep -qF "$t" "$TODO" && fallo "el script imprimió un token de encargos"
+  grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene un token de encargos"
+done
+cp "$S/mini-enc-operador" "$HOME_MINI/.motor-encargos/secretos.env"
+cp "$S/pc-enc-operador" "$HOME_PC/.motor-encargos/secretos.env"
+rm -f "$HOME_MINI/.motor-encargos/.senal-kuma-encargos" "$HOME_PC/.motor-encargos/.senal-kuma-encargos"
+borra_monitor "Motor de encargos de la Mini"
+borra_monitor "Motor de encargos de la PC"
+grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" \
+  || fallo "al restaurar, la Mini perdió la dirección de encargos del operador"
+
+# F11: senal-kuma-servidor.py corre con Python 3.9. En CI el workflow deja el intérprete en
+# MOTOR_PYTHON39. Aquí vale python3.9 o /usr/bin/python3 si es 3.9.
+python39() {
+  local c ver ruta
+  if [ -n "${MOTOR_PYTHON39:-}" ]; then
+    printf '%s\n' "$MOTOR_PYTHON39"
+    return 0
+  fi
+  for c in python3.9 /usr/bin/python3; do
+    ruta="$(command -v "$c" 2>/dev/null || true)"
+    [ -n "$ruta" ] || continue
+    ver="$("$ruta" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+    if [ "$ver" = 3.9 ]; then
+      printf '%s\n' "$ruta"
+      return 0
+    fi
+  done
+  return 1
+}
+py39="$(python39)" || fallo "no hay un Python 3.9 para correr senal-kuma-servidor.py"
+if [ -n "${py39:-}" ]; then
+  ver39="$("$py39" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+  [ "$ver39" = 3.9 ] || fallo "el intérprete elegido para la prueba 3.9 es ${ver39:-ninguno}"
+  rm -f "$S"/py39.db*
+  python3 -I - "$S/py39.db" "$RAIZ/ops/tests/kuma-esquema.sql" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.executescript(open(sys.argv[2], encoding="utf-8").read())
+con.execute("INSERT INTO notification (id, name, active, user_id, is_default, config) VALUES (0, 'Telegram', 1, 1, 1, '{}')")
+con.execute("INSERT INTO notification (id, name, active, user_id, is_default, config) VALUES (1, 'Server Alerts', 1, 1, 0, '{}')")
+con.execute(
+    "INSERT INTO monitor (id, name, user_id, type, interval, retry_interval, maxretries, push_token, accepted_statuscodes_json, timeout, description) "
+    "VALUES (26, 'backup orbit', 1, 'push', 90000, 3600, 1, 'ORBITTOKENDEPRUEBA', '[\"200-299\"]', 48, 'copiame')"
+)
+con.execute("INSERT INTO monitor_notification (monitor_id, notification_id) VALUES (26, 1)")
+con.commit()
+PY
+  if "$py39" -I - "$S/py39.db" alta mac <"$RAIZ/ops/senal-kuma-servidor.py" >"$S/py39-alta" 2>"$S/py39-alta.err"; then
+    echo "  ok: Python 3.9 corre el alta del servidor"
+  else
+    fallo "Python 3.9: alta de senal-kuma-servidor.py salió $?"
+    sed 's/^/    | /' "$S/py39-alta.err" >&2
+  fi
+  if "$py39" -I -c '
+import re, sys
+lineas = open(sys.argv[1], encoding="utf-8").read().splitlines()
+claves = []
+for linea in lineas:
+    if not linea.strip():
+        continue
+    partes = linea.split()
+    if len(partes) != 2 or not re.fullmatch(r"[A-Za-z0-9]{32}", partes[1]):
+        raise SystemExit("alta: una linea no es clave y token de 32")
+    claves.append(partes[0])
+if claves != ["mini", "pc", "mac", "mac-encargos"]:
+    raise SystemExit("alta: claves " + ",".join(claves))
+' "$S/py39-alta"; then
+    echo "  ok: Python 3.9 deja mini, pc, mac y mac-encargos"
+  else
+    fallo "Python 3.9: el alta no dejó los cuatro monitores con token"
+  fi
+  if "$py39" -I - "$S/py39.db" estado <"$RAIZ/ops/senal-kuma-servidor.py" >"$S/py39-estado" 2>"$S/py39-estado.err"; then
+    echo "  ok: Python 3.9 corre el estado del servidor"
+  else
+    fallo "Python 3.9: estado salió $?"
+    sed 's/^/    | /' "$S/py39-estado.err" >&2
+  fi
+  for clave in mini pc mac mac-encargos; do
+    grep -qx "$clave 1 1 0" "$S/py39-estado" || fallo "Python 3.9: estado no dejó $clave activo y conectado al aviso"
+  done
+  if "$py39" -I - "$S/py39.db" baja <"$RAIZ/ops/senal-kuma-servidor.py" >"$S/py39-baja" 2>"$S/py39-baja.err"; then
+    echo "  ok: Python 3.9 corre la baja del servidor"
+  else
+    fallo "Python 3.9: baja salió $?"
+    sed 's/^/    | /' "$S/py39-baja.err" >&2
+  fi
+  [ ! -s "$S/py39-baja" ] || fallo "Python 3.9: baja no debe escribir tokens"
+  "$py39" -I - "$S/py39.db" estado <"$RAIZ/ops/senal-kuma-servidor.py" >"$S/py39-estado-baja" 2>>"$S/py39-estado.err" \
+    || fallo "Python 3.9: estado tras la baja falló"
+  for clave in mini pc mac mac-encargos; do
+    grep -qx "$clave 0 1 0" "$S/py39-estado-baja" || fallo "Python 3.9: baja no dejó $clave inactivo"
+  done
+fi
 
 command -v pwsh >/dev/null 2>&1 || echo "sin pwsh: no probé la escritura de la PC"
 termina
