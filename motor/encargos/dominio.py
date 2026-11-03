@@ -120,9 +120,12 @@ class Hallazgo:
     ancla: str = ""
     origen: str = "independiente"
     estado: str = "abierto"
+    # Evidencia con la que el propietario lo declaró cerrado. Un hallazgo con
+    # esta marca no se reabre sin una reproducción nueva.
+    cierre_evidencia: str = ""
 
     def como_dict(self) -> dict:
-        return {
+        datos = {
             "id": self.id,
             "gravedad": self.gravedad,
             "criterio": self.criterio,
@@ -132,6 +135,9 @@ class Hallazgo:
             "origen": self.origen,
             "estado": self.estado,
         }
+        if self.cierre_evidencia:
+            datos["cierre_evidencia"] = self.cierre_evidencia
+        return datos
 
     @classmethod
     def desde(cls, d: dict) -> "Hallazgo":
@@ -144,6 +150,7 @@ class Hallazgo:
             ancla=str(d.get("ancla") or ""),
             origen=str(d.get("origen") or "independiente"),
             estado=str(d.get("estado") or "abierto"),
+            cierre_evidencia=str(d.get("cierre_evidencia") or ""),
         )
 
 
@@ -229,6 +236,18 @@ class Fase:
     cerrados: tuple[str, ...] = ()
     # SHA cuyos checks requeridos siguen corriendo (aún no terminan, ni verdes ni rojos).
     checks_esperando_sha: str = ""
+    # CI que el motor corrió sobre el producto al entregarlo, sin esperar al
+    # revisor. `ci_arbol` es el tree del commit temporal y `ci_base_*` el último
+    # árbol con todos los jobs en verde, que sirve para reusar por job.
+    ci_version: str = ""
+    ci_arbol: str = ""
+    ci_run: str = ""
+    ci_url: str = ""
+    ci_jobs: tuple[tuple[str, str, bool], ...] = ()
+    ci_fallas: tuple[str, ...] = ()
+    ci_logs: tuple[tuple[str, str, str], ...] = ()
+    ci_base_version: str = ""
+    ci_base_arbol: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -267,6 +286,17 @@ class Fase:
             "inspeccion_solicitud": self.inspeccion_solicitud,
             "inspeccion_entregada": self.inspeccion_entregada,
             "inspecciones_consumidas": list(self.inspecciones_consumidas),
+            "ci": {
+                "version": self.ci_version,
+                "arbol": self.ci_arbol,
+                "run": self.ci_run,
+                "url": self.ci_url,
+                "jobs": [list(x) for x in self.ci_jobs],
+                "fallas": list(self.ci_fallas),
+                "logs": [list(x) for x in self.ci_logs],
+                "base_version": self.ci_base_version,
+                "base_arbol": self.ci_base_arbol,
+            },
         }
 
 
@@ -698,6 +728,14 @@ def _fusionar(
             and h.estado != "resuelto"
         ):
             continue
+        # Un cierre del propietario no se reabre con la misma reproducción. Solo
+        # una evidencia nueva (otra reproducción) vuelve a abrir el hallazgo.
+        if previo.cierre_evidencia and h.estado == "abierto":
+            nueva = " ".join(str(h.reproduccion or "").split())
+            previa = " ".join(str(previo.reproduccion or "").split())
+            cierre = " ".join(str(previo.cierre_evidencia or "").split())
+            if not nueva or nueva in (previa, cierre):
+                continue
         por_id[h.id] = h
     return tuple(por_id[i] for i in orden)
 
@@ -719,10 +757,21 @@ def fuentes_autorizadas(e: Encargo) -> tuple[Path, ...]:
 
 
 def _bloqueos_abiertos(e: Encargo) -> set[str]:
-    """Hallazgos bloqueantes y checks requeridos en rojo de la fase activa."""
+    """Hallazgos bloqueantes, checks requeridos en rojo y CI rojo de la fase."""
     fase = e.fase_actual
     fallas = fase.fallas_checks if fase is not None else ()
-    return {h.id for h in bloqueantes_abiertos(e)} | {f"check:{f}" for f in fallas}
+    ci = ()
+    if (
+        fase is not None
+        and fase.producto is not None
+        and fase.ci_version == fase.producto.firma
+    ):
+        ci = fase.ci_fallas
+    return (
+        {h.id for h in bloqueantes_abiertos(e)}
+        | {f"check:{f}" for f in fallas}
+        | {f"ci:{j}" for j in ci}
+    )
 
 
 def huella_bloqueo(e: Encargo) -> str:
@@ -1107,7 +1156,24 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             tuple(i for i in e.impedimentos if i.verificable),
             "" if en_curso else hora,
         )
+        fase = e.fase_actual
+        abiertos = (
+            [h for h in fase.hallazgos if h.estado == "abierto"]
+            if fase is not None
+            else []
+        )
+        ids = _resolver_cierres(d.get("cierra") or (), abiertos)
+        if not ids:
+            ids = _ids_cerrados_por_texto(d["texto"], abiertos)
+        e, cerrados = _cerrar_hallazgos(e, ids, str(d.get("evidencia") or ""))
         e = replace(e, ajustes=e.ajustes + (d["texto"],))
+        if cerrados:
+            e = replace(
+                e,
+                ultimo_hecho=(
+                    "el propietario declaro cerrados: " + ", ".join(cerrados)
+                ),
+            )
         e = _soltar_impedimento_de_inspeccion(_sin_repeticiones(e))
         if e.estado == "detenido":
             return replace(
@@ -1290,10 +1356,40 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         version = VersionProducto.desde(
             d.get("version") or "", d.get("manifiesto"), d.get("sha_git") or ""
         )
+        # El CI de la versión anterior no acredita la nueva. El verde base se
+        # conserva: sirve para reusar los jobs cuyas rutas no cambiaron.
+        if fase.producto is None or fase.producto.firma != version.firma:
+            fase = replace(
+                fase,
+                ci_version="",
+                ci_arbol="",
+                ci_run="",
+                ci_url="",
+                ci_jobs=(),
+                ci_fallas=(),
+                ci_logs=(),
+            )
         nueva = replace(fase, producto=version, estado="revision")
         return replace(
             con_fase(e, nueva),
             ultimo_hecho=f"producto de {fase.id} listo para revisar",
+            hora=hora or e.hora,
+        )
+    if kind == "ci_producto":
+        return _ci_producto(e, d, hora)
+
+    if kind == "ci_revision_rojo":
+        # El rojo llegó mientras el revisor trabajaba esa versión. El juicio de
+        # esa vuelta se emitió sin la evidencia, así que no se acepta: la
+        # siguiente vuelta del revisor recibe el job y su log literal.
+        nota = (
+            "el CI del producto quedó rojo durante la revisión; el juicio de "
+            "esa vuelta se descarta y la siguiente vuelve a revisar con el "
+            "nombre del job y el log literal"
+        )
+        return replace(
+            e,
+            procedimiento=e.procedimiento + (nota,),
             hora=hora or e.hora,
         )
 
@@ -2048,7 +2144,16 @@ def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
     """Conserva el paso de una fase iniciada; activa al implementador solo
     cuando hay que empezar una fase o corregir un defecto."""
     if fase.estado in ("revision", "entrega"):
-        if bloqueantes_abiertos(e) or e.estrategia == "reparar_instrumento":
+        ci_rojo = bool(
+            fase.ci_fallas
+            and fase.producto is not None
+            and fase.ci_version == fase.producto.firma
+        )
+        if (
+            bloqueantes_abiertos(e)
+            or ci_rojo
+            or e.estrategia == "reparar_instrumento"
+        ):
             return "responsable", e.estrategia
         rol = "revisor" if fase.estado == "revision" else (e.rol or "revisor")
         return rol, e.estrategia
@@ -2192,6 +2297,80 @@ def _fase_de_evento(e: Encargo, d: dict) -> Encargo:
     return e
 
 
+def _ci_producto(e: Encargo, d: dict, hora: str) -> Encargo:
+    """Registra el CI que el motor corrió sobre el producto al entregarlo.
+
+    Un resultado de una versión que ya no es la vigente no se aplica: la
+    versión nueva no hereda ni el verde ni el rojo de la anterior.
+    """
+    e = _fase_de_evento(e, d)
+    fase = e.fase_actual
+    if fase is None:
+        raise TransicionIlegal("no hay fase para el CI del producto")
+    version = str(d.get("version") or "")
+    vigente = fase.producto.firma if fase.producto else ""
+    if not version or version != vigente:
+        nota = (
+            "resultado de CI de la version "
+            f"{version[:12] or '(sin version)'} descartado: la vigente es "
+            f"{vigente[:12] or '(ninguna)'}"
+        )
+        return replace(
+            e,
+            procedimiento=e.procedimiento + (nota,),
+            ultimo_hecho="CI de una version vieja descartado",
+            hora=hora or e.hora,
+        )
+    trabajos = tuple(
+        (
+            str(x.get("nombre") or ""),
+            str(x.get("conclusion") or ""),
+            bool(x.get("reusado")),
+        )
+        for x in (d.get("jobs") or ())
+        if isinstance(x, dict) and str(x.get("nombre") or "")
+    )
+    fallas = tuple(str(x) for x in (d.get("fallas") or ()) if str(x))
+    logs = tuple(
+        (
+            str(x.get("nombre") or ""),
+            str(x.get("log") or ""),
+            str(x.get("cola") or ""),
+        )
+        for x in (d.get("jobs") or ())
+        if isinstance(x, dict)
+        and str(x.get("nombre") or "") in fallas
+        and str(x.get("log") or "")
+    )
+    arbol = str(d.get("arbol") or "")
+    nueva = replace(
+        fase,
+        ci_version=version,
+        ci_arbol=arbol,
+        ci_run=str(d.get("run") or ""),
+        ci_url=str(d.get("url") or ""),
+        ci_jobs=trabajos,
+        ci_fallas=fallas,
+        ci_logs=logs,
+    )
+    if not fallas:
+        nueva = replace(
+            nueva,
+            ci_base_version=version,
+            ci_base_arbol=arbol,
+        )
+    resultado = replace(
+        con_fase(e, nueva),
+        ultimo_hecho=(
+            "CI del producto en verde"
+            if not fallas
+            else "CI del producto en rojo: " + ", ".join(fallas)
+        ),
+        hora=hora or e.hora,
+    )
+    return _con_progreso(e, resultado)
+
+
 def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
     e = _fase_de_evento(e, d)
     fase = e.fase_actual
@@ -2206,6 +2385,14 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
     alcance = str(d.get("alcance") or "completa")
     if alcance == "correccion" and fase.revisado is None:
         veredicto = "no_concluyente"
+    # El CI rojo sobre esta misma versión es un bloqueante aunque el revisor
+    # independiente no lo haya visto: no se aprueba ni se cierra.
+    if (
+        veredicto != "no_concluyente"
+        and fase.ci_fallas
+        and fase.ci_version == str(d.get("version") or "")
+    ):
+        veredicto = "cambios"
     provisional = con_fase(e, replace(fase, hallazgos=hallazgos))
     if veredicto != "no_concluyente" and bloqueantes_abiertos(provisional, origen):
         veredicto = "cambios"
@@ -2269,6 +2456,81 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
 def _sin_repeticiones(e: Encargo) -> Encargo:
     """Lo que el propietario aporta empieza otra cuenta de revisiones repetidas."""
     return replace(e, no_concluyentes=0, no_concluyente_ref=())
+
+
+def _texto_normalizado(valor: str) -> str:
+    import re
+    import unicodedata
+
+    sin_tildes = "".join(
+        c
+        for c in unicodedata.normalize("NFKD", str(valor or ""))
+        if not unicodedata.combining(c)
+    )
+    return " ".join(re.split(r"[^a-z0-9]+", sin_tildes.lower())).strip()
+
+
+def _coincide_hallazgo(valor: str, h: Hallazgo) -> bool:
+    """Un id, un ancla o un título que el propietario nombró para cerrar."""
+    import re
+
+    buscado = _texto_normalizado(valor)
+    if not buscado:
+        return False
+    campos = (_texto_normalizado(h.id), _texto_normalizado(h.ancla), _texto_normalizado(h.titulo))
+    if any(c and (buscado == c or buscado in c or c in buscado) for c in campos):
+        return True
+    for token in re.split(r"[^a-z0-9]+", buscado):
+        if len(token) < 3:
+            continue
+        if any(token in c for c in campos):
+            return True
+    return False
+
+
+def _resolver_cierres(valores, abiertos) -> tuple[str, ...]:
+    ids = []
+    for valor in valores or ():
+        for h in abiertos:
+            if h.id not in ids and _coincide_hallazgo(str(valor), h):
+                ids.append(h.id)
+    return tuple(ids)
+
+
+def _ids_cerrados_por_texto(texto: str, abiertos) -> tuple[str, ...]:
+    """Hallazgos que el propietario declara cerrados en el texto del ajuste.
+
+    Solo se leen detrás de `cierra`/`cierro` para no cerrar por una mención
+    casual. La vía explícita es `--cierra`, que acepta id, ancla o título."""
+    import re
+
+    m = re.search(r"(?i)\bcierr[ao]s?\b\s*:?\s*([^\n]+)", str(texto or ""))
+    if not m:
+        return ()
+    previo = str(texto or "")[: m.start()].strip().lower().split()
+    if previo and previo[-1] in ("no", "sin", "nunca"):
+        return ()
+    return _resolver_cierres([m.group(1)], abiertos)
+
+
+def _cerrar_hallazgos(
+    e: Encargo, ids, evidencia: str
+) -> tuple[Encargo, tuple[str, ...]]:
+    fase = e.fase_actual
+    if fase is None:
+        return e, ()
+    abiertos = {h.id for h in fase.hallazgos if h.estado == "abierto"}
+    pedidos = tuple(x for x in dict.fromkeys(ids) if x in abiertos)
+    if not pedidos:
+        return e, ()
+    marca = str(evidencia or "").strip() or "cerrado por el propietario"
+    hallazgos = tuple(
+        replace(h, estado="resuelto", cierre_evidencia=marca)
+        if h.id in pedidos
+        else h
+        for h in fase.hallazgos
+    )
+    return _con_progreso(e, con_fase(e, replace(fase, hallazgos=hallazgos))), pedidos
 
 
 def _pedido_de_revision(fase_id: str, d: dict) -> tuple[str, ...]:
@@ -2380,16 +2642,19 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         fallas_checks=(
             tuple(sorted(str(x) for x in d["fallas"]))
             if paso == "checks_rojos" and "fallas" in d
-            else () if paso == "checks_verdes" else fase.fallas_checks
+            else ()
+            if paso in ("checks_verdes", "checks_reusados")
+            else fase.fallas_checks
         ),
         entrega_bloqueada_sha=(
-            "" if paso == "checks_verdes" else fase.entrega_bloqueada_sha
+            "" if paso in ("checks_verdes", "checks_reusados")
+            else fase.entrega_bloqueada_sha
         ),
         checks_esperando_sha=(
             sha
             if paso == "checks_esperando"
             else ""
-            if paso in ("checks_verdes", "checks_rojos")
+            if paso in ("checks_verdes", "checks_rojos", "checks_reusados")
             else fase.checks_esperando_sha
         ),
         nivel_alcanzado=candidato,
@@ -2970,6 +3235,55 @@ def decision_proceso(
     return {"matar": False, "lanzar": lanzar and not eventos, "eventos": eventos}
 
 
+def _bloque_ci(e: Encargo) -> list[str]:
+    fase = e.fase_actual
+    if (
+        fase is None
+        or not fase.ci_fallas
+        or fase.producto is None
+        or fase.ci_version != fase.producto.firma
+    ):
+        return []
+    lineas = [
+        "El CI que el motor corrió sobre esta versión del producto falló en: "
+        + ", ".join(fase.ci_fallas)
+        + ". Es un bloqueante: el responsable debe corregirlo y esta aprobación "
+        "no puede cerrar el encargo mientras siga rojo."
+    ]
+    for nombre, ruta, cola in fase.ci_logs:
+        pedazo = str(cola or "").strip()
+        if len(pedazo) > 4000:
+            pedazo = pedazo[:4000] + "\n[...]"
+        aviso = f"{nombre}: log literal completo en {ruta}" if ruta else f"{nombre}:"
+        lineas.append(aviso + (f"\n{pedazo}" if pedazo else ""))
+    if fase.ci_jobs:
+        lineas.append(
+            "Jobs del CI: "
+            + ", ".join(
+                f"{nombre}={conclusion}{' (reusado)' if reusado else ''}"
+                for nombre, conclusion, reusado in fase.ci_jobs
+            )
+        )
+    return lineas
+
+
+def _bloque_cierres(e: Encargo) -> list[str]:
+    fase = e.fase_actual
+    if fase is None:
+        return []
+    cerrados = [h for h in fase.hallazgos if h.cierre_evidencia]
+    if not cerrados:
+        return []
+    return [
+        "El propietario declaró cerrados estos hallazgos. No los reabras sin "
+        "una reproducción nueva:\n"
+        + "\n".join(
+            f"{h.id} [{h.criterio}] {h.titulo} (evidencia: {h.cierre_evidencia})"
+            for h in cerrados
+        )
+    ]
+
+
 def _bloques_comunes(e: Encargo) -> list[str]:
     lineas = ["El pedido original no se reescribe.", f"Pedido:\n{e.texto}"]
     if e.restricciones:
@@ -2982,6 +3296,8 @@ def _bloques_comunes(e: Encargo) -> list[str]:
             "Correcciones del propietario, incorporadas después del pedido:\n"
             + "\n".join(e.ajustes)
         )
+    lineas += _bloque_cierres(e)
+    lineas += _bloque_ci(e)
     if e.efectos:
         hechos = [f"{x.id} {x.estado} {x.recibo}".strip() for x in e.efectos]
         lineas.append("Efectos ya registrados:\n" + "\n".join(hechos))

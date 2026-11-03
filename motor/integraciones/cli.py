@@ -122,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--texto", required=True)
     s.add_argument("--canal", required=True)
     s.add_argument("--sesion", default="")
+    s.add_argument("--cierra", action="append", default=[])
+    s.add_argument("--evidencia", default="")
 
     s = sub.add_parser("conciliar-autoridad")
     s.add_argument("--base", type=Path, required=True)
@@ -260,6 +262,8 @@ def _correr(args) -> int:
                 args.canal,
                 marca,
                 args.sesion,
+                cierra=args.cierra,
+                evidencia=args.evidencia,
             )
             if salida.get("rechazada") or salida.get("conflicto"):
                 print(json.dumps(salida, ensure_ascii=False))

@@ -486,6 +486,7 @@ CI_MAX_S = float(os.environ.get("MOTOR_CI_MAX") or 45 * 60)
 CI_BUSCA_RUN_S = float(os.environ.get("MOTOR_CI_BUSCA_RUN") or 5 * 60)
 CI_MEZCLA_S = float(os.environ.get("MOTOR_CI_MEZCLA") or 30)
 CI_MEZCLA_SONDEO_S = float(os.environ.get("MOTOR_CI_MEZCLA_SONDEO") or 2)
+CI_QUALITY_S = float(os.environ.get("MOTOR_CI_QUALITY") or 60)
 MAX_LOG = 64 * 1024 * 1024
 _RED = (
     "could not resolve host",
@@ -624,18 +625,15 @@ def _es_interno(ruta: str) -> bool:
     return any(parte in _INTERNO for parte in ruta.split("/"))
 
 
-def _commit_temporal(espacio: Path, destino: Path, ident: str) -> tuple[str, str]:
-    """Commit con la versión vigente del producto (con o sin commit propio) en un
-    índice aparte: ni el índice ni la rama ni el árbol del espacio se tocan."""
-    indice = destino / "indice-ci"
+def arbol_producto(espacio: Path, destino: Path) -> str:
+    """Tree de git con la versión vigente del producto (con o sin commit propio).
+
+    Usa un índice aparte: ni el índice ni la rama ni el árbol del espacio se
+    tocan. El tree es determinista para el mismo contenido y sirve para comparar
+    versiones y reusar el verde de un job cuyas rutas no cambiaron."""
+    indice = Path(destino) / "indice-ci"
     indice.unlink(missing_ok=True)
-    env = {
-        "GIT_INDEX_FILE": str(indice),
-        "GIT_AUTHOR_NAME": "motor-ci",
-        "GIT_AUTHOR_EMAIL": "motor-ci@localhost",
-        "GIT_COMMITTER_NAME": "motor-ci",
-        "GIT_COMMITTER_EMAIL": "motor-ci@localhost",
-    }
+    env = {"GIT_INDEX_FILE": str(indice)}
     try:
         cabeza = _git_ci(espacio, "rev-parse", "--verify", "HEAD").strip()
         _git_ci(espacio, "read-tree", cabeza, env=env)
@@ -654,12 +652,31 @@ def _commit_temporal(espacio: Path, destino: Path, ident: str) -> tuple[str, str
                 espacio, "rm", "--cached", "-q", "--ignore-unmatch", "--", *fuera[i : i + 200],
                 env=env,
             )
-        arbol = _git_ci(espacio, "write-tree", env=env).strip()
-        sha = _git_ci(
-            espacio, "commit-tree", arbol, "-p", cabeza, "-m", f"ci-prueba {ident}", env=env
-        ).strip()
+        return _git_ci(espacio, "write-tree", env=env).strip()
     finally:
         indice.unlink(missing_ok=True)
+
+
+def _commit_temporal(
+    espacio: Path, destino: Path, ident: str, mensaje: str = ""
+) -> tuple[str, str]:
+    """Commit con la versión vigente del producto en un índice aparte.
+
+    El mensaje puede llevar `jobs=a,b` para que el workflow del CI corra solo
+    esos jobs y reuse el verde de los demás. El árbol es el mismo de
+    `arbol_producto`."""
+    arbol = arbol_producto(espacio, destino)
+    cabeza = _git_ci(espacio, "rev-parse", "--verify", "HEAD").strip()
+    env = {
+        "GIT_AUTHOR_NAME": "motor-ci",
+        "GIT_AUTHOR_EMAIL": "motor-ci@localhost",
+        "GIT_COMMITTER_NAME": "motor-ci",
+        "GIT_COMMITTER_EMAIL": "motor-ci@localhost",
+    }
+    texto = mensaje or f"ci-prueba {ident}"
+    sha = _git_ci(
+        espacio, "commit-tree", arbol, "-p", cabeza, "-m", texto, env=env
+    ).strip()
     return sha, arbol
 
 
@@ -689,6 +706,28 @@ def _esperar_run(
             raise CiFallo(
                 f"GitHub no inició el workflow {workflow or '(cualquiera)'} para el commit {sha[:12]}",
                 "comprobar que el workflow corre en pull_request y que Actions está habilitado",
+            )
+        time.sleep(CI_SONDEO_S)
+
+
+def _vista_completa(
+    gh: str, repo: str, run: dict, limite: float
+) -> tuple[str, dict]:
+    numero_run = str(run["databaseId"])
+    while True:
+        vista = _json_gh(
+            gh, repo, "run", "view", numero_run,
+            "--json", "status,conclusion,jobs,url",
+        )
+        if not isinstance(vista, dict):
+            raise CiFallo("gh no devolvió la corrida", "reintentar")
+        if str(vista.get("status")) == "completed":
+            return numero_run, vista
+        if time.time() > limite:
+            raise CiFallo(
+                f"el run {numero_run} no terminó en {int(CI_MAX_S // 60)} minutos "
+                f"({vista.get('url') or ''})",
+                "reintentar más tarde; el PR temporal se cerró",
             )
         time.sleep(CI_SONDEO_S)
 
@@ -834,20 +873,122 @@ def _restaurar_sigterm(previo) -> None:
         signal.signal(signal.SIGTERM, previo)
 
 
+ROJO_CI = (
+    "failure",
+    "timed_out",
+    "startup_failure",
+    "cancelled",
+    "action_required",
+    "stale",
+)
+# Un job solo acredita el árbol si terminó en alguno de estos estados. Un
+# `cancelled` o un `action_required` no es un verde: la corrida no terminó.
+VERDE_CI = ("success", "skipped", "neutral")
+COLA_CI = 8 * 1024
+
+
+def _jobs_pedidos(parametros: dict) -> tuple[str, ...]:
+    texto = str(parametros.get("jobs") or "").strip()
+    if not texto:
+        return ()
+    return tuple(x.strip() for x in texto.split(",") if x.strip())
+
+
+def _log_de_job(
+    gh: str,
+    repo: str,
+    numero_run: str,
+    trabajo: dict,
+    destino: Path,
+    sha: str,
+    forzar: bool = False,
+    espacio: Path | None = None,
+) -> dict:
+    """Baja el log literal de un job rojo y deja la copia en el host.
+
+    Para el CI completo solo interesan los logs de los jobs rojos; el revisor
+    que pide un job exacto también recibe el suyo aunque esté verde."""
+    import re
+
+    nombre = str(trabajo.get("name") or "")
+    datos = {
+        "nombre": nombre,
+        "conclusion": str(trabajo.get("conclusion") or ""),
+        "reusado": False,
+        "job_id": str(trabajo.get("databaseId") or ""),
+        "url": str(trabajo.get("url") or trabajo.get("html_url") or ""),
+        "log": "",
+        "bytes": 0,
+        "cola": "",
+    }
+    if not datos["job_id"]:
+        return datos
+    if not forzar and datos["conclusion"] not in ROJO_CI:
+        return datos
+    try:
+        log = _gh(
+            gh, repo, "run", "view", numero_run, "--job", datos["job_id"], "--log",
+            plazo=300, binario=True,
+        )
+    except CiFallo as exc:
+        datos["error_log"] = getattr(exc, "motivo", None) or str(exc)
+        return datos
+    if len(log) > MAX_LOG:
+        datos["error_log"] = f"el log del job supera {MAX_LOG} bytes"
+        return datos
+    archivo = f"{re.sub(r'[^A-Za-z0-9_.-]', '-', nombre)}-{sha[:7]}-run{numero_run}.log"
+    copia = destino / "remoto" / archivo
+    _escribir_seguro(copia, log)
+    texto = log.decode("utf-8", errors="replace")
+    datos.update(
+        {
+            "log": str(copia),
+            "log_nombre": archivo,
+            "log_host": str(copia),
+            "bytes": copia.stat().st_size,
+            "cola": texto[-COLA_CI:],
+        }
+    )
+    if espacio is not None:
+        # El revisor y el responsable leen el espacio, no el host. Los logs de
+        # los jobs rojos se publican ahí además de la copia del host.
+        publico = Path(espacio) / ".interno" / "logs" / archivo
+        try:
+            _escribir_seguro(publico, log, raiz=Path(espacio))
+        except (OSError, ValueError) as exc:
+            datos["error_publicacion"] = str(exc)
+        else:
+            datos["log"] = str(publico)
+    return datos
+
+
 def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) -> dict:
-    """Corre el workflow de pruebas sobre la versión vigente del producto y
-    devuelve el log literal del job pedido, con el SHA y el número de run. Usa el
-    acceso de gh y git que ya tiene el supervisor; la rama y el PR temporales se
-    cierran siempre."""
+    """Corre el workflow de pruebas sobre la versión vigente del producto.
+
+    Con `job` exacto devuelve el log literal de ese job, como siempre. Con
+    `job="todos"` devuelve la conclusión de cada job, los logs de los rojos y el
+    árbol del commit temporal. El parámetro `jobs=a,b` hace que el workflow
+    corra solo esos jobs y marque los demás como reusados. Usa el acceso de gh
+    y git que ya tiene el supervisor; la rama y el PR temporales se cierran
+    siempre."""
     import re
     import shutil
 
     job = str(parametros.get("job") or "").strip()
-    if not job or not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", job):
+    todos = job == "todos"
+    if not job or (not todos and not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", job)):
         raise CiFallo(
-            "ci.correr necesita el parámetro job con el nombre exacto del job (por ejemplo windows)",
+            "ci.correr necesita el parámetro job con el nombre exacto del job "
+            "(por ejemplo windows) o todos",
             "volver a pedirla con --parametro job=<nombre>",
         )
+    pedidos = _jobs_pedidos(parametros)
+    for nombre in pedidos:
+        if not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", nombre):
+            raise CiFallo(
+                f"el parámetro jobs trae un nombre inválido: {nombre!r}",
+                "usar los nombres exactos de los jobs separados por comas",
+            )
     if espacio is None or not (Path(espacio) / ".git").exists():
         raise CiFallo("el espacio del encargo no es un clon git", "pedir al host que prepare el repo de entrega")
     espacio = Path(espacio)
@@ -866,7 +1007,20 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
 
     ident = f"{espacio.name}"
     _barrer_restos(remoto, espacio, ident)
-    sha, arbol = _commit_temporal(espacio, destino, ident)
+    mensaje = f"ci-prueba {ident}"
+    if pedidos:
+        mensaje += " jobs=" + ",".join(pedidos)
+    elif todos:
+        mensaje += " jobs=todos"
+    else:
+        # Un job exacto que pide el revisor tiene que correr aunque sus rutas
+        # no hayan cambiado: el filtro por rutas no puede saltarlo.
+        from motor.encargos import trabajos_ci
+
+        canonico = trabajos_ci.trabajo(job)
+        if canonico in trabajos_ci.TRABAJOS:
+            mensaje += " jobs=" + canonico
+    sha, arbol = _commit_temporal(espacio, destino, ident, mensaje)
     rama = f"ci-prueba/{re_sub_ci(ident)}-{sha[:7]}-{int(time.time())}"
     numero = ""
     previo = _manejar_sigterm()
@@ -875,7 +1029,7 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
         url_pr = _gh(
             gh, repo, "pr", "create", "--draft", "--base", base, "--head", rama,
             "--title", f"ci-prueba: {ident} {sha[:7]}",
-            "--body", "Corrida temporal del CI pedida por el revisor. Se cierra sola.",
+            "--body", "Corrida temporal del CI. Se cierra sola.",
             plazo=120,
         ).strip().splitlines()[-1]
         numero = url_pr.rstrip("/").rsplit("/", 1)[-1]
@@ -892,71 +1046,206 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
         run = _esperar_run(
             gh, repo, workflow, sha, limite - time.time(), vigilar=vigilar_conflicto
         )
-        numero_run = str(run["databaseId"])
-        while True:
-            vista = _json_gh(gh, repo, "run", "view", numero_run, "--json", "status,conclusion,jobs,url")
-            if str(vista.get("status")) == "completed":
-                break
-            if time.time() > limite:
-                raise CiFallo(
-                    f"el run {numero_run} no terminó en {int(CI_MAX_S // 60)} minutos ({vista.get('url') or ''})",
-                    "reintentar más tarde; el PR temporal se cerró",
-                )
-            time.sleep(CI_SONDEO_S)
+        numero_run, vista = _vista_completa(gh, repo, run, limite)
         trabajos = vista.get("jobs") or []
-        elegido = next((j for j in trabajos if str(j.get("name")) == job), None)
-        if elegido is None:
-            nombres = ", ".join(sorted(str(j.get("name")) for j in trabajos)) or "ninguno"
-            raise CiFallo(
-                f"el run {numero_run} no tiene un job llamado {job!r}; jobs: {nombres}",
-                "volver a pedirla con el nombre exacto de uno de esos jobs",
+        url_run = str(vista.get("url") or run.get("url") or "")
+        if not todos:
+            elegido = next((j for j in trabajos if str(j.get("name")) == job), None)
+            if elegido is None:
+                nombres = ", ".join(sorted(str(j.get("name")) for j in trabajos)) or "ninguno"
+                raise CiFallo(
+                    f"el run {numero_run} no tiene un job llamado {job!r}; jobs: {nombres}",
+                    "volver a pedirla con el nombre exacto de uno de esos jobs",
+                )
+            datos_job = _log_de_job(
+                gh, repo, numero_run, elegido, destino, sha, forzar=True
             )
-        log = _gh(
-            gh, repo, "run", "view", numero_run, "--job", str(elegido["databaseId"]), "--log",
-            plazo=300, binario=True,
-        )
-        if len(log) > MAX_LOG:
-            raise CiFallo(f"el log del job supera {MAX_LOG} bytes", "pedir otro job")
-        nombre = f"{re.sub(r'[^A-Za-z0-9_.-]', '-', job)}-{sha[:7]}-run{numero_run}.log"
-        copia = destino / "remoto" / nombre
-        _escribir_seguro(copia, log)
-        resultado = {
-            "job": job,
-            "conclusion": str(elegido.get("conclusion") or vista.get("conclusion") or ""),
-            "sha": sha,
-            "arbol": arbol,
-            "run": numero_run,
-            "url": str(vista.get("url") or run.get("url") or ""),
-            "rama": rama,
-            "base": base,
-            "log_nombre": nombre,
-            "log_host": str(copia),
-            "log": str(copia),
-            "bytes": copia.stat().st_size,
-            "cola": log[-MAX_TEXTO:].decode("utf-8", errors="replace"),
-        }
+            if datos_job.get("error_log"):
+                raise CiFallo(datos_job["error_log"], "pedir otro job")
+            resultado = {
+                "job": job,
+                "conclusion": datos_job["conclusion"],
+                "sha": sha,
+                "arbol": arbol,
+                "run": numero_run,
+                "url": url_run,
+                "rama": rama,
+                "base": base,
+                "jobs": [datos_job],
+                "fallas": (
+                    [job] if datos_job["conclusion"] in ROJO_CI else []
+                ),
+                "log_nombre": datos_job.get("log_nombre", ""),
+                "log_host": datos_job.get("log_host", ""),
+                "log": datos_job.get("log", ""),
+                "bytes": datos_job.get("bytes", 0),
+                "cola": datos_job.get("cola", ""),
+            }
+            copia = Path(resultado["log"]) if resultado["log"] else None
+        else:
+            from motor.encargos import trabajos_ci
+
+            resumen = []
+            for trabajo in trabajos:
+                datos_job = _log_de_job(
+                    gh, repo, numero_run, trabajo, destino, sha, espacio=espacio
+                )
+                canonico = trabajos_ci.trabajo(datos_job["nombre"])
+                datos_job["trabajo"] = canonico
+                if pedidos and canonico not in pedidos:
+                    datos_job["reusado"] = (
+                        datos_job["conclusion"] == "skipped"
+                    )
+                resumen.append(datos_job)
+            gate_intentado = False
+            tiene_quality = False
+            if workflow == "pruebas.yml":
+                try:
+                    _git_ci(
+                        espacio,
+                        "cat-file",
+                        "-e",
+                        f"{sha}:.github/workflows/quality.yml",
+                    )
+                    tiene_quality = True
+                except CiFallo:
+                    tiene_quality = False
+            if tiene_quality:
+                # `quality.yml` corre en el mismo PR temporal. Se espera para
+                # que el CI del producto incluya `gate`; si no aparece, el PR
+                # real lo correrá y el motor no lo dará por verde.
+                try:
+                    run_calidad = _esperar_run(
+                        gh,
+                        repo,
+                        "quality.yml",
+                        sha,
+                        min(CI_QUALITY_S, max(1.0, limite - time.time())),
+                    )
+                    num_calidad, vista_calidad = _vista_completa(
+                        gh, repo, run_calidad, limite
+                    )
+                    gate_intentado = True
+                    vistos = {
+                        str(j.get("trabajo") or trabajos_ci.trabajo(j["nombre"]))
+                        for j in resumen
+                    }
+                    for trabajo in vista_calidad.get("jobs") or []:
+                        datos_job = _log_de_job(
+                            gh, repo, num_calidad, trabajo, destino, sha,
+                            espacio=espacio,
+                        )
+                        canonico = trabajos_ci.trabajo(datos_job["nombre"])
+                        if canonico != "gate" or canonico in vistos:
+                            continue
+                        datos_job["trabajo"] = canonico
+                        resumen.append(datos_job)
+                        vistos.add(canonico)
+                except CiFallo:
+                    gate_intentado = False
+            esperados = list(
+                pedidos
+                or (trabajos_ci.TRABAJOS if workflow == "pruebas.yml" else ())
+            )
+            if gate_intentado:
+                esperados.append("gate")
+            presentes = {
+                str(j.get("trabajo") or trabajos_ci.trabajo(j["nombre"]))
+                for j in resumen
+            }
+            for falta in esperados:
+                if falta in presentes:
+                    continue
+                resumen.append(
+                    {
+                        "nombre": falta,
+                        "trabajo": falta,
+                        "conclusion": "",
+                        "reusado": False,
+                        "job_id": "",
+                        "url": "",
+                        "log": "",
+                        "bytes": 0,
+                        "cola": "",
+                        "error_log": "el run no reportó este job",
+                    }
+                )
+            # Un job acredita el árbol solo si terminó verde. `cancelled` no es
+            # un verde: la corrida no completó y su resultado no sirve como
+            # base para reusar jobs ni para cerrar el PR.
+            fallas = list(
+                dict.fromkeys(
+                    j["nombre"]
+                    for j in resumen
+                    if not j.get("reusado")
+                    and j["conclusion"] not in ("success", "neutral")
+                )
+            )
+            if fallas:
+                conclusion = "failure"
+            elif all(
+                j.get("reusado") or j["conclusion"] in VERDE_CI
+                for j in resumen
+            ):
+                conclusion = "success"
+            else:
+                conclusion = str(vista.get("conclusion") or "")
+            resultado = {
+                "job": "todos",
+                "conclusion": conclusion,
+                "sha": sha,
+                "arbol": arbol,
+                "run": numero_run,
+                "url": url_run,
+                "rama": rama,
+                "base": base,
+                "jobs": resumen,
+                "fallas": fallas,
+                "pedidos": list(pedidos),
+                "log_nombre": "",
+                "log_host": "",
+                "log": "",
+                "bytes": 0,
+                "cola": "",
+            }
+            copia = None
     finally:
         # Siempre, sea cual sea la salida: un CiFallo, un error inesperado o un
         # SIGTERM del supervisor. La rama y el PR temporales no se quedan.
         limpieza = _limpiar_ci(gh, repo, remoto, espacio, rama, numero)
         _restaurar_sigterm(previo)
     resultado["limpieza"] = limpieza
-    return {
-        "estado": "ok",
-        "datos": resultado,
-        "evidencia": {
-            "tipo": "ci",
-            "sha": sha,
-            "run": resultado["run"],
-            "job": job,
-            "conclusion": resultado["conclusion"],
-            "url": resultado["url"],
-            "ruta_copia": str(copia),
-            "sha256": _huella(copia),
-            "bytes": resultado["bytes"],
-            "limpieza": resultado["limpieza"],
-        },
+    evidencia = {
+        "tipo": "ci",
+        "sha": sha,
+        "arbol": arbol,
+        "run": resultado["run"],
+        "job": job,
+        "conclusion": resultado["conclusion"],
+        "url": resultado["url"],
+        "jobs": [
+            {
+                "nombre": j["nombre"],
+                "conclusion": j["conclusion"],
+                "reusado": bool(j.get("reusado")),
+                "log": j.get("log", ""),
+                "url": j.get("url", ""),
+                "cola": j.get("cola", "") if j["nombre"] in resultado["fallas"] else "",
+            }
+            for j in resultado["jobs"]
+        ],
+        "fallas": resultado["fallas"],
+        "limpieza": resultado["limpieza"],
     }
+    if copia is not None:
+        evidencia.update(
+            {
+                "ruta_copia": str(copia),
+                "sha256": _huella(copia),
+                "bytes": resultado["bytes"],
+            }
+        )
+    return {"estado": "ok", "datos": resultado, "evidencia": evidencia}
 
 
 def _entero_pr(valor) -> int:
