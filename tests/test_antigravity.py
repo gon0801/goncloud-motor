@@ -1,5 +1,7 @@
-"""Antigravity (agy) como agente del motor, con un CLI falso que imprime la
-muestra de stream-json medida el 2-nov."""
+"""Antigravity (agy) como agente del motor, con un CLI falso y stream-json.
+
+El ensayo con el CLI instalado y la sesión real vive en test_antigravity_vivo.
+"""
 
 from __future__ import annotations
 
@@ -338,6 +340,7 @@ class EntornoYHerramientas(unittest.TestCase):
                     with mock.patch("subprocess.run", side_effect=hit_windows):
                         self.assertTrue(agentes.sesion_antigravity_presente(home))
 
+    @unittest.skipUnless(os.name == "posix", "el doble de secret-tool usa /bin/sh")
     def test_el_llavero_de_linux_usa_el_codigo_de_salida_sin_leer_el_secreto(
         self,
     ):

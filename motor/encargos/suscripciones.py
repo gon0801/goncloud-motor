@@ -184,6 +184,8 @@ def disponible(agente: str) -> bool:
 def leer_cuenta(agente: str):
     try:
         if agente == "muse":
+            # El lanzamiento de Muse ya no llama a esta exportación: el CLI
+            # lee el llavero del usuario y el motor no exporta su token.
             from .autenticacion_muse import cuenta_muse
 
             return cuenta_muse(exportar=True)
