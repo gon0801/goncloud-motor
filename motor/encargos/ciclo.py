@@ -4894,12 +4894,16 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             except Exception:
                 punta = ""
         if punta and sha and punta != sha:
-            # F6: el push choca con un head externo; la entrega se concilia
-            # contra el head vigente en vez de esperar el reintento en bucle.
-            # F10: solo con ambos shas en mano — un rechazo del remoto, una red
-            # caída o un enganche que niega el push no son una cabeza desviada,
-            # y nombrar un sha vacío en el motivo no le dice nada a nadie.
-            return _head_desviado(registro, enc, hora, enc.pr_numero, sha, punta)
+            entregado = str(enc.pr_sha or "").strip()
+            if punta and entregado and punta != entregado:
+                # F6: la punta del remoto ya no es el sha entregado: cabeza
+                # desviada de verdad, se concilia contra la punta vigente.
+                # F10: un fallo de push con la punta en el sha entregado no es
+                # desviación — el push propio no aterrizó todavía (el sha local
+                # puede estar más adelantado): reintento genérico, no desvío.
+                return _head_desviado(
+                    registro, enc, hora, enc.pr_numero, entregado, punta
+                )
         _anotar_instrumento(
             registro, enc, "github", causa,
             "reintentar commit y push de la misma version aprobada",

@@ -742,10 +742,8 @@ class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
             e = vuelta("uno")
             self.assertEqual(e.fase_actual.fallas_checks, ("windows",))
             repo = str(e.entrega.repo)
-            rama = vuelta.gh.ver(repo, e.pr_numero).rama
-            _empujar_head(tmp, repo, rama)
             punta = vuelta.gh.ver(repo, e.pr_numero).head
-            self.assertTrue(punta)
+            self.assertEqual(punta, e.pr_sha)
 
             with mock.patch.object(
                 ciclo,
@@ -758,6 +756,40 @@ class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
             self.assertEqual(_pasos(r, "head_vigente"), [])
             self.assertNotIn("head vigente del PR #", e.motivo)
             self.assertIn("git push", e.motivo)
+
+    def test_un_push_fallido_de_un_commit_mas_nuevo_no_es_desvio(self):
+        """El push propio de un sha local mas nuevo no aterriza y la punta del
+        remoto sigue en el sha entregado: reintento generico, no desviacion.
+        Comparar contra el sha local declaraba desvios falsos (F10)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-push-atrasado",
+                _GhConCorridas,
+                {
+                    "corridas": {"windows": "failure"},
+                    "logs_job": {"windows": LOG_WINDOWS},
+                },
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.fase_actual.fallas_checks, ("windows",))
+            repo = str(e.entrega.repo)
+            entregado = e.pr_sha
+            self.assertEqual(vuelta.gh.ver(repo, e.pr_numero).head, entregado)
+
+            with mock.patch.object(
+                ciclo,
+                "_commit_push",
+                return_value=("b" * 40, "git push fallo: red inestable"),
+            ):
+                e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(_pasos(r, "head_vigente"), [])
+            self.assertNotIn("head vigente del PR #", e.motivo)
+            self.assertIn("git push", e.motivo)
+
 
 
 if __name__ == "__main__":
