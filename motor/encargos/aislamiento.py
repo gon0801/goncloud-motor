@@ -344,8 +344,9 @@ def aislar(
     env = _entorno(runtime, suscripcion, cmd, agente=agente)
     if nombre in ("antigravity", "agy"):
         # El hook que niega las herramientas de espera y agendado vive en el
-        # runtime del intento. `--add-dir` lo suma a los workspaces de agy sin
-        # escribir en el espacio ni en la configuracion real del usuario.
+        # runtime del intento. `--add-dir` lo suma a los workspaces de agy.
+        # Aqui no se crea nada en la configuracion real: solo se retira, si
+        # existe, el motor-turno.md que dejo la version anterior.
         from .agentes import preparar_hooks_turno, retirar_agente_turno
 
         retirar_agente_turno()

@@ -145,12 +145,14 @@ def retirar_agente_turno(home: Path | None = None) -> None:
     Solo ese nombre. Los hosts que ya corrieron la version rota lo tienen
     en el directorio global, y `agy agents` lo seguiria ofreciendo.
     """
-    base = Path.home() if home is None else home
+    base = Path(home) if home is not None else _home_usuario()
+    if base is None:
+        return
     try:
         (base / ".gemini" / "config" / "agents" / "motor-turno.md").unlink(
             missing_ok=True
         )
-    except OSError:
+    except (OSError, RuntimeError):
         pass
 
 

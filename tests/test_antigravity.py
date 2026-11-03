@@ -53,18 +53,26 @@ def _argv(rol: str, modo: str, modelo: str = "") -> list[str]:
 
 
 def _aislado(
-    tmp: Path, rol: str = "responsable", modo: str = "nueva", modelo: str = ""
+    tmp: Path,
+    rol: str = "responsable",
+    modo: str = "nueva",
+    modelo: str = "",
+    home: Path | None = None,
 ):
     espacio = tmp / "espacio" / "enc_x"
     espacio.mkdir(parents=True, exist_ok=True)
     runtime = tmp / "runtime"
-    comando = aislar(
-        _argv(rol, modo, modelo),
-        espacio,
-        runtime,
-        suscripcion=True,
-        agente="antigravity",
-    )
+    if home is None:
+        home = tmp / "home"
+        home.mkdir(parents=True, exist_ok=True)
+    with mock.patch("pathlib.Path.home", return_value=home):
+        comando = aislar(
+            _argv(rol, modo, modelo),
+            espacio,
+            runtime,
+            suscripcion=True,
+            agente="antigravity",
+        )
     return comando, espacio, runtime
 
 
@@ -383,8 +391,7 @@ class LanzamientoSinAgenteDelTurno(unittest.TestCase):
             base = Path(tmp)
             home = base / "home"
             home.mkdir()
-            with mock.patch("pathlib.Path.home", return_value=home):
-                comando, espacio, _ = _aislado(base)
+            comando, espacio, _ = _aislado(base, home=home)
             self.assertEqual(comando.argv[:1], ["agy"])
             self.assertFalse((home / ".gemini" / "config").exists())
             self.assertFalse((espacio / ".gemini").exists())
@@ -399,10 +406,13 @@ class LanzamientoSinAgenteDelTurno(unittest.TestCase):
             viejo.write_text("excludeDefaultComponents: true\n", encoding="utf-8")
             otro = agentes_dir / "otro.md"
             otro.write_text("---\nname: otro\n---\n", encoding="utf-8")
-            with mock.patch("pathlib.Path.home", return_value=home):
-                _aislado(base / "caso")
+            _aislado(base / "caso", home=home)
             self.assertFalse(viejo.exists())
             self.assertTrue(otro.exists())
+
+    def test_retirar_el_agente_viejo_no_truena_sin_home(self):
+        with mock.patch("pathlib.Path.home", side_effect=RuntimeError("sin home")):
+            agentes.retirar_agente_turno()
 
     def test_el_hook_del_runtime_bloquea_solo_las_herramientas_tras_el_turno(self):
         with tempfile.TemporaryDirectory() as tmp:
