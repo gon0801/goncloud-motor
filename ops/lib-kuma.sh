@@ -263,28 +263,40 @@ responde() {
 }
 
 # base_para <m>: la base que esa máquina alcanza. Primero la IP directa, si no el túnel.
-# Si ninguna responde, no imprime base: quien llama no debe escribir.
+# El alta reinicia Kuma justo antes, y el puerto puede seguir cerrado. Se reintenta la pareja,
+# con una espera corta, y solo entonces se declara inalcanzable. Un fallo de identidad (rc 2)
+# no se reintenta. Si ninguna responde, no imprime base: quien llama no debe escribir.
 base_para() {
-  local m=$1 rc=0
-  responde "$m" "$KUMA_ORIGEN_DIRECTA" || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$KUMA_BASE_DIRECTA"
-    return 0
-  fi
-  if [ "$rc" -eq 2 ]; then
-    echo "senal-kuma: $m: no pude saber si esta máquina es la MacBook" >&2
-    return 2
-  fi
-  rc=0
-  responde "$m" "$KUMA_ORIGEN_TUNEL" || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$KUMA_BASE_TUNEL"
-    return 0
-  fi
-  if [ "$rc" -eq 2 ]; then
-    echo "senal-kuma: $m: no pude saber si esta máquina es la MacBook" >&2
-    return 2
-  fi
+  local m=$1 rc=0 intentos espera i
+  intentos="${MOTOR_KUMA_REINTENTOS:-4}"
+  espera="${MOTOR_KUMA_ESPERA_SONDEO:-1}"
+  [ "$intentos" -ge 1 ] 2>/dev/null || intentos=1
+  i=1
+  while [ "$i" -le "$intentos" ]; do
+    rc=0
+    responde "$m" "$KUMA_ORIGEN_DIRECTA" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      printf '%s\n' "$KUMA_BASE_DIRECTA"
+      return 0
+    fi
+    if [ "$rc" -eq 2 ]; then
+      echo "senal-kuma: $m: no pude saber si esta máquina es la MacBook" >&2
+      return 2
+    fi
+    rc=0
+    responde "$m" "$KUMA_ORIGEN_TUNEL" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      printf '%s\n' "$KUMA_BASE_TUNEL"
+      return 0
+    fi
+    if [ "$rc" -eq 2 ]; then
+      echo "senal-kuma: $m: no pude saber si esta máquina es la MacBook" >&2
+      return 2
+    fi
+    i=$((i + 1))
+    [ "$i" -le "$intentos" ] || break
+    sleep "$espera"
+  done
   echo "senal-kuma: $m: ni ${KUMA_ORIGEN_DIRECTA#*://} ni el túnel ${KUMA_ORIGEN_TUNEL#*://} responden desde esa máquina" >&2
   return 1
 }

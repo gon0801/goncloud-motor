@@ -3,8 +3,8 @@
 # base SQLite con las tablas reales de Kuma (kuma-esquema.sql). El motor de planes y el supervisor de
 # encargos tienen monitores distintos. La Mini y la PC ya traen la dirección del supervisor y se
 # conserva; la MacBook no la tiene y el script le crea su monitor. La Mac y la Mini corren su script
-# en un HOME falso; con pwsh, la PC corre el PowerShell de verdad con un USERPROFILE falso; sin pwsh,
-# el sustituto escribe CRLF, como WriteAllLines en Windows, y la lectura quita el retorno de carro. Un uname y un hostname falsos
+# en un HOME falso. La PC no llama al pwsh del sistema: el doble escribe CRLF, como WriteAllLines
+# en Windows, y la lectura quita el retorno de carro, así que también acepta LF. Un uname y un hostname falsos
 # deciden si la Mac es local: con Linux va por ssh; con Darwin y el hostname de la Mini también va
 # por ssh; solo con Darwin y otro hostname es la MacBook y escribe en su HOME sin ssh a sí misma.
 set -uo pipefail
@@ -12,6 +12,7 @@ set -uo pipefail
 
 export MOTOR_SSH_MAC=mac MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_SSH_SERVIDOR=goncloud
 export MOTOR_KUMA_DB="$S/kuma.db" MOTOR_ESPERA_PASO=1 MOTOR_KUMA_TOPE=2
+export MOTOR_KUMA_REINTENTOS=2 MOTOR_KUMA_ESPERA_SONDEO=0
 export HOME_MAC="$S/mac" HOME_MINI="$S/mini" HOME_PC="$S/pc"
 export FAKE_UNAME_S=Linux
 UNAME_REAL="$(command -v uname)"
@@ -119,15 +120,11 @@ case "$host" in
         esac
         exit 0 ;;
       "powershell "*)
-        if ! command -v pwsh >/dev/null 2>&1; then
-          _script="$(printf '%s' "${*##* }" | python3 -I -c 'import base64,sys; print(base64.b64decode(sys.stdin.read()).decode("utf-16-le"))')"
-          _accion="$(printf '%s\n' "$_script" | sed -n "s/.*accion = '\([^']*\)'.*/\1/p" | head -1)"
-          _sub="$(printf '%s\n' "$_script" | sed -n "s/.*sub = '\([^']*\)'.*/\1/p" | head -1)"
-          _base="$(printf '%s\n' "$_script" | sed -n "s/.*MOTOR_KUMA_URL=\([^']*\)'.*/\1/p" | grep -F http | head -1)"
-          exec python3 -I "$S/escribe-pc.py" "$HOME_PC" "$_accion" "$_sub" "$_base"
-        fi
-        python3 -I -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode("utf-16-le"))' "${*##* }" >>"$FAKE_LOG"
-        USERPROFILE="$HOME_PC" exec pwsh ${1#powershell } ;;
+        _script="$(printf '%s' "${*##* }" | python3 -I -c 'import base64,sys; print(base64.b64decode(sys.stdin.read()).decode("utf-16-le"))')"
+        _accion="$(printf '%s\n' "$_script" | sed -n "s/.*accion = '\([^']*\)'.*/\1/p" | head -1)"
+        _sub="$(printf '%s\n' "$_script" | sed -n "s/.*sub = '\([^']*\)'.*/\1/p" | head -1)"
+        _base="$(printf '%s\n' "$_script" | sed -n "s/.*MOTOR_KUMA_URL=\([^']*\)'.*/\1/p" | grep -F http | head -1)"
+        exec python3 -I "$S/escribe-pc.py" "$HOME_PC" "$_accion" "$_sub" "$_base" ;;
       *curl.exe*)
         _url=$(printf '%s\n' "$*" | grep -oE 'https?://[^[:space:]]+' | head -1)
         HOME="$HOME_PC" exec curl -sS -o /dev/null --max-time 5 "$_url" ;;
@@ -158,11 +155,25 @@ esac
 case " ${FAKE_SIN_RUTA:-} " in
   *" ${maq}|${host} "*) printf '000'; exit 7 ;;
 esac
+# FAKE_FRIOS_FILE cuenta sondeos que todavía no contestan, como Kuma justo después de reiniciar.
+if [ -n "${FAKE_FRIOS_FILE:-}" ] && [ -f "${FAKE_FRIOS_FILE}" ]; then
+  n=$(tr -d '[:space:]' <"${FAKE_FRIOS_FILE}")
+  if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+    printf '%s\n' "$((n - 1))" >"${FAKE_FRIOS_FILE}"
+    printf '000'
+    exit 7
+  fi
+fi
 printf '302'
 exit 0
 FAKE
 ln -sfn curl "$S/bin/curl.exe"
-chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname" "$S/bin/curl"
+cat >"$S/bin/pwsh" <<'EOF'
+#!/usr/bin/env bash
+echo pwsh >>"$S/pwsh-llamado"
+exit 99
+EOF
+chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname" "$S/bin/curl" "$S/bin/pwsh"
 mkdir -p "$HOME_MAC/motor/motor"
 : >"$HOME_MAC/motor/motor/__init__.py"
 cat >"$HOME_MAC/motor/motor/__main__.py" <<'PYEOF'
@@ -493,6 +504,22 @@ cmp -s "$S/mini-antes-de-sin-camino" "$HOME_MINI/.motor/secretos.env" \
   || fallo "sin camino el script escribió igual en la Mini"
 unset FAKE_SIN_RUTA
 
+# El alta reinicia Kuma. Los dos primeros sondeos (directa y túnel) no contestan; el siguiente sí.
+# Sin reintento la Mac se queda con la URL vieja y la corrida sale distinta de 0.
+cp "$HOME_MAC/.motor/secretos.env" "$S/mac-antes-frio"
+printf 'MOTOR_KUMA_URL=http://viejo/api/push/FRIO\n' >"$HOME_MAC/.motor/secretos.env"
+echo 2 >"$S/frios"
+: >"$FAKE_LOG"
+corre_y_guarda "kuma frío tras el reinicio igual escribe la directa" 0 \
+  env FAKE_FRIOS_FILE="$S/frios" bash "$RAIZ/ops/senal-kuma.sh"
+tok_mac="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la MacBook'")"
+if [ "$(grep '^MOTOR_KUMA_URL=' "$HOME_MAC/.motor/secretos.env")" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$tok_mac" ]; then
+  echo "  ok: kuma frío: la Mac quedó en la directa"
+else
+  fallo "kuma frío: la Mac no quedó en la directa"
+  cp "$S/mac-antes-frio" "$HOME_MAC/.motor/secretos.env"
+fi
+
 for t in $(todos_los_tokens); do
   grep -qF "$t" "$TODO" && fallo "una salida contiene el token $t"
   grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene el token $t"
@@ -677,5 +704,7 @@ if claves != ["mini", "pc", "mac", "mac-encargos"]:
     grep -qx "$clave 0 1 0" "$S/py39-estado-baja" || fallo "Python 3.9: baja no dejó $clave inactivo"
   done
 fi
+
+[ ! -s "$S/pwsh-llamado" ] || fallo "la prueba llamó a pwsh"
 
 termina
