@@ -289,6 +289,29 @@ class TurnosFlota(unittest.TestCase):
         )
         self.assertEqual(informe["turnos"]["codex"]["estado"], "fallo_comun")
 
+    def test_candidata_sin_clientes_no_retira_los_de_la_vigente(self):
+        origen, a, gen_a = self._flota("origen-i")
+        _runtime_preparada(self.home, gen_a, "codex", "v1")
+        b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
+        _config_poteto(gen_b)
+        _runtime_preparada(self.home, gen_b, "hermes", "v1")
+
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            with patch("motor.flota.turnos._sesion_presente", return_value=True):
+                salida = aplicar(self.home, b)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("retira el ejecutable de codex", salida["motivo"])
+        self.assertEqual(asignar(self.home), a)
+        candidata = json.loads((self.home / "candidata.json").read_text())
+        self.assertEqual(candidata["turnos"]["codex"]["estado"], "fallo")
+        pendientes = sorted(
+            (self.motor_motor / "avisos" / "pendientes").glob("*.json")
+        )
+        self.assertEqual(len(pendientes), 1)
+        aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
+        self.assertIn("codex", aviso["texto"])
+        self.assertIn("retira el ejecutable", aviso["texto"])
+
     def test_candidata_que_retira_un_agente_con_sesion_bloquea(self):
         origen, a, gen_a = self._flota("origen-g")
         b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)

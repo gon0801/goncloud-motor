@@ -278,22 +278,32 @@ def _comprobar_paquete_completo(home: Path, gen: Path) -> None:
         )
 
 
+def _lanzadores_de(gen: Path) -> set[str]:
+    try:
+        runtime = json.loads((gen / "runtime.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return set()
+    lanzadores = runtime.get("lanzadores")
+    return set(lanzadores) if isinstance(lanzadores, dict) else set()
+
+
 def _turnos_de_activacion(home: Path, gen: Path, destino: str) -> tuple[dict, str]:
     """Los turnos reales de la candidata y el motivo de rechazo, si lo hay.
 
     (resumen, "") cuando todos los turnos pasan o no bloquean; (resumen,
     motivo) cuando un agente que funciona en la vigente falla en la candidata
-    o el propio control de turnos no pudo correr. Solo candidatas con clientes
-    de suscripción en su runtime tienen turnos: una candidata sin ellos no
-    tiene a quién romper.
+    o el propio control de turnos no pudo correr. Corren cuando la candidata
+    o la vigente traen clientes de suscripción: una candidata sin clientes
+    propios igual puede retirar los de la vigente, y solo un par sin
+    clientes en ninguna de las dos no tiene a quién romper.
     """
     from motor.encargos.catalogo_agentes import ADAPTADORES
 
-    try:
-        runtime = json.loads((gen / "runtime.json").read_text(encoding="utf-8"))
-        clientes = set(runtime.get("lanzadores") or {}) & set(ADAPTADORES)
-    except (OSError, ValueError, TypeError):
-        return {}, ""
+    clientes = _lanzadores_de(gen) & set(ADAPTADORES)
+    anterior = _anterior_real(home)
+    vigente = home / "generaciones" / anterior if anterior else None
+    if vigente and vigente.is_dir() and vigente.resolve() != gen.resolve():
+        clientes |= _lanzadores_de(vigente) & set(ADAPTADORES)
     if not clientes:
         return {}, ""
     from .turnos import avisar_rechazo, turnos_candidata
