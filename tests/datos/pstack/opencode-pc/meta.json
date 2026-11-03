@@ -1,0 +1,20 @@
+{
+  "cli": "opencode",
+  "ruta": "glm",
+  "plantilla": [
+    "opencode",
+    "run",
+    "--auto",
+    "-m",
+    "zai-coding-plan/glm-5.3",
+    "{prompt}"
+  ],
+  "rc": 0,
+  "segundos": 190,
+  "raiz": "C:\\Users\\ehven\\AppData\\Local\\Temp\\mide-pstack-copia-bpm2sje4",
+  "version": "opencode v2.0.32",
+  "error": "",
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": " su referencia) fue al subagente y en el hilo principal quedó solo su resumen, que yo verifiqué contra el artefacto real.\n\n**Estado final.** Sin commits ni push porque el brief no trae filas con `Acepta`, ordena \"No cambies nada\" y el directorio de trabajo no es un repositorio git, verificado en el entorno. No hay SHA que reportar por esa misma razón. `{\"sha\": null, \"resumen\": \"poteto-mode cargada por fallback Read, playbook investigation abierto, subagente ses_e99156aa2ffeOdRX2DpLmXyscC leyó README.md (3 líneas, carpeta de medición vacía), verificado por el agente principal, cero cambios\"}`.\n"
+}
