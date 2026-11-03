@@ -1,0 +1,133 @@
+[
+  {
+    "paso": "entrega repetida",
+    "ok": true,
+    "detalle": "enc_c8f0278e31201407"
+  },
+  {
+    "paso": "misma clave con otro texto",
+    "ok": true,
+    "detalle": "se conserva el primero"
+  },
+  {
+    "paso": "archivo normal",
+    "ok": true,
+    "detalle": "enc_ffb18efd1ca7e8b9"
+  },
+  {
+    "paso": "una afirmación no termina",
+    "ok": true,
+    "detalle": "recibido"
+  },
+  {
+    "paso": "pregunta aparte de la actividad",
+    "ok": true,
+    "detalle": "leyó el espacio aislado"
+  },
+  {
+    "paso": "la espera no se presenta como trabajo",
+    "ok": true,
+    "detalle": "reanudar en 2099-01-01T00:00:00Z"
+  },
+  {
+    "paso": "arrancó un trabajador",
+    "ok": true,
+    "detalle": "85030"
+  },
+  {
+    "paso": "el hijo sigue vivo antes de parar",
+    "ok": true,
+    "detalle": "85037"
+  },
+  {
+    "paso": "parar cierra escrituras antes de exigir el cierre",
+    "ok": true,
+    "detalle": "sin autorizacion de escritura"
+  },
+  {
+    "paso": "parar cierra al padre y al hijo",
+    "ok": true,
+    "detalle": "detenido"
+  },
+  {
+    "paso": "retransmitir parar no revierte continuar",
+    "ok": true,
+    "detalle": "rec_1f73f38d91c7"
+  },
+  {
+    "paso": "el supervisor se cerró y el trabajador sigue",
+    "ok": true,
+    "detalle": "85101"
+  },
+  {
+    "paso": "reiniciar el supervisor no abre otro escritor",
+    "ok": true,
+    "detalle": "85101"
+  },
+  {
+    "paso": "una sesión colgada se cierra sin otro escritor encima",
+    "ok": true,
+    "detalle": "85112"
+  },
+  {
+    "paso": "respuesta perdida se concilia sin repetir",
+    "ok": true,
+    "detalle": "{'conciliado': True, 'recibo': 'dst_b89587d24a6f7bae', 'n': 1}"
+  },
+  {
+    "paso": "sin autoridad no hay escritura nueva",
+    "ok": true,
+    "detalle": "sin autorizacion de escritura"
+  },
+  {
+    "paso": "la parada local no crea otra autoridad",
+    "ok": true,
+    "detalle": "loc_509634ff0c6e"
+  },
+  {
+    "paso": "stdin con comando fijo",
+    "ok": true,
+    "detalle": "/opt/homebrew/opt/python@3.14/bin/python3.14 -m motor encargos-aplicar"
+  },
+  {
+    "paso": "el lanzamiento real no escribe el destino",
+    "ok": true,
+    "detalle": "aislamiento=jaula destino=False "
+  },
+  {
+    "paso": "el flujo anterior sigue arrancando",
+    "ok": true,
+    "detalle": "motor 1.0.35 (ecdee4ff14cf)"
+  },
+  {
+    "paso": "la revision tecnica arranca",
+    "ok": true,
+    "detalle": "estrategia=revision_tecnica revisores=1 instrumentos=3"
+  },
+  {
+    "paso": "proceso y stdin en mini",
+    "ok": true,
+    "detalle": "ok  árbol y stdin locales del host: {\"vivo\": true, \"hijo\": 22024, \"hijo_muerto\": true, \"ausente\": true, \"os\": \"posix\", \"cli\": 0, \"out\": \"0-26T20:35:47Z\\\", \\\"motivo\\\": \\\"\\\", \\\"preguntas\\\": [], \\\"reanuda_en\\\": \\\"\\\", \\\"recibo\\\": \\\"rec_fffd1224689a\\\", \\\"siguiente\\\": \\\"investigar y comprobar el pedido\\\", \\\"ultimo_hecho\\\": \\\"pedido recibido\\\"}\\n\"}\n/tmp/informe-remoto.json\n"
+  },
+  {
+    "paso": "proceso y stdin en pc",
+    "ok": true,
+    "detalle": "ok  árbol y stdin locales del host: {\"vivo\": true, \"hijo\": 8028, \"hijo_muerto\": true, \"ausente\": true, \"os\": \"nt\", \"cli\": 0, \"out\": \"0-26T21:00:45Z\\\", \\\"motivo\\\": \\\"\\\", \\\"preguntas\\\": [], \\\"reanuda_en\\\": \\\"\\\", \\\"recibo\\\": \\\"rec_fffd1224689a\\\", \\\"siguiente\\\": \\\"investigar y comprobar el pedido\\\", \\\"ultimo_hecho\\\": \\\"pedido recibido\\\"}\\n\"}\nC:\\Users\\ehven\\AppData\\Local\\Temp\\informe-remoto.json\n"
+  },
+  {
+    "paso": "autoridad en la mini",
+    "ok": true,
+    "detalle": ", \"libre\": {\"alcanzada\": true, \"salida\": {\"conciliado\": true, \"n\": 1, \"recibo\": \"dst_38ea3835b47746c5\"}, \"motivo\": null, \"archivos\": [\"nota-local.txt\"]}, \"caida\": {\"alcanzada\": false, \"buzon\": true, \"archivos\": [\"buzon-local.jsonl\", \"nota-local.txt\"]}, \"nuevo\": {\"alcanzada\": true, \"salida\": {\"n\": 1, \"recibo\": \"dst_1e4e638b3197e403\"}, \"motivo\": null, \"archivos\": [\"buzon-local.jsonl\", \"nota-local.txt\"]}, \"repetido\": {\"alcanzada\": true, \"salida\": {\"n\": 1, \"recibo\": \"dst_1e4e638b3197e403\", \"ya_aplicado\": true}, \"motivo\": null, \"archivos\": [\"buzon-local.jsonl\", \"nota-local.txt\"]}, \"parada\": \"51Z\\\", \\\"motivo\\\": \\\"\\\", \\\"preguntas\\\": [], \\\"reanuda_en\\\": \\\"\\\", \\\"recibo\\\": \\\"rec_d9e349746077\\\", \\\"siguiente\\\": \\\"detenido hasta continuar\\\", \\\"ultimo_hecho\\\": \\\"el árbol de procesos quedó ausente\\\"}\\n\"}"
+  },
+  {
+    "paso": "aislamiento en windows",
+    "ok": false,
+    "pendiente": true,
+    "detalle": "la PC no tiene una jaula equivalente a sandbox-exec; el trabajador puede escribir su propio disco; el destino de este ensayo quedó en la Mini"
+  },
+  {
+    "paso": "agente real por el supervisor",
+    "ok": true,
+    "detalle": "estado=terminado linea=['    return a + b'] confirmado=True"
+  }
+]
