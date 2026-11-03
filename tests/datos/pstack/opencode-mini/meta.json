@@ -1,0 +1,20 @@
+{
+  "cli": "opencode",
+  "ruta": "glm",
+  "plantilla": [
+    "opencode",
+    "run",
+    "--auto",
+    "-m",
+    "zai-coding-plan/glm-5.3",
+    "{prompt}"
+  ],
+  "rc": 0,
+  "segundos": 233,
+  "raiz": "/var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k",
+  "version": "opencode v2.0.32",
+  "error": "",
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "logo de este CLI.\n- Sin commit ni push. El brief dice \"no cambies nada\", no hay filas con `Acepta` y el directorio de trabajo no es un repo git. Skip, lo hace el motor.\n- Principios citados, ninguno. No leí ninguna hoja `principle-*` esta sesión y poteto-mode solo permite citar las leídas.\n\n```json\n{\"sha\": null, \"resumen\": \"Investigación de solo lectura completada. Cargada poteto-mode, abierto el playbook investigation, lanzado un subagente que leyó pstack/README.md con la ruta absoluta de la skill en el prompt. Entregada la salida how-shaped verificada. Sin cambios, sin commit, sin PR.\"}\n```\n"
+}

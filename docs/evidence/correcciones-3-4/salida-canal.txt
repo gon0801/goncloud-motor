@@ -1,0 +1,7 @@
+cerrar: cerrado
+resultado: terminado
+tras corte despues: [('incierto', '')]
+tras conciliar: [('publicado', 'ext-123')]
+canal recibio cuerpo una vez: resultado real
+tercer drenar no reenvia: [('publicado', 'ext-123')]
+done
