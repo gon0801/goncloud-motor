@@ -297,11 +297,11 @@ def _turnos_de_activacion(
     cuando ningún turno real terminó exitoso, o el propio control de turnos no
     pudo correr. Corren cuando la candidata o la vigente traen clientes de
     suscripción: una candidata sin clientes propios igual puede retirar los
-    de la vigente. Fallo cerrado: al activar sobre una vigente hace falta al
-    menos un turno real exitoso (cero agentes con sesión, todos omitidos, o
-    todos los turnos fallidos también en la vigente) y la candidata no se
-    activa y se avisa; `sin_turnos` es la única excepción, el flag explícito
-    del operador que queda escrito en el recibo.
+    de la vigente. Fallo cerrado: siempre hace falta al menos un turno real
+    exitoso (cero agentes con sesión, todos omitidos, o todos los turnos
+    fallidos también en la vigente, incluso en el primer arranque sin
+    vigente) y la candidata no se activa y se avisa; `sin_turnos` es la única
+    excepción, el flag explícito del operador que queda escrito en el recibo.
     """
     from motor.encargos.catalogo_agentes import ADAPTADORES
 
@@ -351,7 +351,7 @@ def _turnos_de_activacion(
         )[:600]
         avisar_rechazo(destino, informe)
         return resumen, motivo
-    if not exitosos and sustituye and not sin_turnos:
+    if not exitosos and not sin_turnos:
         detalle = (
             "; ".join(
                 f"{agente}: {turno.get('estado') or 'omitido'}"
