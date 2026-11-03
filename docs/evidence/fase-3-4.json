@@ -1,0 +1,131 @@
+{
+  "dobles": [
+    "el agente ensayo ejecuta trabajo.sh. No es un modelo ni acredita Hermes o Claw.",
+    "el API HTTP es local y de ensayo. El CLI es el de la app. No acredita los agentes vivos de David.",
+    "codex --version es el CLI real de esta Mac. No es un proceso del plugin de Hermes o Claw."
+  ],
+  "maquinas": {
+    "mac": {
+      "python3": {
+        "estado": "presente",
+        "version": "Python 3.14.7",
+        "rc": 0,
+        "observado": {
+          "estado": "presente",
+          "version": "Python 3.14.7",
+          "integridad": true
+        }
+      },
+      "codex": {
+        "estado": "presente",
+        "version": "codex-cli 0.164.0",
+        "rc": 0,
+        "observado": {
+          "estado": "presente",
+          "version": "codex-cli 0.164.0",
+          "integridad": true
+        }
+      },
+      "grok": {
+        "estado": "presente",
+        "version": "grok 1.0.70 (f50904eaee6c) [stable]",
+        "rc": 0,
+        "observado": {
+          "estado": "presente",
+          "version": "grok 1.0.70 (f50904eaee6c) [stable]",
+          "integridad": true
+        }
+      },
+      "openclaw": {
+        "estado": "ausente",
+        "detalle": "[Errno 2] No such file or directory: 'openclaw'"
+      },
+      "hermes": {
+        "estado": "ausente",
+        "detalle": "[Errno 2] No such file or directory: 'hermes'"
+      }
+    },
+    "mini": {
+      "rc": 0,
+      "texto": "Gons-Mac-Mini-2.lan\nPython 3.9.6\nOpenClaw 2026.10.7 (157d8c2)"
+    },
+    "pc": {
+      "rc": 0,
+      "texto": "Python 3.14.7\nHermes Agent v0.22.5 (2026.9.24) · stable · local bf0203a794a0\nInstall directory: C:\\Users\\ehven\\AppData\\Local\\hermes\\hermes-agent\nInstall method: git\nPython: 3.14.9\nOpenAI SDK: 2.24.0\nUp to date"
+    }
+  },
+  "pedido": {
+    "hermes_directa": "enc_58f942c5f36dd0bc",
+    "claw_directa": "enc_5e3fcba50d2a264a",
+    "mismo_texto": true,
+    "hermes_durable": "enc_15c0017fe57da863",
+    "claw_plan": "enc_04e1a51cd2ce5e9e",
+    "plan_sin_acepta": true
+  },
+  "promover": {
+    "encargo": "enc_58f942c5f36dd0bc",
+    "rechazo_con_sesion": "el ejecutor directo sigue abierto",
+    "via": "durable",
+    "parado": "detenido",
+    "continuado": "recibido",
+    "cancelado": "cancelado",
+    "entregas": 1
+  },
+  "poteto": {
+    "encargo": "enc_ac36d67aaf29d2ef",
+    "producto": "poteto cargado",
+    "estado": "detenido",
+    "doble": "el agente ensayo ejecuta trabajo.sh. No es un modelo ni acredita Hermes o Claw."
+  },
+  "aviso": {
+    "encargo": "enc_0525ccad9faa7a0d",
+    "corte": "incierto",
+    "despues": "publicado",
+    "archivos": 1,
+    "entregas": 1
+  },
+  "openbot": {
+    "capacidades": {
+      "entrega": true,
+      "consulta": true,
+      "parada": false,
+      "timeout_cancela": false,
+      "skills": false,
+      "publicacion_de_sesion": false
+    },
+    "timeout_rc": 4,
+    "status_rc": 0,
+    "aviso": "publicado",
+    "parada": "OpenBot no tiene parada demostrada; el trabajo sigue",
+    "doble": "el API HTTP es local y de ensayo. El CLI es el de la app. No acredita los agentes vivos de David."
+  },
+  "politica": {
+    "puestos": 9,
+    "dirigir_igual_claw": true,
+    "poteto": "c9fe57c8c79e23bbba45ebf601048f4f2578c51de56f3ea264feed5d114dafe6",
+    "contrato": "valido",
+    "discrepancia": "el CLI incluido reporta codex-cli 0.164.0; la configuracion dice anthropic/claude-opus-5-5 (high)",
+    "respaldo": "xai/grok-4.7",
+    "doble_discrepancia": "codex --version es el CLI real de esta Mac. No es un proceso del plugin de Hermes o Claw."
+  },
+  "flota": {
+    "aplicada": "aplicada",
+    "trabajo": "a8f79ab4063c7aefd81712ab5543f604f21df4a4",
+    "segunda": "aplicada",
+    "asignada": "25d002652411041f2d7de3409825b90e027ee90a",
+    "rechazada": "rechazada",
+    "cortada": "cortado",
+    "recuperada": "completo",
+    "segunda_recuperacion": "nada",
+    "reversa": "revertido 25d002652411041f2d7de3409825b90e027ee90a",
+    "reversa_otra": "nada",
+    "reversa_rc": 0,
+    "actual": "25d002652411041f2d7de3409825b90e027ee90a",
+    "marca_reaparecio": false,
+    "cabeza": "25d002652411041f2d7de3409825b90e027ee90a",
+    "anterior": "25d002652411041f2d7de3409825b90e027ee90a"
+  },
+  "limpieza": {
+    "procesos": []
+  }
+}
