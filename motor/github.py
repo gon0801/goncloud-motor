@@ -1,7 +1,9 @@
 """GitHub detrás de una interfaz de 5 métodos. Nadie fuera de aquí ve JSON de GitHub.
 
-- `GhGitHub`: el real, con `gh`. Checks requeridos = protección de la rama base ∪ los extra del
-  `.motor.toml` del repo. Merge con `--match-head-commit`: si la punta se movió, GitHub lo rechaza.
+- `GhGitHub`: el real, con `gh`. Los checks requeridos parten de la protección de la rama
+  base ∪ los extra del `.motor.toml` del repo, y el veredicto los amplía con toda corrida
+  y todo contexto de estado que corra en el SHA. Merge con `--match-head-commit`: si la
+  punta se movió, GitHub lo rechaza.
 - `FakeGitHub`: igual de estricto, sobre repos locales, para probar sin red.
 
 Flujo que el motor usa en cualquier repo: PR en borrador -> (revisión) -> listo -> esperar los
@@ -120,7 +122,7 @@ def veredicto(
     """Un check requerido "completa" cubre también una matriz "completa (1, 6)" … "completa (6, 6)":
     está terminado cuando todas sus partes terminaron, y verde cuando todas salieron bien.
 
-    No solo la lista fija cuenta: toda corrida que corre en el SHA entra al veredicto
+    No solo los requeridos iniciales cuentan: toda corrida que corre en el SHA entra al veredicto
     (enc_25d22b9bfce242f9 cerró terminado con `windows` en rojo porque nadie lo tenía
     como requerido), y también cada contexto de estado del SHA que no esté todo en
     `success` (h_f05e0491: un `external-ci` en failure/error/pending con corridas

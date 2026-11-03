@@ -3,7 +3,8 @@
 Decisión del propietario del 2 de noviembre: en sus Mac los agentes del motor
 trabajan como él, sin jaula, sin listas de permitidos y sin entorno recortado.
 La suscripción de cada agente sigue entregándose en su carpeta del runtime,
-que no bloquea nada, y el HOME del usuario deja de falsearse.
+salvo Muse, que usa la configuración real del usuario, y el HOME del usuario
+deja de falsearse.
 """
 
 from __future__ import annotations
@@ -50,8 +51,8 @@ class SinSandboxExec(unittest.TestCase):
 
     def test_en_macos_el_argv_lanzado_no_empieza_por_sandbox_exec(self):
         """El argv que la Mac lanza es el de la rama POSIX, compartida con
-        Linux: sin job propio de macOS, esta prueba corre en la batería de
-        ubuntu y cubre por construcción el camino que usa la Mac."""
+        Linux: esta prueba corre en la batería de ubuntu y en el job `macos`
+        de `pruebas.yml`, que la ejerce en la Mac de verdad."""
         comando = _comando_directo(["/usr/bin/true"])
         self.assertNotEqual(comando.argv[0], SANDBOX)
         self.assertFalse(any(SANDBOX in parte for parte in comando.argv))
@@ -133,8 +134,10 @@ class MuseSigueNativo(unittest.TestCase):
 
 @unittest.skipUnless(ES_POSIX, "el lanzamiento directo es de la rama POSIX")
 class CadaAgenteSigueRecibiendoSuSesion(unittest.TestCase):
-    """Sin falsear HOME ni XDG_CONFIG_HOME, cada agente tiene que seguir
-    recibiendo la carpeta de sesión donde el motor prepara su suscripción."""
+    """Sin falsear HOME ni XDG_CONFIG_HOME, cada agente con carpeta de
+    sesión (claude, codex, grok, kimi, opencode, qwen) tiene que seguir
+    recibiendo la suya, donde el motor prepara su suscripción. Muse queda
+    fuera: usa la configuración real del usuario (ver MuseUsaLaConfiguracionReal)."""
 
     def _entorno_de(self, agente: str, runtime: Path) -> dict:
         cmd = [agente]

@@ -42,7 +42,7 @@ class ServicioEncargos(unittest.TestCase):
         )
         self.assertEqual(ETIQUETA_ENCARGOS, cm.ETIQUETA_ENCARGOS)
         self.assertIn(f"<key>Label</key><string>{ETIQUETA_ENCARGOS}</string>", mac)
-        self.assertIn(f"LaunchAgents/{ETIQUETA_ENCARGOS}.plist", mac)
+        self.assertIn(f"~/Library/LaunchAgents/{ETIQUETA_ENCARGOS}.plist", mac)
         self.assertIn("<key>RunAtLoad</key><true/>", mac)
         self.assertNotIn("UserName", mac)
         self.assertNotIn("/Library/LaunchDaemons", mac)
