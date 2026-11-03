@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +17,7 @@ from unittest import mock
 
 from motor.capacidades_maquina import _agentes
 from motor.encargos import agentes
-from motor.encargos.aislamiento import _entorno
+from motor.encargos.aislamiento import _entorno, aislar
 from motor.encargos.arranque import Observacion, SalidaRuntime
 from motor.encargos.catalogo_agentes import ADAPTADORES, agente_del_modelo, cliente_para
 from motor.encargos.sesion import herramienta_en_curso
@@ -52,19 +52,35 @@ def _argv(rol: str, modo: str, modelo: str = "") -> list[str]:
     return lanzador(_enc(rol, CONVERSACION), Path("/p/prompt.md"), Path("/e"), "sesion-motor")
 
 
-def _herramientas(markdown: str) -> list[str]:
-    encontradas = []
-    en_lista = False
-    for linea in markdown.splitlines():
-        if linea.strip() == "tools:":
-            en_lista = True
-            continue
-        if en_lista:
-            if linea.startswith("  - "):
-                encontradas.append(linea[4:].strip())
-            elif linea.strip():
-                break
-    return encontradas
+def _aislado(
+    tmp: Path,
+    rol: str = "responsable",
+    modo: str = "nueva",
+    modelo: str = "",
+    home: Path | None = None,
+):
+    espacio = tmp / "espacio" / "enc_x"
+    espacio.mkdir(parents=True, exist_ok=True)
+    runtime = tmp / "runtime"
+    if home is None:
+        home = tmp / "home"
+        home.mkdir(parents=True, exist_ok=True)
+    with mock.patch("pathlib.Path.home", return_value=home):
+        comando = aislar(
+            _argv(rol, modo, modelo),
+            espacio,
+            runtime,
+            suscripcion=True,
+            agente="antigravity",
+        )
+    return comando, espacio, runtime
+
+
+def _hooks_tras_el_turno(comando) -> tuple[Path, dict]:
+    carpeta = Path(comando.argv[comando.argv.index("--add-dir") + 1])
+    return carpeta, json.loads(
+        (carpeta / ".agents" / "hooks.json").read_text(encoding="utf-8")
+    )
 
 
 class Catalogo(unittest.TestCase):
@@ -144,28 +160,6 @@ class EntornoYHerramientas(unittest.TestCase):
                 "MUSE_AUTH_PATH",
             ):
                 self.assertEqual(env.get(clave), base.get(clave), clave)
-
-    def test_el_agente_del_turno_no_ofrece_herramientas_de_despues(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            runtime = Path(tmp) / "runtime"
-            with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
-                _entorno(runtime, True, ["agy", "--print"], agente="antigravity")
-            markdown = (home / ".gemini" / "config" / "agents" / "motor-turno.md").read_text(
-                encoding="utf-8"
-            )
-            permitidas = _herramientas(markdown)
-            for nombre in TRAS_EL_TURNO:
-                self.assertNotIn(nombre, permitidas)
-            for nombre in ("view_file", "run_command", "finish", "write_to_file"):
-                self.assertIn(nombre, permitidas)
-            self.assertIn("excludeDefaultComponents: true", markdown)
-            self.assertIn("mainAgent: true", markdown)
-            argv = _argv("responsable", "nueva")
-            self.assertEqual(argv[argv.index("--agent") + 1], "motor-turno")
-            self.assertIn("--dangerously-skip-permissions", argv)
-            self.assertNotIn("--sandbox", argv)
-            self.assertNotIn("--mode", argv)
 
     def test_la_cache_no_habilita_y_el_token_no_se_reescribe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -378,52 +372,104 @@ class EntornoYHerramientas(unittest.TestCase):
                 with mock.patch("sys.platform", "linux"):
                     self.assertFalse(agentes.sesion_antigravity_presente(home))
 
-    def test_dos_escritores_usan_temporales_distintos(self):
+
+class LanzamientoSinAgenteDelTurno(unittest.TestCase):
+    def test_el_argv_no_nombra_el_agente_ni_excluye_componentes(self):
+        for rol in ("responsable", "revisor"):
+            for modo in ("nueva", "reanudada", "reconstruida"):
+                with self.subTest(rol=rol, modo=modo):
+                    argv = _argv(rol, modo, "antigravity/gemini-4-argon-low")
+                    self.assertNotIn("--agent", argv)
+                    self.assertNotIn("motor-turno", argv)
+                    self.assertFalse(
+                        any("excludeDefaultComponents" in parte for parte in argv)
+                    )
+                    self.assertIn("--dangerously-skip-permissions", argv)
+
+    def test_no_escribe_en_la_configuracion_real_del_usuario(self):
         with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            vistos = []
-            errores = []
-            barrera = threading.Barrier(2)
-            real = os.replace
+            base = Path(tmp)
+            home = base / "home"
+            home.mkdir()
+            comando, espacio, _ = _aislado(base, home=home)
+            self.assertEqual(comando.argv[:1], ["agy"])
+            self.assertFalse((home / ".gemini" / "config").exists())
+            self.assertFalse((espacio / ".gemini").exists())
 
-            def reemplazo(origen, destino):
-                vistos.append(Path(origen).name)
-                if str(origen).endswith(".tmp"):
-                    barrera.wait(timeout=5)
-                return real(origen, destino)
+    def test_retira_el_agente_que_dejo_la_version_anterior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            agentes_dir = home / ".gemini" / "config" / "agents"
+            agentes_dir.mkdir(parents=True)
+            viejo = agentes_dir / "motor-turno.md"
+            viejo.write_text("excludeDefaultComponents: true\n", encoding="utf-8")
+            otro = agentes_dir / "otro.md"
+            otro.write_text("---\nname: otro\n---\n", encoding="utf-8")
+            _aislado(base / "caso", home=home)
+            self.assertFalse(viejo.exists())
+            self.assertTrue(otro.exists())
 
-            def escribir(runtime):
-                try:
-                    _entorno(runtime, True, ["agy", "--print"], agente="antigravity")
-                except Exception as exc:
-                    errores.append(exc)
+    def test_retirar_el_agente_viejo_no_truena_sin_home(self):
+        with mock.patch("pathlib.Path.home", side_effect=RuntimeError("sin home")):
+            agentes.retirar_agente_turno()
 
-            with mock.patch("motor.encargos.agentes.Path.home", return_value=home):
-                with mock.patch(
-                    "motor.encargos.agentes.os.replace", side_effect=reemplazo
-                ):
-                    hilos = [
-                        threading.Thread(
-                            target=escribir, args=(Path(tmp) / f"run-{n}",)
-                        )
-                        for n in (1, 2)
-                    ]
-                    for hilo in hilos:
-                        hilo.start()
-                    for hilo in hilos:
-                        hilo.join(timeout=10)
-            self.assertEqual(errores, [])
-            self.assertEqual(len(vistos), 2)
-            self.assertNotEqual(vistos[0], vistos[1])
-            self.assertNotIn("motor-turno.md.tmp", vistos)
-            markdown = (
-                home / ".gemini" / "config" / "agents" / "motor-turno.md"
-            ).read_text(encoding="utf-8")
-            self.assertIn("excludeDefaultComponents: true", markdown)
-            self.assertNotIn("schedule", _herramientas(markdown))
+    def test_el_hook_del_runtime_bloquea_solo_las_herramientas_tras_el_turno(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            comando, espacio, runtime = _aislado(Path(tmp))
+            carpeta, hooks = _hooks_tras_el_turno(comando)
+            self.assertTrue(carpeta.is_relative_to(runtime))
+            self.assertFalse(carpeta.is_relative_to(espacio))
+            entrada = hooks["motor-turno-sin-segundo-plano"]["PreToolUse"][0]
+            patron = entrada["matcher"]
+            for nombre in TRAS_EL_TURNO:
+                self.assertIsNotNone(re.fullmatch(patron, nombre), nombre)
+            for nombre in (
+                "view_file",
+                "run_command",
+                "search_web",
+                "browser_click_element",
+                "call_mcp_tool",
+            ):
+                self.assertIsNone(re.fullmatch(patron, nombre), nombre)
+
+    @unittest.skipUnless(os.name != "nt", "el guion del hook se prueba en POSIX")
+    def test_el_hook_responde_deny(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            comando, _, _ = _aislado(Path(tmp))
+            _, hooks = _hooks_tras_el_turno(comando)
+            orden = hooks["motor-turno-sin-segundo-plano"]["PreToolUse"][0]["hooks"][
+                0
+            ]["command"]
+            for nombre in TRAS_EL_TURNO:
+                with self.subTest(nombre=nombre):
+                    hecho = subprocess.run(
+                        orden,
+                        shell=True,
+                        input=json.dumps({"toolCall": {"name": nombre}}),
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(hecho.returncode, 0, hecho.stderr)
+                    self.assertEqual(json.loads(hecho.stdout)["decision"], "deny")
+
+    def test_el_hook_es_idempotente_y_no_deja_temporales(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            home.mkdir()
+            primero, _, _ = _aislado(base, home=home)
+            carpeta, _ = _hooks_tras_el_turno(primero)
+            archivo = carpeta / ".agents" / "hooks.json"
+            antes = archivo.read_text(encoding="utf-8")
+            segundo, _, _ = _aislado(base, home=home)
             self.assertEqual(
-                list((home / ".gemini" / "config" / "agents").glob("*.tmp")), []
+                (carpeta / ".agents" / "hooks.json").read_text(encoding="utf-8"),
+                antes,
             )
+            self.assertEqual(segundo.argv.count("--add-dir"), 1)
+            self.assertEqual(list(carpeta.rglob("*.tmp")), [])
 
 
 class StreamJson(unittest.TestCase):
@@ -491,7 +537,8 @@ class StreamJson(unittest.TestCase):
                 datos["herramientas_tras_el_turno"],
                 ["manage_task", "schedule", "wait"],
             )
-            self.assertIn("init con herramientas tras el turno", datos["hecho"])
+            self.assertEqual(datos["hecho"], "")
+            self.assertEqual(datos["secuencia"], 0)
             limpia = Observacion(directorio, "antigravity")
             limpia.evento(
                 {
