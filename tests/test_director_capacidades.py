@@ -72,9 +72,10 @@ def _conf_de_prueba(raiz: Path, path_extra: tuple[str, ...] = ()) -> tuple[Path,
 class Dobles:
     """Un `correr` que responde como gh, java y los CLIs de agentes."""
 
-    def __init__(self, gh_ok=True, jar=True):
+    def __init__(self, gh_ok=True, jar=True, gh_sesion=True):
         self.jar = jar
         self.gh_ok = gh_ok
+        self.gh_sesion = gh_sesion
 
     def correr(self, argv, timeout=20):
         class R:
@@ -88,6 +89,10 @@ class Dobles:
             if not self.gh_ok:
                 r.returncode = 1
                 r.stderr = b"HTTP 403: recurso no alcanzable"
+            elif argv[1:3] == ["auth", "status"]:
+                if not self.gh_sesion:
+                    r.returncode = 1
+                    r.stderr = b"You are not logged into any GitHub hosts. To log in, run: gh auth login"
             elif argv[1:3] == ["repo", "view"] and len(argv) > 3 and not argv[3]:
                 r.returncode = 1
                 r.stderr = b"GraphQL: Could not resolve to a Repository with the name ''."
@@ -185,6 +190,22 @@ class ReporteCompletoTest(unittest.TestCase):
         self.assertEqual(fila["estado"], "ok")
         self.assertIn("repo del encargo", fila["detalle"])
         self.assertEqual(datos["faltas"], [])
+
+    def test_ci_sin_repo_fijo_sin_sesion_de_gh_es_una_falta(self):
+        ruta = self.base / "capacidades.json"
+        doc = json.loads(ruta.read_text(encoding="utf-8"))
+        del doc["recursos"]["ci-linux"]["repo"]
+        del doc["recursos"]["ci-linux"]["workflow"]
+        ruta.write_text(json.dumps(doc), encoding="utf-8")
+
+        datos = self._reporte(Dobles(gh_sesion=False))
+
+        fila = next(
+            f for f in datos["recursos"]["filas"] if f["recurso"] == "ci-linux"
+        )
+        self.assertEqual(fila["estado"], "falta")
+        self.assertIn("sin sesión", fila["detalle"])
+        self.assertTrue(any("ci-linux" in f for f in datos["faltas"]))
 
 
 class AgentesFueraDelPathDelServicioTest(unittest.TestCase):
