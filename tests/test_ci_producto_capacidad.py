@@ -10,7 +10,6 @@ from __future__ import annotations
 import subprocess
 import sys
 import unittest
-from unittest import mock
 from pathlib import Path
 
 from motor.encargos import capacidades as cap
@@ -206,17 +205,39 @@ class CorreTodosLosJobs(_Ci):
         self.assertEqual(self.ramas_base(), [])
 
     def test_si_no_se_puede_comprobar_el_choque_no_corre_el_ci(self):
-        with mock.patch.object(cap, "_archivos_en_conflicto", return_value=None):
-            r = cap.ejecutar(
-                self.recursos,
-                cap.CI,
-                "ci-linux",
-                {"job": "todos"},
-                self.destino,
-                espacio=self.espacio,
-            )
+        # La rama base que no existe hace fallar el fetch real de
+        # `_archivos_en_conflicto`: no se sabe si choca y no se corre el CI.
+        recursos = {
+            "ci-linux": {
+                **self.recursos["ci-linux"],
+                "base": "rama-que-no-existe",
+            }
+        }
+        r = cap.ejecutar(
+            recursos,
+            cap.CI,
+            "ci-linux",
+            {"job": "todos"},
+            self.destino,
+            espacio=self.espacio,
+        )
         self.assertEqual(r["estado"], "error", r)
         self.assertIn("no se pudo comprobar", r["motivo"])
+
+    def test_el_choque_distingue_no_choca_de_no_poder_comprobar(self):
+        self.destino.mkdir(parents=True, exist_ok=True)
+        sha, _ = cap._commit_temporal(self.espacio, self.destino, "test")
+        self.assertEqual(
+            cap._archivos_en_conflicto(
+                self.espacio, str(self.bare), "main", sha
+            ),
+            [],
+        )
+        self.assertIsNone(
+            cap._archivos_en_conflicto(
+                self.espacio, str(self.bare), "rama-que-no-existe", sha
+            )
+        )
 
     def test_un_job_exacto_sin_base_compara_con_head(self):
         r = cap.ejecutar(
