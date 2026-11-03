@@ -1002,6 +1002,46 @@ class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
                 1,
             )
 
+        class _GhRerunRechazaDuplicado(GhGrabado):
+            def _gh(self, *a):
+                if a[0] == "api" and "/events" in a[1]:
+                    return "2026-10-21T21:00:00Z"
+                if a[:2] == ("run", "rerun") and a[2] in self.relanzadas:
+                    raise RuntimeError(f"gh: run {a[2]} cannot be rerun; already running")
+                return super()._gh(*a)
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            salto_ci = _run("ci", conclusion="skipped", rid=42)
+            salto_ci["completed_at"] = "2026-10-21T19:00:00Z"
+            salto_lint = _run("lint", conclusion="skipped", rid=42)
+            salto_lint["id"] = 100043
+            salto_lint["completed_at"] = "2026-10-21T19:00:00Z"
+            gh = _GhRerunRechazaDuplicado(
+                proteccion=json.dumps(["ci", "lint"]),
+                runs=json.dumps([salto_ci, salto_lint]),
+            )
+            store = Store(Path(tmp) / "motor.db")
+            plan = parse_plan(PLAN)
+            fx = Effects(
+                SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0, policy=pol())
+            )
+            store.append(
+                "demo",
+                "A",
+                "ChecksEsperando",
+                {"sha": SHA, "faltan": ["ci", "lint"], "github_termino": True},
+                ts=time.time() - 3600,
+            )
+            snap = m.fold(plan, store.events(plan.id))
+            snap.blocks["A"].pr = {"numero": 7}
+            fx.poll_checks(plan, snap, m.PollChecks("A", SHA))
+            self.assertEqual(gh.relanzadas, ["42"])
+            relanzados = [
+                e for e in store.events("demo") if e.kind == "ChecksRelanzados"
+            ]
+            self.assertEqual(len(relanzados), 1)
+            self.assertEqual(relanzados[0].data["run_ids"], ["42"])
+
     def test_timed_out_y_startup_failure_siguen_siendo_rojos(self):
         for conclusion in ("timed_out", "startup_failure"):
             with self.subTest(conclusion=conclusion):

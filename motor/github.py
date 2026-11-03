@@ -233,6 +233,18 @@ def veredicto(
             for r in partes
         ):
             faltan.append(c)
+    faltan_set = set(faltan)
+    vistos_faltan: set[str] = set()
+    corridas_dedup = []
+    for c in corridas:
+        rid = c["run_id"]
+        if rid and c["nombre"] in faltan_set:
+            if rid in vistos_faltan or c.get("conclusion") != "skipped":
+                c = {**c, "run_id": ""}
+            else:
+                vistos_faltan.add(rid)
+        corridas_dedup.append(c)
+    corridas = tuple(corridas_dedup)
     return ChecksVerdict(
         sha,
         terminal=not faltan or bool(fallas),
@@ -591,8 +603,14 @@ class GhGitHub:
         )
 
     def relanzar_corrida(self, repo, run_id):
-        if run_id:
+        if not run_id:
+            return
+        try:
             self._gh("run", "rerun", str(run_id), "-R", self.nombre(repo))
+        except RuntimeError as e:
+            msg = str(e).lower()
+            if "cannot be rerun" not in msg and "already running" not in msg:
+                raise
 
     def relanzar_fallidas(self, repo, run_id):
         if run_id:
