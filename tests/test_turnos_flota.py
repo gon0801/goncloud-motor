@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from motor.flota.actualizaciones import _crear_generacion, preparar
-from motor.flota.control import _atomico, aplicar, asignar, revertir
+from motor.flota.control import _atomico, aplicar, asignar, recuperar, revertir
 
 POLITICA = (
     'generacion="ensayo"\n[[puesto]]\nfuncion="director"\n'
@@ -120,7 +120,7 @@ class TurnosFlota(unittest.TestCase):
         a, gen_a = _crear_generacion(home, origen, [], {}, POLITICA)
         if config:
             _config_poteto(gen_a, con_poteto=poteto)
-        self.assertEqual(aplicar(home, a)["accion"], "aplicada")
+        self.assertEqual(aplicar(home, a, sin_turnos=True)["accion"], "aplicada")
         return origen, a, gen_a
 
     def test_candidata_sin_config_no_se_aplica(self):
@@ -429,6 +429,47 @@ class TurnosFlota(unittest.TestCase):
         instalacion = json.loads((self.home / "instalacion.json").read_text())
         self.assertTrue(instalacion.get("sin_turnos"), instalacion)
 
+    def test_primer_arranque_sin_clientes_no_se_aplica_y_el_flag_si(self):
+        origen = _repo(self.base / "origen-primer-sin-clientes")
+        a, gen_a = _crear_generacion(self.home, origen, [], {}, POLITICA)
+        _config_poteto(gen_a)
+        _runtime_preparada(self.home, gen_a, "hermes", "v1")
+
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            salida = aplicar(self.home, a)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("no se probó ningún agente", salida["motivo"])
+        self.assertFalse((self.home / "actual").is_symlink())
+        candidata = json.loads((self.home / "candidata.json").read_text())
+        self.assertEqual(candidata["estado"], "rechazada")
+        pendientes = sorted(
+            (self.motor_motor / "avisos" / "pendientes").glob("*.json")
+        )
+        self.assertEqual(len(pendientes), 1)
+        aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
+        self.assertIn("no se probó ningún agente", aviso["texto"])
+
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            con_flag = aplicar(self.home, a, sin_turnos=True)
+        self.assertEqual(con_flag["accion"], "aplicada", con_flag)
+        instalacion = json.loads((self.home / "instalacion.json").read_text())
+        self.assertTrue(instalacion.get("sin_turnos"), instalacion)
+
+    def test_recuperar_primer_arranque_sin_clientes_no_activa(self):
+        origen = _repo(self.base / "origen-recuperar-sin-clientes")
+        a, gen_a = _crear_generacion(self.home, origen, [], {}, POLITICA)
+        _config_poteto(gen_a)
+        _runtime_preparada(self.home, gen_a, "hermes", "v1")
+
+        cortado = aplicar(self.home, a, "worktree")
+        self.assertEqual(cortado["accion"], "cortado", cortado)
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            salida = recuperar(self.home)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("no se probó ningún agente", salida["motivo"])
+        self.assertFalse((self.home / "actual").is_symlink())
+        self.assertFalse((self.home / "instalacion-pendiente.json").exists())
+
     def test_candidata_que_retira_un_agente_con_sesion_bloquea(self):
         origen, a, gen_a = self._flota("origen-g")
         b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
@@ -440,20 +481,51 @@ class TurnosFlota(unittest.TestCase):
                 return None
             return ["/bin/true"]
 
-        with (
-            patch(
-                "motor.flota.turnos._sesion_presente",
-                side_effect=lambda agente: agente == "codex",
-            ),
-            patch(
-                "motor.flota.turnos.resolver_lanzador",
-                side_effect=lanzador_con_retiro,
-            ),
-        ):
-            salida = aplicar(self.home, b)
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            with (
+                patch(
+                    "motor.flota.turnos._sesion_presente",
+                    side_effect=lambda agente: agente == "codex",
+                ),
+                patch(
+                    "motor.flota.turnos.resolver_lanzador",
+                    side_effect=lanzador_con_retiro,
+                ),
+            ):
+                salida = aplicar(self.home, b)
         self.assertEqual(salida["accion"], "rechazada")
         self.assertIn("retira el ejecutable de codex", salida["motivo"])
         self.assertEqual(asignar(self.home), a)
+        pendientes = sorted(
+            (self.motor_motor / "avisos" / "pendientes").glob("*.json")
+        )
+        self.assertEqual(len(pendientes), 1)
+        aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
+        self.assertIn("retira el ejecutable de codex", aviso["texto"])
+
+    def test_fallo_del_control_de_turnos_rechaza_y_avisa(self):
+        origen, a, gen_a = self._flota("origen-control-roto")
+        b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
+        _config_poteto(gen_b)
+        _runtime_preparada(self.home, gen_b, "codex", "v2")
+
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            with patch(
+                "motor.flota.turnos.turnos_candidata",
+                side_effect=RuntimeError("boom"),
+            ):
+                salida = aplicar(self.home, b)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("el control de turnos no pudo correr", salida["motivo"])
+        self.assertIn("boom", salida["motivo"])
+        self.assertEqual(asignar(self.home), a)
+        self.assertFalse((self.home / "instalacion-pendiente.json").exists())
+        pendientes = sorted(
+            (self.motor_motor / "avisos" / "pendientes").glob("*.json")
+        )
+        self.assertEqual(len(pendientes), 1)
+        aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
+        self.assertIn("boom", aviso["texto"])
 
     def test_primer_arranque_sin_turno_exitoso_no_se_aplica(self):
         origen = _repo(self.base / "origen-primer")

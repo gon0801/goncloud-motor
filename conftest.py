@@ -11,3 +11,7 @@ RAIZ = Path(__file__).resolve().parent
 if str(RAIZ) in sys.path:
     sys.path.remove(str(RAIZ))
 sys.path.insert(0, str(RAIZ))
+
+from tests.guarda_home import instalar  # noqa: E402
+
+instalar()

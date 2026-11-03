@@ -314,11 +314,17 @@ def _turnos_de_activacion(
     if sustituye:
         clientes |= _lanzadores_de(vigente) & set(ADAPTADORES)
     if not clientes:
-        if sustituye and not sin_turnos:
+        if not sin_turnos:
+            detalle = (
+                "la candidata y la generacion vigente no traen clientes de "
+                "suscripcion"
+                if sustituye
+                else "la candidata no trae clientes de suscripcion"
+            )
             motivo = (
-                "no se activa: no se probó ningún agente; la candidata no se "
-                "activa (ni la candidata ni la generacion vigente traen "
-                "clientes de suscripcion)"
+                "no se probó ningún agente; la candidata no se activa ("
+                + detalle
+                + ")"
             )[:600]
             from .turnos import avisar_rechazo
 
@@ -330,7 +336,9 @@ def _turnos_de_activacion(
     try:
         informe = turnos_candidata(gen, home)
     except Exception as exc:  # noqa: BLE001  sin turnos no hay activación
-        return {}, f"el control de turnos no pudo correr: {exc}"[:300]
+        motivo = f"el control de turnos no pudo correr: {exc}"[:300]
+        avisar_rechazo(destino, {"turnos": {}, "fallidos": []}, causa=motivo)
+        return {}, motivo
     resumen = {
         agente: {
             k: turno[k]
