@@ -64,6 +64,14 @@ else:
 
 
 class CorreTodosLosJobs(_Ci):
+    def ramas_base(self) -> list[str]:
+        salida = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "for-each-ref",
+             "--format=%(refname)", "refs/heads/ci-base"],
+            capture_output=True, text=True,
+        ).stdout
+        return salida.split()
+
     def setUp(self):
         super().setUp()
         (self.espacio / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
@@ -123,7 +131,10 @@ class CorreTodosLosJobs(_Ci):
         self.assertEqual(
             {j["nombre"]: j["reusado"] for j in evidencia["jobs"]}["macos"], True
         )
+        self.assertTrue(datos["base_rama"].startswith("ci-base/"))
+        self.assertEqual(datos["base"], "main")
         self.assertEqual(self.ramas_remotas(), [])
+        self.assertEqual(self.ramas_base(), [])
 
     def test_un_job_cancelado_es_rojo_y_no_cuenta_como_verde(self):
         guion = (self.bin / "gh").read_text(encoding="utf-8")
@@ -189,6 +200,33 @@ class CorreTodosLosJobs(_Ci):
         ).stdout.split()
         self.assertIn("base.txt", cambios)
         self.assertNotIn("nuevo.txt", cambios)
+        self.assertTrue(r["datos"]["base_rama"].startswith("ci-base/"))
+        self.assertEqual(r["datos"]["base"], "main")
+        self.assertEqual(self.ramas_base(), [])
+
+    def test_un_base_arbol_roto_corre_todo_y_no_compara_con_head(self):
+        r = cap.ejecutar(
+            self.recursos,
+            cap.CI,
+            "ci-linux",
+            {"job": "todos", "base_arbol": "no-es-un-arbol"},
+            self.destino,
+            espacio=self.espacio,
+        )
+        self.assertEqual(r["estado"], "ok", r)
+        sha = r["datos"]["sha"]
+        padre = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "rev-parse", sha + "^"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(
+            subprocess.run(
+                ["git", "--git-dir", str(self.bare), "ls-tree", padre],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip(),
+            "",
+            "un base inválido usa el árbol vacío, no HEAD",
+        )
 
 
 if __name__ == "__main__":

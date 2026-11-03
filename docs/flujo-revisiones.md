@@ -115,10 +115,11 @@ cierran siempre al terminar.
 Cada job del workflow (`ops-tests`, `bateria`, `macos`, `windows`) declara de
 qué rutas depende, sacadas de lo que ejecuta y de lo que sus pruebas leen.
 `ops-tests` depende de `ops/`; `macos` y `windows` de `motor/`, `tests/`,
-`conftest.py` y `verificacion/`, y `windows` además de `ops/prepara_pc.py`.
-`bateria` descubre toda la suite y suma `conf-ejemplo/`, `proto/`, la skill
-del director, los dos documentos que se comprueban y los archivos de `ops/`
-que las pruebas importan o copian. Si una corrección no toca las rutas de un
+`conftest.py` y `verificacion/`, de `ops/iniciar_encargos_pc.py` y, `windows`,
+además de `ops/prepara_pc.py`. `bateria` descubre toda la suite y suma
+`conf-ejemplo/`, `proto/`, `skill/`, los dos documentos que se comprueban y los
+archivos de `ops/` que las pruebas importan o copian (incluidos
+`ops/iniciar_encargos_pc.py` y `ops/pstack/`). Si una corrección no toca las rutas de un
 job, ese job reusa su verde del último árbol que pasó; solo corre completo el
 job que el cambio puede afectar. Un cambio a `.github/workflows/**` vuelve a
 correr todos. El filtro va en el `if` de cada job, no en `paths` del
@@ -126,10 +127,11 @@ disparador: un job saltado por su condición cuenta como éxito para la
 protección de rama, pero un workflow saltado deja los checks pendientes y
 bloquea el merge.
 
-El commit temporal no lleva la lista de jobs en el mensaje. El motor lo
-cuelga del último árbol verde (o de un árbol vacío en la primera corrida) y el
-workflow compara ese commit con su padre: el diff decide los jobs. Un PR normal
-compara base y head. Ningún mensaje de commit decide qué job corre o se salta.
+El commit temporal abre su PR contra una rama `ci-base/` que apunta al último
+árbol verde (o a un árbol vacío en la primera corrida): el workflow compara
+base y head y su diff es la corrección. Un PR normal compara su base real. Ni
+el mensaje ni una firma de rama o autor deciden: manda el diff. Del mensaje
+solo se lee `jobs_extra`, que puede añadir un job; nunca quitarlo.
 
 Si el CI de la versión en revisión falla, el resultado queda como bloqueante
 en la fase. El revisor lo ve en su prompt con el nombre del job y el log

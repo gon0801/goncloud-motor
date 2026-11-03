@@ -211,7 +211,8 @@ class CorreElCiSobreLaVersionVigente(_Ci):
         self.assertEqual(r["evidencia"]["run"], "1234")
         self.assertEqual(r["evidencia"]["sha"], datos["sha"])
         self.assertTrue(gh["borrador"])
-        self.assertEqual(gh["base"], "main")
+        self.assertEqual(datos["base"], "main")
+        self.assertTrue(gh["base"].startswith("ci-base/"))
 
     def test_el_commit_lleva_el_trabajo_sin_commit_y_deja_fuera_lo_interno(self):
         self.pedir()

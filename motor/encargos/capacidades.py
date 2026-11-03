@@ -669,37 +669,57 @@ def _arbol_vacio(espacio: Path, destino: Path) -> str:
         indice.unlink(missing_ok=True)
 
 
-def _commit_temporal(
-    espacio: Path, destino: Path, ident: str, mensaje: str = "", base_arbol: str = ""
-) -> tuple[str, str]:
-    """Commit con la versión vigente del producto en un índice aparte.
-
-    Si `base_arbol` trae el árbol verde anterior, el commit temporal se cuelga
-    de un commit con ese árbol; el diff padre-hijo es entonces la corrección y
-    el workflow decide por rutas sin leer el mensaje. El árbol es el mismo de
-    `arbol_producto`."""
-    arbol = arbol_producto(espacio, destino)
-    cabeza = _git_ci(espacio, "rev-parse", "--verify", "HEAD").strip()
-    env = {
+def _identidad_ci() -> dict:
+    return {
         "GIT_AUTHOR_NAME": "motor-ci",
         "GIT_AUTHOR_EMAIL": "motor-ci@localhost",
         "GIT_COMMITTER_NAME": "motor-ci",
         "GIT_COMMITTER_EMAIL": "motor-ci@localhost",
     }
-    padre = cabeza
+
+
+def _arbol_de_base(espacio: Path, destino: Path, base_arbol: str) -> str:
+    """El árbol verde si existe; si falta o no es un tree, uno vacío.
+
+    Nunca se cae a HEAD: un base ausente tiene que correr todo, no comparar
+    solo contra el último commit y saltar jobs de un rojo anterior."""
     if base_arbol:
         try:
-            tipo = _git_ci(espacio, "cat-file", "-t", base_arbol).strip()
+            if _git_ci(espacio, "cat-file", "-t", base_arbol).strip() == "tree":
+                return base_arbol
         except CiFallo:
-            tipo = ""
-        if tipo == "tree":
-            padre = _git_ci(
-                espacio, "commit-tree", base_arbol, "-p", cabeza,
-                "-m", f"ci-base {ident}", env=env,
-            ).strip()
+            pass
+    return _arbol_vacio(espacio, destino)
+
+
+def _commit_base(
+    espacio: Path, destino: Path, ident: str, base_arbol: str = ""
+) -> tuple[str, str]:
+    """Commit con el árbol verde (o vacío) del que se compara la corrida."""
+    arbol = _arbol_de_base(espacio, destino, base_arbol)
+    cabeza = _git_ci(espacio, "rev-parse", "--verify", "HEAD").strip()
+    sha = _git_ci(
+        espacio, "commit-tree", arbol, "-p", cabeza,
+        "-m", f"ci-base {ident}", env=_identidad_ci(),
+    ).strip()
+    return sha, arbol
+
+
+def _commit_temporal(
+    espacio: Path, destino: Path, ident: str, mensaje: str = "", padre: str = ""
+) -> tuple[str, str]:
+    """Commit con la versión vigente del producto en un índice aparte.
+
+    El padre es el commit base que arma `_commit_base`; si no se pasa, se
+    arma uno con un árbol vacío para que el diff corra todo y no compare contra
+    HEAD. El workflow compara base y head; no lee el mensaje."""
+    arbol = arbol_producto(espacio, destino)
+    if not padre:
+        padre, _ = _commit_base(espacio, destino, ident, "")
     texto = mensaje or f"ci-prueba {ident}"
     sha = _git_ci(
-        espacio, "commit-tree", arbol, "-p", padre, "-m", texto, env=env
+        espacio, "commit-tree", arbol, "-p", padre, "-m", texto,
+        env=_identidad_ci(),
     ).strip()
     return sha, arbol
 
@@ -825,44 +845,63 @@ def _comprobar_mezcla(
     )
 
 
-def _limpiar_ci(gh: str, repo: str, remoto: str, espacio: Path, rama: str, numero: str) -> dict:
-    """Cierra el PR y borra la rama temporal. Cada paso dice si funcionó."""
-    limpieza = {"rama": rama, "pr": numero, "pr_cerrado": False, "rama_borrada": False}
+def _limpiar_ci(
+    gh: str, repo: str, remoto: str, espacio: Path, rama: str, numero: str,
+    base_rama: str = "",
+) -> dict:
+    """Cierra el PR y borra la rama temporal y la base del diff. Cada paso dice
+    si funcionó."""
+    limpieza = {
+        "rama": rama,
+        "base_rama": base_rama,
+        "pr": numero,
+        "pr_cerrado": False,
+        "rama_borrada": False,
+        "base_borrada": False,
+    }
     if numero:
         try:
             _gh(gh, repo, "pr", "close", numero, "--delete-branch", plazo=60)
             limpieza["pr_cerrado"] = True
         except Exception as exc:  # la limpieza sigue aunque falle un paso
             limpieza["pr_error"] = getattr(exc, "motivo", None) or f"{type(exc).__name__}: {exc}"
-    try:
-        presente = _git_ci(espacio, "ls-remote", "--heads", remoto, f"refs/heads/{rama}", plazo=60).strip()
-        if presente:
-            _git_ci(espacio, "push", "--quiet", remoto, "--delete", f"refs/heads/{rama}", plazo=60)
-        limpieza["rama_borrada"] = True
-    except Exception as exc:
-        limpieza["rama_error"] = getattr(exc, "motivo", None) or f"{type(exc).__name__}: {exc}"
+    for clave, ref in (("rama", rama), ("base", base_rama)):
+        if not ref:
+            continue
+        try:
+            presente = _git_ci(
+                espacio, "ls-remote", "--heads", remoto, f"refs/heads/{ref}", plazo=60
+            ).strip()
+            if presente:
+                _git_ci(espacio, "push", "--quiet", remoto, "--delete", f"refs/heads/{ref}", plazo=60)
+            limpieza[f"{clave}_borrada"] = True
+        except Exception as exc:
+            limpieza[f"{clave}_error"] = getattr(exc, "motivo", None) or f"{type(exc).__name__}: {exc}"
     return limpieza
 
 
 def _barrer_restos(remoto: str, espacio: Path, ident: str) -> None:
     """Un run anterior que murió sin limpiar deja su rama (y con ella su PR, que
-    GitHub cierra al borrarla). Se borran las de este encargo que ya no pueden
-    pertenecer a un run vivo: el nombre lleva la hora de salida, y un run vivo
-    no pasa de CI_MAX_S. La rama de un run en curso no se toca."""
+    GitHub cierra al borrarla) y su rama base. Se borran las de este encargo
+    que ya no pueden pertenecer a un run vivo: el nombre lleva la hora de
+    salida, y un run vivo no pasa de CI_MAX_S."""
     import re
 
-    prefijo = "refs/heads/ci-prueba/" + re_sub_ci(ident) + "-"
-    try:
-        filas = _git_ci(espacio, "ls-remote", "--heads", remoto, prefijo + "*", plazo=60).splitlines()
-        for fila in filas:
-            ref = fila.split("\t")[-1].strip()
-            salida = re.search(r"-(\d{9,})$", ref)
-            if not ref.startswith(prefijo) or not salida:
-                continue
-            if time.time() - int(salida.group(1)) > CI_MAX_S + 300:
-                _git_ci(espacio, "push", "--quiet", remoto, "--delete", ref, plazo=60)
-    except CiFallo:
-        pass
+    for familia in ("ci-prueba", "ci-base"):
+        prefijo = f"refs/heads/{familia}/" + re_sub_ci(ident) + "-"
+        try:
+            filas = _git_ci(
+                espacio, "ls-remote", "--heads", remoto, prefijo + "*", plazo=60
+            ).splitlines()
+            for fila in filas:
+                ref = fila.split("\t")[-1].strip()
+                salida = re.search(r"-(\d{9,})$", ref)
+                if not ref.startswith(prefijo) or not salida:
+                    continue
+                if time.time() - int(salida.group(1)) > CI_MAX_S + 300:
+                    _git_ci(espacio, "push", "--quiet", remoto, "--delete", ref, plazo=60)
+        except CiFallo:
+            pass
 
 
 def re_sub_ci(texto: str) -> str:
@@ -997,8 +1036,8 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
     árbol del commit temporal. `base_arbol` es el último árbol verde: el commit
     temporal se cuelga de él y el workflow corre solo los jobs que la
     corrección toca. El mensaje no puede recortar; `jobs_extra` solo añade.
-    Usa el acceso de gh y git que ya tiene el supervisor; la rama y el PR
-    temporales se cierran siempre."""
+    Usa el acceso de gh y git que ya tiene el supervisor; las ramas base y
+    temporal y el PR se cierran siempre."""
     import re
     import shutil
 
@@ -1021,8 +1060,6 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
     if espacio is None or not (Path(espacio) / ".git").exists():
         raise CiFallo("el espacio del encargo no es un clon git", "pedir al host que prepare el repo de entrega")
     espacio = Path(espacio)
-    if todos and not base_arbol:
-        base_arbol = _arbol_vacio(espacio, destino)
     gh = shutil.which("gh")
     if not gh:
         raise CiFallo(
@@ -1048,14 +1085,21 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
             pedidos.append(canonico)
     if extra or (not todos and pedidos):
         mensaje += " jobs_extra=" + ",".join(dict.fromkeys(pedidos))
-    sha, arbol = _commit_temporal(espacio, destino, ident, mensaje, base_arbol)
-    rama = f"ci-prueba/{re_sub_ci(ident)}-{sha[:7]}-{int(time.time())}"
+    base_sha, base_arbol = _commit_base(espacio, destino, ident, base_arbol)
+    sha, arbol = _commit_temporal(espacio, destino, ident, mensaje, base_sha)
+    marca = int(time.time())
+    rama = f"ci-prueba/{re_sub_ci(ident)}-{sha[:7]}-{marca}"
+    base_rama = f"ci-base/{re_sub_ci(ident)}-{sha[:7]}-{marca}"
     numero = ""
     previo = _manejar_sigterm()
     try:
+        _git_ci(
+            espacio, "push", "--quiet", remoto,
+            f"{base_sha}:refs/heads/{base_rama}", plazo=180,
+        )
         _git_ci(espacio, "push", "--quiet", remoto, f"{sha}:refs/heads/{rama}", plazo=180)
         url_pr = _gh(
-            gh, repo, "pr", "create", "--draft", "--base", base, "--head", rama,
+            gh, repo, "pr", "create", "--draft", "--base", base_rama, "--head", rama,
             "--title", f"ci-prueba: {ident} {sha[:7]}",
             "--body", "Corrida temporal del CI. Se cierra sola.",
             plazo=120,
@@ -1065,12 +1109,18 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
         def vigilar_conflicto() -> None:
             # GitHub puede calcular `mergeable` tarde: se revisa mientras se
             # busca el run para no cambiar un choque por un "no inició".
-            _comprobar_mezcla(gh, repo, remoto, base, numero, sha, espacio, 0)
+            _comprobar_mezcla(gh, repo, remoto, base_rama, numero, sha, espacio, 0)
 
         _comprobar_mezcla(
-            gh, repo, remoto, base, numero, sha, espacio,
+            gh, repo, remoto, base_rama, numero, sha, espacio,
             min(CI_MEZCLA_S, limite - time.time()),
         )
+        choques = _archivos_en_conflicto(espacio, remoto, base, sha)
+        if choques:
+            raise CiFallo(
+                f"el producto no se puede mezclar con {base}: chocan {', '.join(choques)}",
+                f"traer {base} a la rama y resolver el choque; después volver a pedir ci.correr",
+            )
         run = _esperar_run(
             gh, repo, workflow, sha, limite - time.time(), vigilar=vigilar_conflicto
         )
@@ -1099,6 +1149,7 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
                 "url": url_run,
                 "rama": rama,
                 "base": base,
+                "base_rama": base_rama,
                 "jobs": [datos_job],
                 "fallas": (
                     [job] if datos_job["conclusion"] in ROJO_CI else []
@@ -1223,6 +1274,7 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
                 "url": url_run,
                 "rama": rama,
                 "base": base,
+                "base_rama": base_rama,
                 "jobs": resumen,
                 "fallas": fallas,
                 "pedidos": list(pedidos),
@@ -1236,7 +1288,7 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
     finally:
         # Siempre, sea cual sea la salida: un CiFallo, un error inesperado o un
         # SIGTERM del supervisor. La rama y el PR temporales no se quedan.
-        limpieza = _limpiar_ci(gh, repo, remoto, espacio, rama, numero)
+        limpieza = _limpiar_ci(gh, repo, remoto, espacio, rama, numero, base_rama)
         _restaurar_sigterm(previo)
     resultado["limpieza"] = limpieza
     evidencia = {

@@ -95,14 +95,12 @@ class Dependencias(unittest.TestCase):
     def test_un_cambio_de_docs_no_corre_ningun_job_de_pruebas(self):
         self.assertEqual(trabajos_ci.trabajos_a_correr(["docs/flujo.md"]), ())
 
-    def _seleccion(
-        self, evento, diffs, correo="motor-ci@localhost", mensaje=""
-    ):
+    def _seleccion(self, evento, diffs, mensaje="", correo="motor-ci@localhost"):
         def falso_git(*args):
             if args[:2] == ("log", "-1"):
-                if any("%B" in a for a in args):
-                    return mensaje + "\n"
-                return correo + "\n"
+                if any("%ae" in a for a in args):
+                    return correo + "\n"
+                return mensaje + "\n"
             if args[:2] == ("diff", "--name-only"):
                 return "".join(
                     linea + "\n" for linea in diffs.get((args[2], args[3]), ())
@@ -114,21 +112,23 @@ class Dependencias(unittest.TestCase):
                 return trabajos_ci.seleccion(evento)
 
     @staticmethod
-    def _pr(rama, misma=True):
-        repo = {"full_name": "o/r"}
-        cabeza = {"sha": "head123", "ref": rama, "repo": repo if misma else {"full_name": "x/r"}}
+    def _pr(base="base123", rama="encargo/enc_1"):
         return {
             "pull_request": {
-                "base": {"sha": "base123", "repo": repo},
-                "head": cabeza,
+                "base": {"sha": base, "repo": {"full_name": "o/r"}},
+                "head": {
+                    "sha": "head123",
+                    "ref": rama,
+                    "repo": {"full_name": "o/r"},
+                },
             }
         }
 
     def test_el_mensaje_del_commit_no_puede_saltar_un_job(self):
-        # El marcador viejo `jobs=` ya no se lee: con motor en el diff, la
-        # bateria corre aunque el mensaje diga jobs=ops-tests.
+        # Con motor en el diff, la bateria corre aunque el mensaje diga
+        # `jobs=ops-tests`: la seleccion es el diff base..head.
         valores = self._seleccion(
-            self._pr("encargo/enc_1"),
+            self._pr(),
             {("base123", "head123"): ("motor/x.py",)},
             mensaje="ci-prueba x jobs=ops-tests",
         )
@@ -136,21 +136,24 @@ class Dependencias(unittest.TestCase):
             valores,
             {"ops-tests": False, "bateria": True, "macos": True, "windows": True},
         )
-        # Una rama ci-prueba de otro autor tampoco usa el diff de su commit.
+
+    def test_la_firma_forjada_no_decide_los_jobs(self):
+        # Ramo `ci-prueba`, commit firmado como motor-ci y un ultimo commit
+        # que solo toca ops/: antes bastaba para saltar la bateria. Ahora
+        # manda el diff contra la base real (main), que trae motor/.
         valores = self._seleccion(
-            self._pr("ci-prueba/x"),
+            self._pr("main-sha", rama="ci-prueba/enc_1-abc1234-1700000000"),
             {
-                ("base123", "head123"): ("motor/x.py",),
+                ("main-sha", "head123"): ("motor/x.py",),
                 ("head123^", "head123"): ("ops/x.sh",),
             },
-            correo="persona@example.com",
             mensaje="ci-prueba x jobs=ops-tests",
         )
         self.assertTrue(valores["bateria"])
 
     def test_jobs_extra_solo_anade(self):
         valores = self._seleccion(
-            self._pr("encargo/enc_1"),
+            self._pr(),
             {("base123", "head123"): ("ops/senal-kuma.sh",)},
             mensaje="ci-prueba x jobs_extra=bateria",
         )
@@ -158,32 +161,17 @@ class Dependencias(unittest.TestCase):
             valores,
             {"ops-tests": True, "bateria": True, "macos": False, "windows": False},
         )
-        valores = self._seleccion(
-            self._pr("ci-prueba/enc_1-abc1234-1700000000"),
-            {("head123^", "head123"): ("ops/senal-kuma.sh",)},
-            mensaje="ci-prueba x jobs_extra=bateria",
-        )
-        self.assertEqual(
-            valores,
-            {"ops-tests": True, "bateria": True, "macos": False, "windows": False},
-        )
 
-    def test_el_commit_temporal_solo_corre_lo_que_cambia_su_diff(self):
+    def test_la_rama_base_del_commit_temporal_acota_su_diff(self):
+        # El PR temporal abre contra ci-base/..., que apunta al verde: su diff
+        # es solo la correccion.
         valores = self._seleccion(
-            self._pr("ci-prueba/enc_1-abc1234-1700000000"),
-            {("head123^", "head123"): ("ops/senal-kuma.sh",)},
+            self._pr("ci-base-sha"),
+            {("ci-base-sha", "head123"): ("ops/senal-kuma.sh",)},
         )
         self.assertEqual(
             valores,
             {"ops-tests": True, "bateria": False, "macos": False, "windows": False},
-        )
-        valores = self._seleccion(
-            self._pr("ci-prueba/enc_1-abc1234-1700000000"),
-            {("head123^", "head123"): ()},
-        )
-        self.assertEqual(
-            valores,
-            {"ops-tests": True, "bateria": True, "macos": True, "windows": True},
         )
 
 

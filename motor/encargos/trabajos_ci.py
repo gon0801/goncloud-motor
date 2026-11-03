@@ -17,11 +17,11 @@ como éxito para la protección de rama (GitHub lo documenta); un workflow
 saltado por `paths` quedaría pendiente y bloquearía el merge. Por eso el
 filtro va en el job, nunca en el disparador.
 
-La selección sale del diff real de git, nunca del mensaje del commit. En un
-PR normal se comparan base y head. En el commit temporal del motor (rama
-`ci-prueba/`, mismo repo, autor `motor-ci`) se compara ese commit con su
-padre, que el motor fija al último árbol verde; así solo corre el job que la
-corrección toca. Si el diff está vacío, corren todos. Del mensaje solo se lee
+La selección sale del diff real de git entre la base y el head del PR, nunca
+del mensaje del commit ni de una firma que se pueda falsificar. El commit
+temporal del motor abre su PR contra una rama `ci-base/` que apunta al último
+árbol verde (o a un árbol vacío en la primera corrida); su diff es la
+corrección y el resto de jobs reusa su verde. Del mensaje solo se lee
 `jobs_extra=...`, que puede añadir un job (el revisor que pide uno exacto);
 nunca quitar.
 """
@@ -142,28 +142,6 @@ def _jobs_extra(mensaje: str) -> tuple[str, ...]:
     return tuple(j for j in TRABAJOS if j in pedidos)
 
 
-_RAMA_TEMPORAL = re.compile(r"ci-prueba/[A-Za-z0-9_.-]+-[0-9a-f]{7,}-[0-9]+")
-
-
-def _es_del_motor(rama: str, head: str) -> bool:
-    """El commit temporal lo crea `ci.correr` con esa rama y esa firma."""
-    if not _RAMA_TEMPORAL.fullmatch(str(rama or "")):
-        return False
-    try:
-        correo = _git("log", "-1", "--format=%ae", head).strip()
-    except Exception:
-        return False
-    return correo == "motor-ci@localhost"
-
-
-def _cambios_del_commit(head: str) -> tuple[str, ...] | None:
-    """Lo que el commit temporal cambia respecto de su padre (el último verde)."""
-    try:
-        return cambios_de_git(f"{head}^", head)
-    except Exception:
-        return None
-
-
 def _git(*args: str) -> str:
     r = subprocess.run(
         ["git", *args], capture_output=True, text=True, timeout=60
@@ -192,46 +170,29 @@ def _evento() -> dict:
         return {}
 
 
-def _base_y_head(evento: dict) -> tuple[str, str, str, bool]:
+def _base_y_head(evento: dict) -> tuple[str, str]:
     nombre = os.environ.get("GITHUB_EVENT_NAME") or ""
     if nombre == "pull_request":
         pr = evento.get("pull_request") or {}
-        base = pr.get("base") or {}
-        cabeza = pr.get("head") or {}
-        repo_base = str((base.get("repo") or {}).get("full_name") or "")
-        repo_cabeza = str((cabeza.get("repo") or {}).get("full_name") or "")
-        misma_rama = bool(repo_base) and repo_base == repo_cabeza
         return (
-            str(base.get("sha") or ""),
-            str(cabeza.get("sha") or ""),
-            str(cabeza.get("ref") or ""),
-            misma_rama,
+            str((pr.get("base") or {}).get("sha") or ""),
+            str((pr.get("head") or {}).get("sha") or ""),
         )
     if nombre == "push":
         return (
             str(evento.get("before") or ""),
             str(evento.get("after") or ""),
-            "",
-            False,
         )
-    return "", "", "", False
+    return "", ""
 
 
 def _decidir(
     cambios: tuple[str, ...] | None,
     hay_base: bool,
-    temporal: bool = False,
     extra=(),
 ) -> dict[str, bool]:
-    """Decide por las rutas cambiadas. `extra` solo puede añadir jobs.
-
-    En el commit temporal, un diff vacío corre todo: la primera corrida no
-    tiene verde previo y no puede quedarse sin jobs."""
-    if temporal:
-        correr = (
-            set(TRABAJOS) if not cambios else set(trabajos_a_correr(cambios))
-        )
-    elif hay_base and cambios is not None:
+    """Decide por las rutas cambiadas entre base y head. `extra` solo suma."""
+    if hay_base and cambios is not None:
         correr = set(trabajos_a_correr(cambios))
     else:
         correr = set(TRABAJOS)
@@ -243,15 +204,10 @@ def seleccion(evento: dict | None = None) -> dict[str, bool]:
     """Los cuatro jobs de pruebas, con True/False. Cualquier duda corre todos."""
     evento = evento if evento is not None else _evento()
     try:
-        base, head, rama, misma_rama = _base_y_head(evento)
+        base, head = _base_y_head(evento)
         if not head:
             head = os.environ.get("GITHUB_SHA") or "HEAD"
-        temporal = bool(head) and misma_rama and _es_del_motor(rama, head)
         extra = _jobs_extra(mensaje_de_git(head)) if head else ()
-        if temporal:
-            return _decidir(
-                _cambios_del_commit(head), True, temporal=True, extra=extra
-            )
         hay_base = bool(base) and not set(base) <= {"0"}
         cambios = cambios_de_git(base, head) if hay_base else None
         return _decidir(cambios, hay_base, extra=extra)

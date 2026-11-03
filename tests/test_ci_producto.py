@@ -527,6 +527,36 @@ class ReusoPorJob(unittest.TestCase):
         )
         return r, e, sha, arbol
 
+    def test_la_peticion_lleva_el_arbol_verde_como_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, e, _sha, arbol = self._con_verde(tmp, "base-verde")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "motor").mkdir(exist_ok=True)
+            (r.espacio / "motor" / "nuevo.py").write_text("X = 1\n")
+            fase = replace(
+                e.fase_actual,
+                producto=replace(e.fase_actual.producto, firma="v2"),
+                ci_version="v1",
+                ci_arbol=arbol,
+                ci_base_arbol=arbol,
+                ci_fallas=(),
+            )
+            e2 = replace(
+                e,
+                fases=tuple(fase if f.id == fase.id else f for f in e.fases),
+            )
+            ciclo._pedir_ci_producto(r.reg, e2, r.espacio, r.d, r.hora)
+            peticiones = sorted(
+                (r.espacio / ".interno" / "buzon" / "peticiones").glob("*.json")
+            )
+            bases = [
+                json.loads(p.read_text(encoding="utf-8"))["parametros"].get(
+                    "base_arbol"
+                )
+                for p in peticiones
+            ]
+            self.assertIn(arbol, bases)
+
     def test_un_cambio_solo_de_ops_reusa_los_jobs_del_motor(self):
         with tempfile.TemporaryDirectory() as tmp:
             r, e, _sha, arbol = self._con_verde(tmp, "reuso-ops")
