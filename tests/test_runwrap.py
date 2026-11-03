@@ -471,9 +471,15 @@ class CierreTrasResultadoTest(unittest.TestCase):
         d.mkdir()
         cwd.mkdir()
 
+        # La foto no vuelve. El wrapper igual tiene que marcar el timeout:
+        # el join del hilo final corta a los 5 s y no espera este cuelgue.
+        dentro = threading.Event()
+        volvio = []
+
         def foto_colgada(*_a, **_k):
-            if threading.current_thread() is threading.main_thread():
-                time.sleep(3)
+            dentro.set()
+            time.sleep(20)
+            volvio.append(1)
 
         inicio = time.time()
         with unittest.mock.patch.object(runwrap, "foto_wip", foto_colgada):
@@ -481,13 +487,16 @@ class CierreTrasResultadoTest(unittest.TestCase):
                 [
                     "--dir", str(d), "--cwd", str(cwd), "--timeout", "0.4",
                     "--sin-avance", "60", "--cierre", "1", "--wip-rama", "wip",
-                    "--wip-cada", "0.2",
+                    "--wip-cada", "0.05",
                     "--", sys.executable, "-c", "import time; time.sleep(30)",
                 ]
             )  # fmt: skip
         o = json.loads((d / "outcome.json").read_text())
+        dura = time.time() - inicio
         self.assertTrue(o["timed_out"])
-        self.assertLess(time.time() - inicio, 2)
+        self.assertLess(dura, 12)
+        self.assertTrue(dentro.is_set())
+        self.assertEqual(volvio, [])
 
 
 if __name__ == "__main__":
