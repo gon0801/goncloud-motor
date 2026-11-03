@@ -117,11 +117,41 @@ case "$host" in
         fi
         python3 -I -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode("utf-16-le"))' "${*##* }" >>"$FAKE_LOG"
         USERPROFILE="$HOME_PC" exec pwsh ${1#powershell } ;;
+      *curl.exe*)
+        _url=$(printf '%s\n' "$*" | grep -oE 'https?://[^[:space:]]+' | head -1)
+        HOME="$HOME_PC" exec curl -sS -o /dev/null --max-time 5 "$_url" ;;
+      *base64.b64decode*)
+        _b64="${*##* }"
+        USERPROFILE="$HOME_PC" HOME="$HOME_PC" exec python3 -I -c 'import base64,sys; exec(base64.b64decode(sys.argv[1]))' "$_b64" ;;
     esac
     echo "ssh falso: no se espera '$*'" >&2; exit 1 ;;
 esac
 FAKE
-chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname"
+cat >"$S/bin/curl" <<'FAKE'
+#!/usr/bin/env bash
+# FAKE_SIN_RUTA="mini|10.13.13.1:3001 mini|127.0.0.1:19301": esa máquina no llega a ese host.
+url=
+for a in "$@"; do
+  case "$a" in
+    http://*|https://*) url=$a ;;
+  esac
+done
+printf 'curl %s\n' "$url" >>"$FAKE_LOG"
+host=$(printf '%s' "$url" | sed -E 's#^https?://##; s#/.*##')
+case "$HOME" in
+  */mac) maq=mac ;;
+  */mini) maq=mini ;;
+  */pc) maq=pc ;;
+  *) maq=? ;;
+esac
+case " ${FAKE_SIN_RUTA:-} " in
+  *" ${maq}|${host} "*) printf '000'; exit 7 ;;
+esac
+printf '302'
+exit 0
+FAKE
+ln -sfn curl "$S/bin/curl.exe"
+chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname" "$S/bin/curl"
 mkdir -p "$HOME_MAC/motor/motor"
 : >"$HOME_MAC/motor/motor/__init__.py"
 cat >"$HOME_MAC/motor/motor/__main__.py" <<'PYEOF'
@@ -413,6 +443,44 @@ done
     pc_motor="cd /d %USERPROFILE%\\motor && $PC_UV run --python 3.12 python -m motor" &&
     senal_configurada pc
 ) || fallo "la señal se debe poder leer aunque la PC conteste en cp1252"
+
+# La Mini no llega a 10.13.13.1:3001 y sí a su túnel. La Mac y la PC sí llegan a la directa.
+# El checklist lo dice si la dirección escrita no se alcanza, y nombra el túnel si está caído.
+for nombre in "Motor de la MacBook" "Motor de la Mini" "Motor de la PC" "Motor de encargos de la MacBook"; do
+  latido "$nombre" 5
+done
+espera "checklist con la directa inalcanzable en la Mini falla" '!0' \
+  env FAKE_SIN_RUTA='mini|10.13.13.1:3001' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+contiene "directa inalcanzable" "$S/salida" "la dirección escrita 10.13.13.1:3001 no es alcanzable desde esa máquina"
+grep -q 'está caído' "$S/salida" && fallo "el túnel que responde no debe figurar como caído"
+espera "checklist con el túnel de la Mini caído falla" '!0' \
+  env FAKE_SIN_RUTA='mini|10.13.13.1:3001 mini|127.0.0.1:19301' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+contiene "túnel caído" "$S/salida" "el túnel ai.goncloud.motor-senal-tunel está caído (127.0.0.1:19301 no responde)"
+corre_y_guarda "la Mini sin la IP directa usa el túnel" 0 \
+  env FAKE_SIN_RUTA='mini|10.13.13.1:3001' bash "$RAIZ/ops/senal-kuma.sh"
+cp "$S/salida" "$S/salida-tunel"
+tok_mini="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la Mini'")"
+tok_mac="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la MacBook'")"
+tok_pc="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la PC'")"
+[ "$(grep '^MOTOR_KUMA_URL=' "$HOME_MINI/.motor/secretos.env")" = "MOTOR_KUMA_URL=http://127.0.0.1:19301/api/push/$tok_mini" ] \
+  || fallo "la Mini que no alcanza la IP directa no quedó en el túnel"
+[ "$(grep '^MOTOR_KUMA_URL=' "$HOME_MAC/.motor/secretos.env")" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$tok_mac" ] \
+  || fallo "la Mac que alcanza la IP directa no quedó en esa dirección"
+[ "$(tr -d '\r' <"$HOME_PC/.motor/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$tok_pc" ] \
+  || fallo "la PC que alcanza la IP directa no quedó en esa dirección"
+grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" \
+  || fallo "la Mini reescribió el secreto de encargos que ya era distinto"
+for t in $(todos_los_tokens); do
+  grep -qF "$t" "$S/salida-tunel" && fallo "el script imprimió un token"
+  grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene el token"
+done
+cp "$HOME_MINI/.motor/secretos.env" "$S/mini-antes-de-sin-camino"
+espera "sin camino la Mini no recibe una dirección inalcanzable" '!0' \
+  env FAKE_SIN_RUTA='mini|10.13.13.1:3001 mini|127.0.0.1:19301' bash "$RAIZ/ops/senal-kuma.sh"
+contiene "sin camino" "$S/salida" "ni 10.13.13.1:3001 ni el túnel 127.0.0.1:19301 responden desde esa máquina"
+cmp -s "$S/mini-antes-de-sin-camino" "$HOME_MINI/.motor/secretos.env" \
+  || fallo "sin camino el script escribió igual en la Mini"
+unset FAKE_SIN_RUTA
 
 for t in $(todos_los_tokens); do
   grep -qF "$t" "$TODO" && fallo "una salida contiene el token $t"
