@@ -40,18 +40,41 @@ jobs:
       - name: Pruebas de shell de ops/tests
         run: bash ops/tests/correr.sh
 
-  bateria:
+  bateria-partes:
+    name: bateria-parte-${{ matrix.parte }}
     needs: prep
     if: always() && needs.prep.outputs.bateria != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        parte: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Bateria completa
-        run: python -m unittest discover -s tests -t . -v
+      - name: Parte de la bateria
+        run: python -m tests.reparto correr --parte ${{ matrix.parte }}
+
+  # El check que mira la protección se llama bateria. Verde solo si las cuatro
+  # partes pasaron. Si el filtro de prep lo salta, GitHub lo cuenta como éxito.
+  bateria:
+    needs: [prep, bateria-partes]
+    if: always() && needs.prep.outputs.bateria != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: La division cubre el discover
+        run: python -m tests.reparto comprobar
+      - name: Las cuatro partes pasaron
+        if: always()
+        run: python -m tests.reparto exigir --resultado "${{ needs.bateria-partes.result }}"
 
   macos:
     name: Lanzamiento directo en macOS

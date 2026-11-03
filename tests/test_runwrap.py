@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
@@ -20,6 +21,46 @@ from motor import machine as m  # noqa: E402
 from motor import runwrap  # noqa: E402
 from motor.daemon import Daemon  # noqa: E402
 from motor.plan import parse_plan  # noqa: E402
+
+
+class _Reloj:
+    """El reloj de runwrap avanza en su sleep. El hijo sigue en tiempo real.
+
+    Hasta que el hijo escribe result.json, el reloj casi no avanza. Si se
+    adelantara al mtime real, el cierre vería la entrega ya vieja y cerraría
+    en la misma vuelta en que aparece.
+    """
+
+    def __init__(self, intento: Path, vuelta: float | None, ancla: bool):
+        # Se guardan antes del parche: si no, dormir se llama a si mismo y el
+        # ancla mediria el reloj falso, que nunca llega a 0,8 s.
+        self._dormir = time.sleep
+        self._wall = time.time
+        self.t = self._wall()
+        self.intento = intento
+        self.vuelta = vuelta
+        self.ancla = ancla
+        self.libre = not ancla
+        self.t0 = self.t
+        self.al_cerrar = None
+
+    def ahora(self) -> float:
+        return self.t
+
+    def dormir(self, segundos: float) -> None:
+        # Cede de verdad para que el hijo escriba. 0,03 s por vuelta de 0,2 s
+        # deja el hueco entre escrituras del hijo por debajo del cierre de 1 s.
+        self._dormir(0.01 if not self.libre else 0.03)
+        if self.ancla and not self.libre:
+            if (self.intento / "result.json").exists() or self._wall() - self.t0 > 0.8:
+                self.libre = True
+        avance = float(segundos)
+        if self.vuelta is not None and avance == 0.2:
+            avance = self.vuelta
+        if self.libre:
+            self.t += avance
+        else:
+            self.t += min(avance, 0.01)
 
 
 class CierreTrasResultadoTest(unittest.TestCase):
@@ -44,13 +85,19 @@ class CierreTrasResultadoTest(unittest.TestCase):
                 self.assertEqual(fallo["kind"], esperado)
 
     def corre(
-        self, script: str, sin_avance: float = 30, extra: tuple[str, ...] = ()
+        self, script: str, sin_avance: float = 30, extra: tuple[str, ...] = (), **reloj
     ) -> tuple[dict, float]:
-        o, dura, _ = self.corre_en(script, sin_avance, extra)
+        o, dura, _ = self.corre_en(script, sin_avance, extra, **reloj)
         return o, dura
 
     def corre_en(
-        self, script: str, sin_avance: float = 30, extra: tuple[str, ...] = ()
+        self,
+        script: str,
+        sin_avance: float = 30,
+        extra: tuple[str, ...] = (),
+        *,
+        vuelta: float | None = None,
+        ancla: bool = True,
     ) -> tuple[dict, float, Path]:
         t = Path(tempfile.mkdtemp(prefix="runwrap-"))
         d, cwd = t / "intento", t / "w"
@@ -68,14 +115,26 @@ class CierreTrasResultadoTest(unittest.TestCase):
                 }
             )
         )
+        self.reloj = _Reloj(d, vuelta, ancla)
         inicio = time.time()
-        runwrap.main(
-            [
-                "--dir", str(d), "--cwd", str(cwd), "--timeout", "60",
-                "--sin-avance", str(sin_avance), "--cierre", "1", *extra,
-                "--", sys.executable, "-c", script,
-            ]
-        )  # fmt: skip
+        real_outcome = runwrap._outcome
+
+        def guarda(destino, datos):
+            self.reloj.al_cerrar = self.reloj.t
+            return real_outcome(destino, datos)
+
+        with (
+            unittest.mock.patch.object(runwrap.time, "time", self.reloj.ahora),
+            unittest.mock.patch.object(runwrap.time, "sleep", self.reloj.dormir),
+            unittest.mock.patch.object(runwrap, "_outcome", guarda),
+        ):
+            runwrap.main(
+                [
+                    "--dir", str(d), "--cwd", str(cwd), "--timeout", "60",
+                    "--sin-avance", str(sin_avance), "--cierre", "1", *extra,
+                    "--", sys.executable, "-c", script,
+                ]
+            )  # fmt: skip
         return json.loads((d / "outcome.json").read_text()), time.time() - inicio, d
 
     def test_entrego_y_no_sale_se_cierra_como_terminado(self):
@@ -108,69 +167,65 @@ class CierreTrasResultadoTest(unittest.TestCase):
             "sub.mkdir()\n"
             "(sub / 'x.jsonl').write_text('a\\n')\n"
             "veredicto('APROBADO')\n"
-            "fin = time.time() + 4\n"
+            "fin = time.time() + 0.55\n"
             "while time.time() < fin:\n"
             "    for f in (sesion, sub / 'x.jsonl'):\n"
             "        f.open('a').write('l\\n')\n"
-            "    time.sleep(0.3)\n",
+            "    time.sleep(0.05)\n",
             extra=self.REVISOR,
         )
         self.assertEqual((o["cerrado_tras_resultado"], o["exit"]), (False, 0))
 
     def test_llamada_sin_fin_impide_el_cierre_hasta_que_se_llena(self):
-        """El paso de abierta a cerrada cuenta como avance: el cierre llega `--cierre` s después
-        de la primera lectura de `llamadas/` que ve `fin` lleno, y esa lectura se mide por su
-        propia hora, no por la de `fin`, que puede caer en cualquier punto de la vuelta. La
-        vuelta de runwrap se estira a 1 s y cada lectura anota su hora y si vio la llamada
-        abierta; el agente llena `fin` 4,5 s después de que el motor congeló su entrega, que
-        marca una vuelta. El código bueno fija `ultimo_cambio_p` después de esa lectura y cierra
-        una vuelta entera más tarde; sin `abierta_antes`, el cierre salta en la misma vuelta que
-        ve `fin` lleno, a menos de 1 s de esa lectura."""
-        real = time.sleep
+        """El paso de abierta a cerrada cuenta como avance: el cierre llega una vuelta
+        después de la primera lectura que ve `fin` lleno. Esa lectura se mide en el
+        reloj del wrapper, no en la hora de `fin`. La vuelta de 0,2 s se estira a 1 s
+        en ese reloj. Sin ese estirón, o si el cierre cae en la misma vuelta, la
+        diferencia queda por debajo de 1 s."""
         real_huella = runwrap._huella_pstack
         lecturas = []
 
-        def vuelta_de_1s(s):
-            real(1.0 if s == 0.2 else s)
-
         def huella_anotada(d):
             huella = real_huella(d)
-            lecturas.append((time.time(), huella[1]))
+            lecturas.append((self.reloj.ahora(), huella[1]))
+            # El hijo no llena `fin` hasta esta lectura. Un sleep fijo pierde
+            # la llamada abierta si una vuelta tarda más que ese sleep.
+            if huella[1]:
+                marca = d / "vio-abierta"
+                if not marca.exists():
+                    marca.write_text("1", encoding="utf-8")
             return huella
 
-        with (
-            unittest.mock.patch.object(runwrap.time, "sleep", vuelta_de_1s),
-            unittest.mock.patch.object(runwrap, "_huella_pstack", huella_anotada),
-        ):
-            o, _, d = self.corre_en(
-                self.PRELUDIO + "veredicto('APROBADO')\n"
-                "(d / 'llamadas').mkdir()\n"
+        with unittest.mock.patch.object(runwrap, "_huella_pstack", huella_anotada):
+            o, _, _d = self.corre_en(
+                self.PRELUDIO + "(d / 'llamadas').mkdir()\n"
                 "f = d / 'llamadas' / 'x.json'\n"
-                "for _ in range(2000):\n"
-                "    if (d / 'entrega.json').exists():\n"
-                "        break\n"
-                "    time.sleep(0.005)\n"
-                "else:\n"
-                "    raise SystemExit(2)\n"
-                "base = time.time()\n"
                 "f.write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
-                "while time.time() < base + 4.5:\n"
-                "    time.sleep(0.02)\n"
+                "veredicto('APROBADO')\n"
+                "marca = d / 'vio-abierta'\n"
+                "limite = time.time() + 5\n"
+                "while not marca.exists() and time.time() < limite:\n"
+                "    time.sleep(0.01)\n"
                 "f.write_text(json.dumps({'fin': time.time(), 'pid': os.getpid()}))\n"
-                "time.sleep(60)\n",
+                "time.sleep(30)\n",
+                sin_avance=80,
                 extra=self.REVISOR,
+                vuelta=1.0,
+                ancla=False,
             )
         self.assertIs(o["cerrado_tras_resultado"], True)
         self.assertGreaterEqual(
             min(b - a for (a, _), (b, _) in zip(lecturas, lecturas[1:])), 1.0
         )  # la vuelta quedó estirada: si runwrap deja de dormir 0,2 s, esto suena
-        fin = json.loads((d / "llamadas" / "x.json").read_text())["fin"]
-        cerradas = [t for t, abierta in lecturas if t > fin and not abierta]
-        self.assertTrue(cerradas)  # el cierre pasó por una lectura con `fin` lleno
-        primera = min(cerradas)
-        self.assertGreaterEqual(
-            (d / "outcome.json").stat().st_mtime - primera, 1.0
-        )  # da tiempo de leer lo que contestó el panel
+        vio_abierta = False
+        primera = None
+        for marca, abierta in lecturas:
+            if abierta:
+                vio_abierta = True
+            elif vio_abierta and primera is None:
+                primera = marca
+        self.assertIsNotNone(primera)
+        self.assertGreaterEqual(self.reloj.al_cerrar - primera, 1.0)
 
     def test_pid_invalido_en_la_llamada_no_cosecha_al_agente(self):
         """Un registro con pid -1 nunca llega a `pid_vivo`: sin la guarda, su `waitpid(-1)`
@@ -251,10 +306,10 @@ class CierreTrasResultadoTest(unittest.TestCase):
         """Mientras el cierre se retiene, el CLI sale con un API Error: el veredicto válido sigue valiendo."""
         salida, d, _ = self.collect_de(
             self.PRELUDIO + "veredicto('APROBADO')\n"
-            "fin = time.time() + 3\n"
+            "fin = time.time() + 0.55\n"
             "while time.time() < fin:\n"
             "    sesion.open('a').write('l\\n')\n"
-            "    time.sleep(0.3)\n"
+            "    time.sleep(0.05)\n"
             "print('API Error: 529 overloaded')\n"
             "raise SystemExit(1)\n",
             sin_avance=30,
@@ -326,10 +381,10 @@ class CierreTrasResultadoTest(unittest.TestCase):
             "sub.mkdir()\n"
             "(sub / 'x.jsonl').write_text('a\\n')\n"
             "veredicto('APROBADO')\n"
-            "fin = time.time() + 4\n"
+            "fin = time.time() + 0.55\n"
             "while time.time() < fin:\n"
             "    (sub / 'x.jsonl').open('a').write('l\\n')\n"
-            "    time.sleep(0.3)\n",
+            "    time.sleep(0.05)\n",
             extra=self.REVISOR,
         )
         self.assertIs(o["cerrado_tras_resultado"], False)
@@ -345,10 +400,10 @@ class CierreTrasResultadoTest(unittest.TestCase):
     def test_el_veredicto_final_reemplaza_al_provisional(self):
         _, _, d = self.corre_en(
             self.PRELUDIO + "veredicto('APROBADO')\n"
-            "fin = time.time() + 4\n"
+            "fin = time.time() + 0.55\n"
             "while time.time() < fin:\n"
             "    sesion.open('a').write('l\\n')\n"
-            "    time.sleep(0.3)\n"
+            "    time.sleep(0.05)\n"
             "veredicto('CAMBIOS', ['falla'])\n",
             extra=self.REVISOR,
         )
@@ -356,7 +411,7 @@ class CierreTrasResultadoTest(unittest.TestCase):
         self.assertEqual(final["veredicto"], "CAMBIOS")
 
     def test_sin_resultado_sigue_esperando_al_agente(self):
-        o, _ = self.corre("import time; time.sleep(3)")
+        o, _ = self.corre("import time; time.sleep(0.05)")
         self.assertEqual((o["exit"], o["cerrado_tras_resultado"]), (0, False))
 
     def test_colgado_sin_resultado_sigue_siendo_sin_avance(self):
@@ -407,7 +462,7 @@ class CierreTrasResultadoTest(unittest.TestCase):
             return real(raiz)
 
         with unittest.mock.patch.object(runwrap, "_mtime_arbol", cuenta):
-            self.corre("import time; time.sleep(3)")
+            self.corre("import time; time.sleep(0.45)")
         self.assertLessEqual(len(llamadas), 2)
 
     def test_foto_colgada_no_apaga_el_timeout(self):
@@ -415,21 +470,33 @@ class CierreTrasResultadoTest(unittest.TestCase):
         d, cwd = t / "intento", t / "w"
         d.mkdir()
         cwd.mkdir()
+
+        # La foto no vuelve. El wrapper igual tiene que marcar el timeout:
+        # el join del hilo final corta a los 5 s y no espera este cuelgue.
+        dentro = threading.Event()
+        volvio = []
+
+        def foto_colgada(*_a, **_k):
+            dentro.set()
+            time.sleep(20)
+            volvio.append(1)
+
         inicio = time.time()
-        with unittest.mock.patch.object(
-            runwrap, "foto_wip", lambda *a, **k: time.sleep(30)
-        ):
+        with unittest.mock.patch.object(runwrap, "foto_wip", foto_colgada):
             runwrap.main(
                 [
-                    "--dir", str(d), "--cwd", str(cwd), "--timeout", "2",
+                    "--dir", str(d), "--cwd", str(cwd), "--timeout", "0.4",
                     "--sin-avance", "60", "--cierre", "1", "--wip-rama", "wip",
-                    "--wip-cada", "1",
-                    "--", sys.executable, "-c", "import time; time.sleep(60)",
+                    "--wip-cada", "0.05",
+                    "--", sys.executable, "-c", "import time; time.sleep(30)",
                 ]
             )  # fmt: skip
         o = json.loads((d / "outcome.json").read_text())
+        dura = time.time() - inicio
         self.assertTrue(o["timed_out"])
-        self.assertLess(time.time() - inicio, 15)
+        self.assertLess(dura, 12)
+        self.assertTrue(dentro.is_set())
+        self.assertEqual(volvio, [])
 
 
 if __name__ == "__main__":

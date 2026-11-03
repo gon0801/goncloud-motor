@@ -4,9 +4,10 @@ La tabla sale de lo que cada job ejecuta y de lo que sus pruebas leen de
 verdad. `ops-tests` corre `ops/tests/correr.sh`; `macos` y `windows` corren
 listas acotadas de `tests/` que importan `motor/`, leen `conftest.py` y
 `verificacion/`, y `windows` además ejecuta `ops/prepara_pc.py`. `bateria`
-descubre toda la suite, así que suma `conf-ejemplo/`, `proto/`, la skill del
-director, los dos documentos que se comprueban y los archivos de `ops/` que
-las pruebas importan o copian. `gate` compila todas las rutas y escanea el
+es el check de la suite completa, cuatro partes y el job final, así que
+suma `conf-ejemplo/`, `proto/`, la skill del director, los dos documentos
+que se comprueban y los archivos de `ops/` que las pruebas importan o
+copian. `gate` compila todas las rutas y escanea el
 historial. `reconcile` no es un job de pruebas: vive en
 `ai-review-publish.yml` y corre en cada evento del PR, así que no se puede
 reusar por rutas.
@@ -74,10 +75,17 @@ DEPENDENCIAS = {
     "reconcile": ("*",),
 }
 
-# El nombre visible del job también es el nombre del check requerido.
+# El nombre visible del job también es el nombre del check. Las cuatro partes
+# publican bateria-parte-0..3 y el id de la matriz es bateria-partes. Son el
+# mismo trabajo que bateria: prep sigue decidiendo un solo filtro.
 ALIAS = {
     "Lanzamiento directo en macOS": "macos",
     "Bateria completa": "bateria",
+    "bateria-partes": "bateria",
+    "bateria-parte-0": "bateria",
+    "bateria-parte-1": "bateria",
+    "bateria-parte-2": "bateria",
+    "bateria-parte-3": "bateria",
 }
 
 SALIDAS = {

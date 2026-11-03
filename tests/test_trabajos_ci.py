@@ -92,6 +92,21 @@ class Dependencias(unittest.TestCase):
             trabajos_ci.trabajos_a_correr(["ops/senal-kuma.sh"]), ("ops-tests",)
         )
 
+    def test_las_partes_de_la_bateria_son_el_mismo_trabajo(self):
+        for nombre in (
+            "bateria-partes",
+            "bateria-parte-0",
+            "bateria-parte-1",
+            "bateria-parte-2",
+            "bateria-parte-3",
+        ):
+            with self.subTest(nombre=nombre):
+                self.assertEqual(trabajos_ci.trabajo(nombre), "bateria")
+                self.assertFalse(trabajos_ci.afecta(nombre, ["ops/senal-kuma.sh"]))
+                self.assertTrue(
+                    trabajos_ci.afecta(nombre, ["motor/encargos/trabajos_ci.py"])
+                )
+
     def test_un_cambio_de_docs_no_corre_ningun_job_de_pruebas(self):
         self.assertEqual(trabajos_ci.trabajos_a_correr(["docs/flujo.md"]), ())
 
@@ -199,10 +214,29 @@ class Workflow(unittest.TestCase):
         for job in trabajos_ci.TRABAJOS:
             with self.subTest(job=job):
                 lineas = _job(job)
-                self.assertIn("    needs: prep", lineas)
+                cabecera = []
+                for linea in lineas:
+                    if linea.startswith("    steps:"):
+                        break
+                    cabecera.append(linea)
+                texto = "\n".join(cabecera)
+                self.assertIn("needs:", texto)
+                self.assertIn("prep", texto)
                 condicion = next(x for x in lineas if x.strip().startswith("if:"))
                 self.assertIn("always()", condicion)
                 self.assertIn(f"needs.prep.outputs.{job.replace('-', '_')} != 'false'", condicion)
+
+    def test_la_bateria_espera_a_las_cuatro_partes(self):
+        partes = "\n".join(_job("bateria-partes"))
+        self.assertIn("needs: prep", partes)
+        self.assertIn("always()", partes)
+        self.assertIn("needs.prep.outputs.bateria != 'false'", partes)
+        self.assertIn("parte: [0, 1, 2, 3]", partes)
+        self.assertIn("fail-fast: false", partes)
+        final = "\n".join(_job("bateria"))
+        self.assertIn("bateria-partes", final)
+        self.assertIn("needs.prep.outputs.bateria != 'false'", final)
+        self.assertIn("tests.reparto exigir", final)
 
     def test_las_rutas_de_los_comandos_estan_declaradas(self):
         dependencias = {
