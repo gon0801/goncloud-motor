@@ -280,9 +280,123 @@ class ElCierreConciliaLaCabezaDelPR(unittest.TestCase):
             self.assertEqual(e.fase_actual.fallas_checks, ("windows",))
             self.assertEqual(e.fase_actual.entrega_bloqueada_sha, sha_b)
 
+    def test_un_push_posterior_en_verde_no_cierra_con_el_sha_guardado(self):
+        """F6: el head vigente gobierna el cierre, no solo los checks. Con B
+        verde pero el sha aprobado A guardado, cerrar daría por terminado un
+        PR cuyo head es contenido que nadie aprobó: el trabajo vuelve nombrando
+        ambos shas."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-head-verde",
+                _GhConCorridas,
+                {"corridas": {"windows": "success", "bateria": "in_progress"}},
+            )
+            e = vuelta("uno")
+            self.assertNotEqual(e.estado, "terminado")
+            repo = str(e.entrega.repo)
+            sha_a = e.producto.sha_git
+            e = ciclo._anotar_lectura_deepseek(
+                r.reg,
+                r.fold(),
+                e.pr_numero,
+                sha_a,
+                [{"texto": "DeepSeek: APPROVED", "autor": "DeepSeek", "sha": sha_a}],
+                ahora_iso(),
+            )
+            rama = vuelta.gh.ver(repo, e.pr_numero).rama
+            sha_b = _empujar_head(tmp, repo, rama)
+            _corridas_sha(
+                vuelta.gh,
+                repo,
+                {
+                    sha_a: {"windows": "success", "bateria": "success"},
+                    sha_b: {"windows": "success"},
+                },
+            )
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertIn("head vigente del PR #", e.motivo)
+            self.assertIn(sha_b[:12], e.motivo)
+            self.assertIn(sha_a[:12], e.motivo)
+            self.assertIn("concilia el head del PR", e.motivo)
+            self.assertEqual(e.fase_actual.fallas_checks, ())
+
 
 def _git(*args):
     subprocess.run(["git", *args], check=True, capture_output=True, text=True)
+
+
+def _empujar_head(tmp, repo, rama, nombre="otro.txt"):
+    """Empuja un commit externo a la rama del PR y devuelve el head nuevo."""
+    clon = Path(tmp) / f"clon-{nombre.replace('.', '-')}"
+    _git("clone", "--quiet", repo, str(clon))
+    _git("-C", str(clon), "checkout", "--quiet", rama)
+    (clon / nombre).write_text("otro\n")
+    _git("-C", str(clon), "add", "-A")
+    _git(
+        "-C", str(clon),
+        "-c", "user.name=t", "-c", "user.email=t@l",
+        "commit", "--quiet", "-m", "push externo",
+    )
+    _git("-C", str(clon), "push", "--quiet", "origin", rama)
+    return subprocess.run(
+        ["git", "-C", str(clon), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _pasos(r, paso):
+    return [
+        ev for ev in r.reg.eventos(r.enc)
+        if ev["kind"] == "entrega_externa" and ev["data"].get("paso") == paso
+    ]
+
+
+class LasRondasNoRevivenUnShaQueYaNoEsLaCabeza(unittest.TestCase):
+    """F6: las rondas de reconciliación leen el sha bloqueado; si el head del
+    PR ya es otro contenido, ese sha está muerto: un rerun en verde sobre él
+    no se anota como checks_verdes ni abre el cierre. El head se concilia en
+    el turno de entrega, que devuelve el trabajo nombrando ambos shas."""
+
+    def test_el_rerun_verde_de_un_sha_que_ya_no_es_head_no_se_anota(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-ronda-head",
+                _GhConCorridas,
+                {"corridas": {"windows": "failure"}, "logs_job": {"windows": LOG_WINDOWS}},
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.fase_actual.fallas_checks, ("windows",))
+            repo = str(e.entrega.repo)
+            sha_a = e.producto.sha_git
+
+            rama = vuelta.gh.ver(repo, e.pr_numero).rama
+            sha_b = _empujar_head(tmp, repo, rama)
+            _corridas_sha(
+                vuelta.gh,
+                repo,
+                {
+                    sha_a: {"windows": "success"},
+                    sha_b: {"windows": "success"},
+                },
+            )
+            e = ciclo._reconciliar_checks(
+                r.reg, r.fold(), vuelta.gh, r.espacio, ahora_iso(), 0.0,
+            )
+            self.assertEqual(_pasos(r, "checks_verdes"), [])
+            self.assertEqual(e.fase_actual.fallas_checks, ("windows",))
+
+            # En el turno de entrega, el head concilia: trabajo de vuelta
+            # nombrando el head vigente y el sha aprobado.
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertIn("head vigente del PR #", e.motivo)
+            self.assertIn("concilia el head del PR", e.motivo)
 
 
 class ElLogDelJobEnRojoEsElDelJob(unittest.TestCase):

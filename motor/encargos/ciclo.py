@@ -3774,6 +3774,18 @@ def _reconciliar_checks(
     if not _toca_releer_checks(marca, sha, epoch, forzar, enc.generacion):
         return enc
     try:
+        vista = gh.ver(enc.entrega.repo, enc.pr_numero)
+        punta = str(getattr(vista, "head", "") or "").strip()
+    except Exception:
+        punta = ""
+    if punta and punta != sha:
+        # F6: el sha bloqueado ya no es el head del PR; sus rondas están muertas.
+        # Un verde de un sha que ya no es el head no abre el cierre (el portón de
+        # _chequeo_previo_cierre devuelve el trabajo por el head) y no se anota
+        # como checks_verdes de esta fase. El head se concilia en el turno de
+        # entrega, que devuelve el trabajo nombrando ambos shas.
+        return enc
+    try:
         veredicto = gh.checks(
             enc.entrega.repo, enc.pr_numero, sha, _checks_extra(enc, espacio),
             base_politica=enc.entrega.base,
@@ -4599,7 +4611,67 @@ def _chequeo_previo_cierre(
                 registro, enc, veredicto_ci, numero, sha_vigente, hora
             )
         return registro.fold(enc.id)
+    if sha_vigente != sha:
+        # F6: el head vigente gobierna el cierre, no solo los checks. Con los
+        # checks del head en verde, cerrar con el sha guardado (aprobado por
+        # DeepSeek y entregado) daría por terminado un PR cuyo head es otro
+        # contenido; el trabajo vuelve al responsable para conciliar el head.
+        return _head_desviado(registro, enc, hora, numero, sha, sha_vigente)
     return None
+
+
+def _head_desviado(
+    registro: Registro, enc: Encargo, hora: str,
+    numero: int, sha_entregado: str, head_vigente: str,
+) -> Encargo:
+    """F6: el head vigente del PR ya no es el sha aprobado y entregado. Cerrar
+    con el sha guardado daría por terminado un PR cuyo head es otro contenido
+    (el head es lo que se mergea), y las rondas de un sha que ya no es head
+    están muertas. Se anota la desviación una vez por head: la primera vez el
+    trabajo vuelve al responsable nombrando ambos shas; la repetición entra en
+    la escalera del freno hasta que alguien concilia el head."""
+    causa_head = (
+        f"el head vigente del PR #{numero} ({head_vigente[:12]}) ya no es el "
+        f"sha aprobado y entregado ({sha_entregado[:12]}); concilia el head "
+        "del PR"
+    )
+    clave_head = (
+        f"entrega:{enc.id}:{enc.fase_activa}:head_vigente:{head_vigente}"
+    )
+    ya_avisado = registro.por_ukey(clave_head) is not None
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "head_vigente",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha_entregado,
+                "head": head_vigente,
+                "hora": hora,
+            },
+        },
+        clave_head,
+    )
+    enc = registro.fold(enc.id)
+    if ya_avisado:
+        _sin_avance(
+            registro, enc, causa_head,
+            "el head del PR sigue distinto del sha aprobado y entregado; "
+            "decide si se acepta ese head o se repone el sha entregado",
+            hora, f"head-{head_vigente[:12]}",
+        )
+    else:
+        _devolver(
+            registro, enc, "investigar", causa_head,
+            "conciliar el head vigente del PR con el sha aprobado y "
+            "entregado; lo aprobado que no cambio se conserva",
+            hora, f"head-{head_vigente[:12]}",
+        )
+    return registro.fold(enc.id)
 
 
 def _observacion_corresponde(
@@ -4811,6 +4883,17 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return espera
     sha, causa = _commit_push(enc, espacio)
     if causa:
+        punta = ""
+        if enc.pr_numero:
+            try:
+                vista_push = gh.ver(enc.entrega.repo, enc.pr_numero)
+                punta = str(getattr(vista_push, "head", "") or "").strip()
+            except Exception:
+                punta = ""
+        if punta and punta != sha:
+            # F6: el push choca con un head externo; la entrega se concilia
+            # contra el head vigente en vez de esperar el reintento en bucle.
+            return _head_desviado(registro, enc, hora, enc.pr_numero, sha, punta)
         _anotar_instrumento(
             registro, enc, "github", causa,
             "reintentar commit y push de la misma version aprobada",
