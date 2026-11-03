@@ -84,11 +84,17 @@ class SolRemotoTest(unittest.TestCase):
                     f" args[0] = {str(falso)!r}\n"
                     " return _real(args, **kwargs)\nsubprocess.Popen = _codex\n"
                 )
+                # El latido hace select de 5 s aunque Codex ya salió. En la
+                # prueba el hijo es instantáneo: el select no espera de verdad.
+                cuerpo = remoto[2].replace(
+                    "select.select([sys.stdin], [], [], 5)",
+                    "select.select([sys.stdin], [], [], 0.01)",
+                )
                 kwargs["env"] = {
                     **(kwargs.get("env") or os.environ),
                     "PYTHONPATH": str(ruta.parents[1]),
                 }
-                return popen(["python3", "-c", prefijo + remoto[2]], **kwargs)
+                return popen(["python3", "-c", prefijo + cuerpo], **kwargs)
 
             esperado = {
                 "sha": sha,
