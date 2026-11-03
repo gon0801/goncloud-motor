@@ -796,16 +796,17 @@ def _vista_mezcla(gh: str, repo: str, numero: str, limite: float) -> dict:
 
 def _archivos_en_conflicto(
     espacio: Path, remoto: str, base: str, cabeza: str
-) -> list[str]:
-    """Nombres del choque que GitHub ya reportó. Se calculan en el clon del host
-    contra la base vigente, sin tocar la rama ni el árbol del espacio."""
+) -> list[str] | None:
+    """Nombres del choque con `base`; `[]` si no choca y `None` si no se pudo
+    comprobar. Se calcula en el clon del host, sin tocar la rama ni el árbol
+    del espacio. Un fallo al comprobar no se toma como "sin choque"."""
     try:
         _git_ci(
             espacio, "fetch", "--quiet", "--no-tags", remoto,
             f"refs/heads/{base}", plazo=60,
         )
     except CiFallo:
-        pass
+        return None
     for referencia in ("FETCH_HEAD", f"refs/remotes/origin/{base}"):
         resultado = _correr(
             [
@@ -814,13 +815,14 @@ def _archivos_en_conflicto(
             ],
             plazo=60,
         )
-        if resultado.returncode not in (0, 1):
+        if resultado.returncode == 0:
+            return []
+        if resultado.returncode != 1:
             continue
         lineas = [linea.strip() for linea in (resultado.stdout or "").splitlines()]
         nombres = [linea for linea in lineas[1:] if linea]
-        if nombres:
-            return nombres
-    return []
+        return nombres or ["(el choque no dice qué archivos)"]
+    return None
 
 
 def _comprobar_mezcla(
@@ -1085,6 +1087,12 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
             pedidos.append(canonico)
     if extra or (not todos and pedidos):
         mensaje += " jobs_extra=" + ",".join(dict.fromkeys(pedidos))
+    if not todos and not base_arbol:
+        # La inspección de un job exacto no acredita el verde del producto:
+        # compara contra HEAD para que solo corra lo que cambió más ese job.
+        base_arbol = _git_ci(
+            espacio, "rev-parse", "--verify", "HEAD^{tree}"
+        ).strip()
     base_sha, base_arbol = _commit_base(espacio, destino, ident, base_arbol)
     sha, arbol = _commit_temporal(espacio, destino, ident, mensaje, base_sha)
     marca = int(time.time())
@@ -1116,6 +1124,11 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
             min(CI_MEZCLA_S, limite - time.time()),
         )
         choques = _archivos_en_conflicto(espacio, remoto, base, sha)
+        if choques is None:
+            raise CiFallo(
+                f"no se pudo comprobar si el producto choca con {base}",
+                "reintentar; el CI no se lanza sobre un árbol sin saber si choca",
+            )
         if choques:
             raise CiFallo(
                 f"el producto no se puede mezclar con {base}: chocan {', '.join(choques)}",

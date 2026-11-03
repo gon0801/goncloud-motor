@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from motor.encargos import capacidades as cap
@@ -203,6 +204,49 @@ class CorreTodosLosJobs(_Ci):
         self.assertTrue(r["datos"]["base_rama"].startswith("ci-base/"))
         self.assertEqual(r["datos"]["base"], "main")
         self.assertEqual(self.ramas_base(), [])
+
+    def test_si_no_se_puede_comprobar_el_choque_no_corre_el_ci(self):
+        with mock.patch.object(cap, "_archivos_en_conflicto", return_value=None):
+            r = cap.ejecutar(
+                self.recursos,
+                cap.CI,
+                "ci-linux",
+                {"job": "todos"},
+                self.destino,
+                espacio=self.espacio,
+            )
+        self.assertEqual(r["estado"], "error", r)
+        self.assertIn("no se pudo comprobar", r["motivo"])
+
+    def test_un_job_exacto_sin_base_compara_con_head(self):
+        r = cap.ejecutar(
+            self.recursos,
+            cap.CI,
+            "ci-linux",
+            {"job": "bateria"},
+            self.destino,
+            espacio=self.espacio,
+        )
+        self.assertEqual(r["estado"], "ok", r)
+        sha = r["datos"]["sha"]
+        padre = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "rev-parse", sha + "^"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        arbol_padre = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "rev-parse", padre + "^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        head_tree = subprocess.run(
+            ["git", "-C", str(self.espacio), "rev-parse", "HEAD^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(arbol_padre, head_tree)
+        mensaje = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "log", "-1", "--format=%B", sha],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("jobs_extra=bateria", mensaje)
 
     def test_un_base_arbol_roto_corre_todo_y_no_compara_con_head(self):
         r = cap.ejecutar(

@@ -162,6 +162,17 @@ class Dependencias(unittest.TestCase):
             {"ops-tests": True, "bateria": True, "macos": False, "windows": False},
         )
 
+    def test_un_job_exacto_sin_cambios_corre_solo_ese(self):
+        valores = self._seleccion(
+            self._pr(),
+            {("base123", "head123"): ()},
+            mensaje="ci-prueba x jobs_extra=bateria",
+        )
+        self.assertEqual(
+            valores,
+            {"ops-tests": False, "bateria": True, "macos": False, "windows": False},
+        )
+
     def test_la_rama_base_del_commit_temporal_acota_su_diff(self):
         # El PR temporal abre contra ci-base/..., que apunta al verde: su diff
         # es solo la correccion.
