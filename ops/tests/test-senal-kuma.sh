@@ -3,12 +3,12 @@
 # base SQLite con las tablas reales de Kuma (kuma-esquema.sql). El motor de planes y el supervisor de
 # encargos tienen monitores distintos. La Mini y la PC ya traen la dirección del supervisor y se
 # conserva; la MacBook no la tiene y el script le crea su monitor. La Mac y la Mini corren su script
-# en un HOME falso. La PC pasa por un doble de powershell en el PATH: recibe el script real de
-# escritor_pc, comprueba las piezas que definen su comportamiento y escribe con CRLF, como
-# WriteAllLines en Windows; la lectura quita el retorno de carro, así que también acepta LF. Un
-# uname y un hostname falsos deciden si la Mac es local: con Linux va por ssh; con Darwin y el
-# hostname de la Mini también va
-# por ssh; solo con Darwin y otro hostname es la MacBook y escribe en su HOME sin ssh a sí misma.
+# en un HOME falso. Si hay pwsh, la PC ejecuta con ese pwsh el script real de escritor_pc
+# contra su HOME temporal; la lectura compara el archivo sin distinguir CR y LF. Si no hay
+# pwsh, queda el doble, que solo mira las piezas del script, y la prueba dice que se omitió
+# la ejecución real. Un uname y un hostname falsos deciden si la Mac es local: con Linux va por
+# ssh; con Darwin y el hostname de la Mini también va por ssh; solo con Darwin y otro hostname
+# es la MacBook y escribe en su HOME sin ssh a sí misma.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
@@ -122,7 +122,7 @@ case "$host" in
         esac
         exit 0 ;;
       "powershell "*)
-        exec powershell "$@" ;;
+        exec "$S/bin/corre-pwsh-pc" "$*" ;;
       *curl.exe*)
         _url=$(printf '%s\n' "$*" | grep -oE 'https?://[^[:space:]]+' | head -1)
         HOME="$HOME_PC" exec curl -sS -o /dev/null --max-time 5 "$_url" ;;
@@ -174,7 +174,15 @@ printf '302'
 exit 0
 FAKE
 ln -sfn curl "$S/bin/curl.exe"
-cat >"$S/bin/powershell" <<'FAKE'
+# pwsh de fuera de $S/bin. El doble de $S/bin no cuenta: lo crea esta prueba.
+PWSH_REAL=""
+_pwsh_en_path="$(command -v pwsh 2>/dev/null || true)"
+case "$_pwsh_en_path" in
+  "$S"/bin/*|"") ;;
+  *) PWSH_REAL="$_pwsh_en_path" ;;
+esac
+export PWSH_REAL
+cat >"$S/bin/powershell-doble" <<'FAKE'
 #!/usr/bin/env python3
 import base64, os, re, sys
 
@@ -218,8 +226,28 @@ base = campo(r"MOTOR_KUMA_URL=(http[^']*)'")
 os.execv(sys.executable, [sys.executable, "-I", os.path.join(os.environ["S"], "escribe-pc.py"),
                           os.environ["HOME_PC"], accion, sub, base])
 FAKE
-ln -sfn powershell "$S/bin/pwsh"
-chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname" "$S/bin/curl" "$S/bin/powershell"
+cat >"$S/bin/corre-pwsh-pc" <<'EOF'
+#!/usr/bin/env bash
+# Una sola entrada para la PC: el script codificado de escritor_pc. Con pwsh real
+# se ejecuta tal cual. Sin él, el doble de powershell-doble escribe en su lugar.
+set -u
+linea="${1:-}"
+case "$linea" in
+  *" -EncodedCommand "*) ;;
+  *) echo "powershell de la prueba: falta -EncodedCommand" >&2; exit 2 ;;
+esac
+b64="${linea##* -EncodedCommand }"
+if [ -z "$b64" ]; then
+  echo "powershell de la prueba: -EncodedCommand vacío" >&2
+  exit 2
+fi
+if [ -n "${PWSH_REAL:-}" ]; then
+  printf '1\n' >>"$S/pwsh-real-corridas"
+  USERPROFILE="$HOME_PC" HOME="$HOME_PC" exec "$PWSH_REAL" -NoProfile -NonInteractive -EncodedCommand "$b64"
+fi
+exec "$S/bin/powershell-doble" "$linea"
+EOF
+chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname" "$S/bin/curl" "$S/bin/powershell-doble" "$S/bin/corre-pwsh-pc"
 mkdir -p "$HOME_MAC/motor/motor"
 : >"$HOME_MAC/motor/motor/__init__.py"
 cat >"$HOME_MAC/motor/motor/__main__.py" <<'PYEOF'
@@ -699,27 +727,90 @@ borra_monitor "Motor de encargos de la PC"
 grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" \
   || fallo "al restaurar, la Mini perdió la dirección de encargos del operador"
 
-# F9: el doble de powershell recibe el script real de escritor_pc. Si al script le falta una pieza
-# del escritor (por ejemplo, la comparación sensible a mayúsculas), el doble se niega en vez de
-# escribir: así una regresión del PowerShell de la PC no pasa como un doble correcto.
-(
-  . "$RAIZ/ops/lib.sh"
-  . "$RAIZ/ops/lib-kuma.sh"
-  escritor_pc poner .motor "http://10.13.13.1:3001/api/push/"
-) >"$S/ps-sano"
-python3 -I - "$S/ps-sano" "$S/ps-malo" <<'PY'
+# La PC. Con pwsh, el script de escritor_pc corre de verdad contra un home temporal.
+# Un exit antes de escribir, o Move-Item dejado en un comentario, no deja secretos.env:
+# el doble igual lo escribiría, porque solo busca esas cadenas y luego usa escribe-pc.py.
+if [ -n "$PWSH_REAL" ]; then
+  [ -s "$S/pwsh-real-corridas" ] || fallo "la corrida de la PC no ejecutó pwsh"
+  _pwsh_ver="$("$PWSH_REAL" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null || true)"
+  echo "  la prueba de la PC se ejecutó con pwsh: $PWSH_REAL ${_pwsh_ver}"
+  _pc_b64() {
+    python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read().decode("utf-8").encode("utf-16-le")).decode())' "$1"
+  }
+  _pc_corre() { # _pc_corre <home> <script> [token]
+    local home=$1 script=$2 token=${3:-} b64
+    b64="$(_pc_b64 "$script")"
+    if [ -n "$token" ]; then
+      printf '%s\n' "$token" | HOME_PC="$home" "$S/bin/corre-pwsh-pc" "powershell -NoProfile -NonInteractive -EncodedCommand $b64"
+    else
+      HOME_PC="$home" "$S/bin/corre-pwsh-pc" "powershell -NoProfile -NonInteractive -EncodedCommand $b64" </dev/null
+    fi
+  }
+  (
+    . "$RAIZ/ops/lib.sh"
+    . "$RAIZ/ops/lib-kuma.sh"
+    escritor_pc poner .motor "http://10.13.13.1:3001/api/push/"
+  ) >"$S/ps-sano"
+  mkdir -p "$S/pc-real-ok"
+  rc=0
+  _pc_corre "$S/pc-real-ok" "$S/ps-sano" TOKENDERECHO || rc=$?
+  [ "$rc" = 0 ] || fallo "pwsh real no escribió el secreto (salió $rc)"
+  python3 -I - "$S/pc-real-ok/.motor/secretos.env" <<'PY' || fallo "pwsh real no dejó el secreto con el final de línea normalizado"
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+texto = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n").decode("utf-8")
+esperado = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/TOKENDERECHO\n"
+if texto != esperado:
+    sys.stderr.write(repr(texto) + "\n")
+    sys.exit(1)
+PY
+  python3 -I - "$S/ps-sano" "$S/ps-exit" <<'PY' || fallo "no pude armar el script con el exit mal puesto"
+import sys
+texto = open(sys.argv[1], encoding="utf-8").read()
+viejo = "$ErrorActionPreference = 'Stop'\n"
+if viejo not in texto:
+    sys.exit(2)
+open(sys.argv[2], "w", encoding="utf-8").write(texto.replace(viejo, viejo + "exit 0\n", 1))
+PY
+  mkdir -p "$S/pc-real-exit"
+  rc=0
+  _pc_corre "$S/pc-real-exit" "$S/ps-exit" TOKENDERECHO || rc=$?
+  [ "$rc" = 0 ] || fallo "el exit mal puesto salió $rc y se esperaba 0"
+  [ ! -e "$S/pc-real-exit/.motor/secretos.env" ] || fallo "un exit mal puesto dejó el archivo: no se ejecutó el PowerShell"
+  python3 -I - "$S/ps-sano" "$S/ps-sin-move" <<'PY' || fallo "no pude armar el script sin Move-Item"
+import sys
+texto = open(sys.argv[1], encoding="utf-8").read()
+linea = "Move-Item -LiteralPath $t -Destination $f -Force"
+if linea not in texto:
+    sys.exit(2)
+open(sys.argv[2], "w", encoding="utf-8").write(texto.replace(linea, "# " + linea, 1))
+PY
+  mkdir -p "$S/pc-real-move"
+  rc=0
+  _pc_corre "$S/pc-real-move" "$S/ps-sin-move" TOKENDERECHO || rc=$?
+  [ "$rc" = 0 ] || fallo "el script sin Move-Item salió $rc y se esperaba 0"
+  [ -f "$S/pc-real-move/.motor/secretos.env.nuevo" ] || fallo "sin Move-Item no quedó el temporal: el script no corrió"
+  [ ! -e "$S/pc-real-move/.motor/secretos.env" ] || fallo "sin Move-Item dejó el archivo: no se ejecutó el PowerShell"
+else
+  echo "  se omitió la ejecución real: no hay pwsh"
+  (
+    . "$RAIZ/ops/lib.sh"
+    . "$RAIZ/ops/lib-kuma.sh"
+    escritor_pc poner .motor "http://10.13.13.1:3001/api/push/"
+  ) >"$S/ps-sano"
+  python3 -I - "$S/ps-sano" "$S/ps-malo" <<'PY'
 import sys
 texto = open(sys.argv[1], encoding="utf-8").read().replace("-cmatch", "-match")
 open(sys.argv[2], "w", encoding="utf-8").write(texto)
 PY
-ps_malo="$(python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read().decode("utf-8").encode("utf-16-le")).decode())' "$S/ps-malo")"
-espera "el doble de powershell rechaza un script sin -cmatch" '!0' \
-  powershell -NoProfile -NonInteractive -EncodedCommand "$ps_malo"
-contiene "doble powershell" "$S/salida" "al script le faltan piezas"
-
-[ -s "$S/powershell-llamado" ] || fallo "ninguna prueba ejecutó el doble de powershell"
-grep -Fq '[IO.File]::WriteAllLines' "$S/powershell-llamado" || fallo "el escritor de la PC no usa WriteAllLines"
-grep -Fq -- '-cmatch' "$S/powershell-llamado" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
+  ps_malo="$(python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read().decode("utf-8").encode("utf-16-le")).decode())' "$S/ps-malo")"
+  espera "el doble de powershell rechaza un script sin -cmatch" '!0' \
+    "$S/bin/powershell-doble" -NoProfile -NonInteractive -EncodedCommand "$ps_malo"
+  contiene "doble powershell" "$S/salida" "al script le faltan piezas"
+  [ -s "$S/powershell-llamado" ] || fallo "ninguna prueba ejecutó el doble de powershell"
+  grep -Fq '[IO.File]::WriteAllLines' "$S/powershell-llamado" || fallo "el escritor de la PC no usa WriteAllLines"
+  grep -Fq -- '-cmatch' "$S/powershell-llamado" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
+fi
 
 # F1: la PC contesta las direcciones por ssh con CRLF. La lectura quita el CR antes de comparar y
 # sondear: sin eso, la dirección viaja con CR y el sondeo juzga una URL que no es la escrita.
