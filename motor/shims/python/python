@@ -1,3 +1,0 @@
-#!/bin/sh
-# El motor lo pone en el PATH solo si la máquina no tiene `python` pero sí `python3` (Mac y Mini).
-exec python3 "$@"
