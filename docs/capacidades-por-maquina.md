@@ -59,7 +59,7 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   abre en solo lectura y se le hace una consulta mínima; un remoto por fichero exige su
   `raiz` presente y legible; un `ci` con `repo` fijo se sondea con `gh repo view` contra
   ese repo (usa la sesión de gh del host; es una llamada de lectura, sin cuota) y uno sin
-  `repo` fijo solo exige `gh`: el repo sale del encargo. Sin `capacidades.json` los
+  `repo` fijo comprueba `gh auth status` y deja el repo al encargo. Sin `capacidades.json` los
   agentes no pueden pedir recursos: falta. Un remoto http no se sondea: aviso.
 - `avisos`: el canal de Telegram del motor (chat en la conf y `token_env` presente en
   `secretos.env`). Nunca imprime el token.
