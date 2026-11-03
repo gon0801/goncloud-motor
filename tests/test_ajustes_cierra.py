@@ -143,6 +143,33 @@ class CierreDelOperador(unittest.TestCase):
                 {"h_f11", "h_pc"},
             )
 
+    def test_el_texto_libre_no_cierra_hallazgos_ajenos_por_una_palabra(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r, e = self._con_bloqueantes(
+                tmp,
+                "cierra-token",
+                [
+                    dict(_bloqueante("h_log"), titulo="El log del CI no trae el job"),
+                    dict(_bloqueante("h_docs"), titulo="La guia no menciona el log"),
+                ],
+            )
+            self.addCleanup(r.reg.close)
+            self.assertEqual(
+                {h.id for h in bloqueantes_abiertos(e)}, {"h_log", "h_docs"}
+            )
+            corregir(
+                r.reg,
+                r.enc,
+                "cierro el log: ya esta",
+                "aj-cierra-token",
+                r.hora,
+                evidencia="revisado a mano",
+            )
+            e = r.fold()
+            self.assertEqual(
+                {h.id for h in bloqueantes_abiertos(e)}, {"h_log", "h_docs"}
+            )
+
     def test_el_texto_del_ajuste_tambien_declara_el_cierre(self):
         with tempfile.TemporaryDirectory() as tmp:
             r, _e = self._con_bloqueante(tmp, "cierra-2")

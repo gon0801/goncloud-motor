@@ -2471,29 +2471,55 @@ def _texto_normalizado(valor: str) -> str:
 
 
 def _coincide_hallazgo(valor: str, h: Hallazgo) -> bool:
-    """Un id, un ancla o un título que el propietario nombró para cerrar."""
-    import re
+    """Un id, un ancla o un título que el propietario nombró para cerrar.
 
+    La comparación es por el nombre entero, no por sus palabras: cerrar por
+    un token común cerraría hallazgos ajenos. Se acepta el título completo, el
+    título seguido de la explicación del ajuste y su primera palabra (``F11``
+    para ``F11 fuga en el log``)."""
     buscado = _texto_normalizado(valor)
     if not buscado:
         return False
-    campos = (_texto_normalizado(h.id), _texto_normalizado(h.ancla), _texto_normalizado(h.titulo))
-    if any(c and (buscado == c or buscado in c or c in buscado) for c in campos):
-        return True
-    for token in re.split(r"[^a-z0-9]+", buscado):
-        if len(token) < 3:
+    campos = (
+        _texto_normalizado(h.id),
+        _texto_normalizado(h.ancla),
+        _texto_normalizado(h.titulo),
+    )
+    for campo in campos:
+        if not campo:
             continue
-        if any(token in c for c in campos):
+        if buscado == campo or buscado.startswith(campo + " "):
             return True
-    return False
+    titulo = campos[2]
+    primera = titulo.split(" ", 1)[0] if titulo else ""
+    return bool(primera) and len(primera) >= 3 and buscado == primera
+
+
+def _separar_nombres(texto: str) -> tuple[str, ...]:
+    """Los nombres que el propietario encadena con comas, `y` o `e`."""
+    import re
+
+    return tuple(
+        parte.strip()
+        for parte in re.split(r"\s*(?:,|;|\by\b|\be\b|\band\b)\s*", str(texto or ""))
+        if parte.strip()
+    )
 
 
 def _resolver_cierres(valores, abiertos) -> tuple[str, ...]:
+    """Resuelve nombres a hallazgos abiertos; una coincidencia ambigua no cierra."""
     ids = []
     for valor in valores or ():
-        for h in abiertos:
-            if h.id not in ids and _coincide_hallazgo(str(valor), h):
-                ids.append(h.id)
+        texto = str(valor or "").strip()
+        if not texto:
+            continue
+        nombres = (texto,)
+        if not any(_coincide_hallazgo(texto, h) for h in abiertos):
+            nombres = _separar_nombres(texto)
+        for nombre in nombres:
+            encontrados = [h.id for h in abiertos if _coincide_hallazgo(nombre, h)]
+            if len(encontrados) == 1 and encontrados[0] not in ids:
+                ids.append(encontrados[0])
     return tuple(ids)
 
 

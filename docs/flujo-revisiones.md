@@ -113,12 +113,23 @@ mecanismo de `ci-prueba`: un commit temporal, una rama y un PR borrador que se
 cierran siempre al terminar.
 
 Cada job del workflow (`ops-tests`, `bateria`, `macos`, `windows`) declara de
-qué rutas depende. Si una corrección no toca las rutas de un job, ese job
-reusa su verde del último árbol que pasó; solo corre completo el job que el
-cambio puede afectar. Un cambio a `.github/workflows/**` vuelve a correr todos.
-El filtro va en el `if` de cada job, no en `paths` del disparador: un job
-saltado por su condición cuenta como éxito para la protección de rama, pero un
-workflow saltado deja los checks pendientes y bloquea el merge.
+qué rutas depende, sacadas de lo que ejecuta y de lo que sus pruebas leen.
+`ops-tests` depende de `ops/`; `macos` y `windows` de `motor/`, `tests/`,
+`conftest.py` y `verificacion/`, y `windows` además de `ops/prepara_pc.py`.
+`bateria` descubre toda la suite y suma `conf-ejemplo/`, `proto/`, la skill
+del director, los dos documentos que se comprueban y los archivos de `ops/`
+que las pruebas importan o copian. Si una corrección no toca las rutas de un
+job, ese job reusa su verde del último árbol que pasó; solo corre completo el
+job que el cambio puede afectar. Un cambio a `.github/workflows/**` vuelve a
+correr todos. El filtro va en el `if` de cada job, no en `paths` del
+disparador: un job saltado por su condición cuenta como éxito para la
+protección de rama, pero un workflow saltado deja los checks pendientes y
+bloquea el merge.
+
+El commit temporal pide por mensaje solo los jobs que el motor ya sabe que
+hacen falta. Ese mensaje no manda en un PR normal: solo se lee en una rama
+`ci-prueba/` del mismo repo, la que crea el motor, y ni allí puede saltar un
+job cuyas rutas toca el propio commit.
 
 Si el CI de la versión en revisión falla, el resultado queda como bloqueante
 en la fase. El revisor lo ve en su prompt con el nombre del job y el log

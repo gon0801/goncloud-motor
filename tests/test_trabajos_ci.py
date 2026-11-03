@@ -60,22 +60,77 @@ class Dependencias(unittest.TestCase):
 
     def test_windows_depende_del_script_que_ejecuta(self):
         self.assertTrue(trabajos_ci.afecta("windows", ["ops/prepara_pc.py"]))
-        self.assertFalse(trabajos_ci.afecta("bateria", ["ops/prepara_pc.py"]))
         self.assertFalse(trabajos_ci.afecta("macos", ["ops/prepara_pc.py"]))
+
+    def test_bateria_depende_de_lo_que_leen_sus_pruebas(self):
+        for ruta in (
+            "conf-ejemplo/rutas.toml",
+            "proto/fake_cli.py",
+            "skill/motor/SKILL.md",
+            "docs/flujo-revisiones.md",
+            "ops/prepara_pc.py",
+            "ops/lib.sh",
+            "ops/tests/omitidas.txt",
+        ):
+            with self.subTest(ruta=ruta):
+                self.assertTrue(trabajos_ci.afecta("bateria", [ruta]))
+
+    def test_un_cambio_de_ops_que_la_bateria_no_lee_no_la_corre(self):
+        self.assertFalse(trabajos_ci.afecta("bateria", ["ops/senal-kuma.sh"]))
+        self.assertEqual(
+            trabajos_ci.trabajos_a_correr(["ops/senal-kuma.sh"]), ("ops-tests",)
+        )
 
     def test_un_cambio_de_docs_no_corre_ningun_job_de_pruebas(self):
         self.assertEqual(trabajos_ci.trabajos_a_correr(["docs/flujo.md"]), ())
 
     def test_el_marcador_del_commit_temporal_manda_sobre_las_rutas(self):
         self.assertEqual(
-            trabajos_ci._marcador_de_jobs("ci-prueba x jobs=ops-tests,bateria"),
+            trabajos_ci._marcador_de_jobs(
+                "ci-prueba x jobs=ops-tests,bateria", "ci-prueba/x"
+            ),
             ("ops-tests", "bateria"),
         )
         self.assertEqual(
-            trabajos_ci._marcador_de_jobs("ci-prueba x jobs=todos"),
+            trabajos_ci._marcador_de_jobs("ci-prueba x jobs=todos", "ci-prueba/x"),
             trabajos_ci.TRABAJOS,
         )
-        self.assertIsNone(trabajos_ci._marcador_de_jobs("commit normal"))
+        self.assertIsNone(
+            trabajos_ci._marcador_de_jobs("commit normal", "ci-prueba/x")
+        )
+
+    def test_el_mensaje_de_un_pr_normal_no_elige_los_jobs(self):
+        self.assertIsNone(
+            trabajos_ci._marcador_de_jobs(
+                "ci-prueba x jobs=ops-tests", "encargo/enc_3979357e"
+            )
+        )
+        self.assertIsNone(
+            trabajos_ci._marcador_de_jobs(
+                "ci-prueba x jobs=ops-tests", "ci-prueba/x", False
+            )
+        )
+        valores = trabajos_ci._decidir(
+            None, (), ["motor/encargos/ciclo.py"], True
+        )
+        self.assertEqual(
+            valores,
+            {"ops-tests": False, "bateria": True, "macos": True, "windows": True},
+        )
+
+    def test_un_marcador_no_puede_saltar_un_job_que_el_commit_toca(self):
+        valores = trabajos_ci._decidir(
+            ("ops-tests",), ["motor/encargos/ciclo.py"], (), True
+        )
+        self.assertEqual(
+            valores,
+            {"ops-tests": True, "bateria": True, "macos": True, "windows": True},
+        )
+        valores = trabajos_ci._decidir(("ops-tests",), ["ops/senal-kuma.sh"], (), True)
+        self.assertEqual(
+            valores,
+            {"ops-tests": True, "bateria": False, "macos": False, "windows": False},
+        )
 
 
 class Workflow(unittest.TestCase):
