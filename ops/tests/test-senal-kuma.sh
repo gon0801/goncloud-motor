@@ -4,7 +4,7 @@
 # encargos tienen monitores distintos. La Mini y la PC ya traen la dirección del supervisor y se
 # conserva; la MacBook no la tiene y el script le crea su monitor. La Mac y la Mini corren su script
 # en un HOME falso; con pwsh, la PC corre el PowerShell de verdad con un USERPROFILE falso; sin pwsh,
-# un sustituto en Python prueba todo menos la escritura de la PC. Un uname y un hostname falsos
+# el sustituto escribe CRLF, como WriteAllLines en Windows, y la lectura quita el retorno de carro. Un uname y un hostname falsos
 # deciden si la Mac es local: con Linux va por ssh; con Darwin y el hostname de la Mini también va
 # por ssh; solo con Darwin y otro hostname es la MacBook y escribe en su HOME sin ssh a sí misma.
 set -uo pipefail
@@ -554,7 +554,11 @@ for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos 
     || fallo "alta: el secreto de encargos de $nombre no apunta al monitor creado"
   # Sin pwsh el sustituto imita WriteAllLines de Windows. Con pwsh, en Linux el salto es LF.
   if [ "$nombre" = PC ] && ! command -v pwsh >/dev/null 2>&1; then
-    grep -q $'\r' "$casa/.motor-encargos/secretos.env" || fallo "alta: el secreto de encargos de la PC no quedó en CRLF"
+    if grep -q $'\r' "$casa/.motor-encargos/secretos.env"; then
+      echo "  ok: el secreto de encargos de la PC quedó en CRLF"
+    else
+      fallo "alta: el secreto de encargos de la PC no quedó en CRLF"
+    fi
   fi
   printf '%s\n' "$tok" >"$S/tok-antes-$nombre"
 done
@@ -683,5 +687,4 @@ if claves != ["mini", "pc", "mac", "mac-encargos"]:
   done
 fi
 
-command -v pwsh >/dev/null 2>&1 || echo "sin pwsh: no probé la escritura de la PC"
 termina
