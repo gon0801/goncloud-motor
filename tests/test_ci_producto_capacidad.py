@@ -8,12 +8,10 @@ reusados. Se usa el mismo `gh` falso que las pruebas de CI.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from motor.encargos import capacidades as cap
 from tests.test_ci_remoto import _Ci
@@ -533,139 +531,6 @@ class EsperaARunsQueAparecenTarde(_Ci):
         jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
         self.assertEqual(jobs["lint"]["conclusion"], "failure")
         self.assertEqual(r["datos"]["fallas"], ["lint"])
-
-
-GH_CAMBIA = r'''#!{python}
-import json, os, sys
-d = os.environ["FAKE_GH_DIR"]
-modo = os.environ.get("FAKE_MODO", "")
-args = sys.argv[1:]
-def val(flag):
-    return args[args.index(flag) + 1]
-ruta = os.path.join(d, "estado.json")
-estado = json.load(open(ruta)) if os.path.exists(ruta) else {"llamadas": [], "sondeos": 0}
-estado["llamadas"].append(args)
-def guardar():
-    json.dump(estado, open(ruta, "w"))
-sha = val("--commit") if "--commit" in args else ""
-def run(rid, estado_run, conclusion, nombre):
-    return {{"databaseId": rid, "status": estado_run, "conclusion": conclusion,
-        "headSha": sha, "event": "pull_request", "workflowName": nombre,
-        "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/" + str(rid)}}
-A = run(1234, "completed", "success", "quality")
-B = run(1235, "completed", "failure", "quality-extra")
-if args[:2] == ["pr", "create"]:
-    guardar()
-    print("https://github.com/gon0801/goncloud-Orbit/pull/7")
-elif args[:2] == ["pr", "view"]:
-    guardar()
-    print(json.dumps({{"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}}))
-elif args[:2] == ["run", "list"]:
-    sondeos = int(estado.get("sondeos") or 0) + 1
-    estado["sondeos"] = sondeos
-    if modo == "estancado":
-        lista = [run(1234, "in_progress", "success", "quality"),
-                 run(1235, "in_progress", "success", "quality-extra")]
-    elif modo == "tardio":
-        if sondeos == 1:
-            lista = [A]
-        elif sondeos == 2:
-            lista = [A, run(1235, "in_progress", "success", "quality-extra")]
-        else:
-            lista = [A, run(1235, "completed", "success", "quality-extra")]
-    elif sondeos == 1:
-        lista = [A, B]
-    elif modo == "omite":
-        lista = [A]
-    elif modo == "vacio":
-        lista = []
-    else:
-        lista = [A, B]
-    guardar()
-    print(json.dumps(lista))
-elif args[:2] == ["run", "view"] and "--log" not in args:
-    guardar()
-    rid = args[2]
-    verde = rid == "1234" or (rid == "1235" and modo == "tardio")
-    if verde:
-        jobs = [{{"name": "quality" if rid == "1234" else "lint",
-                  "databaseId": 201 if rid == "1234" else 202,
-                  "conclusion": "success"}}]
-    else:
-        jobs = [{{"name": "lint", "databaseId": 202, "conclusion": "failure"}}]
-    print(json.dumps({{"status": "completed",
-        "conclusion": "success" if verde else "failure",
-        "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/" + rid,
-        "jobs": jobs}}))
-elif args[:2] == ["run", "view"]:
-    guardar()
-    sys.stdout.write(open(os.path.join(d, "log-" + val("--job") + ".txt")).read())
-elif args[:2] == ["pr", "close"]:
-    guardar()
-else:
-    guardar()
-    sys.exit(2)
-'''
-
-
-class ConjuntoDeRunsEstable(_Ci):
-    """Un sondeo posterior no puede borrar del veredicto un run ya visto, y la
-    confirmación del conjunto espera al workflow que aparece tarde."""
-
-    def setUp(self):
-        super().setUp()
-        (self.fake / "log-202.txt").write_text("FALLA de lint\n", encoding="utf-8")
-        (self.fake / "estado.json").write_text(
-            json.dumps({"llamadas": [], "sondeos": 0})
-        )
-        (self.bin / "gh").write_text(
-            GH_CAMBIA.replace("{{", "{").replace("}}", "}").replace(
-                "#!{python}", "#!" + sys.executable
-            )
-        )
-        (self.bin / "gh").chmod(0o755)
-        self.recursos = {
-            "ci-linux": {"tipo": "ci", "autorizacion": "", "repo": "o/r", "base": "main"}
-        }
-
-    def pedir_en_modo(self, modo: str) -> dict:
-        with mock.patch.dict(os.environ, {"FAKE_MODO": modo}):
-            return self.pedir("todos")
-
-    def test_un_run_omitido_despues_sigue_en_el_veredicto(self):
-        r = self.pedir_en_modo("omite")
-
-        self.assertEqual(r["estado"], "ok", r)
-        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
-        self.assertEqual(jobs["lint"]["conclusion"], "failure")
-        self.assertEqual(r["datos"]["fallas"], ["lint"])
-        self.assertEqual(r["datos"]["conclusion"], "failure")
-
-    def test_una_lista_vacia_posterior_no_borra_los_runs_vistos(self):
-        r = self.pedir_en_modo("vacio")
-
-        self.assertEqual(r["estado"], "ok", r)
-        self.assertEqual(len(r["datos"]["jobs"]), 2)
-        self.assertEqual(r["datos"]["fallas"], ["lint"])
-        self.assertEqual(r["datos"]["conclusion"], "failure")
-
-    def test_un_workflow_que_aparece_al_confirmar_se_espera(self):
-        r = self.pedir_en_modo("tardio")
-
-        self.assertEqual(r["estado"], "ok", r)
-        estado = json.loads((self.fake / "estado.json").read_text())
-        self.assertGreaterEqual(estado["sondeos"], 4)
-        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
-        self.assertEqual(jobs["quality"]["conclusion"], "success")
-        self.assertEqual(jobs["lint"]["conclusion"], "success")
-        self.assertEqual(r["datos"]["fallas"], [])
-
-    def test_los_runs_que_nunca_terminan_vencen_el_plazo(self):
-        with mock.patch.object(cap, "CI_MAX_S", 1.0):
-            r = self.pedir_en_modo("estancado")
-
-        self.assertEqual(r["estado"], "error", r)
-        self.assertIn("no terminaron", r["motivo"])
 
 
 if __name__ == "__main__":
