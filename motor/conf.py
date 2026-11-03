@@ -1,0 +1,389 @@
+"""Configuración en tres capas, una por tipo de verdad, sin copias.
+
+1. Conf compartida (un repo, el mismo en las tres máquinas): papeles, carriles de modelos,
+   rutas modelo -> cuenta -> CLI, reglas y avisos. Es la única fuente de "qué agente hace qué".
+2. `.motor.toml` de cada repo: checks, método de merge y receta de despliegue. Se lee de la
+   rama BASE al tomar el plan y queda fijado (un agente no cambia las reglas de su propia rama).
+3. `maquina.toml` + `secretos.env` de cada máquina: solo hechos de la máquina. Esquema cerrado:
+   si trae papeles, modelos o reglas, se rechaza (así la instalación es idéntica por tipo).
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import stat
+import string
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import tomllib
+
+from .pstack import ConfError, PstackConf, parse_conf
+
+DATOS_DE_RUTA = ("brief", "prompt", "result", "pstack", "sesion")
+CUENTAS_DE_TIEMPOS = {
+    "agentes_por_maquina": 0,
+    "repeticiones_max": 1,
+}  # clave -> mínimo
+
+
+# --------------------------------------------------------------------------- compartida
+
+
+@dataclass(frozen=True)
+class Ruta:
+    """Un modelo concreto, la cuenta que lo paga y cómo se lanza sin ventana."""
+
+    modelo: str
+    cuenta: str
+    cli: str
+    argv: tuple[str, ...]  # plantilla: DATOS_DE_RUTA
+    max_parallel: int = 1  # por cuenta y máquina se suma en machine._ocupados
+    env: tuple[
+        tuple[str, str], ...
+    ] = ()  # p. ej. DeepSeek por el CLI de Claude; ${VAR} sale de secretos.env
+
+
+@dataclass(frozen=True)
+class Conf:
+    sha: str  # versión de la conf (auditoría)
+    papeles: dict[str, str]  # papel -> carril
+    carriles: dict[str, tuple[str, ...]]  # carril -> modelos en orden de relevo
+    rutas: dict[str, Ruta]  # modelo -> ruta
+    reglas: str  # preámbulo de todo encargo
+    reglas_revisor: str
+    tiempos: dict[str, float]
+    avisos: dict[str, str]  # {"base_url", "chat", "token_env"}
+    motor: dict[str, str] = field(
+        default_factory=dict
+    )  # versión que la conf fija: {"version", "sha"}
+    pstack: PstackConf | None = None  # pstack.toml; sin él, el motor no usa pstack
+    dir: Path | None = None  # carpeta de la conf (de ahí sale la copia fija de pstack)
+
+    def escalera(self, papel: str) -> tuple[str, ...]:
+        return self.carriles[self.papeles[papel]]
+
+    def cuenta(self, modelo: str) -> str:
+        return self.rutas[modelo].cuenta
+
+
+def datos_desconocidos(argv) -> list[str]:
+    """Los datos que la línea de una ruta usa y no son de DATOS_DE_RUTA ('?' si la llave está mal escrita)."""
+    malos: list[str] = []
+    for x in argv:
+        try:
+            campos = [c for _, c, _, _ in string.Formatter().parse(x) if c is not None]
+        except ValueError:
+            malos.append("?")
+            continue
+        for c in campos:
+            nombre = c.split(".")[0].split("[")[0]
+            if nombre not in DATOS_DE_RUTA and nombre not in malos:
+                malos.append(nombre)
+    return malos
+
+
+def argv_de_ruta(
+    ruta: Ruta, *, brief: str, prompt: str, result: str, pstack: str, sesion: str
+) -> list[str]:
+    """La línea de una ruta con los cinco datos que pone el motor: el único lugar donde se llenan."""
+    datos = dict(
+        zip(DATOS_DE_RUTA, (brief, prompt, result, pstack, sesion), strict=True)
+    )
+    return [x.format(**datos) for x in ruta.argv]
+
+
+def _valida_tiempos(tiempos) -> None:
+    if not isinstance(tiempos, dict):
+        raise ConfError("[tiempos] tiene que ser una tabla de valores")
+    for k, v in tiempos.items():
+        es_numero = isinstance(v, int | float) and not isinstance(v, bool)
+        if k in CUENTAS_DE_TIEMPOS:
+            minimo = CUENTAS_DE_TIEMPOS[k]
+            if not (isinstance(v, int) and not isinstance(v, bool) and v >= minimo):
+                raise ConfError(
+                    f"[tiempos] {k} tiene que ser un número entero "
+                    + ("mayor que 0" if minimo else "mayor o igual a 0")
+                    + f" (vino {v!r})"
+                )
+        elif not es_numero or not math.isfinite(v):
+            raise ConfError(
+                f"[tiempos] {k} tiene que ser un número finito (vino {v!r})"
+            )
+        elif k.endswith("_s") and v <= 0:
+            raise ConfError(
+                f"[tiempos] {k} tiene que ser un número mayor que 0 (vino {v!r})"
+            )
+
+
+def _max_parallel(modelo: str, r: dict) -> int:
+    v = r.get("max_parallel", 1)
+    if not (isinstance(v, int) and not isinstance(v, bool) and v > 0):
+        raise ConfError(
+            f"rutas.toml [rutas.{modelo}] max_parallel tiene que ser un entero mayor que 0 (vino {v!r})"
+        )
+    return v
+
+
+def _argv(modelo: str, r: dict) -> tuple[str, ...]:
+    v = r["argv"]
+    if not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+        raise ConfError(
+            f"rutas.toml [rutas.{modelo}] argv tiene que ser una lista de textos (vino {v!r})"
+        )
+    return tuple(v)
+
+
+def _git_sha(d: Path) -> str:
+    r = subprocess.run(
+        ["git", "-C", str(d), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+    )
+    return r.stdout.strip() if r.returncode == 0 else "sin-git"
+
+
+def load_conf(d: Path) -> Conf:
+    papeles = tomllib.loads((d / "papeles.toml").read_text(encoding="utf-8"))["papeles"]
+    carriles = {
+        k: tuple(v)
+        for k, v in tomllib.loads((d / "modelos.toml").read_text(encoding="utf-8"))[
+            "carriles"
+        ].items()
+    }
+    raw_rutas = tomllib.loads((d / "rutas.toml").read_text(encoding="utf-8"))["rutas"]
+    rutas = {
+        m: Ruta(
+            modelo=m,
+            cuenta=r["cuenta"],
+            cli=r["cli"],
+            argv=_argv(m, r),
+            max_parallel=_max_parallel(m, r),
+            env=tuple(sorted(r.get("env", {}).items())),
+        )
+        for m, r in raw_rutas.items()
+    }
+    general = (
+        tomllib.loads((d / "general.toml").read_text(encoding="utf-8"))
+        if (d / "general.toml").exists()
+        else {}
+    )
+    _valida_tiempos(general.get("tiempos", {}))
+    errores = []
+    fijada = general.get("motor", {})
+    for k, v in fijada.items():
+        if k not in ("version", "sha") or not isinstance(v, str) or not v.strip():
+            errores.append(
+                f"general.toml [motor]: solo version y sha, como texto; vino {k} = {v!r}"
+            )
+    for papel, carril in papeles.items():
+        if carril not in carriles:
+            errores.append(f"el papel {papel} apunta al carril {carril}, que no existe")
+    for carril, modelos in carriles.items():
+        for mo in modelos:
+            if mo not in rutas:
+                errores.append(
+                    f"el carril {carril} nombra al modelo {mo}, que no tiene ruta"
+                )
+    pstack = None
+    if (d / "pstack.toml").exists():
+        try:
+            pstack = parse_conf(
+                tomllib.loads((d / "pstack.toml").read_text(encoding="utf-8"))
+            )
+        except (ValueError, tomllib.TOMLDecodeError) as e:
+            errores.append(f"pstack.toml: {e}")
+    if errores:
+        raise ConfError("; ".join(errores))
+    reglas_dir = d / "reglas"
+    return Conf(
+        sha=_git_sha(d),
+        papeles=papeles,
+        carriles=carriles,
+        rutas=rutas,
+        reglas=(reglas_dir / "encargo.md").read_text(encoding="utf-8")
+        if (reglas_dir / "encargo.md").exists()
+        else "",
+        reglas_revisor=(reglas_dir / "revisor.md").read_text(encoding="utf-8")
+        if (reglas_dir / "revisor.md").exists()
+        else "",
+        tiempos={k: float(v) for k, v in general.get("tiempos", {}).items()},
+        avisos={k: str(v) for k, v in general.get("avisos", {}).items()},
+        motor={
+            k: v
+            for k, v in fijada.items()
+            if k in ("version", "sha") and isinstance(v, str)
+        },
+        pstack=pstack,
+        dir=d,
+    )
+
+
+# --------------------------------------------------------------------------- máquina
+
+_CLAVES_MAQUINA = {
+    "nombre",
+    "conf",
+    "path_extra",
+    "env",
+    "bash",
+    "wsl",
+    "github",
+    "no_dormir",
+    "tiene",
+    "buzones",
+}
+_PROHIBIDAS = {"papeles", "carriles", "rutas", "modelos", "reglas", "roles", "avisos"}
+
+
+@dataclass(frozen=True)
+class Maquina:
+    nombre: str
+    conf: Path
+    path_extra: tuple[str, ...] = ()
+    env: tuple[tuple[str, str], ...] = ()  # p. ej. certificados de Kaspersky en la PC
+    wsl: tuple[str, ...] = ()  # CLIs que corren dentro de WSL
+    bash: str = ""  # Git Bash de la PC; vacío usa C:\Program Files\Git\bin\bash.exe
+    github: str = "real"  # real | falso:<carpeta> (pruebas)
+    tiene: tuple[str, ...] = ()  # capacidades de esta máquina, p. ej. "ssh-goncloud"
+    # carpetas (con comodines) donde agentes con acceso solo a su carpeta dejan planes para el motor,
+    # p. ej. "/Users/dn/OpenBot/Agents/*/motor-buzon" (David, 2026-10-21)
+    buzones: tuple[str, ...] = ()
+    # MacBook: comandos para no dormirse (ni con la tapa cerrada) mientras haya un plan en curso
+    no_dormir_encender: tuple[str, ...] = ()
+    no_dormir_apagar: tuple[str, ...] = ()
+    secretos: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+
+
+def valida_maquina(raw: dict) -> None:
+    """Esquema cerrado de maquina.toml (también lo usa `motor conf valida` sobre maquinas/*.toml)."""
+    if "nombre" not in raw or "conf" not in raw:
+        raise ConfError("maquina.toml necesita 'nombre' y 'conf'")
+    nd = raw.get("no_dormir")
+    if nd is not None and not (
+        isinstance(nd.get("encender"), list) and isinstance(nd.get("apagar"), list)
+    ):
+        raise ConfError(
+            "[no_dormir] lleva dos listas: encender = [...] y apagar = [...]"
+        )
+    if "bash" in raw and not (isinstance(raw["bash"], str) and raw["bash"].strip()):
+        raise ConfError(
+            '"bash" es la ruta de Git Bash: bash = "C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe"'
+        )
+    tiene = raw.get("tiene", [])
+    if not (
+        isinstance(tiene, list) and all(isinstance(x, str) and x.strip() for x in tiene)
+    ):
+        raise ConfError(
+            '"tiene" es una lista de nombres: tiene = ["ssh-goncloud", ...]'
+        )
+    env = raw.get("env", {})
+    if not (
+        isinstance(env, dict)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+    ):
+        raise ConfError('[env] lleva textos entre comillas: CLAVE = "valor"')
+    for clave in ("path_extra", "wsl", "buzones"):
+        v = raw.get(clave, [])
+        if not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            raise ConfError(f'"{clave}" es una lista de textos: {clave} = ["...", ...]')
+    if not isinstance(raw.get("github", "real"), str):
+        raise ConfError('"github" es un texto: github = "real"')
+    malas = set(raw) & _PROHIBIDAS
+    if malas:
+        raise ConfError(
+            f"maquina.toml no puede traer {sorted(malas)}: eso vive en la conf compartida, "
+            "igual para las tres máquinas"
+        )
+    extras = set(raw) - _CLAVES_MAQUINA
+    if extras:
+        raise ConfError(f"maquina.toml trae claves desconocidas: {sorted(extras)}")
+
+
+def load_maquina(home: Path) -> Maquina:
+    raw = tomllib.loads((home / "maquina.toml").read_text(encoding="utf-8"))
+    valida_maquina(raw)
+    return Maquina(
+        nombre=raw["nombre"],
+        conf=Path(raw["conf"]).expanduser(),
+        path_extra=tuple(raw.get("path_extra", [])),
+        env=tuple(sorted(raw.get("env", {}).items())),
+        wsl=tuple(raw.get("wsl", [])),
+        bash=str(raw.get("bash", "")),
+        github=raw.get("github", "real"),
+        tiene=tuple(raw.get("tiene", [])),
+        buzones=tuple(raw.get("buzones", [])),
+        no_dormir_encender=tuple(raw.get("no_dormir", {}).get("encender", [])),
+        no_dormir_apagar=tuple(raw.get("no_dormir", {}).get("apagar", [])),
+        secretos=tuple(sorted(load_secretos(home).items())),
+    )
+
+
+def load_secretos(home: Path) -> dict[str, str]:
+    """Tokens de larga duración (sin llavero). Exige permisos de dueño en POSIX."""
+    p = home / "secretos.env"
+    if not p.exists():
+        return {}
+    if os.name == "posix" and stat.S_IMODE(p.stat().st_mode) & 0o077:
+        raise ConfError("secretos.env tiene permisos abiertos; debe ser 600")
+    out = {}
+    for linea in p.read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if linea and not linea.startswith("#") and "=" in linea:
+            k, v = linea.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+# --------------------------------------------------------------------------- repo
+
+
+@dataclass(frozen=True)
+class RepoConf:
+    """`.motor.toml` de un repo, tal como estaba en la rama base al tomar el plan."""
+
+    principal: str = "main"
+    merge: str = "squash"
+    checks_extra: tuple[str, ...] = ()
+    desplegar: str = ""
+    checklist: str = ""
+    rollback: str = ""
+    requiere: tuple[str, ...] = ()
+    prueba_env: tuple[tuple[str, str], ...] = ()
+
+    @staticmethod
+    def parse(texto: str) -> RepoConf:
+        raw = tomllib.loads(texto) if texto.strip() else {}
+        gh, dep = raw.get("github", {}), raw.get("deploy", {})
+        return RepoConf(
+            principal=raw.get("repo", {}).get("principal", "main"),
+            merge=gh.get("merge", "squash"),
+            checks_extra=tuple(gh.get("checks_extra", [])),
+            desplegar=dep.get("desplegar", ""),
+            checklist=dep.get("checklist", ""),
+            rollback=dep.get("rollback", ""),
+            requiere=tuple(dep.get("requiere", [])),
+            prueba_env=tuple(sorted(raw.get("pruebas", {}).get("env", {}).items())),
+        )
+
+
+def requisitos_faltantes(
+    requiere: tuple[str, ...], tiene: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Lo que un repo pide en `[deploy] requiere` y la máquina no declara en `tiene`."""
+    return tuple(x for x in dict.fromkeys(requiere) if x not in tiene)
+
+
+def motivo_requiere(maquina: str, repo: str, faltan: tuple[str, ...]) -> str:
+    """Una frase llana para quien entregó el plan (sin rutas ni jerga)."""
+    nombre = repo.removesuffix(".git").rstrip("/").split("/")[-1].split(":")[-1]
+    cosas = ", ".join(faltan)
+    return (
+        f"{maquina} no puede llevar este plan: {nombre} necesita {cosas} para desplegar y esa máquina no lo tiene. "
+        "Entrégalo en una máquina que sí lo tenga."
+    )

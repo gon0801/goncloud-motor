@@ -1,0 +1,20 @@
+{
+  "cli": "grok",
+  "ruta": "grok",
+  "plantilla": [
+    "grok",
+    "--prompt-file",
+    "{brief}",
+    "--always-approve",
+    "--output-format",
+    "json"
+  ],
+  "rc": 0,
+  "segundos": 216,
+  "raiz": "/var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k",
+  "version": "grok 1.0.62 (1474f9cbdd91)",
+  "error": "",
+  "fuente": "~/.grok/sessions/<cwd>/01a166e9-1ff6-77a0-bccd-07be0c12e979/updates.jsonl",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "l heredero de la carpeta encontrará el mismo README de dos líneas.\",\n  \"usage\": {\n    \"input_tokens\": 47524,\n    \"cache_read_input_tokens\": 355840,\n    \"cache_creation_input_tokens\": 0,\n    \"output_tokens\": 15811,\n    \"reasoning_tokens\": 13379,\n    \"total_tokens\": 419175\n  },\n  \"num_turns\": 11,\n  \"total_cost_usd\": 0.367834,\n  \"total_cost_usd_ticks\": 3678340000,\n  \"modelUsage\": {\n    \"grok-4.7-build\": {\n      \"inputTokens\": 47524,\n      \"outputTokens\": 15811,\n      \"cacheReadInputTokens\": 355840,\n      \"cacheCreationInputTokens\": 0,\n      \"modelCalls\": 13,\n      \"costUSD\": 0.367834\n    }\n  }\n}\n"
+}

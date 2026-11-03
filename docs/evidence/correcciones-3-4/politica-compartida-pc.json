@@ -1,0 +1,10 @@
+{
+  "accion": "sincronizada",
+  "origen": "Gons-Mac-Mini-2.lan",
+  "hash": "27dd05295b9d0da3678f3a443ae39726354e3127ffb527f3392ce20d59d46e96",
+  "generacion": "v7",
+  "componentes": [
+    "codex",
+    "openclaw"
+  ]
+}
