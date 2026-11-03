@@ -105,7 +105,9 @@ def _turno_agente(
     combinado = "\n".join(x for x in (salida.strip(), error.strip()) if x)
     resultado: dict = {"segundos": segundos, "rc": rc}
     if rc == 0 and texto:
-        resultado.update({"estado": "ok", "salida": _recorte(texto)})
+        # La respuesta del agente vive al final del stream; la cabeza trae la
+        # sesión y las herramientas.
+        resultado.update({"estado": "ok", "salida": _recorte(texto), "salida_fin": texto[-400:]})
     else:
         # El error literal puede estar en cualquier stream: codex imprime su
         # causa en stdout y el aviso de stdin en stderr.

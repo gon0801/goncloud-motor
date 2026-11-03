@@ -305,7 +305,7 @@ def _turnos_de_activacion(home: Path, gen: Path, destino: str) -> tuple[dict, st
     resumen = {
         agente: {
             k: turno[k]
-            for k in ("estado", "salida", "error", "nota", "vigente")
+            for k in ("estado", "salida", "salida_fin", "error", "nota", "vigente")
             if turno.get(k)
         }
         for agente, turno in informe["turnos"].items()
