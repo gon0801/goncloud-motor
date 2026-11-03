@@ -4,6 +4,10 @@
 Redirige `MOTOR_HOME` a un temporal de la sesión y deja un gancho de auditoría
 que falla si una prueba intenta escribir en `~/.motor` o en el estado real de
 `~/.motor-encargos` fuera del árbol del repositorio.
+
+La guarda usa `os.path`, no `pathlib`: varias pruebas parchean `os.name` a
+`nt` para simular Windows, y en ese momento `pathlib.Path` intenta construir un
+`WindowsPath` que no existe en Linux ni en macOS.
 """
 
 from __future__ import annotations
@@ -13,25 +17,41 @@ import os
 import shutil
 import sys
 import tempfile
-from pathlib import Path
 
-_RAIZ = Path(__file__).resolve().parents[1]
-_HOME_REAL = Path.home()
-_MOTOR_REAL = (_HOME_REAL / ".motor").resolve()
-_ENCARGOS_REAL = (_HOME_REAL / ".motor-encargos").resolve()
-_TEMP = Path(tempfile.gettempdir()).resolve()
+_RAIZ = os.path.realpath(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+_HOME_REAL = os.path.expanduser("~")
+_MOTOR_REAL = os.path.realpath(os.path.join(_HOME_REAL, ".motor"))
+_ENCARGOS_REAL = os.path.realpath(os.path.join(_HOME_REAL, ".motor-encargos"))
+_TEMP = os.path.realpath(tempfile.gettempdir())
 _INSTALADO = False
 _REENTRADA = False
-_HOME_SESION: Path | None = None
+_HOME_SESION = ""
 
 
-def home_sesion() -> Path:
+def home_sesion() -> str:
     """El home del motor de esta corrida de pruebas."""
     return _HOME_SESION or _TEMP
 
 
-def _bajo(ruta: Path, raiz: Path) -> bool:
-    return ruta == raiz or raiz in ruta.parents
+def _bajo(ruta: str, raiz: str) -> bool:
+    return ruta == raiz or ruta.startswith(raiz + os.sep)
+
+
+def _normal(ruta) -> str | None:
+    if isinstance(ruta, int):
+        return None
+    try:
+        texto = os.fsdecode(os.fspath(ruta))
+    except (TypeError, ValueError):
+        return None
+    if not texto:
+        return None
+    try:
+        return os.path.realpath(os.path.abspath(os.path.expanduser(texto)))
+    except (OSError, ValueError):
+        return None
 
 
 def _es_escritura(modo, flags) -> bool:
@@ -50,11 +70,8 @@ def _es_escritura(modo, flags) -> bool:
 
 
 def _prohibida(ruta) -> bool:
-    if isinstance(ruta, int):
-        return False
-    try:
-        p = Path(os.fspath(ruta)).expanduser().resolve()
-    except (TypeError, ValueError, OSError):
+    p = _normal(ruta)
+    if p is None:
         return False
     if _bajo(p, _MOTOR_REAL):
         return True
@@ -97,16 +114,18 @@ def _auditar(evento, args):
         _REENTRADA = False
 
 
-def instalar() -> Path:
+def instalar() -> str:
     """Redirige el home del motor y activa la guarda; idempotente."""
     global _INSTALADO, _HOME_SESION
     if _INSTALADO:
         return home_sesion()
-    if _HOME_SESION is None:
-        _HOME_SESION = Path(tempfile.mkdtemp(prefix="motor-home-pruebas-"))
+    if not _HOME_SESION:
+        _HOME_SESION = tempfile.mkdtemp(prefix="motor-home-pruebas-")
         atexit.register(shutil.rmtree, _HOME_SESION, True)
-    os.environ["MOTOR_HOME"] = str(_HOME_SESION)
-    os.environ.setdefault("MOTOR_ENCARGOS_HOME", str(_HOME_SESION / "encargos"))
+    os.environ["MOTOR_HOME"] = _HOME_SESION
+    os.environ.setdefault(
+        "MOTOR_ENCARGOS_HOME", os.path.join(_HOME_SESION, "encargos")
+    )
     sys.addaudithook(_auditar)
     _INSTALADO = True
     return _HOME_SESION
