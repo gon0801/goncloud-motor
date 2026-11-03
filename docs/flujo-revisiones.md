@@ -341,9 +341,14 @@ real, bwrap, WSL), lo pide por el puente con `ci.correr` sobre un recurso de
 tipo `ci` que el host concede en `capacidades.json`:
 
 ```json
-{"recursos": {"ci-linux": {"tipo": "ci", "repo": "gon0801/goncloud-motor",
-                           "workflow": "pruebas.yml", "base": "main"}}}
+{"recursos": {"ci-linux": {"tipo": "ci", "base": "main"}}}
 ```
+
+El repo y el workflow salen del repo de entrega del encargo. Un `repo` en el
+recurso solo se usa si coincide con ese repo, y `workflows` permite fijar un
+workflow por repo (`{"workflows": {"gon0801/goncloud-motor": "pruebas.yml"}}`);
+sin workflow, el veredicto cubre todos los workflows que corren en
+`pull_request` para el SHA, salvo los de ai-review.
 
 El juicio declara `"inspeccion": {"operacion": "ci.correr", "recurso":
 "ci-linux", "parametros": {"job": "bateria"}}`. El supervisor, con el
@@ -354,7 +359,7 @@ El juicio declara `"inspeccion": {"operacion": "ci.correr", "recurso":
    fuera `.interno/`, `__pycache__` y `.runtime`, también si HEAD ya los
    rastrea.
 2. Lo sube a `ci-prueba/<encargo>-<sha7>-<hora>` y abre un PR borrador.
-3. Espera el run del workflow para ese SHA y el job pedido.
+3. Espera el run de los workflows del repo para ese SHA y el job pedido.
 4. Entrega el log literal, byte a byte, como archivo en
    `.interno/entregas/<solicitud>/<job>-<sha7>-run<N>.log`, con el SHA, el árbol,
    el número de run, la URL y la conclusión del job. Un job en rojo también

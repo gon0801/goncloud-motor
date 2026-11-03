@@ -7,6 +7,7 @@ reusados. Se usa el mismo `gh` falso que las pruebas de CI.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import unittest
@@ -239,6 +240,31 @@ class CorreTodosLosJobs(_Ci):
             )
         )
 
+    def test_goncloud_motor_sin_workflow_en_el_recurso_sigue_usando_pruebas_yml(self):
+        recursos = {
+            "ci-linux": {
+                "tipo": "ci",
+                "autorizacion": "",
+                "repo": "gon0801/goncloud-motor",
+                "base": "main",
+            }
+        }
+
+        r = cap.ejecutar(
+            recursos,
+            cap.CI,
+            "ci-linux",
+            {"job": "todos"},
+            self.destino,
+            espacio=self.espacio,
+        )
+
+        self.assertEqual(r["estado"], "ok", r)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertIn("gate", jobs)
+        self.assertIn("ops-tests", jobs)
+        self.assertTrue(jobs["macos"]["reusado"])
+
     def test_un_job_exacto_sin_base_compara_con_head(self):
         r = cap.ejecutar(
             self.recursos,
@@ -292,6 +318,109 @@ class CorreTodosLosJobs(_Ci):
             "",
             "un base inválido usa el árbol vacío, no HEAD",
         )
+
+
+GH_SIN_PRUEBAS = r'''#!{python}
+import json, os, sys
+d = os.environ["FAKE_GH_DIR"]
+args = sys.argv[1:]
+def val(flag):
+    return args[args.index(flag) + 1]
+ruta = os.path.join(d, "estado.json")
+estado = json.load(open(ruta)) if os.path.exists(ruta) else {"llamadas": []}
+estado["llamadas"].append(args)
+def guardar():
+    json.dump(estado, open(ruta, "w"))
+sha = val("--commit") if "--commit" in args else ""
+runs = [
+    {{"databaseId": 1234, "status": "completed", "conclusion": "success",
+      "headSha": sha, "event": "pull_request", "workflowName": "quality",
+      "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1234"}},
+    {{"databaseId": 1235, "status": "completed", "conclusion": "failure",
+      "headSha": sha, "event": "pull_request", "workflowName": "quality-extra",
+      "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1235"}},
+    {{"databaseId": 1236, "status": "completed", "conclusion": "failure",
+      "headSha": sha, "event": "pull_request", "workflowName": "ai-review-publish",
+      "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1236"}},
+]
+if args[:2] == ["pr", "create"]:
+    guardar()
+    print("https://github.com/gon0801/goncloud-Orbit/pull/7")
+elif args[:2] == ["pr", "view"]:
+    guardar()
+    print(json.dumps({{"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}}))
+elif args[:2] == ["run", "list"]:
+    guardar()
+    print(json.dumps(runs))
+elif args[:2] == ["run", "view"] and "--log" not in args:
+    guardar()
+    rid = args[2]
+    jobs = (
+        [{{"name": "quality", "databaseId": 201, "conclusion": "success"}}]
+        if rid == "1234"
+        else [{{"name": "lint", "databaseId": 202, "conclusion": "failure"}}]
+    )
+    print(json.dumps({{"status": "completed",
+        "conclusion": "success" if rid == "1234" else "failure",
+        "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/" + rid,
+        "jobs": jobs}}))
+elif args[:2] == ["run", "view"]:
+    guardar()
+    sys.stdout.write(open(os.path.join(d, "log-" + val("--job") + ".txt")).read())
+elif args[:2] == ["pr", "close"]:
+    guardar()
+else:
+    guardar()
+    sys.exit(2)
+'''
+
+
+class EsperaTodosLosWorkflowsDelRepo(_Ci):
+    """Un repo que no tiene `pruebas.yml` no puede esperar ese workflow: el
+    veredicto cubre todos los workflows de pull_request del SHA, salvo los de
+    ai-review, que ya cubre la revisión de DeepSeek."""
+
+    def setUp(self):
+        super().setUp()
+        (self.fake / "log-202.txt").write_text("FALLA de lint\n", encoding="utf-8")
+        (self.fake / "estado.json").write_text(json.dumps({"llamadas": []}))
+        (self.bin / "gh").write_text(
+            GH_SIN_PRUEBAS.replace("{{", "{").replace("}}", "}").replace(
+                "#!{python}", "#!" + sys.executable
+            )
+        )
+        (self.bin / "gh").chmod(0o755)
+        self.recursos = {
+            "ci-linux": {"tipo": "ci", "autorizacion": "", "repo": "o/r", "base": "main"}
+        }
+
+    def llamadas_run_list(self) -> list[list[str]]:
+        return [
+            llamada
+            for llamada in json.loads((self.fake / "estado.json").read_text())["llamadas"]
+            if llamada[:2] == ["run", "list"]
+        ]
+
+    def test_espera_los_workflows_de_pull_request_y_no_pruebas_yml(self):
+        r = self.pedir("todos")
+
+        self.assertEqual(r["estado"], "ok", r)
+        for llamada in self.llamadas_run_list():
+            self.assertNotIn("--workflow", llamada)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertEqual(jobs["quality"]["conclusion"], "success")
+        self.assertEqual(jobs["lint"]["conclusion"], "failure")
+        self.assertEqual(r["datos"]["fallas"], ["lint"])
+        self.assertEqual(r["datos"]["conclusion"], "failure")
+        self.assertNotIn("ai-review-publish", jobs)
+
+    def test_un_job_exacto_sale_del_workflow_que_lo_tiene(self):
+        r = self.pedir("lint")
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["job"], "lint")
+        self.assertEqual(r["datos"]["run"], "1235")
+        self.assertEqual(r["datos"]["conclusion"], "failure")
 
 
 if __name__ == "__main__":

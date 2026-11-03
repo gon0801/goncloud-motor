@@ -598,23 +598,77 @@ def _repo_github(valor: str) -> str:
     return str(resolver_repositorio(texto).github or texto)
 
 
-def _repo_de(concedido: dict, espacio: Path) -> tuple[str, str]:
-    """(owner/nombre para gh, remoto de git). Sale del recurso o del origin del espacio."""
+def _repo_de(
+    concedido: dict, espacio: Path, contexto: dict | None = None
+) -> tuple[str, str]:
+    """(owner/nombre para gh, remoto de git) del encargo, no de otro repo.
+
+    Manda el repo de entrega del encargo y, si no viene, el origin del espacio.
+    Un `repo` declarado en el recurso solo sirve cuando coincide o cuando no hay
+    otro dato: el 3-nov el recurso fijo abrió el PR temporal en goncloud-motor
+    para un encargo de Orbit."""
     import re
 
+    espacio = Path(espacio) if espacio is not None else None
     remoto = str(concedido.get("remoto") or "").strip()
+    origen = ""
+    if espacio is not None and (espacio / ".git").exists():
+        origen = _git_ci(espacio, "remote", "get-url", "origin").strip()
     if not remoto:
-        remoto = _git_ci(espacio, "remote", "get-url", "origin").strip()
-    repo = _repo_github(str(concedido.get("repo") or "").strip())
+        remoto = origen
+    entrega = ""
+    if isinstance(contexto, dict):
+        entrega = _repo_github(str(contexto.get("repo") or "").strip())
+    if not entrega:
+        for url in (origen, remoto):
+            m = re.search(r"github\.com[:/]+([^/]+/[^/]+?)(?:\.git)?/?$", url or "")
+            if m:
+                entrega = m.group(1)
+                break
+    declarado = _repo_github(str(concedido.get("repo") or "").strip())
+    repo = entrega or declarado
     if not repo:
-        m = re.search(r"github\.com[:/]+([^/]+/[^/]+?)(?:\.git)?/?$", remoto)
-        if not m:
-            raise CiFallo(
-                "el recurso ci no declara repo y el origin del espacio no es de GitHub",
-                "pedir al host que declare repo en el recurso ci",
-            )
-        repo = m.group(1)
+        raise CiFallo(
+            "el encargo no dice de qué repo es y el origin del espacio no es de GitHub",
+            "preparar el clon del repo de entrega del encargo",
+        )
     return _repo_github(repo), remoto
+
+
+REPO_MOTOR = "gon0801/goncloud-motor"
+WORKFLOWS_POR_OMISION = {REPO_MOTOR: "pruebas.yml"}
+RE_AI_REVIEW = "ai-review"
+
+
+def _mapa_de_workflows(concedido: dict) -> dict[str, str]:
+    """El mapa opcional `workflows` del recurso, con el repo normalizado."""
+    mapa = concedido.get("workflows")
+    if not isinstance(mapa, dict):
+        return {}
+    salida = {}
+    for clave, valor in mapa.items():
+        repo = _repo_github(str(clave or ""))
+        archivo = str(valor or "").strip()
+        if repo and archivo:
+            salida[repo] = archivo
+    return salida
+
+
+def _workflow_de(concedido: dict, repo: str) -> str:
+    """El workflow del repo del encargo; '' espera todos los de pull_request.
+
+    Un `workflow` suelto solo vale para el repo que el propio recurso declara
+    (o para cualquiera si no declara repo). goncloud-motor conserva
+    `pruebas.yml` porque su reuso por rutas y sus jobs dependen de ese
+    workflow; cualquier otro repo sin mapa espera los que corran en el PR."""
+    mapa = _mapa_de_workflows(concedido)
+    if mapa:
+        return mapa.get(repo, WORKFLOWS_POR_OMISION.get(repo, ""))
+    solo = str(concedido.get("workflow") or "").strip()
+    declarado = _repo_github(str(concedido.get("repo") or "").strip())
+    if solo and (not declarado or declarado == repo):
+        return solo
+    return WORKFLOWS_POR_OMISION.get(repo, "")
 
 
 _INTERNO = (".interno", "__pycache__", ".runtime")
@@ -752,6 +806,75 @@ def _esperar_run(
                 "comprobar que el workflow corre en pull_request y que Actions está habilitado",
             )
         time.sleep(CI_SONDEO_S)
+
+
+def _runs_de(gh: str, repo: str, sha: str, workflow: str = "") -> list[dict]:
+    argumentos = [
+        "run", "list", "--commit", sha, "--json",
+        "databaseId,status,conclusion,headSha,event,url,workflowName", "--limit", "50",
+    ]
+    if workflow:
+        argumentos += ["--workflow", workflow]
+    return [
+        r for r in (_json_gh(gh, repo, *argumentos) or [])
+        if str(r.get("headSha") or "").lower() == str(sha).lower()
+    ]
+
+
+def _es_ai_review(run: dict) -> bool:
+    return RE_AI_REVIEW in str(run.get("workflowName") or "").lower()
+
+
+def _esperar_runs(
+    gh: str, repo: str, workflows: list[str], sha: str, limite: float, vigilar=None
+) -> list[dict]:
+    """Los runs que el CI del encargo debe esperar.
+
+    Con un workflow explícito devuelve su run. Sin workflow espera a todos los
+    que corran en `pull_request` para ese SHA, salvo los de ai-review, y no
+    devuelve hasta que todos terminan: el veredicto es verde solo si todos
+    acaban en verde."""
+    if workflows:
+        return [
+            _esperar_run(gh, repo, workflow, sha, limite, vigilar=vigilar)
+            for workflow in workflows
+        ]
+    fin_busqueda = time.time() + min(
+        CI_BUSCA_RUN_S, max(0.0, limite - time.time())
+    )
+    while True:
+        if vigilar is not None:
+            vigilar()
+        runs = [
+            r for r in _runs_de(gh, repo, sha)
+            if str(r.get("event") or "") in ("", "pull_request")
+            and not _es_ai_review(r)
+        ]
+        if runs:
+            break
+        if time.time() > fin_busqueda:
+            raise CiFallo(
+                f"GitHub no inició ningún workflow de pull_request para el commit {sha[:12]}",
+                "comprobar que el repo tiene un workflow que corre en pull_request "
+                "y que Actions está habilitado",
+            )
+        time.sleep(CI_SONDEO_S)
+    while any(str(r.get("status") or "") != "completed" for r in runs):
+        if time.time() > limite:
+            raise CiFallo(
+                f"los workflows de pull_request del commit {sha[:12]} no terminaron "
+                f"en {int(CI_MAX_S // 60)} minutos",
+                "reintentar más tarde; el PR temporal se cerró",
+            )
+        time.sleep(CI_SONDEO_S)
+        if vigilar is not None:
+            vigilar()
+        vistos = {str(r.get("databaseId")): r for r in runs}
+        for run in _runs_de(gh, repo, sha):
+            if str(run.get("event") or "") in ("", "pull_request") and not _es_ai_review(run):
+                vistos[str(run.get("databaseId"))] = run
+        runs = list(vistos.values())
+    return runs
 
 
 def _vista_completa(
@@ -1030,7 +1153,13 @@ def _log_de_job(
     return datos
 
 
-def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) -> dict:
+def _correr_ci(
+    concedido: dict,
+    parametros: dict,
+    espacio: Path,
+    destino: Path,
+    contexto: dict | None = None,
+) -> dict:
     """Corre el workflow de pruebas sobre la versión vigente del producto.
 
     Con `job` exacto devuelve el log literal de ese job, como siempre. Con
@@ -1070,9 +1199,9 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
         )
     if not shutil.which("git"):
         raise CiFallo("git no está instalado en el host del supervisor", "instalar git en el host")
-    repo, remoto = _repo_de(concedido, espacio)
+    repo, remoto = _repo_de(concedido, espacio, contexto)
     base = str(concedido.get("base") or "main")
-    workflow = str(concedido.get("workflow") or "pruebas.yml")
+    workflow = _workflow_de(concedido, repo)
     limite = time.time() + CI_MAX_S
 
     ident = f"{espacio.name}"
@@ -1134,22 +1263,40 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
                 f"el producto no se puede mezclar con {base}: chocan {', '.join(choques)}",
                 f"traer {base} a la rama y resolver el choque; después volver a pedir ci.correr",
             )
-        run = _esperar_run(
-            gh, repo, workflow, sha, limite - time.time(), vigilar=vigilar_conflicto
+        runs = _esperar_runs(
+            gh, repo, [workflow] if workflow else [], sha,
+            limite - time.time(), vigilar=vigilar_conflicto,
         )
-        numero_run, vista = _vista_completa(gh, repo, run, limite)
-        trabajos = vista.get("jobs") or []
-        url_run = str(vista.get("url") or run.get("url") or "")
+        vistas = [_vista_completa(gh, repo, run, limite) for run in runs]
+        url_run = str(
+            (vistas[0][1].get("url") if vistas else "")
+            or (runs[0].get("url") if runs else "")
+        )
         if not todos:
-            elegido = next((j for j in trabajos if str(j.get("name")) == job), None)
+            elegido = None
+            for numero_vista, vista in vistas:
+                for trabajo in vista.get("jobs") or []:
+                    if str(trabajo.get("name")) == job:
+                        elegido = (numero_vista, trabajo, vista)
+                        break
+                if elegido is not None:
+                    break
             if elegido is None:
-                nombres = ", ".join(sorted(str(j.get("name")) for j in trabajos)) or "ninguno"
+                nombres = ", ".join(
+                    sorted(
+                        str(j.get("name"))
+                        for _, vista in vistas
+                        for j in vista.get("jobs") or []
+                    )
+                ) or "ninguno"
                 raise CiFallo(
-                    f"el run {numero_run} no tiene un job llamado {job!r}; jobs: {nombres}",
+                    f"los runs del commit no tienen un job llamado {job!r}; "
+                    f"jobs: {nombres}",
                     "volver a pedirla con el nombre exacto de uno de esos jobs",
                 )
+            numero_run, trabajo_elegido, vista_elegida = elegido
             datos_job = _log_de_job(
-                gh, repo, numero_run, elegido, destino, sha, forzar=True
+                gh, repo, numero_run, trabajo_elegido, destino, sha, forzar=True
             )
             if datos_job.get("error_log"):
                 raise CiFallo(datos_job["error_log"], "pedir otro job")
@@ -1159,7 +1306,7 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
                 "sha": sha,
                 "arbol": arbol,
                 "run": numero_run,
-                "url": url_run,
+                "url": str(vista_elegida.get("url") or url_run),
                 "rama": rama,
                 "base": base,
                 "base_rama": base_rama,
@@ -1178,14 +1325,16 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
             from motor.encargos import trabajos_ci
 
             resumen = []
-            for trabajo in trabajos:
-                datos_job = _log_de_job(
-                    gh, repo, numero_run, trabajo, destino, sha, espacio=espacio
-                )
-                canonico = trabajos_ci.trabajo(datos_job["nombre"])
-                datos_job["trabajo"] = canonico
-                datos_job["reusado"] = datos_job["conclusion"] == "skipped"
-                resumen.append(datos_job)
+            for numero_vista, vista in vistas:
+                for trabajo in vista.get("jobs") or []:
+                    datos_job = _log_de_job(
+                        gh, repo, numero_vista, trabajo, destino, sha, espacio=espacio
+                    )
+                    canonico = trabajos_ci.trabajo(datos_job["nombre"])
+                    datos_job["trabajo"] = canonico
+                    datos_job["run"] = numero_vista
+                    datos_job["reusado"] = datos_job["conclusion"] == "skipped"
+                    resumen.append(datos_job)
             gate_intentado = False
             tiene_quality = False
             if workflow == "pruebas.yml":
@@ -1269,6 +1418,16 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
                     and j["conclusion"] not in ("success", "neutral")
                 )
             )
+            if not workflow:
+                # Sin workflow explícito el veredicto cubre todos los runs de
+                # pull_request del SHA. Un run sin jobs que no acabó verde
+                # tampoco puede contar como verde.
+                for numero_vista, vista_run in vistas:
+                    if (
+                        str(vista_run.get("conclusion") or "") not in VERDE_CI
+                        and not any(j.get("run") == numero_vista for j in resumen)
+                    ):
+                        fallas.append(f"workflow:{numero_vista}")
             if fallas:
                 conclusion = "failure"
             elif all(
@@ -1277,13 +1436,15 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
             ):
                 conclusion = "success"
             else:
-                conclusion = str(vista.get("conclusion") or "")
+                conclusion = str(
+                    (vistas[0][1].get("conclusion") if vistas else "") or ""
+                )
             resultado = {
                 "job": "todos",
                 "conclusion": conclusion,
                 "sha": sha,
                 "arbol": arbol,
-                "run": numero_run,
+                "run": vistas[0][0] if vistas else "",
                 "url": url_run,
                 "rama": rama,
                 "base": base,
@@ -1382,11 +1543,8 @@ def _correr_ci_log(
     gh = shutil.which("gh")
     if not gh:
         raise CiFallo("gh no está instalado en el host del supervisor", "instalar y autenticar gh")
-    repo = _repo_github(str(concedido.get("repo") or ""))
-    if not repo:
-        repo, _remoto = _repo_de(concedido, espacio or Path.cwd())
-        repo = _repo_github(repo)
-    workflow = str(concedido.get("workflow") or "pruebas.yml").strip()
+    repo, _remoto = _repo_de(concedido, espacio or Path.cwd(), contexto)
+    workflow = _workflow_de(concedido, repo)
     if not isinstance(contexto, dict):
         raise CiFallo(
             "ci.log necesita el PR del encargo y el host no lo trajo",
@@ -1461,6 +1619,7 @@ def _correr_ci_log(
     runs = [
         r for r in runs_de(sha_buscar)
         if str(r.get("event") or "") in ("", "pull_request")
+        and (workflow or not _es_ai_review(r))
     ]
     if rama_pr:
         runs = [
@@ -1481,20 +1640,30 @@ def _correr_ci_log(
             f"el PR está en {head[:12]}{detalle}",
             "pedir el log del SHA vigente del PR",
         )
-    run = max(runs, key=lambda r: int(r.get("databaseId") or 0))
-    numero_run = str(run["databaseId"])
-    vista = _json_gh(
-        gh, repo, "run", "view", numero_run,
-        "--json", "status,conclusion,jobs,url",
-    )
-    if not isinstance(vista, dict):
-        raise CiFallo("gh no devolvió la corrida del PR", "reintentar")
-    trabajos = vista.get("jobs") or []
-    elegido = next((j for j in trabajos if str(j.get("name")) == job), None)
+    elegido = None
+    vista = None
+    numero_run = ""
+    nombres = set()
+    for run in sorted(
+        runs, key=lambda r: int(r.get("databaseId") or 0), reverse=True
+    ):
+        numero = str(run["databaseId"])
+        vista_run = _json_gh(
+            gh, repo, "run", "view", numero,
+            "--json", "status,conclusion,jobs,url",
+        )
+        if not isinstance(vista_run, dict):
+            raise CiFallo("gh no devolvió la corrida del PR", "reintentar")
+        trabajos = vista_run.get("jobs") or []
+        nombres.update(str(j.get("name")) for j in trabajos)
+        trabajo = next((j for j in trabajos if str(j.get("name")) == job), None)
+        if trabajo is not None:
+            elegido, vista, numero_run = trabajo, vista_run, numero
+            break
     if elegido is None:
-        nombres = ", ".join(sorted(str(j.get("name")) for j in trabajos)) or "ninguno"
         raise CiFallo(
-            f"la corrida {numero_run} no tiene un job llamado {job!r}; jobs: {nombres}",
+            f"los runs del PR #{pr} no tienen un job llamado {job!r}; "
+            f"jobs: {', '.join(sorted(nombres)) or 'ninguno'}",
             "volver a pedirla con el nombre exacto de uno de esos jobs",
         )
     log = _gh(
@@ -1513,7 +1682,7 @@ def _correr_ci_log(
         "run": numero_run,
         "estado": str(vista.get("status") or ""),
         "conclusion": str(elegido.get("conclusion") or vista.get("conclusion") or ""),
-        "url": str(vista.get("url") or run.get("url") or ""),
+        "url": str(vista.get("url") or ""),
         "log_nombre": nombre,
         "log_host": str(copia),
         "log": str(copia),
@@ -1648,7 +1817,7 @@ def ejecutar(
             return _snapshot(ruta, destino)
         if operacion == CI:
             try:
-                return _correr_ci(concedido, parametros, espacio, destino)
+                return _correr_ci(concedido, parametros, espacio, destino, contexto)
             except (CiFallo, ConfigInvalida):
                 raise
             except Exception as exc:

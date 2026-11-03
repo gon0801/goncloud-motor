@@ -178,10 +178,13 @@ class _Ci(unittest.TestCase):
             }
         }
 
-    def pedir(self, job: str = "jaula-linux", recursos: dict | None = None) -> dict:
+    def pedir(
+        self, job: str = "jaula-linux", recursos: dict | None = None,
+        contexto: dict | None = None,
+    ) -> dict:
         return cap.ejecutar(
             recursos or self.recursos, cap.CI, "ci-linux", {"job": job},
-            self.destino, espacio=self.espacio,
+            self.destino, espacio=self.espacio, contexto=contexto,
         )
 
     def estado_gh(self) -> dict:
@@ -775,6 +778,50 @@ class UnRunLargoNoSeMata(unittest.TestCase):
             self.assertEqual(resultado["estado"], "error")
             self.assertIn("excedió", resultado["motivo"])
 
+
+
+class ElRepoDelCiSaleDelEncargo(_Ci):
+    """El 3-nov un encargo de Orbit abrió el PR temporal en goncloud-motor
+    porque el recurso fijaba ese repo. El repo de entrega manda."""
+
+    def _recursos_motor(self) -> dict:
+        return {
+            "ci-linux": {
+                "tipo": "ci",
+                "autorizacion": "",
+                "repo": "gon0801/goncloud-motor",
+                "workflow": "pruebas.yml",
+                "base": "main",
+                "remoto": str(self.bare),
+            }
+        }
+
+    def _repos_de_gh(self) -> set[str]:
+        return {
+            llamada[llamada.index("--repo") + 1]
+            for llamada in self.estado_gh()["llamadas"]
+            if "--repo" in llamada
+        }
+
+    def test_el_origin_de_otro_repo_manda_sobre_el_repo_del_recurso(self):
+        _git(
+            self.espacio, "remote", "set-url", "origin",
+            "https://github.com/gon0801/goncloud-Orbit.git",
+        )
+
+        r = self.pedir(recursos=self._recursos_motor())
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(self._repos_de_gh(), {"gon0801/goncloud-Orbit"})
+
+    def test_el_repo_de_entrega_del_contexto_tambien_manda(self):
+        r = self.pedir(
+            recursos=self._recursos_motor(),
+            contexto={"repo": "gon0801/goncloud-Orbit"},
+        )
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(self._repos_de_gh(), {"gon0801/goncloud-Orbit"})
 
 
 class DeduplicacionDeCorridas(unittest.TestCase):
