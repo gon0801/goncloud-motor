@@ -261,11 +261,17 @@ def _recurso_raiz(nombre: str, recurso: dict) -> dict:
 
 
 def _recurso_ci(nombre: str, recurso: dict, correr, which) -> dict:
-    repo = str(recurso.get("repo") or "")
+    repo = str(recurso.get("repo") or "").strip()
     gh = which("gh")
     if not gh:
         return {"recurso": nombre, "tipo": "ci", "estado": "falta",
-                "detalle": f"gh no está instalado: no se puede correr CI sobre {repo}"}
+                "detalle": f"gh no está instalado: no se puede correr CI sobre {repo or 'el repo del encargo'}"}
+    if not repo:
+        # Sin repo fijo, cada encargo trae el suyo (origin del espacio o repo de
+        # entrega). No hay un repositorio concreto que sondear aquí; el recurso
+        # sigue siendo usable si gh está presente.
+        return {"recurso": nombre, "tipo": "ci", "estado": "ok",
+                "detalle": "sin repo fijo: usa el repo del encargo; gh está instalado"}
     try:
         r = correr([gh, "repo", "view", repo, "--json", "nameWithOwner"], 30)
     except (OSError, subprocess.TimeoutExpired) as exc:

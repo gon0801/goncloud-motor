@@ -88,6 +88,9 @@ class Dobles:
             if not self.gh_ok:
                 r.returncode = 1
                 r.stderr = b"HTTP 403: recurso no alcanzable"
+            elif argv[1:3] == ["repo", "view"] and len(argv) > 3 and not argv[3]:
+                r.returncode = 1
+                r.stderr = b"GraphQL: Could not resolve to a Repository with the name ''."
             else:
                 r.stdout = b'{"nameWithOwner": "gon0801/goncloud-motor"}'
         elif programa == "java":
@@ -166,6 +169,22 @@ class ReporteCompletoTest(unittest.TestCase):
         self.assertFalse(datos["ok"])
         self.assertTrue(any("ci-linux" in f for f in datos["faltas"]))
         self.assertIn("faltas:", cm.texto(datos))
+
+    def test_ci_sin_repo_fijo_usa_el_del_encargo_y_no_es_una_falta(self):
+        ruta = self.base / "capacidades.json"
+        doc = json.loads(ruta.read_text(encoding="utf-8"))
+        del doc["recursos"]["ci-linux"]["repo"]
+        del doc["recursos"]["ci-linux"]["workflow"]
+        ruta.write_text(json.dumps(doc), encoding="utf-8")
+
+        datos = self._reporte()
+
+        fila = next(
+            f for f in datos["recursos"]["filas"] if f["recurso"] == "ci-linux"
+        )
+        self.assertEqual(fila["estado"], "ok")
+        self.assertIn("repo del encargo", fila["detalle"])
+        self.assertEqual(datos["faltas"], [])
 
 
 class AgentesFueraDelPathDelServicioTest(unittest.TestCase):

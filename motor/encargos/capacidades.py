@@ -864,24 +864,37 @@ def _esperar_runs(
                 "y que Actions está habilitado",
             )
         time.sleep(CI_SONDEO_S)
+    # Un run visto no desaparece del veredicto: GitHub puede omitirlo en un
+    # sondeo (paginación, un fallo pasajero) y reemplazar la lista daría verde
+    # con una lista vacía o sin el run rojo.
+    vistos = {str(r.get("databaseId")): r for r in runs}
     while True:
         pendientes = [
-            r for r in runs if str(r.get("status") or "") != "completed"
+            r for r in vistos.values() if str(r.get("status") or "") != "completed"
         ]
         if not pendientes:
             # Un workflow del mismo PR puede aparecer unos segundos después de
             # los primeros: se confirma el conjunto antes de dar el SHA por
-            # terminado.
+            # terminado. Solo un id nuevo alarga la espera; que falte uno ya
+            # visto no lo saca del veredicto.
             time.sleep(CI_SONDEO_S)
             if vigilar is not None:
                 vigilar()
             nuevos = _runs_del_encargo(gh, repo, sha)
-            if {str(r.get("databaseId")) for r in nuevos} == {
-                str(r.get("databaseId")) for r in runs
-            }:
-                return runs
-            runs = nuevos
-            continue
+            añadidos = {
+                str(r.get("databaseId")) for r in nuevos
+            } - set(vistos)
+            for run in nuevos:
+                vistos[str(run.get("databaseId"))] = run
+            if añadidos:
+                if time.time() > tope:
+                    raise CiFallo(
+                        f"los workflows de pull_request del commit {sha[:12]} no terminaron "
+                        f"en {int(CI_MAX_S // 60)} minutos",
+                        "reintentar más tarde; el PR temporal se cerró",
+                    )
+                continue
+            return list(vistos.values())
         if time.time() > tope:
             raise CiFallo(
                 f"los workflows de pull_request del commit {sha[:12]} no terminaron "
@@ -891,7 +904,8 @@ def _esperar_runs(
         time.sleep(CI_SONDEO_S)
         if vigilar is not None:
             vigilar()
-        runs = _runs_del_encargo(gh, repo, sha)
+        for run in _runs_del_encargo(gh, repo, sha):
+            vistos[str(run.get("databaseId"))] = run
 
 
 def _vista_completa(
