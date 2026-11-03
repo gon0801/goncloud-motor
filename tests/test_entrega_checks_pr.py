@@ -11,6 +11,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from motor.encargos import ciclo
@@ -397,6 +398,9 @@ class LasRondasNoRevivenUnShaQueYaNoEsLaCabeza(unittest.TestCase):
             self.assertNotEqual(e.estado, "terminado")
             self.assertIn("head vigente del PR #", e.motivo)
             self.assertIn("concilia el head del PR", e.motivo)
+            # F10: la desviación nombra los dos shas reales, nunca uno vacío.
+            self.assertIn(sha_a[:12], e.motivo)
+            self.assertIn(sha_b[:12], e.motivo)
 
 
 class ElLogDelJobEnRojoEsElDelJob(unittest.TestCase):
@@ -672,6 +676,82 @@ class DosJobsConElMismoSaneoNoSePisan(unittest.TestCase):
             copia2 = r.espacio / ".interno" / "logs" / "tests--a-b-job100002-run7.log"
             self.assertIn("FALLO_DEL_JOB_1", copia1.read_text())
             self.assertIn("FALLO_DEL_JOB_2", copia2.read_text())
+
+
+def _rechazar_push(repo):
+    """Instala un gancho pre-receive que rechaza cualquier push."""
+    gancho = Path(repo) / "hooks" / "pre-receive"
+    gancho.write_text("#!/bin/sh\nexit 1\n")
+    gancho.chmod(0o755)
+
+
+class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
+    """F10: un rechazo del remoto (o una red caida) no es una cabeza desviada.
+    Con la rama en su sitio, el fallo de push cae en la espera generica del
+    instrumento, sin inventar un desvio ni nombrar un sha vacio en el motivo."""
+
+    def test_un_push_rechazado_con_la_rama_en_su_sitio_espera_sin_desvio(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-push-rechazo",
+                _GhConCorridas,
+                {"corridas": {"windows": "success", "bateria": "in_progress"}},
+            )
+            e = vuelta("uno")
+            self.assertNotEqual(e.estado, "terminado")
+            repo = str(e.entrega.repo)
+            sha_a = e.producto.sha_git
+            self.assertEqual(vuelta.gh.ver(repo, e.pr_numero).head, sha_a)
+            _rechazar_push(repo)
+
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(_pasos(r, "head_vigente"), [])
+            self.assertNotIn("head vigente del PR #", e.motivo)
+            self.assertIn("git push", e.motivo)
+
+
+
+class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
+    """F10: un fallo de push sin sha en mano (remoto inalcanzable, credenciales,
+    un enganche que niega el push) no es una cabeza desviada: cae en la espera
+    genérica del instrumento, sin inventar un desvío ni nombrar un sha vacío."""
+
+    def test_un_push_fallido_sin_sha_espera_sin_inventar_desvio(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-push-rechazo",
+                _GhConCorridas,
+                {
+                    "corridas": {"windows": "failure"},
+                    "logs_job": {"windows": LOG_WINDOWS},
+                },
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.fase_actual.fallas_checks, ("windows",))
+            repo = str(e.entrega.repo)
+            rama = vuelta.gh.ver(repo, e.pr_numero).rama
+            _empujar_head(tmp, repo, rama)
+            punta = vuelta.gh.ver(repo, e.pr_numero).head
+            self.assertTrue(punta)
+
+            with mock.patch.object(
+                ciclo,
+                "_commit_push",
+                return_value=("", "git push fallo: sin credenciales del remoto"),
+            ):
+                e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(_pasos(r, "head_vigente"), [])
+            self.assertNotIn("head vigente del PR #", e.motivo)
+            self.assertIn("git push", e.motivo)
+
 
 
 if __name__ == "__main__":

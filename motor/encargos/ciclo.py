@@ -3498,7 +3498,10 @@ def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
     sha = _git(espacio, "rev-parse", "HEAD").stdout.strip()
     r = _git(espacio, "push", "--quiet", "origin", _rama_fase(enc))
     if r.returncode != 0:
-        return "", f"git push fallo: {r.stderr.strip()[-300:]}"
+        # El commit local existe y es el que se intentó publicar: el fallo del
+        # push no borra el sha. Sin él, un rechazo del remoto (o una red caída)
+        # parecería un head desviado con sha vacío (F10).
+        return sha, f"git push fallo: {r.stderr.strip()[-300:]}"
     return sha, ""
 
 
@@ -4890,9 +4893,12 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 punta = str(getattr(vista_push, "head", "") or "").strip()
             except Exception:
                 punta = ""
-        if punta and punta != sha:
+        if punta and sha and punta != sha:
             # F6: el push choca con un head externo; la entrega se concilia
             # contra el head vigente en vez de esperar el reintento en bucle.
+            # F10: solo con ambos shas en mano — un rechazo del remoto, una red
+            # caída o un enganche que niega el push no son una cabeza desviada,
+            # y nombrar un sha vacío en el motivo no le dice nada a nadie.
             return _head_desviado(registro, enc, hora, enc.pr_numero, sha, punta)
         _anotar_instrumento(
             registro, enc, "github", causa,
