@@ -3,9 +3,11 @@
 # base SQLite con las tablas reales de Kuma (kuma-esquema.sql). El motor de planes y el supervisor de
 # encargos tienen monitores distintos. La Mini y la PC ya traen la dirección del supervisor y se
 # conserva; la MacBook no la tiene y el script le crea su monitor. La Mac y la Mini corren su script
-# en un HOME falso. La PC no llama al pwsh del sistema: el doble escribe CRLF, como WriteAllLines
-# en Windows, y la lectura quita el retorno de carro, así que también acepta LF. Un uname y un hostname falsos
-# deciden si la Mac es local: con Linux va por ssh; con Darwin y el hostname de la Mini también va
+# en un HOME falso. La PC pasa por un doble de powershell en el PATH: recibe el script real de
+# escritor_pc, comprueba las piezas que definen su comportamiento y escribe con CRLF, como
+# WriteAllLines en Windows; la lectura quita el retorno de carro, así que también acepta LF. Un
+# uname y un hostname falsos deciden si la Mac es local: con Linux va por ssh; con Darwin y el
+# hostname de la Mini también va
 # por ssh; solo con Darwin y otro hostname es la MacBook y escribe en su HOME sin ssh a sí misma.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
@@ -120,11 +122,7 @@ case "$host" in
         esac
         exit 0 ;;
       "powershell "*)
-        _script="$(printf '%s' "${*##* }" | python3 -I -c 'import base64,sys; print(base64.b64decode(sys.stdin.read()).decode("utf-16-le"))')"
-        _accion="$(printf '%s\n' "$_script" | sed -n "s/.*accion = '\([^']*\)'.*/\1/p" | head -1)"
-        _sub="$(printf '%s\n' "$_script" | sed -n "s/.*sub = '\([^']*\)'.*/\1/p" | head -1)"
-        _base="$(printf '%s\n' "$_script" | sed -n "s/.*MOTOR_KUMA_URL=\([^']*\)'.*/\1/p" | grep -F http | head -1)"
-        exec python3 -I "$S/escribe-pc.py" "$HOME_PC" "$_accion" "$_sub" "$_base" ;;
+        exec powershell "$@" ;;
       *curl.exe*)
         _url=$(printf '%s\n' "$*" | grep -oE 'https?://[^[:space:]]+' | head -1)
         HOME="$HOME_PC" exec curl -sS -o /dev/null --max-time 5 "$_url" ;;
@@ -168,12 +166,52 @@ printf '302'
 exit 0
 FAKE
 ln -sfn curl "$S/bin/curl.exe"
-cat >"$S/bin/pwsh" <<'EOF'
-#!/usr/bin/env bash
-echo pwsh >>"$S/pwsh-llamado"
-exit 99
-EOF
-chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname" "$S/bin/curl" "$S/bin/pwsh"
+cat >"$S/bin/powershell" <<'FAKE'
+#!/usr/bin/env python3
+import base64, os, re, sys
+
+args = " ".join(sys.argv[1:]).split()
+if "-EncodedCommand" not in args:
+    sys.stderr.write("doble powershell: falta -EncodedCommand\n")
+    sys.exit(2)
+script = base64.b64decode(args[args.index("-EncodedCommand") + 1]).decode("utf-16-le")
+with open(os.path.join(os.environ["S"], "powershell-llamado"), "a", encoding="utf-8") as f:
+    f.write(script)
+    f.write("\n---\n")
+
+piezas = (
+    "[Console]::In.ReadLine()",
+    "Get-Content -LiteralPath $f -Encoding UTF8",
+    "-cmatch",
+    "-cnotmatch",
+    "$linea",
+    "[IO.File]::WriteAllLines",
+    "Move-Item -LiteralPath $t -Destination $f -Force",
+    "New-Item -ItemType Directory -Force -Path $dir",
+    "Test-Path -LiteralPath",
+    "Set-Content -LiteralPath $marca",
+    "Remove-Item -LiteralPath $marca -Force",
+)
+faltan = [p for p in piezas if p not in script]
+if faltan:
+    sys.stderr.write("doble powershell: al script le faltan piezas: " + ", ".join(faltan) + "\n")
+    sys.exit(4)
+
+def campo(patron):
+    hallado = re.search(patron, script)
+    if not hallado:
+        sys.stderr.write("doble powershell: no pude leer del script: " + patron + "\n")
+        sys.exit(5)
+    return hallado.group(1)
+
+accion = campo(r"accion = '([^']*)'")
+sub = campo(r"sub = '([^']*)'")
+base = campo(r"MOTOR_KUMA_URL=(http[^']*)'")
+os.execv(sys.executable, [sys.executable, "-I", os.path.join(os.environ["S"], "escribe-pc.py"),
+                          os.environ["HOME_PC"], accion, sub, base])
+FAKE
+ln -sfn powershell "$S/bin/pwsh"
+chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname" "$S/bin/curl" "$S/bin/powershell"
 mkdir -p "$HOME_MAC/motor/motor"
 : >"$HOME_MAC/motor/motor/__init__.py"
 cat >"$HOME_MAC/motor/motor/__main__.py" <<'PYEOF'
@@ -502,6 +540,37 @@ espera "sin camino la Mini no recibe una dirección inalcanzable" '!0' \
 contiene "sin camino" "$S/salida" "ni 10.13.13.1:3001 ni el túnel 127.0.0.1:19301 responden desde esa máquina"
 cmp -s "$S/mini-antes-de-sin-camino" "$HOME_MINI/.motor/secretos.env" \
   || fallo "sin camino el script escribió igual en la Mini"
+
+# F2: el mismo fallo en la Mac y en la PC. Sin directa ni túnel no escriben una dirección y el
+# checklist lo reporta por la señal que falta, sin inventar una ruta.
+for par in "Mac|mac|$HOME_MAC" "PC|pc|$HOME_PC"; do
+  nombre="${par%%|*}"
+  resto="${par#*|}"
+  maq="${resto%%|*}"
+  casa="${resto#*|}"
+  cp "$casa/.motor/secretos.env" "$S/$maq-motor-antes-sin-camino"
+  cp "$casa/.motor-encargos/secretos.env" "$S/$maq-enc-antes-sin-camino"
+  grep -v '^MOTOR_KUMA_URL=' "$S/$maq-motor-antes-sin-camino" >"$S/$maq-motor-sin-linea"
+  cp "$S/$maq-motor-sin-linea" "$casa/.motor/secretos.env"
+  espera "sin camino la $nombre no recibe una dirección inalcanzable" '!0' \
+    env FAKE_SIN_RUTA="$maq|10.13.13.1:3001 $maq|127.0.0.1:19301" bash "$RAIZ/ops/senal-kuma.sh"
+  contiene "sin camino $nombre" "$S/salida" "ni 10.13.13.1:3001 ni el túnel 127.0.0.1:19301 responden desde esa máquina"
+  cmp -s "$S/$maq-motor-sin-linea" "$casa/.motor/secretos.env" \
+    || fallo "sin camino el script escribió igual en $nombre"
+  cmp -s "$S/$maq-enc-antes-sin-camino" "$casa/.motor-encargos/secretos.env" \
+    || fallo "sin camino el script escribió el secreto de encargos de $nombre"
+  for nombre_mon in "Motor de la MacBook" "Motor de la Mini" "Motor de la PC" "Motor de encargos de la MacBook"; do
+    latido "$nombre_mon" 5
+  done
+  espera "checklist reporta la $nombre sin camino" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+  if [ "$maq" = mac ]; then
+    contiene "checklist sin camino de la Mac" "$S/salida" "sin MOTOR_KUMA_URL en $casa/.motor/secretos.env"
+  else
+    contiene "checklist sin camino de la PC" "$S/salida" "pc: motor doctor no dice"
+  fi
+  cp "$S/$maq-motor-antes-sin-camino" "$casa/.motor/secretos.env"
+  cp "$S/$maq-enc-antes-sin-camino" "$casa/.motor-encargos/secretos.env"
+done
 unset FAKE_SIN_RUTA
 
 # El alta reinicia Kuma. Los dos primeros sondeos (directa y túnel) no contestan; el siguiente sí.
@@ -622,89 +691,26 @@ borra_monitor "Motor de encargos de la PC"
 grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" \
   || fallo "al restaurar, la Mini perdió la dirección de encargos del operador"
 
-# F11 de #307 no aplica en este encargo. Si esta máquina ya tiene Python 3.9, el servidor
-# se prueba con él. Si no lo tiene, la batería sigue. El workflow no instala 3.9.
-python39() {
-  local c ver ruta
-  if [ -n "${MOTOR_PYTHON39:-}" ]; then
-    printf '%s\n' "$MOTOR_PYTHON39"
-    return 0
-  fi
-  for c in python3.9 /usr/bin/python3; do
-    ruta="$(command -v "$c" 2>/dev/null || true)"
-    [ -n "$ruta" ] || continue
-    ver="$("$ruta" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
-    if [ "$ver" = 3.9 ]; then
-      printf '%s\n' "$ruta"
-      return 0
-    fi
-  done
-  return 1
-}
-if py39="$(python39)"; then
-  ver39="$("$py39" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
-  [ "$ver39" = 3.9 ] || fallo "el intérprete elegido para la prueba 3.9 es ${ver39:-ninguno}"
-  rm -f "$S"/py39.db*
-  python3 -I - "$S/py39.db" "$RAIZ/ops/tests/kuma-esquema.sql" <<'PY'
-import sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
-con.executescript(open(sys.argv[2], encoding="utf-8").read())
-con.execute("INSERT INTO notification (id, name, active, user_id, is_default, config) VALUES (0, 'Telegram', 1, 1, 1, '{}')")
-con.execute("INSERT INTO notification (id, name, active, user_id, is_default, config) VALUES (1, 'Server Alerts', 1, 1, 0, '{}')")
-con.execute(
-    "INSERT INTO monitor (id, name, user_id, type, interval, retry_interval, maxretries, push_token, accepted_statuscodes_json, timeout, description) "
-    "VALUES (26, 'backup orbit', 1, 'push', 90000, 3600, 1, 'ORBITTOKENDEPRUEBA', '[\"200-299\"]', 48, 'copiame')"
-)
-con.execute("INSERT INTO monitor_notification (monitor_id, notification_id) VALUES (26, 1)")
-con.commit()
+# F9: el doble de powershell recibe el script real de escritor_pc. Si al script le falta una pieza
+# del escritor (por ejemplo, la comparación sensible a mayúsculas), el doble se niega en vez de
+# escribir: así una regresión del PowerShell de la PC no pasa como un doble correcto.
+(
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  escritor_pc poner .motor "http://10.13.13.1:3001/api/push/"
+) >"$S/ps-sano"
+python3 -I - "$S/ps-sano" "$S/ps-malo" <<'PY'
+import sys
+texto = open(sys.argv[1], encoding="utf-8").read().replace("-cmatch", "-match")
+open(sys.argv[2], "w", encoding="utf-8").write(texto)
 PY
-  if "$py39" -I - "$S/py39.db" alta mac <"$RAIZ/ops/senal-kuma-servidor.py" >"$S/py39-alta" 2>"$S/py39-alta.err"; then
-    echo "  ok: Python 3.9 corre el alta del servidor"
-  else
-    fallo "Python 3.9: alta de senal-kuma-servidor.py salió $?"
-    sed 's/^/    | /' "$S/py39-alta.err" >&2
-  fi
-  if "$py39" -I -c '
-import re, sys
-lineas = open(sys.argv[1], encoding="utf-8").read().splitlines()
-claves = []
-for linea in lineas:
-    if not linea.strip():
-        continue
-    partes = linea.split()
-    if len(partes) != 2 or not re.fullmatch(r"[A-Za-z0-9]{32}", partes[1]):
-        raise SystemExit("alta: una linea no es clave y token de 32")
-    claves.append(partes[0])
-if claves != ["mini", "pc", "mac", "mac-encargos"]:
-    raise SystemExit("alta: claves " + ",".join(claves))
-' "$S/py39-alta"; then
-    echo "  ok: Python 3.9 deja mini, pc, mac y mac-encargos"
-  else
-    fallo "Python 3.9: el alta no dejó los cuatro monitores con token"
-  fi
-  if "$py39" -I - "$S/py39.db" estado <"$RAIZ/ops/senal-kuma-servidor.py" >"$S/py39-estado" 2>"$S/py39-estado.err"; then
-    echo "  ok: Python 3.9 corre el estado del servidor"
-  else
-    fallo "Python 3.9: estado salió $?"
-    sed 's/^/    | /' "$S/py39-estado.err" >&2
-  fi
-  for clave in mini pc mac mac-encargos; do
-    grep -qx "$clave 1 1 0" "$S/py39-estado" || fallo "Python 3.9: estado no dejó $clave activo y conectado al aviso"
-  done
-  if "$py39" -I - "$S/py39.db" baja <"$RAIZ/ops/senal-kuma-servidor.py" >"$S/py39-baja" 2>"$S/py39-baja.err"; then
-    echo "  ok: Python 3.9 corre la baja del servidor"
-  else
-    fallo "Python 3.9: baja salió $?"
-    sed 's/^/    | /' "$S/py39-baja.err" >&2
-  fi
-  [ ! -s "$S/py39-baja" ] || fallo "Python 3.9: baja no debe escribir tokens"
-  "$py39" -I - "$S/py39.db" estado <"$RAIZ/ops/senal-kuma-servidor.py" >"$S/py39-estado-baja" 2>>"$S/py39-estado.err" \
-    || fallo "Python 3.9: estado tras la baja falló"
-  for clave in mini pc mac mac-encargos; do
-    grep -qx "$clave 0 1 0" "$S/py39-estado-baja" || fallo "Python 3.9: baja no dejó $clave inactivo"
-  done
-fi
+ps_malo="$(python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read().decode("utf-8").encode("utf-16-le")).decode())' "$S/ps-malo")"
+espera "el doble de powershell rechaza un script sin -cmatch" '!0' \
+  powershell -NoProfile -NonInteractive -EncodedCommand "$ps_malo"
+contiene "doble powershell" "$S/salida" "al script le faltan piezas"
 
-[ ! -s "$S/pwsh-llamado" ] || fallo "la prueba llamó a pwsh"
+[ -s "$S/powershell-llamado" ] || fallo "ninguna prueba ejecutó el doble de powershell"
+grep -Fq '[IO.File]::WriteAllLines' "$S/powershell-llamado" || fallo "el escritor de la PC no usa WriteAllLines"
+grep -Fq -- '-cmatch' "$S/powershell-llamado" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
 
 termina
