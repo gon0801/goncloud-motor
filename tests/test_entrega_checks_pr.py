@@ -678,33 +678,45 @@ class DosJobsConElMismoSaneoNoSePisan(unittest.TestCase):
             self.assertIn("FALLO_DEL_JOB_2", copia2.read_text())
 
 
-def _rechazar_push(repo):
-    """Instala un gancho pre-receive que rechaza cualquier push."""
-    gancho = Path(repo) / "hooks" / "pre-receive"
-    gancho.write_text("#!/bin/sh\nexit 1\n")
-    gancho.chmod(0o755)
+def _romper_push(espacio: Path) -> None:
+    """F10: deja el remoto sin pushurl util y el resto intacto: el fetch y la
+    lectura del head (ls-remote del bare) siguen funcionando, solo el push
+    falla, con la rama del remoto en su sitio."""
+    subprocess.run(
+        ["git", "-C", str(espacio), "remote", "set-url",
+         "--push", "origin", "/no/existe/como/remoto"],
+        check=True, capture_output=True, text=True,
+    )
 
 
 class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
-    """F10: un rechazo del remoto (o una red caida) no es una cabeza desviada.
-    Con la rama en su sitio, el fallo de push cae en la espera generica del
-    instrumento, sin inventar un desvio ni nombrar un sha vacio en el motivo."""
+    """F10: un fallo de push cualquiera no es una cabeza desviada. Con la rama
+    del remoto en su sitio (la punta coincide con el sha que se intenta
+    publicar), el fallo cae en la espera generica del instrumento, sin
+    inventar un desvio ni nombrar un sha vacio; y la desviacion real de la
+    ronda de F6 nombra los dos shas, nunca uno vacio."""
 
     def test_un_push_rechazado_con_la_rama_en_su_sitio_espera_sin_desvio(self):
+        """Push rechazado con punta == sha: espera generica, cero head_vigente.
+        Con el DeepSeek en desacuerdo, el turno de entrega toma el camino largo
+        y llega de verdad al push rechazado."""
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            class _GhConCorridasReceloso(_GhConCorridas):
+                titulos = ("una observacion",)
+
             vuelta, r = _entrega_pr(
                 self,
                 tmp,
                 "ck-push-rechazo",
-                _GhConCorridas,
-                {"corridas": {"windows": "success", "bateria": "in_progress"}},
+                _GhConCorridasReceloso,
+                {"corridas": {"windows": "success"}},
             )
             e = vuelta("uno")
             self.assertNotEqual(e.estado, "terminado")
             repo = str(e.entrega.repo)
             sha_a = e.producto.sha_git
             self.assertEqual(vuelta.gh.ver(repo, e.pr_numero).head, sha_a)
-            _rechazar_push(repo)
+            _romper_push(r.espacio)
 
             e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
 
@@ -713,19 +725,14 @@ class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
             self.assertNotIn("head vigente del PR #", e.motivo)
             self.assertIn("git push", e.motivo)
 
-
-
-class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
-    """F10: un fallo de push sin sha en mano (remoto inalcanzable, credenciales,
-    un enganche que niega el push) no es una cabeza desviada: cae en la espera
-    genérica del instrumento, sin inventar un desvío ni nombrar un sha vacío."""
-
     def test_un_push_fallido_sin_sha_espera_sin_inventar_desvio(self):
+        """Sin sha entregado en mano (remoto inalcanzable, credenciales, un
+        enganche que niega el push) tampoco hay desvio que declarar."""
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self,
                 tmp,
-                "ck-push-rechazo",
+                "ck-push-sin-sha",
                 _GhConCorridas,
                 {
                     "corridas": {"windows": "failure"},
@@ -751,7 +758,6 @@ class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
             self.assertEqual(_pasos(r, "head_vigente"), [])
             self.assertNotIn("head vigente del PR #", e.motivo)
             self.assertIn("git push", e.motivo)
-
 
 
 if __name__ == "__main__":
