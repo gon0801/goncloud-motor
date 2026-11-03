@@ -552,7 +552,8 @@ for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos 
   [ -n "$tok" ] || fallo "alta: $monitor no tiene token"
   [ "$(tr -d '\r' <"$casa/.motor-encargos/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}" ] \
     || fallo "alta: el secreto de encargos de $nombre no apunta al monitor creado"
-  if [ "$nombre" = PC ]; then
+  # Sin pwsh el sustituto imita WriteAllLines de Windows. Con pwsh, en Linux el salto es LF.
+  if [ "$nombre" = PC ] && ! command -v pwsh >/dev/null 2>&1; then
     grep -q $'\r' "$casa/.motor-encargos/secretos.env" || fallo "alta: el secreto de encargos de la PC no quedó en CRLF"
   fi
   printf '%s\n' "$tok" >"$S/tok-antes-$nombre"
