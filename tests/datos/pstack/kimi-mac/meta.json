@@ -1,0 +1,19 @@
+{
+  "cli": "kimi",
+  "ruta": "k3",
+  "plantilla": [
+    "kimi",
+    "-p",
+    "{prompt}",
+    "--output-format",
+    "stream-json"
+  ],
+  "rc": 0,
+  "segundos": 151,
+  "raiz": "/var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy",
+  "version": "2.1.1",
+  "error": "",
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "``json\\n{\\\"sha\\\": null, \\\"resumen\\\": \\\"Investigación read-only. README.md de trabajo/ es un marcador trivial ('# Carpeta de medición', 'No hay nada que cambiar aquí.'). Subagente explore lo leyó y lo verifiqué en persona. Sin repo git (sha null) y sin $MOTOR_RESULT en el entorno, JSON entregado inline. Ningún archivo modificado.\\\"}\\n```\"}\n{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"session_b56bf00d-f133-446a-9c76-6a2de8e64e22\",\"command\":\"kimi -r session_b56bf00d-f133-446a-9c76-6a2de8e64e22\",\"content\":\"To resume this session: kimi -r session_b56bf00d-f133-446a-9c76-6a2de8e64e22\"}\n"
+}
