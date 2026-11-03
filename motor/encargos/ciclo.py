@@ -3498,7 +3498,10 @@ def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
     sha = _git(espacio, "rev-parse", "HEAD").stdout.strip()
     r = _git(espacio, "push", "--quiet", "origin", _rama_fase(enc))
     if r.returncode != 0:
-        return "", f"git push fallo: {r.stderr.strip()[-300:]}"
+        # El commit local existe y es el que se intentó publicar: el fallo del
+        # push no borra el sha. Sin él, un rechazo del remoto (o una red caída)
+        # parecería un head desviado con sha vacío (F10).
+        return sha, f"git push fallo: {r.stderr.strip()[-300:]}"
     return sha, ""
 
 
@@ -3772,6 +3775,18 @@ def _reconciliar_checks(
     directorio = _directorio(registro.base, enc.id)
     marca = _marca_checks(directorio)
     if not _toca_releer_checks(marca, sha, epoch, forzar, enc.generacion):
+        return enc
+    try:
+        vista = gh.ver(enc.entrega.repo, enc.pr_numero)
+        punta = str(getattr(vista, "head", "") or "").strip()
+    except Exception:
+        punta = ""
+    if punta and punta != sha:
+        # F6: el sha bloqueado ya no es el head del PR; sus rondas están muertas.
+        # Un verde de un sha que ya no es el head no abre el cierre (el portón de
+        # _chequeo_previo_cierre devuelve el trabajo por el head) y no se anota
+        # como checks_verdes de esta fase. El head se concilia en el turno de
+        # entrega, que devuelve el trabajo nombrando ambos shas.
         return enc
     try:
         veredicto = gh.checks(
@@ -4414,6 +4429,254 @@ def _esperar_checks_requeridos(
     )
 
 
+_TOPE_LOG_JOB = 80
+
+
+def _copia_log_job(
+    espacio: Path, nombre: str, run_id: str, job_id: str, texto: str
+) -> str:
+    """El literal completo del log del job queda en el espacio del responsable
+    (`.interno/logs/`, que no viaja en el producto: _commit_push lo excluye).
+    Un fallo que vive en medio del log no puede perderse en un recorte: la
+    devolución referencia la copia y el extracto la acompaña sin sustituirla
+    (h_a8968fb0). Devuelve la ruta relativa al espacio, o "" si no se pudo.
+
+    La identidad de la copia lleva el ID del job: dos jobs de una misma
+    corrida pueden sanear al mismo nombre y no se sobrescriben (h_c4902b32).
+    La escritura no sigue enlaces: rechaza un `.interno` o `logs` que sean
+    enlaces, y crea el temporal con O_EXCL|O_NOFOLLOW (un enlace preexistente
+    se quita a sí mismo, nunca se escribe a través de él), así el contenido
+    del espacio no puede truncar nada fuera del espacio (h_ff7d6d39)."""
+    if not texto:
+        return ""
+    if len(texto.encode("utf-8", errors="replace")) > capacidades.MAX_LOG:
+        return ""
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "-", nombre).strip("-") or "job"
+    destino = espacio / ".interno" / "logs"
+    try:
+        for padre in (espacio / ".interno", destino):
+            if padre.is_symlink():
+                return ""
+        destino.mkdir(parents=True, exist_ok=True)
+        sufijo = f"-job{job_id}" if job_id else ""
+        ruta = destino / f"{slug}{sufijo}-run{run_id or 'sin-run'}.log"
+        temporal = ruta.with_name(ruta.name + ".tmp")
+        try:
+            temporal.unlink()
+        except OSError:
+            pass
+        fd = os.open(
+            temporal,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(texto)
+        os.replace(temporal, ruta)
+    except OSError:
+        return ""
+    return f".interno/logs/{ruta.name}"
+
+
+def _recorte_log_job(texto: str, nombre: str, copia: str = "") -> str:
+    """El literal completo del job queda copiado en el espacio (o es la
+    evidencia que `ci.log` puede traer); en el motivo se acota para no
+    inundarlo: se conservan el principio y el final, y lo omitido queda
+    anotado con dónde está el literal. El extracto acompaña a la copia, no la
+    sustituye."""
+    lineas = texto.splitlines()
+    if len(lineas) <= _TOPE_LOG_JOB:
+        return "\n".join(lineas)
+    omitidas = len(lineas) - _TOPE_LOG_JOB
+    literal = copia or "ci.log"
+    nota = (
+        f"[log de {nombre}: se omiten {omitidas} líneas intermedias; "
+        f"el literal completo queda en {literal}]"
+    )
+    return "\n".join([*lineas[:55], nota, *lineas[-24:]])
+
+
+def _logs_de_fallidos(gh, repo: str, veredicto_ci, espacio: Path) -> str:
+    """El log literal de cada job en rojo, como hace `ci.log`: el job exacto
+    por su ID (el check-run de Actions comparte el ID del job), no su nombre
+    (con el nombre `gh` intenta /actions/jobs/<nombre> y falla, h_a8968fb0) y
+    sin la cola agregada de la corrida, que mezcla los jobs. El literal
+    completo queda copiado en el espacio del responsable y el motivo lo
+    referencia; un fallo en medio del log no depende de dónde caiga en el
+    extracto. Un log que no se pudo leer no frena la devolución: queda el
+    nombre y la url."""
+    partes = []
+    for corrida in veredicto_ci.corridas_fallidas:
+        nombre = str(corrida.get("nombre") or "")
+        url = str(corrida.get("url") or "")
+        run_id = str(corrida.get("run_id") or "")
+        job_id = str(corrida.get("job_id") or "")
+        texto = ""
+        if run_id and nombre:
+            try:
+                texto = gh.log_fallido_job(repo, run_id, nombre, job_id)
+            except Exception:
+                texto = ""
+        if texto:
+            copia = _copia_log_job(espacio, nombre, run_id, job_id, texto)
+            cabeza = f"log de {nombre} ({url}):"
+            if copia:
+                cabeza += f"\ncopia literal: {copia}"
+            partes.append(
+                f"{cabeza}\n{_recorte_log_job(texto, nombre, copia)}".rstrip()
+            )
+        else:
+            partes.append(f"corrida en rojo: {nombre} ({url})".rstrip())
+    return "\n\n".join(partes)
+
+
+def _chequeo_previo_cierre(
+    registro: Registro, enc: Encargo, gh, espacio: Path, hora: str,
+    numero: int, sha: str,
+) -> Encargo | None:
+    """Lee los checks del head vigente del PR antes de seguir hacia DeepSeek o
+    el cierre. El head vigente, no el SHA pedido: un push posterior a la rama
+    del PR deja el SHA guardado viejo y su CI aprobado ya no dice nada del
+    head nuevo (h_9d9b387c). None si están verdes. En rojo bloquea la entrega
+    y devuelve el trabajo con el nombre del job y su log literal; si algo sigue
+    corriendo, espera con relectura; si no se pueden leer, deja la espera
+    anotada."""
+    inicio_vuelta = enc
+    try:
+        vista = gh.ver(enc.entrega.repo, numero)
+    except Exception as exc:
+        causa = f"no se pudo leer la vista del PR #{numero}: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura de la vista del PR",
+            hora, f"pr-ver-{enc.generacion}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return registro.fold(enc.id)
+    sha_vigente = str(getattr(vista, "head", "") or "").strip() or sha
+    try:
+        veredicto_ci = gh.checks(
+            enc.entrega.repo, numero, sha_vigente, _checks_extra(enc, espacio),
+            base_politica=enc.entrega.base,
+        )
+    except Exception as exc:
+        causa = f"no se pudieron leer los checks del PR #{numero}: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura de checks del mismo SHA",
+            hora, f"checks-leer-{sha_vigente[:12]}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return registro.fold(enc.id)
+    if not veredicto_ci.green:
+        if veredicto_ci.fallas:
+            fallas = sorted(str(x) for x in veredicto_ci.fallas)
+            causa_ci = "checks requeridos en rojo: " + ", ".join(fallas)
+            logs = _logs_de_fallidos(gh, enc.entrega.repo, veredicto_ci, espacio)
+            if logs:
+                causa_ci += "\n" + logs
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_bloqueada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "sha": sha_vigente,
+                        "causa": causa_ci,
+                        "fallas": fallas,
+                        "hora": hora,
+                    },
+                },
+                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha_vigente}"
+                + _ronda_checks(registro, enc, sha_vigente),
+            )
+            enc = registro.fold(enc.id)
+            if hubo_avance(inicio_vuelta, enc):
+                _devolver(
+                    registro, enc, "investigar", causa_ci,
+                    "corregir los checks requeridos en rojo del PR de esta fase; "
+                    "lo aprobado que no cambio se conserva",
+                    hora, f"checks-{sha_vigente[:12]}",
+                )
+            else:
+                _sin_avance(
+                    registro, enc, causa_ci,
+                    "se corrigio y se volvio a publicar el PR, pero siguen en "
+                    "rojo los mismos checks requeridos",
+                    hora, f"checks-{sha_vigente[:12]}",
+                )
+        else:
+            _esperar_checks_requeridos(
+                registro, enc, veredicto_ci, numero, sha_vigente, hora
+            )
+        return registro.fold(enc.id)
+    if sha_vigente != sha:
+        # F6: el head vigente gobierna el cierre, no solo los checks. Con los
+        # checks del head en verde, cerrar con el sha guardado (aprobado por
+        # DeepSeek y entregado) daría por terminado un PR cuyo head es otro
+        # contenido; el trabajo vuelve al responsable para conciliar el head.
+        return _head_desviado(registro, enc, hora, numero, sha, sha_vigente)
+    return None
+
+
+def _head_desviado(
+    registro: Registro, enc: Encargo, hora: str,
+    numero: int, sha_entregado: str, head_vigente: str,
+) -> Encargo:
+    """F6: el head vigente del PR ya no es el sha aprobado y entregado. Cerrar
+    con el sha guardado daría por terminado un PR cuyo head es otro contenido
+    (el head es lo que se mergea), y las rondas de un sha que ya no es head
+    están muertas. Se anota la desviación una vez por head: la primera vez el
+    trabajo vuelve al responsable nombrando ambos shas; la repetición entra en
+    la escalera del freno hasta que alguien concilia el head."""
+    causa_head = (
+        f"el head vigente del PR #{numero} ({head_vigente[:12]}) ya no es el "
+        f"sha aprobado y entregado ({sha_entregado[:12]}); concilia el head "
+        "del PR"
+    )
+    clave_head = (
+        f"entrega:{enc.id}:{enc.fase_activa}:head_vigente:{head_vigente}"
+    )
+    ya_avisado = registro.por_ukey(clave_head) is not None
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "head_vigente",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha_entregado,
+                "head": head_vigente,
+                "hora": hora,
+            },
+        },
+        clave_head,
+    )
+    enc = registro.fold(enc.id)
+    if ya_avisado:
+        _sin_avance(
+            registro, enc, causa_head,
+            "el head del PR sigue distinto del sha aprobado y entregado; "
+            "decide si se acepta ese head o se repone el sha entregado",
+            hora, f"head-{head_vigente[:12]}",
+        )
+    else:
+        _devolver(
+            registro, enc, "investigar", causa_head,
+            "conciliar el head vigente del PR con el sha aprobado y "
+            "entregado; lo aprobado que no cambio se conserva",
+            hora, f"head-{head_vigente[:12]}",
+        )
+    return registro.fold(enc.id)
+
+
 def _observacion_corresponde(
     observacion, version: str, declaradas: list[dict]
 ) -> bool:
@@ -4564,6 +4827,16 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         and not _sha_final_sin_leer(enc, gh)
         and not (gh is None and _requiere_veredicto(enc))
     ):
+        if gh is not None and _requiere_veredicto(enc) and enc.pr_sha:
+            # El cierre por el atajo también mira los checks del head: DeepSeek
+            # pudo aprobar mientras una corrida seguía en marcha o un job se
+            # puso en rojo después de la lectura de la entrega (enc_25d22b9bfce242f9).
+            frenado = _chequeo_previo_cierre(
+                registro, enc, gh, _espacio(registro.base, enc.id), hora,
+                enc.pr_numero, enc.pr_sha,
+            )
+            if frenado is not None:
+                return frenado
         return _cerrar_con_veredicto(
             registro, enc, gh, _espacio(registro.base, enc.id),
             _directorio(registro.base, enc.id), hora,
@@ -4613,6 +4886,24 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return espera
     sha, causa = _commit_push(enc, espacio)
     if causa:
+        punta = ""
+        if enc.pr_numero:
+            try:
+                vista_push = gh.ver(enc.entrega.repo, enc.pr_numero)
+                punta = str(getattr(vista_push, "head", "") or "").strip()
+            except Exception:
+                punta = ""
+        if punta and sha and punta != sha:
+            entregado = str(enc.pr_sha or "").strip()
+            if punta and entregado and punta != entregado:
+                # F6: la punta del remoto ya no es el sha entregado: cabeza
+                # desviada de verdad, se concilia contra la punta vigente.
+                # F10: un fallo de push con la punta en el sha entregado no es
+                # desviación — el push propio no aterrizó todavía (el sha local
+                # puede estar más adelantado): reintento genérico, no desvío.
+                return _head_desviado(
+                    registro, enc, hora, enc.pr_numero, entregado, punta
+                )
         _anotar_instrumento(
             registro, enc, "github", causa,
             "reintentar commit y push de la misma version aprobada",
@@ -4840,58 +5131,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     inicio_vuelta = enc
-    try:
-        veredicto_ci = gh.checks(
-            enc.entrega.repo, numero, sha, _checks_extra(enc, espacio),
-            base_politica=enc.entrega.base,
-        )
-    except Exception as exc:
-        causa = f"no se pudieron leer los checks del PR #{numero}: {exc}"
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "reintentar la lectura de checks del mismo SHA",
-            hora, f"checks-leer-{sha[:12]}",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-        return registro.fold(enc.id)
-    if not veredicto_ci.green:
-        if veredicto_ci.fallas:
-            fallas = sorted(str(x) for x in veredicto_ci.fallas)
-            causa_ci = "checks requeridos en rojo: " + ", ".join(fallas)
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "entrega_bloqueada",
-                    "data": {
-                        "fase": enc.fase_activa,
-                        "intento": enc.intento,
-                        "sha": sha,
-                        "causa": causa_ci,
-                        "fallas": fallas,
-                        "hora": hora,
-                    },
-                },
-                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha}"
-                + _ronda_checks(registro, enc, sha),
-            )
-            enc = registro.fold(enc.id)
-            if hubo_avance(inicio_vuelta, enc):
-                _devolver(
-                    registro, enc, "investigar", causa_ci,
-                    "corregir los checks requeridos en rojo del PR de esta fase; "
-                    "lo aprobado que no cambio se conserva",
-                    hora, f"checks-{sha[:12]}",
-                )
-            else:
-                _sin_avance(
-                    registro, enc, causa_ci,
-                    "se corrigio y se volvio a publicar el PR, pero siguen en "
-                    "rojo los mismos checks requeridos",
-                    hora, f"checks-{sha[:12]}",
-                )
-        else:
-            _esperar_checks_requeridos(registro, enc, veredicto_ci, numero, sha, hora)
-        return registro.fold(enc.id)
+    frenado = _chequeo_previo_cierre(registro, enc, gh, espacio, hora, numero, sha)
+    if frenado is not None:
+        return frenado
     fase_ci = enc.fase_actual
     if fase_ci is not None and fase_ci.fallas_checks:
         enc = _anotar_checks_verdes(registro, enc, numero, sha, hora)

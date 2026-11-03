@@ -70,6 +70,8 @@ class GhGrabado(GhGitHub):
         self.reglas = reglas
         self.runs = runs
         self.estados = estados or {"state": "success", "statuses": []}
+        self.jobs = {}
+        self.logs_job = {}
         self.llamadas = []
         self.relanzadas = []
         self.relanzadas_fallidas = []
@@ -84,6 +86,17 @@ class GhGrabado(GhGitHub):
             )
             return ""
         if a[0] == "run" and a[1] == "view":
+            if "--json" in a:
+                return json.dumps(
+                    {
+                        "jobs": [
+                            {"name": nombre, "databaseId": jid}
+                            for nombre, jid in self.jobs.items()
+                        ]
+                    }
+                )
+            if "--job" in a:
+                return self.logs_job.get(a[a.index("--job") + 1], "")
             return "\n".join(f"linea-{i:03d}" for i in range(1, 101))
         if a[0] != "api":
             raise AssertionError(a)
@@ -137,26 +150,98 @@ class ChecksTest(unittest.TestCase):
             runs=json.dumps([_run("ci")]),
             estados={
                 "state": "pending",
-                "statuses": [{"context": "viejo", "state": "pending"}],
+                "statuses": [{"context": "externo", "state": "pending"}],
             },
         )
         v = gh.checks("o/r", 7, SHA, ())
-        self.assertTrue(v.terminal)
-        self.assertTrue(v.green)
+        self.assertFalse(v.terminal)
+        self.assertFalse(v.green)
+        self.assertEqual(v.faltan, ("externo",))
+        self.assertEqual(v.en_marcha, ("externo",))
+        self.assertFalse(v.github_termino)
 
     def test_sin_requeridos_un_estado_en_rojo_es_falla(self):
+        for estado in ("failure", "error"):
+            with self.subTest(estado=estado):
+                gh = GhGrabado(
+                    proteccion=RuntimeError("HTTP 404: Branch not protected"),
+                    runs=json.dumps([_run("ci")]),
+                    estados={
+                        "state": estado,
+                        "statuses": [{"context": "externo", "state": estado}],
+                    },
+                )
+                v = gh.checks("o/r", 7, SHA, ())
+                self.assertTrue(v.terminal)
+                self.assertFalse(v.green)
+                self.assertEqual(v.fallas, ("externo",))
+
+    def test_sin_requeridos_un_estado_en_success_no_cuenta(self):
         gh = GhGrabado(
             proteccion=RuntimeError("HTTP 404: Branch not protected"),
             runs=json.dumps([_run("ci")]),
             estados={
-                "state": "failure",
-                "statuses": [{"context": "viejo", "state": "failure"}],
+                "state": "success",
+                "statuses": [{"context": "externo", "state": "success"}],
             },
         )
         v = gh.checks("o/r", 7, SHA, ())
-        self.assertTrue(v.terminal)
         self.assertTrue(v.green)
+        self.assertTrue(v.terminal)
         self.assertEqual(v.fallas, ())
+
+    def test_estado_del_mismo_nombre_que_una_corrida_verde_cuenta(self):
+        """Un check-run en verde no esconde al estado del mismo contexto: los
+        dos resultados se evalúan y el peor manda (h_f05e0491, 2.ª ronda)."""
+        for estado in ("failure", "error", "pending"):
+            with self.subTest(estado=estado):
+                gh = GhGrabado(
+                    proteccion="[]",
+                    runs=json.dumps([_run("windows")]),
+                    estados={
+                        "state": estado,
+                        "statuses": [{"context": "windows", "state": estado}],
+                    },
+                )
+                v = gh.checks("o/r", 7, SHA, ())
+                self.assertFalse(v.green)
+                if estado == "pending":
+                    self.assertFalse(v.terminal)
+                    self.assertEqual(v.faltan, ("windows",))
+                    self.assertEqual(v.en_marcha, ("windows",))
+                else:
+                    self.assertTrue(v.terminal)
+                    self.assertEqual(v.fallas, ("windows",))
+
+    def test_el_log_del_job_usa_el_id_del_job_y_viaja_literal(self):
+        """`--job` pide el ID del job, no su nombre (h_a8968fb0, 2.ª ronda): el
+        ID viene del check-run o se resuelve por nombre; el texto vuelve
+        completo, sin recorte ciego de cola."""
+        log = "WINDOWS_FAILURE_DETAIL\n" + "\n".join(
+            f"limpieza {i}" for i in range(100)
+        )
+        gh = GhGrabado(proteccion="[]")
+        gh.jobs = {"windows": 2500, "bateria": 2501}
+        gh.logs_job = {"2500": log}
+        self.assertEqual(gh.log_fallido_job("o/r", "7", "windows", "2500"), log)
+        args = next(a for a in gh.llamadas if "--job" in a)
+        self.assertEqual(args[args.index("--job") + 1], "2500")
+
+        gh2 = GhGrabado(proteccion="[]")
+        gh2.jobs = {"windows": 2500}
+        gh2.logs_job = {"2500": log}
+        self.assertEqual(gh2.log_fallido_job("o/r", "7", "windows"), log)
+        args = next(a for a in gh2.llamadas if "--job" in a)
+        self.assertEqual(args[args.index("--job") + 1], "2500")
+        self.assertNotIn(
+            "windows",
+            [str(x) for x in args[: args.index("--job") + 2]],
+        )
+
+        gh3 = GhGrabado(proteccion="[]")
+        gh3.jobs = {"windows": 2500}
+        self.assertEqual(gh3.log_fallido_job("o/r", "7", "desconocido"), "")
+        self.assertEqual(gh3.log_fallido_job("o/r", "", "windows"), "")
 
     def test_proteccion_con_otro_error_es_falla_del_efecto(self):
         gh = GhGrabado(proteccion=RuntimeError("gh api: HTTP 500: boom"))
@@ -248,14 +333,29 @@ class ChecksTest(unittest.TestCase):
         v = gh.checks("o/r", 7, SHA, ())
         self.assertEqual(v.corridas_fallidas[0]["run_id"], "7")
 
-    def test_veredicto_sin_requeridos_exige_que_todo_termine_y_pase(self):
+    def test_sin_requeridos_una_corrida_que_corre_o_falla_cuenta(self):
+        """enc_25d22b9bfce242f9 cerró terminado con `windows` en rojo: con la
+        lista fija vacía, toda corrida que corre en el SHA entra al veredicto."""
         v = veredicto(SHA, (), [_run("ci", status="in_progress", conclusion=None)])
-        self.assertTrue(v.terminal)
-        self.assertTrue(v.green)
+        self.assertFalse(v.terminal)
+        self.assertFalse(v.green)
+        self.assertEqual(v.faltan, ("ci",))
+        self.assertEqual(v.en_marcha, ("ci",))
         v = veredicto(SHA, (), [_run("ci", conclusion="failure")])
         self.assertTrue(v.terminal)
+        self.assertFalse(v.green)
+        self.assertEqual(v.fallas, ("ci",))
+        self.assertEqual(len(v.corridas_fallidas), 1)
+
+    def test_sin_requeridos_skipped_y_neutral_no_cuentan(self):
+        v = veredicto(
+            SHA, (),
+            [_run("ci"), _run("CodeRabbit", conclusion="skipped", rid=2),
+             _run("lint", conclusion="neutral", rid=3)],
+            "",
+        )
+        self.assertTrue(v.terminal)
         self.assertTrue(v.green)
-        self.assertEqual(v.corridas_fallidas, ())
 
     def _fx(self, gh):
         t = Path(tempfile.mkdtemp(prefix="h-checks-"))

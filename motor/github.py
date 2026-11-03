@@ -100,6 +100,9 @@ def _corrida(r: dict) -> dict:
     return {
         "nombre": r.get("name", ""),
         "run_id": _run_id(r),
+        # El ID del check-run de un job de Actions es el databaseId del job:
+        # es lo que `gh run view --job` espera (h_a8968fb0).
+        "job_id": str(r.get("id") or ""),
         "url": r.get("html_url") or r.get("details_url") or "",
         "status": r.get("status", ""),
         "conclusion": r.get("conclusion"),
@@ -117,6 +120,16 @@ def veredicto(
     """Un check requerido "completa" cubre también una matriz "completa (1, 6)" … "completa (6, 6)":
     está terminado cuando todas sus partes terminaron, y verde cuando todas salieron bien.
 
+    No solo la lista fija cuenta: toda corrida que corre en el SHA entra al veredicto
+    (enc_25d22b9bfce242f9 cerró terminado con `windows` en rojo porque nadie lo tenía
+    como requerido), y también cada contexto de estado del SHA que no esté todo en
+    `success` (h_f05e0491: un `external-ci` en failure/error/pending con corridas
+    verdes sigue siendo rojo o pendiente). Corridas y estados del mismo nombre se
+    evalúan los dos: un check-run en verde no esconde a un estado del mismo contexto
+    en rojo o pendiente (h_f05e0491, segunda ronda). Un check se ignora por su
+    conclusión, no por su nombre: salto del borrador, `skipped` o `neutral` no
+    cuentan; lo que corre o falla sí.
+
     Un check saltado cuenta solo si se saltó después de que el PR dejó el borrador (`listo_desde`,
     hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
     no prueba nada (MOTOR 01, PR #484); el salto a propósito de un PR listo sí (Orbit salta
@@ -133,9 +146,28 @@ def veredicto(
         if r.get("status") == "completed"
         and r.get("conclusion") not in ("success", "skipped", "neutral", None)
     )
-    estados_malos = tuple(
-        e.get("context", "") for e in estados if e.get("state") in ("failure", "error")
-    )
+    corren = []
+    for r in runs:
+        nombre = str(r.get("name") or "")
+        if (
+            not nombre
+            or _salto_del_borrador(r, listo_desde, relanzadas_set)
+            or (
+                r.get("status") == "completed"
+                and r.get("conclusion") in ("skipped", "neutral")
+            )
+            or any(nombre == c or nombre.startswith(c + " (") for c in requeridos)
+        ):
+            continue
+        corren.append(nombre)
+    for ctx in {str(e.get("context") or "") for e in estados}:
+        if not ctx:
+            continue
+        sts = [e for e in estados if str(e.get("context") or "") == ctx]
+        if all(e.get("state") == "success" for e in sts):
+            continue
+        corren.append(ctx)
+    requeridos = tuple(dict.fromkeys([*requeridos, *sorted(set(corren))]))
     if not requeridos:
         return ChecksVerdict(
             sha,
@@ -155,25 +187,32 @@ def veredicto(
             if (r["name"] == c or r["name"].startswith(c + " ("))
             and not _salto_del_borrador(r, listo_desde, relanzadas_set)
         ]
-        if not partes:
-            sts = [e for e in estados if e.get("context") == c]
-            if sts and all(e.get("state") == "success" for e in sts):
-                continue
-            if sts and any(e.get("state") in ("failure", "error") for e in sts):
-                fallas.append(c)
-            else:
+        sts = [e for e in estados if str(e.get("context") or "") == c]
+        if partes:
+            if any(
+                r["status"] != "completed" or r.get("conclusion") is None
+                for r in partes
+            ):
                 faltan.append(c)
-                if any(e.get("state") == "pending" for e in sts):
-                    en_marcha.append(c)
-        elif any(
-            r["status"] != "completed" or r.get("conclusion") is None for r in partes
-        ):
-            faltan.append(c)
-            en_marcha.append(c)
-        elif any(
-            r["conclusion"] not in ("success", "skipped", "neutral") for r in partes
-        ):
+                en_marcha.append(c)
+                continue
+            if any(
+                r["conclusion"] not in ("success", "skipped", "neutral")
+                for r in partes
+            ):
+                fallas.append(c)
+                continue
+        # Aquí las corridas del nombre están verdes o no hay corridas: un
+        # estado del mismo contexto no queda escondido por ellas (h_f05e0491);
+        # los dos resultados se evalúan y el peor manda.
+        if sts and any(e.get("state") in ("failure", "error") for e in sts):
             fallas.append(c)
+        elif sts and not all(e.get("state") == "success" for e in sts):
+            faltan.append(c)
+            if any(e.get("state") == "pending" for e in sts):
+                en_marcha.append(c)
+        elif not partes and not sts:
+            faltan.append(c)
     return ChecksVerdict(
         sha,
         terminal=not faltan or bool(fallas),
@@ -272,6 +311,9 @@ class GitHubPort(Protocol):
     def relanzar_corrida(self, repo: str, run_id: str) -> None: ...
     def relanzar_fallidas(self, repo: str, run_id: str) -> None: ...
     def log_fallido(self, repo: str, run_id: str) -> str: ...
+    def log_fallido_job(
+        self, repo: str, run_id: str, job: str, job_id: str = ""
+    ) -> str: ...
     def comentarios_deepseek(
         self, repo: str, numero: int, sha: str = ""
     ) -> list[dict]: ...
@@ -545,6 +587,52 @@ class GhGitHub:
             return ""
         return "\n".join(texto.splitlines()[-80:])
 
+    def log_fallido_job(self, repo, run_id, job, job_id="") -> str:
+        """El log literal del job exacto de la corrida, como hace `ci.log`.
+        `--job` pide el ID del job, no su nombre: con el nombre `gh` intenta
+        GET /actions/jobs/<nombre> y falla (h_a8968fb0). El ID viene del
+        check-run (`job_id`); si no lo hay, se resuelve con el nombre. El
+        texto no se recorta: el literal completo es la evidencia del fallo y
+        el recorte ciego de la cola puede borrar el error."""
+        if not run_id or not job:
+            return ""
+        objetivo = str(job_id or "").strip()
+        if not objetivo:
+            objetivo = self._id_del_job(repo, run_id, job)
+        if not objetivo:
+            return ""
+        try:
+            return self._gh(
+                "run", "view", str(run_id), "--job", objetivo, "--log",
+                "-R", self.nombre(repo),
+            )
+        except RuntimeError:
+            return ""
+
+    def _id_del_job(self, repo, run_id, job) -> str:
+        """Resuelve el ID del job por su nombre, como hace `ci.log`."""
+        try:
+            vista = json.loads(
+                self._gh(
+                    "run", "view", str(run_id), "--json", "jobs",
+                    "-R", self.nombre(repo),
+                )
+            )
+        except (RuntimeError, ValueError):
+            return ""
+        jobs = vista.get("jobs") if isinstance(vista, dict) else None
+        if not isinstance(jobs, list):
+            return ""
+        elegido = next(
+            (
+                j
+                for j in jobs
+                if isinstance(j, dict) and str(j.get("name") or "") == job
+            ),
+            None,
+        )
+        return str(elegido.get("databaseId") or "") if elegido else ""
+
     def comentarios_deepseek(self, repo, numero, sha=""):
         """Comentarios de la integracion ai-review en ese PR y para ese SHA.
 
@@ -817,6 +905,9 @@ class FakeGitHub:
         self._guardar(s)
 
     def log_fallido(self, repo, run_id) -> str:
+        return ""
+
+    def log_fallido_job(self, repo, run_id, job, job_id="") -> str:
         return ""
 
     def comentarios_deepseek(self, repo, numero, sha=""):
