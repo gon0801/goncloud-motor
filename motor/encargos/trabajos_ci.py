@@ -17,10 +17,13 @@ como éxito para la protección de rama (GitHub lo documenta); un workflow
 saltado por `paths` quedaría pendiente y bloquearía el merge. Por eso el
 filtro va en el job, nunca en el disparador.
 
-El commit temporal de `ci.correr` pide por mensaje solo los jobs que el motor
-ya sabe que hacen falta. Ese mensaje no manda en un PR normal: solo se lee en
-una rama `ci-prueba/`, y ni allí puede saltar un job cuyas rutas toca el
-propio commit.
+La selección sale del diff real de git, nunca del mensaje del commit. En un
+PR normal se comparan base y head. En el commit temporal del motor (rama
+`ci-prueba/`, mismo repo, autor `motor-ci`) se compara ese commit con su
+padre, que el motor fija al último árbol verde; así solo corre el job que la
+corrección toca. Si el diff está vacío, corren todos. Del mensaje solo se lee
+`jobs_extra=...`, que puede añadir un job (el revisor que pide uno exacto);
+nunca quitar.
 """
 
 from __future__ import annotations
@@ -39,21 +42,24 @@ TODOS = TRABAJOS + ("gate", "reconcile")
 _RUTAS_MOTOR = ("motor/", "tests/", "conftest.py", "verificacion/")
 
 # `bateria` descubre y corre toda la suite, así que depende además de lo que
-# esas pruebas leen: la conf de ejemplo, los CLI falsos de proto, la skill del
-# director, dos documentos que se comprueban literalmente y los archivos de
-# ops/ que importan o copian (prepara_pc, lib.sh, sol_remoto, reversa y sus
-# fixtures). Un cambio a otra parte de ops/ solo corre ops-tests.
+# esas pruebas leen: la conf de ejemplo, los CLI falsos de proto, las skills,
+# dos documentos que se comprueban literalmente y los archivos de ops/ que
+# importan o copian (prepara_pc, iniciar_encargos_pc, lib.sh, sol_remoto,
+# reversa, pstack y sus fixtures). Un cambio a otra parte de ops/ solo corre
+# ops-tests.
 DEPENDENCIAS = {
     "ops-tests": ("ops/",),
     "bateria": _RUTAS_MOTOR
     + (
         "conf-ejemplo/",
         "proto/",
-        "skill/motor/SKILL.md",
+        "skill/",
         "docs/diseno-flujo-revisiones.md",
         "docs/flujo-revisiones.md",
         "ops/prepara_pc.py",
+        "ops/iniciar_encargos_pc.py",
         "ops/tests/",
+        "ops/pstack/",
         "ops/lib.sh",
         "ops/sol_remoto.py",
         "ops/reversa_ensayo.sh",
@@ -61,8 +67,9 @@ DEPENDENCIAS = {
         "ops/vuelve-a-la-anterior.sh",
         "ops/maquina_local.py",
     ),
-    "macos": _RUTAS_MOTOR,
-    "windows": _RUTAS_MOTOR + ("ops/prepara_pc.py",),
+    "macos": _RUTAS_MOTOR + ("ops/iniciar_encargos_pc.py",),
+    "windows": _RUTAS_MOTOR
+    + ("ops/prepara_pc.py", "ops/iniciar_encargos_pc.py"),
     "gate": ("*",),
     "reconcile": ("*",),
 }
@@ -126,29 +133,35 @@ def trabajos_a_correr(rutas, disponibles=TRABAJOS) -> tuple[str, ...]:
     )
 
 
-def _marcador_de_jobs(
-    mensaje: str, rama: str, misma_rama: bool = True
-) -> tuple[str, ...] | None:
-    """El commit temporal del motor trae `jobs=a,b` y su rama es `ci-prueba/`.
-
-    Cualquier PR puede escribir ese mensaje en su commit, pero solo una rama
-    del mismo repo que crea `ci.correr` trae la marca. Fuera de ella los jobs
-    salen de las rutas, nunca del mensaje."""
-    texto = str(mensaje or "").strip()
-    if not misma_rama:
-        return None
-    if not str(rama or "").startswith("ci-prueba/"):
-        return None
-    if not texto.startswith("ci-prueba"):
-        return None
-    m = re.search(r"(?:^|\s)jobs=([^\s]+)", texto)
+def _jobs_extra(mensaje: str) -> tuple[str, ...]:
+    """Solo puede añadir jobs; el recorte lo decide el diff."""
+    m = re.search(r"(?:^|\s)jobs_extra=([^\s]+)", str(mensaje or ""))
     if not m:
-        return None
-    valor = m.group(1).strip()
-    if valor in ("todos", "all", "*"):
-        return tuple(TRABAJOS)
-    pedidos = [trabajo(x) for x in valor.split(",") if x.strip()]
+        return ()
+    pedidos = [trabajo(x) for x in m.group(1).split(",") if x.strip()]
     return tuple(j for j in TRABAJOS if j in pedidos)
+
+
+_RAMA_TEMPORAL = re.compile(r"ci-prueba/[A-Za-z0-9_.-]+-[0-9a-f]{7,}-[0-9]+")
+
+
+def _es_del_motor(rama: str, head: str) -> bool:
+    """El commit temporal lo crea `ci.correr` con esa rama y esa firma."""
+    if not _RAMA_TEMPORAL.fullmatch(str(rama or "")):
+        return False
+    try:
+        correo = _git("log", "-1", "--format=%ae", head).strip()
+    except Exception:
+        return False
+    return correo == "motor-ci@localhost"
+
+
+def _cambios_del_commit(head: str) -> tuple[str, ...] | None:
+    """Lo que el commit temporal cambia respecto de su padre (el último verde)."""
+    try:
+        return cambios_de_git(f"{head}^", head)
+    except Exception:
+        return None
 
 
 def _git(*args: str) -> str:
@@ -205,23 +218,24 @@ def _base_y_head(evento: dict) -> tuple[str, str, str, bool]:
 
 
 def _decidir(
-    marcador: tuple[str, ...] | None,
-    propios: tuple[str, ...] | None,
     cambios: tuple[str, ...] | None,
     hay_base: bool,
+    temporal: bool = False,
+    extra=(),
 ) -> dict[str, bool]:
-    """El marcador del commit temporal manda, pero nunca puede saltar un job
-    cuyas rutas toca el propio commit. Sin marcador deciden las rutas."""
-    if marcador is not None:
+    """Decide por las rutas cambiadas. `extra` solo puede añadir jobs.
+
+    En el commit temporal, un diff vacío corre todo: la primera corrida no
+    tiene verde previo y no puede quedarse sin jobs."""
+    if temporal:
         correr = (
-            set(TRABAJOS)
-            if propios is None
-            else set(marcador) | set(trabajos_a_correr(propios))
+            set(TRABAJOS) if not cambios else set(trabajos_a_correr(cambios))
         )
     elif hay_base and cambios is not None:
         correr = set(trabajos_a_correr(cambios))
     else:
         correr = set(TRABAJOS)
+    correr |= {trabajo(j) for j in extra if trabajo(j) in TRABAJOS}
     return {job: job in correr for job in TRABAJOS}
 
 
@@ -232,16 +246,16 @@ def seleccion(evento: dict | None = None) -> dict[str, bool]:
         base, head, rama, misma_rama = _base_y_head(evento)
         if not head:
             head = os.environ.get("GITHUB_SHA") or "HEAD"
-        marcador = (
-            _marcador_de_jobs(mensaje_de_git(head), rama, misma_rama) if head else None
-        )
-        propios = None
-        if marcador is not None:
-            propios = cambios_de_git(f"{head}^", head)
+        temporal = bool(head) and misma_rama and _es_del_motor(rama, head)
+        extra = _jobs_extra(mensaje_de_git(head)) if head else ()
+        if temporal:
+            return _decidir(
+                _cambios_del_commit(head), True, temporal=True, extra=extra
+            )
         hay_base = bool(base) and not set(base) <= {"0"}
-        cambios = cambios_de_git(base, head) if hay_base and not marcador else None
-        return _decidir(marcador, propios, cambios, hay_base)
-    except Exception as exc:  # sin base, git roto o mensaje ilegible: todos
+        cambios = cambios_de_git(base, head) if hay_base else None
+        return _decidir(cambios, hay_base, extra=extra)
+    except Exception as exc:  # sin base o git roto: todos
         print(f"trabajos_ci: no se pudo decidir, corren todos: {exc}", file=sys.stderr)
         return {job: True for job in TRABAJOS}
 
@@ -264,15 +278,9 @@ def main(argv=None) -> int:
     ap.add_argument("--github-output", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--rutas", default="")
-    ap.add_argument("--mensaje", default="")
-    ap.add_argument("--rama", default="")
     args = ap.parse_args(argv)
     if args.rutas:
         correr = set(trabajos_a_correr(args.rutas.split(",")))
-        valores = {job: job in correr for job in TRABAJOS}
-    elif args.mensaje:
-        marcador = _marcador_de_jobs(args.mensaje, args.rama)
-        correr = set(marcador if marcador is not None else TRABAJOS)
         valores = {job: job in correr for job in TRABAJOS}
     else:
         valores = seleccion()

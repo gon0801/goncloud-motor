@@ -1,7 +1,8 @@
 """`ci.correr job=todos` devuelve todos los jobs y deja el log de los rojos.
 
-El commit temporal lleva `jobs=...` para que el workflow corra solo esos jobs;
-los demás quedan reusados. Se usa el mismo `gh` falso que las pruebas de CI.
+El commit temporal se cuelga del árbol verde anterior (o de un árbol vacío en
+la primera corrida); el workflow decide por el diff y los jobs saltados quedan
+reusados. Se usa el mismo `gh` falso que las pruebas de CI.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ elif args[:2] == ["run", "view"] and "--log" not in args:
             {{"name": "ops-tests", "databaseId": 99, "conclusion": "success"}},
             {{"name": "bateria", "databaseId": 100, "conclusion": "failure"}},
             {{"name": "macos", "databaseId": 101, "conclusion": "skipped"}},
+            {{"name": "windows", "databaseId": 102, "conclusion": "skipped"}},
         ]}}))
 elif args[:2] == ["run", "view"]:
     sys.stdout.write(open(os.path.join(d, "log-" + val("--job") + ".txt")).read())
@@ -82,7 +84,7 @@ class CorreTodosLosJobs(_Ci):
             self.recursos,
             cap.CI,
             "ci-linux",
-            {"job": "todos", "jobs": "ops-tests,bateria"},
+            {"job": "todos"},
             self.destino,
             espacio=self.espacio,
         )
@@ -98,13 +100,23 @@ class CorreTodosLosJobs(_Ci):
         self.assertEqual(jobs["gate"]["conclusion"], "success")
         self.assertTrue(datos["arbol"])
 
+        padre = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "rev-parse", datos["sha"] + "^"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(
+            subprocess.run(
+                ["git", "--git-dir", str(self.bare), "ls-tree", padre],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip(),
+            "",
+            "la primera corrida se cuelga del árbol vacío y corre todos los jobs",
+        )
         mensaje = subprocess.run(
             ["git", "--git-dir", str(self.bare), "log", "-1", "--format=%B", datos["sha"]],
-            capture_output=True,
-            text=True,
-            check=True,
+            capture_output=True, text=True, check=True,
         ).stdout
-        self.assertIn("jobs=ops-tests,bateria", mensaje)
+        self.assertNotIn("jobs=", mensaje)
 
         evidencia = r["evidencia"]
         self.assertEqual(evidencia["fallas"], ["bateria"])
@@ -124,7 +136,7 @@ class CorreTodosLosJobs(_Ci):
             self.recursos,
             cap.CI,
             "ci-linux",
-            {"job": "todos", "jobs": "ops-tests,bateria"},
+            {"job": "todos"},
             self.destino,
             espacio=self.espacio,
         )
@@ -135,6 +147,48 @@ class CorreTodosLosJobs(_Ci):
         jobs = {j["nombre"]: j for j in datos["jobs"]}
         self.assertEqual(jobs["bateria"]["conclusion"], "cancelled")
         self.assertIn("FALLA de bateria", Path(jobs["bateria"]["log"]).read_text())
+
+
+    def test_una_correccion_se_cuelga_del_arbol_verde_y_su_diff(self):
+        self.destino.mkdir(parents=True, exist_ok=True)
+        verde = cap.arbol_producto(self.espacio, self.destino)
+        (self.espacio / "base.txt").write_text("corregido\n")
+        r = cap.ejecutar(
+            self.recursos,
+            cap.CI,
+            "ci-linux",
+            {"job": "todos", "base_arbol": verde},
+            self.destino,
+            espacio=self.espacio,
+        )
+        self.assertEqual(r["estado"], "ok", r)
+        sha = r["datos"]["sha"]
+        padre = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "rev-parse", sha + "^"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        arbol_padre = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "rev-parse", padre + "^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(arbol_padre, verde)
+        self.assertRegex(
+            r["datos"]["rama"], r"^ci-prueba/.+-[0-9a-f]{7,}-[0-9]+$"
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "--git-dir", str(self.bare), "log", "-1",
+                 "--format=%ae", sha],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip(),
+            "motor-ci@localhost",
+        )
+        cambios = subprocess.run(
+            ["git", "--git-dir", str(self.bare), "diff", "--name-only", padre, sha],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        self.assertIn("base.txt", cambios)
+        self.assertNotIn("nuevo.txt", cambios)
 
 
 if __name__ == "__main__":

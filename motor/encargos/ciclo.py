@@ -4905,7 +4905,7 @@ def _pedir_ci_producto(
         "recurso": recurso,
         "parametros": {
             "job": "todos",
-            "jobs": ",".join(trabajos),
+            "base_arbol": base or "",
         },
         "motivo": "CI del producto al entregar, en paralelo con el revisor",
     }
@@ -4934,9 +4934,8 @@ def _pedir_ci_producto(
             "kind": "procedimiento",
             "data": {
                 "nota": (
-                    "CI del producto pedido al entregar: "
-                    + ", ".join(trabajos)
-                    + " (el resto reusa su verde)"
+                    "CI del producto pedido al entregar: corre los jobs que "
+                    "tocan las rutas y el resto reusa su verde"
                 ),
                 "hora": hora,
             },

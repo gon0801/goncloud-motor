@@ -64,7 +64,7 @@ def _ci_resuelto(r: Recorrido, conclusion: str = "failure"):
                 "intento": e.intento,
                 "generacion": e.generacion,
                 "conductor": "motor-ci",
-                "parametros": [["job", "todos"], ["jobs", "ops-tests,bateria"]],
+                "parametros": [["job", "todos"], ["base_arbol", ""]],
                 "estado": "pendiente",
             },
         },
@@ -281,10 +281,8 @@ class PideElCi(unittest.TestCase):
             self.assertEqual(crudo["conductor"], "motor-ci")
             self.assertEqual(crudo["operacion"], "ci.correr")
             self.assertEqual(crudo["parametros"]["job"], "todos")
-            self.assertEqual(
-                set(crudo["parametros"]["jobs"].split(",")),
-                set(trabajos_ci.TRABAJOS),
-            )
+            # La primera corrida no tiene verde previo: el workflow corre todo.
+            self.assertEqual(crudo["parametros"]["base_arbol"], "")
             self.assertEqual(e.rol, "revisor")
             self.assertEqual(e.estrategia, "revisar_evidencia")
 

@@ -126,10 +126,10 @@ disparador: un job saltado por su condición cuenta como éxito para la
 protección de rama, pero un workflow saltado deja los checks pendientes y
 bloquea el merge.
 
-El commit temporal pide por mensaje solo los jobs que el motor ya sabe que
-hacen falta. Ese mensaje no manda en un PR normal: solo se lee en una rama
-`ci-prueba/` del mismo repo, la que crea el motor, y ni allí puede saltar un
-job cuyas rutas toca el propio commit.
+El commit temporal no lleva la lista de jobs en el mensaje. El motor lo
+cuelga del último árbol verde (o de un árbol vacío en la primera corrida) y el
+workflow compara ese commit con su padre: el diff decide los jobs. Un PR normal
+compara base y head. Ningún mensaje de commit decide qué job corre o se salta.
 
 Si el CI de la versión en revisión falla, el resultado queda como bloqueante
 en la fase. El revisor lo ve en su prompt con el nombre del job y el log

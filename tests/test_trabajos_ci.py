@@ -7,8 +7,10 @@ checks pendientes y bloquea el merge.
 
 from __future__ import annotations
 
+import os
 import re
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from motor.encargos import trabajos_ci
@@ -66,14 +68,23 @@ class Dependencias(unittest.TestCase):
         for ruta in (
             "conf-ejemplo/rutas.toml",
             "proto/fake_cli.py",
-            "skill/motor/SKILL.md",
+            "skill/otra/SKILL.md",
             "docs/flujo-revisiones.md",
             "ops/prepara_pc.py",
+            "ops/iniciar_encargos_pc.py",
+            "ops/pstack/recorta_registro.py",
             "ops/lib.sh",
             "ops/tests/omitidas.txt",
         ):
             with self.subTest(ruta=ruta):
                 self.assertTrue(trabajos_ci.afecta("bateria", [ruta]))
+
+    def test_macos_y_windows_dependen_del_vigilante_que_leen(self):
+        for job in ("macos", "windows"):
+            with self.subTest(job=job):
+                self.assertTrue(
+                    trabajos_ci.afecta(job, ["ops/iniciar_encargos_pc.py"])
+                )
 
     def test_un_cambio_de_ops_que_la_bateria_no_lee_no_la_corre(self):
         self.assertFalse(trabajos_ci.afecta("bateria", ["ops/senal-kuma.sh"]))
@@ -84,52 +95,95 @@ class Dependencias(unittest.TestCase):
     def test_un_cambio_de_docs_no_corre_ningun_job_de_pruebas(self):
         self.assertEqual(trabajos_ci.trabajos_a_correr(["docs/flujo.md"]), ())
 
-    def test_el_marcador_del_commit_temporal_manda_sobre_las_rutas(self):
-        self.assertEqual(
-            trabajos_ci._marcador_de_jobs(
-                "ci-prueba x jobs=ops-tests,bateria", "ci-prueba/x"
-            ),
-            ("ops-tests", "bateria"),
-        )
-        self.assertEqual(
-            trabajos_ci._marcador_de_jobs("ci-prueba x jobs=todos", "ci-prueba/x"),
-            trabajos_ci.TRABAJOS,
-        )
-        self.assertIsNone(
-            trabajos_ci._marcador_de_jobs("commit normal", "ci-prueba/x")
-        )
+    def _seleccion(
+        self, evento, diffs, correo="motor-ci@localhost", mensaje=""
+    ):
+        def falso_git(*args):
+            if args[:2] == ("log", "-1"):
+                if any("%B" in a for a in args):
+                    return mensaje + "\n"
+                return correo + "\n"
+            if args[:2] == ("diff", "--name-only"):
+                return "".join(
+                    linea + "\n" for linea in diffs.get((args[2], args[3]), ())
+                )
+            raise AssertionError(f"git inesperado: {args}")
 
-    def test_el_mensaje_de_un_pr_normal_no_elige_los_jobs(self):
-        self.assertIsNone(
-            trabajos_ci._marcador_de_jobs(
-                "ci-prueba x jobs=ops-tests", "encargo/enc_3979357e"
-            )
-        )
-        self.assertIsNone(
-            trabajos_ci._marcador_de_jobs(
-                "ci-prueba x jobs=ops-tests", "ci-prueba/x", False
-            )
-        )
-        valores = trabajos_ci._decidir(
-            None, (), ["motor/encargos/ciclo.py"], True
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}):
+            with mock.patch.object(trabajos_ci, "_git", falso_git):
+                return trabajos_ci.seleccion(evento)
+
+    @staticmethod
+    def _pr(rama, misma=True):
+        repo = {"full_name": "o/r"}
+        cabeza = {"sha": "head123", "ref": rama, "repo": repo if misma else {"full_name": "x/r"}}
+        return {
+            "pull_request": {
+                "base": {"sha": "base123", "repo": repo},
+                "head": cabeza,
+            }
+        }
+
+    def test_el_mensaje_del_commit_no_puede_saltar_un_job(self):
+        # El marcador viejo `jobs=` ya no se lee: con motor en el diff, la
+        # bateria corre aunque el mensaje diga jobs=ops-tests.
+        valores = self._seleccion(
+            self._pr("encargo/enc_1"),
+            {("base123", "head123"): ("motor/x.py",)},
+            mensaje="ci-prueba x jobs=ops-tests",
         )
         self.assertEqual(
             valores,
             {"ops-tests": False, "bateria": True, "macos": True, "windows": True},
         )
+        # Una rama ci-prueba de otro autor tampoco usa el diff de su commit.
+        valores = self._seleccion(
+            self._pr("ci-prueba/x"),
+            {
+                ("base123", "head123"): ("motor/x.py",),
+                ("head123^", "head123"): ("ops/x.sh",),
+            },
+            correo="persona@example.com",
+            mensaje="ci-prueba x jobs=ops-tests",
+        )
+        self.assertTrue(valores["bateria"])
 
-    def test_un_marcador_no_puede_saltar_un_job_que_el_commit_toca(self):
-        valores = trabajos_ci._decidir(
-            ("ops-tests",), ["motor/encargos/ciclo.py"], (), True
+    def test_jobs_extra_solo_anade(self):
+        valores = self._seleccion(
+            self._pr("encargo/enc_1"),
+            {("base123", "head123"): ("ops/senal-kuma.sh",)},
+            mensaje="ci-prueba x jobs_extra=bateria",
+        )
+        self.assertEqual(
+            valores,
+            {"ops-tests": True, "bateria": True, "macos": False, "windows": False},
+        )
+        valores = self._seleccion(
+            self._pr("ci-prueba/enc_1-abc1234-1700000000"),
+            {("head123^", "head123"): ("ops/senal-kuma.sh",)},
+            mensaje="ci-prueba x jobs_extra=bateria",
+        )
+        self.assertEqual(
+            valores,
+            {"ops-tests": True, "bateria": True, "macos": False, "windows": False},
+        )
+
+    def test_el_commit_temporal_solo_corre_lo_que_cambia_su_diff(self):
+        valores = self._seleccion(
+            self._pr("ci-prueba/enc_1-abc1234-1700000000"),
+            {("head123^", "head123"): ("ops/senal-kuma.sh",)},
+        )
+        self.assertEqual(
+            valores,
+            {"ops-tests": True, "bateria": False, "macos": False, "windows": False},
+        )
+        valores = self._seleccion(
+            self._pr("ci-prueba/enc_1-abc1234-1700000000"),
+            {("head123^", "head123"): ()},
         )
         self.assertEqual(
             valores,
             {"ops-tests": True, "bateria": True, "macos": True, "windows": True},
-        )
-        valores = trabajos_ci._decidir(("ops-tests",), ["ops/senal-kuma.sh"], (), True)
-        self.assertEqual(
-            valores,
-            {"ops-tests": True, "bateria": False, "macos": False, "windows": False},
         )
 
 

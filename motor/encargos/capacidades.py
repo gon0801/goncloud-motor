@@ -657,13 +657,26 @@ def arbol_producto(espacio: Path, destino: Path) -> str:
         indice.unlink(missing_ok=True)
 
 
+def _arbol_vacio(espacio: Path, destino: Path) -> str:
+    """Tree vacío: la primera corrida no tiene verde previo y corre todo."""
+    indice = Path(destino) / "indice-vacio"
+    indice.unlink(missing_ok=True)
+    env = {"GIT_INDEX_FILE": str(indice)}
+    try:
+        _git_ci(espacio, "read-tree", "--empty", env=env)
+        return _git_ci(espacio, "write-tree", env=env).strip()
+    finally:
+        indice.unlink(missing_ok=True)
+
+
 def _commit_temporal(
-    espacio: Path, destino: Path, ident: str, mensaje: str = ""
+    espacio: Path, destino: Path, ident: str, mensaje: str = "", base_arbol: str = ""
 ) -> tuple[str, str]:
     """Commit con la versión vigente del producto en un índice aparte.
 
-    El mensaje puede llevar `jobs=a,b` para que el workflow del CI corra solo
-    esos jobs y reuse el verde de los demás. El árbol es el mismo de
+    Si `base_arbol` trae el árbol verde anterior, el commit temporal se cuelga
+    de un commit con ese árbol; el diff padre-hijo es entonces la corrección y
+    el workflow decide por rutas sin leer el mensaje. El árbol es el mismo de
     `arbol_producto`."""
     arbol = arbol_producto(espacio, destino)
     cabeza = _git_ci(espacio, "rev-parse", "--verify", "HEAD").strip()
@@ -673,9 +686,20 @@ def _commit_temporal(
         "GIT_COMMITTER_NAME": "motor-ci",
         "GIT_COMMITTER_EMAIL": "motor-ci@localhost",
     }
+    padre = cabeza
+    if base_arbol:
+        try:
+            tipo = _git_ci(espacio, "cat-file", "-t", base_arbol).strip()
+        except CiFallo:
+            tipo = ""
+        if tipo == "tree":
+            padre = _git_ci(
+                espacio, "commit-tree", base_arbol, "-p", cabeza,
+                "-m", f"ci-base {ident}", env=env,
+            ).strip()
     texto = mensaje or f"ci-prueba {ident}"
     sha = _git_ci(
-        espacio, "commit-tree", arbol, "-p", cabeza, "-m", texto, env=env
+        espacio, "commit-tree", arbol, "-p", padre, "-m", texto, env=env
     ).strip()
     return sha, arbol
 
@@ -888,7 +912,10 @@ COLA_CI = 8 * 1024
 
 
 def _jobs_pedidos(parametros: dict) -> tuple[str, ...]:
-    texto = str(parametros.get("jobs") or "").strip()
+    """Solo puede añadir jobs (`jobs_extra`); el recorte lo decide el diff."""
+    texto = str(
+        parametros.get("jobs_extra") or parametros.get("jobs") or ""
+    ).strip()
     if not texto:
         return ()
     return tuple(x.strip() for x in texto.split(",") if x.strip())
@@ -967,10 +994,11 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
 
     Con `job` exacto devuelve el log literal de ese job, como siempre. Con
     `job="todos"` devuelve la conclusión de cada job, los logs de los rojos y el
-    árbol del commit temporal. El parámetro `jobs=a,b` hace que el workflow
-    corra solo esos jobs y marque los demás como reusados. Usa el acceso de gh
-    y git que ya tiene el supervisor; la rama y el PR temporales se cierran
-    siempre."""
+    árbol del commit temporal. `base_arbol` es el último árbol verde: el commit
+    temporal se cuelga de él y el workflow corre solo los jobs que la
+    corrección toca. El mensaje no puede recortar; `jobs_extra` solo añade.
+    Usa el acceso de gh y git que ya tiene el supervisor; la rama y el PR
+    temporales se cierran siempre."""
     import re
     import shutil
 
@@ -982,16 +1010,19 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
             "(por ejemplo windows) o todos",
             "volver a pedirla con --parametro job=<nombre>",
         )
-    pedidos = _jobs_pedidos(parametros)
-    for nombre in pedidos:
+    extra = _jobs_pedidos(parametros)
+    for nombre in extra:
         if not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", nombre):
             raise CiFallo(
-                f"el parámetro jobs trae un nombre inválido: {nombre!r}",
+                f"el parámetro jobs_extra trae un nombre inválido: {nombre!r}",
                 "usar los nombres exactos de los jobs separados por comas",
             )
+    base_arbol = str(parametros.get("base_arbol") or "").strip()
     if espacio is None or not (Path(espacio) / ".git").exists():
         raise CiFallo("el espacio del encargo no es un clon git", "pedir al host que prepare el repo de entrega")
     espacio = Path(espacio)
+    if todos and not base_arbol:
+        base_arbol = _arbol_vacio(espacio, destino)
     gh = shutil.which("gh")
     if not gh:
         raise CiFallo(
@@ -1007,20 +1038,17 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
 
     ident = f"{espacio.name}"
     _barrer_restos(remoto, espacio, ident)
-    mensaje = f"ci-prueba {ident}"
-    if pedidos:
-        mensaje += " jobs=" + ",".join(pedidos)
-    elif todos:
-        mensaje += " jobs=todos"
-    else:
-        # Un job exacto que pide el revisor tiene que correr aunque sus rutas
-        # no hayan cambiado: el filtro por rutas no puede saltarlo.
-        from motor.encargos import trabajos_ci
+    from motor.encargos import trabajos_ci
 
+    mensaje = f"ci-prueba {ident}"
+    pedidos = list(extra)
+    if not todos:
         canonico = trabajos_ci.trabajo(job)
-        if canonico in trabajos_ci.TRABAJOS:
-            mensaje += " jobs=" + canonico
-    sha, arbol = _commit_temporal(espacio, destino, ident, mensaje)
+        if canonico in trabajos_ci.TRABAJOS and canonico not in pedidos:
+            pedidos.append(canonico)
+    if extra or (not todos and pedidos):
+        mensaje += " jobs_extra=" + ",".join(dict.fromkeys(pedidos))
+    sha, arbol = _commit_temporal(espacio, destino, ident, mensaje, base_arbol)
     rama = f"ci-prueba/{re_sub_ci(ident)}-{sha[:7]}-{int(time.time())}"
     numero = ""
     previo = _manejar_sigterm()
@@ -1092,10 +1120,7 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
                 )
                 canonico = trabajos_ci.trabajo(datos_job["nombre"])
                 datos_job["trabajo"] = canonico
-                if pedidos and canonico not in pedidos:
-                    datos_job["reusado"] = (
-                        datos_job["conclusion"] == "skipped"
-                    )
+                datos_job["reusado"] = datos_job["conclusion"] == "skipped"
                 resumen.append(datos_job)
             gate_intentado = False
             tiene_quality = False
@@ -1144,8 +1169,7 @@ def _correr_ci(concedido: dict, parametros: dict, espacio: Path, destino: Path) 
                 except CiFallo:
                     gate_intentado = False
             esperados = list(
-                pedidos
-                or (trabajos_ci.TRABAJOS if workflow == "pruebas.yml" else ())
+                trabajos_ci.TRABAJOS if workflow == "pruebas.yml" else ()
             )
             if gate_intentado:
                 esperados.append("gate")
