@@ -3031,6 +3031,7 @@ def prompt_responsable(e: Encargo) -> str:
         )
     ]
     lineas += _bloques_comunes(e)
+    lineas.append(f"Nivel de entrega autorizado: {e.entrega.nivel}.")
     if not e.fases:
         lineas.append(
             "Este pedido todavía no tiene fases. Antes de implementar, organiza el trabajo "

@@ -116,12 +116,12 @@ def _agentes(
             })
             continue
         version = ""
-        if os.name == "nt":
-            from motor.plataforma.windows import resolve_shim
-
-            argv = [*resolve_shim(cliente, os.environ.get("PATH", "")), "--version"]
-        else:
-            argv = [*lanzador, "--version"]
+        argv = [*lanzador, "--version"]
+        if os.name == "nt" and Path(lanzador[0]).suffix.lower() in (".cmd", ".bat"):
+            argv = [
+                os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe"),
+                "/d", "/s", "/c", *argv,
+            ]
         try:
             r = _correr(argv, 20)
             if r.returncode == 0:

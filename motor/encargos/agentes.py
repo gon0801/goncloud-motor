@@ -171,13 +171,13 @@ def _home_del_proceso(base: Path) -> bool:
         return True
     try:
         actual = base.resolve()
-    except OSError:
+    except (OSError, RuntimeError):
         actual = base
     for valor in candidatos:
         try:
             if actual == Path(valor).resolve():
                 return True
-        except OSError:
+        except (OSError, RuntimeError):
             if actual == Path(valor):
                 return True
     return False

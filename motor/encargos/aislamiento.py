@@ -277,7 +277,8 @@ def _preparar_kimi(runtime: Path, cmd: list[str]) -> float:
 
 def _bash_de_git(entorno: dict[str, str]) -> str:
     """El bash de la instalación de Git que resuelve el PATH del agente. Si no
-    está, la ruta habitual de la PC: la sonda y Claude la nombran si falla."""
+    está, devuelve la ruta habitual de la PC para Claude. La sonda de Windows
+    usa Python y no comprueba este bash."""
     from motor.plataforma.windows import BASH_GIT_POR_OMISION
 
     git = shutil.which("git", path=entorno.get("PATH"))
@@ -521,7 +522,8 @@ def sondear(
     """Comprueba con comandos locales, y sin llamar a ningún modelo, las
     operaciones que el trabajador necesita al arrancar: su temporal de shell,
     la escritura en el espacio y la lectura de las fuentes autorizadas. Corre
-    con el mismo lanzamiento que el agente: directo, con su entorno.
+    con lanzamiento directo y el entorno del usuario. En Windows usa Python;
+    en POSIX, /bin/sh. No comprueba el bash de Git que usa Claude.
 
     No acredita lo que no pudo ejecutar: con una fuente declarada que ya no
     está, el resultado es un fallo con su condición. Nunca propaga una

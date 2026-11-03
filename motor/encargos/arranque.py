@@ -503,9 +503,11 @@ def _limpiar_temporal_de(spec: dict) -> None:
     """El temporal de cada intento vive en <runtime>/tmp y se borra al terminar.
     El HOME del agente ya no lo delata (es el real del usuario desde el 2-nov):
     el TMPDIR que el motor fijó apunta al mismo sitio y no depende de nadie."""
-    tmp = str((spec.get("env") or {}).get("TMPDIR") or "")
-    runtime = Path(tmp).parent if tmp else None
-    if runtime is not None and runtime.name and runtime != runtime.parent:
+    tmp = Path(str((spec.get("env") or {}).get("TMPDIR") or ""))
+    if not tmp.is_absolute() or tmp.name != "tmp":
+        return
+    runtime = tmp.parent
+    if runtime.name and runtime != runtime.parent:
         from motor.encargos.aislamiento import limpiar_temporal
 
         limpiar_temporal(runtime)
