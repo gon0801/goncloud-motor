@@ -92,21 +92,6 @@ class Dependencias(unittest.TestCase):
             trabajos_ci.trabajos_a_correr(["ops/senal-kuma.sh"]), ("ops-tests",)
         )
 
-    def test_las_partes_de_la_bateria_son_el_mismo_trabajo(self):
-        for nombre in (
-            "bateria-partes",
-            "bateria-parte-0",
-            "bateria-parte-1",
-            "bateria-parte-2",
-            "bateria-parte-3",
-        ):
-            with self.subTest(nombre=nombre):
-                self.assertEqual(trabajos_ci.trabajo(nombre), "bateria")
-                self.assertFalse(trabajos_ci.afecta(nombre, ["ops/senal-kuma.sh"]))
-                self.assertTrue(
-                    trabajos_ci.afecta(nombre, ["motor/encargos/trabajos_ci.py"])
-                )
-
     def test_un_cambio_de_docs_no_corre_ningun_job_de_pruebas(self):
         self.assertEqual(trabajos_ci.trabajos_a_correr(["docs/flujo.md"]), ())
 

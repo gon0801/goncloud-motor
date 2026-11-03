@@ -75,17 +75,10 @@ DEPENDENCIAS = {
     "reconcile": ("*",),
 }
 
-# El nombre visible del job también es el nombre del check. Las cuatro partes
-# publican bateria-parte-0..3 y el id de la matriz es bateria-partes. Son el
-# mismo trabajo que bateria: prep sigue decidiendo un solo filtro.
+# El nombre visible del job también es el nombre del check requerido.
 ALIAS = {
     "Lanzamiento directo en macOS": "macos",
     "Bateria completa": "bateria",
-    "bateria-partes": "bateria",
-    "bateria-parte-0": "bateria",
-    "bateria-parte-1": "bateria",
-    "bateria-parte-2": "bateria",
-    "bateria-parte-3": "bateria",
 }
 
 SALIDAS = {
