@@ -1,0 +1,10 @@
+Perfil aislado OpenClaw ensayo34d en Mini (Mac mini, usuario gon), skill motor nueva copiada al workspace del perfil.
+Auth: xai/oauth del propio usuario, guardado solo en el perfil de ensayo. Sin copias al repo.
+Turno 1 (tarea acotada de solo lectura):
+  modelo observado: winnerProvider=xai, winnerModel=grok-4.7, ruta terminal xai/grok-4.7-build, thinking high, runner embedded
+  herramienta observada: read
+  respuesta: "Según la sección «Qué vía usar», usaría la vía directa: una tarea acotada que cabe en los agentes y sin continuidad pedida se hace con ellos, y lo de leer se hace ya con tus agentes."
+Turno 2 (trabajo sin conversación, varias etapas, y plan externo):
+  respuesta: "Usaría la vía durable, y un plan traído de fuera se entrega tal cual como contenido del pedido, sin reescribirlo en bloques ni exigirle campos de aceptación."
+Claude en Mini está logueado en la sesión gráfica, pero sin cuota semanal (reinicia Oct 28 22:00 America/Vancouver). Por eso el recorrido usa Grok como respaldo autorizado. La política deseada v7 no cambia.
+El perfil de ensayo se borra al guardar esta evidencia.
