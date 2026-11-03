@@ -877,6 +877,83 @@ class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
                 self.assertEqual(v.fallas, ())
                 self.assertEqual(v.corridas_fallidas, ())
                 self.assertEqual(v.faltan, ("windows",))
+                if conclusion == "action_required":
+                    self.assertFalse(v.github_termino)
+                self.assertEqual(v.corridas[0]["run_id"], "")
+
+    def test_cancelled_action_required_y_stale_no_disparan_relanza_saltada_ni_abortan_tick(self):
+        import time
+        from types import SimpleNamespace
+        from motor import machine as m
+        from motor.effects import Effects
+        from motor.plan import parse_plan
+        from motor.store import Store
+        from tests.test_github_despliegue import GhGrabado, SHA, _run
+        from tests.test_puro import PLAN, pol
+
+        for conclusion in ("cancelled", "action_required", "stale"):
+            with self.subTest(conclusion=conclusion), tempfile.TemporaryDirectory(
+                ignore_cleanup_errors=True
+            ) as tmp:
+                gh = GhGrabado(
+                    proteccion=json.dumps(["ci"]),
+                    runs=json.dumps([_run("ci", conclusion=conclusion, rid=42)]),
+                )
+                store = Store(Path(tmp) / "motor.db")
+                plan = parse_plan(PLAN)
+                fx = Effects(
+                    SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0, policy=pol())
+                )
+                store.append(
+                    "demo",
+                    "A",
+                    "ChecksEsperando",
+                    {"sha": SHA, "faltan": ["ci"], "github_termino": True},
+                    ts=time.time() - 3600,
+                )
+                snap = m.fold(plan, store.events(plan.id))
+                snap.blocks["A"].pr = {"numero": 7}
+                fx.poll_checks(plan, snap, m.PollChecks("A", SHA))
+                self.assertEqual(gh.relanzadas, [])
+                self.assertEqual(
+                    [e for e in store.events("demo") if e.kind == "ChecksRelanzados"],
+                    [],
+                )
+
+        class _GhRerunFalla(GhGrabado):
+            def _gh(self, *a):
+                if a[0] == "api" and "/events" in a[1]:
+                    return "2026-10-21T21:00:00Z"
+                if a[:2] == ("run", "rerun"):
+                    raise RuntimeError("gh: check-run externo sin workflow de Actions")
+                return super()._gh(*a)
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            salto = _run("ci", conclusion="skipped", rid=42)
+            salto["completed_at"] = "2026-10-21T19:00:00Z"
+            gh = _GhRerunFalla(
+                proteccion=json.dumps(["ci"]),
+                runs=json.dumps([salto]),
+            )
+            store = Store(Path(tmp) / "motor.db")
+            plan = parse_plan(PLAN)
+            fx = Effects(
+                SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0, policy=pol())
+            )
+            store.append(
+                "demo",
+                "A",
+                "ChecksEsperando",
+                {"sha": SHA, "faltan": ["ci"], "github_termino": True},
+                ts=time.time() - 3600,
+            )
+            snap = m.fold(plan, store.events(plan.id))
+            snap.blocks["A"].pr = {"numero": 7}
+            fx.poll_checks(plan, snap, m.PollChecks("A", SHA))
+            self.assertEqual(
+                len([e for e in store.events("demo") if e.kind == "ChecksRelanzados"]),
+                1,
+            )
 
     def test_timed_out_y_startup_failure_siguen_siendo_rojos(self):
         for conclusion in ("timed_out", "startup_failure"):

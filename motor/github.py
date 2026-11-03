@@ -96,10 +96,20 @@ def _run_id(r: dict) -> str:
     return str(rid) if rid else ""
 
 
+_CONCLUSIONES_ROJAS = ("failure", "timed_out", "startup_failure")
+_CONCLUSIONES_SIN_VEREDICTO = ("cancelled", "action_required", "stale")
+
+
 def _corrida(r: dict) -> dict:
+    # `corridas[i]["run_id"]` alimenta el relanzamiento de checks saltados en
+    # borrador (`_relanza_saltada`). Las conclusiones completadas sin veredicto
+    # (`cancelled`, `action_required`, `stale`) quedan en `faltan`, pero no son
+    # saltadas del borrador: no deben exponer `run_id` a `_relanza_saltada`.
     return {
         "nombre": r.get("name", ""),
-        "run_id": _run_id(r),
+        "run_id": ""
+        if r.get("conclusion") in _CONCLUSIONES_SIN_VEREDICTO
+        else _run_id(r),
         # El ID del check-run de un job de Actions es el databaseId del job:
         # es lo que `gh run view --job` espera (h_a8968fb0).
         "job_id": str(r.get("id") or ""),
@@ -107,9 +117,6 @@ def _corrida(r: dict) -> dict:
         "status": r.get("status", ""),
         "conclusion": r.get("conclusion"),
     }
-
-
-_CONCLUSIONES_ROJAS = ("failure", "timed_out", "startup_failure")
 
 
 def veredicto(
@@ -234,7 +241,9 @@ def veredicto(
         fallas=tuple(fallas),
         github_termino=bool(runs or estados)
         and all(
-            r["status"] == "completed" and r.get("conclusion") is not None
+            r["status"] == "completed"
+            and r.get("conclusion") is not None
+            and r.get("conclusion") != "action_required"
             for r in runs
         )
         and all(e.get("state") != "pending" for e in estados),
@@ -582,8 +591,12 @@ class GhGitHub:
         )
 
     def relanzar_corrida(self, repo, run_id):
-        if run_id:
+        if not run_id:
+            return
+        try:
             self._gh("run", "rerun", str(run_id), "-R", self.nombre(repo))
+        except RuntimeError:
+            pass
 
     def relanzar_fallidas(self, repo, run_id):
         if run_id:
