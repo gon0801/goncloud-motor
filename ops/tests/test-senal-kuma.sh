@@ -4,9 +4,9 @@
 # encargos tienen monitores distintos. La Mini y la PC ya traen la dirección del supervisor y se
 # conserva; la MacBook no la tiene y el script le crea su monitor. La Mac y la Mini corren su script
 # en un HOME falso. Si hay pwsh, la PC ejecuta con ese pwsh el script real de escritor_pc
-# contra su HOME temporal; la lectura compara el archivo sin distinguir CR y LF. Si no hay
-# pwsh, queda el doble, que solo mira las piezas del script, y la prueba dice que se omitió
-# la ejecución real. Un uname y un hostname falsos deciden si la Mac es local: con Linux va por
+# contra su HOME temporal; la lectura compara el archivo sin distinguir CR y LF, y una línea
+# motor_kuma_url no cuenta como MOTOR_KUMA_URL. Si no hay pwsh, queda el doble, que solo mira
+# las piezas del script, y la prueba dice que se omitió la ejecución real. Un uname y un hostname falsos deciden si la Mac es local: con Linux va por
 # ssh; con Darwin y el hostname de la Mini también va por ssh; solo con Darwin y otro hostname
 # es la MacBook y escribe en su HOME sin ssh a sí misma.
 set -uo pipefail
@@ -730,6 +730,8 @@ grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.mot
 # La PC. Con pwsh, el script de escritor_pc corre de verdad contra un home temporal.
 # Un exit antes de escribir, o Move-Item dejado en un comentario, no deja secretos.env:
 # el doble igual lo escribiría, porque solo busca esas cadenas y luego usa escribe-pc.py.
+# -cmatch y -cnotmatch se ven en el archivo: motor_kuma_url se conserva al poner y
+# asegurar sale 3. -match y -notmatch tratarían esa línea como MOTOR_KUMA_URL.
 if [ -n "$PWSH_REAL" ]; then
   [ -s "$S/pwsh-real-corridas" ] || fallo "la corrida de la PC no ejecutó pwsh"
   _pwsh_ver="$("$PWSH_REAL" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null || true)"
@@ -791,6 +793,57 @@ PY
   [ "$rc" = 0 ] || fallo "el script sin Move-Item salió $rc y se esperaba 0"
   [ -f "$S/pc-real-move/.motor/secretos.env.nuevo" ] || fallo "sin Move-Item no quedó el temporal: el script no corrió"
   [ ! -e "$S/pc-real-move/.motor/secretos.env" ] || fallo "sin Move-Item dejó el archivo: no se ejecutó el PowerShell"
+  caso_antes=$fallos
+  mkdir -p "$S/pc-real-caso/.motor"
+  printf '%s\n' \
+    'OTRA=1' \
+    'motor_kuma_url=http://10.13.13.1:3001/api/push/minuscula' \
+    'MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/VIEJA' \
+    >"$S/pc-real-caso/.motor/secretos.env"
+  rc=0
+  _pc_corre "$S/pc-real-caso" "$S/ps-sano" NUEVA || rc=$?
+  [ "$rc" = 0 ] || fallo "poner con la línea en minúsculas salió $rc"
+  python3 -I - "$S/pc-real-caso/.motor/secretos.env" <<'PY' || fallo "pwsh no distinguió motor_kuma_url de MOTOR_KUMA_URL"
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+texto = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n").decode("utf-8")
+esperado = (
+    "OTRA=1\n"
+    "motor_kuma_url=http://10.13.13.1:3001/api/push/minuscula\n"
+    "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/NUEVA\n"
+)
+if texto != esperado:
+    sys.stderr.write(repr(texto) + "\n")
+    sys.exit(1)
+PY
+  (
+    . "$RAIZ/ops/lib.sh"
+    . "$RAIZ/ops/lib-kuma.sh"
+    escritor_pc asegurar .motor
+  ) >"$S/ps-asegurar"
+  mkdir -p "$S/pc-real-cmatch/.motor"
+  printf '%s\n' 'motor_kuma_url=http://10.13.13.1:3001/api/push/minuscula' >"$S/pc-real-cmatch/.motor/secretos.env"
+  cp "$S/pc-real-cmatch/.motor/secretos.env" "$S/pc-real-cmatch-antes"
+  rc=0
+  _pc_corre "$S/pc-real-cmatch" "$S/ps-asegurar" || rc=$?
+  [ "$rc" = 3 ] || fallo "asegurar tomó motor_kuma_url como MOTOR_KUMA_URL (salió $rc, se esperaba 3)"
+  cmp -s "$S/pc-real-cmatch-antes" "$S/pc-real-cmatch/.motor/secretos.env" \
+    || fallo "asegurar escribió el archivo al no reconocer la línea"
+  mkdir -p "$S/pc-real-cmatch-si/.motor"
+  printf '%s\n' 'MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/VISIBLE' >"$S/pc-real-cmatch-si/.motor/secretos.env"
+  rc=0
+  _pc_corre "$S/pc-real-cmatch-si" "$S/ps-asegurar" || rc=$?
+  [ "$rc" = 0 ] || fallo "asegurar no vio MOTOR_KUMA_URL (salió $rc)"
+  python3 -I - "$S/pc-real-cmatch-si/.motor/secretos.env" <<'PY' || fallo "asegurar no conservó MOTOR_KUMA_URL"
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+texto = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n").decode("utf-8")
+esperado = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/VISIBLE\n"
+if texto != esperado:
+    sys.stderr.write(repr(texto) + "\n")
+    sys.exit(1)
+PY
+  [ "$fallos" = "$caso_antes" ] && echo "  ok: pwsh distingue motor_kuma_url de MOTOR_KUMA_URL"
 else
   echo "  se omitió la ejecución real: no hay pwsh"
   (
