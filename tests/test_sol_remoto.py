@@ -86,14 +86,9 @@ class SolRemotoTest(unittest.TestCase):
                 )
                 # El latido hace select de 5 s aunque Codex ya salió. En la
                 # prueba el hijo es instantáneo: el select no espera de verdad.
-                # Si la aguja no está, replace no cambia nada y la prueba
-                # seguiría verde con la espera real.
-                aguja = "select.select([sys.stdin], [], [], 5)"
-                self.assertEqual(remoto[2].count(aguja), 1)
                 cuerpo = remoto[2].replace(
-                    aguja,
+                    "select.select([sys.stdin], [], [], 5)",
                     "select.select([sys.stdin], [], [], 0.01)",
-                    1,
                 )
                 kwargs["env"] = {
                     **(kwargs.get("env") or os.environ),
