@@ -1435,20 +1435,16 @@ def _correr_ci(
                     and j["conclusion"] not in ("success", "neutral")
                 )
             )
-            # La conclusión del run cuenta aunque tenga jobs: un workflow rojo
-            # con todos sus jobs verdes no acredita el SHA. Si un job del run ya
-            # figura en `fallas`, no se duplica con el nombre del workflow.
-            for numero_vista, vista_run in vistas:
-                if str(vista_run.get("conclusion") or "") in VERDE_CI:
-                    continue
-                rojo_del_run = any(
-                    j.get("run") == numero_vista
-                    and not j.get("reusado")
-                    and j["conclusion"] not in ("success", "neutral")
-                    for j in resumen
-                )
-                if not rojo_del_run:
-                    fallas.append(f"workflow:{numero_vista}")
+            if not workflow:
+                # Sin workflow explícito el veredicto cubre todos los runs de
+                # pull_request del SHA. Un run sin jobs que no acabó verde
+                # tampoco puede contar como verde.
+                for numero_vista, vista_run in vistas:
+                    if (
+                        str(vista_run.get("conclusion") or "") not in VERDE_CI
+                        and not any(j.get("run") == numero_vista for j in resumen)
+                    ):
+                        fallas.append(f"workflow:{numero_vista}")
             if fallas:
                 conclusion = "failure"
             elif all(

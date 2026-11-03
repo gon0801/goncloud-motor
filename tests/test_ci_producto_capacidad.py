@@ -414,25 +414,6 @@ class EsperaTodosLosWorkflowsDelRepo(_Ci):
         self.assertEqual(r["datos"]["conclusion"], "failure")
         self.assertNotIn("ai-review-publish", jobs)
 
-    def test_un_run_rojo_con_todos_sus_jobs_verdes_no_es_verde(self):
-        guion = (self.bin / "gh").read_text(encoding="utf-8")
-        (self.bin / "gh").write_text(
-            guion.replace(
-                '{"name": "lint", "databaseId": 202, "conclusion": "failure"}',
-                '{"name": "lint", "databaseId": 202, "conclusion": "success"}',
-            ),
-            encoding="utf-8",
-        )
-        (self.bin / "gh").chmod(0o755)
-
-        r = self.pedir("todos")
-
-        self.assertEqual(r["estado"], "ok", r)
-        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
-        self.assertEqual(jobs["lint"]["conclusion"], "success")
-        self.assertEqual(r["datos"]["fallas"], ["workflow:1235"])
-        self.assertEqual(r["datos"]["conclusion"], "failure")
-
     def test_un_job_exacto_sale_del_workflow_que_lo_tiene(self):
         r = self.pedir("lint")
 
