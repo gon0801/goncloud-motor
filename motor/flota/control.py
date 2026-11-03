@@ -234,6 +234,92 @@ def _comprobar(gen: Path) -> int:
     return _comprobar_detalle(gen)[0]
 
 
+def _tiene_poteto(base: Path) -> bool:
+    return any(
+        (base / relativo).is_file()
+        for relativo in (
+            "skills/poteto-mode/SKILL.md",
+            "poteto-mode/SKILL.md",
+            "SKILL.md",
+        )
+    )
+
+
+def _comprobar_paquete_completo(home: Path, gen: Path) -> None:
+    """La candidata debe traer lo que la vigente trae: la configuración
+    exportada y poteto-mode. Sin eso el motor no puede lanzar
+    implementadores y el 3-nov dejó la flota muda.
+
+    No exige repos: una candidata preparada sin ellos hereda la configuración
+    de la vigente; lo que se rechaza aquí es omitirla.
+    """
+    anterior = _anterior_real(home)
+    vigente = home / "generaciones" / anterior if anterior else None
+    if not vigente or not vigente.is_dir() or vigente.resolve() == gen.resolve():
+        return
+    if (vigente / "config").is_dir() and not (gen / "config").is_dir():
+        raise ValueError(
+            "la candidata omite la configuracion exportada que trae la "
+            "generacion vigente; se conserva la instalacion actual"
+        )
+    for nombre in ("hermes", "claw", "conf"):
+        if (vigente / "config" / nombre).is_dir() and not (
+            gen / "config" / nombre
+        ).is_dir():
+            raise ValueError(
+                f"la candidata omite la configuracion {nombre} que trae la "
+                "generacion vigente; se conserva la instalacion actual"
+            )
+    paquete = "config/hermes/shared/sistema-agentes/poteto"
+    if _tiene_poteto(vigente / paquete) and not _tiene_poteto(gen / paquete):
+        raise ValueError(
+            "la candidata omite poteto-mode que trae la generacion vigente; "
+            "se conserva la instalacion actual"
+        )
+
+
+def _turnos_de_activacion(home: Path, gen: Path, destino: str) -> tuple[dict, str]:
+    """Los turnos reales de la candidata y el motivo de rechazo, si lo hay.
+
+    (resumen, "") cuando todos los turnos pasan o no bloquean; (resumen,
+    motivo) cuando un agente que funciona en la vigente falla en la candidata
+    o el propio control de turnos no pudo correr. Solo candidatas con clientes
+    de suscripción en su runtime tienen turnos: una candidata sin ellos no
+    tiene a quién romper.
+    """
+    from motor.encargos.catalogo_agentes import ADAPTADORES
+
+    try:
+        runtime = json.loads((gen / "runtime.json").read_text(encoding="utf-8"))
+        clientes = set(runtime.get("lanzadores") or {}) & set(ADAPTADORES)
+    except (OSError, ValueError, TypeError):
+        return {}, ""
+    if not clientes:
+        return {}, ""
+    from .turnos import avisar_rechazo, turnos_candidata
+
+    try:
+        informe = turnos_candidata(gen, home)
+    except Exception as exc:  # noqa: BLE001  sin turnos no hay activación
+        return {}, f"el control de turnos no pudo correr: {exc}"[:300]
+    resumen = {
+        agente: {
+            k: turno[k]
+            for k in ("estado", "salida", "error", "nota", "vigente")
+            if turno.get(k)
+        }
+        for agente, turno in informe["turnos"].items()
+    }
+    if not informe["fallidos"]:
+        return resumen, ""
+    motivo = "turno real fallido: " + "; ".join(
+        f"{agente}: {str(informe['turnos'][agente].get('error') or '')[:200]}"
+        for agente in informe["fallidos"]
+    )[:600]
+    avisar_rechazo(destino, informe)
+    return resumen, motivo
+
+
 def _poner_enlace(home: Path, gen: Path) -> None:
     actual = home / "actual"
     if actual.is_symlink() or actual.exists():
@@ -395,14 +481,49 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
             {"estado": "rechazada", "destino": destino, "motivo": "la comprobacion fallo", "comprobador": comprobador},
         )
         return {"accion": "rechazada", "vigente": anterior, "destino": destino}
+    try:
+        _comprobar_paquete_completo(home, gen)
+    except ValueError as exc:
+        (home / "instalacion-pendiente.json").unlink(missing_ok=True)
+        _atomico(
+            home / "candidata.json",
+            {"estado": "rechazada", "destino": destino, "motivo": str(exc)},
+        )
+        return {
+            "accion": "rechazada",
+            "vigente": anterior,
+            "destino": destino,
+            "motivo": str(exc),
+        }
+    resumen, motivo = _turnos_de_activacion(home, gen, destino)
+    if motivo:
+        (home / "instalacion-pendiente.json").unlink(missing_ok=True)
+        _atomico(
+            home / "candidata.json",
+            {
+                "estado": "rechazada",
+                "destino": destino,
+                "motivo": motivo,
+                "turnos": resumen,
+            },
+        )
+        return {
+            "accion": "rechazada",
+            "vigente": anterior,
+            "destino": destino,
+            "motivo": motivo,
+            "turnos": resumen,
+        }
     if not _cambiar_generacion(home, gen):
         return {"accion": "ocupada", "vigente": asignar(home),
-                "destino": destino, "generacion_preparada": destino}
+                "destino": destino, "generacion_preparada": destino,
+                "turnos": resumen}
     recibo["etapa"] = "completo"
     recibo["causa"] = ""
+    recibo["turnos"] = resumen
     _atomico(home / "instalacion.json", recibo)
     (home / "instalacion-pendiente.json").unlink(missing_ok=True)
-    return {"accion": "aplicada", "generacion": destino, "anterior": anterior}
+    return {"accion": "aplicada", "generacion": destino, "anterior": anterior, "turnos": resumen}
 
 
 @_operacion_flota
@@ -450,14 +571,42 @@ def recuperar(home: Path) -> dict:
         apunta = actual.resolve() == gen.resolve()
     rc, comprobador = _comprobar_detalle(gen) if gen.exists() else (1, "ninguno")
     if gen.exists() and rc == 0:
+        try:
+            _comprobar_paquete_completo(home, gen)
+        except ValueError as exc:
+            pend_path.unlink(missing_ok=True)
+            _atomico(
+                home / "candidata.json",
+                {"estado": "rechazada", "destino": destino, "motivo": str(exc)},
+            )
+            return {"accion": "rechazada", "destino": destino, "motivo": str(exc)}
+        resumen, motivo = _turnos_de_activacion(home, gen, destino)
+        if motivo:
+            pend_path.unlink(missing_ok=True)
+            _atomico(
+                home / "candidata.json",
+                {
+                    "estado": "rechazada",
+                    "destino": destino,
+                    "motivo": motivo,
+                    "turnos": resumen,
+                },
+            )
+            return {
+                "accion": "rechazada",
+                "destino": destino,
+                "motivo": motivo,
+                "turnos": resumen,
+            }
         if not apunta and not _cambiar_generacion(home, gen):
             return {"accion": "ocupada", "vigente": asignar(home), "destino": destino}
         pend["etapa"] = "completo"
         pend["causa"] = ""
         pend["comprobador"] = comprobador
+        pend["turnos"] = resumen
         _atomico(home / "instalacion.json", pend)
         pend_path.unlink(missing_ok=True)
-        return {"accion": "completo", "generacion": destino}
+        return {"accion": "completo", "generacion": destino, "turnos": resumen}
     if gen.exists() and rc != 0:
         if apunta and anterior:
             previa = home / "generaciones" / anterior
