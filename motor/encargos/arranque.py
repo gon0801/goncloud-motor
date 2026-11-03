@@ -35,8 +35,8 @@ class Observacion:
 
     def _anotar_herramientas_de_agy(self, data: dict) -> None:
         """El `init` de agy trae las herramientas que el CLI dejó disponibles.
-        Se guardan las de espera y agendado que aparezcan: con el agente
-        `motor-turno` deben ser ninguna."""
+        Se guardan las de espera y agendado que aparezcan: el hook del runtime
+        las niega aunque sigan en la lista."""
         init = data.get("init")
         if not isinstance(init, dict):
             return

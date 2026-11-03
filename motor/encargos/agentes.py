@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -35,12 +36,12 @@ PROHIBIDO_SEGUNDO_PLANO = (
 # suscripciones.preparar lo pone en el entorno del lanzamiento de claude.
 SIN_SEGUNDO_PLANO = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
 
-# Herramientas que el init de agy 1.4.12 anunció y que esperan o agendan
+# Herramientas que el init de agy 1.4.12 anuncia y que esperan o agendan
 # después del turno. El esquema de permisos de settings.json no puede
 # nombrarlas (solo command, read_file, write_file, read_url, execute_url,
-# mcp y unsandboxed) y --mode no es un filtro de herramientas. El agente
-# propio las omite de `tools` y pone excludeDefaultComponents, que el
-# changelog 1.2.1 documenta como salida de las herramientas de fábrica.
+# mcp y unsandboxed) y --mode no es un filtro de herramientas. Un agente
+# propio con `tools:` tampoco: excludeDefaultComponents hace fallar el
+# registro y sin el no filtra. Se niegan con un hook PreToolUse del runtime.
 HERRAMIENTAS_TRAS_EL_TURNO = frozenset(
     {
         "schedule",
@@ -53,89 +54,88 @@ HERRAMIENTAS_TRAS_EL_TURNO = frozenset(
         "manage_inbox",
     }
 )
-HERRAMIENTAS_MEDIDAS = (
-    "ask_custom_permission",
-    "ask_permission",
-    "ask_question",
-    "browser_click_element",
-    "browser_drag_pixel_to_pixel",
-    "browser_get_dom",
-    "browser_get_network_request",
-    "browser_input",
-    "browser_list_network_requests",
-    "browser_mouse_down",
-    "browser_mouse_up",
-    "browser_move_mouse",
-    "browser_press_key",
-    "browser_refresh_page",
-    "browser_resize_window",
-    "browser_scroll",
-    "browser_scroll_dom",
-    "browser_select_option",
-    "browser_subagent",
-    "call_mcp_tool",
-    "capture_browser_console_logs",
-    "capture_browser_screenshot",
-    "click_browser_pixel",
-    "command_status",
-    "define_subagent",
-    "delete_knowledge",
-    "execute_browser_javascript",
-    "find_by_name",
-    "finish",
-    "generate_image",
-    "grep_search",
-    "invoke_subagent",
-    "list_browser_pages",
-    "list_dir",
-    "list_permissions",
-    "list_plugin_accounts",
-    "list_resources",
-    "manage_inbox",
-    "manage_subagents",
-    "manage_task",
-    "multi_replace_file_content",
-    "notebook_edit",
-    "notebook_execution",
-    "open_browser_url",
-    "read_browser_page",
-    "read_resource",
-    "read_url_content",
-    "replace_file_content",
-    "run_command",
-    "run_workflow",
-    "schedule",
-    "search_marketplace",
-    "search_web",
-    "sed_file",
-    "send_command_input",
-    "send_message",
-    "view_file",
-    "wait",
-    "wait_5_seconds",
-    "write_to_file",
+CLAVE_HOOK_TURNO = "motor-turno-sin-segundo-plano"
+MOTIVO_HOOK_TURNO = (
+    "herramienta deshabilitada por el motor: con --print nadie despierta "
+    "al agente despues del turno"
 )
-HERRAMIENTAS_DEL_TURNO = tuple(
-    nombre for nombre in HERRAMIENTAS_MEDIDAS if nombre not in HERRAMIENTAS_TRAS_EL_TURNO
+_GUION_HOOK = (
+    "import json\n"
+    "print(json.dumps({"
+    "'decision': 'deny', "
+    f"'reason': {MOTIVO_HOOK_TURNO!r}"
+    "}))\n"
 )
-AGENTE_TURNO = "motor-turno"
 
 
-def markdown_agente_turno() -> str:
-    herramientas = "\n".join(f"  - {nombre}" for nombre in HERRAMIENTAS_DEL_TURNO)
-    return (
-        "---\n"
-        f"name: {AGENTE_TURNO}\n"
-        "description: Turno del motor. Solo las herramientas de esta sesion.\n"
-        "mainAgent: true\n"
-        "subagent: false\n"
-        "excludeDefaultComponents: true\n"
-        "tools:\n"
-        f"{herramientas}\n"
-        "---\n"
-        "\n"
-        "Ejecuta el pedido de este turno.\n"
+def patron_hook_turno() -> str:
+    return "^(?:" + "|".join(sorted(HERRAMIENTAS_TRAS_EL_TURNO)) + ")$"
+
+
+def comando_hook_turno(guion: Path) -> str:
+    argv = [sys.executable, str(guion)]
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def hooks_turno(guion: Path) -> dict:
+    """El hook que niega las herramientas que esperan o agendan.
+
+    Un agente propio con `tools:` no sirve: el registro de componentes de
+    agy 1.4.12 no resuelve las herramientas de navegador ni las de MCP, y
+    con `excludeDefaultComponents` el arranque falla. El hook PreToolUse si
+    deja el resto de herramientas y corta solo estas.
+    """
+    return {
+        CLAVE_HOOK_TURNO: {
+            "PreToolUse": [
+                {
+                    "matcher": patron_hook_turno(),
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": comando_hook_turno(guion),
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+
+def _escribir_si_cambia(destino: Path, texto: str) -> None:
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    if destino.is_file():
+        try:
+            if destino.read_text(encoding="utf-8") == texto:
+                return
+        except OSError:
+            pass
+    temporal = destino.with_name(
+        f".{destino.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )
+    try:
+        temporal.write_text(texto, encoding="utf-8")
+        os.replace(temporal, destino)
+    finally:
+        temporal.unlink(missing_ok=True)
+
+
+def preparar_hooks_turno(runtime: Path) -> Path:
+    """Deja el hook del turno en el runtime y devuelve la carpeta que agy
+    suma al workspace con --add-dir.
+
+    No toca `~/.gemini/config`: el runtime del intento es el unico dueno de
+    este archivo, que muere con el.
+    """
+    carpeta = runtime / "agy-hooks"
+    guion = carpeta / "negar.py"
+    _escribir_si_cambia(guion, _GUION_HOOK)
+    destino = carpeta / ".agents" / "hooks.json"
+    texto = json.dumps(hooks_turno(guion), indent=2, sort_keys=True) + "\n"
+    _escribir_si_cambia(destino, texto)
+    return carpeta
 
 
 # El llavero es del usuario del sistema. Un home de prueba no lo tiene, y
@@ -256,38 +256,6 @@ def sesion_antigravity_presente(home: Path | None = None) -> bool:
     if _home_del_proceso(base):
         return _llavero_antigravity()
     return False
-
-
-def ruta_agente_turno(home: Path | None = None) -> Path:
-    base = Path.home() if home is None else home
-    return base / ".gemini" / "config" / "agents" / f"{AGENTE_TURNO}.md"
-
-
-def asegurar_agente_turno(home: Path | None = None) -> Path:
-    """Deja el agente del turno donde agy descubre los agentes globales.
-
-    No es la carpeta de sesión (`antigravity-cli`). El destino es uno
-    solo; cada escritor usa un temporal propio porque dos reemplazos
-    del mismo nombre se pisan.
-    """
-    destino = ruta_agente_turno(home)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    texto = markdown_agente_turno()
-    if destino.is_file():
-        try:
-            if destino.read_text(encoding="utf-8") == texto:
-                return destino
-        except OSError:
-            pass
-    temporal = destino.with_name(
-        f".{destino.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
-    try:
-        temporal.write_text(texto, encoding="utf-8")
-        os.replace(temporal, destino)
-    finally:
-        temporal.unlink(missing_ok=True)
-    return destino
 
 
 def resolver_lanzador(
@@ -674,8 +642,6 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             pelado or "gemini-4-argon-high",
             "--output-format",
             "stream-json",
-            "--agent",
-            AGENTE_TURNO,
             "--dangerously-skip-permissions",
             *(["--conversation", previa] if reanudar else []),
         ]

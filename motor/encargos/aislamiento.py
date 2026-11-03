@@ -145,9 +145,6 @@ def _entorno(
                 env.pop("XDG_DATA_HOME", None)
             else:
                 env["XDG_DATA_HOME"] = previo
-            from .agentes import asegurar_agente_turno
-
-            asegurar_agente_turno()
             return env
         if nombre == "kimi":
             expira = _preparar_kimi(runtime, cmd)
@@ -345,6 +342,13 @@ def aislar(
     runtime.mkdir(parents=True, exist_ok=True)
     nombre = agente or Path(cmd[0]).stem.lower()
     env = _entorno(runtime, suscripcion, cmd, agente=agente)
+    if nombre in ("antigravity", "agy"):
+        # El hook que niega las herramientas de espera y agendado vive en el
+        # runtime del intento. `--add-dir` lo suma a los workspaces de agy sin
+        # escribir en el espacio ni en la configuracion real del usuario.
+        from .agentes import preparar_hooks_turno
+
+        cmd = [*cmd, "--add-dir", str(preparar_hooks_turno(runtime))]
     if os.name == "nt":
         # Windows lanza directo, como POSIX: sin AppContainer ni WSL y con el
         # entorno del usuario. Solo se resuelven los shims .cmd de npm y se le
