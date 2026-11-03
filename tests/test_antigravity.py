@@ -457,17 +457,13 @@ class LanzamientoSinAgenteDelTurno(unittest.TestCase):
     def test_el_hook_es_idempotente_y_no_deja_temporales(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            primero, espacio, runtime = _aislado(base)
+            home = base / "home"
+            home.mkdir()
+            primero, _, _ = _aislado(base, home=home)
             carpeta, _ = _hooks_tras_el_turno(primero)
             archivo = carpeta / ".agents" / "hooks.json"
             antes = archivo.read_text(encoding="utf-8")
-            segundo = aislar(
-                _argv("responsable", "nueva"),
-                espacio,
-                runtime,
-                suscripcion=True,
-                agente="antigravity",
-            )
+            segundo, _, _ = _aislado(base, home=home)
             self.assertEqual(
                 (carpeta / ".agents" / "hooks.json").read_text(encoding="utf-8"),
                 antes,
