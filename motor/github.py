@@ -130,9 +130,11 @@ def veredicto(
     verdes sigue siendo rojo o pendiente). Corridas y estados del mismo nombre se
     evalúan los dos: un check-run en verde no esconde a un estado del mismo contexto
     en rojo o pendiente (h_f05e0491, segunda ronda). Un check se ignora por su
-    conclusión, no por su nombre: salto del borrador o una conclusión que no sea
-    verde ni roja (`skipped`, `neutral`, `cancelled`, `action_required`, `stale`)
-    no cuentan; lo que corre o falla (`failure`, `timed_out`, `startup_failure`) sí.
+    conclusión, no por su nombre: salto del borrador, `skipped` o `neutral` no
+    cuentan; lo que corre o falla sí. Solo `failure`, `timed_out` y
+    `startup_failure` cuentan como rojo (`fallas`); otras conclusiones
+    completadas no verdes (`cancelled`, `action_required`, `stale`) quedan en
+    `faltan` sin abrir el cierre en verde.
 
     Un check saltado cuenta solo si se saltó después de que el PR dejó el borrador (`listo_desde`,
     hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
@@ -158,7 +160,7 @@ def veredicto(
             or _salto_del_borrador(r, listo_desde, relanzadas_set)
             or (
                 r.get("status") == "completed"
-                and r.get("conclusion") not in ("success", *_CONCLUSIONES_ROJAS)
+                and r.get("conclusion") in ("skipped", "neutral")
             )
             or any(nombre == c or nombre.startswith(c + " (") for c in requeridos)
         ):
@@ -206,9 +208,11 @@ def veredicto(
             ):
                 fallas.append(c)
                 continue
-        # Aquí las corridas del nombre están verdes o no hay corridas: un
-        # estado del mismo contexto no queda escondido por ellas (h_f05e0491);
-        # los dos resultados se evalúan y el peor manda.
+        # Aquí las corridas del nombre no están en marcha ni en rojo: un estado
+        # del mismo contexto no queda escondido por ellas (h_f05e0491); los dos
+        # resultados se evalúan y el peor manda. Una conclusión completada que
+        # no sea verde ni roja (cancelled, action_required, stale) tampoco
+        # cuenta como verde: queda en `faltan` sin marcar falla.
         if sts and any(e.get("state") in ("failure", "error") for e in sts):
             fallas.append(c)
         elif sts and not all(e.get("state") == "success" for e in sts):
@@ -216,6 +220,11 @@ def veredicto(
             if any(e.get("state") == "pending" for e in sts):
                 en_marcha.append(c)
         elif not partes and not sts:
+            faltan.append(c)
+        elif any(
+            r["conclusion"] not in ("success", "skipped", "neutral")
+            for r in partes
+        ):
             faltan.append(c)
     return ChecksVerdict(
         sha,

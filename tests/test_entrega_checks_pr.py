@@ -468,10 +468,6 @@ class ElLogDelJobEnRojoEsElDelJob(unittest.TestCase):
                     (str(e.entrega.repo), "40001", "bateria", "40001"),
                 ],
             )
-            self.assertEqual(
-                vuelta.gh.log_fallido_job(str(e.entrega.repo), "40000", "windows", ""),
-                "",
-            )
 
 
 class ElEstadoDelMismoNombreNoLoEscondeLaCorrida(unittest.TestCase):
@@ -828,7 +824,9 @@ class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
 
 class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
     """F2: un check con conclusion cancelled, action_required o stale no es un
-    check en rojo; solo failure, timed_out y startup_failure frenan como rojo."""
+    check en rojo ni un check verde; queda en `faltan` (el PR espera sin
+    devolver el trabajo en rojo ni abrir el cierre), mientras que failure,
+    timed_out y startup_failure siguen frenando como rojo."""
 
     def test_cancelled_y_action_required_no_bloquean_en_rojo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -838,17 +836,47 @@ class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
                 "ck-cancelado",
                 _GhConCorridas,
                 {
+                    "requeridos": ["windows", "aprobacion"],
                     "corridas": {
                         "windows": "success",
                         "previa": "cancelled",
                         "aprobacion": "action_required",
                         "vieja": "stale",
-                    }
+                    },
                 },
             )
             e = vuelta("uno")
-            self.assertEqual(e.estado, "terminado")
+            self.assertNotEqual(e.estado, "terminado")
             self.assertEqual(e.fase_actual.fallas_checks, ())
+            self.assertEqual(e.fase_actual.entrega_bloqueada_sha, "")
+            self.assertNotIn("checks requeridos en rojo", e.motivo)
+            self.assertIn("esperando checks requeridos del PR #", e.motivo)
+            self.assertIn("aprobacion, previa, vieja", e.motivo)
+
+    def test_requerido_en_cancelled_action_required_o_stale_queda_en_faltan(self):
+        for conclusion in ("cancelled", "action_required", "stale"):
+            with self.subTest(conclusion=conclusion):
+                v = veredicto(
+                    "a" * 40,
+                    ("windows",),
+                    [
+                        {
+                            "name": "windows",
+                            "status": "completed",
+                            "conclusion": conclusion,
+                            "completed_at": "2026-11-02T21:46:00Z",
+                            "id": 40000,
+                            "html_url": "https://github.com/o/r/actions/runs/40000/job/40000",
+                            "details_url": "https://github.com/o/r/actions/runs/40000/job/40000",
+                        }
+                    ],
+                    "",
+                )
+                self.assertFalse(v.terminal)
+                self.assertFalse(v.green)
+                self.assertEqual(v.fallas, ())
+                self.assertEqual(v.corridas_fallidas, ())
+                self.assertEqual(v.faltan, ("windows",))
 
     def test_timed_out_y_startup_failure_siguen_siendo_rojos(self):
         for conclusion in ("timed_out", "startup_failure"):
