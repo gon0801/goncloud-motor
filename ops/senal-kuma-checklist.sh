@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Sale 0 solo si Kuma recibe de verdad la señal del motor de la MacBook, la Mini y la PC: Kuma corre,
 # los monitores de planes de las tres máquinas y los de encargos que el script gestiona están activos
-# y conectados al aviso "Server Alerts" (activo), y cada uno tiene una señal UP en los últimos 3 min.
+# y conectados al aviso "Server Alerts" (activo), cada uno tiene una señal UP en los últimos 3 min,
+# y la dirección escrita en cada máquina responde desde esa máquina. Si el túnel de la Mini
+# (ai.goncloud.motor-senal-tunel) es su camino y no responde, lo dice.
 # Kuma guarda heartbeat.time en UTC, igual que datetime('now') de sqlite
 # (medido en el servidor; ver el commit G.2), así que la comparación vive en la consulta, sin zonas de
 # por medio. Espera hasta MOTOR_KUMA_TOPE s (8 min) por la primera señal. Además: `motor doctor` dice
@@ -68,6 +70,11 @@ for m in mac mini; do
   while IFS= read -r l; do
     [ -z "$l" ] || problemas+=("$m: $l")
   done < <(revisa_secretos "$m" </dev/null 2>/dev/null)
+done
+for m in mac mini pc; do
+  while IFS= read -r l; do
+    [ -z "$l" ] || problemas+=("$m: $l")
+  done < <(problemas_direccion "$m")
 done
 
 if [ "${#problemas[@]}" -gt 0 ]; then

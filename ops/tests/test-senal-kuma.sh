@@ -3,15 +3,18 @@
 # base SQLite con las tablas reales de Kuma (kuma-esquema.sql). El motor de planes y el supervisor de
 # encargos tienen monitores distintos. La Mini y la PC ya traen la dirección del supervisor y se
 # conserva; la MacBook no la tiene y el script le crea su monitor. La Mac y la Mini corren su script
-# en un HOME falso; con pwsh, la PC corre el PowerShell de verdad con un USERPROFILE falso; sin pwsh,
-# un sustituto en Python prueba todo menos la escritura de la PC. Un uname y un hostname falsos
-# deciden si la Mac es local: con Linux va por ssh; con Darwin y el hostname de la Mini también va
-# por ssh; solo con Darwin y otro hostname es la MacBook y escribe en su HOME sin ssh a sí misma.
+# en un HOME falso. Si hay pwsh, la PC ejecuta con ese pwsh el script real de escritor_pc
+# contra su HOME temporal; la lectura compara el archivo sin distinguir CR y LF, y una línea
+# motor_kuma_url no cuenta como MOTOR_KUMA_URL. Si no hay pwsh, queda el doble, que solo mira
+# las piezas del script, y la prueba dice que se omitió la ejecución real. Un uname y un hostname falsos deciden si la Mac es local: con Linux va por
+# ssh; con Darwin y el hostname de la Mini también va por ssh; solo con Darwin y otro hostname
+# es la MacBook y escribe en su HOME sin ssh a sí misma.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
 export MOTOR_SSH_MAC=mac MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_SSH_SERVIDOR=goncloud
 export MOTOR_KUMA_DB="$S/kuma.db" MOTOR_ESPERA_PASO=1 MOTOR_KUMA_TOPE=2
+export MOTOR_KUMA_REINTENTOS=2 MOTOR_KUMA_ESPERA_SONDEO=0
 export HOME_MAC="$S/mac" HOME_MINI="$S/mini" HOME_PC="$S/pc"
 export FAKE_UNAME_S=Linux
 UNAME_REAL="$(command -v uname)"
@@ -52,13 +55,19 @@ if accion == "asegurar_distinto":
     token_de = lambda l: re.sub(r"[?#].*$", "", l.rsplit("/", 1)[-1])
     if plan_linea and token_de(plan_linea) == token_de(linea):
         sys.exit(6)
+    if marca.exists():
+        sys.exit(7)
 lineas = [l for l in original if not l.lstrip().startswith("MOTOR_KUMA_URL=")]
 if accion == "poner":
     lineas.append("MOTOR_KUMA_URL=" + sys.argv[4] + tok)
 if accion in ("asegurar", "asegurar_distinto"):
     lineas.append(linea)
 f.parent.mkdir(parents=True, exist_ok=True)
-f.write_text("\n".join(lineas) + ("\n" if lineas else ""), encoding="utf-8")
+# [IO.File]::WriteAllLines en Windows separa con CRLF. LF ocultaría el fallo de las lecturas.
+cuerpo = "\r\n".join(lineas)
+if lineas:
+    cuerpo += "\r\n"
+f.write_bytes(cuerpo.encode("utf-8"))
 if accion == "poner" and sub == ".motor-encargos":
     marca.write_text("creado por ops/senal-kuma.sh\n", encoding="utf-8")
 if accion == "quitar" and sub == ".motor-encargos":
@@ -95,6 +104,11 @@ case "$host" in
   goncloud) exec bash -c "$*" ;;
   gon@mini-fake)
     case "$*" in *doctor*) cat >/dev/null; doctor "$HOME_MINI/.motor/secretos.env" utf8; exit 0 ;; esac
+    case "$*" in
+      *"bash -c hostname"*)
+        if [ -n "${FAKE_MINI_HOSTNAME_FALLA:-}" ]; then exit 1; fi
+        ;;
+    esac
     HOME="$HOME_MINI" exec bash -c "$*" ;;
   mac)
     case "$*" in *doctor*) cat >/dev/null; doctor "$HOME_MAC/.motor/secretos.env" utf8; exit 0 ;; esac
@@ -108,20 +122,132 @@ case "$host" in
         esac
         exit 0 ;;
       "powershell "*)
-        if ! command -v pwsh >/dev/null 2>&1; then
-          _script="$(printf '%s' "${*##* }" | python3 -I -c 'import base64,sys; print(base64.b64decode(sys.stdin.read()).decode("utf-16-le"))')"
-          _accion="$(printf '%s\n' "$_script" | sed -n "s/.*accion = '\([^']*\)'.*/\1/p" | head -1)"
-          _sub="$(printf '%s\n' "$_script" | sed -n "s/.*sub = '\([^']*\)'.*/\1/p" | head -1)"
-          _base="$(printf '%s\n' "$_script" | sed -n "s/.*MOTOR_KUMA_URL=\([^']*\)'.*/\1/p" | grep -F http | head -1)"
-          exec python3 -I "$S/escribe-pc.py" "$HOME_PC" "$_accion" "$_sub" "$_base"
-        fi
-        python3 -I -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode("utf-16-le"))' "${*##* }" >>"$FAKE_LOG"
-        USERPROFILE="$HOME_PC" exec pwsh ${1#powershell } ;;
+        exec "$S/bin/corre-pwsh-pc" "$*" ;;
+      *curl.exe*)
+        _url=$(printf '%s\n' "$*" | grep -oE 'https?://[^[:space:]]+' | head -1)
+        HOME="$HOME_PC" exec curl -sS -o /dev/null --max-time 5 "$_url" ;;
+      *base64.b64decode*)
+        _b64="${*##* }"
+        if [ -n "${FAKE_PC_CR:-}" ]; then
+          USERPROFILE="$HOME_PC" HOME="$HOME_PC" python3 -I -c 'import base64,sys; exec(base64.b64decode(sys.argv[1]))' "$_b64" \
+            | python3 -I -c 'import sys
+for linea in sys.stdin.read().splitlines():
+    sys.stdout.write(linea + "\r\n")'
+          exit "$?"
+        else
+          USERPROFILE="$HOME_PC" HOME="$HOME_PC" exec python3 -I -c 'import base64,sys; exec(base64.b64decode(sys.argv[1]))' "$_b64"
+        fi ;;
     esac
     echo "ssh falso: no se espera '$*'" >&2; exit 1 ;;
 esac
 FAKE
-chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname"
+cat >"$S/bin/curl" <<'FAKE'
+#!/usr/bin/env bash
+# FAKE_SIN_RUTA="mini|10.13.13.1:3001 mini|127.0.0.1:19301": esa máquina no llega a ese host.
+url=
+for a in "$@"; do
+  case "$a" in
+    http://*|https://*) url=$a ;;
+  esac
+done
+printf 'curl %s\n' "$url" >>"$FAKE_LOG"
+host=$(printf '%s' "$url" | sed -E 's#^https?://##; s#/.*##')
+case "$HOME" in
+  */mac) maq=mac ;;
+  */mini) maq=mini ;;
+  */pc) maq=pc ;;
+  *) maq=? ;;
+esac
+case " ${FAKE_SIN_RUTA:-} " in
+  *" ${maq}|${host} "*) printf '000'; exit 7 ;;
+esac
+# FAKE_FRIOS_FILE cuenta sondeos que todavía no contestan, como Kuma justo después de reiniciar.
+if [ -n "${FAKE_FRIOS_FILE:-}" ] && [ -f "${FAKE_FRIOS_FILE}" ]; then
+  n=$(tr -d '[:space:]' <"${FAKE_FRIOS_FILE}")
+  if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+    printf '%s\n' "$((n - 1))" >"${FAKE_FRIOS_FILE}"
+    printf '000'
+    exit 7
+  fi
+fi
+printf '302'
+exit 0
+FAKE
+ln -sfn curl "$S/bin/curl.exe"
+# pwsh de fuera de $S/bin. El doble de $S/bin no cuenta: lo crea esta prueba.
+PWSH_REAL=""
+_pwsh_en_path="$(command -v pwsh 2>/dev/null || true)"
+case "$_pwsh_en_path" in
+  "$S"/bin/*|"") ;;
+  *) PWSH_REAL="$_pwsh_en_path" ;;
+esac
+export PWSH_REAL
+cat >"$S/bin/powershell-doble" <<'FAKE'
+#!/usr/bin/env python3
+import base64, os, re, sys
+
+args = " ".join(sys.argv[1:]).split()
+if "-EncodedCommand" not in args:
+    sys.stderr.write("doble powershell: falta -EncodedCommand\n")
+    sys.exit(2)
+script = base64.b64decode(args[args.index("-EncodedCommand") + 1]).decode("utf-16-le")
+with open(os.path.join(os.environ["S"], "powershell-llamado"), "a", encoding="utf-8") as f:
+    f.write(script)
+    f.write("\n---\n")
+
+piezas = (
+    "[Console]::In.ReadLine()",
+    "Get-Content -LiteralPath $f -Encoding UTF8",
+    "-cmatch",
+    "-cnotmatch",
+    "$linea",
+    "[IO.File]::WriteAllLines",
+    "Move-Item -LiteralPath $t -Destination $f -Force",
+    "New-Item -ItemType Directory -Force -Path $dir",
+    "Test-Path -LiteralPath",
+    "Set-Content -LiteralPath $marca",
+    "Remove-Item -LiteralPath $marca -Force",
+)
+faltan = [p for p in piezas if p not in script]
+if faltan:
+    sys.stderr.write("doble powershell: al script le faltan piezas: " + ", ".join(faltan) + "\n")
+    sys.exit(4)
+
+def campo(patron):
+    hallado = re.search(patron, script)
+    if not hallado:
+        sys.stderr.write("doble powershell: no pude leer del script: " + patron + "\n")
+        sys.exit(5)
+    return hallado.group(1)
+
+accion = campo(r"accion = '([^']*)'")
+sub = campo(r"sub = '([^']*)'")
+base = campo(r"MOTOR_KUMA_URL=(http[^']*)'")
+os.execv(sys.executable, [sys.executable, "-I", os.path.join(os.environ["S"], "escribe-pc.py"),
+                          os.environ["HOME_PC"], accion, sub, base])
+FAKE
+cat >"$S/bin/corre-pwsh-pc" <<'EOF'
+#!/usr/bin/env bash
+# Una sola entrada para la PC: el script codificado de escritor_pc. Con pwsh real
+# se ejecuta tal cual. Sin él, el doble de powershell-doble escribe en su lugar.
+set -u
+linea="${1:-}"
+case "$linea" in
+  *" -EncodedCommand "*) ;;
+  *) echo "powershell de la prueba: falta -EncodedCommand" >&2; exit 2 ;;
+esac
+b64="${linea##* -EncodedCommand }"
+if [ -z "$b64" ]; then
+  echo "powershell de la prueba: -EncodedCommand vacío" >&2
+  exit 2
+fi
+if [ -n "${PWSH_REAL:-}" ]; then
+  printf '1\n' >>"$S/pwsh-real-corridas"
+  USERPROFILE="$HOME_PC" HOME="$HOME_PC" exec "$PWSH_REAL" -NoProfile -NonInteractive -EncodedCommand "$b64"
+fi
+exec "$S/bin/powershell-doble" "$linea"
+EOF
+chmod +x "$S/bin/docker" "$S/bin/ssh" "$S/bin/uname" "$S/bin/hostname" "$S/bin/curl" "$S/bin/powershell-doble" "$S/bin/corre-pwsh-pc"
 mkdir -p "$HOME_MAC/motor/motor"
 : >"$HOME_MAC/motor/motor/__init__.py"
 cat >"$HOME_MAC/motor/motor/__main__.py" <<'PYEOF'
@@ -414,11 +540,349 @@ done
     senal_configurada pc
 ) || fallo "la señal se debe poder leer aunque la PC conteste en cp1252"
 
+# La Mini no llega a 10.13.13.1:3001 y sí a su túnel. La Mac y la PC sí llegan a la directa.
+# El checklist lo dice si la dirección escrita no se alcanza, y nombra el túnel si está caído.
+for nombre in "Motor de la MacBook" "Motor de la Mini" "Motor de la PC" "Motor de encargos de la MacBook"; do
+  latido "$nombre" 5
+done
+espera "checklist con la directa inalcanzable en la Mini falla" '!0' \
+  env FAKE_SIN_RUTA='mini|10.13.13.1:3001' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+contiene "directa inalcanzable" "$S/salida" "la dirección escrita 10.13.13.1:3001 no es alcanzable desde esa máquina"
+grep -q 'está caído' "$S/salida" && fallo "el túnel que responde no debe figurar como caído"
+espera "checklist con el túnel de la Mini caído falla" '!0' \
+  env FAKE_SIN_RUTA='mini|10.13.13.1:3001 mini|127.0.0.1:19301' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+contiene "túnel caído" "$S/salida" "el túnel ai.goncloud.motor-senal-tunel está caído (127.0.0.1:19301 no responde)"
+corre_y_guarda "la Mini sin la IP directa usa el túnel" 0 \
+  env FAKE_SIN_RUTA='mini|10.13.13.1:3001' bash "$RAIZ/ops/senal-kuma.sh"
+cp "$S/salida" "$S/salida-tunel"
+tok_mini="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la Mini'")"
+tok_mac="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la MacBook'")"
+tok_pc="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la PC'")"
+[ "$(grep '^MOTOR_KUMA_URL=' "$HOME_MINI/.motor/secretos.env")" = "MOTOR_KUMA_URL=http://127.0.0.1:19301/api/push/$tok_mini" ] \
+  || fallo "la Mini que no alcanza la IP directa no quedó en el túnel"
+[ "$(grep '^MOTOR_KUMA_URL=' "$HOME_MAC/.motor/secretos.env")" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$tok_mac" ] \
+  || fallo "la Mac que alcanza la IP directa no quedó en esa dirección"
+[ "$(tr -d '\r' <"$HOME_PC/.motor/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$tok_pc" ] \
+  || fallo "la PC que alcanza la IP directa no quedó en esa dirección"
+grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" \
+  || fallo "la Mini reescribió el secreto de encargos que ya era distinto"
+for t in $(todos_los_tokens); do
+  grep -qF "$t" "$S/salida-tunel" && fallo "el script imprimió un token"
+  grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene el token"
+done
+cp "$HOME_MINI/.motor/secretos.env" "$S/mini-antes-de-sin-camino"
+espera "sin camino la Mini no recibe una dirección inalcanzable" '!0' \
+  env FAKE_SIN_RUTA='mini|10.13.13.1:3001 mini|127.0.0.1:19301' bash "$RAIZ/ops/senal-kuma.sh"
+contiene "sin camino" "$S/salida" "ni 10.13.13.1:3001 ni el túnel 127.0.0.1:19301 responden desde esa máquina"
+cmp -s "$S/mini-antes-de-sin-camino" "$HOME_MINI/.motor/secretos.env" \
+  || fallo "sin camino el script escribió igual en la Mini"
+
+# F2: el mismo fallo en la Mac y en la PC. Sin directa ni túnel no escriben una dirección y el
+# checklist lo reporta por la señal que falta, sin inventar una ruta.
+for par in "Mac|mac|$HOME_MAC" "PC|pc|$HOME_PC"; do
+  nombre="${par%%|*}"
+  resto="${par#*|}"
+  maq="${resto%%|*}"
+  casa="${resto#*|}"
+  cp "$casa/.motor/secretos.env" "$S/$maq-motor-antes-sin-camino"
+  cp "$casa/.motor-encargos/secretos.env" "$S/$maq-enc-antes-sin-camino"
+  grep -v '^MOTOR_KUMA_URL=' "$S/$maq-motor-antes-sin-camino" >"$S/$maq-motor-sin-linea"
+  cp "$S/$maq-motor-sin-linea" "$casa/.motor/secretos.env"
+  espera "sin camino la $nombre no recibe una dirección inalcanzable" '!0' \
+    env FAKE_SIN_RUTA="$maq|10.13.13.1:3001 $maq|127.0.0.1:19301" bash "$RAIZ/ops/senal-kuma.sh"
+  contiene "sin camino $nombre" "$S/salida" "ni 10.13.13.1:3001 ni el túnel 127.0.0.1:19301 responden desde esa máquina"
+  cmp -s "$S/$maq-motor-sin-linea" "$casa/.motor/secretos.env" \
+    || fallo "sin camino el script escribió igual en $nombre"
+  cmp -s "$S/$maq-enc-antes-sin-camino" "$casa/.motor-encargos/secretos.env" \
+    || fallo "sin camino el script escribió el secreto de encargos de $nombre"
+  for nombre_mon in "Motor de la MacBook" "Motor de la Mini" "Motor de la PC" "Motor de encargos de la MacBook"; do
+    latido "$nombre_mon" 5
+  done
+  espera "checklist reporta la $nombre sin camino" '!0' bash "$RAIZ/ops/senal-kuma-checklist.sh"
+  if [ "$maq" = mac ]; then
+    contiene "checklist sin camino de la Mac" "$S/salida" "sin MOTOR_KUMA_URL en $casa/.motor/secretos.env"
+  else
+    contiene "checklist sin camino de la PC" "$S/salida" "pc: motor doctor no dice"
+  fi
+  cp "$S/$maq-motor-antes-sin-camino" "$casa/.motor/secretos.env"
+  cp "$S/$maq-enc-antes-sin-camino" "$casa/.motor-encargos/secretos.env"
+done
+unset FAKE_SIN_RUTA
+
+# El alta reinicia Kuma. Los dos primeros sondeos (directa y túnel) no contestan; el siguiente sí.
+# Sin reintento la Mac se queda con la URL vieja y la corrida sale distinta de 0.
+cp "$HOME_MAC/.motor/secretos.env" "$S/mac-antes-frio"
+printf 'MOTOR_KUMA_URL=http://viejo/api/push/FRIO\n' >"$HOME_MAC/.motor/secretos.env"
+echo 2 >"$S/frios"
+: >"$FAKE_LOG"
+corre_y_guarda "kuma frío tras el reinicio igual escribe la directa" 0 \
+  env FAKE_FRIOS_FILE="$S/frios" bash "$RAIZ/ops/senal-kuma.sh"
+tok_mac="$(sql "SELECT push_token FROM monitor WHERE name='Motor de la MacBook'")"
+if [ "$(grep '^MOTOR_KUMA_URL=' "$HOME_MAC/.motor/secretos.env")" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/$tok_mac" ]; then
+  echo "  ok: kuma frío: la Mac quedó en la directa"
+else
+  fallo "kuma frío: la Mac no quedó en la directa"
+  cp "$S/mac-antes-frio" "$HOME_MAC/.motor/secretos.env"
+fi
+
 for t in $(todos_los_tokens); do
   grep -qF "$t" "$TODO" && fallo "una salida contiene el token $t"
   grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene el token $t"
 done
 grep -q "VIEJO" "$TODO" && fallo "una salida contiene un valor de secretos.env"
 
-command -v pwsh >/dev/null 2>&1 || echo "sin pwsh: no probé la escritura de la PC"
+# F3: si la Mini no contesta el hostname, esta máquina no queda clasificada como "no es la MacBook".
+# El script se niega y no escribe los secretos de la Mac por ssh.
+cp "$HOME_MAC/.motor/secretos.env" "$S/mac-motor-antes-f3"
+cp "$HOME_MAC/.motor-encargos/secretos.env" "$S/mac-enc-antes-f3"
+(
+  export FAKE_UNAME_S=Darwin HOME="$HOME_MAC" FAKE_MINI_HOSTNAME_FALLA=1
+  # shellcheck disable=SC1091
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  es_local_kuma mac
+  printf 'rc:%s\n' "$?"
+  maquinas_canario >/dev/null 2>&1
+  printf 'canario:%s\n' "$?"
+) >"$S/f3-sonda"
+[ "$(sed -n 's/^rc://p' "$S/f3-sonda")" = 2 ] || fallo "un sondeo fallido de la Mini se tomó por una respuesta sobre la Mac (rc $(sed -n 's/^rc://p' "$S/f3-sonda"))"
+[ "$(sed -n 's/^canario://p' "$S/f3-sonda")" = 1 ] || fallo "maquinas_canario debe negarse si el hostname de la Mini falla"
+: >"$FAKE_LOG"
+espera "sondeo fallido no escribe la Mac" '!0' \
+  env FAKE_UNAME_S=Darwin HOME="$HOME_MAC" FAKE_MINI_HOSTNAME_FALLA=1 bash "$RAIZ/ops/senal-kuma.sh"
+contiene "sondeo fallido" "$S/salida" "no pude saber si esta máquina es la MacBook"
+grep -q '^mac ::' "$FAKE_LOG" && fallo "un sondeo fallido hizo ssh a mac"
+cmp -s "$S/mac-motor-antes-f3" "$HOME_MAC/.motor/secretos.env" || fallo "un sondeo fallido reescribió .motor de la Mac"
+cmp -s "$S/mac-enc-antes-f3" "$HOME_MAC/.motor-encargos/secretos.env" || fallo "un sondeo fallido reescribió .motor-encargos de la Mac"
+unset FAKE_MINI_HOSTNAME_FALLA
+
+# F9: si el script creó la dirección de encargos de la Mini o la PC y borran el monitor, la
+# siguiente corrida lo repone. Una tercera corrida reusa el token. Sin la marca, no se toca.
+cp "$HOME_MINI/.motor-encargos/secretos.env" "$S/mini-enc-operador"
+cp "$HOME_PC/.motor-encargos/secretos.env" "$S/pc-enc-operador"
+rm -f "$HOME_MINI/.motor-encargos/.senal-kuma-encargos" "$HOME_PC/.motor-encargos/.senal-kuma-encargos"
+grep -v '^MOTOR_KUMA_URL=' "$S/mini-enc-operador" >"$HOME_MINI/.motor-encargos/secretos.env"
+grep -v '^MOTOR_KUMA_URL=' "$S/pc-enc-operador" >"$HOME_PC/.motor-encargos/secretos.env"
+corre_y_guarda "crea el monitor de encargos que faltaba en la Mini y la PC" 0 bash "$RAIZ/ops/senal-kuma.sh"
+borra_monitor() {
+  python3 -I -c 'import sqlite3,sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("DELETE FROM monitor_notification WHERE monitor_id IN (SELECT id FROM monitor WHERE name = ?)", (sys.argv[2],))
+c.execute("DELETE FROM heartbeat WHERE monitor_id IN (SELECT id FROM monitor WHERE name = ?)", (sys.argv[2],))
+c.execute("DELETE FROM monitor WHERE name = ?", (sys.argv[2],))
+c.commit()' "$S/kuma.db" "$1"
+}
+token_de_monitor() { sql "SELECT push_token FROM monitor WHERE name='$1'"; }
+for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos de la PC|$HOME_PC"; do
+  nombre="${par%%|*}"
+  resto="${par#*|}"
+  monitor="${resto%%|*}"
+  casa="${resto#*|}"
+  [ "$(sql "SELECT count(*) FROM monitor WHERE name='$monitor'")" = 1 ] || fallo "alta: no se creó $monitor"
+  [ -f "$casa/.motor-encargos/.senal-kuma-encargos" ] || fallo "alta: $nombre no quedó marcada como creada por el script"
+  tok="$(token_de_monitor "$monitor")"
+  [ -n "$tok" ] || fallo "alta: $monitor no tiene token"
+  [ "$(tr -d '\r' <"$casa/.motor-encargos/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}" ] \
+    || fallo "alta: el secreto de encargos de $nombre no apunta al monitor creado"
+  printf '%s\n' "$tok" >"$S/tok-antes-$nombre"
+done
+borra_monitor "Motor de encargos de la Mini"
+borra_monitor "Motor de encargos de la PC"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name='Motor de encargos de la Mini'")" = 0 ] || fallo "no se pudo simular el borrado del monitor de la Mini"
+[ "$(sql "SELECT count(*) FROM monitor WHERE name='Motor de encargos de la PC'")" = 0 ] || fallo "no se pudo simular el borrado del monitor de la PC"
+corre_y_guarda "repone el monitor de encargos borrado en la Mini y la PC" 0 bash "$RAIZ/ops/senal-kuma.sh"
+for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos de la PC|$HOME_PC"; do
+  nombre="${par%%|*}"
+  resto="${par#*|}"
+  monitor="${resto%%|*}"
+  casa="${resto#*|}"
+  [ "$(sql "SELECT count(*) FROM monitor WHERE name='$monitor'")" = 1 ] || fallo "borrado: no se repuso $monitor"
+  tok="$(token_de_monitor "$monitor")"
+  viejo="$(cat "$S/tok-antes-$nombre")"
+  [ -n "$tok" ] && [ "$tok" != "$viejo" ] || fallo "borrado: $monitor no quedó con un token nuevo"
+  [ "$(tr -d '\r' <"$casa/.motor-encargos/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}" ] \
+    || fallo "borrado: el secreto de encargos de $nombre sigue apuntando al monitor que ya no existe"
+  printf '%s\n' "$tok" >"$S/tok-nuevo-$nombre"
+done
+corre_y_guarda "la tercera corrida reusa el monitor de encargos repuesto" 0 bash "$RAIZ/ops/senal-kuma.sh"
+for par in "Mini|Motor de encargos de la Mini|$HOME_MINI" "PC|Motor de encargos de la PC|$HOME_PC"; do
+  nombre="${par%%|*}"
+  resto="${par#*|}"
+  monitor="${resto%%|*}"
+  casa="${resto#*|}"
+  tok="$(token_de_monitor "$monitor")"
+  [ "$tok" = "$(cat "$S/tok-nuevo-$nombre")" ] || fallo "reuso: $monitor cambió de token sin que lo borraran"
+  [ "$(tr -d '\r' <"$casa/.motor-encargos/secretos.env" | grep '^MOTOR_KUMA_URL=')" = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/${tok}" ] \
+    || fallo "reuso: el secreto de encargos de $nombre no conserva el token repuesto"
+done
+for t in $(cat "$S"/tok-antes-* "$S"/tok-nuevo-*); do
+  grep -qF "$t" "$TODO" && fallo "el script imprimió un token de encargos"
+  grep -qF "$t" "$FAKE_LOG" && fallo "una línea de comandos de ssh contiene un token de encargos"
+done
+cp "$S/mini-enc-operador" "$HOME_MINI/.motor-encargos/secretos.env"
+cp "$S/pc-enc-operador" "$HOME_PC/.motor-encargos/secretos.env"
+rm -f "$HOME_MINI/.motor-encargos/.senal-kuma-encargos" "$HOME_PC/.motor-encargos/.senal-kuma-encargos"
+borra_monitor "Motor de encargos de la Mini"
+borra_monitor "Motor de encargos de la PC"
+grep -q '^MOTOR_KUMA_URL=http://viejo/api/push/VIEJO-ENCARGOS$' "$HOME_MINI/.motor-encargos/secretos.env" \
+  || fallo "al restaurar, la Mini perdió la dirección de encargos del operador"
+
+# La PC. Con pwsh, el script de escritor_pc corre de verdad contra un home temporal.
+# Un exit antes de escribir, o Move-Item dejado en un comentario, no deja secretos.env:
+# el doble igual lo escribiría, porque solo busca esas cadenas y luego usa escribe-pc.py.
+# -cmatch y -cnotmatch se ven en el archivo: motor_kuma_url se conserva al poner y
+# asegurar sale 3. -match y -notmatch tratarían esa línea como MOTOR_KUMA_URL.
+if [ -n "$PWSH_REAL" ]; then
+  [ -s "$S/pwsh-real-corridas" ] || fallo "la corrida de la PC no ejecutó pwsh"
+  _pwsh_ver="$("$PWSH_REAL" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null || true)"
+  echo "  la prueba de la PC se ejecutó con pwsh: $PWSH_REAL ${_pwsh_ver}"
+  _pc_b64() {
+    python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read().decode("utf-8").encode("utf-16-le")).decode())' "$1"
+  }
+  _pc_corre() { # _pc_corre <home> <script> [token]
+    local home=$1 script=$2 token=${3:-} b64
+    b64="$(_pc_b64 "$script")"
+    if [ -n "$token" ]; then
+      printf '%s\n' "$token" | HOME_PC="$home" "$S/bin/corre-pwsh-pc" "powershell -NoProfile -NonInteractive -EncodedCommand $b64"
+    else
+      HOME_PC="$home" "$S/bin/corre-pwsh-pc" "powershell -NoProfile -NonInteractive -EncodedCommand $b64" </dev/null
+    fi
+  }
+  (
+    . "$RAIZ/ops/lib.sh"
+    . "$RAIZ/ops/lib-kuma.sh"
+    escritor_pc poner .motor "http://10.13.13.1:3001/api/push/"
+  ) >"$S/ps-sano"
+  mkdir -p "$S/pc-real-ok"
+  rc=0
+  _pc_corre "$S/pc-real-ok" "$S/ps-sano" TOKENDERECHO || rc=$?
+  [ "$rc" = 0 ] || fallo "pwsh real no escribió el secreto (salió $rc)"
+  python3 -I - "$S/pc-real-ok/.motor/secretos.env" <<'PY' || fallo "pwsh real no dejó el secreto con el final de línea normalizado"
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+texto = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n").decode("utf-8")
+esperado = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/TOKENDERECHO\n"
+if texto != esperado:
+    sys.stderr.write(repr(texto) + "\n")
+    sys.exit(1)
+PY
+  python3 -I - "$S/ps-sano" "$S/ps-exit" <<'PY' || fallo "no pude armar el script con el exit mal puesto"
+import sys
+texto = open(sys.argv[1], encoding="utf-8").read()
+viejo = "$ErrorActionPreference = 'Stop'\n"
+if viejo not in texto:
+    sys.exit(2)
+open(sys.argv[2], "w", encoding="utf-8").write(texto.replace(viejo, viejo + "exit 0\n", 1))
+PY
+  mkdir -p "$S/pc-real-exit"
+  rc=0
+  _pc_corre "$S/pc-real-exit" "$S/ps-exit" TOKENDERECHO || rc=$?
+  [ "$rc" = 0 ] || fallo "el exit mal puesto salió $rc y se esperaba 0"
+  [ ! -e "$S/pc-real-exit/.motor/secretos.env" ] || fallo "un exit mal puesto dejó el archivo: no se ejecutó el PowerShell"
+  python3 -I - "$S/ps-sano" "$S/ps-sin-move" <<'PY' || fallo "no pude armar el script sin Move-Item"
+import sys
+texto = open(sys.argv[1], encoding="utf-8").read()
+linea = "Move-Item -LiteralPath $t -Destination $f -Force"
+if linea not in texto:
+    sys.exit(2)
+open(sys.argv[2], "w", encoding="utf-8").write(texto.replace(linea, "# " + linea, 1))
+PY
+  mkdir -p "$S/pc-real-move"
+  rc=0
+  _pc_corre "$S/pc-real-move" "$S/ps-sin-move" TOKENDERECHO || rc=$?
+  [ "$rc" = 0 ] || fallo "el script sin Move-Item salió $rc y se esperaba 0"
+  [ -f "$S/pc-real-move/.motor/secretos.env.nuevo" ] || fallo "sin Move-Item no quedó el temporal: el script no corrió"
+  [ ! -e "$S/pc-real-move/.motor/secretos.env" ] || fallo "sin Move-Item dejó el archivo: no se ejecutó el PowerShell"
+  caso_antes=$fallos
+  mkdir -p "$S/pc-real-caso/.motor"
+  printf '%s\n' \
+    'OTRA=1' \
+    'motor_kuma_url=http://10.13.13.1:3001/api/push/minuscula' \
+    'MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/VIEJA' \
+    >"$S/pc-real-caso/.motor/secretos.env"
+  rc=0
+  _pc_corre "$S/pc-real-caso" "$S/ps-sano" NUEVA || rc=$?
+  [ "$rc" = 0 ] || fallo "poner con la línea en minúsculas salió $rc"
+  python3 -I - "$S/pc-real-caso/.motor/secretos.env" <<'PY' || fallo "pwsh no distinguió motor_kuma_url de MOTOR_KUMA_URL"
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+texto = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n").decode("utf-8")
+esperado = (
+    "OTRA=1\n"
+    "motor_kuma_url=http://10.13.13.1:3001/api/push/minuscula\n"
+    "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/NUEVA\n"
+)
+if texto != esperado:
+    sys.stderr.write(repr(texto) + "\n")
+    sys.exit(1)
+PY
+  (
+    . "$RAIZ/ops/lib.sh"
+    . "$RAIZ/ops/lib-kuma.sh"
+    escritor_pc asegurar .motor
+  ) >"$S/ps-asegurar"
+  mkdir -p "$S/pc-real-cmatch/.motor"
+  printf '%s\n' 'motor_kuma_url=http://10.13.13.1:3001/api/push/minuscula' >"$S/pc-real-cmatch/.motor/secretos.env"
+  cp "$S/pc-real-cmatch/.motor/secretos.env" "$S/pc-real-cmatch-antes"
+  rc=0
+  _pc_corre "$S/pc-real-cmatch" "$S/ps-asegurar" || rc=$?
+  [ "$rc" = 3 ] || fallo "asegurar tomó motor_kuma_url como MOTOR_KUMA_URL (salió $rc, se esperaba 3)"
+  cmp -s "$S/pc-real-cmatch-antes" "$S/pc-real-cmatch/.motor/secretos.env" \
+    || fallo "asegurar escribió el archivo al no reconocer la línea"
+  mkdir -p "$S/pc-real-cmatch-si/.motor"
+  printf '%s\n' 'MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/VISIBLE' >"$S/pc-real-cmatch-si/.motor/secretos.env"
+  rc=0
+  _pc_corre "$S/pc-real-cmatch-si" "$S/ps-asegurar" || rc=$?
+  [ "$rc" = 0 ] || fallo "asegurar no vio MOTOR_KUMA_URL (salió $rc)"
+  python3 -I - "$S/pc-real-cmatch-si/.motor/secretos.env" <<'PY' || fallo "asegurar no conservó MOTOR_KUMA_URL"
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+texto = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n").decode("utf-8")
+esperado = "MOTOR_KUMA_URL=http://10.13.13.1:3001/api/push/VISIBLE\n"
+if texto != esperado:
+    sys.stderr.write(repr(texto) + "\n")
+    sys.exit(1)
+PY
+  [ "$fallos" = "$caso_antes" ] && echo "  ok: pwsh distingue motor_kuma_url de MOTOR_KUMA_URL"
+else
+  echo "  se omitió la ejecución real: no hay pwsh"
+  (
+    . "$RAIZ/ops/lib.sh"
+    . "$RAIZ/ops/lib-kuma.sh"
+    escritor_pc poner .motor "http://10.13.13.1:3001/api/push/"
+  ) >"$S/ps-sano"
+  python3 -I - "$S/ps-sano" "$S/ps-malo" <<'PY'
+import sys
+texto = open(sys.argv[1], encoding="utf-8").read().replace("-cmatch", "-match")
+open(sys.argv[2], "w", encoding="utf-8").write(texto)
+PY
+  ps_malo="$(python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read().decode("utf-8").encode("utf-16-le")).decode())' "$S/ps-malo")"
+  espera "el doble de powershell rechaza un script sin -cmatch" '!0' \
+    "$S/bin/powershell-doble" -NoProfile -NonInteractive -EncodedCommand "$ps_malo"
+  contiene "doble powershell" "$S/salida" "al script le faltan piezas"
+  [ -s "$S/powershell-llamado" ] || fallo "ninguna prueba ejecutó el doble de powershell"
+  grep -Fq '[IO.File]::WriteAllLines' "$S/powershell-llamado" || fallo "el escritor de la PC no usa WriteAllLines"
+  grep -Fq -- '-cmatch' "$S/powershell-llamado" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
+fi
+
+# F1: la PC contesta las direcciones por ssh con CRLF. La lectura quita el CR antes de comparar y
+# sondear: sin eso, la dirección viaja con CR y el sondeo juzga una URL que no es la escrita.
+(
+  export FAKE_PC_CR=1
+  # shellcheck disable=SC1091
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  _origenes_pc
+) >"$S/pc-cr-leidas" 2>&1
+[ -s "$S/pc-cr-leidas" ] || fallo "la lectura de direcciones de la PC no devolvió ninguna dirección"
+grep -q $'\r' "$S/pc-cr-leidas" && fallo "la lectura de direcciones de la PC dejó el CR del final de línea"
+(
+  export FAKE_PC_CR=1 FAKE_SIN_RUTA='pc|10.13.13.1:3001'
+  # shellcheck disable=SC1091
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  problemas_direccion pc
+) >"$S/pc-cr-sin" 2>&1
+contiene "la dirección de la PC con CR se sondea sin el CR" "$S/pc-cr-sin" "la dirección escrita 10.13.13.1:3001 no es alcanzable desde esa máquina"
+
 termina
