@@ -336,9 +336,13 @@ for sub in (".motor", ".motor-encargos"):
 '
 
 _origenes_pc() {
-  local b64
+  local b64 salida rc
   b64="$(printf '%s' "$_ORIGENES_PC_PY" | python3 -I -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
-  corre pc x "$PC_UV run --python 3.12 python -c \"import base64,sys; exec(base64.b64decode(sys.argv[1]))\" $b64"
+  salida="$(corre pc x "$PC_UV run --python 3.12 python -c \"import base64,sys; exec(base64.b64decode(sys.argv[1]))\" $b64")"
+  rc=$?
+  # La PC contesta por ssh con CRLF; el CR no forma parte de la dirección ni de NOSEENTIENDE.
+  printf '%s\n' "$salida" | tr -d '\r'
+  return "$rc"
 }
 
 _origenes_de() {

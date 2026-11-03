@@ -128,7 +128,15 @@ case "$host" in
         HOME="$HOME_PC" exec curl -sS -o /dev/null --max-time 5 "$_url" ;;
       *base64.b64decode*)
         _b64="${*##* }"
-        USERPROFILE="$HOME_PC" HOME="$HOME_PC" exec python3 -I -c 'import base64,sys; exec(base64.b64decode(sys.argv[1]))' "$_b64" ;;
+        if [ -n "${FAKE_PC_CR:-}" ]; then
+          USERPROFILE="$HOME_PC" HOME="$HOME_PC" python3 -I -c 'import base64,sys; exec(base64.b64decode(sys.argv[1]))' "$_b64" \
+            | python3 -I -c 'import sys
+for linea in sys.stdin.read().splitlines():
+    sys.stdout.write(linea + "\r\n")'
+          exit "$?"
+        else
+          USERPROFILE="$HOME_PC" HOME="$HOME_PC" exec python3 -I -c 'import base64,sys; exec(base64.b64decode(sys.argv[1]))' "$_b64"
+        fi ;;
     esac
     echo "ssh falso: no se espera '$*'" >&2; exit 1 ;;
 esac
@@ -712,5 +720,25 @@ contiene "doble powershell" "$S/salida" "al script le faltan piezas"
 [ -s "$S/powershell-llamado" ] || fallo "ninguna prueba ejecutó el doble de powershell"
 grep -Fq '[IO.File]::WriteAllLines' "$S/powershell-llamado" || fallo "el escritor de la PC no usa WriteAllLines"
 grep -Fq -- '-cmatch' "$S/powershell-llamado" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
+
+# F1: la PC contesta las direcciones por ssh con CRLF. La lectura quita el CR antes de comparar y
+# sondear: sin eso, la dirección viaja con CR y el sondeo juzga una URL que no es la escrita.
+(
+  export FAKE_PC_CR=1
+  # shellcheck disable=SC1091
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  _origenes_pc
+) >"$S/pc-cr-leidas" 2>&1
+[ -s "$S/pc-cr-leidas" ] || fallo "la lectura de direcciones de la PC no devolvió ninguna dirección"
+grep -q $'\r' "$S/pc-cr-leidas" && fallo "la lectura de direcciones de la PC dejó el CR del final de línea"
+(
+  export FAKE_PC_CR=1 FAKE_SIN_RUTA='pc|10.13.13.1:3001'
+  # shellcheck disable=SC1091
+  . "$RAIZ/ops/lib.sh"
+  . "$RAIZ/ops/lib-kuma.sh"
+  problemas_direccion pc
+) >"$S/pc-cr-sin" 2>&1
+contiene "la dirección de la PC con CR se sondea sin el CR" "$S/pc-cr-sin" "la dirección escrita 10.13.13.1:3001 no es alcanzable desde esa máquina"
 
 termina
