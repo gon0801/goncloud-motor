@@ -1,0 +1,45 @@
+[0m
+> build · glm-5.3
+[0m→ [0mRead C:/Users/ehven/AppData/Local/Temp/mide-pstack-opencode-qph9he6q/brief.md
+> build · glm-5.3
+[0m→ [0mRead C:/Users/ehven/AppData/Local/Temp/mide-pstack-copia-bpm2sje4/pstack-motor/motor.md
+[0m→ [0mRead C:/Users/ehven/AppData/Local/Temp/mide-pstack-copia-bpm2sje4/pstack-motor/opencode.md
+[0m→ [0mRead .
+> build · glm-5.3
+[0m✗ [0mSkill "poteto-mode" failed
+[91m[1mError: [0mUnable to load skill poteto-mode
+He leído `motor.md` y `opencode.md`. Ahora cargo la skill `poteto-mode` (primero pruebo la herramienta de skills de mi CLI):
+> build · glm-5.3
+La herramienta de skills no tiene `poteto-mode` disponible; aplico el fallback del mapa y leo la skill por ruta absoluta:
+[0m→ [0mRead C:/Users/ehven/AppData/Local/Temp/mide-pstack-copia-bpm2sje4/pstack/skills/poteto-mode/SKILL.md
+> build · glm-5.3
+Skill `poteto-mode` cargada. Abro el playbook `investigation`:
+[0m→ [0mRead C:/Users/ehven/AppData/Local/Temp/mide-pstack-copia-bpm2sje4/pstack/skills/poteto-mode/playbooks/investigation.md
+> build · glm-5.3
+Playbook `investigation` abierto. Es una investigación de solo lectura; su paso 1 enruta por la skill `how`. Compruebo qué skills existen para pasar al subagente solo rutas reales:
+[0m→ [0mRead C:/Users/ehven/AppData/Local/Temp/mide-pstack-copia-bpm2sje4/pstack/skills
+> build · glm-5.3
+Existe la skill `how`. Lanzo el subagente (agente por omisión, sin `poteto-agent` disponible, con la ruta absoluta de la skill en el prompt) y en paralelo leo la hoja del principio que guía la delegación:
+[0m→ [0mRead C:/Users/ehven/AppData/Local/Temp/mide-pstack-copia-bpm2sje4/pstack/skills/principle-guard-the-context-window/SKILL.md
+[0m✓ [0mInvestigación read-only de README [90mGeneral Agent[0m
+> build · glm-5.3
+El subagente entregó. Antes de dar por buena su palabra, verifico su afirmación central leyendo yo mismo el README, que es la revisión que me exige poteto-mode:
+[0m→ [0mRead README.md
+> build · glm-5.3
+Verificado. El informe del subagente coincide con el archivo, línea por línea. Ejecución completa del brief, sin tocar nada.
+
+**Qué se ejecutó.**
+1. Leí `motor.md` y `opencode.md` del motor, y el `brief.md`.
+2. Cargué `poteto-mode`. La herramienta `skill` no la tiene disponible, así que apliqué el fallback del mapa de opencode y leí `C:\Users\ehven\AppData\Local\Temp\mide-pstack-copia-bpm2sje4\pstack\skills\poteto-mode\SKILL.md` completo por ruta absoluta.
+3. Abrí el playbook `investigation` en `...\poteto-mode\playbooks\investigation.md` y copié sus pasos como guía de la tarea.
+4. Lancé un subagente (sesión `ses_e99156aa2ffeOdRX2DpLmXysc`, agente por omisión porque no existe `poteto-agent` en este CLI) con la ruta absoluta de la skill en el prompt. Leyó la skill, el playbook, la skill `how` y el README, y devolvió el informe. Yo releí el README y su reporte es fiel al archivo.
+
+**Resultado de la investigación.**
+- **Overview.** El README tiene tres líneas verificadas por mi propia lectura. Titula la carpeta como "Carpeta de medición" y su único cuerpo dice "No hay nada que cambiar aquí." Funciona como etiqueta más directiva de no tocar, inferencia mía sobre el texto completo.
+- **Key Concepts / How It Works / Where Things Live.** El README no lo cubre. La carpeta contiene solo el propio `README.md`, observado directamente en el listado del directorio.
+- **Gotchas.** La frase "No hay nada que cambiar aquí." es la única señal, una instrucción explícita de no modificar. Que la carpeta forma parte de una medición del stack es inferencia del nombre del directorio padre, no algo que el README afirme.
+- Throughput checkpoint, n/a, read-only investigation.
+
+**Principios aplicados.** **Guard the Context Window** (hoja leída esta sesión) cambió una decisión concreta. La lectura voluminosa (skill `how` completa y su referencia) fue al subagente y en el hilo principal quedó solo su resumen, que yo verifiqué contra el artefacto real.
+
+**Estado final.** Sin commits ni push porque el brief no trae filas con `Acepta`, ordena "No cambies nada" y el directorio de trabajo no es un repositorio git, verificado en el entorno. No hay SHA que reportar por esa misma razón. `{"sha": null, "resumen": "poteto-mode cargada por fallback Read, playbook investigation abierto, subagente ses_e99156aa2ffeOdRX2DpLmXyscC leyó README.md (3 líneas, carpeta de medición vacía), verificado por el agente principal, cero cambios"}`.

@@ -1,0 +1,126 @@
+[0m
+> build · glm-5.3
+[0m→ [0mRead /var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-opencode-3hugkkkt/brief.md
+> build · glm-5.3
+[0m→ [0mRead /Users/dn/.agents/pstack-plataformas/opencode.md
+[0m→ [0mRead /var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy/pstack-motor/motor.md
+[0m→ [0mRead /var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy/pstack-motor/opencode.md
+[0m→ [0mRead /var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy/pstack/skills/poteto-mode/playbooks/investigation.md
+[0m✱ [0mGlob "README.md" [90m1 match[0m
+> build · glm-5.3
+He leído el brief completo: `motor.md`, `pstack-motor/opencode.md`, el playbook `investigation`, y confirmé que existe `README.md` en el repo. Ahora cargo la skill `poteto-mode` antes de continuar.
+[0m→ [0mSkill "poteto-mode"
+> build · glm-5.3
+`poteto-mode` cargada. El playbook `investigation` pide rutear por `how` y aplicar `unslop` a la respuesta; las cargo ahora.
+[0m→ [0mSkill "how"
+[0m→ [0mSkill "unslop"
+> build · glm-5.3
+Skills `how` y `unslop` cargadas. La ruta es la simple del playbook `how` (una sola pieza, un explainer), y el brief pide exactamente un subagente con la ruta absoluta de la skill. Lo lanzo ahora con `poteto-agent` (modelo fijado `zai-coding-plan/glm-5.3` según el mapa de opencode, sin pasar otro modelo).
+[0m✱ [0mGlob "skills/principle-*/SKILL.md" [90min /var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy/pstack · 24 matches[0m
+[0m✓ [0mLeer README.md (investigación) [90mPoteto-Agent Agent[0m
+> build · glm-5.3
+El subagente terminó. Soy dueño de lo que entregó, así que verifico sus afirmaciones contra el README real y leo las hojas de los principios que aplico antes de citarlos.
+[0m→ [0mRead README.md
+[0m→ [0mRead /var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy/pstack/skills/principle-prove-it-works/SKILL.md
+[0m→ [0mRead /var/folders/hp/sc_3c6qs7nvdswl_x3w5sdbr0000gn/T/mide-pstack-copia-1xdya2xy/pstack/skills/principle-guard-the-context-window/SKILL.md
+> build · glm-5.3
+Toda afirmación del subagente checking contra el README real salió bien. Última verificación, que nada cambió en el repo.
+[0m$ [0mgit status --porcelain && git rev-parse HEAD
+M conf-ejemplo/rutas.toml
+ M motor/pstack.py
+ M ops/pstack/mide.sh
+ M tests/datos/pstack/claude-mac/meta.json
+ M tests/datos/pstack/claude-mac/registro.jsonl
+ M tests/datos/pstack/claude-mini/meta.json
+ M tests/datos/pstack/claude-mini/registro.jsonl
+ M tests/datos/pstack/claude-pc/meta.json
+ M tests/datos/pstack/claude-pc/registro.jsonl
+ M tests/datos/pstack/grok-mac/meta.json
+ M tests/datos/pstack/grok-mac/registro.jsonl
+ D tests/datos/pstack/grok-mini/meta.json
+ D tests/datos/pstack/grok-mini/registro.jsonl
+ M tests/datos/pstack/grok-pc/meta.json
+ M tests/datos/pstack/grok-pc/registro.jsonl
+ M tests/datos/pstack/kimi-mac/meta.json
+ M tests/datos/pstack/kimi-mac/registro.jsonl
+ M tests/datos/pstack/kimi-mini/meta.json
+ M tests/datos/pstack/kimi-mini/registro.jsonl
+ M tests/datos/pstack/kimi-pc/meta.json
+ M tests/datos/pstack/kimi-pc/registro.jsonl
+ M tests/datos/pstack/muse-mac/meta.json
+ M tests/datos/pstack/muse-mac/registro.jsonl
+ M tests/datos/pstack/muse-mini/meta.json
+ M tests/datos/pstack/muse-mini/registro.jsonl
+ M tests/datos/pstack/muse-pc/meta.json
+ M tests/datos/pstack/muse-pc/registro.jsonl
+ M tests/datos/pstack/opencode-mac/meta.json
+ M tests/datos/pstack/opencode-mac/registro.jsonl
+ M tests/datos/pstack/opencode-mini/meta.json
+ M tests/datos/pstack/opencode-mini/registro.jsonl
+ M tests/datos/pstack/opencode-pc/meta.json
+ M tests/datos/pstack/opencode-pc/registro.jsonl
+ M tests/datos/pstack/qwen-mac/meta.json
+ M tests/datos/pstack/qwen-mac/registro.jsonl
+ M tests/datos/pstack/qwen-mini/meta.json
+ M tests/datos/pstack/qwen-mini/registro.jsonl
+ M tests/datos/pstack/qwen-pc/meta.json
+ M tests/datos/pstack/qwen-pc/registro.jsonl
+ M tests/test_pstack.py
+9395273319c9ea8693c2b10378a4b369489dda72
+> build · glm-5.3
+## Resumen del encargo
+
+throughput checkpoint: n/a, read-only investigation
+
+El brief se ejecutó completo. Cargué `poteto-mode` con la herramienta de skills antes de tocar nada, abrí el playbook `investigation` desde la copia fija, cargué `how` y `unslop` como pide el playbook, y lancé un subagente que leyó `README.md`. No cambié nada. El árbol de git traía modificaciones previas del propio motor, que `git status` listó al final. Ninguna operación mía escribió en el repo.
+
+Dos principios movieron decisiones y leí sus hojas esta sesión. `principle-prove-it-works` cambió una elección, ya que en vez de reenviar el resumen del subagente leí `README.md` yo mismo y verifiqué cada afirmación contra el archivo. `principle-guard-the-context-window` movió la lectura del archivo al subagente y dejó solo la explicación en este hilo.
+
+## Qué dice README.md
+
+Explicación del subagente con ediciones mías. Cada afirmación fue verificada por mí contra el archivo real de 44 líneas.
+
+**Overview.** Motor es un motor de planes que corre igual en la Mac, la Mac Mini y la PC. Recibe un plan en Markdown, lo implementa con agentes sin ventana, lo hace revisar por un modelo que no lo escribió, lo mergea, lo despliega, lo prueba con datos reales y avisa a David en lenguaje llano. Sigue solo después de un apagón. Solo pide intervención humana en login, 2FA, captcha o pago. El diseño vive en `docs/diseno.md` y la guía para claw y Hermi en `skill/motor/SKILL.md`.
+
+**Key concepts.**
+- **Plan en Markdown.** Es la unidad de entrada. `motor valida` responde si el plan está listo para correr solo.
+- **Bloque.** Los planes se dividen en bloques. `motor estado` imprime una línea por bloque y `motor hecho` registra un paso humano terminado.
+- **Encargo.** El trabajo se reparte en encargos y `motor nota` hace llegar un texto al siguiente.
+- **Revisión cruzada.** El código lo revisa un modelo que no lo escribió.
+- **Capacidades.** `maquina.toml` declara capacidades en `tiene`, como `ssh-goncloud`, y los repos las piden en `[deploy] requiere`.
+- **Conf compartida.** Papeles, modelos, rutas y reglas viven en la conf compartida, no por máquina.
+
+**How it works.** `motor` es `python3 -m motor` corrido desde la carpeta del repo. El ciclo visible en los verbos es este.
+1. `motor valida plan.md` chequea si el plan está listo.
+2. `motor entrega plan.md` devuelve tomado, encolado o rechazado.
+3. `motor estado` da una línea por bloque.
+4. `motor recibo <cmd_id>` dice qué pasó con una orden puntual.
+5. `motor hecho` marca un paso humano terminado.
+6. `motor nota` pasa un texto al siguiente encargo.
+7. `motor doctor` revisa conf, máquina, rutas y papeles.
+8. `motor instala --imprime` imprime un plist o una tarea de Windows según la máquina.
+9. `motor servicio` levanta el supervisor.
+
+Todos los verbos aceptan `--home`, con `~/.motor` como valor por omisión.
+
+**Where things live.**
+- Diseño y decisiones en `docs/diseno.md`. Guía de claw y Hermi en `skill/motor/SKILL.md`.
+- `~/.motor/maquina.toml` por máquina, con nombre, ruta de conf, `path_extra`, `env`, `wsl`, `github`, `tiene` y en la MacBook `[no_dormir]`.
+- `~/.motor/secretos.env` con modo 600, con `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN` y `MOTOR_TELEGRAM_TOKEN` entre otros.
+- Conf compartida con punto de partida en `conf-ejemplo/`. Por repo, `.motor.toml` en su rama principal.
+
+**Gotchas.**
+- `maquina.toml` rechaza papeles, modelos, rutas y reglas. Definirlos por máquina no funciona porque pertenecen a la conf compartida.
+- `secretos.env` exige modo 600. No es opcional según el README.
+- Las pruebas no tocan Orbit, OpenClaw, Hermes, GitHub ni producción. Crean repos desechables, un GitHub falso, agentes simulados, un servidor que imita Telegram y simulan un apagón.
+- El contrato contra GitHub real es opt-in con `MOTOR_GH_SANDBOX=<dueño/repo>`.
+- El comando de pruebas documentado es `PYTHONPATH=. python3 -W ignore -m unittest tests.test_puro tests.test_github_contrato tests.test_motor_e2e`. La lectura de que sin `PYTHONPATH=.` no es el comando documentado es una inferencia del subagente, no texto literal del archivo.
+
+## Entrega
+
+- Skills cargadas con la herramienta de skills. `poteto-mode` antes de cualquier otra acción, luego `how` y `unslop` que el playbook `investigation` exige.
+- Subagente. `poteto-agent` con modelo fijado `zai-coding-plan/glm-5.3`, sesión `ses_e99150d18ffenQmrpF54qWGXZL`, prompt con la ruta absoluta de la skill en la copia y modo solo lectura.
+- Verificación real. Leí `README.md` completo, 44 líneas, y cotejé cada afirmación de las cinco secciones contra el archivo. Todas calzan. `git status` confirmó que el árbol conserva las modificaciones previas del motor y `git rev-parse HEAD` devolvió `9395273319c9ea8693c2b10378a4b369489dda72`, sin commits nuevos porque el encargo no cambia nada.
+- Sin cambios, sin PR, sin despliegue. Nada quedó esperando a una persona.
+
+`{"sha": null, "resumen": "Encargo de medición ejecutado completo y sin cambios. Cargué poteto-mode, how y unslop con la herramienta de skills, abrí el playbook investigation desde la copia fija y lancé un subagente poteto-agent (glm-5.3, sesión ses_e99150d18ffenQmrpF54qWGXZL, solo lectura) que leyó README.md. Verifiqué su explicación contra el archivo real. Sin commits; HEAD sigue en 9395273319c9ea8693c2b10378a4b369489dda72 y el árbol conserva las modificaciones previas del motor."}`

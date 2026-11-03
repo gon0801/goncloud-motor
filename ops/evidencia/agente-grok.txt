@@ -1,0 +1,14 @@
+supervisor
+[{"encargo": "enc_c7e72bec16f67518", "estado": "terminado", "ultimo_hecho": "python3 -c \"import suma; assert suma.sumar(2, 3) == 5\" rc=0", "hora": "2026-10-26T21:02:33Z", "motivo": "", "siguiente": "ninguna", "preguntas": [], "recibo": "", "reanuda_en": "", "estrategia": "investigar", "escrituras": false}]
+
+
+log del trabajador
+Voy a corregir `suma.py` en este espacio y dejar la comprobación en `evidencia-comportamiento.txt`. Primero miro el pedido y los archivos de aquí.`sumar` resta en lugar de sumar. Reviso si en este espacio ya hay un recibo de efecto antes de tocar nada.`sumar` ahora regresa `a + b`. El cambio es una sola línea sobre el commit `base`, así que se revierte con `git restore suma.py` o `git checkout -- suma.py`.
+
+Corrí `python3 -c "import suma; assert suma.sumar(2, 3) == 5"`. No imprimió nada y salió con código 0. Esa salida quedó en `evidencia-comportamiento.txt`:
+
+```
+exit=0
+```
+
+El supervisor mira ese destino.
