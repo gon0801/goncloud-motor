@@ -103,6 +103,16 @@ class InspeccionVacia(unittest.TestCase):
         self.assertEqual(juicio.veredicto, "aprobado")
         self.assertIsNone(juicio.inspeccion)
 
+    def test_aprobado_con_inspeccion_lista_vacia_es_valido(self):
+        juicio = self._aprobado(inspeccion=[])
+        self.assertEqual(juicio.veredicto, "aprobado")
+        self.assertIsNone(juicio.inspeccion)
+
+    def test_aprobado_con_inspeccion_cadena_vacia_es_valido(self):
+        juicio = self._aprobado(inspeccion="")
+        self.assertEqual(juicio.veredicto, "aprobado")
+        self.assertIsNone(juicio.inspeccion)
+
     def test_instrumento_vacio_en_aprobado_cuenta_como_ausente(self):
         juicio = self._aprobado(instrumento={"causa": ""})
         self.assertEqual(juicio.veredicto, "aprobado")
