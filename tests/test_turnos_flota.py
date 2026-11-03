@@ -336,6 +336,34 @@ class TurnosFlota(unittest.TestCase):
         aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
         self.assertIn("ningun turno real", aviso["texto"])
 
+    def test_par_sin_clientes_no_se_aplica_y_el_flag_del_operador_si(self):
+        origen, a, gen_a = self._flota("origen-k")
+        _runtime_preparada(self.home, gen_a, "hermes", "v1")
+        b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
+        _config_poteto(gen_b)
+        _runtime_preparada(self.home, gen_b, "hermes", "v2")
+
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            salida = aplicar(self.home, b)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("no se probó ningún agente", salida["motivo"])
+        self.assertEqual(asignar(self.home), a)
+        candidata = json.loads((self.home / "candidata.json").read_text())
+        self.assertEqual(candidata["estado"], "rechazada")
+        pendientes = sorted(
+            (self.motor_motor / "avisos" / "pendientes").glob("*.json")
+        )
+        self.assertEqual(len(pendientes), 1)
+        aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
+        self.assertIn("no se probó ningún agente", aviso["texto"])
+
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            con_flag = aplicar(self.home, b, sin_turnos=True)
+        self.assertEqual(con_flag["accion"], "aplicada", con_flag)
+        self.assertEqual(asignar(self.home), b)
+        instalacion = json.loads((self.home / "instalacion.json").read_text())
+        self.assertTrue(instalacion.get("sin_turnos"), instalacion)
+
     def test_candidata_que_retira_un_agente_con_sesion_bloquea(self):
         origen, a, gen_a = self._flota("origen-g")
         b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)

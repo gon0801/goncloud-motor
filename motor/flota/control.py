@@ -287,7 +287,9 @@ def _lanzadores_de(gen: Path) -> set[str]:
     return set(lanzadores) if isinstance(lanzadores, dict) else set()
 
 
-def _turnos_de_activacion(home: Path, gen: Path, destino: str) -> tuple[dict, str]:
+def _turnos_de_activacion(
+    home: Path, gen: Path, destino: str, sin_turnos: bool = False
+) -> tuple[dict, str]:
     """Los turnos reales de la candidata y el motivo de rechazo, si lo hay.
 
     (resumen, "") cuando todos los turnos pasan o no bloquean; (resumen,
@@ -295,18 +297,32 @@ def _turnos_de_activacion(home: Path, gen: Path, destino: str) -> tuple[dict, st
     cuando ningún turno real corrió, o el propio control de turnos no pudo
     correr. Corren cuando la candidata o la vigente traen clientes de
     suscripción: una candidata sin clientes propios igual puede retirar los
-    de la vigente, y solo un par sin clientes en ninguna de las dos no tiene
-    a quién romper. Fallo cerrado: si no corrió ningún turno real (cero
-    agentes con sesión, o todos omitidos) la candidata no se activa.
+    de la vigente. Fallo cerrado: si no corrió ningún turno real (cero
+    agentes con sesión, todos omitidos, o el par candidata+vigente sin
+    clientes) la candidata no se activa y se avisa; `sin_turnos` es la única
+    excepción, el flag explícito del operador que queda escrito en el recibo.
     """
     from motor.encargos.catalogo_agentes import ADAPTADORES
 
     clientes = _lanzadores_de(gen) & set(ADAPTADORES)
     anterior = _anterior_real(home)
     vigente = home / "generaciones" / anterior if anterior else None
-    if vigente and vigente.is_dir() and vigente.resolve() != gen.resolve():
+    sustituye = bool(
+        vigente and vigente.is_dir() and vigente.resolve() != gen.resolve()
+    )
+    if sustituye:
         clientes |= _lanzadores_de(vigente) & set(ADAPTADORES)
     if not clientes:
+        if sustituye and not sin_turnos:
+            motivo = (
+                "no se activa: no se probó ningún agente; la candidata no se "
+                "activa (ni la candidata ni la generacion vigente traen "
+                "clientes de suscripcion)"
+            )[:600]
+            from .turnos import avisar_rechazo
+
+            avisar_rechazo(destino, {"turnos": {}, "fallidos": []}, causa=motivo)
+            return {}, motivo
         return {}, ""
     from .turnos import avisar_rechazo, turnos_candidata
 
@@ -327,7 +343,7 @@ def _turnos_de_activacion(home: Path, gen: Path, destino: str) -> tuple[dict, st
         for agente, turno in informe["turnos"].items()
         if turno.get("estado") in ("ok", "fallo", "fallo_comun")
     ]
-    if not corridos:
+    if not corridos and not sin_turnos:
         detalle = (
             "; ".join(
                 f"{agente}: {turno.get('estado') or 'omitido'}"
@@ -467,7 +483,7 @@ def revertir(home: Path) -> dict:
 
 
 @_operacion_flota
-def aplicar(home: Path, destino: str, corte: str = "") -> dict:
+def aplicar(home: Path, destino: str, corte: str = "", sin_turnos: bool = False) -> dict:
     motor = home / "motor"
     anterior = _anterior_real(home)
     completo = _leer(home / "instalacion.json")
@@ -487,6 +503,8 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
         "destino": {"codigo": destino, "conf": ""},
         "causa": "",
     }
+    if sin_turnos:
+        recibo["sin_turnos"] = True
     _atomico(home / "instalacion-pendiente.json", recibo)
     if corte == "pendiente":
         return {"accion": "cortado", "etapa": "origen", "vigente": anterior}
@@ -527,7 +545,7 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
             "destino": destino,
             "motivo": str(exc),
         }
-    resumen, motivo = _turnos_de_activacion(home, gen, destino)
+    resumen, motivo = _turnos_de_activacion(home, gen, destino, sin_turnos)
     if motivo:
         (home / "instalacion-pendiente.json").unlink(missing_ok=True)
         _atomico(
@@ -559,7 +577,7 @@ def aplicar(home: Path, destino: str, corte: str = "") -> dict:
 
 
 @_operacion_flota
-def recuperar(home: Path) -> dict:
+def recuperar(home: Path, sin_turnos: bool = False) -> dict:
     pend_path = home / "instalacion-pendiente.json"
     pend = _leer(pend_path)
     if pend is None:
@@ -612,7 +630,7 @@ def recuperar(home: Path) -> dict:
                 {"estado": "rechazada", "destino": destino, "motivo": str(exc)},
             )
             return {"accion": "rechazada", "destino": destino, "motivo": str(exc)}
-        resumen, motivo = _turnos_de_activacion(home, gen, destino)
+        resumen, motivo = _turnos_de_activacion(home, gen, destino, sin_turnos)
         if motivo:
             pend_path.unlink(missing_ok=True)
             _atomico(
@@ -636,6 +654,8 @@ def recuperar(home: Path) -> dict:
         pend["causa"] = ""
         pend["comprobador"] = comprobador
         pend["turnos"] = resumen
+        if sin_turnos:
+            pend["sin_turnos"] = True
         _atomico(home / "instalacion.json", pend)
         pend_path.unlink(missing_ok=True)
         return {"accion": "completo", "generacion": destino, "turnos": resumen}

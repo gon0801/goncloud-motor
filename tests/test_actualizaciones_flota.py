@@ -137,7 +137,9 @@ class ActualizacionesFlota(unittest.TestCase):
             {},
             'generacion="B"\n',
         )
-        self.assertEqual(aplicar(home, b)["accion"], "aplicada")
+        self.assertEqual(
+            aplicar(home, b, sin_turnos=True)["accion"], "aplicada"
+        )
         self.assertEqual(asignar(home), b)
         (gen / "comprobar.py").write_text("raise SystemExit(1)\n")
         # El recibo de la instalación completa permite volver aunque B ya falle.

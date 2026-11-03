@@ -783,9 +783,10 @@ def actualizar(
     *,
     motor_origen: Path | None = None,
     repos: dict[str, Path] | None = None,
+    sin_turnos: bool = False,
 ) -> dict:
     candidata = preparar(home, catalogo, motor_origen=motor_origen, repos=repos)
-    resultado = aplicar(home.resolve(), candidata["generacion"])
+    resultado = aplicar(home.resolve(), candidata["generacion"], sin_turnos=sin_turnos)
     return {**resultado, "preparacion": candidata}
 
 
