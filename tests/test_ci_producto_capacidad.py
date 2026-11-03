@@ -423,5 +423,96 @@ class EsperaTodosLosWorkflowsDelRepo(_Ci):
         self.assertEqual(r["datos"]["conclusion"], "failure")
 
 
+GH_LENTO = r'''#!{python}
+import json, os, sys
+d = os.environ["FAKE_GH_DIR"]
+args = sys.argv[1:]
+def val(flag):
+    return args[args.index(flag) + 1]
+ruta = os.path.join(d, "estado.json")
+estado = json.load(open(ruta)) if os.path.exists(ruta) else {"llamadas": [], "sondeos": 0}
+estado["llamadas"].append(args)
+def guardar():
+    json.dump(estado, open(ruta, "w"))
+sha = val("--commit") if "--commit" in args else ""
+def runs(estado_run):
+    return [
+        {{"databaseId": 1234, "status": estado_run, "conclusion": "success",
+          "headSha": sha, "event": "pull_request", "workflowName": "quality",
+          "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1234"}},
+        {{"databaseId": 1235, "status": estado_run,
+          "conclusion": "success" if estado_run != "completed" else "failure",
+          "headSha": sha, "event": "pull_request", "workflowName": "quality-extra",
+          "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/1235"}},
+    ]
+if args[:2] == ["pr", "create"]:
+    guardar()
+    print("https://github.com/gon0801/goncloud-Orbit/pull/7")
+elif args[:2] == ["pr", "view"]:
+    guardar()
+    print(json.dumps({{"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}}))
+elif args[:2] == ["run", "list"]:
+    estado["sondeos"] = int(estado.get("sondeos") or 0) + 1
+    if estado["sondeos"] == 1:
+        print("[]")
+    elif estado["sondeos"] == 2:
+        print(json.dumps(runs("in_progress")))
+    else:
+        print(json.dumps(runs("completed")))
+    guardar()
+elif args[:2] == ["run", "view"] and "--log" not in args:
+    guardar()
+    rid = args[2]
+    jobs = (
+        [{{"name": "quality", "databaseId": 201, "conclusion": "success"}}]
+        if rid == "1234"
+        else [{{"name": "lint", "databaseId": 202, "conclusion": "failure"}}]
+    )
+    print(json.dumps({{"status": "completed",
+        "conclusion": "success" if rid == "1234" else "failure",
+        "url": "https://github.com/gon0801/goncloud-Orbit/actions/runs/" + rid,
+        "jobs": jobs}}))
+elif args[:2] == ["run", "view"]:
+    guardar()
+    sys.stdout.write(open(os.path.join(d, "log-" + val("--job") + ".txt")).read())
+elif args[:2] == ["pr", "close"]:
+    guardar()
+else:
+    guardar()
+    sys.exit(2)
+'''
+
+
+class EsperaARunsQueAparecenTarde(_Ci):
+    """Recién creado el PR el repo puede no tener runs, o tenerlos en curso.
+    El plazo llega como duración: no se puede comparar con un epoch."""
+
+    def setUp(self):
+        super().setUp()
+        (self.fake / "log-202.txt").write_text("FALLA de lint\n", encoding="utf-8")
+        (self.fake / "estado.json").write_text(
+            json.dumps({"llamadas": [], "sondeos": 0})
+        )
+        (self.bin / "gh").write_text(
+            GH_LENTO.replace("{{", "{").replace("}}", "}").replace(
+                "#!{python}", "#!" + sys.executable
+            )
+        )
+        (self.bin / "gh").chmod(0o755)
+        self.recursos = {
+            "ci-linux": {"tipo": "ci", "autorizacion": "", "repo": "o/r", "base": "main"}
+        }
+
+    def test_espera_a_que_aparezcan_y_terminen_los_runs(self):
+        r = self.pedir("todos")
+
+        self.assertEqual(r["estado"], "ok", r)
+        estado = json.loads((self.fake / "estado.json").read_text())
+        self.assertGreaterEqual(estado["sondeos"], 3)
+        jobs = {j["nombre"]: j for j in r["datos"]["jobs"]}
+        self.assertEqual(jobs["lint"]["conclusion"], "failure")
+        self.assertEqual(r["datos"]["fallas"], ["lint"])
+
+
 if __name__ == "__main__":
     unittest.main()

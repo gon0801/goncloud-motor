@@ -839,8 +839,9 @@ def _esperar_runs(
             _esperar_run(gh, repo, workflow, sha, limite, vigilar=vigilar)
             for workflow in workflows
         ]
+    tope = time.time() + max(0.0, limite)
     fin_busqueda = time.time() + min(
-        CI_BUSCA_RUN_S, max(0.0, limite - time.time())
+        CI_BUSCA_RUN_S, max(0.0, limite)
     )
     while True:
         if vigilar is not None:
@@ -860,7 +861,7 @@ def _esperar_runs(
             )
         time.sleep(CI_SONDEO_S)
     while any(str(r.get("status") or "") != "completed" for r in runs):
-        if time.time() > limite:
+        if time.time() > tope:
             raise CiFallo(
                 f"los workflows de pull_request del commit {sha[:12]} no terminaron "
                 f"en {int(CI_MAX_S // 60)} minutos",
