@@ -188,6 +188,12 @@ class CierreTrasResultadoTest(unittest.TestCase):
         def huella_anotada(d):
             huella = real_huella(d)
             lecturas.append((self.reloj.ahora(), huella[1]))
+            # El hijo no llena `fin` hasta esta lectura. Un sleep fijo pierde
+            # la llamada abierta si una vuelta tarda más que ese sleep.
+            if huella[1]:
+                marca = d / "vio-abierta"
+                if not marca.exists():
+                    marca.write_text("1", encoding="utf-8")
             return huella
 
         with unittest.mock.patch.object(runwrap, "_huella_pstack", huella_anotada):
@@ -196,7 +202,10 @@ class CierreTrasResultadoTest(unittest.TestCase):
                 "f = d / 'llamadas' / 'x.json'\n"
                 "f.write_text(json.dumps({'fin': None, 'pid': os.getpid()}))\n"
                 "veredicto('APROBADO')\n"
-                "time.sleep(0.12)\n"
+                "marca = d / 'vio-abierta'\n"
+                "limite = time.time() + 5\n"
+                "while not marca.exists() and time.time() < limite:\n"
+                "    time.sleep(0.01)\n"
                 "f.write_text(json.dumps({'fin': time.time(), 'pid': os.getpid()}))\n"
                 "time.sleep(30)\n",
                 sin_avance=80,
