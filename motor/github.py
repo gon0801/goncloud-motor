@@ -109,6 +109,9 @@ def _corrida(r: dict) -> dict:
     }
 
 
+_CONCLUSIONES_ROJAS = ("failure", "timed_out", "startup_failure")
+
+
 def veredicto(
     sha: str,
     requeridos: tuple[str, ...],
@@ -127,8 +130,9 @@ def veredicto(
     verdes sigue siendo rojo o pendiente). Corridas y estados del mismo nombre se
     evalúan los dos: un check-run en verde no esconde a un estado del mismo contexto
     en rojo o pendiente (h_f05e0491, segunda ronda). Un check se ignora por su
-    conclusión, no por su nombre: salto del borrador, `skipped` o `neutral` no
-    cuentan; lo que corre o falla sí.
+    conclusión, no por su nombre: salto del borrador o una conclusión que no sea
+    verde ni roja (`skipped`, `neutral`, `cancelled`, `action_required`, `stale`)
+    no cuentan; lo que corre o falla (`failure`, `timed_out`, `startup_failure`) sí.
 
     Un check saltado cuenta solo si se saltó después de que el PR dejó el borrador (`listo_desde`,
     hora ISO de GitHub; "" si nunca fue borrador; None si sigue en borrador). El salto del borrador
@@ -144,7 +148,7 @@ def veredicto(
         c
         for c, r in zip(corridas, runs)
         if r.get("status") == "completed"
-        and r.get("conclusion") not in ("success", "skipped", "neutral", None)
+        and r.get("conclusion") in _CONCLUSIONES_ROJAS
     )
     corren = []
     for r in runs:
@@ -154,7 +158,7 @@ def veredicto(
             or _salto_del_borrador(r, listo_desde, relanzadas_set)
             or (
                 r.get("status") == "completed"
-                and r.get("conclusion") in ("skipped", "neutral")
+                and r.get("conclusion") not in ("success", *_CONCLUSIONES_ROJAS)
             )
             or any(nombre == c or nombre.startswith(c + " (") for c in requeridos)
         ):
@@ -197,7 +201,7 @@ def veredicto(
                 en_marcha.append(c)
                 continue
             if any(
-                r["conclusion"] not in ("success", "skipped", "neutral")
+                r["conclusion"] in _CONCLUSIONES_ROJAS
                 for r in partes
             ):
                 fallas.append(c)

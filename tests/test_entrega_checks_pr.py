@@ -43,13 +43,20 @@ class _GhConCorridas(_GhConDeepSeek):
         estados = {
             "success": ("completed", "success"),
             "failure": ("completed", "failure"),
+            "timed_out": ("completed", "timed_out"),
+            "startup_failure": ("completed", "startup_failure"),
             "in_progress": ("in_progress", None),
             "skipped": ("completed", "skipped"),
             "neutral": ("completed", "neutral"),
+            "cancelled": ("completed", "cancelled"),
+            "action_required": ("completed", "action_required"),
+            "stale": ("completed", "stale"),
         }
         corridas = (cfg.get("corridas_sha") or {}).get(
             sha, cfg.get("corridas") or {}
         )
+        if not hasattr(self, "_job_ids"):
+            self._job_ids = {}
         runs = []
         for nombre, estado in corridas.items():
             run_fijo = None
@@ -60,6 +67,7 @@ class _GhConCorridas(_GhConDeepSeek):
             rid = 40000 + len(runs)
             run_id = (run_fijo or {}).get("run") or rid
             job_id = (run_fijo or {}).get("id") or rid
+            self._job_ids[(repo, nombre)] = str(job_id)
             runs.append(
                 {
                     "name": nombre,
@@ -68,10 +76,10 @@ class _GhConCorridas(_GhConDeepSeek):
                     "completed_at": "2026-11-02T21:46:00Z",
                     "id": job_id,
                     "html_url": (
-                        f"https://github.com/o/r/actions/runs/{run_id}/job/{job_id + 100000}"
+                        f"https://github.com/o/r/actions/runs/{run_id}/job/{job_id}"
                     ),
                     "details_url": (
-                        f"https://github.com/o/r/actions/runs/{run_id}/job/{job_id + 100000}"
+                        f"https://github.com/o/r/actions/runs/{run_id}/job/{job_id}"
                     ),
                 }
             )
@@ -87,7 +95,15 @@ class _GhConCorridas(_GhConDeepSeek):
         return str((self._cfg(repo).get("logs") or {}).get(str(run_id), ""))
 
     def log_fallido_job(self, repo, run_id, job, job_id="") -> str:
-        return str((self._cfg(repo).get("logs_job") or {}).get(job, ""))
+        jid = str(job_id or "")
+        if not hasattr(self, "llamadas_log_job"):
+            self.llamadas_log_job = []
+        self.llamadas_log_job.append((repo, str(run_id), job, jid))
+        esperado = getattr(self, "_job_ids", {}).get((repo, job), "")
+        if not jid or (esperado and jid != esperado):
+            return ""
+        logs = self._cfg(repo).get("logs_job") or {}
+        return str(logs.get(jid, logs.get(job, "")))
 
 
 def _corridas(gh, repo, estados):
@@ -386,9 +402,17 @@ class LasRondasNoRevivenUnShaQueYaNoEsLaCabeza(unittest.TestCase):
                     sha_b: {"windows": "success"},
                 },
             )
-            e = ciclo._reconciliar_checks(
-                r.reg, r.fold(), vuelta.gh, r.espacio, ahora_iso(), 0.0,
-            )
+            with mock.patch.object(
+                vuelta.gh, "ver", wraps=vuelta.gh.ver
+            ) as ver_spy:
+                e = ciclo._reconciliar_checks(
+                    r.reg, r.fold(), vuelta.gh, r.espacio, ahora_iso(), 1000.0,
+                )
+                self.assertEqual(ver_spy.call_count, 1)
+                e = ciclo._reconciliar_checks(
+                    r.reg, r.fold(), vuelta.gh, r.espacio, ahora_iso(), 1001.0,
+                )
+                self.assertEqual(ver_spy.call_count, 1)
             self.assertEqual(_pasos(r, "checks_verdes"), [])
             self.assertEqual(e.fase_actual.fallas_checks, ("windows",))
 
@@ -437,6 +461,17 @@ class ElLogDelJobEnRojoEsElDelJob(unittest.TestCase):
             self.assertIn(LOG_BATERIA, por_job["bateria"])
             self.assertNotIn(LOG_WINDOWS, por_job["bateria"])
             self.assertNotIn("BATERIA_FALLA", e.motivo)
+            self.assertEqual(
+                vuelta.gh.llamadas_log_job,
+                [
+                    (str(e.entrega.repo), "40000", "windows", "40000"),
+                    (str(e.entrega.repo), "40001", "bateria", "40001"),
+                ],
+            )
+            self.assertEqual(
+                vuelta.gh.log_fallido_job(str(e.entrega.repo), "40000", "windows", ""),
+                "",
+            )
 
 
 class ElEstadoDelMismoNombreNoLoEscondeLaCorrida(unittest.TestCase):
@@ -532,7 +567,7 @@ class ElLogDelJobConservaElFallo(unittest.TestCase):
             e = vuelta("uno")
             self.assertNotEqual(e.estado, "terminado")
             self.assertIn(LOG_WINDOWS, e.motivo)
-            self.assertIn("se omiten", e.motivo)
+            self.assertIn("se omiten 22 líneas intermedias", e.motivo)
             self.assertIn(
                 "copia literal: .interno/logs/windows-job40000-run40000.log", e.motivo
             )
@@ -790,6 +825,101 @@ class UnFalloDePushCualquieraNoEsCabezaDesviada(unittest.TestCase):
             self.assertNotIn("head vigente del PR #", e.motivo)
             self.assertIn("git push", e.motivo)
 
+
+class CanceladoOActionRequiredNoFrenanEnRojo(unittest.TestCase):
+    """F2: un check con conclusion cancelled, action_required o stale no es un
+    check en rojo; solo failure, timed_out y startup_failure frenan como rojo."""
+
+    def test_cancelled_y_action_required_no_bloquean_en_rojo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-cancelado",
+                _GhConCorridas,
+                {
+                    "corridas": {
+                        "windows": "success",
+                        "previa": "cancelled",
+                        "aprobacion": "action_required",
+                        "vieja": "stale",
+                    }
+                },
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.fase_actual.fallas_checks, ())
+
+    def test_timed_out_y_startup_failure_siguen_siendo_rojos(self):
+        for conclusion in ("timed_out", "startup_failure"):
+            with self.subTest(conclusion=conclusion):
+                v = veredicto(
+                    "a" * 40,
+                    (),
+                    [
+                        {
+                            "name": "windows",
+                            "status": "completed",
+                            "conclusion": conclusion,
+                            "completed_at": "2026-11-02T21:46:00Z",
+                            "id": 40000,
+                            "html_url": "https://github.com/o/r/actions/runs/40000/job/40000",
+                            "details_url": "https://github.com/o/r/actions/runs/40000/job/40000",
+                        }
+                    ],
+                    "",
+                )
+                self.assertTrue(v.terminal)
+                self.assertFalse(v.green)
+                self.assertEqual(v.fallas, ("windows",))
+                self.assertEqual(len(v.corridas_fallidas), 1)
+
+
+class SondaEntornoSinAtajoDeAgente(unittest.TestCase):
+    """#321 F3: _verificar_impedimento de entorno consulta la sonda aunque el
+    agente anotado ya no este entre los candidatos del rol."""
+
+    def test_un_agente_fuera_de_candidatas_no_levanta_el_impedimento_sin_sonda(self):
+        from motor.encargos.registro import Registro
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp) / "base"
+            reg = Registro(base)
+            try:
+                hora = ahora_iso()
+                enc_id = ciclo.recibir(
+                    reg,
+                    "pedido",
+                    "f3-sonda",
+                    hora,
+                    modelos_solicitados=(("responsable", "opencode", "glm-5"),),
+                )["encargo"]
+                espacio = base / "espacio" / enc_id
+                espacio.mkdir(parents=True, exist_ok=True)
+                ciclo._anotar_impedimento(
+                    reg,
+                    reg.fold(enc_id),
+                    "entorno",
+                    "falla del entorno",
+                    "que el entorno funcione",
+                    hora,
+                    "agente-retirado",
+                )
+                enc = reg.fold(enc_id)
+                self.assertEqual(enc.impedimento, "entorno")
+                espacio_roto = Path(tmp) / "fuera"
+                self.assertFalse(
+                    ciclo._verificar_impedimento(
+                        "entorno", enc, espacio_roto, base, reg
+                    )
+                )
+                self.assertTrue(
+                    ciclo._verificar_impedimento(
+                        "entorno", enc, espacio, base, reg
+                    )
+                )
+            finally:
+                reg.close()
 
 
 if __name__ == "__main__":

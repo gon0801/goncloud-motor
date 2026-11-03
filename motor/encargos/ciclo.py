@@ -1591,15 +1591,6 @@ def _verificar_impedimento(
     condición que la rechazó. `None` si este host no puede saberlo, que no es
     lo mismo que haberlo comprobado."""
     if clase == "entorno":
-        # Se vuelve a probar con el agente que falló, no con uno supuesto por el texto de la
-        # causa. Si el lanzador ya no lo elegiría (ni la ruta ni el modelo solicitado para el
-        # rol lo incluyen), la causa no le aplica a lo que se lanzará.
-        from .rutas import candidatas_de
-
-        agente = next((i.agente for i in enc.impedimentos if i.clase == clase), "")
-        candidatas = candidatas_de(enc, enc.rol or "responsable")
-        if agente and candidatas and agente not in candidatas:
-            return True
         return _sonda_entorno(enc, espacio, base).ok
     if clase.startswith("inspeccion:"):
         juicio = _juicio_de_referencia(enc, _directorio(base, enc.id))
@@ -3787,6 +3778,7 @@ def _reconciliar_checks(
         # _chequeo_previo_cierre devuelve el trabajo por el head) y no se anota
         # como checks_verdes de esta fase. El head se concilia en el turno de
         # entrega, que devuelve el trabajo nombrando ambos shas.
+        _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
         return enc
     try:
         veredicto = gh.checks(
@@ -4490,13 +4482,14 @@ def _recorte_log_job(texto: str, nombre: str, copia: str = "") -> str:
     lineas = texto.splitlines()
     if len(lineas) <= _TOPE_LOG_JOB:
         return "\n".join(lineas)
-    omitidas = len(lineas) - _TOPE_LOG_JOB
+    cabeza, cola = lineas[:55], lineas[-24:]
+    omitidas = len(lineas) - len(cabeza) - len(cola)
     literal = copia or "ci.log"
     nota = (
         f"[log de {nombre}: se omiten {omitidas} líneas intermedias; "
         f"el literal completo queda en {literal}]"
     )
-    return "\n".join([*lineas[:55], nota, *lineas[-24:]])
+    return "\n".join([*cabeza, nota, *cola])
 
 
 def _logs_de_fallidos(gh, repo: str, veredicto_ci, espacio: Path) -> str:
