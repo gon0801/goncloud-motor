@@ -1,0 +1,10 @@
+R2-1 corte incierto
+R2-1 reintento incierto
+R2-1 entregas 1
+R2-2 cierre_original cerrado
+R2-2 sesion_nueva {'pid': 17117, 'estado': 'activo', 'cierre_observado': False}
+R2-2 promocion rechazada True ejecutor_vivo True
+R2-4 paquete_completo publicado True digest 40cd8f4485e1
+R2-6 rechazada: JSON invalido en el paquete: hermes.json
+R2-6 conservada_A True
+done

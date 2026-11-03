@@ -1,0 +1,27 @@
+Carrera de generacion (REAL_R4): encargo_reservado_A True, actualizacion ocupada, entorno_A True, marca_real buena.
+Pruebas mantenidas nuevas en tests: 9 OK en total (7 anteriores + 2 de intercalados).
+
+Hermes ejecutando desde su terminal (PC, home aislado ensayo34e, grok-4.7):
+- Herramienta de archivos creo C:\Users\ehven\ensayo-corr34\saludo-directo.txt con "directa ejecutada por Hermes".
+- Terminal ejecuto motor director encargar durable desde plan-externo.txt: enc_d475bdc8a4a85df8, recibo rec_985509123260.
+- ver: recibido. parar: deteniendo (rec_40df62c25e19). El supervisor cerro el arbol: detenido.
+- continuar con la clave ya usada devolvio el mismo rechazo guardado (retransmision idempotente).
+- continuar con clave nueva r4-continuar-2: recibido, recibo rec_678ccb984c58. Mismo encargo.
+El plan tenia un BOM de PowerShell al inicio del texto. No afecta los estados.
+
+Flota real aislada por host, componente motor real (A=93d3d2e, B=f78a85f de esta rama):
+Mini y PC, mismo resultado:
+- aplicar_A aplicada
+- aplicar_B_con_trabajo_vivo ocupada (proceso real durmiendo desde la generacion A, registrado con su PID)
+- aplicar_B_sin_trabajo aplicada, asignar tras B verdadero
+- candidata mala real (error de sintaxis en el paquete): rechazada, conserva B
+- reversa con ops/reversa_ensayo.sh: revertido a A, asignar tras reversa es A verdadero
+Homes de ensayo: /Users/gon/ensayo-flota-r4 en Mini y C:\Users\ehven\ensayo-flota-r4 en PC.
+
+Claw ejecutando desde sus herramientas (Mini, perfil aislado clawr4, grok-4.7, ruta terminal grok-4.7-build):
+- Herramientas observadas en el turno: read, write y exec, 5 llamadas, 0 fallos.
+- write creo /Users/gon/ensayo-corr34/saludo-directo.txt con "directa ejecutada por Claw".
+- exec encargo el durable desde plan-externo.txt: enc_e1717bf894e0f936, recibo rec_ad72846ce0a5.
+- ver: recibido. parar --clave r4-parar: deteniendo. El supervisor cerro el arbol: detenido.
+- Segundo turno: continuar --clave r4-continuar lo reanudo al mismo encargo: recibido.
+El perfil clawr4 se borra al guardar esta evidencia. Su login de Grok era propio del perfil.
