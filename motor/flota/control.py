@@ -623,6 +623,7 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
         return {"accion": "nada"}
     destino = (pend.get("destino") or {}).get("codigo") or ""
     anterior = (pend.get("anterior") or {}).get("codigo") or ""
+    sin_turnos = sin_turnos or bool(pend.get("sin_turnos"))
     gen = home / "generaciones" / destino
     vigente_rec = asignar(home) if (home / "actual").is_symlink() else anterior
     if destino and vigente_rec and destino != vigente_rec and _trabajos_sobre(home, vigente_rec):

@@ -470,6 +470,25 @@ class TurnosFlota(unittest.TestCase):
         self.assertFalse((self.home / "actual").is_symlink())
         self.assertFalse((self.home / "instalacion-pendiente.json").exists())
 
+    def test_recuperar_usa_el_sin_turnos_guardado_en_la_pendiente(self):
+        origen = _repo(self.base / "origen-recuperar-flag-pendiente")
+        a, gen_a = _crear_generacion(self.home, origen, [], {}, POLITICA)
+        _config_poteto(gen_a)
+        _runtime_preparada(self.home, gen_a, "hermes", "v1")
+
+        cortado = aplicar(self.home, a, "worktree", sin_turnos=True)
+        self.assertEqual(cortado["accion"], "cortado", cortado)
+        pendiente = json.loads(
+            (self.home / "instalacion-pendiente.json").read_text()
+        )
+        self.assertTrue(pendiente.get("sin_turnos"), pendiente)
+
+        salida = recuperar(self.home)
+        self.assertEqual(salida["accion"], "completo", salida)
+        self.assertEqual(asignar(self.home), a)
+        instalacion = json.loads((self.home / "instalacion.json").read_text())
+        self.assertTrue(instalacion.get("sin_turnos"), instalacion)
+
     def test_candidata_que_retira_un_agente_con_sesion_bloquea(self):
         origen, a, gen_a = self._flota("origen-g")
         b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
@@ -605,6 +624,30 @@ class TurnosFlota(unittest.TestCase):
         self.assertEqual(asignar(self.home), b)
         self.assertEqual(revertir(self.home)["accion"], "revertido")
         self.assertEqual(asignar(self.home), a)
+
+
+class GuardaHomeTest(unittest.TestCase):
+    def test_la_guarda_bloquea_escrituras_en_el_motor_real(self):
+        import tests.guarda_home as guarda
+
+        with tempfile.TemporaryDirectory(prefix="guarda-motor-") as tmp:
+            falso = Path(tmp) / "motor-real"
+            (falso / "avisos" / "pendientes").mkdir(parents=True)
+            aviso = falso / "avisos" / "pendientes" / "aviso.json"
+            with patch.object(guarda, "_MOTOR_REAL", os.path.realpath(falso)):
+                self.assertTrue(guarda._prohibida(aviso))
+                with self.assertRaises(RuntimeError):
+                    aviso.write_text("{}", encoding="utf-8")
+            self.assertFalse(aviso.exists())
+
+    def test_la_guarda_permite_escribir_en_el_temporal(self):
+        import tests.guarda_home as guarda
+
+        with tempfile.TemporaryDirectory(prefix="guarda-temp-") as tmp:
+            aviso = Path(tmp) / "aviso.json"
+            self.assertFalse(guarda._prohibida(aviso))
+            aviso.write_text("{}", encoding="utf-8")
+            self.assertTrue(aviso.exists())
 
 
 if __name__ == "__main__":
