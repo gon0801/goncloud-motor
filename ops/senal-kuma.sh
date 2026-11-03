@@ -3,9 +3,10 @@
 # tiene su monitor push, «Motor de la <máquina>», y su token va a ~/.motor/secretos.env. El supervisor
 # de encargos conserva su dirección propia en ~/.motor-encargos/secretos.env: si falta (la MacBook),
 # se crea el monitor «Motor de encargos de la <máquina>». Nunca el mismo token en los dos secretos:
-# con el mismo monitor, el proceso vivo taparía la caída del otro. La Mac escribe en local, sin ssh a
-# sí misma. No reinicia ningún motor: la señal lee el archivo en cada vuelta. Sin argumentos; se puede
-# repetir. Nunca imprime un token.
+# con el mismo monitor, el proceso vivo taparía la caída del otro. La base es la que esa máquina
+# alcanza: primero 10.13.13.1:3001 y, si no responde, el túnel 127.0.0.1:19301. Si ninguna responde,
+# no escribe. La Mac escribe en local, sin ssh a sí misma. No reinicia ningún motor: la señal lee el
+# archivo en cada vuelta. Sin argumentos; se puede repetir. Nunca imprime un token.
 set -uo pipefail
 export LC_ALL=C
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +41,11 @@ for m in mac mini pc; do
     fallos=$((fallos + 1))
     continue
   fi
-  if ! printf '%s\n' "$token" | linea_en "$m" poner .motor >/dev/null; then
+  if ! base="$(base_para "$m")"; then
+    fallos=$((fallos + 1))
+    continue
+  fi
+  if ! printf '%s\n' "$token" | linea_en "$m" poner .motor "$base" >/dev/null; then
     echo "senal-kuma: $m: no pude escribir .motor/secretos.env" >&2
     fallos=$((fallos + 1))
     continue
@@ -53,7 +58,7 @@ for m in mac mini pc; do
         fallos=$((fallos + 1))
         continue
       fi
-      if ! printf '%s\n' "$token" | linea_en "$m" poner .motor-encargos >/dev/null; then
+      if ! printf '%s\n' "$token" | linea_en "$m" poner .motor-encargos "$base" >/dev/null; then
         echo "senal-kuma: $m: no pude escribir .motor-encargos/secretos.env" >&2
         fallos=$((fallos + 1))
         continue
