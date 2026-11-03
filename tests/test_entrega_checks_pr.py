@@ -7,6 +7,7 @@ DeepSeek aprobó con `windows` en rojo y `bateria` corriendo y el encargo cerró
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -50,20 +51,26 @@ class _GhConCorridas(_GhConDeepSeek):
         )
         runs = []
         for nombre, estado in corridas.items():
+            run_fijo = None
+            if isinstance(estado, dict):
+                run_fijo = {"run": estado.get("run"), "id": estado.get("id")}
+                estado = estado["estado"]
             status, conclusion = estados[estado]
             rid = 40000 + len(runs)
+            run_id = (run_fijo or {}).get("run") or rid
+            job_id = (run_fijo or {}).get("id") or rid
             runs.append(
                 {
                     "name": nombre,
                     "status": status,
                     "conclusion": conclusion,
                     "completed_at": "2026-11-02T21:46:00Z",
-                    "id": rid,
+                    "id": job_id,
                     "html_url": (
-                        f"https://github.com/o/r/actions/runs/{rid}/job/{rid + 100000}"
+                        f"https://github.com/o/r/actions/runs/{run_id}/job/{job_id + 100000}"
                     ),
                     "details_url": (
-                        f"https://github.com/o/r/actions/runs/{rid}/job/{rid + 100000}"
+                        f"https://github.com/o/r/actions/runs/{run_id}/job/{job_id + 100000}"
                     ),
                 }
             )
@@ -409,9 +416,9 @@ class ElLogDelJobConservaElFallo(unittest.TestCase):
             self.assertIn(LOG_WINDOWS, e.motivo)
             self.assertIn("se omiten", e.motivo)
             self.assertIn(
-                "copia literal: .interno/logs/windows-run40000.log", e.motivo
+                "copia literal: .interno/logs/windows-job40000-run40000.log", e.motivo
             )
-            copia = r.espacio / ".interno" / "logs" / "windows-run40000.log"
+            copia = r.espacio / ".interno" / "logs" / "windows-job40000-run40000.log"
             self.assertTrue(copia.is_file())
             self.assertEqual(len(copia.read_text().splitlines()), 101)
             self.assertIn(LOG_WINDOWS, copia.read_text())
@@ -434,14 +441,123 @@ class ElLogDelJobConservaElFallo(unittest.TestCase):
             e = vuelta("uno")
             self.assertNotEqual(e.estado, "terminado")
             fallo = "WINDOWS_FAILURE_DETAIL: AssertionError"
-            self.assertIn("copia literal: .interno/logs/windows-run40000.log", e.motivo)
-            self.assertIn("queda en .interno/logs/windows-run40000.log", e.motivo)
-            copia = r.espacio / ".interno" / "logs" / "windows-run40000.log"
+            self.assertIn("copia literal: .interno/logs/windows-job40000-run40000.log", e.motivo)
+            self.assertIn("queda en .interno/logs/windows-job40000-run40000.log", e.motivo)
+            copia = r.espacio / ".interno" / "logs" / "windows-job40000-run40000.log"
             self.assertTrue(copia.is_file())
             literal = copia.read_text()
             self.assertEqual(len(literal.splitlines()), 101)
             self.assertIn(fallo, literal)
             self.assertNotIn(fallo, e.motivo)
+
+
+class LaCopiaDelLogNoSigueEnlaces(unittest.TestCase):
+    """La escritura de la copia no sigue enlaces: un `.log.tmp` del espacio
+    que apunte a fuera no trunca nada externo, la copia queda como archivo
+    regular dentro del espacio y un `.interno` enlazado se rechaza
+    (h_ff7d6d39)."""
+
+    def test_un_enlace_preexistente_en_el_temporal_no_escribe_fuera(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-enlace",
+                _GhConCorridas,
+                {
+                    "corridas": {"windows": "failure"},
+                    "logs_job": {"windows": LOG_WINDOWS},
+                },
+            )
+            centinela = Path(tmp) / "host-file.txt"
+            centinela.write_text("CONTENIDO_HOST")
+            logs = r.espacio / ".interno" / "logs"
+            logs.mkdir(parents=True)
+            temporal = logs / "windows-job40000-run40000.log.tmp"
+            os.symlink(centinela, temporal)
+
+            e = vuelta("uno")
+
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertIn("checks requeridos en rojo: windows", e.motivo)
+            self.assertEqual(centinela.read_text(), "CONTENIDO_HOST")
+            copia = logs / "windows-job40000-run40000.log"
+            self.assertFalse(copia.is_symlink())
+            self.assertTrue(copia.is_file())
+            self.assertEqual(copia.read_text(), LOG_WINDOWS)
+            self.assertIn(
+                "copia literal: .interno/logs/windows-job40000-run40000.log",
+                e.motivo,
+            )
+
+    def test_un_interno_enlazado_no_copia_nada(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-interno-enlace",
+                _GhConCorridas,
+                {
+                    "corridas": {"windows": "failure"},
+                    "logs_job": {"windows": LOG_WINDOWS},
+                },
+            )
+            fuera = Path(tmp) / "dir-host"
+            fuera.mkdir()
+            interno = r.espacio / ".interno"
+            interno.mkdir(parents=True, exist_ok=True)
+            os.symlink(fuera, interno / "logs")
+
+            e = vuelta("uno")
+
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertIn("checks requeridos en rojo: windows", e.motivo)
+            self.assertIn(LOG_WINDOWS, e.motivo)
+            self.assertEqual(list(fuera.iterdir()), [])
+            self.assertNotIn("copia literal:", e.motivo)
+
+
+class DosJobsConElMismoSaneoNoSePisan(unittest.TestCase):
+    """Dos jobs distintos de una misma corrida pueden saneo al mismo nombre:
+    la identidad de la copia lleva el ID del job, así cada job conserva su
+    propio log y el motivo referencia la copia correcta (h_c4902b32)."""
+
+    def test_dos_jobs_de_una_corrida_conservan_sus_propios_logs(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            def log_con_fallo_en_medio(marca):
+                lineas = [f"preparacion {i}" for i in range(100)]
+                lineas.insert(60, marca)
+                del lineas[101:]
+                return "\n".join(lineas)
+
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ck-colision",
+                _GhConCorridas,
+                {
+                    "corridas": {
+                        "tests (a/b)": {"estado": "failure", "run": 7, "id": 100001},
+                        "tests (a-b)": {"estado": "failure", "run": 7, "id": 100002},
+                    },
+                    "logs_job": {
+                        "tests (a/b)": log_con_fallo_en_medio("FALLO_DEL_JOB_1"),
+                        "tests (a-b)": log_con_fallo_en_medio("FALLO_DEL_JOB_2"),
+                    },
+                },
+            )
+            e = vuelta("uno")
+
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertIn(
+                "checks requeridos en rojo: tests (a-b), tests (a/b)", e.motivo
+            )
+            self.assertIn("tests--a-b-job100001-run7.log", e.motivo)
+            self.assertIn("tests--a-b-job100002-run7.log", e.motivo)
+            copia1 = r.espacio / ".interno" / "logs" / "tests--a-b-job100001-run7.log"
+            copia2 = r.espacio / ".interno" / "logs" / "tests--a-b-job100002-run7.log"
+            self.assertIn("FALLO_DEL_JOB_1", copia1.read_text())
+            self.assertIn("FALLO_DEL_JOB_2", copia2.read_text())
 
 
 if __name__ == "__main__":

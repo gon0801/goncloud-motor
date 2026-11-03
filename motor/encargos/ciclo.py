@@ -4417,23 +4417,48 @@ def _esperar_checks_requeridos(
 _TOPE_LOG_JOB = 80
 
 
-def _copia_log_job(espacio: Path, nombre: str, run_id: str, texto: str) -> str:
+def _copia_log_job(
+    espacio: Path, nombre: str, run_id: str, job_id: str, texto: str
+) -> str:
     """El literal completo del log del job queda en el espacio del responsable
     (`.interno/logs/`, que no viaja en el producto: _commit_push lo excluye).
     Un fallo que vive en medio del log no puede perderse en un recorte: la
     devolución referencia la copia y el extracto la acompaña sin sustituirla
-    (h_a8968fb0). Devuelve la ruta relativa al espacio, o "" si no se pudo."""
+    (h_a8968fb0). Devuelve la ruta relativa al espacio, o "" si no se pudo.
+
+    La identidad de la copia lleva el ID del job: dos jobs de una misma
+    corrida pueden sanear al mismo nombre y no se sobrescriben (h_c4902b32).
+    La escritura no sigue enlaces: rechaza un `.interno` o `logs` que sean
+    enlaces, y crea el temporal con O_EXCL|O_NOFOLLOW (un enlace preexistente
+    se quita a sí mismo, nunca se escribe a través de él), así el contenido
+    del espacio no puede truncar nada fuera del espacio (h_ff7d6d39)."""
     if not texto:
         return ""
     if len(texto.encode("utf-8", errors="replace")) > capacidades.MAX_LOG:
         return ""
-    slug = re.sub(r"[^A-Za-z0-9_.-]", "-", nombre) or "job"
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "-", nombre).strip("-") or "job"
     destino = espacio / ".interno" / "logs"
     try:
+        for padre in (espacio / ".interno", destino):
+            if padre.is_symlink():
+                return ""
         destino.mkdir(parents=True, exist_ok=True)
-        ruta = destino / f"{slug}-run{run_id or 'sin-run'}.log"
+        sufijo = f"-job{job_id}" if job_id else ""
+        ruta = destino / f"{slug}{sufijo}-run{run_id or 'sin-run'}.log"
         temporal = ruta.with_name(ruta.name + ".tmp")
-        with open(temporal, "w", encoding="utf-8") as f:
+        try:
+            temporal.unlink()
+        except OSError:
+            pass
+        fd = os.open(
+            temporal,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(texto)
         os.replace(temporal, ruta)
     except OSError:
@@ -4481,7 +4506,7 @@ def _logs_de_fallidos(gh, repo: str, veredicto_ci, espacio: Path) -> str:
             except Exception:
                 texto = ""
         if texto:
-            copia = _copia_log_job(espacio, nombre, run_id, texto)
+            copia = _copia_log_job(espacio, nombre, run_id, job_id, texto)
             cabeza = f"log de {nombre} ({url}):"
             if copia:
                 cabeza += f"\ncopia literal: {copia}"
