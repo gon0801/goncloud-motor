@@ -81,7 +81,7 @@ class VersionDelLanzador(unittest.TestCase):
 class HomeDeAntigravity(unittest.TestCase):
     def test_resolve_con_runtimeerror_no_impide_detectar_el_llavero_del_home(self):
         with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
+            home = Path(tmp).resolve()
             resolver = type(home).resolve
             for falla in ("base", "entorno"):
                 with self.subTest(falla=falla):
