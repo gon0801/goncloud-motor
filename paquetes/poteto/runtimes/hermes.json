@@ -1,6 +1,0 @@
-{
-  "runtime": "hermes",
-  "subagente": "hermes",
-  "terminal": "local",
-  "skill": "SKILL.md"
-}
