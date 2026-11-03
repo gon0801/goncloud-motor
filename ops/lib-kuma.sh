@@ -36,21 +36,27 @@ servidor_kuma() {
   ssh_a "$KUMA_SSH" "$(printf '%q ' python3 - "$KUMA_DB" "$@")" <"$KUMA_SERVIDOR_PY"
 }
 
-# es_local_kuma <m>: la MacBook es esta misma máquina, no la Mini ni otra macOS.
+# es_local_kuma <m>: 0 si la MacBook es esta misma máquina, 1 si no, 2 si no se pudo saber.
 # macOS no basta: la Mini también es Darwin. En la flota solo la MacBook y la Mini corren macOS
 # (ops/lib.sh, maquinas_canario), así que en Darwin se compara el hostname local con el de la Mini:
 # si difieren, esta máquina es la MacBook. Preguntar a la Mini, en vez de a `mac`, deja que la
 # MacBook escriba sus secretos sin hacerse ssh a sí misma. Desde la Mini el hostname coincide y la
 # Mac se alcanza por ssh como cualquier otra. En la PC o el CI ni se sondea: uname no es Darwin.
-# El sondeo se hace una sola vez por proceso.
+# El sondeo se hace una sola vez por proceso cuando contesta. Si el hostname local o el de la Mini
+# falla o sale vacío, sale 2 y no guarda la respuesta: no es "no es la MacBook". Quien llama se
+# niega antes de escribir o de hacer ssh a mac, igual que maquinas_canario.
 es_local_kuma() {
   [ "$1" = mac ] || return 1
   [ "$(uname -s 2>/dev/null)" = Darwin ] || return 1
   if [ -z "${_kuma_es_macbook:-}" ]; then
     local propio remoto
-    propio="$(hostname 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
-    remoto="$(corre mini hostname </dev/null 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
-    if [ -n "$propio" ] && [ -n "$remoto" ] && [ "$propio" != "$remoto" ]; then
+    propio="$(hostname 2>/dev/null)" || return 2
+    propio="$(printf '%s' "$propio" | tr -d '\r' | tr -d '[:space:]')"
+    [ -n "$propio" ] || return 2
+    remoto="$(corre mini hostname </dev/null 2>/dev/null)" || return 2
+    remoto="$(printf '%s' "$remoto" | tr -d '\r' | tr -d '[:space:]')"
+    [ -n "$remoto" ] || return 2
+    if [ "$propio" != "$remoto" ]; then
       _kuma_es_macbook=si
     else
       _kuma_es_macbook=no
@@ -60,8 +66,18 @@ es_local_kuma() {
 }
 
 # corre_kuma <m> <posix> <pc>: como corre, pero la Mac se ejecuta en local.
+# Sale 2, sin ssh a mac, si no se pudo saber si esta máquina es la MacBook.
 corre_kuma() {
-  if es_local_kuma "$1"; then bash -c "$2"; else corre "$@"; fi
+  local rc=0
+  es_local_kuma "$1" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    bash -c "$2"
+    return $?
+  fi
+  if [ "$rc" -eq 2 ]; then
+    return 2
+  fi
+  corre "$@"
 }
 
 # Escritura atómica de MOTOR_KUMA_URL en el secreto de un proceso:
@@ -97,6 +113,7 @@ if [ "\$accion" = asegurar ] || [ "\$accion" = asegurar_distinto ]; then
     tok_de=\$(printf '%s\n' "\$linea" | sed 's#.*/##; s/[?#].*//')
     tok_plan=\$(printf '%s\n' "\$plan" | sed 's#.*/##; s/[?#].*//')
     [ -z "\$plan" ] || [ "\$tok_plan" != "\$tok_de" ] || exit 6
+    [ ! -f "\$marca" ] || exit 7
   fi
 fi
 mkdir -p "\$HOME/$2" || exit 4
@@ -141,6 +158,7 @@ if (\$accion -eq 'asegurar' -or \$accion -eq 'asegurar_distinto') {
     \$tokDe = (\$linea -split '/')[-1] -replace '[?#].*$', ''
     \$tokPlan = (\$lineaPlan -split '/')[-1] -replace '[?#].*$', ''
     if (\$lineaPlan -and \$tokPlan -ceq \$tokDe) { exit 6 }
+    if (Test-Path -LiteralPath \$marca) { exit 7 }
   }
 }
 New-Item -ItemType Directory -Force -Path \$dir | Out-Null
@@ -158,7 +176,7 @@ SCRIPT
 # linea_en <mac|mini|pc> <poner|quitar|asegurar|asegurar_distinto> <.motor|.motor-encargos>:
 # el token (si poner) llega por stdin, nunca en la línea de comandos.
 linea_en() {
-  local m=$1 accion=$2 sub=$3 base=${4:-$KUMA_BASE_DIRECTA} codificado
+  local m=$1 accion=$2 sub=$3 base=${4:-$KUMA_BASE_DIRECTA} codificado rc
   if [ "$accion" = poner ] && ! base_valida "$base"; then
     echo "base de push desconocida" >&2
     return 2
@@ -166,7 +184,15 @@ linea_en() {
   if [ "$m" = pc ]; then
     codificado="$(escritor_pc "$accion" "$sub" "$base" | python3 -I -c 'import base64,sys; print(base64.b64encode(sys.stdin.read().encode("utf-16-le")).decode())')"
     corre pc x "powershell -NoProfile -NonInteractive -EncodedCommand $codificado"
-  elif es_local_kuma "$m"; then
+    return $?
+  fi
+  rc=0
+  es_local_kuma "$m" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "senal-kuma: $m: no pude saber si esta máquina es la MacBook" >&2
+    return 2
+  fi
+  if [ "$rc" -eq 0 ]; then
     bash -c "$(escritor_posix "$accion" "$sub" "$base")"
   else
     corre "$m" "$(escritor_posix "$accion" "$sub" "$base")" x
@@ -218,14 +244,17 @@ tok_b=$(printf "%s\n" "$b" | sed "s#.*/##; s/[?#].*//")
 # --max-redirs 0: el 302 de Kuma cuenta aunque el seguimiento no llegue a ningún lado.
 # En la PC, curl.exe sale 0 con ese mismo 302 (sin -f); cmd se comería %{http_code}.
 responde() {
-  local m=$1 origen=$2 codigo c t
+  local m=$1 origen=$2 codigo c t rc=0
   c="${MOTOR_KUMA_CONECTA:-3}"
   t="${MOTOR_KUMA_SONDEO:-5}"
   if [ "$m" = pc ]; then
     corre pc x "curl.exe -sS -o NUL --connect-timeout $c --max-time $t ${origen}/" </dev/null >/dev/null 2>&1
     return $?
   fi
-  codigo="$(corre_kuma "$m" "curl -sS -o /dev/null --connect-timeout $c --max-time $t --max-redirs 0 -w '%{http_code}' -- ${origen}/" x </dev/null 2>/dev/null || true)"
+  codigo="$(corre_kuma "$m" "curl -sS -o /dev/null --connect-timeout $c --max-time $t --max-redirs 0 -w '%{http_code}' -- ${origen}/" x </dev/null 2>/dev/null)" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    return 2
+  fi
   codigo="$(printf '%s' "$codigo" | tr -d '[:space:]')"
   case "$codigo" in
     [1-5][0-9][0-9]) return 0 ;;
@@ -236,14 +265,25 @@ responde() {
 # base_para <m>: la base que esa máquina alcanza. Primero la IP directa, si no el túnel.
 # Si ninguna responde, no imprime base: quien llama no debe escribir.
 base_para() {
-  local m=$1
-  if responde "$m" "$KUMA_ORIGEN_DIRECTA"; then
+  local m=$1 rc=0
+  responde "$m" "$KUMA_ORIGEN_DIRECTA" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     printf '%s\n' "$KUMA_BASE_DIRECTA"
     return 0
   fi
-  if responde "$m" "$KUMA_ORIGEN_TUNEL"; then
+  if [ "$rc" -eq 2 ]; then
+    echo "senal-kuma: $m: no pude saber si esta máquina es la MacBook" >&2
+    return 2
+  fi
+  rc=0
+  responde "$m" "$KUMA_ORIGEN_TUNEL" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     printf '%s\n' "$KUMA_BASE_TUNEL"
     return 0
+  fi
+  if [ "$rc" -eq 2 ]; then
+    echo "senal-kuma: $m: no pude saber si esta máquina es la MacBook" >&2
+    return 2
   fi
   echo "senal-kuma: $m: ni ${KUMA_ORIGEN_DIRECTA#*://} ni el túnel ${KUMA_ORIGEN_TUNEL#*://} responden desde esa máquina" >&2
   return 1

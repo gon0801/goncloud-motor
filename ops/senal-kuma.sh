@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # Deja a Kuma vigilando el motor de la MacBook, la Mini y la PC. El motor de planes de cada máquina
-# tiene su monitor push, «Motor de la <máquina>», y su token va a ~/.motor/secretos.env. El supervisor
-# de encargos conserva su dirección propia en ~/.motor-encargos/secretos.env: si falta (la MacBook),
-# se crea el monitor «Motor de encargos de la <máquina>». Nunca el mismo token en los dos secretos:
-# con el mismo monitor, el proceso vivo taparía la caída del otro. La base es la que esa máquina
-# alcanza: primero 10.13.13.1:3001 y, si no responde, el túnel 127.0.0.1:19301. Si ninguna responde,
-# no escribe. La Mac escribe en local, sin ssh a sí misma. No reinicia ningún motor: la señal lee el
-# archivo en cada vuelta. Sin argumentos; se puede repetir. Nunca imprime un token.
+# tiene su monitor push, «Motor de la <máquina>», y cada corrida escribe su token en
+# ~/.motor/secretos.env, en la base que esa máquina alcanza. El de encargos es otro monitor. En la
+# Mini y la PC, una dirección que ya estaba en ~/.motor-encargos/secretos.env y no creó este script
+# se deja como está. La de la MacBook sí es de este script: cada corrida la reescribe con la base
+# que la Mac alcanza y el token del monitor, y vuelve a crear el monitor si alguien lo borró. Si
+# este script creó la de la Mini o la PC (queda la marca .senal-kuma-encargos) y borran ese monitor,
+# la siguiente corrida lo recrea y reescribe esa URL. Nunca el mismo token en los dos secretos.
+# La base se elige en la máquina: primero 10.13.13.1:3001 y, si no responde, el túnel
+# 127.0.0.1:19301. Si ninguna responde, no escribe. La Mac escribe en local, sin ssh a sí misma.
+# No reinicia ningún motor: la señal lee el archivo en cada vuelta. Sin argumentos; se puede
+# repetir. Nunca imprime un token.
 set -uo pipefail
 export LC_ALL=C
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DIR/lib.sh"
 . "$DIR/lib-kuma.sh"
 
-# El monitor de encargos de la MacBook es del script: se asegura en cada corrida para recrearlo si
-# alguien lo borró. En la Mini y la PC solo se crea si falta la dirección o si es la de planes.
+# La Mac entra siempre: su URL de encargos se reescribe en cada corrida. La Mini y la PC entran
+# si falta la URL (3), si es la de planes (6), o si este script la creó (7) para reponer el monitor.
 crear=" mac"
 fallos=0
 for m in mac mini pc; do
@@ -22,7 +26,16 @@ for m in mac mini pc; do
   rc=$?
   case "$rc" in
     0) ;;
-    3|6) crear="$crear $m" ;;
+    3|6|7)
+      case " $crear " in
+        *" $m "*) ;;
+        *) crear="$crear $m" ;;
+      esac
+      ;;
+    2)
+      echo "senal-kuma: $m: no pude saber si esta máquina es la MacBook" >&2
+      fallos=$((fallos + 1))
+      ;;
     *)
       echo "senal-kuma: $m: no pude revisar ~/.motor-encargos/secretos.env" >&2
       fallos=$((fallos + 1))

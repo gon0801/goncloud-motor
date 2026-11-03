@@ -14,9 +14,16 @@ jobs:
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v6
+        id: py39
+        with:
+          python-version: '3.9'
+          update-environment: false
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Pruebas de shell de ops/tests
+        env:
+          MOTOR_PYTHON39: ${{ steps.py39.outputs.python-path }}
         run: bash ops/tests/correr.sh
 
   bateria:
