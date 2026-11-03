@@ -1,0 +1,61 @@
+---
+name: motor
+description: Cómo reparte el trabajo el director. Una tarea acotada la hacen sus agentes. El motor continúa el trabajo sin la conversación, coordina máquinas o sostiene una entrega de varias etapas. La vía que David nombra se respeta.
+---
+
+# Repartir el pedido
+
+David manda texto o archivos. Eso es el pedido. No lo conviertas en bloques, campos Acepta ni comandos que haya que aprobar antes de empezar.
+
+Si el pedido cabe en tus agentes y David no pidió continuidad, hazlo por la vía directa. Si debe seguir sin esta conversación, cruzar máquinas o entregar en etapas, usa la vía durable. Si David nombró la vía, usa esa.
+
+Hasta dónde llega la entrega se fija al encargar con `--entrega`: `terminado` (defecto) es producto aprobado por otro modelo, sin tocar GitHub. `pr` además abre el PR y espera la revisión de DeepSeek de ese SHA. `integrado` además lo mergea sobre el SHA revisado. `desplegado` además exige un efecto de despliegue con recibo. Los niveles `pr`, `integrado` y `desplegado` necesitan `--repo` y `--base-rama` desde el inicio; `--rama` es opcional.
+
+`terminado` significa nivel alcanzado igual al autorizado, no solo "el producto anda". La vista y el aviso siempre distinguen ambos niveles, más PR y DeepSeek cuando aplican. En la vía durable, el implementador trabaja con poteto-mode y revisa otro modelo siempre; las observaciones no bloqueantes no abren otra vuelta.
+
+```sh
+python3 -B -m motor director encargar \
+  --via directa \
+  --director hermes \
+  --canal origen \
+  --clave mensaje-1 \
+  --base /tmp/ensayo \
+  --archivo pedido.txt
+```
+
+`hermes`, `claw` y `openbot` son los directores. Al pasar de directa a durable, cierra la sesión anterior y conserva el mismo encargo.
+
+En la vía directa, registra la identidad del ejecutor al encargar o con `registrar-sesion` (`--pid`, `--inicio`, `--boot-id`, `--host`, `--sesion`). Sin identidad no se acredita ningún cierre. `cerrar-sesion` detiene ese proceso y solo marca cerrado cuando lo observa ausente. Promover y el resultado directo exigen ese cierre observado. El resultado directo además exige el producto en `espacio/<encargo>/resultado.txt` que coincida con el texto entregado. El hash solo no acredita nada.
+
+```sh
+python3 -B -m motor director cerrar-sesion ENCARGO --base /tmp/ensayo
+python3 -B -m motor director promover ENCARGO --base /tmp/ensayo --clave promover-1
+```
+
+Si hay autoridad configurada, promover y el resultado directo se envían a ella antes de aplicarse aquí. Si no responde, quedan en `pendientes-autoridad/` y se concilian con `director conciliar-autoridad`. No se concede nada en local mientras tanto.
+
+Consultar, parar, continuar y cancelar retransmiten la misma clave.
+
+```sh
+python3 -B -m motor director ver ENCARGO --base /tmp/ensayo
+python3 -B -m motor director parar ENCARGO --base /tmp/ensayo --clave orden-1
+python3 -B -m motor director continuar ENCARGO --base /tmp/ensayo --clave orden-2
+```
+
+OpenBot no ofrece parada hasta que su comando la demuestre. Un timeout no cancela el trabajo.
+
+Si David corrige algo con el encargo en marcha, no hace falta parar. `corregir` registra la nota con el encargo en cualquier estado salvo `cancelado` y `terminado`, no interrumpe al agente y la recibe el siguiente intento. Usa el mismo canal (y `--sesion`) con que encargaste. La misma clave retransmite; la misma clave con otro texto es un conflicto. Si David quiere que se aplique ya, usa `parar` y `continuar`.
+
+```sh
+python3 -B -m motor director corregir ENCARGO --base /tmp/ensayo --clave corregir-1 --canal origen --texto "usa UTF-8"
+```
+
+El resultado vuelve al canal de origen aunque este turno cierre. Si el aviso falla, se recupera el aviso. No se repite el encargo.
+
+El transporte del canal vive en `canal.json` de la base, por canal, con `comando` y `conciliacion`. El recibo válido es el que devuelve ese comando. Sin transporte, el aviso queda `local-pendiente` con alcance local y sin recibo. Si un envío queda incierto, primero se concilia y solo se reenvía cuando la conciliación dice que no llegó.
+
+```sh
+python3 -B -m motor director avisar --base /tmp/ensayo
+```
+
+La política de modelos y esfuerzos sale de la fuente común. No la edites a mano. Un respaldo por cuota no cambia la cadena deseada.

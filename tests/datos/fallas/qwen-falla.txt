@@ -1,0 +1,5 @@
+Invalid values:
+  Argument: approval-mode, Given: "nope", Choices: "plan", "default", "auto-edit", "auto", "yolo"
+Usage: qwen [options] [command]
+
+Qwen Code - Launch an interactive CLI, use -p/--prompt for non-interactive mode

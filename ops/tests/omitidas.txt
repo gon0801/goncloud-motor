@@ -1,0 +1,2 @@
+# Pruebas de ops/tests que no corren en Linux: nombre|motivo
+# Una entrada aquí se omite en ops/tests/correr.sh con este motivo. No se quita la prueba.

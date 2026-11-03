@@ -1,0 +1,23 @@
+{
+  "cli": "claude",
+  "ruta": "sonnet",
+  "plantilla": [
+    "claude",
+    "-p",
+    "--model",
+    "sonnet",
+    "--permission-mode",
+    "bypassPermissions",
+    "--output-format",
+    "json",
+    "{prompt}"
+  ],
+  "rc": 0,
+  "segundos": 19,
+  "raiz": "/var/folders/_q/41s96wsn5f30htg32wdwk4940000gn/T/mide-pstack-copia-j2as9b1k",
+  "version": "2.1.304 (Claude Code)",
+  "error": "",
+  "fuente": "log.txt (stdout y stderr)",
+  "conf_sha": "0f95b5ed8f78764d43eff2d57b0e8bec98578134",
+  "registro_cola": "neral-purpose` con la ruta absoluta de la skill y le pedí leer `README.md`. No editó ni creó archivos.\\n- **Contenido de `README.md`.** Dice \\\"Carpeta de medición. No hay nada que cambiar aquí.\\\"\\n\\nNo hice commit ni push, y no usé PR. El brief no tiene filas con `Acepta` y el directorio de trabajo no es un repositorio git. No escribí `$MOTOR_RESULT`, porque el brief no pide cambios.\",\"ttft_ms\":1615,\"type\":\"result\",\"duration_ms\":18112,\"uuid\":\"2d12f6af-7fe9-4047-8490-ae778c242315\",\"ttft_stream_ms\":871,\"time_to_request_ms\":106,\"first_content_frame_ms\":871,\"queued_turn_count\":0,\"result_index\":0}\n"
+}
