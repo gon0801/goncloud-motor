@@ -60,7 +60,11 @@ if accion == "poner":
 if accion in ("asegurar", "asegurar_distinto"):
     lineas.append(linea)
 f.parent.mkdir(parents=True, exist_ok=True)
-f.write_text("\n".join(lineas) + ("\n" if lineas else ""), encoding="utf-8")
+# [IO.File]::WriteAllLines en Windows separa con CRLF. LF ocultaría el fallo de las lecturas.
+cuerpo = "\r\n".join(lineas)
+if lineas:
+    cuerpo += "\r\n"
+f.write_bytes(cuerpo.encode("utf-8"))
 if accion == "poner" and sub == ".motor-encargos":
     marca.write_text("creado por ops/senal-kuma.sh\n", encoding="utf-8")
 if accion == "quitar" and sub == ".motor-encargos":
