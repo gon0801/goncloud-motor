@@ -1698,9 +1698,8 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         )
 
     if kind in ("ci_producto", "ci_revision_rojo", "ci_pr_sondeo"):
-        # `ci_producto` y `ci_revision_rojo` son de la compuerta retirada: un
-        # registro viejo sigue plegando. `ci_pr_sondeo` solo espacia la lectura
-        # del CI del PR y no cambia el estado.
+        # Eventos retirados de una versión anterior: un registro viejo sigue
+        # plegando sin cambiar el estado.
         return replace(e, hora=hora or e.hora)
 
     raise TransicionIlegal(f"evento desconocido: {kind}")
@@ -2239,7 +2238,8 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
     Un rojo de una prueba del producto reabre la fase para corregir en la misma
     rama y el mismo PR. Un rojo de infraestructura solo queda anotado: el
     encargo no vuelve al responsable. El estado «reintentando» marca el único
-    reintento de un rojo de tubería, antes de leer el resultado de nuevo.
+    reintento de un rojo de tubería, antes de leer el resultado de nuevo; el
+    estado «sin_resultado» cierra el sondeo cuando el CI no terminó a tiempo.
     """
     e = _fase_de_evento(e, d)
     fase = e.fase_actual
@@ -2247,7 +2247,7 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
         raise TransicionIlegal("no hay fase para el CI del PR")
     sha = str(d.get("sha") or "")
     estado = str(d.get("estado") or "")
-    if estado not in ("verde", "rojo", "error", "reintentando"):
+    if estado not in ("verde", "rojo", "error", "reintentando", "sin_resultado"):
         raise TransicionIlegal("estado de CI del PR desconocido")
     causa = str(d.get("causa") or "")
     fallas = tuple(str(x) for x in (d.get("fallas") or ()) if str(x))
