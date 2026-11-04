@@ -635,6 +635,41 @@ def _repo_de(
     return _repo_github(repo), remoto
 
 
+def _rama_por_omision(gh: str, repo: str) -> str:
+    """La rama por omisión del repo, sin caer nunca en `main` fijo."""
+    vista = _json_gh(gh, repo, "repo", "view", "--json", "defaultBranchRef")
+    ref = vista.get("defaultBranchRef") if isinstance(vista, dict) else None
+    nombre = str(ref.get("name") if isinstance(ref, dict) else ref or "").strip()
+    if not nombre:
+        raise CiFallo(
+            f"no se pudo saber la rama por omisión de {repo}",
+            "declarar base en la entrega del encargo o en el recurso ci",
+        )
+    return nombre
+
+
+def _base_de(
+    concedido: dict, contexto: dict | None, gh: str, repo: str
+) -> str:
+    """La rama base del encargo; el repo la omisión y el recurso el respaldo.
+
+    El 3-nov el recurso fijo `main` hizo fallar el CI de un encargo de Orbit,
+    que usa `master`: la base tiene que salir de la entrega, no de un valor
+    fijo en la máquina. Sin base en el encargo manda la rama por omisión del
+    repo; un `base: main` viejo del recurso solo se usa si esa consulta falla."""
+    if isinstance(contexto, dict):
+        base = str(contexto.get("base") or "").strip()
+        if base:
+            return base
+    try:
+        return _rama_por_omision(gh, repo)
+    except CiFallo:
+        base = str(concedido.get("base") or "").strip()
+        if base:
+            return base
+        raise
+
+
 REPO_MOTOR = "gon0801/goncloud-motor"
 WORKFLOWS_POR_OMISION = {REPO_MOTOR: "pruebas.yml"}
 RE_AI_REVIEW = "ai-review"
@@ -1231,7 +1266,7 @@ def _correr_ci(
     if not shutil.which("git"):
         raise CiFallo("git no está instalado en el host del supervisor", "instalar git en el host")
     repo, remoto = _repo_de(concedido, espacio, contexto)
-    base = str(concedido.get("base") or "main")
+    base = _base_de(concedido, contexto, gh, repo)
     workflow = _workflow_de(concedido, repo)
     limite = time.time() + CI_MAX_S
 
@@ -1603,9 +1638,10 @@ def _correr_ci_log(
             f"el PR del encargo es de {repo_contexto}, no de {repo}; ci.log no cruza repos",
             "pedir el log con el recurso ci del repo del encargo",
         )
+    base = _base_de(concedido, contexto, gh, repo)
     vista_pr = _json_gh(
         gh, repo, "pr", "view", str(pr),
-        "--json", "number,state,headRefName,headRefOid,headRepository",
+        "--json", "number,state,headRefName,headRefOid,headRepository,baseRefName",
     )
     if not isinstance(vista_pr, dict):
         raise CiFallo("gh no devolvió el PR del encargo", "reintentar")
@@ -1624,6 +1660,13 @@ def _correr_ci_log(
         raise CiFallo(
             f"el PR #{pr} viene de {repo_pr}, no de {repo}; ci.log no cruza repos",
             "pedir el log del PR del encargo",
+        )
+    base_pr = str(vista_pr.get("baseRefName") or "").strip()
+    if base_pr and base_pr != base:
+        raise CiFallo(
+            f"el PR #{pr} se abre contra {base_pr}, no contra la base {base} del encargo; "
+            "ci.log no lee PRs de otra base",
+            "pedir el log del PR de la base del encargo",
         )
     head = str(vista_pr.get("headRefOid") or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", head):
@@ -1712,6 +1755,7 @@ def _correr_ci_log(
     _escribir_seguro(copia, log)
     datos = {
         "pr": pr,
+        "base": base,
         "job": job,
         "sha": sha_buscar,
         "run": numero_run,
@@ -1731,6 +1775,7 @@ def _correr_ci_log(
             "tipo": "ci_log",
             "repo": repo,
             "pr": pr,
+            "base": base,
             "sha": sha_buscar,
             "run": numero_run,
             "job": job,

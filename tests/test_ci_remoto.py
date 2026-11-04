@@ -51,7 +51,14 @@ if modo == "red":
     guardar()
     sys.stderr.write("error connecting to api.github.com\n")
     sys.exit(1)
-if args[:2] == ["pr", "create"]:
+if args[:2] == ["repo", "view"]:
+    guardar()
+    if modo == "sin_default":
+        print(json.dumps({{"defaultBranchRef": None}}))
+    else:
+        print(json.dumps({{"defaultBranchRef": {"name": os.environ.get(
+            "FAKE_GH_RAMA", estado.get("rama_base", "main"))}}}))
+elif args[:2] == ["pr", "create"]:
     rama = val("--head")
     estado.update(rama=rama, pr_abierto=True, borrador="--draft" in args, base=val("--base"))
     estado["arbol"] = git("ls-tree", "-r", "--name-only", rama).split()
@@ -119,6 +126,8 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 class _Ci(unittest.TestCase):
+    RAMA = "main"
+
     def setUp(self):
         self._montar_ci()
 
@@ -127,14 +136,18 @@ class _Ci(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.raiz = Path(tmp.name)
         self.bare = self.raiz / "repo.git"
-        subprocess.run(["git", "init", "--bare", "-b", "main", "--quiet", str(self.bare)], check=True)
+        rama = getattr(self, "RAMA", "main")
+        subprocess.run(
+            ["git", "init", "--bare", "-b", rama, "--quiet", str(self.bare)],
+            check=True,
+        )
         semilla = self.raiz / "semilla"
         semilla.mkdir()
         (semilla / "base.txt").write_text("base\n")
-        _git(semilla, "init", "-b", "main", "--quiet")
+        _git(semilla, "init", "-b", rama, "--quiet")
         _git(semilla, "add", "-A")
         _git(semilla, "commit", "--quiet", "-m", "base")
-        _git(semilla, "push", "--quiet", str(self.bare), "main")
+        _git(semilla, "push", "--quiet", str(self.bare), rama)
         self.espacio = self.raiz / "base" / "espacio" / "enc_x"
         subprocess.run(["git", "clone", "--quiet", str(self.bare), str(self.espacio)], check=True)
         (self.espacio / "base.txt").write_text("base editada sin commit\n")
@@ -330,7 +343,11 @@ class CausaClaraSiFalta(_Ci):
 
         self.assertEqual(r["estado"], "error")
         self.assertIn("sin red hacia GitHub", r["motivo"])
-        self.assertFalse((self.fake / "estado.json").exists())
+        # La rama por omisión se consulta antes de subir: lo que no puede pasar
+        # es abrir el PR temporal ni dejar la rama.
+        llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
+        self.assertNotIn(["pr", "create"], llamadas)
+        self.assertEqual(self.ramas_remotas(), [])
 
     def test_un_job_que_no_existe_lista_los_que_hay(self):
         r = self.pedir(job="no-existe")
@@ -437,6 +454,101 @@ class LaLimpiezaEsSiempre(_Ci):
         self.assertEqual(self.ramas_remotas(), [])
         self.assertIn("disco lleno", r["datos"]["limpieza"]["pr_error"])
         self.assertFalse(r["datos"]["limpieza"]["pr_cerrado"])
+
+
+class LaBaseSaleDelEncargo(_Ci):
+    RAMA = "master"
+
+    def sin_base_en_el_recurso(self) -> dict:
+        return {
+            "ci-linux": {
+                k: v for k, v in self.recursos["ci-linux"].items() if k != "base"
+            }
+        }
+
+    def test_un_encargo_con_base_master_usa_master_y_no_main(self):
+        r = self.pedir(
+            recursos=self.recursos,
+            contexto={"repo": "o/r", "base": "master"},
+        )
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "master")
+        gh = self.estado_gh()
+        self.assertTrue(gh["base"].startswith("ci-base/"))
+        self.assertFalse(
+            [a[:2] for a in gh["llamadas"] if a[:2] == ["repo", "view"]],
+            "la base del encargo manda y no consulta la rama por omisión",
+        )
+
+    def test_el_choque_se_comprueba_contra_master(self):
+        otro = self.raiz / "otro"
+        subprocess.run(["git", "clone", "--quiet", str(self.bare), str(otro)], check=True)
+        (otro / "base.txt").write_text("master cambio\n")
+        _git(otro, "commit", "-am", "master cambia")
+        _git(otro, "push", "--quiet", "origin", "master")
+
+        with mock.patch.object(cap, "CI_MEZCLA_S", 0.2), \
+             mock.patch.object(cap, "CI_MEZCLA_SONDEO_S", 0.01):
+            r = self.pedir(
+                recursos=self.recursos,
+                contexto={"repo": "o/r", "base": "master"},
+            )
+
+        self.assertEqual(r["estado"], "error")
+        self.assertIn("no se puede mezclar", r["motivo"])
+        self.assertIn("base.txt", r["motivo"])
+        self.assertIn("traer master", r["alternativa"])
+
+    def test_sin_base_en_el_encargo_usa_la_rama_por_omision(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_RAMA": "master"}):
+            r = self.pedir(
+                recursos=self.sin_base_en_el_recurso(),
+                contexto={"repo": "o/r"},
+            )
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "master")
+        llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
+        self.assertIn(["repo", "view"], llamadas)
+
+    def test_un_base_main_del_recurso_no_manda_sobre_la_rama_por_omision(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_RAMA": "master"}):
+            r = self.pedir(
+                recursos=self.recursos,
+                contexto={"repo": "o/r"},
+            )
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "master")
+        llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
+        self.assertIn(["repo", "view"], llamadas)
+
+
+class GoncloudMotorSigueConMain(_Ci):
+    def test_sin_base_declarada_resuelve_la_rama_por_omision_del_repo(self):
+        recursos = {
+            "ci-linux": {
+                k: v for k, v in self.recursos["ci-linux"].items() if k != "base"
+            }
+        }
+        with mock.patch.dict(os.environ, {"FAKE_GH_RAMA": "main"}):
+            r = self.pedir(
+                recursos=recursos,
+                contexto={"repo": "gon0801/goncloud-motor"},
+            )
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "main")
+        llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
+        self.assertIn(["repo", "view"], llamadas)
+
+    def test_sin_rama_por_omision_el_recurso_sirve_de_respaldo(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_MODO": "sin_default"}):
+            r = self.pedir(recursos=self.recursos, contexto={"repo": "o/r"})
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "main")
 
 
 class ElPuenteLaConoce(_Ci):

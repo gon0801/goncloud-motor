@@ -227,7 +227,6 @@ class InstalacionDejaLoPrometido(DoblesTest):
                 },
                 "ci-linux": {
                     "tipo": "ci",
-                    "base": "main",
                 },
             }
         }
@@ -252,7 +251,7 @@ class InstalacionDejaLoPrometido(DoblesTest):
         self.assertIsNotNone(script)
         self.assertTrue(script.is_file())
 
-    def test_repreparar_quita_repo_y_workflow_fijos_y_conserva_lo_del_operador(self):
+    def test_repreparar_quita_repo_workflow_y_base_fijos_y_conserva_lo_del_operador(self):
         (self.base / "capacidades.json").write_text(
             json.dumps(
                 {
@@ -278,8 +277,8 @@ class InstalacionDejaLoPrometido(DoblesTest):
         ci = datos["recursos"]["ci-linux"]
         self.assertNotIn("repo", ci)
         self.assertNotIn("workflow", ci)
+        self.assertNotIn("base", ci)
         self.assertEqual(ci["tipo"], "ci")
-        self.assertEqual(ci["base"], "main")
         self.assertEqual(ci["autorizacion"], "propietario")
         self.assertEqual(ci["nota"], "la puso el operador")
         self.assertEqual(datos["recursos"]["mi-base"], {"tipo": "sqlite", "ruta": "x.db"})

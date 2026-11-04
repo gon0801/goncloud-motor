@@ -77,7 +77,6 @@ RECURSOS = {
     },
     "ci-linux": {
         "tipo": "ci",
-        "base": "main",
     },
 }
 TIMEOUT_CORTO = 30
@@ -403,10 +402,10 @@ def _entorno_servicio_mac(base: Path) -> tuple[str, str]:
 # ------------------------------------------------------- capacidades.json
 
 
-# El recurso ci ya no fija el repo ni el workflow del encargo: los saca el motor
-# del repo de entrega. Al volver a preparar una máquina se quitan los que dejó
+# El recurso ci ya no fija el repo, el workflow ni la base del encargo: los saca
+# el motor de la entrega. Al volver a preparar una máquina se quitan los que dejó
 # una preparación anterior, sin tocar lo demás que haya declarado el operador.
-CAMPOS_FIJOS_QUE_SE_QUITAN = {"ci-linux": ("repo", "workflow")}
+CAMPOS_FIJOS_QUE_SE_QUITAN = {"ci-linux": ("repo", "workflow", "base")}
 
 
 def capacidades_deseadas(base: Path) -> dict:
