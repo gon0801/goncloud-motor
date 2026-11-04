@@ -658,9 +658,12 @@ def _cerrar_procesos_del_encargo(registro: Registro, enc: Encargo) -> int:
     return cerrados
 
 
-# Encargos cuya limpieza ya falló en este proceso: el barrido siguiente no
-# vuelve a intentarlo. Un arranque nuevo del supervisor permite un reintento.
-_LIMPIEZA_FALLIDA: set[tuple[str, str]] = set()
+# Encargos cuya limpieza ya falló en este proceso, con los intentos fallidos.
+# Un fallo se anota una sola vez y se permite un único reintento para el caso
+# transitorio (un handle que tarda en soltarse); después se deja de intentar.
+# Un arranque nuevo del supervisor vuelve a permitir ese reintento.
+_LIMPIEZA_FALLIDA: dict[tuple[str, str], int] = {}
+_MAX_INTENTOS_LIMPIEZA = 2
 
 
 def _anotar_limpieza_fallida(
@@ -683,11 +686,13 @@ def _limpiar_encargo_cerrado(
     """Un encargo terminado o cancelado ya no necesita su runtime ni los
     intentos de ejecución. El historial vive en `registro.sqlite`; el espacio
     del producto se conserva. Lo que no se pueda borrar queda anotado una sola
-    vez y no se reintenta en cada barrido."""
+    vez: se reintenta una vez más y después no se vuelve a intentar en cada
+    barrido."""
     if enc.estado not in ("terminado", "cancelado"):
         return False
     clave = (str(Path(registro.base)), enc.id)
-    if clave in _LIMPIEZA_FALLIDA:
+    fallos_previos = _LIMPIEZA_FALLIDA.get(clave, 0)
+    if fallos_previos >= _MAX_INTENTOS_LIMPIEZA:
         return False
     hora = hora or ahora_iso()
     _cerrar_procesos_del_encargo(registro, enc)
@@ -726,11 +731,11 @@ def _limpiar_encargo_cerrado(
         borrar(intento)
     borrar(ejecucion / "actual")
     if fallos:
-        _LIMPIEZA_FALLIDA.add(clave)
+        _LIMPIEZA_FALLIDA[clave] = fallos_previos + 1
         ruta, exc = fallos[0]
         _anotar_limpieza_fallida(registro, enc, ruta, exc, hora)
     else:
-        _LIMPIEZA_FALLIDA.discard(clave)
+        _LIMPIEZA_FALLIDA.pop(clave, None)
     return borrado
 
 

@@ -95,7 +95,7 @@ class LimpiezaAlCerrar(unittest.TestCase):
             )
         )
 
-    def test_un_archivo_imposible_de_borrar_se_anota_una_sola_vez(self):
+    def _cancelar_con_archivo_abierto(self) -> str:
         encargo = recibir(self.reg, "x", "sin-borrar", ahora_iso())["encargo"]
         runtime = self.reg.base / "runtime" / encargo / "intento-1"
         ejecucion = self.reg.base / "ejecucion" / encargo / "intento-1"
@@ -110,29 +110,53 @@ class LimpiezaAlCerrar(unittest.TestCase):
             f"cancela-{encargo}",
         )
         self.assertEqual(self.reg.fold(encargo).estado, "cancelado")
+        return encargo
+
+    def _notas_de_limpieza(self, encargo: str) -> list[dict]:
+        return [
+            evento
+            for evento in self.reg.eventos(encargo)
+            if evento["kind"] == "procedimiento"
+            and "limpieza(" in evento["data"].get("nota", "")
+        ]
+
+    def test_un_archivo_imposible_de_borrar_se_anota_una_sola_vez(self):
+        encargo = self._cancelar_con_archivo_abierto()
         error = PermissionError(13, "Permission denied", "abierto.db")
 
         with mock.patch.object(ciclo, "borrar_arbol", side_effect=error) as borrar:
             barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(borrar.call_count, 2)
-            notas = [
-                evento
-                for evento in self.reg.eventos(encargo)
-                if evento["kind"] == "procedimiento"
-                and "limpieza(" in evento["data"].get("nota", "")
-            ]
-            self.assertEqual(len(notas), 1, notas)
+            self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
             self.assertFalse(
                 any(
                     evento["kind"] == "instrumento_fallo"
                     for evento in self.reg.eventos(encargo)
                 )
             )
+
+            # Un fallo transitorio se reintenta una sola vez; después el
+            # barrido deja de intentarlo sin agregar otra nota.
+            barrer(self.reg, ahora_iso(), time.time(), None)
+            self.assertEqual(borrar.call_count, 4, "no se reintentó una vez")
+            self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
             antes = self.reg.eventos(encargo)
             for _ in range(3):
                 barrer(self.reg, ahora_iso(), time.time(), None)
-            self.assertEqual(borrar.call_count, 2, "la limpieza se reintentó")
+            self.assertEqual(borrar.call_count, 4, "la limpieza se reintentó en bucle")
             self.assertEqual(self.reg.eventos(encargo), antes)
+
+    def test_un_arranque_nuevo_reintenta_sin_duplicar_la_nota(self):
+        encargo = self._cancelar_con_archivo_abierto()
+        error = PermissionError(13, "Permission denied", "abierto.db")
+
+        with mock.patch.object(ciclo, "borrar_arbol", side_effect=error) as borrar:
+            barrer(self.reg, ahora_iso(), time.time(), None)
+            self.assertEqual(borrar.call_count, 2)
+            ciclo._LIMPIEZA_FALLIDA.clear()
+            barrer(self.reg, ahora_iso(), time.time(), None)
+            self.assertEqual(borrar.call_count, 4, "no se reintentó tras el arranque")
+            self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
 
 
 if __name__ == "__main__":
