@@ -57,8 +57,8 @@ class JsonDelAgenteConBom(unittest.TestCase):
 
     def test_peticion_del_buzon_con_bom(self) -> None:
         path = self.espacio / "peticion.json"
-        _escribir_con_bom(path, {"id": "p_1", "operacion": "ci.correr"})
-        self.assertEqual(necesidades._leer(path), {"id": "p_1", "operacion": "ci.correr"})
+        _escribir_con_bom(path, {"id": "p_1", "operacion": "remoto.leer"})
+        self.assertEqual(necesidades._leer(path), {"id": "p_1", "operacion": "remoto.leer"})
 
     def test_pedido_efecto_con_bom(self) -> None:
         _escribir_con_bom(

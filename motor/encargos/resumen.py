@@ -206,11 +206,9 @@ def _espera_en_palabras(motivo: str) -> str:
     texto = str(motivo or "")
     llano = texto.lower()
     if "revisión externa" in llano or "revision externa" in llano:
-        return "esperando la revisión de DeepSeek o checks"
+        return "esperando la revisión de DeepSeek"
     if "revisión de deepseek" in llano or "revision de deepseek" in llano:
         return "esperando la revisión de DeepSeek"
-    if "checks requeridos" in llano:
-        return "esperando checks"
     if "comprobador" in llano:
         return "esperando las comprobaciones antes de publicar"
     if not texto.strip():
@@ -221,8 +219,6 @@ def _espera_en_palabras(motivo: str) -> str:
 
 
 def _paso(enc: Encargo) -> str:
-    fase = enc.fase_actual
-    espera_checks = bool(fase is not None and fase.checks_esperando_sha)
     if enc.estado == "necesita_usuario":
         motivo = _frase(enc.motivo or (enc.preguntas[-1] if enc.preguntas else ""), 160)
         return f"necesita tu decisión: {motivo}" if motivo else "necesita tu decisión"
@@ -233,18 +229,12 @@ def _paso(enc: Encargo) -> str:
         motivo = _frase(enc.motivo, 140)
         return f"conciliando: {motivo}" if motivo else "conciliando un efecto incierto"
     if enc.estado == "esperando_reintento":
-        if espera_checks:
-            return "esperando checks"
         return _espera_en_palabras(enc.impedimento_causa or enc.motivo)
     if enc.estado == "recibido":
-        if espera_checks:
-            return "esperando checks"
         if enc.proc is not None:
             return f"{_modelo(enc, enc.rol or 'responsable')} arrancando"
         return "recibido, sin agente todavía"
     if enc.estado == "ejecutando":
-        if espera_checks:
-            return "esperando checks"
         rol = enc.rol or "responsable"
         modelo = _modelo(enc, rol)
         return f"{modelo} revisando" if rol == "revisor" else f"{modelo} implementando"

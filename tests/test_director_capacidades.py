@@ -59,10 +59,6 @@ def _conf_de_prueba(raiz: Path, path_extra: tuple[str, ...] = ()) -> tuple[Path,
                 "tipo": "remoto", "transporte": "fichero",
                 "raiz": (base / "evidencia-ci").as_posix(),
             },
-            "ci-linux": {
-                "tipo": "ci", "repo": "gon0801/goncloud-motor",
-                "workflow": "pruebas.yml", "base": "main",
-            },
         }
     }), encoding="utf-8")
     (base / "evidencia-ci").mkdir()
@@ -169,44 +165,11 @@ class ReporteCompletoTest(unittest.TestCase):
             self.assertIn("MOTOR_KUMA_URL", texto)
 
     def test_texto_es_legible_y_nombra_las_faltas(self):
-        dobles = Dobles(gh_ok=False)
-        datos = self._reporte(dobles)
-        self.assertFalse(datos["ok"])
-        self.assertTrue(any("ci-linux" in f for f in datos["faltas"]))
-        self.assertIn("faltas:", cm.texto(datos))
-
-    def test_ci_sin_repo_fijo_usa_el_del_encargo_y_no_es_una_falta(self):
-        ruta = self.base / "capacidades.json"
-        doc = json.loads(ruta.read_text(encoding="utf-8"))
-        del doc["recursos"]["ci-linux"]["repo"]
-        del doc["recursos"]["ci-linux"]["workflow"]
-        ruta.write_text(json.dumps(doc), encoding="utf-8")
-
+        (self.base / "evidencia-ci").rmdir()
         datos = self._reporte()
-
-        fila = next(
-            f for f in datos["recursos"]["filas"] if f["recurso"] == "ci-linux"
-        )
-        self.assertEqual(fila["estado"], "ok")
-        self.assertIn("repo del encargo", fila["detalle"])
-        self.assertEqual(datos["faltas"], [])
-
-    def test_ci_sin_repo_fijo_sin_sesion_de_gh_es_una_falta(self):
-        ruta = self.base / "capacidades.json"
-        doc = json.loads(ruta.read_text(encoding="utf-8"))
-        del doc["recursos"]["ci-linux"]["repo"]
-        del doc["recursos"]["ci-linux"]["workflow"]
-        ruta.write_text(json.dumps(doc), encoding="utf-8")
-
-        datos = self._reporte(Dobles(gh_sesion=False))
-
-        fila = next(
-            f for f in datos["recursos"]["filas"] if f["recurso"] == "ci-linux"
-        )
-        self.assertEqual(fila["estado"], "falta")
-        self.assertIn("sin sesión", fila["detalle"])
-        self.assertTrue(any("ci-linux" in f for f in datos["faltas"]))
-
+        self.assertFalse(datos["ok"])
+        self.assertTrue(any("ci-github" in f for f in datos["faltas"]))
+        self.assertIn("faltas:", cm.texto(datos))
 
 class AgentesFueraDelPathDelServicioTest(unittest.TestCase):
     """El reporte resuelve el cliente con la misma función que el supervisor
@@ -334,24 +297,6 @@ class ReporteIncompletoTest(unittest.TestCase):
         fila = next(f for f in datos["agentes"]["filas"] if f["agente"] == "antigravity")
         self.assertEqual(fila["estado"], "ok")
         self.assertIn("sin sesión", fila["detalle"])
-
-    def test_recurso_ci_sin_gh_o_inalcanzable_es_falta(self):
-        (self.base / "capacidades.json").write_text(json.dumps({
-            "recursos": {"ci-linux": {
-                "tipo": "ci", "repo": "gon0801/goncloud-motor",
-                "workflow": "pruebas.yml", "base": "main",
-            }}
-        }), encoding="utf-8")
-        sin_gh = self._reporte(Dobles(gh_ok=False))
-        self.assertEqual(sin_gh["recursos"]["estado"], "falta")
-        dobles = Dobles()
-        dobles.gh_ok = False
-        with mock.patch.dict(os.environ, {}, clear=True), _puertas_de_windows():
-            datos = cm.reporte(self.base, self.home, dobles.correr, dobles.which)
-        fila = next(f for f in datos["recursos"]["filas"] if f["recurso"] == "ci-linux")
-        self.assertEqual(fila["estado"], "falta")
-        self.assertIn("gh", fila["detalle"])
-
 
 class SeccionesPorSistemaTest(unittest.TestCase):
     def setUp(self):

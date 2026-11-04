@@ -561,9 +561,8 @@ def instrucciones_revision(ref: AlcanceRevision, resultado: Path) -> str:
             "y las ejecuciones observadas por el supervisor."
         )
     return f'''Tu turno termina cuando respondes y nadie te despierta, asi que no dejes nada
-corriendo en segundo plano. La bateria completa no se corre en local: si hace falta, se
-pide con la inspeccion ci.correr.
-Inspecciona el producto real. No inventes observaciones. Un comando tautologico,
+corriendo en segundo plano. El CI corre en el PR; no lo pidas ni lo exijas para aprobar.
+Inspecciona el producto real, la evidencia y las pruebas enfocadas que corrio el responsable. No inventes observaciones. Un comando tautologico,
 una nota o una fraccion del objetivo no basta para aprobar.
 {alcance_txt}
 Entrega juntos los hallazgos y distingue bloqueantes de observaciones. Explica el impacto real
@@ -589,11 +588,9 @@ Escribe SOLO tu juicio en {resultado}, con este objeto JSON interno.
 "aprobadas":["ruta revisada y aprobada"],
 "efectos_pendientes":["id exacto de cada solicitud de efecto que apruebas"],
 "inspeccion_faltante":"inspeccion concreta que falta, solo si el veredicto es no_concluyente",
-"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer|ci.correr|ci.log", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
+"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
 "ampliacion":"motivo si revisaste fuera de las rutas tocadas",
 "instrumento":{{"causa":"que fallo del instrumento, si aplica"}}}}
-Si la inspeccion es ci.log, sus parametros son pr (el numero del PR del encargo),
-job (el nombre exacto del job) y sha (el SHA esperado); no uses el ejemplo de sql.
 Si el producto cumple y solo faltan efectos del adaptador, aprueba y enumera en
 efectos_pendientes los IDs exactos de solicitudes_efecto. Eso autoriza al supervisor a
 mediarlos; NO afirma que ya ocurrieron. Los recibos de los efectos los obtiene el supervisor
@@ -762,8 +759,6 @@ def _inspeccion_de(crudo) -> InspeccionPedido:
         capacidades.CONSULTAR,
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
-        capacidades.CI,
-        capacidades.CI_LOG,
     )
     if operacion not in conocidas:
         raise DefectoJuicio(

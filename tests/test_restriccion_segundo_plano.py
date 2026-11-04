@@ -1,5 +1,5 @@
 """El lanzamiento de claude no deja trabajo en segundo plano y el prompt del
-revisor lo dice: el turno termina al responder y la bateria va por ci.correr."""
+revisor lo dice: el turno termina al responder y el CI corre en el PR."""
 
 import tempfile
 import time
@@ -81,7 +81,7 @@ class EntornoDelLanzamiento(unittest.TestCase):
 
 
 class PromptRevisor(unittest.TestCase):
-    def test_el_prompt_nombra_el_turno_que_termina_y_la_bateria_por_ci(self):
+    def test_el_prompt_nombra_el_turno_que_termina_y_el_ci_en_el_pr(self):
         texto = instrucciones_revision(
             AlcanceRevision(clase="completa", version="v1", base_version=""),
             Path("/p/resultado.json"),
@@ -90,8 +90,8 @@ class PromptRevisor(unittest.TestCase):
         self.assertTrue(plano.startswith("Tu turno termina cuando respondes"))
         self.assertIn("nadie te despierta", plano)
         self.assertIn("no dejes nada corriendo en segundo plano", plano)
-        self.assertIn("La bateria completa no se corre en local", plano)
-        self.assertIn("se pide con la inspeccion ci.correr", plano)
+        self.assertIn("El CI corre en el PR", plano)
+        self.assertIn("no lo pidas ni lo exijas para aprobar", plano)
 
 
 if __name__ == "__main__":

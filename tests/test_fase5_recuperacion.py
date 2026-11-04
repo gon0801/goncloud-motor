@@ -190,7 +190,6 @@ class RecuperacionFase5(unittest.TestCase):
                 gh.checks = lambda *args, **kw: veredicto(sha, (), [])
                 with patch.object(ciclo, "_asegurar_repo", return_value=""), \
                      patch.object(ciclo, "_commit_push", return_value=(sha, "")), \
-                     patch.object(ciclo, "_checks_extra", return_value=()), \
                      patch.object(ciclo, "_sonda_entorno", return_value=SimpleNamespace(ok=True)):
                     ciclo.barrer(reg, HORA, 0, None, gh=gh)
                     final = reg.fold(ident)

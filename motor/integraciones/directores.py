@@ -681,7 +681,7 @@ def _cuerpo_de_cierre(enc) -> str:
     elif enc.pr_numero:
         cuerpo = (
             f"Terminó tu encargo «{titulo}». "
-            f"El PR #{enc.pr_numero} está listo para que decidas el merge."
+            f"El PR #{enc.pr_numero} está abierto; el CI corre en el PR."
         )
     else:
         cuerpo = f"Terminó tu encargo «{titulo}»."
@@ -1011,6 +1011,29 @@ def _apariciones_de_impedimentos(registro: Registro, encargo: str) -> dict[str, 
     return cuenta
 
 
+def _hecho_de_ci(enc) -> dict | None:
+    """El rojo del CI real del PR, contado una vez por SHA.
+
+    El texto es el aviso llano que dejó el motor al clasificar el fallo: qué
+    falló, si es del código o de la tubería y qué conviene hacer. El log
+    literal queda en el estado del encargo, no en el aviso a una persona no
+    técnica."""
+    fase = enc.fase_actual
+    if fase is None or not enc.pr_numero or fase.ci_pr_estado != "rojo":
+        return None
+    if fase.ci_pr_sha and fase.pr_sha and fase.ci_pr_sha != fase.pr_sha:
+        return None
+    texto = str(fase.ci_pr_aviso or "").strip()
+    if not texto:
+        fallas = ", ".join(fase.ci_pr_fallas) or "un job"
+        texto = f"El CI del PR #{enc.pr_numero} falló en {fallas}."
+    return {
+        "tipo": "ci_rojo",
+        "identidad": fase.ci_pr_sha or str(fase.pr_sha or ""),
+        "texto": texto,
+    }
+
+
 def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dict]:
     """Hechos ya registrados que merecen un aviso a una persona no técnica. La identidad es el hecho.
 
@@ -1022,8 +1045,11 @@ def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dic
     el texto que cambia dentro de un mismo bloqueo no repite el aviso, y un bloqueo nuevo de la misma
     clase, tras resolverse el anterior, sí lo avisa.
     """
-    if enc.estado in ("cancelado", "detenido", "deteniendo", "terminado"):
+    if enc.estado in ("cancelado", "detenido", "deteniendo"):
         return []
+    ci = _hecho_de_ci(enc)
+    if enc.estado == "terminado":
+        return [ci] if ci else []
     hechos = []
     fase = enc.fase_actual
     if fase is not None or enc.estado in ("ejecutando", "esperando_reintento", "conciliando"):
@@ -1085,6 +1111,8 @@ def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dic
                 ),
             }
         )
+    if ci is not None:
+        hechos.append(ci)
     return hechos
 
 
@@ -1427,6 +1455,7 @@ def _descartar_avances_de_terminados(registro: Registro, terminados: set[str]) -
             not doc
             or doc.get("encargo") not in terminados
             or not doc.get("tipo")
+            or doc.get("tipo") == "ci_rojo"
             or doc.get("estado") in ("publicado", "descartado")
         ):
             continue
