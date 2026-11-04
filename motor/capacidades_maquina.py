@@ -216,10 +216,8 @@ def _recursos(base: Path, correr, which) -> tuple[str, list[dict]]:
                 "recurso": nombre, "tipo": tipo, "estado": "aviso",
                 "detalle": "remoto http: no se sondea",
             })
-        elif tipo == "remoto":
-            filas.append(_recurso_raiz(nombre, recurso))
         else:
-            filas.append(_recurso_ci(nombre, recurso, correr, which))
+            filas.append(_recurso_raiz(nombre, recurso))
     return "", filas
 
 
@@ -258,40 +256,6 @@ def _recurso_raiz(nombre: str, recurso: dict) -> dict:
             "detalle": f"la raiz {raiz} no es una carpeta legible",
         }
     return {"recurso": nombre, "tipo": "remoto", "estado": "ok", "detalle": f"raiz {raiz}"}
-
-
-def _recurso_ci(nombre: str, recurso: dict, correr, which) -> dict:
-    repo = str(recurso.get("repo") or "").strip()
-    gh = which("gh")
-    if not gh:
-        return {"recurso": nombre, "tipo": "ci", "estado": "falta",
-                "detalle": f"gh no está instalado: no se puede correr CI sobre {repo or 'el repo del encargo'}"}
-    if not repo:
-        # Sin repo fijo, cada encargo trae el suyo (origin del espacio o repo de
-        # entrega). No hay un repositorio concreto que sondear, pero la sesión
-        # de gh sí se comprueba: sin sesión el recurso no sirve para correr CI.
-        try:
-            r = correr([gh, "auth", "status"], 30)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return {"recurso": nombre, "tipo": "ci", "estado": "falta",
-                    "detalle": f"gh no respondió al comprobar la sesión: {exc}"}
-        if r.returncode != 0:
-            causa = _texto((r.stderr or b"") + (r.stdout or b""))
-            return {"recurso": nombre, "tipo": "ci", "estado": "falta",
-                    "detalle": f"gh sin sesión: {causa}"}
-        return {"recurso": nombre, "tipo": "ci", "estado": "ok",
-                "detalle": "sin repo fijo: usa el repo del encargo; gh tiene sesión"}
-    try:
-        r = correr([gh, "repo", "view", repo, "--json", "nameWithOwner"], 30)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"recurso": nombre, "tipo": "ci", "estado": "falta",
-                "detalle": f"gh no respondió para {repo}: {exc}"}
-    if r.returncode != 0:
-        causa = _texto((r.stderr or b"") + (r.stdout or b""))
-        return {"recurso": nombre, "tipo": "ci", "estado": "falta",
-                "detalle": f"gh no alcanza {repo}: {causa}"}
-    return {"recurso": nombre, "tipo": "ci", "estado": "ok",
-            "detalle": f"gh ve {repo}: CI disponible"}
 
 
 def _avisos_y_senal(home: Path) -> tuple[dict, dict]:

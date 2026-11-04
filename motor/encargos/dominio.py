@@ -232,22 +232,17 @@ class Fase:
     inspeccion_entregada: str = ""
     inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
-    fallas_checks: tuple[str, ...] = ()
+    # Resultado del CI real del PR, leído una sola vez después de entregar.
+    # `ci_pr_estado` es «reintentando» mientras corre el único reintento de un
+    # rojo de tubería; `ci_pr_clase` y `ci_pr_reintento` alimentan el aviso llano.
+    ci_pr_sha: str = ""
+    ci_pr_estado: str = ""
+    ci_pr_fallas: tuple[str, ...] = ()
+    ci_pr_causa: str = ""
+    ci_pr_clase: str = ""
+    ci_pr_reintento: str = ""
+    ci_pr_aviso: str = ""
     cerrados: tuple[str, ...] = ()
-    # SHA cuyos checks requeridos siguen corriendo (aún no terminan, ni verdes ni rojos).
-    checks_esperando_sha: str = ""
-    # CI que el motor corrió sobre el producto al entregarlo, sin esperar al
-    # revisor. `ci_arbol` es el tree del commit temporal y `ci_base_*` el último
-    # árbol con todos los jobs en verde, que sirve para reusar por job.
-    ci_version: str = ""
-    ci_arbol: str = ""
-    ci_run: str = ""
-    ci_url: str = ""
-    ci_jobs: tuple[tuple[str, str, bool], ...] = ()
-    ci_fallas: tuple[str, ...] = ()
-    ci_logs: tuple[tuple[str, str, str], ...] = ()
-    ci_base_version: str = ""
-    ci_base_arbol: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -286,16 +281,14 @@ class Fase:
             "inspeccion_solicitud": self.inspeccion_solicitud,
             "inspeccion_entregada": self.inspeccion_entregada,
             "inspecciones_consumidas": list(self.inspecciones_consumidas),
-            "ci": {
-                "version": self.ci_version,
-                "arbol": self.ci_arbol,
-                "run": self.ci_run,
-                "url": self.ci_url,
-                "jobs": [list(x) for x in self.ci_jobs],
-                "fallas": list(self.ci_fallas),
-                "logs": [list(x) for x in self.ci_logs],
-                "base_version": self.ci_base_version,
-                "base_arbol": self.ci_base_arbol,
+            "ci_pr": {
+                "sha": self.ci_pr_sha,
+                "estado": self.ci_pr_estado,
+                "fallas": list(self.ci_pr_fallas),
+                "causa": self.ci_pr_causa,
+                "clase": self.ci_pr_clase,
+                "reintento": self.ci_pr_reintento,
+                "aviso": self.ci_pr_aviso,
             },
         }
 
@@ -363,8 +356,7 @@ class Solicitud:
     # Carpeta del host donde su herramienta deja `resultado.json`. El intento
     # que la lanzó puede no ser el vigente cuando termina: la solicitud la recuerda.
     carpeta: str = ""
-    # Firma del producto cuando se lanzó la herramienta: dos ci.correr iguales
-    # son los que piden lo mismo sobre la misma versión.
+    # Firma del producto cuando se lanzó la herramienta.
     version: str = ""
     # Huella de la configuración efectiva del recurso con que se lanzó.
     configuracion: str = ""
@@ -757,21 +749,8 @@ def fuentes_autorizadas(e: Encargo) -> tuple[Path, ...]:
 
 
 def _bloqueos_abiertos(e: Encargo) -> set[str]:
-    """Hallazgos bloqueantes, checks requeridos en rojo y CI rojo de la fase."""
-    fase = e.fase_actual
-    fallas = fase.fallas_checks if fase is not None else ()
-    ci = ()
-    if (
-        fase is not None
-        and fase.producto is not None
-        and fase.ci_version == fase.producto.firma
-    ):
-        ci = fase.ci_fallas
-    return (
-        {h.id for h in bloqueantes_abiertos(e)}
-        | {f"check:{f}" for f in fallas}
-        | {f"ci:{j}" for j in ci}
-    )
+    """Hallazgos bloqueantes de la fase."""
+    return {h.id for h in bloqueantes_abiertos(e)}
 
 
 def huella_bloqueo(e: Encargo) -> str:
@@ -792,19 +771,15 @@ def bloqueos_nuevos(e: Encargo) -> set[str]:
 
 
 def revision_externa_pendiente(e: Encargo) -> bool:
-    """Falta el veredicto de una revisión externa sobre el commit vigente: DeepSeek no
-    ha leído ese SHA (si los checks no están en rojo; entonces el motor ni llega a
-    DeepSeek) o sus checks requeridos siguen corriendo. Mientras tanto una vuelta
-    sin novedad no es una vuelta sin avance."""
+    """Falta el veredicto de DeepSeek sobre el commit vigente. Mientras tanto una
+    vuelta sin novedad no es una vuelta sin avance."""
     fase = e.fase_actual
     if fase is None or e.entrega.nivel == "terminado" or not fase.pr_numero:
         return False
     sha = fase.producto.sha_git if fase.producto else ""
     if not sha:
         return False
-    if fase.checks_esperando_sha == sha:
-        return True
-    return not fase.fallas_checks and fase.deepseek_sha != sha
+    return fase.deepseek_sha != sha
 
 
 def hubo_avance(previo: Encargo, e: Encargo) -> bool:
@@ -1356,43 +1331,14 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         version = VersionProducto.desde(
             d.get("version") or "", d.get("manifiesto"), d.get("sha_git") or ""
         )
-        # El CI de la versión anterior no acredita la nueva. El verde base se
-        # conserva: sirve para reusar los jobs cuyas rutas no cambiaron.
-        if fase.producto is None or fase.producto.firma != version.firma:
-            fase = replace(
-                fase,
-                ci_version="",
-                ci_arbol="",
-                ci_run="",
-                ci_url="",
-                ci_jobs=(),
-                ci_fallas=(),
-                ci_logs=(),
-            )
         nueva = replace(fase, producto=version, estado="revision")
         return replace(
             con_fase(e, nueva),
             ultimo_hecho=f"producto de {fase.id} listo para revisar",
             hora=hora or e.hora,
         )
-    if kind == "ci_producto":
-        return _ci_producto(e, d, hora)
-
-    if kind == "ci_revision_rojo":
-        # El rojo llegó mientras el revisor trabajaba esa versión. El juicio de
-        # esa vuelta se emitió sin la evidencia, así que no se acepta: la
-        # siguiente vuelta del revisor recibe el job y su log literal.
-        nota = (
-            "el CI del producto quedó rojo durante la revisión; el juicio de "
-            "esa vuelta se descarta y la siguiente vuelve a revisar con el "
-            "nombre del job y el log literal"
-        )
-        return replace(
-            e,
-            procedimiento=e.procedimiento + (nota,),
-            hora=hora or e.hora,
-        )
-
+    if kind == "ci_pr":
+        return _ci_pr(e, d, hora)
     if kind == "observacion_supervisor":
         return replace(
             e,
@@ -1456,11 +1402,6 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         fase = e.fase_actual
         if fase is None:
             raise TransicionIlegal("no hay fase para la entrega bloqueada")
-        fallas = (
-            tuple(sorted(str(x) for x in d["fallas"]))
-            if "fallas" in d
-            else fase.fallas_checks
-        )
         return _con_progreso(
             e,
             replace(
@@ -1469,12 +1410,10 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                     replace(
                         fase,
                         entrega_bloqueada_sha=str(d.get("sha") or ""),
-                        fallas_checks=fallas,
-                        checks_esperando_sha="",
                     ),
                 ),
                 ultimo_hecho=str(
-                    d.get("causa") or "entrega bloqueada por checks en rojo"
+                    d.get("causa") or "entrega bloqueada por un conflicto con la base"
                 ),
                 hora=hora or e.hora,
             ),
@@ -2144,16 +2083,7 @@ def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
     """Conserva el paso de una fase iniciada; activa al implementador solo
     cuando hay que empezar una fase o corregir un defecto."""
     if fase.estado in ("revision", "entrega"):
-        ci_rojo = bool(
-            fase.ci_fallas
-            and fase.producto is not None
-            and fase.ci_version == fase.producto.firma
-        )
-        if (
-            bloqueantes_abiertos(e)
-            or ci_rojo
-            or e.estrategia == "reparar_instrumento"
-        ):
+        if bloqueantes_abiertos(e) or e.estrategia == "reparar_instrumento":
             return "responsable", e.estrategia
         rol = "revisor" if fase.estado == "revision" else (e.rol or "revisor")
         return rol, e.estrategia
@@ -2297,78 +2227,55 @@ def _fase_de_evento(e: Encargo, d: dict) -> Encargo:
     return e
 
 
-def _ci_producto(e: Encargo, d: dict, hora: str) -> Encargo:
-    """Registra el CI que el motor corrió sobre el producto al entregarlo.
+def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
+    """El CI del PR real, leído una vez cuando termina.
 
-    Un resultado de una versión que ya no es la vigente no se aplica: la
-    versión nueva no hereda ni el verde ni el rojo de la anterior.
+    Un rojo de una prueba del producto reabre la fase para corregir en la misma
+    rama y el mismo PR. Un rojo de infraestructura solo queda anotado: el
+    encargo no vuelve al responsable. El estado «reintentando» marca el único
+    reintento de un rojo de tubería, antes de leer el resultado de nuevo.
     """
     e = _fase_de_evento(e, d)
     fase = e.fase_actual
     if fase is None:
-        raise TransicionIlegal("no hay fase para el CI del producto")
-    version = str(d.get("version") or "")
-    vigente = fase.producto.firma if fase.producto else ""
-    if not version or version != vigente:
-        nota = (
-            "resultado de CI de la version "
-            f"{version[:12] or '(sin version)'} descartado: la vigente es "
-            f"{vigente[:12] or '(ninguna)'}"
-        )
-        return replace(
-            e,
-            procedimiento=e.procedimiento + (nota,),
-            ultimo_hecho="CI de una version vieja descartado",
-            hora=hora or e.hora,
-        )
-    trabajos = tuple(
-        (
-            str(x.get("nombre") or ""),
-            str(x.get("conclusion") or ""),
-            bool(x.get("reusado")),
-        )
-        for x in (d.get("jobs") or ())
-        if isinstance(x, dict) and str(x.get("nombre") or "")
-    )
+        raise TransicionIlegal("no hay fase para el CI del PR")
+    sha = str(d.get("sha") or "")
+    estado = str(d.get("estado") or "")
+    if estado not in ("verde", "rojo", "error", "reintentando"):
+        raise TransicionIlegal("estado de CI del PR desconocido")
+    causa = str(d.get("causa") or "")
     fallas = tuple(str(x) for x in (d.get("fallas") or ()) if str(x))
-    logs = tuple(
-        (
-            str(x.get("nombre") or ""),
-            str(x.get("log") or ""),
-            str(x.get("cola") or ""),
-        )
-        for x in (d.get("jobs") or ())
-        if isinstance(x, dict)
-        and str(x.get("nombre") or "") in fallas
-        and str(x.get("log") or "")
-    )
-    arbol = str(d.get("arbol") or "")
     nueva = replace(
         fase,
-        ci_version=version,
-        ci_arbol=arbol,
-        ci_run=str(d.get("run") or ""),
-        ci_url=str(d.get("url") or ""),
-        ci_jobs=trabajos,
-        ci_fallas=fallas,
-        ci_logs=logs,
+        ci_pr_sha=sha,
+        ci_pr_estado=estado,
+        ci_pr_fallas=fallas,
+        ci_pr_causa=causa,
+        ci_pr_clase=str(d.get("clase") or ""),
+        ci_pr_reintento=str(d.get("reintento") or ""),
+        ci_pr_aviso=str(d.get("aviso") or ""),
     )
-    if not fallas:
-        nueva = replace(
-            nueva,
-            ci_base_version=version,
-            ci_base_arbol=arbol,
+    e = con_fase(e, nueva)
+    if not d.get("reabrir"):
+        return replace(e, hora=hora or e.hora)
+    if e.estado != "terminado":
+        return replace(e, hora=hora or e.hora)
+    reabierta = replace(nueva, estado="entrega", nivel_alcanzado="pr_abierto")
+    return sesiones_de_fase_nueva(
+        replace(
+            con_fase(e, reabierta),
+            estado="recibido",
+            rol="responsable",
+            estrategia="investigar",
+            motivo=causa or "el CI del PR falló en una prueba del producto",
+            siguiente="corregir el CI rojo en la misma rama y el mismo PR",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            ultimo_hecho=causa or "el CI del PR falló en una prueba del producto",
+            devuelto_con=(),
+            hora=hora or e.hora,
         )
-    resultado = replace(
-        con_fase(e, nueva),
-        ultimo_hecho=(
-            "CI del producto en verde"
-            if not fallas
-            else "CI del producto en rojo: " + ", ".join(fallas)
-        ),
-        hora=hora or e.hora,
     )
-    return _con_progreso(e, resultado)
 
 
 def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
@@ -2385,14 +2292,6 @@ def _revision(e: Encargo, d: dict, hora: str) -> Encargo:
     alcance = str(d.get("alcance") or "completa")
     if alcance == "correccion" and fase.revisado is None:
         veredicto = "no_concluyente"
-    # El CI rojo sobre esta misma versión es un bloqueante aunque el revisor
-    # independiente no lo haya visto: no se aprueba ni se cierra.
-    if (
-        veredicto != "no_concluyente"
-        and fase.ci_fallas
-        and fase.ci_version == str(d.get("version") or "")
-    ):
-        veredicto = "cambios"
     provisional = con_fase(e, replace(fase, hallazgos=hallazgos))
     if veredicto != "no_concluyente" and bloqueantes_abiertos(provisional, origen):
         veredicto = "cambios"
@@ -2665,24 +2564,6 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         producto = replace(producto, sha_git=sha)
     nueva = replace(
         fase,
-        fallas_checks=(
-            tuple(sorted(str(x) for x in d["fallas"]))
-            if paso == "checks_rojos" and "fallas" in d
-            else ()
-            if paso in ("checks_verdes", "checks_reusados")
-            else fase.fallas_checks
-        ),
-        entrega_bloqueada_sha=(
-            "" if paso in ("checks_verdes", "checks_reusados")
-            else fase.entrega_bloqueada_sha
-        ),
-        checks_esperando_sha=(
-            sha
-            if paso == "checks_esperando"
-            else ""
-            if paso in ("checks_verdes", "checks_rojos", "checks_reusados")
-            else fase.checks_esperando_sha
-        ),
         nivel_alcanzado=candidato,
         pr_numero=int(d.get("numero") or fase.pr_numero or 0),
         pr_sha=sha
@@ -2714,8 +2595,6 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         ultimo_hecho=f"entrega externa: {paso}",
         hora=hora or e.hora,
     )
-    if paso in ("checks_verdes", "checks_rojos"):
-        return _con_progreso(e, resultado)
     return resultado
 
 
@@ -3261,35 +3140,26 @@ def decision_proceso(
     return {"matar": False, "lanzar": lanzar and not eventos, "eventos": eventos}
 
 
-def _bloque_ci(e: Encargo) -> list[str]:
+def _bloque_ci_pr(e: Encargo) -> list[str]:
+    """El rojo del CI real del PR, para que el responsable lo corrija."""
     fase = e.fase_actual
     if (
-        fase is None
-        or not fase.ci_fallas
-        or fase.producto is None
-        or fase.ci_version != fase.producto.firma
+        e.rol != "responsable"
+        or fase is None
+        or fase.ci_pr_estado != "rojo"
+        or not fase.ci_pr_fallas
     ):
         return []
     lineas = [
-        "El CI que el motor corrió sobre esta versión del producto falló en: "
-        + ", ".join(fase.ci_fallas)
-        + ". Es un bloqueante: el responsable debe corregirlo y esta aprobación "
-        "no puede cerrar el encargo mientras siga rojo."
+        "El CI del PR falló en: " + ", ".join(fase.ci_pr_fallas)
+        + ". Corrige esa prueba en la misma rama y el mismo PR; lo aprobado que "
+        "no cambió se conserva."
     ]
-    for nombre, ruta, cola in fase.ci_logs:
-        pedazo = str(cola or "").strip()
-        if len(pedazo) > 4000:
-            pedazo = pedazo[:4000] + "\n[...]"
-        aviso = f"{nombre}: log literal completo en {ruta}" if ruta else f"{nombre}:"
-        lineas.append(aviso + (f"\n{pedazo}" if pedazo else ""))
-    if fase.ci_jobs:
-        lineas.append(
-            "Jobs del CI: "
-            + ", ".join(
-                f"{nombre}={conclusion}{' (reusado)' if reusado else ''}"
-                for nombre, conclusion, reusado in fase.ci_jobs
-            )
-        )
+    motivo = str(fase.ci_pr_causa or "").strip()
+    if len(motivo) > 4000:
+        motivo = motivo[:4000] + "\n[...]"
+    if motivo:
+        lineas.append("Motivo literal:\n" + motivo)
     return lineas
 
 
@@ -3323,7 +3193,7 @@ def _bloques_comunes(e: Encargo) -> list[str]:
             + "\n".join(e.ajustes)
         )
     lineas += _bloque_cierres(e)
-    lineas += _bloque_ci(e)
+    lineas += _bloque_ci_pr(e)
     if e.efectos:
         hechos = [f"{x.id} {x.estado} {x.recibo}".strip() for x in e.efectos]
         lineas.append("Efectos ya registrados:\n" + "\n".join(hechos))

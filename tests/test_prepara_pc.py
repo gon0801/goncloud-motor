@@ -225,9 +225,6 @@ class InstalacionDejaLoPrometido(DoblesTest):
                     "transporte": "fichero",
                     "raiz": (self.base / "evidencia-ci").resolve().as_posix(),
                 },
-                "ci-linux": {
-                    "tipo": "ci",
-                },
             }
         }
         self.assertEqual(
@@ -251,18 +248,20 @@ class InstalacionDejaLoPrometido(DoblesTest):
         self.assertIsNotNone(script)
         self.assertTrue(script.is_file())
 
-    def test_repreparar_quita_repo_workflow_y_base_fijos_y_conserva_lo_del_operador(self):
+    def test_repreparar_quita_ci_linux_y_conserva_lo_del_operador(self):
         (self.base / "capacidades.json").write_text(
             json.dumps(
                 {
                     "recursos": {
+                        "ci-github": {
+                            "tipo": "remoto",
+                            "transporte": "fichero",
+                            "raiz": (self.base / "evidencia-ci").resolve().as_posix(),
+                        },
                         "ci-linux": {
                             "tipo": "ci",
                             "repo": "gon0801/goncloud-motor",
-                            "workflow": "pruebas.yml",
-                            "base": "main",
-                            "autorizacion": "propietario",
-                            "nota": "la puso el operador",
+                            "nota": "la puso una preparacion anterior",
                         },
                         "mi-base": {"tipo": "sqlite", "ruta": "x.db"},
                     }
@@ -274,13 +273,7 @@ class InstalacionDejaLoPrometido(DoblesTest):
         prepara_pc.instalar_capacidades(self.base)
 
         datos = json.loads((self.base / "capacidades.json").read_text(encoding="utf-8"))
-        ci = datos["recursos"]["ci-linux"]
-        self.assertNotIn("repo", ci)
-        self.assertNotIn("workflow", ci)
-        self.assertNotIn("base", ci)
-        self.assertEqual(ci["tipo"], "ci")
-        self.assertEqual(ci["autorizacion"], "propietario")
-        self.assertEqual(ci["nota"], "la puso el operador")
+        self.assertNotIn("ci-linux", datos["recursos"])
         self.assertEqual(datos["recursos"]["mi-base"], {"tipo": "sqlite", "ruta": "x.db"})
 
     def test_segunda_corrida_no_cambia_nada(self):

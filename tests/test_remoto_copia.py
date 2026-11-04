@@ -3,8 +3,7 @@ el log de la batería pesaba 486 KB y al agente solo le llegaron los primeros 64
 en `texto`. La copia entera se quedó en la carpeta del host, que la jaula del
 agente no lee, y el operador tuvo que cortar extractos a mano.
 
-`ci.correr` ya publicaba su log completo en `.interno/entregas/<id>/`. Estas
-pruebas piden lo mismo de `remoto.leer`: el archivo completo dentro del espacio,
+Estas pruebas piden de `remoto.leer` el archivo completo dentro del espacio,
 la copia pública comprobada contra la del host, y un campo que diga si `texto`
 se recortó."""
 
@@ -210,9 +209,7 @@ class ElSupervisorPublicaElArchivoCompleto(_Base):
         self.assertEqual(Path(publicado["datos"]["copia"]).name, "remoto-datos.json")
 
     def test_la_operacion_publica_su_archivo_como_las_otras_dos(self):
-        self.assertEqual(
-            set(cap.CON_ARCHIVO), {cap.SNAPSHOT, cap.CI, cap.CI_LOG, cap.REMOTO}
-        )
+        self.assertEqual(set(cap.CON_ARCHIVO), {cap.SNAPSHOT, cap.REMOTO})
 
 
 class ElRevisorPideUnLogGrandeYLoRecibeCompleto(_Flujo):

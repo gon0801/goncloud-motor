@@ -9,10 +9,8 @@ decide el trabajo: conserva hechos y devuelve datos o la causa de la espera.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -35,12 +33,6 @@ MAX_MOTIVO = 2_000
 MAX_PARAMETROS = 32 * 1024
 MAX_RESPUESTA = 256 * 1024
 TIMEOUT_S = float(os.environ.get("MOTOR_HERRAMIENTA_TIMEOUT") or 120)
-# Un run de CI o un log grande tardan minutos: el barrido solo espera esto a que
-# terminen y sigue con los demás encargos. La herramienta continúa por su cuenta.
-ESPERA_CI_S = float(os.environ.get("MOTOR_CI_ESPERA") or 5)
-# Lo que se le da a una herramienta de CI entre el SIGTERM y el SIGKILL: su
-# limpieza (cerrar el PR, borrar la rama) son varias llamadas de red.
-CI_GRACIA_S = float(os.environ.get("MOTOR_CI_GRACIA") or 90)
 LEASE_S = 30.0
 
 _AFIRMATIVAS = (
@@ -151,8 +143,6 @@ Operaciones:
 - `sqlite.consultar --recurso <r> --parametro sql="SELECT ..."`: solo lectura, una sentencia.
 - `sqlite.snapshot --recurso <r>`: copia consistente con origen y huella; la ruta queda en la respuesta.
 - `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado. `texto` trae solo los primeros 64 KB; si `texto_recortado` es true, el archivo completo está en `copia`, dentro del espacio.
-- `ci.correr --recurso <r> --parametro job="nombre-del-job"`: corre el workflow de pruebas de GitHub sobre la versión vigente del producto y devuelve el log literal de ese job, con el SHA y el número de run. Tarda minutos: la respuesta puede quedar `pendiente`. La rama y el PR temporales se cierran solos. Con `job="todos"` devuelve la conclusión de cada job y el log de los rojos; con `base_arbol` (el último verde) corre solo los jobs que ese diff toca y el resto se reusa, y sin `base_arbol` corre todos.
-- `ci.log --recurso <r> --parametro pr="numero" --parametro job="nombre-del-job" --parametro sha="commit"`: solo lectura. Devuelve el log literal del job de la corrida del PR del encargo. Si la corrida no es del SHA pedido, dice cuál hay. No sirve para otro repo ni para un PR ajeno al encargo.
 Añade `--motivo` con para qué la necesitas. Si la respuesta es `pregunta`, queda una autorización
 pendiente con su id: sigue con lo demás o espera con `python3 {cliente} ver <id>`. Una respuesta
 `error` trae la causa y la alternativa; corrige la solicitud en lugar de repetirla igual.
@@ -176,10 +166,7 @@ def pedir_inspeccion(espacio: Path, enc, crudo: dict) -> None:
 
 
 def pedir_motor(espacio: Path, enc, crudo: dict) -> None:
-    """Una petición que hace el propio motor, con la misma validación del buzón.
-
-    El CI del producto al entregarlo entra por aquí: no la pide el agente ni el
-    revisor, pero se ejecuta y se recoge como cualquier herramienta."""
+    """Una petición que hace el propio motor, con la misma validación del buzón."""
     pedir_inspeccion(espacio, enc, crudo)
 
 
@@ -216,8 +203,6 @@ def _solicitud_de(enc, crudo: dict) -> Solicitud:
         capacidades.CONSULTAR,
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
-        capacidades.CI,
-        capacidades.CI_LOG,
         capacidades.DECISION,
     )
     if operacion not in conocidas:
@@ -389,9 +374,6 @@ def _en_curso(sol: Solicitud, directorio: Path) -> bool:
 
 def _archivo_de(sol: Solicitud, datos: dict) -> tuple[str, str, str]:
     """(clave pública, clave del host, nombre) del archivo que publica la operación."""
-    if sol.operacion in (capacidades.CI, capacidades.CI_LOG):
-        nombre = Path(str(datos.get("log_nombre") or "ci.log")).name
-        return "log", "log_host", nombre
     if sol.operacion == capacidades.REMOTO:
         nombre = Path(str(datos.get("copia_host") or datos.get("copia") or "remoto")).name
         # `datos.json` es el archivo donde `_respuesta` deja una respuesta larga.
@@ -604,20 +586,9 @@ def _herramienta_viva(marca: dict) -> bool:
 
 
 def _matar_herramienta(pid: int, inicio: str, operacion: str = "") -> bool:
-    """Termina la herramienta. Una de CI recibe SIGTERM solo ella (no su grupo,
-    que incluiría el gh o el git de la limpieza) y CI_GRACIA_S para cerrar su rama
-    y su PR; `matar_proc` solo corta lo que siga vivo. El resto, como siempre."""
+    """Termina la herramienta del buzón."""
     from motor import plataforma
 
-    marca = {"pid": pid, "inicio": inicio}
-    if operacion == capacidades.CI and os.name != "nt" and _herramienta_viva(marca):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
-        fin = time.time() + CI_GRACIA_S
-        while time.time() < fin and _herramienta_viva(marca):
-            time.sleep(0.2)
     return plataforma.matar_proc(pid, inicio)
 
 
@@ -738,10 +709,6 @@ def _publicar_snapshot(
     return actualizado
 
 
-def _espera_de(sol: Solicitud) -> float | None:
-    return ESPERA_CI_S if sol.operacion in capacidades.ASINCRONAS else None
-
-
 def _completar_entrega(
     espacio: Path, sol: Solicitud, resultado: dict, directorio: Path
 ) -> dict:
@@ -782,7 +749,7 @@ def _ejecutar(
             espacio,
             sol,
             _esperar_herramienta(
-                registro, enc, destino, previa, _espera_de(sol), sol.operacion
+                registro, enc, destino, previa, None, sol.operacion
             ),
             directorio,
         )
@@ -837,7 +804,7 @@ def _ejecutar(
             espacio,
             sol,
             _esperar_herramienta(
-                registro, enc, destino, previa, _espera_de(sol), sol.operacion
+                registro, enc, destino, previa, None, sol.operacion
             ),
             directorio,
         )
@@ -848,25 +815,13 @@ def _ejecutar(
             "alternativa": "revisar el marcador y reintentar",
         }
 
-    espera = _espera_de(sol)
-    fin = time.time() + (TIMEOUT_S if espera is None else espera)
+    fin = time.time() + TIMEOUT_S
     detenida = False
-    sigue_viva = False
     try:
         while proc.poll() is None:
             if _detenida_ahora(registro, enc.id):
                 detenida = True
                 break
-            if time.time() > fin and sol.operacion in capacidades.ASINCRONAS:
-                # Un run de CI o un log grande tardan minutos: la herramienta
-                # sigue por su cuenta (con su propio plazo y su limpieza) y el
-                # siguiente paso recoge el resultado. Matarla dejaría la rama,
-                # el PR temporales o el `gh` hijo huérfanos.
-                sigue_viva = True
-                return {
-                    "estado": "pendiente",
-                    "motivo": "el CI sigue corriendo; el resultado se recogerá en el siguiente paso",
-                }
             if time.time() > fin:
                 proc.kill()
                 proc.wait(5)
@@ -877,19 +832,11 @@ def _ejecutar(
                 }
             time.sleep(0.2)
     finally:
-        if proc.poll() is None and not sigue_viva:
-            if sol.operacion == capacidades.CI:
-                # SIGTERM primero: la herramienta de CI cierra su rama y su PR.
-                proc.terminate()
-                try:
-                    proc.wait(CI_GRACIA_S)
-                except subprocess.TimeoutExpired:
-                    pass
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait(5)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(5)
         actual = _leer(marca)
-        if not sigue_viva and actual and int(actual.get("pid") or 0) == proc.pid:
+        if actual and int(actual.get("pid") or 0) == proc.pid:
             marca.unlink(missing_ok=True)
     if detenida:
         return {
@@ -976,11 +923,11 @@ def _atender_decision(
 
 
 def contexto_de(enc) -> dict:
-    """PR, SHA, rama, base y repo del encargo que autorizan su CI.
+    """PR, SHA, rama, base y repo del encargo.
 
-    La base es la de la fase vigente, que es contra la que se abrió su PR
-    (`ci.log` la compara). Solo si la fase aún no la registró se usa la de la
-    entrega; una fase que depende de otra se abre contra la rama de esa otra."""
+    La base es la de la fase vigente, que es contra la que se abrió su PR. Solo
+    si la fase aún no la registró se usa la de la entrega; una fase que depende
+    de otra se abre contra la rama de esa otra."""
     fase = getattr(enc, "fase_actual", None)
     base = str(getattr(fase, "base", "") or "").strip()
     if not base:
@@ -994,41 +941,6 @@ def contexto_de(enc) -> dict:
     }
 
 
-def _huella_config(concedido: dict) -> str:
-    """Huella de la configuración efectiva del recurso (repo, workflow, base...):
-    la misma corrida solo vale para quien pide con la misma configuración."""
-    texto = json.dumps(concedido, sort_keys=True, ensure_ascii=False, default=str)
-    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
-
-
-def _corrida_igual(
-    enc, sol: Solicitud, version: str, configuracion: str, directorio: Path
-) -> Solicitud | None:
-    """La corrida de CI que sigue viva y pide lo mismo: mismo recurso con la misma
-    configuración, mismos parámetros (job, base_arbol, jobs_extra...) y misma
-    versión del producto. Dos peticiones con distinta base o distintos jobs
-    extra no son la misma corrida: la primera solo corre lo afectado por su
-    diff y la segunda puede pedir otro recorte. Repetirla cuesta una corrida de
-    minutos, pero heredar un resultado recortado cuesta más."""
-    parametros = dict(sol.parametros)
-    return next(
-        (
-            otra
-            for otra in enc.solicitudes
-            if otra.id != sol.id
-            and otra.operacion == capacidades.CI
-            and otra.recurso == sol.recurso
-            and otra.estado == "pendiente"
-            and otra.carpeta
-            and otra.version == version
-            and otra.configuracion == configuracion
-            and dict(otra.parametros) == parametros
-            and _en_curso(otra, directorio)
-        ),
-        None,
-    )
-
-
 def _recordar_carpeta(
     registro: Registro,
     enc,
@@ -1039,62 +951,21 @@ def _recordar_carpeta(
     recursos: dict[str, dict],
     autorizado: bool,
 ) -> Solicitud:
-    """Anota dónde correrá la herramienta antes de lanzarla. `sol` viene de la
-    petición o del registro: la que ya recuerda su carpeta la conserva.
-
-    Un `ci.correr` igual a uno que sigue vivo se une a esa corrida: su carpeta
-    es la de la corrida en marcha y no se lanza otra. Solo si el recurso está
-    concedido para esa operación y, cuando pide al propietario, ya lo autorizó:
-    unirse no puede saltarse lo que la herramienta comprobaría al lanzarse."""
+    """Anota dónde correrá la herramienta antes de lanzarla."""
     if sol.carpeta:
         return sol
-    version = configuracion = ""
-    otra = None
-    if sol.operacion == capacidades.CI:
-        from .comprobacion import firma_producto
-
-        concedido = recursos.get(sol.recurso)
-        version = firma_producto(Path(espacio))
-        if concedido is not None:
-            configuracion = _huella_config(concedido)
-            permitido = sol.operacion in capacidades.operaciones_de(recursos, sol.recurso)
-            if permitido and (concedido.get("autorizacion") != "propietario" or autorizado):
-                otra = _corrida_igual(enc, sol, version, configuracion, directorio)
-    carpeta = otra.carpeta if otra else str(_carpeta_de(sol, directorio))
+    carpeta = str(_carpeta_de(sol, directorio))
     _anotar(
         registro,
         enc.id,
         {
             "kind": "herramienta",
-            "data": {
-                "id": sol.id,
-                "carpeta": carpeta,
-                "version": version,
-                "configuracion": configuracion,
-            },
+            "data": {"id": sol.id, "carpeta": carpeta},
         },
         f"herramienta:{enc.id}:{sol.id}",
     )
-    if otra:
-        _anotar(
-            registro,
-            enc.id,
-            {
-                "kind": "procedimiento",
-                "data": {
-                    "nota": f"{sol.id} pide lo mismo que {otra.id}, que sigue corriendo: reusa esa corrida y no lanza otra",
-                    "hora": hora,
-                },
-            },
-            f"reuso:{enc.id}:{sol.id}",
-        )
     actual = _buscar(registro.fold(enc.id) or enc, sol.id)
-    return replace(
-        sol,
-        carpeta=(actual.carpeta if actual else "") or carpeta,
-        version=(actual.version if actual else "") or version,
-        configuracion=(actual.configuracion if actual else "") or configuracion,
-    )
+    return replace(sol, carpeta=(actual.carpeta if actual else "") or carpeta)
 
 
 def _cerrar_con_resultado(
@@ -1191,9 +1062,9 @@ def _recoger(
 ) -> bool:
     """Registra el resultado de toda herramienta que ya terminó.
 
-    Una corrida de CI dura más que un turno: puede terminar con otro intento
-    vigente, sin petición en el buzón o con el encargo detenido. La solicitud
-    sigue su carpeta, no el intento actual. Una herramienta que murió sin dejar
+    Una herramienta puede terminar con otro intento vigente, sin petición en
+    el buzón o con el encargo detenido. La solicitud sigue su carpeta, no el
+    intento actual. Una herramienta que murió sin dejar
     resultado cierra la solicitud con un error: `pendiente` es solo mientras corre.
 
     Un resultado `ok` que llega después de la resolución `detenida` la cambia a
@@ -1761,16 +1632,12 @@ def responder(
 def cerrar_herramientas(directorio: Path, solo_del_turno: bool = False) -> int:
     """Cierra las herramientas que el motor lanzó para este intento.
 
-    Con `solo_del_turno` (el turno del agente terminó o se mató) deja correr las
-    asíncronas (CI y log de CI): duran más que un turno y no dependen de él. Su
-    marca queda en su sitio para que el siguiente paso recoja el resultado. Parar
-    o cancelar el encargo las cierra todas, con la limpieza de rama y PR de CI."""
+    Con `solo_del_turno` no cambia nada: ya no hay herramientas que duren más
+    que el turno."""
     cerrados = 0
     for path in sorted((Path(directorio) / "herramientas").glob("*.json")):
         doc = _leer(path) or {}
         operacion = str(doc.get("operacion") or "")
-        if solo_del_turno and operacion in capacidades.ASINCRONAS:
-            continue
         pid, inicio = doc.get("pid"), doc.get("inicio")
         if pid and inicio:
             _matar_herramienta(int(pid), str(inicio), operacion)
@@ -1781,8 +1648,7 @@ def cerrar_herramientas(directorio: Path, solo_del_turno: bool = False) -> int:
 
 def cerrar_herramientas_del_encargo(directorio: Path) -> int:
     """Parar o cancelar: cierra las herramientas de todos los intentos del encargo,
-    no solo las del vigente. Una corrida de CI lanzada en un intento anterior sigue
-    viva y no la alcanzaría el cierre de este."""
+    no solo las del vigente."""
     return sum(cerrar_herramientas(d) for d in _intentos(directorio) if d.is_dir())
 
 

@@ -634,7 +634,7 @@ class GhGitHub:
         return "\n".join(texto.splitlines()[-80:])
 
     def log_fallido_job(self, repo, run_id, job, job_id="") -> str:
-        """El log literal del job exacto de la corrida, como hace `ci.log`.
+        """El log literal del job exacto de la corrida.
         `--job` pide el ID del job, no su nombre: con el nombre `gh` intenta
         GET /actions/jobs/<nombre> y falla (h_a8968fb0). El ID viene del
         check-run (`job_id`); si no lo hay, se resuelve con el nombre. El
@@ -656,7 +656,7 @@ class GhGitHub:
             return ""
 
     def _id_del_job(self, repo, run_id, job) -> str:
-        """Resuelve el ID del job por su nombre, como hace `ci.log`."""
+        """Resuelve el ID del job por su nombre."""
         try:
             vista = json.loads(
                 self._gh(
