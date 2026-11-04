@@ -1,6 +1,0 @@
-{
-  "runtime": "claw",
-  "subagente": "openclaw",
-  "terminal": "local",
-  "skill": "SKILL.md"
-}
