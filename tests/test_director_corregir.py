@@ -74,26 +74,42 @@ class DirectorCorregir(unittest.TestCase):
             self.addCleanup(reg.close)
             self.assertEqual(reg.fold(encargo).ajustes, ("usa UTF-8",))
 
-    def test_otro_canal_no_corrige_el_encargo(self):
+    def test_otro_director_de_la_maquina_corrige_y_queda_registrado(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"
             encargo = self._encargar(base)
             codigo, salida = self._corregir(base, encargo, canal="claw")
+            self.assertEqual(codigo, 0)
+            self.assertEqual(salida["autor"], "director:claw")
+            reg = Registro(base)
+            self.addCleanup(reg.close)
+            self.assertEqual(reg.fold(encargo).ajustes, ("usa UTF-8",))
+            ajustes = [
+                ev for ev in reg.eventos(encargo) if ev["kind"] == "ajuste"
+            ]
+            self.assertEqual(ajustes[-1]["data"]["autor"], "director:claw")
+
+    def test_un_canal_ajeno_sigue_sin_corregir_el_encargo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            encargo = self._encargar(base)
+            codigo, salida = self._corregir(base, encargo, canal="desconocido")
             self.assertEqual(codigo, 2)
             self.assertIn("canal", salida["motivo"])
             reg = Registro(base)
             self.addCleanup(reg.close)
             self.assertEqual(reg.fold(encargo).ajustes, ())
 
-    def test_otra_sesion_no_corrige_el_encargo(self):
+    def test_la_sesion_no_bloquea_a_un_director_registrado(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"
             encargo = self._encargar(base, sesion="sesion-a")
             codigo, salida = self._corregir(base, encargo, sesion="sesion-b")
-            self.assertEqual(codigo, 2)
-            self.assertIn("identidad", salida["motivo"])
-            codigo, _ = self._corregir(base, encargo, clave="corr-2", sesion="sesion-a")
             self.assertEqual(codigo, 0)
+            self.assertEqual(salida["autor"], "director:hermes")
+            reg = Registro(base)
+            self.addCleanup(reg.close)
+            self.assertEqual(reg.fold(encargo).ajustes, ("usa UTF-8",))
 
     def test_encargo_cerrado_se_rechaza_con_su_motivo(self):
         with tempfile.TemporaryDirectory() as tmp:

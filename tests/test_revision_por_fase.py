@@ -50,7 +50,13 @@ def setUpModule():
         "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
     )
     parche.start()
-    unittest.addModuleCleanup(parche.stop)
+    globals()["_PARCHE_SONDA"] = parche
+
+
+def tearDownModule():
+    parche = globals().pop("_PARCHE_SONDA", None)
+    if parche is not None:
+        parche.stop()
 
 
 def _revisiones(r, origen: str) -> list[dict]:
@@ -215,7 +221,7 @@ class DeepSeekNoPasaPorOpus(unittest.TestCase):
 
 
 class DisputaConEvidencia(unittest.TestCase):
-    def test_un_hallazgo_de_deepseek_disputado_espera_al_propietario(self):
+    def test_un_hallazgo_de_deepseek_disputado_lo_decide_el_revisor(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "disputa", _GhConDeepSeek)
             e = vuelta("uno")
@@ -234,12 +240,17 @@ class DisputaConEvidencia(unittest.TestCase):
                 )
             )
             e = r.incorporar()
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertFalse(_lanzaria(e))
-            self.assertEqual(len(_revisiones(r, "independiente")), 1)
-            self.assertTrue(e.preguntas)
-            self.assertIn(hallazgo.titulo, e.preguntas[-1])
-            self.assertIn("identificador publico de prueba", e.preguntas[-1])
+            # No se pide autorización al propietario: la disputa queda para que
+            # la decida el revisor independiente y el trabajo continúa.
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertTrue(_lanzaria(e))
+            self.assertEqual(e.preguntas, ())
+            self.assertTrue(
+                any(
+                    "identificador publico de prueba" in n for n in e.notas_pr
+                ),
+                e.notas_pr,
+            )
 
     def test_una_disputa_invalida_repetida_termina_en_impedimento(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -252,15 +263,11 @@ class DisputaConEvidencia(unittest.TestCase):
             self.assertEqual(e.estrategia, "reparar_instrumento")
             self.assertEqual(e.impedimento, "")
             e = r.incorporar()
-            self.assertEqual(e.impedimento, "disputa.json")
-            self.assertEqual(
-                e.siguiente,
-                "esperar a que se cumpla: que .interno/disputa.json vuelva a validar",
-            )
-            self.assertFalse(_lanzaria(e))
+            self.assertEqual(e.impedimento, "")
+            self.assertIn("disputa.json", e.herramientas_no_disponibles)
             e = r.incorporar()
-            self.assertEqual(e.impedimento, "disputa.json")
-            self.assertFalse(_lanzaria(e))
+            self.assertEqual(e.impedimento, "")
+            self.assertNotEqual(e.estado, "necesita_usuario")
 
     def test_una_lista_de_disputas_vacia_es_sin_disputa(self):
         for contenido in ({"disputas": []}, []):
@@ -279,7 +286,7 @@ class DisputaConEvidencia(unittest.TestCase):
                 self.assertEqual(fallos, [])
                 self.assertEqual(e.impedimento, "")
 
-    def test_el_impedimento_de_disputa_se_levanta_al_reparar_el_archivo(self):
+    def test_la_disputa_invalida_no_deja_una_espera_al_operador(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "disputa-reparada", _GhConDeepSeek)
             vuelta("uno")
@@ -287,12 +294,8 @@ class DisputaConEvidencia(unittest.TestCase):
             archivo.write_text(json.dumps({"hallazgo": "", "evidencia": ""}))
             r.incorporar()
             e = r.incorporar()
-            self.assertEqual(e.impedimento, "disputa.json")
-            self.assertFalse(
-                ciclo._verificar_impedimento(
-                    e.impedimento, e, r.espacio, r.base, r.reg
-                )
-            )
+            self.assertEqual(e.impedimento, "")
+            self.assertIn("disputa.json", e.herramientas_no_disponibles)
             hallazgo = bloqueantes_abiertos(e, "deepseek")[0]
             archivo.write_text(
                 json.dumps(
@@ -302,13 +305,9 @@ class DisputaConEvidencia(unittest.TestCase):
                     }
                 )
             )
-            self.assertTrue(
-                ciclo._verificar_impedimento(
-                    e.impedimento, e, r.espacio, r.base, r.reg
-                )
-            )
-            ciclo._resolver_impedimento(r.reg, e, e.impedimento, ahora_iso())
-            self.assertEqual(r.fold().impedimento, "")
+            e = r.incorporar()
+            self.assertEqual(e.impedimento, "")
+            self.assertNotEqual(e.estado, "necesita_usuario")
 
 
 class SesionNuevaPorFase(unittest.TestCase):

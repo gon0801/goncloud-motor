@@ -54,28 +54,39 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         self.lanzamientos.clear()
         self.vuelta(r, "jaula-linux-c.txt")
         enc = r.fold()
-        self.assertEqual(enc.estado, "necesita_usuario")
-        self.assertEqual(enc.sin_progreso, 0)
+        # El revisor no concluyente ya no detiene el encargo: pasa a otro
+        # revisor autorizado.
+        self.assertNotEqual(enc.estado, "necesita_usuario")
+        self.assertEqual(enc.relevos, 1)
         self.assertIn("3 veces seguidas", enc.motivo)
         self.assertIn(FALTANTE, enc.motivo)
         self.assertIn("no se encontro jaula-linux-c.txt", enc.motivo)
         self.assertEqual(len(enc.solicitudes), 2)
         self.assertEqual(enc.fases[0].inspeccion_pendiente, "")
-        self.assertEqual(self.lanzamientos, [])
+        self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])
+        self.assertEqual(enc.pendientes_entrega, ())
 
-        self.barrer(r)
-        self.assertEqual(self.lanzamientos, [])
+        # El revisor de relevo tampoco concluye: el barrido entrega con la nota.
+        self.lanzamientos.clear()
+        self.vuelta(r, "jaula-linux-d.txt")
+        enc = r.fold()
+        self.assertEqual(enc.estado, "terminado")
+        self.assertTrue(
+            any("no concluyó" in n for n in enc.evidencia), enc.evidencia
+        )
 
     def test_un_ajuste_del_propietario_empieza_otra_cuenta_y_abre_el_turno(self):
         r = self.recorrido("freno-2", con_recurso=True)
         self.herramienta_ok()
         for ruta in ("a.txt", "b.txt", "c.txt"):
             self.vuelta(r, ruta)
-        self.assertEqual(r.fold().estado, "necesita_usuario")
+        self.assertEqual(r.fold().relevos, 1)
+        self.assertNotEqual(r.fold().estado, "necesita_usuario")
 
         corregir(r.reg, r.enc, "El log esta en indice.txt.", "aj-1", ahora_iso())
         enc = r.fold()
-        self.assertEqual((enc.no_concluyentes, enc.estado), (0, "recibido"))
+        self.assertEqual((enc.no_concluyentes, enc.relevos), (0, 0))
+        self.assertEqual(enc.estado, "recibido")
         self.lanzamientos.clear()
         self.barrer(r)
         self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])

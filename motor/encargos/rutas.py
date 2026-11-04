@@ -33,6 +33,18 @@ def candidatas_de(enc: Encargo, rol: str) -> tuple[str, ...]:
     return (solicitado[0],) if solicitado else tuple(enc.agentes)
 
 
+def _pausa_de(pausas, agente: str, modelo: str, hora: str):
+    """La pausa que cubre este modelo: la del agente entero o la de esa misma
+    identidad de modelo."""
+    for pausa in pausas:
+        if pausa.agente != agente or pausa.hasta <= hora:
+            continue
+        if pausa.modelo and identidad_modelo(pausa.modelo) != identidad_modelo(modelo):
+            continue
+        return pausa
+    return None
+
+
 def elegir(
     enc: Encargo,
     hora: str,
@@ -46,32 +58,38 @@ def elegir(
     `disponibles` mapea agente -> modelos que podría correr para el rol,
     en orden de política. Excluir al autor es por identidad de modelo, no
     por CLI ni sesión: si la cabeza es el autor, se mira el siguiente.
+
+    Una pausa por cuota de un modelo no tapa a los demás modelos del mismo
+    agente: si otro tiene cuota, se usa de inmediato en vez de esperar.
     """
-    pausas = {p.agente: p for p in enc.pausas}
+    pausas = tuple(enc.pausas)
     excluidos = {identidad_modelo(m) for m in excluir_modelos}
     for agente in enc.agentes:
         if agente not in disponibles:
             continue
-        pausa = pausas.get(agente)
-        if pausa is None or pausa.hasta <= hora:
-            valor = disponibles[agente]
-            modelos = (valor,) if isinstance(valor, str) else tuple(valor)
-            for modelo in modelos:
-                if modelo and identidad_modelo(modelo) in excluidos:
-                    continue
+        valor = disponibles[agente]
+        modelos = (valor,) if isinstance(valor, str) else tuple(valor)
+        for modelo in modelos:
+            if not modelo or identidad_modelo(modelo) in excluidos:
+                continue
+            pausa = _pausa_de(pausas, agente, modelo, hora)
+            if pausa is None:
                 return agente, modelo
-            continue
-        if not pausa.relevo:
-            return None
+            if not pausa.relevo:
+                # Un bloqueo que no avanza (un tiempo agotado, una petición
+                # inválida) detiene la etapa entera, aunque la pausa sea de un
+                # solo modelo.
+                return None
     return None
 
 
 def proximo(enc: Encargo, hora: str, disponibles: set[str]) -> str:
-    for agente in enc.agentes:
-        pausa = next((p for p in enc.pausas if p.agente == agente), None)
-        if agente in disponibles and pausa and pausa.hasta > hora and not pausa.relevo:
-            return pausa.hasta
-    plazos = [p.hasta for p in enc.pausas if p.agente in disponibles and p.hasta > hora]
+    plazos = [
+        p.hasta
+        for p in enc.pausas
+        if p.agente in disponibles
+        and p.hasta > hora
+    ]
     if plazos:
         return min(plazos)
     ahora = datetime.fromisoformat(hora.replace("Z", "+00:00"))
@@ -80,7 +98,9 @@ def proximo(enc: Encargo, hora: str, disponibles: set[str]) -> str:
     )
 
 
-def fallo(agente: str, mensaje: str, hora: str, seguidas: int) -> dict:
+def fallo(
+    agente: str, mensaje: str, hora: str, seguidas: int, modelo: str = ""
+) -> dict:
     datos = clasifica(agente, "", mensaje)
     tipo = desde_kind(datos["kind"]) or Falla.TASK_FAILURE
     ahora = datetime.fromisoformat(hora.replace("Z", "+00:00"))
@@ -100,6 +120,7 @@ def fallo(agente: str, mensaje: str, hora: str, seguidas: int) -> dict:
             pass
     return {
         "agente": agente,
+        "modelo": str(modelo or ""),
         "clase": datos["kind"],
         "causa": mensaje,
         "hasta": hasta.strftime("%Y-%m-%dT%H:%M:%SZ"),

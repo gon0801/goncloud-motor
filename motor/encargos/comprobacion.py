@@ -517,7 +517,8 @@ Si hay hallazgos bloqueantes abiertos, corrige solo esos y sus efectos. Lo aprob
 conserva su aprobacion; no reescribas producto valido.
 Si un bloqueante de DeepSeek no aplica, no lo ignores ni lo descartes por tu cuenta: escribe
 .interno/disputa.json como {{"hallazgo":"<id>","evidencia":"<por que no aplica, con la comprobacion>"}}
-y entrega. El motor pedira autorizacion al propietario; solo el puede descartarlo.
+y entrega. El revisor independiente decide con esa evidencia si aplica; su decision y la razon
+quedan escritas en el PR. No se pide autorizacion al propietario.
 No cambies el objetivo ni despliegues sin autorizacion. Trabaja como el usuario: puedes leer y
 escribir fuera del espacio y usar las herramientas de la maquina cuando el pedido lo pida.
 Nunca subas credenciales ni llaves a un repo: usalas de la maquina cuando el trabajo las
@@ -700,6 +701,9 @@ class JuicioValidado:
     nota: str = ""
     inspeccion_faltante: str = ""
     inspeccion: InspeccionPedido | None = None
+    # Hallazgos que el revisor dio por resueltos, también los de DeepSeek que
+    # el responsable disputó con evidencia.
+    resueltos: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -941,6 +945,7 @@ def validar_juicio(
         nota=str(d.get("causa") or d.get("reparacion") or ""),
         inspeccion_faltante=inspeccion_faltante,
         inspeccion=inspeccion,
+        resueltos=tuple(sorted(resueltos)),
     )
 
 

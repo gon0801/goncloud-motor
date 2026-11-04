@@ -391,7 +391,7 @@ class FlujoRevisiones(unittest.TestCase):
                 any(f["data"]["fuente"] == "comprobacion" for f in fallos)
             )
 
-    def test_sin_progreso_diagnostica_y_luego_pide_al_usuario(self):
+    def test_sin_progreso_diagnostica_releva_y_luego_entrega_con_pendientes(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "sp-1", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -423,11 +423,15 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertEqual(e.sin_progreso, 1)
             self.assertNotEqual(e.estado, "necesita_usuario")
             e = vuelta_rechazo()
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertTrue(e.preguntas)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
+            self.assertEqual(e.pendientes_entrega, ())
+            e = vuelta_rechazo()
+            self.assertTrue(e.pendientes_entrega)
+            self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(malo.read_text(), "X")
 
-    def test_cambiar_archivos_con_el_mismo_bloqueante_escala(self):
+    def test_cambiar_archivos_con_el_mismo_bloqueante_releva_y_entrega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-3", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -454,10 +458,12 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertTrue(_lanzaria(e))
             e = vuelta(3)
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
             self.assertIn("malo.txt no contiene B", e.motivo)
-            self.assertIn("Se intento", e.motivo)
-            self.assertTrue(e.preguntas)
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(4)
+            self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
 
     def test_bloqueantes_nuevos_devuelven_al_responsable_sin_tope(self):
@@ -492,7 +498,7 @@ class FlujoRevisiones(unittest.TestCase):
                 self.assertNotEqual(e.estado, "necesita_usuario", i)
                 self.assertTrue(_lanzaria(e), i)
 
-    def test_revisor_que_no_concluye_dos_vueltas_escala(self):
+    def test_revisor_que_no_concluye_dos_vueltas_releva_y_entrega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "nc-1", "dato.txt con 42")
             self.addCleanup(r.reg.close)
@@ -515,8 +521,12 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertTrue(_lanzaria(e))
             e = vuelta(2)
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
             self.assertTrue(e.motivo)
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(3)
+            self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
 
     def test_aprobar_corta_la_racha_y_la_fase_nueva_empieza_en_cero(self):
@@ -583,8 +593,12 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertEqual(e.sin_progreso, 1)
             e = vuelta(3, [])
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
             self.assertIn("malo.txt no contiene B", e.motivo)
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(4, [])
+            self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
 
     def test_no_concluyente_que_cierra_un_bloqueante_es_avance(self):
@@ -603,7 +617,7 @@ class FlujoRevisiones(unittest.TestCase):
             )
             e = r.incorporar()
             hid = bloqueantes_abiertos(e)[0].id
-            for i in range(3):
+            for i in range(4):
                 malo.write_text(f"B{i}")
                 r.incorporar()
                 r.juicio(
@@ -621,10 +635,13 @@ class FlujoRevisiones(unittest.TestCase):
                     self.assertTrue(_lanzaria(e))
                 elif i == 1:
                     self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+                elif i == 2:
+                    self.assertNotEqual(e.estado, "necesita_usuario")
+                    self.assertEqual(e.relevos, 1)
                 else:
-                    self.assertEqual(e.estado, "necesita_usuario")
+                    self.assertTrue(e.pendientes_entrega)
 
-    def test_deepseek_con_el_mismo_bloqueante_dos_vueltas_seguidas_escala(self):
+    def test_deepseek_con_el_mismo_bloqueante_dos_vueltas_seguidas_releva(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-1", _GhConDeepSeek)
             e = vuelta("uno")
@@ -635,10 +652,11 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertEqual(e.sin_progreso, 1)
             self.assertNotEqual(e.estado, "necesita_usuario")
             e = vuelta("tres")
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
             self.assertIn("DeepSeek", e.motivo)
-            self.assertIn("Se intento", e.motivo)
-            self.assertFalse(_lanzaria(e))
+            e = vuelta("cuatro")
+            self.assertTrue(e.pendientes_entrega)
 
     def test_deepseek_que_cierra_un_bloqueante_y_trae_otro_es_avance(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -759,22 +777,13 @@ class FlujoRevisiones(unittest.TestCase):
             tarde = (hora_pr + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
             barrer(r.reg, tarde, time.time(), lanzador, gh=gh)
             e = r.fold()
-            self.assertEqual(e.estado, "esperando_reintento")
-            self.assertFalse(
-                any(
-                    "DeepSeek no reviso" in f["data"].get("causa", "")
-                    for f in r.eventos("instrumento_fallo")
-                )
-            )
-            pr["comentarios_deepseek"] = [
-                {"texto": "Revision sin problemas.", "sha": e.pr_sha}
-            ]
-            (raiz / "fake" / "github.json").write_text(json.dumps(estado_fake))
-            barrer(r.reg, e.reanuda_en, time.time(), lanzador, gh=gh)
-            e = r.fold()
+            # Sin revisión de DeepSeek pasado el tope, el encargo entrega igual
+            # y deja la falta escrita; no espera a ninguna persona.
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.nivel_alcanzado, "pr")
-            self.assertEqual(e.deepseek_sha, e.pr_sha)
+            self.assertTrue(
+                any("sin revisión de DeepSeek" in n for n in e.notas_pr), e.notas_pr
+            )
             self.assertEqual(lanzamientos, [])
             v = vista(e)
             self.assertEqual(v["entrega"]["nivel_autorizado"], "pr")

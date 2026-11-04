@@ -84,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("encargo")
         s.add_argument("--base", type=Path, required=True)
         s.add_argument("--clave", required=True)
+        s.add_argument("--canal", default="")
 
     s = sub.add_parser("promover")
     s.add_argument("encargo")
@@ -224,7 +225,13 @@ def _correr(args) -> int:
                 salida["canales_caidos"] = caidos
             return _json(salida)
         if args.cmd in ("parar", "continuar", "cancelar"):
-            return _json(relay(reg, args.encargo, args.cmd, args.clave, marca))
+            salida = relay(
+                reg, args.encargo, args.cmd, args.clave, marca, args.canal
+            )
+            if salida.get("rechazada"):
+                print(json.dumps(salida, ensure_ascii=False))
+                return 2
+            return _json(salida)
         if args.cmd == "promover":
             return _json(promover(reg, args.encargo, args.clave, marca))
         if args.cmd == "cerrar-sesion":
