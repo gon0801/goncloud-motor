@@ -53,8 +53,11 @@ if modo == "red":
     sys.exit(1)
 if args[:2] == ["repo", "view"]:
     guardar()
-    print(json.dumps({{"defaultBranchRef": {"name": os.environ.get(
-        "FAKE_GH_RAMA", estado.get("rama_base", "main"))}}}))
+    if modo == "sin_default":
+        print(json.dumps({{"defaultBranchRef": None}}))
+    else:
+        print(json.dumps({{"defaultBranchRef": {"name": os.environ.get(
+            "FAKE_GH_RAMA", estado.get("rama_base", "main"))}}}))
 elif args[:2] == ["pr", "create"]:
     rama = val("--head")
     estado.update(rama=rama, pr_abierto=True, borrador="--draft" in args, base=val("--base"))
@@ -539,6 +542,13 @@ class GoncloudMotorSigueConMain(_Ci):
         self.assertEqual(r["datos"]["base"], "main")
         llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
         self.assertIn(["repo", "view"], llamadas)
+
+    def test_sin_rama_por_omision_el_recurso_sirve_de_respaldo(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_MODO": "sin_default"}):
+            r = self.pedir(recursos=self.recursos, contexto={"repo": "o/r"})
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "main")
 
 
 class ElPuenteLaConoce(_Ci):
