@@ -4354,12 +4354,17 @@ def _causa_tuberia_en_llano(caidas, texto: str) -> str:
     return "la tubería del CI falló"
 
 
-def _aviso_ci_en_llano(clase: str, caidas, texto: str) -> str:
+def _aviso_ci_en_llano(clase: str, caidas, texto: str, reabrir: bool = True) -> str:
     """El aviso para alguien que no es técnico: qué falló, de quién es y qué
     conviene hacer. Sin nombres de archivo, hashes ni el log literal."""
     que = " y ".join(
         dict.fromkeys(_job_en_llano(str(c.get("nombre") or "")) for c in caidas)
     ) or "una comprobación automática"
+    if clase == "codigo" and not reabrir:
+        return (
+            f"Falló {que}: es del código del cambio. El cambio ya está "
+            "integrado; recomiendo abrir un encargo para corregirlo."
+        )
     if clase == "codigo":
         return (
             f"Falló {que}: es del código del cambio, no de la tubería. Ya se "
@@ -4416,6 +4421,30 @@ def _anotar_ci_del_pr(
     return registro.fold(enc.id) or enc
 
 
+_CI_SONDEO_S = 60
+
+
+def _segundos_entre(desde: str, hasta: str) -> float | None:
+    from datetime import datetime
+
+    try:
+        a = datetime.fromisoformat(str(desde).replace("Z", "+00:00"))
+        b = datetime.fromisoformat(str(hasta).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (b - a).total_seconds()
+
+
+def _ultimo_sondeo_ci(registro: Registro, encargo_id: str, sha: str) -> str:
+    for evento in reversed(registro.eventos(encargo_id)):
+        if (
+            evento["kind"] == "ci_pr_sondeo"
+            and str(evento["data"].get("sha") or "") == sha
+        ):
+            return str(evento["data"].get("hora") or "")
+    return ""
+
+
 def _revisar_ci_del_pr(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> Encargo:
@@ -4427,7 +4456,9 @@ def _revisar_ci_del_pr(
     sola vez (`gh run rerun --failed`) y se lee el resultado de esa segunda
     corrida: si pasa, la falla era pasajera y no hay aviso; si sigue rojo, es
     permanente y el aviso lo dice en palabras llanas. Nunca hay más de un
-    reintento ni una espera en bucle."""
+    reintento. La lectura se espacia para no agotar la cuota de GitHub, y un
+    error de lectura no consume el resultado: se reintenta en el siguiente
+    sondeo."""
     fase = enc.fase_actual
     if (
         gh is None
@@ -4443,20 +4474,35 @@ def _revisar_ci_del_pr(
     if registro.por_ukey(ukey) is not None:
         return enc
     clave_reintento = f"ci-pr-reintento:{enc.id}:{sha}"
-    reintentado = registro.por_ukey(clave_reintento) is not None
+    evento_reintento = registro.por_ukey(clave_reintento)
+    reintentado = evento_reintento is not None
+    ultimo = _ultimo_sondeo_ci(registro, enc.id, sha)
+    transcurrido = _segundos_entre(ultimo, hora) if ultimo else None
+    if transcurrido is not None and transcurrido < _CI_SONDEO_S:
+        return enc
+    registro.anotar(
+        enc.id,
+        {"kind": "ci_pr_sondeo", "data": {"sha": sha, "hora": hora}},
+        f"ci-pr-sondeo:{enc.id}:{sha}:{hora}",
+    )
+    enc = registro.fold(enc.id) or enc
     try:
         veredicto_ci = gh.checks(enc.entrega.repo, enc.pr_numero, sha, ())
     except Exception as exc:
-        return _anotar_ci_del_pr(
-            registro,
-            enc,
-            ukey=ukey,
-            fase=fase.id,
-            sha=sha,
-            estado="error",
-            causa=f"no se pudo leer el CI del PR: {exc}",
-            hora=hora,
+        # Sin consumir `ukey`: el resultado todavía no se conoce y un fallo de
+        # lectura no puede darlo por perdido.
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "procedimiento",
+                "data": {
+                    "nota": f"no se pudo leer el CI del PR todavía: {exc}",
+                    "hora": hora,
+                },
+            },
+            f"ci-pr-error:{enc.id}:{sha}:{hashlib.sha256(str(exc).encode()).hexdigest()[:12]}",
         )
+        return registro.fold(enc.id) or enc
     corridas = tuple(
         c
         for c in (getattr(veredicto_ci, "corridas", ()) or ())
@@ -4490,6 +4536,25 @@ def _revisar_ci_del_pr(
             estado="verde",
             hora=hora,
         )
+    if reintentado:
+        datos = (evento_reintento or {}).get("data") or {}
+        previos = {str(x) for x in (datos.get("job_ids") or ()) if str(x)}
+        hora_reintento = str(datos.get("hora") or "")
+
+        def _lectura_anterior(c: dict) -> bool:
+            job_id = str(c.get("job_id") or "")
+            completed = str(c.get("completed_at") or "")
+            if previos:
+                mismo = bool(job_id) and job_id in previos
+            else:
+                mismo = True
+            return mismo and (
+                not completed or not hora_reintento or completed <= hora_reintento
+            )
+
+        if all(_lectura_anterior(c) for c in caidas):
+            # El rerun aún no empezó: esto sigue siendo la corrida anterior.
+            return enc
     nombres = [
         f"{str(c.get('nombre') or 'job')} ({str(c.get('conclusion') or '')})"
         for c in caidas
@@ -4532,6 +4597,11 @@ def _revisar_ci_del_pr(
                         "clase": "tuberia",
                         "reintento": "",
                         "aviso": "",
+                        "job_ids": [
+                            str(c.get("job_id") or "")
+                            for c in caidas
+                            if str(c.get("job_id") or "")
+                        ],
                         "hora": hora,
                     },
                 },
@@ -4558,7 +4628,8 @@ def _revisar_ci_del_pr(
                 )
             return enc
     if "codigo" in valores:
-        clase, reabrir = "codigo", True
+        clase = "codigo"
+        reabrir = enc.nivel_alcanzado not in ("integrado", "desplegado")
     elif valores == {"tuberia"}:
         clase, reabrir = "tuberia", False
     else:
@@ -4576,7 +4647,7 @@ def _revisar_ci_del_pr(
         reabrir=reabrir,
         clase=clase,
         reintento=reintento,
-        aviso=_aviso_ci_en_llano(clase, caidas, texto),
+        aviso=_aviso_ci_en_llano(clase, caidas, texto, reabrir=reabrir),
         hora=hora,
     )
 
@@ -4772,6 +4843,31 @@ def _espera_por_observacion(
     return registro.fold(enc.id)
 
 
+def _head_antes_de_cerrar(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> Encargo | None:
+    """El cierre por atajo no publica nada: concilia el head vigente del PR con
+    el sha aprobado y entregado antes de cerrar. Un head abierto distinto no se
+    da por terminado con el sha guardado."""
+    if gh is None or not enc.pr_numero or not enc.pr_sha:
+        return None
+    try:
+        vista = gh.ver(enc.entrega.repo, enc.pr_numero)
+    except Exception as exc:
+        causa = f"no se pudo leer el head del PR #{enc.pr_numero}: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura del head del PR antes de cerrar",
+            hora, f"head-ver-{enc.generacion}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return registro.fold(enc.id)
+    head = str(getattr(vista, "head", "") or "").strip()
+    if head and head != enc.pr_sha:
+        return _head_desviado(registro, enc, hora, enc.pr_numero, enc.pr_sha, head)
+    return None
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
@@ -4785,6 +4881,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         and not _sha_final_sin_leer(enc, gh)
         and not (gh is None and _requiere_veredicto(enc))
     ):
+        desviado = _head_antes_de_cerrar(registro, enc, gh, hora)
+        if desviado is not None:
+            return desviado
         return _cerrar_con_veredicto(
             registro, enc, gh, _espacio(registro.base, enc.id),
             _directorio(registro.base, enc.id), hora,

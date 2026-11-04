@@ -122,6 +122,7 @@ def _corrida(r: dict) -> dict:
         "url": r.get("html_url") or r.get("details_url") or "",
         "status": r.get("status", ""),
         "conclusion": r.get("conclusion"),
+        "completed_at": str(r.get("completed_at") or ""),
     }
 
 
