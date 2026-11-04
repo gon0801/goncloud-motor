@@ -503,12 +503,36 @@ def _relativo_a_vigente(texto: str, vigente: Path) -> Path | None:
     return None
 
 
+def _directorio_node(rel: Path) -> Path | None:
+    """herramientas/node/<huella>/node.exe, el Node que Windows deja en la generación."""
+    partes = rel.parts
+    if len(partes) < 3 or partes[0] != "herramientas" or partes[1] != "node":
+        return None
+    huella = partes[2]
+    if huella in (".", ".."):
+        return None
+    return Path(*partes[:3])
+
+
 def _raiz_de_soporte(rel: Path) -> Path:
     partes = rel.parts
     if "venv" in partes:
         return Path(*partes[: partes.index("venv") + 1])
     corte = next(i for i, parte in enumerate(partes) if parte in _ESTADO_OPERATIVO)
     return Path(*partes[: corte + 1])
+
+
+def _copiar_binario(origen: Path, destino: Path) -> None:
+    """Copia sin reescribir bytes. node.exe no es texto de configuración."""
+    if destino.exists() or destino.is_symlink():
+        return
+    if not origen.exists() and not origen.is_symlink():
+        return
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    if origen.is_dir() and not origen.is_symlink():
+        shutil.copytree(origen, destino, symlinks=True)
+        return
+    shutil.copy2(origen, destino, follow_symlinks=False)
 
 
 def _copiar_entrada(
@@ -548,7 +572,15 @@ def _copiar_soporte_lanzador(
     vistos: set[Path] = set()
     for arg in argv:
         rel = _relativo_a_vigente(str(arg), vigente)
-        if rel is None or not any(parte in _ESTADO_OPERATIVO for parte in rel.parts):
+        if rel is None:
+            continue
+        node = _directorio_node(rel)
+        if node is not None:
+            if node not in vistos:
+                vistos.add(node)
+                _copiar_binario(vigente / node, gen / node)
+            continue
+        if not any(parte in _ESTADO_OPERATIVO for parte in rel.parts):
             continue
         raiz = _raiz_de_soporte(rel)
         if raiz in vistos:
@@ -557,8 +589,29 @@ def _copiar_soporte_lanzador(
         _copiar_entrada(vigente / raiz, gen / raiz, prefijos, nuevo)
 
 
+def _reemplazar_rutas(data: bytes, prefijos: list[str], nuevo: str) -> bytes:
+    for viejo in prefijos:
+        # json.dumps escapa cada barra invertida. El texto plano trae una sola.
+        formas = [(viejo, nuevo)]
+        if "\\" in viejo or "\\" in nuevo:
+            formas.insert(
+                0, (viejo.replace("\\", "\\\\"), nuevo.replace("\\", "\\\\"))
+            )
+        for origen, destino in formas:
+            data = data.replace(origen.encode(), destino.encode())
+    return data
+
+
 def _copiar_arbol(origen: Path, destino: Path, prefijos: list[str], nuevo: str) -> None:
-    if origen.is_symlink() or not origen.exists():
+    if origen.is_symlink():
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        if not (destino.is_symlink() or destino.exists()):
+            destino.symlink_to(
+                _traducir_ruta(os.readlink(origen), prefijos, nuevo),
+                target_is_directory=origen.is_dir(),
+            )
+        return
+    if not origen.exists():
         return
     if origen.is_dir():
         destino.mkdir(parents=True, exist_ok=True)
@@ -566,12 +619,11 @@ def _copiar_arbol(origen: Path, destino: Path, prefijos: list[str], nuevo: str) 
             if item.name in _ESTADO_OPERATIVO:
                 continue
             _copiar_arbol(item, destino / item.name, prefijos, nuevo)
+        shutil.copymode(origen, destino)
         return
-    data = origen.read_bytes()
-    for viejo in prefijos:
-        data = data.replace(viejo.encode(), nuevo.encode())
     destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_bytes(data)
+    destino.write_bytes(_reemplazar_rutas(origen.read_bytes(), prefijos, nuevo))
+    shutil.copymode(origen, destino)
 
 
 def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
@@ -601,6 +653,11 @@ def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
         runtime["config"]["claw"] = "perfiles/claw/openclaw.json"
     tabla = gen / "config/hermes/model-routing.source.json"
     if tabla.is_file():
+        # El manifiesto de la candidata es el importado. La tabla vigente conserva
+        # bindings y metadatos; las cadenas salen de esa proyección.
+        proyeccion = json.loads(tabla.read_text(encoding="utf-8"))
+        proyeccion.update(proyectar_tabla(cargar(gen / "manifesto.toml")))
+        _atomico(tabla, proyeccion)
         runtime["politica"] = str(tabla.relative_to(gen))
     modelos = gen / "perfiles/claw/modelos.json"
     if modelos.is_file():

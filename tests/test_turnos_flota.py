@@ -10,7 +10,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from motor.flota.actualizaciones import _crear_generacion, actualizar, preparar
+from motor.flota.actualizaciones import (
+    _copiar_arbol,
+    _crear_generacion,
+    actualizar,
+    preparar,
+)
 from motor.flota.compartida import exportar, importar
 from motor.flota.control import _atomico, aplicar, asignar, recuperar, revertir
 from motor.flota.manifiesto import Herramienta, Politica, Puesto, guardar
@@ -681,6 +686,16 @@ class TurnosFlota(unittest.TestCase):
 
     def test_replica_sin_checkouts_aplica_la_configuracion_vigente(self):
         origen, gen_a = self._replica("origen-replica")
+        (gen_a / "config/hermes/model-routing.source.json").write_text(
+            json.dumps(
+                {
+                    "bindings": {"director": "adaptador"},
+                    "chains": {"director": ["viejo (low)"]},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
         def fake(doc_, destino, gen, home):
             destino.mkdir(parents=True)
@@ -737,6 +752,17 @@ class TurnosFlota(unittest.TestCase):
         runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
         self.assertEqual(
             runtime["poteto"], "config/hermes/shared/sistema-agentes/poteto"
+        )
+        tabla = json.loads(
+            (nueva / "config/hermes/model-routing.source.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(tabla["bindings"], {"director": "adaptador"})
+        self.assertEqual(tabla["chains"], {"director": ["p/m (low)"]})
+        self.assertEqual(tabla["source"], "flota/manifesto.toml")
+        self.assertEqual(
+            runtime["politica"], "config/hermes/model-routing.source.json"
         )
 
     def test_la_misma_pieza_se_reutiliza_si_no_se_puede_preparar(self):
@@ -801,6 +827,112 @@ class TurnosFlota(unittest.TestCase):
         self.assertIn("v1", str(ctx.exception))
         self.assertIn("v2", str(ctx.exception))
         self.assertEqual(asignar(self.home), gen_a.name)
+
+    def test_reutilizar_npm_copia_el_node_de_la_generacion(self):
+        origen, gen_a = self._replica("origen-node")
+        huella = "ab" * 32
+        node_rel = Path("herramientas/node") / huella / "node.exe"
+        nodo = gen_a / node_rel
+        nodo.parent.mkdir(parents=True)
+        nodo.write_bytes(b"NODE" + str(gen_a).encode() + b"NODE")
+        (gen_a / "herramientas/grok").mkdir(parents=True, exist_ok=True)
+        (gen_a / "herramientas/grok/cli.js").write_text(
+            "console.log('v2')\n", encoding="utf-8"
+        )
+        ruta = gen_a / "runtime.json"
+        runtime = json.loads(ruta.read_text(encoding="utf-8"))
+        runtime["lanzadores"]["grok"] = [
+            node_rel.as_posix(),
+            "herramientas/grok/cli.js",
+        ]
+        _atomico(ruta, runtime)
+
+        def falla(doc_, destino, gen, home):
+            raise RuntimeError("fallo node [npm-cli.js] (salida 1)")
+
+        with patch(
+            "motor.flota.actualizaciones._preparar_componente", side_effect=falla
+        ):
+            salida = preparar(self.home, motor_origen=origen, repos={})
+        nueva = self.home / "generaciones" / salida["generacion"]
+        copiado = nueva / node_rel
+        self.assertTrue(copiado.is_file(), copiado)
+        self.assertEqual(copiado.read_bytes(), nodo.read_bytes())
+        runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            runtime["lanzadores"]["grok"][0], node_rel.as_posix()
+        )
+
+
+class CopiaConfigReplica(unittest.TestCase):
+    def test_las_rutas_escapadas_en_json_se_reescriben(self):
+        viejo = "C:\\flota\\generaciones\\aaa"
+        nuevo = "C:\\flota\\generaciones\\bbb"
+        with tempfile.TemporaryDirectory(prefix="copia-json-") as tmp:
+            origen = Path(tmp) / "config"
+            origen.mkdir()
+            (origen / "openclaw.json").write_text(
+                json.dumps({"workspace": viejo + "\\perfiles\\claw"}) + "\n",
+                encoding="utf-8",
+            )
+            (origen / "nota.txt").write_text("home: " + viejo + "\n", encoding="utf-8")
+            destino = Path(tmp) / "nueva"
+            _copiar_arbol(origen, destino, [viejo], nuevo)
+            workspace = json.loads(
+                (destino / "openclaw.json").read_text(encoding="utf-8")
+            )["workspace"]
+            self.assertEqual(workspace, nuevo + "\\perfiles\\claw")
+            self.assertEqual(
+                (destino / "nota.txt").read_text(encoding="utf-8"),
+                "home: " + nuevo + "\n",
+            )
+
+    def test_la_copia_conserva_permisos_y_symlinks(self):
+        with tempfile.TemporaryDirectory(prefix="copia-modo-") as tmp:
+            origen = Path(tmp) / "config"
+            privado = origen / "bin"
+            privado.mkdir(parents=True)
+            os.chmod(privado, 0o700)
+            script = privado / "tool.sh"
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            os.chmod(script, 0o750)
+            real = origen / "real.txt"
+            real.write_text("dato\n", encoding="utf-8")
+            enlace = origen / "enlace"
+            enlace.symlink_to("real.txt")
+            absoluto = origen / "enlace-abs"
+            absoluto.symlink_to(real)
+            solo_lectura = origen / "solo-lectura"
+            solo_lectura.mkdir()
+            (solo_lectura / "adentro.txt").write_text("si\n", encoding="utf-8")
+            os.chmod(solo_lectura, 0o500)
+            destino = Path(tmp) / "nueva"
+            try:
+                _copiar_arbol(origen, destino, [str(origen)], str(destino))
+                self.assertEqual(
+                    (destino / "solo-lectura" / "adentro.txt").read_text(
+                        encoding="utf-8"
+                    ),
+                    "si\n",
+                )
+                if os.name == "posix":
+                    self.assertEqual(
+                        (destino / "solo-lectura").stat().st_mode & 0o777, 0o500
+                    )
+            finally:
+                os.chmod(solo_lectura, 0o700)
+                if (destino / "solo-lectura").exists():
+                    os.chmod(destino / "solo-lectura", 0o700)
+            self.assertTrue((destino / "enlace").is_symlink())
+            self.assertEqual(os.readlink(destino / "enlace"), "real.txt")
+            self.assertTrue((destino / "enlace-abs").is_symlink())
+            self.assertEqual(os.readlink(destino / "enlace-abs"), str(destino / "real.txt"))
+            self.assertEqual(
+                (destino / "real.txt").read_text(encoding="utf-8"), "dato\n"
+            )
+            if os.name == "posix":
+                self.assertEqual((destino / "bin" / "tool.sh").stat().st_mode & 0o777, 0o750)
+                self.assertEqual((destino / "bin").stat().st_mode & 0o777, 0o700)
 
 
 class GuardaHomeTest(unittest.TestCase):
