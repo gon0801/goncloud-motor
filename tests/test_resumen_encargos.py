@@ -565,7 +565,11 @@ class Envio(Base):
         )
         directores.drenar(self.b.reg, ahora=T0)
         self.assertEqual(len(self.b.resumenes()), 1)
-        viejo = next((self.b.base / "avisos").glob("*.json"))
+        viejo = next(
+            path
+            for path in (self.b.base / "avisos").glob("*.json")
+            if json.loads(path.read_text(encoding="utf-8")).get("tipo") == "resumen"
+        )
         doc = json.loads(viejo.read_text(encoding="utf-8"))
         doc["id"] = "av_viejo"
         doc["firma"] = "firma-vieja"
