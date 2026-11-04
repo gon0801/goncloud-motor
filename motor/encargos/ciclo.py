@@ -6722,9 +6722,9 @@ def _espejo_entrega(
 
 def _autoridad_cerrada_resuelta(registro: Registro, enc: Encargo) -> bool:
     """Un cerrado que ya entregó el resultado o la orden de su estado final no
-    se vuelve a consultar. La marca guarda el estado: una de `detenido` no
-    puede impedir el cierre posterior."""
-    evento = registro.por_ukey(f"autoridad-cerrada:{enc.id}")
+    se vuelve a consultar. La marca es por estado: una vieja sin estado o la de
+    `detenido` no impide sellar el cierre posterior."""
+    evento = registro.por_ukey(f"autoridad-cerrada:{enc.id}:{enc.estado}")
     return bool(
         evento and str(evento["data"].get("estado") or "") == enc.estado
     )
@@ -6737,7 +6737,7 @@ def _marcar_autoridad_cerrada(registro: Registro, enc: Encargo, hora: str) -> No
             "kind": "autoridad_cerrada",
             "data": {"hora": hora, "estado": enc.estado},
         },
-        f"autoridad-cerrada:{enc.id}",
+        f"autoridad-cerrada:{enc.id}:{enc.estado}",
     )
 
 

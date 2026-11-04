@@ -898,6 +898,44 @@ class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
                 any(str(clave).endswith("-canonico") for clave in claves), claves
             )
 
+    def test_una_marca_vieja_sin_estado_no_impide_sellar_el_cierre(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(reg, "x", "marca-vieja", ahora_iso())[
+                "encargo"
+            ]
+            reg.anotar(
+                encargo,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {"evidencia": "entregado con pendientes", "hora": ahora_iso()},
+                },
+                "cierre-marca-vieja",
+            )
+            # Marca de la versión anterior: mismo id, sin estado.
+            reg.anotar(
+                encargo,
+                {"kind": "autoridad_cerrada", "data": {"hora": ahora_iso()}},
+                f"autoridad-cerrada:{encargo}",
+            )
+            self.assertFalse(
+                ciclo._autoridad_cerrada_resuelta(reg, reg.fold(encargo))
+            )
+            with (
+                mock.patch("motor.encargos.transporte.cargar", return_value={}),
+                mock.patch(
+                    "motor.encargos.transporte.operar",
+                    return_value={"alcanzada": True, "salida": {"estado": "terminado"}},
+                ) as operar,
+            ):
+                for _ in range(2):
+                    barrer(reg, ahora_iso(), time.time(), _llamador)
+            self.assertEqual(operar.call_count, 1)
+            self.assertTrue(
+                ciclo._autoridad_cerrada_resuelta(reg, reg.fold(encargo))
+            )
+
     def test_un_detenido_no_sella_el_cierre_y_luego_publica_el_resultado(self):
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")
