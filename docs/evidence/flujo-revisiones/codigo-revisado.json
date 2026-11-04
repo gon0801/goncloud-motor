@@ -1,0 +1,26 @@
+{
+  "origen": "/Users/dn/dev/goncloud-motor-encargos-5",
+  "head": "46be73974e388f0f28fcacb06921a7c08e05b7f2",
+  "archivos_modificados": {
+    "motor/integraciones/directores.py": "2aa4d3dc197d95f20d464eef4abc07420e79b533dbeefa3547379d0a7534de43",
+    "motor/encargos/cli.py": "2df5fc00b81012f624534733e8346a227d22cb312f344aed2faf43a7d4f38e17",
+    "motor/flota/runtime.py": "1c59ed1de3d81c44896acfa366257692e1730acbeb3a46c4e6b22f02458f2e08",
+    "tests/test_flujo_revisiones.py": "d03532e2426063135e70a9aeb619520f9e85f29519b1990cfa78e9239ee5d06d",
+    "motor/encargos/arranque.py": "037e8416ce3e2d7305f8925173095322747691ceee1ca67a256f424b311223d9",
+    "docs/encargos-ensayo.md": "b0be59c6f7e0eee769811d2fca22dfcb457841db90fee9c0ee18b7b67b632338",
+    "docs/flujo-revisiones.md": "26356ed3640c8a1887a77edc93c3089788f37e0c6ae18abcfccdf02dea3c998e",
+    "docs/correcciones-fase-5.md": "61402e5872ea692050517268dd13e16347d45745c930080d067db94cac753545",
+    "motor/encargos/rutas.py": "5a70e70f2b6d29019074661361a0a58e303cea37ae6dbf22596ffa790b0a2f20",
+    "motor/encargos/dominio.py": "a1f090fe3c412109683cbc01fd9ff3ee04b9a0addf429fc32414b500b825e126",
+    "motor/encargos/comprobar.py": "d33afda6af521335f18697e73bb938963692a5aef3f1036c88198159afc62f72",
+    "motor/encargos/ciclo.py": "b7ea9e32111e0accbd176688e0aafa07ca4346e22fe1c28a98e95f34d0581ed1",
+    "skill/motor/SKILL.md": "aec6073a98ff7d4f8adb575e99e570f4bc5cf2dbb4243dae16d3ff0c9f1a99d6",
+    "motor/encargos/sesion.py": "e4f911e59ac39670d867b527d57a9c736eba1ffc1f3aacceeb3fec480c9cca56",
+    "motor/integraciones/cli.py": "ea75bafc46ec1d2071c76a5c746572150b2762237f05b101117c0326a7d3b253",
+    "docs/diseno-flujo-revisiones.md": "41b6b8a6897f5245294f2fdb3c88f3c09c55f42b08dc7068516c47543f9a7a2b",
+    "motor/github.py": "01e9a3e6598d94b70a5e0b739dc32e5db5a361aaa198b37187702e1f47499772",
+    "motor/encargos/comprobacion.py": "5e1cbd3ae181014bb08836f7997db8837804586164b34f2508681b15a11fd316",
+    "tests/test_encargo_motor06.py": "5d01a2b0bc470bb9f3d165c517c730b362dd3ba881f9a649b64ef8b4cbbf7883",
+    "motor/encargos/cierre.py": "dfcbcbd6fe7c95ecc7c0aa7ea45f6590914c6b159e2e8204158c3c97b3b39d1e"
+  }
+}
