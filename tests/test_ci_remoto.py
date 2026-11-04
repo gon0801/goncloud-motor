@@ -340,7 +340,11 @@ class CausaClaraSiFalta(_Ci):
 
         self.assertEqual(r["estado"], "error")
         self.assertIn("sin red hacia GitHub", r["motivo"])
-        self.assertFalse((self.fake / "estado.json").exists())
+        # La rama por omisión se consulta antes de subir: lo que no puede pasar
+        # es abrir el PR temporal ni dejar la rama.
+        llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
+        self.assertNotIn(["pr", "create"], llamadas)
+        self.assertEqual(self.ramas_remotas(), [])
 
     def test_un_job_que_no_existe_lista_los_que_hay(self):
         r = self.pedir(job="no-existe")
@@ -497,6 +501,18 @@ class LaBaseSaleDelEncargo(_Ci):
         with mock.patch.dict(os.environ, {"FAKE_GH_RAMA": "master"}):
             r = self.pedir(
                 recursos=self.sin_base_en_el_recurso(),
+                contexto={"repo": "o/r"},
+            )
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "master")
+        llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
+        self.assertIn(["repo", "view"], llamadas)
+
+    def test_un_base_main_del_recurso_no_manda_sobre_la_rama_por_omision(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_RAMA": "master"}):
+            r = self.pedir(
+                recursos=self.recursos,
                 contexto={"repo": "o/r"},
             )
 
