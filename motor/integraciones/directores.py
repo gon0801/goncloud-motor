@@ -1699,19 +1699,20 @@ def relay(
     enc = registro.fold(encargo)
     if enc is None:
         return {"rechazada": True, "motivo": "no hay encargo", "encargo": encargo}
-    if str(canal or ""):
-        try:
-            canal = nombre_canal(canal)
-        except ValueError as exc:
-            return {"rechazada": True, "motivo": str(exc), "encargo": encargo}
-        identidad = _leer(_ruta_identidad_canal(registro, encargo)) or {}
-        origen = str(identidad.get("canal") or enc.canal or "")
-        if canal != origen and canal not in DIRECTORES_DE_LA_MAQUINA:
-            return {
-                "rechazada": True,
-                "motivo": "el canal no es un director registrado de la máquina",
-                "encargo": encargo,
-            }
+    # Sin --canal la orden la manda el operador local, que es un director
+    # registrado: no se salta la validación, se identifica y se registra.
+    try:
+        canal = nombre_canal(canal or "operador")
+    except ValueError as exc:
+        return {"rechazada": True, "motivo": str(exc), "encargo": encargo}
+    identidad = _leer(_ruta_identidad_canal(registro, encargo)) or {}
+    origen = str(identidad.get("canal") or enc.canal or "")
+    if canal != origen and canal not in DIRECTORES_DE_LA_MAQUINA:
+        return {
+            "rechazada": True,
+            "motivo": "el canal no es un director registrado de la máquina",
+            "encargo": encargo,
+        }
     if accion == "parar" and enc.director == "openbot":
         caps = _leer(registro.base / "politica" / "openbot.json") or {}
         if not caps.get("parada"):

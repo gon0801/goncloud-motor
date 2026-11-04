@@ -12,14 +12,19 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+from motor import plataforma
 from motor.encargos import ciclo
+from motor.encargos import cli as motor_cli
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso, barrer, _cuerpo_pr
 from motor.encargos.dominio import PausaAgente, bloqueantes_abiertos
@@ -212,6 +217,163 @@ class RevisorSinVeredictoReleva(unittest.TestCase):
         e = r.fold()
         self.assertTrue(e.pendientes_entrega or e.estado == "terminado")
 
+    def test_sin_inspeccion_faltante_el_relevo_va_a_otro_revisor(self):
+        from tests.test_freno_no_concluyente import _Freno
+
+        caso = _Freno(methodName="runTest")
+        caso.setUp()
+        self.addCleanup(caso.doCleanups)
+        r = caso.recorrido("f3")
+
+        def vuelta(i: int):
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "no_concluyente",
+                    "evidencia": f"no alcancé el log del job, vuelta {i}",
+                }
+            )
+            return r.incorporar()
+
+        vuelta(1)
+        enc = vuelta(2)
+        self.assertEqual(enc.rol, "revisor")
+        self.assertGreaterEqual(enc.relevos, 1)
+        self.assertNotEqual(enc.estado, "necesita_usuario")
+
+
+class RelevoPorRol(unittest.TestCase):
+    def test_un_relevo_del_responsable_no_deja_al_revisor_sin_modelo(self):
+        from motor.encargos.dominio import relevos_de
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            reg = Registro(base)
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(reg, "x", "f1", ahora_iso())["encargo"]
+
+            elegidas = []
+
+            def construir(agente, modelo, modo):
+                def lanzar(actual, prompt, espacio, sesion):
+                    elegidas.append((actual.rol, agente, modelo))
+                    return [agente, modelo]
+
+                return lanzar
+
+            def paso(registro, hora, epoch, lanzador, **kw):
+                actual = registro.fold(encargo)
+                actual = replace(
+                    actual,
+                    rol="revisor",
+                    modelos=(
+                        ("responsable", "claude", "claude/opus"),
+                        ("revisor", "claude", "claude/sonnet"),
+                    ),
+                    relevos=1,
+                    relevos_por_rol=(("responsable", 1),),
+                    relevo_huella_por_rol=(("responsable", "bloqueo-1"),),
+                )
+                self.assertEqual(relevos_de(actual, "responsable"), 1)
+                self.assertEqual(relevos_de(actual, "revisor"), 0)
+                comando, _ = lanzador(
+                    actual, base / "pedido", base / "espacio", "s1"
+                )
+                self.assertEqual(comando, ["claude", "claude/sonnet"])
+                return []
+
+            args = SimpleNamespace(
+                agente="claude", respaldo=[], una_vez=True, umbral=30, intervalo=1
+            )
+            with (
+                mock.patch.object(motor_cli, "_disponible", return_value=True),
+                mock.patch.object(
+                    motor_cli, "_modelos_para", return_value=("claude/sonnet",)
+                ),
+                mock.patch.object(motor_cli, "_lanzador", side_effect=construir),
+                mock.patch.object(motor_cli, "barrer", side_effect=paso),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(motor_cli._supervisor(reg, args), 0)
+            self.assertEqual(elegidas, [("revisor", "claude", "claude/sonnet")])
+
+
+class PreguntaVencidaNoLaContestaUnJuicioViejo(unittest.TestCase):
+    def test_un_turno_vivo_no_contesta_la_pregunta_que_no_vio(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "f2", "dato.txt con 42")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "dato.txt").write_text("42")
+            r.incorporar()
+            enc = r.fold()
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "reserva",
+                    "data": {"rol": "revisor", "generacion": enc.generacion + 1},
+                },
+                "f2-reserva",
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "intento_abierto",
+                    "data": {
+                        "id": "rev-vivo",
+                        "pid": os.getpid(),
+                        "inicio": plataforma.hora_inicio(os.getpid()),
+                        "rol": "revisor",
+                        "hora": ahora_iso(),
+                    },
+                },
+                "f2-abierto",
+            )
+            enc = r.fold()
+            vieja = (
+                datetime.now(timezone.utc) - timedelta(minutes=30)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "solicitud",
+                    "data": {
+                        "id": "sol-viva",
+                        "operacion": "remoto.leer",
+                        "recurso": "ci-github",
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "generacion": enc.generacion,
+                        "conductor": enc.conductor,
+                        "motivo": "falta el log",
+                        "parametros": [["ruta", "indice.txt"]],
+                        "estado": "pregunta",
+                        "pregunta": "¿autorizas leer el log?",
+                        "hora": vieja,
+                    },
+                },
+                "sol-viva",
+            )
+            barrer(r.reg, ahora_iso(), time.time(), _llamador)
+            self.assertEqual(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "respuesta_revisor_pedida"
+                ],
+                [],
+            )
+
+            r.juicio(
+                {
+                    "veredicto": "cambios",
+                    "evidencia": "el producto no cambió",
+                    "bloqueantes": [_bloqueante_dict()],
+                }
+            )
+            r.incorporar()
+            enc = r.fold()
+            self.assertEqual(enc.solicitudes[0].estado, "pregunta")
+
 
 class DisputaLaDecideElRevisor(unittest.TestCase):
     def test_la_disputa_no_pide_al_propietario_y_el_revisor_la_resuelve(self):
@@ -362,6 +524,26 @@ class CualquierDirectorCorrige(unittest.TestCase):
                 if ev["kind"] == "orden"
             ]
             self.assertEqual(autores, ["director:claw", "director:hermes"])
+
+    def test_sin_canal_la_orden_queda_como_operador_registrado(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            encargo = self._encargar(base)
+            codigo, salida = self._correr(
+                [
+                    "parar", encargo, "--base", str(base), "--clave", "para-1",
+                ]
+            )
+            self.assertEqual(codigo, 0)
+            self.assertEqual(salida["estado"], "deteniendo")
+            reg = Registro(base)
+            self.addCleanup(reg.close)
+            autores = [
+                ev["data"].get("autor")
+                for ev in reg.eventos(encargo)
+                if ev["kind"] == "orden"
+            ]
+            self.assertEqual(autores, ["director:operador"])
 
 
 class CuotaUsaOtroModelo(unittest.TestCase):
@@ -587,6 +769,44 @@ class AlCerrarLimpiaSuDisco(unittest.TestCase):
             while plataforma.pid_vivo(proceso.pid) and reloj.time() < fin:
                 reloj.sleep(0.05)
             self.assertFalse(plataforma.pid_vivo(proceso.pid))
+
+
+class EntregarSinPuertoDejaConstatancia(unittest.TestCase):
+    def test_sin_puerto_github_queda_escrito_que_falta_el_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(
+                reg,
+                "x",
+                "sin-puerto",
+                ahora_iso(),
+                entrega_nivel="pr",
+                repo="gon0801/goncloud-motor",
+                rama="encargo/falta-pr",
+            )["encargo"]
+            reg.anotar(
+                encargo,
+                {
+                    "kind": "pendiente_entrega",
+                    "data": {"texto": "bloqueo abierto", "hora": ahora_iso()},
+                },
+                "pendiente-sin-puerto",
+            )
+            enc = reg.fold(encargo)
+            enc = ciclo._entregar_con_pendientes(reg, enc, None, ahora_iso())
+            self.assertEqual(enc.estado, "terminado")
+            self.assertTrue(
+                any(
+                    "sin puerto GitHub" in nota and "PR" in nota
+                    for nota in enc.notas_pr
+                ),
+                enc.notas_pr,
+            )
+            self.assertTrue(
+                any("No se pudo publicar el PR" in x for x in enc.evidencia),
+                enc.evidencia,
+            )
 
 
 class AvisosInformanSinPedirNada(unittest.TestCase):

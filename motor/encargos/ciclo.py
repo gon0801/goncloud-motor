@@ -61,6 +61,8 @@ from .dominio import (
     prompt_revisor,
     recibo_de,
     reducir,
+    relevo_huella_de,
+    relevos_de,
     vista,
 )
 from .frontera import (
@@ -873,6 +875,26 @@ def _barrer_encargos(
                 f"plazo:{encargo_id}:{enc.reanuda_en}",
             )
             enc = registro.fold(encargo_id)
+        if enc.estado in ("terminado", "cancelado"):
+            # Un encargo cerrado no vuelve a pasar por la autoridad ni por el
+            # buzón: solo se revisa el CI de su PR y se limpia su disco.
+            if enc.estado == "terminado" and enc.pr_numero and not parada:
+                enc = _revisar_ci_del_pr(registro, enc, gh, hora)
+            _limpiar_encargo_cerrado(registro, enc)
+            informes.append(vista(enc))
+            continue
+        if (
+            not parada
+            and enc.pendientes_entrega
+            and enc.proc is None
+            and not enc.reserva
+            and enc.estado in ("recibido", "ejecutando", "necesita_usuario")
+        ):
+            # La entrega con pendientes va delante de cualquier paso que pueda
+            # volver a fallar: es el camino que corta la espera y el ciclo.
+            enc = _entregar_con_pendientes(registro, enc, gh, hora)
+            informes.append(vista(enc))
+            continue
         cambio = decision_fallo(enc)
         if (
             cambio
@@ -1394,6 +1416,7 @@ def _sin_avance(
                     "nueva": True,
                     "nuevos": nuevos,
                     "escalar": False,
+                    "rol": rol,
                     "hora": hora,
                 },
             },
@@ -1407,7 +1430,11 @@ def _sin_avance(
         )
         return
     if enc.sin_progreso >= 1:
-        ya_relevado = huella and huella == enc.relevo_huella and enc.relevos >= 1
+        ya_relevado = (
+            huella
+            and huella == relevo_huella_de(enc, rol)
+            and relevos_de(enc, rol) >= 1
+        )
         registro.anotar(
             enc.id,
             {
@@ -1419,6 +1446,7 @@ def _sin_avance(
                         f"informacion nueva: {abierto}. Se intento: {intentado}"
                     ),
                     "escalar": True,
+                    "rol": rol,
                     "hora": hora,
                 },
             },
@@ -1436,7 +1464,7 @@ def _sin_avance(
         enc.id,
         {
             "kind": "sin_progreso",
-            "data": {"huella": huella, "escalar": False, "hora": hora},
+            "data": {"huella": huella, "escalar": False, "rol": rol, "hora": hora},
         },
         base + ":diagnostico",
     )
@@ -2619,7 +2647,7 @@ def _cerrar_con_juicio(
                 or juicio.nota
                 or "el revisor no concluyo: evidencia insuficiente para aprobar",
                 "el revisor independiente no concluyo y no cerro ningun bloqueante",
-                hora, "no-concluyente",
+                hora, "no-concluyente", rol="revisor",
             )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -5260,6 +5288,12 @@ def _entregar_con_pendientes(
         enc = registro.fold(enc.id) or enc
     publicable = enc.entrega.nivel != "terminado" and gh is not None
     causa = ""
+    if enc.entrega.nivel != "terminado" and gh is None:
+        causa = (
+            "nivel de entrega "
+            + enc.entrega.nivel
+            + " sin puerto GitHub configurado en este supervisor; el PR no se publicó"
+        )
     numero = enc.pr_numero
     sha = enc.producto.sha_git if enc.producto is not None else ""
     if publicable:
@@ -5492,6 +5526,11 @@ def _contestar_como_responsable(
     return registro.fold(enc.id) or enc
 
 
+def _turno_de_revisor_en_curso(enc: Encargo) -> bool:
+    """Un juicio que ya está en curso no vio la pregunta: no se le atribuye."""
+    return enc.rol == "revisor" and (enc.proc is not None or enc.reserva)
+
+
 def _autocontestar_preguntas(
     registro: Registro,
     enc: Encargo,
@@ -5519,6 +5558,10 @@ def _autocontestar_preguntas(
         return enc
     por_pedir = []
     for sol in pendientes:
+        if _turno_de_revisor_en_curso(enc):
+            # El turno vivo no vio esta pregunta; se pide al terminar, en un
+            # juicio nuevo que sí la tenga delante.
+            continue
         pedida = _hora_de_pedido_al_revisor(registro, enc.id, sol.id)
         if not pedida:
             por_pedir.append(sol)

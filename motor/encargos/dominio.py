@@ -519,6 +519,10 @@ class Encargo:
     # relevo tampoco avanza en ese mismo punto, se entrega con pendientes.
     relevo_huella: str = ""
     relevos: int = 0
+    # El relevo es por rol: uno del responsable no marca al revisor como ya
+    # relevado ni lo deja sin turno.
+    relevos_por_rol: tuple[tuple[str, int], ...] = ()
+    relevo_huella_por_rol: tuple[tuple[str, str], ...] = ()
     # Pendientes que se escriben en el cuerpo del PR cuando el encargo entrega
     # sin que el revisor haya concluido o sin la revisión externa.
     pendientes_entrega: tuple[str, ...] = ()
@@ -832,6 +836,25 @@ def hubo_avance(previo: Encargo, e: Encargo) -> bool:
     return bool((antes - ahora) - ya_cerrados) or bool(
         ahora and not antes and ahora - ya_cerrados
     )
+
+
+def relevos_de(e: Encargo, rol: str) -> int:
+    return dict(e.relevos_por_rol).get(rol or "responsable", 0)
+
+
+def relevo_huella_de(e: Encargo, rol: str) -> str:
+    return dict(e.relevo_huella_por_rol).get(rol or "responsable", "")
+
+
+def _con_relevo_de(
+    e: Encargo, rol: str, huella: str
+) -> tuple[tuple[tuple[str, int], ...], tuple[tuple[str, str], ...]]:
+    rol = rol or "responsable"
+    relevos = dict(e.relevos_por_rol)
+    relevos[rol] = relevos.get(rol, 0) + 1
+    huellas = dict(e.relevo_huella_por_rol)
+    huellas[rol] = huella
+    return tuple(sorted(relevos.items())), tuple(sorted(huellas.items()))
 
 
 def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Encargo:
@@ -1523,7 +1546,11 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             # El mismo bloqueo sin información nueva ya no detiene el encargo.
             # Primero pasa el rol a otro modelo autorizado; si el relevo
             # tampoco avanza, se entrega el PR con los pendientes escritos.
-            if huella and huella == e.relevo_huella and e.relevos >= 1:
+            # La escalera es por rol: un relevo del responsable no deja al
+            # revisor sin turno ni fuerza la entrega sin revisar.
+            rol = str(d.get("rol") or "responsable")
+            huella_previa = relevo_huella_de(e, rol)
+            if huella and huella == huella_previa and relevos_de(e, rol) >= 1:
                 pendiente = diagnostico or (
                     "el bloqueo sigue abierto tras el relevo: "
                     + (e.bloqueo_huella or huella)
@@ -1545,6 +1572,9 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                     ),
                     hora=hora or e.hora,
                 )
+            relevos_por_rol, relevo_huella_por_rol = _con_relevo_de(
+                e, rol, huella or e.relevo_huella
+            )
             return replace(
                 e,
                 estado=(
@@ -1556,6 +1586,8 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 sin_progreso=1,
                 relevo_huella=huella or e.relevo_huella,
                 relevos=e.relevos + 1,
+                relevos_por_rol=relevos_por_rol,
+                relevo_huella_por_rol=relevo_huella_por_rol,
                 motivo=diagnostico or "el mismo bloqueo sin progreso",
                 siguiente="seguir con otro modelo autorizado del mismo rol",
                 ultimo_hecho=diagnostico or "se releva a otro modelo del mismo rol",
@@ -2529,6 +2561,8 @@ def _reiniciar_escalera(e: Encargo) -> Encargo:
         _sin_repeticiones(e),
         relevo_huella="",
         relevos=0,
+        relevos_por_rol=(),
+        relevo_huella_por_rol=(),
         pendientes_entrega=(),
     )
 
@@ -2692,7 +2726,7 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
     )
     if fase is not None:
         e = con_fase(e, replace(fase, inspeccion_pendiente=""))
-    if e.relevo_huella == clave and e.relevos >= 1:
+    if relevo_huella_de(e, "revisor") == clave and relevos_de(e, "revisor") >= 1:
         # El revisor de relevo tampoco concluyó: se entrega con la nota.
         return replace(
             e,
@@ -2706,6 +2740,7 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
             siguiente="entregar el PR con la revisión sin veredicto",
             ultimo_hecho=motivo,
         )
+    relevos_por_rol, relevo_huella_por_rol = _con_relevo_de(e, "revisor", clave)
     return replace(
         e,
         estado=(
@@ -2715,6 +2750,8 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
         ),
         relevo_huella=clave,
         relevos=e.relevos + 1,
+        relevos_por_rol=relevos_por_rol,
+        relevo_huella_por_rol=relevo_huella_por_rol,
         sin_progreso=1,
         motivo=motivo,
         siguiente="seguir con otro revisor autorizado sobre la misma versión",

@@ -25,6 +25,7 @@ from .ciclo import (
     recibir,
     resolver_entrega,
 )
+from .dominio import relevo_huella_de, relevos_de
 from .frontera import DestinoEnsayo, despachar
 from .registro import BaseProhibida, Registro, exigir_base
 from .seleccion import solicitar_modelos
@@ -380,9 +381,11 @@ def _supervisor(reg: Registro, args) -> int:
             if rol == "revisor"
             else frozenset()
         )
-        if enc.relevos > 0:
+        relevo_del_rol = relevos_de(enc, rol)
+        if relevo_del_rol > 0:
             # Relevo: el mismo rol pasa a otro modelo autorizado que todavía
-            # no haya corrido en este encargo.
+            # no haya corrido en este encargo. La cuenta es del rol: uno del
+            # responsable no excluye modelos del revisor ni al revés.
             excluir = frozenset(excluir) | frozenset(
                 m for r, _a, m in enc.modelos if r == rol
             )
@@ -394,7 +397,7 @@ def _supervisor(reg: Registro, args) -> int:
             modo = _sesion_modo(enc, agente, rol)
             argv = _lanzador(agente, modelo, modo)(enc, prompt, espacio, sesion)
             return argv, {"agente": agente, "modelo": modelo, "sesion_modo": modo}
-        if enc.relevos > 0:
+        if relevo_del_rol > 0:
             # El relevo no tiene otro modelo autorizado para este rol: no se
             # espera a una persona. Se marca el punto como estancado para que
             # el supervisor entregue lo que hay con los pendientes escritos.
@@ -405,16 +408,18 @@ def _supervisor(reg: Registro, args) -> int:
                 {
                     "kind": "sin_progreso",
                     "data": {
-                        "huella": enc.relevo_huella or huella_bloqueo(enc),
+                        "huella": relevo_huella_de(enc, rol)
+                        or huella_bloqueo(enc),
                         "diagnostico": (
                             "no queda otro modelo autorizado para el rol "
                             f"{rol} tras el relevo"
                         ),
                         "escalar": True,
+                        "rol": rol,
                         "hora": hora,
                     },
                 },
-                f"relevo-agotado:{enc.id}:{enc.relevos}",
+                f"relevo-agotado:{enc.id}:{rol}:{relevo_del_rol}",
             )
             return None
         if rol == "revisor" and disponibles and all(

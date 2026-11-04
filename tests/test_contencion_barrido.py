@@ -94,9 +94,14 @@ class ContencionDelBarrido(unittest.TestCase):
                 b.vuelta()
             self.assertEqual(b.atendidos.count(b.malo), TOPE_FALLOS_BARRIDO)
             self.assertEqual(len(b.eventos(b.malo, "instrumento_fallo")), TOPE_FALLOS_BARRIDO)
-            (parado,) = b.parados(b.malo)
-            self.assertEqual(parado["data"]["clase"], "barrido:PermissionError")
-            self.assertFalse(parado["data"]["verificable"])
+            self.assertEqual(b.parados(b.malo), [])
+            enc = b.reg.fold(b.malo)
+            self.assertEqual(enc.estado, "terminado")
+            self.assertIn("barrido:PermissionError", enc.herramientas_no_disponibles)
+            self.assertTrue(enc.pendientes_entrega)
+            self.assertEqual(
+                len(b.eventos(b.malo, "instrumento_no_disponible")), 1
+            )
             self.assertGreater(b.atendidos.count(b.bueno), TOPE_FALLOS_BARRIDO)
 
     def test_fallos_sueltos_entre_vueltas_sanas_no_aparcan_el_encargo(self):
@@ -116,20 +121,32 @@ class ContencionDelBarrido(unittest.TestCase):
                 b.error = error
                 b.vuelta()
             self.assertEqual(b.parados(b.malo), [])
+            self.assertNotIn(
+                "barrido:OSError", b.reg.fold(b.malo).herramientas_no_disponibles
+            )
             b.error = OSError
             b.vuelta()
             b.vuelta()
-            (parado,) = b.parados(b.malo)
-            self.assertEqual(parado["data"]["clase"], "barrido:OSError")
+            self.assertEqual(b.parados(b.malo), [])
+            self.assertIn(
+                "barrido:OSError", b.reg.fold(b.malo).herramientas_no_disponibles
+            )
+            self.assertTrue(
+                any(
+                    e["data"].get("clase") == "barrido:OSError"
+                    for e in b.eventos(b.malo, "instrumento_no_disponible")
+                )
+            )
 
     def test_un_ajuste_del_operador_lo_vuelve_a_atender(self):
         with Banco(self.tmp) as b:
-            for _ in range(TOPE_FALLOS_BARRIDO + 1):
+            for _ in range(TOPE_FALLOS_BARRIDO):
                 b.vuelta()
             antes = b.atendidos.count(b.malo)
             b.rompe = False
             corregir(b.reg, b.malo, "ya se arregló el permiso", "ajuste-1", ahora_iso())
             self.assertEqual(b.reg.fold(b.malo).impedimentos, ())
+            self.assertEqual(b.reg.fold(b.malo).pendientes_entrega, ())
             b.vuelta()
             self.assertEqual(b.atendidos.count(b.malo), antes + 1)
 
@@ -137,37 +154,28 @@ class ContencionDelBarrido(unittest.TestCase):
         with Banco(self.tmp) as b:
             for _ in range(TOPE_FALLOS_BARRIDO):
                 b.vuelta()
+            fallos = len(b.eventos(b.malo, "instrumento_fallo"))
             corregir(b.reg, b.malo, "probemos otra vez", "ajuste-1", ahora_iso())
             b.vuelta()
-            self.assertEqual(len(b.parados(b.malo)), 1)
-            for _ in range(TOPE_FALLOS_BARRIDO):
-                b.vuelta()
-            self.assertEqual(len(b.parados(b.malo)), 2)
+            self.assertEqual(
+                len(b.eventos(b.malo, "instrumento_fallo")), fallos + 1
+            )
+            self.assertEqual(b.parados(b.malo), [])
 
-    def test_un_encargo_aparcado_se_puede_cancelar(self):
+    def test_un_encargo_con_pendientes_se_puede_cancelar(self):
         with Banco(self.tmp) as b:
             for _ in range(TOPE_FALLOS_BARRIDO):
                 b.vuelta()
-            b.vuelta()
-            b.vuelta()
-            aparcado = b.atendidos.count(b.malo)
-            self.assertEqual(aparcado, TOPE_FALLOS_BARRIDO, "aparcado: no se atiende")
+            self.assertTrue(b.reg.fold(b.malo).pendientes_entrega)
 
             ordenar(b.reg, b.malo, "cancelar", "cancelar-1", ahora_iso())
             self.assertEqual(b.reg.fold(b.malo).estado, "deteniendo")
-            antes = len(b.reg.eventos(b.malo))
-            b.vuelta()
-            b.vuelta()
-
-            self.assertEqual(
-                b.atendidos.count(b.malo), aparcado + 2,
-                "deteniendo se atiende aunque esté aparcado, para poder cerrar su proceso",
+            b.reg.anotar(
+                b.malo,
+                {"kind": "arbol", "data": {"observacion": "ausente"}},
+                "t-ausente",
             )
-            nuevos = b.reg.eventos(b.malo)[antes:]
-            self.assertEqual(
-                [e for e in nuevos if e["kind"] in ("instrumento_fallo", "impedimento")], [],
-                "un fallo repetido de un encargo ya aparcado no llena el registro",
-            )
+            self.assertEqual(b.reg.fold(b.malo).estado, "cancelado")
 
 
 class BucleDelSupervisor(unittest.TestCase):
