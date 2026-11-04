@@ -393,6 +393,221 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict, vigente: Path | None =
             runtime["claw_modelos"] = str((destino / "modelos.json").relative_to(gen))
 
 
+_ESTADO_OPERATIVO = frozenset(
+    {
+        "cache",
+        "installs",
+        "logs",
+        "sessions",
+        "image_cache",
+        "backups",
+        "__pycache__",
+        ".git",
+    }
+)
+
+
+def _causa_pieza(doc: dict, exc: BaseException, componentes: list) -> str:
+    from .distribuidores import _pista_de_fallo
+
+    detalle = str(exc)
+    pista = _pista_de_fallo(detalle)
+    if pista and pista not in detalle:
+        detalle = f"{detalle}; {pista}"
+    anterior = next(
+        (c for c in componentes if c.get("nombre") == doc.get("nombre")), None
+    )
+    if anterior is None:
+        return (
+            f"no se pudo preparar {doc.get('nombre')}: {detalle}. "
+            "Se conserva la instalacion vigente."
+        )
+    if anterior.get("version") == doc.get("version") and anterior.get(
+        "integridad"
+    ) == doc.get("integridad"):
+        return (
+            f"no se pudo preparar {doc['nombre']} {doc.get('version')}: {detalle}. "
+            "No se encontro la instalacion vigente de esa misma pieza para reutilizar. "
+            "Se conserva la instalacion vigente."
+        )
+    return (
+        f"la candidata no pudo preparar {doc['nombre']} {doc.get('version')}: {detalle}. "
+        f"La vigente tiene {anterior.get('version')} y no es la misma pieza; "
+        "se conserva la instalacion vigente."
+    )
+
+
+def _reutilizar_pieza(
+    doc: dict,
+    destino: Path,
+    gen: Path,
+    vigente: Path | None,
+    runtime_vigente: dict,
+) -> tuple[list[str], str, None] | None:
+    if vigente is None:
+        return None
+    misma = next(
+        (
+            c
+            for c in runtime_vigente.get("componentes") or []
+            if c.get("nombre") == doc.get("nombre")
+            and c.get("version") == doc.get("version")
+            and c.get("integridad") == doc.get("integridad")
+        ),
+        None,
+    )
+    origen = vigente / "herramientas" / str(doc.get("nombre"))
+    argv = list((runtime_vigente.get("lanzadores") or {}).get(doc.get("nombre")) or [])
+    if misma is None or not argv or not origen.is_dir():
+        return None
+    shutil.copytree(origen, destino, symlinks=True)
+    prefijos = _prefijos_de(vigente)
+    nuevo = str(gen.resolve())
+    _copiar_soporte_lanzador(gen, vigente, argv, prefijos, nuevo)
+    traducido = [_traducir_ruta(str(arg), prefijos, nuevo) for arg in argv]
+    version = str(
+        ((runtime_vigente.get("observaciones") or {}).get(doc["nombre"]) or {}).get(
+            "version"
+        )
+        or doc.get("version")
+        or ""
+    )
+    return traducido, version, None
+
+
+def _prefijos_de(vigente: Path) -> list[str]:
+    vistos = []
+    for candidato in (vigente.resolve(), vigente):
+        texto = str(candidato)
+        if texto not in vistos:
+            vistos.append(texto)
+    return sorted(vistos, key=len, reverse=True)
+
+
+def _traducir_ruta(texto: str, prefijos: list[str], nuevo: str) -> str:
+    for viejo in prefijos:
+        if texto.startswith(viejo):
+            return nuevo + texto[len(viejo) :]
+    return texto
+
+
+def _relativo_a_vigente(texto: str, vigente: Path) -> Path | None:
+    ruta = Path(texto)
+    if not ruta.is_absolute():
+        return ruta
+    for base in (vigente, vigente.resolve()):
+        try:
+            return ruta.relative_to(base)
+        except ValueError:
+            continue
+    return None
+
+
+def _raiz_de_soporte(rel: Path) -> Path:
+    partes = rel.parts
+    if "venv" in partes:
+        return Path(*partes[: partes.index("venv") + 1])
+    corte = next(i for i, parte in enumerate(partes) if parte in _ESTADO_OPERATIVO)
+    return Path(*partes[: corte + 1])
+
+
+def _copiar_entrada(
+    origen: Path, destino: Path, prefijos: list[str], nuevo: str
+) -> None:
+    if origen.is_symlink():
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        if destino.is_symlink() or destino.exists():
+            return
+        destino.symlink_to(_traducir_ruta(os.readlink(origen), prefijos, nuevo))
+        return
+    if not origen.exists():
+        return
+    if origen.is_dir():
+        destino.mkdir(parents=True, exist_ok=True)
+        for item in origen.iterdir():
+            _copiar_entrada(item, destino / item.name, prefijos, nuevo)
+        return
+    if destino.exists():
+        return
+    _copiar_arbol(origen, destino, prefijos, nuevo)
+
+
+def _copiar_soporte_lanzador(
+    gen: Path,
+    vigente: Path,
+    argv: list[str],
+    prefijos: list[str],
+    nuevo: str,
+) -> None:
+    """Copia el entorno que el lanzador reutilizado necesita.
+
+    El árbol de perfiles omite cache e installs. El python de Hermes vive en
+    un venv bajo installs y apunta al intérprete de herramientas/. Sin esa
+    copia, reutilizar la pieza deja un lanzador que no existe.
+    """
+    vistos: set[Path] = set()
+    for arg in argv:
+        rel = _relativo_a_vigente(str(arg), vigente)
+        if rel is None or not any(parte in _ESTADO_OPERATIVO for parte in rel.parts):
+            continue
+        raiz = _raiz_de_soporte(rel)
+        if raiz in vistos:
+            continue
+        vistos.add(raiz)
+        _copiar_entrada(vigente / raiz, gen / raiz, prefijos, nuevo)
+
+
+def _copiar_arbol(origen: Path, destino: Path, prefijos: list[str], nuevo: str) -> None:
+    if origen.is_symlink() or not origen.exists():
+        return
+    if origen.is_dir():
+        destino.mkdir(parents=True, exist_ok=True)
+        for item in origen.iterdir():
+            if item.name in _ESTADO_OPERATIVO:
+                continue
+            _copiar_arbol(item, destino / item.name, prefijos, nuevo)
+        return
+    data = origen.read_bytes()
+    for viejo in prefijos:
+        data = data.replace(viejo.encode(), nuevo.encode())
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_bytes(data)
+
+
+def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
+    if not (vigente / "config").is_dir():
+        raise RuntimeError(
+            "la replica no tiene la configuracion exportada de la generacion "
+            "vigente (config/). No se consultan checkouts de conf ni de Hermes. "
+            "Se conserva la instalacion vigente."
+        )
+    prefijos = _prefijos_de(vigente)
+    nuevo = str(gen.resolve())
+    _copiar_arbol(vigente / "config", gen / "config", prefijos, nuevo)
+    perfiles = vigente / "perfiles"
+    if perfiles.is_dir():
+        _copiar_arbol(perfiles, gen / "perfiles", prefijos, nuevo)
+    paquete = gen / "config/hermes/shared/sistema-agentes/poteto"
+    if (paquete / "poteto.v1.json").is_file() or (
+        paquete / "skills/poteto-mode/SKILL.md"
+    ).is_file():
+        runtime["poteto"] = str(paquete.relative_to(gen))
+    runtime["config"] = {}
+    if "hermes" in runtime["lanzadores"] and (gen / "perfiles/hermes").is_dir():
+        runtime["config"]["hermes"] = "perfiles/hermes"
+    if "openclaw" in runtime["lanzadores"] and (
+        gen / "perfiles/claw/openclaw.json"
+    ).is_file():
+        runtime["config"]["claw"] = "perfiles/claw/openclaw.json"
+    tabla = gen / "config/hermes/model-routing.source.json"
+    if tabla.is_file():
+        runtime["politica"] = str(tabla.relative_to(gen))
+    modelos = gen / "perfiles/claw/modelos.json"
+    if modelos.is_file():
+        runtime["claw_modelos"] = str(modelos.relative_to(gen))
+    runtime["config_reutilizada"] = True
+
+
 def _preparar_componente(
     doc: dict, destino: Path, gen: Path, home: Path
 ) -> tuple[list[str], str, dict | None]:
@@ -456,8 +671,12 @@ def preparar(
     for doc in componentes:
         _validar_componente(doc)
     home.mkdir(parents=True, exist_ok=True)
-    fuentes = _snapshot_repos(
-        repos if repos is not None else _repos_predeterminados(motor_origen)
+    fuentes = (
+        {}
+        if fuente is not None
+        else _snapshot_repos(
+            repos if repos is not None else _repos_predeterminados(motor_origen)
+        )
     )
     manifiesto = home / "manifiesto.toml"
     semilla = (
@@ -532,22 +751,22 @@ def preparar(
         )
         vigentes: set[str] = set()
         gen_vigente: Path | None = None
+        runtime_vigente: dict = {}
         try:
             gen_vigente = home / "generaciones" / asignar(home)
             ruta_vigente = gen_vigente / "runtime.json"
             if ruta_vigente.is_file():
-                vigentes = set(
-                    json.loads(
-                        ruta_vigente.read_text(encoding="utf-8")
-                    ).get("lanzadores", {})
-                )
+                runtime_vigente = json.loads(ruta_vigente.read_text(encoding="utf-8"))
+                vigentes = set(runtime_vigente.get("lanzadores") or {})
         except (OSError, ValueError):
             vigentes = set()
+            runtime_vigente = {}
         if gen_vigente is not None and not gen_vigente.is_dir():
             gen_vigente = None
         try:
             for doc in componentes:
                 destino = gen / "herramientas" / doc["nombre"]
+                motivo_reuso = ""
                 try:
                     argv, respuesta, contrato = _preparar_componente(
                         doc, destino, gen, home
@@ -559,24 +778,44 @@ def preparar(
                     subprocess.SubprocessError,
                 ) as exc:
                     shutil.rmtree(destino, ignore_errors=True)
-                    if doc["nombre"] in vigentes:
-                        raise RuntimeError(
-                            f"la candidata retiraria {doc['nombre']}, vigente "
-                            f"en la generacion actual: {exc}"
-                        ) from exc
-                    runtime["no_disponibles"].append(
-                        {
-                            "nombre": doc["nombre"],
-                            "estado": "pendiente",
-                            "motivo": str(exc)[:300],
-                        }
+                    pieza = (
+                        _reutilizar_pieza(
+                            doc, destino, gen, gen_vigente, runtime_vigente
+                        )
+                        if fuente is not None
+                        else None
                     )
-                    continue
+                    if pieza is not None:
+                        argv, respuesta, contrato = pieza
+                        motivo_reuso = (
+                            f"{exc}; se reutiliza la instalacion vigente"
+                        )
+                    elif doc["nombre"] in vigentes:
+                        raise RuntimeError(
+                            _causa_pieza(
+                                doc,
+                                exc,
+                                runtime_vigente.get("componentes") or [],
+                            )
+                        ) from exc
+                    else:
+                        runtime["no_disponibles"].append(
+                            {
+                                "nombre": doc["nombre"],
+                                "estado": "pendiente",
+                                "motivo": str(exc)[:300],
+                            }
+                        )
+                        continue
+                if (
+                    doc["nombre"] == "hermes"
+                    and (gen / "herramientas/hermes/src").is_dir()
+                ):
+                    runtime["env"]["PYTHONPATH"] = "herramientas/hermes/src"
                 if doc["nombre"] == "hermes" and contrato is not None:
                     runtime.setdefault("configuradores", {})["hermes"] = (
                         _utilidad_configuracion(gen, contrato)
                     )
-                    runtime["env"]["PYTHONPATH"] = "herramientas/hermes/src"
                 # Las rutas de la generacion se resuelven al lanzar, nunca por PATH global.
                 runtime["lanzadores"][doc["nombre"]] = [
                     str(Path(a).relative_to(gen))
@@ -588,7 +827,11 @@ def preparar(
                     "version": respuesta[:200],
                     "ejecutable": runtime["lanzadores"][doc["nombre"]],
                 }
-                if doc["nombre"] == "hermes":
+                if motivo_reuso:
+                    runtime["observaciones"][doc["nombre"]]["motivo"] = motivo_reuso[
+                        :300
+                    ]
+                if doc["nombre"] == "hermes" and contrato is not None:
                     observacion = dict(contrato["launcher"])
                     observacion["ruta"] = str(
                         Path(observacion["ruta"]).relative_to(gen)
@@ -604,7 +847,16 @@ def preparar(
                     "la candidata no dejo ninguna herramienta utilizable; "
                     "se conserva la generacion vigente"
                 )
-            _copiar_config(gen, fuentes, runtime, vigente=gen_vigente)
+            if fuente is not None:
+                if gen_vigente is None:
+                    raise RuntimeError(
+                        "la replica no tiene generacion vigente de la que "
+                        "reutilizar config/, perfiles/ y poteto. No se consultan "
+                        "checkouts de conf ni de Hermes. Se conserva la instalacion vigente."
+                    )
+                _reutilizar_config(gen, gen_vigente, runtime)
+            else:
+                _copiar_config(gen, fuentes, runtime, vigente=gen_vigente)
             runtime["archivos"] = {}
             comandos = list(runtime["lanzadores"].values())
             comandos.extend(
@@ -757,7 +1009,7 @@ def comprobar_runtime(gen: Path) -> dict:
                 "el ejecutable cambio de version tras preparar la candidata"
             )
     config = runtime.get("config", {})
-    if "hermes" in config:
+    if "hermes" in config and not runtime.get("config_reutilizada"):
         python = _argv_real(gen, runtime["configuradores"]["hermes"]["argv"])
         _run(
             [

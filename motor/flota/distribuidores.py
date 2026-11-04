@@ -65,6 +65,10 @@ def _run(
         ultima = hecho.stderr.strip().splitlines()
         tipo = ultima[-1].partition(":")[0] if ultima else ""
         detalle = "; " + tipo if tipo.isidentifier() and tipo.endswith("Error") else ""
+        crudo = "\n".join(parte for parte in (hecho.stderr, hecho.stdout) if parte)
+        pista = _pista_de_fallo(crudo)
+        if pista:
+            detalle += "; " + pista
         raise RuntimeError(
             f"fallo {Path(argv[0]).name} [{etapa}] (salida {hecho.returncode}{detalle})"
         )
@@ -217,10 +221,61 @@ def _descargar(doc: dict, cache: Path) -> Path:
     return artefacto
 
 
+def _home_del_motor() -> Path:
+    entorno = os.environ.get("MOTOR_HOME", "").strip()
+    if entorno:
+        return Path(entorno).expanduser()
+    return Path.home() / ".motor"
+
+
+def _path_extra_del_motor() -> tuple[str, ...]:
+    try:
+        from ..conf import load_maquina
+
+        return tuple(load_maquina(_home_del_motor()).path_extra)
+    except (OSError, ValueError, KeyError, ImportError):
+        return ()
+
+
+def path_de_instalacion() -> str:
+    from ..servicio import PATH_SERVICIO
+
+    bloques = [*_path_extra_del_motor()]
+    if os.name == "posix":
+        bloques.append(PATH_SERVICIO)
+    bloques.append(os.environ.get("PATH", ""))
+    partes: list[str] = []
+    for bloque in bloques:
+        for item in str(bloque).split(os.pathsep):
+            if item and item not in partes:
+                partes.append(item)
+    return os.pathsep.join(partes)
+
+
+def _pista_de_fallo(texto: str) -> str:
+    bajo = texto.lower()
+    if "enospc" in bajo or "no space left" in bajo:
+        return "sin espacio en disco"
+    for linea in texto.splitlines():
+        if not linea.lower().startswith("fatal:"):
+            continue
+        limpio = linea.strip()[:160]
+        if "@" in limpio or any(
+            marca in limpio.lower() for marca in ("token", "password", "secret")
+        ):
+            return "git rechazo el origen"
+        return limpio
+    return ""
+
+
 def _npm() -> list[str]:
-    node, npm = shutil.which("node"), shutil.which("npm")
+    path = path_de_instalacion()
+    node, npm = shutil.which("node", path=path), shutil.which("npm", path=path)
     if not node or not npm:
-        raise RuntimeError("Node y npm no estan disponibles")
+        raise RuntimeError(
+            "Node y npm no estan disponibles en el PATH del motor "
+            "(path_extra de maquina.toml y el PATH del servicio)"
+        )
     ruta = Path(npm).resolve()
     candidatos = [
         ruta,
@@ -318,7 +373,7 @@ def _instalar_npm(doc: dict, artefacto: Path, destino: Path, cache: Path) -> lis
     if ejecutable.suffix in (".js", ".mjs", ".cjs") or (
         cabecera.startswith(b"#!") and b"node" in cabecera
     ):
-        node = Path(shutil.which("node")).resolve()
+        node = Path(shutil.which("node", path=path_de_instalacion())).resolve()
         if os.name == "nt":
             node = _node_de_generacion(node, destino)
         return [str(node), str(ejecutable)]
@@ -442,6 +497,7 @@ def _entorno_generacion(gen: Path) -> dict:
         "OPENCLAW_CONFIG_PATH": str(gen / "perfiles/claw/openclaw.json"),
         "GONCLOUD_MUSE_LOGIN": str(datos / "sin-credencial-muse.json"),
         "OPENCLAW_CONFIG_READONLY": "1",
+        "PATH": path_de_instalacion(),
     }
     for nombre in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
         env.pop(nombre, None)

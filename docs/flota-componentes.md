@@ -4,7 +4,13 @@ El controlador consulta el distribuidor oficial, fija una versión exacta y prep
 
 ## Actualizar en una máquina
 
-Cada máquina actualiza su propio home de flota pasando sus checkouts de configuración. Con los repos explícitos la candidata exporta configuración nueva; sin ellos (o con un checkout ausente) reutiliza la configuración exportada de la generación vigente, para que una actualización parcial como `--componentes codex qwen` no salga nunca sin `config/` ni poteto-mode:
+Cada máquina actualiza su propio home de flota. Una réplica no pasa checkouts de configuración: `actualizar` reutiliza `config/`, los perfiles de configuración y poteto de la generación vigente para lo que no viene en el catálogo publicado, y no llama a `poteto.py`, a git de Hermes ni a un checkout que la máquina no tenga. En la publicadora, los repos explícitos exportan configuración nueva; sin ellos (o con un checkout ausente) una actualización parcial reutiliza la configuración exportada de la vigente, para que `--componentes codex qwen` no salga nunca sin `config/` ni poteto-mode:
+
+```
+python3 -m motor flota actualizar --home <home-flota>
+```
+
+En la publicadora, para exportar configuración nueva:
 
 ```
 python3 -m motor flota actualizar --home <home-flota> --componentes codex qwen \
@@ -35,7 +41,7 @@ La activación (`control.aplicar` y `control.recuperar`) rechaza una candidata q
 Las funciones públicas están en motor.flota.actualizaciones:
 
 - descubrir(componentes): consulta las versiones publicadas. Admite openclaw, codex, claude, grok, qwen, kimi, opencode y hermes. Devuelve componentes disponibles y capacidades cuyo canal no pudo comprobarse.
-- preparar(home, catalogo=None, motor_origen=None, repos=None): crea una candidata y la comprueba, sin activarla. Los repositorios hermes, claw y conf se descubren entre los checkouts vecinos o se reciben explícitamente por máquina.
+- preparar(home, catalogo=None, motor_origen=None, repos=None): crea una candidata y la comprueba, sin activarla. En la publicadora, los repositorios hermes, claw y conf se descubren entre los checkouts vecinos o se reciben explícitamente. En una réplica se ignoran: la candidata reutiliza la configuración exportada de la generación vigente.
 - actualizar: prepara y llama a control.aplicar. Si hay trabajo sobre la generación vigente, la candidata queda preparada y la activación responde ocupada. Admite `--sin-turnos`, el flag explícito del operador que activa sin exigir turnos reales exitosos y deja `sin_turnos: true` en el recibo.
 - comprobar_runtime(generacion): comprueba el recibo, hashes de ejecutables/configuración/skills, versiones realmente ejecutadas y configuración nativa de los directores presentes.
 - estado(home): muestra la generación aplicada, componentes y recibos de preparación.
@@ -58,7 +64,7 @@ La política se carga del manifiesto del home o se siembra desde flota/manifesto
 
 La generación contiene manifesto.toml y flota-runtime.json fijados en un commit local del clon de suministro. Los checkouts de configuración se exportan por una lista de rutas permitidas, sin copiar archivos de autenticación, TLS ni estado operativo. La tabla de Hermes se proyecta desde el manifiesto, preservando bindings y metadatos de sus adaptadores.
 
-El paquete poteto completo se valida mediante comprobar_copia del plugin versionado. Para Hermes se crea el perfil director con la API nativa, se instalan los plugins externos en los commits de director-plugins.json y configure_team aplica sus parches fijados antes de comprobar los perfiles. Para Claw, claw_models deriva y compara las cadenas; el ejecutable preparado valida el openclaw.json resultante sin arrancar el gateway. La configuración de ensayo no habilita canales ni cron.
+En la publicadora, el paquete poteto completo se valida mediante comprobar_copia del plugin versionado. Una réplica no ejecuta ese plugin: copia el paquete ya exportado en la generación vigente. Para Hermes se crea el perfil director con la API nativa, se instalan los plugins externos en los commits de director-plugins.json y configure_team aplica sus parches fijados antes de comprobar los perfiles. Para Claw, claw_models deriva y compara las cadenas; el ejecutable preparado valida el openclaw.json resultante sin arrancar el gateway. La configuración de ensayo no habilita canales ni cron.
 
 runtime.json guarda lanzadores y configuración relativos a la generación, los ejecutables externos imprescindibles y sus hashes. El lanzador del motor debe resolverlos respecto a MOTOR_GENERACION_RUTA. Una preparación reutilizada vuelve a comprobar la integridad y las versiones; un archivo ausente o cambiado rechaza esa candidata y conserva la instalación vigente.
 
