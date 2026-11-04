@@ -4626,6 +4626,22 @@ def _revisar_ci_del_pr(
 
         if all(_lectura_anterior(c) for c in caidas):
             # El rerun aún no empezó: esto sigue siendo la corrida anterior.
+            if al_limite:
+                # Al vencer el plazo no se vuelve a sondear cada barrido: si el
+                # reintento no arrancó a tiempo, el sondeo termina.
+                return _anotar_ci_del_pr(
+                    registro,
+                    enc,
+                    ukey=ukey,
+                    fase=fase.id,
+                    sha=sha,
+                    estado="sin_resultado",
+                    causa=(
+                        "el reintento del CI no empezó en "
+                        f"{_CI_SONDEO_MAX_S // 60} minutos; se deja de sondear"
+                    ),
+                    hora=hora,
+                )
             return enc
     nombres = [
         f"{str(c.get('nombre') or 'job')} ({str(c.get('conclusion') or '')})"
