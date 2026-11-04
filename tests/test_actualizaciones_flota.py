@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -16,7 +17,14 @@ from unittest.mock import patch
 
 from motor.flota.actualizaciones import _crear_generacion, preparar
 from motor.flota.control import aplicar, asignar, revertir
-from motor.flota.distribuidores import _descargar, _instalar_npm, _validar_componente
+from motor.flota.distribuidores import (
+    _descargar,
+    _entorno_generacion,
+    _instalar_npm,
+    _npm,
+    _run,
+    _validar_componente,
+)
 
 
 class ActualizacionesFlota(unittest.TestCase):
@@ -166,6 +174,56 @@ class ActualizacionesFlota(unittest.TestCase):
         self.assertEqual(asignar(home), a)
         self.assertTrue((home / "historial" / f"instalacion-{b}.json").is_file())
 
+    def test_el_path_de_instalacion_incluye_el_node_del_motor(self):
+        from tests.guarda_home import home_sesion
+
+        nodo = self.base / "node-del-motor"
+        cli = nodo / "node_modules/npm/bin"
+        cli.mkdir(parents=True)
+        (nodo / "node").write_text("#!/bin/sh\nprintf 'node-motor\\n'\n", encoding="utf-8")
+        (nodo / "npm").write_text("#!/bin/sh\nprintf 'npm-motor\\n'\n", encoding="utf-8")
+        (cli / "npm-cli.js").write_text("// cli del motor\n", encoding="utf-8")
+        os.chmod(nodo / "node", 0o755)
+        os.chmod(nodo / "npm", 0o755)
+        home = Path(home_sesion())
+        toml = home / "maquina.toml"
+        previo = toml.read_text(encoding="utf-8") if toml.is_file() else None
+        toml.write_text(
+            'nombre = "ensayo"\n'
+            f'conf = "{(self.base / "conf").as_posix()}"\n'
+            f'path_extra = ["{nodo.as_posix()}"]\n',
+            encoding="utf-8",
+        )
+        path_previo = os.environ.get("PATH")
+        os.environ["PATH"] = "/usr/bin:/bin"
+        try:
+            entorno = _entorno_generacion(self.base / "gen-path")
+            self.assertEqual(entorno["PATH"].split(os.pathsep)[0], str(nodo))
+            argv = _npm()
+            self.assertEqual(Path(argv[0]).resolve(), (nodo / "node").resolve())
+            self.assertEqual(Path(argv[1]).resolve(), (cli / "npm-cli.js").resolve())
+        finally:
+            if path_previo is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = path_previo
+            if previo is None:
+                toml.unlink(missing_ok=True)
+            else:
+                toml.write_text(previo, encoding="utf-8")
+
+    def test_un_fallo_de_npm_por_disco_lleno_lo_dice(self):
+        hecho = SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Error: ENOSPC: no space left on device\n",
+        )
+        with patch(
+            "motor.flota.distribuidores.subprocess.run", return_value=hecho
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                _run(["node", "npm-cli.js", "install"])
+        self.assertIn("sin espacio en disco", str(ctx.exception))
 
     def test_candidata_corrupta_conserva_la_generacion_vigente(self):
         origen = self.base / "origen2"
