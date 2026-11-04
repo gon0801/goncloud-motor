@@ -876,8 +876,27 @@ def _barrer_encargos(
             )
             enc = registro.fold(encargo_id)
         if enc.estado in ("terminado", "cancelado"):
-            # Un encargo cerrado no vuelve a pasar por la autoridad ni por el
-            # buzón: solo se revisa el CI de su PR y se limpia su disco.
+            # Un encargo cerrado no vuelve al buzón, pero sí pasa por la
+            # autoridad: es donde se reintentan el resultado y la orden
+            # canónica. Un fallo de esa lectura no se acumula en el registro.
+            try:
+                enc = _mirar_autoridad(registro, enc, hora)
+            except Exception as exc:  # noqa: BLE001  el cierre no tumba el barrido
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "procedimiento",
+                        "data": {
+                            "nota": (
+                                "no se pudo mirar la autoridad del encargo "
+                                f"cerrado: {type(exc).__name__}: {exc}"
+                            )[:2000],
+                            "hora": hora,
+                        },
+                    },
+                    f"autoridad-cerrado:{enc.id}:{type(exc).__name__}",
+                )
+                enc = registro.fold(enc.id) or enc
             if enc.estado == "terminado" and enc.pr_numero and not parada:
                 enc = _revisar_ci_del_pr(registro, enc, gh, hora)
             _limpiar_encargo_cerrado(registro, enc)

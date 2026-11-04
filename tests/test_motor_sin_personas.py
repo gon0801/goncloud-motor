@@ -809,6 +809,70 @@ class EntregarSinPuertoDejaConstatancia(unittest.TestCase):
             )
 
 
+class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
+    def test_un_terminado_reintenta_el_resultado_por_la_autoridad(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(reg, "x", "autoridad-resultado", ahora_iso())[
+                "encargo"
+            ]
+            reg.anotar(
+                encargo,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {
+                        "evidencia": "entregado con pendientes abiertos",
+                        "hora": ahora_iso(),
+                    },
+                },
+                "cierre-autoridad",
+            )
+            self.assertEqual(reg.fold(encargo).estado, "terminado")
+            with (
+                mock.patch("motor.encargos.transporte.cargar", return_value={}),
+                mock.patch(
+                    "motor.encargos.transporte.operar",
+                    return_value={"alcanzada": True, "salida": {"estado": "recibido"}},
+                ),
+                mock.patch.object(
+                    ciclo, "_publicar_resultado", return_value=True
+                ) as publicado,
+            ):
+                barrer(reg, ahora_iso(), time.time(), _llamador)
+            publicado.assert_called()
+
+    def test_un_cancelado_reintenta_la_orden_canonica(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(reg, "x", "autoridad-orden", ahora_iso())[
+                "encargo"
+            ]
+            ciclo.ordenar(reg, encargo, "cancelar", "cancela-1", ahora_iso())
+            reg.anotar(
+                encargo,
+                {"kind": "arbol", "data": {"observacion": "ausente"}},
+                "cancela-ausente",
+            )
+            self.assertEqual(reg.fold(encargo).estado, "cancelado")
+            with (
+                mock.patch("motor.encargos.transporte.cargar", return_value={}),
+                mock.patch(
+                    "motor.encargos.transporte.operar",
+                    return_value={"alcanzada": True, "salida": {"estado": "cancelado"}},
+                ),
+                mock.patch.object(
+                    ciclo, "_enviar_orden", return_value=True
+                ) as enviar,
+            ):
+                barrer(reg, ahora_iso(), time.time(), _llamador)
+            claves = [llamada.args[3] for llamada in enviar.call_args_list]
+            self.assertTrue(
+                any(str(clave).endswith("-canonico") for clave in claves), claves
+            )
+
+
 class AvisosInformanSinPedirNada(unittest.TestCase):
     def test_el_cierre_cuenta_los_pendientes_como_informacion(self):
         from dataclasses import replace

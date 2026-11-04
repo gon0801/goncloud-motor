@@ -92,7 +92,11 @@ class ContencionDelBarrido(unittest.TestCase):
         with Banco(self.tmp) as b:
             for _ in range(TOPE_FALLOS_BARRIDO + 4):
                 b.vuelta()
-            self.assertEqual(b.atendidos.count(b.malo), TOPE_FALLOS_BARRIDO)
+            # El encargo cerrado sigue pasando por la autoridad (F7), pero el
+            # fallo del barrido no se acumula: solo quedan los tres intentos.
+            self.assertGreaterEqual(
+                b.atendidos.count(b.malo), TOPE_FALLOS_BARRIDO
+            )
             self.assertEqual(len(b.eventos(b.malo, "instrumento_fallo")), TOPE_FALLOS_BARRIDO)
             self.assertEqual(b.parados(b.malo), [])
             enc = b.reg.fold(b.malo)
@@ -102,6 +106,12 @@ class ContencionDelBarrido(unittest.TestCase):
             self.assertEqual(
                 len(b.eventos(b.malo, "instrumento_no_disponible")), 1
             )
+            notas = [
+                e
+                for e in b.eventos(b.malo, "procedimiento")
+                if "autoridad del encargo cerrado" in e["data"].get("nota", "")
+            ]
+            self.assertEqual(len(notas), 1)
             self.assertGreater(b.atendidos.count(b.bueno), TOPE_FALLOS_BARRIDO)
 
     def test_fallos_sueltos_entre_vueltas_sanas_no_aparcan_el_encargo(self):
