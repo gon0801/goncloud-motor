@@ -233,10 +233,15 @@ class Fase:
     inspecciones_consumidas: tuple[str, ...] = ()
     entrega_bloqueada_sha: str = ""
     # Resultado del CI real del PR, leído una sola vez después de entregar.
+    # `ci_pr_estado` es «reintentando» mientras corre el único reintento de un
+    # rojo de tubería; `ci_pr_clase` y `ci_pr_reintento` alimentan el aviso llano.
     ci_pr_sha: str = ""
     ci_pr_estado: str = ""
     ci_pr_fallas: tuple[str, ...] = ()
     ci_pr_causa: str = ""
+    ci_pr_clase: str = ""
+    ci_pr_reintento: str = ""
+    ci_pr_aviso: str = ""
     cerrados: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -281,6 +286,9 @@ class Fase:
                 "estado": self.ci_pr_estado,
                 "fallas": list(self.ci_pr_fallas),
                 "causa": self.ci_pr_causa,
+                "clase": self.ci_pr_clase,
+                "reintento": self.ci_pr_reintento,
+                "aviso": self.ci_pr_aviso,
             },
         }
 
@@ -2224,7 +2232,8 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
 
     Un rojo de una prueba del producto reabre la fase para corregir en la misma
     rama y el mismo PR. Un rojo de infraestructura solo queda anotado: el
-    encargo no vuelve al responsable.
+    encargo no vuelve al responsable. El estado «reintentando» marca el único
+    reintento de un rojo de tubería, antes de leer el resultado de nuevo.
     """
     e = _fase_de_evento(e, d)
     fase = e.fase_actual
@@ -2232,7 +2241,7 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
         raise TransicionIlegal("no hay fase para el CI del PR")
     sha = str(d.get("sha") or "")
     estado = str(d.get("estado") or "")
-    if estado not in ("verde", "rojo", "error"):
+    if estado not in ("verde", "rojo", "error", "reintentando"):
         raise TransicionIlegal("estado de CI del PR desconocido")
     causa = str(d.get("causa") or "")
     fallas = tuple(str(x) for x in (d.get("fallas") or ()) if str(x))
@@ -2242,6 +2251,9 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
         ci_pr_estado=estado,
         ci_pr_fallas=fallas,
         ci_pr_causa=causa,
+        ci_pr_clase=str(d.get("clase") or ""),
+        ci_pr_reintento=str(d.get("reintento") or ""),
+        ci_pr_aviso=str(d.get("aviso") or ""),
     )
     e = con_fase(e, nueva)
     if not d.get("reabrir"):

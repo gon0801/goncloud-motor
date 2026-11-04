@@ -112,13 +112,19 @@ el supervisor hace commit y push, abre o actualiza el PR real y termina. El
 aviso de cierre dice «PR abierto; el CI corre en el PR».
 
 El CI corre con los workflows normales del repo, los mismos que verá quien
-decida el merge. El supervisor lee su resultado una sola vez, cuando termina;
-no lo espera para cerrar y no reintenta en bucle. Un pendiente o un verde no
-detienen nada. Un rojo deja un aviso al propietario con el nombre del job y el
-motivo literal. Si el fallo es de una prueba del producto, además devuelve el
-log al mismo responsable una sola vez, para corregir en la misma rama y el
-mismo PR. Un fallo de infraestructura (secretos o Gitleaks, cancelación, tope
-de tiempo, GitHub caído o falta de minutos) solo avisa.
+decida el merge. El supervisor lee su resultado cuando termina; no lo espera
+para cerrar y no reintenta en bucle. Un pendiente o un verde no detienen nada.
+Un rojo deja un aviso en palabras llanas para el propietario: qué falló, si es
+del código del cambio o de la tubería, y qué conviene hacer. Si es una prueba
+del producto, además devuelve el log al mismo responsable una sola vez, para
+corregir en la misma rama y el mismo PR, y el aviso recomienda no hacer nada.
+Si es un fallo de la tubería (secretos o Gitleaks, cancelación, tope de tiempo,
+GitHub caído o falta de minutos), el motor relanza ese CI una sola vez con
+`gh run rerun --failed`. Si la segunda corrida pasa, la falla era pasajera y no
+hay aviso; si vuelve a fallar igual, es un problema fijo y el aviso recomienda
+mergear y abrir un encargo para arreglar la tubería. Un fallo que no se puede
+clasificar con certeza lo dice y recomienda pedirle a Claude que lo revise.
+Nunca hay más de un reintento.
 
 El reparto de la batería en cuatro partes y el filtro por rutas del workflow
 siguen igual: cada job declara de qué rutas depende y el resto se salta, con

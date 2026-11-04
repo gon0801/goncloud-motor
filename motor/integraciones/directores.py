@@ -1012,20 +1012,21 @@ def _apariciones_de_impedimentos(registro: Registro, encargo: str) -> dict[str, 
 
 
 def _hecho_de_ci(enc) -> dict | None:
-    """El rojo del CI real del PR, contado una vez por SHA."""
+    """El rojo del CI real del PR, contado una vez por SHA.
+
+    El texto es el aviso llano que dejó el motor al clasificar el fallo: qué
+    falló, si es del código o de la tubería y qué conviene hacer. El log
+    literal queda en el estado del encargo, no en el aviso a una persona no
+    técnica."""
     fase = enc.fase_actual
     if fase is None or not enc.pr_numero or fase.ci_pr_estado != "rojo":
         return None
     if fase.ci_pr_sha and fase.pr_sha and fase.ci_pr_sha != fase.pr_sha:
         return None
-    fallas = ", ".join(fase.ci_pr_fallas) or "un job"
-    motivo = " ".join(str(fase.ci_pr_causa or "").split())
-    if len(motivo) > 1200:
-        motivo = motivo[:1199].rstrip() + "…"
-    texto = (
-        f"El CI del PR #{enc.pr_numero} falló en {fallas}."
-        + (f" {motivo}" if motivo else "")
-    )
+    texto = str(fase.ci_pr_aviso or "").strip()
+    if not texto:
+        fallas = ", ".join(fase.ci_pr_fallas) or "un job"
+        texto = f"El CI del PR #{enc.pr_numero} falló en {fallas}."
     return {
         "tipo": "ci_rojo",
         "identidad": fase.ci_pr_sha or str(fase.pr_sha or ""),

@@ -4269,28 +4269,165 @@ _INFRA_CI = (
     "unable to access",
 )
 
+# Marcas de que el rojo viene de una prueba del producto y no de la tubería.
+# Sin una de estas, un job conocido sigue siendo «incierto»: no se devuelve al
+# responsable ni se reintenta, se dice que no se puede clasificar con certeza.
+_PRUEBA_CI = (
+    "failed",
+    "failure",
+    "assertion",
+    "traceback",
+    "syntaxerror",
+    "importerror",
+    "modulenotfound",
+    "no such file",
+    "error:",
+    "not ok",
+)
 
-def _es_fallo_de_prueba(nombre: str, conclusion: str, texto: str) -> bool:
-    """Un fallo que el responsable puede corregir en el mismo PR.
 
-    Solo una prueba del producto; no la infraestructura (secretos, Gitleaks,
-    cancelación, tope de tiempo, GitHub caído o falta de minutos)."""
-    if conclusion != "failure":
-        return False
-    if trabajos_ci.trabajo(nombre) not in trabajos_ci.TRABAJOS:
-        return False
+def _clasificar_fallo_ci(nombre: str, conclusion: str, texto: str) -> str:
+    """Clasifica un job en rojo para el aviso y la corrección.
+
+    «codigo» es una prueba del producto que el responsable corrige en el mismo
+    PR; «tuberia» es infraestructura (secretos o Gitleaks, cancelación, tiempo
+    límite, GitHub caído o falta de minutos); «incierto» es un fallo sin
+    diagnóstico suficiente para distinguirlos."""
+    if str(conclusion or "") in (
+        "timed_out",
+        "startup_failure",
+        "cancelled",
+        "action_required",
+        "stale",
+    ):
+        return "tuberia"
     bajo = str(texto or "").lower()
-    return not any(marca in bajo for marca in _INFRA_CI)
+    if any(marca in bajo for marca in _INFRA_CI):
+        return "tuberia"
+    if any(marca in bajo for marca in _PRUEBA_CI):
+        return "codigo"
+    return "incierto"
+
+
+def _job_en_llano(nombre: str) -> str:
+    base = str(nombre or "").split(" (")[0].strip()
+    job = trabajos_ci.trabajo(base)
+    nombres = {
+        "bateria": "la comprobación de pruebas del producto",
+        "ops-tests": "la comprobación de pruebas de las herramientas",
+        "macos": "la comprobación en macOS",
+        "windows": "la comprobación en Windows",
+        "gate": "la revisión del repositorio",
+    }
+    return nombres.get(
+        job,
+        f"la comprobación automática «{base}»" if base else "una comprobación automática",
+    )
+
+
+def _causa_tuberia_en_llano(caidas, texto: str) -> str:
+    junto = (
+        str(texto or "")
+        + " "
+        + " ".join(str(c.get("conclusion") or "") for c in caidas)
+    ).lower()
+    if any(marca in junto for marca in ("gitleaks", "leak", "secret")):
+        return "el control de secretos encontró claves viejas en el repositorio"
+    if any(marca in junto for marca in ("minutes", "billing", "payment")):
+        return "faltan minutos de CI"
+    if any(marca in junto for marca in ("timed out", "timed_out", "timeout")):
+        return "se agotó el tiempo límite de la corrida"
+    if any(marca in junto for marca in ("cancelled", "canceled")):
+        return "la corrida se canceló"
+    if any(
+        marca in junto
+        for marca in (
+            "could not resolve host",
+            "connection",
+            "runner",
+            "rate limit",
+            "unable to access",
+            "startup_failure",
+        )
+    ):
+        return "el servicio de GitHub no respondió"
+    return "la tubería del CI falló"
+
+
+def _aviso_ci_en_llano(clase: str, caidas, texto: str) -> str:
+    """El aviso para alguien que no es técnico: qué falló, de quién es y qué
+    conviene hacer. Sin nombres de archivo, hashes ni el log literal."""
+    que = " y ".join(
+        dict.fromkeys(_job_en_llano(str(c.get("nombre") or "")) for c in caidas)
+    ) or "una comprobación automática"
+    if clase == "codigo":
+        return (
+            f"Falló {que}: es del código del cambio, no de la tubería. Ya se "
+            "mandó a corregir en el mismo PR, no tienes que hacer nada."
+        )
+    if clase == "tuberia":
+        causa = _causa_tuberia_en_llano(caidas, texto)
+        return (
+            f"La tubería de este proyecto tiene un problema fijo: {causa}. "
+            "El cambio ya está revisado; recomiendo mergear y abrir un encargo "
+            "para arreglar la tubería."
+        )
+    return (
+        f"Falló {que} y no puedo saber con certeza si es del código del cambio "
+        "o de la tubería. Recomiendo pedirle a Claude que lo revise."
+    )
+
+
+def _anotar_ci_del_pr(
+    registro: Registro,
+    enc: Encargo,
+    *,
+    ukey: str,
+    fase: str,
+    sha: str,
+    estado: str,
+    fallas=(),
+    causa: str = "",
+    reabrir: bool = False,
+    clase: str = "",
+    reintento: str = "",
+    aviso: str = "",
+    hora: str,
+) -> Encargo:
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "ci_pr",
+            "data": {
+                "fase": fase,
+                "sha": sha,
+                "estado": estado,
+                "fallas": list(fallas),
+                "causa": causa,
+                "reabrir": reabrir,
+                "clase": clase,
+                "reintento": reintento,
+                "aviso": aviso,
+                "hora": hora,
+            },
+        },
+        ukey,
+    )
+    return registro.fold(enc.id) or enc
 
 
 def _revisar_ci_del_pr(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> Encargo:
-    """Lee una sola vez el CI real del PR cuando terminó.
+    """Lee el CI real del PR cuando terminó.
 
     Un pendiente o un verde no cambia nada. Un rojo avisa al propietario una
     vez; si el fallo es de una prueba del producto, además reabre la fase para
-    corregir en la misma rama y el mismo PR."""
+    corregir en la misma rama y el mismo PR. Un rojo de tubería se relanza una
+    sola vez (`gh run rerun --failed`) y se lee el resultado de esa segunda
+    corrida: si pasa, la falla era pasajera y no hay aviso; si sigue rojo, es
+    permanente y el aviso lo dice en palabras llanas. Nunca hay más de un
+    reintento ni una espera en bucle."""
     fase = enc.fase_actual
     if (
         gh is None
@@ -4305,26 +4442,21 @@ def _revisar_ci_del_pr(
     ukey = f"ci-pr:{enc.id}:{sha}"
     if registro.por_ukey(ukey) is not None:
         return enc
+    clave_reintento = f"ci-pr-reintento:{enc.id}:{sha}"
+    reintentado = registro.por_ukey(clave_reintento) is not None
     try:
         veredicto_ci = gh.checks(enc.entrega.repo, enc.pr_numero, sha, ())
     except Exception as exc:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "ci_pr",
-                "data": {
-                    "fase": fase.id,
-                    "sha": sha,
-                    "estado": "error",
-                    "fallas": [],
-                    "causa": f"no se pudo leer el CI del PR: {exc}",
-                    "reabrir": False,
-                    "hora": hora,
-                },
-            },
-            ukey,
+        return _anotar_ci_del_pr(
+            registro,
+            enc,
+            ukey=ukey,
+            fase=fase.id,
+            sha=sha,
+            estado="error",
+            causa=f"no se pudo leer el CI del PR: {exc}",
+            hora=hora,
         )
-        return registro.fold(enc.id) or enc
     corridas = tuple(
         c
         for c in (getattr(veredicto_ci, "corridas", ()) or ())
@@ -4349,23 +4481,15 @@ def _revisar_ci_del_pr(
             for nombre in veredicto_ci.fallas
         ]
     if not caidas:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "ci_pr",
-                "data": {
-                    "fase": fase.id,
-                    "sha": sha,
-                    "estado": "verde",
-                    "fallas": [],
-                    "causa": "",
-                    "reabrir": False,
-                    "hora": hora,
-                },
-            },
-            ukey,
+        return _anotar_ci_del_pr(
+            registro,
+            enc,
+            ukey=ukey,
+            fase=fase.id,
+            sha=sha,
+            estado="verde",
+            hora=hora,
         )
-        return registro.fold(enc.id) or enc
     nombres = [
         f"{str(c.get('nombre') or 'job')} ({str(c.get('conclusion') or '')})"
         for c in caidas
@@ -4376,31 +4500,85 @@ def _revisar_ci_del_pr(
         gh, enc.entrega.repo, veredicto_ci, espacio, corridas=caidas,
         detalles=detalles,
     )
-    producto = any(
-        _es_fallo_de_prueba(
+    clases = {
+        str(c.get("nombre") or ""): _clasificar_fallo_ci(
             str(c.get("nombre") or ""),
             str(c.get("conclusion") or ""),
             detalles.get(str(c.get("nombre") or ""), ""),
         )
         for c in caidas
+    }
+    valores = set(clases.values())
+    if valores == {"tuberia"} and not reintentado:
+        run_ids = tuple(
+            dict.fromkeys(
+                str(c.get("run_id") or "")
+                for c in caidas
+                if str(c.get("run_id") or "")
+            )
+        )
+        if run_ids:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "ci_pr",
+                    "data": {
+                        "fase": fase.id,
+                        "sha": sha,
+                        "estado": "reintentando",
+                        "fallas": nombres,
+                        "causa": texto,
+                        "reabrir": False,
+                        "clase": "tuberia",
+                        "reintento": "",
+                        "aviso": "",
+                        "hora": hora,
+                    },
+                },
+                clave_reintento,
+            )
+            enc = registro.fold(enc.id) or enc
+            try:
+                for run_id in run_ids:
+                    gh.relanzar_fallidas(enc.entrega.repo, run_id)
+            except Exception as exc:
+                return _anotar_ci_del_pr(
+                    registro,
+                    enc,
+                    ukey=ukey,
+                    fase=fase.id,
+                    sha=sha,
+                    estado="rojo",
+                    fallas=nombres,
+                    causa=f"{texto}\nno se pudo relanzar el CI: {exc}",
+                    clase="tuberia",
+                    reintento="permanente",
+                    aviso=_aviso_ci_en_llano("tuberia", caidas, texto),
+                    hora=hora,
+                )
+            return enc
+    if "codigo" in valores:
+        clase, reabrir = "codigo", True
+    elif valores == {"tuberia"}:
+        clase, reabrir = "tuberia", False
+    else:
+        clase, reabrir = "incierto", False
+    reintento = "permanente" if clase == "tuberia" else ""
+    return _anotar_ci_del_pr(
+        registro,
+        enc,
+        ukey=ukey,
+        fase=fase.id,
+        sha=sha,
+        estado="rojo",
+        fallas=nombres,
+        causa=texto,
+        reabrir=reabrir,
+        clase=clase,
+        reintento=reintento,
+        aviso=_aviso_ci_en_llano(clase, caidas, texto),
+        hora=hora,
     )
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "ci_pr",
-            "data": {
-                "fase": fase.id,
-                "sha": sha,
-                "estado": "rojo",
-                "fallas": nombres,
-                "causa": texto,
-                "reabrir": producto,
-                "hora": hora,
-            },
-        },
-        ukey,
-    )
-    return registro.fold(enc.id) or enc
 
 
 def _head_desviado(
