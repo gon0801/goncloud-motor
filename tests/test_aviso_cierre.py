@@ -162,7 +162,7 @@ class ElCierreEnLlano(Base):
         self.assertEqual(
             cuerpo,
             "Terminó tu encargo «avisos-caidos listo para revisar». "
-            "El PR #160 está listo para que decidas el merge. listo",
+            "El PR #160 está abierto; el CI corre en el PR. listo",
         )
         self.assertLess(len(cuerpo), 300)
         for prohibido in PROHIBIDOS:
@@ -282,7 +282,7 @@ class ElCierreEnLlano(Base):
         self.assertEqual(
             self.b.cuerpos()[0]["cuerpo"],
             "Terminó tu encargo «con-correccion listo para revisar». "
-            "El PR #5 está listo para que decidas el merge. "
+            "El PR #5 está abierto; el CI corre en el PR. "
             "Correcciones que ningún intento pudo recibir: el dato debe ser 43 listo",
         )
 

@@ -624,25 +624,6 @@ class FlujoRevisiones(unittest.TestCase):
                 else:
                     self.assertEqual(e.estado, "necesita_usuario")
 
-    def test_checks_en_rojo_dos_vueltas_seguidas_escalan(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(
-                self, tmp, "ci-1", FakeGitHub,
-                {"requeridos": ["ci"], "checks": {"ci": "exit 1"}},
-            )
-            e = vuelta("uno")
-            self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
-            e = vuelta("dos")
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
-            self.assertNotEqual(e.estado, "necesita_usuario")
-            e = vuelta("tres")
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertIn("checks requeridos en rojo: ci", e.motivo)
-            self.assertIn("Se intento", e.motivo)
-            self.assertFalse(_lanzaria(e))
-
     def test_deepseek_con_el_mismo_bloqueante_dos_vueltas_seguidas_escala(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-1", _GhConDeepSeek)
@@ -671,72 +652,6 @@ class FlujoRevisiones(unittest.TestCase):
                 self.assertEqual(e.sin_progreso, 0)
                 self.assertNotEqual(e.estado, "necesita_usuario")
                 self.assertTrue(_lanzaria(e))
-
-    def test_check_que_se_pone_rojo_con_deepseek_abierto_es_informacion_nueva_y_luego_escala(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(
-                self, tmp, "ci-3", _GhConDeepSeek,
-                {"requeridos": ["ci"], "checks": {"ci": _contiene("A")}},
-            )
-            e = vuelta("A1")
-            self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
-            e = vuelta("A2")
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
-            self.assertNotEqual(e.estado, "necesita_usuario")
-            # El check en rojo es un bloqueante que el responsable no habia visto:
-            # informacion nueva. Vuelve a corregir; no escala como «el mismo bloqueo».
-            e = vuelta("x3")
-            self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
-            self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertTrue(_lanzaria(e))
-            # Los mismos bloqueantes siguen abiertos tras la vuelta: diagnostico y despues escala.
-            e = vuelta("x4")
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
-            e = vuelta("x5")
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertIn("checks requeridos en rojo: ci", e.motivo)
-            self.assertFalse(_lanzaria(e))
-
-    def test_check_que_alterna_rojo_y_verde_no_es_avance_cada_vez(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(
-                self, tmp, "ci-4", _GhConDeepSeek,
-                {"requeridos": ["ci"], "checks": {"ci": _contiene("A")}},
-            )
-            e = vuelta("x1")
-            self.assertEqual(e.estrategia, "investigar")
-            e = vuelta("A2")
-            self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
-            e = vuelta("x3")
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
-            e = vuelta("A4")
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertFalse(_lanzaria(e))
-
-    def test_cerrar_un_check_en_rojo_es_avance(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(
-                self, tmp, "ci-2", FakeGitHub,
-                {
-                    "requeridos": ["a", "b"],
-                    "checks": {"a": _contiene("A"), "b": _contiene("B")},
-                },
-            )
-            e = vuelta("x")
-            self.assertEqual(e.estrategia, "investigar")
-            e = vuelta("A")
-            self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
-            self.assertNotEqual(e.estado, "necesita_usuario")
-            e = vuelta("A2")
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
 
     def test_rondas_con_progreso_sin_tope(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -1363,20 +1278,6 @@ class AvanceGlobalDelFreno(unittest.TestCase):
             "efectos_pendientes": [],
             "inspeccion_faltante": "",
         }
-
-    def test_check_rojo_de_un_commit_anterior_sigue_siendo_bloqueo(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            evento = self._eventos(tmp, "avance-check")
-            previo = evento(
-                "entrega_bloqueada",
-                {"sha": "A", "causa": "ci rojo", "fallas": ["ci"]},
-            )
-            e = evento("revision", self._revision("independiente", ["R1"]))
-            self.assertFalse(hubo_avance(previo, e))
-            self.assertEqual(e.fase_actual.fallas_checks, ("ci",))
-            verde = evento("entrega_externa", {"paso": "checks_verdes", "sha": "B"})
-            self.assertTrue(hubo_avance(e, verde))
-            self.assertEqual(verde.fase_actual.fallas_checks, ())
 
     def test_revision_independiente_no_cierra_bloqueantes_de_deepseek(self):
         with tempfile.TemporaryDirectory() as tmp:

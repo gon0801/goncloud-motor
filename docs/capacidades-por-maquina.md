@@ -83,7 +83,7 @@ para el CI, y el canal de avisos y la señal en el home del motor.
 En la PC (Windows), `ops/prepara_pc.py` deja lo que faltaba (Java y TLC,
 `capacidades.json`, arranque por el vigilante). En macOS el mismo script toma su rama
 (`ops/prepara_pc.py --base ~/.motor-encargos`) y deja Java y TLC en
-`<base>/herramientas`, `capacidades.json` con `ci-linux` y `ci-github`, la carpeta
+`<base>/herramientas`, `capacidades.json` con `ci-github`, la carpeta
 `evidencia-ci` y el enlace `herramientas/java/actual`; no toca el LaunchAgent ni los
 secretos. Después de prepararla ya no deben faltar `java_tlc`, `capacidades`
 ni `evidencia-ci`; `arranque` sigue dependiendo del LaunchAgent de encargos

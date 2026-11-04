@@ -104,50 +104,25 @@ el lanzamiento no reanuda la conversación anterior. El prompt se arma desde el
 fold con el pedido, los ajustes, las fases cerradas con su resultado y los
 hallazgos abiertos.
 
-## El CI corre al entregar, antes del PR
+## El CI corre en el PR real
 
-Con entrega `pr`, cuando el responsable deja el producto listo el motor pide
-el CI completo del repo sobre esa versión y lo lanza en paralelo con el
-revisor. No espera la aprobación para enterarse de un rojo. El CI usa el mismo
-mecanismo de `ci-prueba`: un commit temporal, una rama y un PR borrador que se
-cierran siempre al terminar.
+Con entrega `pr`, el encargo no pide CI antes del PR. Cuando el revisor
+independiente aprueba (y DeepSeek, donde revisa el PR, deja de pedir cambios),
+el supervisor hace commit y push, abre o actualiza el PR real y termina. El
+aviso de cierre dice «PR abierto; el CI corre en el PR».
 
-Cada job del workflow (`ops-tests`, `bateria`, `macos`, `windows`) declara de
-qué rutas depende, sacadas de lo que ejecuta y de lo que sus pruebas leen.
-`ops-tests` depende de `ops/`; `macos` y `windows` de `motor/`, `tests/`,
-`conftest.py` y `verificacion/`, de `ops/iniciar_encargos_pc.py` y, `windows`,
-además de `ops/prepara_pc.py`. `bateria` descubre toda la suite y suma
-`conf-ejemplo/`, `proto/`, `skill/`, los dos documentos que se comprueban y los
-archivos de `ops/` que las pruebas importan o copian (incluidos
-`ops/iniciar_encargos_pc.py` y `ops/pstack/`). Si una corrección no toca las rutas de un
-job, ese job reusa su verde del último árbol que pasó; solo corre completo el
-job que el cambio puede afectar. Un cambio a `.github/workflows/**` vuelve a
-correr todos. El filtro va en el `if` de cada job, no en `paths` del
-disparador: un job saltado por su condición cuenta como éxito para la
-protección de rama, pero un workflow saltado deja los checks pendientes y
-bloquea el merge.
+El CI corre con los workflows normales del repo, los mismos que verá quien
+decida el merge. El supervisor lee su resultado una sola vez, cuando termina;
+no lo espera para cerrar y no reintenta en bucle. Un pendiente o un verde no
+detienen nada. Un rojo deja un aviso al propietario con el nombre del job y el
+motivo literal. Si el fallo es de una prueba del producto, además devuelve el
+log al mismo responsable una sola vez, para corregir en la misma rama y el
+mismo PR. Un fallo de infraestructura (secretos o Gitleaks, cancelación, tope
+de tiempo, GitHub caído o falta de minutos) solo avisa.
 
-El commit temporal abre su PR contra una rama `ci-base/` que apunta al último
-árbol verde (o a un árbol vacío en la primera corrida): el workflow compara
-base y head y su diff es la corrección. Un PR normal compara su base real. Ni
-el mensaje ni una firma de rama o autor deciden: manda el diff. Del mensaje
-solo se lee `jobs_extra`, que puede añadir un job; nunca quitarlo.
-
-Si el CI de la versión en revisión falla, el resultado queda como bloqueante
-en la fase. El revisor lo ve en su prompt con el nombre del job y el log
-literal, y el responsable lo recibe como su siguiente trabajo; una aprobación
-del revisor no cierra el encargo con ese rojo. Si el rojo llega mientras el
-revisor sigue trabajando esa versión, el juicio de esa vuelta se descarta —no
-vio la evidencia— y la siguiente vuelta del revisor se arma con el job y su
-log. Un resultado de una versión anterior se descarta: no acredita la nueva.
-Una corrida `cancelled` o `action_required` no es un verde: no acredita el
-árbol ni permite reusar sus jobs.
-
-Al abrir el PR real, si el árbol del commit ya pasó el CI del producto, el
-motor no espera otra corrida: los jobs cuyas rutas no cambiaron se dan por
-verdes con ese árbol y solo se esperan los checks ajenos al CI del producto
-(por ejemplo `gate`) y la revisión de DeepSeek. Un check en rojo del PR sigue
-bloqueando siempre.
+El reparto de la batería en cuatro partes y el filtro por rutas del workflow
+siguen igual: cada job declara de qué rutas depende y el resto se salta, con
+el filtro en el `if` de cada job y no en `paths` del disparador.
 
 ## DeepSeek es una compuerta aparte
 
@@ -238,34 +213,21 @@ idéntico no pasa el encargo a `necesita_usuario` por sí solo. Reintenta el
 mismo paso y el encargo sigue su curso.
 
 No hay tope de rondas mientras haya avance. Una vuelta es avance solo si
-cierra al menos un bloqueante: del revisor independiente, de DeepSeek o de
-los checks requeridos del PR. Cambiar archivos no es avance, y la firma del
-producto no entra en la cuenta. Que aparezca un bloqueante nuevo junto con
+cierra al menos un bloqueante: del revisor independiente o de DeepSeek.
+Cambiar archivos no es avance, y la firma del producto no entra en la cuenta. Que aparezca un bloqueante nuevo junto con
 uno cerrado sí es avance. Uno nuevo sin cerrar ninguno no es avance, pero
 tampoco es «el mismo bloqueo»: es información nueva (ver más abajo). Volver a
-cerrar algo que ya se cerró y se reabrió (por ejemplo un check que alterna rojo
-y verde) no es avance ni información nueva. El primer bloqueante que se ve no
-tiene con qué compararse y cuenta como avance.
+cerrar algo que ya se cerró y se reabrió no es avance ni información nueva. El
+primer bloqueante que se ve no tiene con qué compararse y cuenta como avance.
 
 Una vuelta sin avance incluye al revisor que no concluye (`no_concluyente`
 sin inspección faltante), al implementador que cambia archivos con el mismo
-bloqueante abierto, a los checks requeridos que siguen en rojo y a DeepSeek
-que mantiene el mismo bloqueante tras republicar el PR. La primera vuelta sin
+bloqueante abierto y a DeepSeek que mantiene el mismo bloqueante tras
+republicar el PR. La primera vuelta sin
 avance no repite: el responsable diagnostica por qué la corrección no lo
 resolvió. La segunda seguida deja el encargo en `necesita_usuario` con el
 diagnóstico concreto (qué bloqueante sigue abierto y qué se intentó), el
-trabajo intacto y sin lanzar más agentes. Un check requerido que estaba en
-rojo y pasa a verde al volver a correrse sobre el mismo SHA no espera a una
-entrega nueva: el supervisor relee en solo lectura los checks de ese SHA y
-anota `checks_verdes`, que cierra el bloqueo, reinicia la cuenta y reabre la
-entrega. La lectura se espacia 120 s por SHA (la marca vive en
-`checks_lectura.json` del encargo), no corre mientras el agente trabaja y se
-fuerza una sola vez por generación y SHA cuando la incorporación del agente
-queda pendiente (aunque tarde muchos barridos, por ejemplo mientras corre el
-comprobador), para anotar un verde antes de contar la vuelta sin agotar la
-cuota de la API de GitHub. El forzado se consume al leer, no al intentar: si
-la lectura falla queda pendiente, la causa queda en la marca y se reintenta
-a los 15 s. Cerrar un bloqueante o una
+trabajo intacto y sin lanzar más agentes. Cerrar un bloqueante o una
 aprobación sin nada abierto reinicia la cuenta, también al pasar a la fase
 siguiente. Nunca se declara éxito ni se vuelve a crear el encargo.
 
@@ -275,23 +237,15 @@ Tres reglas evitan que el freno pare un encargo por error (casos del 1-nov):
 
 - **Una vuelta cuenta una sola vez.** La vuelta es la generación del agente. Si en
   el mismo barrido entran varias fuentes (la observación del supervisor, el
-  revisor, DeepSeek, los checks), la primera que no es información nueva la
+  revisor, DeepSeek), la primera que no es información nueva la
   resuelve y las demás no suman ni escalan (`Encargo.vuelta_contada`). Antes dos
   fuentes del mismo barrido llevaban el encargo de «diagnosticar» a
   `necesita_usuario` sin dar el turno de diagnóstico.
 - **No cuenta con una revisión externa pendiente.** Mientras DeepSeek no haya
-  leído el commit vigente, o sus checks requeridos sigan corriendo
-  (`Fase.checks_esperando_sha`, que anota `checks_esperando` y cierran
-  `checks_verdes` o `checks_rojos`; solo vale mientras algún check
-  requerido tiene una corrida en marcha o en cola para ese SHA: una lectura a
-  mitad de corrida no se toma por terminada ni refresca los checks en rojo, y
-  `checks_rojos` los adopta cuando los requeridos acaban, aunque GitHub siga
-  corriendo otros workflows que no lo son), una vuelta del responsable sin cambios no
-  se cuenta: el encargo espera (60 s con DeepSeek, 120 s con checks) en vez de
-  contar un bloqueante que su fuente puede haber cerrado ya. Un bloqueante que la
-  fuente cerró (resuelto o descartado) deja de estar abierto con la relectura
-  de DeepSeek y los `checks_verdes`, y tampoco cuenta. Con los checks en rojo
-  y nada corriendo sí cuenta: DeepSeek no se lee mientras los checks están en rojo.
+  leído el commit vigente, una vuelta del responsable sin cambios no se cuenta:
+  el encargo espera 60 s en vez de contar un bloqueante que DeepSeek puede
+  haber cerrado ya. Un bloqueante que DeepSeek cerró (resuelto o descartado)
+  deja de estar abierto con su relectura y tampoco cuenta.
 - **Un bloqueante nuevo es información nueva.** `Encargo.devuelto_con` guarda los
   bloqueos abiertos la última vez que el trabajo volvió al responsable. Si una
   vuelta sin avance trae uno que no estaba ahí (ni se cerró antes), el trabajo
@@ -334,59 +288,6 @@ solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
   existe no bloquea. Una solicitud detenida antes de despachar queda
   `detenida`, y pedir lo mismo otra vez es una solicitud nueva.
 
-### Evidencia de CI sin el operador (`ci.correr`)
-
-Cuando el revisor necesita el log de un job que solo existe en el CI (Linux
-real, bwrap, WSL), lo pide por el puente con `ci.correr` sobre un recurso de
-tipo `ci` que el host concede en `capacidades.json`:
-
-```json
-{"recursos": {"ci-linux": {"tipo": "ci", "base": "main"}}}
-```
-
-El repo y el workflow salen del repo de entrega del encargo. Un `repo` en el
-recurso solo se usa si coincide con ese repo, y `workflows` permite fijar un
-workflow por repo (`{"workflows": {"gon0801/goncloud-motor": "pruebas.yml"}}`);
-sin workflow, el veredicto cubre todos los workflows que corren en
-`pull_request` para el SHA, salvo los de ai-review.
-
-El juicio declara `"inspeccion": {"operacion": "ci.correr", "recurso":
-"ci-linux", "parametros": {"job": "bateria"}}`. El supervisor, con el
-`gh` y el git que ya tiene (sin tokens nuevos):
-
-1. Arma un commit con la versión vigente del producto, con o sin commit propio,
-   en un índice aparte: no toca el índice, la rama ni el árbol del espacio. Deja
-   fuera `.interno/`, `__pycache__` y `.runtime`, también si HEAD ya los
-   rastrea.
-2. Lo sube a `ci-prueba/<encargo>-<sha7>-<hora>` y abre un PR borrador.
-3. Espera el run de los workflows del repo para ese SHA y el job pedido.
-4. Entrega el log literal, byte a byte, como archivo en
-   `.interno/entregas/<solicitud>/<job>-<sha7>-run<N>.log`, con el SHA, el árbol,
-   el número de run, la URL y la conclusión del job. Un job en rojo también
-   entrega su log.
-5. Cierra el PR y borra la rama, siempre: con un fallo de CI, con un error
-   inesperado y con el SIGTERM de la parada del encargo. Si falla un paso de la
-   limpieza, los demás siguen y la respuesta dice cuál falló. Las ramas
-   `ci-prueba/<encargo>-*` de un run que murió sin limpiar (el nombre lleva la
-   hora de salida) se borran al empezar el siguiente, solo cuando ya pasaron el
-   plazo de un run (`MOTOR_CI_MAX` más 5 minutos): la rama de un run en curso no
-   se toca.
-
-Sin `gh`, sin red, sin sesión de `gh` o con un job que no existe, el revisor
-recibe la causa y qué hacer: `gh no está instalado`, `sin red hacia GitHub`,
-`el acceso de gh o git del supervisor no basta` o la lista de jobs del run. Un
-run tarda minutos: el barrido solo espera `MOTOR_CI_ESPERA` (5 s) a que la
-herramienta termine y la respuesta queda `pendiente`; en los barridos siguientes
-no espera nada. La herramienta sigue por su cuenta, con su propio plazo
-(`MOTOR_CI_MAX`, 45 minutos) y su limpieza. El recurso no es observable: pedir el
-mismo job sobre la misma versión sí cuenta como repetir.
-
-Parar el encargo no corta la limpieza: la herramienta de CI recibe SIGTERM (solo
-ella, no el `gh` o el git de su limpieza) y `MOTOR_CI_GRACIA` (90 s) antes del
-SIGKILL, en las tres rutas que la terminan (el primer lanzamiento, la espera de
-una herramienta que ya estaba viva y `cerrar_herramientas`). La marca de la
-herramienta guarda su operación para que esta última sepa que es de CI.
-
 ### Revisiones `no_concluyente` repetidas
 
 Una revisión `no_concluyente` que nombra una inspección no cierra ni abre
@@ -399,7 +300,7 @@ la escalera de diagnóstico de los bloqueos. A la tercera
 de la última revisión y no gasta otro turno del revisor.
 
 La cuenta empieza de nuevo con otra versión del producto, otro pedido, un
-bloqueante cerrado o un check que pasó a verde (aunque ocurra fuera de la revisión), otro veredicto, un ajuste o una respuesta del propietario.
+bloqueante cerrado, otro veredicto, un ajuste o una respuesta del propietario.
 Si el recurso pedido cambió desde la última lectura (otra huella del mismo
 archivo), pedirlo de nuevo no cuenta como repetir.
 
@@ -414,9 +315,11 @@ encargo termina solo cuando el alcanzado iguala al autorizado.
   vigente + recibos de los efectos pedidos. No se toca GitHub.
 - `pr`: además, el espacio es un clon del repo en la rama del encargo y el
   supervisor, sin sesiones LLM, hace commit del producto
-  (sin `.interno/`), push, abre el PR con `motor/github.py`, lo marca listo
-  (la revisión automática ignora borradores) y espera la revisión de DeepSeek
-  para ese SHA. Cada hecho es un evento `entrega_externa`.
+  (sin `.interno/`), push, abre o actualiza el PR con `motor/github.py` y lo
+  marca listo (la revisión automática ignora borradores). Con la aprobación
+  del revisor y, donde revisa, de DeepSeek, el encargo termina. El CI corre
+  después en el PR real y su resultado se lee una vez, como se describe
+  arriba. Cada hecho es un evento `entrega_externa`.
 
 Antes de publicar o de cerrar, el supervisor vuelve a calcular la versión
 del producto y la compara con la referencia aprobada y con el producto

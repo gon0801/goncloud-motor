@@ -18,9 +18,10 @@ Deja, de forma idempotente (correrlo dos veces no cambia nada la segunda):
 - En Mac, un enlace estable <base>/herramientas/java/actual al JDK instalado.
   Ni launchd ni un shell de servicio heredan variables de la terminal, así que
   verificar.sh y `motor director capacidades` buscan ahí sin necesitarlas.
-- <base>/capacidades.json con los recursos ci-linux y ci-github, y la carpeta
-  <base>/evidencia-ci que declara ci-github, sin pisar los recursos que el
-  operador ya haya declarado.
+- <base>/capacidades.json con el recurso ci-github y la carpeta
+  <base>/evidencia-ci que declara, sin pisar los recursos que el operador ya
+  haya declarado. Al volver a preparar una máquina se quita ci-linux, que ya no
+  se usa: el CI corre en el PR real.
 - En Windows, la llave HKCU\\...\\Run\\GoncloudMotorEncargos lanzando el
   vigilante (ops/iniciar_encargos_pc.py) en lugar de supervisor.ps1 directo.
   supervisor.ps1 no se borra: sigue siendo lo que el vigilante lanza y vigila
@@ -75,10 +76,9 @@ RECURSOS = {
         "transporte": "fichero",
         "raiz": "{raiz}/evidencia-ci",
     },
-    "ci-linux": {
-        "tipo": "ci",
-    },
 }
+# Recursos de preparaciones anteriores que ya no se usan.
+RECURSOS_QUE_SE_QUITAN = ("ci-linux",)
 TIMEOUT_CORTO = 30
 TIMEOUT_VERIFICAR_S = 1800
 BASH_POR_OMISION = r"C:\Program Files\Git\bin\bash.exe"
@@ -402,10 +402,8 @@ def _entorno_servicio_mac(base: Path) -> tuple[str, str]:
 # ------------------------------------------------------- capacidades.json
 
 
-# El recurso ci ya no fija el repo, el workflow ni la base del encargo: los saca
-# el motor de la entrega. Al volver a preparar una máquina se quitan los que dejó
-# una preparación anterior, sin tocar lo demás que haya declarado el operador.
-CAMPOS_FIJOS_QUE_SE_QUITAN = {"ci-linux": ("repo", "workflow", "base")}
+# Al volver a preparar una máquina se quita el recurso ci-linux que dejó una
+# preparación anterior, sin tocar lo demás que haya declarado el operador.
 
 
 def capacidades_deseadas(base: Path) -> dict:
@@ -424,18 +422,17 @@ def capacidades_deseadas(base: Path) -> dict:
 def _recurso_suficiente(nombre: str, actual, deseado: dict) -> bool:
     if not isinstance(actual, dict):
         return False
-    if any(campo in actual for campo in CAMPOS_FIJOS_QUE_SE_QUITAN.get(nombre, ())):
-        return False
     return all(actual.get(k) == v for k, v in deseado.items())
 
 
 def capacidades_suficiente(actual, deseado: dict) -> bool:
     """La base puede tener recursos propios del operador: lo que prepara_pc
-    exige es que sus dos recursos estén con los valores que declara, no que el
-    archivo sea exactamente el suyo (F3). Un `repo` o `workflow` fijado por una
-    preparación vieja deja el recurso insuficiente para que se limpie."""
+    exige es que su recurso esté con los valores que declara, no que el archivo
+    sea exactamente el suyo (F3)."""
     recursos = actual.get("recursos") if isinstance(actual, dict) else None
     if not isinstance(recursos, dict):
+        return False
+    if any(nombre in recursos for nombre in RECURSOS_QUE_SE_QUITAN):
         return False
     return all(
         _recurso_suficiente(nombre, recursos.get(nombre), recurso)
@@ -459,17 +456,17 @@ def instalar_capacidades(base: Path) -> tuple[str, str]:
         if isinstance(actual, dict) and isinstance(actual.get("recursos"), dict)
         else {}
     )
+    for nombre in RECURSOS_QUE_SE_QUITAN:
+        recursos.pop(nombre, None)
     for nombre, recurso in deseado["recursos"].items():
         previo = recursos.get(nombre)
         fusion = dict(previo) if isinstance(previo, dict) else {}
-        for campo in CAMPOS_FIJOS_QUE_SE_QUITAN.get(nombre, ()):
-            fusion.pop(campo, None)
         fusion.update(recurso)
         recursos[nombre] = fusion
     combinado = dict(actual) if isinstance(actual, dict) else {}
     combinado["recursos"] = recursos
     _escribir_atomico(ruta, json.dumps(combinado, ensure_ascii=False, indent=2) + "\n")
-    return "hecho", "capacidades.json escrito con ci-linux y ci-github"
+    return "hecho", "capacidades.json escrito con ci-github; ci-linux ya no se usa"
 
 
 # ---------------------------------------------------------------- llave Run
@@ -549,7 +546,7 @@ def _comprobar_mac(base: Path) -> list[dict]:
         {
             "paso": "capacidades",
             "estado": "ok" if capacidades_suficiente(capacidades_actual, deseado) else "falta",
-            "detalle": "capacidades.json con ci-linux y ci-github"
+            "detalle": "capacidades.json con ci-github"
             if capacidades_suficiente(capacidades_actual, deseado)
             else "capacidades.json no coincide con lo esperado",
         },
@@ -607,7 +604,7 @@ def comprobar(base: Path, correr=correr) -> list[dict]:
         {
             "paso": "capacidades",
             "estado": "ok" if capacidades_suficiente(capacidades_actual, deseado) else "falta",
-            "detalle": "capacidades.json con ci-linux y ci-github"
+            "detalle": "capacidades.json con ci-github"
             if capacidades_suficiente(capacidades_actual, deseado)
             else "capacidades.json no coincide con lo esperado",
         },

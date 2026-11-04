@@ -126,22 +126,22 @@ class InspeccionVacia(unittest.TestCase):
                 "evidencia": "falta el log del job",
                 "inspeccion_faltante": "el log del job jaula-linux",
                 "inspeccion": {
-                    "operacion": "ci.log",
-                    "recurso": "ci-linux",
-                    "parametros": {"pr": "309", "job": "jaula", "sha": "abc"},
+                    "operacion": "remoto.leer",
+                    "recurso": "ci-github",
+                    "parametros": {"ruta": "bateria.log"},
                 },
             },
             _ALCANCE,
         )
         self.assertEqual(juicio.veredicto, "no_concluyente")
         self.assertIsNotNone(juicio.inspeccion)
-        self.assertEqual(juicio.inspeccion.operacion, "ci.log")
+        self.assertEqual(juicio.inspeccion.operacion, "remoto.leer")
         self.assertEqual(juicio.inspeccion_faltante, "el log del job jaula-linux")
 
     def test_inspeccion_con_contenido_en_aprobado_sigue_rechazandose(self):
         with self.assertRaises(DefectoJuicio):
             self._aprobado(
-                inspeccion={"operacion": "ci.log", "recurso": "ci-linux"},
+                inspeccion={"operacion": "remoto.leer", "recurso": "ci-github"},
             )
 
 

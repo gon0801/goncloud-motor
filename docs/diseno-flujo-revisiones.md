@@ -48,7 +48,7 @@ entrega externa y la anti-repetición, sin estado lateral.
   Un `instrumento_fallo` repetido no escala por conteo: reintenta el mismo
   paso y no toca `sin_progreso`. Solo la anti-repetición de abajo escala.
 - **Anti-repetición sin tope.** Sin número fijo de rondas: progreso = se
-  cierra un bloqueante (revisor independiente, DeepSeek o checks requeridos).
+  cierra un bloqueante (revisor independiente o DeepSeek).
   Cambiar archivos no cuenta. Sin progreso, primero diagnostica el
   responsable; la segunda vuelta seguida sin progreso es `necesita_usuario`.
 
