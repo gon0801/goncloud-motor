@@ -250,6 +250,62 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
             self.assertEqual(len(_avisos(e)), 1)
 
 
+class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
+    def test_la_cancelacion_pasajera_pasa_en_la_segunda_y_no_avisa(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-cancel-1",
+                _GhConCorridas,
+                {"corridas": {"bateria": "cancelled"}},
+            )
+            e = vuelta("hola\n")
+            repo = e.entrega.repo
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
+            self.assertEqual(len(vuelta.gh.relanzadas), 1)
+            self.assertEqual(_avisos(e), [])
+
+            _segunda_corrida(vuelta, repo, {"bateria": "success"})
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            self.assertEqual(e.fase_actual.ci_pr_estado, "verde")
+            self.assertEqual(_avisos(e), [])
+            self.assertEqual(len(vuelta.gh.relanzadas), 1)
+
+    def test_la_cancelacion_permanente_avisa_tras_el_unico_reintento(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-cancel-2",
+                _GhConCorridas,
+                {"corridas": {"bateria": "cancelled"}},
+            )
+            e = vuelta("hola\n")
+            repo = e.entrega.repo
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
+            self.assertEqual(len(vuelta.gh.relanzadas), 1)
+
+            _segunda_corrida(vuelta, repo, {"bateria": "cancelled"})
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            self.assertEqual(e.fase_actual.ci_pr_estado, "rojo")
+            self.assertEqual(e.fase_actual.ci_pr_clase, "tuberia")
+            self.assertEqual(e.fase_actual.ci_pr_reintento, "permanente")
+            self.assertEqual(len(vuelta.gh.relanzadas), 1)
+            avisos = _avisos(e)
+            self.assertEqual(len(avisos), 1)
+            self.assertIn("tubería", avisos[0]["texto"])
+            self.assertIn("se canceló", avisos[0]["texto"])
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            self.assertEqual(len(vuelta.gh.relanzadas), 1)
+
+
 class RojoInciertoNoDevuelveNiReintenta(unittest.TestCase):
     def test_avisa_que_no_puede_clasificar_y_recomienda_a_claude(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

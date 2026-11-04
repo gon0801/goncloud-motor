@@ -4512,9 +4512,9 @@ def _revisar_ci_del_pr(
     if valores == {"tuberia"} and not reintentado:
         run_ids = tuple(
             dict.fromkeys(
-                str(c.get("run_id") or "")
+                str(c.get("run_id_corrida") or c.get("run_id") or "")
                 for c in caidas
-                if str(c.get("run_id") or "")
+                if str(c.get("run_id_corrida") or c.get("run_id") or "")
             )
         )
         if run_ids:
