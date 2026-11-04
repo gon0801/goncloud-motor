@@ -24,15 +24,32 @@ def _escribible(ruta: Path) -> None:
         pass
 
 
+def _reintentar_sin_solo_lectura(funcion, ruta, excinfo) -> None:
+    """Un archivo de solo lectura no se puede borrar en Windows. Se le quita el
+    atributo y se reintenta ese mismo archivo; si aun así falla, el error sube.
+    Se usa `onerror` porque `onexc` no existe en el Python 3.11 de la PC."""
+    exc = excinfo[1] if isinstance(excinfo, tuple) else excinfo
+    if isinstance(exc, FileNotFoundError):
+        return
+    if funcion not in (os.unlink, os.remove, os.rmdir):
+        raise exc
+    ruta = Path(ruta)
+    _escribible(ruta)
+    _escribible(ruta.parent)
+    try:
+        funcion(ruta)
+    except FileNotFoundError:
+        pass
+
+
 def _quitar(ruta: Path) -> None:
+    """Borra un archivo, enlace o árbol aunque tenga el permiso de solo lectura."""
     if ruta.is_symlink() or ruta.is_file():
         _escribible(ruta.parent)
         _escribible(ruta)
         ruta.unlink()
     elif ruta.is_dir():
-        for raiz, _carpetas, _archivos in os.walk(ruta):
-            _escribible(Path(raiz))
-        shutil.rmtree(ruta)
+        shutil.rmtree(ruta, onerror=_reintentar_sin_solo_lectura)
 
 
 def _igual(origen: Path, destino: Path) -> bool:

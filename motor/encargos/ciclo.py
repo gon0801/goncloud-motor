@@ -658,24 +658,84 @@ def _cerrar_procesos_del_encargo(registro: Registro, enc: Encargo) -> int:
     return cerrados
 
 
-def _limpiar_encargo_cerrado(registro: Registro, enc: Encargo) -> bool:
+# Encargos cuya limpieza ya falló en este proceso, con los intentos fallidos.
+# Un fallo se anota una sola vez y se permite un único reintento para el caso
+# transitorio (un handle que tarda en soltarse); después se deja de intentar.
+# Un arranque nuevo del supervisor vuelve a permitir ese reintento.
+_LIMPIEZA_FALLIDA: dict[tuple[str, str], int] = {}
+_MAX_INTENTOS_LIMPIEZA = 2
+
+
+def _anotar_limpieza_fallida(
+    registro: Registro, enc: Encargo, ruta: Path, exc: OSError, hora: str
+) -> None:
+    nota = (
+        f"limpieza({ruta.name}): {type(exc).__name__}: {exc}; "
+        "no se reintenta en cada barrido"
+    )[:2000]
+    registro.anotar(
+        enc.id,
+        {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
+        f"limpieza-fallida:{enc.id}",
+    )
+
+
+def _limpiar_encargo_cerrado(
+    registro: Registro, enc: Encargo, hora: str = ""
+) -> bool:
     """Un encargo terminado o cancelado ya no necesita su runtime ni los
     intentos de ejecución. El historial vive en `registro.sqlite`; el espacio
-    del producto se conserva."""
+    del producto se conserva. Lo que no se pueda borrar queda anotado una sola
+    vez: se reintenta una vez más y después no se vuelve a intentar en cada
+    barrido."""
     if enc.estado not in ("terminado", "cancelado"):
         return False
+    clave = (str(Path(registro.base)), enc.id)
+    fallos_previos = _LIMPIEZA_FALLIDA.get(clave, 0)
+    if fallos_previos >= _MAX_INTENTOS_LIMPIEZA:
+        return False
+    hora = hora or ahora_iso()
     _cerrar_procesos_del_encargo(registro, enc)
     base = Path(registro.base)
     borrado = False
-    runtime = base / "runtime" / enc.id
-    if runtime.exists() or runtime.is_symlink():
-        borrar_arbol(runtime)
-        borrado = True
+    fallos: list[tuple[Path, OSError]] = []
+
+    def borrar(ruta: Path) -> None:
+        """Borra una ruta y guarda el error para anotarlo sin cortar el resto."""
+        nonlocal borrado
+        if not (ruta.exists() or ruta.is_symlink()):
+            return
+        try:
+            borrar_arbol(ruta)
+            borrado = True
+        except OSError as exc:
+            fallos.append((ruta, exc))
+
+    borrar(base / "runtime" / enc.id)
     ejecucion = base / "ejecucion" / enc.id
-    for intento in sorted(ejecucion.glob("intento-*")):
-        borrar_arbol(intento)
-        borrado = True
-    (ejecucion / "actual").unlink(missing_ok=True)
+    try:
+        intentos = sorted(
+            (
+                ruta
+                for ruta in ejecucion.iterdir()
+                if ruta.name.startswith("intento-")
+            ),
+            key=lambda ruta: ruta.name,
+        )
+    except FileNotFoundError:
+        intentos = []
+    except OSError as exc:
+        fallos.append((ejecucion, exc))
+        intentos = []
+    for intento in intentos:
+        borrar(intento)
+    borrar(ejecucion / "actual")
+    if fallos:
+        _LIMPIEZA_FALLIDA[clave] = fallos_previos + 1
+        ruta, exc = fallos[0]
+        _anotar_limpieza_fallida(registro, enc, ruta, exc, hora)
+    else:
+        _LIMPIEZA_FALLIDA.pop(clave, None)
     return borrado
 
 
@@ -900,7 +960,7 @@ def _barrer_encargos(
                     enc = registro.fold(enc.id) or enc
             if enc.estado == "terminado" and enc.pr_numero and not parada:
                 enc = _revisar_ci_del_pr(registro, enc, gh, hora)
-            _limpiar_encargo_cerrado(registro, enc)
+            _limpiar_encargo_cerrado(registro, enc, hora)
             informes.append(vista(enc))
             continue
         if (
@@ -1168,7 +1228,7 @@ def _barrer_encargos(
             _lanzar_uno(registro, enc, directorio, espacio, hora, lanzador)
             enc = registro.fold(encargo_id)
         enc = _vigilar_quietud(registro, enc, decision, arbol, parada, hora, epoch)
-        if _limpiar_encargo_cerrado(registro, enc):
+        if _limpiar_encargo_cerrado(registro, enc, hora):
             enc = registro.fold(encargo_id) or enc
         informes.append(vista(enc))
     return informes
@@ -5398,7 +5458,7 @@ def _entregar_con_pendientes(
     _publica(directorio / "incorporado", hora)
     if enc.estado == "terminado":
         _publicar_resultado(registro, enc, hora)
-        _limpiar_encargo_cerrado(registro, enc)
+        _limpiar_encargo_cerrado(registro, enc, hora)
     return enc
 
 
