@@ -19,12 +19,9 @@ saltado por `paths` quedaría pendiente y bloquearía el merge. Por eso el
 filtro va en el job, nunca en el disparador.
 
 La selección sale del diff real de git entre la base y el head del PR, nunca
-del mensaje del commit ni de una firma que se pueda falsificar. El commit
-temporal del motor abre su PR contra una rama `ci-base/` que apunta al último
-árbol verde (o a un árbol vacío en la primera corrida); su diff es la
-corrección y el resto de jobs reusa su verde. Del mensaje solo se lee
-`jobs_extra=...`, que puede añadir un job (el revisor que pide uno exacto);
-nunca quitar.
+del mensaje del commit ni de una firma que se pueda falsificar. Corre en el
+workflow normal del PR, el mismo que verá quien decida el merge. Del mensaje
+solo se lee `jobs_extra=...`, que puede añadir un job; nunca quitar.
 """
 
 from __future__ import annotations
@@ -38,7 +35,6 @@ import sys
 from pathlib import Path
 
 TRABAJOS = ("ops-tests", "bateria", "macos", "windows")
-TODOS = TRABAJOS + ("gate", "reconcile")
 
 _RUTAS_MOTOR = ("motor/", "tests/", "conftest.py", "verificacion/")
 

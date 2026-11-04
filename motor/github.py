@@ -107,17 +107,22 @@ def _corrida(r: dict) -> dict:
     # borrador (`_relanza_saltada`). Las conclusiones completadas sin veredicto
     # (`cancelled`, `action_required`, `stale`) quedan en `faltan`, pero no son
     # saltadas del borrador: no deben exponer `run_id` a `_relanza_saltada`.
+    # `run_id_corrida` conserva el id real en todos los casos: el encargo lo
+    # usa para el único `rerun --failed` de un rojo de tubería, que también
+    # incluye cancelaciones.
     return {
         "nombre": r.get("name", ""),
         "run_id": ""
         if r.get("conclusion") in _CONCLUSIONES_SIN_VEREDICTO
         else _run_id(r),
+        "run_id_corrida": _run_id(r),
         # El ID del check-run de un job de Actions es el databaseId del job:
         # es lo que `gh run view --job` espera (h_a8968fb0).
         "job_id": str(r.get("id") or ""),
         "url": r.get("html_url") or r.get("details_url") or "",
         "status": r.get("status", ""),
         "conclusion": r.get("conclusion"),
+        "completed_at": str(r.get("completed_at") or ""),
     }
 
 
@@ -634,7 +639,7 @@ class GhGitHub:
         return "\n".join(texto.splitlines()[-80:])
 
     def log_fallido_job(self, repo, run_id, job, job_id="") -> str:
-        """El log literal del job exacto de la corrida, como hace `ci.log`.
+        """El log literal del job exacto de la corrida.
         `--job` pide el ID del job, no su nombre: con el nombre `gh` intenta
         GET /actions/jobs/<nombre> y falla (h_a8968fb0). El ID viene del
         check-run (`job_id`); si no lo hay, se resuelve con el nombre. El
@@ -656,7 +661,7 @@ class GhGitHub:
             return ""
 
     def _id_del_job(self, repo, run_id, job) -> str:
-        """Resuelve el ID del job por su nombre, como hace `ci.log`."""
+        """Resuelve el ID del job por su nombre."""
         try:
             vista = json.loads(
                 self._gh(

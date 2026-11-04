@@ -93,10 +93,16 @@ _UMBRAL_S = 30
 # primera del supervisor tras una caída.
 _QUIETUD_S = 600
 _QUIETUD_VUELTAS = 3
-_RELECTURA_CHECKS_S = 120
 _RELECTURA_DEEPSEEK_S = 60
 _AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
+_TOPE_LOG_JOB = 80
+_LIMITE_CUERPO_PR = 65_536
+_NOTA_CUERPO_RECORTADO = (
+    "\n\n[Nota: el cuerpo supera el límite de GitHub y se recortó. "
+    "El texto completo está en `.interno/cuerpo-pr.md`, en el espacio del "
+    "encargo y fuera del PR.]"
+)
 
 
 def ahora_iso(epoch: float | None = None) -> str:
@@ -830,23 +836,6 @@ def _barrer_encargos(
                     f"buzon-fallo:{encargo_id}:{type(exc).__name__}",
                 )
             enc = registro.fold(encargo_id) or enc
-            try:
-                enc = _aplicar_ci_producto(registro, enc, hora)
-            except (OSError, ValueError, TypeError, KeyError) as exc:
-                registro.anotar(
-                    encargo_id,
-                    {
-                        "kind": "procedimiento",
-                        "data": {
-                            "nota": (
-                                "no se pudo aplicar el resultado del CI del "
-                                f"producto: {type(exc).__name__}: {exc}"
-                            ),
-                            "hora": hora,
-                        },
-                    },
-                    f"ci-aplicar-fallo:{encargo_id}:{type(exc).__name__}",
-                )
         if enc.host and enc.host != socket.gethostname() and (enc.reserva or enc.proc):
             arbol = "incierto"
         observacion_path = directorio / "herramienta.json"
@@ -918,14 +907,6 @@ def _barrer_encargos(
                 "necesita_usuario",
             )
         )
-        if (
-            not parada
-            and enc.via != "directa"
-            and enc.estado in ("recibido", "ejecutando")
-        ):
-            enc = _reconciliar_checks(
-                registro, enc, gh, espacio, hora, epoch, forzar=por_incorporar
-            )
         if not parada and enc.via != "directa":
             enc = _releer_deepseek(
                 registro, enc, gh, _directorio(base, encargo_id), hora, epoch,
@@ -933,27 +914,6 @@ def _barrer_encargos(
             )
         if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
-            # El CI del producto se pide al incorporar. Se atiende aquí, antes
-            # de que el revisor abra su intento: la petición nace con el intento
-            # del responsable y tiene que despacharse en el mismo barrido.
-            try:
-                necesidades.atender(registro, enc, espacio, directorio, hora)
-            except (OSError, ValueError) as exc:
-                registro.anotar(
-                    encargo_id,
-                    {
-                        "kind": "procedimiento",
-                        "data": {
-                            "nota": (
-                                "el buzón de necesidades falló al pedir el CI: "
-                                f"{type(exc).__name__}: {exc}"
-                            ),
-                            "hora": hora,
-                        },
-                    },
-                    f"buzon-ci-fallo:{encargo_id}:{type(exc).__name__}",
-                )
-            enc = registro.fold(encargo_id) or enc
             arbol = observar(directorio, proc)
         if arbol == "ausente" and enc.proc is not None:
             _soltar_conductor(registro, enc, hora)
@@ -964,10 +924,6 @@ def _barrer_encargos(
                 f"intento-cerrado:{encargo_id}:{enc.proc.pid}:{enc.proc.inicio}",
             )
             enc = registro.fold(encargo_id)
-        # El CI del producto se aplica cuando el turno que lo pidió ya cerró:
-        # así un rojo puede devolver el trabajo al responsable sin cambiar el
-        # rol de un proceso vivo.
-        enc = _aplicar_ci_producto(registro, enc, hora)
         sin_llm = False
         if (
             not parada
@@ -996,6 +952,8 @@ def _barrer_encargos(
                 )
             if sin_llm:
                 arbol = observar(directorio, proc)
+        if enc.estado == "terminado" and enc.pr_numero and not parada:
+            enc = _revisar_ci_del_pr(registro, enc, gh, hora)
         sin_hecho = _edad(enc, epoch) >= umbral_s
         decision = _decision(enc, arbol, directorio, sin_hecho, hora)
         if sin_llm:
@@ -1059,7 +1017,7 @@ def _barrer_encargos(
         if parada or necesidades.detenida_ahora(registro, encargo_id):
             necesidades.cerrar_herramientas_del_encargo(directorio)
         elif decision["matar"]:
-            # Matar el turno (colgado, vencido) no mata una corrida de CI: no depende de él.
+            # Matar el turno (colgado, vencido) cierra solo las herramientas del turno.
             necesidades.cerrar_herramientas(directorio, solo_del_turno=True)
         if decision["lanzar"] and lanzador is not None and not parada:
             _lanzar_uno(registro, enc, directorio, espacio, hora, lanzador)
@@ -1792,18 +1750,12 @@ def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
 
 
 def _bloqueo_externo_abierto(enc: Encargo) -> str:
-    """Bloqueantes de DeepSeek y checks requeridos en rojo que siguen abiertos,
-    con el texto con que `_paso_entrega` los reporta. Vacio si no hay ninguno."""
-    partes = []
+    """Bloqueantes de DeepSeek que siguen abiertos, con el texto con que
+    `_paso_entrega` los reporta. Vacio si no hay ninguno."""
     abiertos = bloqueantes_abiertos(enc, "deepseek")
-    if abiertos:
-        partes.append("; ".join(f"{h.id} {h.titulo}" for h in abiertos) + " (DeepSeek)")
-    fase = enc.fase_actual
-    if fase is not None and fase.fallas_checks:
-        partes.append(
-            "checks requeridos en rojo: " + ", ".join(sorted(fase.fallas_checks))
-        )
-    return "; ".join(partes)
+    if not abiertos:
+        return ""
+    return "; ".join(f"{h.id} {h.titulo}" for h in abiertos) + " (DeepSeek)"
 
 
 def _deepseek_por_releer(enc: Encargo) -> bool:
@@ -1937,8 +1889,6 @@ def _intentar_cierre(
     llega aquí sin ese paso (`veredicto_comprobado` falso) no cierra: el
     siguiente paso de entrega lo hace con el veredicto vigente.
     """
-    if _devolver_ci_rojo(registro, enc, hora, "ci-cierre"):
-        return registro.fold(enc.id)
     if (
         not veredicto_comprobado
         and enc.entrega.nivel in ("pr", "integrado", "desplegado")
@@ -2651,7 +2601,6 @@ def _incorporar_responsable(
         f"producto:{enc.id}:{enc.fase_activa}:{enc.generacion}:{version.firma}",
     )
     enc = registro.fold(enc.id)
-    enc = _pedir_ci_producto(registro, enc, espacio, directorio, hora)
     if _disputa_de_deepseek(registro, enc, interno, hora):
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -2743,15 +2692,15 @@ def _incorporar_responsable(
     if commit_entregado and not _deepseek_por_releer(enc):
         abierto = _bloqueo_externo_abierto(enc)
         if abierto and revision_externa_pendiente(enc):
-            # Falta el veredicto de DeepSeek o de los checks sobre este commit: una
+            # Falta el veredicto de DeepSeek sobre este commit: una
             # vuelta sin novedad del supervisor no es una vuelta sin avance, y el
             # bloqueante abierto puede ser uno que su fuente ya cerró. No cuenta;
             # se espera, sin lanzar otro turno que devolvería lo mismo.
             marcar_espera(
                 registro, enc.id,
                 f"esperando la revisión externa del commit {commit_entregado[:12]} "
-                "(DeepSeek o checks) antes de contar otra vuelta",
-                _reanuda_en(120 if enc.fase_actual.checks_esperando_sha else 60), hora,
+                "(DeepSeek) antes de contar otra vuelta",
+                _reanuda_en(60), hora,
             )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
@@ -2765,21 +2714,6 @@ def _incorporar_responsable(
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
     if _correccion_deepseek_conserva_aprobadas(enc):
-        _publica(directorio / "incorporado", hora)
-        return registro.fold(enc.id)
-    if _ci_producto_rojo(enc):
-        # La misma version volvio a entregarse con el CI rojo: no gasta un turno
-        # del revisor en un producto que ya se sabe que no pasa. La escalera de
-        # sin_progreso evita repetir la devolucion para siempre.
-        fase_ci = enc.fase_actual
-        _sin_avance(
-            registro,
-            enc,
-            _motivo_ci(enc),
-            "se volvio a entregar la misma version con el CI del producto en rojo",
-            hora,
-            f"ci-{fase_ci.ci_version[:12] if fase_ci else ''}",
-        )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     alcance = alcance_de(enc)
@@ -2941,27 +2875,6 @@ def _incorporar_revisor(
     from motor.runwrap import _publica
 
     if _salta_inspeccion(registro, enc, directorio, hora):
-        _publica(directorio / "incorporado", hora)
-        return registro.fold(enc.id)
-    if _ci_revision_rojo_pendiente(registro, enc):
-        # Esta vuelta empezó antes del rojo: su juicio no vio el job ni el log.
-        # No se acepta; la siguiente vuelta del revisor se arma con la
-        # evidencia que ya está en la fase (`_bloque_ci`).
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "procedimiento",
-                "data": {
-                    "nota": (
-                        "se descarta el juicio de esta vuelta: el CI del "
-                        "producto quedó rojo durante la revisión; la siguiente "
-                        "vuelve a revisar con el nombre del job y su log"
-                    ),
-                    "hora": hora,
-                },
-            },
-            f"ci-revision-reintento:{enc.id}:{enc.generacion}",
-        )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     ref_path = directorio / "revision.json"
@@ -3669,318 +3582,6 @@ def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -
     )
 
 
-def _checks_extra(enc: Encargo, espacio: Path) -> tuple[str, ...]:
-    from motor.conf import RepoConf
-
-    base = _ref_existente(espacio, f"origin/{enc.entrega.base}", enc.entrega.base)
-    if not base:
-        raise ValueError("no se encontró la base autorizada para leer .motor.toml")
-    existe = _git(espacio, "ls-tree", "--name-only", base, "--", ".motor.toml")
-    if existe.returncode != 0:
-        raise ValueError("no se pudo consultar .motor.toml en la base autorizada")
-    if not existe.stdout.strip():
-        return ()
-    contenido = _git(espacio, "show", f"{base}:.motor.toml")
-    if contenido.returncode != 0:
-        raise ValueError("no se pudo leer .motor.toml en la base autorizada")
-    return RepoConf.parse(contenido.stdout).checks_extra
-
-
-def _ronda_checks(registro: Registro, enc: Encargo, sha: str) -> str:
-    """Sufijo de las claves de checks del SHA: un check que vuelve a rojo tras
-    haber pasado a verde abre una ronda nueva, no repite el evento ya anotado."""
-    verdes = sum(
-        1
-        for ev in registro.eventos(enc.id)
-        if ev["kind"] == "entrega_externa"
-        and ev["data"].get("paso") == "checks_verdes"
-        and ev["data"].get("sha") == sha
-        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
-    )
-    return f":ronda{verdes}" if verdes else ""
-
-
-def _anotar_checks_verdes(
-    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
-) -> Encargo:
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "entrega_externa",
-            "data": {
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "paso": "checks_verdes",
-                "repo": enc.entrega.repo,
-                "numero": numero,
-                "sha": sha,
-                "hora": hora,
-            },
-        },
-        f"entrega:{enc.id}:{enc.fase_activa}:checks_verdes:{sha}"
-        + _ronda_checks(registro, enc, sha),
-    )
-    return registro.fold(enc.id)
-
-
-def _anotar_checks_reusados(
-    registro: Registro,
-    enc: Encargo,
-    numero: int,
-    sha: str,
-    arbol: str,
-    jobs,
-    hora: str,
-) -> Encargo:
-    """El PR real sigue corriendo, pero su árbol ya pasó el CI del producto.
-
-    No se espera otra corrida. Queda anotado qué árbol y qué jobs lo sostienen
-    para que la regla de #327 no acepte un verde de otro contenido."""
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "entrega_externa",
-            "data": {
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "paso": "checks_reusados",
-                "repo": enc.entrega.repo,
-                "numero": numero,
-                "sha": sha,
-                "arbol": arbol,
-                "jobs": list(jobs),
-                "hora": hora,
-            },
-        },
-        f"entrega:{enc.id}:{enc.fase_activa}:checks_reusados:{sha}:{arbol}",
-    )
-    return registro.fold(enc.id)
-
-
-def _requeridos_en_marcha(veredicto) -> bool:
-    """Un check requerido que aún no terminó tiene una corrida sin completar o un estado
-    legacy pendiente (`veredicto.en_marcha`). Uno sin ninguna corrida (nadie lo corre)
-    no está en marcha: no hay qué esperar."""
-    return bool(veredicto.en_marcha)
-
-
-def _anotar_checks_esperando(
-    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
-) -> Encargo:
-    """Los checks requeridos de este SHA siguen corriendo: queda dicho para que el
-    freno no cuente vueltas mientras tanto. Un solo evento por tramo de espera: lo
-    cierra un verde o un rojo, y la ronda distingue una espera de la siguiente."""
-    fase = enc.fase_actual
-    if fase is None or fase.checks_esperando_sha == sha:
-        return enc
-    ronda = sum(
-        1
-        for ev in registro.eventos(enc.id)
-        if ev["data"].get("sha") == sha
-        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
-        and (
-            ev["kind"] == "entrega_bloqueada"
-            or (
-                ev["kind"] == "entrega_externa"
-                and ev["data"].get("paso") in ("checks_verdes", "checks_rojos")
-            )
-        )
-    )
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "entrega_externa",
-            "data": {
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "paso": "checks_esperando",
-                "repo": enc.entrega.repo,
-                "numero": numero,
-                "sha": sha,
-                "hora": hora,
-            },
-        },
-        f"entrega:{enc.id}:{enc.fase_activa}:checks_esperando:{sha}:ronda{ronda}",
-    )
-    return registro.fold(enc.id)
-
-
-def _marca_checks(directorio: Path) -> dict:
-    try:
-        marca = json.loads(
-            (directorio / "checks_lectura.json").read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError):
-        return {}
-    return marca if isinstance(marca, dict) else {}
-
-
-def _toca_releer_checks(
-    marca: dict, sha: str, epoch: float, forzar: bool, generacion: int
-) -> bool:
-    """Una lectura por SHA cada `_RELECTURA_CHECKS_S`, como el espaciado de
-    `_paso_entrega`. `forzar` se salta el espaciado una sola vez por generación
-    y SHA: la incorporación pendiente puede durar muchos barridos, y la marca
-    recuerda cuál ya forzó. Un forzado cuya lectura falló sigue pendiente y se
-    reintenta pasados `_REINTENTO_FORZADO_S`, sin golpear a GitHub mientras
-    responde con error."""
-    try:
-        desde = epoch - float(marca.get("epoch") or 0)
-        reciente = marca.get("sha") == sha and 0 <= desde < _RELECTURA_CHECKS_S
-    except (TypeError, ValueError):
-        return True
-    if not reciente:
-        return True
-    if not forzar or marca.get("forzada") == f"{generacion}:{sha}":
-        return False
-    return not marca.get("error") or desde >= _REINTENTO_FORZADO_S
-
-
-def _marcar_lectura_checks(
-    directorio: Path,
-    marca: dict,
-    sha: str,
-    epoch: float,
-    generacion: int,
-    consume_forzado: bool,
-    error: str = "",
-) -> None:
-    """Deja en disco el intento de lectura, que así sobrevive a un reinicio del
-    supervisor. Solo una lectura lograda consume el forzado; un fallo deja el
-    forzado pendiente y su causa a la vista."""
-    try:
-        directorio.mkdir(parents=True, exist_ok=True)
-        (directorio / "checks_lectura.json").write_text(
-            json.dumps(
-                {
-                    "sha": sha,
-                    "epoch": epoch,
-                    "forzada": (
-                        f"{generacion}:{sha}"
-                        if consume_forzado and not error
-                        else marca.get("forzada", "")
-                    ),
-                    "error": error,
-                }
-            ),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
-
-
-def _reconciliar_checks(
-    registro: Registro,
-    enc: Encargo,
-    gh,
-    espacio: Path,
-    hora: str,
-    epoch: float,
-    forzar: bool = False,
-) -> Encargo:
-    """Relee los checks del SHA que dejó la entrega bloqueada, sin pasar por la
-    compuerta de `_aplica_entrega`. Un check requerido que se vuelve a correr
-    sobre el mismo SHA y pasa a verde se anota como `checks_verdes`; si sigue
-    en rojo o no se puede leer no se anota nada y la lectura se repite pasado
-    el espaciado. Con el agente corriendo no lee. Con la incorporación del
-    agente pendiente `forzar` obliga una lectura, una sola por generación y
-    SHA aunque la incorporación tarde muchos barridos (el comprobador del
-    supervisor), para anotar un verde antes de contar la vuelta. El forzado
-    se consume al leer, no al intentar: una lectura fallida lo deja pendiente
-    y anota su causa en la marca."""
-    fase = enc.fase_actual
-    if (
-        gh is None
-        or fase is None
-        or not fase.fallas_checks
-        or not fase.entrega_bloqueada_sha
-        or not enc.pr_numero
-        or enc.producto is None
-        or fase.entrega_bloqueada_sha != enc.producto.sha_git
-        or enc.entrega.nivel == "terminado"
-        or (enc.proc is not None and not forzar)
-    ):
-        return enc
-    sha = fase.entrega_bloqueada_sha
-    directorio = _directorio(registro.base, enc.id)
-    marca = _marca_checks(directorio)
-    if not _toca_releer_checks(marca, sha, epoch, forzar, enc.generacion):
-        return enc
-    try:
-        vista = gh.ver(enc.entrega.repo, enc.pr_numero)
-        punta = str(getattr(vista, "head", "") or "").strip()
-    except Exception:
-        punta = ""
-    if punta and punta != sha:
-        # F6: el sha bloqueado ya no es el head del PR; sus rondas están muertas.
-        # Un verde de un sha que ya no es el head no abre el cierre (el portón de
-        # _chequeo_previo_cierre devuelve el trabajo por el head) y no se anota
-        # como checks_verdes de esta fase. El head se concilia en el turno de
-        # entrega, que devuelve el trabajo nombrando ambos shas.
-        _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
-        return enc
-    try:
-        veredicto = gh.checks(
-            enc.entrega.repo, enc.pr_numero, sha, _checks_extra(enc, espacio),
-            base_politica=enc.entrega.base,
-        )
-    except Exception as exc:
-        _marcar_lectura_checks(
-            directorio, marca, sha, epoch, enc.generacion, forzar,
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        return enc
-    _marcar_lectura_checks(directorio, marca, sha, epoch, enc.generacion, forzar)
-    if not veredicto.green:
-        if _requeridos_en_marcha(veredicto):
-            # Algún check requerido sigue corriendo: lo que se lee es una corrida a
-            # medias, aunque otro ya esté en rojo. No se toma por terminada ni se
-            # refrescan los checks en rojo con ella. Las corridas ajenas a los
-            # requeridos no cuentan: no tienen por qué terminar para leer los rojos.
-            return _anotar_checks_esperando(registro, enc, enc.pr_numero, sha, hora)
-        if not veredicto.fallas:
-            return enc
-        fallas = tuple(sorted(str(x) for x in veredicto.fallas))
-        if fase.checks_esperando_sha == sha or fallas != tuple(sorted(fase.fallas_checks)):
-            # La corrida terminó en rojo: ya no hay revisión pendiente y los checks
-            # en rojo son los de esta lectura, no los de la anterior.
-            esperas = sum(
-                1
-                for ev in registro.eventos(enc.id)
-                if ev["kind"] == "entrega_externa"
-                and ev["data"].get("paso") == "checks_esperando"
-                and ev["data"].get("sha") == sha
-            )
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "entrega_externa",
-                    "data": {
-                        "fase": enc.fase_activa,
-                        "intento": enc.intento,
-                        "paso": "checks_rojos",
-                        "repo": enc.entrega.repo,
-                        "numero": enc.pr_numero,
-                        "sha": sha,
-                        "fallas": list(fallas),
-                        "hora": hora,
-                    },
-                },
-                f"entrega:{enc.id}:{enc.fase_activa}:checks_rojos:{sha}:{esperas}:{'+'.join(fallas)}",
-            )
-            return registro.fold(enc.id)
-        return enc
-    return _anotar_checks_verdes(registro, enc, enc.pr_numero, sha, hora)
-
-
-_LIMITE_CUERPO_PR = 65_536
-_NOTA_CUERPO_RECORTADO = (
-    "\n\n[Nota: el cuerpo supera el límite de GitHub y se recortó. "
-    "El texto completo está en `.interno/cuerpo-pr.md`, en el espacio del "
-    "encargo y fuera del PR.]"
-)
-
-
 def _leer_cuerpo_del_espacio(espacio: Path) -> str | None:
     """Lee `.interno/cuerpo-pr.md` sin seguir enlaces ni aceptar un archivo
     compartido con otro lugar del host. Devuelve None si no es un archivo
@@ -4543,26 +4144,6 @@ def _sha_final_sin_leer(enc: Encargo, gh) -> bool:
     )
 
 
-def _esperar_checks_requeridos(
-    registro: Registro, enc: Encargo, veredicto, numero: int, sha: str, hora: str
-) -> None:
-    """Ningún check requerido está en rojo y aún no están todos en verde: el PR espera.
-    Solo si alguno corre o está en cola (`veredicto.en_marcha`) queda anotado
-    `checks_esperando`, y con él el freno no cuenta vueltas; si el que falta no lo corre
-    nadie, se espera a la vista pero el freno sigue contando. Lo cubre
-    `tests/test_freno_vueltas.py::EsperaDeChecksEnLaEntrega`."""
-    if _requeridos_en_marcha(veredicto):
-        _anotar_checks_esperando(registro, enc, numero, sha, hora)
-    marcar_espera(
-        registro, enc.id,
-        f"esperando checks requeridos del PR #{numero}: {', '.join(veredicto.faltan)}",
-        _reanuda_en(120), hora,
-    )
-
-
-_TOPE_LOG_JOB = 80
-
-
 def _copia_log_job(
     espacio: Path, nombre: str, run_id: str, job_id: str, texto: str
 ) -> str:
@@ -4613,17 +4194,16 @@ def _copia_log_job(
 
 
 def _recorte_log_job(texto: str, nombre: str, copia: str = "") -> str:
-    """El literal completo del job queda copiado en el espacio (o es la
-    evidencia que `ci.log` puede traer); en el motivo se acota para no
-    inundarlo: se conservan el principio y el final, y lo omitido queda
-    anotado con dónde está el literal. El extracto acompaña a la copia, no la
-    sustituye."""
+    """El literal completo del job queda copiado en el espacio; en el motivo se
+    acota para no inundarlo: se conservan el principio y el final, y lo omitido
+    queda anotado con dónde está el literal. El extracto acompaña a la copia,
+    no la sustituye."""
     lineas = texto.splitlines()
     if len(lineas) <= _TOPE_LOG_JOB:
         return "\n".join(lineas)
     cabeza, cola = lineas[:55], lineas[-24:]
     omitidas = len(lineas) - len(cabeza) - len(cola)
-    literal = copia or "ci.log"
+    literal = copia or "el log del job"
     nota = (
         f"[log de {nombre}: se omiten {omitidas} líneas intermedias; "
         f"el literal completo queda en {literal}]"
@@ -4631,17 +4211,20 @@ def _recorte_log_job(texto: str, nombre: str, copia: str = "") -> str:
     return "\n".join([*cabeza, nota, *cola])
 
 
-def _logs_de_fallidos(gh, repo: str, veredicto_ci, espacio: Path) -> str:
-    """El log literal de cada job en rojo, como hace `ci.log`: el job exacto
-    por su ID (el check-run de Actions comparte el ID del job), no su nombre
-    (con el nombre `gh` intenta /actions/jobs/<nombre> y falla, h_a8968fb0) y
-    sin la cola agregada de la corrida, que mezcla los jobs. El literal
-    completo queda copiado en el espacio del responsable y el motivo lo
-    referencia; un fallo en medio del log no depende de dónde caiga en el
-    extracto. Un log que no se pudo leer no frena la devolución: queda el
-    nombre y la url."""
+def _logs_de_fallidos(
+    gh, repo: str, veredicto_ci, espacio: Path, corridas=None, detalles=None
+) -> str:
+    """El log literal de cada job en rojo: el job exacto por su ID (el
+    check-run de Actions comparte el ID del job), no su nombre (con el nombre
+    `gh` intenta /actions/jobs/<nombre> y falla, h_a8968fb0) y sin la cola
+    agregada de la corrida, que mezcla los jobs. El literal completo queda
+    copiado en el espacio del responsable y el motivo lo referencia; un fallo
+    en medio del log no depende de dónde caiga en el extracto. Un log que no
+    se pudo leer no frena la devolución: queda el nombre y la url."""
     partes = []
-    for corrida in veredicto_ci.corridas_fallidas:
+    for corrida in (
+        veredicto_ci.corridas_fallidas if corridas is None else corridas
+    ):
         nombre = str(corrida.get("nombre") or "")
         url = str(corrida.get("url") or "")
         run_id = str(corrida.get("run_id") or "")
@@ -4653,6 +4236,8 @@ def _logs_de_fallidos(gh, repo: str, veredicto_ci, espacio: Path) -> str:
             except Exception:
                 texto = ""
         if texto:
+            if detalles is not None:
+                detalles[nombre] = texto
             copia = _copia_log_job(espacio, nombre, run_id, job_id, texto)
             cabeza = f"log de {nombre} ({url}):"
             if copia:
@@ -4665,640 +4250,498 @@ def _logs_de_fallidos(gh, repo: str, veredicto_ci, espacio: Path) -> str:
     return "\n\n".join(partes)
 
 
-def _recurso_ci(registro: Registro, enc: Encargo) -> str:
-    """El recurso ci concedido que corresponde al repo de entrega."""
-    try:
-        recursos = capacidades.cargar(registro.base)
-    except capacidades.ConfigInvalida:
-        return ""
-    entrega = capacidades._repo_github(enc.entrega.repo)
-    candidatos = []
-    for nombre, conf in recursos.items():
-        if str(conf.get("tipo")) != "ci":
-            continue
-        if capacidades.CI not in capacidades.operaciones_de(recursos, nombre):
-            continue
-        if str(conf.get("autorizacion") or "") == "propietario":
-            # El CI del producto se pide solo; un recurso que exige al
-            # propietario no se dispara en silencio.
-            continue
-        repo = capacidades._repo_github(str(conf.get("repo") or ""))
-        candidatos.append((nombre, conf, repo))
-    if not candidatos:
-        return ""
-    for nombre, conf, repo in candidatos:
-        if (not repo or not entrega or repo == entrega) and str(
-            conf.get("workflow") or "pruebas.yml"
-        ) == "pruebas.yml":
-            return nombre
-    for nombre, conf, repo in candidatos:
-        if not repo or not entrega or repo == entrega:
-            return nombre
-    return candidatos[0][0]
+_CONCLUSIONES_VERDES = ("success", "skipped", "neutral")
+_INFRA_CI = (
+    "gitleaks",
+    "secret",
+    "leak",
+    "the job was not started",
+    "runner",
+    "no space left",
+    "billing",
+    "payment",
+    "minutes",
+    "rate limit",
+    "could not resolve host",
+    "connection refused",
+    "connection reset",
+    "timed out",
+    "unable to access",
+)
+
+# Marcas de que el rojo viene de una prueba del producto y no de la tubería.
+# Sin una de estas, un job conocido sigue siendo «incierto»: no se devuelve al
+# responsable ni se reintenta, se dice que no se puede clasificar con certeza.
+_PRUEBA_CI = (
+    "failed",
+    "failure",
+    "assertion",
+    "traceback",
+    "syntaxerror",
+    "importerror",
+    "modulenotfound",
+    "no such file",
+    "error:",
+    "not ok",
+)
 
 
-def _arbol_de(espacio: Path, ref: str) -> str:
-    r = _git(espacio, "rev-parse", "--verify", f"{ref}^{{tree}}")
-    return r.stdout.strip() if r.returncode == 0 else ""
+def _clasificar_fallo_ci(nombre: str, conclusion: str, texto: str) -> str:
+    """Clasifica un job en rojo para el aviso y la corrección.
+
+    «codigo» es una prueba del producto que el responsable corrige en el mismo
+    PR; «tuberia» es infraestructura (secretos o Gitleaks, cancelación, tiempo
+    límite, GitHub caído o falta de minutos); «incierto» es un fallo sin
+    diagnóstico suficiente para distinguirlos."""
+    if str(conclusion or "") in (
+        "timed_out",
+        "startup_failure",
+        "cancelled",
+        "action_required",
+        "stale",
+    ):
+        return "tuberia"
+    bajo = str(texto or "").lower()
+    if any(marca in bajo for marca in _INFRA_CI):
+        return "tuberia"
+    if any(marca in bajo for marca in _PRUEBA_CI):
+        return "codigo"
+    return "incierto"
 
 
-def _rutas_entre_arboles(espacio: Path, base: str, actual: str) -> tuple[str, ...] | None:
-    if not base or not actual or base == actual:
-        return ()
-    r = _git(espacio, "diff", "--name-only", base, actual)
-    if r.returncode != 0:
-        return None
-    return tuple(linea.strip() for linea in r.stdout.splitlines() if linea.strip())
-
-
-def _ci_producto_rojo(enc: Encargo) -> bool:
-    fase = enc.fase_actual
-    return bool(
-        fase is not None
-        and fase.ci_fallas
-        and fase.producto is not None
-        and fase.ci_version == fase.producto.firma
+def _job_en_llano(nombre: str) -> str:
+    base = str(nombre or "").split(" (")[0].strip()
+    job = trabajos_ci.trabajo(base)
+    nombres = {
+        "bateria": "la comprobación de pruebas del producto",
+        "ops-tests": "la comprobación de pruebas de las herramientas",
+        "macos": "la comprobación en macOS",
+        "windows": "la comprobación en Windows",
+        "gate": "la revisión del repositorio",
+    }
+    return nombres.get(
+        job,
+        f"la comprobación automática «{base}»" if base else "una comprobación automática",
     )
 
 
-def _motivo_ci(enc: Encargo) -> str:
-    fase = enc.fase_actual
-    if fase is None or not fase.ci_fallas:
-        return ""
-    return "CI del producto en rojo: " + ", ".join(fase.ci_fallas)
+def _causa_tuberia_en_llano(caidas, texto: str) -> str:
+    junto = (
+        str(texto or "")
+        + " "
+        + " ".join(str(c.get("conclusion") or "") for c in caidas)
+    ).lower()
+    if any(marca in junto for marca in ("gitleaks", "leak", "secret")):
+        return "el control de secretos encontró claves viejas en el repositorio"
+    if any(marca in junto for marca in ("minutes", "billing", "payment")):
+        return "faltan minutos de CI"
+    if any(marca in junto for marca in ("timed out", "timed_out", "timeout")):
+        return "se agotó el tiempo límite de la corrida"
+    if any(marca in junto for marca in ("cancelled", "canceled")):
+        return "la corrida se canceló"
+    if any(
+        marca in junto
+        for marca in (
+            "could not resolve host",
+            "connection",
+            "runner",
+            "rate limit",
+            "unable to access",
+            "startup_failure",
+        )
+    ):
+        return "el servicio de GitHub no respondió"
+    return "la tubería del CI falló"
 
 
-def _ci_revision_rojo_pendiente(registro: Registro, enc: Encargo) -> bool:
-    """El rojo llegó en esta misma vuelta del revisor, antes de su juicio."""
-    fase = enc.fase_actual
-    if fase is None or not fase.ci_fallas or fase.producto is None:
-        return False
-    for ev in reversed(registro.eventos(enc.id)):
-        if ev["kind"] != "ci_revision_rojo":
-            continue
-        d = ev.get("data") or {}
-        if str(d.get("version") or "") != fase.producto.firma:
-            continue
-        try:
-            generacion = int(d.get("generacion", -1))
-        except (TypeError, ValueError):
-            continue
-        if generacion == enc.generacion:
-            return True
-    return False
-
-
-def _ci_producto_pendiente(enc: Encargo) -> bool:
-    """Hay una corrida del CI del producto para la versión vigente sin resolver."""
-    fase = enc.fase_actual
-    version = fase.producto.firma if fase and fase.producto else ""
-    if not version:
-        return False
-    return any(
-        sol.operacion == capacidades.CI
-        and sol.conductor == "motor-ci"
-        and sol.version == version
-        and sol.estado in ("pendiente", "pregunta")
-        for sol in enc.solicitudes
+def _aviso_ci_en_llano(clase: str, caidas, texto: str, reabrir: bool = True) -> str:
+    """El aviso para alguien que no es técnico: qué falló, de quién es y qué
+    conviene hacer. Sin nombres de archivo, hashes ni el log literal."""
+    que = " y ".join(
+        dict.fromkeys(_job_en_llano(str(c.get("nombre") or "")) for c in caidas)
+    ) or "una comprobación automática"
+    if clase == "codigo" and not reabrir:
+        return (
+            f"Falló {que}: es del código del cambio. El cambio ya está "
+            "integrado; recomiendo abrir un encargo para corregirlo."
+        )
+    if clase == "codigo":
+        return (
+            f"Falló {que}: es del código del cambio, no de la tubería. Ya se "
+            "mandó a corregir en el mismo PR, no tienes que hacer nada."
+        )
+    if clase == "tuberia":
+        causa = _causa_tuberia_en_llano(caidas, texto)
+        return (
+            f"La tubería de este proyecto tiene un problema fijo: {causa}. "
+            "El cambio ya está revisado; recomiendo mergear y abrir un encargo "
+            "para arreglar la tubería."
+        )
+    return (
+        f"Falló {que} y no puedo saber con certeza si es del código del cambio "
+        "o de la tubería. Recomiendo pedirle a Claude que lo revise."
     )
 
 
-def _devolver_ci_rojo(
-    registro: Registro, enc: Encargo, hora: str, serie: str
-) -> bool:
-    """Si el CI del producto está rojo, el trabajo vuelve al responsable."""
-    if not _ci_producto_rojo(enc):
-        return False
-    fase = enc.fase_actual
-    _devolver(
-        registro,
-        enc,
-        "investigar",
-        _motivo_ci(enc),
-        "corregir " + ", ".join(fase.ci_fallas if fase else ())
-        + "; el CI volverá a correr sobre la versión nueva",
-        hora,
-        f"{serie}-{fase.ci_version[:12] if fase else ''}",
-    )
-    return True
-
-
-def _pedir_ci_producto(
-    registro: Registro, enc: Encargo, espacio: Path, directorio: Path, hora: str
+def _anotar_ci_del_pr(
+    registro: Registro,
+    enc: Encargo,
+    *,
+    ukey: str,
+    fase: str,
+    sha: str,
+    estado: str,
+    fallas=(),
+    causa: str = "",
+    reabrir: bool = False,
+    clase: str = "",
+    reintento: str = "",
+    aviso: str = "",
+    hora: str,
 ) -> Encargo:
-    """Pide el CI del producto al entregarlo, sin esperar al revisor.
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "ci_pr",
+            "data": {
+                "fase": fase,
+                "sha": sha,
+                "estado": estado,
+                "fallas": list(fallas),
+                "causa": causa,
+                "reabrir": reabrir,
+                "clase": clase,
+                "reintento": reintento,
+                "aviso": aviso,
+                "hora": hora,
+            },
+        },
+        ukey,
+    )
+    if estado != "reintentando":
+        _borrar_sondeo_ci(registro, enc.id)
+    return registro.fold(enc.id) or enc
 
-    Es idempotente por versión. Si el árbol no cambió respecto del último verde
-    del CI, no lanza una corrida: registra los cuatro jobs como reusados."""
+
+_CI_SONDEO_S = 60
+_CI_SONDEO_MAX_S = 90 * 60
+
+
+def _segundos_entre(desde: str, hasta: str) -> float | None:
+    from datetime import datetime
+
+    try:
+        a = datetime.fromisoformat(str(desde).replace("Z", "+00:00"))
+        b = datetime.fromisoformat(str(hasta).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (b - a).total_seconds()
+
+
+def _ruta_sondeo_ci(registro: Registro, encargo_id: str) -> Path:
+    raiz = Path(registro.base) / "ejecucion" / encargo_id
+    raiz.mkdir(parents=True, exist_ok=True)
+    return raiz / "ci-sondeo.json"
+
+
+def _leer_sondeo_ci(ruta: Path) -> dict:
+    try:
+        doc = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _guardar_sondeo_ci(ruta: Path, doc: dict) -> None:
+    try:
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        temporal = ruta.with_suffix(".json.tmp")
+        temporal.write_text(
+            json.dumps(doc, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        temporal.replace(ruta)
+    except OSError:
+        pass
+
+
+def _borrar_sondeo_ci(registro: Registro, encargo_id: str) -> None:
+    try:
+        _ruta_sondeo_ci(registro, encargo_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _revisar_ci_del_pr(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> Encargo:
+    """Lee el CI real del PR cuando terminó.
+
+    Un pendiente o un verde no cambia nada. Un rojo avisa al propietario una
+    vez; si el fallo es de una prueba del producto, además reabre la fase para
+    corregir en la misma rama y el mismo PR. Un rojo de tubería se relanza una
+    sola vez (`gh run rerun --failed`) y se lee el resultado de esa segunda
+    corrida: si pasa, la falla era pasajera y no hay aviso; si sigue rojo, es
+    permanente y el aviso lo dice en palabras llanas. Nunca hay más de un
+    reintento. La lectura se espacia para no agotar la cuota de GitHub y deja
+    su marca en un archivo, no en un evento por sondeo; si el CI no termina en
+    90 minutos, queda el estado terminal «sin_resultado» y se deja de sondear.
+    Un error de lectura no consume el resultado: se reintenta en el siguiente
+    sondeo."""
     fase = enc.fase_actual
     if (
-        enc.entrega.nivel not in ("pr", "integrado", "desplegado")
+        gh is None
+        or enc.estado != "terminado"
+        or enc.entrega.nivel not in ("pr", "integrado", "desplegado")
+        or not enc.pr_numero
+        or not enc.pr_sha
         or fase is None
-        or fase.producto is None
-        or enc.estado in ("detenido", "deteniendo", "cancelado", "terminado")
     ):
         return enc
-    version = fase.producto.firma
-    if not version:
+    sha = enc.pr_sha
+    ukey = f"ci-pr:{enc.id}:{sha}"
+    if registro.por_ukey(ukey) is not None:
         return enc
-    if not enc.intento:
+    clave_reintento = f"ci-pr-reintento:{enc.id}:{sha}"
+    evento_reintento = registro.por_ukey(clave_reintento)
+    reintentado = evento_reintento is not None
+    ruta_sondeo = _ruta_sondeo_ci(registro, enc.id)
+    sondeo = _leer_sondeo_ci(ruta_sondeo)
+    if str(sondeo.get("sha") or "") != sha:
+        sondeo = {"sha": sha, "primero": hora, "ultimo": "", "sondeos": 0}
+    ultimo = str(sondeo.get("ultimo") or "")
+    transcurrido = _segundos_entre(ultimo, hora) if ultimo else None
+    if transcurrido is not None and transcurrido < _CI_SONDEO_S:
+        return enc
+    primero = str(sondeo.get("primero") or hora)
+    edad = _segundos_entre(primero, hora)
+    al_limite = edad is not None and edad >= _CI_SONDEO_MAX_S
+    if not al_limite:
+        _guardar_sondeo_ci(
+            ruta_sondeo,
+            {
+                "sha": sha,
+                "primero": primero,
+                "ultimo": hora,
+                "sondeos": int(sondeo.get("sondeos") or 0) + 1,
+            },
+        )
+    try:
+        veredicto_ci = gh.checks(enc.entrega.repo, enc.pr_numero, sha, ())
+    except Exception as exc:
+        if al_limite:
+            # Al vencer el plazo no se declara sin resultado sin haber leído:
+            # el CI pudo terminar. Si la lectura falla, sí es terminal para no
+            # quedarse reintentando errores cada barrido.
+            return _anotar_ci_del_pr(
+                registro,
+                enc,
+                ukey=ukey,
+                fase=fase.id,
+                sha=sha,
+                estado="sin_resultado",
+                causa=(
+                    "el CI del PR no terminó en "
+                    f"{_CI_SONDEO_MAX_S // 60} minutos y al vencer no se pudo "
+                    f"leer: {exc}"
+                ),
+                hora=hora,
+            )
+        # Sin consumir `ukey`: el resultado todavía no se conoce y un fallo de
+        # lectura no puede darlo por perdido.
         registro.anotar(
             enc.id,
             {
                 "kind": "procedimiento",
                 "data": {
-                    "nota": "no se pide el CI del producto: la entrega no tiene intento",
+                    "nota": f"no se pudo leer el CI del PR todavía: {exc}",
                     "hora": hora,
                 },
             },
-            f"ci-sin-intento:{enc.id}:{fase.id}:{version[:12]}",
+            f"ci-pr-error:{enc.id}:{sha}",
         )
         return registro.fold(enc.id) or enc
-    if fase.ci_version == version and fase.ci_arbol:
-        return enc
-    for sol in enc.solicitudes:
-        if (
-            sol.operacion == capacidades.CI
-            and sol.conductor == "motor-ci"
-            and sol.version == version
-            and sol.estado in (
-                "pendiente",
-                "pregunta",
-                "resuelta",
-                "error",
-                "denegada",
-                "detenida",
-            )
-        ):
-            return enc
-    recurso = _recurso_ci(registro, enc)
-    if not recurso:
-        nota = (
-            "no hay un recurso ci concedido que el motor pueda usar sin "
-            "preguntar al propietario para correr el CI del producto"
-        )
-        registro.anotar(
-            enc.id,
-            {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
-            f"ci-sin-recurso:{enc.id}:{fase.id}",
-        )
-        return registro.fold(enc.id) or enc
-    try:
-        arbol = capacidades.arbol_producto(espacio, directorio)
-    except Exception as exc:
-        nota = f"no se pudo calcular el arbol del producto para el CI: {exc}"
-        registro.anotar(
-            enc.id,
-            {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
-            f"ci-arbol-fallo:{enc.id}:{fase.id}:{version[:12]}",
-        )
-        return registro.fold(enc.id) or enc
-    base = fase.ci_base_arbol
-    trabajos = tuple(trabajos_ci.TRABAJOS)
-    if base and base == arbol:
-        trabajos = ()
-    elif base:
-        rutas = _rutas_entre_arboles(espacio, base, arbol)
-        if rutas is not None:
-            trabajos = trabajos_ci.trabajos_a_correr(rutas)
-    if base and not trabajos:
-        jobs = [
-            {
-                "nombre": nombre,
-                "conclusion": "skipped",
-                "reusado": True,
-                "log": "",
-                "url": "",
-                "cola": "",
-            }
-            for nombre in trabajos_ci.TRABAJOS
-        ]
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "ci_producto",
-                "data": {
-                    "fase": fase.id,
-                    "version": version,
-                    "arbol": arbol,
-                    "run": "",
-                    "url": "",
-                    "jobs": jobs,
-                    "fallas": [],
-                    "hora": hora,
-                },
-            },
-            f"ci-producto-reuso:{enc.id}:{fase.id}:{version[:16]}",
-        )
-        return registro.fold(enc.id) or enc
-    ident = "ci-producto-" + hashlib.sha256(
-        f"{enc.id}:{fase.id}:{version}".encode()
-    ).hexdigest()[:16]
-    crudo = {
-        "id": ident,
-        "encargo": enc.id,
-        "fase": fase.id,
-        "intento": enc.intento,
-        "generacion": enc.generacion,
-        "conductor": "motor-ci",
-        "operacion": capacidades.CI,
-        "recurso": recurso,
-        "parametros": {
-            "job": "todos",
-            "base_arbol": base or "",
-        },
-        "motivo": "CI del producto al entregar, en paralelo con el revisor",
-    }
-    try:
-        marca = registro.base / "ci-producto" / f"{ident}.json"
-        marca.parent.mkdir(parents=True, exist_ok=True)
-        marca.write_text(
-            json.dumps(
-                {"version": version, "fase": fase.id, "hora": hora},
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        necesidades.pedir_motor(espacio, enc, crudo)
-    except (OSError, ValueError) as exc:
-        nota = f"no se pudo pedir el CI del producto: {exc}"
-        registro.anotar(
-            enc.id,
-            {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
-            f"ci-pedido-fallo:{enc.id}:{fase.id}:{version[:12]}",
-        )
-        return registro.fold(enc.id) or enc
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "procedimiento",
-            "data": {
-                "nota": (
-                    "CI del producto pedido al entregar: corre los jobs que "
-                    "tocan las rutas y el resto reusa su verde"
-                ),
-                "hora": hora,
-            },
-        },
-        f"ci-pedido:{enc.id}:{ident}",
+    corridas = tuple(
+        c
+        for c in (getattr(veredicto_ci, "corridas", ()) or ())
+        if isinstance(c, dict)
     )
-    return registro.fold(enc.id) or enc
-
-
-def _aplicar_ci_producto(registro: Registro, enc: Encargo, hora: str) -> Encargo:
-    """Recoge el resultado del CI que pidió el motor y lo aplica a la fase."""
-    for sol in tuple(enc.solicitudes):
-        if sol.operacion != capacidades.CI or sol.conductor != "motor-ci":
-            continue
-        ukey = f"ci-producto:{enc.id}:{sol.id}"
-        if registro.por_ukey(ukey) is not None:
-            continue
-        # La petición del motor se reconoce por la marca que solo escribe el
-        # supervisor en su base, fuera del espacio del agente.
-        if not (registro.base / "ci-producto" / f"{sol.id}.json").is_file():
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "procedimiento",
-                    "data": {
-                        "nota": (
-                            f"resultado de {sol.id} ignorado: no tiene la marca "
-                            "del supervisor que lo pidió"
-                        ),
-                        "hora": hora,
-                    },
-                },
-                ukey,
+    pendiente = any(
+        str(c.get("status") or "") != "completed" for c in corridas
+    ) or (not corridas and not getattr(veredicto_ci, "fallas", ()))
+    if pendiente:
+        if al_limite:
+            return _anotar_ci_del_pr(
+                registro,
+                enc,
+                ukey=ukey,
+                fase=fase.id,
+                sha=sha,
+                estado="sin_resultado",
+                causa=(
+                    "el CI del PR no terminó en "
+                    f"{_CI_SONDEO_MAX_S // 60} minutos; se deja de sondear"
+                ),
+                hora=hora,
             )
-            enc = registro.fold(enc.id) or enc
-            continue
-        if sol.fase and sol.fase != enc.fase_activa:
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "procedimiento",
-                    "data": {
-                        "nota": (
-                            f"resultado de CI de la fase {sol.fase} descartado: "
-                            f"la activa es {enc.fase_activa}"
-                        ),
-                        "hora": hora,
-                    },
-                },
-                ukey,
-            )
-            enc = registro.fold(enc.id) or enc
-            continue
-        if sol.estado in ("error", "denegada", "detenida"):
-            nota = (
-                f"el CI del producto {sol.id} no se pudo correr: "
-                f"{sol.detalle or sol.estado}"
-            )
-            registro.anotar(
-                enc.id,
-                {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
-                ukey,
-            )
-            enc = registro.fold(enc.id) or enc
-            continue
-        if sol.estado != "resuelta":
-            continue
-        try:
-            evidencia = json.loads(sol.evidencia or "{}")
-        except ValueError:
-            evidencia = {}
-        if not isinstance(evidencia, dict):
-            evidencia = {}
-        jobs = [
+        return enc
+    caidas = [
+        c
+        for c in corridas
+        if str(c.get("conclusion") or "") not in _CONCLUSIONES_VERDES
+    ]
+    if not caidas and getattr(veredicto_ci, "fallas", ()):
+        caidas = [
             {
-                "nombre": str(j.get("nombre") or ""),
-                "conclusion": str(j.get("conclusion") or ""),
-                "reusado": bool(j.get("reusado")),
-                "log": str(j.get("log") or ""),
-                "url": str(j.get("url") or ""),
-                "cola": str(j.get("cola") or ""),
+                "nombre": str(nombre),
+                "conclusion": "failure",
+                "status": "completed",
             }
-            for j in (evidencia.get("jobs") or ())
-            if isinstance(j, dict) and str(j.get("nombre") or "")
+            for nombre in veredicto_ci.fallas
         ]
-        fallas = [str(x) for x in (evidencia.get("fallas") or ()) if str(x)]
-        if not fallas:
-            # El motor decide por la conclusión de cada job, no solo por la
-            # lista que traiga la evidencia: una corrida cancelada no es verde.
-            fallas = [
-                j["nombre"]
-                for j in jobs
-                if not j["reusado"] and j["conclusion"] not in ("success", "neutral")
-            ]
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "ci_producto",
-                "data": {
-                    "fase": sol.fase,
-                    "version": sol.version,
-                    "arbol": str(evidencia.get("arbol") or ""),
-                    "run": str(evidencia.get("run") or ""),
-                    "url": str(evidencia.get("url") or ""),
-                    "jobs": jobs,
-                    "fallas": fallas,
-                    "hora": hora,
-                },
-            },
-            ukey,
+    if not caidas:
+        return _anotar_ci_del_pr(
+            registro,
+            enc,
+            ukey=ukey,
+            fase=fase.id,
+            sha=sha,
+            estado="verde",
+            hora=hora,
         )
-        enc = registro.fold(enc.id) or enc
-        fase = enc.fase_actual
-        if (
-            fallas
-            and fase is not None
-            and fase.producto is not None
-            and sol.version == fase.producto.firma
-            and enc.estado not in ("detenido", "deteniendo", "cancelado", "terminado")
-        ):
-            # No se cambia el rol de un turno en curso. Si es el revisor, el
-            # juicio de esa vuelta se descarta al incorporarlo: no vio el rojo.
-            # La siguiente vuelta recibe el job y el log, ya en la fase. Sin
-            # turno vivo, el rojo vuelve ya al responsable.
-            if enc.proc is not None or enc.reserva:
-                if enc.rol == "revisor":
-                    registro.anotar(
-                        enc.id,
-                        {
-                            "kind": "ci_revision_rojo",
-                            "data": {
-                                "version": sol.version,
-                                "generacion": enc.generacion,
-                                "fallas": list(fallas),
-                                "hora": hora,
-                            },
-                        },
-                        f"ci-revision-rojo:{enc.id}:{sol.version[:12]}:"
-                        f"{enc.generacion}",
-                    )
-                else:
-                    registro.anotar(
-                        enc.id,
-                        {
-                            "kind": "procedimiento",
-                            "data": {
-                                "nota": (
-                                    "el CI del producto quedó rojo mientras "
-                                    "el responsable trabajaba; lo verá en su "
-                                    "siguiente vuelta con el job y el log"
-                                ),
-                                "hora": hora,
-                            },
-                        },
-                        f"ci-rojo-en-turno:{enc.id}:{sol.version[:12]}",
-                    )
-                enc = registro.fold(enc.id) or enc
+    if reintentado:
+        datos = (evento_reintento or {}).get("data") or {}
+        previos = {str(x) for x in (datos.get("job_ids") or ()) if str(x)}
+        hora_reintento = str(datos.get("hora") or "")
+
+        def _lectura_anterior(c: dict) -> bool:
+            job_id = str(c.get("job_id") or "")
+            completed = str(c.get("completed_at") or "")
+            if previos:
+                mismo = bool(job_id) and job_id in previos
             else:
-                _devolver(
+                mismo = True
+            return mismo and (
+                not completed or not hora_reintento or completed <= hora_reintento
+            )
+
+        if all(_lectura_anterior(c) for c in caidas):
+            # El rerun aún no empezó: esto sigue siendo la corrida anterior.
+            if al_limite:
+                # Al vencer el plazo no se vuelve a sondear cada barrido: si el
+                # reintento no arrancó a tiempo, el sondeo termina.
+                return _anotar_ci_del_pr(
                     registro,
                     enc,
-                    "investigar",
-                    _motivo_ci(enc) or "CI del producto en rojo",
-                    "corregir " + ", ".join(fallas)
-                    + "; el CI volverá a correr sobre la versión nueva",
-                    hora,
-                    f"ci-{sol.version[:12]}",
+                    ukey=ukey,
+                    fase=fase.id,
+                    sha=sha,
+                    estado="sin_resultado",
+                    causa=(
+                        "el reintento del CI no empezó en "
+                        f"{_CI_SONDEO_MAX_S // 60} minutos; se deja de sondear"
+                    ),
+                    hora=hora,
                 )
-                enc = registro.fold(enc.id) or enc
-    return enc
-
-
-def _pre_ci_cubre(
-    enc: Encargo, espacio: Path, sha: str, veredicto_ci
-) -> bool:
-    """El CI del producto ya acreditó los jobs requeridos que siguen pendientes.
-
-    Solo cubre los jobs cuyas rutas no cambiaron desde el árbol verde del CI.
-    Un job de otro repo, `gate` o `reconcile` no se cubre: si sigue pendiente,
-    se espera. Un check en rojo nunca se cubre."""
-    fase = enc.fase_actual
-    if getattr(veredicto_ci, "fallas", ()):
-        return False
-    if (
-        fase is None
-        or fase.producto is None
-        or fase.ci_version != fase.producto.firma
-        or fase.ci_fallas
-        or not fase.ci_arbol
-    ):
-        return False
-    arbol = _arbol_de(espacio, sha)
-    if not arbol:
-        return False
-    presentes = {trabajos_ci.trabajo(nombre) for nombre, _c, _r in fase.ci_jobs}
-    if not set(trabajos_ci.TRABAJOS) <= presentes:
-        return False
-    verdes = {
-        trabajos_ci.trabajo(nombre)
-        for nombre, conclusion, reusado in fase.ci_jobs
-        if reusado or str(conclusion) in ("success", "neutral")
+            return enc
+    nombres = [
+        f"{str(c.get('nombre') or 'job')} ({str(c.get('conclusion') or '')})"
+        for c in caidas
+    ]
+    espacio = _espacio(registro.base, enc.id)
+    detalles: dict[str, str] = {}
+    texto = _logs_de_fallidos(
+        gh, enc.entrega.repo, veredicto_ci, espacio, corridas=caidas,
+        detalles=detalles,
+    )
+    clases = {
+        str(c.get("nombre") or ""): _clasificar_fallo_ci(
+            str(c.get("nombre") or ""),
+            str(c.get("conclusion") or ""),
+            detalles.get(str(c.get("nombre") or ""), ""),
+        )
+        for c in caidas
     }
-    if fase.ci_arbol == arbol:
-        cubiertos = set(trabajos_ci.TRABAJOS)
-        if any(
-            str(nombre) == "gate"
-            and str(conclusion) in ("success", "skipped", "neutral")
-            for nombre, conclusion, _reusado in fase.ci_jobs
-        ):
-            cubiertos.add("gate")
+    valores = set(clases.values())
+    if valores == {"tuberia"} and not reintentado:
+        run_ids = tuple(
+            dict.fromkeys(
+                str(c.get("run_id_corrida") or c.get("run_id") or "")
+                for c in caidas
+                if str(c.get("run_id_corrida") or c.get("run_id") or "")
+            )
+        )
+        if run_ids:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "ci_pr",
+                    "data": {
+                        "fase": fase.id,
+                        "sha": sha,
+                        "estado": "reintentando",
+                        "fallas": nombres,
+                        "causa": texto,
+                        "reabrir": False,
+                        "clase": "tuberia",
+                        "reintento": "",
+                        "aviso": "",
+                        "job_ids": [
+                            str(c.get("job_id") or "")
+                            for c in caidas
+                            if str(c.get("job_id") or "")
+                        ],
+                        "hora": hora,
+                    },
+                },
+                clave_reintento,
+            )
+            enc = registro.fold(enc.id) or enc
+            _guardar_sondeo_ci(
+                ruta_sondeo,
+                {"sha": sha, "primero": hora, "ultimo": hora, "sondeos": 1},
+            )
+            try:
+                for run_id in run_ids:
+                    gh.relanzar_fallidas(enc.entrega.repo, run_id)
+            except Exception as exc:
+                return _anotar_ci_del_pr(
+                    registro,
+                    enc,
+                    ukey=ukey,
+                    fase=fase.id,
+                    sha=sha,
+                    estado="rojo",
+                    fallas=nombres,
+                    causa=f"{texto}\nno se pudo relanzar el CI: {exc}",
+                    clase="tuberia",
+                    reintento="permanente",
+                    aviso=_aviso_ci_en_llano("tuberia", caidas, texto),
+                    hora=hora,
+                )
+            return enc
+    if "codigo" in valores:
+        clase = "codigo"
+        reabrir = enc.nivel_alcanzado not in ("integrado", "desplegado")
+    elif valores == {"tuberia"}:
+        clase, reabrir = "tuberia", False
     else:
-        base = fase.ci_base_arbol
-        if not base:
-            return False
-        rutas = _rutas_entre_arboles(espacio, base, arbol)
-        if rutas is None:
-            return False
-        cubiertos = {
-            job for job in trabajos_ci.TRABAJOS if not trabajos_ci.afecta(job, rutas)
-        }
-    # Un job cubierto tiene que haber terminado verde en esa corrida. Un
-    # `cancelled` o cualquier conclusión que no sea verde no acredita el árbol.
-    if not cubiertos <= verdes:
-        return False
-    pendientes = {
-        str(x)
-        for x in (
-            tuple(getattr(veredicto_ci, "faltan", ()) or ())
-            + tuple(getattr(veredicto_ci, "fallas", ()) or ())
-            + tuple(getattr(veredicto_ci, "en_marcha", ()) or ())
-        )
-        if str(x)
-    }
-    for nombre in pendientes:
-        if trabajos_ci.trabajo(nombre) in cubiertos:
-            continue
-        return False
-    return True
-
-
-def _chequeo_previo_cierre(
-    registro: Registro, enc: Encargo, gh, espacio: Path, hora: str,
-    numero: int, sha: str,
-) -> Encargo | None:
-    """Lee los checks del head vigente del PR antes de seguir hacia DeepSeek o
-    el cierre. El head vigente, no el SHA pedido: un push posterior a la rama
-    del PR deja el SHA guardado viejo y su CI aprobado ya no dice nada del
-    head nuevo (h_9d9b387c). None si están verdes. En rojo bloquea la entrega
-    y devuelve el trabajo con el nombre del job y su log literal; si algo sigue
-    corriendo, espera con relectura; si no se pueden leer, deja la espera
-    anotada."""
-    if _ci_producto_pendiente(enc):
-        # No se cierra hasta que el CI del producto sobre esta versión termine.
-        # Su resultado es la evidencia que el pedido pide; la corrida del PR
-        # real no siempre es una compuerta (main puede no tener protección).
-        marcar_espera(
-            registro,
-            enc.id,
-            "esperando el CI del producto sobre la versión revisada",
-            _reanuda_en(60),
-            hora,
-        )
-        return registro.fold(enc.id)
-    inicio_vuelta = enc
-    try:
-        vista = gh.ver(enc.entrega.repo, numero)
-    except Exception as exc:
-        causa = f"no se pudo leer la vista del PR #{numero}: {exc}"
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "reintentar la lectura de la vista del PR",
-            hora, f"pr-ver-{enc.generacion}",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-        return registro.fold(enc.id)
-    sha_vigente = str(getattr(vista, "head", "") or "").strip() or sha
-    try:
-        veredicto_ci = gh.checks(
-            enc.entrega.repo, numero, sha_vigente, _checks_extra(enc, espacio),
-            base_politica=enc.entrega.base,
-        )
-    except Exception as exc:
-        causa = f"no se pudieron leer los checks del PR #{numero}: {exc}"
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "reintentar la lectura de checks del mismo SHA",
-            hora, f"checks-leer-{sha_vigente[:12]}",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-        return registro.fold(enc.id)
-    if not veredicto_ci.green:
-        if veredicto_ci.fallas:
-            fallas = sorted(str(x) for x in veredicto_ci.fallas)
-            causa_ci = "checks requeridos en rojo: " + ", ".join(fallas)
-            logs = _logs_de_fallidos(gh, enc.entrega.repo, veredicto_ci, espacio)
-            if logs:
-                causa_ci += "\n" + logs
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "entrega_bloqueada",
-                    "data": {
-                        "fase": enc.fase_activa,
-                        "intento": enc.intento,
-                        "sha": sha_vigente,
-                        "causa": causa_ci,
-                        "fallas": fallas,
-                        "hora": hora,
-                    },
-                },
-                f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{sha_vigente}"
-                + _ronda_checks(registro, enc, sha_vigente),
-            )
-            enc = registro.fold(enc.id)
-            if hubo_avance(inicio_vuelta, enc):
-                _devolver(
-                    registro, enc, "investigar", causa_ci,
-                    "corregir los checks requeridos en rojo del PR de esta fase; "
-                    "lo aprobado que no cambio se conserva",
-                    hora, f"checks-{sha_vigente[:12]}",
-                )
-            else:
-                _sin_avance(
-                    registro, enc, causa_ci,
-                    "se corrigio y se volvio a publicar el PR, pero siguen en "
-                    "rojo los mismos checks requeridos",
-                    hora, f"checks-{sha_vigente[:12]}",
-                )
-            return registro.fold(enc.id)
-        if _pre_ci_cubre(enc, espacio, sha_vigente, veredicto_ci):
-            arbol = _arbol_de(espacio, sha_vigente)
-            enc = _anotar_checks_reusados(
-                registro, enc, numero, sha_vigente, arbol,
-                list(trabajos_ci.TRABAJOS), hora,
-            )
-            registro.anotar(
-                enc.id,
-                {
-                    "kind": "procedimiento",
-                    "data": {
-                        "nota": (
-                            "no se espera el CI del PR: el árbol "
-                            f"{arbol[:12]} ya pasó el CI del producto y los "
-                            "jobs pendientes no tocan rutas que cambiaron"
-                        ),
-                        "hora": hora,
-                    },
-                },
-                f"checks-reusados:{enc.id}:{enc.fase_activa}:{sha_vigente}",
-            )
-            enc = registro.fold(enc.id)
-        else:
-            _esperar_checks_requeridos(
-                registro, enc, veredicto_ci, numero, sha_vigente, hora
-            )
-            return registro.fold(enc.id)
-    if sha_vigente != sha:
-        # F6: el head vigente gobierna el cierre, no solo los checks. Con los
-        # checks del head en verde, cerrar con el sha guardado (aprobado por
-        # DeepSeek y entregado) daría por terminado un PR cuyo head es otro
-        # contenido; el trabajo vuelve al responsable para conciliar el head.
-        return _head_desviado(registro, enc, hora, numero, sha, sha_vigente)
-    return None
+        clase, reabrir = "incierto", False
+    reintento = "permanente" if clase == "tuberia" else ""
+    return _anotar_ci_del_pr(
+        registro,
+        enc,
+        ukey=ukey,
+        fase=fase.id,
+        sha=sha,
+        estado="rojo",
+        fallas=nombres,
+        causa=texto,
+        reabrir=reabrir,
+        clase=clase,
+        reintento=reintento,
+        aviso=_aviso_ci_en_llano(clase, caidas, texto, reabrir=reabrir),
+        hora=hora,
+    )
 
 
 def _head_desviado(
@@ -5492,12 +4935,35 @@ def _espera_por_observacion(
     return registro.fold(enc.id)
 
 
+def _head_antes_de_cerrar(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> Encargo | None:
+    """El cierre por atajo no publica nada: concilia el head vigente del PR con
+    el sha aprobado y entregado antes de cerrar. Un head abierto distinto no se
+    da por terminado con el sha guardado."""
+    if gh is None or not enc.pr_numero or not enc.pr_sha:
+        return None
+    try:
+        vista = gh.ver(enc.entrega.repo, enc.pr_numero)
+    except Exception as exc:
+        causa = f"no se pudo leer el head del PR #{enc.pr_numero}: {exc}"
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            "reintentar la lectura del head del PR antes de cerrar",
+            hora, f"head-ver-{enc.generacion}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return registro.fold(enc.id)
+    head = str(getattr(vista, "head", "") or "").strip()
+    if head and head != enc.pr_sha:
+        return _head_desviado(registro, enc, hora, enc.pr_numero, enc.pr_sha, head)
+    return None
+
+
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
     if _devolver_correcciones(registro, enc, hora):
-        return registro.fold(enc.id)
-    if _devolver_ci_rojo(registro, enc, hora, "ci-entrega"):
         return registro.fold(enc.id)
     if (
         nivel_cumplido(enc)
@@ -5507,16 +4973,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         and not _sha_final_sin_leer(enc, gh)
         and not (gh is None and _requiere_veredicto(enc))
     ):
-        if gh is not None and _requiere_veredicto(enc) and enc.pr_sha:
-            # El cierre por el atajo también mira los checks del head: DeepSeek
-            # pudo aprobar mientras una corrida seguía en marcha o un job se
-            # puso en rojo después de la lectura de la entrega (enc_25d22b9bfce242f9).
-            frenado = _chequeo_previo_cierre(
-                registro, enc, gh, _espacio(registro.base, enc.id), hora,
-                enc.pr_numero, enc.pr_sha,
-            )
-            if frenado is not None:
-                return frenado
+        desviado = _head_antes_de_cerrar(registro, enc, gh, hora)
+        if desviado is not None:
+            return desviado
         return _cerrar_con_veredicto(
             registro, enc, gh, _espacio(registro.base, enc.id),
             _directorio(registro.base, enc.id), hora,
@@ -5811,12 +5270,6 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     inicio_vuelta = enc
-    frenado = _chequeo_previo_cierre(registro, enc, gh, espacio, hora, numero, sha)
-    if frenado is not None:
-        return frenado
-    fase_ci = enc.fase_actual
-    if fase_ci is not None and fase_ci.fallas_checks:
-        enc = _anotar_checks_verdes(registro, enc, numero, sha, hora)
     if enc.deepseek_sha != sha or _deepseek_por_releer(enc):
         try:
             comentarios = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
@@ -7036,8 +6489,6 @@ def _recibir_resultado_nuevo(
     hora: str,
 ) -> dict:
     from .comprobacion import validar_juicio
-    from .dominio import VersionProducto
-
     version = str(observaciones.get("version") or observaciones.get("producto") or "")
     manifiesto = tuple(
         (str(x[0]), str(x[1]))
