@@ -53,8 +53,11 @@ if modo == "red":
     sys.exit(1)
 if args[:2] == ["repo", "view"]:
     guardar()
-    print(json.dumps({{"defaultBranchRef": {"name": os.environ.get(
-        "FAKE_GH_RAMA", estado.get("rama_base", "main"))}}}))
+    if modo == "sin_default":
+        print(json.dumps({{"defaultBranchRef": None}}))
+    else:
+        print(json.dumps({{"defaultBranchRef": {"name": os.environ.get(
+            "FAKE_GH_RAMA", estado.get("rama_base", "main"))}}}))
 elif args[:2] == ["pr", "create"]:
     rama = val("--head")
     estado.update(rama=rama, pr_abierto=True, borrador="--draft" in args, base=val("--base"))
@@ -340,7 +343,11 @@ class CausaClaraSiFalta(_Ci):
 
         self.assertEqual(r["estado"], "error")
         self.assertIn("sin red hacia GitHub", r["motivo"])
-        self.assertFalse((self.fake / "estado.json").exists())
+        # La rama por omisión se consulta antes de subir: lo que no puede pasar
+        # es abrir el PR temporal ni dejar la rama.
+        llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
+        self.assertNotIn(["pr", "create"], llamadas)
+        self.assertEqual(self.ramas_remotas(), [])
 
     def test_un_job_que_no_existe_lista_los_que_hay(self):
         r = self.pedir(job="no-existe")
@@ -505,6 +512,18 @@ class LaBaseSaleDelEncargo(_Ci):
         llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
         self.assertIn(["repo", "view"], llamadas)
 
+    def test_un_base_main_del_recurso_no_manda_sobre_la_rama_por_omision(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_RAMA": "master"}):
+            r = self.pedir(
+                recursos=self.recursos,
+                contexto={"repo": "o/r"},
+            )
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "master")
+        llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
+        self.assertIn(["repo", "view"], llamadas)
+
 
 class GoncloudMotorSigueConMain(_Ci):
     def test_sin_base_declarada_resuelve_la_rama_por_omision_del_repo(self):
@@ -523,6 +542,13 @@ class GoncloudMotorSigueConMain(_Ci):
         self.assertEqual(r["datos"]["base"], "main")
         llamadas = [a[:2] for a in self.estado_gh()["llamadas"]]
         self.assertIn(["repo", "view"], llamadas)
+
+    def test_sin_rama_por_omision_el_recurso_sirve_de_respaldo(self):
+        with mock.patch.dict(os.environ, {"FAKE_GH_MODO": "sin_default"}):
+            r = self.pedir(recursos=self.recursos, contexto={"repo": "o/r"})
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "main")
 
 
 class ElPuenteLaConoce(_Ci):

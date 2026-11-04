@@ -976,13 +976,21 @@ def _atender_decision(
 
 
 def contexto_de(enc) -> dict:
-    """PR, SHA, rama, base y repo del encargo que autorizan su CI."""
+    """PR, SHA, rama, base y repo del encargo que autorizan su CI.
+
+    La base es la de la fase vigente, que es contra la que se abrió su PR
+    (`ci.log` la compara). Solo si la fase aún no la registró se usa la de la
+    entrega; una fase que depende de otra se abre contra la rama de esa otra."""
+    fase = getattr(enc, "fase_actual", None)
+    base = str(getattr(fase, "base", "") or "").strip()
+    if not base:
+        base = str(getattr(getattr(enc, "entrega", None), "base", "") or "").strip()
     return {
         "pr": int(getattr(enc, "pr_numero", 0) or 0),
         "sha": str(getattr(enc, "pr_sha", "") or ""),
         "rama": str(getattr(enc, "rama_entrega", "") or ""),
         "repo": str(getattr(getattr(enc, "entrega", None), "repo", "") or ""),
-        "base": str(getattr(getattr(enc, "entrega", None), "base", "") or ""),
+        "base": base,
     }
 
 

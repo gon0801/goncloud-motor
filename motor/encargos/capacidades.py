@@ -651,19 +651,23 @@ def _rama_por_omision(gh: str, repo: str) -> str:
 def _base_de(
     concedido: dict, contexto: dict | None, gh: str, repo: str
 ) -> str:
-    """La rama base del encargo; el recurso es respaldo y el repo la omisión.
+    """La rama base del encargo; el repo la omisión y el recurso el respaldo.
 
     El 3-nov el recurso fijo `main` hizo fallar el CI de un encargo de Orbit,
     que usa `master`: la base tiene que salir de la entrega, no de un valor
-    fijo en la máquina."""
+    fijo en la máquina. Sin base en el encargo manda la rama por omisión del
+    repo; un `base: main` viejo del recurso solo se usa si esa consulta falla."""
     if isinstance(contexto, dict):
         base = str(contexto.get("base") or "").strip()
         if base:
             return base
-    base = str(concedido.get("base") or "").strip()
-    if base:
-        return base
-    return _rama_por_omision(gh, repo)
+    try:
+        return _rama_por_omision(gh, repo)
+    except CiFallo:
+        base = str(concedido.get("base") or "").strip()
+        if base:
+            return base
+        raise
 
 
 REPO_MOTOR = "gon0801/goncloud-motor"
