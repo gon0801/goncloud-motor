@@ -6754,6 +6754,36 @@ def _marcar_autoridad_cerrada(registro: Registro, enc: Encargo, hora: str) -> No
     )
 
 
+def _marcador_autoridad_final(registro: Registro, enc: Encargo):
+    """La última marca de cierre de este encargo, con o sin token. Las marcas
+    de orden de un detenido no cuentan: no sellan el cierre."""
+    for evento in reversed(registro.eventos(enc.id)):
+        if evento["kind"] != "autoridad_cerrada":
+            continue
+        datos = evento["data"]
+        if datos.get("orden"):
+            continue
+        estado = str(datos.get("estado") or "")
+        if estado and estado != enc.estado:
+            continue
+        return evento
+    return None
+
+
+def _nuevo_cierre_tras_marcador(
+    registro: Registro, enc: Encargo, marcador: dict
+) -> bool:
+    """Hubo una reapertura o un cierre nuevo después de la última marca."""
+    for evento in registro.eventos(enc.id):
+        if evento["id"] <= marcador["id"]:
+            continue
+        if evento["kind"] in ("cierre_forzado", "resultado_directo"):
+            return True
+        if evento["kind"] == "ci_pr" and evento["data"].get("reabrir"):
+            return True
+    return False
+
+
 def _marcar_autoridad_orden(
     registro: Registro, enc: Encargo, recibo: str, hora: str
 ) -> None:
@@ -6813,7 +6843,11 @@ def _mirar_autoridad(registro: Registro, enc: Encargo, hora: str) -> Encargo:
         enc = registro.fold(enc.id) or enc
     estado = str((resp.get("salida") or {}).get("estado") or "")
     if enc.estado == "terminado":
-        if estado == "terminado":
+        marcador = _marcador_autoridad_final(registro, enc)
+        nuevo = marcador is not None and _nuevo_cierre_tras_marcador(
+            registro, enc, marcador
+        )
+        if estado == "terminado" and not nuevo:
             _marcar_autoridad_cerrada(registro, enc, hora)
         elif _publicar_resultado(registro, enc, hora):
             _marcar_autoridad_cerrada(registro, enc, hora)

@@ -958,11 +958,13 @@ class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
                 ciclo._autoridad_cerrada_resuelta(reg, reg.fold(encargo))
             )
 
+            # La autoridad ya quedó en terminado por el primer cierre: aun así
+            # hay que publicar la evidencia del cierre nuevo.
             with (
                 mock.patch("motor.encargos.transporte.cargar", return_value={}),
                 mock.patch(
                     "motor.encargos.transporte.operar",
-                    return_value={"alcanzada": True, "salida": {"estado": "recibido"}},
+                    return_value={"alcanzada": True, "salida": {"estado": "terminado"}},
                 ) as operar,
                 mock.patch.object(
                     ciclo, "_publicar_resultado", return_value=True
