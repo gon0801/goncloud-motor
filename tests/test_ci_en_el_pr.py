@@ -140,6 +140,12 @@ def _estados_ci(r):
     ]
 
 
+def _sondeos(r):
+    return [
+        ev for ev in r.reg.eventos(r.enc) if ev["kind"] == "ci_pr_sondeo"
+    ]
+
+
 class EntregaSinCiAntesDelPr(unittest.TestCase):
     def test_termina_con_la_aprobacion_sin_pedir_ci(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -434,6 +440,33 @@ class ElSondeoSeEspacia(unittest.TestCase):
 
             e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
             self.assertEqual(vuelta.gh.checks_llamadas, 2)
+            self.assertEqual(_sondeos(r), [])
+
+    def test_el_sondeo_termina_si_el_ci_no_llega(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-sondeo-tope",
+                _GhConCorridas,
+                {"corridas": {"bateria": "in_progress"}},
+            )
+            e = vuelta("hola\n")
+            vuelta.gh.checks_llamadas = 0
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(90))
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.fase_actual.ci_pr_estado, "sin_resultado")
+            self.assertEqual(_avisos(e), [])
+            self.assertEqual(_estados_ci(r), ["sin_resultado"])
+            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(100))
+            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+            self.assertEqual(_sondeos(r), [])
 
 
 class UnErrorDeLecturaNoPierdeElResultado(unittest.TestCase):

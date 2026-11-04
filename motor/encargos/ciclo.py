@@ -4418,10 +4418,13 @@ def _anotar_ci_del_pr(
         },
         ukey,
     )
+    if estado != "reintentando":
+        _borrar_sondeo_ci(registro, enc.id)
     return registro.fold(enc.id) or enc
 
 
 _CI_SONDEO_S = 60
+_CI_SONDEO_MAX_S = 90 * 60
 
 
 def _segundos_entre(desde: str, hasta: str) -> float | None:
@@ -4435,14 +4438,37 @@ def _segundos_entre(desde: str, hasta: str) -> float | None:
     return (b - a).total_seconds()
 
 
-def _ultimo_sondeo_ci(registro: Registro, encargo_id: str, sha: str) -> str:
-    for evento in reversed(registro.eventos(encargo_id)):
-        if (
-            evento["kind"] == "ci_pr_sondeo"
-            and str(evento["data"].get("sha") or "") == sha
-        ):
-            return str(evento["data"].get("hora") or "")
-    return ""
+def _ruta_sondeo_ci(registro: Registro, encargo_id: str) -> Path:
+    raiz = Path(registro.base) / "ejecucion" / encargo_id
+    raiz.mkdir(parents=True, exist_ok=True)
+    return raiz / "ci-sondeo.json"
+
+
+def _leer_sondeo_ci(ruta: Path) -> dict:
+    try:
+        doc = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _guardar_sondeo_ci(ruta: Path, doc: dict) -> None:
+    try:
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        temporal = ruta.with_suffix(".json.tmp")
+        temporal.write_text(
+            json.dumps(doc, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        temporal.replace(ruta)
+    except OSError:
+        pass
+
+
+def _borrar_sondeo_ci(registro: Registro, encargo_id: str) -> None:
+    try:
+        _ruta_sondeo_ci(registro, encargo_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _revisar_ci_del_pr(
@@ -4456,8 +4482,10 @@ def _revisar_ci_del_pr(
     sola vez (`gh run rerun --failed`) y se lee el resultado de esa segunda
     corrida: si pasa, la falla era pasajera y no hay aviso; si sigue rojo, es
     permanente y el aviso lo dice en palabras llanas. Nunca hay más de un
-    reintento. La lectura se espacia para no agotar la cuota de GitHub, y un
-    error de lectura no consume el resultado: se reintenta en el siguiente
+    reintento. La lectura se espacia para no agotar la cuota de GitHub y deja
+    su marca en un archivo, no en un evento por sondeo; si el CI no termina en
+    90 minutos, queda el estado terminal «sin_resultado» y se deja de sondear.
+    Un error de lectura no consume el resultado: se reintenta en el siguiente
     sondeo."""
     fase = enc.fase_actual
     if (
@@ -4476,16 +4504,39 @@ def _revisar_ci_del_pr(
     clave_reintento = f"ci-pr-reintento:{enc.id}:{sha}"
     evento_reintento = registro.por_ukey(clave_reintento)
     reintentado = evento_reintento is not None
-    ultimo = _ultimo_sondeo_ci(registro, enc.id, sha)
+    ruta_sondeo = _ruta_sondeo_ci(registro, enc.id)
+    sondeo = _leer_sondeo_ci(ruta_sondeo)
+    if str(sondeo.get("sha") or "") != sha:
+        sondeo = {"sha": sha, "primero": hora, "ultimo": "", "sondeos": 0}
+    ultimo = str(sondeo.get("ultimo") or "")
     transcurrido = _segundos_entre(ultimo, hora) if ultimo else None
     if transcurrido is not None and transcurrido < _CI_SONDEO_S:
         return enc
-    registro.anotar(
-        enc.id,
-        {"kind": "ci_pr_sondeo", "data": {"sha": sha, "hora": hora}},
-        f"ci-pr-sondeo:{enc.id}:{sha}:{hora}",
+    primero = str(sondeo.get("primero") or hora)
+    edad = _segundos_entre(primero, hora)
+    if edad is not None and edad >= _CI_SONDEO_MAX_S:
+        return _anotar_ci_del_pr(
+            registro,
+            enc,
+            ukey=ukey,
+            fase=fase.id,
+            sha=sha,
+            estado="sin_resultado",
+            causa=(
+                "el CI del PR no terminó en "
+                f"{_CI_SONDEO_MAX_S // 60} minutos; se deja de sondear"
+            ),
+            hora=hora,
+        )
+    _guardar_sondeo_ci(
+        ruta_sondeo,
+        {
+            "sha": sha,
+            "primero": primero,
+            "ultimo": hora,
+            "sondeos": int(sondeo.get("sondeos") or 0) + 1,
+        },
     )
-    enc = registro.fold(enc.id) or enc
     try:
         veredicto_ci = gh.checks(enc.entrega.repo, enc.pr_numero, sha, ())
     except Exception as exc:
@@ -4500,7 +4551,7 @@ def _revisar_ci_del_pr(
                     "hora": hora,
                 },
             },
-            f"ci-pr-error:{enc.id}:{sha}:{hashlib.sha256(str(exc).encode()).hexdigest()[:12]}",
+            f"ci-pr-error:{enc.id}:{sha}",
         )
         return registro.fold(enc.id) or enc
     corridas = tuple(
