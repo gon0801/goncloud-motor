@@ -898,6 +898,63 @@ class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
                 any(str(clave).endswith("-canonico") for clave in claves), claves
             )
 
+    def test_un_detenido_no_sella_el_cierre_y_luego_publica_el_resultado(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(reg, "x", "detenido-luego-cierra", ahora_iso())[
+                "encargo"
+            ]
+            ciclo.ordenar(reg, encargo, "parar", "parar-1", ahora_iso())
+            reg.anotar(
+                encargo,
+                {"kind": "arbol", "data": {"observacion": "ausente"}},
+                "parar-ausente",
+            )
+            self.assertEqual(reg.fold(encargo).estado, "detenido")
+            with (
+                mock.patch("motor.encargos.transporte.cargar", return_value={}),
+                mock.patch(
+                    "motor.encargos.transporte.operar",
+                    return_value={"alcanzada": True, "salida": {"estado": "detenido"}},
+                ),
+                mock.patch.object(
+                    ciclo, "_enviar_orden", return_value=True
+                ) as enviar,
+            ):
+                for _ in range(2):
+                    barrer(reg, ahora_iso(), time.time(), _llamador)
+            self.assertEqual(enviar.call_count, 1)
+            self.assertFalse(
+                ciclo._autoridad_cerrada_resuelta(reg, reg.fold(encargo))
+            )
+
+            ciclo.ordenar(reg, encargo, "continuar", "sigue-1", ahora_iso())
+            reg.anotar(
+                encargo,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {
+                        "evidencia": "entregado con pendientes abiertos",
+                        "hora": ahora_iso(),
+                    },
+                },
+                "cierre-despues-detenido",
+            )
+            self.assertEqual(reg.fold(encargo).estado, "terminado")
+            with (
+                mock.patch("motor.encargos.transporte.cargar", return_value={}),
+                mock.patch(
+                    "motor.encargos.transporte.operar",
+                    return_value={"alcanzada": True, "salida": {"estado": "recibido"}},
+                ),
+                mock.patch.object(
+                    ciclo, "_publicar_resultado", return_value=True
+                ) as publicado,
+            ):
+                barrer(reg, ahora_iso(), time.time(), _llamador)
+            publicado.assert_called()
+
     def test_un_cancelado_resuelto_no_reenvia_la_orden_cada_vuelta(self):
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")

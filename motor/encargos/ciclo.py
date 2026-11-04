@@ -6721,16 +6721,35 @@ def _espejo_entrega(
 
 
 def _autoridad_cerrada_resuelta(registro: Registro, enc: Encargo) -> bool:
-    """Un cerrado que ya entregó su resultado o su orden canónica no se vuelve
-    a consultar en cada vuelta."""
-    return registro.por_ukey(f"autoridad-cerrada:{enc.id}") is not None
+    """Un cerrado que ya entregó el resultado o la orden de su estado final no
+    se vuelve a consultar. La marca guarda el estado: una de `detenido` no
+    puede impedir el cierre posterior."""
+    evento = registro.por_ukey(f"autoridad-cerrada:{enc.id}")
+    return bool(
+        evento and str(evento["data"].get("estado") or "") == enc.estado
+    )
 
 
 def _marcar_autoridad_cerrada(registro: Registro, enc: Encargo, hora: str) -> None:
     registro.anotar(
         enc.id,
-        {"kind": "autoridad_cerrada", "data": {"hora": hora}},
+        {
+            "kind": "autoridad_cerrada",
+            "data": {"hora": hora, "estado": enc.estado},
+        },
         f"autoridad-cerrada:{enc.id}",
+    )
+
+
+def _marcar_autoridad_orden(
+    registro: Registro, enc: Encargo, recibo: str, hora: str
+) -> None:
+    """La orden canónica de un detenido se manda una vez, pero su marca no
+    sella el cierre: el encargo todavía puede continuar y terminar."""
+    registro.anotar(
+        enc.id,
+        {"kind": "autoridad_cerrada", "data": {"hora": hora, "orden": recibo}},
+        f"autoridad-orden:{enc.id}:{recibo}",
     )
 
 
@@ -6754,9 +6773,17 @@ def _mirar_autoridad(registro: Registro, enc: Encargo, hora: str) -> Encargo:
                 break
         if orden is not None:
             clave = orden["recibo"] + "-canonico"
-            if _enviar_orden(registro, enc.id, orden["accion"], clave):
-                _marcar_autoridad_cerrada(registro, enc, hora)
-        elif enc.estado in ("detenido", "cancelado"):
+            if enc.estado == "cancelado":
+                if _enviar_orden(registro, enc.id, orden["accion"], clave):
+                    _marcar_autoridad_cerrada(registro, enc, hora)
+            elif registro.por_ukey(
+                f"autoridad-orden:{enc.id}:{orden['recibo']}"
+            ) is None:
+                if _enviar_orden(registro, enc.id, orden["accion"], clave):
+                    _marcar_autoridad_orden(
+                        registro, enc, str(orden["recibo"]), hora
+                    )
+        elif enc.estado == "cancelado":
             _marcar_autoridad_cerrada(registro, enc, hora)
     resp = operar(registro.base, {"op": "ver", "encargo": enc.id})
     if not resp.get("alcanzada"):
