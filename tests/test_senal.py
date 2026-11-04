@@ -153,11 +153,11 @@ class SenalTest(Banco):
 
     def test_agregar_la_direccion_en_caliente_surte_efecto_sin_reiniciar(self):
         self.secretos(None)
-        self.en_hilo(0.8)
+        self.en_hilo(1.6)
         time.sleep(0.3)
         self.assertEqual(self.kuma.pedidos, [])
         self.secretos(self.kuma.url)
-        time.sleep(0.35)
+        time.sleep(0.9)
         self.assertGreaterEqual(len(self.kuma.pedidos), 2)
 
     def test_quitar_la_direccion_en_caliente_apaga_la_senal(self):

@@ -236,7 +236,7 @@ class BucleInstrumento(unittest.TestCase):
         banco.barrer(2)
         self.assertEqual(banco.lanzamientos, [])
 
-    def test_el_mismo_instrumento_cuatro_veces_no_habilita_otro_lanzamiento(self):
+    def test_el_mismo_instrumento_tres_veces_queda_no_disponible_y_no_bloquea(self):
         banco = self.banco()
         with mock.patch("motor.encargos.aislamiento.sondear", return_value=RECUPERADO):
             for vuelta in range(4):
@@ -246,12 +246,14 @@ class BucleInstrumento(unittest.TestCase):
                 )
                 banco.correr(f"revisor-{vuelta}")
         e = banco.fold()
-        self.assertTrue(e.impedimento)
-        self.assertIn("indisponible", e.impedimento_causa)
-        self.assertEqual(e.impedimento_fuente, "instrumento")
-        self.assertLessEqual(len(banco.eventos("producto_listo")), 2)
-        banco.barrer(3)
-        self.assertEqual(banco.lanzamientos, [])
+        # A la tercera falla igual, la herramienta se marca no disponible y el
+        # trabajo sigue sin ella; no queda esperando a una persona.
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("comprobacion", e.herramientas_no_disponibles)
+        self.assertTrue(
+            any("no disponible" in n for n in e.notas_pr), e.notas_pr
+        )
+        self.assertLessEqual(len(banco.eventos("producto_listo")), 4)
 
     def test_dos_causas_distintas_no_se_tratan_como_repeticion(self):
         banco = self.banco()
@@ -321,12 +323,18 @@ class BucleInstrumento(unittest.TestCase):
         self._parar_y_continuar(banco)
         e = banco.fold()
         self.assertEqual(e.estado, "recibido")
-        self.assertEqual(e.impedimento, "comprobaciones.json")
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("comprobaciones.json", e.herramientas_no_disponibles)
         self.assertEqual(archivo.read_text(), "{")
         self.assertEqual(banco.eventos("impedimento_resuelto"), [])
-        banco.barrer(3)
-        self.assertEqual(banco.lanzamientos, [])
-        self.assertTrue(banco.fold().impedimento)
+        with mock.patch(
+            "motor.encargos.aislamiento.sondear", return_value=RECUPERADO
+        ):
+            banco.barrer(3)
+        self.assertGreaterEqual(len(banco.lanzamientos), 1)
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertNotEqual(e.estado, "necesita_usuario")
 
     def _bloquear_comprobaciones(self, banco) -> Path:
         interno = banco.espacio / ".interno"
@@ -336,11 +344,13 @@ class BucleInstrumento(unittest.TestCase):
         with mock.patch("motor.encargos.aislamiento.sondear", return_value=RECUPERADO):
             banco.correr("comprobaciones-1")
             banco.correr("comprobaciones-2")
-        self.assertEqual(banco.fold().impedimento, "comprobaciones.json")
-        self.assertEqual(banco.fold().impedimento_fuente, "instrumento")
+        self.assertEqual(banco.fold().impedimento, "")
+        self.assertIn(
+            "comprobaciones.json", banco.fold().herramientas_no_disponibles
+        )
         return archivo
 
-    def test_reparar_el_archivo_levanta_la_espera_sin_orden(self):
+    def test_reparar_el_archivo_no_deja_una_espera_al_operador(self):
         banco = self.banco()
         archivo = self._bloquear_comprobaciones(banco)
         archivo.write_text("[]")
@@ -348,22 +358,26 @@ class BucleInstrumento(unittest.TestCase):
             banco.barrer(3)
         e = banco.fold()
         self.assertEqual(e.impedimento, "")
-        self.assertGreaterEqual(len(banco.eventos("impedimento_resuelto")), 1)
-        self.assertEqual(len(banco.lanzamientos), 1)
+        self.assertEqual(banco.eventos("impedimento_resuelto"), [])
+        self.assertNotEqual(e.estado, "necesita_usuario")
+        self.assertIn("comprobaciones.json", e.herramientas_no_disponibles)
 
     def test_un_fallo_del_entorno_no_borra_el_del_instrumento(self):
         banco = self.banco()
         archivo = self._bloquear_comprobaciones(banco)
         self.sonda["actual"] = IMPEDIMENTO
         banco.barrer()
-        self.assertEqual(banco.fold().impedimento_fuente, "instrumento")
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "entorno")
+        self.assertIn("comprobaciones.json", e.herramientas_no_disponibles)
         self.sonda["actual"] = RECUPERADO
         banco.barrer(2)
         e = banco.fold()
         self.assertEqual(archivo.read_text(), "{")
-        self.assertTrue(e.impedimento)
-        self.assertEqual(e.impedimento, "comprobaciones.json")
-        self.assertEqual(banco.lanzamientos, [])
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("comprobaciones.json", e.herramientas_no_disponibles)
+        self.assertGreaterEqual(len(banco.lanzamientos), 1)
+        self.assertNotEqual(e.estado, "necesita_usuario")
 
     def test_el_mismo_defecto_con_otro_identificador_no_reinicia(self):
         banco = self.banco()
@@ -374,14 +388,12 @@ class BucleInstrumento(unittest.TestCase):
                     f"comprobador externo no disponible; intento=intento-{vuelta}"
                 )
                 banco.correr(f"revisor-token-{vuelta}")
-                if banco.fold().impedimento:
-                    break
         e = banco.fold()
-        self.assertEqual(e.impedimento, "comprobacion")
-        self.assertFalse(e.impedimentos[0].verificable)
-        self.assertEqual(len(banco.eventos("producto_listo")), 2)
-        banco.barrer(3)
-        self.assertEqual(banco.lanzamientos, [])
+        # El identificador dentro del mensaje no reinicia la cuenta: la tercera
+        # vez igual deja la herramienta fuera del encargo, sin impedimento.
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("comprobacion", e.herramientas_no_disponibles)
+        self.assertEqual(len(banco.eventos("producto_listo")), 4)
 
     def test_fases_ciclicas_no_se_dan_por_reparadas_sin_cambiar_el_archivo(self):
         banco = self.banco()
@@ -401,15 +413,19 @@ class BucleInstrumento(unittest.TestCase):
         )
         banco.correr("fases-ciclicas-1")
         banco.correr("fases-ciclicas-2")
-        self.assertEqual(banco.fold().impedimento, "fases.json")
-        self.assertEqual(len(banco.fold().fases), 0)
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("fases.json", e.herramientas_no_disponibles)
+        self.assertEqual(len(e.fases), 0)
 
-        # La forma ya era aceptable: lo que falla es adoptarla. Sin reparación
-        # no hay resolución ni lanzamiento.
+        # La herramienta queda fuera de este encargo: no se adopta un plan
+        # cíclico, pero tampoco se deja una espera al operador.
         banco.barrer(3)
-        self.assertTrue(banco.fold().impedimento)
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertEqual(len(e.fases), 0)
         self.assertEqual(banco.eventos("impedimento_resuelto"), [])
-        self.assertEqual(banco.lanzamientos, [])
+        self.assertNotEqual(e.estado, "necesita_usuario")
 
         archivo.write_text(
             json.dumps(
@@ -422,11 +438,11 @@ class BucleInstrumento(unittest.TestCase):
             )
         )
         banco.barrer(3)
-        self.assertEqual(banco.fold().impedimento, "")
-        self.assertGreaterEqual(len(banco.eventos("impedimento_resuelto")), 1)
-        self.assertEqual(len(banco.lanzamientos), 1)
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("fases.json", e.herramientas_no_disponibles)
 
-    def test_el_juicio_reparado_levanta_la_espera(self):
+    def test_el_juicio_caido_tres_veces_entrega_sin_espera_al_operador(self):
         banco = self.banco()
         self.sonda["actual"] = RECUPERADO
         banco.correr()
@@ -434,7 +450,10 @@ class BucleInstrumento(unittest.TestCase):
         for numero in range(2):
             banco.juicio({"version": version})
             banco.correr(f"sin-veredicto-{numero}")
-        self.assertEqual(banco.fold().impedimento, "juicio:esquema:veredicto")
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("juicio:esquema:veredicto", e.herramientas_no_disponibles)
+        self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
 
         banco.juicio(
             {
@@ -444,9 +463,11 @@ class BucleInstrumento(unittest.TestCase):
             }
         )
         banco.barrer(3)
-        self.assertEqual(banco.fold().impedimento, "")
-        self.assertGreaterEqual(len(banco.eventos("impedimento_resuelto")), 1)
-        self.assertEqual(len(banco.lanzamientos), 1)
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertEqual(e.estado, "terminado")
+        self.assertEqual(banco.eventos("impedimento_resuelto"), [])
+        self.assertEqual(banco.lanzamientos, [])
 
     def test_dos_defectos_del_juicio_distintos_no_son_la_misma_falla(self):
         banco = self.banco()
@@ -503,16 +524,15 @@ class BucleInstrumento(unittest.TestCase):
             ev["data"]["clase"] for ev in banco.eventos("instrumento_fallo")
         ]
         self.assertEqual(clases, ["juicio:referencia", "juicio:referencia"])
-        self.assertEqual(banco.fold().impedimento, "juicio:referencia")
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("juicio:referencia", e.herramientas_no_disponibles)
+        self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
         banco.barrer(3)
+        e = banco.fold()
+        self.assertEqual(e.estado, "terminado")
+        self.assertEqual(e.impedimento, "")
         self.assertEqual(banco.lanzamientos, [])
-
-        # La referencia de la versión vigente levanta la espera sin orden.
-        banco.juicio(valido)
-        banco.barrer(3)
-        self.assertEqual(banco.fold().impedimento, "")
-        self.assertGreaterEqual(len(banco.eventos("impedimento_resuelto")), 1)
-        self.assertEqual(len(banco.lanzamientos), 1)
 
     def test_una_referencia_con_version_ajena_no_levanta_la_espera(self):
         banco = self.banco()
@@ -521,10 +541,13 @@ class BucleInstrumento(unittest.TestCase):
         (banco.directorio / "revision.json").unlink(missing_ok=True)
         banco.correr("sinref-1")
         banco.correr("sinref-2")
-        self.assertEqual(banco.fold().impedimento, "juicio:referencia")
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("juicio:referencia", e.herramientas_no_disponibles)
+        self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
 
         # El juicio al que apunta ya valida, pero la referencia es de otra
-        # versión: es la misma que la incorporación seguiría rechazando.
+        # versión: el encargo entrega con la nota y no espera a una persona.
         banco.juicio(
             {
                 "version": firma_producto(banco.espacio),
@@ -534,7 +557,9 @@ class BucleInstrumento(unittest.TestCase):
         )
         banco.referencia_con_version("version-que-no-es")
         banco.barrer(3)
-        self.assertEqual(banco.fold().impedimento, "juicio:referencia")
+        e = banco.fold()
+        self.assertEqual(e.estado, "terminado")
+        self.assertEqual(e.impedimento, "")
         self.assertEqual(banco.eventos("impedimento_resuelto"), [])
         self.assertEqual(banco.lanzamientos, [])
 
@@ -567,21 +592,14 @@ class BucleInstrumento(unittest.TestCase):
                 }
             )
             banco.correr(f"sin-efectos-{numero}")
-        self.assertEqual(banco.fold().impedimento, "juicio:esquema:efectos")
+        e = banco.fold()
+        self.assertEqual(e.impedimento, "")
+        self.assertIn("juicio:esquema:efectos", e.herramientas_no_disponibles)
+        self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
         banco.barrer(3)
+        e = banco.fold()
+        self.assertEqual(e.estado, "terminado")
         self.assertEqual(banco.lanzamientos, [])
-
-        banco.juicio(
-            {
-                "version": version,
-                "veredicto": "aprobado",
-                "evidencia": "Comportamiento comprobado",
-                "efectos_pendientes": ["efecto-1"],
-            }
-        )
-        banco.barrer(3)
-        self.assertEqual(banco.fold().impedimento, "")
-        self.assertEqual(len(banco.lanzamientos), 1)
 
     def test_no_lanza_sin_comprobar_el_entorno(self):
         banco = self.banco()

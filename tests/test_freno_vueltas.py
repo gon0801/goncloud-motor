@@ -37,7 +37,13 @@ def setUpModule():
         "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
     )
     parche.start()
-    unittest.addModuleCleanup(parche.stop)
+    globals()["_PARCHE_SONDA"] = parche
+
+
+def tearDownModule():
+    parche = globals().pop("_PARCHE_SONDA", None)
+    if parche is not None:
+        parche.stop()
 
 
 class _GhPorCommit(FakeGitHub):
@@ -124,7 +130,7 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertNotEqual(e.estado, "necesita_usuario")
 
-    def test_la_vuelta_siguiente_si_cuenta_y_escala(self):
+    def test_la_vuelta_siguiente_si_cuenta_y_releva(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "fr-1c", _GhPorCommit)
             vuelta.gh.textos = [_comentario(_hallazgo("F1"))]
@@ -133,7 +139,9 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
             self.assertEqual(r.fold().sin_progreso, 1)
             r.incorporar()
             e = r.fold()
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
+            self.assertTrue(_lanzaria(e))
 
 
 class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
@@ -259,13 +267,15 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             self.assertEqual(e.sin_progreso, 0)
             self.assertTrue(_lanzaria(e))
 
-    def test_los_mismos_bloqueantes_tras_el_diagnostico_siguen_escalando(self):
+    def test_los_mismos_bloqueantes_tras_el_diagnostico_relevan(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, gh = self._tras_el_diagnostico_de_f4(tmp, "fr-5b")
             r.incorporar()
             e = r.fold()
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertFalse(_lanzaria(e))
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
+            self.assertTrue(_lanzaria(e))
+            self.assertEqual(e.pendientes_entrega, ())
 
     def test_lo_nuevo_y_luego_lo_mismo_recorre_la_escalera_otra_vez(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -281,7 +291,9 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertEqual(e.sin_progreso, 1)
             r.incorporar()
-            self.assertEqual(r.fold().estado, "necesita_usuario")
+            e = r.fold()
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
 
     def test_una_serie_que_siempre_trae_hallazgos_nuevos_no_escala_por_si_sola(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

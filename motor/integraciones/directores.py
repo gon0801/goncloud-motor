@@ -688,6 +688,18 @@ def _cuerpo_de_cierre(enc) -> str:
     nota = " ".join(
         nota for nota in enc.procedimiento if "intento pudo recibir" in nota
     )
+    if getattr(enc, "pendientes_entrega", ()):
+        cuerpo += (
+            " Quedaron pendientes abiertos escritos en el PR; "
+            "no hace falta que hagas nada para que el trabajo siga."
+        )
+    if getattr(enc, "herramientas_no_disponibles", ()):
+        cuerpo += (
+            " Una herramienta no estaba disponible y se siguió con la "
+            "evidencia que había."
+        )
+    if getattr(enc, "relevos", 0):
+        cuerpo += " Se cambió de modelo para continuar sin esperar a nadie."
     return f"{cuerpo} {nota}".rstrip()
 
 
@@ -1093,6 +1105,41 @@ def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dic
                     ),
                 }
             )
+    if getattr(enc, "relevos", 0):
+        hechos.append(
+            {
+                "tipo": "relevo",
+                "identidad": f"{enc.relevo_huella}:{enc.relevos}",
+                "texto": (
+                    "Cambié de modelo para seguir con tu encargo. "
+                    "El trabajo continúa sin que hagas nada."
+                ),
+            }
+        )
+    if getattr(enc, "herramientas_no_disponibles", ()):
+        hechos.append(
+            {
+                "tipo": "herramienta",
+                "identidad": ",".join(enc.herramientas_no_disponibles),
+                "texto": (
+                    "Una herramienta no está disponible en este encargo; sigo "
+                    "con la evidencia que hay. No hace falta que hagas nada."
+                ),
+            }
+        )
+    if getattr(enc, "pendientes_entrega", ()):
+        hechos.append(
+            {
+                "tipo": "pendientes",
+                "identidad": hashlib.sha256(
+                    "|".join(enc.pendientes_entrega).encode()
+                ).hexdigest()[:12],
+                "texto": (
+                    "El encargo se entregó con pendientes abiertos, que quedaron "
+                    "escritos en el PR. No hace falta que hagas nada para que siga."
+                ),
+            }
+        )
     clase, condicion = "", ""
     if enc.impedimento and (enc.impedimento_causa or enc.impedimento_condicion):
         clase, condicion = enc.impedimento, enc.impedimento_condicion
@@ -1170,6 +1217,12 @@ def _canal_de_origen(
     return canal_resp, None
 
 
+# Los directores que atienden encargos en esta máquina. Cualquiera de ellos
+# puede corregir, parar o continuar un encargo de la máquina; queda registrado
+# quién lo hizo.
+DIRECTORES_DE_LA_MAQUINA = frozenset({"hermes", "claw", "openbot", "operador"})
+
+
 def corregir_canal(
     registro: Registro,
     encargo: str,
@@ -1181,10 +1234,23 @@ def corregir_canal(
     cierra=(),
     evidencia: str = "",
 ) -> dict:
-    """Registra la corrección si el canal es el de origen. No interrumpe al agente."""
+    """Registra la corrección de cualquier director de la máquina. No interrumpe
+    al agente. El canal de origen sigue siendo la vía normal; un director
+    registrado de la misma máquina también puede corregir, y su identidad queda
+    en el evento."""
     canal_corr, rechazo = _canal_de_origen(registro, encargo, canal, sesion)
     if rechazo is not None:
-        return rechazo
+        try:
+            canal_corr = nombre_canal(canal)
+        except ValueError:
+            return rechazo
+        if canal_corr not in DIRECTORES_DE_LA_MAQUINA:
+            return rechazo
+        if rechazo.get("motivo") == "no hay encargo":
+            return rechazo
+        autor = f"director:{canal_corr}"
+    else:
+        autor = f"canal:{canal_corr}"
     salida = corregir(
         registro,
         encargo,
@@ -1193,9 +1259,11 @@ def corregir_canal(
         hora,
         cierra=cierra,
         evidencia=evidencia,
+        autor=autor,
     )
     salida["encargo"] = encargo
     salida["canal"] = canal_corr
+    salida["autor"] = autor
     return salida
 
 
@@ -1621,11 +1689,29 @@ def guardar_capacidades(base: Path, doc: dict) -> None:
 
 
 def relay(
-    registro: Registro, encargo: str, accion: str, clave: str, hora: str
+    registro: Registro,
+    encargo: str,
+    accion: str,
+    clave: str,
+    hora: str,
+    canal: str = "",
 ) -> dict:
     enc = registro.fold(encargo)
     if enc is None:
         return {"rechazada": True, "motivo": "no hay encargo", "encargo": encargo}
+    if str(canal or ""):
+        try:
+            canal = nombre_canal(canal)
+        except ValueError as exc:
+            return {"rechazada": True, "motivo": str(exc), "encargo": encargo}
+        identidad = _leer(_ruta_identidad_canal(registro, encargo)) or {}
+        origen = str(identidad.get("canal") or enc.canal or "")
+        if canal != origen and canal not in DIRECTORES_DE_LA_MAQUINA:
+            return {
+                "rechazada": True,
+                "motivo": "el canal no es un director registrado de la máquina",
+                "encargo": encargo,
+            }
     if accion == "parar" and enc.director == "openbot":
         caps = _leer(registro.base / "politica" / "openbot.json") or {}
         if not caps.get("parada"):
@@ -1633,7 +1719,8 @@ def relay(
             salida["parada_ofrecida"] = False
             salida["motivo"] = "OpenBot no tiene parada demostrada; el trabajo sigue"
             return salida
-    return ordenar(registro, encargo, accion, clave, hora)
+    autor = f"director:{canal}" if str(canal or "") else ""
+    return ordenar(registro, encargo, accion, clave, hora, autor)
 
 
 def parar(registro: Registro, encargo: str, clave: str, hora: str) -> dict:

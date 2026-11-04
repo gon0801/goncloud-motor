@@ -380,6 +380,12 @@ def _supervisor(reg: Registro, args) -> int:
             if rol == "revisor"
             else frozenset()
         )
+        if enc.relevos > 0:
+            # Relevo: el mismo rol pasa a otro modelo autorizado que todavía
+            # no haya corrido en este encargo.
+            excluir = frozenset(excluir) | frozenset(
+                m for r, _a, m in enc.modelos if r == rol
+            )
         elegido = elegir(
             replace(enc, agentes=candidatas), hora, disponibles, rol=rol, excluir_modelos=excluir
         )
@@ -388,6 +394,29 @@ def _supervisor(reg: Registro, args) -> int:
             modo = _sesion_modo(enc, agente, rol)
             argv = _lanzador(agente, modelo, modo)(enc, prompt, espacio, sesion)
             return argv, {"agente": agente, "modelo": modelo, "sesion_modo": modo}
+        if enc.relevos > 0:
+            # El relevo no tiene otro modelo autorizado para este rol: no se
+            # espera a una persona. Se marca el punto como estancado para que
+            # el supervisor entregue lo que hay con los pendientes escritos.
+            from .dominio import huella_bloqueo
+
+            reg.anotar(
+                enc.id,
+                {
+                    "kind": "sin_progreso",
+                    "data": {
+                        "huella": enc.relevo_huella or huella_bloqueo(enc),
+                        "diagnostico": (
+                            "no queda otro modelo autorizado para el rol "
+                            f"{rol} tras el relevo"
+                        ),
+                        "escalar": True,
+                        "hora": hora,
+                    },
+                },
+                f"relevo-agotado:{enc.id}:{enc.relevos}",
+            )
+            return None
         if rol == "revisor" and disponibles and all(
             identidad_modelo(m) in {identidad_modelo(x) for x in excluir}
             for modelos in disponibles.values() for m in modelos

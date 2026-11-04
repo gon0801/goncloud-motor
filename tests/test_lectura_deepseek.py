@@ -29,7 +29,13 @@ def setUpModule():
         "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
     )
     parche.start()
-    unittest.addModuleCleanup(parche.stop)
+    globals()["_PARCHE_SONDA"] = parche
+
+
+def tearDownModule():
+    parche = globals().pop("_PARCHE_SONDA", None)
+    if parche is not None:
+        parche.stop()
 
 
 def _hallazgo(ident: str, severidad: str = "high", estado: str = "open") -> dict:

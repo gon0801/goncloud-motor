@@ -36,7 +36,7 @@ def _turno_sin_llm(r, gh):
 
 
 class MismaVersionTrasDevolucion(unittest.TestCase):
-    def test_deepseek_misma_version_recupera_sha_y_escala_sin_quedar_quieto(self):
+    def test_deepseek_misma_version_recupera_sha_y_releva_sin_quedar_quieto(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "mv-ds", _GhConDeepSeek)
             e = vuelta("uno")
@@ -59,11 +59,14 @@ class MismaVersionTrasDevolucion(unittest.TestCase):
 
             r.incorporar()
             e = r.fold()
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(e.relevos, 1)
             self.assertIn("DeepSeek", e.motivo)
-            self.assertIn("Se intento", e.motivo)
             self.assertFalse(_aplica_entrega(e))
-            self.assertFalse(_lanzaria(e))
+            self.assertTrue(_lanzaria(e))
+            r.incorporar()
+            e = r.fold()
+            self.assertTrue(e.pendientes_entrega)
 
     def test_una_version_distinta_no_hereda_el_commit(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

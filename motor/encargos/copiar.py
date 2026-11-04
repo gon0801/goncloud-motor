@@ -114,3 +114,9 @@ def vaciar_arbol(ruta: Path) -> None:
     """Deja `ruta` como directorio vacío, aunque contenga archivos de solo lectura."""
     _quitar(ruta)
     ruta.mkdir(parents=True, exist_ok=True)
+
+
+def borrar_arbol(ruta: Path) -> None:
+    """Borra `ruta` y su contenido, aunque haya archivos de solo lectura."""
+    if ruta.exists() or ruta.is_symlink():
+        _quitar(ruta)

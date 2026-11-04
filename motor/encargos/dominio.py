@@ -12,6 +12,8 @@ import socket
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .catalogo_agentes import identidad_modelo
+
 ESTADOS = (
     "recibido",
     "ejecutando",
@@ -67,6 +69,29 @@ class PausaAgente:
     hasta: str
     causa: str
     relevo: bool = True
+    # Modelo concreto que falló. Vacío pausa el agente entero (compatibilidad).
+    modelo: str = ""
+
+
+def _con_pausa(
+    previas: tuple[PausaAgente, ...], nueva: PausaAgente
+) -> tuple[PausaAgente, ...]:
+    """Reemplaza solo la pausa del mismo modelo, no las de los demás modelos del
+    agente: una cuota agotada en un modelo no borra la pausa de otro."""
+    if not nueva.modelo:
+        quedan = tuple(p for p in previas if p.agente != nueva.agente)
+    else:
+        identidad = identidad_modelo(nueva.modelo)
+        quedan = tuple(
+            p
+            for p in previas
+            if not (
+                p.agente == nueva.agente
+                and p.modelo
+                and identidad_modelo(p.modelo) == identidad
+            )
+        )
+    return quedan + (nueva,)
 
 
 CRITERIOS = ("seguridad", "datos", "comportamiento", "prueba_exigida", "operativo")
@@ -490,6 +515,19 @@ class Encargo:
     # mismo, y qué pidió la última (fase, versión, texto, recurso, objetivo, huella).
     no_concluyentes: int = 0
     no_concluyente_ref: tuple[str, ...] = ()
+    # El punto donde el encargo ya relevó a otro modelo del mismo rol. Si el
+    # relevo tampoco avanza en ese mismo punto, se entrega con pendientes.
+    relevo_huella: str = ""
+    relevos: int = 0
+    # Pendientes que se escriben en el cuerpo del PR cuando el encargo entrega
+    # sin que el revisor haya concluido o sin la revisión externa.
+    pendientes_entrega: tuple[str, ...] = ()
+    # Herramientas que fallaron igual tres veces y no se vuelven a usar en este
+    # encargo. El trabajo sigue con la evidencia que haya.
+    herramientas_no_disponibles: tuple[str, ...] = ()
+    # Notas que acompañan al cuerpo del PR (disputas, preguntas contestadas,
+    # herramientas caídas, tiempos agotados).
+    notas_pr: tuple[str, ...] = ()
     # Las causas pendientes del entorno o del instrumento. Mientras haya una,
     # ningún proceso nuevo: cada una se levanta con su propia comprobación.
     impedimento: str = ""
@@ -809,8 +847,9 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
     if not avance:
         return e
     # Un avance, venga de la revisión o de un check que se puso verde, cierra
-    # también la cuenta de revisiones no_concluyente repetidas.
-    return _sin_repeticiones(replace(e, sin_progreso=0))
+    # también la cuenta de revisiones no_concluyente repetidas y el punto donde
+    # el encargo ya había relevado: el siguiente bloqueo estrena escalera.
+    return _reiniciar_escalera(replace(e, sin_progreso=0))
 
 
 def fuente_de_impedimento(clase: str) -> str:
@@ -902,6 +941,7 @@ def sin_nada_en_curso(e: Encargo) -> bool:
         or e.reserva
         or e.impedimento
         or e.impedimentos
+        or e.pendientes_entrega
         or (inspeccion_bloquea(e) and pregunta_de_inspeccion(e) is None)
         or any(
             s.estado in ("pendiente", "pregunta") and s is not pregunta_de_inspeccion(e)
@@ -1104,14 +1144,33 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             causa="", motivo="", siguiente="seguir el mismo encargo", hora=hora or e.hora,
         )
     if kind == "proveedor_fallo":
-        pausa = PausaAgente(d["agente"], d["hasta"], d["causa"], d["relevo"])
+        pausa = PausaAgente(
+            d["agente"], d["hasta"], d["causa"], d["relevo"],
+            str(d.get("modelo") or ""),
+        )
         return replace(
             e,
-            pausas=tuple(p for p in e.pausas if p.agente != pausa.agente) + (pausa,),
+            pausas=_con_pausa(e.pausas, pausa),
             causa=d["causa"],
         )
     if kind == "proveedor_disponible":
-        return replace(e, pausas=tuple(p for p in e.pausas if p.agente != d["agente"]))
+        modelo = str(d.get("modelo") or "")
+        if not modelo:
+            return replace(
+                e, pausas=tuple(p for p in e.pausas if p.agente != d["agente"])
+            )
+        return replace(
+            e,
+            pausas=tuple(
+                p
+                for p in e.pausas
+                if not (
+                    p.agente == d["agente"]
+                    and p.modelo
+                    and identidad_modelo(p.modelo) == identidad_modelo(modelo)
+                )
+            ),
+        )
     if kind == "orden":
         return _orden(e, d, hora)
     if kind == "ajuste":
@@ -1149,7 +1208,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                     "el propietario declaro cerrados: " + ", ".join(cerrados)
                 ),
             )
-        e = _soltar_impedimento_de_inspeccion(_sin_repeticiones(e))
+        e = _soltar_impedimento_de_inspeccion(_reiniciar_escalera(e))
         if e.estado == "detenido":
             return replace(
                 e,
@@ -1461,15 +1520,45 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         diagnostico = str(d.get("diagnostico") or d.get("causa") or "")
         e = replace(e, vuelta_contada=e.generacion)
         if d.get("escalar"):
+            # El mismo bloqueo sin información nueva ya no detiene el encargo.
+            # Primero pasa el rol a otro modelo autorizado; si el relevo
+            # tampoco avanza, se entrega el PR con los pendientes escritos.
+            if huella and huella == e.relevo_huella and e.relevos >= 1:
+                pendiente = diagnostico or (
+                    "el bloqueo sigue abierto tras el relevo: "
+                    + (e.bloqueo_huella or huella)
+                )
+                return replace(
+                    e,
+                    estado=(
+                        "recibido"
+                        if e.estado in ("recibido", "ejecutando", "necesita_usuario")
+                        else e.estado
+                    ),
+                    bloqueo_huella=huella or e.bloqueo_huella,
+                    sin_progreso=veces,
+                    pendientes_entrega=e.pendientes_entrega + (pendiente,),
+                    motivo=diagnostico or "el relevo tampoco avanzó en el mismo bloqueo",
+                    siguiente="entregar el PR con los pendientes abiertos",
+                    ultimo_hecho=(
+                        "el relevo tampoco avanzó: se entrega con pendientes"
+                    ),
+                    hora=hora or e.hora,
+                )
             return replace(
                 e,
-                estado="necesita_usuario",
+                estado=(
+                    "recibido"
+                    if e.estado in ("recibido", "ejecutando", "necesita_usuario")
+                    else e.estado
+                ),
                 bloqueo_huella=huella or e.bloqueo_huella,
-                sin_progreso=veces,
-                preguntas=e.preguntas + ((diagnostico,) if diagnostico else ()),
+                sin_progreso=1,
+                relevo_huella=huella or e.relevo_huella,
+                relevos=e.relevos + 1,
                 motivo=diagnostico or "el mismo bloqueo sin progreso",
-                siguiente="hace falta una decisión del usuario",
-                ultimo_hecho=diagnostico or "el mismo bloqueo sin progreso",
+                siguiente="seguir con otro modelo autorizado del mismo rol",
+                ultimo_hecho=diagnostico or "se releva a otro modelo del mismo rol",
                 hora=hora or e.hora,
             )
         if d.get("nueva"):
@@ -1487,6 +1576,70 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             motivo="la corrección no resolvió el bloqueo",
             siguiente="diagnosticar por qué la corrección no resolvió el bloqueo",
             ultimo_hecho="sin progreso: ningun bloqueante cerrado en la vuelta",
+            hora=hora or e.hora,
+        )
+    if kind == "nota_pr":
+        texto = str(d.get("texto") or "").strip()
+        if texto and texto not in e.notas_pr:
+            return replace(e, notas_pr=e.notas_pr + (texto,), hora=hora or e.hora)
+        return e
+    if kind == "pendiente_entrega":
+        texto = str(d.get("texto") or "").strip()
+        if texto and texto not in e.pendientes_entrega:
+            return replace(
+                e,
+                pendientes_entrega=e.pendientes_entrega + (texto,),
+                hora=hora or e.hora,
+            )
+        return e
+    if kind == "instrumento_no_disponible":
+        clase = str(d.get("clase") or "").strip()
+        if not clase:
+            raise TransicionIlegal("instrumento_no_disponible sin clase")
+        limpios = tuple(i for i in e.impedimentos if i.clase != clase)
+        return _con_impedimentos(
+            replace(
+                e,
+                herramientas_no_disponibles=tuple(
+                    sorted(set(e.herramientas_no_disponibles) | {clase})
+                ),
+                hora=hora or e.hora,
+            ),
+            limpios,
+            "",
+        )
+    if kind == "cierre_forzado":
+        evidencia = str(d.get("evidencia") or "").strip()
+        if not evidencia:
+            raise TransicionIlegal("cierre forzado sin evidencia")
+        if e.estado in _CERRADOS:
+            raise TransicionIlegal("el encargo ya cerró")
+        e = asegurar_fase(e)
+        fase = e.fase_actual
+        if fase is not None:
+            nivel = (
+                fase.nivel_alcanzado
+                if fase.nivel_alcanzado != "ninguno"
+                else "terminado"
+            )
+            e = con_fase(
+                e,
+                replace(
+                    fase,
+                    estado="preparada",
+                    nivel_alcanzado=nivel,
+                    evidencia=evidencia,
+                ),
+            )
+        return replace(
+            e,
+            estado="terminado",
+            evidencia=e.evidencia + (evidencia,),
+            intentos_nuevos=False,
+            escrituras=False,
+            ultimo_hecho=evidencia,
+            siguiente="ninguna",
+            motivo="",
             hora=hora or e.hora,
         )
     if kind == "arbol":
@@ -1697,9 +1850,14 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             hora=hora or e.hora,
         )
 
-    if kind in ("ci_producto", "ci_revision_rojo", "ci_pr_sondeo"):
-        # Eventos retirados de una versión anterior: un registro viejo sigue
-        # plegando sin cambiar el estado.
+    if kind in (
+        "ci_producto",
+        "ci_revision_rojo",
+        "ci_pr_sondeo",
+        "respuesta_revisor_pedida",
+    ):
+        # Eventos sin efecto sobre el estado: los retirados de una versión
+        # anterior y la marca de que una pregunta vencida se pasó al revisor.
         return replace(e, hora=hora or e.hora)
 
     raise TransicionIlegal(f"evento desconocido: {kind}")
@@ -1883,7 +2041,7 @@ def _respuesta(e: Encargo, d: dict, hora: str) -> Encargo:
         hora=hora or e.hora,
     )
     return _reanudar_inspeccion(
-        _soltar_impedimento_de_inspeccion(_sin_repeticiones(e)), ident
+        _soltar_impedimento_de_inspeccion(_reiniciar_escalera(e)), ident
     )
 
 
@@ -2365,6 +2523,16 @@ def _sin_repeticiones(e: Encargo) -> Encargo:
     return replace(e, no_concluyentes=0, no_concluyente_ref=())
 
 
+def _reiniciar_escalera(e: Encargo) -> Encargo:
+    """Avance real o corrección del propietario: se estrena escalera de relevo."""
+    return replace(
+        _sin_repeticiones(e),
+        relevo_huella="",
+        relevos=0,
+        pendientes_entrega=(),
+    )
+
+
 def _texto_normalizado(valor: str) -> str:
     import re
     import unicodedata
@@ -2517,22 +2685,40 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
     fase = e.fase_actual
     version = ref[1][:12]
     causa = str(d.get("evidencia") or "").strip() or "sin evidencia nueva"
-    pregunta = (
+    clave = "|".join((ref[0], ref[1], ref[3]))
+    motivo = (
         f"El revisor no concluyó {seguidas} veces seguidas sobre la versión {version} "
-        f"pidiendo lo mismo: «{faltante}». Última causa: {causa[:400]}. "
-        "Aporta el dato (director responder o un ajuste) o decide cómo seguir."
+        f"pidiendo lo mismo: «{faltante}». Última causa: {causa[:400]}."
     )
     if fase is not None:
         e = con_fase(e, replace(fase, inspeccion_pendiente=""))
-    if e.estado not in ("recibido", "ejecutando"):
-        return e
+    if e.relevo_huella == clave and e.relevos >= 1:
+        # El revisor de relevo tampoco concluyó: se entrega con la nota.
+        return replace(
+            e,
+            estado=(
+                "recibido"
+                if e.estado in ("recibido", "ejecutando", "necesita_usuario")
+                else e.estado
+            ),
+            pendientes_entrega=e.pendientes_entrega + (motivo,),
+            motivo=motivo,
+            siguiente="entregar el PR con la revisión sin veredicto",
+            ultimo_hecho=motivo,
+        )
     return replace(
         e,
-        estado="necesita_usuario",
-        preguntas=e.preguntas + (pregunta,),
-        motivo=pregunta,
-        siguiente="hace falta una decisión del usuario",
-        ultimo_hecho=pregunta,
+        estado=(
+            "recibido"
+            if e.estado in ("recibido", "ejecutando", "necesita_usuario")
+            else e.estado
+        ),
+        relevo_huella=clave,
+        relevos=e.relevos + 1,
+        sin_progreso=1,
+        motivo=motivo,
+        siguiente="seguir con otro revisor autorizado sobre la misma versión",
+        ultimo_hecho=motivo,
     )
 
 
@@ -2547,6 +2733,10 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
     candidato = fase.nivel_alcanzado
     if paso in ("pr_abierto", "pr_listo"):
         candidato = "pr_abierto"
+    elif paso == "pr_con_pendientes":
+        # El motor entrega el PR con pendientes: el nivel pr queda alcanzado
+        # aunque el revisor no haya concluido.
+        candidato = "pr"
     elif paso == "deepseek_leido":
         if not bloqueantes_abiertos(e, "deepseek"):
             candidato = "pr"
@@ -2575,7 +2765,8 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         nivel_alcanzado=candidato,
         pr_numero=int(d.get("numero") or fase.pr_numero or 0),
         pr_sha=sha
-        if paso in ("commit", "push", "pr_abierto", "pr_listo") and sha
+        if paso in ("commit", "push", "pr_abierto", "pr_listo", "pr_con_pendientes")
+        and sha
         else fase.pr_sha,
         deepseek_sha=sha if paso == "deepseek_leido" and sha else fase.deepseek_sha,
         deepseek_huella=(
@@ -3013,6 +3204,13 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         "ultimo_hecho": e.ultimo_hecho,
         "hora": e.hora,
         "motivo": e.motivo,
+        "relevo": {
+            "huella": e.relevo_huella,
+            "veces": e.relevos,
+        },
+        "pendientes_entrega": list(e.pendientes_entrega),
+        "herramientas_no_disponibles": list(e.herramientas_no_disponibles),
+        "notas_pr": list(e.notas_pr),
         "siguiente": e.siguiente,
         "preguntas": list(e.preguntas),
         "impedimento": (
@@ -3087,6 +3285,10 @@ def decision_proceso(
             return {"matar": True, "lanzar": False, "eventos": []}
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.estado in ("detenido", "cancelado", "terminado", "esperando_reintento"):
+        return {"matar": False, "lanzar": False, "eventos": []}
+    if e.pendientes_entrega:
+        # Ya no se lanza otro turno: el supervisor entrega lo que hay, con los
+        # pendientes escritos, sin esperar a ninguna persona.
         return {"matar": False, "lanzar": False, "eventos": []}
     # Con un impedimento del entorno pendiente, otro proceso repetiría el mismo
     # trabajo sin información nueva. La huella sólo se limpia con evidencia.
@@ -3212,6 +3414,20 @@ def _bloques_comunes(e: Encargo) -> list[str]:
             "Notas de procedimiento. No sustituyen al pedido ni a los efectos.\n"
             + "\n".join(e.procedimiento)
         )
+    if e.herramientas_no_disponibles:
+        lineas.append(
+            "Herramientas no disponibles para este encargo (fallaron igual tres "
+            "veces): " + ", ".join(e.herramientas_no_disponibles)
+            + ". No las vuelvas a usar; sigue con la evidencia que haya y deja "
+            "constancia de lo que no pudiste comprobar."
+        )
+    if e.pendientes_entrega:
+        lineas.append(
+            "Pendientes que acompañan a la entrega:\n"
+            + "\n".join(e.pendientes_entrega)
+        )
+    if e.notas_pr:
+        lineas.append("Notas para el PR:\n" + "\n".join(e.notas_pr))
     if e.preguntas:
         lineas.append("Preguntas pendientes:\n" + "\n".join(e.preguntas))
     return lineas
@@ -3284,8 +3500,9 @@ def prompt_responsable(e: Encargo) -> str:
             lineas.append(
                 "Si sostienes con evidencia que un hallazgo de DeepSeek no aplica, "
                 "no lo descartes por tu cuenta: deja la evidencia en "
-                ".interno/disputa.json con el id del hallazgo y el motor pedirá "
-                "autorización al propietario."
+                ".interno/disputa.json con el id del hallazgo. El revisor "
+                "independiente decide con esa evidencia si aplica y su decisión "
+                "queda escrita en el PR."
             )
     if e.aprobadas:
         lineas.append(
