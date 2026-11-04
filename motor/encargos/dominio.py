@@ -1887,9 +1887,11 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         "ci_revision_rojo",
         "ci_pr_sondeo",
         "respuesta_revisor_pedida",
+        "autoridad_cerrada",
     ):
         # Eventos sin efecto sobre el estado: los retirados de una versión
-        # anterior y la marca de que una pregunta vencida se pasó al revisor.
+        # anterior, la marca de que una pregunta vencida se pasó al revisor y
+        # la de que un cerrado ya no tiene nada que reintentar en la autoridad.
         return replace(e, hora=hora or e.hora)
 
     raise TransicionIlegal(f"evento desconocido: {kind}")

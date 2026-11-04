@@ -877,26 +877,27 @@ def _barrer_encargos(
             enc = registro.fold(encargo_id)
         if enc.estado in ("terminado", "cancelado"):
             # Un encargo cerrado no vuelve al buzón, pero sí pasa por la
-            # autoridad: es donde se reintentan el resultado y la orden
-            # canónica. Un fallo de esa lectura no se acumula en el registro.
-            try:
-                enc = _mirar_autoridad(registro, enc, hora)
-            except Exception as exc:  # noqa: BLE001  el cierre no tumba el barrido
-                registro.anotar(
-                    enc.id,
-                    {
-                        "kind": "procedimiento",
-                        "data": {
-                            "nota": (
-                                "no se pudo mirar la autoridad del encargo "
-                                f"cerrado: {type(exc).__name__}: {exc}"
-                            )[:2000],
-                            "hora": hora,
+            # autoridad mientras le quede algo que reintentar: el resultado o
+            # la orden canónica. Cuando ya está resuelto se deja de consultar.
+            if not _autoridad_cerrada_resuelta(registro, enc):
+                try:
+                    enc = _mirar_autoridad(registro, enc, hora)
+                except Exception as exc:  # noqa: BLE001  el cierre no tumba el barrido
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "procedimiento",
+                            "data": {
+                                "nota": (
+                                    "no se pudo mirar la autoridad del encargo "
+                                    f"cerrado: {type(exc).__name__}: {exc}"
+                                )[:2000],
+                                "hora": hora,
+                            },
                         },
-                    },
-                    f"autoridad-cerrado:{enc.id}:{type(exc).__name__}",
-                )
-                enc = registro.fold(enc.id) or enc
+                        f"autoridad-cerrado:{enc.id}:{type(exc).__name__}",
+                    )
+                    enc = registro.fold(enc.id) or enc
             if enc.estado == "terminado" and enc.pr_numero and not parada:
                 enc = _revisar_ci_del_pr(registro, enc, gh, hora)
             _limpiar_encargo_cerrado(registro, enc)
@@ -6719,6 +6720,20 @@ def _espejo_entrega(
     )
 
 
+def _autoridad_cerrada_resuelta(registro: Registro, enc: Encargo) -> bool:
+    """Un cerrado que ya entregó su resultado o su orden canónica no se vuelve
+    a consultar en cada vuelta."""
+    return registro.por_ukey(f"autoridad-cerrada:{enc.id}") is not None
+
+
+def _marcar_autoridad_cerrada(registro: Registro, enc: Encargo, hora: str) -> None:
+    registro.anotar(
+        enc.id,
+        {"kind": "autoridad_cerrada", "data": {"hora": hora}},
+        f"autoridad-cerrada:{enc.id}",
+    )
+
+
 def _mirar_autoridad(registro: Registro, enc: Encargo, hora: str) -> Encargo:
     from .transporte import ConfigAutoridadInvalida, cargar, operar
 
@@ -6729,14 +6744,20 @@ def _mirar_autoridad(registro: Registro, enc: Encargo, hora: str) -> Encargo:
     if cfg is None:
         return enc
     if enc.estado in ("deteniendo", "detenido", "cancelado"):
+        orden = None
         for evento in reversed(registro.eventos(enc.id)):
             if evento["kind"] == "orden" and evento["data"]["accion"] in (
                 "parar",
                 "cancelar",
             ):
-                clave = evento["data"]["recibo"] + "-canonico"
-                _enviar_orden(registro, enc.id, evento["data"]["accion"], clave)
+                orden = evento["data"]
                 break
+        if orden is not None:
+            clave = orden["recibo"] + "-canonico"
+            if _enviar_orden(registro, enc.id, orden["accion"], clave):
+                _marcar_autoridad_cerrada(registro, enc, hora)
+        elif enc.estado in ("detenido", "cancelado"):
+            _marcar_autoridad_cerrada(registro, enc, hora)
     resp = operar(registro.base, {"op": "ver", "encargo": enc.id})
     if not resp.get("alcanzada"):
         if enc.autoridad:
@@ -6751,8 +6772,11 @@ def _mirar_autoridad(registro: Registro, enc: Encargo, hora: str) -> Encargo:
         _marcar_autoridad(registro, enc.id, True, hora, "vuelve")
         enc = registro.fold(enc.id) or enc
     estado = str((resp.get("salida") or {}).get("estado") or "")
-    if enc.estado == "terminado" and estado != "terminado":
-        _publicar_resultado(registro, enc, hora)
+    if enc.estado == "terminado":
+        if estado == "terminado":
+            _marcar_autoridad_cerrada(registro, enc, hora)
+        elif _publicar_resultado(registro, enc, hora):
+            _marcar_autoridad_cerrada(registro, enc, hora)
     if enc.estado == "recibido" and estado == "detenido":
         for evento in reversed(registro.eventos(enc.id)):
             if evento["kind"] == "orden":

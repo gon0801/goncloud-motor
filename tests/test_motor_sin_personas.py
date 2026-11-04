@@ -842,6 +842,32 @@ class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
                 barrer(reg, ahora_iso(), time.time(), _llamador)
             publicado.assert_called()
 
+    def test_un_terminado_resuelto_no_consulta_la_autoridad_cada_vuelta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(reg, "x", "autoridad-una-vez", ahora_iso())[
+                "encargo"
+            ]
+            reg.anotar(
+                encargo,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {"evidencia": "entregado con pendientes", "hora": ahora_iso()},
+                },
+                "cierre-una-vez",
+            )
+            with (
+                mock.patch("motor.encargos.transporte.cargar", return_value={}),
+                mock.patch(
+                    "motor.encargos.transporte.operar",
+                    return_value={"alcanzada": True, "salida": {"estado": "terminado"}},
+                ) as operar,
+            ):
+                for _ in range(3):
+                    barrer(reg, ahora_iso(), time.time(), _llamador)
+            self.assertEqual(operar.call_count, 1)
+
     def test_un_cancelado_reintenta_la_orden_canonica(self):
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")
@@ -871,6 +897,33 @@ class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
             self.assertTrue(
                 any(str(clave).endswith("-canonico") for clave in claves), claves
             )
+
+    def test_un_cancelado_resuelto_no_reenvia_la_orden_cada_vuelta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(reg, "x", "orden-una-vez", ahora_iso())[
+                "encargo"
+            ]
+            ciclo.ordenar(reg, encargo, "cancelar", "cancela-2", ahora_iso())
+            reg.anotar(
+                encargo,
+                {"kind": "arbol", "data": {"observacion": "ausente"}},
+                "cancela-ausente-2",
+            )
+            with (
+                mock.patch("motor.encargos.transporte.cargar", return_value={}),
+                mock.patch(
+                    "motor.encargos.transporte.operar",
+                    return_value={"alcanzada": True, "salida": {"estado": "cancelado"}},
+                ),
+                mock.patch.object(
+                    ciclo, "_enviar_orden", return_value=True
+                ) as enviar,
+            ):
+                for _ in range(3):
+                    barrer(reg, ahora_iso(), time.time(), _llamador)
+            self.assertEqual(enviar.call_count, 1)
 
 
 class AvisosInformanSinPedirNada(unittest.TestCase):
