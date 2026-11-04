@@ -57,9 +57,10 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
   reporte lo dice cuando las toma de ahí.
 - `recursos`: los recursos de `capacidades.json` de la base y si son usables: un sqlite se
   abre en solo lectura y se le hace una consulta mínima; un remoto por fichero exige su
-  `raiz` presente y legible; un remoto http no se sondea: aviso. Un recurso `ci` de una
-  preparación anterior se ignora: el CI corre en el PR real y ya no hay un sondeo de `gh`
-  por recurso. Sin `capacidades.json` los agentes no pueden pedir recursos: falta.
+  `raiz` presente y legible; un `ci` con `repo` fijo se sondea con `gh repo view` contra
+  ese repo (usa la sesión de gh del host; es una llamada de lectura, sin cuota) y uno sin
+  `repo` fijo comprueba `gh auth status` y deja el repo al encargo. Sin `capacidades.json` los
+  agentes no pueden pedir recursos: falta. Un remoto http no se sondea: aviso.
 - `avisos`: el canal de Telegram del motor (chat en la conf y `token_env` presente en
   `secretos.env`). Nunca imprime el token.
 - `senal`: si `MOTOR_KUMA_URL` está presente en el entorno o en `secretos.env`. Nunca

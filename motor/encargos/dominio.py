@@ -1697,12 +1697,6 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             hora=hora or e.hora,
         )
 
-    if kind in ("ci_producto", "ci_revision_rojo", "ci_pr_sondeo"):
-        # `ci_producto` y `ci_revision_rojo` son de la compuerta retirada: un
-        # registro viejo sigue plegando. `ci_pr_sondeo` solo espacia la lectura
-        # del CI del PR y no cambia el estado.
-        return replace(e, hora=hora or e.hora)
-
     raise TransicionIlegal(f"evento desconocido: {kind}")
 
 
@@ -2264,9 +2258,7 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
     e = con_fase(e, nueva)
     if not d.get("reabrir"):
         return replace(e, hora=hora or e.hora)
-    if e.estado != "terminado" or e.nivel_alcanzado in ("integrado", "desplegado"):
-        # Un encargo ya integrado o desplegado no vuelve a pr_abierto: el CI
-        # del PR solo deja su aviso. Reabrir ahí rebajaría el nivel alcanzado.
+    if e.estado != "terminado":
         return replace(e, hora=hora or e.hora)
     reabierta = replace(nueva, estado="entrega", nivel_alcanzado="pr_abierto")
     return sesiones_de_fase_nueva(
