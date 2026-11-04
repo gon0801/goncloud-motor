@@ -336,6 +336,36 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
 
 
+class ElReintentoSinEmpezarNoSondeaCadaBarrido(unittest.TestCase):
+    def test_al_vencer_el_plazo_termina_en_sin_resultado(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-rerun-tarde",
+                _GhConCorridas,
+                {"corridas": {"gate": "failure"}, "logs_job": {"gate": LOG_GATE}},
+            )
+            e = vuelta("hola\n")
+            repo = e.entrega.repo
+            vuelta.gh.checks_llamadas = 0
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
+            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+
+            _reintento_empezado(vuelta, repo, False)
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(90))
+            self.assertEqual(e.fase_actual.ci_pr_estado, "sin_resultado")
+            self.assertEqual(_avisos(e), [])
+            self.assertEqual(_estados_ci(r), ["reintentando", "sin_resultado"])
+            self.assertEqual(vuelta.gh.checks_llamadas, 2)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(100))
+            self.assertEqual(vuelta.gh.checks_llamadas, 2)
+            self.assertEqual(_estados_ci(r), ["reintentando", "sin_resultado"])
+
+
 class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
     def test_la_cancelacion_pasajera_pasa_en_la_segunda_y_no_avisa(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
