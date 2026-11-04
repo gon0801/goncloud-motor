@@ -10,8 +10,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from motor.flota.actualizaciones import _crear_generacion, preparar
+from motor.flota.actualizaciones import (
+    _copiar_arbol,
+    _crear_generacion,
+    actualizar,
+    preparar,
+)
+from motor.flota.compartida import exportar, importar
 from motor.flota.control import _atomico, aplicar, asignar, recuperar, revertir
+from motor.flota.manifiesto import Herramienta, Politica, Puesto, guardar
 
 POLITICA = (
     'generacion="ensayo"\n[[puesto]]\nfuncion="director"\n'
@@ -21,6 +28,15 @@ POLITICA_B = (
     'generacion="ensayo-b"\n[[puesto]]\nfuncion="director"\n'
     'modelo=["p/m"]\nesfuerzo=["low"]\n'
 )
+GROK = {
+    "nombre": "grok",
+    "tipo": "npm",
+    "paquete": "@xai-official/grok",
+    "version": "v2",
+    "fuente": "https://registry.npmjs.org/%40xai-official%2Fgrok/latest",
+    "tarball": "https://registry.npmjs.org/@xai-official/grok/-/grok-v2.tgz",
+    "integridad": "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+}
 
 
 def _repo(origen: Path) -> Path:
@@ -624,6 +640,373 @@ class TurnosFlota(unittest.TestCase):
         self.assertEqual(asignar(self.home), b)
         self.assertEqual(revertir(self.home)["accion"], "revertido")
         self.assertEqual(asignar(self.home), a)
+
+    def _replica(self, nombre: str):
+        """Home de réplica con una generación vigente que ya exportó config y perfiles."""
+        origen, _a, gen_a = self._flota(nombre)
+        _runtime_preparada(self.home, gen_a, "grok", "v1")
+        ruta = gen_a / "runtime.json"
+        runtime = json.loads(ruta.read_text(encoding="utf-8"))
+        runtime["componentes"] = [GROK]
+        _atomico(ruta, runtime)
+        guardar(
+            self.home / "manifiesto.toml",
+            Politica(
+                "ensayo",
+                (Puesto("director", (("p/m", "low"),)),),
+                (),
+                (Herramienta("grok", GROK["fuente"], GROK["version"], GROK["integridad"]),),
+                (),
+                None,
+                (),
+            ),
+        )
+        snap = self.base / (nombre + "-snap.json")
+        exportar(self.home, snap)
+        importar(self.home, snap)
+        plugin = gen_a / "config/hermes/plugins/goncloud-team/poteto.py"
+        plugin.write_text(
+            "raise FileNotFoundError('checkout de conf')\n", encoding="utf-8"
+        )
+        (gen_a / "config/conf").mkdir(parents=True)
+        (gen_a / "config/conf/marca.txt").write_text("conf-vigente\n", encoding="utf-8")
+        claw = gen_a / "perfiles/claw"
+        claw.mkdir(parents=True)
+        (claw / "openclaw.json").write_text(
+            json.dumps({"workspace": str(gen_a / "perfiles/claw/workspaces/main")}),
+            encoding="utf-8",
+        )
+        perfil = gen_a / "perfiles/hermes/profiles/director"
+        perfil.mkdir(parents=True)
+        (perfil / "config.yaml").write_text("home: " + str(gen_a) + "\n", encoding="utf-8")
+        cache = gen_a / "perfiles/hermes/cache"
+        cache.mkdir(parents=True)
+        (cache / "no-copiar.txt").write_text("cache\n", encoding="utf-8")
+        return origen, gen_a
+
+    def test_replica_sin_checkouts_aplica_la_configuracion_vigente(self):
+        origen, gen_a = self._replica("origen-replica")
+        (gen_a / "config/hermes/model-routing.source.json").write_text(
+            json.dumps(
+                {
+                    "bindings": {"director": "adaptador"},
+                    "chains": {"director": ["viejo (low)"]},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        def fake(doc_, destino, gen, home):
+            destino.mkdir(parents=True)
+            script = destino / "cli.py"
+            script.write_text("print(" + repr(doc_["version"]) + ")", encoding="utf-8")
+            return [sys.executable, str(script)], doc_["version"], None
+
+        with (
+            patch(
+                "motor.flota.actualizaciones._preparar_componente", side_effect=fake
+            ),
+            patch("motor.flota.turnos._sesion_presente", return_value=False),
+        ):
+            salida = actualizar(
+                self.home,
+                motor_origen=origen,
+                repos={
+                    "hermes": self.base / "no-esta-hermes",
+                    "conf": self.base / "no-esta-conf",
+                },
+                sin_turnos=True,
+            )
+        self.assertEqual(salida["accion"], "aplicada", salida)
+        nueva = self.home / "generaciones" / salida["generacion"]
+        self.assertEqual(
+            (nueva / "config/conf/marca.txt").read_text(encoding="utf-8"),
+            "conf-vigente\n",
+        )
+        self.assertIn(
+            "raise FileNotFoundError",
+            (nueva / "config/hermes/plugins/goncloud-team/poteto.py").read_text(
+                encoding="utf-8"
+            ),
+        )
+        workspace = json.loads(
+            (nueva / "perfiles/claw/openclaw.json").read_text(encoding="utf-8")
+        )["workspace"]
+        self.assertEqual(
+            Path(workspace).resolve(),
+            (nueva / "perfiles/claw/workspaces/main").resolve(),
+        )
+        self.assertNotEqual(
+            Path(workspace).resolve(),
+            (gen_a / "perfiles/claw/workspaces/main").resolve(),
+        )
+        home_yaml = (
+            (nueva / "perfiles/hermes/profiles/director/config.yaml")
+            .read_text(encoding="utf-8")
+            .split("home: ", 1)[1]
+            .strip()
+        )
+        self.assertEqual(Path(home_yaml).resolve(), nueva.resolve())
+        self.assertFalse((nueva / "perfiles/hermes/cache/no-copiar.txt").exists())
+        runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            runtime["poteto"], "config/hermes/shared/sistema-agentes/poteto"
+        )
+        tabla = json.loads(
+            (nueva / "config/hermes/model-routing.source.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(tabla["bindings"], {"director": "adaptador"})
+        self.assertEqual(tabla["chains"], {"director": ["p/m (low)"]})
+        self.assertEqual(tabla["source"], "flota/manifesto.toml")
+        self.assertEqual(
+            runtime["politica"], "config/hermes/model-routing.source.json"
+        )
+
+    def test_la_reproyeccion_actualiza_los_perfiles_claw(self):
+        origen, gen_a = self._replica("origen-claw")
+        hermes = gen_a / "config/hermes"
+        (hermes / "model-routing.source.json").write_text(
+            json.dumps({"chains": {"director": ["viejo/modelo (low)"]}}) + "\n",
+            encoding="utf-8",
+        )
+        (hermes / "claw-routing.json").write_text(
+            json.dumps({"agents": {"main": {"row": "director", "thinking": False}}})
+            + "\n",
+            encoding="utf-8",
+        )
+        script = hermes / "scripts/claw_models.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            "import json, sys\n"
+            "args = sys.argv[1:]\n"
+            "fuente = json.load(open(args[args.index('--source') + 1], encoding='utf-8'))\n"
+            "modelo = fuente['chains']['director'][0].split(' (', 1)[0]\n"
+            "deseado = {'agents': {'entries': {'main': {'model': {\n"
+            "'primary': modelo, 'fallbacks': []}}}}}\n"
+            "if 'desired' in args:\n"
+            "    print(json.dumps(deseado))\n"
+            "elif 'check' in args:\n"
+            "    vivo = json.load(open(args[args.index('--live') + 1], encoding='utf-8'))\n"
+            "    if vivo['agents']['entries']['main']['model']['primary'] != modelo:\n"
+            "        raise SystemExit(1)\n",
+            encoding="utf-8",
+        )
+        claw = gen_a / "perfiles/claw"
+        viejo = {
+            "agents": {
+                "entries": {
+                    "main": {
+                        "model": {"primary": "viejo/modelo", "fallbacks": []},
+                        "workspace": str(gen_a / "perfiles/claw/workspaces/main"),
+                    }
+                }
+            }
+        }
+        (claw / "modelos.json").write_text(json.dumps(viejo) + "\n", encoding="utf-8")
+        (claw / "openclaw.json").write_text(json.dumps(viejo) + "\n", encoding="utf-8")
+
+        def fake(doc_, destino, gen, home):
+            destino.mkdir(parents=True)
+            marca = destino / "cli.py"
+            marca.write_text("print(" + repr(doc_["version"]) + ")", encoding="utf-8")
+            return [sys.executable, str(marca)], doc_["version"], None
+
+        with patch(
+            "motor.flota.actualizaciones._preparar_componente", side_effect=fake
+        ):
+            salida = preparar(self.home, motor_origen=origen, repos={})
+        nueva = self.home / "generaciones" / salida["generacion"]
+        modelos = json.loads(
+            (nueva / "perfiles/claw/modelos.json").read_text(encoding="utf-8")
+        )
+        abierto = json.loads(
+            (nueva / "perfiles/claw/openclaw.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            modelos["agents"]["entries"]["main"]["model"]["primary"], "p/m"
+        )
+        self.assertEqual(
+            abierto["agents"]["entries"]["main"]["model"]["primary"], "p/m"
+        )
+        self.assertEqual(
+            Path(abierto["agents"]["entries"]["main"]["workspace"]).resolve(),
+            (nueva / "perfiles/claw/workspaces/main").resolve(),
+        )
+        self.assertEqual(abierto["channels"], {})
+        self.assertNotIn("viejo/modelo", json.dumps(modelos))
+        self.assertNotIn("viejo/modelo", json.dumps(abierto))
+
+    def test_la_misma_pieza_se_reutiliza_si_no_se_puede_preparar(self):
+        origen, gen_a = self._replica("origen-reuso")
+        marca = gen_a / "herramientas/grok/marca.txt"
+        marca.parent.mkdir(parents=True)
+        marca.write_text("vigente\n", encoding="utf-8")
+        real = gen_a / "herramientas/grok/real-python"
+        real.write_text("binario\n", encoding="utf-8")
+        venv_rel = Path(
+            "perfiles/hermes/installs/abc/environments/e/venv/bin/python"
+        )
+        enlace = gen_a / venv_rel
+        enlace.parent.mkdir(parents=True)
+        enlace.symlink_to(real.resolve())
+        ruta = gen_a / "runtime.json"
+        runtime = json.loads(ruta.read_text(encoding="utf-8"))
+        runtime["lanzadores"]["grok"] = [venv_rel.as_posix()]
+        _atomico(ruta, runtime)
+
+        def falla(doc_, destino, gen, home):
+            raise RuntimeError("fallo git [] (salida 128)")
+
+        with patch(
+            "motor.flota.actualizaciones._preparar_componente", side_effect=falla
+        ):
+            salida = preparar(self.home, motor_origen=origen, repos={})
+        nueva = self.home / "generaciones" / salida["generacion"]
+        self.assertEqual(
+            (nueva / "herramientas/grok/marca.txt").read_text(encoding="utf-8"),
+            "vigente\n",
+        )
+        runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
+        self.assertIn(
+            "se reutiliza la instalacion vigente",
+            runtime["observaciones"]["grok"]["motivo"],
+        )
+        nuevo_enlace = nueva / venv_rel
+        self.assertTrue(nuevo_enlace.is_symlink(), nuevo_enlace)
+        self.assertEqual(
+            nuevo_enlace.resolve(),
+            (nueva / "herramientas/grok/real-python").resolve(),
+        )
+
+    def test_una_version_distinta_que_falla_conserva_la_vigente_y_lo_dice(self):
+        origen, gen_a = self._replica("origen-distinta")
+        ruta = gen_a / "runtime.json"
+        runtime = json.loads(ruta.read_text(encoding="utf-8"))
+        runtime["componentes"] = [{**GROK, "version": "v1"}]
+        runtime["observaciones"]["grok"]["version"] = "v1"
+        _atomico(ruta, runtime)
+
+        def falla(doc_, destino, gen, home):
+            raise RuntimeError("fallo node [npm-cli.js] (salida 1)")
+
+        with patch(
+            "motor.flota.actualizaciones._preparar_componente", side_effect=falla
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                preparar(self.home, motor_origen=origen, repos={})
+        self.assertIn("se conserva la instalacion vigente", str(ctx.exception))
+        self.assertIn("v1", str(ctx.exception))
+        self.assertIn("v2", str(ctx.exception))
+        self.assertEqual(asignar(self.home), gen_a.name)
+
+    def test_reutilizar_npm_copia_el_node_de_la_generacion(self):
+        origen, gen_a = self._replica("origen-node")
+        huella = "ab" * 32
+        node_rel = Path("herramientas/node") / huella / "node.exe"
+        nodo = gen_a / node_rel
+        nodo.parent.mkdir(parents=True)
+        nodo.write_bytes(b"NODE" + str(gen_a).encode() + b"NODE")
+        (gen_a / "herramientas/grok").mkdir(parents=True, exist_ok=True)
+        (gen_a / "herramientas/grok/cli.js").write_text(
+            "console.log('v2')\n", encoding="utf-8"
+        )
+        ruta = gen_a / "runtime.json"
+        runtime = json.loads(ruta.read_text(encoding="utf-8"))
+        runtime["lanzadores"]["grok"] = [
+            node_rel.as_posix(),
+            "herramientas/grok/cli.js",
+        ]
+        _atomico(ruta, runtime)
+
+        def falla(doc_, destino, gen, home):
+            raise RuntimeError("fallo node [npm-cli.js] (salida 1)")
+
+        with patch(
+            "motor.flota.actualizaciones._preparar_componente", side_effect=falla
+        ):
+            salida = preparar(self.home, motor_origen=origen, repos={})
+        nueva = self.home / "generaciones" / salida["generacion"]
+        copiado = nueva / node_rel
+        self.assertTrue(copiado.is_file(), copiado)
+        self.assertEqual(copiado.read_bytes(), nodo.read_bytes())
+        runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            runtime["lanzadores"]["grok"][0], node_rel.as_posix()
+        )
+
+
+class CopiaConfigReplica(unittest.TestCase):
+    def test_las_rutas_escapadas_en_json_se_reescriben(self):
+        viejo = "C:\\flota\\generaciones\\aaa"
+        nuevo = "C:\\flota\\generaciones\\bbb"
+        with tempfile.TemporaryDirectory(prefix="copia-json-") as tmp:
+            origen = Path(tmp) / "config"
+            origen.mkdir()
+            (origen / "openclaw.json").write_text(
+                json.dumps({"workspace": viejo + "\\perfiles\\claw"}) + "\n",
+                encoding="utf-8",
+            )
+            (origen / "nota.txt").write_text("home: " + viejo + "\n", encoding="utf-8")
+            destino = Path(tmp) / "nueva"
+            _copiar_arbol(origen, destino, [viejo], nuevo)
+            workspace = json.loads(
+                (destino / "openclaw.json").read_text(encoding="utf-8")
+            )["workspace"]
+            self.assertEqual(workspace, nuevo + "\\perfiles\\claw")
+            self.assertEqual(
+                (destino / "nota.txt").read_text(encoding="utf-8"),
+                "home: " + nuevo + "\n",
+            )
+
+    def test_la_copia_conserva_permisos_y_symlinks(self):
+        with tempfile.TemporaryDirectory(prefix="copia-modo-") as tmp:
+            origen = Path(tmp) / "config"
+            privado = origen / "bin"
+            privado.mkdir(parents=True)
+            os.chmod(privado, 0o700)
+            script = privado / "tool.sh"
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            os.chmod(script, 0o750)
+            real = origen / "real.txt"
+            real.write_text("dato\n", encoding="utf-8")
+            enlace = origen / "enlace"
+            enlace.symlink_to("real.txt")
+            absoluto = origen / "enlace-abs"
+            absoluto.symlink_to(real)
+            solo_lectura = origen / "solo-lectura"
+            solo_lectura.mkdir()
+            (solo_lectura / "adentro.txt").write_text("si\n", encoding="utf-8")
+            os.chmod(solo_lectura, 0o500)
+            destino = Path(tmp) / "nueva"
+            try:
+                _copiar_arbol(origen, destino, [str(origen)], str(destino))
+                self.assertEqual(
+                    (destino / "solo-lectura" / "adentro.txt").read_text(
+                        encoding="utf-8"
+                    ),
+                    "si\n",
+                )
+                if os.name == "posix":
+                    self.assertEqual(
+                        (destino / "solo-lectura").stat().st_mode & 0o777, 0o500
+                    )
+            finally:
+                os.chmod(solo_lectura, 0o700)
+                if (destino / "solo-lectura").exists():
+                    os.chmod(destino / "solo-lectura", 0o700)
+            self.assertTrue((destino / "enlace").is_symlink())
+            self.assertEqual(os.readlink(destino / "enlace"), "real.txt")
+            self.assertTrue((destino / "enlace-abs").is_symlink())
+            self.assertEqual(os.readlink(destino / "enlace-abs"), str(destino / "real.txt"))
+            self.assertEqual(
+                (destino / "real.txt").read_text(encoding="utf-8"), "dato\n"
+            )
+            if os.name == "posix":
+                self.assertEqual((destino / "bin" / "tool.sh").stat().st_mode & 0o777, 0o750)
+                self.assertEqual((destino / "bin").stat().st_mode & 0o777, 0o700)
 
 
 class GuardaHomeTest(unittest.TestCase):
