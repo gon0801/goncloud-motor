@@ -63,10 +63,10 @@ else:
 '''
 
 
-def _encargo_con_repo(repo: str) -> Encargo:
+def _encargo_con_repo(repo: str, base_fase: str = "") -> Encargo:
     fase = Fase(
         id="f", resultado="log", estado="entrega",
-        pr_numero=189, pr_sha=SHA, rama="encargo/enc_x-f",
+        pr_numero=189, pr_sha=SHA, rama="encargo/enc_x-f", base=base_fase,
     )
     return Encargo(
         id="enc_x",
@@ -249,6 +249,18 @@ class _CiLog(unittest.TestCase):
         self.assertEqual(r["estado"], "error", r)
         self.assertIn("no contra la base main del encargo", r["motivo"])
         self.assertFalse((self.destino / "remoto").exists())
+
+    def test_lee_el_pr_del_encargo_abierto_contra_la_base_de_su_fase(self):
+        contexto = nec.contexto_de(
+            _encargo_con_repo("o/r", base_fase="encargo/enc_x-f1")
+        )
+        self.assertEqual(contexto["base"], "encargo/enc_x-f1")
+        self.cambiar_pr(baseRefName="encargo/enc_x-f1")
+
+        r = self.pedir(contexto=contexto)
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["base"], "encargo/enc_x-f1")
 
     def test_sin_pr_del_encargo_no_lee_nada(self):
         r = self.pedir(contexto={**self.contexto, "pr": 0})
