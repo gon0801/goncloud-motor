@@ -1,0 +1,11 @@
+OpenBot real en la Mac (app 0.51.1 corriendo), agente DG con Scripts locales activado por David.
+CLI real: /Applications/OpenBot.app/Contents/Resources/cli/openbot-cli.mjs
+Entrega con clave de ensayo estable ensayo-corr34-1:
+  status: completed
+  deliveryId: d7f29301-8579-462d-95ff-d10dd1523377
+  messageId: 69bbbd78-2f6a-4397-9d69-8f8dbe574cef
+  turnId: 01a17c2d-35e0-7453-a97f-762b05d43054
+  respuesta: "Usaría la vía directa: la delegaría a un agente de lectura, sin crear un plan para el motor."
+Consulta con status devolvio el mismo turno completado.
+Retransmision con la misma clave --id devolvio el mismo deliveryId y turnId. No se duplico el trabajo.
+Parada: sigue sin ofrecerse; no se demostro cancel. Un timeout no cancela.

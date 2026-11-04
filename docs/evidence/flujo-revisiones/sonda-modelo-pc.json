@@ -1,0 +1,30 @@
+{
+  "host": "pc",
+  "modelo": "gpt-6-astra",
+  "origen_catalogo": "~/.codex/models_cache.json",
+  "ejecutor": "Codex nativo de la generación instalada; suscripción existente",
+  "comando_modelo": [
+    "exec",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--skip-git-repo-check",
+    "--ephemeral",
+    "--json",
+    "-m",
+    "gpt-6-astra",
+    "-c",
+    "model_reasoning_effort=\"low\""
+  ],
+  "pedido": "Responde exactamente MODELO_OK. No uses herramientas ni cambies archivos.",
+  "exit_code": 0,
+  "respuesta": "MODELO_OK",
+  "uso_observado": {
+    "input_tokens": 20149,
+    "cached_input_tokens": 0,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 7,
+    "reasoning_output_tokens": 0
+  },
+  "alcance": "Sonda real por SSH en PC. Acredita cuenta y modelo disponible; no acredita por sí sola el recorrido completo de trabajador/revisor.",
+  "observador": "Codex root, salida de comando observada en esta sesión"
+}
