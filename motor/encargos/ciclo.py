@@ -660,7 +660,7 @@ def _cerrar_procesos_del_encargo(registro: Registro, enc: Encargo) -> int:
 
 # Encargos cuya limpieza ya falló en este proceso: el barrido siguiente no
 # vuelve a intentarlo. Un arranque nuevo del supervisor permite un reintento.
-_LIMPIEZA_FALLIDA: set[str] = set()
+_LIMPIEZA_FALLIDA: set[tuple[str, str]] = set()
 
 
 def _anotar_limpieza_fallida(
@@ -686,7 +686,8 @@ def _limpiar_encargo_cerrado(
     vez y no se reintenta en cada barrido."""
     if enc.estado not in ("terminado", "cancelado"):
         return False
-    if enc.id in _LIMPIEZA_FALLIDA:
+    clave = (str(Path(registro.base)), enc.id)
+    if clave in _LIMPIEZA_FALLIDA:
         return False
     hora = hora or ahora_iso()
     _cerrar_procesos_del_encargo(registro, enc)
@@ -695,6 +696,7 @@ def _limpiar_encargo_cerrado(
     fallos: list[tuple[Path, OSError]] = []
 
     def borrar(ruta: Path) -> None:
+        """Borra una ruta y guarda el error para anotarlo sin cortar el resto."""
         nonlocal borrado
         if not (ruta.exists() or ruta.is_symlink()):
             return
@@ -707,7 +709,16 @@ def _limpiar_encargo_cerrado(
     borrar(base / "runtime" / enc.id)
     ejecucion = base / "ejecucion" / enc.id
     try:
-        intentos = sorted(ejecucion.glob("intento-*"))
+        intentos = sorted(
+            (
+                ruta
+                for ruta in ejecucion.iterdir()
+                if ruta.name.startswith("intento-")
+            ),
+            key=lambda ruta: ruta.name,
+        )
+    except FileNotFoundError:
+        intentos = []
     except OSError as exc:
         fallos.append((ejecucion, exc))
         intentos = []
@@ -715,11 +726,11 @@ def _limpiar_encargo_cerrado(
         borrar(intento)
     borrar(ejecucion / "actual")
     if fallos:
-        _LIMPIEZA_FALLIDA.add(enc.id)
+        _LIMPIEZA_FALLIDA.add(clave)
         ruta, exc = fallos[0]
         _anotar_limpieza_fallida(registro, enc, ruta, exc, hora)
     else:
-        _LIMPIEZA_FALLIDA.discard(enc.id)
+        _LIMPIEZA_FALLIDA.discard(clave)
     return borrado
 
 

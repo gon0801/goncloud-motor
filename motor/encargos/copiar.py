@@ -43,6 +43,7 @@ def _reintentar_sin_solo_lectura(funcion, ruta, excinfo) -> None:
 
 
 def _quitar(ruta: Path) -> None:
+    """Borra un archivo, enlace o árbol aunque tenga el permiso de solo lectura."""
     if ruta.is_symlink() or ruta.is_file():
         _escribible(ruta.parent)
         _escribible(ruta)
