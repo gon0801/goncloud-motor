@@ -4514,32 +4514,38 @@ def _revisar_ci_del_pr(
         return enc
     primero = str(sondeo.get("primero") or hora)
     edad = _segundos_entre(primero, hora)
-    if edad is not None and edad >= _CI_SONDEO_MAX_S:
-        return _anotar_ci_del_pr(
-            registro,
-            enc,
-            ukey=ukey,
-            fase=fase.id,
-            sha=sha,
-            estado="sin_resultado",
-            causa=(
-                "el CI del PR no terminó en "
-                f"{_CI_SONDEO_MAX_S // 60} minutos; se deja de sondear"
-            ),
-            hora=hora,
+    al_limite = edad is not None and edad >= _CI_SONDEO_MAX_S
+    if not al_limite:
+        _guardar_sondeo_ci(
+            ruta_sondeo,
+            {
+                "sha": sha,
+                "primero": primero,
+                "ultimo": hora,
+                "sondeos": int(sondeo.get("sondeos") or 0) + 1,
+            },
         )
-    _guardar_sondeo_ci(
-        ruta_sondeo,
-        {
-            "sha": sha,
-            "primero": primero,
-            "ultimo": hora,
-            "sondeos": int(sondeo.get("sondeos") or 0) + 1,
-        },
-    )
     try:
         veredicto_ci = gh.checks(enc.entrega.repo, enc.pr_numero, sha, ())
     except Exception as exc:
+        if al_limite:
+            # Al vencer el plazo no se declara sin resultado sin haber leído:
+            # el CI pudo terminar. Si la lectura falla, sí es terminal para no
+            # quedarse reintentando errores cada barrido.
+            return _anotar_ci_del_pr(
+                registro,
+                enc,
+                ukey=ukey,
+                fase=fase.id,
+                sha=sha,
+                estado="sin_resultado",
+                causa=(
+                    "el CI del PR no terminó en "
+                    f"{_CI_SONDEO_MAX_S // 60} minutos y al vencer no se pudo "
+                    f"leer: {exc}"
+                ),
+                hora=hora,
+            )
         # Sin consumir `ukey`: el resultado todavía no se conoce y un fallo de
         # lectura no puede darlo por perdido.
         registro.anotar(
@@ -4559,9 +4565,24 @@ def _revisar_ci_del_pr(
         for c in (getattr(veredicto_ci, "corridas", ()) or ())
         if isinstance(c, dict)
     )
-    if any(str(c.get("status") or "") != "completed" for c in corridas):
-        return enc
-    if not corridas and not getattr(veredicto_ci, "fallas", ()):
+    pendiente = any(
+        str(c.get("status") or "") != "completed" for c in corridas
+    ) or (not corridas and not getattr(veredicto_ci, "fallas", ()))
+    if pendiente:
+        if al_limite:
+            return _anotar_ci_del_pr(
+                registro,
+                enc,
+                ukey=ukey,
+                fase=fase.id,
+                sha=sha,
+                estado="sin_resultado",
+                causa=(
+                    "el CI del PR no terminó en "
+                    f"{_CI_SONDEO_MAX_S // 60} minutos; se deja de sondear"
+                ),
+                hora=hora,
+            )
         return enc
     caidas = [
         c
@@ -4659,6 +4680,10 @@ def _revisar_ci_del_pr(
                 clave_reintento,
             )
             enc = registro.fold(enc.id) or enc
+            _guardar_sondeo_ci(
+                ruta_sondeo,
+                {"sha": sha, "primero": hora, "ultimo": hora, "sondeos": 1},
+            )
             try:
                 for run_id in run_ids:
                     gh.relanzar_fallidas(enc.entrega.repo, run_id)

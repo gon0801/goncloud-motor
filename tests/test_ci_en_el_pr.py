@@ -462,11 +462,36 @@ class ElSondeoSeEspacia(unittest.TestCase):
             self.assertEqual(e.fase_actual.ci_pr_estado, "sin_resultado")
             self.assertEqual(_avisos(e), [])
             self.assertEqual(_estados_ci(r), ["sin_resultado"])
-            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+            self.assertEqual(vuelta.gh.checks_llamadas, 2)
 
             e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(100))
-            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+            self.assertEqual(vuelta.gh.checks_llamadas, 2)
             self.assertEqual(_sondeos(r), [])
+
+    def test_un_ci_terminado_al_vencer_el_plazo_se_lee(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-sondeo-final",
+                _GhConCorridas,
+                {"corridas": {"bateria": "in_progress"}},
+            )
+            e = vuelta("hola\n")
+            vuelta.gh.checks_llamadas = 0
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+            self.assertEqual(e.fase_actual.ci_pr_estado, "")
+
+            cfg = json.loads((vuelta.gh.d / "repos.json").read_text())
+            cfg[str(e.entrega.repo)]["corridas"] = {"bateria": "success"}
+            (vuelta.gh.d / "repos.json").write_text(json.dumps(cfg))
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(90))
+            self.assertEqual(e.fase_actual.ci_pr_estado, "verde")
+            self.assertEqual(_estados_ci(r), ["verde"])
+            self.assertEqual(vuelta.gh.checks_llamadas, 2)
 
 
 class UnErrorDeLecturaNoPierdeElResultado(unittest.TestCase):
