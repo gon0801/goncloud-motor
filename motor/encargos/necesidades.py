@@ -976,12 +976,13 @@ def _atender_decision(
 
 
 def contexto_de(enc) -> dict:
-    """PR, SHA, rama y repo del encargo que autorizan una lectura de su CI."""
+    """PR, SHA, rama, base y repo del encargo que autorizan su CI."""
     return {
         "pr": int(getattr(enc, "pr_numero", 0) or 0),
         "sha": str(getattr(enc, "pr_sha", "") or ""),
         "rama": str(getattr(enc, "rama_entrega", "") or ""),
         "repo": str(getattr(getattr(enc, "entrega", None), "repo", "") or ""),
+        "base": str(getattr(getattr(enc, "entrega", None), "base", "") or ""),
     }
 
 

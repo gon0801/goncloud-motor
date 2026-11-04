@@ -104,6 +104,7 @@ class _CiLog(unittest.TestCase):
                 "headRefName": "encargo/enc_x-f",
                 "headRefOid": SHA,
                 "headRepository": {"nameWithOwner": "o/r"},
+                "baseRefName": "main",
             },
             "runs": [
                 {
@@ -160,6 +161,7 @@ class _CiLog(unittest.TestCase):
             "sha": SHA,
             "rama": "encargo/enc_x-f",
             "repo": "o/r",
+            "base": "main",
         }
 
     def pedir(self, contexto=None, **parametros) -> dict:
@@ -182,6 +184,7 @@ class _CiLog(unittest.TestCase):
 
         self.assertEqual(r["estado"], "ok", r)
         self.assertEqual(r["datos"]["pr"], 189)
+        self.assertEqual(r["datos"]["base"], "main")
         self.assertEqual(r["datos"]["job"], "jaula-macos")
         self.assertEqual(r["datos"]["sha"], SHA)
         self.assertEqual(r["datos"]["run"], "1234")
@@ -237,6 +240,15 @@ class _CiLog(unittest.TestCase):
 
         self.assertEqual(r["estado"], "error", r)
         self.assertIn("no cruza repos", r["motivo"])
+
+    def test_no_lee_un_pr_contra_otra_base(self):
+        self.cambiar_pr(baseRefName="develop")
+
+        r = self.pedir()
+
+        self.assertEqual(r["estado"], "error", r)
+        self.assertIn("no contra la base main del encargo", r["motivo"])
+        self.assertFalse((self.destino / "remoto").exists())
 
     def test_sin_pr_del_encargo_no_lee_nada(self):
         r = self.pedir(contexto={**self.contexto, "pr": 0})
