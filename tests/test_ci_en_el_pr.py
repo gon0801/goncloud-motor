@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso
@@ -26,6 +29,13 @@ LOG_BATERIA = "ERROR: 3 failed, 0 passed in tests/test_bateria.py"
 LOG_GATE = "leaks found: 13\nfinding: generic-api-key en docs/viejo.md"
 LOG_INCIERTO = "fallo ambiguo sin diagnóstico"
 
+_INICIO = time.time() + 3600
+_VACIO = "2026-11-03T21:46:00Z"
+
+
+def _hora(paso: int = 0) -> str:
+    return ahora_iso(_INICIO + 61 * paso)
+
 
 def setUpModule():
     sonda_sin_aislamiento_del_host()
@@ -36,11 +46,19 @@ class _GhConCorridas(_GhConDeepSeek):
 
     def __init__(self, d):
         super().__init__(d)
-        self._job_ids = {}
         self.relanzadas = []
+        self.checks_llamadas = 0
         self._reintentos = {}
+        self._errores = {}
+
+    def fallar_checks(self, repo: str, veces: int = 1) -> None:
+        self._errores[str(repo)] = veces
 
     def checks(self, repo, numero, sha, extra, relanzadas=(), *, base_politica=""):
+        self.checks_llamadas += 1
+        if self._errores.get(str(repo), 0) > 0:
+            self._errores[str(repo)] -= 1
+            raise RuntimeError("GitHub no respondió")
         cfg = self._cfg(repo)
         estados = {
             "success": ("completed", "success"),
@@ -52,24 +70,31 @@ class _GhConCorridas(_GhConDeepSeek):
             "skipped": ("completed", "skipped"),
             "neutral": ("completed", "neutral"),
         }
-        if self._reintentos.get(repo) and "corridas_tras_reintento" in cfg:
+        intento = self._reintentos.get(str(repo), 0)
+        no_empezo = intento > 0 and bool(cfg.get("reintento_no_empezado"))
+        if no_empezo:
+            corridas = cfg.get("corridas") or {}
+            intento_lectura = 0
+        elif intento > 0 and "corridas_tras_reintento" in cfg:
             corridas = cfg["corridas_tras_reintento"]
+            intento_lectura = intento
         else:
             corridas = (cfg.get("corridas_sha") or {}).get(
                 sha, cfg.get("corridas") or {}
             )
+            intento_lectura = intento
+        completado = _VACIO if intento_lectura == 0 else ahora_iso()
         runs = []
         for nombre, estado in corridas.items():
             status, conclusion = estados[estado]
-            rid = 40000 + len(runs)
+            rid = 40000 + intento_lectura * 1000 + len(runs)
             job_id = rid
-            self._job_ids[(repo, nombre)] = str(job_id)
             runs.append(
                 {
                     "name": nombre,
                     "status": status,
                     "conclusion": conclusion,
-                    "completed_at": "2026-11-03T21:46:00Z",
+                    "completed_at": completado,
                     "id": job_id,
                     "html_url": f"https://github.com/o/r/actions/runs/{rid}/job/{job_id}",
                     "details_url": f"https://github.com/o/r/actions/runs/{rid}/job/{job_id}",
@@ -83,7 +108,7 @@ class _GhConCorridas(_GhConDeepSeek):
 
     def relanzar_fallidas(self, repo, run_id):
         self.relanzadas.append((repo, str(run_id)))
-        self._reintentos[repo] = self._reintentos.get(repo, 0) + 1
+        self._reintentos[str(repo)] = self._reintentos.get(str(repo), 0) + 1
 
 
 def _segunda_corrida(vuelta, repo: str, corridas: dict, logs: dict | None = None):
@@ -93,6 +118,13 @@ def _segunda_corrida(vuelta, repo: str, corridas: dict, logs: dict | None = None
     entrada["corridas_tras_reintento"] = corridas
     if logs is not None:
         entrada["logs_job"] = logs
+    ruta.write_text(json.dumps(cfg))
+
+
+def _reintento_empezado(vuelta, repo: str, empezado: bool) -> None:
+    ruta = vuelta.gh.d / "repos.json"
+    cfg = json.loads(ruta.read_text())
+    cfg[str(repo)]["reintento_no_empezado"] = not empezado
     ruta.write_text(json.dumps(cfg))
 
 
@@ -136,7 +168,7 @@ class RojoDePruebaVuelveAlResponsable(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
             numero = e.pr_numero
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
             self.assertEqual(e.estado, "recibido")
             self.assertEqual(e.rol, "responsable")
             self.assertEqual(e.pr_numero, numero)
@@ -149,7 +181,7 @@ class RojoDePruebaVuelveAlResponsable(unittest.TestCase):
             self.assertIn("bateria", prompt_responsable(e))
             self.assertIn(LOG_BATERIA, prompt_responsable(e))
 
-            e2 = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e2 = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
             self.assertEqual(e2.estado, "recibido")
             self.assertEqual(_estados_ci(r), ["rojo"])
 
@@ -167,7 +199,7 @@ class RojoDePruebaVuelveAlResponsable(unittest.TestCase):
                 {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
             )
             e = vuelta("hola\n")
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
             avisos = _avisos(e)
             self.assertEqual(len(avisos), 1)
             texto = avisos[0]["texto"]
@@ -178,6 +210,25 @@ class RojoDePruebaVuelveAlResponsable(unittest.TestCase):
             )
             self.assertNotIn(LOG_BATERIA, texto)
             self.assertNotIn("docs/", texto)
+
+
+class FoldDeEventosRetirados(unittest.TestCase):
+    def test_un_registro_viejo_con_ci_producto_o_ci_revision_rojo_sigue_plegando(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ci-pr-fold", _GhConCorridas)
+            e = vuelta("hola\n")
+            for kind, data, ukey in (
+                ("ci_producto", {"version": "vieja", "fallas": []}, "legado-ci-producto"),
+                ("ci_revision_rojo", {"job": "bateria"}, "legado-ci-revision-rojo"),
+            ):
+                r.reg.db.execute(
+                    "INSERT INTO events (ts, encargo, kind, data, ukey) "
+                    "VALUES (?,?,?,?,?)",
+                    (_hora(), r.enc, kind, json.dumps(data), ukey),
+                )
+            plegado = r.reg.fold(r.enc)
+            self.assertEqual(plegado.estado, e.estado)
+            self.assertEqual(plegado.nivel_alcanzado, e.nivel_alcanzado)
 
 
 class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
@@ -193,21 +244,21 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
             e = vuelta("hola\n")
             repo = e.entrega.repo
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
             self.assertEqual(_avisos(e), [])
 
             _segunda_corrida(vuelta, repo, {"gate": "success"})
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.fase_actual.ci_pr_estado, "verde")
             self.assertEqual(_avisos(e), [])
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
             self.assertEqual(_estados_ci(r), ["reintentando", "verde"])
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(2))
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
             self.assertEqual(_estados_ci(r), ["reintentando", "verde"])
 
@@ -223,12 +274,12 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
             e = vuelta("hola\n")
             repo = e.entrega.repo
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
             self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
 
             _segunda_corrida(vuelta, repo, {"gate": "failure"}, {"gate": LOG_GATE})
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.fase_actual.ci_pr_estado, "rojo")
             self.assertEqual(e.fase_actual.ci_pr_clase, "tuberia")
@@ -244,10 +295,39 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
             self.assertIn("abrir un encargo para arreglar la tubería", texto.lower())
             self.assertNotIn(LOG_GATE, texto)
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(2))
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
             self.assertEqual(_estados_ci(r), ["reintentando", "rojo"])
             self.assertEqual(len(_avisos(e)), 1)
+
+    def test_no_se_declara_permanente_antes_de_que_empiece_el_rerun(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-rerun",
+                _GhConCorridas,
+                {"corridas": {"gate": "failure"}, "logs_job": {"gate": LOG_GATE}},
+            )
+            e = vuelta("hola\n")
+            repo = e.entrega.repo
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
+            self.assertEqual(len(vuelta.gh.relanzadas), 1)
+
+            _segunda_corrida(vuelta, repo, {"gate": "failure"}, {"gate": LOG_GATE})
+            _reintento_empezado(vuelta, repo, False)
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
+            self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
+            self.assertEqual(_avisos(e), [])
+            self.assertEqual(_estados_ci(r), ["reintentando"])
+
+            _reintento_empezado(vuelta, repo, True)
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(2))
+            self.assertEqual(e.fase_actual.ci_pr_estado, "rojo")
+            self.assertEqual(e.fase_actual.ci_pr_reintento, "permanente")
+            self.assertEqual(len(vuelta.gh.relanzadas), 1)
 
 
 class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
@@ -263,14 +343,14 @@ class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
             e = vuelta("hola\n")
             repo = e.entrega.repo
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
             self.assertEqual(_avisos(e), [])
 
             _segunda_corrida(vuelta, repo, {"bateria": "success"})
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
             self.assertEqual(e.fase_actual.ci_pr_estado, "verde")
             self.assertEqual(_avisos(e), [])
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
@@ -287,12 +367,12 @@ class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
             e = vuelta("hola\n")
             repo = e.entrega.repo
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
             self.assertEqual(e.fase_actual.ci_pr_estado, "reintentando")
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
 
             _segunda_corrida(vuelta, repo, {"bateria": "cancelled"})
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
             self.assertEqual(e.fase_actual.ci_pr_estado, "rojo")
             self.assertEqual(e.fase_actual.ci_pr_clase, "tuberia")
             self.assertEqual(e.fase_actual.ci_pr_reintento, "permanente")
@@ -302,7 +382,7 @@ class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
             self.assertIn("tubería", avisos[0]["texto"])
             self.assertIn("se canceló", avisos[0]["texto"])
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(2))
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
 
 
@@ -320,7 +400,7 @@ class RojoInciertoNoDevuelveNiReintenta(unittest.TestCase):
                 },
             )
             e = vuelta("hola\n")
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.fase_actual.ci_pr_estado, "rojo")
             self.assertEqual(e.fase_actual.ci_pr_clase, "incierto")
@@ -330,6 +410,144 @@ class RojoInciertoNoDevuelveNiReintenta(unittest.TestCase):
             texto = avisos[0]["texto"]
             self.assertIn("no puedo saber con certeza", texto)
             self.assertIn("Claude", texto)
+
+
+class ElSondeoSeEspacia(unittest.TestCase):
+    def test_dos_lecturas_seguidas_no_llaman_dos_veces_a_github(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-sondeo",
+                _GhConCorridas,
+                {"corridas": {"bateria": "in_progress"}},
+            )
+            e = vuelta("hola\n")
+            vuelta.gh.checks_llamadas = 0
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+            self.assertEqual(_estados_ci(r), [])
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(vuelta.gh.checks_llamadas, 1)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
+            self.assertEqual(vuelta.gh.checks_llamadas, 2)
+
+
+class UnErrorDeLecturaNoPierdeElResultado(unittest.TestCase):
+    def test_tras_un_error_se_vuelve_a_leer_y_se_procesa(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-error",
+                _GhConCorridas,
+                {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
+            )
+            e = vuelta("hola\n")
+            vuelta.gh.fallar_checks(e.entrega.repo, 1)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(_estados_ci(r), [])
+            self.assertEqual(e.estado, "terminado")
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
+            self.assertEqual(e.fase_actual.ci_pr_estado, "rojo")
+            self.assertEqual(_estados_ci(r), ["rojo"])
+
+
+class ElBarridoRevisaElCiDelPr(unittest.TestCase):
+    def test_barrer_lee_el_ci_del_pr_entregado(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-barrido",
+                _GhConCorridas,
+                {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
+            )
+            e = vuelta("hola\n")
+            self.assertEqual(e.estado, "terminado")
+
+            ciclo.barrer(
+                r.reg, _hora(), time.time(), lambda *a: None, gh=vuelta.gh
+            )
+            self.assertEqual(_estados_ci(r), ["rojo"])
+            self.assertNotEqual(r.fold().estado, "terminado")
+
+
+class UnRojoNoRebajaUnEncargoIntegrado(unittest.TestCase):
+    def test_el_ci_rojo_de_un_integrado_no_vuelve_a_pr_abierto(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-integrado",
+                _GhConCorridas,
+                {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
+            )
+            e = vuelta("hola\n")
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": e.fase_activa,
+                        "intento": e.intento,
+                        "paso": "integrado",
+                        "repo": e.entrega.repo,
+                        "numero": e.pr_numero,
+                        "sha": e.pr_sha,
+                        "recibo": e.pr_sha,
+                        "hora": _hora(),
+                    },
+                },
+                f"integrado-{r.enc}",
+            )
+            e = r.fold()
+            self.assertEqual(e.nivel_alcanzado, "integrado")
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.nivel_alcanzado, "integrado")
+            self.assertEqual(e.fase_actual.ci_pr_estado, "rojo")
+            avisos = _avisos(e)
+            self.assertEqual(len(avisos), 1)
+            self.assertIn("abrir un encargo para corregirlo", avisos[0]["texto"])
+            self.assertNotIn("ya se mandó a corregir", avisos[0]["texto"])
+
+
+class ElCierrePorAtajoConciliaLaCabeza(unittest.TestCase):
+    def test_un_head_abierto_distinto_no_se_cierra_con_el_sha_guardado(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "ci-pr-head", _GhConCorridas)
+            e = vuelta("hola\n")
+            fase = e.fase_actual
+            producto = fase.producto
+            if producto is not None:
+                producto = replace(producto, sha_git=producto.sha_git or e.pr_sha)
+            fase2 = replace(
+                fase,
+                estado="entrega",
+                nivel_alcanzado="pr",
+                deepseek_sha=e.pr_sha,
+                producto=producto,
+            )
+            e2 = replace(
+                e,
+                estado="recibido",
+                fases=tuple(fase2 if f.id == fase2.id else f for f in e.fases),
+            )
+            otro = "f" * 40
+            vuelta.gh.ver = lambda repo, numero: SimpleNamespace(
+                estado="abierto", head=otro
+            )
+
+            salida = ciclo._paso_entrega(r.reg, e2, vuelta.gh, _hora())
+            self.assertEqual(salida.rol, "responsable")
+            self.assertIn("head", salida.motivo)
 
 
 class ClasificacionDeUnFallo(unittest.TestCase):
@@ -361,14 +579,14 @@ class PendienteOVerdeNoDetiene(unittest.TestCase):
             e = vuelta("hola\n")
             self.assertEqual(e.estado, "terminado")
 
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(_estados_ci(r), [])
 
             cfg = json.loads((vuelta.gh.d / "repos.json").read_text())
             cfg[str(e.entrega.repo)]["corridas"] = {"bateria": "success"}
             (vuelta.gh.d / "repos.json").write_text(json.dumps(cfg))
-            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.fase_actual.ci_pr_estado, "verde")
             self.assertEqual(_estados_ci(r), ["verde"])
