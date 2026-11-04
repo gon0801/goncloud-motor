@@ -6720,24 +6720,37 @@ def _espejo_entrega(
     )
 
 
+def _cierre_token(enc: Encargo) -> str:
+    """Identidad del cierre vigente: un cierre nuevo tras reabrir el PR tiene
+    otra evidencia y no puede heredar la marca del anterior."""
+    ultima = enc.evidencia[-1] if enc.evidencia else ""
+    return f"{len(enc.evidencia)}:{hashlib.sha256(ultima.encode()).hexdigest()[:12]}"
+
+
 def _autoridad_cerrada_resuelta(registro: Registro, enc: Encargo) -> bool:
-    """Un cerrado que ya entregó el resultado o la orden de su estado final no
-    se vuelve a consultar. La marca es por estado: una vieja sin estado o la de
-    `detenido` no impide sellar el cierre posterior."""
-    evento = registro.por_ukey(f"autoridad-cerrada:{enc.id}:{enc.estado}")
+    """Un cerrado que ya entregó el resultado o la orden de su cierre vigente
+    no se vuelve a consultar. La marca es por estado y cierre: una vieja sin
+    estado, la de `detenido` o la de un cierre anterior no impide sellar."""
+    token = _cierre_token(enc)
+    evento = registro.por_ukey(
+        f"autoridad-cerrada:{enc.id}:{enc.estado}:{token}"
+    )
     return bool(
-        evento and str(evento["data"].get("estado") or "") == enc.estado
+        evento
+        and str(evento["data"].get("estado") or "") == enc.estado
+        and str(evento["data"].get("cierre") or "") == token
     )
 
 
 def _marcar_autoridad_cerrada(registro: Registro, enc: Encargo, hora: str) -> None:
+    token = _cierre_token(enc)
     registro.anotar(
         enc.id,
         {
             "kind": "autoridad_cerrada",
-            "data": {"hora": hora, "estado": enc.estado},
+            "data": {"hora": hora, "estado": enc.estado, "cierre": token},
         },
-        f"autoridad-cerrada:{enc.id}:{enc.estado}",
+        f"autoridad-cerrada:{enc.id}:{enc.estado}:{token}",
     )
 
 

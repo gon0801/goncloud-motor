@@ -898,6 +898,80 @@ class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
                 any(str(clave).endswith("-canonico") for clave in claves), claves
             )
 
+    def test_un_cierre_nuevo_tras_reabrir_el_pr_vuelve_a_conciliarse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            encargo = ciclo.recibir(
+                reg,
+                "x",
+                "reabre-pr",
+                ahora_iso(),
+                entrega_nivel="pr",
+                repo="gon0801/goncloud-motor",
+                rama="encargo/reabre",
+            )["encargo"]
+            reg.anotar(
+                encargo,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {"evidencia": "primer cierre", "hora": ahora_iso()},
+                },
+                "cierre-1",
+            )
+            ciclo._marcar_autoridad_cerrada(reg, reg.fold(encargo), ahora_iso())
+            self.assertTrue(
+                ciclo._autoridad_cerrada_resuelta(reg, reg.fold(encargo))
+            )
+
+            fase = reg.fold(encargo).fase_activa
+            reg.anotar(
+                encargo,
+                {
+                    "kind": "ci_pr",
+                    "data": {
+                        "fase": fase,
+                        "sha": "sha-reabre",
+                        "estado": "rojo",
+                        "reabrir": True,
+                        "fallas": ["test_del_producto"],
+                        "causa": "fallo del producto",
+                        "hora": ahora_iso(),
+                    },
+                },
+                "ci-pr-rojo-reabre",
+            )
+            self.assertEqual(reg.fold(encargo).estado, "recibido")
+            reg.anotar(
+                encargo,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {
+                        "evidencia": "segundo cierre corregido",
+                        "hora": ahora_iso(),
+                    },
+                },
+                "cierre-2",
+            )
+            self.assertEqual(reg.fold(encargo).estado, "terminado")
+            self.assertFalse(
+                ciclo._autoridad_cerrada_resuelta(reg, reg.fold(encargo))
+            )
+
+            with (
+                mock.patch("motor.encargos.transporte.cargar", return_value={}),
+                mock.patch(
+                    "motor.encargos.transporte.operar",
+                    return_value={"alcanzada": True, "salida": {"estado": "recibido"}},
+                ) as operar,
+                mock.patch.object(
+                    ciclo, "_publicar_resultado", return_value=True
+                ) as publicado,
+            ):
+                barrer(reg, ahora_iso(), time.time(), _llamador)
+            operar.assert_called()
+            publicado.assert_called()
+
     def test_una_marca_vieja_sin_estado_no_impide_sellar_el_cierre(self):
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp) / "base")
