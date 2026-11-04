@@ -765,6 +765,80 @@ class TurnosFlota(unittest.TestCase):
             runtime["politica"], "config/hermes/model-routing.source.json"
         )
 
+    def test_la_reproyeccion_actualiza_los_perfiles_claw(self):
+        origen, gen_a = self._replica("origen-claw")
+        hermes = gen_a / "config/hermes"
+        (hermes / "model-routing.source.json").write_text(
+            json.dumps({"chains": {"director": ["viejo/modelo (low)"]}}) + "\n",
+            encoding="utf-8",
+        )
+        (hermes / "claw-routing.json").write_text(
+            json.dumps({"agents": {"main": {"row": "director", "thinking": False}}})
+            + "\n",
+            encoding="utf-8",
+        )
+        script = hermes / "scripts/claw_models.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            "import json, sys\n"
+            "args = sys.argv[1:]\n"
+            "fuente = json.load(open(args[args.index('--source') + 1], encoding='utf-8'))\n"
+            "modelo = fuente['chains']['director'][0].split(' (', 1)[0]\n"
+            "deseado = {'agents': {'entries': {'main': {'model': {\n"
+            "'primary': modelo, 'fallbacks': []}}}}}\n"
+            "if 'desired' in args:\n"
+            "    print(json.dumps(deseado))\n"
+            "elif 'check' in args:\n"
+            "    vivo = json.load(open(args[args.index('--live') + 1], encoding='utf-8'))\n"
+            "    if vivo['agents']['entries']['main']['model']['primary'] != modelo:\n"
+            "        raise SystemExit(1)\n",
+            encoding="utf-8",
+        )
+        claw = gen_a / "perfiles/claw"
+        viejo = {
+            "agents": {
+                "entries": {
+                    "main": {
+                        "model": {"primary": "viejo/modelo", "fallbacks": []},
+                        "workspace": str(gen_a / "perfiles/claw/workspaces/main"),
+                    }
+                }
+            }
+        }
+        (claw / "modelos.json").write_text(json.dumps(viejo) + "\n", encoding="utf-8")
+        (claw / "openclaw.json").write_text(json.dumps(viejo) + "\n", encoding="utf-8")
+
+        def fake(doc_, destino, gen, home):
+            destino.mkdir(parents=True)
+            marca = destino / "cli.py"
+            marca.write_text("print(" + repr(doc_["version"]) + ")", encoding="utf-8")
+            return [sys.executable, str(marca)], doc_["version"], None
+
+        with patch(
+            "motor.flota.actualizaciones._preparar_componente", side_effect=fake
+        ):
+            salida = preparar(self.home, motor_origen=origen, repos={})
+        nueva = self.home / "generaciones" / salida["generacion"]
+        modelos = json.loads(
+            (nueva / "perfiles/claw/modelos.json").read_text(encoding="utf-8")
+        )
+        abierto = json.loads(
+            (nueva / "perfiles/claw/openclaw.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            modelos["agents"]["entries"]["main"]["model"]["primary"], "p/m"
+        )
+        self.assertEqual(
+            abierto["agents"]["entries"]["main"]["model"]["primary"], "p/m"
+        )
+        self.assertEqual(
+            Path(abierto["agents"]["entries"]["main"]["workspace"]).resolve(),
+            (nueva / "perfiles/claw/workspaces/main").resolve(),
+        )
+        self.assertEqual(abierto["channels"], {})
+        self.assertNotIn("viejo/modelo", json.dumps(modelos))
+        self.assertNotIn("viejo/modelo", json.dumps(abierto))
+
     def test_la_misma_pieza_se_reutiliza_si_no_se_puede_preparar(self):
         origen, gen_a = self._replica("origen-reuso")
         marca = gen_a / "herramientas/grok/marca.txt"

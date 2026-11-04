@@ -349,47 +349,11 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict, vigente: Path | None =
             _run([*args, "--check"], env=_entorno_configuracion(gen, runtime))
             runtime["config"]["hermes"] = str(home_hermes.relative_to(gen))
         if "openclaw" in runtime["lanzadores"]:
-            destino = gen / "perfiles/claw"
-            destino.mkdir(parents=True, exist_ok=True)
-            salida = _run(
-                [
-                    sys.executable,
-                    str(hermes / "scripts/claw_models.py"),
-                    "--source",
-                    str(tabla),
-                    "desired",
-                ]
-            )
-            configuracion = json.loads(salida)
-            configuracion["agents"]["ownership"] = "explicit"
-            _atomico(destino / "modelos.json", configuracion)
-            for nombre, entry in configuracion["agents"]["entries"].items():
-                entry["workspace"] = str(destino / "workspaces" / nombre)
-                entry["agentDir"] = str(destino / "agents" / nombre / "agent")
-            configuracion.update(
-                {
-                    "channels": {},
-                    "bindings": [],
-                    "cron": {"enabled": False},
-                    "hooks": {},
-                }
-            )
-            _atomico(destino / "openclaw.json", configuracion)
+            destino = _escribir_claw_desde_tabla(gen, tabla)
             runtime["config"]["claw"] = str(
                 (destino / "openclaw.json").relative_to(gen)
             )
             _comprobar_claw(gen, runtime)
-            _run(
-                [
-                    sys.executable,
-                    str(hermes / "scripts/claw_models.py"),
-                    "--source",
-                    str(tabla),
-                    "check",
-                    "--live",
-                    str(destino / "modelos.json"),
-                ]
-            )
             runtime["claw_modelos"] = str((destino / "modelos.json").relative_to(gen))
 
 
@@ -626,6 +590,46 @@ def _copiar_arbol(origen: Path, destino: Path, prefijos: list[str], nuevo: str) 
     shutil.copymode(origen, destino)
 
 
+def _escribir_claw_desde_tabla(gen: Path, tabla: Path) -> Path:
+    """modelos.json y openclaw.json salen de la tabla, con el claw_models exportado.
+
+    La publicadora y la réplica usan el mismo script. No es poteto ni un checkout.
+    """
+    script = gen / "config/hermes/scripts/claw_models.py"
+    destino = gen / "perfiles/claw"
+    destino.mkdir(parents=True, exist_ok=True)
+    salida = _run(
+        [sys.executable, str(script), "--source", str(tabla), "desired"]
+    )
+    configuracion = json.loads(salida)
+    configuracion["agents"]["ownership"] = "explicit"
+    _atomico(destino / "modelos.json", configuracion)
+    for nombre, entry in configuracion["agents"]["entries"].items():
+        entry["workspace"] = str(destino / "workspaces" / nombre)
+        entry["agentDir"] = str(destino / "agents" / nombre / "agent")
+    configuracion.update(
+        {
+            "channels": {},
+            "bindings": [],
+            "cron": {"enabled": False},
+            "hooks": {},
+        }
+    )
+    _atomico(destino / "openclaw.json", configuracion)
+    _run(
+        [
+            sys.executable,
+            str(script),
+            "--source",
+            str(tabla),
+            "check",
+            "--live",
+            str(destino / "modelos.json"),
+        ]
+    )
+    return destino
+
+
 def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
     if not (vigente / "config").is_dir():
         raise RuntimeError(
@@ -659,6 +663,11 @@ def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
         proyeccion.update(proyectar_tabla(cargar(gen / "manifesto.toml")))
         _atomico(tabla, proyeccion)
         runtime["politica"] = str(tabla.relative_to(gen))
+        script = gen / "config/hermes/scripts/claw_models.py"
+        if script.is_file() and (
+            (gen / "perfiles/claw").exists() or "openclaw" in runtime["lanzadores"]
+        ):
+            _escribir_claw_desde_tabla(gen, tabla)
     modelos = gen / "perfiles/claw/modelos.json"
     if modelos.is_file():
         runtime["claw_modelos"] = str(modelos.relative_to(gen))
