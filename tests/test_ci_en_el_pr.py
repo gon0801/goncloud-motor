@@ -777,6 +777,9 @@ class ClasificacionDeUnFallo(unittest.TestCase):
             ("Run actions/checkout@v7", "fatal: early EOF"),
             ("Set up job", "##[error]Failed to download action 'x'. Error: 500"),
             ("Initialize containers", "Failed to initialize, postgres service is unhealthy."),
+            ("Set up Python", "ERROR: Could not install packages due to an OSError: "
+             "HTTPSConnectionPool(host='files.pythonhosted.org'): Max retries exceeded"),
+            ("Gitleaks", "sha256sum: WARNING: 1 computed checksum did NOT match"),
         ):
             with self.subTest(linea=linea):
                 self.assertEqual(
