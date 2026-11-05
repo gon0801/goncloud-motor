@@ -11,7 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .dominio import Encargo
+from .dominio import Encargo, TransicionIlegal, datos_despliegue
 from .registro import Registro
 
 NOMBRE = "fases.json"
@@ -77,11 +77,23 @@ def leer_propuesta(interno: Path) -> tuple[dict, ...] | None:
     propuesta = []
     for item in crudo:
         fase_id = str(item["id"]).strip()
+        try:
+            politica = datos_despliegue(item)
+        except TransicionIlegal as exc:
+            raise ValueError(str(exc)) from exc
+        metadata = {}
+        if "requiere_despliegue" in politica:
+            metadata["requiere_despliegue"] = politica["requiere_despliegue"]
+        if "despliegue" in item:
+            metadata["despliegue"] = {
+                k: politica[k] for k in ("desplegar", "checklist", "rollback")
+            }
         propuesta.append(
             {
                 "id": fase_id,
                 "resultado": " ".join(str(item["resultado"]).split()),
                 "requiere": _dependencias(item, ids, fase_id),
+                **metadata,
             }
         )
     return tuple(propuesta)
