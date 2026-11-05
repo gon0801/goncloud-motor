@@ -103,6 +103,15 @@ class Banco(unittest.TestCase):
         }}, "arbol-ausente")
         self.assertEqual(self.reg.fold(ident).estado, "detenido")
 
+    def cancelar(self, ident: str) -> None:
+        self.reg.anotar(ident, {"kind": "orden", "data": {
+            "accion": "cancelar", "hora": HORA,
+        }}, "orden-cancelar")
+        self.reg.anotar(ident, {"kind": "arbol", "data": {
+            "observacion": "ausente", "hora": HORA,
+        }}, "arbol-cancelar")
+        self.assertEqual(self.reg.fold(ident).estado, "cancelado")
+
     def encargo_directo(self) -> str:
         return directores.encargar(
             self.reg, "pedido", "directo", HORA, "hermes", "hermes", "directa"
@@ -271,6 +280,27 @@ class AvisoInciertoHuerfano(Banco):
         )
         self.assertEqual(self.sondeos(), ["sondeo-hermes"])
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
+
+    def test_un_cierre_vigente_de_un_cancelado_en_espera_bloquea_el_sondeo(self):
+        ident = self.encargo_directo()
+        self.cancelar(ident)
+        cierre = directores._aviso_de(self.reg.fold(ident))
+        cierre["estado"] = "incierto"
+        cierre["fallos"] = 1
+        cierre["proximo_intento"] = directores._iso(T0 + 600)
+        self.escribir_aviso(cierre)
+        self.caido()
+
+        directores.drenar(self.reg, ahora=T0)
+
+        self.assertEqual(self.aviso(cierre["id"])["estado"], "incierto")
+        self.assertEqual(
+            self.sondeos(), [], "el cierre vigente del cancelado ya prueba el transporte"
+        )
+        self.assertEqual(
+            [c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 1000)],
+            ["hermes"],
+        )
 
     def test_un_cierre_vigente_incierto_en_espera_bloquea_el_sondeo(self):
         ident = self.encargo_directo()

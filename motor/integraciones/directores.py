@@ -1373,13 +1373,34 @@ def _aviso_de_terminado_vigente(doc: dict, enc) -> bool:
     )
 
 
-def _aviso_retomable(doc: dict, encargos: dict, resumen_activo: bool) -> bool:
+def _aviso_de_cancelado_vigente(
+    registro: Registro, doc: dict, enc, corte_cierres: int
+) -> bool:
+    """Si el cierre de un cancelado sigue siendo el que `drenar` visita.
+
+    Un cancelado anterior al corte de cierres es historia y no reabre aviso. Uno posterior sí, y su
+    cierre pendiente prueba el transporte; cualquier otro aviso suyo es huérfano.
+    """
+    if str(doc.get("id") or "") != str(_aviso_de(enc).get("id") or ""):
+        return False
+    al_corte = registro.fold(enc.id, hasta=corte_cierres)
+    return al_corte is None or al_corte.estado != "cancelado"
+
+
+def _aviso_retomable(
+    doc: dict,
+    encargos: dict,
+    resumen_activo: bool,
+    registro: Registro,
+    corte_cierres: int,
+) -> bool:
     """Si la pasada puede volver a intentar el aviso; si no, no prueba el transporte del canal.
 
     Un aviso de resumen no nombra encargo y solo lo retoma `resumen_encargos` mientras el envío de
-    resumen tenga canal activo; apagado no lo toca nadie. Un aviso de un encargo detenido, cancelado
-    o que ya no existe no se reabre. Uno de un terminado solo prueba si es su cierre o su `ci_rojo`
-    vigente; `_descartar_avances_de_terminados` no borra un `ci_rojo` huérfano del terminado.
+    resumen tenga canal activo; apagado no lo toca nadie. Un aviso de un encargo detenido o que ya
+    no existe no se reabre. Uno de un terminado solo prueba si es su cierre o su `ci_rojo` vigente;
+    `_descartar_avances_de_terminados` no borra un `ci_rojo` huérfano del terminado. Uno de un
+    cancelado solo prueba si es su cierre vigente.
     """
     encargo = str(doc.get("encargo") or "")
     if not encargo:
@@ -1389,10 +1410,14 @@ def _aviso_retomable(doc: dict, encargos: dict, resumen_activo: bool) -> bool:
         return False
     if enc.estado == "terminado":
         return _aviso_de_terminado_vigente(doc, enc)
+    if enc.estado == "cancelado":
+        return _aviso_de_cancelado_vigente(registro, doc, enc, corte_cierres)
     return enc.estado not in _ESTADOS_SIN_AVANCE
 
 
-def _canales_con_avisos_pendientes(registro: Registro, encargos: dict) -> set[str]:
+def _canales_con_avisos_pendientes(
+    registro: Registro, encargos: dict, corte_cierres: int
+) -> set[str]:
     """Los canales con un aviso que todavía prueba su transporte: incierto o pendiente."""
     pendientes: set[str] = set()
     resumen_activo = bool(resumen_encargos.config_envio(registro.base)[0])
@@ -1403,7 +1428,9 @@ def _canales_con_avisos_pendientes(registro: Registro, encargos: dict) -> set[st
             continue
         if not doc or doc.get("estado") not in ("incierto", "pendiente"):
             continue
-        if not _aviso_retomable(doc, encargos, resumen_activo):
+        if not _aviso_retomable(
+            doc, encargos, resumen_activo, registro, corte_cierres
+        ):
             continue
         try:
             pendientes.add(nombre_canal(str(doc.get("canal") or "")))
@@ -1452,9 +1479,11 @@ def _reintentar_avisos_sueltos(
     return publicados
 
 
-def _sondear_canales(registro: Registro, vuelta: Vuelta, encargos: dict) -> None:
+def _sondear_canales(
+    registro: Registro, vuelta: Vuelta, encargos: dict, corte_cierres: int
+) -> None:
     """Un canal caído sin avisos pendientes se prueba con su conciliación, a lo sumo una vez por intervalo."""
-    pendientes = _canales_con_avisos_pendientes(registro, encargos)
+    pendientes = _canales_con_avisos_pendientes(registro, encargos, corte_cierres)
     for canal in canales.canales_en_fallo(registro.base):
         if vuelta.agotada():
             return
@@ -1754,7 +1783,7 @@ def drenar(
         if cortada:
             break
     publicados.extend(_reintentar_avisos_sueltos(registro, vuelta, vistos, cortar, encargos))
-    _sondear_canales(registro, vuelta, encargos)
+    _sondear_canales(registro, vuelta, encargos, corte_cierres)
     for firma, episodio in envios_resumen:
         try:
             resumen_encargos.cerrar(registro, vuelta.ahora, firma, episodio)
