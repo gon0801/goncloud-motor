@@ -272,6 +272,27 @@ class AvisoInciertoHuerfano(Banco):
         self.assertEqual(self.sondeos(), ["sondeo-hermes"])
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
 
+    def test_un_cierre_vigente_incierto_en_espera_bloquea_el_sondeo(self):
+        ident = self.encargo_directo()
+        self.terminar(ident)
+        cierre = directores._aviso_de(self.reg.fold(ident))
+        cierre["estado"] = "incierto"
+        cierre["fallos"] = 1
+        cierre["proximo_intento"] = directores._iso(T0 + 600)
+        self.escribir_aviso(cierre)
+        self.caido()
+
+        directores.drenar(self.reg, ahora=T0)
+
+        self.assertEqual(self.aviso(cierre["id"])["estado"], "incierto")
+        self.assertEqual(
+            self.sondeos(), [], "el cierre vigente en espera ya prueba el transporte"
+        )
+        self.assertEqual(
+            [c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 1000)],
+            ["hermes"],
+        )
+
     def test_un_aviso_incierto_huerfano_de_un_encargo_terminado_no_bloquea_el_sondeo(self):
         ident = self.encargo_directo()
         self.terminar(ident)

@@ -1358,19 +1358,38 @@ class Vuelta:
 _ESTADOS_SIN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo", "terminado"})
 
 
+def _aviso_de_terminado_vigente(doc: dict, enc) -> bool:
+    """Si el aviso es uno que `drenar` vuelve a visitar para un encargo terminado.
+
+    De un terminado solo se visitan el cierre vigente y el `ci_rojo` que el estado todavía genera.
+    Cualquier otro aviso suyo es huérfano y no debe impedir el sondeo.
+    """
+    ident = str(doc.get("id") or "")
+    if enc.evidencia and ident == str(_aviso_de(enc).get("id") or ""):
+        return True
+    return any(
+        ident == str(_aviso_de_hecho(enc, hecho).get("id") or "")
+        for hecho in hechos_de_avance(enc)
+    )
+
+
 def _aviso_retomable(doc: dict, encargos: dict, resumen_activo: bool) -> bool:
     """Si la pasada puede volver a intentar el aviso; si no, no prueba el transporte del canal.
 
     Un aviso de resumen no nombra encargo y solo lo retoma `resumen_encargos` mientras el envío de
-    resumen tenga canal activo; apagado no lo toca nadie. Un aviso de un encargo detenido, cancelado,
-    terminado o que ya no existe no se reabre, así que tampoco debe impedir el sondeo;
-    `_descartar_avances_de_terminados` no borra un `ci_rojo` huérfano del terminado.
+    resumen tenga canal activo; apagado no lo toca nadie. Un aviso de un encargo detenido, cancelado
+    o que ya no existe no se reabre. Uno de un terminado solo prueba si es su cierre o su `ci_rojo`
+    vigente; `_descartar_avances_de_terminados` no borra un `ci_rojo` huérfano del terminado.
     """
     encargo = str(doc.get("encargo") or "")
     if not encargo:
         return resumen_activo
     enc = encargos.get(encargo)
-    return enc is not None and enc.estado not in _ESTADOS_SIN_AVANCE
+    if enc is None:
+        return False
+    if enc.estado == "terminado":
+        return _aviso_de_terminado_vigente(doc, enc)
+    return enc.estado not in _ESTADOS_SIN_AVANCE
 
 
 def _canales_con_avisos_pendientes(registro: Registro, encargos: dict) -> set[str]:
