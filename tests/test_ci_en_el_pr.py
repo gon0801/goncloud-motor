@@ -51,6 +51,7 @@ LOG_BATERIA_CON_SECRETOS = "\n".join(
         ("Parte de la bateria", "test_secretos_con_permisos_abiertos_espera_y_sale ... ok"),
         ("Parte de la bateria", "test_un_agente_no_ve_la_variable (tests.test_senal.SecretoTest) ... ok"),
         ("Parte de la bateria", "FAIL: test_el_juicio_caido_tres_veces_tambien_se_omite"),
+        ("Parte de la bateria", '  File "/home/runner/work/goncloud-motor/goncloud-motor/tests/test_motor_sin_personas.py", line 148'),
         ("Parte de la bateria", "AssertionError: True is not false"),
         ("Parte de la bateria", "FAILED (failures=2, skipped=1)"),
         ("Parte de la bateria", "##[error]Process completed with exit code 1."),
