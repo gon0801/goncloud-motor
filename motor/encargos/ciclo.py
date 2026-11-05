@@ -4619,12 +4619,15 @@ def _logs_de_fallidos(
 
 
 _CONCLUSIONES_VERDES = ("success", "skipped", "neutral")
+# Gitleaks imprime «leaks found: N» solo con hallazgos; el paso verde dice «no
+# leaks found» y cada job de GitHub abre con «Secret source: Actions», así que
+# buscar «secret» o «leak» sueltos clasificaba cualquier rojo como tubería.
+_HALLAZGOS_SECRETOS = re.compile(r"leaks found: [1-9]")
 _INFRA_CI = (
-    "gitleaks",
-    "secret",
-    "leak",
     "the job was not started",
-    "runner",
+    # «runner» suelto aparece en toda ruta /home/runner/work de un traceback.
+    "runner has received a shutdown signal",
+    "lost communication with the server",
     "no space left",
     "billing",
     "payment",
@@ -4654,6 +4657,26 @@ _PRUEBA_CI = (
 )
 
 
+def _texto_de_pasos_fallidos(texto: str) -> str:
+    """Las líneas de los pasos que terminaron en error.
+
+    `gh run view --log` trae el job entero como «job<TAB>paso<TAB>línea»: la
+    cabecera, los pasos verdes y la limpieza nombran runners, secretos o
+    «failed» sin haber fallado. Sin pasos identificables se usa el texto
+    completo."""
+    pasos: dict[str, list[str]] = {}
+    for linea in str(texto or "").splitlines():
+        partes = linea.split("\t", 2)
+        if len(partes) == 3:
+            pasos.setdefault(partes[1], []).append(partes[2])
+    fallidos = [
+        lineas for lineas in pasos.values() if any("##[error]" in x for x in lineas)
+    ]
+    if not fallidos:
+        return str(texto or "")
+    return "\n".join(x for lineas in fallidos for x in lineas)
+
+
 def _clasificar_fallo_ci(nombre: str, conclusion: str, texto: str) -> str:
     """Clasifica un job en rojo para el aviso y la corrección.
 
@@ -4669,8 +4692,8 @@ def _clasificar_fallo_ci(nombre: str, conclusion: str, texto: str) -> str:
         "stale",
     ):
         return "tuberia"
-    bajo = str(texto or "").lower()
-    if any(marca in bajo for marca in _INFRA_CI):
+    bajo = _texto_de_pasos_fallidos(texto).lower()
+    if _HALLAZGOS_SECRETOS.search(bajo) or any(marca in bajo for marca in _INFRA_CI):
         return "tuberia"
     if any(marca in bajo for marca in _PRUEBA_CI):
         return "codigo"
@@ -4695,11 +4718,11 @@ def _job_en_llano(nombre: str) -> str:
 
 def _causa_tuberia_en_llano(caidas, texto: str) -> str:
     junto = (
-        str(texto or "")
+        _texto_de_pasos_fallidos(texto)
         + " "
         + " ".join(str(c.get("conclusion") or "") for c in caidas)
     ).lower()
-    if any(marca in junto for marca in ("gitleaks", "leak", "secret")):
+    if _HALLAZGOS_SECRETOS.search(junto):
         return "el control de secretos encontró claves viejas en el repositorio"
     if any(marca in junto for marca in ("minutes", "billing", "payment")):
         return "faltan minutos de CI"
@@ -4712,7 +4735,8 @@ def _causa_tuberia_en_llano(caidas, texto: str) -> str:
         for marca in (
             "could not resolve host",
             "connection",
-            "runner",
+            "runner has received a shutdown signal",
+            "lost communication with the server",
             "rate limit",
             "unable to access",
             "startup_failure",
