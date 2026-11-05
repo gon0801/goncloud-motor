@@ -194,6 +194,31 @@ class ActualizacionesFlota(unittest.TestCase):
             rc = flota_ciclo.main(["--home", str(home)])
         self.assertEqual(rc, 0)
 
+    def test_flota_ciclo_primer_arranque_del_publicador_llega_a_preparar(self):
+        from ops import flota_ciclo
+
+        home = self.base / "home-ciclo-arranque"
+        home.mkdir()
+        observado = {}
+        real = flota_ciclo.preparar
+
+        def espia(home_, **opciones):
+            observado.update(opciones)
+            return real(home_, **opciones)
+
+        with (
+            patch("ops.flota_ciclo.preparar", side_effect=espia),
+            patch(
+                "motor.flota.actualizaciones.descubrir",
+                return_value={"componentes": []},
+            ),
+        ):
+            rc = flota_ciclo.main(["--home", str(home)])
+        # El primer arranque (sin manifiesto) prepara sin el flag de turnos:
+        # si sin_turnos llegara a preparar, la llamada real rompe con TypeError.
+        self.assertNotIn("sin_turnos", observado)
+        self.assertEqual(rc, 1)
+
     def test_candidata_de_componentes_se_aplica_y_revierte_con_recibo(self):
         origen = self.base / "origen"
         origen.mkdir()

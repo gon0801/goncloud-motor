@@ -26,7 +26,9 @@ def ciclo(
     repos: dict[str, Path] | None = None,
     sin_turnos: bool = False,
 ) -> dict:
-    opciones = {"motor_origen": motor_origen, "repos": repos, "sin_turnos": sin_turnos}
+    opciones = {"motor_origen": motor_origen, "repos": repos}
+    # preparar no recibe sin_turnos: el flag solo rige los turnos de aplicar,
+    # y la llamada de preparación no debe romperse en el primer arranque.
     if replica is not None:
         importar(home, replica)
     with _cerrojo_flota(home):
@@ -34,7 +36,9 @@ def ciclo(
         if fuente is not None:
             return {
                 "modo": "replica",
-                "actualizacion": actualizar(home, **opciones),
+                "actualizacion": actualizar(
+                    home, **opciones, sin_turnos=sin_turnos
+                ),
                 "estado": estado(home),
             }
         if not (home / "manifiesto.toml").is_file():
@@ -45,7 +49,7 @@ def ciclo(
         modelos = publicar_politica_modelos(
             manifiesto, tabla, catalogos, hermes_repo=(repos or {}).get("hermes")
         )
-        resultado = actualizar(home, **opciones)
+        resultado = actualizar(home, **opciones, sin_turnos=sin_turnos)
         publicada = exportar(home, salida or home / "publicada.json")
         return {
             "modo": "publicador",

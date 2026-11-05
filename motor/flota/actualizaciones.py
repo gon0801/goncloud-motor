@@ -431,9 +431,12 @@ def _reutilizar_pieza(
     # La pieza copiada se contrasta con los hashes que la vigente registró al
     # preparar: sin eso, una pieza alterada en la vigente entraría a la
     # candidata como si fuera la de catálogo. Si no coincide, no se reutiliza.
-    prefijo = f"herramientas/{doc.get('nombre')}/"
+    # Las claves se registraron con separadores nativos (str(relative_to)),
+    # así que el prefijo se compara por partes y no por texto con '/'.
+    nombre = doc.get("nombre")
     for clave, huella in (runtime_vigente.get("archivos") or {}).items():
-        if not str(clave).startswith(prefijo):
+        partes = Path(str(clave)).parts
+        if len(partes) < 3 or partes[0] != "herramientas" or partes[1] != nombre:
             continue
         ruta = gen / str(clave)
         if not ruta.is_file() or _sha256(ruta) != huella:

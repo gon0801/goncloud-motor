@@ -865,7 +865,10 @@ espera "el doble de powershell rechaza un script sin -cmatch" '!0' \
 contiene "doble powershell" "$S/salida" "al script le faltan piezas"
 [ -s "$S/powershell-llamado" ] || fallo "ninguna prueba ejecutó el doble de powershell"
 grep -Fq '[IO.File]::WriteAllLines' "$S/powershell-llamado" || fallo "el escritor de la PC no usa WriteAllLines"
-grep -Fq -- '-cmatch' "$S/powershell-llamado" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
+# El único registro del doble es el mutante al que se le quitó -cmatch, así
+# que la comparación sensible a mayúsculas del escritor se exige sobre el
+# artefacto sano que la rama de pwsh real generó.
+grep -Fq -- '-cmatch' "$S/ps-sano" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
 
 # F1: la PC contesta las direcciones por ssh con CRLF. La lectura quita el CR antes de comparar y
 # sondear: sin eso, la dirección viaja con CR y el sondeo juzga una URL que no es la escrita.
