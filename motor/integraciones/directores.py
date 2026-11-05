@@ -1358,7 +1358,23 @@ class Vuelta:
 _ESTADOS_SIN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo", "terminado"})
 
 
-def _canales_con_avisos_pendientes(registro: Registro) -> set[str]:
+_ESTADOS_QUE_NO_RETOMAN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo"})
+
+
+def _aviso_retomable(doc: dict, encargos: dict) -> bool:
+    """Si la pasada puede volver a intentar el aviso; si no, no prueba el transporte del canal.
+
+    Un aviso de resumen no nombra encargo y lo retoma `resumen_encargos`. Un aviso de un encargo
+    detenido, cancelado o que ya no existe no se reabre, así que no debe impedir el sondeo.
+    """
+    encargo = str(doc.get("encargo") or "")
+    if not encargo:
+        return True
+    enc = encargos.get(encargo)
+    return enc is not None and enc.estado not in _ESTADOS_QUE_NO_RETOMAN_AVANCE
+
+
+def _canales_con_avisos_pendientes(registro: Registro, encargos: dict) -> set[str]:
     """Los canales con un aviso que todavía prueba su transporte: incierto o pendiente."""
     pendientes: set[str] = set()
     for path in (registro.base / "avisos").glob("*.json"):
@@ -1367,6 +1383,8 @@ def _canales_con_avisos_pendientes(registro: Registro) -> set[str]:
         except (OSError, ValueError):
             continue
         if not doc or doc.get("estado") not in ("incierto", "pendiente"):
+            continue
+        if not _aviso_retomable(doc, encargos):
             continue
         try:
             pendientes.add(nombre_canal(str(doc.get("canal") or "")))
@@ -1415,9 +1433,9 @@ def _reintentar_avisos_sueltos(
     return publicados
 
 
-def _sondear_canales(registro: Registro, vuelta: Vuelta) -> None:
+def _sondear_canales(registro: Registro, vuelta: Vuelta, encargos: dict) -> None:
     """Un canal caído sin avisos pendientes se prueba con su conciliación, a lo sumo una vez por intervalo."""
-    pendientes = _canales_con_avisos_pendientes(registro)
+    pendientes = _canales_con_avisos_pendientes(registro, encargos)
     for canal in canales.canales_en_fallo(registro.base):
         if vuelta.agotada():
             return
@@ -1717,7 +1735,7 @@ def drenar(
         if cortada:
             break
     publicados.extend(_reintentar_avisos_sueltos(registro, vuelta, vistos, cortar, encargos))
-    _sondear_canales(registro, vuelta)
+    _sondear_canales(registro, vuelta, encargos)
     for firma, episodio in envios_resumen:
         try:
             resumen_encargos.cerrar(registro, vuelta.ahora, firma, episodio)

@@ -34,7 +34,8 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
 - **Un estado dañado no rompe nada.** Un archivo de estado ilegible se ignora y un `fallos` que no es número cuenta como 0.
 - **Sin avisos pendientes el canal se sondea.** Si un canal está caído y no queda ningún aviso `incierto` ni `pendiente` que
   pruebe su transporte, `drenar` llama a su `conciliacion` con un id `sondeo-<canal>`, a lo sumo una vez por intervalo creciente
-  (`espera_s`) guardado en `proximo_sondeo`. Una respuesta `ausente` o `hallado` lo marca recuperado, igual que un envío con
+  (`espera_s`) guardado en `proximo_sondeo`. Un aviso de un encargo detenido o cancelado, o de un encargo que ya no existe,
+  no prueba el transporte: esa pasada no lo reabre y el canal se sondea igual. Una respuesta `ausente` o `hallado` lo marca recuperado, igual que un envío con
   recibo; sin `conciliacion`, el canal se deja como está. El sondeo no manda mensajes: `ultimo_intento` dice cuándo fue la última
   prueba. Un aviso pendiente solo recupera el canal con una entrega probada (un envío con recibo o una conciliación `hallado`);
   con `ausente` decide el envío que sigue en la misma pasada, y una conciliación que contesta sin veredicto no marca ni fallo ni

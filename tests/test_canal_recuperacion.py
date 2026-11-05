@@ -94,6 +94,15 @@ class Banco(unittest.TestCase):
             "huella": huella, "escalar": True, "diagnostico": huella, "hora": HORA,
         }}, f"rel-{huella}")
 
+    def detener(self, ident: str) -> None:
+        self.reg.anotar(ident, {"kind": "orden", "data": {
+            "accion": "parar", "hora": HORA,
+        }}, "orden-parar")
+        self.reg.anotar(ident, {"kind": "arbol", "data": {
+            "observacion": "ausente", "hora": HORA,
+        }}, "arbol-ausente")
+        self.assertEqual(self.reg.fold(ident).estado, "detenido")
+
     def aviso(self, ident: str) -> dict:
         return json.loads((self.base / "avisos" / f"{ident}.json").read_text())
 
@@ -204,6 +213,26 @@ class AvisoInciertoHuerfano(Banco):
         self.assertTrue(guardado.get("recibo"))
         self.assertIn(viejo["id"], self.lineas("check.log"))
         self.assertIn(viejo["id"], self.lineas("envios.log"))
+
+    def test_un_aviso_incierto_de_un_encargo_detenido_no_bloquea_el_sondeo(self):
+        ident = self.encargo()
+        directores.drenar(self.reg, ahora=T0)
+        self.relevo(ident, "h1")
+        (self.base / "envio_caido").write_text("x")
+        directores.drenar(self.reg, ahora=T0 + 1)
+        viejo = self.aviso_de_relevo()
+        self.assertEqual(viejo["estado"], "incierto")
+        self.detener(ident)
+
+        (self.base / "envio_caido").unlink()
+        directores.drenar(self.reg, ahora=T0 + 100)
+
+        self.assertEqual(
+            self.aviso(viejo["id"])["estado"], "incierto",
+            "un encargo detenido no reabre avisos de avance",
+        )
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
 
 
 if __name__ == "__main__":
