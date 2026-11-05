@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -266,6 +267,26 @@ def _contiene(letra: str) -> str:
     )
 
 
+def _git_de_ensayo(semilla: Path, args: list[str]) -> None:
+    """Git del sandbox que se explica cuando falla: la corrida de un
+    comprobador captura la salida del banco y un push roto sin mensaje no
+    deja pista de por qué falló."""
+    hecho = subprocess.run(
+        ["git", "-C", str(semilla), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if hecho.returncode:
+        detalle = hecho.stderr.strip() or hecho.stdout.strip() or "(sin salida)"
+        raise RuntimeError(
+            f"git {' '.join(args)} salio {hecho.returncode} en {semilla}: "
+            f"{detalle[:400]}; git resuelto en {shutil.which('git')}"
+        )
+
+
 def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, nivel: str = "pr"):
     """Encargo de nivel pr sobre un repo bare real. `vuelta(contenido)` hace
     de implementador y de revisor que aprueba, y devuelve el encargo tras el
@@ -277,16 +298,14 @@ def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, n
     semilla = raiz / "semilla"
     semilla.mkdir()
     (semilla / "base.txt").write_text("base\n")
-    subprocess.run(
-        ["git", "init", "--bare", "-b", "main", "--quiet", str(bare)], check=True
-    )
+    _git_de_ensayo(semilla, ["init", "--bare", "-b", "main", "--quiet", str(bare)])
     for args in (
         ["init", "-b", "main", "--quiet"],
         ["add", "-A"],
         ["-c", "user.name=t", "-c", "user.email=t@l", "commit", "--quiet", "-m", "base"],
         ["push", "--quiet", str(bare), "main"],
     ):
-        subprocess.run(["git", "-C", str(semilla), *args], check=True)
+        _git_de_ensayo(semilla, args)
     r = Recorrido(
         tmp, clave, "agrega saludo.txt con hola",
         entrega_nivel=nivel, repo=str(bare), base_rama="main",
