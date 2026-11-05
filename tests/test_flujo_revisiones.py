@@ -47,6 +47,78 @@ from motor.encargos.registro import Registro
 from motor.flota.runtime import exigir_poteto
 from motor.github import FakeGitHub, GhGitHub
 from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
+from tests import git_env_limpio
+
+
+class PushSandboxSinGitAmbiental(unittest.TestCase):
+    """Los pushes entre repos de ensayo no heredan la config Git del proceso padre.
+
+    Un `GIT_CONFIG_*` ambiental con un `core.hooksPath` cuya pre-push rechaza
+    hacía fallar el push de la semilla en `_entrega_pr` (init y commit
+    pasaban, push salía 1): era la roja del comprobador. El banco arranca con
+    el ambiente Git saneado (`tests/__init__`) y el git de ensayo usa
+    `git_env_limpio` explícito.
+    """
+
+    def test_el_banco_arranca_sin_config_git_ambiental(self):
+        self.assertFalse(
+            [k for k in os.environ if k.startswith("GIT_CONFIG_")],
+            "el banco heredó configuración Git ambiental al importar",
+        )
+
+    def test_el_push_del_sandbox_sobrevive_a_un_hookspath_que_rechaza(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raiz = Path(tmp)
+            hooks = raiz / "hooks"
+            hooks.mkdir()
+            (hooks / "pre-push").write_text("#!/bin/sh\nexit 1\n")
+            bare = raiz / "repo.git"
+            semilla = raiz / "semilla"
+            semilla.mkdir()
+            (semilla / "base.txt").write_text("base\n")
+            subprocess.run(
+                ["git", "init", "--bare", "-b", "main", "--quiet", str(bare)],
+                check=True,
+            )
+            for args in (
+                ["init", "-b", "main", "--quiet"],
+                ["add", "-A"],
+                [
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@l",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "base",
+                ],
+            ):
+                subprocess.run(["git", "-C", str(semilla), *args], check=True)
+            inyectado = {
+                **os.environ,
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.hooksPath",
+                "GIT_CONFIG_VALUE_0": str(hooks),
+            }
+            control = subprocess.run(
+                ["git", "-C", str(semilla), "push", "--quiet", str(bare), "main"],
+                env=inyectado,
+                capture_output=True,
+            )
+            self.assertNotEqual(
+                control.returncode,
+                0,
+                "el hook ambiental dejó pasar el push de control",
+            )
+            limpio = subprocess.run(
+                ["git", "-C", str(semilla), "push", "--quiet", str(bare), "main"],
+                env=git_env_limpio(),
+                capture_output=True,
+            )
+            self.assertEqual(
+                limpio.returncode, 0, limpio.stderr.decode("utf-8", "replace")
+            )
 
 
 def sonda_sin_aislamiento_del_host() -> None:
