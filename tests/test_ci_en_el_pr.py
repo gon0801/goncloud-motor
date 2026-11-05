@@ -17,7 +17,12 @@ from types import SimpleNamespace
 from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso
 from motor.github import veredicto
-from motor.encargos.dominio import prompt_responsable
+from motor.encargos.dominio import (
+    TransicionIlegal,
+    con_fase,
+    prompt_responsable,
+    reducir,
+)
 from motor.integraciones import directores
 from tests.test_flujo_revisiones import (
     _GhConDeepSeek,
@@ -720,6 +725,52 @@ class ClasificacionDeUnFallo(unittest.TestCase):
             ),
             "el control de secretos encontró claves viejas en el repositorio",
         )
+
+
+class CorreccionTrasTerminar(unittest.TestCase):
+    def test_una_correccion_con_el_pr_abierto_reabre_en_la_misma_rama(self):
+        # Caso real: el operador pidió arreglar dos pruebas del PR #393 del motor
+        # y el encargo, ya terminado, rechazó la corrección (rec_4e0e48b70680).
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "corr-terminado", _GhConCorridas,
+                {"corridas": {"gate": "success"}},
+            )
+            self.addCleanup(r.reg.close)
+            e = vuelta("hola\n")
+            self.assertEqual(e.estado, "terminado")
+            pr = e.pr_numero
+            self.assertTrue(pr)
+
+            salida = ciclo.corregir(
+                r.reg, r.enc, "arregla las dos pruebas rojas", "c-1", _hora()
+            )
+
+            self.assertFalse(salida.get("rechazada"), salida.get("motivo"))
+            e = r.reg.fold(r.enc)
+            self.assertEqual(e.estado, "recibido")
+            self.assertEqual(e.rol, "responsable")
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(e.pr_numero, pr)
+            self.assertIn("arregla las dos pruebas rojas", e.ajustes)
+
+    def test_una_correccion_tras_integrar_se_rechaza(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "corr-integrado", _GhConCorridas,
+                {"corridas": {"gate": "success"}},
+            )
+            self.addCleanup(r.reg.close)
+            e = vuelta("hola\n")
+            self.assertEqual(e.estado, "terminado")
+            integrado = con_fase(
+                e, replace(e.fase_actual, nivel_alcanzado="integrado")
+            )
+            with self.assertRaises(TransicionIlegal):
+                reducir(
+                    integrado,
+                    {"kind": "ajuste", "data": {"texto": "otra", "recibo": "x"}},
+                )
 
 
 class PendienteOVerdeNoDetiene(unittest.TestCase):
