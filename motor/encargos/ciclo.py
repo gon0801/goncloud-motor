@@ -695,16 +695,23 @@ _MAX_INTENTOS_LIMPIEZA = 2
 
 
 def _anotar_limpieza_fallida(
-    registro: Registro, enc: Encargo, ruta: Path, exc: OSError, hora: str
+    registro: Registro,
+    enc: Encargo,
+    ruta: Path,
+    exc: OSError,
+    hora: str,
+    intento: int = 1,
 ) -> None:
     nota = (
         f"limpieza({ruta.name}): {type(exc).__name__}: {exc}; "
         "no se reintenta en cada barrido"
     )[:2000]
+    # La ukey lleva el intento: con la fija, el segundo fallo (otra ruta u otro
+    # mensaje) se descartaría en silencio por el dedup del registro.
     registro.anotar(
         enc.id,
         {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
-        f"limpieza-fallida:{enc.id}",
+        f"limpieza-fallida:{enc.id}:{intento}",
     )
 
 
@@ -761,7 +768,9 @@ def _limpiar_encargo_cerrado(
     if fallos:
         _LIMPIEZA_FALLIDA[clave] = fallos_previos + 1
         ruta, exc = fallos[0]
-        _anotar_limpieza_fallida(registro, enc, ruta, exc, hora)
+        _anotar_limpieza_fallida(
+            registro, enc, ruta, exc, hora, intento=fallos_previos + 1
+        )
     else:
         _LIMPIEZA_FALLIDA.pop(clave, None)
     return borrado
@@ -1952,8 +1961,11 @@ def _impedimento_de_instrumento(
     Una clase distinta sí es un intento de reparación y se deja pasar.
 
     A la tercera falla igual, la herramienta se marca como no disponible para
-    este encargo: deja de bloquear y el trabajo sigue con la evidencia que haya,
-    también cuando la que falla es el juicio o la inspección."""
+    este encargo: deja de bloquear y el trabajo sigue con la evidencia que hay,
+    también cuando la que falla es el juicio o la inspección. Devuelve True
+    cuando el caso queda manejado (la tercera falla ya no gasta un turno de
+    reparación leyendo el fold anterior) y False cuando el llamador debe
+    devolver el trabajo para reparar el instrumento."""
     previas = sum(
         1
         for ev in registro.eventos(enc.id)
@@ -1999,7 +2011,8 @@ def _impedimento_de_instrumento(
                 },
                 f"pendiente-instrumento:{enc.id}:{clase}",
             )
-        return False
+        # La herramienta ya no bloquea: no se gasta un turno de reparación.
+        return True
     _anotar_impedimento(registro, enc, clase, causa, condicion, hora)
     return True
 
@@ -4769,7 +4782,10 @@ def _causa_tuberia_en_llano(caidas, texto: str) -> str:
     return "la tubería del CI falló"
 
 
-def _aviso_ci_en_llano(clase: str, caidas, texto: str, reabrir: bool = True) -> str:
+def _aviso_ci_en_llano(
+    clase: str, caidas, texto: str, reabrir: bool = True,
+    sin_relanzamiento: bool = False,
+) -> str:
     """El aviso para alguien que no es técnico: qué falló, de quién es y qué
     conviene hacer. Sin nombres de archivo, hashes ni el log literal."""
     que = " y ".join(
@@ -4787,6 +4803,14 @@ def _aviso_ci_en_llano(clase: str, caidas, texto: str, reabrir: bool = True) -> 
         )
     if clase == "tuberia":
         causa = _causa_tuberia_en_llano(caidas, texto)
+        if sin_relanzamiento:
+            # No hubo segundo intento (no se pudo identificar el run): no se
+            # sabe si era pasajero, así que no se anuncia problema fijo.
+            return (
+                f"La tubería falló: {causa}. No se pudo relanzar sola para ver "
+                "si era pasajero. El cambio ya está revisado; recomiendo "
+                "mergear y abrir un encargo para arreglar la tubería."
+            )
         return (
             f"La tubería de este proyecto tiene un problema fijo: {causa}. "
             "El cambio ya está revisado; recomiendo mergear y abrir un encargo "
@@ -4944,9 +4968,36 @@ def _revisar_ci_del_pr(
         veredicto_ci = gh.checks(enc.entrega.repo, enc.pr_numero, sha, ())
     except Exception as exc:
         if al_limite:
-            # Al vencer el plazo no se declara sin resultado sin haber leído:
-            # el CI pudo terminar. Si la lectura falla, sí es terminal para no
-            # quedarse reintentando errores cada barrido.
+            hechos = int(sondeo.get("errores_limite") or 0)
+            if hechos < 1:
+                # Una lectura fallida justo al vencer puede esconder un
+                # resultado ya listo: se concede una sola lectura más en el
+                # siguiente barrido y ahí sí termina el sondeo (sin sondear
+                # errores para siempre).
+                _guardar_sondeo_ci(
+                    ruta_sondeo,
+                    {
+                        "sha": sha,
+                        "primero": primero,
+                        "ultimo": hora,
+                        "sondeos": int(sondeo.get("sondeos") or 0),
+                        "errores_limite": hechos + 1,
+                    },
+                )
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "procedimiento",
+                        "data": {
+                            "nota": f"no se pudo leer el CI del PR todavía: {exc}",
+                            "hora": hora,
+                        },
+                    },
+                    f"ci-pr-error:{enc.id}:{sha}",
+                )
+                return registro.fold(enc.id) or enc
+            # Al vencer el plazo con una segunda lectura fallida sí es
+            # terminal: se declara sin resultado y se deja de sondear.
             return _anotar_ci_del_pr(
                 registro,
                 enc,
@@ -5077,6 +5128,7 @@ def _revisar_ci_del_pr(
         for c in caidas
     }
     valores = set(clases.values())
+    sin_relanzamiento = False
     if valores == {"tuberia"} and not reintentado:
         run_ids = tuple(
             dict.fromkeys(
@@ -5134,6 +5186,9 @@ def _revisar_ci_del_pr(
                     hora=hora,
                 )
             return enc
+        # Sin run_ids no hay rerun posible: el rojo se anuncia sin un segundo
+        # intento, y el aviso no puede decir problema fijo.
+        sin_relanzamiento = True
     if "codigo" in valores:
         clase = "codigo"
         reabrir = enc.nivel_alcanzado not in ("integrado", "desplegado")
@@ -5154,7 +5209,10 @@ def _revisar_ci_del_pr(
         reabrir=reabrir,
         clase=clase,
         reintento=reintento,
-        aviso=_aviso_ci_en_llano(clase, caidas, texto, reabrir=reabrir),
+        aviso=_aviso_ci_en_llano(
+            clase, caidas, texto, reabrir=reabrir,
+            sin_relanzamiento=sin_relanzamiento,
+        ),
         hora=hora,
     )
 

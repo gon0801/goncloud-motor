@@ -651,6 +651,10 @@ def recuperar(home: Path, sin_turnos: bool = False) -> dict:
             return {"accion": "rechazada", "destino": destino, "motivo": str(exc)}
         resumen, motivo = _turnos_de_activacion(home, gen, destino, sin_turnos)
         if motivo:
+            if apunta and anterior:
+                previa = home / "generaciones" / anterior
+                if not _cambiar_generacion(home, previa if previa.exists() else None):
+                    return {"accion": "ocupada", "vigente": asignar(home), "destino": anterior}
             pend_path.unlink(missing_ok=True)
             _atomico(
                 home / "candidata.json",

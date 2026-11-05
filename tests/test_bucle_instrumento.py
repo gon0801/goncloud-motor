@@ -255,6 +255,26 @@ class BucleInstrumento(unittest.TestCase):
         )
         self.assertLessEqual(len(banco.eventos("producto_listo")), 4)
 
+    def test_la_tercera_falla_no_gasta_un_turno_de_reparacion(self):
+        banco = self.banco()
+        with mock.patch("motor.encargos.aislamiento.sondear", return_value=RECUPERADO):
+            for vuelta in range(3):
+                banco.correr(f"responsable-{vuelta}")
+                banco.fallo_de_comprobacion(
+                    "el mismo comprobador externo sigue indisponible"
+                )
+                banco.correr(f"revisor-{vuelta}")
+        e = banco.fold()
+        self.assertIn("comprobacion", e.herramientas_no_disponibles)
+        reparaciones = [
+            ev
+            for ev in banco.eventos("estrategia")
+            if ev["data"].get("estrategia") == "reparar_instrumento"
+        ]
+        # Dos turnos de reparación (las dos primeras fallas); la tercera queda
+        # manejada por la marca de no disponible, sin turno extra.
+        self.assertEqual(len(reparaciones), 2)
+
     def test_dos_causas_distintas_no_se_tratan_como_repeticion(self):
         banco = self.banco()
         with mock.patch("motor.encargos.aislamiento.sondear", return_value=RECUPERADO):
@@ -393,7 +413,9 @@ class BucleInstrumento(unittest.TestCase):
         # vez igual deja la herramienta fuera del encargo, sin impedimento.
         self.assertEqual(e.impedimento, "")
         self.assertIn("comprobacion", e.herramientas_no_disponibles)
-        self.assertEqual(len(banco.eventos("producto_listo")), 4)
+        # Solo las dos primeras fallas devuelven a reparar; la tercera queda
+        # manejada con la marca y el trabajo sigue sin gastar otro turno.
+        self.assertEqual(len(banco.eventos("producto_listo")), 2)
 
     def test_fases_ciclicas_no_se_dan_por_reparadas_sin_cambiar_el_archivo(self):
         banco = self.banco()

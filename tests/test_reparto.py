@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests import reparto
 
@@ -48,6 +49,24 @@ class Division(unittest.TestCase):
 
     def test_el_discover_real_no_pierde_ni_repite(self):
         reparto.comprobar()
+
+    def test_un_import_roto_no_deja_la_parte_en_verde(self):
+        class Rota:
+            def id(self):
+                return "unittest.loader._FailedTest.tests.test_roto"
+
+        Rota.__module__ = "unittest.loader"
+        falsa = [Rota()]
+        with mock.patch.object(
+            unittest.defaultTestLoader, "discover", return_value=falsa
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                reparto.descubrir()
+            self.assertIn("no importa", str(ctx.exception))
+            self.assertIn("test_roto", str(ctx.exception))
+            with self.assertRaises(SystemExit) as ctx:
+                reparto.correr(1)
+            self.assertIn("no importa", str(ctx.exception))
 
     def test_las_otras_partes_no_superan_el_peso_de_e2e(self):
         partes = reparto.partir(reparto.modulos_descubiertos())

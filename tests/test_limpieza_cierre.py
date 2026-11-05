@@ -135,15 +135,58 @@ class LimpiezaAlCerrar(unittest.TestCase):
                 )
             )
 
-            # Un fallo transitorio se reintenta una sola vez; después el
-            # barrido deja de intentarlo sin agregar otra nota.
+            # Un fallo transitorio se reintenta una sola vez; la segunda nota
+            # queda registrada con su propio intento (no se descarta en
+            # silencio por repetir la ukey), y después el barrido deja de
+            # intentarlo sin agregar más notas.
             barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(borrar.call_count, 4, "no se reintentó una vez")
-            self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
+            self.assertEqual(len(self._notas_de_limpieza(encargo)), 2)
             antes = self.reg.eventos(encargo)
             for _ in range(3):
                 barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(borrar.call_count, 4, "la limpieza se reintentó en bucle")
+            self.assertEqual(self.reg.eventos(encargo), antes)
+
+    def test_el_fallo_al_enumerar_los_intentos_tambien_se_anota(self):
+        encargo = self._cancelar_con_archivo_abierto()
+        # `ejecucion/<id>` como archivo: iterdir() falla con NotADirectoryError.
+        ejecucion = self.reg.base / "ejecucion" / encargo
+        shutil.rmtree(ejecucion)
+        ejecucion.write_text("no es carpeta", encoding="utf-8")
+
+        barrer(self.reg, ahora_iso(), time.time(), None)
+        notas = self._notas_de_limpieza(encargo)
+        self.assertEqual(len(notas), 1)
+        self.assertIn("NotADirectoryError", notas[0]["data"]["nota"])
+
+    def test_el_reintento_que_si_borra_quita_la_marca_del_encargo(self):
+        encargo = self._cancelar_con_archivo_abierto()
+        error = PermissionError(13, "Permission denied", "abierto.db")
+        efectos = [error, error, None, None]
+
+        def borrar_falso(*a):
+            if efectos:
+                efecto = efectos.pop(0)
+                if isinstance(efecto, BaseException):
+                    raise efecto
+            return None
+
+        with mock.patch.object(
+            ciclo, "borrar_arbol", side_effect=borrar_falso
+        ) as borrar:
+            barrer(self.reg, ahora_iso(), time.time(), None)
+            self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
+            barrer(self.reg, ahora_iso(), time.time(), None)
+            self.assertEqual(borrar.call_count, 4, "el segundo barrido no borró")
+            # El reintento logró limpiar: sin nota nueva y sin marca que
+            # siga intentando en los barridos siguientes.
+            self.assertEqual(len(self._notas_de_limpieza(encargo)), 1)
+            clave = (str(Path(self.reg.base)), encargo)
+            self.assertNotIn(clave, ciclo._LIMPIEZA_FALLIDA)
+            # El barrido siguiente no agrega nada: sin fallo, sin nota.
+            antes = self.reg.eventos(encargo)
+            barrer(self.reg, ahora_iso(), time.time(), None)
             self.assertEqual(self.reg.eventos(encargo), antes)
 
     def test_un_arranque_nuevo_reintenta_sin_duplicar_la_nota(self):

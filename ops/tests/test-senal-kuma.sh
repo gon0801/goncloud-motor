@@ -5,8 +5,8 @@
 # conserva; la MacBook no la tiene y el script le crea su monitor. La Mac y la Mini corren su script
 # en un HOME falso. Si hay pwsh, la PC ejecuta con ese pwsh el script real de escritor_pc
 # contra su HOME temporal; la lectura compara el archivo sin distinguir CR y LF, y una línea
-# motor_kuma_url no cuenta como MOTOR_KUMA_URL. Si no hay pwsh, queda el doble, que solo mira
-# las piezas del script, y la prueba dice que se omitió la ejecución real. Un uname y un hostname falsos deciden si la Mac es local: con Linux va por
+# motor_kuma_url no cuenta como MOTOR_KUMA_URL. La ejecución real es exigida: sin pwsh
+# la prueba falla en vez de omitirla. Un uname y un hostname falsos deciden si la Mac es local: con Linux va por
 # ssh; con Darwin y el hostname de la Mini también va por ssh; solo con Darwin y otro hostname
 # es la MacBook y escribe en su HOME sin ssh a sí misma.
 set -uo pipefail
@@ -845,25 +845,30 @@ if texto != esperado:
 PY
   [ "$fallos" = "$caso_antes" ] && echo "  ok: pwsh distingue motor_kuma_url de MOTOR_KUMA_URL"
 else
-  echo "  se omitió la ejecución real: no hay pwsh"
-  (
-    . "$RAIZ/ops/lib.sh"
-    . "$RAIZ/ops/lib-kuma.sh"
-    escritor_pc poner .motor "http://10.13.13.1:3001/api/push/"
-  ) >"$S/ps-sano"
-  python3 -I - "$S/ps-sano" "$S/ps-malo" <<'PY'
+  # La ejecución real del escritor de la PC es lo que esta prueba exige:
+  # sin pwsh no se omite y pasar, el test falla (hallazgo F2 del PR 345).
+  fallo "la ejecución real de la PC exige pwsh y no hay"
+  termina
+fi
+
+# El doble de powershell, el respaldo de los entornos sin pwsh, también se
+# prueba en cualquier corrida: rechaza un script al que se le cambió
+# -cmatch por -match y deja rastro de su llamada con las piezas reales.
+python3 -I - "$S/ps-sano" "$S/ps-malo" <<'PY'
 import sys
 texto = open(sys.argv[1], encoding="utf-8").read().replace("-cmatch", "-match")
 open(sys.argv[2], "w", encoding="utf-8").write(texto)
 PY
-  ps_malo="$(python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read().decode("utf-8").encode("utf-16-le")).decode())' "$S/ps-malo")"
-  espera "el doble de powershell rechaza un script sin -cmatch" '!0' \
-    "$S/bin/powershell-doble" -NoProfile -NonInteractive -EncodedCommand "$ps_malo"
-  contiene "doble powershell" "$S/salida" "al script le faltan piezas"
-  [ -s "$S/powershell-llamado" ] || fallo "ninguna prueba ejecutó el doble de powershell"
-  grep -Fq '[IO.File]::WriteAllLines' "$S/powershell-llamado" || fallo "el escritor de la PC no usa WriteAllLines"
-  grep -Fq -- '-cmatch' "$S/powershell-llamado" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
-fi
+ps_malo="$(python3 -I -c 'import base64,sys; print(base64.b64encode(open(sys.argv[1],"rb").read().decode("utf-8").encode("utf-16-le")).decode())' "$S/ps-malo")"
+espera "el doble de powershell rechaza un script sin -cmatch" '!0' \
+  "$S/bin/powershell-doble" -NoProfile -NonInteractive -EncodedCommand "$ps_malo"
+contiene "doble powershell" "$S/salida" "al script le faltan piezas"
+[ -s "$S/powershell-llamado" ] || fallo "ninguna prueba ejecutó el doble de powershell"
+grep -Fq '[IO.File]::WriteAllLines' "$S/powershell-llamado" || fallo "el escritor de la PC no usa WriteAllLines"
+# El único registro del doble es el mutante al que se le quitó -cmatch, así
+# que la comparación sensible a mayúsculas del escritor se exige sobre el
+# artefacto sano que la rama de pwsh real generó.
+grep -Fq -- '-cmatch' "$S/ps-sano" || fallo "el escritor de la PC no compara en mayúsculas y minúsculas"
 
 # F1: la PC contesta las direcciones por ssh con CRLF. La lectura quita el CR antes de comparar y
 # sondear: sin eso, la dirección viaja con CR y el sondeo juzga una URL que no es la escrita.

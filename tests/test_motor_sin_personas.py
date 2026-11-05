@@ -121,10 +121,12 @@ class HerramientaCaidaSeOmite(unittest.TestCase):
                     f"fallo-{i}",
                 )
             enc = banco.fold()
-            sigue_bloqueando = ciclo._impedimento_de_instrumento(
+            manejado = ciclo._impedimento_de_instrumento(
                 banco.reg, enc, "comprobacion", "falla igual", "repararla", banco.hora
             )
-            self.assertFalse(sigue_bloqueando)
+            # Manejado: la herramienta queda no disponible y no se gasta un
+            # turno de reparación.
+            self.assertTrue(manejado)
             enc = banco.fold()
             self.assertEqual(enc.impedimento, "")
             self.assertIn("comprobacion", enc.herramientas_no_disponibles)
@@ -141,11 +143,11 @@ class HerramientaCaidaSeOmite(unittest.TestCase):
                     f"fallo-juicio-{i}",
                 )
             enc = banco.fold()
-            sigue_bloqueando = ciclo._impedimento_de_instrumento(
+            manejado = ciclo._impedimento_de_instrumento(
                 banco.reg, enc, "juicio:esquema", "falta veredicto",
                 "volver a emitir el juicio", banco.hora,
             )
-            self.assertFalse(sigue_bloqueando)
+            self.assertTrue(manejado)
             enc = banco.fold()
             self.assertEqual(enc.impedimento, "")
             self.assertEqual(enc.impedimentos, ())
@@ -971,8 +973,14 @@ class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
                 ) as publicado,
             ):
                 barrer(reg, ahora_iso(), time.time(), _llamador)
+                # La marca recién sellada detiene los barridos siguientes:
+                # sin ella, cada vuelta volvería a publicar el resultado.
+                barrer(reg, ahora_iso(), time.time(), _llamador)
             operar.assert_called()
-            publicado.assert_called()
+            self.assertEqual(publicado.call_count, 1)
+            self.assertTrue(
+                ciclo._autoridad_cerrada_resuelta(reg, reg.fold(encargo))
+            )
 
     def test_una_marca_vieja_sin_estado_no_impide_sellar_el_cierre(self):
         with tempfile.TemporaryDirectory() as tmp:
