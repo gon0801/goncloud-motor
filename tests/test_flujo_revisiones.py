@@ -71,6 +71,49 @@ class PushSandboxSinGitAmbiental(unittest.TestCase):
             "(la única permitida es la de rutas largas que él mismo arma)",
         )
 
+    def test_el_saneo_al_importar_quita_el_git_heredado(self):
+        """Un hijo con GIT_DIR heredado lo ve desaparecer tras importar tests.
+
+        Sin el saneo del `tests/__init__`, un GIT_DIR del proceso padre
+        redirigiría el git de cada sandbox hacia un repo ajeno; el estado
+        final del proceso solo con el par armado no distingue si el saneo
+        corrió, por eso este ensayo mira el ambiente de un intérprete que
+        importa el banco con la herencia inyectada.
+        """
+        raiz = Path(__file__).resolve().parents[1]
+        hijo = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import os, sys; sys.path.insert(0, %r); import tests; "
+                "print('GIT_DIR=' + ('AUSENTE' if os.environ.get('GIT_DIR') "
+                "is None else 'PRESENTE'), 'CLAVE=' "
+                "+ str(os.environ.get('GIT_CONFIG_KEY_0')))" % str(raiz),
+            ],
+            env={
+                **os.environ,
+                "GIT_DIR": str(raiz),
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.hooksPath",
+                "GIT_CONFIG_VALUE_0": "no-importa",
+            },
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        self.assertEqual(hijo.returncode, 0, hijo.stderr)
+        self.assertIn("GIT_DIR=AUSENTE", hijo.stdout, hijo.stdout + hijo.stderr)
+        self.assertIn(
+            "CLAVE=core.longpaths",
+            hijo.stdout,
+            "la config armada por el banco no quedó en el ambiente del hijo: "
+            + hijo.stdout
+            + hijo.stderr,
+        )
+
     def test_el_push_del_sandbox_sobrevive_a_un_hookspath_que_rechaza(self):
         with tempfile.TemporaryDirectory() as tmp:
             raiz = Path(tmp)

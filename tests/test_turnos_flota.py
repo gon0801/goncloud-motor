@@ -994,8 +994,13 @@ class TurnosFlota(unittest.TestCase):
             "componentes": [GROK],
             "observaciones": {"grok": {"version": "v2", "ejecutable": argv}},
             # La clave sale de str(relative_to(gen)): separador nativo del
-            # sistema, no la forma posix que usa el resto de las pruebas.
-            "archivos": {str(Path("herramientas") / "grok" / "cli.txt"): _sha256(cli)},
+            # sistema. El './' delante la deja fuera del prefijo textual
+            # 'herramientas/<n>/' que comparaba el codigo anterior (en Linux
+            # la forma nativa coincide con la textual y no discriminaria):
+            # la comparacion por partes de ruta debe reconocerla igual.
+            "archivos": {
+                f"./{Path('herramientas') / 'grok' / 'cli.txt'}": _sha256(cli)
+            },
         }
         gen_sana = base / "gen-sana"
         gen_sana.mkdir(parents=True)
