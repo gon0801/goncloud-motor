@@ -5724,7 +5724,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         try:
             comprobar_recibo(enc)
         except ValueError as exc:
-            marcar_pregunta(registro, enc.id, str(exc), True, hora)
+            _preguntar_despliegue(registro, enc, str(exc), hora)
             return registro.fold(enc.id) or enc
     if _devolver_correcciones(registro, enc, hora):
         return registro.fold(enc.id)
@@ -6249,6 +6249,20 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     return enc
 
 
+def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: str) -> None:
+    # Continuar reabre el trabajo sin cambiar intento ni generación. La misma
+    # causa debe bloquear otra vez, una sola vez por esa intervención.
+    continuacion = next((
+        ev["id"] for ev in reversed(registro.eventos(enc.id))
+        if ev["kind"] == "orden" and ev["data"].get("accion") == "continuar"
+    ), 0)
+    huella = hashlib.sha256(causa.encode()).hexdigest()[:12]
+    marcar_pregunta(
+        registro, enc.id, causa, True, hora,
+        ukey=f"pregunta-despliegue:{enc.id}:{enc.fase_activa}:{continuacion}:{huella}",
+    )
+
+
 def _paso_despliegue(
     registro: Registro, enc: Encargo, espacio: Path, hora: str
 ) -> Encargo:
@@ -6289,7 +6303,7 @@ def _paso_despliegue(
         if resultado.get("recibo"):
             causa += "; recibo: " + resultado["recibo"]
         if resultado["estado"] in ("fallido", "incierto"):
-            marcar_pregunta(registro, enc.id, causa, True, hora)
+            _preguntar_despliegue(registro, enc, causa, hora)
         else:
             marcar_espera(registro, enc.id, causa, _reanuda_desde(hora, 30), hora)
         return registro.fold(enc.id) or enc
