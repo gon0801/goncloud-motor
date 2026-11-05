@@ -1,6 +1,7 @@
 """La recuperación explícita restaura sólo la fase que cerró el atajo."""
 
 import json
+from contextlib import closing
 import tempfile
 import time
 import unittest
@@ -200,7 +201,7 @@ class ReabrirCierreForzado(unittest.TestCase):
         r = self.r
         remote_base = r.base.parent / "autoridad"
         remote_base.mkdir()
-        with sqlite3.connect(remote_base / "registro.sqlite") as dst:
+        with closing(sqlite3.connect(remote_base / "registro.sqlite")) as dst:
             r.reg.db.backup(dst)
         remote = Registro(remote_base)
         self.addCleanup(remote.close)

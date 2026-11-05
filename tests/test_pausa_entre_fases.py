@@ -56,8 +56,10 @@ class PausaEntreFases(unittest.TestCase):
         ciclo.ordenar(r.reg, r.enc, "continuar", "continuacion", r.hora)
 
     def test_el_resultado_del_intento_cortado_no_es_falla_del_proveedor(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with contextlib.ExitStack() as cleanup:
+            tmp = cleanup.enter_context(tempfile.TemporaryDirectory())
             r, gh, integrado = self.preparar(tmp)
+            cleanup.callback(r.reg.close)
             (r.d / "outcome.json").write_text(json.dumps({
                 "fallo_runtime": "el CLI termino con codigo 1, sin error estructurado",
                 "sesion_runtime": "sesion-del-revisor",
@@ -98,8 +100,10 @@ class PausaEntreFases(unittest.TestCase):
         self.assertEqual(elegidos, [("motor-despliegue", "zai-coding-plan/glm-5.3-flash")])
 
     def test_cambiar_de_fase_reinicia_el_relevo_y_los_bloqueos(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with contextlib.ExitStack() as cleanup:
+            tmp = cleanup.enter_context(tempfile.TemporaryDirectory())
             r, gh, _ = self.preparar(tmp)
+            cleanup.callback(r.reg.close)
             self.parar_continuar(r)
 
             final = ciclo._paso_entrega(r.reg, r.fold(), gh, r.hora)
@@ -113,10 +117,12 @@ class PausaEntreFases(unittest.TestCase):
             self.assertEqual(final.pendientes_entrega, ())
 
     def test_una_fase_sin_commits_no_publica_pr_ni_cierra_forzada(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with contextlib.ExitStack() as cleanup:
+            tmp = cleanup.enter_context(tempfile.TemporaryDirectory())
             r, gh, _ = self.legado_integrado(
                 tmp, ("propuesta", "motor-despliegue", "meta-sombra"),
             )
+            cleanup.callback(r.reg.close)
             r.reg.anotar(r.enc, {"kind": "fases", "data": {"fases": [
                 {"id": f.id, "resultado": f.resultado} for f in r.fold().fases
             ]}}, "fases-sin-dependencias-como-el-encargo-real")

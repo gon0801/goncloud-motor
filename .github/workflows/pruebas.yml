@@ -103,8 +103,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Pruebas de Windows y recetas de encargos con Git Bash
-        run: python -m unittest -v tests.test_windows tests.test_windows_identidad tests.test_windows_wsl tests.test_lanzamiento_directo_windows tests.test_relanzamiento_pc tests.test_prepara_pc tests.test_director_capacidades tests.test_encargos_despliegue_real tests.test_despliegue_recuperacion
+      - name: Pruebas de Windows, recetas y recuperación de encargos
+        run: python -m unittest -v tests.test_windows tests.test_windows_identidad tests.test_windows_wsl tests.test_lanzamiento_directo_windows tests.test_relanzamiento_pc tests.test_prepara_pc tests.test_director_capacidades tests.test_encargos_despliegue_real tests.test_despliegue_recuperacion tests.test_pausa_entre_fases tests.test_reabrir_cierre_forzado tests.test_relevo_sin_modelos tests.test_cli_reabrir
       - name: La preparacion deja verificar.sh corriendo (JDK y jar reales, Git Bash real, TLC real)
         shell: bash
         run: python ops/prepara_pc.py --base "${RUNNER_TEMP}/base-prepara" --verificar main.cfg
