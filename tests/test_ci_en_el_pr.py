@@ -789,6 +789,22 @@ class ClasificacionDeUnFallo(unittest.TestCase):
                     ciclo._clasificar_fallo_ci("gate", "failure", log), "codigo"
                 )
 
+    def test_una_caida_de_red_que_tumba_pruebas_es_tuberia(self):
+        log = _log_paso(
+            "Pruebas",
+            "2026-11-05T03:14:11Z E   ConnectionResetError: [Errno 104] Connection reset by peer",
+            "2026-11-05T03:14:11Z 3 failed, 40 passed in 9.00s",
+        )
+        self.assertEqual(ciclo._clasificar_fallo_ci("gate", "failure", log), "tuberia")
+
+    def test_un_hallazgo_de_gitleaks_sin_el_conteo_es_tuberia(self):
+        log = _log_paso(
+            "Gitleaks",
+            "2026-11-05T03:02:05Z RuleID:      generic-api-key",
+            "2026-11-05T03:02:05Z File:        docs/viejo.md",
+        )
+        self.assertEqual(ciclo._clasificar_fallo_ci("gate", "failure", log), "tuberia")
+
     def test_cero_fallas_y_una_subida_caida_es_tuberia(self):
         log = _log_paso(
             "Subir resultados",
@@ -854,7 +870,8 @@ class CorreccionTrasTerminar(unittest.TestCase):
             self.assertTrue(pr)
 
             salida = ciclo.corregir(
-                r.reg, r.enc, "arregla las dos pruebas rojas", "c-1", _hora()
+                r.reg, r.enc, "arregla las dos pruebas rojas", "c-1", _hora(),
+                gh=vuelta.gh,
             )
 
             self.assertFalse(salida.get("rechazada"), salida.get("motivo"))
@@ -864,6 +881,37 @@ class CorreccionTrasTerminar(unittest.TestCase):
             self.assertEqual(e.nivel_alcanzado, "pr_abierto")
             self.assertEqual(e.pr_numero, pr)
             self.assertIn("arregla las dos pruebas rojas", e.ajustes)
+
+    def test_una_correccion_con_el_pr_ya_mergeado_se_rechaza(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "corr-mergeado", _GhConCorridas,
+                {"corridas": {"gate": "success"}},
+            )
+            self.addCleanup(r.reg.close)
+            e = vuelta("hola\n")
+            self.assertEqual(e.estado, "terminado")
+            vuelta.gh.ver = lambda repo, numero: SimpleNamespace(
+                estado="mergeado", head=e.pr_sha
+            )
+            salida = ciclo.corregir(
+                r.reg, r.enc, "otra", "c-2", _hora(), gh=vuelta.gh
+            )
+            self.assertTrue(salida.get("rechazada"))
+            self.assertIn("mergeado", salida["motivo"])
+            self.assertEqual(r.reg.fold(r.enc).estado, "terminado")
+
+    def test_sin_poder_leer_el_pr_la_correccion_se_rechaza(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "corr-sin-gh", _GhConCorridas,
+                {"corridas": {"gate": "success"}},
+            )
+            self.addCleanup(r.reg.close)
+            vuelta("hola\n")
+            salida = ciclo.corregir(r.reg, r.enc, "otra", "c-3", _hora(), gh=None)
+            self.assertTrue(salida.get("rechazada"))
+            self.assertEqual(r.reg.fold(r.enc).estado, "terminado")
 
     def test_una_correccion_tras_integrar_se_rechaza(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
