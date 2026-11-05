@@ -1160,6 +1160,11 @@ def _barrer_encargos(
         if enc.estado == "terminado" and enc.pr_numero and not parada:
             enc = _revisar_ci_del_pr(registro, enc, gh, hora)
         sin_hecho = _edad(enc, epoch) >= umbral_s
+        if arbol == "ausente" and (enc.estado == "deteniendo" or parada):
+            from .despliegue import observacion as observar_despliegue
+
+            if observar_despliegue(registro, enc) != "ausente":
+                arbol = "incierto"
         decision = _decision(enc, arbol, directorio, sin_hecho, hora)
         if sin_llm:
             decision["lanzar"] = False
@@ -1473,7 +1478,8 @@ def _sin_avance(
     """Escalera de una vuelta que no cerro ningun bloqueante: la primera vuelve
     a diagnosticar, la segunda seguida releva el mismo rol a otro modelo
     autorizado. Si el relevo tampoco avanza en el mismo punto, el encargo
-    entrega con los pendientes abiertos y termina. Nunca espera a una persona.
+    entrega con los pendientes abiertos. Si ya está aprobado pero la entrega
+    sigue bloqueada, pide intervención y conserva el encargo abierto.
     `enc` ya incorpora el hallazgo de la vuelta.
 
     Una vuelta cuenta una sola vez: si otra fuente del mismo barrido ya la
@@ -2217,6 +2223,13 @@ def _intentar_cierre(
                     hora, "pedidos",
                 )
             return registro.fold(enc.id)
+    if any(p["operacion"] == "desplegar" for p in pedidos):
+        if enc.entrega.nivel != "desplegado":
+            marcar_pregunta(registro, enc.id, "el encargo no autoriza desplegar", True, hora)
+            return registro.fold(enc.id)
+        if not nivel_cumplido(enc):
+            return enc
+        pedidos = [p for p in pedidos if p["operacion"] != "desplegar"]
     if pedidos and not enc.autoridad:
         marcar_espera(
             registro,
@@ -5700,6 +5713,19 @@ def _autocontestar_preguntas(
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
+    from .politica_despliegue import adoptar as adoptar_politica_despliegue
+
+    enc = adoptar_politica_despliegue(
+        registro, enc, _espacio(registro.base, enc.id), hora
+    )
+    if enc.nivel_alcanzado == "desplegado":
+        from .despliegue import comprobar_recibo
+
+        try:
+            comprobar_recibo(enc)
+        except ValueError as exc:
+            marcar_pregunta(registro, enc.id, str(exc), True, hora)
+            return registro.fold(enc.id) or enc
     if _devolver_correcciones(registro, enc, hora):
         return registro.fold(enc.id)
     if (
@@ -5717,6 +5743,14 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             registro, enc, gh, _espacio(registro.base, enc.id),
             _directorio(registro.base, enc.id), hora,
         )
+    if enc.entrega.nivel == "desplegado" and enc.nivel_alcanzado == "integrado":
+        enc = _paso_despliegue(registro, enc, _espacio(registro.base, enc.id), hora)
+        if nivel_cumplido(enc):
+            return _cerrar_con_veredicto(
+                registro, enc, gh, _espacio(registro.base, enc.id),
+                _directorio(registro.base, enc.id), hora,
+            )
+        return enc
     if gh is None:
         causa = (
             "nivel de entrega "
@@ -6152,15 +6186,41 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
                     )
         except Exception as exc:
-            from motor.github import MergeRechazado
+            from motor.github import MergeRechazado, PoliticaBloquea
 
             causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
+            necesita_usuario = isinstance(exc, MergeRechazado)
+            if isinstance(exc, PoliticaBloquea):
+                try:
+                    checks = gh.checks_requeridos(
+                        enc.entrega.repo, enc.pr_numero, enc.pr_sha
+                    )
+                except MergeRechazado as rechazo:
+                    causa += f"; {rechazo}"
+                except Exception as lectura:
+                    necesita_usuario = False
+                    causa += f"; no se pudieron leer los checks requeridos: {lectura}"
+                else:
+                    if (
+                        checks.en_marcha
+                        and not checks.fallas
+                        and set(checks.faltan) <= set(checks.en_marcha)
+                    ):
+                        marcar_espera(
+                            registro, enc.id,
+                            f"esperando checks requeridos del PR #{enc.pr_numero}: "
+                            + ", ".join(checks.en_marcha),
+                            _reanuda_desde(hora, 120), hora,
+                        )
+                        return registro.fold(enc.id)
+                    if checks.fallas:
+                        causa += "; checks requeridos fallidos: " + ", ".join(checks.fallas)
             _anotar_instrumento(
                 registro, enc, "github", causa,
                 "resolver la causa del merge rechazado sobre el SHA revisado",
                 hora, f"merge-{enc.pr_sha[:12]}",
             )
-            if isinstance(exc, MergeRechazado):
+            if necesita_usuario:
                 marcar_pregunta(registro, enc.id, causa, True, hora)
             else:
                 marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
@@ -6192,14 +6252,18 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
 def _paso_despliegue(
     registro: Registro, enc: Encargo, espacio: Path, hora: str
 ) -> Encargo:
-    """Nunca reabre un PR vacío: solo sella con el efecto que corresponde a un
-    pedido vivo, con la misma identidad que exige el cierre."""
+    """El sello se obtiene de la receta ejecutada sobre el commit integrado."""
+    from . import despliegue, politica_despliegue
+
     if enc.entrega.nivel != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
+    enc = politica_despliegue.adoptar(registro, enc, espacio, hora)
+    if nivel_cumplido(enc):
+        return enc
+    # Conserva el diagnóstico de instrumentos inválidos, pero ningún pedido
+    # del agente ni recibo de ensayo acredita una ejecución de producción.
     try:
-        pedidos = [
-            p for p in _pedidos_efecto(espacio) if p["operacion"] == "desplegar"
-        ]
+        _pedidos_efecto(espacio)
     except (OSError, ValueError, TypeError) as exc:
         _anotar_instrumento(
             registro, enc, "adaptador", str(exc),
@@ -6211,91 +6275,38 @@ def _paso_despliegue(
             "que .interno/pedido-efecto.json vuelva a validar", hora,
         )
         return registro.fold(enc.id) or enc
-    efecto = None
-    for pedido in pedidos:
-        efecto = next(
-            (
-                e
-                for e in enc.efectos
-                if e.id == pedido["id"]
-                and e.operacion == pedido["operacion"]
-                and e.clave == pedido["clave"]
-                and e.cuerpo == pedido["cuerpo"]
-                and e.estado == "aplicado"
-                and e.recibo
-            ),
-            None,
-        )
-        if efecto is not None:
-            break
-    if efecto is None and pedidos:
-        from .frontera import DestinoEnsayo, despachar
-
-        destino = DestinoEnsayo(registro.base / "destino")
-        for pedido in pedidos:
-            despachar(
-                registro,
-                enc.id,
-                destino,
-                str(pedido["id"]),
-                str(pedido["operacion"]),
-                str(pedido["clave"]),
-                str(pedido["cuerpo"]),
-                hora,
-            )
-        enc = registro.fold(enc.id)
-        efecto = None
-        for pedido in pedidos:
-            efecto = next(
-                (
-                    e
-                    for e in enc.efectos
-                    if e.id == pedido["id"]
-                    and e.operacion == pedido["operacion"]
-                    and e.clave == pedido["clave"]
-                    and e.cuerpo == pedido["cuerpo"]
-                    and e.estado == "aplicado"
-                    and e.recibo
-                ),
-                None,
-            )
-            if efecto is not None:
-                break
-    if efecto is None:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "sin_progreso",
-                "data": {
-                    "huella": enc.bloqueo_huella,
-                    "diagnostico": (
-                        "integrado; falta un efecto de despliegue "
-                        "declarado con recibo para cerrar el nivel "
-                        "desplegado"
-                    ),
-                    "escalar": True,
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:desplegado:sin-efecto",
-        )
-        return registro.fold(enc.id)
+    politica = politica_despliegue.resolver(espacio, enc)
+    if politica.requiere_despliegue is None:
+        resultado = {"estado": "esperando", "motivo":
+                     "falta declarar si la fase despliega y su receta real"}
+    else:
+        resultado = despliegue.iniciar(registro, enc, espacio, politica, hora)
+    fresco = registro.fold(enc.id) or enc
+    if not fresco.escrituras or not fresco.intentos_nuevos:
+        return fresco
+    if resultado["estado"] != "aplicado":
+        causa = resultado["motivo"]
+        if resultado.get("recibo"):
+            causa += "; recibo: " + resultado["recibo"]
+        if resultado["estado"] in ("fallido", "incierto"):
+            marcar_pregunta(registro, enc.id, causa, True, hora)
+        else:
+            marcar_espera(registro, enc.id, causa, _reanuda_desde(hora, 30), hora)
+        return registro.fold(enc.id) or enc
+    # Una parada durante la receta no se convierte en un cierre. El recibo
+    # queda disponible para conciliar al continuar el encargo.
+    fresco = registro.fold(enc.id) or enc
+    if not fresco.escrituras or not fresco.intentos_nuevos:
+        return fresco
     registro.anotar(
         enc.id,
-        {
-            "kind": "entrega_externa",
-            "data": {
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "paso": "desplegado",
-                "repo": enc.entrega.repo,
-                "numero": enc.pr_numero,
-                "sha": enc.pr_sha,
-                "recibo": efecto.recibo,
-                "hora": hora,
-            },
-        },
-        f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{efecto.id}",
+        {"kind": "entrega_externa", "data": {
+            "fase": enc.fase_activa, "intento": enc.intento, "paso": "desplegado",
+            "repo": enc.entrega.repo, "numero": enc.pr_numero,
+            "sha": enc.fase_actual.integrado_sha,
+            "recibo": resultado["recibo"], "hora": hora,
+        }},
+        f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{enc.fase_actual.integrado_sha}",
     )
     return registro.fold(enc.id) or enc
 
