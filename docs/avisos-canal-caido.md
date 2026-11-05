@@ -27,6 +27,11 @@ y el aviso remite al estado del encargo para el detalle.
 - De un encargo terminado solo queda el aviso de cierre. Los avisos de avance sin entregar se **descartan** (estado
   `descartado`, con su motivo); no se resumen, porque el cierre ya lleva el resultado y al volver el canal no llegan
   decenas de avisos viejos.
+- Un aviso `incierto` que el estado actual del encargo ya no genera (por ejemplo, un relevo anterior al último) se
+  retoma en cada pasada después de su `proximo_intento`, con el cuerpo que quedó en `canal/<canal>/<id>`. Los
+  encargos detenidos, cancelados o terminados no reabren avisos de avance, y esos avisos no impiden que el canal caído se
+  sondee: si no queda otro aviso retomable, la pasada prueba la conciliación `sondeo-<canal>` y recupera el canal
+  cuando responde.
 
 ## Los avisos no frenan el barrido
 

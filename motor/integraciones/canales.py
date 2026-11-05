@@ -91,6 +91,44 @@ def registrar_pasada(base: Path, ahora: float, fallaron: dict[str, str], respond
             _guardar(path, {"canal": canal, "ultimo_exito": _iso(ahora)})
 
 
+def canales_en_fallo(base: Path) -> list[str]:
+    """Los canales con un fallo registrado, sin esperar el umbral de la señal."""
+    nombres: list[str] = []
+    try:
+        rutas = sorted((Path(base) / "canales").glob("*.json"))
+    except OSError:
+        return nombres
+    for path in rutas:
+        doc = _leer(path)
+        if doc.get("fallando_desde"):
+            nombres.append(str(doc.get("canal") or path.stem))
+    return nombres
+
+
+def sondeo_toca(base: Path, canal: str, ahora: float) -> bool:
+    """Si el canal caído ya admite un sondeo: la primera vez y, después, tras su espera creciente."""
+    proximo = _epoch(_leer(_ruta(base, canal)).get("proximo_sondeo") or "")
+    return proximo is None or ahora >= proximo
+
+
+def sondeos(base: Path, canal: str) -> int:
+    return _entero(_leer(_ruta(base, canal)).get("sondeos"))
+
+
+def anotar_sondeo(base: Path, canal: str, ahora: float, intervalo_s: int, error: str = "") -> None:
+    """Anota un sondeo que no respondió y cuándo toca el siguiente."""
+    path = _ruta(base, canal)
+    doc = _leer(path) or {"canal": canal}
+    doc["canal"] = doc.get("canal") or canal
+    doc["sondeos"] = _entero(doc.get("sondeos")) + 1
+    doc["ultimo_sondeo"] = _iso(ahora)
+    doc["ultimo_intento"] = _iso(ahora)
+    doc["proximo_sondeo"] = _iso(ahora + intervalo_s)
+    if error:
+        doc["ultimo_error"] = redactar(error)
+    _guardar(path, doc)
+
+
 def canales_caidos(base: Path, ahora: float | None = None, umbral_s: float = UMBRAL_CAIDO_S) -> list[dict]:
     """Los canales que llevan fallando al menos `umbral_s`, con desde cuándo y su último error."""
     ahora = time.time() if ahora is None else ahora

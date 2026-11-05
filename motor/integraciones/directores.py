@@ -1355,6 +1355,171 @@ class Vuelta:
         self.errores[canal] = error
 
 
+_ESTADOS_SIN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo", "terminado"})
+
+
+def _aviso_de_terminado_vigente(doc: dict, enc) -> bool:
+    """Si el aviso es uno que `drenar` vuelve a visitar para un encargo terminado.
+
+    De un terminado solo se visitan el cierre vigente y el `ci_rojo` que el estado todavía genera.
+    Cualquier otro aviso suyo es huérfano y no debe impedir el sondeo.
+    """
+    ident = str(doc.get("id") or "")
+    if enc.evidencia and ident == str(_aviso_de(enc).get("id") or ""):
+        return True
+    return any(
+        ident == str(_aviso_de_hecho(enc, hecho).get("id") or "")
+        for hecho in hechos_de_avance(enc)
+    )
+
+
+def _aviso_de_cancelado_vigente(
+    registro: Registro, doc: dict, enc, corte_cierres: int
+) -> bool:
+    """Si el cierre de un cancelado sigue siendo el que `drenar` visita.
+
+    Un cancelado anterior al corte de cierres es historia y no reabre aviso. Uno posterior sí, y su
+    cierre pendiente prueba el transporte; cualquier otro aviso suyo es huérfano.
+    """
+    if str(doc.get("id") or "") != str(_aviso_de(enc).get("id") or ""):
+        return False
+    al_corte = registro.fold(enc.id, hasta=corte_cierres)
+    return al_corte is None or al_corte.estado != "cancelado"
+
+
+def _aviso_retomable(
+    doc: dict,
+    encargos: dict,
+    resumen_activo: bool,
+    registro: Registro,
+    corte_cierres: int,
+) -> bool:
+    """Si la pasada puede volver a intentar el aviso; si no, no prueba el transporte del canal.
+
+    Un aviso de resumen no nombra encargo y solo lo retoma `resumen_encargos` mientras el envío de
+    resumen tenga canal activo; apagado no lo toca nadie. Un aviso de un encargo detenido o que ya
+    no existe no se reabre. Uno de un terminado solo prueba si es su cierre o su `ci_rojo` vigente;
+    `_descartar_avances_de_terminados` no borra un `ci_rojo` huérfano del terminado. Uno de un
+    cancelado solo prueba si es su cierre vigente.
+    """
+    encargo = str(doc.get("encargo") or "")
+    if not encargo:
+        return resumen_activo
+    enc = encargos.get(encargo)
+    if enc is None:
+        return False
+    if enc.estado == "terminado":
+        return _aviso_de_terminado_vigente(doc, enc)
+    if enc.estado == "cancelado":
+        return _aviso_de_cancelado_vigente(registro, doc, enc, corte_cierres)
+    return enc.estado not in _ESTADOS_SIN_AVANCE
+
+
+def _canales_con_avisos_pendientes(
+    registro: Registro, encargos: dict, corte_cierres: int
+) -> set[str]:
+    """Los canales con un aviso que todavía prueba su transporte: incierto o pendiente."""
+    pendientes: set[str] = set()
+    resumen_activo = bool(resumen_encargos.config_envio(registro.base)[0])
+    for path in (registro.base / "avisos").glob("*.json"):
+        try:
+            doc = _leer(path)
+        except (OSError, ValueError):
+            continue
+        if not doc or doc.get("estado") not in ("incierto", "pendiente"):
+            continue
+        if not _aviso_retomable(
+            doc, encargos, resumen_activo, registro, corte_cierres
+        ):
+            continue
+        try:
+            pendientes.add(nombre_canal(str(doc.get("canal") or "")))
+        except ValueError:
+            continue
+    return pendientes
+
+
+def _reintentar_avisos_sueltos(
+    registro: Registro, vuelta: Vuelta, vistos: set[str], cortar: str, encargos: dict
+) -> list[dict]:
+    """Un aviso `incierto` vencido que el estado actual ya no genera se retoma desde su cuerpo guardado.
+
+    `drenar` solo visita los avisos derivados del fold vigente. Un relevo posterior cambia la identidad del
+    aviso y deja huérfano el anterior; su carpeta `canal/<canal>/<id>` conserva el cuerpo para conciliar o
+    reenviar. Los encargos detenidos o cancelados no reabren avisos de avance.
+    """
+    publicados: list[dict] = []
+    for path in sorted((registro.base / "avisos").glob("*.json")):
+        if vuelta.agotada():
+            break
+        try:
+            doc = _leer(path)
+        except (OSError, ValueError):
+            continue
+        if not doc or doc.get("id") in vistos:
+            continue
+        if doc.get("estado") != "incierto":
+            continue
+        if _por_esperar(doc, vuelta.ahora) and not _vencido(doc, vuelta.ahora, path):
+            continue
+        enc = encargos.get(str(doc.get("encargo") or ""))
+        if enc is None or enc.estado in _ESTADOS_SIN_AVANCE:
+            continue
+        try:
+            nombre = nombre_canal(str(doc.get("canal") or ""))
+        except ValueError:
+            continue
+        entrega = registro.base / "canal" / nombre / str(doc.get("id") or "")
+        try:
+            cuerpo = entrega.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        publicados.append(_publicar_aviso(registro, doc, cuerpo, cortar, vuelta))
+        vistos.add(str(doc.get("id")))
+    return publicados
+
+
+def _sondear_canales(
+    registro: Registro, vuelta: Vuelta, encargos: dict, corte_cierres: int
+) -> None:
+    """Un canal caído sin avisos pendientes se prueba con su conciliación, a lo sumo una vez por intervalo."""
+    pendientes = _canales_con_avisos_pendientes(registro, encargos, corte_cierres)
+    for canal in canales.canales_en_fallo(registro.base):
+        if vuelta.agotada():
+            return
+        try:
+            nombre = nombre_canal(canal)
+        except ValueError:
+            continue
+        if nombre in pendientes or nombre in vuelta.caidos:
+            continue
+        cfg = _config_canal(registro, nombre)
+        if not cfg or cfg.get("error"):
+            continue
+        conciliacion = list(cfg.get("conciliacion") or [])
+        if not conciliacion or not canales.sondeo_toca(registro.base, nombre, vuelta.ahora):
+            continue
+        aviso = {
+            "id": f"sondeo-{nombre}",
+            "canal": nombre,
+            "evidencia": "sondeo",
+            "formato": "texto",
+        }
+        estado, dato, caido = _correr_conciliacion(registro, conciliacion, aviso, "")
+        if estado in ("ausente", "hallado"):
+            vuelta.respondieron.add(nombre)
+            continue
+        canales.anotar_sondeo(
+            registro.base,
+            nombre,
+            vuelta.ahora,
+            espera_s(canales.sondeos(registro.base, nombre) + 1),
+            dato,
+        )
+        if caido:
+            vuelta.fallo_el_transporte(nombre, dato)
+
+
 def _publicar_aviso(
     registro: Registro,
     aviso: dict,
@@ -1556,6 +1721,7 @@ def drenar(
     if terminados:
         _descartar_avances_de_terminados(registro, terminados)
     envios_resumen: set[tuple[str, int]] = set()
+    vistos: set[str] = set()
     try:
         trabajos_resumen = resumen_encargos.preparar(registro, vuelta.ahora)
     except Exception:  # noqa: BLE001  el resumen no puede tumbar la pasada de avisos
@@ -1565,6 +1731,7 @@ def drenar(
             cortada = True
             break
         publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
+        vistos.add(str(aviso.get("id") or ""))
         if aviso.get("firma"):
             envios_resumen.add(
                 (str(aviso["firma"]), int(aviso.get("episodio") or 0))
@@ -1612,8 +1779,11 @@ def drenar(
                 cortada = True
                 break
             publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
+            vistos.add(str(aviso.get("id") or ""))
         if cortada:
             break
+    publicados.extend(_reintentar_avisos_sueltos(registro, vuelta, vistos, cortar, encargos))
+    _sondear_canales(registro, vuelta, encargos, corte_cierres)
     for firma, episodio in envios_resumen:
         try:
             resumen_encargos.cerrar(registro, vuelta.ahora, firma, episodio)
