@@ -69,6 +69,15 @@ humana obligatoria pide intervención. No se usa `--admin`. Una aprobación
 repetida que no resuelve el mismo bloqueo tras un relevo tampoco lanza
 revisores indefinidamente: conserva el encargo abierto y pide intervención.
 
+Una parada del operador conserva el intento como interrumpido: su salida no
+consume un relevo ni se clasifica como falla del proveedor. Al cambiar de fase
+se reinician los contadores de bloqueo y los modelos usados para relevar ese
+rol. El historial de modelos se conserva para auditoría e independencia de la
+revisión. Si se agotan los modelos autorizados, el encargo queda en
+`necesita_usuario`; una cuota temporal mantiene su espera. El agotamiento no
+autoriza una entrega con pendientes. Tampoco se abre un PR sin commits sobre
+su base.
+
 Para un encargo legado detenido en una fase ya integrada, el contrato se adopta
 al reanudar. No hace falta reescribir su historial ni repetir la fase. Después
 de instalar este arreglo en la PC, el operador puede continuar con una clave
@@ -77,6 +86,21 @@ nueva:
 ```text
 motor director continuar enc_fb7358452cdfe01b --base C:/Users/ehven/.motor-encargos --clave <nueva>
 ```
+
+Si una versión anterior lo terminó mediante `cierre_forzado`, el operador
+puede recuperar la fase que estaba abierta:
+
+```text
+motor director reabrir enc_fb7358452cdfe01b --base C:/Users/ehven/.motor-encargos --clave <clave-recuperacion>
+```
+
+`reabrir` restaura el estado de esa fase anterior al cierre forzado y conserva
+las fases ya integradas, sus revisiones y recibos. Queda **detenido**: el
+operador revisa el resultado y después usa `continuar` con otra clave.
+La orden no revierte efectos externos ni permite reabrir un cierre normal o
+una cancelación. El evento vincula la operación a la fase y firma del cierre;
+repetir la clave es idempotente. Si la autoridad remota no confirma, devuelve
+`autoridad_pendiente`; repetir esa misma clave reintenta el mismo envío.
 
 Este cambio no modifica el plan de Orbit ni activa interruptores de producto.
 El encendido de la pausa publicitaria sigue siendo una acción de David.

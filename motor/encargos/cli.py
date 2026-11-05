@@ -25,7 +25,7 @@ from .ciclo import (
     recibir,
     resolver_entrega,
 )
-from .dominio import relevo_huella_de, relevos_de
+from .dominio import relevos_de
 from .frontera import DestinoEnsayo, despachar
 from .registro import BaseProhibida, Registro, exigir_base
 from .seleccion import solicitar_modelos
@@ -74,11 +74,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("encargo")
     s.add_argument("--base", type=Path, required=True)
 
-    for nombre in ("parar", "continuar", "cancelar"):
+    for nombre in ("parar", "continuar", "cancelar", "reabrir"):
         s = sub.add_parser(nombre)
         s.add_argument("encargo")
         s.add_argument("--base", type=Path, required=True)
         s.add_argument("--clave", required=True)
+        if nombre == "reabrir":
+            s.add_argument("--fase", default="")
+            s.add_argument("--cierre", default="")
 
     s = sub.add_parser("corregir")
     s.add_argument("encargo")
@@ -223,6 +226,11 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         )
     if args.cmd == "ver":
         return _json(consultar(reg, args.encargo))
+    if args.cmd == "reabrir":
+        return _json(ordenar(
+            reg, args.encargo, args.cmd, args.clave, hora,
+            fase=args.fase, cierre=args.cierre,
+        ))
     if args.cmd in ("parar", "continuar", "cancelar"):
         salida = ordenar(reg, args.encargo, args.cmd, args.clave, hora)
         if (
@@ -371,9 +379,12 @@ def _supervisor(reg: Registro, args) -> int:
         referencia = reg.base / "ejecucion" / enc.id / f"intento-{enc.generacion}-{enc.conductor}" / "generacion.json"
         if referencia.is_file():
             generacion = Path(json.loads(referencia.read_text(encoding="utf-8"))["ruta"])
-        disponibles = {
+        autorizados = {
             agente: (solicitado[1],) if solicitado else _modelos_para(agente, rol, generacion)
             for agente in candidatas
+        }
+        disponibles = {
+            agente: modelos for agente, modelos in autorizados.items()
             if _disponible(agente, generacion)
         }
         excluir = (
@@ -384,10 +395,10 @@ def _supervisor(reg: Registro, args) -> int:
         relevo_del_rol = relevos_de(enc, rol)
         if relevo_del_rol > 0:
             # Relevo: el mismo rol pasa a otro modelo autorizado que todavía
-            # no haya corrido en este encargo. La cuenta es del rol: uno del
+            # no haya corrido en esta fase. La cuenta es del rol: uno del
             # responsable no excluye modelos del revisor ni al revés.
             excluir = frozenset(excluir) | frozenset(
-                m for r, _a, m in enc.modelos if r == rol
+                m for r, _a, m in enc.modelos_fase if r == rol
             )
         elegido = elegir(
             replace(enc, agentes=candidatas), hora, disponibles, rol=rol, excluir_modelos=excluir
@@ -397,29 +408,16 @@ def _supervisor(reg: Registro, args) -> int:
             modo = _sesion_modo(enc, agente, rol)
             argv = _lanzador(agente, modelo, modo)(enc, prompt, espacio, sesion)
             return argv, {"agente": agente, "modelo": modelo, "sesion_modo": modo}
-        if relevo_del_rol > 0:
-            # El relevo no tiene otro modelo autorizado para este rol: no se
-            # espera a una persona. Se marca el punto como estancado para que
-            # el supervisor entregue lo que hay con los pendientes escritos.
-            from .dominio import huella_bloqueo
-
-            reg.anotar(
-                enc.id,
-                {
-                    "kind": "sin_progreso",
-                    "data": {
-                        "huella": relevo_huella_de(enc, rol)
-                        or huella_bloqueo(enc),
-                        "diagnostico": (
-                            "no queda otro modelo autorizado para el rol "
-                            f"{rol} tras el relevo"
-                        ),
-                        "escalar": True,
-                        "rol": rol,
-                        "hora": hora,
-                    },
-                },
-                f"relevo-agotado:{enc.id}:{rol}:{relevo_del_rol}",
+        if relevo_del_rol > 0 and all(
+            identidad_modelo(m) in {identidad_modelo(x) for x in excluir}
+            for modelos in autorizados.values() for m in modelos if m
+        ):
+            marcar_pregunta(
+                reg, enc.id,
+                f"no queda otro modelo autorizado para el rol {rol} tras el relevo; "
+                "hace falta autorizar otro modelo o ajustar el encargo para continuar",
+                True, hora,
+                ukey=f"relevo-agotado:{enc.id}:{enc.fase_activa}:{rol}:{enc.generacion}",
             )
             return None
         if rol == "revisor" and disponibles and all(
@@ -649,6 +647,17 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
         argv = ["ver", msg["encargo"], "--base", str(base)]
     elif op in ("parar", "continuar", "cancelar"):
         argv = [op, msg["encargo"], "--base", str(base), "--clave", msg["clave"]]
+    elif op == "reabrir":
+        if any(
+            not isinstance(msg.get(campo), str) or not msg[campo].strip()
+            for campo in ("fase", "cierre")
+        ):
+            print(json.dumps({"error": "reabrir necesita fase y cierre no vacíos"}))
+            return 2
+        argv = [
+            op, msg["encargo"], "--base", str(base), "--clave", msg["clave"],
+            "--fase", msg["fase"], "--cierre", msg["cierre"],
+        ]
     elif op == "resultado":
         from .ciclo import recibir_resultado
 
