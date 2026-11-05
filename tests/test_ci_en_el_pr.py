@@ -29,6 +29,44 @@ LOG_BATERIA = "ERROR: 3 failed, 0 passed in tests/test_bateria.py"
 LOG_GATE = "leaks found: 13\nfinding: generic-api-key en docs/viejo.md"
 LOG_INCIERTO = "fallo ambiguo sin diagnóstico"
 
+# Formato real de `gh run view --job <id> --log`: job, paso y línea por tabuladores.
+LOG_GATE_PRUEBA_ROJA = "\n".join(
+    f"gate\t{paso}\t{linea}"
+    for paso, linea in (
+        ("Set up job", "Current runner version: '2.329.0'"),
+        ("Set up job", "Secret source: Actions"),
+        ("Gitleaks", "##[group]Run v=8.30.1"),
+        ("Gitleaks", 't="gitleaks_${v}_linux_x64.tar.gz"'),
+        ("Gitleaks", "INF no leaks found"),
+        ("Pruebas (una vez)", "FAILED tests/test_schema_docs.py::test_conteo - assert 87 == 88"),
+        ("Pruebas (una vez)", "1 failed, 5060 passed, 1 warning in 718.16s (0:11:58)"),
+        ("Pruebas (una vez)", "##[error]Process completed with exit code 1."),
+        ("Stop containers", "CHECK (estado IN ('planeado', 'applied', 'failed'))"),
+    )
+)
+LOG_BATERIA_CON_SECRETOS = "\n".join(
+    f"bateria-parte-1\t{paso}\t{linea}"
+    for paso, linea in (
+        ("Set up job", "Secret source: Actions"),
+        ("Parte de la bateria", "test_secretos_con_permisos_abiertos_espera_y_sale ... ok"),
+        ("Parte de la bateria", "test_un_agente_no_ve_la_variable (tests.test_senal.SecretoTest) ... ok"),
+        ("Parte de la bateria", "FAIL: test_el_juicio_caido_tres_veces_tambien_se_omite"),
+        ("Parte de la bateria", "AssertionError: True is not false"),
+        ("Parte de la bateria", "FAILED (failures=2, skipped=1)"),
+        ("Parte de la bateria", "##[error]Process completed with exit code 1."),
+    )
+)
+LOG_GATE_CON_HALLAZGOS = "\n".join(
+    f"gate\t{paso}\t{linea}"
+    for paso, linea in (
+        ("Set up job", "Secret source: Actions"),
+        ("Gitleaks", "Finding:     REDACTED"),
+        ("Gitleaks", "RuleID:      generic-api-key"),
+        ("Gitleaks", "WRN leaks found: 3"),
+        ("Gitleaks", "##[error]Process completed with exit code 1."),
+    )
+)
+
 _INICIO = time.time() + 3600
 _VACIO = "2026-11-03T21:46:00Z"
 
@@ -651,6 +689,35 @@ class ClasificacionDeUnFallo(unittest.TestCase):
         )
         self.assertEqual(
             ciclo._clasificar_fallo_ci("bateria", "failure", LOG_BATERIA), "codigo"
+        )
+
+    def test_una_prueba_roja_tras_gitleaks_verde_es_codigo(self):
+        # Rojo real de Orbit (run 41958894995): el log completo del job trae la
+        # cabecera de GitHub y el paso de Gitleaks que pasó.
+        self.assertEqual(
+            ciclo._clasificar_fallo_ci("gate", "failure", LOG_GATE_PRUEBA_ROJA),
+            "codigo",
+        )
+
+    def test_nombres_de_prueba_con_secretos_no_son_tuberia(self):
+        # Rojo real del motor (run 41961774402, bateria-parte-1).
+        self.assertEqual(
+            ciclo._clasificar_fallo_ci(
+                "bateria-parte-1", "failure", LOG_BATERIA_CON_SECRETOS
+            ),
+            "codigo",
+        )
+
+    def test_gitleaks_con_hallazgos_sigue_siendo_tuberia(self):
+        self.assertEqual(
+            ciclo._clasificar_fallo_ci("gate", "failure", LOG_GATE_CON_HALLAZGOS),
+            "tuberia",
+        )
+        self.assertEqual(
+            ciclo._causa_tuberia_en_llano(
+                [{"nombre": "gate", "conclusion": "failure"}], LOG_GATE_CON_HALLAZGOS
+            ),
+            "el control de secretos encontró claves viejas en el repositorio",
         )
 
 
