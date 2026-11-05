@@ -187,6 +187,29 @@ class RecuperacionPorSondeo(Banco):
         directores.drenar(self.reg, ahora=T0 + 30)
         self.assertEqual(self.sondeos(), [], "aún no toca reintentar el aviso ni sondear")
 
+    def test_un_resumen_incierto_con_el_envio_apagado_no_bloquea_el_sondeo(self):
+        self.escribir_aviso({
+            "id": "av_resumen_apagado",
+            "encargo": "",
+            "canal": "hermes",
+            "evidencia": "resumen:firma:1:1",
+            "estado": "incierto",
+            "tipo": "resumen",
+            "firma": "firma",
+            "episodio": 1,
+            "parte": 1,
+            "partes": 1,
+            "cuerpo": "resumen",
+            "fallos": 1,
+            "proximo_intento": directores._iso(T0 - 10),
+        })
+        self.caido()
+
+        directores.drenar(self.reg, ahora=T0)
+
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
+
 
 class AvisoInciertoHuerfano(Banco):
     def test_un_aviso_vencido_no_bloquea_el_sondeo_del_canal(self):

@@ -1358,16 +1358,17 @@ class Vuelta:
 _ESTADOS_SIN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo", "terminado"})
 
 
-def _aviso_retomable(doc: dict, encargos: dict) -> bool:
+def _aviso_retomable(doc: dict, encargos: dict, resumen_activo: bool) -> bool:
     """Si la pasada puede volver a intentar el aviso; si no, no prueba el transporte del canal.
 
-    Un aviso de resumen no nombra encargo y lo retoma `resumen_encargos`. Un aviso de un encargo
-    detenido, cancelado, terminado o que ya no existe no se reabre, así que no debe impedir el sondeo;
-    `_descartar_avances_de_terminados` tampoco borra un `ci_rojo` huérfano del terminado.
+    Un aviso de resumen no nombra encargo y solo lo retoma `resumen_encargos` mientras el envío de
+    resumen tenga canal activo; apagado no lo toca nadie. Un aviso de un encargo detenido, cancelado,
+    terminado o que ya no existe no se reabre, así que tampoco debe impedir el sondeo;
+    `_descartar_avances_de_terminados` no borra un `ci_rojo` huérfano del terminado.
     """
     encargo = str(doc.get("encargo") or "")
     if not encargo:
-        return True
+        return resumen_activo
     enc = encargos.get(encargo)
     return enc is not None and enc.estado not in _ESTADOS_SIN_AVANCE
 
@@ -1375,6 +1376,7 @@ def _aviso_retomable(doc: dict, encargos: dict) -> bool:
 def _canales_con_avisos_pendientes(registro: Registro, encargos: dict) -> set[str]:
     """Los canales con un aviso que todavía prueba su transporte: incierto o pendiente."""
     pendientes: set[str] = set()
+    resumen_activo = bool(resumen_encargos.config_envio(registro.base)[0])
     for path in (registro.base / "avisos").glob("*.json"):
         try:
             doc = _leer(path)
@@ -1382,7 +1384,7 @@ def _canales_con_avisos_pendientes(registro: Registro, encargos: dict) -> set[st
             continue
         if not doc or doc.get("estado") not in ("incierto", "pendiente"):
             continue
-        if not _aviso_retomable(doc, encargos):
+        if not _aviso_retomable(doc, encargos, resumen_activo):
             continue
         try:
             pendientes.add(nombre_canal(str(doc.get("canal") or "")))
