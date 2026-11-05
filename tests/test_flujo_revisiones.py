@@ -72,6 +72,9 @@ class PushSandboxSinGitAmbiental(unittest.TestCase):
             hooks = raiz / "hooks"
             hooks.mkdir()
             (hooks / "pre-push").write_text("#!/bin/sh\nexit 1\n")
+            # Sin el permiso de ejecucion Linux ignora el hook y el control
+            # no rechaza; Git para Windows no lo exige.
+            os.chmod(hooks / "pre-push", 0o755)
             bare = raiz / "repo.git"
             semilla = raiz / "semilla"
             semilla.mkdir()
