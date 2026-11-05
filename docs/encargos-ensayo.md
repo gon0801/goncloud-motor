@@ -31,7 +31,7 @@ python3 -B -m motor corregir ID --base /tmp/encargo-personal --clave ajuste-1 --
 python3 -B -m motor continuar ID --base /tmp/encargo-personal --clave orden-seguir-1
 ```
 
-`corregir` no necesita parar antes: se acepta con el encargo en cualquier estado salvo `cancelado` y `terminado`, no interrumpe al agente que corre y la recibe el siguiente intento. Para aplicarla de inmediato, usa `parar` y `continuar`. Ver [Corregir un encargo en curso](flujo-revisiones.md#corregir-un-encargo-en-curso).
+`corregir` no necesita parar antes: se acepta con el encargo en cualquier estado salvo `cancelado` (un `terminado` con PR abierto se reabre en el mismo PR; integrado, desplegado o sin PR se rechaza), no interrumpe al agente que corre y la recibe el siguiente intento. Para aplicarla de inmediato, usa `parar` y `continuar`. Ver [Corregir un encargo en curso](flujo-revisiones.md#corregir-un-encargo-en-curso).
 
 Para un encargo largo que se alejó de su base, el host puede traer la rama
 principal a la rama del encargo sin abrir otro turno:

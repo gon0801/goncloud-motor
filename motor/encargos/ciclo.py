@@ -381,6 +381,9 @@ def _ordenar(
     return vista(registro.fold(encargo_id), recibo)
 
 
+_PUERTO_DEL_REGISTRO = object()
+
+
 def corregir(
     registro: Registro,
     encargo_id: str,
@@ -390,9 +393,12 @@ def corregir(
     cierra=(),
     evidencia: str = "",
     autor: str = "",
+    gh=_PUERTO_DEL_REGISTRO,
 ) -> dict:
     """Registra una corrección sin interrumpir al agente. La toma el siguiente
-    intento. Sólo un encargo cerrado la rechaza. Un rechazo deja constancia
+    intento. Un encargo cancelado la rechaza; uno terminado solo la acepta si su
+    PR sigue abierto en GitHub (`gh`, por omisión el puerto del registro), y
+    entonces se reabre en la misma rama y el mismo PR. Un rechazo deja constancia
     pero no gasta la clave: se vuelve a evaluar al repetirla, porque la causa
     puede haber cambiado (por ejemplo, un encargo que pasó a durable).
 
@@ -464,6 +470,27 @@ def corregir(
             "el encargo va por la vía directa: ningún intento del motor recibiría "
             "la corrección; promuévelo a durable"
         )
+    if (
+        enc.estado == "terminado"
+        and enc.pr_numero
+        and enc.nivel_alcanzado not in ("integrado", "desplegado")
+    ):
+        if gh is _PUERTO_DEL_REGISTRO:
+            from .cli import _puerto_github
+
+            gh = _puerto_github(registro.base)
+        estado_pr = ""
+        if gh is not None:
+            try:
+                estado_pr = str(gh.ver(enc.entrega.repo, enc.pr_numero).estado)
+            except Exception:  # noqa: BLE001  sin lectura no se reabre
+                estado_pr = ""
+        if estado_pr != "abierto":
+            situacion = f"está {estado_pr}" if estado_pr else "no se pudo leer en GitHub"
+            return rechazar(
+                f"el encargo ya terminó y su PR #{enc.pr_numero} {situacion}; "
+                "abre un encargo nuevo"
+            )
     datos = {"texto": texto, "recibo": recibo, "hora": hora}
     if ids:
         datos["cierra"] = list(ids)
@@ -4679,22 +4706,45 @@ def _logs_de_fallidos(
 
 
 _CONCLUSIONES_VERDES = ("success", "skipped", "neutral")
-_INFRA_CI = (
-    "gitleaks",
-    "secret",
-    "leak",
+# Gitleaks imprime «leaks found: N» solo con hallazgos; el paso verde dice «no
+# leaks found» y cada job de GitHub abre con «Secret source: Actions», así que
+# buscar «secret» o «leak» sueltos clasificaba cualquier rojo como tubería.
+_HALLAZGOS_SECRETOS = re.compile(r"leaks found: [1-9]|\bruleid:\s")
+# Caídas que una prueba del producto no produce: mandan aunque el paso traiga
+# pruebas en rojo.
+_INFRA_CI_SEGURA = (
     "the job was not started",
-    "runner",
+    # «runner» suelto aparece en toda ruta /home/runner/work de un traceback.
+    "runner has received a shutdown signal",
+    "lost communication with the server",
     "no space left",
+    "returned error: 5",
+    "rpc failed",
+    "early eof",
+    "hung up unexpectedly",
+    "failed to download action",
+    "service is unhealthy",
+    "could not resolve host",
+    "connection reset",
+    "unable to access",
+    "computed checksum did not match",
+)
+# El resumen de un corredor de pruebas: con él, las marcas débiles de abajo son
+# texto de las pruebas (una aserción sobre «billing» o «rate limit»).
+# Sin anclar al inicio: cada línea del log de gh lleva la hora delante.
+_RESUMEN_PRUEBAS = re.compile(
+    r"\b[1-9]\d* (?:failed|errors?)\b|failed \((?:[a-z]+=\d+, )*(?:failures|errors)="
+    r"|assertionerror|short test summary info"
+)
+_INFRA_CI = (
     "billing",
     "payment",
     "minutes",
     "rate limit",
     "could not resolve host",
     "connection refused",
-    "connection reset",
     "timed out",
-    "unable to access",
+    "max retries exceeded",
 )
 
 # Marcas de que el rojo viene de una prueba del producto y no de la tubería.
@@ -4714,6 +4764,26 @@ _PRUEBA_CI = (
 )
 
 
+def _texto_de_pasos_fallidos(texto: str) -> str:
+    """Las líneas de los pasos que terminaron en error.
+
+    `gh run view --log` trae el job entero como «job<TAB>paso<TAB>línea»: la
+    cabecera, los pasos verdes y la limpieza nombran runners, secretos o
+    «failed» sin haber fallado. Sin pasos identificables se usa el texto
+    completo."""
+    pasos: dict[str, list[str]] = {}
+    for linea in str(texto or "").splitlines():
+        partes = linea.split("\t", 2)
+        if len(partes) == 3:
+            pasos.setdefault(partes[1], []).append(partes[2])
+    fallidos = [
+        lineas for lineas in pasos.values() if any("##[error]" in x for x in lineas)
+    ]
+    if not fallidos:
+        return str(texto or "")
+    return "\n".join(x for lineas in fallidos for x in lineas)
+
+
 def _clasificar_fallo_ci(nombre: str, conclusion: str, texto: str) -> str:
     """Clasifica un job en rojo para el aviso y la corrección.
 
@@ -4729,7 +4799,11 @@ def _clasificar_fallo_ci(nombre: str, conclusion: str, texto: str) -> str:
         "stale",
     ):
         return "tuberia"
-    bajo = str(texto or "").lower()
+    bajo = _texto_de_pasos_fallidos(texto).lower()
+    if _HALLAZGOS_SECRETOS.search(bajo) or any(m in bajo for m in _INFRA_CI_SEGURA):
+        return "tuberia"
+    if _RESUMEN_PRUEBAS.search(bajo):
+        return "codigo"
     if any(marca in bajo for marca in _INFRA_CI):
         return "tuberia"
     if any(marca in bajo for marca in _PRUEBA_CI):
@@ -4755,16 +4829,17 @@ def _job_en_llano(nombre: str) -> str:
 
 def _causa_tuberia_en_llano(caidas, texto: str) -> str:
     junto = (
-        str(texto or "")
+        _texto_de_pasos_fallidos(texto)
         + " "
         + " ".join(str(c.get("conclusion") or "") for c in caidas)
     ).lower()
-    if any(marca in junto for marca in ("gitleaks", "leak", "secret")):
+    if _HALLAZGOS_SECRETOS.search(junto):
         return "el control de secretos encontró claves viejas en el repositorio"
-    if any(marca in junto for marca in ("minutes", "billing", "payment")):
-        return "faltan minutos de CI"
+    # Antes que los minutos: «has timed out after 15 minutes» es un límite de tiempo.
     if any(marca in junto for marca in ("timed out", "timed_out", "timeout")):
         return "se agotó el tiempo límite de la corrida"
+    if any(marca in junto for marca in ("minutes", "billing", "payment")):
+        return "faltan minutos de CI"
     if any(marca in junto for marca in ("cancelled", "canceled")):
         return "la corrida se canceló"
     if any(
@@ -4772,7 +4847,15 @@ def _causa_tuberia_en_llano(caidas, texto: str) -> str:
         for marca in (
             "could not resolve host",
             "connection",
-            "runner",
+            "runner has received a shutdown signal",
+            "lost communication with the server",
+            "returned error: 5",
+            "rpc failed",
+            "early eof",
+            "hung up unexpectedly",
+            "failed to download action",
+            "service is unhealthy",
+            "max retries exceeded",
             "rate limit",
             "unable to access",
             "startup_failure",
@@ -5128,6 +5211,12 @@ def _revisar_ci_del_pr(
         for c in caidas
     }
     valores = set(clases.values())
+    # El aviso lee la causa del log entero de cada job: `texto` va recortado y
+    # el paso que falló (el «leaks found» de Gitleaks) puede quedar fuera.
+    texto_aviso = (
+        "\n".join(_texto_de_pasos_fallidos(t) for t in detalles.values() if t)
+        or texto
+    )
     sin_relanzamiento = False
     if valores == {"tuberia"} and not reintentado:
         run_ids = tuple(
@@ -5182,7 +5271,7 @@ def _revisar_ci_del_pr(
                     causa=f"{texto}\nno se pudo relanzar el CI: {exc}",
                     clase="tuberia",
                     reintento="permanente",
-                    aviso=_aviso_ci_en_llano("tuberia", caidas, texto),
+                    aviso=_aviso_ci_en_llano("tuberia", caidas, texto_aviso),
                     hora=hora,
                 )
             return enc
@@ -5210,7 +5299,7 @@ def _revisar_ci_del_pr(
         clase=clase,
         reintento=reintento,
         aviso=_aviso_ci_en_llano(
-            clase, caidas, texto, reabrir=reabrir,
+            clase, caidas, texto_aviso, reabrir=reabrir,
             sin_relanzamiento=sin_relanzamiento,
         ),
         hora=hora,
