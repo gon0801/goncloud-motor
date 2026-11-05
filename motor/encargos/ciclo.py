@@ -4623,12 +4623,28 @@ _CONCLUSIONES_VERDES = ("success", "skipped", "neutral")
 # leaks found» y cada job de GitHub abre con «Secret source: Actions», así que
 # buscar «secret» o «leak» sueltos clasificaba cualquier rojo como tubería.
 _HALLAZGOS_SECRETOS = re.compile(r"leaks found: [1-9]")
-_INFRA_CI = (
+# Caídas que una prueba del producto no produce: mandan aunque el paso traiga
+# pruebas en rojo.
+_INFRA_CI_SEGURA = (
     "the job was not started",
     # «runner» suelto aparece en toda ruta /home/runner/work de un traceback.
     "runner has received a shutdown signal",
     "lost communication with the server",
     "no space left",
+    "returned error: 5",
+    "rpc failed",
+    "early eof",
+    "hung up unexpectedly",
+    "failed to download action",
+    "service is unhealthy",
+)
+# El resumen de un corredor de pruebas: con él, las marcas débiles de abajo son
+# texto de las pruebas (una aserción sobre «billing» o «rate limit»).
+_RESUMEN_PRUEBAS = re.compile(
+    r"^failed tests/|\b\d+ failed\b|^fail: |failed \(failures=|assertionerror",
+    re.MULTILINE,
+)
+_INFRA_CI = (
     "billing",
     "payment",
     "minutes",
@@ -4638,6 +4654,8 @@ _INFRA_CI = (
     "connection reset",
     "timed out",
     "unable to access",
+    "max retries exceeded",
+    "computed checksum did not match",
 )
 
 # Marcas de que el rojo viene de una prueba del producto y no de la tubería.
@@ -4693,7 +4711,11 @@ def _clasificar_fallo_ci(nombre: str, conclusion: str, texto: str) -> str:
     ):
         return "tuberia"
     bajo = _texto_de_pasos_fallidos(texto).lower()
-    if _HALLAZGOS_SECRETOS.search(bajo) or any(marca in bajo for marca in _INFRA_CI):
+    if _HALLAZGOS_SECRETOS.search(bajo) or any(m in bajo for m in _INFRA_CI_SEGURA):
+        return "tuberia"
+    if _RESUMEN_PRUEBAS.search(bajo):
+        return "codigo"
+    if any(marca in bajo for marca in _INFRA_CI):
         return "tuberia"
     if any(marca in bajo for marca in _PRUEBA_CI):
         return "codigo"
@@ -4737,6 +4759,13 @@ def _causa_tuberia_en_llano(caidas, texto: str) -> str:
             "connection",
             "runner has received a shutdown signal",
             "lost communication with the server",
+            "returned error: 5",
+            "rpc failed",
+            "early eof",
+            "hung up unexpectedly",
+            "failed to download action",
+            "service is unhealthy",
+            "max retries exceeded",
             "rate limit",
             "unable to access",
             "startup_failure",
@@ -5054,6 +5083,12 @@ def _revisar_ci_del_pr(
         for c in caidas
     }
     valores = set(clases.values())
+    # El aviso lee la causa del log entero de cada job: `texto` va recortado y
+    # el paso que falló (el «leaks found» de Gitleaks) puede quedar fuera.
+    texto_aviso = (
+        "\n".join(_texto_de_pasos_fallidos(t) for t in detalles.values() if t)
+        or texto
+    )
     if valores == {"tuberia"} and not reintentado:
         run_ids = tuple(
             dict.fromkeys(
@@ -5107,7 +5142,7 @@ def _revisar_ci_del_pr(
                     causa=f"{texto}\nno se pudo relanzar el CI: {exc}",
                     clase="tuberia",
                     reintento="permanente",
-                    aviso=_aviso_ci_en_llano("tuberia", caidas, texto),
+                    aviso=_aviso_ci_en_llano("tuberia", caidas, texto_aviso),
                     hora=hora,
                 )
             return enc
@@ -5131,7 +5166,7 @@ def _revisar_ci_del_pr(
         reabrir=reabrir,
         clase=clase,
         reintento=reintento,
-        aviso=_aviso_ci_en_llano(clase, caidas, texto, reabrir=reabrir),
+        aviso=_aviso_ci_en_llano(clase, caidas, texto_aviso, reabrir=reabrir),
         hora=hora,
     )
 
