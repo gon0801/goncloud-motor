@@ -62,9 +62,13 @@ class PushSandboxSinGitAmbiental(unittest.TestCase):
     """
 
     def test_el_banco_arranca_sin_config_git_ambiental(self):
-        self.assertFalse(
-            [k for k in os.environ if k.startswith("GIT_CONFIG_")],
-            "el banco heredó configuración Git ambiental al importar",
+        n = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+        claves = [os.environ.get(f"GIT_CONFIG_KEY_{i}", "(falta)") for i in range(n)]
+        self.assertEqual(
+            claves,
+            ["core.longpaths"],
+            "el banco heredó configuración Git ambiental al importar "
+            "(la única permitida es la de rutas largas que él mismo arma)",
         )
 
     def test_el_push_del_sandbox_sobrevive_a_un_hookspath_que_rechaza(self):
@@ -82,6 +86,13 @@ class PushSandboxSinGitAmbiental(unittest.TestCase):
             (semilla / "base.txt").write_text("base\n")
             subprocess.run(
                 ["git", "init", "--bare", "-b", "main", "--quiet", str(bare)],
+                check=True,
+            )
+            # El receive-pack de un push local lee la config del repo, no la
+            # del ambiente: sin longpaths no escribe objetos bajo el temporal
+            # profundo del comprobador ("Filename too long").
+            subprocess.run(
+                ["git", "-C", str(bare), "config", "core.longpaths", "true"],
                 check=True,
             )
             for args in (
@@ -267,12 +278,12 @@ def _contiene(letra: str) -> str:
     )
 
 
-def _git_de_ensayo(semilla: Path, args: list[str]) -> None:
+def _git_de_ensayo(semilla: Path, args: list[str], donde: Path | None = None) -> None:
     """Git del sandbox que se explica cuando falla: la corrida de un
     comprobador captura la salida del banco y un push roto sin mensaje no
     deja pista de por qué falló."""
     hecho = subprocess.run(
-        ["git", "-C", str(semilla), *args],
+        ["git", "-C", str(donde or semilla), *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -299,6 +310,10 @@ def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, n
     semilla.mkdir()
     (semilla / "base.txt").write_text("base\n")
     _git_de_ensayo(semilla, ["init", "--bare", "-b", "main", "--quiet", str(bare)])
+    # El receive-pack de un push local lee la config del repo, no la del
+    # ambiente: sin longpaths no puede escribir objetos bajo el temporal
+    # profundo del comprobador ("Filename too long", remote unpack failed).
+    _git_de_ensayo(semilla, ["config", "core.longpaths", "true"], donde=bare)
     for args in (
         ["init", "-b", "main", "--quiet"],
         ["add", "-A"],
