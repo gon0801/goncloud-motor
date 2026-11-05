@@ -922,6 +922,39 @@ class CorreccionTrasTerminar(unittest.TestCase):
             self.assertTrue(salida.get("rechazada"))
             self.assertEqual(r.reg.fold(r.enc).estado, "terminado")
 
+    def test_sin_puerto_explicito_usa_el_github_del_registro(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "corr-puerto", _GhConCorridas,
+                {"corridas": {"gate": "success"}},
+            )
+            self.addCleanup(r.reg.close)
+            vuelta("hola\n")
+            (r.reg.base / "github.json").write_text(
+                json.dumps({"falso": str(vuelta.gh.d)})
+            )
+            salida = ciclo.corregir(r.reg, r.enc, "arregla", "c-4", _hora())
+            self.assertFalse(salida.get("rechazada"), salida.get("motivo"))
+            self.assertEqual(r.reg.fold(r.enc).estado, "recibido")
+
+    def test_si_github_falla_al_leer_el_pr_se_rechaza(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "corr-gh-falla", _GhConCorridas,
+                {"corridas": {"gate": "success"}},
+            )
+            self.addCleanup(r.reg.close)
+            vuelta("hola\n")
+
+            def caido(repo, numero):
+                raise RuntimeError("gh pr view: HTTP 502")
+
+            vuelta.gh.ver = caido
+            salida = ciclo.corregir(r.reg, r.enc, "otra", "c-5", _hora(), gh=vuelta.gh)
+            self.assertTrue(salida.get("rechazada"))
+            self.assertIn("no se pudo leer", salida["motivo"])
+            self.assertEqual(r.reg.fold(r.enc).estado, "terminado")
+
     def test_una_correccion_tras_integrar_se_rechaza(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
