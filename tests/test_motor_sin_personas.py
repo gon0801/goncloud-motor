@@ -121,10 +121,12 @@ class HerramientaCaidaSeOmite(unittest.TestCase):
                     f"fallo-{i}",
                 )
             enc = banco.fold()
-            sigue_bloqueando = ciclo._impedimento_de_instrumento(
+            manejado = ciclo._impedimento_de_instrumento(
                 banco.reg, enc, "comprobacion", "falla igual", "repararla", banco.hora
             )
-            self.assertFalse(sigue_bloqueando)
+            # Manejado: la herramienta queda no disponible y no se gasta un
+            # turno de reparación.
+            self.assertTrue(manejado)
             enc = banco.fold()
             self.assertEqual(enc.impedimento, "")
             self.assertIn("comprobacion", enc.herramientas_no_disponibles)
@@ -141,11 +143,11 @@ class HerramientaCaidaSeOmite(unittest.TestCase):
                     f"fallo-juicio-{i}",
                 )
             enc = banco.fold()
-            sigue_bloqueando = ciclo._impedimento_de_instrumento(
+            manejado = ciclo._impedimento_de_instrumento(
                 banco.reg, enc, "juicio:esquema", "falta veredicto",
                 "volver a emitir el juicio", banco.hora,
             )
-            self.assertFalse(sigue_bloqueando)
+            self.assertTrue(manejado)
             enc = banco.fold()
             self.assertEqual(enc.impedimento, "")
             self.assertEqual(enc.impedimentos, ())
