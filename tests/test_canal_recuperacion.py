@@ -165,6 +165,26 @@ class RecuperacionPorSondeo(Banco):
 
 
 class AvisoInciertoHuerfano(Banco):
+    def test_un_aviso_vencido_no_bloquea_el_sondeo_del_canal(self):
+        ident = self.encargo()
+        directores.drenar(self.reg, ahora=T0)
+        self.relevo(ident, "h1")
+        (self.base / "envio_caido").write_text("x")
+        directores.drenar(self.reg, ahora=T0 + 1)
+        viejo = self.aviso_de_relevo()
+
+        self.relevo(ident, "h2")
+        doc = self.aviso(viejo["id"])
+        doc["primer_intento"] = T0 - 7 * 3600
+        doc["proximo_intento"] = directores._iso(T0 + 100)
+        (self.base / "avisos" / f"{viejo['id']}.json").write_text(json.dumps(doc))
+        (self.base / "envio_caido").unlink()
+
+        directores.drenar(self.reg, ahora=T0 + 10)
+        self.assertEqual(self.aviso(viejo["id"])["estado"], "descartado")
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
+        self.assertEqual(self.sondeos(), ["sondeo:hermes"])
+
     def test_un_aviso_incierto_vencido_que_ya_no_genera_el_estado_se_reintenta(self):
         ident = self.encargo()
         directores.drenar(self.reg, ahora=T0)

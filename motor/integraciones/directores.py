@@ -1394,7 +1394,9 @@ def _reintentar_avisos_sueltos(
             continue
         if not doc or doc.get("id") in vistos:
             continue
-        if doc.get("estado") != "incierto" or _por_esperar(doc, vuelta.ahora):
+        if doc.get("estado") != "incierto":
+            continue
+        if _por_esperar(doc, vuelta.ahora) and not _vencido(doc, vuelta.ahora, path):
             continue
         enc = encargos.get(str(doc.get("encargo") or ""))
         if enc is None or enc.estado in _ESTADOS_SIN_AVANCE:
