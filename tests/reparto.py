@@ -47,7 +47,15 @@ def descubrir() -> list[tuple[str, str]]:
         str(RAIZ / "tests"),
         top_level_dir=str(RAIZ),
     )
-    return [(t.__class__.__module__, t.id()) for t in _hojas(suite)]
+    hojas = [(t.__class__.__module__, t.id()) for t in _hojas(suite)]
+    # Un modulo con el import roto aparece como _FailedTest de unittest.loader:
+    # sin esta guardia, correr() lo deja fuera de su parte y el job sale verde.
+    rotas = [ident for modulo, ident in hojas if not modulo.startswith("tests.")]
+    if rotas:
+        raise SystemExit(
+            "un modulo de tests no importa: " + ", ".join(rotas[:3])
+        )
+    return hojas
 
 
 def modulos_descubiertos() -> list[str]:

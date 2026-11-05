@@ -3,7 +3,10 @@
 `tests/__init__.py` (unittest) y `conftest.py` (pytest) llaman a `instalar()`.
 Redirige `MOTOR_HOME` a un temporal de la sesión y deja un gancho de auditoría
 que falla si una prueba intenta escribir en `~/.motor` o en el estado real de
-`~/.motor-encargos` fuera del árbol del repositorio.
+`~/.motor-encargos` fuera del árbol del repositorio. El gancho solo ve los
+eventos de este proceso: un subproceso que una prueba lance contra el home real
+escapa de la auditoría; lo que lo aparta del home real es `MOTOR_HOME` y los
+argumentos que la prueba misma le pase.
 
 La guarda usa `os.path`, no `pathlib`: varias pruebas parchean `os.name` a
 `nt` para simular Windows, y en ese momento `pathlib.Path` intenta construir un
@@ -17,6 +20,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 
 _RAIZ = os.path.realpath(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,7 +30,7 @@ _MOTOR_REAL = os.path.realpath(os.path.join(_HOME_REAL, ".motor"))
 _ENCARGOS_REAL = os.path.realpath(os.path.join(_HOME_REAL, ".motor-encargos"))
 _TEMP = os.path.realpath(tempfile.gettempdir())
 _INSTALADO = False
-_REENTRADA = False
+_LOCAL = threading.local()
 _HOME_SESION = ""
 
 
@@ -87,10 +91,10 @@ def _fallar(ruta) -> None:
 
 
 def _auditar(evento, args):
-    global _REENTRADA
-    if _REENTRADA:
+    # Por hilo: un gancho ocupado en otro hilo no silencia los eventos de este.
+    if getattr(_LOCAL, "reentrada", False):
         return
-    _REENTRADA = True
+    _LOCAL.reentrada = True
     try:
         if evento == "open":
             ruta, modo, flags = args
@@ -111,7 +115,7 @@ def _auditar(evento, args):
         if _prohibida(ruta):
             _fallar(ruta)
     finally:
-        _REENTRADA = False
+        _LOCAL.reentrada = False
 
 
 def instalar() -> str:
@@ -123,9 +127,6 @@ def instalar() -> str:
         _HOME_SESION = tempfile.mkdtemp(prefix="motor-home-pruebas-")
         atexit.register(shutil.rmtree, _HOME_SESION, True)
     os.environ["MOTOR_HOME"] = _HOME_SESION
-    os.environ.setdefault(
-        "MOTOR_ENCARGOS_HOME", os.path.join(_HOME_SESION, "encargos")
-    )
     sys.addaudithook(_auditar)
     _INSTALADO = True
     return _HOME_SESION

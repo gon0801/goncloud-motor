@@ -24,8 +24,9 @@ def ciclo(
     salida: Path | None = None,
     motor_origen: Path | None = None,
     repos: dict[str, Path] | None = None,
+    sin_turnos: bool = False,
 ) -> dict:
-    opciones = {"motor_origen": motor_origen, "repos": repos}
+    opciones = {"motor_origen": motor_origen, "repos": repos, "sin_turnos": sin_turnos}
     if replica is not None:
         importar(home, replica)
     with _cerrojo_flota(home):
@@ -55,7 +56,7 @@ def ciclo(
         }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     if os.name == "nt":
         for stream in (sys.stdin, sys.stdout, sys.stderr):
             if hasattr(stream, "reconfigure"):
@@ -66,9 +67,10 @@ def main() -> int:
     ap.add_argument("--salida", type=Path)
     ap.add_argument("--motor-origen", type=Path)
     ap.add_argument("--json", action="store_true", help="diagnostico estructurado")
+    ap.add_argument("--sin-turnos", action="store_true", help="no exigir turnos para activar")
     for repo in ("hermes", "claw", "conf"):
         ap.add_argument("--repo-" + repo, type=Path)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     repos = {
         n: getattr(args, "repo_" + n)
         for n in ("hermes", "claw", "conf")
@@ -81,9 +83,14 @@ def main() -> int:
             salida=args.salida,
             motor_origen=args.motor_origen,
             repos=repos or None,
+            sin_turnos=args.sin_turnos,
         )
+        rechazada = resultado["actualizacion"]["accion"] == "rechazada"
         if args.json:
             print(json.dumps(resultado, ensure_ascii=False))
+        elif rechazada:
+            motivo = resultado["actualizacion"].get("motivo") or "rechazada"
+            print(f"La actualizacion fue rechazada: {motivo}", file=sys.stderr)
         elif resultado["actualizacion"]["accion"] == "ocupada":
             print(
                 "Hay una actualizacion preparada. Se aplicara cuando terminen los trabajos en curso."
@@ -97,6 +104,7 @@ def main() -> int:
             print(
                 "Sigo con los modelos actuales; una actualizacion queda pendiente de comprobacion."
             )
+        return 1 if rechazada else 0
     except (OSError, ValueError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

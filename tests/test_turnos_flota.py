@@ -13,11 +13,19 @@ from unittest.mock import patch
 from motor.flota.actualizaciones import (
     _copiar_arbol,
     _crear_generacion,
+    _sha256,
     actualizar,
     preparar,
 )
 from motor.flota.compartida import exportar, importar
-from motor.flota.control import _atomico, aplicar, asignar, recuperar, revertir
+from motor.flota.control import (
+    _atomico,
+    _poner_enlace,
+    aplicar,
+    asignar,
+    recuperar,
+    revertir,
+)
 from motor.flota.manifiesto import Herramienta, Politica, Puesto, guardar
 
 POLITICA = (
@@ -505,6 +513,27 @@ class TurnosFlota(unittest.TestCase):
         instalacion = json.loads((self.home / "instalacion.json").read_text())
         self.assertTrue(instalacion.get("sin_turnos"), instalacion)
 
+    def test_recuperar_rechazo_por_turnos_devuelve_la_vigente(self):
+        origen, a, gen_a = self._flota("origen-recuperar-activa")
+        b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
+        _config_poteto(gen_b)
+        _runtime_preparada(self.home, gen_b, "hermes", "v2")
+
+        cortado = aplicar(self.home, b, "worktree")
+        self.assertEqual(cortado["accion"], "cortado", cortado)
+        # Activacion interrumpida: `actual` ya apunta a la candidata rechazada.
+        _poner_enlace(self.home, gen_b)
+        self.assertEqual(asignar(self.home), b)
+
+        with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
+            salida = recuperar(self.home)
+        self.assertEqual(salida["accion"], "rechazada", salida)
+        self.assertIn("no se probó ningún agente", salida["motivo"])
+        self.assertEqual(asignar(self.home), a)
+        candidata = json.loads((self.home / "candidata.json").read_text())
+        self.assertEqual(candidata["estado"], "rechazada")
+        self.assertFalse((self.home / "instalacion-pendiente.json").exists())
+
     def test_candidata_que_retira_un_agente_con_sesion_bloquea(self):
         origen, a, gen_a = self._flota("origen-g")
         b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
@@ -768,6 +797,15 @@ class TurnosFlota(unittest.TestCase):
     def test_la_reproyeccion_actualiza_los_perfiles_claw(self):
         origen, gen_a = self._replica("origen-claw")
         hermes = gen_a / "config/hermes"
+        # La derivación de Claw solo corre cuando openclaw es lanzador (F8 del
+        # PR 391): la candidata de este ensayo usa Claw de verdad.
+        ruta = gen_a / "runtime.json"
+        runtime = json.loads(ruta.read_text(encoding="utf-8"))
+        runtime["lanzadores"]["openclaw"] = list(runtime["lanzadores"]["grok"])
+        runtime["observaciones"]["openclaw"] = dict(
+            runtime["observaciones"]["grok"]
+        )
+        _atomico(ruta, runtime)
         (hermes / "model-routing.source.json").write_text(
             json.dumps({"chains": {"director": ["viejo/modelo (low)"]}}) + "\n",
             encoding="utf-8",
@@ -838,6 +876,16 @@ class TurnosFlota(unittest.TestCase):
         self.assertEqual(abierto["channels"], {})
         self.assertNotIn("viejo/modelo", json.dumps(modelos))
         self.assertNotIn("viejo/modelo", json.dumps(abierto))
+        # El orden importa: config["claw"] se resuelve DESPUÉS de derivar, así
+        # que el openclaw.json declarado es el derivado y queda hashado para
+        # que comprobar_runtime lo valide.
+        runtime_nuevo = json.loads(
+            (nueva / "runtime.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            runtime_nuevo["config"]["claw"], "perfiles/claw/openclaw.json"
+        )
+        self.assertIn("perfiles/claw/openclaw.json", runtime_nuevo["archivos"])
 
     def test_la_misma_pieza_se_reutiliza_si_no_se_puede_preparar(self):
         origen, gen_a = self._replica("origen-reuso")
@@ -880,6 +928,29 @@ class TurnosFlota(unittest.TestCase):
             nuevo_enlace.resolve(),
             (nueva / "herramientas/grok/real-python").resolve(),
         )
+
+    def test_una_pieza_alterada_en_la_vigente_no_se_reutiliza(self):
+        origen, gen_a = self._replica("origen-alterada")
+        real = gen_a / "herramientas/grok/real-python"
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text("binario\n", encoding="utf-8")
+        ruta = gen_a / "runtime.json"
+        runtime = json.loads(ruta.read_text(encoding="utf-8"))
+        runtime["archivos"] = {"herramientas/grok/real-python": _sha256(real)}
+        _atomico(ruta, runtime)
+        # Alteración posterior a la preparación: el contenido ya no es el registrado.
+        real.write_text("alterado\n", encoding="utf-8")
+
+        def falla(doc_, destino, gen, home):
+            raise RuntimeError("fallo git [] (salida 128)")
+
+        with patch(
+            "motor.flota.actualizaciones._preparar_componente", side_effect=falla
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                preparar(self.home, motor_origen=origen, repos={})
+        self.assertIn("fallo git", str(ctx.exception))
+        self.assertEqual(asignar(self.home), gen_a.name)
 
     def test_una_version_distinta_que_falla_conserva_la_vigente_y_lo_dice(self):
         origen, gen_a = self._replica("origen-distinta")
@@ -1031,6 +1102,45 @@ class GuardaHomeTest(unittest.TestCase):
             self.assertFalse(guarda._prohibida(aviso))
             aviso.write_text("{}", encoding="utf-8")
             self.assertTrue(aviso.exists())
+
+    def test_la_guarda_audita_este_hilo_aunque_otro_este_en_el_gancho(self):
+        import threading
+
+        import tests.guarda_home as guarda
+
+        with tempfile.TemporaryDirectory(prefix="guarda-hilos-") as tmp:
+            falso = Path(tmp) / "motor-real"
+            (falso / "avisos").mkdir(parents=True)
+            aviso = falso / "avisos" / "aviso.json"
+            leento = Path(tmp) / "leento.json"
+            leento.write_text("", encoding="utf-8")
+            dentro = threading.Event()
+            esperar = threading.Event()
+            original = guarda._prohibida
+
+            def lenta(ruta):
+                if os.path.realpath(ruta) == os.path.realpath(leento):
+                    dentro.set()
+                    esperar.wait(2)
+                return original(ruta)
+
+            def el_otro():
+                with patch.object(guarda, "_prohibida", side_effect=lenta):
+                    guarda._auditar("open", (str(leento), "w", None))
+
+            with patch.object(guarda, "_MOTOR_REAL", os.path.realpath(falso)):
+                hilo = threading.Thread(target=el_otro)
+                hilo.start()
+                try:
+                    self.assertTrue(
+                        dentro.wait(2), "el otro hilo nunca llego al gancho"
+                    )
+                    with self.assertRaises(RuntimeError):
+                        aviso.write_text("{}", encoding="utf-8")
+                finally:
+                    esperar.set()
+                    hilo.join(5)
+            self.assertFalse(aviso.exists())
 
 
 if __name__ == "__main__":

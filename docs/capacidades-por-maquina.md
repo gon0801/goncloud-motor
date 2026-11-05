@@ -76,8 +76,8 @@ avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
 
 Lo que el reporte marca como falta es exactamente lo que hay que dejar en la máquina
 antes de mandarle un encargo: Java y TLC para verificación formal, `capacidades.json`
-con sus recursos y su carpeta, la llave Run apuntando al vigilante, `gh` con sesión
-para el CI, y el canal de avisos y la señal en el home del motor.
+con sus recursos y su carpeta, la llave Run apuntando al vigilante, y el canal de
+avisos y la señal en el home del motor.
 
 En la PC (Windows), `ops/prepara_pc.py` deja lo que faltaba (Java y TLC,
 `capacidades.json`, arranque por el vigilante). En macOS el mismo script toma su rama
@@ -86,6 +86,6 @@ En la PC (Windows), `ops/prepara_pc.py` deja lo que faltaba (Java y TLC,
 `evidencia-ci` y el enlace `herramientas/java/actual`; no toca el LaunchAgent ni los
 secretos. Después de prepararla ya no deben faltar `java_tlc`, `capacidades`
 ni `evidencia-ci`; `arranque` sigue dependiendo del LaunchAgent de encargos
-instalado en `~/Library/LaunchAgents`, que la preparación no toca, y `gh` con
-sesión y el home del motor (avisos, señal) dependen de la instalación de la
+instalado en `~/Library/LaunchAgents`, que la preparación no toca, y el home
+del motor (avisos, señal) dependen de la instalación de la
 máquina y el reporte lo dice si falta.

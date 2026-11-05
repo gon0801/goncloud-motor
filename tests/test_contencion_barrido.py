@@ -92,9 +92,10 @@ class ContencionDelBarrido(unittest.TestCase):
         with Banco(self.tmp) as b:
             for _ in range(TOPE_FALLOS_BARRIDO + 4):
                 b.vuelta()
-            # El encargo cerrado sigue pasando por la autoridad (F7), pero el
-            # fallo del barrido no se acumula: solo quedan los tres intentos.
-            self.assertGreaterEqual(
+            # El encargo cerrado sigue pasando por la autoridad (F7) incluso
+            # tras la marca de no disponible: sus visitas continúan después del
+            # tope, pero el fallo ya no se registra (exactamente TOPE veces).
+            self.assertGreater(
                 b.atendidos.count(b.malo), TOPE_FALLOS_BARRIDO
             )
             self.assertEqual(len(b.eventos(b.malo, "instrumento_fallo")), TOPE_FALLOS_BARRIDO)

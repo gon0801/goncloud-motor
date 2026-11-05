@@ -971,8 +971,14 @@ class EncargoCerradoSigueMirandoAutoridad(unittest.TestCase):
                 ) as publicado,
             ):
                 barrer(reg, ahora_iso(), time.time(), _llamador)
+                # La marca recién sellada detiene los barridos siguientes:
+                # sin ella, cada vuelta volvería a publicar el resultado.
+                barrer(reg, ahora_iso(), time.time(), _llamador)
             operar.assert_called()
-            publicado.assert_called()
+            self.assertEqual(publicado.call_count, 1)
+            self.assertTrue(
+                ciclo._autoridad_cerrada_resuelta(reg, reg.fold(encargo))
+            )
 
     def test_una_marca_vieja_sin_estado_no_impide_sellar_el_cierre(self):
         with tempfile.TemporaryDirectory() as tmp:

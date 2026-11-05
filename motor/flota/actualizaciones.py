@@ -428,6 +428,17 @@ def _reutilizar_pieza(
     prefijos = _prefijos_de(vigente)
     nuevo = str(gen.resolve())
     _copiar_soporte_lanzador(gen, vigente, argv, prefijos, nuevo)
+    # La pieza copiada se contrasta con los hashes que la vigente registró al
+    # preparar: sin eso, una pieza alterada en la vigente entraría a la
+    # candidata como si fuera la de catálogo. Si no coincide, no se reutiliza.
+    prefijo = f"herramientas/{doc.get('nombre')}/"
+    for clave, huella in (runtime_vigente.get("archivos") or {}).items():
+        if not str(clave).startswith(prefijo):
+            continue
+        ruta = gen / str(clave)
+        if not ruta.is_file() or _sha256(ruta) != huella:
+            shutil.rmtree(destino, ignore_errors=True)
+            return None
     traducido = [_traducir_ruta(str(arg), prefijos, nuevo) for arg in argv]
     version = str(
         ((runtime_vigente.get("observaciones") or {}).get(doc["nombre"]) or {}).get(
@@ -649,12 +660,10 @@ def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
     ).is_file():
         runtime["poteto"] = str(paquete.relative_to(gen))
     runtime["config"] = {}
-    if "hermes" in runtime["lanzadores"] and (gen / "perfiles/hermes").is_dir():
+    if "hermes" in runtime["lanzadores"] and (
+        vigente / "perfiles/hermes"
+    ).is_dir():
         runtime["config"]["hermes"] = "perfiles/hermes"
-    if "openclaw" in runtime["lanzadores"] and (
-        gen / "perfiles/claw/openclaw.json"
-    ).is_file():
-        runtime["config"]["claw"] = "perfiles/claw/openclaw.json"
     tabla = gen / "config/hermes/model-routing.source.json"
     if tabla.is_file():
         # El manifiesto de la candidata es el importado. La tabla vigente conserva
@@ -664,10 +673,16 @@ def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
         _atomico(tabla, proyeccion)
         runtime["politica"] = str(tabla.relative_to(gen))
         script = gen / "config/hermes/scripts/claw_models.py"
-        if script.is_file() and (
-            (gen / "perfiles/claw").exists() or "openclaw" in runtime["lanzadores"]
-        ):
+        if script.is_file() and "openclaw" in runtime["lanzadores"]:
+            # La derivación corre ANTES de resolver runtime["config"]["claw"]:
+            # así el openclaw.json declarado es el derivado y comprobar_runtime
+            # lo valida; sin openclaw como lanzador, la generación no usa Claw
+            # y ninguna falla del script debe rechazar la candidata.
             _escribir_claw_desde_tabla(gen, tabla)
+    if "openclaw" in runtime["lanzadores"] and (
+        gen / "perfiles/claw/openclaw.json"
+    ).is_file():
+        runtime["config"]["claw"] = "perfiles/claw/openclaw.json"
     modelos = gen / "perfiles/claw/modelos.json"
     if modelos.is_file():
         runtime["claw_modelos"] = str(modelos.relative_to(gen))
