@@ -207,6 +207,8 @@ def resolver(espacio: Path, enc: Encargo) -> PoliticaDespliegue:
 
 def adoptar(registro: Registro, enc: Encargo, espacio: Path, hora: str) -> Encargo:
     """Persiste el contrato antes de que el nivel permita cerrar esta fase."""
+    if enc.entrega.nivel != "desplegado":
+        return enc
     politica = resolver(espacio, enc)
     if politica.requiere_despliegue is None:
         return enc

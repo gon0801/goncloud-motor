@@ -66,6 +66,7 @@ class RecuperacionDespliegue(unittest.TestCase):
             plataforma.Propiedad.COMANDO_CONTENIDO,
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        self.addCleanup(self.terminar, worker)
         worker.liberar()
         marca_worker = self.marca(worker)
         worker.proceso.communicate(timeout=5)
@@ -229,6 +230,6 @@ class RecuperacionDespliegue(unittest.TestCase):
 
     @staticmethod
     def terminar(creado):
-        if creado.proceso.poll() is None:
+        if os.name == "nt" or creado.proceso.poll() is None:
             plataforma.matar_grupo(creado.proceso)
         creado.proceso.wait(timeout=5)

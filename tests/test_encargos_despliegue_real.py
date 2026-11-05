@@ -1,6 +1,7 @@
 """El sello de producción exige ejecutar la receta del commit integrado."""
 
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -11,8 +12,46 @@ from unittest import mock
 from motor import plataforma
 from motor.encargos import ciclo
 from motor.encargos.registro import Registro
+from tests.entorno import deja_breakaway
 
 HORA = "2026-11-05T12:00:00+00:00"
+SEPARA_TRABAJADOR = os.name != "nt" or deja_breakaway()
+
+
+def cerrar_trabajador(creado):
+    try:
+        creado.proceso.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+    if os.name == "nt" or creado.proceso.poll() is None:
+        # En Windows cierra el handle del Job después de terminar el worker.
+        plataforma.matar_grupo(creado.proceso)
+    creado.proceso.wait(timeout=5)
+
+
+def trabajador_contenido(caso):
+    """El CI sin breakaway prueba recetas reales, sin probar supervivencia al padre.
+
+    La PC con breakaway conserva el lanzador de producción y la separación real.
+    El Job del worker contenido se mantiene abierto hasta terminar cada prueba.
+    """
+    def lanzar(cmd, cwd, env, log):
+        with log.open("ab") as out:
+            creado = plataforma.crear_proceso(
+                cmd, plataforma.Propiedad.COMANDO_CONTENIDO,
+                cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                stdout=out, stderr=subprocess.STDOUT,
+            )
+        caso.addCleanup(cerrar_trabajador, creado)
+        marca = {
+            "pid": creado.proceso.pid, "boot_id": plataforma.boot_id(),
+            "inicio": plataforma.hora_inicio(creado.proceso.pid),
+            "job": creado.job, "separacion": creado.separacion,
+        }
+        creado.liberar()
+        return marca
+
+    caso.enterContext(mock.patch.object(plataforma, "lanzar_separado", side_effect=lanzar))
 
 
 def git(raiz, *args):
@@ -74,6 +113,8 @@ class DespliegueReal(unittest.TestCase):
             return sha
 
         self.despliegue = reg, ident, espacio, destino, integrar
+        if not SEPARA_TRABAJADOR:
+            trabajador_contenido(self)
 
     def parche(self, objeto, atributo, valor):
         parche = mock.patch.object(objeto, atributo, valor)
