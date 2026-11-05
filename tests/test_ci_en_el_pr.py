@@ -62,6 +62,28 @@ LOG_BATERIA_CON_SECRETOS = "\n".join(
         ("Parte de la bateria", "##[error]Process completed with exit code 1."),
     )
 )
+# Más largo que el recorte del log (_TOPE_LOG_JOB): el hallazgo de Gitleaks queda
+# en el tramo que el recorte omite.
+LOG_GATE_LARGO_CON_HALLAZGOS = "\n".join(
+    [f"gate\tSet up job\tlinea de preparacion {i}" for i in range(120)]
+    + [
+        "gate\tGitleaks\tFinding:     REDACTED",
+        "gate\tGitleaks\tRuleID:      generic-api-key",
+        "gate\tGitleaks\tWRN leaks found: 3",
+        "gate\tGitleaks\t##[error]Process completed with exit code 1.",
+    ]
+    + [f"gate\tPost Run actions/checkout@v7\tlimpieza {i}" for i in range(60)]
+)
+
+
+def _log_paso(paso: str, *lineas: str) -> str:
+    return "\n".join(
+        [f"gate\tSet up job\tSecret source: Actions"]
+        + [f"gate\t{paso}\t{linea}" for linea in lineas]
+        + [f"gate\t{paso}\t##[error]Process completed with exit code 1."]
+    )
+
+
 LOG_GATE_CON_HALLAZGOS = "\n".join(
     f"gate\t{paso}\t{linea}"
     for paso, linea in (
@@ -349,6 +371,23 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
             self.assertEqual(len(vuelta.gh.relanzadas), 1)
             self.assertEqual(_estados_ci(r), ["reintentando", "rojo"])
             self.assertEqual(len(_avisos(e)), 1)
+
+    def test_con_un_log_largo_el_aviso_conserva_la_causa_de_secretos(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            logs = {"gate": LOG_GATE_LARGO_CON_HALLAZGOS}
+            vuelta, r = _entrega_pr(
+                self, tmp, "ci-pr-largo", _GhConCorridas,
+                {"corridas": {"gate": "failure"}, "logs_job": logs},
+            )
+            e = vuelta("hola\n")
+            repo = e.entrega.repo
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            _segunda_corrida(vuelta, repo, {"gate": "failure"}, logs)
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(1))
+            self.assertEqual(e.fase_actual.ci_pr_clase, "tuberia")
+            avisos = _avisos(e)
+            self.assertEqual(len(avisos), 1)
+            self.assertIn("control de secretos", avisos[0]["texto"])
 
     def test_no_se_declara_permanente_antes_de_que_empiece_el_rerun(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -713,6 +752,37 @@ class ClasificacionDeUnFallo(unittest.TestCase):
             ),
             "codigo",
         )
+
+    def test_una_prueba_que_menciona_cobros_o_limites_sigue_siendo_codigo(self):
+        for linea in (
+            "E   assert 'billing' in respuesta",
+            "E   RuntimeError: rate limit del cliente simulado",
+            "E   assert espera == '15 minutes'",
+        ):
+            with self.subTest(linea=linea):
+                log = _log_paso(
+                    "Pruebas (una vez)",
+                    "FAILED tests/test_cliente.py::test_x - " + linea,
+                    linea,
+                    "1 failed, 10 passed in 3.00s",
+                )
+                self.assertEqual(
+                    ciclo._clasificar_fallo_ci("gate", "failure", log), "codigo"
+                )
+
+    def test_caidas_de_red_o_servicios_son_tuberia(self):
+        for paso, linea in (
+            ("Gitleaks", "curl: (22) The requested URL returned error: 503"),
+            ("Run actions/checkout@v7", "error: RPC failed; HTTP 502 curl 22"),
+            ("Run actions/checkout@v7", "fatal: early EOF"),
+            ("Set up job", "##[error]Failed to download action 'x'. Error: 500"),
+            ("Initialize containers", "Failed to initialize, postgres service is unhealthy."),
+        ):
+            with self.subTest(linea=linea):
+                self.assertEqual(
+                    ciclo._clasificar_fallo_ci("gate", "failure", _log_paso(paso, linea)),
+                    "tuberia",
+                )
 
     def test_gitleaks_con_hallazgos_sigue_siendo_tuberia(self):
         self.assertEqual(
