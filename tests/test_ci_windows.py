@@ -22,6 +22,8 @@ PRUEBAS = (
     "tests.test_relanzamiento_pc",
     "tests.test_prepara_pc",
     "tests.test_director_capacidades",
+    "tests.test_encargos_despliegue_real",
+    "tests.test_despliegue_recuperacion",
 )
 
 

@@ -249,6 +249,13 @@ class Fase:
     # bien. Es para quien mira (`ver`): ningún prompt lo lee.
     deepseek_error: str = ""
     integrado_sha: str = ""
+    desplegado_recibo: str = ""
+    requiere_despliegue: bool | None = None
+    desplegar: str = ""
+    checklist: str = ""
+    rollback: str = ""
+    despliegue_fuente: str = ""
+    despliegue_huella: str = ""
     rama: str = ""
     base: str = ""
     evidencia: str = ""
@@ -293,6 +300,15 @@ class Fase:
             if self.revision_vigente
             else None,
             "nivel_alcanzado": self.nivel_alcanzado,
+            "requiere_despliegue": self.requiere_despliegue,
+            "despliegue": {
+                "desplegar": self.desplegar,
+                "checklist": self.checklist,
+                "rollback": self.rollback,
+                "fuente": self.despliegue_fuente,
+                "huella": self.despliegue_huella,
+                "recibo": self.desplegado_recibo,
+            },
             "pr": {"numero": self.pr_numero, "sha": self.pr_sha},
             "deepseek": {
                 "sha": self.deepseek_sha,
@@ -542,6 +558,8 @@ class Encargo:
     observada_version: str = ""
     fases: tuple[Fase, ...] = ()
     fase_activa: str = ""
+    despliegue_mapa: tuple[tuple[str, str], ...] = ()
+    despliegue_archivo: str = ""
     solicitudes: tuple[Solicitud, ...] = ()
     decisiones: tuple[Decision, ...] = ()
     autorizaciones: tuple[tuple[str, str, str, str, str, str], ...] = ()
@@ -858,10 +876,15 @@ def _con_relevo_de(
 
 
 def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Encargo:
-    """Reinicia la cuenta de sin_progreso con un avance. Un juicio concluyente
-    sin nada abierto tambien la corta: la duda del revisor quedo resuelta y no
-    arrastra la cuenta a lo que sigue."""
-    avance = hubo_avance(previo, e) or (concluyente and not _bloqueos_abiertos(e))
+    """Reinicia la escalera al cerrar bloqueantes o resolver una revisión.
+    Repetir una aprobación no resuelve lo que sigue bloqueando la entrega."""
+    aprobacion_nueva = concluyente and (
+        previo.revision_vigente is None
+        or previo.revision_vigente.veredicto != "aprobado"
+    )
+    avance = hubo_avance(previo, e) or (
+        aprobacion_nueva and not _bloqueos_abiertos(e)
+    )
     cerrados = _bloqueos_abiertos(previo) - _bloqueos_abiertos(e)
     fase = e.fase_actual
     if fase is not None and cerrados - set(fase.cerrados):
@@ -988,9 +1011,15 @@ def nivel_cumplido(e: Encargo) -> bool:
         # Sin cambios publicables sólo satisface niveles sin efectos externos;
         # integrado y desplegado exigen el nivel real alcanzado.
         return e.revisado is not None and e.entrega.nivel in ("terminado", "pr")
-    return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(
-        e.entrega.nivel, 1
-    )
+    nivel = e.entrega.nivel
+    if (
+        nivel == "desplegado"
+        and e.fase_actual is not None
+        and e.fase_actual.requiere_despliegue is False
+        and e.fase_actual.despliegue_fuente
+    ):
+        nivel = "integrado"
+    return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(nivel, 1)
 
 
 def inspeccion_bloquea(e: Encargo) -> bool:
@@ -1405,6 +1434,23 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         return e
     if kind == "fases":
         return _adoptar_fases(e, d, hora)
+    if kind == "politica_despliegue":
+        e = _fase_de_evento(e, d)
+        fase = e.fase_actual
+        if fase is None or fase.estado == "preparada":
+            raise TransicionIlegal("no se cambia la política de una fase cerrada")
+        fuente, huella = str(d.get("fuente") or ""), str(d.get("huella") or "")
+        if not fuente or not huella:
+            raise TransicionIlegal("política de despliegue sin fuente comprobable")
+        datos = datos_despliegue(d)
+        if "requiere_despliegue" not in datos:
+            raise TransicionIlegal("política sin declaración de despliegue")
+        correspondencia = _correspondencia_despliegue(e, d)
+        return replace(
+            con_fase(e, replace(fase, **datos, despliegue_fuente=fuente, despliegue_huella=huella)),
+            hora=hora or e.hora,
+            **correspondencia,
+        )
     if kind == "producto_listo":
         e = _fase_de_evento(e, d)
         fase = e.fase_actual
@@ -1555,6 +1601,34 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                     "el bloqueo sigue abierto tras el relevo: "
                     + (e.bloqueo_huella or huella)
                 )
+                if (
+                    e.revision_vigente is not None
+                    and e.revision_vigente.veredicto == "aprobado"
+                    and not _bloqueos_abiertos(e)
+                ):
+                    pregunta = (
+                        "El relevo aprobó sin resolver la entrega: " + pendiente
+                        + ". ¿Qué debe cambiar para completar la entrega autorizada?"
+                    )
+                    return replace(
+                        e,
+                        estado=(
+                            "necesita_usuario"
+                            if e.estado not in _CERRADOS
+                            else e.estado
+                        ),
+                        bloqueo_huella=huella,
+                        sin_progreso=veces,
+                        preguntas=(
+                            e.preguntas
+                            if pregunta in e.preguntas
+                            else e.preguntas + (pregunta,)
+                        ),
+                        motivo=pendiente,
+                        siguiente="hace falta una decisión del usuario para completar la entrega",
+                        ultimo_hecho="el relevo aprobó, pero la entrega sigue bloqueada",
+                        hora=hora or e.hora,
+                    )
                 return replace(
                     e,
                     estado=(
@@ -2173,6 +2247,70 @@ def _sin_ciclo(fases: tuple[Fase, ...]) -> None:
         visitar(fase.id)
 
 
+def _correspondencia_despliegue(e: Encargo, d: dict) -> dict:
+    if "correspondencia" not in d:
+        return {}
+    crudo = d["correspondencia"]
+    if not isinstance(crudo, dict):
+        raise TransicionIlegal("correspondencia de despliegue debe ser un objeto")
+    archivo, fases = crudo.get("archivo"), crudo.get("fases")
+    if not isinstance(archivo, str) or not archivo.strip():
+        raise TransicionIlegal("correspondencia de despliegue sin archivo")
+    if not isinstance(fases, (list, tuple)) or not fases:
+        raise TransicionIlegal("correspondencia de despliegue sin fases")
+    if any(
+        not isinstance(par, (list, tuple))
+        or len(par) != 2
+        or any(not isinstance(valor, str) or not valor.strip() for valor in par)
+        for par in fases
+    ):
+        raise TransicionIlegal("correspondencia requiere pares de ids de fase y bloque")
+    mapa = tuple((fase, bloque) for fase, bloque in fases)
+    ids_fase = {fase for fase, _ in mapa}
+    ids_bloque = {bloque for _, bloque in mapa}
+    if len(ids_fase) != len(mapa) or ids_fase != {fase.id for fase in e.fases}:
+        raise TransicionIlegal("correspondencia debe incluir cada fase exactamente una vez")
+    if len(ids_bloque) != len(mapa):
+        raise TransicionIlegal("correspondencia repite un bloque")
+    if (e.despliegue_mapa or e.despliegue_archivo) and (
+        mapa != e.despliegue_mapa or archivo != e.despliegue_archivo
+    ):
+        raise TransicionIlegal("no se reemplaza la correspondencia de despliegue adoptada")
+    return {"despliegue_mapa": mapa, "despliegue_archivo": archivo}
+
+
+def datos_despliegue(item: dict) -> dict:
+    """Normaliza sólo lo declarado; omitir metadata nunca borra una política."""
+    salida = {}
+    if "requiere_despliegue" in item:
+        requiere = item["requiere_despliegue"]
+        if requiere is not None and type(requiere) is not bool:
+            raise TransicionIlegal("requiere_despliegue debe ser booleano o null")
+        salida["requiere_despliegue"] = requiere
+    if "lane" in item:
+        lane = item["lane"]
+        if lane not in ("fast", "gate", "release"):
+            raise TransicionIlegal("lane debe ser fast, gate o release")
+        requiere = lane == "release"
+        if salida.get("requiere_despliegue", requiere) is not requiere:
+            raise TransicionIlegal("lane contradice requiere_despliegue")
+        salida["requiere_despliegue"] = requiere
+    if "despliegue" in item:
+        receta = item["despliegue"]
+        if not isinstance(receta, dict):
+            raise TransicionIlegal("despliegue debe contener desplegar, checklist y rollback")
+        for nombre in ("desplegar", "checklist", "rollback"):
+            valor = receta.get(nombre, "")
+            if not isinstance(valor, str):
+                raise TransicionIlegal(f"despliegue.{nombre} debe ser una ruta")
+            salida[nombre] = valor.strip()
+        if any(salida[n] for n in ("desplegar", "checklist", "rollback")):
+            if salida.get("requiere_despliegue") is False:
+                raise TransicionIlegal("una fase sin despliegue no puede declarar receta")
+            salida["requiere_despliegue"] = True
+    return salida
+
+
 def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     """La propuesta de fases se valida aquí y no borra trabajo ya obtenido.
 
@@ -2197,6 +2335,7 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
         vistos.add(fid)
         resultado = str(item.get("resultado") or "").strip()
         requiere = _requiere_de(item)
+        despliegue = datos_despliegue(item)
         previa = existentes.get(fid)
         if previa is None:
             if not resultado:
@@ -2207,11 +2346,15 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
                     resultado=resultado,
                     estado="pendiente",
                     requiere=requiere,
+                    **despliegue,
                 )
             )
             continue
         if previa.estado != "pendiente" and resultado and resultado != previa.resultado:
             raise TransicionIlegal(f"no se reescribe el resultado de la fase {fid}")
+        if previa.estado != "pendiente" or previa.despliegue_fuente:
+            if any(getattr(previa, k) != v for k, v in despliegue.items()):
+                raise TransicionIlegal(f"no se reescribe el despliegue de la fase {fid} ya trabajada")
         if previa.estado != "pendiente":
             fusionada = _fusionar_requiere(previa.requiere, requiere)
             if fusionada != previa.requiere:
@@ -2226,6 +2369,7 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
                 previa,
                 resultado=resultado or previa.resultado,
                 requiere=requiere_final,
+                **despliegue,
             )
         )
     for fid in existentes:
@@ -2817,6 +2961,9 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
             str(d.get("recibo") or sha)
             if paso == "integrado" and (d.get("recibo") or sha)
             else fase.integrado_sha
+        ),
+        desplegado_recibo=(
+            str(d.get("recibo") or "") if paso == "desplegado" else fase.desplegado_recibo
         ),
         rama=str(d.get("rama") or fase.rama),
         base=str(d.get("base") or fase.base),
