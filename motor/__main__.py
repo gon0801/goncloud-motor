@@ -627,6 +627,7 @@ _CMDS_ENCARGO = {
     "parar",
     "continuar",
     "cancelar",
+    "reabrir",
     "corregir",
     "efecto",
     "espera",

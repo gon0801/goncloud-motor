@@ -79,12 +79,15 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("encargo")
     s.add_argument("--base", type=Path, required=True)
 
-    for nombre in ("parar", "continuar", "cancelar"):
+    for nombre in ("parar", "continuar", "cancelar", "reabrir"):
         s = sub.add_parser(nombre)
         s.add_argument("encargo")
         s.add_argument("--base", type=Path, required=True)
         s.add_argument("--clave", required=True)
         s.add_argument("--canal", default="")
+        if nombre == "reabrir":
+            s.add_argument("--fase", default="")
+            s.add_argument("--cierre", default="")
 
     s = sub.add_parser("promover")
     s.add_argument("encargo")
@@ -224,9 +227,13 @@ def _correr(args) -> int:
             if caidos:
                 salida["canales_caidos"] = caidos
             return _json(salida)
-        if args.cmd in ("parar", "continuar", "cancelar"):
+        if args.cmd in ("parar", "continuar", "cancelar", "reabrir"):
+            firma = (
+                {"fase": args.fase, "cierre": args.cierre}
+                if args.cmd == "reabrir" else {}
+            )
             salida = relay(
-                reg, args.encargo, args.cmd, args.clave, marca, args.canal
+                reg, args.encargo, args.cmd, args.clave, marca, args.canal, **firma,
             )
             if salida.get("rechazada"):
                 print(json.dumps(salida, ensure_ascii=False))

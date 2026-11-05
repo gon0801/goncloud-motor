@@ -1695,6 +1695,9 @@ def relay(
     clave: str,
     hora: str,
     canal: str = "",
+    *,
+    fase: str = "",
+    cierre: str = "",
 ) -> dict:
     enc = registro.fold(encargo)
     if enc is None:
@@ -1721,6 +1724,10 @@ def relay(
             salida["motivo"] = "OpenBot no tiene parada demostrada; el trabajo sigue"
             return salida
     autor = f"director:{canal}" if str(canal or "") else ""
+    if accion == "reabrir":
+        return ordenar(
+            registro, encargo, accion, clave, hora, autor, fase=fase, cierre=cierre,
+        )
     return ordenar(registro, encargo, accion, clave, hora, autor)
 
 

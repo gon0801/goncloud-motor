@@ -246,15 +246,23 @@ def ordenar(
     clave: str,
     hora: str,
     autor: str = "",
+    *, fase: str = "", cierre: str = "",
 ) -> dict:
     with turno(registro.base):
-        salida = _ordenar(registro, encargo_id, accion, clave, hora, autor)
-        if not salida.get("rechazada") and not salida.get("retransmision"):
-            _enviar_orden(registro, encargo_id, accion, clave)
+        salida = _ordenar(registro, encargo_id, accion, clave, hora, autor, fase=fase, cierre=cierre)
+        if not salida.get("rechazada") and not salida.get("conflicto") and (
+            not salida.get("retransmision") or accion == "reabrir"
+        ):
+            sincronizada = _enviar_orden(registro, encargo_id, accion, clave)
+            if accion == "reabrir" and not sincronizada:
+                salida["autoridad_pendiente"] = True
         return salida
 
 
-def _enviar_orden(registro: Registro, encargo_id: str, accion: str, clave: str) -> bool:
+def _enviar_orden(
+    registro: Registro, encargo_id: str, accion: str, clave: str,
+    *, datos: dict | None = None,
+) -> bool:
     from .transporte import ConfigAutoridadInvalida, cargar, operar
 
     try:
@@ -263,11 +271,22 @@ def _enviar_orden(registro: Registro, encargo_id: str, accion: str, clave: str) 
         return False
     if cfg is None:
         return True
-    resp = operar(registro.base, {"op": accion, "encargo": encargo_id, "clave": clave})
+    mensaje = {"op": accion, "encargo": encargo_id, "clave": clave}
+    if accion == "reabrir":
+        if datos is None:
+            orden = registro.por_ukey(f"orden:{clave}")
+            if not orden or orden["kind"] != "orden":
+                return False
+            datos = orden["data"]
+        if datos.get("accion") != "reabrir":
+            return False
+        mensaje.update({k: datos[k] for k in ("fase", "cierre")})
+    resp = operar(registro.base, mensaje)
     salida = resp.get("salida") or {}
     return bool(
         resp.get("alcanzada")
         and not salida.get("rechazada")
+        and not salida.get("conflicto")
         and not salida.get("error")
     )
 
@@ -279,6 +298,7 @@ def _ordenar(
     clave: str,
     hora: str,
     autor: str = "",
+    *, fase: str = "", cierre: str = "",
 ) -> dict:
     ukey = f"orden:{clave}"
     previo = _recibo_previo(registro, encargo_id, ukey, accion)
@@ -288,8 +308,15 @@ def _ordenar(
     if enc is None:
         raise TransicionIlegal("no hay encargo")
     recibo = recibo_de(ukey)
+    datos = {"accion": accion, "hora": hora}
+    if accion == "reabrir":
+        datos.update(
+            fase=fase or (enc.cierre_forzado_fase.id if enc.cierre_forzado_fase else ""),
+            cierre=cierre or enc.cierre_forzado_huella,
+            clave=clave,
+        )
     try:
-        reducir(enc, {"kind": "orden", "data": {"accion": accion, "hora": hora}})
+        reducir(enc, {"kind": "orden", "data": datos})
     except TransicionIlegal as exc:
         registro.append(
             encargo_id,
@@ -310,6 +337,7 @@ def _ordenar(
         salida["motivo"] = str(exc)
         return salida
     datos_orden = {
+        **datos,
         "accion": accion,
         "recibo": recibo,
         "resultado": "aplicada",
@@ -324,7 +352,7 @@ def _ordenar(
         try:
             reducir(
                 registro.fold(encargo_id),
-                {"kind": "orden", "data": {"accion": accion, "hora": hora}},
+                {"kind": "orden", "data": datos},
             )
         except TransicionIlegal as exc:
             motivo = str(exc)
@@ -968,7 +996,7 @@ def _barrer_encargos(
             and enc.pendientes_entrega
             and enc.proc is None
             and not enc.reserva
-            and enc.estado in ("recibido", "ejecutando", "necesita_usuario")
+            and enc.estado in ("recibido", "ejecutando")
         ):
             # La entrega con pendientes va delante de cualquier paso que pueda
             # volver a fallar: es el camino que corta la espera y el ciclo.
@@ -1038,7 +1066,7 @@ def _barrer_encargos(
             and enc.pendientes_entrega
             and enc.proc is None
             and not enc.reserva
-            and enc.estado in ("recibido", "ejecutando", "necesita_usuario")
+            and enc.estado in ("recibido", "ejecutando")
         ):
             enc = _entregar_con_pendientes(registro, enc, gh, hora)
         if enc.host and enc.host != socket.gethostname() and (enc.reserva or enc.proc):
@@ -2760,6 +2788,9 @@ def _incorporar(
 
     directorio = directorio or _directorio(registro.base, enc.id)
     outcome_path = directorio / "outcome.json"
+    if enc.intento_interrumpido and (not enc.intento or not outcome_path.is_file()):
+        _publica(directorio / "incorporado", hora)
+        return enc
     if outcome_path.is_file():
         outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
         sesion_runtime = str(outcome.get("sesion_runtime") or "")
@@ -2789,6 +2820,9 @@ def _incorporar(
                 "guardar",
                 hora,
             )
+        if enc.intento_interrumpido:
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
         if outcome.get("autenticacion_expirada"):
             marcar_espera(
                 registro,
@@ -5400,6 +5434,18 @@ def _entregar_con_pendientes(
                 if enc.entrega.nivel in ("integrado", "desplegado")
                 else _base_fase(enc)
             )
+            if not numero:
+                ref_base = _ref_existente(espacio, f"origin/{base}", base)
+                conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}") if ref_base else None
+                if conteo is None or conteo.returncode != 0:
+                    marcar_espera(registro, enc.id, "no se pudieron comprobar los commits para publicar el PR",
+                                  _reanuda_en(120), hora)
+                    return registro.fold(enc.id)
+                if conteo.stdout.strip() == "0":
+                    marcar_pregunta(registro, enc.id,
+                                    f"La fase {enc.fase_activa} no tiene commits para un PR con pendientes; "
+                                    "hace falta resolver el bloqueo antes de continuar.", True, hora)
+                    return registro.fold(enc.id)
             cuerpo = _cuerpo_pr(
                 replace(enc, pendientes_entrega=tuple(pendientes)), espacio
             )
@@ -5465,7 +5511,7 @@ def _entregar_con_pendientes(
             "kind": "cierre_forzado",
             "data": {"evidencia": evidencia, "hora": hora},
         },
-        f"cierre-forzado:{enc.id}:{enc.fase_activa}:{len(pendientes)}:{sha}",
+        f"cierre-forzado:{enc.id}:{enc.fase_activa}:{enc.reaperturas}:{len(pendientes)}:{sha}",
     )
     enc = registro.fold(enc.id) or enc
     _publica(directorio / "incorporado", hora)
@@ -6866,6 +6912,8 @@ def _nuevo_cierre_tras_marcador(
             return True
         if evento["kind"] == "ci_pr" and evento["data"].get("reabrir"):
             return True
+        if evento["kind"] == "orden" and evento["data"].get("accion") == "reabrir":
+            return True
     return False
 
 
@@ -6896,18 +6944,19 @@ def _mirar_autoridad(registro: Registro, enc: Encargo, hora: str) -> Encargo:
             if evento["kind"] == "orden" and evento["data"]["accion"] in (
                 "parar",
                 "cancelar",
+                "reabrir",
             ):
                 orden = evento["data"]
                 break
         if orden is not None:
-            clave = orden["recibo"] + "-canonico"
+            clave = orden["clave"] if orden["accion"] == "reabrir" else orden["recibo"] + "-canonico"
             if enc.estado == "cancelado":
-                if _enviar_orden(registro, enc.id, orden["accion"], clave):
+                if _enviar_orden(registro, enc.id, orden["accion"], clave, datos=orden):
                     _marcar_autoridad_cerrada(registro, enc, hora)
             elif registro.por_ukey(
                 f"autoridad-orden:{enc.id}:{orden['recibo']}"
             ) is None:
-                if _enviar_orden(registro, enc.id, orden["accion"], clave):
+                if _enviar_orden(registro, enc.id, orden["accion"], clave, datos=orden):
                     _marcar_autoridad_orden(
                         registro, enc, str(orden["recibo"]), hora
                     )
