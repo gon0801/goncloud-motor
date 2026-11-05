@@ -353,6 +353,9 @@ def _ordenar(
     return vista(registro.fold(encargo_id), recibo)
 
 
+_PUERTO_DEL_REGISTRO = object()
+
+
 def corregir(
     registro: Registro,
     encargo_id: str,
@@ -362,9 +365,12 @@ def corregir(
     cierra=(),
     evidencia: str = "",
     autor: str = "",
+    gh=_PUERTO_DEL_REGISTRO,
 ) -> dict:
     """Registra una corrección sin interrumpir al agente. La toma el siguiente
-    intento. Sólo un encargo cerrado la rechaza. Un rechazo deja constancia
+    intento. Un encargo cancelado la rechaza; uno terminado solo la acepta si su
+    PR sigue abierto en GitHub (`gh`, por omisión el puerto del registro), y
+    entonces se reabre en la misma rama y el mismo PR. Un rechazo deja constancia
     pero no gasta la clave: se vuelve a evaluar al repetirla, porque la causa
     puede haber cambiado (por ejemplo, un encargo que pasó a durable).
 
@@ -436,6 +442,27 @@ def corregir(
             "el encargo va por la vía directa: ningún intento del motor recibiría "
             "la corrección; promuévelo a durable"
         )
+    if (
+        enc.estado == "terminado"
+        and enc.pr_numero
+        and enc.nivel_alcanzado not in ("integrado", "desplegado")
+    ):
+        if gh is _PUERTO_DEL_REGISTRO:
+            from .cli import _puerto_github
+
+            gh = _puerto_github(registro.base)
+        estado_pr = ""
+        if gh is not None:
+            try:
+                estado_pr = str(gh.ver(enc.entrega.repo, enc.pr_numero).estado)
+            except Exception:  # noqa: BLE001  sin lectura no se reabre
+                estado_pr = ""
+        if estado_pr != "abierto":
+            situacion = f"está {estado_pr}" if estado_pr else "no se pudo leer en GitHub"
+            return rechazar(
+                f"el encargo ya terminó y su PR #{enc.pr_numero} {situacion}; "
+                "abre un encargo nuevo"
+            )
     datos = {"texto": texto, "recibo": recibo, "hora": hora}
     if ids:
         datos["cierra"] = list(ids)
@@ -4622,7 +4649,7 @@ _CONCLUSIONES_VERDES = ("success", "skipped", "neutral")
 # Gitleaks imprime «leaks found: N» solo con hallazgos; el paso verde dice «no
 # leaks found» y cada job de GitHub abre con «Secret source: Actions», así que
 # buscar «secret» o «leak» sueltos clasificaba cualquier rojo como tubería.
-_HALLAZGOS_SECRETOS = re.compile(r"leaks found: [1-9]")
+_HALLAZGOS_SECRETOS = re.compile(r"leaks found: [1-9]|\bruleid:\s")
 # Caídas que una prueba del producto no produce: mandan aunque el paso traiga
 # pruebas en rojo.
 _INFRA_CI_SEGURA = (
@@ -4637,6 +4664,10 @@ _INFRA_CI_SEGURA = (
     "hung up unexpectedly",
     "failed to download action",
     "service is unhealthy",
+    "could not resolve host",
+    "connection reset",
+    "unable to access",
+    "computed checksum did not match",
 )
 # El resumen de un corredor de pruebas: con él, las marcas débiles de abajo son
 # texto de las pruebas (una aserción sobre «billing» o «rate limit»).
@@ -4652,11 +4683,8 @@ _INFRA_CI = (
     "rate limit",
     "could not resolve host",
     "connection refused",
-    "connection reset",
     "timed out",
-    "unable to access",
     "max retries exceeded",
-    "computed checksum did not match",
 )
 
 # Marcas de que el rojo viene de una prueba del producto y no de la tubería.
