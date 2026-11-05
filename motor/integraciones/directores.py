@@ -1358,20 +1358,18 @@ class Vuelta:
 _ESTADOS_SIN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo", "terminado"})
 
 
-_ESTADOS_QUE_NO_RETOMAN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo"})
-
-
 def _aviso_retomable(doc: dict, encargos: dict) -> bool:
     """Si la pasada puede volver a intentar el aviso; si no, no prueba el transporte del canal.
 
     Un aviso de resumen no nombra encargo y lo retoma `resumen_encargos`. Un aviso de un encargo
-    detenido, cancelado o que ya no existe no se reabre, así que no debe impedir el sondeo.
+    detenido, cancelado, terminado o que ya no existe no se reabre, así que no debe impedir el sondeo;
+    `_descartar_avances_de_terminados` tampoco borra un `ci_rojo` huérfano del terminado.
     """
     encargo = str(doc.get("encargo") or "")
     if not encargo:
         return True
     enc = encargos.get(encargo)
-    return enc is not None and enc.estado not in _ESTADOS_QUE_NO_RETOMAN_AVANCE
+    return enc is not None and enc.estado not in _ESTADOS_SIN_AVANCE
 
 
 def _canales_con_avisos_pendientes(registro: Registro, encargos: dict) -> set[str]:

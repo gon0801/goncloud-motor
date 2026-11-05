@@ -29,7 +29,7 @@ y el aviso remite al estado del encargo para el detalle.
   decenas de avisos viejos.
 - Un aviso `incierto` que el estado actual del encargo ya no genera (por ejemplo, un relevo anterior al último) se
   retoma en cada pasada después de su `proximo_intento`, con el cuerpo que quedó en `canal/<canal>/<id>`. Los
-  encargos detenidos o cancelados no reabren avisos de avance, y esos avisos no impiden que el canal caído se
+  encargos detenidos, cancelados o terminados no reabren avisos de avance, y esos avisos no impiden que el canal caído se
   sondee: si no queda otro aviso retomable, la pasada prueba la conciliación `sondeo-<canal>` y recupera el canal
   cuando responde.
 

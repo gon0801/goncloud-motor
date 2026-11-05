@@ -103,6 +103,21 @@ class Banco(unittest.TestCase):
         }}, "arbol-ausente")
         self.assertEqual(self.reg.fold(ident).estado, "detenido")
 
+    def encargo_directo(self) -> str:
+        return directores.encargar(
+            self.reg, "pedido", "directo", HORA, "hermes", "hermes", "directa"
+        )["encargo"]
+
+    def terminar(self, ident: str) -> None:
+        self.reg.anotar(ident, {"kind": "resultado_directo", "data": {
+            "evidencia": "listo", "hora": HORA,
+        }}, "fin")
+        self.assertEqual(self.reg.fold(ident).estado, "terminado")
+
+    def escribir_aviso(self, doc: dict) -> None:
+        (self.base / "avisos").mkdir(parents=True, exist_ok=True)
+        (self.base / "avisos" / f"{doc['id']}.json").write_text(json.dumps(doc))
+
     def aviso(self, ident: str) -> dict:
         return json.loads((self.base / "avisos" / f"{ident}.json").read_text())
 
@@ -230,6 +245,36 @@ class AvisoInciertoHuerfano(Banco):
         self.assertEqual(
             self.aviso(viejo["id"])["estado"], "incierto",
             "un encargo detenido no reabre avisos de avance",
+        )
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
+
+    def test_un_aviso_incierto_huerfano_de_un_encargo_terminado_no_bloquea_el_sondeo(self):
+        ident = self.encargo_directo()
+        self.terminar(ident)
+        cierre = directores._aviso_de(self.reg.fold(ident))
+        cierre["estado"] = "publicado"
+        cierre["recibo"] = "ok"
+        self.escribir_aviso(cierre)
+        huerfano = {
+            "id": "av_ci_rojo_huerfano",
+            "encargo": ident,
+            "canal": "hermes",
+            "evidencia": "avance:ci_rojo:sha-viejo",
+            "estado": "incierto",
+            "tipo": "ci_rojo",
+            "recibo": "",
+            "fallos": 1,
+            "proximo_intento": directores._iso(T0 - 10),
+        }
+        self.escribir_aviso(huerfano)
+        self.caido()
+
+        directores.drenar(self.reg, ahora=T0)
+
+        self.assertEqual(
+            self.aviso(huerfano["id"])["estado"], "incierto",
+            "un terminado no reabre el aviso huerfano",
         )
         self.assertEqual(self.sondeos(), ["sondeo-hermes"])
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
