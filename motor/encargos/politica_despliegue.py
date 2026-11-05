@@ -28,14 +28,22 @@ class PoliticaDespliegue:
     rollback: str = ""
     fuente: str = ""
     huella: str = ""
+    correspondencia: tuple[tuple[str, str], ...] = ()
+    archivo_plan: str = ""
 
     def datos(self) -> dict:
-        return {
+        datos = {
             "requiere_despliegue": self.requiere_despliegue,
             "despliegue": {k: getattr(self, k) for k in _RECETA},
             "fuente": self.fuente,
             "huella": self.huella,
         }
+        if self.correspondencia:
+            datos["correspondencia"] = {
+                "archivo": self.archivo_plan,
+                "fases": [list(par) for par in self.correspondencia],
+            }
+        return datos
 
 
 def _huella(texto: str) -> str:
@@ -95,20 +103,40 @@ def _fuentes(espacio: Path, enc: Encargo) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(fuentes))
 
 
-def _del_plan(texto: str, fase_id: str, fuente: str) -> PoliticaDespliegue | None:
-    campos: dict[str, str] = {}
-    activa = False
-    encontrados = 0
+def _lineas_plan(texto: str):
     cerca = ""
-    ambiguo = False
     for linea in texto.splitlines():
         limpia = linea.strip()
         if limpia.startswith(("```", "~~~")):
             marca = limpia[:3]
             cerca = "" if cerca == marca else marca if not cerca else cerca
             continue
-        if cerca:
-            continue
+        if not cerca:
+            yield linea
+
+
+def _correspondencia_por_posicion(texto: str, enc: Encargo) -> tuple[tuple[str, str], ...]:
+    bloques = tuple(
+        bloque.group(1) for linea in _lineas_plan(texto)
+        if (bloque := _BLOQUE.match(linea))
+    )
+    ids = tuple(fase.id for fase in enc.fases)
+    if (not bloques or len(bloques) != len(ids) or enc.fase_activa not in ids
+            or len(set(bloques)) != len(bloques) or len(set(ids)) != len(ids)):
+        return ()
+    # Un nombre que ya coincide es un ancla: no se admite otra posición para él.
+    if any(ident in bloques and bloques[i] != ident for i, ident in enumerate(ids)):
+        return ()
+    return tuple(zip(ids, bloques))
+
+
+def _del_plan(texto: str, fase_id: str, fuente: str) -> PoliticaDespliegue | None:
+    campos: dict[str, str] = {}
+    activa = False
+    encontrados = 0
+    ambiguo = False
+    for linea in _lineas_plan(texto):
+        limpia = linea.strip()
         bloque = _BLOQUE.match(linea)
         if bloque:
             activa = bloque.group(1) == fase_id
@@ -152,6 +180,17 @@ def _del_plan(texto: str, fase_id: str, fuente: str) -> PoliticaDespliegue | Non
     return politica
 
 
+def _politica_asociada(texto: str, fuente: str, fase_id: str,
+                      mapa: tuple[tuple[str, str], ...], archivo: str) -> PoliticaDespliegue:
+    for posicion, (ident, bloque) in enumerate(mapa, 1):
+        if ident == fase_id:
+            fuente += f"#Bloque {bloque} (posición {posicion}/{len(mapa)})"
+            politica = _del_plan(texto, bloque, fuente)
+            if politica is not None:
+                return replace(politica, correspondencia=mapa, archivo_plan=archivo)
+    return PoliticaDespliegue()
+
+
 def _con_receta_repo(politica: PoliticaDespliegue, espacio: Path, enc: Encargo) -> PoliticaDespliegue:
     if politica.requiere_despliegue is not True or any(getattr(politica, k) for k in _RECETA):
         return politica
@@ -178,6 +217,7 @@ def resolver(espacio: Path, enc: Encargo) -> PoliticaDespliegue:
         politica = PoliticaDespliegue(
             fase.requiere_despliegue, fase.desplegar, fase.checklist, fase.rollback,
             fase.despliegue_fuente, fase.despliegue_huella,
+            enc.despliegue_mapa, enc.despliegue_archivo,
         )
         return _con_receta_repo(politica, espacio, enc)
     if fase is None or fase.id == FASE_IMPLICITA:
@@ -185,12 +225,34 @@ def resolver(espacio: Path, enc: Encargo) -> PoliticaDespliegue:
                                      huella=_huella(enc.entrega.nivel))
     else:
         politicas = []
+        lecturas = []
         for archivo in _fuentes(espacio, enc):
             lectura = _leer(espacio, archivo, enc)
             if lectura is not None:
+                lecturas.append((archivo, *lectura))
                 candidata = _del_plan(lectura[0], fase.id, lectura[1])
                 if candidata is not None:
                     politicas.append(candidata)
+        if not politicas and enc.despliegue_mapa:
+            if {f.id for f in enc.fases} != {ident for ident, _ in enc.despliegue_mapa}:
+                return PoliticaDespliegue()
+            lectura = _leer(espacio, Path(enc.despliegue_archivo), enc)
+            if lectura is None:
+                return PoliticaDespliegue()
+            politica = _politica_asociada(
+                *lectura, fase.id, enc.despliegue_mapa, enc.despliegue_archivo,
+            )
+            return _con_receta_repo(politica, espacio, enc)
+        if not politicas:
+            posicionales = [
+                (archivo, texto, fuente, mapa) for archivo, texto, fuente in lecturas
+                if (mapa := _correspondencia_por_posicion(texto, enc))
+            ]
+            if len(posicionales) > 1:
+                return PoliticaDespliegue()
+            if posicionales:
+                archivo, texto, fuente, mapa = posicionales[0]
+                politicas.append(_politica_asociada(texto, fuente, fase.id, mapa, str(archivo)))
         if politicas:
             politica = politicas[0]
             contrato = lambda p: (p.requiere_despliegue, p.desplegar, p.checklist, p.rollback)
@@ -202,6 +264,9 @@ def resolver(espacio: Path, enc: Encargo) -> PoliticaDespliegue:
             politica = replace(politica, huella=_huella(json.dumps(politica.datos(), sort_keys=True)))
         else:
             return PoliticaDespliegue()
+    if enc.despliegue_mapa:
+        politica = replace(politica, correspondencia=enc.despliegue_mapa,
+                           archivo_plan=enc.despliegue_archivo)
     return _con_receta_repo(politica, espacio, enc)
 
 

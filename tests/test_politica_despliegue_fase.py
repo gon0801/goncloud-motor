@@ -12,6 +12,18 @@ from motor.encargos.dominio import VersionProducto, con_fase, nivel_cumplido, re
 from motor.encargos.registro import Registro
 
 
+IDS_DESCRIPTIVOS = (
+    "propuesta", "motor-despliegue", "motor-meta", "meta-sombra", "meta-visible",
+    "meta-viva", "retiro-tipado", "pausa-sombra", "pausa-lista",
+)
+RECETA = "desplegar=ops/deploy.sh checklist=ops/check.sh rollback=ops/back.sh"
+PLAN_DESCRIPTIVO = "\n".join(
+    f"## Bloque {letra} — {ident}\nlane: {'gate' if i < 3 else 'release'}\n"
+    + (f"despliegue: {RECETA}\n" if i >= 3 else "")
+    for i, (letra, ident) in enumerate(zip("ABCDEFGHI", IDS_DESCRIPTIVOS))
+)
+
+
 class PoliticaDeFase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -46,6 +58,153 @@ class PoliticaDeFase(unittest.TestCase):
 
     def integrada(self, enc):
         return con_fase(enc, replace(enc.fase_actual, nivel_alcanzado="integrado"))
+
+    def test_ids_descriptivos_corresponden_a_los_nueve_bloques_en_orden(self):
+        from motor.encargos.politica_despliegue import resolver
+        enc = self.organizar([{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS])
+        self.plan(PLAN_DESCRIPTIVO)
+        for i, ident in enumerate(IDS_DESCRIPTIVOS):
+            with self.subTest(fase=ident):
+                politica = resolver(self.espacio, replace(enc, fase_activa=ident))
+                self.assertIs(politica.requiere_despliegue, i >= 3)
+                self.assertIn(f"#Bloque {'ABCDEFGHI'[i]}", politica.fuente)
+                self.assertEqual(politica.desplegar, "ops/deploy.sh" if i >= 3 else "")
+
+    def test_adopta_y_conserva_la_correspondencia_descriptiva_del_plan_adjunto(self):
+        from motor.encargos.politica_despliegue import adoptar, resolver
+        propuesta = [{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS]
+        enc = self.organizar(propuesta)
+        externo = Path(self.tmp.name) / "adjunto.md"
+        externo.write_text(PLAN_DESCRIPTIVO, encoding="utf-8")
+        enc = replace(enc, texto="Usa el plan adjunto", adjuntos=(str(externo),))
+        adoptado = adoptar(self.reg, enc, self.espacio, "h1")
+        eventos = [ev for ev in self.reg.eventos("e") if ev["kind"] == "politica_despliegue"]
+        self.assertEqual(len(eventos), 1)
+        self.assertEqual(eventos[0]["data"]["fase"], "propuesta")
+        self.assertIn("#Bloque A", eventos[0]["data"]["fuente"])
+        self.assertEqual(eventos[0]["data"]["correspondencia"], {
+            "archivo": str(externo.resolve()),
+            "fases": [list(par) for par in zip(IDS_DESCRIPTIVOS, "ABCDEFGHI")],
+        })
+        self.assertTrue(nivel_cumplido(self.integrada(adoptado)))
+        adoptar(self.reg, adoptado, self.espacio, "h2")
+        self.assertEqual(len([ev for ev in self.reg.eventos("e") if ev["kind"] == "politica_despliegue"]), 1)
+        externo.write_text(PLAN_DESCRIPTIVO.replace("lane: gate", "lane: release"), encoding="utf-8")
+        self.assertIs(resolver(self.espacio, adoptado).requiere_despliegue, False)
+
+    def test_mapa_incompleto_o_sustituido_no_cambia_el_contrato_adoptado(self):
+        from motor.encargos.politica_despliegue import adoptar
+        propuesta = [{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS]
+        self.plan(PLAN_DESCRIPTIVO)
+        enc = adoptar(self.reg, self.organizar(propuesta), self.espacio, "h1")
+        mapa = list(enc.despliegue_mapa)
+        intercambiado = mapa.copy()
+        intercambiado[1] = (mapa[1][0], mapa[3][1])
+        intercambiado[3] = (mapa[3][0], mapa[1][1])
+        for i, (archivo, pares) in enumerate((
+            (enc.despliegue_archivo, mapa[:-1]),
+            (enc.despliegue_archivo, mapa[:-1] + [mapa[0]]),
+            (enc.despliegue_archivo, mapa[:-1] + [(mapa[-1][0], "A")]),
+            (enc.despliegue_archivo, intercambiado),
+            (enc.despliegue_archivo + ".otro", mapa),
+        )):
+            with self.subTest(caso=i):
+                resultado = self.reg.anotar("e", {"kind": "politica_despliegue", "data": {
+                    "fase": "propuesta", "requiere_despliegue": False,
+                    "fuente": "otra", "huella": "otra",
+                    "correspondencia": {"archivo": archivo, "fases": pares},
+                }}, f"cambio-mapa-{i}")
+                self.assertEqual(resultado, "ilegal")
+                self.assertEqual(self.reg.fold("e").despliegue_mapa, enc.despliegue_mapa)
+
+    def test_reordenar_fases_no_cambia_los_bloques_ya_asociados(self):
+        from motor.encargos.politica_despliegue import adoptar, resolver
+        propuesta = [{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS]
+        self.plan(PLAN_DESCRIPTIVO)
+        adoptar(self.reg, self.organizar(propuesta), self.espacio, "h1")
+        propuesta[1], propuesta[3] = propuesta[3], propuesta[1]
+        self.assertEqual(self.reg.anotar("e", {"kind": "fases", "data": {
+            "fases": propuesta,
+        }}, "fases-reordenadas"), "nuevo")
+        enc = self.reg.fold("e")
+        for ident, despliega in (("motor-despliegue", False), ("meta-sombra", True)):
+            with self.subTest(fase=ident):
+                self.assertIs(resolver(self.espacio, replace(enc, fase_activa=ident)).requiere_despliegue, despliega)
+
+    def test_reordenar_bloques_del_plan_no_cambia_la_correspondencia_adoptada(self):
+        from motor.encargos.politica_despliegue import adoptar, resolver
+        self.plan(PLAN_DESCRIPTIVO)
+        propuesta = [{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS]
+        enc = adoptar(self.reg, self.organizar(propuesta), self.espacio, "h1")
+        bloques = PLAN_DESCRIPTIVO.split("## Bloque ")[1:]
+        bloques[1], bloques[3] = bloques[3], bloques[1]
+        self.plan("".join("## Bloque " + b for b in bloques))
+        self.assertIs(resolver(self.espacio, replace(enc, fase_activa="motor-despliegue")).requiere_despliegue, False)
+        self.assertIs(resolver(self.espacio, replace(enc, fase_activa="meta-sombra")).requiere_despliegue, True)
+
+    def test_correspondencia_adoptada_con_bloque_ausente_no_se_infiere_de_nuevo(self):
+        from motor.encargos.politica_despliegue import adoptar, resolver
+        self.plan(PLAN_DESCRIPTIVO)
+        propuesta = [{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS]
+        enc = adoptar(self.reg, self.organizar(propuesta), self.espacio, "h1")
+        self.plan(PLAN_DESCRIPTIVO.replace("## Bloque D", "## Bloque nuevo"))
+        self.assertIsNone(resolver(self.espacio, replace(enc, fase_activa="meta-sombra")).requiere_despliegue)
+
+    def test_posicion_ambigua_conserva_desconocido(self):
+        from motor.encargos.politica_despliegue import resolver
+        for ids, plan in (
+            (IDS_DESCRIPTIVOS, PLAN_DESCRIPTIVO.rsplit("## Bloque I", 1)[0]),
+            (IDS_DESCRIPTIVOS, PLAN_DESCRIPTIVO.replace("## Bloque I", "## Bloque H")),
+            (("propuesta", "A", *IDS_DESCRIPTIVOS[2:]), PLAN_DESCRIPTIVO),
+        ):
+            with self.subTest(ids=ids, plan=plan[-40:]):
+                self.plan(plan)
+                # Cada caso usa una propuesta nueva para no adoptar una política.
+                enc = reducir(self.reg.fold("e"), {"kind": "fases", "data": {
+                    "fases": [{"id": ident, "resultado": ident} for ident in ids],
+                }})
+                self.assertIsNone(resolver(self.espacio, enc).requiere_despliegue)
+
+    def test_dos_planes_posicionales_no_eligen_uno_aunque_la_politica_coincida(self):
+        from motor.encargos.politica_despliegue import resolver
+        enc = self.organizar([{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS])
+        self.plan(PLAN_DESCRIPTIVO)
+        otro = self.espacio / "plans/otro.md"
+        otro.write_text(PLAN_DESCRIPTIVO, encoding="utf-8")
+        enc = replace(enc, adjuntos=(str(otro),))
+        self.assertIsNone(resolver(self.espacio, enc).requiere_despliegue)
+
+    def test_coincidencia_explicita_prevalece_sobre_otra_fuente_posicional(self):
+        from motor.encargos.politica_despliegue import resolver
+        enc = self.organizar([{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS])
+        self.plan(PLAN_DESCRIPTIVO)
+        otro = self.espacio / "plans/explicito.md"
+        otro.write_text(f"## Bloque propuesta\nlane: release\ndespliegue: {RECETA}\n", encoding="utf-8")
+        enc = replace(enc, adjuntos=(str(otro),))
+        self.assertIs(resolver(self.espacio, enc).requiere_despliegue, True)
+
+    def test_adoptar_otra_fase_no_oculta_la_regla_explicita_de_un_despliegue(self):
+        from motor.encargos.politica_despliegue import adoptar, resolver
+        enc = self.organizar([{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS])
+        self.plan(PLAN_DESCRIPTIVO)
+        otro = self.espacio / "plans/explicito.md"
+        otro.write_text(f"## Bloque motor-despliegue\nlane: release\ndespliegue: {RECETA}\n", encoding="utf-8")
+        enc = replace(enc, texto=enc.texto + " y plans/explicito.md")
+        antes = resolver(self.espacio, replace(enc, fase_activa="motor-despliegue"))
+        self.assertIs(antes.requiere_despliegue, True)
+        adoptado = adoptar(self.reg, enc, self.espacio, "h1")
+        # El fixture conserva las fuentes autorizadas al reconstruir el encargo.
+        adoptado = replace(adoptado, texto=enc.texto, fase_activa="motor-despliegue")
+        despues = resolver(self.espacio, adoptado)
+        self.assertIs(despues.requiere_despliegue, True)
+        self.assertEqual(despues.fuente, antes.fuente)
+        self.assertEqual(despues.desplegar, antes.desplegar)
+
+    def test_ejemplos_en_codigo_no_alteran_la_correspondencia_posicional(self):
+        from motor.encargos.politica_despliegue import resolver
+        enc = self.organizar([{"id": ident, "resultado": ident} for ident in IDS_DESCRIPTIVOS])
+        self.plan("```markdown\n## Bloque ficticio\nlane: release\n```\n" + PLAN_DESCRIPTIVO)
+        self.assertIs(resolver(self.espacio, enc).requiere_despliegue, False)
 
     def test_metadata_false_sobrevive_lectura_y_cierra_a_integrada(self):
         self.propuesta[0]["requiere_despliegue"] = False

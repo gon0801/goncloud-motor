@@ -558,6 +558,8 @@ class Encargo:
     observada_version: str = ""
     fases: tuple[Fase, ...] = ()
     fase_activa: str = ""
+    despliegue_mapa: tuple[tuple[str, str], ...] = ()
+    despliegue_archivo: str = ""
     solicitudes: tuple[Solicitud, ...] = ()
     decisiones: tuple[Decision, ...] = ()
     autorizaciones: tuple[tuple[str, str, str, str, str, str], ...] = ()
@@ -1443,9 +1445,11 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         datos = datos_despliegue(d)
         if "requiere_despliegue" not in datos:
             raise TransicionIlegal("política sin declaración de despliegue")
+        correspondencia = _correspondencia_despliegue(e, d)
         return replace(
             con_fase(e, replace(fase, **datos, despliegue_fuente=fuente, despliegue_huella=huella)),
             hora=hora or e.hora,
+            **correspondencia,
         )
     if kind == "producto_listo":
         e = _fase_de_evento(e, d)
@@ -2241,6 +2245,38 @@ def _sin_ciclo(fases: tuple[Fase, ...]) -> None:
 
     for fase in fases:
         visitar(fase.id)
+
+
+def _correspondencia_despliegue(e: Encargo, d: dict) -> dict:
+    if "correspondencia" not in d:
+        return {}
+    crudo = d["correspondencia"]
+    if not isinstance(crudo, dict):
+        raise TransicionIlegal("correspondencia de despliegue debe ser un objeto")
+    archivo, fases = crudo.get("archivo"), crudo.get("fases")
+    if not isinstance(archivo, str) or not archivo.strip():
+        raise TransicionIlegal("correspondencia de despliegue sin archivo")
+    if not isinstance(fases, (list, tuple)) or not fases:
+        raise TransicionIlegal("correspondencia de despliegue sin fases")
+    if any(
+        not isinstance(par, (list, tuple))
+        or len(par) != 2
+        or any(not isinstance(valor, str) or not valor.strip() for valor in par)
+        for par in fases
+    ):
+        raise TransicionIlegal("correspondencia requiere pares de ids de fase y bloque")
+    mapa = tuple((fase, bloque) for fase, bloque in fases)
+    ids_fase = {fase for fase, _ in mapa}
+    ids_bloque = {bloque for _, bloque in mapa}
+    if len(ids_fase) != len(mapa) or ids_fase != {fase.id for fase in e.fases}:
+        raise TransicionIlegal("correspondencia debe incluir cada fase exactamente una vez")
+    if len(ids_bloque) != len(mapa):
+        raise TransicionIlegal("correspondencia repite un bloque")
+    if (e.despliegue_mapa or e.despliegue_archivo) and (
+        mapa != e.despliegue_mapa or archivo != e.despliegue_archivo
+    ):
+        raise TransicionIlegal("no se reemplaza la correspondencia de despliegue adoptada")
+    return {"despliegue_mapa": mapa, "despliegue_archivo": archivo}
 
 
 def datos_despliegue(item: dict) -> dict:
