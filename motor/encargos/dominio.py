@@ -1198,7 +1198,17 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         return _orden(e, d, hora)
     if kind == "ajuste":
         if e.estado == "terminado":
-            raise TransicionIlegal("el encargo ya terminó; no admite correcciones")
+            # Con el PR abierto la corrección vuelve al responsable en la misma
+            # rama; integrado o desplegado ya no hay PR que corregir.
+            if not e.pr_numero or e.nivel_alcanzado in ("integrado", "desplegado"):
+                raise TransicionIlegal("el encargo ya terminó; no admite correcciones")
+            e = _reabrir_en_el_pr(
+                e,
+                e.fase_actual,
+                "corrección del propietario sobre el PR abierto",
+                "aplicar la corrección en la misma rama y el mismo PR",
+                hora,
+            )
         if e.estado == "cancelado" or (
             e.estado == "deteniendo" and e.motivo == "cancelado"
         ):
@@ -2460,18 +2470,31 @@ def _ci_pr(e: Encargo, d: dict, hora: str) -> Encargo:
         # Un encargo ya integrado o desplegado no vuelve a pr_abierto: el CI
         # del PR solo deja su aviso. Reabrir ahí rebajaría el nivel alcanzado.
         return replace(e, hora=hora or e.hora)
-    reabierta = replace(nueva, estado="entrega", nivel_alcanzado="pr_abierto")
+    return _reabrir_en_el_pr(
+        e,
+        nueva,
+        causa or "el CI del PR falló en una prueba del producto",
+        "corregir el CI rojo en la misma rama y el mismo PR",
+        hora,
+    )
+
+
+def _reabrir_en_el_pr(
+    e: Encargo, fase: Fase, causa: str, siguiente: str, hora: str
+) -> Encargo:
+    """La fase vuelve al responsable en su misma rama y su mismo PR."""
+    reabierta = replace(fase, estado="entrega", nivel_alcanzado="pr_abierto")
     return sesiones_de_fase_nueva(
         replace(
             con_fase(e, reabierta),
             estado="recibido",
             rol="responsable",
             estrategia="investigar",
-            motivo=causa or "el CI del PR falló en una prueba del producto",
-            siguiente="corregir el CI rojo en la misma rama y el mismo PR",
+            motivo=causa,
+            siguiente=siguiente,
             intentos_nuevos=True,
             escrituras=e.autoridad,
-            ultimo_hecho=causa or "el CI del PR falló en una prueba del producto",
+            ultimo_hecho=causa,
             devuelto_con=(),
             hora=hora or e.hora,
         )
