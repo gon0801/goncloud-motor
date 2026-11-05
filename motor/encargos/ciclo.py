@@ -4640,9 +4640,10 @@ _INFRA_CI_SEGURA = (
 )
 # El resumen de un corredor de pruebas: con él, las marcas débiles de abajo son
 # texto de las pruebas (una aserción sobre «billing» o «rate limit»).
+# Sin anclar al inicio: cada línea del log de gh lleva la hora delante.
 _RESUMEN_PRUEBAS = re.compile(
-    r"^failed tests/|\b\d+ failed\b|^fail: |failed \(failures=|assertionerror",
-    re.MULTILINE,
+    r"\b[1-9]\d* (?:failed|errors?)\b|failed \((?:[a-z]+=\d+, )*(?:failures|errors)="
+    r"|assertionerror|short test summary info|\bran \d+ tests? in\b"
 )
 _INFRA_CI = (
     "billing",
@@ -4746,10 +4747,11 @@ def _causa_tuberia_en_llano(caidas, texto: str) -> str:
     ).lower()
     if _HALLAZGOS_SECRETOS.search(junto):
         return "el control de secretos encontró claves viejas en el repositorio"
-    if any(marca in junto for marca in ("minutes", "billing", "payment")):
-        return "faltan minutos de CI"
+    # Antes que los minutos: «has timed out after 15 minutes» es un límite de tiempo.
     if any(marca in junto for marca in ("timed out", "timed_out", "timeout")):
         return "se agotó el tiempo límite de la corrida"
+    if any(marca in junto for marca in ("minutes", "billing", "payment")):
+        return "faltan minutos de CI"
     if any(marca in junto for marca in ("cancelled", "canceled")):
         return "la corrida se canceló"
     if any(
