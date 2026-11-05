@@ -770,6 +770,44 @@ class ClasificacionDeUnFallo(unittest.TestCase):
                     ciclo._clasificar_fallo_ci("gate", "failure", log), "codigo"
                 )
 
+    def test_errores_de_codigo_con_palabras_de_tuberia_son_codigo(self):
+        # Formato real: cada línea del log lleva su hora delante.
+        for lineas in (
+            ("ERROR: test_x (tests.test_cobro.Cobro.test_x)", "    return minutes - 5",
+             "TypeError: unsupported operand", "Ran 12 tests in 0.40s", "FAILED (errors=1)"),
+            ("ModuleNotFoundError: No module named 'app.payment'", "FAILED (errors=1)"),
+            ("ERROR collecting tests/test_orbit.py", "E   ImportError: orbit.billing",
+             "1 error in 0.50s"),
+            ("E   TimeoutError: timed out", "1 passed, 1 error in 2.00s"),
+        ):
+            with self.subTest(lineas=lineas[-1]):
+                log = _log_paso(
+                    "Pruebas",
+                    *(f"2026-11-05T03:14:11.7190750Z {x}" for x in lineas),
+                )
+                self.assertEqual(
+                    ciclo._clasificar_fallo_ci("gate", "failure", log), "codigo"
+                )
+
+    def test_cero_fallas_y_una_subida_caida_es_tuberia(self):
+        log = _log_paso(
+            "Subir resultados",
+            "2026-11-05T03:14:11Z Tests: 0 failed, 12 passed",
+            "2026-11-05T03:14:12Z curl: upload timed out",
+        )
+        self.assertEqual(ciclo._clasificar_fallo_ci("gate", "failure", log), "tuberia")
+
+    def test_un_limite_de_tiempo_del_paso_no_es_falta_de_minutos(self):
+        log = _log_paso(
+            "Pruebas", "##[error]The action has timed out after 15 minutes."
+        )
+        self.assertEqual(
+            ciclo._causa_tuberia_en_llano(
+                [{"nombre": "gate", "conclusion": "failure"}], log
+            ),
+            "se agotó el tiempo límite de la corrida",
+        )
+
     def test_caidas_de_red_o_servicios_son_tuberia(self):
         for paso, linea in (
             ("Gitleaks", "curl: (22) The requested URL returned error: 503"),
