@@ -813,6 +813,15 @@ class ClasificacionDeUnFallo(unittest.TestCase):
         )
         self.assertEqual(ciclo._clasificar_fallo_ci("gate", "failure", log), "tuberia")
 
+    def test_pruebas_verdes_y_una_subida_caida_es_tuberia(self):
+        log = _log_paso(
+            "Probar y subir",
+            "2026-11-05T03:14:11Z Ran 12 tests in 0.400s",
+            "2026-11-05T03:14:11Z OK",
+            "2026-11-05T03:14:12Z curl: upload timed out",
+        )
+        self.assertEqual(ciclo._clasificar_fallo_ci("gate", "failure", log), "tuberia")
+
     def test_un_limite_de_tiempo_del_paso_no_es_falta_de_minutos(self):
         log = _log_paso(
             "Pruebas", "##[error]The action has timed out after 15 minutes."
