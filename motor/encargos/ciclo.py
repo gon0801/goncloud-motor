@@ -246,15 +246,23 @@ def ordenar(
     clave: str,
     hora: str,
     autor: str = "",
+    *, fase: str = "", cierre: str = "",
 ) -> dict:
     with turno(registro.base):
-        salida = _ordenar(registro, encargo_id, accion, clave, hora, autor)
-        if not salida.get("rechazada") and not salida.get("retransmision"):
-            _enviar_orden(registro, encargo_id, accion, clave)
+        salida = _ordenar(registro, encargo_id, accion, clave, hora, autor, fase=fase, cierre=cierre)
+        if not salida.get("rechazada") and not salida.get("conflicto") and (
+            not salida.get("retransmision") or accion == "reabrir"
+        ):
+            sincronizada = _enviar_orden(registro, encargo_id, accion, clave)
+            if accion == "reabrir" and not sincronizada:
+                salida["autoridad_pendiente"] = True
         return salida
 
 
-def _enviar_orden(registro: Registro, encargo_id: str, accion: str, clave: str) -> bool:
+def _enviar_orden(
+    registro: Registro, encargo_id: str, accion: str, clave: str,
+    *, datos: dict | None = None,
+) -> bool:
     from .transporte import ConfigAutoridadInvalida, cargar, operar
 
     try:
@@ -263,11 +271,22 @@ def _enviar_orden(registro: Registro, encargo_id: str, accion: str, clave: str) 
         return False
     if cfg is None:
         return True
-    resp = operar(registro.base, {"op": accion, "encargo": encargo_id, "clave": clave})
+    mensaje = {"op": accion, "encargo": encargo_id, "clave": clave}
+    if accion == "reabrir":
+        if datos is None:
+            orden = registro.por_ukey(f"orden:{clave}")
+            if not orden or orden["kind"] != "orden":
+                return False
+            datos = orden["data"]
+        if datos.get("accion") != "reabrir":
+            return False
+        mensaje.update({k: datos[k] for k in ("fase", "cierre")})
+    resp = operar(registro.base, mensaje)
     salida = resp.get("salida") or {}
     return bool(
         resp.get("alcanzada")
         and not salida.get("rechazada")
+        and not salida.get("conflicto")
         and not salida.get("error")
     )
 
@@ -279,6 +298,7 @@ def _ordenar(
     clave: str,
     hora: str,
     autor: str = "",
+    *, fase: str = "", cierre: str = "",
 ) -> dict:
     ukey = f"orden:{clave}"
     previo = _recibo_previo(registro, encargo_id, ukey, accion)
@@ -288,8 +308,15 @@ def _ordenar(
     if enc is None:
         raise TransicionIlegal("no hay encargo")
     recibo = recibo_de(ukey)
+    datos = {"accion": accion, "hora": hora}
+    if accion == "reabrir":
+        datos.update(
+            fase=fase or (enc.cierre_forzado_fase.id if enc.cierre_forzado_fase else ""),
+            cierre=cierre or enc.cierre_forzado_huella,
+            clave=clave,
+        )
     try:
-        reducir(enc, {"kind": "orden", "data": {"accion": accion, "hora": hora}})
+        reducir(enc, {"kind": "orden", "data": datos})
     except TransicionIlegal as exc:
         registro.append(
             encargo_id,
@@ -310,6 +337,7 @@ def _ordenar(
         salida["motivo"] = str(exc)
         return salida
     datos_orden = {
+        **datos,
         "accion": accion,
         "recibo": recibo,
         "resultado": "aplicada",
@@ -324,7 +352,7 @@ def _ordenar(
         try:
             reducir(
                 registro.fold(encargo_id),
-                {"kind": "orden", "data": {"accion": accion, "hora": hora}},
+                {"kind": "orden", "data": datos},
             )
         except TransicionIlegal as exc:
             motivo = str(exc)
@@ -694,16 +722,23 @@ _MAX_INTENTOS_LIMPIEZA = 2
 
 
 def _anotar_limpieza_fallida(
-    registro: Registro, enc: Encargo, ruta: Path, exc: OSError, hora: str
+    registro: Registro,
+    enc: Encargo,
+    ruta: Path,
+    exc: OSError,
+    hora: str,
+    intento: int = 1,
 ) -> None:
     nota = (
         f"limpieza({ruta.name}): {type(exc).__name__}: {exc}; "
         "no se reintenta en cada barrido"
     )[:2000]
+    # La ukey lleva el intento: con la fija, el segundo fallo (otra ruta u otro
+    # mensaje) se descartaría en silencio por el dedup del registro.
     registro.anotar(
         enc.id,
         {"kind": "procedimiento", "data": {"nota": nota, "hora": hora}},
-        f"limpieza-fallida:{enc.id}",
+        f"limpieza-fallida:{enc.id}:{intento}",
     )
 
 
@@ -760,7 +795,9 @@ def _limpiar_encargo_cerrado(
     if fallos:
         _LIMPIEZA_FALLIDA[clave] = fallos_previos + 1
         ruta, exc = fallos[0]
-        _anotar_limpieza_fallida(registro, enc, ruta, exc, hora)
+        _anotar_limpieza_fallida(
+            registro, enc, ruta, exc, hora, intento=fallos_previos + 1
+        )
     else:
         _LIMPIEZA_FALLIDA.pop(clave, None)
     return borrado
@@ -995,7 +1032,7 @@ def _barrer_encargos(
             and enc.pendientes_entrega
             and enc.proc is None
             and not enc.reserva
-            and enc.estado in ("recibido", "ejecutando", "necesita_usuario")
+            and enc.estado in ("recibido", "ejecutando")
         ):
             # La entrega con pendientes va delante de cualquier paso que pueda
             # volver a fallar: es el camino que corta la espera y el ciclo.
@@ -1065,7 +1102,7 @@ def _barrer_encargos(
             and enc.pendientes_entrega
             and enc.proc is None
             and not enc.reserva
-            and enc.estado in ("recibido", "ejecutando", "necesita_usuario")
+            and enc.estado in ("recibido", "ejecutando")
         ):
             enc = _entregar_con_pendientes(registro, enc, gh, hora)
         if enc.host and enc.host != socket.gethostname() and (enc.reserva or enc.proc):
@@ -1187,6 +1224,11 @@ def _barrer_encargos(
         if enc.estado == "terminado" and enc.pr_numero and not parada:
             enc = _revisar_ci_del_pr(registro, enc, gh, hora)
         sin_hecho = _edad(enc, epoch) >= umbral_s
+        if arbol == "ausente" and (enc.estado == "deteniendo" or parada):
+            from .despliegue import observacion as observar_despliegue
+
+            if observar_despliegue(registro, enc) != "ausente":
+                arbol = "incierto"
         decision = _decision(enc, arbol, directorio, sin_hecho, hora)
         if sin_llm:
             decision["lanzar"] = False
@@ -1500,7 +1542,8 @@ def _sin_avance(
     """Escalera de una vuelta que no cerro ningun bloqueante: la primera vuelve
     a diagnosticar, la segunda seguida releva el mismo rol a otro modelo
     autorizado. Si el relevo tampoco avanza en el mismo punto, el encargo
-    entrega con los pendientes abiertos y termina. Nunca espera a una persona.
+    entrega con los pendientes abiertos. Si ya está aprobado pero la entrega
+    sigue bloqueada, pide intervención y conserva el encargo abierto.
     `enc` ya incorpora el hallazgo de la vuelta.
 
     Una vuelta cuenta una sola vez: si otra fuente del mismo barrido ya la
@@ -1945,8 +1988,11 @@ def _impedimento_de_instrumento(
     Una clase distinta sí es un intento de reparación y se deja pasar.
 
     A la tercera falla igual, la herramienta se marca como no disponible para
-    este encargo: deja de bloquear y el trabajo sigue con la evidencia que haya,
-    también cuando la que falla es el juicio o la inspección."""
+    este encargo: deja de bloquear y el trabajo sigue con la evidencia que hay,
+    también cuando la que falla es el juicio o la inspección. Devuelve True
+    cuando el caso queda manejado (la tercera falla ya no gasta un turno de
+    reparación leyendo el fold anterior) y False cuando el llamador debe
+    devolver el trabajo para reparar el instrumento."""
     previas = sum(
         1
         for ev in registro.eventos(enc.id)
@@ -1992,7 +2038,8 @@ def _impedimento_de_instrumento(
                 },
                 f"pendiente-instrumento:{enc.id}:{clase}",
             )
-        return False
+        # La herramienta ya no bloquea: no se gasta un turno de reparación.
+        return True
     _anotar_impedimento(registro, enc, clase, causa, condicion, hora)
     return True
 
@@ -2244,6 +2291,13 @@ def _intentar_cierre(
                     hora, "pedidos",
                 )
             return registro.fold(enc.id)
+    if any(p["operacion"] == "desplegar" for p in pedidos):
+        if enc.entrega.nivel != "desplegado":
+            marcar_pregunta(registro, enc.id, "el encargo no autoriza desplegar", True, hora)
+            return registro.fold(enc.id)
+        if not nivel_cumplido(enc):
+            return enc
+        pedidos = [p for p in pedidos if p["operacion"] != "desplegar"]
     if pedidos and not enc.autoridad:
         marcar_espera(
             registro,
@@ -2774,6 +2828,9 @@ def _incorporar(
 
     directorio = directorio or _directorio(registro.base, enc.id)
     outcome_path = directorio / "outcome.json"
+    if enc.intento_interrumpido and (not enc.intento or not outcome_path.is_file()):
+        _publica(directorio / "incorporado", hora)
+        return enc
     if outcome_path.is_file():
         outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
         sesion_runtime = str(outcome.get("sesion_runtime") or "")
@@ -2803,6 +2860,9 @@ def _incorporar(
                 "guardar",
                 hora,
             )
+        if enc.intento_interrumpido:
+            _publica(directorio / "incorporado", hora)
+            return registro.fold(enc.id)
         if outcome.get("autenticacion_expirada"):
             marcar_espera(
                 registro,
@@ -4805,7 +4865,10 @@ def _causa_tuberia_en_llano(caidas, texto: str) -> str:
     return "la tubería del CI falló"
 
 
-def _aviso_ci_en_llano(clase: str, caidas, texto: str, reabrir: bool = True) -> str:
+def _aviso_ci_en_llano(
+    clase: str, caidas, texto: str, reabrir: bool = True,
+    sin_relanzamiento: bool = False,
+) -> str:
     """El aviso para alguien que no es técnico: qué falló, de quién es y qué
     conviene hacer. Sin nombres de archivo, hashes ni el log literal."""
     que = " y ".join(
@@ -4823,6 +4886,14 @@ def _aviso_ci_en_llano(clase: str, caidas, texto: str, reabrir: bool = True) -> 
         )
     if clase == "tuberia":
         causa = _causa_tuberia_en_llano(caidas, texto)
+        if sin_relanzamiento:
+            # No hubo segundo intento (no se pudo identificar el run): no se
+            # sabe si era pasajero, así que no se anuncia problema fijo.
+            return (
+                f"La tubería falló: {causa}. No se pudo relanzar sola para ver "
+                "si era pasajero. El cambio ya está revisado; recomiendo "
+                "mergear y abrir un encargo para arreglar la tubería."
+            )
         return (
             f"La tubería de este proyecto tiene un problema fijo: {causa}. "
             "El cambio ya está revisado; recomiendo mergear y abrir un encargo "
@@ -4980,9 +5051,36 @@ def _revisar_ci_del_pr(
         veredicto_ci = gh.checks(enc.entrega.repo, enc.pr_numero, sha, ())
     except Exception as exc:
         if al_limite:
-            # Al vencer el plazo no se declara sin resultado sin haber leído:
-            # el CI pudo terminar. Si la lectura falla, sí es terminal para no
-            # quedarse reintentando errores cada barrido.
+            hechos = int(sondeo.get("errores_limite") or 0)
+            if hechos < 1:
+                # Una lectura fallida justo al vencer puede esconder un
+                # resultado ya listo: se concede una sola lectura más en el
+                # siguiente barrido y ahí sí termina el sondeo (sin sondear
+                # errores para siempre).
+                _guardar_sondeo_ci(
+                    ruta_sondeo,
+                    {
+                        "sha": sha,
+                        "primero": primero,
+                        "ultimo": hora,
+                        "sondeos": int(sondeo.get("sondeos") or 0),
+                        "errores_limite": hechos + 1,
+                    },
+                )
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "procedimiento",
+                        "data": {
+                            "nota": f"no se pudo leer el CI del PR todavía: {exc}",
+                            "hora": hora,
+                        },
+                    },
+                    f"ci-pr-error:{enc.id}:{sha}",
+                )
+                return registro.fold(enc.id) or enc
+            # Al vencer el plazo con una segunda lectura fallida sí es
+            # terminal: se declara sin resultado y se deja de sondear.
             return _anotar_ci_del_pr(
                 registro,
                 enc,
@@ -5119,6 +5217,7 @@ def _revisar_ci_del_pr(
         "\n".join(_texto_de_pasos_fallidos(t) for t in detalles.values() if t)
         or texto
     )
+    sin_relanzamiento = False
     if valores == {"tuberia"} and not reintentado:
         run_ids = tuple(
             dict.fromkeys(
@@ -5176,6 +5275,9 @@ def _revisar_ci_del_pr(
                     hora=hora,
                 )
             return enc
+        # Sin run_ids no hay rerun posible: el rojo se anuncia sin un segundo
+        # intento, y el aviso no puede decir problema fijo.
+        sin_relanzamiento = True
     if "codigo" in valores:
         clase = "codigo"
         reabrir = enc.nivel_alcanzado not in ("integrado", "desplegado")
@@ -5196,7 +5298,10 @@ def _revisar_ci_del_pr(
         reabrir=reabrir,
         clase=clase,
         reintento=reintento,
-        aviso=_aviso_ci_en_llano(clase, caidas, texto_aviso, reabrir=reabrir),
+        aviso=_aviso_ci_en_llano(
+            clase, caidas, texto_aviso, reabrir=reabrir,
+            sin_relanzamiento=sin_relanzamiento,
+        ),
         hora=hora,
     )
 
@@ -5476,6 +5581,18 @@ def _entregar_con_pendientes(
                 if enc.entrega.nivel in ("integrado", "desplegado")
                 else _base_fase(enc)
             )
+            if not numero:
+                ref_base = _ref_existente(espacio, f"origin/{base}", base)
+                conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}") if ref_base else None
+                if conteo is None or conteo.returncode != 0:
+                    marcar_espera(registro, enc.id, "no se pudieron comprobar los commits para publicar el PR",
+                                  _reanuda_en(120), hora)
+                    return registro.fold(enc.id)
+                if conteo.stdout.strip() == "0":
+                    marcar_pregunta(registro, enc.id,
+                                    f"La fase {enc.fase_activa} no tiene commits para un PR con pendientes; "
+                                    "hace falta resolver el bloqueo antes de continuar.", True, hora)
+                    return registro.fold(enc.id)
             cuerpo = _cuerpo_pr(
                 replace(enc, pendientes_entrega=tuple(pendientes)), espacio
             )
@@ -5541,7 +5658,7 @@ def _entregar_con_pendientes(
             "kind": "cierre_forzado",
             "data": {"evidencia": evidencia, "hora": hora},
         },
-        f"cierre-forzado:{enc.id}:{enc.fase_activa}:{len(pendientes)}:{sha}",
+        f"cierre-forzado:{enc.id}:{enc.fase_activa}:{enc.reaperturas}:{len(pendientes)}:{sha}",
     )
     enc = registro.fold(enc.id) or enc
     _publica(directorio / "incorporado", hora)
@@ -5789,6 +5906,19 @@ def _autocontestar_preguntas(
 def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
+    from .politica_despliegue import adoptar as adoptar_politica_despliegue
+
+    enc = adoptar_politica_despliegue(
+        registro, enc, _espacio(registro.base, enc.id), hora
+    )
+    if enc.nivel_alcanzado == "desplegado":
+        from .despliegue import comprobar_recibo
+
+        try:
+            comprobar_recibo(enc)
+        except ValueError as exc:
+            _preguntar_despliegue(registro, enc, str(exc), hora)
+            return registro.fold(enc.id) or enc
     if _devolver_correcciones(registro, enc, hora):
         return registro.fold(enc.id)
     if (
@@ -5806,6 +5936,14 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             registro, enc, gh, _espacio(registro.base, enc.id),
             _directorio(registro.base, enc.id), hora,
         )
+    if enc.entrega.nivel == "desplegado" and enc.nivel_alcanzado == "integrado":
+        enc = _paso_despliegue(registro, enc, _espacio(registro.base, enc.id), hora)
+        if nivel_cumplido(enc):
+            return _cerrar_con_veredicto(
+                registro, enc, gh, _espacio(registro.base, enc.id),
+                _directorio(registro.base, enc.id), hora,
+            )
+        return enc
     if gh is None:
         causa = (
             "nivel de entrega "
@@ -6241,15 +6379,41 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
                     )
         except Exception as exc:
-            from motor.github import MergeRechazado
+            from motor.github import MergeRechazado, PoliticaBloquea
 
             causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
+            necesita_usuario = isinstance(exc, MergeRechazado)
+            if isinstance(exc, PoliticaBloquea):
+                try:
+                    checks = gh.checks_requeridos(
+                        enc.entrega.repo, enc.pr_numero, enc.pr_sha
+                    )
+                except MergeRechazado as rechazo:
+                    causa += f"; {rechazo}"
+                except Exception as lectura:
+                    necesita_usuario = False
+                    causa += f"; no se pudieron leer los checks requeridos: {lectura}"
+                else:
+                    if (
+                        checks.en_marcha
+                        and not checks.fallas
+                        and set(checks.faltan) <= set(checks.en_marcha)
+                    ):
+                        marcar_espera(
+                            registro, enc.id,
+                            f"esperando checks requeridos del PR #{enc.pr_numero}: "
+                            + ", ".join(checks.en_marcha),
+                            _reanuda_desde(hora, 120), hora,
+                        )
+                        return registro.fold(enc.id)
+                    if checks.fallas:
+                        causa += "; checks requeridos fallidos: " + ", ".join(checks.fallas)
             _anotar_instrumento(
                 registro, enc, "github", causa,
                 "resolver la causa del merge rechazado sobre el SHA revisado",
                 hora, f"merge-{enc.pr_sha[:12]}",
             )
-            if isinstance(exc, MergeRechazado):
+            if necesita_usuario:
                 marcar_pregunta(registro, enc.id, causa, True, hora)
             else:
                 marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
@@ -6278,17 +6442,35 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     return enc
 
 
+def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: str) -> None:
+    # Continuar reabre el trabajo sin cambiar intento ni generación. La misma
+    # causa debe bloquear otra vez, una sola vez por esa intervención.
+    continuacion = next((
+        ev["id"] for ev in reversed(registro.eventos(enc.id))
+        if ev["kind"] == "orden" and ev["data"].get("accion") == "continuar"
+    ), 0)
+    huella = hashlib.sha256(causa.encode()).hexdigest()[:12]
+    marcar_pregunta(
+        registro, enc.id, causa, True, hora,
+        ukey=f"pregunta-despliegue:{enc.id}:{enc.fase_activa}:{continuacion}:{huella}",
+    )
+
+
 def _paso_despliegue(
     registro: Registro, enc: Encargo, espacio: Path, hora: str
 ) -> Encargo:
-    """Nunca reabre un PR vacío: solo sella con el efecto que corresponde a un
-    pedido vivo, con la misma identidad que exige el cierre."""
+    """El sello se obtiene de la receta ejecutada sobre el commit integrado."""
+    from . import despliegue, politica_despliegue
+
     if enc.entrega.nivel != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
+    enc = politica_despliegue.adoptar(registro, enc, espacio, hora)
+    if nivel_cumplido(enc):
+        return enc
+    # Conserva el diagnóstico de instrumentos inválidos, pero ningún pedido
+    # del agente ni recibo de ensayo acredita una ejecución de producción.
     try:
-        pedidos = [
-            p for p in _pedidos_efecto(espacio) if p["operacion"] == "desplegar"
-        ]
+        _pedidos_efecto(espacio)
     except (OSError, ValueError, TypeError) as exc:
         _anotar_instrumento(
             registro, enc, "adaptador", str(exc),
@@ -6300,91 +6482,38 @@ def _paso_despliegue(
             "que .interno/pedido-efecto.json vuelva a validar", hora,
         )
         return registro.fold(enc.id) or enc
-    efecto = None
-    for pedido in pedidos:
-        efecto = next(
-            (
-                e
-                for e in enc.efectos
-                if e.id == pedido["id"]
-                and e.operacion == pedido["operacion"]
-                and e.clave == pedido["clave"]
-                and e.cuerpo == pedido["cuerpo"]
-                and e.estado == "aplicado"
-                and e.recibo
-            ),
-            None,
-        )
-        if efecto is not None:
-            break
-    if efecto is None and pedidos:
-        from .frontera import DestinoEnsayo, despachar
-
-        destino = DestinoEnsayo(registro.base / "destino")
-        for pedido in pedidos:
-            despachar(
-                registro,
-                enc.id,
-                destino,
-                str(pedido["id"]),
-                str(pedido["operacion"]),
-                str(pedido["clave"]),
-                str(pedido["cuerpo"]),
-                hora,
-            )
-        enc = registro.fold(enc.id)
-        efecto = None
-        for pedido in pedidos:
-            efecto = next(
-                (
-                    e
-                    for e in enc.efectos
-                    if e.id == pedido["id"]
-                    and e.operacion == pedido["operacion"]
-                    and e.clave == pedido["clave"]
-                    and e.cuerpo == pedido["cuerpo"]
-                    and e.estado == "aplicado"
-                    and e.recibo
-                ),
-                None,
-            )
-            if efecto is not None:
-                break
-    if efecto is None:
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "sin_progreso",
-                "data": {
-                    "huella": enc.bloqueo_huella,
-                    "diagnostico": (
-                        "integrado; falta un efecto de despliegue "
-                        "declarado con recibo para cerrar el nivel "
-                        "desplegado"
-                    ),
-                    "escalar": True,
-                    "hora": hora,
-                },
-            },
-            f"entrega:{enc.id}:desplegado:sin-efecto",
-        )
-        return registro.fold(enc.id)
+    politica = politica_despliegue.resolver(espacio, enc)
+    if politica.requiere_despliegue is None:
+        resultado = {"estado": "esperando", "motivo":
+                     "falta declarar si la fase despliega y su receta real"}
+    else:
+        resultado = despliegue.iniciar(registro, enc, espacio, politica, hora)
+    fresco = registro.fold(enc.id) or enc
+    if not fresco.escrituras or not fresco.intentos_nuevos:
+        return fresco
+    if resultado["estado"] != "aplicado":
+        causa = resultado["motivo"]
+        if resultado.get("recibo"):
+            causa += "; recibo: " + resultado["recibo"]
+        if resultado["estado"] in ("fallido", "incierto"):
+            _preguntar_despliegue(registro, enc, causa, hora)
+        else:
+            marcar_espera(registro, enc.id, causa, _reanuda_desde(hora, 30), hora)
+        return registro.fold(enc.id) or enc
+    # Una parada durante la receta no se convierte en un cierre. El recibo
+    # queda disponible para conciliar al continuar el encargo.
+    fresco = registro.fold(enc.id) or enc
+    if not fresco.escrituras or not fresco.intentos_nuevos:
+        return fresco
     registro.anotar(
         enc.id,
-        {
-            "kind": "entrega_externa",
-            "data": {
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "paso": "desplegado",
-                "repo": enc.entrega.repo,
-                "numero": enc.pr_numero,
-                "sha": enc.pr_sha,
-                "recibo": efecto.recibo,
-                "hora": hora,
-            },
-        },
-        f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{efecto.id}",
+        {"kind": "entrega_externa", "data": {
+            "fase": enc.fase_activa, "intento": enc.intento, "paso": "desplegado",
+            "repo": enc.entrega.repo, "numero": enc.pr_numero,
+            "sha": enc.fase_actual.integrado_sha,
+            "recibo": resultado["recibo"], "hora": hora,
+        }},
+        f"entrega:{enc.id}:{enc.fase_activa}:desplegado:{enc.fase_actual.integrado_sha}",
     )
     return registro.fold(enc.id) or enc
 
@@ -6930,6 +7059,8 @@ def _nuevo_cierre_tras_marcador(
             return True
         if evento["kind"] == "ci_pr" and evento["data"].get("reabrir"):
             return True
+        if evento["kind"] == "orden" and evento["data"].get("accion") == "reabrir":
+            return True
     return False
 
 
@@ -6960,18 +7091,19 @@ def _mirar_autoridad(registro: Registro, enc: Encargo, hora: str) -> Encargo:
             if evento["kind"] == "orden" and evento["data"]["accion"] in (
                 "parar",
                 "cancelar",
+                "reabrir",
             ):
                 orden = evento["data"]
                 break
         if orden is not None:
-            clave = orden["recibo"] + "-canonico"
+            clave = orden["clave"] if orden["accion"] == "reabrir" else orden["recibo"] + "-canonico"
             if enc.estado == "cancelado":
-                if _enviar_orden(registro, enc.id, orden["accion"], clave):
+                if _enviar_orden(registro, enc.id, orden["accion"], clave, datos=orden):
                     _marcar_autoridad_cerrada(registro, enc, hora)
             elif registro.por_ukey(
                 f"autoridad-orden:{enc.id}:{orden['recibo']}"
             ) is None:
-                if _enviar_orden(registro, enc.id, orden["accion"], clave):
+                if _enviar_orden(registro, enc.id, orden["accion"], clave, datos=orden):
                     _marcar_autoridad_orden(
                         registro, enc, str(orden["recibo"]), hora
                     )

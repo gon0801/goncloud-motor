@@ -220,8 +220,11 @@ class Workflow(unittest.TestCase):
                         break
                     cabecera.append(linea)
                 texto = "\n".join(cabecera)
+                needs = next(x for x in lineas if x.strip().startswith("needs:"))
+                # El needs de la cabecera debe nombrar a prep: no basta que
+                # la palabra aparezca en cualquier parte del job.
+                self.assertRegex(needs, r"\bprep\b")
                 self.assertIn("needs:", texto)
-                self.assertIn("prep", texto)
                 condicion = next(x for x in lineas if x.strip().startswith("if:"))
                 self.assertIn("always()", condicion)
                 self.assertIn(f"needs.prep.outputs.{job.replace('-', '_')} != 'false'", condicion)

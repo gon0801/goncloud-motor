@@ -177,6 +177,31 @@ class _GhConCorridas(_GhConDeepSeek):
         self._reintentos[str(repo)] = self._reintentos.get(str(repo), 0) + 1
 
 
+class _GhSinRunId(_GhConCorridas):
+    """Las corridas no traen el id del run (sin urls): el rerun es imposible."""
+
+    def checks(self, repo, numero, sha, extra, relanzadas=(), *, base_politica=""):
+        self.checks_llamadas += 1
+        cfg = self._cfg(repo)
+        estados = {
+            "cancelled": ("completed", "cancelled"),
+            "failure": ("completed", "failure"),
+        }
+        runs = []
+        for nombre, estado in (cfg.get("corridas") or {}).items():
+            status, conclusion = estados[estado]
+            runs.append(
+                {
+                    "name": nombre,
+                    "status": status,
+                    "conclusion": conclusion,
+                    "completed_at": _VACIO,
+                    "id": 50001,
+                }
+            )
+        return veredicto(sha, tuple(extra), runs, "")
+
+
 def _segunda_corrida(vuelta, repo: str, corridas: dict, logs: dict | None = None):
     ruta = vuelta.gh.d / "repos.json"
     cfg = json.loads(ruta.read_text())
@@ -420,6 +445,64 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
 
 
 class ElReintentoSinEmpezarNoSondeaCadaBarrido(unittest.TestCase):
+    def test_un_error_de_lectura_al_vencer_concede_una_lectura_mas(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-error-limite",
+                _GhConCorridas,
+                {"corridas": {"bateria": "in_progress"}},
+            )
+            e = vuelta("hola\n")
+            repo = e.entrega.repo
+            vuelta.gh.checks_llamadas = 0
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(_estados_ci(r), [])
+            vuelta.gh.fallar_checks(repo, 2)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(90))
+            self.assertEqual(_estados_ci(r), [])
+            self.assertEqual(vuelta.gh.checks_llamadas, 2)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(91))
+            self.assertEqual(_estados_ci(r), ["sin_resultado"])
+            self.assertEqual(vuelta.gh.checks_llamadas, 3)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(92))
+            self.assertEqual(vuelta.gh.checks_llamadas, 3)
+            self.assertEqual(_estados_ci(r), ["sin_resultado"])
+
+    def test_el_resultado_sobrevive_a_un_error_de_lectura_en_el_limite(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-error-limite-verde",
+                _GhConCorridas,
+                {"corridas": {"bateria": "in_progress"}},
+            )
+            e = vuelta("hola\n")
+            repo = e.entrega.repo
+            vuelta.gh.checks_llamadas = 0
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(_estados_ci(r), [])
+            vuelta.gh.fallar_checks(repo, 1)
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(90))
+            self.assertEqual(_estados_ci(r), [])
+            self.assertEqual(vuelta.gh.checks_llamadas, 2)
+
+            ruta = vuelta.gh.d / "repos.json"
+            cfg = json.loads(ruta.read_text())
+            cfg[str(repo)]["corridas_sha"] = {e.pr_sha: {"bateria": "success"}}
+            ruta.write_text(json.dumps(cfg))
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora(91))
+            self.assertEqual(_estados_ci(r), ["verde"])
+            self.assertEqual(vuelta.gh.checks_llamadas, 3)
+
     def test_al_vencer_el_plazo_termina_en_sin_resultado(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
@@ -450,6 +533,31 @@ class ElReintentoSinEmpezarNoSondeaCadaBarrido(unittest.TestCase):
 
 
 class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
+    def test_sin_run_id_no_se_declara_problema_fijo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "ci-pr-sin-run-id",
+                _GhSinRunId,
+                {"corridas": {"bateria": "cancelled"}},
+            )
+            e = vuelta("hola\n")
+            repo = e.entrega.repo
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, _hora())
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.fase_actual.ci_pr_estado, "rojo")
+            self.assertEqual(e.fase_actual.ci_pr_clase, "tuberia")
+            self.assertEqual(e.fase_actual.ci_pr_reintento, "permanente")
+            self.assertEqual(vuelta.gh.relanzadas, [])
+            avisos = _avisos(e)
+            self.assertEqual(len(avisos), 1)
+            texto = avisos[0]["texto"]
+            self.assertIn("tubería", texto)
+            self.assertIn("No se pudo relanzar", texto)
+            self.assertNotIn("problema fijo", texto)
+
     def test_la_cancelacion_pasajera_pasa_en_la_segunda_y_no_avisa(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(

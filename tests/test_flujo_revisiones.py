@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,135 @@ from motor.encargos.registro import Registro
 from motor.flota.runtime import exigir_poteto
 from motor.github import FakeGitHub, GhGitHub
 from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
+from tests import git_env_limpio
+
+
+class PushSandboxSinGitAmbiental(unittest.TestCase):
+    """Los pushes entre repos de ensayo no heredan la config Git del proceso padre.
+
+    Un `GIT_CONFIG_*` ambiental con un `core.hooksPath` cuya pre-push rechaza
+    hacía fallar el push de la semilla en `_entrega_pr` (init y commit
+    pasaban, push salía 1): era la roja del comprobador. El banco arranca con
+    el ambiente Git saneado (`tests/__init__`) y el git de ensayo usa
+    `git_env_limpio` explícito.
+    """
+
+    def test_el_banco_arranca_sin_config_git_ambiental(self):
+        n = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+        claves = [os.environ.get(f"GIT_CONFIG_KEY_{i}", "(falta)") for i in range(n)]
+        self.assertEqual(
+            claves,
+            ["core.longpaths"],
+            "el banco heredó configuración Git ambiental al importar "
+            "(la única permitida es la de rutas largas que él mismo arma)",
+        )
+
+    def test_el_saneo_al_importar_quita_el_git_heredado(self):
+        """Un hijo con GIT_DIR heredado lo ve desaparecer tras importar tests.
+
+        Sin el saneo del `tests/__init__`, un GIT_DIR del proceso padre
+        redirigiría el git de cada sandbox hacia un repo ajeno; el estado
+        final del proceso solo con el par armado no distingue si el saneo
+        corrió, por eso este ensayo mira el ambiente de un intérprete que
+        importa el banco con la herencia inyectada.
+        """
+        raiz = Path(__file__).resolve().parents[1]
+        hijo = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import os, sys; sys.path.insert(0, %r); import tests; "
+                "print('GIT_DIR=' + ('AUSENTE' if os.environ.get('GIT_DIR') "
+                "is None else 'PRESENTE'), 'CLAVE=' "
+                "+ str(os.environ.get('GIT_CONFIG_KEY_0')))" % str(raiz),
+            ],
+            env={
+                **os.environ,
+                "GIT_DIR": str(raiz),
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.hooksPath",
+                "GIT_CONFIG_VALUE_0": "no-importa",
+            },
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        self.assertEqual(hijo.returncode, 0, hijo.stderr)
+        self.assertIn("GIT_DIR=AUSENTE", hijo.stdout, hijo.stdout + hijo.stderr)
+        self.assertIn(
+            "CLAVE=core.longpaths",
+            hijo.stdout,
+            "la config armada por el banco no quedó en el ambiente del hijo: "
+            + hijo.stdout
+            + hijo.stderr,
+        )
+
+    def test_el_push_del_sandbox_sobrevive_a_un_hookspath_que_rechaza(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raiz = Path(tmp)
+            hooks = raiz / "hooks"
+            hooks.mkdir()
+            (hooks / "pre-push").write_text("#!/bin/sh\nexit 1\n")
+            # Sin el permiso de ejecucion Linux ignora el hook y el control
+            # no rechaza; Git para Windows no lo exige.
+            os.chmod(hooks / "pre-push", 0o755)
+            bare = raiz / "repo.git"
+            semilla = raiz / "semilla"
+            semilla.mkdir()
+            (semilla / "base.txt").write_text("base\n")
+            subprocess.run(
+                ["git", "init", "--bare", "-b", "main", "--quiet", str(bare)],
+                check=True,
+            )
+            # El receive-pack de un push local lee la config del repo, no la
+            # del ambiente: sin longpaths no escribe objetos bajo el temporal
+            # profundo del comprobador ("Filename too long").
+            subprocess.run(
+                ["git", "-C", str(bare), "config", "core.longpaths", "true"],
+                check=True,
+            )
+            for args in (
+                ["init", "-b", "main", "--quiet"],
+                ["add", "-A"],
+                [
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@l",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "base",
+                ],
+            ):
+                subprocess.run(["git", "-C", str(semilla), *args], check=True)
+            inyectado = {
+                **os.environ,
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.hooksPath",
+                "GIT_CONFIG_VALUE_0": str(hooks),
+            }
+            control = subprocess.run(
+                ["git", "-C", str(semilla), "push", "--quiet", str(bare), "main"],
+                env=inyectado,
+                capture_output=True,
+            )
+            self.assertNotEqual(
+                control.returncode,
+                0,
+                "el hook ambiental dejó pasar el push de control",
+            )
+            limpio = subprocess.run(
+                ["git", "-C", str(semilla), "push", "--quiet", str(bare), "main"],
+                env=git_env_limpio(),
+                capture_output=True,
+            )
+            self.assertEqual(
+                limpio.returncode, 0, limpio.stderr.decode("utf-8", "replace")
+            )
 
 
 def sonda_sin_aislamiento_del_host() -> None:
@@ -191,6 +321,26 @@ def _contiene(letra: str) -> str:
     )
 
 
+def _git_de_ensayo(semilla: Path, args: list[str], donde: Path | None = None) -> None:
+    """Git del sandbox que se explica cuando falla: la corrida de un
+    comprobador captura la salida del banco y un push roto sin mensaje no
+    deja pista de por qué falló."""
+    hecho = subprocess.run(
+        ["git", "-C", str(donde or semilla), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if hecho.returncode:
+        detalle = hecho.stderr.strip() or hecho.stdout.strip() or "(sin salida)"
+        raise RuntimeError(
+            f"git {' '.join(args)} salio {hecho.returncode} en {semilla}: "
+            f"{detalle[:400]}; git resuelto en {shutil.which('git')}"
+        )
+
+
 def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, nivel: str = "pr"):
     """Encargo de nivel pr sobre un repo bare real. `vuelta(contenido)` hace
     de implementador y de revisor que aprueba, y devuelve el encargo tras el
@@ -202,16 +352,18 @@ def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, n
     semilla = raiz / "semilla"
     semilla.mkdir()
     (semilla / "base.txt").write_text("base\n")
-    subprocess.run(
-        ["git", "init", "--bare", "-b", "main", "--quiet", str(bare)], check=True
-    )
+    _git_de_ensayo(semilla, ["init", "--bare", "-b", "main", "--quiet", str(bare)])
+    # El receive-pack de un push local lee la config del repo, no la del
+    # ambiente: sin longpaths no puede escribir objetos bajo el temporal
+    # profundo del comprobador ("Filename too long", remote unpack failed).
+    _git_de_ensayo(semilla, ["config", "core.longpaths", "true"], donde=bare)
     for args in (
         ["init", "-b", "main", "--quiet"],
         ["add", "-A"],
         ["-c", "user.name=t", "-c", "user.email=t@l", "commit", "--quiet", "-m", "base"],
         ["push", "--quiet", str(bare), "main"],
     ):
-        subprocess.run(["git", "-C", str(semilla), *args], check=True)
+        _git_de_ensayo(semilla, args)
     r = Recorrido(
         tmp, clave, "agrega saludo.txt con hola",
         entrega_nivel=nivel, repo=str(bare), base_rama="main",

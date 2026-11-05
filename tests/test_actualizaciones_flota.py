@@ -136,7 +136,87 @@ class ActualizacionesFlota(unittest.TestCase):
         self.assertNotIn("sin_turnos", preparar.call_args.kwargs)
         with self.assertRaises(SystemExit):
             main(["preparar", "--home", str(home), "--sin-turnos"])
-        rc = main(["actualizar", "--home", str(home), "--catalogo", str(catalogo), "--sin-turnos"])
+        with patch(
+            "motor.flota.actualizaciones.actualizar",
+            return_value={"accion": "nada"},
+        ) as actualizar:
+            rc = main(
+                [
+                    "actualizar",
+                    "--home",
+                    str(home),
+                    "--catalogo",
+                    str(catalogo),
+                    "--sin-turnos",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.assertIs(actualizar.call_args.kwargs.get("sin_turnos"), True)
+        with patch(
+            "motor.flota.actualizaciones.actualizar",
+            return_value={"accion": "nada"},
+        ) as actualizar:
+            rc = main(["actualizar", "--home", str(home), "--catalogo", str(catalogo)])
+        self.assertEqual(rc, 0)
+        self.assertIs(actualizar.call_args.kwargs.get("sin_turnos"), False)
+
+    def test_flota_ciclo_reenvia_sin_turnos_y_trata_rechazada(self):
+        from ops import flota_ciclo
+
+        home = self.base / "home-ciclo"
+        home.mkdir()
+        rechazada = {
+            "accion": "rechazada",
+            "destino": "abc123",
+            "motivo": "turno real fallido: hermes",
+        }
+        # Modo réplica: el camino mínimo que llega a `actualizar`.
+        with (
+            patch("ops.flota_ciclo.leer_fuente", return_value={"maquina": "pc"}),
+            patch("ops.flota_ciclo.estado", return_value={"estado": "igual"}),
+            patch("ops.flota_ciclo.actualizar", return_value=rechazada) as actualizar,
+        ):
+            rc = flota_ciclo.main(["--home", str(home), "--sin-turnos", "--json"])
+        self.assertEqual(rc, 1)
+        self.assertIs(actualizar.call_args.kwargs.get("sin_turnos"), True)
+        with (
+            patch("ops.flota_ciclo.leer_fuente", return_value={"maquina": "pc"}),
+            patch("ops.flota_ciclo.estado", return_value={"estado": "igual"}),
+            patch("ops.flota_ciclo.actualizar", return_value=rechazada),
+        ):
+            rc = flota_ciclo.main(["--home", str(home)])
+        self.assertEqual(rc, 1)
+        with (
+            patch("ops.flota_ciclo.leer_fuente", return_value={"maquina": "pc"}),
+            patch("ops.flota_ciclo.estado", return_value={"estado": "igual"}),
+            patch("ops.flota_ciclo.actualizar", return_value={"accion": "aplicada"}),
+        ):
+            rc = flota_ciclo.main(["--home", str(home)])
+        self.assertEqual(rc, 0)
+
+    def test_flota_ciclo_primer_arranque_del_publicador_llega_a_preparar(self):
+        from ops import flota_ciclo
+
+        home = self.base / "home-ciclo-arranque"
+        home.mkdir()
+        observado = {}
+        real = flota_ciclo.preparar
+
+        def espia(home_, **opciones):
+            observado.update(opciones)
+            return real(home_, **opciones)
+
+        with (
+            patch("ops.flota_ciclo.preparar", side_effect=espia),
+            patch(
+                "motor.flota.actualizaciones.descubrir",
+                return_value={"componentes": []},
+            ),
+        ):
+            rc = flota_ciclo.main(["--home", str(home)])
+        # El primer arranque (sin manifiesto) prepara sin el flag de turnos:
+        # si sin_turnos llegara a preparar, la llamada real rompe con TypeError.
+        self.assertNotIn("sin_turnos", observado)
         self.assertEqual(rc, 1)
 
     def test_candidata_de_componentes_se_aplica_y_revierte_con_recibo(self):

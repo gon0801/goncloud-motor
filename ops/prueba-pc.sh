@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prueba el SHA dado en la PC Windows (ssh a host_de pc): lo manda con git archive a una carpeta
-# temporal, corre test_puro + test_windows con uv y borra la carpeta. Sale != 0 si algo falla,
+# temporal, corre pruebas de Windows y despliegue con uv y borra la carpeta. Sale != 0 si algo falla,
 # si ssh falla o si test_windows se saltó (salvo la prueba de WSL cuando la PC no tiene distro).
 set -uo pipefail
 export LC_ALL=C
@@ -21,7 +21,7 @@ trap 'limpiar; rm -f "$salida"' EXIT
 ssh_a "$host" "(if exist $carpeta rmdir /s /q $carpeta) & mkdir $carpeta" || { echo "ssh/mkdir falló" >&2; exit 3; }
 git archive "$sha" | ssh_a "$host" "tar -x -C $carpeta" || { echo "envío del SHA falló" >&2; exit 3; }
 
-ssh_a "$host" "cd /d $carpeta && $uv run --python 3.12 python -m unittest -v tests.test_puro tests.test_windows" >"$salida" 2>&1
+ssh_a "$host" "cd /d $carpeta && $uv run --python 3.12 python -m unittest -v tests.test_puro tests.test_windows tests.test_encargos_despliegue_real tests.test_despliegue_recuperacion" >"$salida" 2>&1
 codigo=$?
 tr -d '\r' <"$salida"
 if [ "$codigo" -ne 0 ]; then echo "FALLÓ en la PC (código $codigo)" >&2; exit "$codigo"; fi

@@ -1,0 +1,334 @@
+"""Receta real sobre el SHA integrado, con un recibo durable fuera del producto.
+
+El trabajador sobrevive al supervisor. Una corrida interrumpida sin recibo final
+queda incierta: no se repite un efecto de producción a ciegas.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from motor import plataforma
+from motor.conf import load_maquina
+from motor.effects import _lock_despliegue, _posix, con_python_de_comando, entorno_maquina
+from motor.encargos.frontera import _atomico, _autorizado_ahora, autoridad_ausente, turno
+from motor.encargos.registro import Registro
+
+TOPE_S = 900
+
+
+def _guardar(path: Path, datos: dict) -> None:
+    _atomico(path, json.dumps(datos, ensure_ascii=False, sort_keys=True))
+
+
+def _correr(reg, encargo: str, paso: str, script: str, copia: Path, env: dict, bash: str):
+    argv, shell, exe = _posix("bash " + shlex.quote(script), bash)
+    env = con_python_de_comando(env)
+    vigente = lambda: _autorizado_ahora(reg, encargo, not autoridad_ausente(reg.base))
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        with turno(reg.base):
+            if paso != "rollback" and not vigente():
+                return subprocess.CompletedProcess(argv, 130, "", "parada aceptada antes de " + paso), False
+            marca = copia.parent / "comando.json"
+            _guardar(marca, {"estado": "preparando"})
+            try:
+                creado = plataforma.crear_proceso(
+                    argv, plataforma.Propiedad.COMANDO_CONTENIDO, cwd=copia, env=env,
+                    stdout=out, stderr=err, stdin=subprocess.DEVNULL, shell=shell, executable=exe,
+                )
+            except OSError as exc:
+                _guardar(marca, {"estado": "no_enviado"})
+                return subprocess.CompletedProcess(argv, 127, "", str(exc)), False
+            _guardar(marca, {
+                "pid": creado.proceso.pid, "inicio": plataforma.hora_inicio(creado.proceso.pid),
+                "boot_id": plataforma.boot_id(), "job": creado.job,
+            })
+            creado.liberar()
+        proceso = creado.proceso
+        fin = time.monotonic() + TOPE_S
+        codigo, motivo = None, ""
+        while proceso.poll() is None:
+            if paso != "rollback" and not vigente():
+                codigo, motivo = 130, "parada aceptada durante " + paso
+            elif time.monotonic() >= fin:
+                codigo, motivo = 124, f"se pasó del tope de {TOPE_S} s"
+            if codigo is not None:
+                plataforma.matar_grupo(proceso)
+                proceso.wait(timeout=5)
+                break
+            try:
+                proceso.wait(timeout=min(1, max(0.01, fin - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                pass
+        # Los hijos locales del script también tienen que terminar antes de
+        # pasar al siguiente paso o afirmar que el trabajador se detuvo.
+        ident = json.loads(marca.read_text(encoding="utf-8"))
+        if os.name == "nt":
+            plataforma.matar_grupo(proceso)
+        else:
+            plataforma.matar_grupo_pid(proceso.pid, ident["inicio"])
+        if plataforma.presencia_grupo(proceso.pid, ident["inicio"], ident["job"]) != "ausente":
+            raise RuntimeError("el grupo del script todavía no confirma su salida")
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(
+            argv, proceso.returncode if codigo is None else codigo,
+            out.read().decode("utf-8", errors="replace"),
+            err.read().decode("utf-8", errors="replace") + motivo,
+        ), True
+
+
+def _git(espacio: Path, *args: str) -> str:
+    p = subprocess.run(
+        ["git", "-C", str(espacio), *args], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+    )
+    if p.returncode:
+        raise ValueError("no se pudo preparar la copia del SHA integrado: " + p.stderr[-1200:])
+    return p.stdout.strip()
+
+
+def _maquina(base: Path):
+    home = base if (base / "maquina.toml").is_file() else Path(
+        os.environ.get("MOTOR_HOME") or Path.home() / ".motor"
+    )
+    try:
+        maquina = load_maquina(home)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"falta configuración de máquina para ssh-goncloud: {home / 'maquina.toml'}") from exc
+    if "ssh-goncloud" not in maquina.tiene:
+        raise ValueError(f"la máquina {maquina.nombre} no tiene la capacidad ssh-goncloud")
+    return maquina
+
+
+def _rutas(receta: dict) -> None:
+    for paso in ("desplegar", "checklist", "rollback"):
+        valor = receta.get(paso, "")
+        ruta = Path(valor)
+        if (not valor or ruta.is_absolute() or ".." in ruta.parts
+                or "\\" in valor or ":" in valor or valor.startswith("-")):
+            raise ValueError(f"falta receta real: {paso} debe ser una ruta relativa dentro del repo")
+
+
+def _leer(path: Path, identidad: dict) -> dict:
+    datos = json.loads(path.read_text(encoding="utf-8"))
+    if any(datos.get(k) != v for k, v in identidad.items()):
+        raise ValueError("el recibo de despliegue no corresponde a esta fase, SHA y receta")
+    if datos.get("estado") == "aplicado":
+        pasos = datos.get("pasos", [])
+        if ([p.get("paso") for p in pasos] != ["desplegar", "checklist"]
+                or any(p.get("codigo") != 0 for p in pasos)
+                or any(p.get("script") != identidad["receta"][p["paso"]] for p in pasos)):
+            raise ValueError("el recibo no demuestra despliegue y checklist con salida 0")
+    return datos
+
+
+def comprobar_recibo(enc) -> dict:
+    fase = enc.fase_actual
+    if fase is None or not fase.desplegado_recibo:
+        raise ValueError("falta el recibo de ejecución real del despliegue")
+    identidad = {"encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
+                 "sha": fase.integrado_sha,
+                 "receta": {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")}}
+    clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+    path = Path(fase.desplegado_recibo)
+    if path.name != "recibo.json" or path.parent.name != clave or path.parent.parent.name != "despliegues":
+        raise ValueError("un recibo de ensayo no acredita un despliegue real")
+    try:
+        datos = _leer(path, identidad)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise ValueError(f"no se puede verificar el recibo de despliegue: {exc}") from exc
+    if datos.get("estado") != "aplicado":
+        raise ValueError("el recibo de despliegue no terminó con checklist aprobado")
+    return datos
+
+
+def observacion(registro, enc) -> str:
+    """Una parada espera también al trabajador de despliegue y su reversa."""
+    puntero = registro.base / "despliegues" / (enc.id + ".actual")
+    if not puntero.exists():
+        return "ausente"
+    try:
+        clave = puntero.read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", clave):
+            return "incierto"
+        directorio = puntero.parent / clave
+        datos = json.loads((directorio / "recibo.json").read_text(encoding="utf-8"))
+        proceso = json.loads((directorio / "proceso.json").read_text(encoding="utf-8"))
+        if datos.get("encargo") != enc.id:
+            return "incierto"
+        if plataforma.estado_proc(proceso) == "vivo":
+            return "vivo"
+        comando_path = directorio / "comando.json"
+        if not comando_path.exists():
+            return "ausente"
+        comando = json.loads(comando_path.read_text(encoding="utf-8"))
+        if comando.get("estado") == "no_enviado":
+            return "ausente"
+        if not comando.get("inicio") or not comando.get("pid"):
+            return "incierto"
+        if comando.get("boot_id") != plataforma.boot_id():
+            return "ausente"
+        presencia = plataforma.presencia_grupo(
+            int(comando["pid"]), comando["inicio"], comando.get("job", ""),
+        )
+        if presencia == "vivo" and not _autorizado_ahora(registro, enc.id, not autoridad_ausente(registro.base)):
+            plataforma.matar_grupo_pid(int(comando["pid"]), comando["inicio"])
+        return presencia
+    except (OSError, ValueError, KeyError, TypeError):
+        return "incierto"
+
+
+def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
+    """Inicia una vez o lee el recibo de la misma operación; no espera al script."""
+    sha = enc.fase_actual.integrado_sha
+    receta = {k: getattr(politica, k) for k in ("desplegar", "checklist", "rollback")}
+    try:
+        _rutas(receta)
+        if not re.fullmatch(r"[0-9a-f]{40,64}", sha):
+            raise ValueError("falta el SHA del merge para ejecutar la receta")
+        _maquina(registro.base)
+    except ValueError as exc:
+        return {"estado": "esperando", "motivo": str(exc)}
+    identidad = {"encargo": enc.id, "fase": enc.fase_activa,
+                 "repo": enc.entrega.repo, "sha": sha, "receta": receta}
+    clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+    directorio = registro.base / "despliegues" / clave
+    recibo = directorio / "recibo.json"
+    with turno(registro.base):
+        if recibo.exists():
+            try:
+                datos = _leer(recibo, identidad)
+                if datos["estado"] != "ejecutando" and observacion(registro, enc) == "vivo":
+                    return {**datos, "estado": "ejecutando", "recibo": str(recibo),
+                            "motivo": "ejecutando receta de despliegue: finalizando trabajador"}
+                if datos["estado"] == "ejecutando":
+                    proceso = json.loads((directorio / "proceso.json").read_text(encoding="utf-8"))
+                    if plataforma.estado_proc(proceso) != "vivo":
+                        datos.update(estado="incierto", motivo="la receta se interrumpió; conciliar producción y rollback antes de reintentar")
+                        _guardar(recibo, datos)
+                reintentable = (
+                    datos["estado"] == "esperando"
+                    and enc.estado in ("recibido", "ejecutando")
+                    and all(p.get("enviado") is False for p in datos.get("pasos", []))
+                    and observacion(registro, enc) == "ausente"
+                )
+                if not reintentable:
+                    return {**datos, "recibo": str(recibo)}
+                previo = directorio / ("preparacion-" + str(time.time_ns()) + ".json")
+                _guardar(previo, datos)
+            except (OSError, ValueError, KeyError) as exc:
+                return {"estado": "incierto", "motivo": f"recibo de despliegue no verificable: {exc}"}
+        if not _autorizado_ahora(registro, enc.id, not autoridad_ausente(registro.base)):
+            return {"estado": "esperando", "motivo": "despliegue sin autorización vigente"}
+        directorio.mkdir(parents=True, exist_ok=True)
+        datos = {**identidad, "estado": "ejecutando", "hora": hora, "pasos": [],
+                 "motivo": "ejecutando receta de despliegue del SHA integrado"}
+        _guardar(recibo, datos)
+        _atomico(directorio.parent / (enc.id + ".actual"), clave)
+        _guardar(directorio / "pedido.json", {
+            "base": str(registro.base.resolve()), "espacio": str(espacio.resolve()),
+            "identidad": identidad,
+        })
+        try:
+            proceso = plataforma.lanzar_separado(
+                [sys.executable, "-P", str(Path(__file__).resolve()), str(directorio / "pedido.json")],
+                directorio, os.environ.copy(), directorio / "trabajador.log",
+            )
+            _guardar(directorio / "proceso.json", proceso)
+        except OSError as exc:
+            datos.update(estado="incierto", motivo=f"no se pudo confirmar el arranque del despliegue: {exc}")
+            _guardar(recibo, datos)
+        return {**datos, "recibo": str(recibo)}
+
+
+def _salida(texto: str, maquina) -> str:
+    for _, secreto in (*maquina.secretos, *maquina.env):
+        if secreto:
+            texto = texto.replace(secreto, "[oculto]")
+    # Credenciales de DSN y tokens habituales, incluso si vienen del servidor.
+    texto = re.sub(r"(://[^\s:/]+:)[^\s@]+(@)", r"\1[oculto]\2", texto)
+    texto = re.sub(r"(?i)((?:token|password|secret|api_key)\s*[=:]\s*)[^\s]+", r"\1[oculto]", texto)
+    return texto
+
+
+def ejecutar(pedido: Path) -> None:
+    spec = json.loads(pedido.read_text(encoding="utf-8"))
+    base, espacio = Path(spec["base"]), Path(spec["espacio"])
+    identidad = spec["identidad"]
+    recibo, copia = pedido.parent / "recibo.json", pedido.parent / "repo"
+    datos = _leer(recibo, identidad)
+    reg = Registro(base)
+    try:
+        maquina = _maquina(base)
+        receta = identidad["receta"]
+        # La copia contiene el merge, no los archivos mutables del trabajador.
+        with _lock_despliegue(base, identidad["repo"]):
+            if not _autorizado_ahora(reg, identidad["encargo"], not autoridad_ausente(base)):
+                raise ValueError("parada aceptada antes del despliegue")
+            sha = identidad["sha"]
+            try:
+                _git(espacio, "cat-file", "-e", sha + "^{commit}")
+            except ValueError:
+                _git(espacio, "fetch", "origin", sha)
+            if copia.exists():
+                _git(espacio, "worktree", "remove", "--force", str(copia))
+            _git(espacio, "worktree", "add", "--detach", str(copia), sha)
+            for nombre in receta.values():
+                script = copia / nombre
+                if not script.is_file() or script.is_symlink() or copia.resolve() not in script.resolve().parents:
+                    raise ValueError(f"falta script real en el SHA integrado: {nombre}")
+            env = entorno_maquina(maquina, {"MOTOR_SHA": sha, "MOTOR_RAIZ": str(copia)})
+
+            def correr(paso):
+                indice = len(datos["pasos"])
+                datos["pasos"].append({"paso": paso, "script": receta[paso], "enviado": None})
+                _guardar(recibo, datos)
+                p, enviado = _correr(reg, identidad["encargo"], paso, receta[paso], copia, env, maquina.bash)
+                salida = {"paso": paso, "script": receta[paso], "codigo": p.returncode,
+                          "stdout": _salida(p.stdout, maquina), "stderr": _salida(p.stderr, maquina),
+                          "enviado": enviado}
+                datos["pasos"][indice] = salida
+                _guardar(recibo, datos)
+                return salida["codigo"]
+
+            codigo = correr("desplegar")
+            autorizado = _autorizado_ahora(reg, identidad["encargo"], not autoridad_ausente(base))
+            if codigo == 0 and autorizado:
+                codigo = correr("checklist")
+            if codigo != 0 or not autorizado:
+                rollback = correr("rollback") if datos["pasos"][0]["enviado"] else "no requerido"
+                datos.update(estado="fallido" if datos["pasos"][0]["enviado"] else "esperando", motivo=(
+                    f"despliegue sin verificar (salida {codigo}); rollback salida {rollback}; "
+                    "revisar el recibo antes de un nuevo despliegue"
+                ))
+            else:
+                datos.update(estado="aplicado", motivo="despliegue y checklist terminaron con salida 0")
+            _guardar(recibo, datos)
+    except Exception as exc:
+        datos.update(estado="incierto" if datos["pasos"] else "esperando",
+                     motivo=f"no se completó la receta de despliegue: {exc}")
+        _guardar(recibo, datos)
+    finally:
+        reg.close()
+        if copia.exists():
+            try:
+                _git(espacio, "worktree", "remove", "--force", str(copia))
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                pass
+
+
+if __name__ == "__main__":
+    ejecutar(Path(sys.argv[1]))

@@ -43,6 +43,10 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
     """Cierre de una fase: revisión aprobada sobre la firma vigente,
     recibos de efectos y, si el nivel autorizado es pr o más, DeepSeek
     leído para el SHA actual y nivel alcanzado igual al autorizado."""
+    if enc.nivel_alcanzado == "desplegado":
+        from .despliegue import comprobar_recibo
+
+        comprobar_recibo(enc)
     ref = enc.revision_vigente
     if ref is None or ref.veredicto != "aprobado":
         raise ValueError("cierre sin revisión independiente aprobada")
@@ -83,6 +87,8 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
                 f" Entrega {enc.nivel_alcanzado} por contención en "
                 f"{enc.entrega.base}: sin PR; el SHA ya está en la base."
             )
+    if enc.nivel_alcanzado == "desplegado":
+        detalle += " Recibo de la receta: " + enc.fase_actual.desplegado_recibo
     return {
         "clase": "cierre_comprobado",
         "fase": enc.fase_activa,

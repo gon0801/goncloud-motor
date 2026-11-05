@@ -344,6 +344,7 @@ class GitHubPort(Protocol):
         relanzadas: tuple[str, ...] = (),
         *, base_politica: str = "",
     ) -> ChecksVerdict: ...
+    def checks_requeridos(self, repo: str, numero: int, sha: str) -> ChecksVerdict: ...
     def merge(
         self, repo: str, numero: int, sha: str, metodo: str, mensaje: str
     ) -> PrView: ...
@@ -607,6 +608,48 @@ class GhGitHub:
             None if pr.borrador else self._listo_desde(n, numero),
             estados,
             tuple(str(r) for r in relanzadas),
+        )
+
+    def checks_requeridos(self, repo, numero, sha):
+        """Distingue CI en marcha de una política que requiere intervención.
+
+        `checks` incluye opcionales; aquí manda la selección de requeridos de
+        GitHub. Con `--json`, gh entrega los estados sin usar el exit code de CI.
+        """
+        n = self.nombre(repo)
+        pr = json.loads(self._gh(
+            "pr", "view", str(numero), "-R", n,
+            "--json", "headRefOid,reviewDecision",
+        ))
+        if pr["headRefOid"] != sha:
+            raise PuntaMovida("la punta del PR ya no es el SHA revisado")
+        if pr.get("reviewDecision") in ("REVIEW_REQUIRED", "CHANGES_REQUESTED"):
+            raise PoliticaBloquea("la política del PR requiere una revisión humana")
+        try:
+            checks = json.loads(self._gh(
+                "pr", "checks", str(numero), "-R", n,
+                "--required", "--json", "name,bucket,state",
+            ))
+        except RuntimeError as exc:
+            if not any(t in str(exc) for t in (
+                "no required checks reported", "no checks reported",
+            )):
+                raise
+            checks = []
+        faltan, fallas, en_marcha = [], [], []
+        for check in checks:
+            nombre, estado = check["name"], check["state"]
+            if check["bucket"] in ("fail", "cancel"):
+                fallas.append(nombre)
+            elif check["bucket"] not in ("pass", "skipping"):
+                faltan.append(nombre)
+                if estado in ("IN_PROGRESS", "QUEUED", "PENDING", "REQUESTED", "WAITING"):
+                    en_marcha.append(nombre)
+        return ChecksVerdict(
+            sha, terminal=not faltan or bool(fallas),
+            green=not faltan and not fallas,
+            faltan=tuple(faltan), fallas=tuple(fallas),
+            en_marcha=tuple(en_marcha),
         )
 
     def relanzar_corrida(self, repo, run_id):
@@ -940,6 +983,11 @@ class FakeGitHub:
                 c for c in corridas if c["conclusion"] == "failure"
             ),
         )
+
+    def checks_requeridos(self, repo, numero, sha):
+        if self.ver(repo, numero).head != sha:
+            raise PuntaMovida("la punta del PR ya no es el SHA revisado")
+        return self.checks(repo, numero, sha, ())
 
     def relanzar_corrida(self, repo, run_id):
         s = self._cargar()

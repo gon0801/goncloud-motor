@@ -249,6 +249,13 @@ class Fase:
     # bien. Es para quien mira (`ver`): ningún prompt lo lee.
     deepseek_error: str = ""
     integrado_sha: str = ""
+    desplegado_recibo: str = ""
+    requiere_despliegue: bool | None = None
+    desplegar: str = ""
+    checklist: str = ""
+    rollback: str = ""
+    despliegue_fuente: str = ""
+    despliegue_huella: str = ""
     rama: str = ""
     base: str = ""
     evidencia: str = ""
@@ -293,6 +300,15 @@ class Fase:
             if self.revision_vigente
             else None,
             "nivel_alcanzado": self.nivel_alcanzado,
+            "requiere_despliegue": self.requiere_despliegue,
+            "despliegue": {
+                "desplegar": self.desplegar,
+                "checklist": self.checklist,
+                "rollback": self.rollback,
+                "fuente": self.despliegue_fuente,
+                "huella": self.despliegue_huella,
+                "recibo": self.desplegado_recibo,
+            },
             "pr": {"numero": self.pr_numero, "sha": self.pr_sha},
             "deepseek": {
                 "sha": self.deepseek_sha,
@@ -467,6 +483,7 @@ class Encargo:
     preguntas: tuple[str, ...] = ()
     pendientes: tuple[str, ...] = ()
     intento: str = ""
+    intento_interrumpido: bool = False
     proc: Proc | None = None
     herramienta: str = ""
     causa: str = ""
@@ -493,6 +510,7 @@ class Encargo:
     via: str = "durable"
     entrega: EntregaAutorizada = field(default_factory=EntregaAutorizada)
     modelos: tuple[tuple[str, str, str], ...] = ()
+    modelos_fase: tuple[tuple[str, str, str], ...] = ()
     modelos_solicitados: tuple[tuple[str, str, str], ...] = ()
     sesion_responsable: str = ""
     sesion_revisor: str = ""
@@ -526,6 +544,9 @@ class Encargo:
     # Pendientes que se escriben en el cuerpo del PR cuando el encargo entrega
     # sin que el revisor haya concluido o sin la revisión externa.
     pendientes_entrega: tuple[str, ...] = ()
+    cierre_forzado_fase: Fase | None = None
+    cierre_forzado_huella: str = ""
+    reaperturas: int = 0
     # Herramientas que fallaron igual tres veces y no se vuelven a usar en este
     # encargo. El trabajo sigue con la evidencia que haya.
     herramientas_no_disponibles: tuple[str, ...] = ()
@@ -542,6 +563,8 @@ class Encargo:
     observada_version: str = ""
     fases: tuple[Fase, ...] = ()
     fase_activa: str = ""
+    despliegue_mapa: tuple[tuple[str, str], ...] = ()
+    despliegue_archivo: str = ""
     solicitudes: tuple[Solicitud, ...] = ()
     decisiones: tuple[Decision, ...] = ()
     autorizaciones: tuple[tuple[str, str, str, str, str, str], ...] = ()
@@ -660,7 +683,16 @@ def sesiones_de_fase_nueva(e: Encargo) -> Encargo:
     el fold (pedido, ajustes, fases cerradas y hallazgos abiertos).
     """
     return replace(
-        e,
+        _reiniciar_escalera(e),
+        cierre_forzado_fase=None,
+        cierre_forzado_huella="",
+        modelos_fase=(),
+        bloqueo_huella="",
+        sin_progreso=0,
+        firma_fallo="",
+        repeticiones=0,
+        vuelta_contada=0,
+        devuelto_con=(),
         sesion_responsable="",
         sesion_revisor="",
         viva_responsable=False,
@@ -858,10 +890,15 @@ def _con_relevo_de(
 
 
 def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Encargo:
-    """Reinicia la cuenta de sin_progreso con un avance. Un juicio concluyente
-    sin nada abierto tambien la corta: la duda del revisor quedo resuelta y no
-    arrastra la cuenta a lo que sigue."""
-    avance = hubo_avance(previo, e) or (concluyente and not _bloqueos_abiertos(e))
+    """Reinicia la escalera al cerrar bloqueantes o resolver una revisión.
+    Repetir una aprobación no resuelve lo que sigue bloqueando la entrega."""
+    aprobacion_nueva = concluyente and (
+        previo.revision_vigente is None
+        or previo.revision_vigente.veredicto != "aprobado"
+    )
+    avance = hubo_avance(previo, e) or (
+        aprobacion_nueva and not _bloqueos_abiertos(e)
+    )
     cerrados = _bloqueos_abiertos(previo) - _bloqueos_abiertos(e)
     fase = e.fase_actual
     if fase is not None and cerrados - set(fase.cerrados):
@@ -988,9 +1025,15 @@ def nivel_cumplido(e: Encargo) -> bool:
         # Sin cambios publicables sólo satisface niveles sin efectos externos;
         # integrado y desplegado exigen el nivel real alcanzado.
         return e.revisado is not None and e.entrega.nivel in ("terminado", "pr")
-    return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(
-        e.entrega.nivel, 1
-    )
+    nivel = e.entrega.nivel
+    if (
+        nivel == "desplegado"
+        and e.fase_actual is not None
+        and e.fase_actual.requiere_despliegue is False
+        and e.fase_actual.despliegue_fuente
+    ):
+        nivel = "integrado"
+    return _ORDEN_NIVEL.get(e.nivel_alcanzado, 0) >= _ORDEN_NIVEL.get(nivel, 1)
 
 
 def inspeccion_bloquea(e: Encargo) -> bool:
@@ -1319,10 +1362,13 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             raise TransicionIlegal("intento del responsable sin poteto verificado")
         modelo = str(d.get("modelo") or "")
         modelos = e.modelos
+        modelos_fase = e.modelos_fase
         if modelo:
             registro_modelo = (rol_intento, str(d.get("agente") or e.agente), modelo)
             if not modelos or modelos[-1] != registro_modelo:
                 modelos = modelos + (registro_modelo,)
+            if not modelos_fase or modelos_fase[-1] != registro_modelo:
+                modelos_fase = modelos_fase + (registro_modelo,)
         viva = (
             {"viva_revisor": True}
             if rol_intento == "revisor"
@@ -1335,9 +1381,11 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             rol=rol_intento,
             agente=str(d.get("agente") or e.agente),
             modelos=modelos,
+            modelos_fase=modelos_fase,
             sesion_modo=str(d.get("sesion_modo") or e.sesion_modo),
             poteto_digest=poteto or e.poteto_digest,
             intento=d["id"],
+            intento_interrumpido=False,
             sesion=d.get("sesion") or e.sesion,
             proc=Proc(
                 pid=int(d["pid"]),
@@ -1415,6 +1463,23 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         return e
     if kind == "fases":
         return _adoptar_fases(e, d, hora)
+    if kind == "politica_despliegue":
+        e = _fase_de_evento(e, d)
+        fase = e.fase_actual
+        if fase is None or fase.estado == "preparada":
+            raise TransicionIlegal("no se cambia la política de una fase cerrada")
+        fuente, huella = str(d.get("fuente") or ""), str(d.get("huella") or "")
+        if not fuente or not huella:
+            raise TransicionIlegal("política de despliegue sin fuente comprobable")
+        datos = datos_despliegue(d)
+        if "requiere_despliegue" not in datos:
+            raise TransicionIlegal("política sin declaración de despliegue")
+        correspondencia = _correspondencia_despliegue(e, d)
+        return replace(
+            con_fase(e, replace(fase, **datos, despliegue_fuente=fuente, despliegue_huella=huella)),
+            hora=hora or e.hora,
+            **correspondencia,
+        )
     if kind == "producto_listo":
         e = _fase_de_evento(e, d)
         fase = e.fase_actual
@@ -1565,6 +1630,34 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                     "el bloqueo sigue abierto tras el relevo: "
                     + (e.bloqueo_huella or huella)
                 )
+                if (
+                    e.revision_vigente is not None
+                    and e.revision_vigente.veredicto == "aprobado"
+                    and not _bloqueos_abiertos(e)
+                ):
+                    pregunta = (
+                        "El relevo aprobó sin resolver la entrega: " + pendiente
+                        + ". ¿Qué debe cambiar para completar la entrega autorizada?"
+                    )
+                    return replace(
+                        e,
+                        estado=(
+                            "necesita_usuario"
+                            if e.estado not in _CERRADOS
+                            else e.estado
+                        ),
+                        bloqueo_huella=huella,
+                        sin_progreso=veces,
+                        preguntas=(
+                            e.preguntas
+                            if pregunta in e.preguntas
+                            else e.preguntas + (pregunta,)
+                        ),
+                        motivo=pendiente,
+                        siguiente="hace falta una decisión del usuario para completar la entrega",
+                        ultimo_hecho="el relevo aprobó, pero la entrega sigue bloqueada",
+                        hora=hora or e.hora,
+                    )
                 return replace(
                     e,
                     estado=(
@@ -1658,6 +1751,9 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             raise TransicionIlegal("el encargo ya cerró")
         e = asegurar_fase(e)
         fase = e.fase_actual
+        e = replace(e, cierre_forzado_fase=fase, cierre_forzado_huella=hashlib.sha256(
+            json.dumps([e.id, fase.id, hora, evidencia, e.reaperturas]).encode()
+        ).hexdigest())
         if fase is not None:
             nivel = (
                 fase.nivel_alcanzado
@@ -1823,6 +1919,8 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             e,
             fases=fases,
             estado="terminado",
+            cierre_forzado_fase=None,
+            cierre_forzado_huella="",
             evidencia=e.evidencia + (evidencia,),
             intentos_nuevos=False,
             escrituras=False,
@@ -2183,6 +2281,70 @@ def _sin_ciclo(fases: tuple[Fase, ...]) -> None:
         visitar(fase.id)
 
 
+def _correspondencia_despliegue(e: Encargo, d: dict) -> dict:
+    if "correspondencia" not in d:
+        return {}
+    crudo = d["correspondencia"]
+    if not isinstance(crudo, dict):
+        raise TransicionIlegal("correspondencia de despliegue debe ser un objeto")
+    archivo, fases = crudo.get("archivo"), crudo.get("fases")
+    if not isinstance(archivo, str) or not archivo.strip():
+        raise TransicionIlegal("correspondencia de despliegue sin archivo")
+    if not isinstance(fases, (list, tuple)) or not fases:
+        raise TransicionIlegal("correspondencia de despliegue sin fases")
+    if any(
+        not isinstance(par, (list, tuple))
+        or len(par) != 2
+        or any(not isinstance(valor, str) or not valor.strip() for valor in par)
+        for par in fases
+    ):
+        raise TransicionIlegal("correspondencia requiere pares de ids de fase y bloque")
+    mapa = tuple((fase, bloque) for fase, bloque in fases)
+    ids_fase = {fase for fase, _ in mapa}
+    ids_bloque = {bloque for _, bloque in mapa}
+    if len(ids_fase) != len(mapa) or ids_fase != {fase.id for fase in e.fases}:
+        raise TransicionIlegal("correspondencia debe incluir cada fase exactamente una vez")
+    if len(ids_bloque) != len(mapa):
+        raise TransicionIlegal("correspondencia repite un bloque")
+    if (e.despliegue_mapa or e.despliegue_archivo) and (
+        mapa != e.despliegue_mapa or archivo != e.despliegue_archivo
+    ):
+        raise TransicionIlegal("no se reemplaza la correspondencia de despliegue adoptada")
+    return {"despliegue_mapa": mapa, "despliegue_archivo": archivo}
+
+
+def datos_despliegue(item: dict) -> dict:
+    """Normaliza sólo lo declarado; omitir metadata nunca borra una política."""
+    salida = {}
+    if "requiere_despliegue" in item:
+        requiere = item["requiere_despliegue"]
+        if requiere is not None and type(requiere) is not bool:
+            raise TransicionIlegal("requiere_despliegue debe ser booleano o null")
+        salida["requiere_despliegue"] = requiere
+    if "lane" in item:
+        lane = item["lane"]
+        if lane not in ("fast", "gate", "release"):
+            raise TransicionIlegal("lane debe ser fast, gate o release")
+        requiere = lane == "release"
+        if salida.get("requiere_despliegue", requiere) is not requiere:
+            raise TransicionIlegal("lane contradice requiere_despliegue")
+        salida["requiere_despliegue"] = requiere
+    if "despliegue" in item:
+        receta = item["despliegue"]
+        if not isinstance(receta, dict):
+            raise TransicionIlegal("despliegue debe contener desplegar, checklist y rollback")
+        for nombre in ("desplegar", "checklist", "rollback"):
+            valor = receta.get(nombre, "")
+            if not isinstance(valor, str):
+                raise TransicionIlegal(f"despliegue.{nombre} debe ser una ruta")
+            salida[nombre] = valor.strip()
+        if any(salida[n] for n in ("desplegar", "checklist", "rollback")):
+            if salida.get("requiere_despliegue") is False:
+                raise TransicionIlegal("una fase sin despliegue no puede declarar receta")
+            salida["requiere_despliegue"] = True
+    return salida
+
+
 def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     """La propuesta de fases se valida aquí y no borra trabajo ya obtenido.
 
@@ -2207,6 +2369,7 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
         vistos.add(fid)
         resultado = str(item.get("resultado") or "").strip()
         requiere = _requiere_de(item)
+        despliegue = datos_despliegue(item)
         previa = existentes.get(fid)
         if previa is None:
             if not resultado:
@@ -2217,11 +2380,15 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
                     resultado=resultado,
                     estado="pendiente",
                     requiere=requiere,
+                    **despliegue,
                 )
             )
             continue
         if previa.estado != "pendiente" and resultado and resultado != previa.resultado:
             raise TransicionIlegal(f"no se reescribe el resultado de la fase {fid}")
+        if previa.estado != "pendiente" or previa.despliegue_fuente:
+            if any(getattr(previa, k) != v for k, v in despliegue.items()):
+                raise TransicionIlegal(f"no se reescribe el despliegue de la fase {fid} ya trabajada")
         if previa.estado != "pendiente":
             fusionada = _fusionar_requiere(previa.requiere, requiere)
             if fusionada != previa.requiere:
@@ -2236,6 +2403,7 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
                 previa,
                 resultado=resultado or previa.resultado,
                 requiere=requiere_final,
+                **despliegue,
             )
         )
     for fid in existentes:
@@ -2299,12 +2467,31 @@ def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
 
 def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     accion = d["accion"]
+    if accion == "reabrir":
+        fase = e.cierre_forzado_fase
+        if e.estado != "terminado" or fase is None:
+            raise TransicionIlegal("reabrir requiere un cierre forzado vigente")
+        if d.get("fase") != fase.id or d.get("cierre") != e.cierre_forzado_huella:
+            raise TransicionIlegal("la orden no corresponde al cierre forzado vigente")
+        return replace(
+            sesiones_de_fase_nueva(con_fase(e, fase)),
+            estado="detenido", fase_activa=fase.id,
+            cierre_forzado_fase=None, cierre_forzado_huella="",
+            reaperturas=e.reaperturas + 1, generacion=e.generacion + 1,
+            intento="", intento_interrumpido=True,
+            proc=None, reserva=False, candidato="", conductor="", host="",
+            herramienta="", sesion="", rol="responsable", estrategia="investigar",
+            escrituras=False, intentos_nuevos=False, causa="", motivo="", reanuda_en="",
+            ultimo_hecho=f"cierre forzado reabierto en la fase {fase.id}; sigue detenido",
+            siguiente="detenido hasta continuar", hora=hora or e.hora,
+        )
     if accion == "parar":
         if e.estado in ("cancelado", "terminado"):
             raise TransicionIlegal(f"no se para un encargo {e.estado}")
         return replace(
             e,
             estado="deteniendo",
+            intento_interrumpido=e.intento_interrumpido or e.proc is not None or e.reserva,
             escrituras=False,
             intentos_nuevos=False,
             motivo="parada aceptada",
@@ -2841,6 +3028,9 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
             if paso == "integrado" and (d.get("recibo") or sha)
             else fase.integrado_sha
         ),
+        desplegado_recibo=(
+            str(d.get("recibo") or "") if paso == "desplegado" else fase.desplegado_recibo
+        ),
         rama=str(d.get("rama") or fase.rama),
         base=str(d.get("base") or fase.base),
         evidencia=(
@@ -3022,6 +3212,8 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
             fases=fases,
             estado="terminado",
             evidencia=evidencias,
+            cierre_forzado_fase=None,
+            cierre_forzado_huella="",
             intentos_nuevos=False,
             escrituras=False,
             ultimo_hecho=evidencia,
