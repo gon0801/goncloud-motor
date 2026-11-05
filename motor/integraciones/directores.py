@@ -1355,6 +1355,103 @@ class Vuelta:
         self.errores[canal] = error
 
 
+_ESTADOS_SIN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo", "terminado"})
+
+
+def _canales_con_avisos_pendientes(registro: Registro) -> set[str]:
+    """Los canales con un aviso que todavía prueba su transporte: incierto o pendiente."""
+    pendientes: set[str] = set()
+    for path in (registro.base / "avisos").glob("*.json"):
+        try:
+            doc = _leer(path)
+        except (OSError, ValueError):
+            continue
+        if not doc or doc.get("estado") not in ("incierto", "pendiente"):
+            continue
+        try:
+            pendientes.add(nombre_canal(str(doc.get("canal") or "")))
+        except ValueError:
+            continue
+    return pendientes
+
+
+def _reintentar_avisos_sueltos(
+    registro: Registro, vuelta: Vuelta, vistos: set[str], cortar: str, encargos: dict
+) -> list[dict]:
+    """Un aviso `incierto` vencido que el estado actual ya no genera se retoma desde su cuerpo guardado.
+
+    `drenar` solo visita los avisos derivados del fold vigente. Un relevo posterior cambia la identidad del
+    aviso y deja huérfano el anterior; su carpeta `canal/<canal>/<id>` conserva el cuerpo para conciliar o
+    reenviar. Los encargos detenidos o cancelados no reabren avisos de avance.
+    """
+    publicados: list[dict] = []
+    for path in sorted((registro.base / "avisos").glob("*.json")):
+        if vuelta.agotada():
+            break
+        try:
+            doc = _leer(path)
+        except (OSError, ValueError):
+            continue
+        if not doc or doc.get("id") in vistos:
+            continue
+        if doc.get("estado") != "incierto" or _por_esperar(doc, vuelta.ahora):
+            continue
+        enc = encargos.get(str(doc.get("encargo") or ""))
+        if enc is None or enc.estado in _ESTADOS_SIN_AVANCE:
+            continue
+        try:
+            nombre = nombre_canal(str(doc.get("canal") or ""))
+        except ValueError:
+            continue
+        entrega = registro.base / "canal" / nombre / str(doc.get("id") or "")
+        try:
+            cuerpo = entrega.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        publicados.append(_publicar_aviso(registro, doc, cuerpo, cortar, vuelta))
+        vistos.add(str(doc.get("id")))
+    return publicados
+
+
+def _sondear_canales(registro: Registro, vuelta: Vuelta) -> None:
+    """Un canal caído sin avisos pendientes se prueba con su conciliación, a lo sumo una vez por intervalo."""
+    pendientes = _canales_con_avisos_pendientes(registro)
+    for canal in canales.canales_en_fallo(registro.base):
+        if vuelta.agotada():
+            return
+        try:
+            nombre = nombre_canal(canal)
+        except ValueError:
+            continue
+        if nombre in pendientes or nombre in vuelta.caidos:
+            continue
+        cfg = _config_canal(registro, nombre)
+        if not cfg or cfg.get("error"):
+            continue
+        conciliacion = list(cfg.get("conciliacion") or [])
+        if not conciliacion or not canales.sondeo_toca(registro.base, nombre, vuelta.ahora):
+            continue
+        aviso = {
+            "id": f"sondeo:{nombre}",
+            "canal": nombre,
+            "evidencia": "sondeo",
+            "formato": "texto",
+        }
+        estado, dato, caido = _correr_conciliacion(registro, conciliacion, aviso, "")
+        if estado in ("ausente", "hallado"):
+            vuelta.respondieron.add(nombre)
+            continue
+        canales.anotar_sondeo(
+            registro.base,
+            nombre,
+            vuelta.ahora,
+            espera_s(canales.sondeos(registro.base, nombre) + 1),
+            dato,
+        )
+        if caido:
+            vuelta.fallo_el_transporte(nombre, dato)
+
+
 def _publicar_aviso(
     registro: Registro,
     aviso: dict,
@@ -1556,6 +1653,7 @@ def drenar(
     if terminados:
         _descartar_avances_de_terminados(registro, terminados)
     envios_resumen: set[tuple[str, int]] = set()
+    vistos: set[str] = set()
     try:
         trabajos_resumen = resumen_encargos.preparar(registro, vuelta.ahora)
     except Exception:  # noqa: BLE001  el resumen no puede tumbar la pasada de avisos
@@ -1565,6 +1663,7 @@ def drenar(
             cortada = True
             break
         publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
+        vistos.add(str(aviso.get("id") or ""))
         if aviso.get("firma"):
             envios_resumen.add(
                 (str(aviso["firma"]), int(aviso.get("episodio") or 0))
@@ -1612,8 +1711,11 @@ def drenar(
                 cortada = True
                 break
             publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
+            vistos.add(str(aviso.get("id") or ""))
         if cortada:
             break
+    publicados.extend(_reintentar_avisos_sueltos(registro, vuelta, vistos, cortar, encargos))
+    _sondear_canales(registro, vuelta)
     for firma, episodio in envios_resumen:
         try:
             resumen_encargos.cerrar(registro, vuelta.ahora, firma, episodio)
