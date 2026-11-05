@@ -4674,7 +4674,7 @@ _INFRA_CI_SEGURA = (
 # Sin anclar al inicio: cada línea del log de gh lleva la hora delante.
 _RESUMEN_PRUEBAS = re.compile(
     r"\b[1-9]\d* (?:failed|errors?)\b|failed \((?:[a-z]+=\d+, )*(?:failures|errors)="
-    r"|assertionerror|short test summary info|\bran \d+ tests? in\b"
+    r"|assertionerror|short test summary info"
 )
 _INFRA_CI = (
     "billing",
