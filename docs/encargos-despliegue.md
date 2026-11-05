@@ -12,6 +12,18 @@ nuevos, `.interno/fases.json` también admite `requiere_despliegue` y un objeto
 `despliegue` con `desplegar`, `checklist` y `rollback`. El plan declarado tiene
 prioridad sobre esa propuesta.
 
+Primero se busca un bloque cuyo ID coincida con la fase. Si ninguno coincide,
+se admite la correspondencia por posición entre la lista completa de fases y
+los bloques del plan: deben tener igual cantidad, IDs únicos y ninguna
+coincidencia de nombres que contradiga el orden. Debe haber un único documento
+que permita esa correspondencia. Al adoptar la primera política se registra
+el mapa completo fase→bloque y el archivo del plan; reordenar las fases o los
+bloques no cambia ese mapa. La coincidencia explícita por ID mantiene prioridad
+sobre el mapa posicional al adoptar las siguientes fases. La fuente conserva
+el bloque y su posición inicial,
+por ejemplo `#Bloque A (posición 1/9)` para la fase `propuesta`. Si la asociación
+es ambigua o un bloque asociado ya no existe, la política sigue desconocida.
+
 Una receta contiene tres rutas relativas a scripts del repositorio:
 
 ```text

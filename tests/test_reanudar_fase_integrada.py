@@ -49,7 +49,7 @@ class _GitHubContado(FakeGitHub):
 
 
 class ReanudarFaseIntegrada(unittest.TestCase):
-    def legado_integrado(self, tmp):
+    def legado_integrado(self, tmp, ids):
         """Recibos anteriores a politica_despliegue, con un merge local real."""
         repo, _, _ = _bare_con_rama(Path(tmp))
         r = Recorrido(
@@ -58,9 +58,9 @@ class ReanudarFaseIntegrada(unittest.TestCase):
         )
         self.addCleanup(r.reg.close)
         r.reg.anotar(r.enc, {"kind": "fases", "data": {"fases": [
-            {"id": "A", "resultado": "Documentación y SQL"},
-            {"id": "B", "resultado": "Receta disponible", "requiere": ["A"]},
-            {"id": "D", "resultado": "Servicio desplegado", "requiere": ["B"]},
+            {"id": ids[0], "resultado": "Documentación y SQL"},
+            {"id": ids[1], "resultado": "Receta disponible", "requiere": [ids[0]]},
+            {"id": ids[2], "resultado": "Servicio desplegado", "requiere": [ids[1]]},
         ]}}, "fases-legadas")
         self.assertEqual(ciclo._asegurar_repo(r.fold(), r.espacio), "")
         (r.espacio / "plans").mkdir()
@@ -79,7 +79,7 @@ class ReanudarFaseIntegrada(unittest.TestCase):
 
         def entrega(paso, commit):
             r.reg.anotar(r.enc, {"kind": "entrega_externa", "data": {
-                "fase": "A", "intento": e.intento, "paso": paso,
+                "fase": ids[0], "intento": e.intento, "paso": paso,
                 "repo": repo, "rama": rama, "base": "main", "numero": pr.numero,
                 "sha": commit, "recibo": commit, "hora": r.hora,
             }}, f"legado:{paso}:{commit}")
@@ -92,14 +92,20 @@ class ReanudarFaseIntegrada(unittest.TestCase):
         )
         fusionado = gh.merge(repo, pr.numero, sha, "squash", "A integrada")
         entrega("integrado", fusionado.merge_commit)
-        self.assertEqual(r.fold().fase_activa, "A")
+        self.assertEqual(r.fold().fase_activa, ids[0])
         self.assertEqual(r.fold().nivel_alcanzado, "integrado")
         self.assertEqual(r.eventos("politica_despliegue"), [])
         return r, gh, fusionado
 
     def test_parar_continuar_avanza_a_b_sin_repetir_el_trabajo_integrado_de_a(self):
+        self.comprobar_continuacion(("A", "B", "D"))
+
+    def test_continuar_propuesta_avanza_a_motor_despliegue_sin_repetir_revision_o_merge(self):
+        self.comprobar_continuacion(("propuesta", "motor-despliegue", "meta-sombra"))
+
+    def comprobar_continuacion(self, ids):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r, gh, fusionado = self.legado_integrado(tmp)
+            r, gh, fusionado = self.legado_integrado(tmp, ids)
             revisiones = r.eventos("revision")
             reservas = r.eventos("reserva")
             generacion = r.fold().generacion
@@ -116,7 +122,7 @@ class ReanudarFaseIntegrada(unittest.TestCase):
 
             final = ciclo._paso_entrega(r.reg, r.fold(), gh, ciclo.ahora_iso())
 
-            self.assertEqual(final.fase_activa, "B")
+            self.assertEqual(final.fase_activa, ids[1])
             self.assertEqual(final.estado, "recibido")
             self.assertEqual(final.entrega.nivel, "desplegado")
             a, b, d = final.fases
@@ -125,7 +131,7 @@ class ReanudarFaseIntegrada(unittest.TestCase):
             self.assertEqual(a.integrado_sha, fusionado.merge_commit)
             self.assertEqual(a.pr_sha, sha_aprobado)
             self.assertNotEqual(d.estado, "preparada")
-            self.assertEqual(b.requiere, (("A", a.producto.firma),))
+            self.assertEqual(b.requiere, ((ids[0], a.producto.firma),))
             self.assertEqual(final.generacion, generacion)
             self.assertEqual(r.eventos("reserva"), reservas)
             self.assertEqual(r.eventos("revision"), revisiones)

@@ -123,7 +123,12 @@ class RecuperacionDespliegue(unittest.TestCase):
                 self.assertLess(time.monotonic(), fin)
                 time.sleep(0.05)
             recibo, = (reg.base / "despliegues").rglob("recibo.json")
-            marca = json.loads((recibo.parent / "comando.json").read_text(encoding="utf-8"))
+            while True:
+                marca = json.loads((recibo.parent / "comando.json").read_text(encoding="utf-8"))
+                if marca.get("estado") != "preparando":
+                    break
+                self.assertLess(time.monotonic(), fin, "el worker no guardó la identidad")
+                time.sleep(0.01)
             self.assertTrue(marca["inicio"])
             self.assertEqual(marca["boot_id"], plataforma.boot_id())
             self.assertEqual(plataforma.presencia_grupo(marca["pid"], marca["inicio"], marca["job"]), "vivo")
