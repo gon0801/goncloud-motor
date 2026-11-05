@@ -156,9 +156,9 @@ simples. Solo el propietario autoriza descartarlo.
 `motor corregir` y `motor director corregir` aceptan una corrección en
 cualquier estado salvo `cancelado` (o una cancelación en curso), que la
 rechaza con su motivo. Un encargo `terminado` con su PR abierto se reabre en
-la misma rama y el mismo PR; integrado, desplegado o sin PR se rechaza. El
-motor no consulta GitHub al corregir: un PR ya mergeado o cerrado a mano
-necesita un encargo nuevo. No interrumpen al agente que corre:
+la misma rama y el mismo PR, después de comprobar en GitHub que el PR sigue
+abierto; integrado, desplegado, sin PR, o con el PR mergeado, cerrado o
+ilegible se rechaza. No interrumpen al agente que corre:
 la corrección queda en el registro y la recibe el siguiente intento, del
 rol que sea, en su prompt. Para que se aplique de inmediato, se usa `parar`
 y `continuar`.
