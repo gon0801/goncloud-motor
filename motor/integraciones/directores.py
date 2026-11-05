@@ -1434,7 +1434,7 @@ def _sondear_canales(registro: Registro, vuelta: Vuelta) -> None:
         if not conciliacion or not canales.sondeo_toca(registro.base, nombre, vuelta.ahora):
             continue
         aviso = {
-            "id": f"sondeo:{nombre}",
+            "id": f"sondeo-{nombre}",
             "canal": nombre,
             "evidencia": "sondeo",
             "formato": "texto",

@@ -115,7 +115,7 @@ class RecuperacionPorSondeo(Banco):
                 estado = self.estado()
                 self.assertNotIn("fallando_desde", estado, "el sondeo probó que el canal volvió")
                 self.assertEqual(estado.get("ultimo_exito"), directores._iso(T0))
-                self.assertEqual(self.sondeos(), ["sondeo:hermes"], "un solo sondeo")
+                self.assertEqual(self.sondeos(), ["sondeo-hermes"], "un solo sondeo")
                 self.assertEqual(self.lineas("envios.log"), [], "el sondeo no manda mensajes")
                 (self.base / "canales" / "hermes.json").unlink()
                 for log in ("check.log", "envios.log"):
@@ -127,7 +127,7 @@ class RecuperacionPorSondeo(Banco):
         self.caido()
         self.check_modo("roto")
         directores.drenar(self.reg, ahora=T0)
-        self.assertEqual(self.sondeos(), ["sondeo:hermes"])
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
         caidos = [c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 1000)]
         self.assertEqual(caidos, ["hermes"], "sin respuesta el canal sigue caído")
 
@@ -183,7 +183,7 @@ class AvisoInciertoHuerfano(Banco):
         directores.drenar(self.reg, ahora=T0 + 10)
         self.assertEqual(self.aviso(viejo["id"])["estado"], "descartado")
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
-        self.assertEqual(self.sondeos(), ["sondeo:hermes"])
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
 
     def test_un_aviso_incierto_vencido_que_ya_no_genera_el_estado_se_reintenta(self):
         ident = self.encargo()
