@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from .dominio import Encargo, TransicionIlegal, reducir
@@ -13,6 +14,13 @@ _VIVO = Path.home() / ".motor"
 
 class BaseProhibida(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class _Plegado:
+    estado: Encargo | None
+    ultimo: int
+    conteo: int
 
 
 def _estable(data: dict) -> dict:
@@ -49,6 +57,9 @@ class Registro:
             "BEGIN SELECT RAISE(ABORT, 'append-only'); END"
         )
         self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_encargo ON events(encargo, id)"
+        )
+        self.db.execute(
             "CREATE TABLE IF NOT EXISTS cortes_avisos ("
             " version TEXT PRIMARY KEY, evento INTEGER NOT NULL)"
         )
@@ -63,6 +74,11 @@ class Registro:
             "INSERT OR IGNORE INTO cortes_avisos (version, evento) "
             "SELECT 'cierres-cancelados-v1', COALESCE(MAX(id), 0) FROM events"
         )
+        self._plegados: dict[str, _Plegado] = {}
+        self._plegados_hasta: dict[tuple[str, int], _Plegado] = {}
+        self._ultimos: dict[str, tuple[int, int]] | None = None
+        self._data_version = -1
+        self._cambios = -1
 
     def close(self) -> None:
         self.db.close()
@@ -116,13 +132,33 @@ class Registro:
         }
 
     def eventos(self, encargo: str) -> list[dict]:
-        rows = self.db.execute(
-            "SELECT id, ts, kind, data FROM events WHERE encargo = ? ORDER BY id",
-            (encargo,),
-        ).fetchall()
-        return [
-            {"id": r[0], "ts": r[1], "kind": r[2], "data": json.loads(r[3])} for r in rows
-        ]
+        return self._rango(encargo, 0)
+
+    def ultimos(self) -> dict[str, tuple[int, int]]:
+        """MAX(id) y cantidad de eventos por encargo, en una sola consulta."""
+        self._refrescar_ultimos()
+        return dict(self._ultimos or {})
+
+    def _refrescar_ultimos(self) -> None:
+        version = int(self.db.execute("PRAGMA data_version").fetchone()[0])
+        cambios = self.db.total_changes
+        if (
+            self._ultimos is None
+            or version != self._data_version
+            or cambios != self._cambios
+        ):
+            self._ultimos = {
+                fila[0]: (int(fila[1] or 0), int(fila[2] or 0))
+                for fila in self.db.execute(
+                    "SELECT encargo, MAX(id), COUNT(*) FROM events GROUP BY encargo"
+                )
+            }
+            self._data_version = version
+            self._cambios = cambios
+
+    def _ultimo_y_conteo(self, encargo: str) -> tuple[int, int]:
+        self._refrescar_ultimos()
+        return (self._ultimos or {}).get(encargo, (0, 0))
 
     def ultimo_evento(self, encargo: str) -> int:
         row = self.db.execute(
@@ -142,12 +178,63 @@ class Registro:
         ).fetchone()
         return int(fila[0])
 
-    def fold(self, encargo: str, hasta: int | None = None) -> Encargo | None:
+    def _rango(self, encargo: str, desde: int, hasta: int | None = None) -> list[dict]:
+        sql = "SELECT id, ts, kind, data FROM events WHERE encargo = ? AND id > ?"
+        args: list = [encargo, desde]
+        if hasta is not None:
+            sql += " AND id <= ?"
+            args.append(hasta)
+        sql += " ORDER BY id"
+        rows = self.db.execute(sql, args).fetchall()
+        return [
+            {"id": r[0], "ts": r[1], "kind": r[2], "data": json.loads(r[3])} for r in rows
+        ]
+
+    def _plegar(self, encargo: str, hasta: int | None = None) -> Encargo | None:
         estado = None
-        for ev in self.eventos(encargo):
-            if hasta is not None and ev["id"] > hasta:
-                break
+        for ev in self._rango(encargo, 0, hasta):
             estado = reducir(estado, ev)
+        return estado
+
+    def _fold_hasta(self, encargo: str, hasta: int) -> Encargo | None:
+        fila = self.db.execute(
+            "SELECT MAX(id), COUNT(*) FROM events WHERE encargo = ? AND id <= ?",
+            (encargo, hasta),
+        ).fetchone()
+        ultimo = int(fila[0] or 0)
+        conteo = int(fila[1] or 0)
+        guardado = self._plegados_hasta.get((encargo, hasta))
+        if guardado is not None and guardado.ultimo == ultimo and guardado.conteo == conteo:
+            return guardado.estado
+        estado = self._plegar(encargo, hasta)
+        self._plegados_hasta[(encargo, hasta)] = _Plegado(estado, ultimo, conteo)
+        return estado
+
+    def fold(self, encargo: str, hasta: int | None = None) -> Encargo | None:
+        if hasta is not None:
+            return self._fold_hasta(encargo, hasta)
+        ultimo, conteo = self._ultimo_y_conteo(encargo)
+        guardado = self._plegados.get(encargo)
+        if guardado is not None and guardado.ultimo == ultimo and guardado.conteo == conteo:
+            return guardado.estado
+        if (
+            guardado is not None
+            and guardado.ultimo < ultimo
+            and guardado.conteo <= conteo
+        ):
+            nuevos = self._rango(encargo, guardado.ultimo, ultimo)
+            if (
+                nuevos
+                and nuevos[-1]["id"] == ultimo
+                and guardado.conteo + len(nuevos) == conteo
+            ):
+                estado = guardado.estado
+                for ev in nuevos:
+                    estado = reducir(estado, ev)
+                self._plegados[encargo] = _Plegado(estado, ultimo, conteo)
+                return estado
+        estado = self._plegar(encargo)
+        self._plegados[encargo] = _Plegado(estado, ultimo, conteo)
         return estado
 
     def anotar(self, encargo: str, evento: dict, ukey: str) -> str:
