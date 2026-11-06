@@ -117,6 +117,29 @@ class _Base(unittest.TestCase):
         self._ruido_interno()
         self._cambio_de_producto()
 
+    def _rastrear_cache(self):
+        (self.espacio / ".runtime").mkdir()
+        (self.espacio / ".runtime" / "estado").write_text("antes\n", encoding="utf-8")
+        _git(self.espacio, "add", ".runtime")
+        _git(self.espacio, "commit", "--quiet", "-m", "rastrea cache")
+        (self.espacio / ".runtime" / "estado").write_text(
+            "despues\n", encoding="utf-8"
+        )
+        (self.espacio / ".runtime" / "nuevo").write_text("nuevo\n", encoding="utf-8")
+        self._cambio_de_producto()
+
+    def _comprobar_cache_rastreada(self):
+        arbol = self.repo.arbol()
+        self.assertIn(".runtime/estado", arbol)
+        self.assertNotIn(".runtime/nuevo", arbol)
+        self.assertEqual(
+            _git(self.espacio, "show", "HEAD:.runtime/estado"), "despues\n"
+        )
+        self.assertEqual(
+            _git(self.espacio, "status", "--porcelain", "--", ".runtime"),
+            "?? .runtime/nuevo\n",
+        )
+
     def _internas(self, rutas: list[str]) -> list[str]:
         return [
             ruta
@@ -171,6 +194,14 @@ class CommitDelProducto(_Base):
         self.assertEqual(sha, "")
         self.assertIn("git add fallo", causa)
 
+    def test_una_cache_ya_rastreada_se_conserva(self):
+        self._rastrear_cache()
+
+        _, causa = _commit_push(_encargo(), self.espacio)
+
+        self.assertEqual(causa, "")
+        self._comprobar_cache_rastreada()
+
 
 class CommitPendienteDeIntegracion(_Base):
     def test_con_interno_en_gitignore_commitea_el_resto(self):
@@ -206,6 +237,14 @@ class CommitPendienteDeIntegracion(_Base):
         causa = _commit_pendiente(_encargo(), self.espacio, "main")
 
         self.assertEqual(causa, "no se pudo preparar el producto para la mezcla")
+
+    def test_una_cache_ya_rastreada_se_conserva(self):
+        self._rastrear_cache()
+
+        causa = _commit_pendiente(_encargo(), self.espacio, "main")
+
+        self.assertEqual(causa, "")
+        self._comprobar_cache_rastreada()
 
 
 if __name__ == "__main__":

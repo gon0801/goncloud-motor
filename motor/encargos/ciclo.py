@@ -3905,7 +3905,8 @@ def _asegurar_repo(
 _RUTAS_INTERNAS = (
     "**/.interno", "**/.interno/**", "**/__pycache__/**", "**/.runtime/**",
 )
-_FUERA_DEL_INDICE = tuple(f":(glob){ruta}" for ruta in _RUTAS_INTERNAS)
+_CACHES_INTERNAS = ("**/__pycache__/**", "**/.runtime/**")
+_SIEMPRE_FUERA = ("**/.interno", "**/.interno/**")
 _FUERA_DEL_PRODUCTO = tuple(f":(exclude,glob){ruta}" for ruta in _RUTAS_INTERNAS)
 
 
@@ -3914,14 +3915,30 @@ def _preparar_indice(espacio: Path) -> str:
 
     `git add` no puede nombrar rutas ignoradas en su pathspec: con `.interno` en
     el `.gitignore` devuelve 1 aunque agregue lo demas. Por eso se agrega todo y
-    luego se saca lo interno con `rm --cached --ignore-unmatch`.
+    luego se saca lo interno con `rm --cached --ignore-unmatch`. De las caches
+    solo salen las que agrega esta entrega: lo que ya estaba rastreado se
+    conserva como antes.
     """
     r = _git(espacio, "add", "-A", "--", ".")
     if r.returncode != 0:
         return f"git add fallo: {r.stderr.strip()[-300:]}"
     r = _git(
+        espacio, "diff", "--cached", "--name-only", "--diff-filter=A", "-z", "--",
+        *(f":(glob){ruta}" for ruta in _CACHES_INTERNAS),
+    )
+    if r.returncode != 0:
+        return f"git diff del indice fallo: {r.stderr.strip()[-300:]}"
+    agregadas = [ruta for ruta in r.stdout.split("\0") if ruta]
+    if agregadas:
+        r = _git(
+            espacio, "rm", "--cached", "--quiet", "--ignore-unmatch", "--",
+            *agregadas,
+        )
+        if r.returncode != 0:
+            return f"git rm del indice fallo: {r.stderr.strip()[-300:]}"
+    r = _git(
         espacio, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--",
-        *_FUERA_DEL_INDICE,
+        *(f":(glob){ruta}" for ruta in _SIEMPRE_FUERA),
     )
     if r.returncode != 0:
         return f"git rm del indice fallo: {r.stderr.strip()[-300:]}"
