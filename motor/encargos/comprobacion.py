@@ -745,6 +745,19 @@ _PROHIBE = (
     "sin modificar",
     "prohibido",
 )
+_EXCEPCION = (
+    "fuera de",
+    "excepto",
+    "salvo",
+    "ajenos a",
+    "ajeno a",
+    "que no sea",
+    "que no sean",
+    "distinto de",
+    "distintos de",
+    "diferente de",
+    "salir de",
+)
 _ACOTA = (
     "acotad",
     "limitad",
@@ -765,17 +778,27 @@ def _rutas_de_restriccion(texto: str) -> tuple[str, ...]:
     )
 
 
-def _ruta_cubierta(ruta: str, permitidas: tuple[str, ...]) -> bool:
+def _ruta_cubierta(
+    ruta: str, permitidas: tuple[str, ...], *, incluye: bool = False
+) -> bool:
     actual = ruta.strip("./").replace("\\", "/")
     for cruda in permitidas:
         permitida = cruda.strip("./").replace("\\", "/")
         if actual == permitida or actual.startswith(permitida.rstrip("/") + "/"):
             return True
-        nombre = Path(actual).name
-        es_prueba = nombre.startswith("test_") or actual.startswith("tests/") or "/tests/" in f"/{actual}"
-        if Path(permitida).suffix and es_prueba:
-            if Path(permitida).stem in Path(actual).stem:
+        if incluye and "/" not in actual:
+            if Path(actual).name == Path(permitida).name:
                 return True
+        if not incluye or not Path(permitida).suffix:
+            continue
+        nombre = Path(actual).name
+        es_prueba = (
+            nombre.startswith("test_")
+            or actual.startswith("tests/")
+            or "/tests/" in f"/{actual}"
+        )
+        if es_prueba and Path(permitida).stem in Path(actual).stem:
+            return True
     return False
 
 
@@ -800,7 +823,9 @@ def hallazgo_fuera_de_alcance_por_restriccion(
             rutas = _rutas_de_restriccion(clausula)
             if not rutas:
                 continue
-            if any(p in bajo for p in _PROHIBE):
+            if any(p in bajo for p in _EXCEPCION):
+                incluye.append(rutas)
+            elif any(p in bajo for p in _PROHIBE):
                 excluye.append(rutas)
             elif any(p in bajo for p in _ACOTA):
                 incluye.append(rutas)
@@ -809,7 +834,9 @@ def hallazgo_fuera_de_alcance_por_restriccion(
             "la restricción expresa del encargo prohíbe tocar "
             f"{ruta}; el hallazgo lo señala"
         )
-    if incluye and not any(_ruta_cubierta(ruta, rutas) for rutas in incluye):
+    if incluye and not any(
+        _ruta_cubierta(ruta, rutas, incluye=True) for rutas in incluye
+    ):
         permitidas = sorted({p for rutas in incluye for p in rutas})
         return (
             "la restricción expresa del encargo limita el cambio a "

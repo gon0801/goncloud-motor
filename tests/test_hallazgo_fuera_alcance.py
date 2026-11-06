@@ -83,6 +83,39 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             ),
         )
 
+    def test_no_tocar_nada_fuera_de_la_ruta_la_deja_dentro(self):
+        texto = "No tocar nada fuera de motor/encargos/cli.py"
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/encargos/cli.py:1")
+            ),
+            "",
+        )
+        self.assertIn(
+            "limita el cambio",
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/otro.py:1")
+            ),
+        )
+
+    def test_la_prohibicion_no_alcanza_por_tallo_de_prueba(self):
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                ("No tocar motor/encargos/cli.py",),
+                _hallazgo("tests/test_cli_reabrir.py:1"),
+            ),
+            "",
+        )
+
+    def test_ancla_sin_directorio_cuenta_para_la_ruta_permitida(self):
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                ("Cambio acotado a motor/encargos/cli.py",),
+                _hallazgo("cli.py:120"),
+            ),
+            "",
+        )
+
     def test_restriccion_expresa_deja_fuera_el_hallazgo_y_entrega(self):
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(

@@ -8000,6 +8000,32 @@ def _recibir_resultado_nuevo(
             "rechazado": True,
             "motivo": "la aprobacion no enumera los efectos solicitados",
         }
+    hallazgos_validados = list(validado.hallazgos)
+    abiertos_ds = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
+    fuera_aplicados = False
+    for hid, razon in validado.fuera_de_alcance:
+        h = abiertos_ds.get(hid)
+        if h is None:
+            continue
+        hallazgos_validados.append(
+            replace(
+                h,
+                gravedad="observacion",
+                estado="resuelto",
+                cierre_evidencia=razon,
+            )
+        )
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "hallazgo_fuera_de_alcance",
+                "data": {"id": hid, "titulo": h.titulo, "razon": razon, "hora": hora},
+            },
+            f"fuera-alcance:{enc.id}:{fase}:{hid}",
+        )
+        fuera_aplicados = True
+    if fuera_aplicados:
+        enc = registro.fold(enc.id) or enc
     registro.anotar(
         enc.id,
         {
@@ -8013,7 +8039,7 @@ def _recibir_resultado_nuevo(
                 "revisor": "autoridad",
                 "origen": "independiente",
                 "cubre": list(validado.cubre),
-                "hallazgos": [h.como_dict() for h in validado.hallazgos],
+                "hallazgos": [h.como_dict() for h in hallazgos_validados],
                 "aprobadas": [list(x) for x in validado.aprobadas],
                 "evidencia": validado.evidencia,
                 "efectos_pendientes": list(validado.efectos_pendientes),
