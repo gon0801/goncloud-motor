@@ -1365,6 +1365,31 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
             )
             self.assertEqual(len(gh.llamadas), llamadas)
 
+    def test_el_barrido_hace_a_lo_sumo_cinco_consultas_por_pasada(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            repo = str(Path(tmp) / "repo.git")
+            viejo = (
+                datetime.now() - timedelta(days=30)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            self._terminado(reg, "viejo", viejo, repo, 1)
+            gh = _GhCuenta(Path(tmp) / "gh")
+            barrer(reg, ahora_iso(), time.time(), lambda *a, **k: None, gh=gh)
+            self.assertEqual(gh.llamadas, [])
+
+            for i in range(10):
+                self._terminado(reg, f"nuevo-{i}", ahora_iso(), repo, i + 2)
+            epoch = time.time()
+            barrer(reg, ahora_iso(), epoch, lambda *a, **k: None, gh=gh)
+            self.assertEqual(len(gh.llamadas), 5)
+
+            barrer(
+                reg, ahora_iso(), epoch + 120,
+                lambda *a, **k: None, gh=gh,
+            )
+            self.assertEqual(len(gh.llamadas), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

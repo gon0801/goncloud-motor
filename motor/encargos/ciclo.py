@@ -5206,7 +5206,8 @@ def _revisar_deepseek_del_cerrado(
     ]
     if not fases:
         return enc
-    directorio = _directorio(registro.base, enc.id)
+    directorio = Path(registro.base) / "ejecucion" / enc.id
+    directorio.mkdir(parents=True, exist_ok=True)
     espacio = _espacio(registro.base, enc.id)
     marca = _marca_deepseek_cerrado(directorio)
     if not marca["desde"]:
