@@ -279,6 +279,44 @@ class UnaSolaLectura(Base):
         )
 
 
+class ResumenNoDescartaAvisosAjenos(Base):
+    def test_el_resumen_no_descarta_un_aviso_activo_que_no_es_suyo(self):
+        ident = self.b.encargo("uno")
+        aviso = directores.id_aviso(ident, "avance:inicio:inicio")
+        (self.b.base / "avisos").mkdir(parents=True, exist_ok=True)
+        (self.b.base / "avisos" / f"{aviso}.json").write_text(
+            json.dumps(
+                {
+                    "id": aviso,
+                    "encargo": ident,
+                    "canal": "tg",
+                    "evidencia": "avance:inicio:inicio",
+                    "estado": "incierto",
+                    "tipo": "inicio",
+                    "fallos": 1,
+                    "proximo_intento": directores._iso(T0 + 3600),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        directores.drenar(self.b.reg, ahora=T0)
+
+        guardado = next(
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (
+                self.b.base / "avisos" / f"{aviso}.json",
+                self.b.base / "avisos" / "archivo" / f"{aviso}.json",
+            )
+            if path.is_file()
+        )
+        self.assertEqual(guardado["estado"], "incierto")
+        self.assertNotEqual(
+            guardado.get("motivo"), "hay un resumen más nuevo",
+            "el resumen no descarta avisos de encargos que no son suyos",
+        )
+
+
 class CorteDeArchivo(Base):
     def _publicado_con_marca(self, ident: str) -> None:
         (self.b.base / "avisos").mkdir(parents=True, exist_ok=True)

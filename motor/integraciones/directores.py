@@ -1880,11 +1880,20 @@ def _descartar_avances_de_terminados(
             _atomico(registro.base / "avisos" / f"{ident}.json", doc)
 
 
+def _es_aviso_de_cierre(doc: dict, enc) -> bool:
+    """El cierre es el único aviso que todavía se le debe al propietario de un encargo cerrado."""
+    if enc is None:
+        return False
+    return str(doc.get("id") or "") == str(_aviso_de(enc).get("id") or "")
+
+
 def _cerrar_inciertos_sin_destino(encargos: dict, vista: VistaAvisos) -> None:
     """Un incierto que ya no puede llegar a nadie queda descartado y sale de la carpeta activa.
 
     Los de un encargo cerrado o de un encargo que ya no existe no vuelven a probar
-    el transporte; el de un encargo activo sigue su conciliación normal.
+    el transporte; el de un encargo activo sigue su conciliación normal. El cierre
+    de un encargo cerrado se conserva: es su última entrega y todavía se concilia
+    o se reintenta.
     """
     for ident, doc in list(vista.docs.items()):
         if doc.get("estado") != "incierto" or doc.get("tipo") == "resumen":
@@ -1892,6 +1901,8 @@ def _cerrar_inciertos_sin_destino(encargos: dict, vista: VistaAvisos) -> None:
         encargo = str(doc.get("encargo") or "")
         enc = encargos.get(encargo) if encargo else None
         if enc is not None and enc.estado not in ("terminado", "cancelado"):
+            continue
+        if _es_aviso_de_cierre(doc, enc):
             continue
         doc["estado"] = "descartado"
         doc["motivo"] = MOTIVO_ENCARGO_CERRADO
@@ -1933,7 +1944,11 @@ def drenar(
     envios_resumen: set[tuple[str, int]] = set()
     vistos: set[str] = set()
     existentes_resumen = dict(vista.resumenes)
-    existentes_resumen.update(vista.docs)
+    existentes_resumen.update(
+        (ident, doc)
+        for ident, doc in vista.docs.items()
+        if doc.get("tipo") == "resumen"
+    )
     try:
         trabajos_resumen = resumen_encargos.preparar(
             registro,
