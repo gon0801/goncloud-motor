@@ -625,6 +625,26 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             )
             self.assertEqual(len(vuelta.gh.llamadas), 3)
 
+    def test_el_sondeo_termina_a_los_30_dias(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = None
+            epoch = time.time()
+            hora = ahora_iso()
+            ventana = 30 * 24 * 60 * 60
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 2)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 3600
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 2)
+
     def test_el_primer_medium_despues_de_una_ventana_vacia_llega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
