@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime
 from unittest import mock
 
-from motor.encargos import ciclo
+from motor.encargos import ciclo, resumen
 from tests.test_flujo_revisiones import (
     _entrega_pr,
     _GhConDeepSeek,
@@ -80,6 +80,36 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertEqual(len(r.eventos("espera")), 1)
             self.assertEqual(e3.estado, "recibido")
             self.assertEqual(e3.estrategia, "investigar")
+
+    def test_el_aviso_dice_que_el_motor_dejo_de_reintentar(self):
+        causa = "git push fallo: remote rejected: protected branch hook declined"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "fallo-git-aviso", _GhConDeepSeek)
+            with mock.patch.object(ciclo, "_commit_push", return_value=("", causa)):
+                e1 = vuelta("hola")
+                eventos_e1 = list(r.reg.eventos(r.enc))
+                e2 = _barrido(r, vuelta.gh, _epoch(e1.reanuda_en))
+
+            alertas_antes = resumen._alertas(
+                e1, eventos_e1, _epoch(e1.reanuda_en) - 1
+            )
+            self.assertFalse(
+                any("dejo de reintentar" in alerta for alerta in alertas_antes),
+                alertas_antes,
+            )
+            alertas = resumen._alertas(
+                e2, r.reg.eventos(r.enc), _epoch(e1.reanuda_en) + 200
+            )
+            self.assertTrue(
+                any(
+                    "dejo de reintentar" in alerta
+                    and "vuelve al responsable" in alerta
+                    for alerta in alertas
+                ),
+                alertas,
+            )
+            self.assertIn("protected branch hook declined", " ".join(alertas))
+            self.assertEqual(resumen._decisiones_de(e2), [])
 
     def test_corregir_solo_el_repositorio_vuelve_a_entregar(self):
         causa = "git push fallo: remote rejected: protected branch hook declined"

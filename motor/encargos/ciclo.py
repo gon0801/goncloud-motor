@@ -3716,6 +3716,10 @@ TOPE_FALLOS_REPO = 3
 # El commit o push de la misma version no se reintenta en bucle: a la segunda
 # falla seguida vuelve al responsable con la causa exacta.
 TOPE_FALLOS_ENTREGA = 2
+# Lo que el aviso del resumen dice en palabras simples cuando se corta el bucle.
+_AVISO_ENTREGA_DEVUELTA = (
+    "el motor dejo de reintentar; el trabajo vuelve al responsable."
+)
 # Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
 _ENTRE_REINTENTOS = (
     "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
@@ -6124,16 +6128,24 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 return _head_desviado(
                     registro, enc, hora, enc.pr_numero, entregado, punta
                 )
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "reintentar commit y push de la misma version aprobada",
-            hora, f"push-{enc.generacion}-{_clase_de_fallo(causa)}",
-        )
-        if not _fallo_transitorio(causa) and (
+        corte = not _fallo_transitorio(causa) and (
             _entrega_devuelta_de_la_version(registro, enc)
             or _fallos_de_entrega_seguidos(registro, enc.id, causa) + 1
             >= TOPE_FALLOS_ENTREGA
-        ):
+        )
+        # El aviso del resumen lee la causa del ultimo instrumento_fallo. En el
+        # corte antepone la explicacion para que el aviso comunique que el
+        # motor dejo de reintentar. La serie distinta evita que el registro
+        # deduplique la causa sin explicacion que ya quedo del primer fallo.
+        _anotar_instrumento(
+            registro, enc, "github",
+            f"{_AVISO_ENTREGA_DEVUELTA} {causa}" if corte else causa,
+            "reintentar commit y push de la misma version aprobada",
+            hora,
+            f"push-{enc.generacion}-{_clase_de_fallo(causa)}"
+            + ("-corte" if corte else ""),
+        )
+        if corte:
             registro.anotar(
                 enc.id,
                 {
