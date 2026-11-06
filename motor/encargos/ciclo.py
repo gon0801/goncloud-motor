@@ -2142,7 +2142,7 @@ def _aplica_entrega(enc: Encargo) -> bool:
         fase is not None
         and fase.entrega_bloqueada_sha
         and enc.producto is not None
-        and fase.entrega_bloqueada_sha == enc.producto.sha_git
+        and fase.entrega_bloqueada_sha == (enc.producto.sha_git or enc.producto.firma)
     ):
         # La aprobación se conserva; sólo deja de ser aplicable a la entrega
         # mientras el producto vigente siga en rojo.
@@ -3713,11 +3713,30 @@ def _incorporar_entradas(
 # Veces seguidas que el mismo fallo de git deja esperar al encargo antes de
 # pedir ayuda: reintentar cada 5 minutos sin fin no arregla lo que no cambia.
 TOPE_FALLOS_REPO = 3
+# El commit o push de la misma version no se reintenta en bucle: a la segunda
+# falla seguida vuelve al responsable con la causa exacta.
+TOPE_FALLOS_ENTREGA = 2
 # Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
 _ENTRE_REINTENTOS = (
     "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
     "contexto_entrega",
 )
+# Un fallo de red o de servicio no es una causa reproducible: sigue reintentando.
+_FALLOS_TRANSITORIOS = (
+    "could not resolve host", "temporary failure in name resolution",
+    "network is unreachable", "connection timed out", "connection reset",
+    "connection refused", "connection closed", "operation timed out",
+    "remote end hung up unexpectedly", "the remote end hung up",
+    "rpc failed", "early eof", "broken pipe",
+    "resource temporarily unavailable", "http 429", "http 500", "http 502",
+    "http 503", "http 504", "returned error: 429", "returned error: 500",
+    "returned error: 502", "returned error: 503", "returned error: 504",
+)
+
+
+def _fallo_transitorio(causa: str) -> bool:
+    texto = str(causa or "").lower()
+    return any(marca in texto for marca in _FALLOS_TRANSITORIOS)
 
 
 def _clase_de_fallo(causa: str) -> str:
@@ -4032,6 +4051,7 @@ def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -
     producto nuevo, vuelve a habilitar la entrega."""
     if enc.producto is None:
         return
+    clave = enc.producto.sha_git or enc.producto.firma
     registro.anotar(
         enc.id,
         {
@@ -4039,12 +4059,12 @@ def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -
             "data": {
                 "fase": enc.fase_activa,
                 "intento": enc.intento,
-                "sha": enc.producto.sha_git,
+                "sha": clave,
                 "causa": causa,
                 "hora": hora,
             },
         },
-        f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{enc.producto.sha_git}",
+        f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{clave}",
     )
 
 
@@ -6039,6 +6059,19 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             "reintentar commit y push de la misma version aprobada",
             hora, f"push-{enc.generacion}",
         )
+        if not _fallo_transitorio(causa) and (
+            _fallos_de_repo_seguidos(registro, enc.id, causa) + 1
+            >= TOPE_FALLOS_ENTREGA
+        ):
+            _bloquear_entrega(registro, enc, causa, hora)
+            _devolver(
+                registro, enc, "investigar", causa,
+                "investigar la causa exacta de git del commit o push y corregir "
+                "el espacio o el repositorio; el producto que no cambio conserva "
+                "su aprobación",
+                hora, f"push-{enc.generacion}",
+            )
+            return registro.fold(enc.id)
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return registro.fold(enc.id)
     rama = _rama_fase(enc)
