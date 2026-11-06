@@ -3720,6 +3720,20 @@ TOPE_FALLOS_ENTREGA = 2
 _AVISO_ENTREGA_DEVUELTA = (
     "el motor dejo de reintentar; el trabajo vuelve al responsable."
 )
+# `resumen._alerta_instrumento` recorta la causa a 140 caracteres. El corte
+# reserva ese espacio para el aviso y, si hace falta, recorta solo la causa.
+_TOPE_CAUSA_AVISO = 140
+
+
+def _causa_con_aviso(
+    causa: str, aviso: str, tope: int = _TOPE_CAUSA_AVISO
+) -> str:
+    """La causa primero y el aviso completo dentro del limite del resumen."""
+    texto = " ".join(str(causa or "").split())
+    espacio = max(tope - len(aviso) - 2, 1)
+    if len(texto) > espacio:
+        texto = texto[: espacio - 1].rstrip() + "…"
+    return f"{texto}. {aviso}"
 # Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
 _ENTRE_REINTENTOS = (
     "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
@@ -6134,13 +6148,13 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             >= TOPE_FALLOS_ENTREGA
         )
         # El aviso del resumen lee la causa del ultimo instrumento_fallo. En el
-        # corte agrega la explicacion al final: la causa tecnica conserva su
-        # lugar y el resumen no la recorta para hacer sitio. La serie distinta
-        # evita que el registro deduplique la causa sin explicacion que ya
-        # quedo del primer fallo.
+        # corte reserva el espacio del aviso dentro del limite del resumen y
+        # recorta solo la causa: asi el aviso siempre dice que el motor dejo de
+        # reintentar. La serie distinta evita que el registro deduplique la
+        # causa sin explicacion que ya quedo del primer fallo.
         _anotar_instrumento(
             registro, enc, "github",
-            f"{causa}. {_AVISO_ENTREGA_DEVUELTA}" if corte else causa,
+            _causa_con_aviso(causa, _AVISO_ENTREGA_DEVUELTA) if corte else causa,
             "reintentar commit y push de la misma version aprobada",
             hora,
             f"push-{enc.generacion}-{_clase_de_fallo(causa)}"
