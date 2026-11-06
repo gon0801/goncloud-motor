@@ -625,56 +625,10 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             )
             self.assertEqual(len(vuelta.gh.llamadas), 3)
 
-    def test_el_sondeo_termina_al_ano(self):
+    def test_una_lectura_fallida_no_finaliza_el_sha(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
-            vuelta.gh.textos[e.pr_numero] = None
-            epoch = time.time()
-            hora = ahora_iso()
-            ventana = 365 * 24 * 60 * 60
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch
-            )
-            self.assertEqual(len(vuelta.gh.llamadas), 1)
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
-            )
-            self.assertEqual(len(vuelta.gh.llamadas), 2)
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 3600
-            )
-            self.assertEqual(len(vuelta.gh.llamadas), 2)
-
-    def test_el_tope_de_reintentos_de_la_lectura_final(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r, e = self._terminado(tmp)
-            ventana = 365 * 24 * 60 * 60
-            paso = 30 * 60
-            epoch = time.time()
-            hora = ahora_iso()
-            vuelta.gh.textos[e.pr_numero] = None
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch
-            )
-            self.assertEqual(len(vuelta.gh.llamadas), 1)
-            vuelta.gh.falla = True
-            base = epoch + ventana + 61
-            for intento in range(3):
-                ciclo._revisar_deepseek_del_cerrado(
-                    r.reg, r.fold(), vuelta.gh, hora,
-                    base + intento * paso,
-                )
-            self.assertEqual(len(vuelta.gh.llamadas), 4)
-            # Tras el tercer fallo seguido al vencer, el SHA queda final.
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, base + 3 * paso
-            )
-            self.assertEqual(len(vuelta.gh.llamadas), 4)
-
-    def test_una_lectura_fallida_al_vencer_no_finaliza_sin_leer(self):
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r, e = self._terminado(tmp)
-            ventana = 365 * 24 * 60 * 60
+            un_ano = 365 * 24 * 60 * 60
             epoch = time.time()
             hora = ahora_iso()
             vuelta.gh.textos[e.pr_numero] = None
@@ -683,13 +637,13 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             )
             vuelta.gh.falla = True
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+                r.reg, r.fold(), vuelta.gh, hora, epoch + un_ano + 61
             )
             vuelta.gh.falla = False
             vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F23"))
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ventana + 61 + 3600,
+                epoch + un_ano + 61 + 3600,
             )
             e = r.fold()
             self.assertEqual(e.estado, "necesita_usuario")
@@ -716,6 +670,28 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             e = r.fold()
             self.assertEqual(e.estado, "necesita_usuario")
             self.assertTrue(any("F24" in p for p in e.preguntas), e.preguntas)
+
+    def test_el_primer_medium_posterior_al_ano_llega(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = None
+            epoch = time.time()
+            hora = ahora_iso()
+            un_ano = 365 * 24 * 60 * 60
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch
+            )
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + un_ano + 61
+            )
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F25"))
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + un_ano + 61 + 3600,
+            )
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F25" in p for p in e.preguntas), e.preguntas)
 
     def test_el_primer_medium_despues_de_una_ventana_vacia_llega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
