@@ -1036,14 +1036,25 @@ def validar_juicio(
                 ancla=ancla,
             )
         )
-    quedan = [
+    # Una revisión concluyente manda sobre los bloqueantes independientes que
+    # cubre: el que ya no vuelve a reportar abierto queda resuelto con esa
+    # revisión como evidencia (el evento `revision` con su revision_id). Un
+    # no_concluyente, una inspección pendiente o un instrumento fallido no
+    # cierran nada por omisión. Sin cierre_evidencia: esa marca es la del
+    # propietario y bloquearía la reapertura con una redeclaración.
+    abiertos_reportados = any(
+        h.gravedad == "bloqueante" and h.estado == "abierto" for h in hallazgos
+    )
+    omitidos = [
         h
         for h in alcance.abiertos
         if h.id not in resueltos and h.id not in redeclarados
     ]
-    hay_bloqueantes = bool(quedan) or any(
-        h.gravedad == "bloqueante" and h.estado == "abierto" for h in hallazgos
-    )
+    if veredicto == "cambios" and not abiertos_reportados and not instrumento:
+        veredicto = "aprobado" if evidencia.strip() else "no_concluyente"
+    cierra_omision = veredicto in ("aprobado", "cambios") and not instrumento
+    quedan = [] if cierra_omision else omitidos
+    hay_bloqueantes = bool(quedan) or abiertos_reportados
     if veredicto == "aprobado":
         if hay_bloqueantes:
             veredicto = "cambios"
@@ -1053,6 +1064,8 @@ def validar_juicio(
             raise DefectoJuicio("evidencia", "aprobación sin evidencia")
     if veredicto == "cambios" and not hay_bloqueantes and not instrumento:
         veredicto = "aprobado" if evidencia.strip() else "no_concluyente"
+    if cierra_omision and omitidos:
+        hallazgos.extend(_replace(h, estado="resuelto") for h in omitidos)
     manifiesto = dict(alcance.manifiesto)
     rutas_bloqueadas = {
         _ruta_de(h.ancla)
