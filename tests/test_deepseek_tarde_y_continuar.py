@@ -1390,6 +1390,35 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
             )
             self.assertEqual(len(gh.llamadas), 10)
 
+    def test_el_marcador_sobrevive_a_la_limpieza_de_intentos(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            repo = str(Path(tmp) / "repo.git")
+            enc = self._terminado(reg, "nuevo", ahora_iso(), repo, 1)
+            intento = Path(reg.base) / "ejecucion" / enc / "intento-1-x"
+            intento.mkdir(parents=True, exist_ok=True)
+            (Path(reg.base) / "ejecucion" / enc / "actual").write_text(
+                "intento-1-x", encoding="utf-8"
+            )
+            gh = _GhCuenta(Path(tmp) / "gh")
+            epoch = time.time()
+            barrer(reg, ahora_iso(), epoch, lambda *a, **k: None, gh=gh)
+            self.assertTrue(gh.llamadas)
+
+            ciclo._limpiar_encargo_cerrado(reg, reg.fold(enc), ahora_iso())
+            marca = (
+                Path(reg.base) / "ejecucion" / enc / "deepseek_cerrado.json"
+            )
+            self.assertTrue(marca.is_file())
+
+            gh.llamadas.clear()
+            barrer(
+                reg, ahora_iso(), epoch + 120,
+                lambda *a, **k: None, gh=gh,
+            )
+            self.assertTrue(gh.llamadas)
+
 
 if __name__ == "__main__":
     unittest.main()
