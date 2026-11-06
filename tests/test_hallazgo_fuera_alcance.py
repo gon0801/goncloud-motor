@@ -343,6 +343,39 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
                 for ev in r.reg.eventos(r.enc)
             ))
 
+    def test_una_categoria_con_salvo_no_es_lista_blanca(self):
+        texto = "No tocar los tests salvo tests/test_a.py"
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/encargos/cli.py:1")
+            ),
+            "",
+        )
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("tests/test_a.py:1")
+            ),
+            "",
+        )
+
+    def test_un_contrato_fuera_de_no_es_lista_blanca(self):
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                ("No modificar el contrato público fuera de motor/api.py",),
+                _hallazgo("motor/api.py:1"),
+            ),
+            "",
+        )
+
+    def test_fuera_de_con_salvo_no_excluye_la_ruta_permitida(self):
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                ("No tocar nada fuera de motor/a.py salvo su prueba",),
+                _hallazgo("motor/a.py:1"),
+            ),
+            "",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
