@@ -6,7 +6,7 @@ import json
 import tempfile
 import unittest
 
-from motor.encargos.ciclo import _paso_entrega, ahora_iso
+from motor.encargos.ciclo import _paso_entrega, ahora_iso, recibir_resultado
 from motor.encargos.comprobacion import hallazgo_fuera_de_alcance_por_restriccion
 from motor.encargos.dominio import Hallazgo, bloqueantes_abiertos
 from motor.github import FakeGitHub
@@ -116,6 +116,42 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             "",
         )
 
+    def test_una_excepcion_no_convierte_la_prohibicion_en_lista_blanca(self):
+        texto = "No tocar motor/a.py salvo motor/b.py"
+        self.assertIn(
+            "prohíbe tocar",
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/a.py:1")
+            ),
+        )
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/b.py:1")
+            ),
+            "",
+        )
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/c.py:1")
+            ),
+            "",
+        )
+
+    def test_un_fuera_de_sin_nada_es_prohibicion_no_lista_blanca(self):
+        texto = "No modificar motor/a.py fuera de lo estrictamente necesario"
+        self.assertIn(
+            "prohíbe tocar",
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/a.py:1")
+            ),
+        )
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/c.py:1")
+            ),
+            "",
+        )
+
     def test_restriccion_expresa_deja_fuera_el_hallazgo_y_entrega(self):
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
@@ -199,6 +235,41 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             cuerpo = _cuerpo_del_pr(vuelta)
             self.assertIn("## Hallazgos fuera de alcance", cuerpo)
             self.assertIn("fuera del alcance del encargo", cuerpo)
+
+    def test_el_camino_de_autoridad_aplica_fuera_de_alcance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "autoridad-1", _GhConHallazgo,
+                texto="cambia el comando de encargos",
+            )
+            e = vuelta("hola")
+            self.assertEqual([h.id for h in bloqueantes_abiertos(e, "deepseek")], ["F1"])
+            r.reg.anotar(
+                r.enc,
+                {"kind": "conductor", "data": {"token": "tok", "host": "host"}},
+                "conductor-autoridad",
+            )
+            enc = r.fold()
+            observaciones = {
+                "version": enc.producto.firma,
+                "manifiesto": [list(x) for x in enc.producto.manifiesto],
+            }
+            juicio = {
+                "version": enc.producto.firma,
+                "veredicto": "aprobado",
+                "evidencia": "la evidencia de la disputa es correcta",
+                "fuera_de_alcance": [
+                    {"hallazgo": "F1", "razon": "fuera del alcance del encargo"}
+                ],
+            }
+            salida = recibir_resultado(
+                r.reg, r.enc, "tok", "host", enc.huella,
+                observaciones, juicio, ahora_iso(),
+            )
+            self.assertTrue(salida.get("registrado"), salida)
+            final = r.fold()
+            self.assertEqual(bloqueantes_abiertos(final, "deepseek"), ())
+            self.assertEqual(final.fuera_de_alcance[0][0], "F1")
 
 
 if __name__ == "__main__":

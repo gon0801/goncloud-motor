@@ -218,9 +218,10 @@ def leer_disputa(interno: Path) -> tuple[dict, ...] | None:
 
     Formato: `{"hallazgo": "F1", "evidencia": "..."}` o
     `{"disputas": [{"hallazgo": "F1", "evidencia": "..."}]}`. No descarta
-    nada: el motor lo convierte en una pregunta al propietario, que es el
-    único que puede autorizar el descarte. Una lista vacía es una retirada
-    de la disputa: no hay nada que preguntar y no es un error.
+    nada: la decide el revisor independiente con esa evidencia. Si la acepta,
+    incluye el hallazgo en `resueltos` o en `fuera_de_alcance`; si la rechaza,
+    el hallazgo sigue abierto y vuelve al responsable. Una lista vacía es una
+    retirada de la disputa: no hay nada que decidir y no es un error.
     """
     path = interno / "disputa.json"
     if not path.is_file():
@@ -746,9 +747,9 @@ _PROHIBE = (
     "prohibido",
 )
 _EXCEPCION = (
-    "fuera de",
-    "excepto",
-    "salvo",
+    "nada fuera de",
+    "nada que no sea",
+    "nada que no sean",
     "ajenos a",
     "ajeno a",
     "que no sea",
@@ -820,6 +821,14 @@ def hallazgo_fuera_de_alcance_por_restriccion(
     for texto in restricciones:
         for clausula in re.split(r";|\.(?=\s|$)", texto):
             bajo = clausula.lower()
+            partes = re.split(r"\b(?:salvo|excepto)\b", clausula, maxsplit=1, flags=re.I)
+            if len(partes) == 2 and any(p in partes[0].lower() for p in _PROHIBE):
+                antes = _rutas_de_restriccion(partes[0])
+                despues = _rutas_de_restriccion(partes[1])
+                excluidas = tuple(p for p in antes if p not in despues)
+                if excluidas:
+                    excluye.append(excluidas)
+                continue
             rutas = _rutas_de_restriccion(clausula)
             if not rutas:
                 continue

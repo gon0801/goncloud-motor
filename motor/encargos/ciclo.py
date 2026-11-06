@@ -8002,10 +8002,21 @@ def _recibir_resultado_nuevo(
         }
     hallazgos_validados = list(validado.hallazgos)
     abiertos_ds = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
-    fuera_aplicados = False
+    aplicados = False
+    ya_resueltos = {h.id for h in hallazgos_validados}
+    marca = validado.evidencia or "descartado por el revisor independiente"
+    for hid in validado.resueltos:
+        h = abiertos_ds.get(hid)
+        if h is None or hid in ya_resueltos:
+            continue
+        hallazgos_validados.append(
+            replace(h, estado="resuelto", cierre_evidencia=marca)
+        )
+        ya_resueltos.add(hid)
+        aplicados = True
     for hid, razon in validado.fuera_de_alcance:
         h = abiertos_ds.get(hid)
-        if h is None:
+        if h is None or hid in ya_resueltos:
             continue
         hallazgos_validados.append(
             replace(
@@ -8023,8 +8034,9 @@ def _recibir_resultado_nuevo(
             },
             f"fuera-alcance:{enc.id}:{fase}:{hid}",
         )
-        fuera_aplicados = True
-    if fuera_aplicados:
+        ya_resueltos.add(hid)
+        aplicados = True
+    if aplicados:
         enc = registro.fold(enc.id) or enc
     registro.anotar(
         enc.id,
@@ -8051,6 +8063,8 @@ def _recibir_resultado_nuevo(
         f"revision-autoridad:{enc.id}:{fase}:{version}",
     )
     enc = registro.fold(enc.id)
+    if aplicados:
+        enc = _marcar_deepseek_limpio(registro, enc, hora)
     from .cierre import comprobar_destino, componer
 
     try:
