@@ -242,7 +242,8 @@ class CommitPendienteDeIntegracion(_Base):
 
         causa = _commit_pendiente(_encargo(), self.espacio, "main")
 
-        self.assertEqual(causa, "no se pudo preparar el producto para la mezcla")
+        self.assertIn("no se pudo preparar el producto para la mezcla", causa)
+        self.assertIn("git add fallo", causa)
 
     def test_una_cache_ya_rastreada_se_conserva(self):
         self._rastrear_cache()

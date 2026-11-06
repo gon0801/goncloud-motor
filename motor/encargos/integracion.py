@@ -51,8 +51,9 @@ def _resultado(enc, base: str, rama: str, estado: str, **datos) -> dict:
 def _commit_pendiente(enc, espacio: Path, base: str) -> str:
     """El producto sin commit entra antes de mezclar: el choque se ve sobre el
     trabajo real y no se pierde nada si la mezcla falla."""
-    if _preparar_indice(espacio):
-        return "no se pudo preparar el producto para la mezcla"
+    causa = _preparar_indice(espacio)
+    if causa:
+        return f"no se pudo preparar el producto para la mezcla: {causa}"
     pendiente = _git(espacio, "diff", "--cached", "--quiet")
     if pendiente.returncode not in (0, 1):
         return f"no se pudo revisar el índice: {pendiente.stderr.strip()[-300:]}"

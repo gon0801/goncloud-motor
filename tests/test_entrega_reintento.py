@@ -104,6 +104,27 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertIn(e3.nivel_alcanzado, ("pr", "pr_abierto"))
             self.assertEqual(len(r.eventos("espera")), 1)
 
+    def test_dos_clases_distintas_no_pierden_el_segundo_fallo(self):
+        causa_add = "git add fallo: path is ignored"
+        causa_push = "git push fallo: remote rejected"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "fallo-dos-clases", _GhConDeepSeek)
+            with mock.patch.object(
+                ciclo,
+                "_commit_push",
+                side_effect=[("", causa_add), ("", causa_push)],
+            ):
+                e1 = vuelta("hola")
+                self.assertEqual(e1.estado, "esperando_reintento")
+                e2 = _barrido(r, vuelta.gh, _epoch(e1.reanuda_en))
+
+            causas = [
+                ev["data"]["causa"] for ev in r.eventos("instrumento_fallo")
+            ]
+            self.assertEqual(causas, [causa_add, causa_push])
+            self.assertEqual(e2.estado, "esperando_reintento")
+            self.assertEqual(len(r.eventos("espera")), 2)
+
     def test_una_falla_transitoria_sigue_reintentando(self):
         causa = (
             "git push fallo: fatal: unable to access 'https://github.com/o/r.git/': "
@@ -141,6 +162,8 @@ class ClasificacionDeFallas(unittest.TestCase):
             "Could not resolve host: github.com",
             "git push fallo: error: RPC failed; curl 56 GnuTLS recv error: "
             "The remote end hung up unexpectedly",
+            "git push fallo: error: RPC failed; curl 92 HTTP/2 stream 0 was "
+            "not closed cleanly",
         ):
             self.assertTrue(ciclo._fallo_transitorio(causa), causa)
 

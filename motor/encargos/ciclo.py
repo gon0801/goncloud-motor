@@ -3734,8 +3734,19 @@ _FALLOS_TRANSITORIOS = (
 )
 
 
+_FALLOS_PERMANENTES = (
+    "http 400", "http 401", "http 403", "http 404", "http 422",
+    "returned error: 400", "returned error: 401", "returned error: 403",
+    "returned error: 404", "returned error: 422",
+)
+
+
 def _fallo_transitorio(causa: str) -> bool:
     texto = str(causa or "").lower()
+    if any(marca in texto for marca in _FALLOS_PERMANENTES):
+        return False
+    if "rpc failed" in texto:
+        return True
     return any(marca in texto for marca in _FALLOS_TRANSITORIOS)
 
 
@@ -3767,12 +3778,28 @@ def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) ->
     return seguidos
 
 
-# Lo que no cambia la version del producto ni trae información nueva: el
-# responsable puede dar una vuelta y el contador de la entrega sigue.
-_ENTRE_INTENTOS_ENTREGA = _ENTRE_REINTENTOS + (
-    "estrategia", "actividad", "intento_cerrado", "procedimiento", "nota_pr",
-    "entrega_devuelta",
-)
+def _fallos_de_entrega_seguidos(
+    registro: Registro, encargo_id: str, causa: str
+) -> int:
+    """Esperas seguidas por el mismo fallo de entrega, sin contar las
+    transitorias. Un ajuste, una respuesta, una orden o un intento que empezó
+    las cortan."""
+    clase = _clase_de_fallo(causa)
+    seguidos = 0
+    for ev in reversed(registro.eventos(encargo_id)):
+        if ev["kind"] == "espera":
+            motivo = ev["data"].get("motivo") or ""
+            if _clase_de_fallo(motivo) != clase:
+                break
+            if not _fallo_transitorio(motivo):
+                seguidos += 1
+        elif ev["kind"] == "procedimiento" and str(ev["data"].get("nota") or "").startswith(
+            _NOTA_COPIA_SESION
+        ):
+            continue  # el aviso de una copia de sesión fallida no es un cambio
+        elif ev["kind"] not in _ENTRE_REINTENTOS:
+            break
+    return seguidos
 
 
 def _entrega_devuelta_pendiente(registro: Registro, enc: Encargo) -> bool:
@@ -3795,39 +3822,18 @@ def _entrega_devuelta_pendiente(registro: Registro, enc: Encargo) -> bool:
     return False
 
 
-def _fallos_de_entrega_de_la_version(
-    registro: Registro, enc: Encargo, causa: str, incluir_transitorios: bool = False
-) -> int:
-    """Fallos de commit o push de la misma clase para la misma version del
-    producto. Por defecto no cuenta los transitorios. Las altas, cambios o
-    borrados del producto cortan la cuenta; los intentos del responsable que no
-    cambian la version no."""
-    clase = _clase_de_fallo(causa)
+def _entrega_devuelta_de_la_version(registro: Registro, enc: Encargo) -> bool:
+    """Ya se devolvio la entrega de esta version: una falla posterior vuelve al
+    responsable sin abrir otra espera."""
     producto = getattr(enc, "producto", None)
     version = producto.firma if producto else ""
     eventos = getattr(registro, "eventos", None)
     if not callable(eventos):
-        return 0
-    cuenta = 0
+        return False
     for ev in reversed(eventos(enc.id)):
-        kind = ev["kind"]
-        if kind == "instrumento_fallo":
-            datos = ev["data"]
-            if (
-                datos.get("fuente") == "github"
-                and datos.get("version") == version
-                and _clase_de_fallo(datos.get("causa") or "") == clase
-            ):
-                if incluir_transitorios or not _fallo_transitorio(
-                    datos.get("causa") or ""
-                ):
-                    cuenta += 1
-                continue
-            break
-        if kind in _ENTRE_INTENTOS_ENTREGA:
-            continue
-        break
-    return cuenta
+        if ev["kind"] == "entrega_devuelta":
+            return ev["data"].get("version") == version
+    return False
 
 
 def _fallo_de_repo(
@@ -6118,17 +6124,14 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 return _head_desviado(
                     registro, enc, hora, enc.pr_numero, entregado, punta
                 )
-        previos = _fallos_de_entrega_de_la_version(
-            registro, enc, causa, incluir_transitorios=True
-        )
         _anotar_instrumento(
             registro, enc, "github", causa,
             "reintentar commit y push de la misma version aprobada",
-            hora, f"push-{enc.generacion}-{previos + 1}",
+            hora, f"push-{enc.generacion}-{_clase_de_fallo(causa)}",
         )
-        if (
-            not _fallo_transitorio(causa)
-            and _fallos_de_entrega_de_la_version(registro, enc, causa)
+        if not _fallo_transitorio(causa) and (
+            _entrega_devuelta_de_la_version(registro, enc)
+            or _fallos_de_entrega_seguidos(registro, enc.id, causa) + 1
             >= TOPE_FALLOS_ENTREGA
         ):
             registro.anotar(
