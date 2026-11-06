@@ -638,6 +638,28 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             self.assertEqual(e.estado, "necesita_usuario")
             self.assertTrue(any("F20" in p for p in e.preguntas), e.preguntas)
 
+    def test_una_actualizacion_posterior_a_la_ultima_lectura_llega(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            ventana = 7 * 24 * 60 * 60
+            vuelta.gh.textos[e.pr_numero] = "DeepSeek: APPROVED"
+            epoch = time.time()
+            hora = ahora_iso()
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch
+            )
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+            )
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F21"))
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ventana + 61 + 3600,
+            )
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F21" in p for p in e.preguntas), e.preguntas)
+
     def test_un_medium_posterior_a_la_ventana_de_90_min_sigue_llegando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
