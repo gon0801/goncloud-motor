@@ -1733,6 +1733,10 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 hora=hora or e.hora,
             )
         return e
+    if kind == "entrega_devuelta":
+        # La devolución de la entrega se lee del registro: el producto y el
+        # estado no cambian, solo deja de reintentarse hasta la próxima vuelta.
+        return e
     if kind == "pendiente_entrega":
         texto = str(d.get("texto") or "").strip()
         if texto and texto not in e.pendientes_entrega:

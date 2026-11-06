@@ -3854,11 +3854,59 @@ def _incorporar_entradas(
 # Veces seguidas que el mismo fallo de git deja esperar al encargo antes de
 # pedir ayuda: reintentar cada 5 minutos sin fin no arregla lo que no cambia.
 TOPE_FALLOS_REPO = 3
+# El commit o push de la misma version no se reintenta en bucle: a la segunda
+# falla seguida vuelve al responsable con la causa exacta.
+TOPE_FALLOS_ENTREGA = 2
+# Lo que el aviso del resumen dice en palabras simples cuando se corta el bucle.
+_AVISO_ENTREGA_DEVUELTA = (
+    "el motor dejo de reintentar; el trabajo vuelve al responsable."
+)
+# `resumen._alerta_instrumento` recorta la causa a 140 caracteres. El corte
+# reserva ese espacio para el aviso y, si hace falta, recorta solo la causa.
+_TOPE_CAUSA_AVISO = 140
+
+
+def _causa_con_aviso(
+    causa: str, aviso: str, tope: int = _TOPE_CAUSA_AVISO
+) -> str:
+    """La causa primero y el aviso completo dentro del limite del resumen."""
+    texto = " ".join(str(causa or "").split())
+    espacio = max(tope - len(aviso) - 2, 1)
+    if len(texto) > espacio:
+        texto = texto[: espacio - 1].rstrip() + "…"
+    return f"{texto}. {aviso}"
 # Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
 _ENTRE_REINTENTOS = (
     "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
     "contexto_entrega",
 )
+# Un fallo de red o de servicio no es una causa reproducible: sigue reintentando.
+_FALLOS_TRANSITORIOS = (
+    "could not resolve host", "temporary failure in name resolution",
+    "network is unreachable", "connection timed out", "connection reset",
+    "connection refused", "connection closed", "operation timed out",
+    "remote end hung up unexpectedly", "the remote end hung up",
+    "early eof", "broken pipe",
+    "resource temporarily unavailable", "http 429", "http 500", "http 502",
+    "http 503", "http 504", "returned error: 429", "returned error: 500",
+    "returned error: 502", "returned error: 503", "returned error: 504",
+)
+
+
+_FALLOS_PERMANENTES = (
+    "http 400", "http 401", "http 403", "http 404", "http 413", "http 422",
+    "returned error: 400", "returned error: 401", "returned error: 403",
+    "returned error: 404", "returned error: 413", "returned error: 422",
+)
+
+
+def _fallo_transitorio(causa: str) -> bool:
+    texto = str(causa or "").lower()
+    if any(marca in texto for marca in _FALLOS_PERMANENTES):
+        return False
+    if "rpc failed" in texto:
+        return True
+    return any(marca in texto for marca in _FALLOS_TRANSITORIOS)
 
 
 def _clase_de_fallo(causa: str) -> str:
@@ -3887,6 +3935,64 @@ def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) ->
         elif ev["kind"] not in _ENTRE_REINTENTOS:
             break
     return seguidos
+
+
+def _fallos_de_entrega_seguidos(
+    registro: Registro, encargo_id: str, causa: str
+) -> int:
+    """Esperas seguidas por el mismo fallo de entrega, sin contar las
+    transitorias. Un ajuste, una respuesta, una orden o un intento que empezó
+    las cortan."""
+    clase = _clase_de_fallo(causa)
+    seguidos = 0
+    for ev in reversed(registro.eventos(encargo_id)):
+        if ev["kind"] == "espera":
+            motivo = ev["data"].get("motivo") or ""
+            if _clase_de_fallo(motivo) != clase:
+                break
+            if not _fallo_transitorio(motivo):
+                seguidos += 1
+        elif ev["kind"] == "procedimiento" and str(ev["data"].get("nota") or "").startswith(
+            _NOTA_COPIA_SESION
+        ):
+            continue  # el aviso de una copia de sesión fallida no es un cambio
+        elif ev["kind"] not in _ENTRE_REINTENTOS:
+            break
+    return seguidos
+
+
+def _entrega_devuelta_pendiente(registro: Registro, enc: Encargo) -> bool:
+    """La ultima devolucion de entrega es de esta version y este intento: no se
+    reintenta el commit hasta que el responsable haya dado su vuelta."""
+    producto = getattr(enc, "producto", None)
+    version = producto.firma if producto else ""
+    eventos = getattr(registro, "eventos", None)
+    if not callable(eventos):
+        return False
+    for ev in reversed(eventos(enc.id)):
+        if ev["kind"] != "entrega_devuelta":
+            continue
+        datos = ev["data"]
+        return (
+            datos.get("version") == version
+            and int(datos.get("generacion") or 0)
+            == int(getattr(enc, "generacion", 0) or 0)
+        )
+    return False
+
+
+def _entrega_devuelta_de_la_version(registro: Registro, enc: Encargo) -> bool:
+    """Ya se devolvio la entrega de esta version: una falla posterior vuelve al
+    responsable sin abrir otra espera."""
+    producto = getattr(enc, "producto", None)
+    version = producto.firma if producto else ""
+    eventos = getattr(registro, "eventos", None)
+    if not callable(eventos):
+        return False
+    for ev in reversed(eventos(enc.id)):
+        if ev["kind"] == "entrega_devuelta":
+            return ev["data"].get("version") == version
+    return False
 
 
 def _fallo_de_repo(
@@ -4043,10 +4149,39 @@ def _asegurar_repo(
     return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
 
 
-_FUERA_DEL_PRODUCTO = (
-    ":(exclude).interno", ":(exclude)**/.interno",
-    ":(exclude)**/__pycache__", ":(exclude)**/.runtime",
+_RUTAS_INTERNAS = (
+    "**/.interno", "**/.interno/**", "**/__pycache__/**", "**/.runtime/**",
 )
+_CACHES_INTERNAS = ("**/__pycache__/**", "**/.runtime/**")
+_SIEMPRE_FUERA = ("**/.interno", "**/.interno/**")
+_FUERA_DEL_PRODUCTO = tuple(f":(exclude,glob){ruta}" for ruta in _RUTAS_INTERNAS)
+
+
+def _preparar_indice(espacio: Path) -> str:
+    """Deja el producto en el indice y saca lo interno. Devuelve la causa del fallo.
+
+    `git add` no puede nombrar rutas ignoradas en su pathspec: con `.interno` en
+    el `.gitignore` devuelve 1 aunque agregue lo demas. Por eso se agrega todo y
+    luego se saca lo interno con `rm --cached --ignore-unmatch`. Las caches
+    vuelven al estado de `HEAD` igual que antes: ni sus altas ni sus cambios ni
+    sus borrados entran al commit.
+    """
+    r = _git(espacio, "add", "-A", "--", ".")
+    if r.returncode != 0:
+        return f"git add fallo: {r.stderr.strip()[-300:]}"
+    r = _git(
+        espacio, "reset", "--quiet", "HEAD", "--",
+        *(f":(glob){ruta}" for ruta in _CACHES_INTERNAS),
+    )
+    if r.returncode != 0:
+        return f"git reset del indice fallo: {r.stderr.strip()[-300:]}"
+    r = _git(
+        espacio, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--",
+        *(f":(glob){ruta}" for ruta in _SIEMPRE_FUERA),
+    )
+    if r.returncode != 0:
+        return f"git rm del indice fallo: {r.stderr.strip()[-300:]}"
+    return ""
 
 
 def _commit_entregado(enc: Encargo, version, espacio: Path) -> str:
@@ -4066,11 +4201,9 @@ def _commit_entregado(enc: Encargo, version, espacio: Path) -> str:
 
 def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
     """Commit del producto (sin .interno) y push. Devuelve (sha, causa)."""
-    if _git(espacio, "ls-files", "--", ".interno").stdout.strip():
-        _git(espacio, "rm", "-r", "--cached", "--quiet", ".interno")
-    r = _git(espacio, "add", "-A", "--", ".", *_FUERA_DEL_PRODUCTO)
-    if r.returncode != 0:
-        return "", f"git add fallo: {r.stderr.strip()[-300:]}"
+    causa = _preparar_indice(espacio)
+    if causa:
+        return "", causa
     pendientes = _git(espacio, "diff", "--cached", "--quiet")
     if pendientes.returncode not in (0, 1):
         return "", f"git diff del indice fallo: {pendientes.stderr.strip()[-300:]}"
@@ -6217,6 +6350,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id) or enc
     if _devolver_correcciones(registro, enc, hora):
         return registro.fold(enc.id)
+    if _entrega_devuelta_pendiente(registro, enc):
+        return enc
     if (
         nivel_cumplido(enc)
         and enc.estado != "terminado"
@@ -6303,11 +6438,63 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 return _head_desviado(
                     registro, enc, hora, enc.pr_numero, entregado, punta
                 )
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "reintentar commit y push de la misma version aprobada",
-            hora, f"push-{enc.generacion}",
+        corte = not _fallo_transitorio(causa) and (
+            _entrega_devuelta_de_la_version(registro, enc)
+            or _fallos_de_entrega_seguidos(registro, enc.id, causa) + 1
+            >= TOPE_FALLOS_ENTREGA
         )
+        # El aviso del resumen lee la causa del ultimo instrumento_fallo. En el
+        # corte reserva el espacio del aviso dentro del limite del resumen y
+        # recorta solo la causa: asi el aviso siempre dice que el motor dejo de
+        # reintentar. La serie distinta evita que el registro deduplique la
+        # causa sin explicacion que ya quedo del primer fallo.
+        _anotar_instrumento(
+            registro, enc, "github",
+            _causa_con_aviso(causa, _AVISO_ENTREGA_DEVUELTA) if corte else causa,
+            "reintentar commit y push de la misma version aprobada",
+            hora,
+            f"push-{enc.generacion}-{_clase_de_fallo(causa)}"
+            + ("-corte" if corte else ""),
+        )
+        if corte:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "nota_pr",
+                    "data": {
+                        "texto": (
+                            "el motor dejo de reintentar el commit o push de "
+                            "esta version porque la misma falla de git se "
+                            "repitio; el trabajo vuelve al responsable con la "
+                            f"causa. {causa}"
+                        ),
+                        "hora": hora,
+                    },
+                },
+                f"nota-reintento-entrega:{enc.id}:{enc.generacion}",
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_devuelta",
+                    "data": {
+                        "version": enc.producto.firma if enc.producto else "",
+                        "generacion": enc.generacion,
+                        "clase": _clase_de_fallo(causa),
+                        "causa": causa,
+                        "hora": hora,
+                    },
+                },
+                f"entrega-devuelta:{enc.id}:{enc.generacion}:{_clase_de_fallo(causa)}",
+            )
+            _devolver(
+                registro, enc, "investigar", causa,
+                "investigar la causa exacta de git del commit o push y corregir "
+                "el espacio o el repositorio; el producto que no cambio conserva "
+                "su aprobación",
+                hora, f"push-{enc.generacion}",
+            )
+            return registro.fold(enc.id)
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return registro.fold(enc.id)
     rama = _rama_fase(enc)
