@@ -301,9 +301,9 @@ class UnFalloDeGitRepetidoPideAyuda(_Repo):
         self.assertNotIn("usa continuar", motivo)
         self.assertNotIn("responde", motivo)
 
-        rechazo = ciclo.ordenar(r.reg, r.enc, "continuar", "c-0", ahora_iso())
-        self.assertTrue(rechazo.get("rechazada"), rechazo)
-        self.assertEqual(r.fold().estado, "necesita_usuario")
+        salida = ciclo.ordenar(r.reg, r.enc, "continuar", "c-0", ahora_iso())
+        self.assertFalse(salida.get("rechazada"), salida)
+        self.assertEqual(r.fold().estado, "recibido")
         self.assertEqual(r.fold().solicitudes, ())
 
     def test_parar_y_continuar_devuelven_el_trabajo_y_reintentan(self):

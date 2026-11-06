@@ -159,6 +159,14 @@ de alcance», con su id y la razón. Un Critical, High o Medium dentro del
 alcance sigue bloqueando hasta corregirse o hasta que el revisor lo descarte
 con evidencia.
 
+La espera de DeepSeek tiene un tope de 30 minutos. Si el revisor independiente
+ya aprobó y el tope vence sin comentario, el motor deja la nota «sin revisión
+de DeepSeek tras N min» en el PR y sigue la fase como si no hubiera hallazgos:
+integra o despliega según el nivel autorizado y pasa a la fase siguiente. No
+fuerza el cierre del encargo. Si después llega un Critical, High o Medium
+dentro del alcance para un SHA ya integrado, se lee como hallazgo tardío y no
+se pierde.
+
 ## Corregir un encargo en curso
 
 `motor corregir` y `motor director corregir` aceptan una corrección en
@@ -297,8 +305,12 @@ solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
   impedimento `inspeccion:<id>` o con el encargo detenido, un ajuste cuenta como
   información nueva. El revisor corre una vez y, al abrirse su intento, el
   ajuste queda visto: si repite el mismo pedido, el gate vuelve a cerrar.
-- **`continuar` no deja un `recibido` mudo.** Si la pregunta sigue abierta y
-  nada la contestó, el encargo queda en `necesita_usuario` con esa pregunta.
+- **`continuar` no deja un `recibido` mudo.** Se acepta desde `detenido`,
+  `necesita_usuario` y desde un `recibido` sin proceso ni reserva, sin obligar
+  a `parar` primero. Limpia la pregunta vieja, los contadores de la vuelta y
+  los bloqueantes externos que una restricción expresa ya deja fuera. Si la
+  pregunta sigue realmente abierta y nada la contestó, el encargo queda en
+  `necesita_usuario` con esa pregunta.
 - **Un recurso cambiado no es una repetición.** La identidad de la inspección
   incluye el tamaño, la fecha y el hash de lo que leería el recurso (un
   archivo local o una base sqlite). Pedirlo de nuevo tras subir otro archivo es

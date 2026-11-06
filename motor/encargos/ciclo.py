@@ -35,6 +35,7 @@ from . import capacidades, necesidades, trabajos_ci
 from .dominio import (
     Encargo,
     FASE_IMPLICITA,
+    HUELLA_DEEPSEEK_SIN_REVISION,
     TOPE_NO_CONCLUYENTES,
     TransicionIlegal,
     alcance_de,
@@ -4238,6 +4239,43 @@ def _minutos_desde(hora_evento: str, hora: str) -> float:
     return (b - a).total_seconds() / 60.0
 
 
+def _omitir_deepseek(
+    registro: Registro, enc: Encargo, numero: int, sha: str, texto: str, hora: str
+) -> Encargo:
+    """Tras el tope, la fase sigue sin la revisión externa.
+
+    La nota queda en el PR y la huella `sin-revision` libera el SHA para
+    integrar o desplegar. Una relectura posterior con comentarios reales
+    sustituye la huella y trata el hallazgo como tardío.
+    """
+    registro.anotar(
+        enc.id,
+        {"kind": "nota_pr", "data": {"texto": texto, "hora": hora}},
+        f"nota-deepseek:{enc.id}:{sha[:12]}",
+    )
+    enc = registro.fold(enc.id) or enc
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "deepseek_sin_revision",
+                "repo": enc.entrega.repo,
+                "numero": numero,
+                "sha": sha,
+                "huella": HUELLA_DEEPSEEK_SIN_REVISION,
+                "recibo": sha,
+                "evidencia": texto,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:deepseek_sin_revision:{sha}",
+    )
+    return registro.fold(enc.id) or enc
+
+
 def _disparar_deepseek(gh, enc: Encargo, espacio: Path, sha: str) -> None:
     """Recuperacion por dispatch, como en el motor por planes. Best effort:
     si el workflow no existe en el SHA o el disparo falla, la espera sigue
@@ -4852,14 +4890,19 @@ def _veredicto_antes_de_cerrar(
                     (f, gh.comentarios_deepseek(enc.entrega.repo, f.pr_numero, f.pr_sha))
                 )
     except Exception as exc:
-        causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
-        _anotar_instrumento(
-            registro, enc, "github", causa,
-            "reintentar la lectura de DeepSeek antes de cerrar",
-            hora, f"deepseek-cerrar-{sha[:12]}",
-        )
-        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-        return registro.fold(enc.id)
+        if fase.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
+            causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
+            _anotar_instrumento(
+                registro, enc, "github", causa,
+                "reintentar la lectura de DeepSeek antes de cerrar",
+                hora, f"deepseek-cerrar-{sha[:12]}",
+            )
+            marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+            return registro.fold(enc.id)
+        # La fase siguió sin revisión tras el tope: una relectura fallida no
+        # vuelve a frenar el cierre. Si llega un comentario, el siguiente
+        # barrido lo lee y lo trata como tardío.
+        return None
     if comentarios and _huella_comentarios(comentarios) != fase.deepseek_huella:
         enc = _anotar_lectura_deepseek(
             registro, enc, enc.pr_numero, sha, comentarios, hora
@@ -6743,15 +6786,11 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 texto = (
                     "sin revisión de DeepSeek para el SHA "
                     f"{sha[:12]} tras {int(minutos)} min (no se pudo leer: "
-                    f"{str(exc)[:200]}); se entrega igual"
+                    f"{str(exc)[:200]}); la fase sigue como si no hubiera "
+                    "hallazgos"
                 )
-                registro.anotar(
-                    enc.id,
-                    {"kind": "nota_pr", "data": {"texto": texto, "hora": hora}},
-                    f"nota-deepseek:{enc.id}:{sha[:12]}",
-                )
-                enc = registro.fold(enc.id) or enc
-                return _entregar_con_pendientes(registro, enc, gh, hora)
+                enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
+                return _paso_entrega(registro, enc, gh, hora)
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return registro.fold(enc.id)
         if not comentarios:
@@ -6782,15 +6821,11 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             if minutos >= _TOPE_DEEPSEEK_MIN:
                 texto = (
                     "sin revisión de DeepSeek para el SHA "
-                    f"{sha[:12]} tras {int(minutos)} min; se entrega igual"
+                    f"{sha[:12]} tras {int(minutos)} min; la fase sigue como "
+                    "si no hubiera hallazgos"
                 )
-                registro.anotar(
-                    enc.id,
-                    {"kind": "nota_pr", "data": {"texto": texto, "hora": hora}},
-                    f"nota-deepseek:{enc.id}:{sha[:12]}",
-                )
-                enc = registro.fold(enc.id) or enc
-                return _entregar_con_pendientes(registro, enc, gh, hora)
+                enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
+                return _paso_entrega(registro, enc, gh, hora)
             marcar_espera(
                 registro,
                 enc.id,

@@ -155,7 +155,7 @@ class HerramientaCaidaSeOmite(unittest.TestCase):
 
 
 class DeepSeekTieneTope(unittest.TestCase):
-    def test_sin_revision_de_deepseek_pasado_el_tope_entrega(self):
+    def test_sin_revision_de_deepseek_pasado_el_tope_la_fase_sigue(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-tope", FakeGitHub)
             self.addCleanup(r.reg.close)
@@ -173,10 +173,12 @@ class DeepSeekTieneTope(unittest.TestCase):
             barrer(r.reg, tarde, time.time(), _llamador, gh=gh)
             e = r.fold()
             self.assertEqual(e.estado, "terminado")
-            self.assertTrue(any("DeepSeek" in n for n in e.notas_pr), e.notas_pr)
-            self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
+            self.assertTrue(any("sin revisión de DeepSeek" in n for n in e.notas_pr), e.notas_pr)
+            self.assertTrue(any("la fase sigue" in n for n in e.notas_pr), e.notas_pr)
+            self.assertEqual(e.pendientes_entrega, ())
+            self.assertEqual(r.eventos("cierre_forzado"), [])
 
-    def test_si_no_se_puede_leer_deepseek_el_tope_tambien_entrega(self):
+    def test_si_no_se_puede_leer_deepseek_el_tope_no_fuerza_el_cierre(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-tope-lectura", FakeGitHub)
             self.addCleanup(r.reg.close)
@@ -198,7 +200,8 @@ class DeepSeekTieneTope(unittest.TestCase):
             self.assertTrue(
                 any("no se pudo leer" in n for n in e.notas_pr), e.notas_pr
             )
-            self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
+            self.assertEqual(e.pendientes_entrega, ())
+            self.assertEqual(r.eventos("cierre_forzado"), [])
 
 
 class RevisorSinVeredictoReleva(unittest.TestCase):
