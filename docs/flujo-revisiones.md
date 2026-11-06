@@ -168,16 +168,17 @@ dentro del alcance para un SHA ya integrado, se lee como hallazgo tardío y no
 se pierde, aunque el encargo ya haya terminado. El cierre mira los PR de todas
 las fases con entrega externa, no solo el de la fase activa, y sigue
 releyendo el mismo SHA: una revisión limpia puede cambiar después y traer un
-hallazgo, y una pregunta ya emitida en una fase no detiene la lectura de las
+hallazgo, y un aviso ya emitido en una fase no detiene la lectura de las
 siguientes. Durante los primeros 7 días se relee cada minuto y después cada
-30 minutos; los errores también se espacian. Una lectura limpia, una pregunta
-ya emitida, una ventana vacía o el paso del tiempo no cierran el SHA: una
+30 minutos; los errores también se espacian. Una lectura limpia, un aviso
+ya emitido, una ventana vacía o el paso del tiempo no cierran el SHA: una
 primera revisión puede llegar más tarde y no se pierde. Los bloqueantes de una
 lectura anterior no impiden que el SHA omitido avance.
 
-Un ajuste del propietario es la respuesta a una decisión tardía: consume la
-pregunta conservada y el cierre reconoce la misma clave para no volver a
-preguntarla.
+El hallazgo tardío no cambia el estado del encargo. Queda como nota en el PR
+de su fase y como aviso informativo al director, en palabras simples, para que
+decida si abre otro encargo. La nota es idempotente por SHA y huella del
+comentario: releer el mismo comentario no la repite.
 
 El sticky de `ai-review` puede declarar el timeout antes de esos 30 minutos:
 si `ai-review:completion` dice `timeout` con `retry: false` (o lo dice la frase
@@ -328,10 +329,9 @@ solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
   `necesita_usuario` y desde un `recibido` sin proceso ni reserva, sin obligar
   a `parar` primero. Limpia la pregunta vieja del relevo agotado, los
   contadores de la vuelta y los bloqueantes externos que una restricción
-  expresa ya deja fuera. No borra una decisión vigente del propietario, como
-  la de un hallazgo tardío de DeepSeek sobre un PR ya fusionado. Si la
-  pregunta sigue realmente abierta y nada la contestó, el encargo queda en
-  `necesita_usuario` con esa pregunta.
+  expresa ya deja fuera. Si una pregunta ligada a una inspección sigue
+  realmente abierta y nada la contestó, vuelve a quedar en `necesita_usuario`
+  con esa pregunta.
 - **Un recurso cambiado no es una repetición.** La identidad de la inspección
   incluye el tamaño, la fecha y el hash de lo que leería el recurso (un
   archivo local o una base sqlite). Pedirlo de nuevo tras subir otro archivo es
@@ -449,8 +449,8 @@ GitHub tampoco cierra una fase con PR y nivel `pr` alcanzado: no hay veredicto
 que comprobar, y el encargo espera visible en el paso de entrega. Con entrega
 `integrado` o `desplegado`, las fases anteriores ya se fusionaron y no se
 reabren: si el comentario de DeepSeek sobre su PR trae un High o un Medium
-abierto al cerrar la última fase, el encargo no termina en silencio, sino que
-pregunta una vez al propietario (`necesita_usuario`) si abre un encargo aparte.
+abierto al cerrar la última fase, el motor deja la nota en el PR de esa fase y
+el aviso al director; el encargo sigue su cierre sin cambiar de estado.
 
 Un repo sin los workflows `ai-review-worker.yml` / `ai-review-publish.yml` o
 sin secretos no finge una revisión leída. La espera de DeepSeek no vence:
