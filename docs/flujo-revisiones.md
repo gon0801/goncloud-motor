@@ -165,7 +165,14 @@ de DeepSeek tras N min» en el PR y sigue la fase como si no hubiera hallazgos:
 integra o despliega según el nivel autorizado y pasa a la fase siguiente. No
 fuerza el cierre del encargo. Si después llega un Critical, High o Medium
 dentro del alcance para un SHA ya integrado, se lee como hallazgo tardío y no
-se pierde.
+se pierde, aunque el encargo ya haya terminado.
+
+El sticky de `ai-review` puede declarar el timeout antes de esos 30 minutos:
+si `ai-review:completion` dice `timeout` con `retry: false` (o lo dice la frase
+de 900 s y «no se reintenta»), el motor no espera ni finge una aprobación. Lo
+trata en la misma pasada como revisión ausente: deja la nota y sigue la fase.
+Si el mismo comentario trae un Critical, High o Medium dentro del alcance,
+manda el hallazgo y sigue bloqueando.
 
 ## Corregir un encargo en curso
 
@@ -307,8 +314,10 @@ solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
   ajuste queda visto: si repite el mismo pedido, el gate vuelve a cerrar.
 - **`continuar` no deja un `recibido` mudo.** Se acepta desde `detenido`,
   `necesita_usuario` y desde un `recibido` sin proceso ni reserva, sin obligar
-  a `parar` primero. Limpia la pregunta vieja, los contadores de la vuelta y
-  los bloqueantes externos que una restricción expresa ya deja fuera. Si la
+  a `parar` primero. Limpia la pregunta vieja del relevo agotado, los
+  contadores de la vuelta y los bloqueantes externos que una restricción
+  expresa ya deja fuera. No borra una decisión vigente del propietario, como
+  la de un hallazgo tardío de DeepSeek sobre un PR ya fusionado. Si la
   pregunta sigue realmente abierta y nada la contestó, el encargo queda en
   `necesita_usuario` con esa pregunta.
 - **Un recurso cambiado no es una repetición.** La identidad de la inspección

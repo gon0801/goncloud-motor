@@ -44,11 +44,36 @@ class _GhPorNumero(FakeGitHub):
 
     textos: dict[int, str | None] = {}
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.textos = dict(type(self).textos)
+
     def comentarios_deepseek(self, repo, numero, sha=""):
         texto = self.textos.get(numero, "DeepSeek: APPROVED")
         if texto is None:
             return []
         return [{"texto": texto, "autor": "DeepSeek", "sha": sha}]
+
+
+class _GhStickyTimeout(FakeGitHub):
+    """El sticky de ai-review declara el timeout de 900 s y que no reintenta."""
+
+    textos: dict[int, str] = {}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.textos = dict(type(self).textos)
+
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        texto = self.textos.get(
+            numero,
+            "DeepSeek review\n<!-- ai-review:sticky -->\n"
+            'ai-review:completion={"status":"timeout","retry":false}\n'
+            "ai-review:findings=[]\n"
+            "la revisión excedió el tiempo límite de 900 s; no se reintenta "
+            "porque otro intento tardaría lo mismo",
+        )
+        return [{"texto": texto, "autor": "github-actions[bot]", "sha": sha}]
 
 
 def _medio(ident: str = "F6") -> dict:
@@ -117,6 +142,53 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             ]
             self.assertIn("integrado", pasos)
 
+    def test_sticky_timeout_sin_revision_no_espera_ni_finge_aprobacion(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-sticky", _GhStickyTimeout, nivel="integrado"
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {
+                                "id": "dos",
+                                "resultado": "saludo.txt con dos",
+                                "requiere": ["uno"],
+                            },
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-sticky",
+            )
+
+            e = vuelta("uno")
+
+            self.assertEqual(e.fase_activa, "dos")
+            self.assertEqual(e.fases[0].nivel_alcanzado, "integrado")
+            self.assertTrue(
+                any(
+                    "sin revisión de DeepSeek" in n
+                    and "no se reintenta" in n
+                    for n in e.notas_pr
+                ),
+                e.notas_pr,
+            )
+            pasos = [
+                ev["data"].get("paso")
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "entrega_externa"
+            ]
+            self.assertIn("deepseek_sin_revision", pasos)
+            self.assertNotIn("deepseek_leido", pasos)
+            self.assertEqual(
+                e.fases[0].deepseek_huella, "sin-revision"
+            )
+
     def test_un_medium_tardio_de_un_pr_ya_integrado_no_se_pierde(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
@@ -156,6 +228,73 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
                 any("ya fusionado" in p and "F9" in p for p in e.preguntas),
                 e.preguntas,
             )
+
+    def test_continuar_no_borra_la_decision_de_un_medium_tardio(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-tardio-continuar", _GhPorNumero, nivel="integrado"
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {
+                                "id": "dos",
+                                "resultado": "saludo.txt con dos",
+                                "requiere": ["uno"],
+                            },
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-tardio-continuar",
+            )
+            e = vuelta("uno")
+            hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+            tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+            primera = e.fases[0]
+            vuelta.gh.textos[primera.pr_numero] = _comentario(_medio("F9"))
+            e = vuelta("dos")
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F9" in p for p in e.preguntas), e.preguntas)
+
+            salida = ciclo.ordenar(
+                r.reg, r.enc, "continuar", "continuar-decision-vigente", ahora_iso()
+            )
+
+            self.assertFalse(salida.get("rechazada"), salida)
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F9" in p for p in e.preguntas), e.preguntas)
+            e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertTrue(any("F9" in p for p in e.preguntas), e.preguntas)
+
+    def test_un_medium_publicado_despues_del_cierre_vuelve_al_encargo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-cerrado-tardio", _GhPorNumero, nivel="integrado"
+            )
+            e = vuelta("uno")
+            hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+            tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+            self.assertEqual(e.estado, "terminado")
+
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F10"))
+            barrer(
+                r.reg, ahora_iso(), time.time(), lambda *a, **k: None,
+                gh=vuelta.gh,
+            )
+
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F10" in p for p in e.preguntas), e.preguntas)
+            self.assertTrue(r.eventos("pregunta"))
 
     def test_un_medium_dentro_del_alcance_antes_del_tope_sigue_bloqueando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -278,8 +417,12 @@ class ReabrirReusaElPrYLaAprobacion(unittest.TestCase):
 
             e = ciclo._entregar_con_pendientes(r.reg, r.fold(), vuelta.gh, tarde)
             self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.fases[0].estado, "preparada")
+            self.assertEqual(e.fases[0].pr_numero, pr_original)
             reabierto = ciclo.ordenar(r.reg, r.enc, "reabrir", "r-1", tarde)
             self.assertFalse(reabierto.get("rechazada"), reabierto)
+            self.assertEqual(r.fold().fase_activa, "uno")
+            self.assertNotEqual(r.fold().fases[0].estado, "preparada")
             continuado = ciclo.ordenar(r.reg, r.enc, "continuar", "c-1", tarde)
             self.assertFalse(continuado.get("rechazada"), continuado)
 
@@ -288,6 +431,12 @@ class ReabrirReusaElPrYLaAprobacion(unittest.TestCase):
             self.assertEqual(e.fase_activa, "dos")
             self.assertEqual(e.fases[0].pr_numero, pr_original)
             self.assertEqual(e.fases[0].nivel_alcanzado, "integrado")
+            aperturas = [
+                ev for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") == "pr_abierto"
+            ]
+            self.assertEqual(len(aperturas), 1)
             # El cierre forzado es el de la simulación del caso viejo; el
             # camino recuperado no añade otro.
             self.assertEqual(len(r.eventos("cierre_forzado")), 1)

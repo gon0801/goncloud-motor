@@ -2556,13 +2556,42 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     raise TransicionIlegal(f"orden desconocida: {accion}")
 
 
+_PREGUNTAS_SIN_VIGENCIA = (
+    "no queda otro modelo autorizado",
+    "el relevo agotó los modelos autorizados",
+)
+
+_PREGUNTAS_DE_DECISION_VIGENTE = (
+    "DeepSeek dejó abierto en el PR",
+    "DeepSeek publicó después del cierre",
+)
+
+
+def _pregunta_sin_vigencia(texto: str) -> bool:
+    """Preguntas que sólo existían por los contadores que `continuar` limpia."""
+    bajo = texto.lower()
+    return any(marca in bajo for marca in _PREGUNTAS_SIN_VIGENCIA)
+
+
+def _pregunta_es_decision_vigente(texto: str) -> bool:
+    """Una decisión del propietario que sigue abierta aunque el trabajo siga.
+
+    El hallazgo tardío de DeepSeek sobre un PR ya integrado no se contesta con
+    un `continuar`: el propietario decide si abre otro encargo o sigue sin
+    corregirlo. Borrar esa pregunta permitiría cerrar el encargo en silencio.
+    """
+    return texto.startswith(_PREGUNTAS_DE_DECISION_VIGENTE)
+
+
 def _limpiar_para_continuar(e: Encargo) -> Encargo:
     """Un continuar explícito quita el estado que el motor ya no exige.
 
     La pregunta vieja, los contadores de la vuelta que la produjo y los
     bloqueantes externos que una restricción expresa deja fuera dejan de
-    sostener el encargo. Una pregunta ligada a una inspección que sigue
-    esperando al propietario vuelve a ponerse en `_retomar`.
+    sostener el encargo. Las preguntas que siguen vigentes (una decisión del
+    propietario sobre un hallazgo tardío) no se borran. Una pregunta ligada a
+    una inspección que sigue esperando al propietario vuelve a ponerse en
+    `_retomar`.
     """
     fase = e.fase_actual
     fuera = list(e.fuera_de_alcance)
@@ -2590,9 +2619,12 @@ def _limpiar_para_continuar(e: Encargo) -> Encargo:
                     fuera.append((h.id, h.titulo, razon))
             hallazgos.append(h)
         e = con_fase(e, replace(fase, hallazgos=tuple(hallazgos)))
+    preguntas = tuple(
+        texto for texto in e.preguntas if not _pregunta_sin_vigencia(texto)
+    )
     return replace(
         e,
-        preguntas=(),
+        preguntas=preguntas,
         pendientes_entrega=(),
         sin_progreso=0,
         bloqueo_huella="",
@@ -2617,6 +2649,19 @@ def _retomar(e: Encargo, hora: str) -> Encargo:
     """Vuelve a abrir el trabajo. Si una pregunta del propietario sigue abierta
     y bloquea la fase, no queda en `recibido`: dice cuál es."""
     e = _retomar_trabajo(e, hora)
+    if e.estado == "recibido":
+        vigente = next(
+            (texto for texto in e.preguntas if _pregunta_es_decision_vigente(texto)),
+            "",
+        )
+        if vigente:
+            return replace(
+                e,
+                estado="necesita_usuario",
+                motivo=vigente,
+                siguiente="hace falta una decisión del usuario",
+                ultimo_hecho="se continuó, pero la decisión del propietario sigue abierta",
+            )
     sol = pregunta_de_inspeccion(e) if e.estado == "recibido" else None
     if sol is None:
         return e

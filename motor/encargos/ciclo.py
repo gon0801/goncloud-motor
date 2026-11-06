@@ -1025,6 +1025,10 @@ def _barrer_encargos(
                     )
                     enc = registro.fold(enc.id) or enc
             if enc.estado == "terminado" and enc.pr_numero and not parada:
+                enc = _revisar_deepseek_del_cerrado(
+                    registro, enc, gh, hora, epoch
+                )
+            if enc.estado == "terminado" and enc.pr_numero and not parada:
                 enc = _revisar_ci_del_pr(registro, enc, gh, hora)
             _limpiar_encargo_cerrado(registro, enc, hora)
             informes.append(vista(enc))
@@ -4569,6 +4573,82 @@ def _huella_comentarios(comentarios: list[dict]) -> str:
     return h.hexdigest()[:16]
 
 
+_ESTADOS_REVISION_AGOTADA = ("timeout", "timed_out", "timed-out", "time_out")
+_MARCA_COMPLETION_DEEPSEEK = "ai-review:completion="
+
+
+def _completion_deepseek(texto: str) -> dict:
+    """El marcador estructurado del sticky de ai-review, si lo trae."""
+    inicio = texto.find(_MARCA_COMPLETION_DEEPSEEK)
+    if inicio < 0:
+        return {}
+    resto = texto[inicio + len(_MARCA_COMPLETION_DEEPSEEK):].strip()
+    try:
+        valor, _ = json.JSONDecoder().raw_decode(resto)
+    except ValueError:
+        return {}
+    if isinstance(valor, dict):
+        return valor
+    if isinstance(valor, str):
+        return {"status": valor}
+    return {}
+
+
+def _sin_reintento(valor) -> bool:
+    if valor is False:
+        return True
+    return isinstance(valor, str) and valor.strip().lower() in (
+        "false", "no", "0"
+    )
+
+
+def _comentario_sin_revision(comentario: dict, sha: str) -> bool:
+    """El sticky declara que la revisión no llegó y no se reintenta.
+
+    Manda el marcador de completitud; la frase de 900 s es sólo el respaldo
+    para comentarios viejos sin marcador. Un comentario con un Critical, High
+    o Medium dentro del alcance no es una ausencia: es una revisión real.
+    """
+    texto = str(comentario.get("texto") or "")
+    if not texto:
+        return False
+    completion = _completion_deepseek(texto)
+    estado = str(
+        completion.get("status") or completion.get("state") or ""
+    ).strip().lower()
+    declara = estado in _ESTADOS_REVISION_AGOTADA and _sin_reintento(
+        completion.get("retry", completion.get("reintentar"))
+    )
+    if not declara:
+        bajo = texto.lower()
+        declara = (
+            ("excedió el tiempo límite" in bajo or "excedio el tiempo limite" in bajo)
+            and ("no se reintenta" in bajo or "not retried" in bajo
+                 or "will not retry" in bajo)
+        )
+    if not declara:
+        return False
+    return not any(
+        h.gravedad == "bloqueante"
+        for h in hallazgos_deepseek([{"texto": texto, "sha": sha}], sha)
+    )
+
+
+def _deepseek_con_contenido(comentarios: list[dict], sha: str) -> list[dict]:
+    """Los comentarios que realmente revisan el SHA, sin los avisos de timeout."""
+    return [
+        c for c in comentarios if not _comentario_sin_revision(c, sha)
+    ]
+
+
+def _continuaciones(registro: Registro, encargo_id: str) -> int:
+    return sum(
+        1
+        for ev in registro.eventos(encargo_id)
+        if ev["kind"] == "orden" and ev["data"].get("accion") == "continuar"
+    )
+
+
 def _anotar_lectura_deepseek(
     registro: Registro, enc: Encargo, numero: int, sha: str,
     comentarios: list[dict], hora: str,
@@ -4717,7 +4797,9 @@ def _releer_deepseek(
     if marca.get("sha") == sha and 0 <= desde < espaciado:
         return enc
     try:
-        comentarios = gh.comentarios_deepseek(enc.entrega.repo, fase.pr_numero, sha)
+        comentarios = _deepseek_con_contenido(
+            gh.comentarios_deepseek(enc.entrega.repo, fase.pr_numero, sha), sha
+        )
     except Exception as exc:
         # El espaciado no se consume con una lectura que falló: se reintenta
         # pronto. La causa queda en el registro (`lectura_fallida`) y en la
@@ -4835,6 +4917,101 @@ def _releer_deepseek(
     return registro.fold(enc.id)
 
 
+def _marca_deepseek_cerrado(directorio: Path) -> dict:
+    try:
+        marca = json.loads(
+            (directorio / "deepseek_cerrado.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return {}
+    return marca if isinstance(marca, dict) else {}
+
+
+def _marcar_deepseek_cerrado(directorio: Path, sha: str, epoch: float) -> None:
+    try:
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "deepseek_cerrado.json").write_text(
+            json.dumps({"sha": sha, "epoch": epoch}), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _revisar_deepseek_del_cerrado(
+    registro: Registro, enc: Encargo, gh, hora: str, epoch: float
+) -> Encargo:
+    """Un hallazgo tardío de DeepSeek en un encargo ya cerrado no se pierde.
+
+    El encargo terminado no vuelve al ciclo normal, así que la relectura de
+    DeepSeek —que excluye los cerrados— nunca lo vería. Se mira el comentario
+    del SHA del PR: si trae un Critical, High o Medium dentro del alcance, el
+    hallazgo vuelve al encargo como pregunta del propietario (abrir otro
+    encargo o seguir sin corregirlo). Una ausencia declarada por el sticky no
+    cuenta como hallazgo.
+    """
+    if (
+        gh is None
+        or enc.estado != "terminado"
+        or enc.entrega.nivel not in ("pr", "integrado", "desplegado")
+        or not enc.pr_numero
+        or not enc.pr_sha
+        or enc.fase_actual is None
+    ):
+        return enc
+    fase = enc.fase_actual
+    sha = enc.pr_sha
+    directorio = _directorio(registro.base, enc.id)
+    marca = _marca_deepseek_cerrado(directorio)
+    try:
+        desde = epoch - float(marca.get("epoch") or 0)
+    except (TypeError, ValueError):
+        desde = _RELECTURA_DEEPSEEK_S
+    if marca.get("sha") == sha and 0 <= desde < _RELECTURA_DEEPSEEK_S:
+        return enc
+    try:
+        comentarios = _deepseek_con_contenido(
+            gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha), sha
+        )
+    except Exception:
+        return enc
+    _marcar_deepseek_cerrado(directorio, sha, epoch)
+    if not comentarios:
+        return enc
+    huella = _huella_comentarios(comentarios)
+    if huella == fase.deepseek_huella:
+        return enc
+    abiertos = [
+        h for h in hallazgos_deepseek(comentarios, sha)
+        if h.gravedad == "bloqueante"
+        and not hallazgo_fuera_de_alcance_por_restriccion(enc.restricciones, h)
+    ]
+    if not abiertos:
+        return enc
+    enc = _anotar_lectura_deepseek(
+        registro, enc, enc.pr_numero, sha, comentarios, hora
+    )
+    abiertos = bloqueantes_abiertos(enc, "deepseek")
+    if not abiertos:
+        return enc
+    clave = (
+        f"pregunta:{enc.id}:cerrado:{sha}:{huella}:"
+        f"r{_continuaciones(registro, enc.id)}"
+    )
+    marcar_pregunta(
+        registro,
+        enc.id,
+        f"DeepSeek publicó después del cierre un hallazgo en el PR "
+        f"#{enc.pr_numero}, ya integrado, de la fase {fase.id}: "
+        + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
+        + ". Decide si abrir otro encargo para corregirlo o seguir sin "
+        "corregirlo.",
+        True,
+        hora,
+        ukey=clave,
+    )
+    return registro.fold(enc.id)
+
+
 def _cierre_sin_aplicar(
     registro: Registro, enc: Encargo, que: str, sha: str, hora: str
 ) -> Encargo:
@@ -4875,7 +5052,9 @@ def _veredicto_antes_de_cerrar(
     fase = enc.fase_actual
     sha = enc.pr_sha
     try:
-        comentarios = gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha)
+        comentarios = _deepseek_con_contenido(
+            gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha), sha
+        )
         previas = []
         if all(f.estado == "preparada" for f in enc.fases if f.id != enc.fase_activa):
             for f in enc.fases:
@@ -4887,7 +5066,15 @@ def _veredicto_antes_de_cerrar(
                 ):
                     continue
                 previas.append(
-                    (f, gh.comentarios_deepseek(enc.entrega.repo, f.pr_numero, f.pr_sha))
+                    (
+                        f,
+                        _deepseek_con_contenido(
+                            gh.comentarios_deepseek(
+                                enc.entrega.repo, f.pr_numero, f.pr_sha
+                            ),
+                            f.pr_sha,
+                        ),
+                    )
                 )
     except Exception as exc:
         if fase.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
@@ -4932,9 +5119,13 @@ def _veredicto_antes_de_cerrar(
         huella = _huella_comentarios(comentarios)
         if previa.nivel_alcanzado != "pr":
             # El PR ya se fusionó: la corrección no cabe en él. No se termina
-            # en silencio con el hallazgo abierto: se avisa al propietario una vez.
+            # en silencio con el hallazgo abierto: se avisa al propietario. La
+            # clave incluye las continuaciones para que, si un `continuar`
+            # limpió la pregunta, la misma decisión vuelva a quedar visible en
+            # vez de que el cierre siga por una clave ya consumida.
             clave = (
                 f"pregunta:{enc.id}:fusionado:{previa.id}:{previa.pr_sha}:{huella}"
+                f":r{_continuaciones(registro, enc.id)}"
             )
             if registro.por_ukey(clave) is not None:
                 continue
@@ -6774,7 +6965,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         )
         minutos = _minutos_desde(primera, hora)
         try:
-            comentarios = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
+            leidos = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
         except Exception as exc:
             causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
             _anotar_instrumento(
@@ -6793,6 +6984,19 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 return _paso_entrega(registro, enc, gh, hora)
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return registro.fold(enc.id)
+        comentarios = _deepseek_con_contenido(leidos, sha)
+        if leidos and not comentarios:
+            # El sticky de ai-review declara que la revisión excedió su límite
+            # y no se reintenta. No es una revisión aprobada ni una espera de
+            # 30 min: se trata como ausencia en esta misma pasada.
+            texto = (
+                "sin revisión de DeepSeek para el SHA "
+                f"{sha[:12]}: el sticky de ai-review declara que la revisión "
+                "excedió su tiempo límite y no se reintenta; la fase sigue "
+                "como si no hubiera hallazgos"
+            )
+            enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
+            return _paso_entrega(registro, enc, gh, hora)
         if not comentarios:
             disparado = any(
                 ev["kind"] == "entrega_externa"
