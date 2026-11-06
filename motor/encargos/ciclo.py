@@ -6134,12 +6134,13 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             >= TOPE_FALLOS_ENTREGA
         )
         # El aviso del resumen lee la causa del ultimo instrumento_fallo. En el
-        # corte antepone la explicacion para que el aviso comunique que el
-        # motor dejo de reintentar. La serie distinta evita que el registro
-        # deduplique la causa sin explicacion que ya quedo del primer fallo.
+        # corte agrega la explicacion al final: la causa tecnica conserva su
+        # lugar y el resumen no la recorta para hacer sitio. La serie distinta
+        # evita que el registro deduplique la causa sin explicacion que ya
+        # quedo del primer fallo.
         _anotar_instrumento(
             registro, enc, "github",
-            f"{_AVISO_ENTREGA_DEVUELTA} {causa}" if corte else causa,
+            f"{causa}. {_AVISO_ENTREGA_DEVUELTA}" if corte else causa,
             "reintentar commit y push de la misma version aprobada",
             hora,
             f"push-{enc.generacion}-{_clase_de_fallo(causa)}"

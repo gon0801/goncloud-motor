@@ -111,6 +111,26 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertIn("protected branch hook declined", " ".join(alertas))
             self.assertEqual(resumen._decisiones_de(e2), [])
 
+    def test_el_aviso_conserva_la_causa_tecnica_completa(self):
+        causa = (
+            "git push fallo: remote rejected: protected branch hook declined "
+            "by repository policy at https://github.com/gon0801/goncloud-motor"
+        )
+        self.assertEqual(len(causa), 129)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "fallo-git-causa", _GhConDeepSeek)
+            with mock.patch.object(ciclo, "_commit_push", return_value=("", causa)):
+                e1 = vuelta("hola")
+                e2 = _barrido(r, vuelta.gh, _epoch(e1.reanuda_en))
+
+            alertas = resumen._alertas(
+                e2, r.reg.eventos(r.enc), _epoch(e1.reanuda_en) + 200
+            )
+            self.assertTrue(
+                any(causa in alerta for alerta in alertas),
+                alertas,
+            )
+
     def test_corregir_solo_el_repositorio_vuelve_a_entregar(self):
         causa = "git push fallo: remote rejected: protected branch hook declined"
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
