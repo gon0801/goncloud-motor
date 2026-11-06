@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from motor.encargos import resumen as resumen_encargos
 from motor.encargos.registro import Registro
 from motor.integraciones import directores
 
@@ -244,6 +245,85 @@ class UnaSolaLectura(Base):
             path for path in leidos if path.parent == (self.b.base / "avisos").resolve()
         ]
         self.assertEqual(len(activos), 12, "cada aviso activo se lee una vez")
+
+    def test_cerrar_un_resumen_no_vuelve_a_leer_la_carpeta_de_avisos(self):
+        self.b.encargo("uno")
+        resumen_encargos.preparar(self.b.reg, ahora=T0)
+        carpeta = (self.b.base / "avisos").resolve()
+        activos = sorted(path.resolve() for path in carpeta.glob("*.json"))
+        self.assertTrue(activos, "el resumen pendiente vive en la carpeta activa")
+
+        leidos: list[Path] = []
+        leer_directores = directores._leer
+        leer_resumen = resumen_encargos._leer_json
+
+        def contar_directores(path):
+            leidos.append(Path(path).resolve())
+            return leer_directores(path)
+
+        def contar_resumen(path):
+            leidos.append(Path(path).resolve())
+            return leer_resumen(path)
+
+        with mock.patch(
+            "motor.integraciones.directores._leer", side_effect=contar_directores
+        ), mock.patch(
+            "motor.encargos.resumen._leer_json", side_effect=contar_resumen
+        ):
+            directores.drenar(self.b.reg, ahora=T0)
+
+        self.assertEqual(
+            sorted(path for path in leidos if path.parent == carpeta),
+            activos,
+            "cada aviso activo se lee una sola vez, también al cerrar el resumen",
+        )
+
+
+class CorteDeArchivo(Base):
+    def _publicado_con_marca(self, ident: str) -> None:
+        (self.b.base / "avisos").mkdir(parents=True, exist_ok=True)
+        (self.b.base / "avisos" / f"{ident}.json").write_text(
+            json.dumps(
+                {
+                    "id": ident,
+                    "encargo": "enc_viejo",
+                    "canal": "tg",
+                    "evidencia": "avance:inicio:inicio",
+                    "estado": "publicado",
+                    "recibo": "r",
+                    "alcance": "externo",
+                }
+            ),
+            encoding="utf-8",
+        )
+        marca = self.b.base / "canal" / "tg" / ident
+        marca.parent.mkdir(parents=True, exist_ok=True)
+        marca.write_text("cuerpo", encoding="utf-8")
+
+    def test_un_corte_al_archivar_se_recupera_en_la_pasada_siguiente(self):
+        ident = "av_corte"
+        self._publicado_con_marca(ident)
+        with mock.patch.object(
+            directores.VistaAvisos,
+            "_archivar_marca",
+            side_effect=OSError("corte simulado"),
+        ):
+            with self.assertRaises(OSError):
+                directores.drenar(self.b.reg, ahora=T0)
+        self.assertTrue(
+            (self.b.base / "avisos" / f"{ident}.json").is_file(),
+            "el corte no deja el aviso movido sin su marca",
+        )
+
+        directores.drenar(self.b.reg, ahora=T0 + 1)
+        self.assertFalse((self.b.base / "avisos" / f"{ident}.json").exists())
+        self.assertTrue(
+            (self.b.base / "avisos" / "archivo" / f"{ident}.json").is_file()
+        )
+        self.assertFalse((self.b.base / "canal" / "tg" / ident).exists())
+        self.assertTrue(
+            (self.b.base / "canal" / "archivo" / "tg" / ident).is_file()
+        )
 
 
 if __name__ == "__main__":

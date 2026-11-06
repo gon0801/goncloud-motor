@@ -147,10 +147,12 @@ class VistaAvisos:
         if not (self.archivo / "resumenes.json").exists():
             self._guardar_indice()
         self._indexar(doc)
+        # La marca primero: si el proceso muere entre los dos renombres, el
+        # aviso sigue activo y la pasada siguiente termina de mover ambos.
+        self._archivar_marca(doc)
         origen = self.carpeta / f"{ident}.json"
         if origen.is_file():
             origen.replace(self.archivo / f"{ident}.json")
-        self._archivar_marca(doc)
         self.docs.pop(ident, None)
         return True
 
@@ -2001,9 +2003,16 @@ def drenar(
         _reintentar_avisos_sueltos(registro, vuelta, vistos, cortar, encargos, vista)
     )
     _sondear_canales(registro, vuelta, encargos, corte_cierres, vista)
+    existentes_cierre = {**vista.resumenes, **vista.docs}
     for firma, episodio in envios_resumen:
         try:
-            resumen_encargos.cerrar(registro, vuelta.ahora, firma, episodio)
+            resumen_encargos.cerrar(
+                registro,
+                vuelta.ahora,
+                firma,
+                episodio,
+                existentes=existentes_cierre,
+            )
         except Exception:  # noqa: BLE001  marcar el envio no tumba la pasada
             pass
     _archivar_terminales(vista)
