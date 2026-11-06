@@ -168,9 +168,10 @@ dentro del alcance para un SHA ya integrado, se lee como hallazgo tardío y no
 se pierde, aunque el encargo ya haya terminado. El cierre mira los PR de todas
 las fases con entrega externa, no solo el de la fase activa, y sigue
 releyendo el mismo SHA: una revisión limpia puede cambiar después y traer un
-hallazgo, así que el sondeo no se cierra por una lectura limpia ni por tiempo.
-Se espacia ante errores para no golpear GitHub en cada barrido. Los bloqueantes
-de una lectura anterior no impiden que el SHA omitido avance.
+hallazgo, y una pregunta ya emitida en una fase no detiene la lectura de las
+siguientes. Se espacia ante errores para no golpear GitHub en cada barrido y
+la ventana total es de 7 días; al vencer se deja de consultar ese SHA. Los
+bloqueantes de una lectura anterior no impiden que el SHA omitido avance.
 
 Un ajuste del propietario es la respuesta a una decisión tardía: consume la
 pregunta conservada y el cierre reconoce la misma clave para no volver a

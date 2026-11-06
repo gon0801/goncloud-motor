@@ -598,6 +598,27 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             self.assertEqual(e.estado, "necesita_usuario")
             self.assertTrue(any("F15" in p for p in e.preguntas), e.preguntas)
 
+    def test_el_sondeo_no_consulta_github_de_por_vida(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = None
+            epoch = time.time()
+            hora = ahora_iso()
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            # La ventana total es de 7 días aunque la lectura sea limpia.
+            ventana = 7 * 24 * 60 * 60
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 3600
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+
     def test_un_medium_posterior_a_la_ventana_de_90_min_sigue_llegando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
@@ -778,6 +799,66 @@ class DecisionTardiaConUnaSolaClave(unittest.TestCase):
             self.assertFalse(
                 any("F13" in p for p in r.fold().preguntas), r.fold().preguntas
             )
+
+
+class SondeoNoSeDetieneEnUnaFaseYaPreguntada(unittest.TestCase):
+    def test_sigue_con_las_fases_siguientes(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-fases-preguntadas", _GhPorNumero,
+                nivel="integrado",
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {
+                                "id": "dos",
+                                "resultado": "saludo.txt con dos",
+                                "requiere": ["uno"],
+                            },
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-preguntadas",
+            )
+            e = vuelta("uno")
+            e = vuelta("dos")
+            self.assertEqual(e.estado, "terminado")
+            uno, dos = e.fases
+            texto_uno = _comentario(_medio("F18"))
+            texto_dos = _comentario(_medio("F19"))
+            vuelta.gh.textos[uno.pr_numero] = texto_uno
+            vuelta.gh.textos[dos.pr_numero] = texto_dos
+            huella_uno = ciclo._huella_comentarios(
+                [{"texto": texto_uno, "sha": uno.pr_sha}]
+            )
+            clave_uno = ciclo._clave_decision_tardia(
+                r.reg, e, uno.id, uno.pr_sha, huella_uno
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "pregunta",
+                    "data": {
+                        "texto": "DeepSeek dejó abierto F18 en la fase uno.",
+                        "bloquea_todo": False,
+                        "hora": r.hora,
+                    },
+                },
+                clave_uno,
+            )
+
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, ahora_iso(), time.time()
+            )
+
+            e = r.fold()
+            self.assertTrue(any("F19" in p for p in e.preguntas), e.preguntas)
 
 
 class CierreSinPrEnLaFaseActiva(unittest.TestCase):

@@ -100,6 +100,12 @@ _QUIETUD_VUELTAS = 3
 _RELECTURA_DEEPSEEK_S = 60
 _AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
+# El sondeo de un encargo cerrado no puede consultar GitHub de por vida, pero
+# tampoco puede cerrarse en la primera lectura limpia: ai-review puede
+# actualizar el mismo comentario y añadir un hallazgo. Se observa durante una
+# ventana larga (7 días) con el espaciado de `_RELECTURA_DEEPSEEK_S`; al vencer
+# se deja de consultar ese SHA.
+_SONDEO_DEEPSEEK_CERRADO_S = 7 * 24 * 60 * 60
 _TOPE_LOG_JOB = 80
 _LIMITE_CUERPO_PR = 65_536
 _NOTA_CUERPO_RECORTADO = (
@@ -4991,40 +4997,55 @@ def _releer_deepseek(
     return registro.fold(enc.id)
 
 
-def _marca_deepseek_cerrado(directorio: Path) -> dict[str, float]:
+def _epochs_de_marca(valor) -> dict[str, float]:
+    if not isinstance(valor, dict):
+        return {}
+    salida = {}
+    for sha, epoch in valor.items():
+        try:
+            salida[str(sha)] = float(epoch)
+        except (TypeError, ValueError):
+            continue
+    return salida
+
+
+def _marca_deepseek_cerrado(directorio: Path) -> dict:
     try:
         marca = json.loads(
             (directorio / "deepseek_cerrado.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
-        return {}
+        return {"shas": {}, "inicios": {}, "finales": []}
     if not isinstance(marca, dict):
-        return {}
-    leidas = marca.get("shas")
-    if isinstance(leidas, dict):
-        salida = {}
-        for sha, epoch in leidas.items():
-            try:
-                salida[str(sha)] = float(epoch)
-            except (TypeError, ValueError):
-                continue
-        return salida
+        return {"shas": {}, "inicios": {}, "finales": []}
+    shas = _epochs_de_marca(marca.get("shas"))
+    inicios = _epochs_de_marca(marca.get("inicios"))
+    finales = [str(x) for x in (marca.get("finales") or []) if str(x)]
     # Formato anterior, de una sola fase: se conserva al actualizar.
     sha = str(marca.get("sha") or "")
     try:
         epoch = float(marca.get("epoch") or 0)
     except (TypeError, ValueError):
         epoch = 0.0
-    return {sha: epoch} if sha and epoch else {}
+    if sha and epoch:
+        shas.setdefault(sha, epoch)
+        inicios.setdefault(sha, epoch)
+    return {"shas": shas, "inicios": inicios, "finales": finales}
 
 
-def _marcar_deepseek_cerrado(
-    directorio: Path, leidas: dict[str, float]
-) -> None:
+def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
     try:
         directorio.mkdir(parents=True, exist_ok=True)
         (directorio / "deepseek_cerrado.json").write_text(
-            json.dumps({"shas": leidas}, sort_keys=True), encoding="utf-8"
+            json.dumps(
+                {
+                    "shas": marca.get("shas") or {},
+                    "inicios": marca.get("inicios") or {},
+                    "finales": sorted(set(marca.get("finales") or [])),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
         )
     except OSError:
         pass
@@ -5043,10 +5064,12 @@ def _revisar_deepseek_del_cerrado(
     se pregunta al propietario (abrir otro encargo o seguir sin corregirlo).
     Una ausencia declarada por el sticky no cuenta como hallazgo.
 
-    El sondeo no se cierra en una lectura limpia: el mismo comentario puede
-    cambiar después y traer un hallazgo. Cada SHA se vuelve a leer tras el
-    espaciado de `_RELECTURA_DEEPSEEK_S`, sin vencimiento por tiempo. Un error
-    de GitHub también actualiza la marca para no reintentar en cada barrido.
+    Una lectura limpia no cierra el sondeo: el mismo comentario puede cambiar
+    después y traer un hallazgo. Cada SHA se vuelve a leer tras el espaciado,
+    sin cerrarse por lectura limpia ni por una pregunta ya emitida. Para no
+    consultar GitHub de por vida, la ventana total es
+    `_SONDEO_DEEPSEEK_CERRADO_S` desde la primera lectura. Un error de GitHub
+    también actualiza la marca y espacia el siguiente intento.
     """
     if (
         gh is None
@@ -5063,10 +5086,22 @@ def _revisar_deepseek_del_cerrado(
     if not fases:
         return enc
     directorio = _directorio(registro.base, enc.id)
-    leidas = _marca_deepseek_cerrado(directorio)
+    marca = _marca_deepseek_cerrado(directorio)
+    leidas = marca["shas"]
+    inicios = marca["inicios"]
+    finales = set(marca["finales"])
     cambio = False
     for fase in fases:
         sha = fase.pr_sha
+        if sha in finales:
+            continue
+        if sha not in inicios:
+            inicios[sha] = epoch
+            cambio = True
+        if epoch - inicios[sha] >= _SONDEO_DEEPSEEK_CERRADO_S:
+            finales.add(sha)
+            cambio = True
+            continue
         desde = epoch - leidas.get(sha, 0.0)
         if 0 <= desde < _RELECTURA_DEEPSEEK_S:
             continue
@@ -5100,24 +5135,33 @@ def _revisar_deepseek_del_cerrado(
         clave = _clave_decision_tardia(
             registro, enc, fase.id, sha, huella
         )
-        if registro.por_ukey(clave) is None:
-            marcar_pregunta(
-                registro,
-                enc.id,
-                f"DeepSeek publicó después del cierre un hallazgo en el PR "
-                f"#{fase.pr_numero}, ya cerrado, de la fase {fase.id}: "
-                + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
-                + ". Decide si abrir otro encargo para corregirlo o seguir sin "
-                "corregirlo.",
-                True,
-                hora,
-                ukey=clave,
-            )
-            enc = registro.fold(enc.id) or enc
-        _marcar_deepseek_cerrado(directorio, leidas)
+        if registro.por_ukey(clave) is not None:
+            # La decisión de esta fase ya está preguntada; seguir con las
+            # demás fases en vez de detener el sondeo aquí.
+            continue
+        marcar_pregunta(
+            registro,
+            enc.id,
+            f"DeepSeek publicó después del cierre un hallazgo en el PR "
+            f"#{fase.pr_numero}, ya cerrado, de la fase {fase.id}: "
+            + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
+            + ". Decide si abrir otro encargo para corregirlo o seguir sin "
+            "corregirlo.",
+            True,
+            hora,
+            ukey=clave,
+        )
+        enc = registro.fold(enc.id) or enc
+        _marcar_deepseek_cerrado(
+            directorio,
+            {"shas": leidas, "inicios": inicios, "finales": finales},
+        )
         return enc
     if cambio:
-        _marcar_deepseek_cerrado(directorio, leidas)
+        _marcar_deepseek_cerrado(
+            directorio,
+            {"shas": leidas, "inicios": inicios, "finales": finales},
+        )
     return enc
 
 
