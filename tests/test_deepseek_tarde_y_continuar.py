@@ -598,27 +598,54 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             self.assertEqual(e.estado, "necesita_usuario")
             self.assertTrue(any("F15" in p for p in e.preguntas), e.preguntas)
 
-    def test_el_sondeo_no_consulta_github_de_por_vida(self):
+    def test_el_sondeo_espacia_tras_la_ventana(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = None
             epoch = time.time()
             hora = ahora_iso()
+            ventana = 7 * 24 * 60 * 60
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
             self.assertEqual(len(vuelta.gh.llamadas), 1)
-            # La ventana total es de 7 días; al vencer se hace una última
-            # lectura y después deja de consultarse.
-            ventana = 7 * 24 * 60 * 60
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
             )
             self.assertEqual(len(vuelta.gh.llamadas), 2)
+            # Después de la ventana se sigue mirando, pero cada 30 minutos.
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 3600
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ventana + 61 + 600,
             )
             self.assertEqual(len(vuelta.gh.llamadas), 2)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ventana + 61 + 30 * 60,
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 3)
+
+    def test_el_primer_medium_despues_de_una_ventana_vacia_llega(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = None
+            epoch = time.time()
+            hora = ahora_iso()
+            ventana = 7 * 24 * 60 * 60
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch
+            )
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+            )
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F22"))
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ventana + 61 + 3600,
+            )
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F22" in p for p in e.preguntas), e.preguntas)
 
     def test_un_medium_posterior_a_la_ventana_de_7_dias_llega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

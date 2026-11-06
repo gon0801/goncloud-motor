@@ -169,12 +169,11 @@ se pierde, aunque el encargo ya haya terminado. El cierre mira los PR de todas
 las fases con entrega externa, no solo el de la fase activa, y sigue
 releyendo el mismo SHA: una revisión limpia puede cambiar después y traer un
 hallazgo, y una pregunta ya emitida en una fase no detiene la lectura de las
-siguientes. Se espacia ante errores para no golpear GitHub en cada barrido y
-la ventana total es de 7 días. Al vencer se hace una última lectura: si no hay
-una revisión real, se deja de consultar ese SHA; si la hay, se sigue leyendo
-con menos frecuencia, porque el mismo comentario puede cambiar después y
-traer un hallazgo. Los bloqueantes de una lectura anterior no impiden que el
-SHA omitido avance.
+siguientes. Durante los primeros 7 días se relee cada minuto y después cada
+30 minutos; los errores también se espacian. Nunca se cierra por una lectura
+limpia, por una pregunta ya emitida ni por una ventana vacía: una revisión
+puede llegar o cambiar después. Los bloqueantes de una lectura anterior no
+impiden que el SHA omitido avance.
 
 Un ajuste del propietario es la respuesta a una decisión tardía: consume la
 pregunta conservada y el cierre reconoce la misma clave para no volver a
