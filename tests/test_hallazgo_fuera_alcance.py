@@ -83,7 +83,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             ),
         )
 
-    def test_no_tocar_nada_fuera_de_la_ruta_la_deja_dentro(self):
+    def test_no_tocar_nada_fuera_de_la_ruta_no_infiere_nada(self):
         # «fuera de» es ambigua: la heurística no descarta nada y el revisor
         # independiente decide con su juicio.
         texto = "No tocar nada fuera de motor/encargos/cli.py"
@@ -130,7 +130,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
                 "",
             )
 
-    def test_un_fuera_de_sin_nada_es_prohibicion_no_lista_blanca(self):
+    def test_un_fuera_de_sin_nada_no_infiere_nada(self):
         # «fuera de» sin una fórmula genérica es ambigua: no se descarta nada.
         texto = "No modificar motor/a.py fuera de lo estrictamente necesario"
         for ancla in ("motor/a.py:1", "motor/c.py:1"):
@@ -260,7 +260,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             self.assertEqual(bloqueantes_abiertos(final, "deepseek"), ())
             self.assertEqual(final.fuera_de_alcance[0][0], "F1")
 
-    def test_prohibido_fuera_de_la_ruta_es_lista_blanca(self):
+    def test_prohibido_fuera_de_la_ruta_no_infiere_nada(self):
         # «fuera de» deja la decisión al revisor; no se infiere lista blanca.
         texto = "Prohibido tocar archivos fuera de motor/a.py"
         for ancla in ("motor/a.py:1", "motor/c.py:1"):
@@ -271,7 +271,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
                 "",
             )
 
-    def test_nada_salvo_la_ruta_es_lista_blanca(self):
+    def test_nada_salvo_la_ruta_no_infiere_nada(self):
         # «salvo» deja la decisión al revisor; no se infiere lista blanca.
         texto = "No tocar nada salvo motor/b.py"
         for ancla in ("motor/b.py:1", "motor/c.py:1"):
@@ -357,6 +357,16 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             ),
             "",
         )
+
+    def test_no_tocar_una_ruta_y_solo_otra_es_ambigua(self):
+        texto = "No tocar motor/a.py, solo motor/b.py"
+        for ancla in ("motor/a.py:1", "motor/b.py:1", "motor/c.py:1"):
+            self.assertEqual(
+                hallazgo_fuera_de_alcance_por_restriccion(
+                    (texto,), _hallazgo(ancla)
+                ),
+                "",
+            )
 
 
 if __name__ == "__main__":

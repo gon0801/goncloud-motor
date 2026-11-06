@@ -832,6 +832,10 @@ def hallazgo_fuera_de_alcance_por_restriccion(
                 continue
             if any(p in bajo for p in _AMBIGUO):
                 continue
+            if any(p in bajo for p in _PROHIBE) and any(
+                p in bajo for p in _ACOTA
+            ):
+                continue
             if any(p in bajo for p in _PROHIBE):
                 excluye.append(rutas)
             elif any(p in bajo for p in _ACOTA):
