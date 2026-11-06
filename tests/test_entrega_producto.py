@@ -79,29 +79,58 @@ class _Base(unittest.TestCase):
     def _cambio_de_producto(self):
         (self.espacio / "producto.txt").write_text("nuevo\n", encoding="utf-8")
 
+    def _ruido_interno(self):
+        for ruta in (
+            ".interno/nota.txt",
+            "sub/.interno/nota.txt",
+            "sub/deep/.interno/nota.txt",
+            "__pycache__/x.pyc",
+            "sub/__pycache__/y.pyc",
+            ".runtime/estado",
+            "sub/deep/.runtime/estado",
+        ):
+            archivo = self.espacio / ruta
+            archivo.parent.mkdir(parents=True, exist_ok=True)
+            archivo.write_text(f"{ruta}\n", encoding="utf-8")
+
     def _escenario_ignorado(self):
-        (self.espacio / ".gitignore").write_text(".interno\n", encoding="utf-8")
-        (self.espacio / ".interno").mkdir()
-        (self.espacio / ".interno" / "nota.txt").write_text("interno\n", encoding="utf-8")
+        (self.espacio / ".gitignore").write_text(
+            ".interno\n__pycache__/\n.runtime/\n", encoding="utf-8"
+        )
+        self._ruido_interno()
         self._cambio_de_producto()
 
     def _escenario_sin_gitignore(self):
-        (self.espacio / ".interno").mkdir()
-        (self.espacio / ".interno" / "nota.txt").write_text("interno\n", encoding="utf-8")
+        self._ruido_interno()
         self._cambio_de_producto()
 
     def _escenario_rastreado(self):
-        (self.espacio / ".interno").write_text("antes\n", encoding="utf-8")
+        (self.espacio / ".interno").mkdir()
+        (self.espacio / ".interno" / "nota.txt").write_text(
+            "antes\n", encoding="utf-8"
+        )
         _git(self.espacio, "add", ".interno")
         _git(self.espacio, "commit", "--quiet", "-m", "rastrea interno")
-        (self.espacio / ".interno").write_text("despues\n", encoding="utf-8")
+        (self.espacio / ".interno" / "nota.txt").write_text(
+            "despues\n", encoding="utf-8"
+        )
+        self._ruido_interno()
         self._cambio_de_producto()
 
-    def _comprobar_commit(self):
-        self.assertIn("producto.txt", self.repo.arbol())
-        self.assertNotIn(".interno", self.repo.arbol())
-        self.assertNotIn(".interno", self.repo.indice())
-        self.assertNotIn(".interno", self.repo.remoto())
+    def _internas(self, rutas: list[str]) -> list[str]:
+        return [
+            ruta
+            for ruta in rutas
+            if any(p in {".interno", "__pycache__", ".runtime"} for p in Path(ruta).parts)
+        ]
+
+    def _comprobar_commit(self, remoto: bool = True):
+        arbol = self.repo.arbol()
+        self.assertIn("producto.txt", arbol)
+        self.assertEqual(self._internas(arbol), [])
+        self.assertEqual(self._internas(self.repo.indice()), [])
+        if remoto:
+            self.assertEqual(self._internas(self.repo.remoto()), [])
 
 
 class CommitDelProducto(_Base):
@@ -152,7 +181,7 @@ class CommitPendienteDeIntegracion(_Base):
 
         self.assertEqual(causa, "")
         self.assertNotEqual(_git(self.espacio, "rev-parse", "HEAD").strip(), antes)
-        self._comprobar_commit()
+        self._comprobar_commit(remoto=False)
 
     def test_sin_gitignore_interno_tampoco_entra(self):
         self._escenario_sin_gitignore()
@@ -160,7 +189,7 @@ class CommitPendienteDeIntegracion(_Base):
         causa = _commit_pendiente(_encargo(), self.espacio, "main")
 
         self.assertEqual(causa, "")
-        self._comprobar_commit()
+        self._comprobar_commit(remoto=False)
 
     def test_interno_ya_rastreado_sale_del_commit(self):
         self._escenario_rastreado()
@@ -168,8 +197,7 @@ class CommitPendienteDeIntegracion(_Base):
         causa = _commit_pendiente(_encargo(), self.espacio, "main")
 
         self.assertEqual(causa, "")
-        self.assertNotIn(".interno", self.repo.arbol())
-        self.assertNotIn(".interno", self.repo.indice())
+        self._comprobar_commit(remoto=False)
 
     def test_un_add_que_falla_por_otra_razon_sigue_siendo_visible(self):
         self._cambio_de_producto()

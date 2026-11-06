@@ -3902,8 +3902,11 @@ def _asegurar_repo(
     return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
 
 
-_FUERA_DEL_INDICE = (".interno", "**/.interno", "**/__pycache__", "**/.runtime")
-_FUERA_DEL_PRODUCTO = tuple(f":(exclude){ruta}" for ruta in _FUERA_DEL_INDICE)
+_RUTAS_INTERNAS = (
+    "**/.interno", "**/.interno/**", "**/__pycache__/**", "**/.runtime/**",
+)
+_FUERA_DEL_INDICE = tuple(f":(glob){ruta}" for ruta in _RUTAS_INTERNAS)
+_FUERA_DEL_PRODUCTO = tuple(f":(exclude,glob){ruta}" for ruta in _RUTAS_INTERNAS)
 
 
 def _preparar_indice(espacio: Path) -> str:
