@@ -44,6 +44,129 @@ TOPE_AVISO_VIEJO_S = 6 * 3600
 TRANSPORTE_TIMEOUT_S = 30.0
 TOPE_DRENAR_S = 20.0
 
+ESTADOS_TERMINALES = frozenset({"publicado", "descartado"})
+MOTIVO_ENCARGO_CERRADO = "encargo cerrado; queda en el registro"
+
+
+class VistaAvisos:
+    """Los avisos activos de la base, leídos una sola vez por pasada.
+
+    Un aviso `publicado` o `descartado` vive en `avisos/archivo/` y ninguna
+    pasada recorre esa carpeta. Su archivo se busca por id, así un hecho que ya
+    se avisó no se vuelve a crear ni a mandar. El movimiento es un `rename`
+    atómico: una migración cortada deja cada aviso en una carpeta o en la otra.
+    """
+
+    def __init__(self, base: Path):
+        self.base = Path(base)
+        self.carpeta = self.base / "avisos"
+        self.archivo = self.carpeta / "archivo"
+        self.docs: dict[str, dict] = {}
+        self.resumenes: dict[str, dict] = {}
+        self._cargar_indice()
+        if not self.carpeta.is_dir():
+            return
+        for path in sorted(self.carpeta.glob("*.json")):
+            try:
+                doc = _leer(path)
+            except (OSError, ValueError):
+                continue
+            if isinstance(doc, dict):
+                self.docs[str(doc.get("id") or path.stem)] = doc
+
+    def _cargar_indice(self) -> None:
+        path = self.archivo / "resumenes.json"
+        try:
+            crudo = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            crudo = None
+        if isinstance(crudo, dict) and isinstance(crudo.get("avisos"), dict):
+            crudo = crudo["avisos"]
+        if isinstance(crudo, dict):
+            self.resumenes = {
+                str(ident): {**doc, "_archivado": True}
+                for ident, doc in crudo.items()
+                if isinstance(doc, dict)
+            }
+        elif self.archivo.is_dir():
+            self._reconstruir_indice()
+
+    def _reconstruir_indice(self) -> None:
+        """Sin índice, una sola vez: los resúmenes terminales que ya viven en el archivo."""
+        for path in sorted(self.archivo.glob("*.json")):
+            try:
+                doc = _leer(path)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(doc, dict) or doc.get("tipo") != "resumen":
+                continue
+            self.resumenes[str(doc.get("id") or path.stem)] = {
+                **doc,
+                "_archivado": True,
+            }
+        self._guardar_indice()
+
+    def _guardar_indice(self) -> None:
+        self.archivo.mkdir(parents=True, exist_ok=True)
+        _atomico(
+            self.archivo / "resumenes.json",
+            {
+                "avisos": {
+                    ident: {k: v for k, v in doc.items() if k != "_archivado"}
+                    for ident, doc in self.resumenes.items()
+                }
+            },
+        )
+
+    def _indexar(self, doc: dict) -> None:
+        if doc.get("tipo") != "resumen":
+            return
+        ident = str(doc.get("id") or "")
+        if ident:
+            self.resumenes[ident] = {**doc, "_archivado": True}
+            self._guardar_indice()
+
+    def get(self, ident: str) -> dict | None:
+        return self.docs.get(str(ident))
+
+    def put(self, doc: dict) -> None:
+        ident = str(doc.get("id") or "")
+        if not ident:
+            return
+        _atomico(self.carpeta / f"{ident}.json", doc)
+        self.docs[ident] = doc
+
+    def archivado(self, ident: str) -> dict | None:
+        return _leer(self.archivo / f"{ident}.json")
+
+    def archivar(self, doc: dict) -> bool:
+        ident = str(doc.get("id") or "")
+        if not ident:
+            return False
+        self.archivo.mkdir(parents=True, exist_ok=True)
+        if not (self.archivo / "resumenes.json").exists():
+            self._guardar_indice()
+        self._indexar(doc)
+        origen = self.carpeta / f"{ident}.json"
+        if origen.is_file():
+            origen.replace(self.archivo / f"{ident}.json")
+        self._archivar_marca(doc)
+        self.docs.pop(ident, None)
+        return True
+
+    def _archivar_marca(self, doc: dict) -> None:
+        ident = str(doc.get("id") or "")
+        try:
+            canal = nombre_canal(str(doc.get("canal") or ""))
+        except ValueError:
+            return
+        origen = self.base / "canal" / canal / ident
+        if not origen.is_file():
+            return
+        destino = self.base / "canal" / "archivo" / canal / ident
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        origen.replace(destino)
+
 
 def espera_s(fallos: int) -> int:
     """1, 2, 4... minutos entre intentos de un mismo aviso, con tope de una hora."""
@@ -1416,17 +1539,27 @@ def _aviso_retomable(
 
 
 def _canales_con_avisos_pendientes(
-    registro: Registro, encargos: dict, corte_cierres: int
+    registro: Registro,
+    encargos: dict,
+    corte_cierres: int,
+    vista: "VistaAvisos | None" = None,
 ) -> set[str]:
     """Los canales con un aviso que todavía prueba su transporte: incierto o pendiente."""
     pendientes: set[str] = set()
     resumen_activo = bool(resumen_encargos.config_envio(registro.base)[0])
-    for path in (registro.base / "avisos").glob("*.json"):
-        try:
-            doc = _leer(path)
-        except (OSError, ValueError):
-            continue
-        if not doc or doc.get("estado") not in ("incierto", "pendiente"):
+    if vista is not None:
+        docs = list(vista.docs.values())
+    else:
+        docs = []
+        for path in (registro.base / "avisos").glob("*.json"):
+            try:
+                doc = _leer(path)
+            except (OSError, ValueError):
+                continue
+            if doc:
+                docs.append(doc)
+    for doc in docs:
+        if doc.get("estado") not in ("incierto", "pendiente"):
             continue
         if not _aviso_retomable(
             doc, encargos, resumen_activo, registro, corte_cierres
@@ -1440,7 +1573,12 @@ def _canales_con_avisos_pendientes(
 
 
 def _reintentar_avisos_sueltos(
-    registro: Registro, vuelta: Vuelta, vistos: set[str], cortar: str, encargos: dict
+    registro: Registro,
+    vuelta: Vuelta,
+    vistos: set[str],
+    cortar: str,
+    encargos: dict,
+    vista: "VistaAvisos | None" = None,
 ) -> list[dict]:
     """Un aviso `incierto` vencido que el estado actual ya no genera se retoma desde su cuerpo guardado.
 
@@ -1449,17 +1587,25 @@ def _reintentar_avisos_sueltos(
     reenviar. Los encargos detenidos o cancelados no reabren avisos de avance.
     """
     publicados: list[dict] = []
-    for path in sorted((registro.base / "avisos").glob("*.json")):
+    if vista is not None:
+        candidatos = sorted(vista.docs.items())
+    else:
+        candidatos = []
+        for path in sorted((registro.base / "avisos").glob("*.json")):
+            try:
+                doc = _leer(path)
+            except (OSError, ValueError):
+                continue
+            if doc:
+                candidatos.append((str(doc.get("id") or path.stem), doc))
+    for ident, doc in candidatos:
         if vuelta.agotada():
             break
-        try:
-            doc = _leer(path)
-        except (OSError, ValueError):
-            continue
-        if not doc or doc.get("id") in vistos:
+        if ident in vistos:
             continue
         if doc.get("estado") != "incierto":
             continue
+        path = registro.base / "avisos" / f"{ident}.json"
         if _por_esperar(doc, vuelta.ahora) and not _vencido(doc, vuelta.ahora, path):
             continue
         enc = encargos.get(str(doc.get("encargo") or ""))
@@ -1474,16 +1620,20 @@ def _reintentar_avisos_sueltos(
             cuerpo = entrega.read_text(encoding="utf-8")
         except OSError:
             continue
-        publicados.append(_publicar_aviso(registro, doc, cuerpo, cortar, vuelta))
-        vistos.add(str(doc.get("id")))
+        publicados.append(_publicar_aviso(registro, doc, cuerpo, cortar, vuelta, vista))
+        vistos.add(ident)
     return publicados
 
 
 def _sondear_canales(
-    registro: Registro, vuelta: Vuelta, encargos: dict, corte_cierres: int
+    registro: Registro,
+    vuelta: Vuelta,
+    encargos: dict,
+    corte_cierres: int,
+    vista: "VistaAvisos | None" = None,
 ) -> None:
     """Un canal caído sin avisos pendientes se prueba con su conciliación, a lo sumo una vez por intervalo."""
-    pendientes = _canales_con_avisos_pendientes(registro, encargos, corte_cierres)
+    pendientes = _canales_con_avisos_pendientes(registro, encargos, corte_cierres, vista)
     for canal in canales.canales_en_fallo(registro.base):
         if vuelta.agotada():
             return
@@ -1526,11 +1676,24 @@ def _publicar_aviso(
     cuerpo: str | None,
     cortar: str,
     vuelta: Vuelta | None = None,
+    vista: "VistaAvisos | None" = None,
 ) -> dict:
     """Misma recuperación de recibo para el cierre y para el avance. Sin modelo."""
     vuelta = vuelta or Vuelta(time.time())
     path = registro.base / "avisos" / f"{aviso['id']}.json"
-    guardado = _leer(path) or dict(aviso)
+
+    def guardar(doc: dict) -> None:
+        if vista is not None:
+            vista.put(doc)
+        else:
+            _atomico(path, doc)
+
+    guardado = vista.get(aviso["id"]) if vista is not None else _leer(path)
+    if guardado is None and vista is not None:
+        anterior = vista.archivado(str(aviso["id"]))
+        if anterior is not None and anterior.get("estado") in ESTADOS_TERMINALES:
+            return _cerrar_aviso(anterior, False)
+    guardado = guardado or dict(aviso)
     if guardado.get("estado") == "publicado" and guardado.get("recibo"):
         return _cerrar_aviso(guardado, False)
     if guardado.get("estado") == "descartado":
@@ -1547,7 +1710,7 @@ def _publicar_aviso(
         guardado["motivo"] = "canal caído demasiado tiempo; queda en el registro"
         for campo in ("proximo_intento", "fallos"):
             guardado.pop(campo, None)
-        _atomico(path, guardado)
+        guardar(guardado)
         return _cerrar_aviso(guardado, False)
     if guardado.get("estado") == "local-pendiente" and guardado.get("alcance") == "local":
         try:
@@ -1567,14 +1730,14 @@ def _publicar_aviso(
     except ValueError:
         guardado["estado"] = "incierto"
         guardado["motivo"] = "el canal no es un nombre"
-        _atomico(path, guardado)
+        guardar(guardado)
         return _cerrar_aviso(guardado, True)
     canal_dir = registro.base / "canal" / nombre
     entrega = canal_dir / guardado["id"]
     if cuerpo is None:
         guardado["estado"] = "incierto"
         guardado["motivo"] = "no hay un resultado legible que concuerde con la evidencia"
-        _atomico(path, guardado)
+        guardar(guardado)
         return _cerrar_aviso(guardado, True)
     try:
         intentos = int(guardado.get("intentos") or 0)
@@ -1593,23 +1756,24 @@ def _publicar_aviso(
             guardado["alcance"] = "local"
             guardado["recibo"] = ""
             guardado["motivo"] = str(cfg["error"])
-        _atomico(path, guardado)
+        guardar(guardado)
         return _cerrar_aviso(guardado, True)
     comando = list(cfg.get("comando") or []) if cfg else []
     conciliacion = list(cfg.get("conciliacion") or []) if cfg else []
     if guardado.get("estado") == "incierto":
         if not comando:
             guardado["motivo"] = "sin transporte configurado; no se reenvia"
-            _atomico(path, guardado)
+            guardar(guardado)
             return _cerrar_aviso(guardado, True)
         if nombre in vuelta.caidos or _por_esperar(guardado, vuelta.ahora):
             return _cerrar_aviso(guardado, False)
         if not conciliacion:
             if _declara_idempotencia(cfg):
                 _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
+                guardar(guardado)
                 return _cerrar_aviso(guardado, True)
             guardado["motivo"] = "aviso incierto sin conciliacion; no se reenvia"
-            _atomico(path, guardado)
+            guardar(guardado)
             return _cerrar_aviso(guardado, True)
         resultado_con, dato, caido = _correr_conciliacion(
             registro, conciliacion, guardado, cuerpo
@@ -1623,20 +1787,21 @@ def _publicar_aviso(
             guardado["recibo"] = dato
             for campo in ("motivo", "proximo_intento", "fallos"):
                 guardado.pop(campo, None)
-            _atomico(path, guardado)
+            guardar(guardado)
             return _cerrar_aviso(guardado, True)
         if resultado_con == "incierto":
             guardado["motivo"] = dato
             _diferir(guardado, vuelta.ahora)
             if caido:
                 vuelta.fallo_el_transporte(nombre, dato)
-            _atomico(path, guardado)
+            guardar(guardado)
             return _cerrar_aviso(guardado, True)
         _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
+        guardar(guardado)
         return _cerrar_aviso(guardado, True)
     if cortar == "antes" and not entrega.exists():
         guardado["estado"] = "pendiente"
-        _atomico(path, guardado)
+        guardar(guardado)
         return _cerrar_aviso(guardado, True)
     if not entrega.exists():
         canal_dir.mkdir(parents=True, exist_ok=True)
@@ -1646,7 +1811,7 @@ def _publicar_aviso(
     if entrega.read_text(encoding="utf-8") != cuerpo:
         guardado["estado"] = "incierto"
         guardado["motivo"] = "el canal tiene otro contenido y no se puede conciliar"
-        _atomico(path, guardado)
+        guardar(guardado)
         return _cerrar_aviso(guardado, True)
     if cortar == "despues" and not guardado.get("recibo"):
         if comando:
@@ -1663,30 +1828,41 @@ def _publicar_aviso(
             guardado["estado"] = "local-pendiente"
             guardado["alcance"] = "local"
             guardado["recibo"] = ""
-        _atomico(path, guardado)
+        guardar(guardado)
         return _cerrar_aviso(guardado, True)
     if not comando:
         guardado["estado"] = "local-pendiente"
         guardado["alcance"] = "local"
         guardado["recibo"] = ""
-        _atomico(path, guardado)
+        guardar(guardado)
         return _cerrar_aviso(guardado, True)
     if nombre in vuelta.caidos:
         return _cerrar_aviso(guardado, False)
     _enviar_aviso(registro, comando, guardado, cuerpo, path, vuelta)
+    guardar(guardado)
     return _cerrar_aviso(guardado, True)
 
 
-def _descartar_avances_de_terminados(registro: Registro, terminados: set[str]) -> None:
+def _descartar_avances_de_terminados(
+    registro: Registro,
+    terminados: set[str],
+    vista: "VistaAvisos | None" = None,
+) -> None:
     """De un encargo terminado solo vale el aviso de cierre: los avances sin entregar se descartan."""
-    for path in sorted((registro.base / "avisos").glob("*.json")):
-        try:
-            doc = _leer(path)
-        except (OSError, ValueError):
-            continue
+    if vista is not None:
+        candidatos = list(vista.docs.items())
+    else:
+        candidatos = []
+        for path in sorted((registro.base / "avisos").glob("*.json")):
+            try:
+                doc = _leer(path)
+            except (OSError, ValueError):
+                continue
+            if doc:
+                candidatos.append((str(doc.get("id") or path.stem), doc))
+    for ident, doc in candidatos:
         if (
-            not doc
-            or doc.get("encargo") not in terminados
+            doc.get("encargo") not in terminados
             or not doc.get("tipo")
             or doc.get("tipo") == "ci_rojo"
             or doc.get("estado") in ("publicado", "descartado")
@@ -1696,7 +1872,37 @@ def _descartar_avances_de_terminados(registro: Registro, terminados: set[str]) -
         doc["motivo"] = "encargo terminado; solo se envia el aviso de cierre"
         for campo in ("proximo_intento", "fallos"):
             doc.pop(campo, None)
-        _atomico(path, doc)
+        if vista is not None:
+            vista.put(doc)
+        else:
+            _atomico(registro.base / "avisos" / f"{ident}.json", doc)
+
+
+def _cerrar_inciertos_sin_destino(encargos: dict, vista: VistaAvisos) -> None:
+    """Un incierto que ya no puede llegar a nadie queda descartado y sale de la carpeta activa.
+
+    Los de un encargo cerrado o de un encargo que ya no existe no vuelven a probar
+    el transporte; el de un encargo activo sigue su conciliación normal.
+    """
+    for ident, doc in list(vista.docs.items()):
+        if doc.get("estado") != "incierto" or doc.get("tipo") == "resumen":
+            continue
+        encargo = str(doc.get("encargo") or "")
+        enc = encargos.get(encargo) if encargo else None
+        if enc is not None and enc.estado not in ("terminado", "cancelado"):
+            continue
+        doc["estado"] = "descartado"
+        doc["motivo"] = MOTIVO_ENCARGO_CERRADO
+        for campo in ("proximo_intento", "fallos"):
+            doc.pop(campo, None)
+        vista.put(doc)
+
+
+def _archivar_terminales(vista: VistaAvisos) -> None:
+    """Mueve fuera de la carpeta activa todo aviso que ya no va a volver a probarse."""
+    for ident, doc in list(vista.docs.items()):
+        if doc.get("estado") in ESTADOS_TERMINALES:
+            vista.archivar(doc)
 
 
 def drenar(
@@ -1716,21 +1922,30 @@ def drenar(
     publicados = []
     corte = registro.corte_avisos()
     corte_cierres = registro.corte_avisos("cierres-cancelados-v1")
+    vista = VistaAvisos(registro.base)
     encargos = {ident: registro.fold(ident) for ident in registro.ids()}
     terminados = {i for i, e in encargos.items() if e is not None and e.estado == "terminado"}
+    _cerrar_inciertos_sin_destino(encargos, vista)
     if terminados:
-        _descartar_avances_de_terminados(registro, terminados)
+        _descartar_avances_de_terminados(registro, terminados, vista)
     envios_resumen: set[tuple[str, int]] = set()
     vistos: set[str] = set()
+    existentes_resumen = dict(vista.resumenes)
+    existentes_resumen.update(vista.docs)
     try:
-        trabajos_resumen = resumen_encargos.preparar(registro, vuelta.ahora)
+        trabajos_resumen = resumen_encargos.preparar(
+            registro,
+            vuelta.ahora,
+            existentes=existentes_resumen,
+            archivado=vista.archivado,
+        )
     except Exception:  # noqa: BLE001  el resumen no puede tumbar la pasada de avisos
         trabajos_resumen = []
     for aviso, cuerpo in trabajos_resumen:
         if vuelta.agotada():
             cortada = True
             break
-        publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
+        publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta, vista))
         vistos.add(str(aviso.get("id") or ""))
         if aviso.get("firma"):
             envios_resumen.add(
@@ -1778,17 +1993,20 @@ def drenar(
             if vuelta.agotada():
                 cortada = True
                 break
-            publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta))
+            publicados.append(_publicar_aviso(registro, aviso, cuerpo, cortar, vuelta, vista))
             vistos.add(str(aviso.get("id") or ""))
         if cortada:
             break
-    publicados.extend(_reintentar_avisos_sueltos(registro, vuelta, vistos, cortar, encargos))
-    _sondear_canales(registro, vuelta, encargos, corte_cierres)
+    publicados.extend(
+        _reintentar_avisos_sueltos(registro, vuelta, vistos, cortar, encargos, vista)
+    )
+    _sondear_canales(registro, vuelta, encargos, corte_cierres, vista)
     for firma, episodio in envios_resumen:
         try:
             resumen_encargos.cerrar(registro, vuelta.ahora, firma, episodio)
         except Exception:  # noqa: BLE001  marcar el envio no tumba la pasada
             pass
+    _archivar_terminales(vista)
     try:
         canales.registrar_pasada(registro.base, vuelta.ahora, vuelta.errores, vuelta.respondieron)
     except OSError:

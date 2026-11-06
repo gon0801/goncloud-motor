@@ -156,7 +156,12 @@ class EstadoDelCanal(Banco):
         fallos = self.estado()["fallos"]
         self.modo("ok_y_cae")
         directores.drenar(self.reg, ahora=T0 + 700)
-        entregados = [a for a in (self.base / "avisos").glob("*.json") if json.loads(a.read_text()).get("recibo")]
+        entregados = [
+            a
+            for carpeta in (self.base / "avisos", self.base / "avisos" / "archivo")
+            for a in carpeta.glob("*.json")
+            if json.loads(a.read_text()).get("recibo")
+        ]
         self.assertEqual(len(entregados), 1, "uno salió con recibo y el otro se cayó")
         estado = self.estado()
         self.assertEqual(estado["fallando_desde"], inicio, "el fallo de la misma pasada gana al recibo")

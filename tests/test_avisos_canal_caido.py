@@ -178,10 +178,15 @@ class CanalCaido(unittest.TestCase):
         self.assertTrue(avisos[0]["entregado"])
         self.assertEqual(len(self.b.llamadas()), 2, "un intento fallido de avance y el cierre")
         descartados = [
-            json.loads(p.read_text()) for p in (self.b.base / "avisos").glob("*.json")
+            json.loads(p.read_text())
+            for p in [
+                *(self.b.base / "avisos").glob("*.json"),
+                *(self.b.base / "avisos" / "archivo").glob("*.json"),
+            ]
             if json.loads(p.read_text()).get("tipo")
+            and json.loads(p.read_text()).get("estado") == "descartado"
         ]
-        self.assertEqual({d["estado"] for d in descartados}, {"descartado"})
+        self.assertTrue(descartados, "los avances del terminado quedaron descartados")
         directores.drenar(self.b.reg, ahora=T0 + 20_000)
         self.assertEqual(len(self.b.llamadas()), 2)
 

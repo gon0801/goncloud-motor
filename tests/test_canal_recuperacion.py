@@ -128,7 +128,9 @@ class Banco(unittest.TestCase):
         (self.base / "avisos" / f"{doc['id']}.json").write_text(json.dumps(doc))
 
     def aviso(self, ident: str) -> dict:
-        return json.loads((self.base / "avisos" / f"{ident}.json").read_text())
+        activo = self.base / "avisos" / f"{ident}.json"
+        archivo = self.base / "avisos" / "archivo" / f"{ident}.json"
+        return json.loads((activo if activo.exists() else archivo).read_text())
 
     def aviso_de_relevo(self) -> dict:
         for path in (self.base / "avisos").glob("*.json"):
@@ -281,7 +283,7 @@ class AvisoInciertoHuerfano(Banco):
         self.assertEqual(self.sondeos(), ["sondeo-hermes"])
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
 
-    def test_un_cierre_vigente_de_un_cancelado_en_espera_bloquea_el_sondeo(self):
+    def test_el_cierre_incierto_de_un_cancelado_se_descarta_y_no_bloquea_el_sondeo(self):
         ident = self.encargo_directo()
         self.cancelar(ident)
         cierre = directores._aviso_de(self.reg.fold(ident))
@@ -293,16 +295,16 @@ class AvisoInciertoHuerfano(Banco):
 
         directores.drenar(self.reg, ahora=T0)
 
-        self.assertEqual(self.aviso(cierre["id"])["estado"], "incierto")
-        self.assertEqual(
-            self.sondeos(), [], "el cierre vigente del cancelado ya prueba el transporte"
+        guardado = self.aviso(cierre["id"])
+        self.assertEqual(guardado["estado"], "descartado")
+        self.assertEqual(guardado["motivo"], directores.MOTIVO_ENCARGO_CERRADO)
+        self.assertTrue(
+            (self.base / "avisos" / "archivo" / f"{cierre['id']}.json").is_file()
         )
-        self.assertEqual(
-            [c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 1000)],
-            ["hermes"],
-        )
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
 
-    def test_un_cierre_vigente_incierto_en_espera_bloquea_el_sondeo(self):
+    def test_el_cierre_incierto_de_un_terminado_se_descarta_y_no_bloquea_el_sondeo(self):
         ident = self.encargo_directo()
         self.terminar(ident)
         cierre = directores._aviso_de(self.reg.fold(ident))
@@ -314,14 +316,14 @@ class AvisoInciertoHuerfano(Banco):
 
         directores.drenar(self.reg, ahora=T0)
 
-        self.assertEqual(self.aviso(cierre["id"])["estado"], "incierto")
-        self.assertEqual(
-            self.sondeos(), [], "el cierre vigente en espera ya prueba el transporte"
+        guardado = self.aviso(cierre["id"])
+        self.assertEqual(guardado["estado"], "descartado")
+        self.assertEqual(guardado["motivo"], directores.MOTIVO_ENCARGO_CERRADO)
+        self.assertTrue(
+            (self.base / "avisos" / "archivo" / f"{cierre['id']}.json").is_file()
         )
-        self.assertEqual(
-            [c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 1000)],
-            ["hermes"],
-        )
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
 
     def test_un_aviso_incierto_huerfano_de_un_encargo_terminado_no_bloquea_el_sondeo(self):
         ident = self.encargo_directo()
@@ -346,9 +348,12 @@ class AvisoInciertoHuerfano(Banco):
 
         directores.drenar(self.reg, ahora=T0)
 
-        self.assertEqual(
-            self.aviso(huerfano["id"])["estado"], "incierto",
-            "un terminado no reabre el aviso huerfano",
+        guardado = self.aviso(huerfano["id"])
+        self.assertEqual(guardado["estado"], "descartado")
+        self.assertEqual(guardado["motivo"], directores.MOTIVO_ENCARGO_CERRADO)
+        self.assertTrue(
+            (self.base / "avisos" / "archivo" / f"{huerfano['id']}.json").is_file(),
+            "el huerfano de un terminado se archiva",
         )
         self.assertEqual(self.sondeos(), ["sondeo-hermes"])
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])

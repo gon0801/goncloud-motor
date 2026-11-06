@@ -627,7 +627,28 @@ def _descartar(base: Path, pendientes: list[dict], motivo: str) -> None:
         _atomico(Path(base) / "avisos" / f"{doc['id']}.json", doc)
 
 
-def _faltan_partes(existentes: dict[str, dict], firma: str, episodio: int) -> bool:
+def _id_resumen(firma: str, parte: int, episodio: int) -> str:
+    return "av_" + hashlib.sha256(
+        f"resumen:{firma}:{parte}:{episodio}".encode()
+    ).hexdigest()[:16]
+
+
+def _publicado_externo(doc: dict | None) -> bool:
+    return bool(
+        doc
+        and doc.get("estado") == "publicado"
+        and doc.get("recibo")
+        and doc.get("alcance") == "externo"
+    )
+
+
+def _faltan_partes(
+    existentes: dict[str, dict],
+    firma: str,
+    episodio: int,
+    total: int | None = None,
+    archivado=None,
+) -> bool:
     docs = [
         doc
         for doc in existentes.values()
@@ -635,26 +656,35 @@ def _faltan_partes(existentes: dict[str, dict], firma: str, episodio: int) -> bo
         and int(doc.get("episodio") or 0) == int(episodio)
         and doc.get("estado") != "descartado"
     ]
-    if not docs:
-        return True
-    total = max(int(doc.get("partes") or 1) for doc in docs)
+    if total is None:
+        if not docs:
+            return True
+        total = max(int(doc.get("partes") or 1) for doc in docs)
+    por_parte = {int(doc.get("parte") or 1): doc for doc in docs}
     publicadas = {
-        int(doc.get("parte") or 1)
-        for doc in docs
-        if doc.get("estado") == "publicado"
-        and doc.get("recibo")
-        and doc.get("alcance") == "externo"
+        indice
+        for indice in range(1, total + 1)
+        if _publicado_externo(
+            por_parte.get(indice)
+            or (archivado(_id_resumen(firma, indice, episodio)) if archivado else None)
+        )
     }
     return bool(set(range(1, total + 1)) - publicadas)
 
 
-def preparar(registro: Registro, ahora: float | None = None) -> list[tuple[dict, str]]:
+def preparar(
+    registro: Registro,
+    ahora: float | None = None,
+    existentes: dict[str, dict] | None = None,
+    archivado=None,
+) -> list[tuple[dict, str]]:
     momento = time.time() if ahora is None else float(ahora)
     base = Path(registro.base)
     canal, intervalo = config_envio(base)
     if not canal:
         return []
-    existentes = {str(doc.get("id") or ""): doc for doc in _avisos(base)}
+    if existentes is None:
+        existentes = {str(doc.get("id") or ""): doc for doc in _avisos(base)}
     pendientes = [
         doc
         for doc in existentes.values()
@@ -694,7 +724,10 @@ def preparar(registro: Registro, ahora: float | None = None) -> list[tuple[dict,
         or guardado.get("ultima_firma")
         or ""
     )
-    ultimo_episodio = int((ultimo_publicado or {}).get("episodio") or 0)
+    ultimo_episodio = max(
+        int((ultimo_publicado or {}).get("episodio") or 0),
+        int(guardado.get("ultimo_episodio") or 0),
+    )
     pend_actual = [
         doc for doc in pendientes if str(doc.get("firma") or "") == actual.firma
     ]
@@ -720,8 +753,27 @@ def preparar(registro: Registro, ahora: float | None = None) -> list[tuple[dict,
                 for doc in mismo_episodio
                 if str(doc.get("cuerpo") or "")
             ]
-        if not _faltan_partes(existentes, actual.firma, ultimo_episodio):
-            cerrar(registro, momento, actual.firma, ultimo_episodio)
+        if (
+            str(guardado.get("ultima_firma") or "") == actual.firma
+            and guardado.get("ultimo_envio")
+            and int(guardado.get("ultimo_episodio") or 0) == ultimo_episodio
+        ):
+            return []
+        partes_actuales = partir(actual.cuerpo)
+        if not _faltan_partes(
+            existentes,
+            actual.firma,
+            ultimo_episodio,
+            total=len(partes_actuales),
+            archivado=archivado,
+        ):
+            cerrar(
+                registro,
+                momento,
+                actual.firma,
+                ultimo_episodio,
+                existentes=existentes,
+            )
             return []
         episodio_actual = ultimo_episodio
     else:
@@ -760,12 +812,23 @@ def preparar(registro: Registro, ahora: float | None = None) -> list[tuple[dict,
     partes = partir(actual.cuerpo)
     salida: list[tuple[dict, str]] = []
     for indice, parte in enumerate(partes, 1):
-        ident = "av_" + hashlib.sha256(
-            f"resumen:{actual.firma}:{indice}:{episodio_actual}".encode()
-        ).hexdigest()[:16]
+        ident = _id_resumen(actual.firma, indice, episodio_actual)
         previo = existentes.get(ident)
         if previo is not None and previo.get("estado") == "publicado":
             continue
+        if (
+            previo is not None
+            and previo.get("_archivado")
+            and previo.get("estado") in ("publicado", "descartado")
+        ):
+            continue
+        if previo is None and archivado is not None:
+            anterior = archivado(ident)
+            if anterior is not None and anterior.get("estado") in (
+                "publicado",
+                "descartado",
+            ):
+                continue
         if previo is not None and previo.get("estado") not in ("descartado",):
             salida.append((previo, str(previo.get("cuerpo") or parte)))
             continue
@@ -785,12 +848,17 @@ def preparar(registro: Registro, ahora: float | None = None) -> list[tuple[dict,
             "cuerpo": parte,
         }
         _atomico(base / "avisos" / f"{ident}.json", aviso)
+        existentes[ident] = aviso
         salida.append((aviso, parte))
     return salida
 
 
 def cerrar(
-    registro: Registro, ahora: float, firma: str, episodio: int | None = None
+    registro: Registro,
+    ahora: float,
+    firma: str,
+    episodio: int | None = None,
+    existentes: dict[str, dict] | None = None,
 ) -> bool:
     if not firma:
         return False
@@ -805,9 +873,10 @@ def cerrar(
         )
     ):
         return True
+    candidatos = existentes.values() if existentes is not None else _avisos(base)
     avisos = [
         doc
-        for doc in _avisos(base)
+        for doc in candidatos
         if str(doc.get("firma") or "") == firma and doc.get("estado") != "descartado"
     ]
     if not avisos:
