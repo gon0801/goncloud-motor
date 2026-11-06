@@ -645,6 +645,30 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             )
             self.assertEqual(len(vuelta.gh.llamadas), 2)
 
+    def test_una_lectura_fallida_al_vencer_no_finaliza_sin_leer(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            ventana = 30 * 24 * 60 * 60
+            epoch = time.time()
+            hora = ahora_iso()
+            vuelta.gh.textos[e.pr_numero] = None
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch
+            )
+            vuelta.gh.falla = True
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+            )
+            vuelta.gh.falla = False
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F23"))
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ventana + 61 + 3600,
+            )
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F23" in p for p in e.preguntas), e.preguntas)
+
     def test_el_primer_medium_despues_de_una_ventana_vacia_llega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)

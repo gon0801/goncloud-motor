@@ -173,8 +173,9 @@ siguientes. Durante los primeros 7 días se relee cada minuto y después cada
 30 minutos; los errores también se espacian. Una lectura limpia, una pregunta
 ya emitida o una ventana vacía no cierran el SHA. La ventana total es de 30
 días: al vencer se hace una última lectura y se deja de consultar ese SHA para
-no hacerlo de por vida. Los bloqueantes de una lectura anterior no impiden que
-el SHA omitido avance.
+no hacerlo de por vida. Si esa última lectura falla, no se da por final sin
+leer: se reintenta y, tras tres fallos seguidos, sí se deja. Los bloqueantes de
+una lectura anterior no impiden que el SHA omitido avance.
 
 Un ajuste del propietario es la respuesta a una decisión tardía: consume la
 pregunta conservada y el cierre reconoce la misma clave para no volver a

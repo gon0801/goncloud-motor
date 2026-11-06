@@ -107,6 +107,10 @@ _REINTENTO_FORZADO_S = 15
 _SONDEO_DEEPSEEK_LENTO_S = 7 * 24 * 60 * 60
 _SONDEO_DEEPSEEK_CERRADO_S = 30 * 24 * 60 * 60
 _RELECTURA_DEEPSEEK_CERRADO_S = 30 * 60
+# Si la última lectura al vencer falla, no se da el SHA por final sin leerlo:
+# se reintenta unas veces. Tras varios fallos seguidos sí se finaliza, para no
+# sondear GitHub de por vida.
+_REINTENTOS_LECTURA_FINAL = 3
 _TOPE_LOG_JOB = 80
 _LIMITE_CUERPO_PR = 65_536
 _NOTA_CUERPO_RECORTADO = (
@@ -5016,12 +5020,13 @@ def _marca_deepseek_cerrado(directorio: Path) -> dict:
             (directorio / "deepseek_cerrado.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
-        return {"shas": {}, "inicios": {}, "finales": []}
+        return {"shas": {}, "inicios": {}, "finales": [], "fallos": {}}
     if not isinstance(marca, dict):
-        return {"shas": {}, "inicios": {}, "finales": []}
+        return {"shas": {}, "inicios": {}, "finales": [], "fallos": {}}
     shas = _epochs_de_marca(marca.get("shas"))
     inicios = _epochs_de_marca(marca.get("inicios"))
     finales = [str(x) for x in (marca.get("finales") or []) if str(x)]
+    fallos = _epochs_de_marca(marca.get("fallos"))
     # Formato anterior, de una sola fase: se conserva al actualizar.
     sha = str(marca.get("sha") or "")
     try:
@@ -5031,7 +5036,12 @@ def _marca_deepseek_cerrado(directorio: Path) -> dict:
     if sha and epoch:
         shas.setdefault(sha, epoch)
         inicios.setdefault(sha, epoch)
-    return {"shas": shas, "inicios": inicios, "finales": finales}
+    return {
+        "shas": shas,
+        "inicios": inicios,
+        "finales": finales,
+        "fallos": fallos,
+    }
 
 
 def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
@@ -5043,6 +5053,7 @@ def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
                     "shas": marca.get("shas") or {},
                     "inicios": marca.get("inicios") or {},
                     "finales": sorted(set(marca.get("finales") or [])),
+                    "fallos": marca.get("fallos") or {},
                 },
                 sort_keys=True,
             ),
@@ -5091,6 +5102,7 @@ def _revisar_deepseek_del_cerrado(
     leidas = marca["shas"]
     inicios = marca["inicios"]
     finales = set(marca["finales"])
+    fallos = marca["fallos"]
     cambio = False
     for fase in fases:
         sha = fase.pr_sha
@@ -5108,7 +5120,7 @@ def _revisar_deepseek_del_cerrado(
             if lento
             else _RELECTURA_DEEPSEEK_S
         )
-        if not limite and 0 <= desde < espaciado:
+        if 0 <= desde < espaciado:
             continue
         try:
             crudos = gh.comentarios_deepseek(
@@ -5116,13 +5128,17 @@ def _revisar_deepseek_del_cerrado(
             )
         except Exception:
             # El error también se espacia: la marca de la última tentativa
-            # vale para la siguiente lectura.
+            # vale para la siguiente lectura. Al vencer no se finaliza sin
+            # leer: se reintenta; tras varios fallos seguidos sí se finaliza.
             leidas[sha] = epoch
             if limite:
-                finales.add(sha)
+                fallos[sha] = fallos.get(sha, 0) + 1
+                if fallos[sha] >= _REINTENTOS_LECTURA_FINAL:
+                    finales.add(sha)
             cambio = True
             continue
         leidas[sha] = epoch
+        fallos.pop(sha, None)
         cambio = True
         comentarios = _deepseek_con_contenido(crudos, sha)
         if not comentarios:
@@ -5171,13 +5187,23 @@ def _revisar_deepseek_del_cerrado(
             finales.add(sha)
         _marcar_deepseek_cerrado(
             directorio,
-            {"shas": leidas, "inicios": inicios, "finales": finales},
+            {
+                "shas": leidas,
+                "inicios": inicios,
+                "finales": finales,
+                "fallos": fallos,
+            },
         )
         return enc
     if cambio:
         _marcar_deepseek_cerrado(
             directorio,
-            {"shas": leidas, "inicios": inicios, "finales": finales},
+            {
+                "shas": leidas,
+                "inicios": inicios,
+                "finales": finales,
+                "fallos": fallos,
+            },
         )
     return enc
 
