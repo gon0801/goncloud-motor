@@ -553,6 +553,9 @@ class Encargo:
     # Notas que acompañan al cuerpo del PR (disputas, preguntas contestadas,
     # herramientas caídas, tiempos agotados).
     notas_pr: tuple[str, ...] = ()
+    # Hallazgos externos que una restricción expresa o el revisor dejaron fuera
+    # de alcance: (id, título, razón). No bloquean; se escriben en el PR.
+    fuera_de_alcance: tuple[tuple[str, str, str], ...] = ()
     # Las causas pendientes del entorno o del instrumento. Mientras haya una,
     # ningún proceso nuevo: cada una se levanta con su propia comprobación.
     impedimento: str = ""
@@ -1718,6 +1721,18 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         if texto and texto not in e.notas_pr:
             return replace(e, notas_pr=e.notas_pr + (texto,), hora=hora or e.hora)
         return e
+    if kind == "hallazgo_fuera_de_alcance":
+        hid = str(d.get("id") or "").strip()
+        titulo = str(d.get("titulo") or "").strip()
+        razon = " ".join(str(d.get("razon") or "").split())
+        if hid and razon:
+            actuales = tuple(x for x in e.fuera_de_alcance if x[0] != hid)
+            return replace(
+                e,
+                fuera_de_alcance=actuales + ((hid, titulo, razon),),
+                hora=hora or e.hora,
+            )
+        return e
     if kind == "pendiente_entrega":
         texto = str(d.get("texto") or "").strip()
         if texto and texto not in e.pendientes_entrega:
@@ -1996,6 +2011,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         "ci_pr_sondeo",
         "respuesta_revisor_pedida",
         "autoridad_cerrada",
+        "disputa",
     ):
         # Eventos sin efecto sobre el estado: los retirados de una versión
         # anterior, la marca de que una pregunta vencida se pasó al revisor y
@@ -3463,6 +3479,10 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             "veces": e.relevos,
         },
         "pendientes_entrega": list(e.pendientes_entrega),
+        "fuera_de_alcance": [
+            {"id": hid, "titulo": titulo, "razon": razon}
+            for hid, titulo, razon in e.fuera_de_alcance
+        ],
         "herramientas_no_disponibles": list(e.herramientas_no_disponibles),
         "notas_pr": list(e.notas_pr),
         "siguiente": e.siguiente,
@@ -3838,6 +3858,23 @@ def prompt_revisor(e: Encargo, alcance: AlcanceRevision) -> str:
         "Elige pruebas y revisiones que aporten evidencia al comportamiento y al riesgo del "
         "cambio. Conserva la evidencia válida y amplía la revisión cuando exista un motivo."
     )
+    externos = bloqueantes_abiertos(e, "deepseek")
+    if externos:
+        lineas.append(
+            "Hallazgos externos abiertos de DeepSeek. Los decide esta revisión, no el "
+            "responsable:\n"
+            + "\n".join(
+                f"{h.id} [{h.criterio}] {h.titulo} (ancla: {h.ancla})\n"
+                f"  reproduccion: {h.reproduccion}"
+                for h in externos
+            )
+            + "\nSi el hallazgo está fuera del alcance del pedido o de sus restricciones, "
+            "inclúyelo en `fuera_de_alcance` como "
+            '{"hallazgo": "<id>", "razon": "<por qué>"}; no bloquea y la razón queda '
+            "en el PR. Si la disputa con evidencia es correcta, inclúyelo en `resueltos` "
+            "y explica en `evidencia` por qué. Si no lo descartas, déjalo abierto y "
+            "explica por qué; volverá al responsable para corregirlo."
+        )
     return "\n\n".join(lineas)
 
 

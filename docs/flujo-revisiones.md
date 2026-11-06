@@ -147,9 +147,17 @@ Ninguna corrección se integra sin que Opus haya visto ese tramo final.
 
 Si el responsable sostiene con evidencia que un bloqueante de DeepSeek no
 aplica, lo deja en `.interno/disputa.json`
-(`{"hallazgo": "<id>", "evidencia": "<por qué no aplica>"}`). El motor no lo
-descarta: pasa a `necesita_usuario` con el hallazgo y la evidencia en palabras
-simples. Solo el propietario autoriza descartarlo.
+(`{"hallazgo": "<id>", "evidencia": "<por qué no aplica>"}`). La disputa no
+cuenta como vuelta sin progreso: pasa al revisor independiente, que la decide
+con esa evidencia. Si la acepta, el hallazgo se descarta y la razón queda en el
+PR; si la rechaza, vuelve al responsable como cualquier hallazgo.
+
+Un hallazgo externo que el revisor declara fuera de alcance, o que señala
+archivos que una restricción expresa del encargo deja fuera, no reabre la
+revisión ni bloquea. Queda en el cuerpo del PR, en la sección «Hallazgos fuera
+de alcance», con su id y la razón. Un Critical, High o Medium dentro del
+alcance sigue bloqueando hasta corregirse o hasta que el revisor lo descarte
+con evidencia.
 
 ## Corregir un encargo en curso
 
@@ -234,9 +242,11 @@ sin inspección faltante), al implementador que cambia archivos con el mismo
 bloqueante abierto y a DeepSeek que mantiene el mismo bloqueante tras
 republicar el PR. La primera vuelta sin
 avance no repite: el responsable diagnostica por qué la corrección no lo
-resolvió. La segunda seguida deja el encargo en `necesita_usuario` con el
-diagnóstico concreto (qué bloqueante sigue abierto y qué se intentó), el
-trabajo intacto y sin lanzar más agentes. Cerrar un bloqueante o una
+resolvió. La segunda seguida releva el mismo rol a otro modelo autorizado; si
+el relevo tampoco avanza, el encargo entrega el PR con los pendientes abiertos
+y termina. Si ya no queda otro modelo autorizado para el rol, hace lo mismo:
+entrega con los pendientes escritos en el cuerpo o, si todavía no hay producto,
+termina con el motivo, sin pedir intervención. Cerrar un bloqueante o una
 aprobación sin nada abierto reinicia la cuenta, también al pasar a la fase
 siguiente. Nunca se declara éxito ni se vuelve a crear el encargo.
 

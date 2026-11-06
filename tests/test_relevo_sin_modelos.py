@@ -77,32 +77,36 @@ class RelevoSinModelos(unittest.TestCase):
             self.assertEqual(cli._supervisor(self.r.reg, self.args), 0)
         return self.r.fold()
 
-    def test_un_solo_responsable_glm_agotado_pide_intervencion_sin_entregar(self):
-        self.relevar()
-
+    def barrer_hasta_terminar(self):
         for _ in range(4):
             enc = self.barrer()
-            self.assertEqual(enc.estado, "necesita_usuario")
-            self.assertIn("no queda otro modelo autorizado", enc.motivo)
-            self.assertIn("responsable", enc.motivo)
-            self.assertTrue(enc.preguntas)
-            self.assertEqual(enc.pendientes_entrega, ())
-            self.assertEqual(enc.pr_numero, 0)
-        self.assertFalse(any(
-            ev["kind"] in ("cierre_forzado", "entrega_externa")
-            for ev in self.r.reg.eventos(self.r.enc)
-        ))
-        github = self.raiz / "fake" / "github.json"
-        self.assertEqual(json.loads(github.read_text())["prs"] if github.exists() else {}, {})
+            if enc.estado == "terminado":
+                return enc
+        return enc
 
-    def test_el_revisor_sin_otro_modelo_tambien_pide_intervencion(self):
+    def test_un_solo_responsable_glm_agotado_termina_con_el_motivo_sin_preguntar(self):
+        self.relevar()
+
+        enc = self.barrer_hasta_terminar()
+
+        self.assertEqual(enc.estado, "terminado")
+        self.assertTrue(enc.pendientes_entrega)
+        self.assertIn("relevo", " ".join(enc.pendientes_entrega).lower())
+        self.assertEqual(enc.preguntas, ())
+        self.assertTrue(any(
+            ev["kind"] == "cierre_forzado" for ev in self.r.reg.eventos(self.r.enc)
+        ))
+        self.assertIn("no hay producto", enc.evidencia[-1].lower())
+
+    def test_el_revisor_sin_otro_modelo_tambien_termina_con_pendientes(self):
         self.relevar("revisor")
 
-        enc = self.barrer()
+        enc = self.barrer_hasta_terminar()
 
-        self.assertEqual(enc.estado, "necesita_usuario")
-        self.assertIn("revisor", enc.motivo)
-        self.assertEqual(enc.pendientes_entrega, ())
+        self.assertEqual(enc.estado, "terminado")
+        self.assertTrue(enc.pendientes_entrega)
+        self.assertIn("revisor", " ".join(enc.pendientes_entrega).lower())
+        self.assertEqual(enc.preguntas, ())
 
     def test_un_modelo_de_relevo_con_cuota_temporal_sigue_en_espera(self):
         self.relevar()

@@ -20,6 +20,7 @@ from .ciclo import (
     corregir,
     marcar_espera,
     marcar_pregunta,
+    marcar_relevo_agotado,
     ordenar,
     parada_local,
     recibir,
@@ -412,13 +413,7 @@ def _supervisor(reg: Registro, args) -> int:
             identidad_modelo(m) in {identidad_modelo(x) for x in excluir}
             for modelos in autorizados.values() for m in modelos if m
         ):
-            marcar_pregunta(
-                reg, enc.id,
-                f"no queda otro modelo autorizado para el rol {rol} tras el relevo; "
-                "hace falta autorizar otro modelo o ajustar el encargo para continuar",
-                True, hora,
-                ukey=f"relevo-agotado:{enc.id}:{enc.fase_activa}:{rol}:{enc.generacion}",
-            )
+            marcar_relevo_agotado(reg, enc, rol, hora)
             return None
         if rol == "revisor" and disponibles and all(
             identidad_modelo(m) in {identidad_modelo(x) for x in excluir}
