@@ -100,11 +100,6 @@ _QUIETUD_VUELTAS = 3
 _RELECTURA_DEEPSEEK_S = 60
 _AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
-# Un encargo cerrado no puede sondear DeepSeek para siempre. Se le da la misma
-# ventana que al CI de un PR (90 min) para que llegue una revisión tardía; al
-# vencer se deja de consultar ese SHA. Una revisión real o un sticky que ya
-# declara el timeout cierran el sondeo antes.
-_SONDEO_DEEPSEEK_CERRADO_S = 90 * 60
 _TOPE_LOG_JOB = 80
 _LIMITE_CUERPO_PR = 65_536
 _NOTA_CUERPO_RECORTADO = (
@@ -4996,55 +4991,40 @@ def _releer_deepseek(
     return registro.fold(enc.id)
 
 
-def _epochs_de_marca(valor) -> dict[str, float]:
-    if not isinstance(valor, dict):
-        return {}
-    salida = {}
-    for sha, epoch in valor.items():
-        try:
-            salida[str(sha)] = float(epoch)
-        except (TypeError, ValueError):
-            continue
-    return salida
-
-
-def _marca_deepseek_cerrado(directorio: Path) -> dict:
+def _marca_deepseek_cerrado(directorio: Path) -> dict[str, float]:
     try:
         marca = json.loads(
             (directorio / "deepseek_cerrado.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
-        return {"shas": {}, "inicios": {}, "finales": []}
+        return {}
     if not isinstance(marca, dict):
-        return {"shas": {}, "inicios": {}, "finales": []}
-    shas = _epochs_de_marca(marca.get("shas"))
-    inicios = _epochs_de_marca(marca.get("inicios"))
-    finales = [str(x) for x in (marca.get("finales") or []) if str(x)]
+        return {}
+    leidas = marca.get("shas")
+    if isinstance(leidas, dict):
+        salida = {}
+        for sha, epoch in leidas.items():
+            try:
+                salida[str(sha)] = float(epoch)
+            except (TypeError, ValueError):
+                continue
+        return salida
     # Formato anterior, de una sola fase: se conserva al actualizar.
     sha = str(marca.get("sha") or "")
     try:
         epoch = float(marca.get("epoch") or 0)
     except (TypeError, ValueError):
         epoch = 0.0
-    if sha and epoch:
-        shas.setdefault(sha, epoch)
-        inicios.setdefault(sha, epoch)
-    return {"shas": shas, "inicios": inicios, "finales": finales}
+    return {sha: epoch} if sha and epoch else {}
 
 
-def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
+def _marcar_deepseek_cerrado(
+    directorio: Path, leidas: dict[str, float]
+) -> None:
     try:
         directorio.mkdir(parents=True, exist_ok=True)
         (directorio / "deepseek_cerrado.json").write_text(
-            json.dumps(
-                {
-                    "shas": marca.get("shas") or {},
-                    "inicios": marca.get("inicios") or {},
-                    "finales": sorted(set(marca.get("finales") or [])),
-                },
-                sort_keys=True,
-            ),
-            encoding="utf-8",
+            json.dumps({"shas": leidas}, sort_keys=True), encoding="utf-8"
         )
     except OSError:
         pass
@@ -5063,10 +5043,10 @@ def _revisar_deepseek_del_cerrado(
     se pregunta al propietario (abrir otro encargo o seguir sin corregirlo).
     Una ausencia declarada por el sticky no cuenta como hallazgo.
 
-    El sondeo termina: cuando la revisión real del SHA ya se leyó, cuando el
-    sticky declara que no habrá reintento, o al vencer la ventana desde la
-    primera lectura. Un error de GitHub se espacia como una lectura fallida y
-    no se reintenta en cada barrido.
+    El sondeo no se cierra en una lectura limpia: el mismo comentario puede
+    cambiar después y traer un hallazgo. Cada SHA se vuelve a leer tras el
+    espaciado de `_RELECTURA_DEEPSEEK_S`, sin vencimiento por tiempo. Un error
+    de GitHub también actualiza la marca para no reintentar en cada barrido.
     """
     if (
         gh is None
@@ -5083,18 +5063,10 @@ def _revisar_deepseek_del_cerrado(
     if not fases:
         return enc
     directorio = _directorio(registro.base, enc.id)
-    marca = _marca_deepseek_cerrado(directorio)
-    leidas = marca["shas"]
-    inicios = marca["inicios"]
-    finales = set(marca["finales"])
+    leidas = _marca_deepseek_cerrado(directorio)
     cambio = False
     for fase in fases:
         sha = fase.pr_sha
-        if sha in finales:
-            continue
-        if sha not in inicios:
-            inicios[sha] = epoch
-            cambio = True
         desde = epoch - leidas.get(sha, 0.0)
         if 0 <= desde < _RELECTURA_DEEPSEEK_S:
             continue
@@ -5104,27 +5076,17 @@ def _revisar_deepseek_del_cerrado(
             )
         except Exception:
             # El error también se espacia: la marca de la última tentativa
-            # vale para la siguiente lectura. Si la ventana ya venció, el
-            # sondeo termina aunque todas las lecturas hayan fallado.
+            # vale para la siguiente lectura.
             leidas[sha] = epoch
-            if epoch - inicios[sha] >= _SONDEO_DEEPSEEK_CERRADO_S:
-                finales.add(sha)
             cambio = True
             continue
         leidas[sha] = epoch
         cambio = True
         comentarios = _deepseek_con_contenido(crudos, sha)
-        if crudos and not comentarios:
-            # El sticky declara timeout sin reintento: no habrá revisión.
-            finales.add(sha)
-            continue
         if not comentarios:
-            if epoch - inicios[sha] >= _SONDEO_DEEPSEEK_CERRADO_S:
-                finales.add(sha)
             continue
         huella = _huella_comentarios(comentarios)
         if huella == fase.deepseek_huella:
-            finales.add(sha)
             continue
         abiertos = [
             h for h in hallazgos_deepseek(comentarios, sha)
@@ -5134,7 +5096,6 @@ def _revisar_deepseek_del_cerrado(
             )
         ]
         if not abiertos:
-            finales.add(sha)
             continue
         clave = _clave_decision_tardia(
             registro, enc, fase.id, sha, huella
@@ -5153,17 +5114,10 @@ def _revisar_deepseek_del_cerrado(
                 ukey=clave,
             )
             enc = registro.fold(enc.id) or enc
-        finales.add(sha)
-        _marcar_deepseek_cerrado(
-            directorio,
-            {"shas": leidas, "inicios": inicios, "finales": finales},
-        )
+        _marcar_deepseek_cerrado(directorio, leidas)
         return enc
     if cambio:
-        _marcar_deepseek_cerrado(
-            directorio,
-            {"shas": leidas, "inicios": inicios, "finales": finales},
-        )
+        _marcar_deepseek_cerrado(directorio, leidas)
     return enc
 
 

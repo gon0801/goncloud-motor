@@ -166,10 +166,11 @@ integra o despliega según el nivel autorizado y pasa a la fase siguiente. No
 fuerza el cierre del encargo. Si después llega un Critical, High o Medium
 dentro del alcance para un SHA ya integrado, se lee como hallazgo tardío y no
 se pierde, aunque el encargo ya haya terminado. El cierre mira los PR de todas
-las fases con entrega externa, no solo el de la fase activa. Ese sondeo se
-espacia ante errores y termina: al leer la revisión real del SHA, cuando el
-sticky declara que no habrá reintento o al vencer su ventana de 90 minutos.
-Los bloqueantes de una lectura anterior no impiden que el SHA omitido avance.
+las fases con entrega externa, no solo el de la fase activa, y sigue
+releyendo el mismo SHA: una revisión limpia puede cambiar después y traer un
+hallazgo, así que el sondeo no se cierra por una lectura limpia ni por tiempo.
+Se espacia ante errores para no golpear GitHub en cada barrido. Los bloqueantes
+de una lectura anterior no impiden que el SHA omitido avance.
 
 Un ajuste del propietario es la respuesta a una decisión tardía: consume la
 pregunta conservada y el cierre reconoce la misma clave para no volver a

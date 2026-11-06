@@ -564,7 +564,7 @@ class TopeConBloqueantesAnteriores(unittest.TestCase):
             self.assertFalse(vista(e)["fases"][0]["deepseek"]["leida"])
 
 
-class SonderoDeCerradosTermina(unittest.TestCase):
+class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
     def _terminado(self, tmp: str):
         vuelta, r = _entrega_pr(
             self, tmp, "ds-sondeo-cerrado", _GhCuenta, nivel="integrado"
@@ -577,45 +577,47 @@ class SonderoDeCerradosTermina(unittest.TestCase):
         vuelta.gh.llamadas.clear()
         return vuelta, r, e
 
-    def test_una_revision_real_o_el_vencimiento_terminan_el_sondeo(self):
-        with (
-            tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp,
-            tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp2,
-        ):
+    def test_un_medium_posterior_a_una_lectura_limpia_vuelve_al_encargo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
-            vuelta.gh.textos[e.pr_numero] = None
+            vuelta.gh.textos[e.pr_numero] = "DeepSeek: APPROVED"
             epoch = time.time()
             hora = ahora_iso()
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch
+            )
+            self.assertEqual(r.fold().estado, "terminado")
+            self.assertEqual(r.fold().preguntas, ())
 
-            for _ in range(3):
-                ciclo._revisar_deepseek_del_cerrado(r.reg, r.fold(), vuelta.gh, hora, epoch)
-                epoch += 61
-            llamadas_antes = len(vuelta.gh.llamadas)
-            self.assertLessEqual(llamadas_antes, 3)
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F15"))
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ciclo._SONDEO_DEEPSEEK_CERRADO_S + 61,
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 61
             )
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ciclo._SONDEO_DEEPSEEK_CERRADO_S + 3600,
-            )
-            self.assertLessEqual(len(vuelta.gh.llamadas), llamadas_antes + 1)
 
-            vuelta2, r2, e2 = self._terminado(tmp2)
-            vuelta2.gh.textos[e2.pr_numero] = _comentario(_medio("F12"))
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F15" in p for p in e.preguntas), e.preguntas)
+
+    def test_un_medium_posterior_a_la_ventana_de_90_min_sigue_llegando(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = "DeepSeek: APPROVED"
+            epoch = time.time()
+            hora = ahora_iso()
             ciclo._revisar_deepseek_del_cerrado(
-                r2.reg, r2.fold(), vuelta2.gh, ahora_iso(), time.time()
+                r.reg, r.fold(), vuelta.gh, hora, epoch
             )
-            llamadas = len(vuelta2.gh.llamadas)
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F16"))
             ciclo._revisar_deepseek_del_cerrado(
-                r2.reg, r2.fold(), vuelta2.gh, ahora_iso(), time.time() + 3600
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 91 * 60
             )
-            self.assertEqual(len(vuelta2.gh.llamadas), llamadas)
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F16" in p for p in e.preguntas), e.preguntas)
 
     def test_un_error_de_lectura_se_espacia(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r, _e = self._terminado(tmp)
+            vuelta, r, e = self._terminado(tmp)
             vuelta.gh.falla = True
             epoch = time.time()
             hora = ahora_iso()
@@ -629,18 +631,16 @@ class SonderoDeCerradosTermina(unittest.TestCase):
                 r.reg, r.fold(), vuelta.gh, hora, epoch + 61
             )
             self.assertEqual(len(vuelta.gh.llamadas), 2)
-            # Aunque todas las lecturas fallen, la ventana vence y el sondeo
-            # termina: no se consulta GitHub para siempre.
+            # El sondeo sigue vivo para ver actualizaciones tardías, pero el
+            # error no se reintenta en cada barrido.
+            vuelta.gh.falla = False
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F17"))
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ciclo._SONDEO_DEEPSEEK_CERRADO_S + 120,
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 91 * 60
             )
-            self.assertEqual(len(vuelta.gh.llamadas), 3)
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ciclo._SONDEO_DEEPSEEK_CERRADO_S + 3600,
-            )
-            self.assertEqual(len(vuelta.gh.llamadas), 3)
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F17" in p for p in e.preguntas), e.preguntas)
 
 
 class FailOpenDelUltimoCierre(unittest.TestCase):
