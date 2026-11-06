@@ -78,8 +78,10 @@ class Banco:
         ]
 
     def aviso_guardado(self, ident: str) -> dict:
+        activo = self.base / "avisos" / f"{ident}.json"
+        archivo = self.base / "avisos" / "archivo" / f"{ident}.json"
         return json.loads(
-            (self.base / "avisos" / f"{ident}.json").read_text(encoding="utf-8")
+            (activo if activo.exists() else archivo).read_text(encoding="utf-8")
         )
 
     def escribir_aviso(self, ident: str, guardado: dict) -> None:
@@ -146,6 +148,18 @@ class Base(unittest.TestCase):
             clave,
         )
         self.b.terminar(ident, pasos)
+        return ident
+
+    def encargo_activo(self, clave: str) -> str:
+        ident = self.b.encargo(f"# {clave}\n\nTrabaja el pedido.", clave)
+        self.b.reg.anotar(
+            ident,
+            {
+                "kind": "fases",
+                "data": {"fases": [{"id": "A", "resultado": "fase"}], "hora": HORA},
+            },
+            f"fase-{clave}",
+        )
         return ident
 
 
@@ -308,7 +322,7 @@ class ElCierreEnLlano(Base):
 
 class UnAvisoViejoNoSaleDeGolpe(Base):
     def test_un_aviso_previo_al_despliegue_de_hace_7_horas_se_descarta(self):
-        self.encargo_terminado("legado-viejo")
+        self.encargo_activo("legado-viejo")
         self.b.caer()
         primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
         aviso_id = primera[0]["id"]
@@ -328,7 +342,7 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
         )
 
     def test_un_aviso_previo_al_despliegue_de_hace_1_hora_si_se_envia(self):
-        self.encargo_terminado("legado-reciente")
+        self.encargo_activo("legado-reciente")
         self.b.caer()
         primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
         aviso_id = primera[0]["id"]
@@ -343,7 +357,7 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
     def test_los_avisos_de_ayer_no_salen_cuando_el_canal_vuelve(self):
         # Telegram caído un día: la versión anterior reintentó cada hora y el
         # último fallo es reciente; la edad se cuenta desde el primer fallo.
-        self.encargo_terminado("de-ayer")
+        self.encargo_activo("de-ayer")
         self.b.caer()
         primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
         aviso_id = primera[0]["id"]
@@ -361,7 +375,7 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
         )
 
     def test_un_aviso_previo_al_despliegue_envejece_desde_su_fallo_original(self):
-        self.encargo_terminado("legado-5h")
+        self.encargo_activo("legado-5h")
         self.b.caer()
         primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
         aviso_id = primera[0]["id"]
@@ -386,7 +400,7 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
         )
 
     def test_un_aviso_pendiente_previo_al_despliegue_no_se_envia(self):
-        self.encargo_terminado("pendiente-viejo")
+        self.encargo_activo("pendiente-viejo")
         directores.drenar(self.b.reg, ahora=T0, cortar="antes")
         aviso_id = directores.drenar(self.b.reg, ahora=T0, cortar="antes")["avisos"][0][
             "id"
@@ -435,7 +449,7 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
         self.assertEqual(len(self.b.cuerpos()), 1, "y el cierre no se repite")
 
     def test_un_aviso_incierto_de_hace_7_horas_se_descarta_y_no_se_envia(self):
-        self.encargo_terminado("viejo-uno")
+        self.encargo_activo("viejo-uno")
         self.b.caer()
         primera = directores.drenar(self.b.reg, ahora=T0)["avisos"]
         self.assertFalse(primera[0]["entregado"])
@@ -454,7 +468,7 @@ class UnAvisoViejoNoSaleDeGolpe(Base):
         self.assertEqual(len(self.b.cuerpos()), 1, "y un descartado no se recupera")
 
     def test_un_aviso_incierto_de_hace_1_hora_si_se_envia(self):
-        self.encargo_terminado("reciente-uno")
+        self.encargo_activo("reciente-uno")
         self.b.caer()
         directores.drenar(self.b.reg, ahora=T0)
         self.assertEqual(len(self.b.cuerpos()), 1)

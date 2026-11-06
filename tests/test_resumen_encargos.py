@@ -87,12 +87,12 @@ class Banco:
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
     def avisos(self) -> list[dict]:
-        carpeta = self.base / "avisos"
-        if not carpeta.is_dir():
-            return []
         return [
             json.loads(path.read_text(encoding="utf-8"))
+            for carpeta in (self.base / "avisos", self.base / "avisos" / "archivo")
+            if carpeta.is_dir()
             for path in sorted(carpeta.glob("*.json"))
+            if path.name != "resumenes.json"
         ]
 
 
@@ -567,7 +567,10 @@ class Envio(Base):
         self.assertEqual(len(self.b.resumenes()), 1)
         viejo = next(
             path
-            for path in (self.b.base / "avisos").glob("*.json")
+            for path in [
+                *(self.b.base / "avisos").glob("*.json"),
+                *(self.b.base / "avisos" / "archivo").glob("*.json"),
+            ]
             if json.loads(path.read_text(encoding="utf-8")).get("tipo") == "resumen"
         )
         doc = json.loads(viejo.read_text(encoding="utf-8"))
@@ -588,7 +591,9 @@ class Envio(Base):
         directores.drenar(self.b.reg, ahora=T0 + 60 * 60)
         self.assertEqual(len(self.b.resumenes()), 2)
         self.assertEqual(
-            json.loads((self.b.base / "avisos" / "av_viejo.json").read_text())["estado"],
+            json.loads(
+                (self.b.base / "avisos" / "archivo" / "av_viejo.json").read_text()
+            )["estado"],
             "descartado",
         )
 
