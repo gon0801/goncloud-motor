@@ -101,11 +101,11 @@ _RELECTURA_DEEPSEEK_S = 60
 _AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
 # El sondeo de un encargo cerrado no puede consultar GitHub de por vida. Se
-# observa una ventana total de 30 días: los primeros 7 cada minuto y después
-# cada 30 minutos, para no golpear GitHub de forma constante. Al vencer la
-# ventana se hace una última lectura y se deja de consultar ese SHA.
+# observa una ventana total de un año: los primeros 7 días cada minuto y
+# después cada 30 minutos, para no golpear GitHub de forma constante. Al vencer
+# la ventana se hace una última lectura y se deja de consultar ese SHA.
 _SONDEO_DEEPSEEK_LENTO_S = 7 * 24 * 60 * 60
-_SONDEO_DEEPSEEK_CERRADO_S = 30 * 24 * 60 * 60
+_SONDEO_DEEPSEEK_CERRADO_S = 365 * 24 * 60 * 60
 _RELECTURA_DEEPSEEK_CERRADO_S = 30 * 60
 # Si la última lectura al vencer falla, no se da el SHA por final sin leerlo:
 # se reintenta unas veces. Tras varios fallos seguidos sí se finaliza, para no
@@ -5079,7 +5079,7 @@ def _revisar_deepseek_del_cerrado(
     El sondeo no se cierra por una lectura limpia, por una pregunta ya emitida
     ni por una ventana vacía: una revisión puede llegar o cambiar después.
     Los primeros 7 días relee cada minuto; después cada 30 minutos. Al vencer
-    la ventana total de 30 días hace una última lectura y deja ese SHA, para
+    la ventana total de un año hace una última lectura y deja ese SHA, para
     no consultar GitHub de por vida. Un error de GitHub también actualiza la
     marca y espacia el siguiente intento.
     """

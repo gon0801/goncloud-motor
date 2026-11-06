@@ -171,8 +171,8 @@ releyendo el mismo SHA: una revisión limpia puede cambiar después y traer un
 hallazgo, y una pregunta ya emitida en una fase no detiene la lectura de las
 siguientes. Durante los primeros 7 días se relee cada minuto y después cada
 30 minutos; los errores también se espacian. Una lectura limpia, una pregunta
-ya emitida o una ventana vacía no cierran el SHA. La ventana total es de 30
-días: al vencer se hace una última lectura y se deja de consultar ese SHA para
+ya emitida o una ventana vacía no cierran el SHA. La ventana total es de un
+año: al vencer se hace una última lectura y se deja de consultar ese SHA para
 no hacerlo de por vida. Si esa última lectura falla, no se da por final sin
 leer: se reintenta y, tras tres fallos seguidos, sí se deja. Los bloqueantes de
 una lectura anterior no impiden que el SHA omitido avance.

@@ -625,13 +625,13 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             )
             self.assertEqual(len(vuelta.gh.llamadas), 3)
 
-    def test_el_sondeo_termina_a_los_30_dias(self):
+    def test_el_sondeo_termina_al_ano(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = None
             epoch = time.time()
             hora = ahora_iso()
-            ventana = 30 * 24 * 60 * 60
+            ventana = 365 * 24 * 60 * 60
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
@@ -648,7 +648,7 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
     def test_el_tope_de_reintentos_de_la_lectura_final(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
-            ventana = 30 * 24 * 60 * 60
+            ventana = 365 * 24 * 60 * 60
             paso = 30 * 60
             epoch = time.time()
             hora = ahora_iso()
@@ -674,7 +674,7 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
     def test_una_lectura_fallida_al_vencer_no_finaliza_sin_leer(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
-            ventana = 30 * 24 * 60 * 60
+            ventana = 365 * 24 * 60 * 60
             epoch = time.time()
             hora = ahora_iso()
             vuelta.gh.textos[e.pr_numero] = None
@@ -694,6 +694,28 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             e = r.fold()
             self.assertEqual(e.estado, "necesita_usuario")
             self.assertTrue(any("F23" in p for p in e.preguntas), e.preguntas)
+
+    def test_el_primer_medium_posterior_a_los_30_dias_llega(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = None
+            epoch = time.time()
+            hora = ahora_iso()
+            treinta = 30 * 24 * 60 * 60
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch
+            )
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + treinta + 61
+            )
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F24"))
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + treinta + 61 + 3600,
+            )
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F24" in p for p in e.preguntas), e.preguntas)
 
     def test_el_primer_medium_despues_de_una_ventana_vacia_llega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
