@@ -317,7 +317,8 @@ class Fase:
             "pr": {"numero": self.pr_numero, "sha": self.pr_sha},
             "deepseek": {
                 "sha": self.deepseek_sha,
-                "leida": bool(self.deepseek_sha),
+                "leida": bool(self.deepseek_sha)
+                and self.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION,
                 "error": self.deepseek_error,
             },
             "rama": self.rama,
@@ -635,6 +636,11 @@ class Encargo:
     def deepseek_sha(self) -> str:
         fase = self.fase_actual
         return fase.deepseek_sha if fase else ""
+
+    @property
+    def deepseek_huella(self) -> str:
+        fase = self.fase_actual
+        return fase.deepseek_huella if fase else ""
 
     @property
     def deepseek_error(self) -> str:
@@ -3135,12 +3141,15 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         # El motor entrega el PR con pendientes: el nivel pr queda alcanzado
         # aunque el revisor no haya concluido.
         candidato = "pr"
-    elif paso in ("deepseek_leido", "deepseek_sin_revision"):
+    elif paso == "deepseek_sin_revision":
+        # La fase sigue como si la revisión externa no tuviera hallazgos. Los
+        # bloqueantes que queden son de una lectura anterior y no frenan este
+        # SHA: el motor ya los cerró con la razón de la omisión.
+        candidato = "pr"
+    elif paso == "deepseek_leido":
         if not bloqueantes_abiertos(e, "deepseek"):
             candidato = "pr"
-        elif paso == "deepseek_leido" and d.get("huella") and (
-            fase.nivel_alcanzado == "pr"
-        ):
+        elif d.get("huella") and fase.nivel_alcanzado == "pr":
             # Una relectura que trae un bloqueante deja de dar la fase por
             # cumplida: sigue sin cerrar hasta que DeepSeek lo dé por resuelto.
             candidato = "pr_abierto"
@@ -3578,7 +3587,8 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             "pr": {"numero": e.pr_numero, "sha": e.pr_sha},
             "deepseek": {
                 "sha": e.deepseek_sha,
-                "leida": bool(e.deepseek_sha),
+                "leida": bool(e.deepseek_sha)
+                and e.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION,
                 "error": e.deepseek_error,
             },
         },

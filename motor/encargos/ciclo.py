@@ -100,6 +100,11 @@ _QUIETUD_VUELTAS = 3
 _RELECTURA_DEEPSEEK_S = 60
 _AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
+# Un encargo cerrado no puede sondear DeepSeek para siempre. Se le da la misma
+# ventana que al CI de un PR (90 min) para que llegue una revisión tardía; al
+# vencer se deja de consultar ese SHA. Una revisión real o un sticky que ya
+# declara el timeout cierran el sondeo antes.
+_SONDEO_DEEPSEEK_CERRADO_S = 90 * 60
 _TOPE_LOG_JOB = 80
 _LIMITE_CUERPO_PR = 65_536
 _NOTA_CUERPO_RECORTADO = (
@@ -1024,7 +1029,10 @@ def _barrer_encargos(
                         f"autoridad-cerrado:{enc.id}:{type(exc).__name__}",
                     )
                     enc = registro.fold(enc.id) or enc
-            if enc.estado == "terminado" and enc.pr_numero and not parada:
+            # La fase activa puede no tener PR (por ejemplo, cerró sin
+            # cambios) y una fase anterior sí. El sondeo de DeepSeek recorre
+            # las fases, así que no depende de `enc.pr_numero`.
+            if enc.estado == "terminado" and not parada:
                 enc = _revisar_deepseek_del_cerrado(
                     registro, enc, gh, hora, epoch
                 )
@@ -4243,6 +4251,58 @@ def _minutos_desde(hora_evento: str, hora: str) -> float:
     return (b - a).total_seconds() / 60.0
 
 
+def _resolver_bloqueantes_deepseek_omitido(
+    registro: Registro, enc: Encargo, sha: str, razon: str, hora: str
+) -> Encargo:
+    """Los bloqueantes de una lectura anterior no frenan el SHA que se omite.
+
+    Si DeepSeek no publicó nada para este SHA no hay hallazgos nuevos que
+    leer; los que quedaron abiertos son de una lectura de otro SHA y ya no
+    sostienen la fase. Se cierran con la razón de la omisión para que el nivel
+    avance, sin inventar una lectura aprobada.
+    """
+    if enc.deepseek_sha == sha:
+        # La lectura abierta es la del mismo SHA: esos bloqueantes son de
+        # DeepSeek y siguen bloqueando. Sólo se cierran los de un SHA anterior
+        # (o los que quedaron sin lectura asociada).
+        return enc
+    abiertos = bloqueantes_abiertos(enc, "deepseek")
+    if not abiertos:
+        return enc
+    ids = sorted(h.id for h in abiertos)
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "revision",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "revision_id": "rev_ds_omitida_" + sha[:12],
+                "version": enc.producto.firma if enc.producto else "",
+                "base_version": enc.deepseek_sha,
+                "alcance": "completa",
+                "veredicto": "aprobado",
+                "revisor": "deepseek",
+                "origen": "deepseek",
+                "lector_version": VERSION_LECTOR_DEEPSEEK,
+                "cubre": ids,
+                "hallazgos": [
+                    replace(
+                        h,
+                        estado="resuelto",
+                        cierre_evidencia=razon,
+                    ).como_dict()
+                    for h in abiertos
+                ],
+                "hora": hora,
+            },
+        },
+        f"revision-ds-omitida:{enc.id}:{enc.fase_activa}:{sha}:"
+        + ",".join(ids),
+    )
+    return registro.fold(enc.id) or enc
+
+
 def _omitir_deepseek(
     registro: Registro, enc: Encargo, numero: int, sha: str, texto: str, hora: str
 ) -> Encargo:
@@ -4250,7 +4310,8 @@ def _omitir_deepseek(
 
     La nota queda en el PR y la huella `sin-revision` libera el SHA para
     integrar o desplegar. Una relectura posterior con comentarios reales
-    sustituye la huella y trata el hallazgo como tardío.
+    sustituye la huella y trata el hallazgo como tardío. Los bloqueantes de
+    una lectura anterior no impiden avanzar la fase.
     """
     registro.anotar(
         enc.id,
@@ -4258,6 +4319,9 @@ def _omitir_deepseek(
         f"nota-deepseek:{enc.id}:{sha[:12]}",
     )
     enc = registro.fold(enc.id) or enc
+    enc = _resolver_bloqueantes_deepseek_omitido(
+        registro, enc, sha, texto, hora
+    )
     registro.anotar(
         enc.id,
         {
@@ -4649,6 +4713,21 @@ def _continuaciones(registro: Registro, encargo_id: str) -> int:
     )
 
 
+def _clave_decision_tardia(
+    registro: Registro, enc: Encargo, fase_id: str, sha: str, huella: str
+) -> str:
+    """La misma decisión tardía usa una sola clave venga del cierre que venga.
+
+    Si el barrido de cerrados pregunta y luego el ajuste del propietario
+    consume la decisión, la comprobación previa al siguiente cierre debe
+    reconocer la clave ya emitida y no volver a preguntar con otra.
+    """
+    return (
+        f"pregunta:{enc.id}:tardia:{fase_id}:{sha}:{huella}:"
+        f"r{_continuaciones(registro, enc.id)}"
+    )
+
+
 def _anotar_lectura_deepseek(
     registro: Registro, enc: Encargo, numero: int, sha: str,
     comentarios: list[dict], hora: str,
@@ -4917,40 +4996,55 @@ def _releer_deepseek(
     return registro.fold(enc.id)
 
 
-def _marca_deepseek_cerrado(directorio: Path) -> dict[str, float]:
+def _epochs_de_marca(valor) -> dict[str, float]:
+    if not isinstance(valor, dict):
+        return {}
+    salida = {}
+    for sha, epoch in valor.items():
+        try:
+            salida[str(sha)] = float(epoch)
+        except (TypeError, ValueError):
+            continue
+    return salida
+
+
+def _marca_deepseek_cerrado(directorio: Path) -> dict:
     try:
         marca = json.loads(
             (directorio / "deepseek_cerrado.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
-        return {}
+        return {"shas": {}, "inicios": {}, "finales": []}
     if not isinstance(marca, dict):
-        return {}
-    leidas = marca.get("shas")
-    if isinstance(leidas, dict):
-        salida = {}
-        for sha, epoch in leidas.items():
-            try:
-                salida[str(sha)] = float(epoch)
-            except (TypeError, ValueError):
-                continue
-        return salida
+        return {"shas": {}, "inicios": {}, "finales": []}
+    shas = _epochs_de_marca(marca.get("shas"))
+    inicios = _epochs_de_marca(marca.get("inicios"))
+    finales = [str(x) for x in (marca.get("finales") or []) if str(x)]
     # Formato anterior, de una sola fase: se conserva al actualizar.
     sha = str(marca.get("sha") or "")
     try:
         epoch = float(marca.get("epoch") or 0)
     except (TypeError, ValueError):
         epoch = 0.0
-    return {sha: epoch} if sha and epoch else {}
+    if sha and epoch:
+        shas.setdefault(sha, epoch)
+        inicios.setdefault(sha, epoch)
+    return {"shas": shas, "inicios": inicios, "finales": finales}
 
 
-def _marcar_deepseek_cerrado(
-    directorio: Path, leidas: dict[str, float]
-) -> None:
+def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
     try:
         directorio.mkdir(parents=True, exist_ok=True)
         (directorio / "deepseek_cerrado.json").write_text(
-            json.dumps({"shas": leidas}), encoding="utf-8"
+            json.dumps(
+                {
+                    "shas": marca.get("shas") or {},
+                    "inicios": marca.get("inicios") or {},
+                    "finales": sorted(set(marca.get("finales") or [])),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
         )
     except OSError:
         pass
@@ -4968,6 +5062,11 @@ def _revisar_deepseek_del_cerrado(
     encargo. Si trae un Critical, High o Medium dentro del alcance, el hallazgo
     se pregunta al propietario (abrir otro encargo o seguir sin corregirlo).
     Una ausencia declarada por el sticky no cuenta como hallazgo.
+
+    El sondeo termina: cuando la revisión real del SHA ya se leyó, cuando el
+    sticky declara que no habrá reintento, o al vencer la ventana desde la
+    primera lectura. Un error de GitHub se espacia como una lectura fallida y
+    no se reintenta en cada barrido.
     """
     if (
         gh is None
@@ -4984,28 +5083,45 @@ def _revisar_deepseek_del_cerrado(
     if not fases:
         return enc
     directorio = _directorio(registro.base, enc.id)
-    leidas = _marca_deepseek_cerrado(directorio)
-    cambio_marca = False
+    marca = _marca_deepseek_cerrado(directorio)
+    leidas = marca["shas"]
+    inicios = marca["inicios"]
+    finales = set(marca["finales"])
+    cambio = False
     for fase in fases:
         sha = fase.pr_sha
+        if sha in finales:
+            continue
+        if sha not in inicios:
+            inicios[sha] = epoch
+            cambio = True
         desde = epoch - leidas.get(sha, 0.0)
         if 0 <= desde < _RELECTURA_DEEPSEEK_S:
             continue
         try:
-            comentarios = _deepseek_con_contenido(
-                gh.comentarios_deepseek(
-                    enc.entrega.repo, fase.pr_numero, sha
-                ),
-                sha,
+            crudos = gh.comentarios_deepseek(
+                enc.entrega.repo, fase.pr_numero, sha
             )
         except Exception:
+            # El error también se espacia: la marca de la última tentativa
+            # vale para la siguiente lectura.
+            leidas[sha] = epoch
+            cambio = True
             continue
         leidas[sha] = epoch
-        cambio_marca = True
+        cambio = True
+        comentarios = _deepseek_con_contenido(crudos, sha)
+        if crudos and not comentarios:
+            # El sticky declara timeout sin reintento: no habrá revisión.
+            finales.add(sha)
+            continue
         if not comentarios:
+            if epoch - inicios[sha] >= _SONDEO_DEEPSEEK_CERRADO_S:
+                finales.add(sha)
             continue
         huella = _huella_comentarios(comentarios)
         if huella == fase.deepseek_huella:
+            finales.add(sha)
             continue
         abiertos = [
             h for h in hallazgos_deepseek(comentarios, sha)
@@ -5015,31 +5131,36 @@ def _revisar_deepseek_del_cerrado(
             )
         ]
         if not abiertos:
+            finales.add(sha)
             continue
-        clave = (
-            f"pregunta:{enc.id}:cerrado:{fase.id}:{sha}:{huella}:"
-            f"r{_continuaciones(registro, enc.id)}"
+        clave = _clave_decision_tardia(
+            registro, enc, fase.id, sha, huella
         )
-        if registro.por_ukey(clave) is not None:
-            continue
-        marcar_pregunta(
-            registro,
-            enc.id,
-            f"DeepSeek publicó después del cierre un hallazgo en el PR "
-            f"#{fase.pr_numero}, ya cerrado, de la fase {fase.id}: "
-            + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
-            + ". Decide si abrir otro encargo para corregirlo o seguir sin "
-            "corregirlo.",
-            True,
-            hora,
-            ukey=clave,
+        if registro.por_ukey(clave) is None:
+            marcar_pregunta(
+                registro,
+                enc.id,
+                f"DeepSeek publicó después del cierre un hallazgo en el PR "
+                f"#{fase.pr_numero}, ya cerrado, de la fase {fase.id}: "
+                + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
+                + ". Decide si abrir otro encargo para corregirlo o seguir sin "
+                "corregirlo.",
+                True,
+                hora,
+                ukey=clave,
+            )
+            enc = registro.fold(enc.id) or enc
+        finales.add(sha)
+        _marcar_deepseek_cerrado(
+            directorio,
+            {"shas": leidas, "inicios": inicios, "finales": finales},
         )
-        enc = registro.fold(enc.id) or enc
-        if cambio_marca:
-            _marcar_deepseek_cerrado(directorio, leidas)
         return enc
-    if cambio_marca:
-        _marcar_deepseek_cerrado(directorio, leidas)
+    if cambio:
+        _marcar_deepseek_cerrado(
+            directorio,
+            {"shas": leidas, "inicios": inicios, "finales": finales},
+        )
     return enc
 
 
@@ -5151,12 +5272,12 @@ def _veredicto_antes_de_cerrar(
         if previa.nivel_alcanzado != "pr":
             # El PR ya se fusionó: la corrección no cabe en él. No se termina
             # en silencio con el hallazgo abierto: se avisa al propietario. La
-            # clave incluye las continuaciones para que, si un `continuar`
-            # limpió la pregunta, la misma decisión vuelva a quedar visible en
-            # vez de que el cierre siga por una clave ya consumida.
-            clave = (
-                f"pregunta:{enc.id}:fusionado:{previa.id}:{previa.pr_sha}:{huella}"
-                f":r{_continuaciones(registro, enc.id)}"
+            # clave es la misma que usa el sondeo de cerrados y lleva las
+            # continuaciones: si un `continuar` limpió la pregunta, la misma
+            # decisión vuelve a quedar visible; si un ajuste la consumió, el
+            # cierre reconoce la clave y no la pregunta con otra.
+            clave = _clave_decision_tardia(
+                registro, enc, previa.id, previa.pr_sha, huella
             )
             if registro.por_ukey(clave) is not None:
                 continue
@@ -6982,7 +7103,11 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
     inicio_vuelta = enc
-    if enc.deepseek_sha != sha or _deepseek_por_releer(enc):
+    por_releer = _deepseek_por_releer(enc) and (
+        enc.fase_actual is None
+        or enc.fase_actual.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION
+    )
+    if enc.deepseek_sha != sha or por_releer:
         eventos = registro.eventos(enc.id)
         primera = next(
             (

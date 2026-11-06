@@ -22,6 +22,7 @@ from motor.encargos.dominio import (
     bloqueantes_abiertos,
     decision_proceso,
     reducir,
+    vista,
 )
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import Recorrido, _entrega_pr
@@ -426,6 +427,395 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
                 if ev["kind"] == "entrega_externa"
             ]
             self.assertNotIn("integrado", pasos)
+
+
+def _dos_fases_con_pr_en_la_segunda(caso, tmp: str, clave: str):
+    """Encargo de dos fases: la uno integrada y la dos con PR en nivel pr."""
+    vuelta, r = _entrega_pr(caso, tmp, clave, _GhCuenta, nivel="integrado")
+    r.reg.anotar(
+        r.enc,
+        {
+            "kind": "fases",
+            "data": {
+                "fases": [
+                    {"id": "uno", "resultado": "saludo.txt con uno"},
+                    {
+                        "id": "dos",
+                        "resultado": "saludo.txt con dos",
+                        "requiere": ["uno"],
+                    },
+                ],
+                "hora": r.hora,
+            },
+        },
+        f"{clave}:fases",
+    )
+    e = vuelta("uno")
+    sha = "a" * 40
+    for paso in ("commit", "push", "pr_listo"):
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "entrega_externa",
+                "data": {
+                    "fase": "dos",
+                    "intento": e.intento,
+                    "paso": paso,
+                    "repo": e.entrega.repo,
+                    "rama": ciclo._rama_fase(e),
+                    "base": e.entrega.base,
+                    "numero": 2,
+                    "sha": sha,
+                    "recibo": sha,
+                    "hora": r.hora,
+                },
+            },
+            f"{clave}:{paso}",
+        )
+    r.reg.anotar(
+        r.enc,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": "dos",
+                "intento": e.intento,
+                "paso": "deepseek_leido",
+                "repo": e.entrega.repo,
+                "numero": 2,
+                "sha": sha,
+                "huella": "sin-revision",
+                "recibo": sha,
+                "hora": r.hora,
+            },
+        },
+        f"{clave}:ds",
+    )
+    return vuelta, r, r.fold()
+
+
+class _GhCuenta(_GhPorNumero):
+    """Cuenta las lecturas de DeepSeek y puede fallar a voluntad."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.llamadas: list[str] = []
+        self.falla = False
+
+    def comentarios_deepseek(self, repo, numero, sha=""):
+        self.llamadas.append(sha)
+        if self.falla:
+            raise RuntimeError("DeepSeek no responde")
+        return super().comentarios_deepseek(repo, numero, sha)
+
+
+class TopeConBloqueantesAnteriores(unittest.TestCase):
+    def test_omitir_resuelve_el_bloqueante_viejo_y_no_finge_una_lectura(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-bloqueante-viejo", FakeGitHub, nivel="integrado"
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "revision",
+                    "data": {
+                        "fase": e.fase_activa,
+                        "intento": e.intento,
+                        "revision_id": "rev-vieja",
+                        "version": e.producto.firma,
+                        "base_version": "",
+                        "alcance": "completa",
+                        "veredicto": "cambios",
+                        "revisor": "deepseek",
+                        "origen": "deepseek",
+                        "lector_version": 0,
+                        "cubre": ["F8"],
+                        "hallazgos": [
+                            {
+                                "id": "F8",
+                                "gravedad": "bloqueante",
+                                "criterio": "comportamiento",
+                                "titulo": "bloqueante de un SHA anterior",
+                                "origen": "deepseek",
+                                "estado": "abierto",
+                            }
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "rev-bloqueante-viejo",
+            )
+            e = r.fold()
+            self.assertEqual(_ids(e), ["F8"])
+            self.assertTrue(ciclo._deepseek_por_releer(e))
+
+            e = ciclo._omitir_deepseek(
+                r.reg, e, e.pr_numero, e.pr_sha,
+                "sin revisión de DeepSeek tras 31 min; la fase sigue", r.hora,
+            )
+
+            self.assertEqual(_ids(e), [])
+            self.assertFalse(ciclo._deepseek_por_releer(e))
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(e.deepseek_huella, "sin-revision")
+            self.assertFalse(vista(e)["entrega"]["deepseek"]["leida"])
+            self.assertFalse(vista(e)["fases"][0]["deepseek"]["leida"])
+
+
+class SonderoDeCerradosTermina(unittest.TestCase):
+    def _terminado(self, tmp: str):
+        vuelta, r = _entrega_pr(
+            self, tmp, "ds-sondeo-cerrado", _GhCuenta, nivel="integrado"
+        )
+        e = vuelta("uno")
+        hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+        tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+        self.assertEqual(e.estado, "terminado")
+        vuelta.gh.llamadas.clear()
+        return vuelta, r, e
+
+    def test_una_revision_real_o_el_vencimiento_terminan_el_sondeo(self):
+        with (
+            tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp,
+            tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp2,
+        ):
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = None
+            epoch = time.time()
+            hora = ahora_iso()
+
+            for _ in range(3):
+                ciclo._revisar_deepseek_del_cerrado(r.reg, r.fold(), vuelta.gh, hora, epoch)
+                epoch += 61
+            llamadas_antes = len(vuelta.gh.llamadas)
+            self.assertLessEqual(llamadas_antes, 3)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ciclo._SONDEO_DEEPSEEK_CERRADO_S + 61,
+            )
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ciclo._SONDEO_DEEPSEEK_CERRADO_S + 3600,
+            )
+            self.assertLessEqual(len(vuelta.gh.llamadas), llamadas_antes + 1)
+
+            vuelta2, r2, e2 = self._terminado(tmp2)
+            vuelta2.gh.textos[e2.pr_numero] = _comentario(_medio("F12"))
+            ciclo._revisar_deepseek_del_cerrado(
+                r2.reg, r2.fold(), vuelta2.gh, ahora_iso(), time.time()
+            )
+            llamadas = len(vuelta2.gh.llamadas)
+            ciclo._revisar_deepseek_del_cerrado(
+                r2.reg, r2.fold(), vuelta2.gh, ahora_iso(), time.time() + 3600
+            )
+            self.assertEqual(len(vuelta2.gh.llamadas), llamadas)
+
+    def test_un_error_de_lectura_se_espacia(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, _e = self._terminado(tmp)
+            vuelta.gh.falla = True
+            epoch = time.time()
+            hora = ahora_iso()
+            ciclo._revisar_deepseek_del_cerrado(r.reg, r.fold(), vuelta.gh, hora, epoch)
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 10
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 61
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 2)
+
+
+class FailOpenDelUltimoCierre(unittest.TestCase):
+    def test_una_lectura_fallida_al_cerrar_no_pierde_la_fase_anterior(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = _dos_fases_con_pr_en_la_segunda(
+                self, tmp, "ds-fail-open"
+            )
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            vuelta.gh.textos[e.fases[0].pr_numero] = _comentario(
+                _medio("F14")
+            )
+            vuelta.gh.falla = True
+
+            self.assertIsNone(
+                ciclo._veredicto_antes_de_cerrar(
+                    r.reg, r.fold(), vuelta.gh, ahora_iso()
+                )
+            )
+
+            vuelta.gh.falla = False
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {"evidencia": "cierre de prueba", "hora": r.hora},
+                },
+                "ds-fail-open:cierre",
+            )
+            self.assertEqual(r.fold().estado, "terminado")
+            barrer(
+                r.reg, ahora_iso(), time.time(), lambda *a, **k: None,
+                gh=vuelta.gh,
+            )
+
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F14" in p for p in e.preguntas), e.preguntas)
+
+
+class DecisionTardiaConUnaSolaClave(unittest.TestCase):
+    def test_tras_el_ajuste_no_se_pregunta_otra_vez_con_otra_clave(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-clave-unica", _GhPorNumero, nivel="integrado"
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {
+                                "id": "dos",
+                                "resultado": "saludo.txt con dos",
+                                "requiere": ["uno"],
+                            },
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-clave-unica",
+            )
+            e = vuelta("uno")
+            sha = "a" * 40
+            for paso in ("commit", "push", "pr_listo"):
+                r.reg.anotar(
+                    r.enc,
+                    {
+                        "kind": "entrega_externa",
+                        "data": {
+                            "fase": "dos",
+                            "intento": e.intento,
+                            "paso": paso,
+                            "repo": e.entrega.repo,
+                            "rama": ciclo._rama_fase(e),
+                            "base": e.entrega.base,
+                            "numero": 2,
+                            "sha": sha,
+                            "recibo": sha,
+                            "hora": r.hora,
+                        },
+                    },
+                    f"clave-unica:{paso}",
+                )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": "dos",
+                        "intento": e.intento,
+                        "paso": "deepseek_leido",
+                        "repo": e.entrega.repo,
+                        "numero": 2,
+                        "sha": sha,
+                        "huella": "h2",
+                        "recibo": sha,
+                        "hora": r.hora,
+                    },
+                },
+                "clave-unica:ds",
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {"evidencia": "cierre de prueba", "hora": r.hora},
+                },
+                "clave-unica:cierre",
+            )
+            e = r.fold()
+            self.assertEqual(e.estado, "terminado")
+            vuelta.gh.textos[e.fases[0].pr_numero] = _comentario(_medio("F13"))
+            barrer(
+                r.reg, ahora_iso(), time.time(), lambda *a, **k: None,
+                gh=vuelta.gh,
+            )
+            self.assertEqual(len(r.eventos("pregunta")), 1)
+
+            ciclo.corregir(
+                r.reg,
+                r.enc,
+                "Seguir sin corregirlo; decisión del propietario.",
+                "decision-f13",
+                ahora_iso(),
+            )
+            self.assertEqual(r.fold().preguntas, ())
+            ciclo._veredicto_antes_de_cerrar(
+                r.reg, r.fold(), vuelta.gh, ahora_iso()
+            )
+
+            self.assertEqual(len(r.eventos("pregunta")), 1)
+            self.assertFalse(
+                any("F13" in p for p in r.fold().preguntas), r.fold().preguntas
+            )
+
+
+class CierreSinPrEnLaFaseActiva(unittest.TestCase):
+    def test_el_sondeo_llega_a_una_fase_anterior_con_pr(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-cierre-sin-pr", _GhPorNumero, nivel="integrado"
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {
+                                "id": "dos",
+                                "resultado": "saludo.txt con dos",
+                                "requiere": ["uno"],
+                            },
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-cierre-sin-pr",
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.fase_activa, "dos")
+            self.assertTrue(e.fases[0].pr_numero)
+            self.assertFalse(e.pr_numero)
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "cierre_forzado",
+                    "data": {"evidencia": "cierre de prueba", "hora": r.hora},
+                },
+                "cierre-sin-pr-activo",
+            )
+            self.assertEqual(r.fold().estado, "terminado")
+            self.assertFalse(r.fold().pr_numero)
+
+            vuelta.gh.textos[e.fases[0].pr_numero] = _comentario(_medio("F11"))
+            barrer(
+                r.reg, ahora_iso(), time.time(), lambda *a, **k: None,
+                gh=vuelta.gh,
+            )
+
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F11" in p for p in e.preguntas), e.preguntas)
 
 
 def _encargo_con_pregunta_vieja(tmp: str) -> Recorrido:
