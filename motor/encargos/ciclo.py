@@ -3739,9 +3739,9 @@ _FALLOS_TRANSITORIOS = (
 
 
 _FALLOS_PERMANENTES = (
-    "http 400", "http 401", "http 403", "http 404", "http 422",
+    "http 400", "http 401", "http 403", "http 404", "http 413", "http 422",
     "returned error: 400", "returned error: 401", "returned error: 403",
-    "returned error: 404", "returned error: 422",
+    "returned error: 404", "returned error: 413", "returned error: 422",
 )
 
 

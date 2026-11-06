@@ -184,6 +184,9 @@ class ClasificacionDeFallas(unittest.TestCase):
             "git push fallo: error: RPC failed; HTTP 403 from remote",
             "git push fallo: fatal: unable to access 'https://github.com/o/r.git/': "
             "The requested URL returned error: 403",
+            "git push fallo: error: RPC failed; HTTP 413 from remote",
+            "git push fallo: fatal: unable to access 'https://github.com/o/r.git/': "
+            "The requested URL returned error: 413",
             "git push fallo: Permission denied (publickey)",
         ):
             self.assertFalse(ciclo._fallo_transitorio(causa), causa)
