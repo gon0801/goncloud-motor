@@ -5104,8 +5104,11 @@ def _revisar_deepseek_del_cerrado(
             )
         except Exception:
             # El error también se espacia: la marca de la última tentativa
-            # vale para la siguiente lectura.
+            # vale para la siguiente lectura. Si la ventana ya venció, el
+            # sondeo termina aunque todas las lecturas hayan fallado.
             leidas[sha] = epoch
+            if epoch - inicios[sha] >= _SONDEO_DEEPSEEK_CERRADO_S:
+                finales.add(sha)
             cambio = True
             continue
         leidas[sha] = epoch

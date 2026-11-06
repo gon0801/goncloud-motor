@@ -629,6 +629,18 @@ class SonderoDeCerradosTermina(unittest.TestCase):
                 r.reg, r.fold(), vuelta.gh, hora, epoch + 61
             )
             self.assertEqual(len(vuelta.gh.llamadas), 2)
+            # Aunque todas las lecturas fallen, la ventana vence y el sondeo
+            # termina: no se consulta GitHub para siempre.
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ciclo._SONDEO_DEEPSEEK_CERRADO_S + 120,
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 3)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora,
+                epoch + ciclo._SONDEO_DEEPSEEK_CERRADO_S + 3600,
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 3)
 
 
 class FailOpenDelUltimoCierre(unittest.TestCase):
