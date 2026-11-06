@@ -3902,10 +3902,27 @@ def _asegurar_repo(
     return "" if r.returncode == 0 else "no se pudo configurar el remoto de publicación"
 
 
-_FUERA_DEL_PRODUCTO = (
-    ":(exclude).interno", ":(exclude)**/.interno",
-    ":(exclude)**/__pycache__", ":(exclude)**/.runtime",
-)
+_FUERA_DEL_INDICE = (".interno", "**/.interno", "**/__pycache__", "**/.runtime")
+_FUERA_DEL_PRODUCTO = tuple(f":(exclude){ruta}" for ruta in _FUERA_DEL_INDICE)
+
+
+def _preparar_indice(espacio: Path) -> str:
+    """Deja el producto en el indice y saca lo interno. Devuelve la causa del fallo.
+
+    `git add` no puede nombrar rutas ignoradas en su pathspec: con `.interno` en
+    el `.gitignore` devuelve 1 aunque agregue lo demas. Por eso se agrega todo y
+    luego se saca lo interno con `rm --cached --ignore-unmatch`.
+    """
+    r = _git(espacio, "add", "-A", "--", ".")
+    if r.returncode != 0:
+        return f"git add fallo: {r.stderr.strip()[-300:]}"
+    r = _git(
+        espacio, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--",
+        *_FUERA_DEL_INDICE,
+    )
+    if r.returncode != 0:
+        return f"git rm del indice fallo: {r.stderr.strip()[-300:]}"
+    return ""
 
 
 def _commit_entregado(enc: Encargo, version, espacio: Path) -> str:
@@ -3925,11 +3942,9 @@ def _commit_entregado(enc: Encargo, version, espacio: Path) -> str:
 
 def _commit_push(enc: Encargo, espacio: Path) -> tuple[str, str]:
     """Commit del producto (sin .interno) y push. Devuelve (sha, causa)."""
-    if _git(espacio, "ls-files", "--", ".interno").stdout.strip():
-        _git(espacio, "rm", "-r", "--cached", "--quiet", ".interno")
-    r = _git(espacio, "add", "-A", "--", ".", *_FUERA_DEL_PRODUCTO)
-    if r.returncode != 0:
-        return "", f"git add fallo: {r.stderr.strip()[-300:]}"
+    causa = _preparar_indice(espacio)
+    if causa:
+        return "", causa
     pendientes = _git(espacio, "diff", "--cached", "--quiet")
     if pendientes.returncode not in (0, 1):
         return "", f"git diff del indice fallo: {pendientes.stderr.strip()[-300:]}"

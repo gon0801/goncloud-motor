@@ -13,10 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from .ciclo import (
-    _FUERA_DEL_PRODUCTO,
     _devolver,
     _espacio,
     _git,
+    _preparar_indice,
     _rama_fase,
 )
 from .frontera import turno
@@ -51,9 +51,7 @@ def _resultado(enc, base: str, rama: str, estado: str, **datos) -> dict:
 def _commit_pendiente(enc, espacio: Path, base: str) -> str:
     """El producto sin commit entra antes de mezclar: el choque se ve sobre el
     trabajo real y no se pierde nada si la mezcla falla."""
-    if _git(espacio, "ls-files", "--", ".interno").stdout.strip():
-        _git(espacio, "rm", "-r", "--cached", "--quiet", ".interno")
-    if _git(espacio, "add", "-A", "--", ".", *_FUERA_DEL_PRODUCTO).returncode != 0:
+    if _preparar_indice(espacio):
         return "no se pudo preparar el producto para la mezcla"
     pendiente = _git(espacio, "diff", "--cached", "--quiet")
     if pendiente.returncode not in (0, 1):
