@@ -116,6 +116,17 @@ class Incremental(Base):
             self.assertEqual(self.reg.fold(encargo).procedimiento, ("n0", "n1"))
             self.assertEqual(leidos.call_count, 0)
 
+    def test_con_un_evento_nuevo_lee_solo_el_rango_nuevo(self):
+        encargo = self.crear()
+        self.nota(encargo, "n0")
+        self.reg.fold(encargo)
+        anterior = self.reg.ultimo_evento(encargo)
+        self.nota(encargo, "n1")
+        nuevo = self.reg.ultimo_evento(encargo)
+        with mock.patch.object(self.reg, "_rango", wraps=self.reg._rango) as leidos:
+            self.assertEqual(self.reg.fold(encargo).procedimiento, ("n0", "n1"))
+        leidos.assert_called_once_with(encargo, anterior, nuevo)
+
     def test_si_baja_el_maximo_o_el_conteo_no_cuadra_se_reconstruye(self):
         encargo = self.crear()
         self.nota(encargo, "n0")
