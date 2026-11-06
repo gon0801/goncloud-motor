@@ -120,24 +120,30 @@ class _Base(unittest.TestCase):
     def _rastrear_cache(self):
         (self.espacio / ".runtime").mkdir()
         (self.espacio / ".runtime" / "estado").write_text("antes\n", encoding="utf-8")
+        (self.espacio / ".runtime" / "viejo").write_text("viejo\n", encoding="utf-8")
         _git(self.espacio, "add", ".runtime")
         _git(self.espacio, "commit", "--quiet", "-m", "rastrea cache")
         (self.espacio / ".runtime" / "estado").write_text(
             "despues\n", encoding="utf-8"
         )
+        (self.espacio / ".runtime" / "viejo").unlink()
         (self.espacio / ".runtime" / "nuevo").write_text("nuevo\n", encoding="utf-8")
         self._cambio_de_producto()
 
     def _comprobar_cache_rastreada(self):
         arbol = self.repo.arbol()
         self.assertIn(".runtime/estado", arbol)
+        self.assertIn(".runtime/viejo", arbol)
         self.assertNotIn(".runtime/nuevo", arbol)
         self.assertEqual(
-            _git(self.espacio, "show", "HEAD:.runtime/estado"), "despues\n"
+            _git(self.espacio, "show", "HEAD:.runtime/estado"), "antes\n"
         )
         self.assertEqual(
-            _git(self.espacio, "status", "--porcelain", "--", ".runtime"),
-            "?? .runtime/nuevo\n",
+            _git(self.espacio, "show", "HEAD:.runtime/viejo"), "viejo\n"
+        )
+        self.assertEqual(
+            set(_git(self.espacio, "status", "--porcelain", "--", ".runtime").splitlines()),
+            {" M .runtime/estado", " D .runtime/viejo", "?? .runtime/nuevo"},
         )
 
     def _internas(self, rutas: list[str]) -> list[str]:

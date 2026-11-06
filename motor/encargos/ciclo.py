@@ -3915,27 +3915,19 @@ def _preparar_indice(espacio: Path) -> str:
 
     `git add` no puede nombrar rutas ignoradas en su pathspec: con `.interno` en
     el `.gitignore` devuelve 1 aunque agregue lo demas. Por eso se agrega todo y
-    luego se saca lo interno con `rm --cached --ignore-unmatch`. De las caches
-    solo salen las que agrega esta entrega: lo que ya estaba rastreado se
-    conserva como antes.
+    luego se saca lo interno con `rm --cached --ignore-unmatch`. Las caches
+    vuelven al estado de `HEAD` igual que antes: ni sus altas ni sus cambios ni
+    sus borrados entran al commit.
     """
     r = _git(espacio, "add", "-A", "--", ".")
     if r.returncode != 0:
         return f"git add fallo: {r.stderr.strip()[-300:]}"
     r = _git(
-        espacio, "diff", "--cached", "--name-only", "--diff-filter=A", "-z", "--",
+        espacio, "reset", "--quiet", "HEAD", "--",
         *(f":(glob){ruta}" for ruta in _CACHES_INTERNAS),
     )
     if r.returncode != 0:
-        return f"git diff del indice fallo: {r.stderr.strip()[-300:]}"
-    agregadas = [ruta for ruta in r.stdout.split("\0") if ruta]
-    if agregadas:
-        r = _git(
-            espacio, "rm", "--cached", "--quiet", "--ignore-unmatch", "--",
-            *agregadas,
-        )
-        if r.returncode != 0:
-            return f"git rm del indice fallo: {r.stderr.strip()[-300:]}"
+        return f"git reset del indice fallo: {r.stderr.strip()[-300:]}"
     r = _git(
         espacio, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--",
         *(f":(glob){ruta}" for ruta in _SIEMPRE_FUERA),
