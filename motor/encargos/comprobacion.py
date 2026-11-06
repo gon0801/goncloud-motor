@@ -825,9 +825,24 @@ def hallazgo_fuera_de_alcance_por_restriccion(
             if len(partes) == 2 and any(p in partes[0].lower() for p in _PROHIBE):
                 antes = _rutas_de_restriccion(partes[0])
                 despues = _rutas_de_restriccion(partes[1])
-                excluidas = tuple(p for p in antes if p not in despues)
-                if excluidas:
-                    excluye.append(excluidas)
+                if antes:
+                    excluidas = tuple(p for p in antes if p not in despues)
+                    if excluidas:
+                        excluye.append(excluidas)
+                elif despues:
+                    incluye.append(despues)
+                continue
+            partes_fuera = re.split(
+                r"\bfuera de\b", clausula, maxsplit=1, flags=re.I
+            )
+            if len(partes_fuera) == 2:
+                derecha = _rutas_de_restriccion(partes_fuera[1])
+                if derecha:
+                    incluye.append(derecha)
+                    continue
+                rutas = _rutas_de_restriccion(clausula)
+                if rutas:
+                    excluye.append(rutas)
                 continue
             rutas = _rutas_de_restriccion(clausula)
             if not rutas:

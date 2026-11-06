@@ -271,6 +271,78 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             self.assertEqual(bloqueantes_abiertos(final, "deepseek"), ())
             self.assertEqual(final.fuera_de_alcance[0][0], "F1")
 
+    def test_prohibido_fuera_de_la_ruta_es_lista_blanca(self):
+        texto = "Prohibido tocar archivos fuera de motor/a.py"
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/a.py:1")
+            ),
+            "",
+        )
+        self.assertIn(
+            "limita el cambio",
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/c.py:1")
+            ),
+        )
+
+    def test_nada_salvo_la_ruta_es_lista_blanca(self):
+        texto = "No tocar nada salvo motor/b.py"
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/b.py:1")
+            ),
+            "",
+        )
+        self.assertIn(
+            "limita el cambio",
+            hallazgo_fuera_de_alcance_por_restriccion(
+                (texto,), _hallazgo("motor/c.py:1")
+            ),
+        )
+
+    def test_el_camino_de_autoridad_aplica_resueltos_externos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "autoridad-resueltos-1", _GhConHallazgo,
+                texto="cambia el comando de encargos",
+            )
+            e = vuelta("hola")
+            self.assertEqual([h.id for h in bloqueantes_abiertos(e, "deepseek")], ["F1"])
+            r.reg.anotar(
+                r.enc,
+                {"kind": "conductor", "data": {"token": "tok", "host": "host"}},
+                "conductor-autoridad-resueltos",
+            )
+            enc = r.fold()
+            observaciones = {
+                "version": enc.producto.firma,
+                "manifiesto": [list(x) for x in enc.producto.manifiesto],
+            }
+            juicio = {
+                "version": enc.producto.firma,
+                "veredicto": "aprobado",
+                "evidencia": "la evidencia del revisor descarta el hallazgo",
+                "resueltos": ["F1"],
+            }
+            salida = recibir_resultado(
+                r.reg, r.enc, "tok", "host", enc.huella,
+                observaciones, juicio, ahora_iso(),
+            )
+            self.assertTrue(salida.get("registrado"), salida)
+            final = r.fold()
+            self.assertEqual(bloqueantes_abiertos(final, "deepseek"), ())
+            cerrado = next(h for h in final.hallazgos if h.id == "F1")
+            self.assertEqual(cerrado.estado, "resuelto")
+            self.assertEqual(
+                cerrado.cierre_evidencia, "la evidencia del revisor descarta el hallazgo"
+            )
+            self.assertTrue(any(
+                ev["kind"] == "nota_pr"
+                and "F1" in ev["data"].get("texto", "")
+                for ev in r.reg.eventos(r.enc)
+            ))
+
 
 if __name__ == "__main__":
     unittest.main()

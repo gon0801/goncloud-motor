@@ -8012,6 +8012,20 @@ def _recibir_resultado_nuevo(
         hallazgos_validados.append(
             replace(h, estado="resuelto", cierre_evidencia=marca)
         )
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "nota_pr",
+                "data": {
+                    "texto": (
+                        f"hallazgo de DeepSeek descartado por el revisor "
+                        f"independiente: {hid} «{h.titulo}» ({marca[:400]})"
+                    ),
+                    "hora": hora,
+                },
+            },
+            f"disputa-resuelta-autoridad:{enc.id}:{hid}",
+        )
         ya_resueltos.add(hid)
         aplicados = True
     for hid, razon in validado.fuera_de_alcance:
