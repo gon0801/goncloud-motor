@@ -2142,7 +2142,7 @@ def _aplica_entrega(enc: Encargo) -> bool:
         fase is not None
         and fase.entrega_bloqueada_sha
         and enc.producto is not None
-        and fase.entrega_bloqueada_sha == (enc.producto.sha_git or enc.producto.firma)
+        and fase.entrega_bloqueada_sha == enc.producto.sha_git
     ):
         # La aprobación se conserva; sólo deja de ser aplicable a la entrega
         # mientras el producto vigente siga en rojo.
@@ -3727,7 +3727,7 @@ _FALLOS_TRANSITORIOS = (
     "network is unreachable", "connection timed out", "connection reset",
     "connection refused", "connection closed", "operation timed out",
     "remote end hung up unexpectedly", "the remote end hung up",
-    "rpc failed", "early eof", "broken pipe",
+    "early eof", "broken pipe",
     "resource temporarily unavailable", "http 429", "http 500", "http 502",
     "http 503", "http 504", "returned error: 429", "returned error: 500",
     "returned error: 502", "returned error: 503", "returned error: 504",
@@ -3765,6 +3765,69 @@ def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) ->
         elif ev["kind"] not in _ENTRE_REINTENTOS:
             break
     return seguidos
+
+
+# Lo que no cambia la version del producto ni trae información nueva: el
+# responsable puede dar una vuelta y el contador de la entrega sigue.
+_ENTRE_INTENTOS_ENTREGA = _ENTRE_REINTENTOS + (
+    "estrategia", "actividad", "intento_cerrado", "procedimiento", "nota_pr",
+    "entrega_devuelta",
+)
+
+
+def _entrega_devuelta_pendiente(registro: Registro, enc: Encargo) -> bool:
+    """La ultima devolucion de entrega es de esta version y este intento: no se
+    reintenta el commit hasta que el responsable haya dado su vuelta."""
+    producto = getattr(enc, "producto", None)
+    version = producto.firma if producto else ""
+    eventos = getattr(registro, "eventos", None)
+    if not callable(eventos):
+        return False
+    for ev in reversed(eventos(enc.id)):
+        if ev["kind"] != "entrega_devuelta":
+            continue
+        datos = ev["data"]
+        return (
+            datos.get("version") == version
+            and int(datos.get("generacion") or 0)
+            == int(getattr(enc, "generacion", 0) or 0)
+        )
+    return False
+
+
+def _fallos_de_entrega_de_la_version(
+    registro: Registro, enc: Encargo, causa: str, incluir_transitorios: bool = False
+) -> int:
+    """Fallos de commit o push de la misma clase para la misma version del
+    producto. Por defecto no cuenta los transitorios. Las altas, cambios o
+    borrados del producto cortan la cuenta; los intentos del responsable que no
+    cambian la version no."""
+    clase = _clase_de_fallo(causa)
+    producto = getattr(enc, "producto", None)
+    version = producto.firma if producto else ""
+    eventos = getattr(registro, "eventos", None)
+    if not callable(eventos):
+        return 0
+    cuenta = 0
+    for ev in reversed(eventos(enc.id)):
+        kind = ev["kind"]
+        if kind == "instrumento_fallo":
+            datos = ev["data"]
+            if (
+                datos.get("fuente") == "github"
+                and datos.get("version") == version
+                and _clase_de_fallo(datos.get("causa") or "") == clase
+            ):
+                if incluir_transitorios or not _fallo_transitorio(
+                    datos.get("causa") or ""
+                ):
+                    cuenta += 1
+                continue
+            break
+        if kind in _ENTRE_INTENTOS_ENTREGA:
+            continue
+        break
+    return cuenta
 
 
 def _fallo_de_repo(
@@ -4051,7 +4114,6 @@ def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -
     producto nuevo, vuelve a habilitar la entrega."""
     if enc.producto is None:
         return
-    clave = enc.producto.sha_git or enc.producto.firma
     registro.anotar(
         enc.id,
         {
@@ -4059,12 +4121,12 @@ def _bloquear_entrega(registro: Registro, enc: Encargo, causa: str, hora: str) -
             "data": {
                 "fase": enc.fase_activa,
                 "intento": enc.intento,
-                "sha": clave,
+                "sha": enc.producto.sha_git,
                 "causa": causa,
                 "hora": hora,
             },
         },
-        f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{clave}",
+        f"entrega-bloqueada:{enc.id}:{enc.fase_activa}:{enc.producto.sha_git}",
     )
 
 
@@ -5968,6 +6030,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id) or enc
     if _devolver_correcciones(registro, enc, hora):
         return registro.fold(enc.id)
+    if _entrega_devuelta_pendiente(registro, enc):
+        return enc
     if (
         nivel_cumplido(enc)
         and enc.estado != "terminado"
@@ -6054,16 +6118,49 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 return _head_desviado(
                     registro, enc, hora, enc.pr_numero, entregado, punta
                 )
+        previos = _fallos_de_entrega_de_la_version(
+            registro, enc, causa, incluir_transitorios=True
+        )
         _anotar_instrumento(
             registro, enc, "github", causa,
             "reintentar commit y push de la misma version aprobada",
-            hora, f"push-{enc.generacion}",
+            hora, f"push-{enc.generacion}-{previos + 1}",
         )
-        if not _fallo_transitorio(causa) and (
-            _fallos_de_repo_seguidos(registro, enc.id, causa) + 1
+        if (
+            not _fallo_transitorio(causa)
+            and _fallos_de_entrega_de_la_version(registro, enc, causa)
             >= TOPE_FALLOS_ENTREGA
         ):
-            _bloquear_entrega(registro, enc, causa, hora)
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "nota_pr",
+                    "data": {
+                        "texto": (
+                            "el motor dejo de reintentar el commit o push de "
+                            "esta version porque la misma falla de git se "
+                            "repitio; el trabajo vuelve al responsable con la "
+                            f"causa. {causa}"
+                        ),
+                        "hora": hora,
+                    },
+                },
+                f"nota-reintento-entrega:{enc.id}:{enc.generacion}",
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "entrega_devuelta",
+                    "data": {
+                        "version": enc.producto.firma if enc.producto else "",
+                        "generacion": enc.generacion,
+                        "clase": _clase_de_fallo(causa),
+                        "causa": causa,
+                        "hora": hora,
+                    },
+                },
+                f"entrega-devuelta:{enc.id}:{enc.generacion}:{_clase_de_fallo(causa)}",
+            )
             _devolver(
                 registro, enc, "investigar", causa,
                 "investigar la causa exacta de git del commit o push y corregir "

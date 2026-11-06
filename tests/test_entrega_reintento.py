@@ -67,16 +67,42 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertFalse(
                 any(ev["kind"] == "pregunta" for ev in r.reg.eventos(r.enc))
             )
-            self.assertFalse(ciclo._aplica_entrega(e2))
-            self.assertEqual(
-                e2.fase_actual.entrega_bloqueada_sha, e2.producto.firma
-            )
+            self.assertTrue(ciclo._aplica_entrega(e2))
             self.assertTrue(_lanzaria(e2))
+            self.assertEqual(len(r.eventos("entrega_devuelta")), 1)
+            self.assertEqual(len(r.eventos("nota_pr")), 1)
+            self.assertIn(
+                "el motor dejo de reintentar",
+                r.eventos("nota_pr")[0]["data"]["texto"],
+            )
 
             self.assertEqual(len(llamadas), 2)
             self.assertEqual(len(r.eventos("espera")), 1)
             self.assertEqual(e3.estado, "recibido")
             self.assertEqual(e3.estrategia, "investigar")
+
+    def test_corregir_solo_el_repositorio_vuelve_a_entregar(self):
+        causa = "git push fallo: remote rejected: protected branch hook declined"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(self, tmp, "fallo-git-repo", _GhConDeepSeek)
+            with mock.patch.object(ciclo, "_commit_push", return_value=("", causa)):
+                e1 = vuelta("hola")
+                e2 = _barrido(r, vuelta.gh, _epoch(e1.reanuda_en))
+            self.assertEqual(e2.estrategia, "investigar")
+            firma = e2.producto.firma
+
+            r.incorporar()
+            tras_turno = r.fold()
+            self.assertGreater(tras_turno.generacion, e2.generacion)
+            self.assertEqual(tras_turno.producto.firma, firma)
+
+            e3 = _barrido(r, vuelta.gh, _epoch(e1.reanuda_en) + 1)
+
+            self.assertNotEqual(e3.estado, "esperando_reintento")
+            self.assertEqual(e3.producto.firma, firma)
+            self.assertTrue(e3.producto.sha_git)
+            self.assertIn(e3.nivel_alcanzado, ("pr", "pr_abierto"))
+            self.assertEqual(len(r.eventos("espera")), 1)
 
     def test_una_falla_transitoria_sigue_reintentando(self):
         causa = (
@@ -99,6 +125,24 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertIn("Could not resolve host", e2.motivo)
             self.assertEqual(len(r.eventos("espera")), 2)
             self.assertFalse(_lanzaria(e2))
+
+
+class ClasificacionDeFallas(unittest.TestCase):
+    def test_un_rechazo_de_permisos_no_se_confunde_con_red(self):
+        for causa in (
+            "git push fallo: error: RPC failed; HTTP 403 from remote",
+            "git push fallo: fatal: unable to access 'https://github.com/o/r.git/': "
+            "The requested URL returned error: 403",
+            "git push fallo: Permission denied (publickey)",
+        ):
+            self.assertFalse(ciclo._fallo_transitorio(causa), causa)
+        for causa in (
+            "git push fallo: fatal: unable to access 'https://github.com/o/r.git/': "
+            "Could not resolve host: github.com",
+            "git push fallo: error: RPC failed; curl 56 GnuTLS recv error: "
+            "The remote end hung up unexpectedly",
+        ):
+            self.assertTrue(ciclo._fallo_transitorio(causa), causa)
 
 
 if __name__ == "__main__":
