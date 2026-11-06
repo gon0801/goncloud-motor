@@ -190,11 +190,17 @@ class Registro:
             {"id": r[0], "ts": r[1], "kind": r[2], "data": json.loads(r[3])} for r in rows
         ]
 
-    def _plegar(self, encargo: str, hasta: int | None = None) -> Encargo | None:
+    def _plegar(
+        self, encargo: str, hasta: int | None = None
+    ) -> tuple[Encargo | None, int, int]:
         estado = None
+        ultimo = 0
+        conteo = 0
         for ev in self._rango(encargo, 0, hasta):
             estado = reducir(estado, ev)
-        return estado
+            ultimo = ev["id"]
+            conteo += 1
+        return estado, ultimo, conteo
 
     def _fold_hasta(self, encargo: str, hasta: int) -> Encargo | None:
         fila = self.db.execute(
@@ -206,7 +212,7 @@ class Registro:
         guardado = self._plegados_hasta.get((encargo, hasta))
         if guardado is not None and guardado.ultimo == ultimo and guardado.conteo == conteo:
             return guardado.estado
-        estado = self._plegar(encargo, hasta)
+        estado, ultimo, conteo = self._plegar(encargo, hasta)
         self._plegados_hasta[(encargo, hasta)] = _Plegado(estado, ultimo, conteo)
         return estado
 
@@ -233,7 +239,9 @@ class Registro:
                     estado = reducir(estado, ev)
                 self._plegados[encargo] = _Plegado(estado, ultimo, conteo)
                 return estado
-        estado = self._plegar(encargo)
+        # El token se toma del mismo recorrido que produjo el estado: si otro
+        # proceso escribe durante el plegado, el caché no queda adelantado.
+        estado, ultimo, conteo = self._plegar(encargo)
         self._plegados[encargo] = _Plegado(estado, ultimo, conteo)
         return estado
 
