@@ -296,6 +296,119 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             self.assertTrue(any("F10" in p for p in e.preguntas), e.preguntas)
             self.assertTrue(r.eventos("pregunta"))
 
+    def test_un_medium_posterior_al_cierre_en_una_fase_anterior_vuelve(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-cerrado-fase-anterior", _GhPorNumero,
+                nivel="integrado",
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {
+                                "id": "dos",
+                                "resultado": "saludo.txt con dos",
+                                "requiere": ["uno"],
+                            },
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-cerrado-anterior",
+            )
+            e = vuelta("uno")
+            e = vuelta("dos")
+            self.assertEqual(e.estado, "terminado")
+            pr_primera = e.fases[0].pr_numero
+            self.assertTrue(pr_primera)
+
+            vuelta.gh.textos[pr_primera] = _comentario(_medio("F11"))
+            barrer(
+                r.reg, ahora_iso(), time.time(), lambda *a, **k: None,
+                gh=vuelta.gh,
+            )
+
+            e = r.fold()
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F11" in p for p in e.preguntas), e.preguntas)
+            self.assertTrue(any("fase uno" in p for p in e.preguntas), e.preguntas)
+
+    def test_un_ajuste_consume_la_decision_de_un_medium_tardio(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-decision-ajuste", _GhPorNumero, nivel="integrado"
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {
+                                "id": "dos",
+                                "resultado": "saludo.txt con dos",
+                                "requiere": ["uno"],
+                            },
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-decision-ajuste",
+            )
+            e = vuelta("uno")
+            hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+            tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+            vuelta.gh.textos[e.fases[0].pr_numero] = _comentario(_medio("F9"))
+            e = vuelta("dos")
+            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(any("F9" in p for p in e.preguntas), e.preguntas)
+
+            salida = ciclo.corregir(
+                r.reg,
+                r.enc,
+                "Seguir sin corregirlo; decisión del propietario.",
+                "decision-f9",
+                ahora_iso(),
+            )
+
+            self.assertFalse(salida.get("rechazada"), salida)
+            e = r.fold()
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertFalse(any("F9" in p for p in e.preguntas), e.preguntas)
+            self.assertIn(
+                "Seguir sin corregirlo; decisión del propietario.", e.ajustes
+            )
+            with (
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                for _vuelta in range(2):
+                    barrer(
+                        r.reg, ahora_iso(), time.time(),
+                        lambda *a, **k: None, gh=vuelta.gh,
+                    )
+                    e = r.fold()
+                    self.assertNotEqual(e.estado, "necesita_usuario")
+                    self.assertFalse(
+                        any("F9" in p for p in e.preguntas), e.preguntas
+                    )
+
     def test_un_medium_dentro_del_alcance_antes_del_tope_sigue_bloqueando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(

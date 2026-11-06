@@ -1301,6 +1301,16 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 siguiente="seguir detenido hasta continuar",
             )
         if e.estado == "necesita_usuario":
+            # Un ajuste es la respuesta del propietario: consume la decisión
+            # sobre un hallazgo tardío que el motor conservó. Sin esto la
+            # misma pregunta volvería a bloquear tras la respuesta.
+            e = replace(
+                e,
+                preguntas=tuple(
+                    texto for texto in e.preguntas
+                    if not _pregunta_es_decision_vigente(texto)
+                ),
+            )
             return replace(
                 _retomar(e, hora),
                 ultimo_hecho="corrección incorporada; se retoma el trabajo",

@@ -4917,21 +4917,40 @@ def _releer_deepseek(
     return registro.fold(enc.id)
 
 
-def _marca_deepseek_cerrado(directorio: Path) -> dict:
+def _marca_deepseek_cerrado(directorio: Path) -> dict[str, float]:
     try:
         marca = json.loads(
             (directorio / "deepseek_cerrado.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
         return {}
-    return marca if isinstance(marca, dict) else {}
+    if not isinstance(marca, dict):
+        return {}
+    leidas = marca.get("shas")
+    if isinstance(leidas, dict):
+        salida = {}
+        for sha, epoch in leidas.items():
+            try:
+                salida[str(sha)] = float(epoch)
+            except (TypeError, ValueError):
+                continue
+        return salida
+    # Formato anterior, de una sola fase: se conserva al actualizar.
+    sha = str(marca.get("sha") or "")
+    try:
+        epoch = float(marca.get("epoch") or 0)
+    except (TypeError, ValueError):
+        epoch = 0.0
+    return {sha: epoch} if sha and epoch else {}
 
 
-def _marcar_deepseek_cerrado(directorio: Path, sha: str, epoch: float) -> None:
+def _marcar_deepseek_cerrado(
+    directorio: Path, leidas: dict[str, float]
+) -> None:
     try:
         directorio.mkdir(parents=True, exist_ok=True)
         (directorio / "deepseek_cerrado.json").write_text(
-            json.dumps({"sha": sha, "epoch": epoch}), encoding="utf-8"
+            json.dumps({"shas": leidas}), encoding="utf-8"
         )
     except OSError:
         pass
@@ -4943,73 +4962,85 @@ def _revisar_deepseek_del_cerrado(
     """Un hallazgo tardío de DeepSeek en un encargo ya cerrado no se pierde.
 
     El encargo terminado no vuelve al ciclo normal, así que la relectura de
-    DeepSeek —que excluye los cerrados— nunca lo vería. Se mira el comentario
-    del SHA del PR: si trae un Critical, High o Medium dentro del alcance, el
-    hallazgo vuelve al encargo como pregunta del propietario (abrir otro
-    encargo o seguir sin corregirlo). Una ausencia declarada por el sticky no
-    cuenta como hallazgo.
+    DeepSeek —que excluye los cerrados— nunca lo vería. Se miran los PR de
+    todas las fases con entrega externa, no solo el de la fase activa: una
+    revisión tardía sobre una fase anterior integrada también vuelve al
+    encargo. Si trae un Critical, High o Medium dentro del alcance, el hallazgo
+    se pregunta al propietario (abrir otro encargo o seguir sin corregirlo).
+    Una ausencia declarada por el sticky no cuenta como hallazgo.
     """
     if (
         gh is None
         or enc.estado != "terminado"
         or enc.entrega.nivel not in ("pr", "integrado", "desplegado")
-        or not enc.pr_numero
-        or not enc.pr_sha
-        or enc.fase_actual is None
     ):
         return enc
-    fase = enc.fase_actual
-    sha = enc.pr_sha
-    directorio = _directorio(registro.base, enc.id)
-    marca = _marca_deepseek_cerrado(directorio)
-    try:
-        desde = epoch - float(marca.get("epoch") or 0)
-    except (TypeError, ValueError):
-        desde = _RELECTURA_DEEPSEEK_S
-    if marca.get("sha") == sha and 0 <= desde < _RELECTURA_DEEPSEEK_S:
-        return enc
-    try:
-        comentarios = _deepseek_con_contenido(
-            gh.comentarios_deepseek(enc.entrega.repo, enc.pr_numero, sha), sha
-        )
-    except Exception:
-        return enc
-    _marcar_deepseek_cerrado(directorio, sha, epoch)
-    if not comentarios:
-        return enc
-    huella = _huella_comentarios(comentarios)
-    if huella == fase.deepseek_huella:
-        return enc
-    abiertos = [
-        h for h in hallazgos_deepseek(comentarios, sha)
-        if h.gravedad == "bloqueante"
-        and not hallazgo_fuera_de_alcance_por_restriccion(enc.restricciones, h)
+    fases = [
+        f for f in enc.fases
+        if f.pr_numero
+        and f.pr_sha
+        and f.nivel_alcanzado in ("pr", "integrado", "desplegado")
     ]
-    if not abiertos:
+    if not fases:
         return enc
-    enc = _anotar_lectura_deepseek(
-        registro, enc, enc.pr_numero, sha, comentarios, hora
-    )
-    abiertos = bloqueantes_abiertos(enc, "deepseek")
-    if not abiertos:
+    directorio = _directorio(registro.base, enc.id)
+    leidas = _marca_deepseek_cerrado(directorio)
+    cambio_marca = False
+    for fase in fases:
+        sha = fase.pr_sha
+        desde = epoch - leidas.get(sha, 0.0)
+        if 0 <= desde < _RELECTURA_DEEPSEEK_S:
+            continue
+        try:
+            comentarios = _deepseek_con_contenido(
+                gh.comentarios_deepseek(
+                    enc.entrega.repo, fase.pr_numero, sha
+                ),
+                sha,
+            )
+        except Exception:
+            continue
+        leidas[sha] = epoch
+        cambio_marca = True
+        if not comentarios:
+            continue
+        huella = _huella_comentarios(comentarios)
+        if huella == fase.deepseek_huella:
+            continue
+        abiertos = [
+            h for h in hallazgos_deepseek(comentarios, sha)
+            if h.gravedad == "bloqueante"
+            and not hallazgo_fuera_de_alcance_por_restriccion(
+                enc.restricciones, h
+            )
+        ]
+        if not abiertos:
+            continue
+        clave = (
+            f"pregunta:{enc.id}:cerrado:{fase.id}:{sha}:{huella}:"
+            f"r{_continuaciones(registro, enc.id)}"
+        )
+        if registro.por_ukey(clave) is not None:
+            continue
+        marcar_pregunta(
+            registro,
+            enc.id,
+            f"DeepSeek publicó después del cierre un hallazgo en el PR "
+            f"#{fase.pr_numero}, ya cerrado, de la fase {fase.id}: "
+            + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
+            + ". Decide si abrir otro encargo para corregirlo o seguir sin "
+            "corregirlo.",
+            True,
+            hora,
+            ukey=clave,
+        )
+        enc = registro.fold(enc.id) or enc
+        if cambio_marca:
+            _marcar_deepseek_cerrado(directorio, leidas)
         return enc
-    clave = (
-        f"pregunta:{enc.id}:cerrado:{sha}:{huella}:"
-        f"r{_continuaciones(registro, enc.id)}"
-    )
-    marcar_pregunta(
-        registro,
-        enc.id,
-        f"DeepSeek publicó después del cierre un hallazgo en el PR "
-        f"#{enc.pr_numero}, ya integrado, de la fase {fase.id}: "
-        + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
-        + ". Decide si abrir otro encargo para corregirlo o seguir sin "
-        "corregirlo.",
-        True,
-        hora,
-        ukey=clave,
-    )
-    return registro.fold(enc.id)
+    if cambio_marca:
+        _marcar_deepseek_cerrado(directorio, leidas)
+    return enc
 
 
 def _cierre_sin_aplicar(
