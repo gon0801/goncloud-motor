@@ -300,6 +300,13 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
             pr_primera = e.fases[0].pr_numero
             self.assertTrue(pr_primera)
+            estado_antes = json.loads(
+                (vuelta.gh.d / "github.json").read_text()
+            )
+            cuerpo_antes = next(
+                pr for pr in estado_antes["prs"].values()
+                if pr["numero"] == pr_primera
+            )["cuerpo"]
 
             vuelta.gh.textos[pr_primera] = _comentario(_medio("F11"))
             barrer(
@@ -317,11 +324,13 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             estado_fake = json.loads(
                 (vuelta.gh.d / "github.json").read_text()
             )
-            pr = next(
+            cuerpo = next(
                 pr for pr in estado_fake["prs"].values()
                 if pr["numero"] == pr_primera
-            )
-            self.assertIn("F11", pr["cuerpo"])
+            )["cuerpo"]
+            self.assertIn("F11", cuerpo)
+            # El cuerpo original de la fase anterior no se sobrescribe.
+            self.assertIn(cuerpo_antes, cuerpo)
 
     def test_un_medium_dentro_del_alcance_antes_del_tope_sigue_bloqueando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

@@ -5039,6 +5039,63 @@ def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
         pass
 
 
+def _anotar_nota_en_pr_tardia(
+    registro: Registro, enc: Encargo, gh, fase, sha: str, huella: str,
+    texto: str, hora: str,
+) -> Encargo:
+    """Añade la nota al cuerpo actual del PR sin reescribir el de la fase
+    vigente. Un PR de una fase anterior conserva su descripción original."""
+    serie = f"{enc.id}:{fase.id}:{sha}:{huella}"
+    ukey = f"nota-pr-tardia:{serie}"
+    if registro.por_ukey(ukey) is not None:
+        return enc
+    try:
+        vista = gh.ver(enc.entrega.repo, fase.pr_numero)
+    except Exception as exc:
+        _anotar_instrumento(
+            registro, enc, "github",
+            f"no se pudo leer el cuerpo del PR #{fase.pr_numero}: {exc}",
+            "reintentar la nota del hallazgo tardío en la próxima pasada",
+            hora, f"cuerpo-tardio-{sha[:12]}",
+        )
+        return registro.fold(enc.id) or enc
+    cuerpo = str(getattr(vista, "cuerpo", "") or "").rstrip()
+    if texto not in cuerpo:
+        encabezado = (
+            "" if "## Notas del motor" in cuerpo else "## Notas del motor\n"
+        )
+        nuevo = f"{cuerpo}\n\n{encabezado}- {texto}".strip()
+        try:
+            gh.actualizar_cuerpo(enc.entrega.repo, fase.pr_numero, nuevo)
+        except Exception as exc:
+            _anotar_instrumento(
+                registro, enc, "github",
+                f"no se pudo anotar el hallazgo tardío en el PR "
+                f"#{fase.pr_numero}: {exc}",
+                "reintentar la nota del hallazgo tardío en la próxima pasada",
+                hora, f"cuerpo-tardio-{sha[:12]}",
+            )
+            return registro.fold(enc.id) or enc
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": fase.id,
+                "intento": enc.intento,
+                "paso": "pr_cuerpo_tardio",
+                "repo": enc.entrega.repo,
+                "numero": fase.pr_numero,
+                "sha": sha,
+                "huella": huella,
+                "hora": hora,
+            },
+        },
+        ukey,
+    )
+    return registro.fold(enc.id) or enc
+
+
 def _avisar_hallazgo_tardio(
     registro: Registro, enc: Encargo, fase, sha: str, huella: str,
     abiertos: list, gh, espacio: Path, hora: str,
@@ -5068,9 +5125,8 @@ def _avisar_hallazgo_tardio(
     )
     enc = registro.fold(enc.id) or enc
     if gh is not None and espacio is not None:
-        enc = _actualizar_cuerpo_pr(
-            registro, enc, gh, fase.pr_numero, sha, espacio, hora,
-            fase_id=fase.id,
+        enc = _anotar_nota_en_pr_tardia(
+            registro, enc, gh, fase, sha, huella, texto, hora
         )
     return enc
 
