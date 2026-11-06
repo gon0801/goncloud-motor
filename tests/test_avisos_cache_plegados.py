@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from motor.encargos.ciclo import recibir
+from motor.encargos.dominio import reducir
 from motor.encargos.registro import Registro
 from motor.integraciones import directores
 
@@ -32,14 +35,19 @@ class Base(unittest.TestCase):
         self.addCleanup(self.reg.close)
 
     def encargo(self, clave: str, canal: str = "tg") -> str:
+        return self.crear(self.reg, clave, HORA, canal)
+
+    def crear(
+        self, registro: Registro, clave: str, hora: str, canal: str = "tg"
+    ) -> str:
         ident = recibir(
-            self.reg, f"pedido {clave}", clave, HORA, "hermes",
+            registro, f"pedido {clave}", clave, hora, "hermes",
             canal=canal, via="directa",
         )["encargo"]
-        self.reg.anotar(
+        registro.anotar(
             ident,
             {"kind": "fases", "data": {
-                "fases": [{"id": "A", "resultado": "fase comprobada"}], "hora": HORA,
+                "fases": [{"id": "A", "resultado": "fase comprobada"}], "hora": hora,
             }},
             f"fase-{clave}",
         )
@@ -144,6 +152,118 @@ class FoldHastaCacheado(Base):
             )
         self.assertEqual(despues, antes)
         self.assertEqual(despues.ajustes, ())
+
+
+class BaseRecreada(Base):
+    def test_recrear_la_base_en_la_misma_ruta_no_reutiliza_la_cache(self):
+        ident = self.encargo("uno")
+        viejo = self.reg.fold(ident)
+        self.reg.close()
+        shutil.rmtree(self.base)
+
+        nuevo = Registro(self.base)
+        self.addCleanup(nuevo.close)
+        otra_hora = "2026-11-06T11:00:00Z"
+        entrega = {
+            "id": ident,
+            "clave": "uno",
+            "huella": "otra-huella",
+            "texto": "pedido uno",
+            "director": "hermes",
+            "adjuntos": [],
+            "restricciones": [],
+            "canal": "tg",
+            "via": "directa",
+            "detenido": False,
+            "entrega_nivel": "terminado",
+            "repo": "",
+            "rama": "",
+            "base": "",
+            "modelos_solicitados": [],
+            "recibo": "rec_otro",
+            "hora": otra_hora,
+        }
+        # Se escribe directo para no refrescar la cache al crear el encargo.
+        nuevo.append(ident, "entrega", entrega, "entrega:uno", otra_hora)
+        nuevo.append(
+            ident,
+            "fases",
+            {"fases": [{"id": "A", "resultado": "fase nueva"}], "hora": otra_hora},
+            "fase-uno",
+            otra_hora,
+        )
+
+        actual = nuevo.fold(ident)
+        self.assertEqual(actual.hora, otra_hora)
+        self.assertEqual(actual.fases[0].resultado, "fase nueva")
+        self.assertNotEqual(actual, viejo)
+
+
+class FoldConcurrente(Base):
+    def test_lectores_y_escritura_concurrentes_convergen(self):
+        ident = self.encargo("uno")
+        total = 25
+        listo = threading.Barrier(3)
+        fin = threading.Event()
+        errores: list[BaseException] = []
+        finales: list[object] = []
+
+        def lector():
+            try:
+                reg = Registro(self.base)
+                try:
+                    listo.wait(10)
+                    for _ in range(500):
+                        reg.fold(ident)
+                    fin.wait(10)
+                    finales.append(reg.fold(ident))
+                finally:
+                    reg.close()
+            except BaseException as exc:  # noqa: BLE001  la prueba reporta el error
+                errores.append(exc)
+
+        def escritor():
+            try:
+                reg = Registro(self.base)
+                try:
+                    listo.wait(10)
+                    for i in range(total):
+                        reg.anotar(
+                            ident,
+                            {"kind": "procedimiento", "data": {
+                                "nota": f"n{i}", "hora": HORA,
+                            }},
+                            f"nota-concurrente-{i}",
+                        )
+                finally:
+                    reg.close()
+            except BaseException as exc:  # noqa: BLE001  la prueba reporta el error
+                errores.append(exc)
+            finally:
+                fin.set()
+
+        hilos = [
+            threading.Thread(target=lector),
+            threading.Thread(target=lector),
+            threading.Thread(target=escritor),
+        ]
+        for hilo in hilos:
+            hilo.start()
+        for hilo in hilos:
+            hilo.join(20)
+
+        self.assertEqual(errores, [])
+        self.assertFalse(any(hilo.is_alive() for hilo in hilos), "un hilo no terminó")
+
+        verificador = Registro(self.base)
+        self.addCleanup(verificador.close)
+        esperado = None
+        for evento in verificador.eventos(ident):
+            esperado = reducir(esperado, evento)
+        self.assertEqual(verificador.fold(ident), esperado)
+        self.assertEqual(len(finales), 2)
+        for estado in finales:
+            self.assertEqual(estado, esperado)
 
 
 if __name__ == "__main__":

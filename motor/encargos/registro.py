@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,17 +44,34 @@ class _CacheDeLaBase:
         self.plegados_hasta: dict[tuple[str, int], _Plegado] = {}
 
 
-_CACHES: dict[str, _CacheDeLaBase] = {}
+# La identidad del fichero separa una base recreada en la misma ruta: un
+# registro nuevo vuelve a empezar los ids y una colisión de token devolvería
+# historia vieja. La cota impide que un proceso que abre muchas bases acumule
+# plegados para siempre.
+_CACHES: OrderedDict[tuple[str, tuple[int, int]], _CacheDeLaBase] = OrderedDict()
+_CACHE_MAX = 16
 _CACHES_CANDADO = threading.Lock()
 
 
+def _identidad_de_la_base(base: Path) -> tuple[int, int]:
+    try:
+        stat = (base / "registro.sqlite").stat()
+    except OSError:
+        return (0, 0)
+    return (int(stat.st_dev), int(stat.st_ino))
+
+
 def _cache_de(base: Path) -> _CacheDeLaBase:
-    clave = str(base)
+    clave = (str(base), _identidad_de_la_base(base))
     with _CACHES_CANDADO:
         cache = _CACHES.get(clave)
-        if cache is None:
-            cache = _CacheDeLaBase()
-            _CACHES[clave] = cache
+        if cache is not None:
+            _CACHES.move_to_end(clave)
+            return cache
+        cache = _CacheDeLaBase()
+        _CACHES[clave] = cache
+        while len(_CACHES) > _CACHE_MAX:
+            _CACHES.popitem(last=False)
         return cache
 
 
