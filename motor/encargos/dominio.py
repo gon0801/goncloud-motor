@@ -96,6 +96,11 @@ def _con_pausa(
 
 CRITERIOS = ("seguridad", "datos", "comportamiento", "prueba_exigida", "operativo")
 NIVELES = ("terminado", "pr", "integrado", "desplegado")
+# Marca una fase que siguió sin la revisión externa tras el tope: no hay
+# comentario leído, pero el SHA ya no se vuelve a esperar. Una relectura
+# posterior con comentarios reales sustituye esta huella.
+HUELLA_DEEPSEEK_SIN_REVISION = "sin-revision"
+
 _ORDEN_NIVEL = {
     "ninguno": 0,
     "terminado": 1,
@@ -312,7 +317,8 @@ class Fase:
             "pr": {"numero": self.pr_numero, "sha": self.pr_sha},
             "deepseek": {
                 "sha": self.deepseek_sha,
-                "leida": bool(self.deepseek_sha),
+                "leida": bool(self.deepseek_sha)
+                and self.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION,
                 "error": self.deepseek_error,
             },
             "rama": self.rama,
@@ -630,6 +636,11 @@ class Encargo:
     def deepseek_sha(self) -> str:
         fase = self.fase_actual
         return fase.deepseek_sha if fase else ""
+
+    @property
+    def deepseek_huella(self) -> str:
+        fase = self.fase_actual
+        return fase.deepseek_huella if fase else ""
 
     @property
     def deepseek_error(self) -> str:
@@ -1296,6 +1307,8 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 siguiente="seguir detenido hasta continuar",
             )
         if e.estado == "necesita_usuario":
+            # Un ajuste es la respuesta del propietario y retoma el trabajo.
+            # Las preguntas que siguen vigentes las vuelve a poner `_retomar`.
             return replace(
                 _retomar(e, hora),
                 ultimo_hecho="corrección incorporada; se retoma el trabajo",
@@ -2533,10 +2546,79 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             hora=hora or e.hora,
         )
     if accion == "continuar":
-        if e.estado != "detenido":
-            raise TransicionIlegal("continuar espera el estado detenido")
-        return replace(_retomar(e, hora), proc=None, herramienta="")
+        rearmar = (
+            e.estado == "recibido"
+            and e.proc is None
+            and not e.reserva
+            and e.intentos_nuevos
+        )
+        if e.estado not in ("detenido", "necesita_usuario") and not rearmar:
+            raise TransicionIlegal(
+                "continuar espera el estado detenido, una pausa sin proceso "
+                "o una pregunta del usuario"
+            )
+        return replace(
+            _retomar(_limpiar_para_continuar(e), hora),
+            proc=None, herramienta="", conductor="", intento="",
+        )
     raise TransicionIlegal(f"orden desconocida: {accion}")
+
+def _limpiar_para_continuar(e: Encargo) -> Encargo:
+    """Un continuar explícito quita el estado que el motor ya no exige.
+
+    La pregunta vieja, los contadores de la vuelta que la produjo y los
+    bloqueantes externos que una restricción expresa deja fuera dejan de
+    sostener el encargo. Una pregunta ligada a una inspección que sigue
+    esperando al propietario vuelve a ponerse en `_retomar`; las demás causas
+    que sigan vigentes se vuelven a preguntar en la pasada siguiente.
+    """
+    fase = e.fase_actual
+    fuera = list(e.fuera_de_alcance)
+    if fase is not None:
+        from .comprobacion import hallazgo_fuera_de_alcance_por_restriccion
+
+        hallazgos = []
+        for h in fase.hallazgos:
+            if (
+                h.origen == "deepseek"
+                and h.gravedad == "bloqueante"
+                and h.estado == "abierto"
+            ):
+                razon = hallazgo_fuera_de_alcance_por_restriccion(
+                    e.restricciones, h
+                )
+                if razon:
+                    h = replace(
+                        h,
+                        gravedad="observacion",
+                        estado="resuelto",
+                        cierre_evidencia=razon,
+                    )
+                    fuera = [x for x in fuera if x[0] != h.id]
+                    fuera.append((h.id, h.titulo, razon))
+            hallazgos.append(h)
+        e = con_fase(e, replace(fase, hallazgos=tuple(hallazgos)))
+    return replace(
+        e,
+        preguntas=(),
+        pendientes_entrega=(),
+        sin_progreso=0,
+        bloqueo_huella="",
+        firma_fallo="",
+        repeticiones=0,
+        vuelta_contada=0,
+        devuelto_con=(),
+        relevo_huella="",
+        relevos=0,
+        relevos_por_rol=(),
+        relevo_huella_por_rol=(),
+        no_concluyentes=0,
+        no_concluyente_ref=(),
+        fuera_de_alcance=tuple(fuera),
+        motivo="",
+        causa="",
+        reanuda_en="",
+    )
 
 
 def _retomar(e: Encargo, hora: str) -> Encargo:
@@ -3006,6 +3088,16 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         # El motor entrega el PR con pendientes: el nivel pr queda alcanzado
         # aunque el revisor no haya concluido.
         candidato = "pr"
+    elif paso == "deepseek_sin_revision":
+        # La fase sigue como si la revisión externa no tuviera hallazgos. Los
+        # bloqueantes que queden son de una lectura anterior y no frenan este
+        # SHA: el motor ya los cerró con la razón de la omisión. Si la lectura
+        # abierta es la del mismo SHA, sus bloqueantes siguen bloqueando y el
+        # nivel no avanza.
+        if e.deepseek_sha == sha and bloqueantes_abiertos(e, "deepseek"):
+            candidato = fase.nivel_alcanzado
+        else:
+            candidato = "pr"
     elif paso == "deepseek_leido":
         if not bloqueantes_abiertos(e, "deepseek"):
             candidato = "pr"
@@ -3037,11 +3129,19 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         if paso in ("commit", "push", "pr_abierto", "pr_listo", "pr_con_pendientes")
         and sha
         else fase.pr_sha,
-        deepseek_sha=sha if paso == "deepseek_leido" and sha else fase.deepseek_sha,
+        deepseek_sha=(
+            sha
+            if paso in ("deepseek_leido", "deepseek_sin_revision") and sha
+            else fase.deepseek_sha
+        ),
         deepseek_huella=(
             str(d.get("huella") or "")
             if paso == "deepseek_leido"
-            else fase.deepseek_huella
+            else (
+                HUELLA_DEEPSEEK_SIN_REVISION
+                if paso == "deepseek_sin_revision"
+                else fase.deepseek_huella
+            )
         ),
         integrado_sha=(
             str(d.get("recibo") or sha)
@@ -3439,7 +3539,8 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             "pr": {"numero": e.pr_numero, "sha": e.pr_sha},
             "deepseek": {
                 "sha": e.deepseek_sha,
-                "leida": bool(e.deepseek_sha),
+                "leida": bool(e.deepseek_sha)
+                and e.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION,
                 "error": e.deepseek_error,
             },
         },

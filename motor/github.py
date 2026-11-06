@@ -36,6 +36,7 @@ class PrView:
     head: str
     estado: str  # abierto | mergeado | cerrado
     merge_commit: str = ""
+    cuerpo: str = ""
 
 
 @dataclass(frozen=True)
@@ -431,7 +432,7 @@ class GhGitHub:
                 "-R",
                 self.nombre(repo),
                 "--json",
-                "number,headRefName,baseRefName,isDraft,headRefOid,state,mergeCommit",
+                "number,headRefName,baseRefName,isDraft,headRefOid,state,mergeCommit,body",
             )
         )
         estado = {"OPEN": "abierto", "MERGED": "mergeado"}.get(d["state"], "cerrado")
@@ -443,6 +444,7 @@ class GhGitHub:
             d["headRefOid"],
             estado,
             (d.get("mergeCommit") or {}).get("oid", ""),
+            str(d.get("body") or ""),
         )
 
     def abrir_pr(self, repo, rama, base, titulo, cuerpo):
@@ -875,6 +877,7 @@ class FakeGitHub:
             head,
             pr["estado"],
             pr.get("merge_commit", ""),
+            str(pr.get("cuerpo") or ""),
         )
 
     def abrir_pr(self, repo, rama, base, titulo, cuerpo):

@@ -159,6 +159,35 @@ de alcance», con su id y la razón. Un Critical, High o Medium dentro del
 alcance sigue bloqueando hasta corregirse o hasta que el revisor lo descarte
 con evidencia.
 
+La espera de DeepSeek tiene un tope de 30 minutos. Si el revisor independiente
+ya aprobó y el tope vence sin comentario, el motor deja la nota «sin revisión
+de DeepSeek tras N min» en el PR y sigue la fase como si no hubiera hallazgos:
+integra o despliega según el nivel autorizado y pasa a la fase siguiente. No
+fuerza el cierre del encargo. Si después llega un Critical, High o Medium
+dentro del alcance para un SHA ya integrado, se lee como hallazgo tardío y no
+se pierde, aunque el encargo ya haya terminado. El cierre mira los PR de todas
+las fases con entrega externa, no solo el de la fase activa. El sondeo se
+limita a 7 días desde el cierre del encargo: los primeros 60 minutos relee
+cada minuto y después cada 30 minutos; los errores también se espacian. Los
+encargos cerrados antes de que este cambio empezara a observar no se sondean,
+para no golpear GitHub con los encargos viejos al desplegar. El barrido
+comparte un presupuesto de consultas por pasada; lo que falte se retoma en la
+siguiente. Una lectura limpia o un aviso ya emitido no cierran el SHA antes de
+la ventana. Los bloqueantes de una lectura anterior no impiden que el SHA
+omitido avance.
+
+El hallazgo tardío no cambia el estado del encargo. Queda como nota en el PR
+de su fase y como aviso informativo al director, en palabras simples, para que
+decida si abre otro encargo. La nota es idempotente por SHA y huella del
+comentario: releer el mismo comentario no la repite.
+
+El sticky de `ai-review` puede declarar el timeout antes de esos 30 minutos:
+si `ai-review:completion` dice `timeout` con `retry: false` (o lo dice la frase
+de 900 s y «no se reintenta»), el motor no espera ni finge una aprobación. Lo
+trata en la misma pasada como revisión ausente: deja la nota y sigue la fase.
+Si el mismo comentario trae un Critical, High o Medium dentro del alcance,
+manda el hallazgo y sigue bloqueando.
+
 ## Corregir un encargo en curso
 
 `motor corregir` y `motor director corregir` aceptan una corrección en
@@ -297,8 +326,13 @@ solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
   impedimento `inspeccion:<id>` o con el encargo detenido, un ajuste cuenta como
   información nueva. El revisor corre una vez y, al abrirse su intento, el
   ajuste queda visto: si repite el mismo pedido, el gate vuelve a cerrar.
-- **`continuar` no deja un `recibido` mudo.** Si la pregunta sigue abierta y
-  nada la contestó, el encargo queda en `necesita_usuario` con esa pregunta.
+- **`continuar` no deja un `recibido` mudo.** Se acepta desde `detenido`,
+  `necesita_usuario` y desde un `recibido` sin proceso ni reserva, sin obligar
+  a `parar` primero. Limpia la pregunta vieja del relevo agotado, los
+  contadores de la vuelta y los bloqueantes externos que una restricción
+  expresa ya deja fuera. Si una pregunta ligada a una inspección sigue
+  realmente abierta y nada la contestó, vuelve a quedar en `necesita_usuario`
+  con esa pregunta.
 - **Un recurso cambiado no es una repetición.** La identidad de la inspección
   incluye el tamaño, la fecha y el hash de lo que leería el recurso (un
   archivo local o una base sqlite). Pedirlo de nuevo tras subir otro archivo es
@@ -416,8 +450,8 @@ GitHub tampoco cierra una fase con PR y nivel `pr` alcanzado: no hay veredicto
 que comprobar, y el encargo espera visible en el paso de entrega. Con entrega
 `integrado` o `desplegado`, las fases anteriores ya se fusionaron y no se
 reabren: si el comentario de DeepSeek sobre su PR trae un High o un Medium
-abierto al cerrar la última fase, el encargo no termina en silencio, sino que
-pregunta una vez al propietario (`necesita_usuario`) si abre un encargo aparte.
+abierto al cerrar la última fase, el motor deja la nota en el PR de esa fase y
+el aviso al director; el encargo sigue su cierre sin cambiar de estado.
 
 Un repo sin los workflows `ai-review-worker.yml` / `ai-review-publish.yml` o
 sin secretos no finge una revisión leída. La espera de DeepSeek no vence:

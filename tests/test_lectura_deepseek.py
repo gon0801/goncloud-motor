@@ -205,7 +205,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             self.assertEqual(_ids(e), ["F6"])
             self.assertEqual(e.nivel_alcanzado, "pr_abierto")
 
-    def test_un_medium_en_un_pr_ya_fusionado_no_termina_el_encargo_en_silencio(self):
+    def test_un_medium_en_un_pr_ya_fusionado_se_avisa_y_no_cambia_el_estado(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "ds-fusionado", _GhComentarios, nivel="integrado"
@@ -232,20 +232,13 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
 
             vuelta.gh.textos[primera.pr_numero] = _comentario(_hallazgo("F9", "medium"))
             e = vuelta("dos")
-            self.assertNotEqual(e.estado, "terminado")
-            self.assertEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.fase_activa, "dos")
-            self.assertEqual(len(e.preguntas), 1)
-            self.assertIn("ya fusionado", e.preguntas[0])
-            self.assertIn("hallazgo F9", e.preguntas[0])
-
-            # La pregunta ya se hizo: una segunda comprobación no vuelve a bloquear
-            # (si bloqueara, el encargo no cerraría ni tras la respuesta del propietario)
-            # ni a preguntar.
-            self.assertIsNone(
-                ciclo._veredicto_antes_de_cerrar(r.reg, e, vuelta.gh, ahora_iso())
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.preguntas, ())
+            self.assertTrue(any("F9" in n for n in e.notas_pr), e.notas_pr)
+            self.assertTrue(
+                any("abre otro encargo" in n for n in e.procedimiento),
+                e.procedimiento,
             )
-            self.assertEqual(len(r.fold().preguntas), 1)
 
     def test_sin_puerto_de_github_no_se_da_por_comprobado_el_veredicto(self):
         def texto(n):
