@@ -156,47 +156,76 @@ class FoldHastaCacheado(Base):
 
 class BaseRecreada(Base):
     def test_recrear_la_base_en_la_misma_ruta_no_reutiliza_la_cache(self):
-        ident = self.encargo("uno")
-        viejo = self.reg.fold(ident)
-        self.reg.close()
-        shutil.rmtree(self.base)
+        # Se fuerza la misma identidad de fichero: en Linux un inodo borrado se
+        # reutiliza y la prueba debe depender de la firma del primer evento.
+        with mock.patch(
+            "motor.encargos.registro._identidad_del_fichero",
+            return_value=(1, 1),
+        ):
+            ident = self.encargo("uno")
+            viejo = self.reg.fold(ident)
+            self.reg.close()
+            shutil.rmtree(self.base)
 
-        nuevo = Registro(self.base)
-        self.addCleanup(nuevo.close)
-        otra_hora = "2026-11-06T11:00:00Z"
-        entrega = {
-            "id": ident,
-            "clave": "uno",
-            "huella": "otra-huella",
-            "texto": "pedido uno",
-            "director": "hermes",
-            "adjuntos": [],
-            "restricciones": [],
-            "canal": "tg",
-            "via": "directa",
-            "detenido": False,
-            "entrega_nivel": "terminado",
-            "repo": "",
-            "rama": "",
-            "base": "",
-            "modelos_solicitados": [],
-            "recibo": "rec_otro",
-            "hora": otra_hora,
-        }
-        # Se escribe directo para no refrescar la cache al crear el encargo.
-        nuevo.append(ident, "entrega", entrega, "entrega:uno", otra_hora)
-        nuevo.append(
-            ident,
-            "fases",
-            {"fases": [{"id": "A", "resultado": "fase nueva"}], "hora": otra_hora},
-            "fase-uno",
-            otra_hora,
-        )
+            nuevo = Registro(self.base)
+            self.addCleanup(nuevo.close)
+            otra_hora = "2026-11-06T11:00:00Z"
+            entrega = {
+                "id": ident,
+                "clave": "uno",
+                "huella": "otra-huella",
+                "texto": "pedido uno",
+                "director": "hermes",
+                "adjuntos": [],
+                "restricciones": [],
+                "canal": "tg",
+                "via": "directa",
+                "detenido": False,
+                "entrega_nivel": "terminado",
+                "repo": "",
+                "rama": "",
+                "base": "",
+                "modelos_solicitados": [],
+                "recibo": "rec_otro",
+                "hora": otra_hora,
+            }
+            # Se escribe directo para no refrescar la cache al crear el encargo.
+            nuevo.append(ident, "entrega", entrega, "entrega:uno", otra_hora)
+            nuevo.append(
+                ident,
+                "fases",
+                {"fases": [{"id": "A", "resultado": "fase nueva"}], "hora": otra_hora},
+                "fase-uno",
+                otra_hora,
+            )
 
-        actual = nuevo.fold(ident)
-        self.assertEqual(actual.hora, otra_hora)
-        self.assertEqual(actual.fases[0].resultado, "fase nueva")
-        self.assertNotEqual(actual, viejo)
+            actual = nuevo.fold(ident)
+            self.assertEqual(actual.hora, otra_hora)
+            self.assertEqual(actual.fases[0].resultado, "fase nueva")
+            self.assertNotEqual(actual, viejo)
+
+
+class TopeDeLaCache(Base):
+    def test_la_cache_se_capa_a_la_cantidad_de_bases(self):
+        import motor.encargos.registro as registro_mod
+
+        with mock.patch.object(registro_mod, "_CACHE_MAX", 2):
+            with registro_mod._CACHES_CANDADO:
+                previo = registro_mod._CACHES.copy()
+                registro_mod._CACHES.clear()
+            try:
+                for i in range(3):
+                    reg = Registro(self.raiz / f"base-{i}")
+                    try:
+                        self.crear(reg, f"c{i}", HORA)
+                    finally:
+                        reg.close()
+                with registro_mod._CACHES_CANDADO:
+                    self.assertLessEqual(len(registro_mod._CACHES), 2)
+            finally:
+                with registro_mod._CACHES_CANDADO:
+                    registro_mod._CACHES.clear()
+                    registro_mod._CACHES.update(previo)
 
 
 class FoldConcurrente(Base):
