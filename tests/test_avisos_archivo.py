@@ -152,6 +152,38 @@ class InciertosSinDestino(Base):
             (self.b.base / "avisos" / "archivo" / f"{inicio_activo}.json").is_file()
         )
 
+    def test_el_cierre_incierto_de_un_terminado_se_descarta_y_no_se_envia(self):
+        (self.b.base / "resumen-config.json").unlink()
+        ident = self.b.encargo("cierro", canal="tg", via="directa")
+        self.b.terminar(ident)
+        cierre = directores._aviso_de(self.b.reg.fold(ident))
+        cierre.update(
+            {
+                "estado": "incierto",
+                "recibo": "",
+                "fallos": 1,
+                "proximo_intento": directores._iso(T0 - 10),
+            }
+        )
+        (self.b.base / "avisos").mkdir(parents=True, exist_ok=True)
+        (self.b.base / "avisos" / f"{cierre['id']}.json").write_text(
+            json.dumps(cierre), encoding="utf-8"
+        )
+
+        directores.drenar(self.b.reg, ahora=T0)
+
+        guardado = json.loads(
+            (self.b.base / "avisos" / "archivo" / f"{cierre['id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(guardado["estado"], "descartado")
+        self.assertEqual(guardado["motivo"], directores.MOTIVO_ENCARGO_CERRADO)
+        self.assertFalse((self.b.base / "avisos" / f"{cierre['id']}.json").exists())
+        self.assertEqual(
+            self.b.llamadas(), [], "un cierre incierto de un cerrado no se reenvia"
+        )
+
 
 class Migracion(Base):
     def _terminal(self, ident: str, estado: str) -> None:

@@ -283,7 +283,7 @@ class AvisoInciertoHuerfano(Banco):
         self.assertEqual(self.sondeos(), ["sondeo-hermes"])
         self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
 
-    def test_el_cierre_incierto_de_un_cancelado_se_reintenta_y_no_se_descarta(self):
+    def test_el_cierre_incierto_de_un_cancelado_se_descarta_y_no_se_envia(self):
         ident = self.encargo_directo()
         self.cancelar(ident)
         cierre = directores._aviso_de(self.reg.fold(ident))
@@ -291,16 +291,22 @@ class AvisoInciertoHuerfano(Banco):
         cierre["fallos"] = 1
         cierre["proximo_intento"] = directores._iso(T0 - 10)
         self.escribir_aviso(cierre)
+        self.caido()
 
         directores.drenar(self.reg, ahora=T0)
 
         guardado = self.aviso(cierre["id"])
-        self.assertEqual(guardado["estado"], "publicado")
-        self.assertTrue(guardado.get("recibo"))
-        self.assertIn(cierre["id"], self.lineas("envios.log"))
-        self.assertEqual(self.sondeos(), [])
+        self.assertEqual(guardado["estado"], "descartado")
+        self.assertEqual(guardado["motivo"], directores.MOTIVO_ENCARGO_CERRADO)
+        self.assertTrue(
+            (self.base / "avisos" / "archivo" / f"{cierre['id']}.json").is_file()
+        )
+        self.assertNotIn(cierre["id"], self.lineas("envios.log"))
+        self.assertNotIn(cierre["id"], self.lineas("check.log"))
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
 
-    def test_el_cierre_incierto_de_un_terminado_se_concilia_y_no_se_descarta(self):
+    def test_el_cierre_incierto_de_un_terminado_se_descarta_y_no_se_envia(self):
         ident = self.encargo_directo()
         self.terminar(ident)
         cierre = directores._aviso_de(self.reg.fold(ident))
@@ -308,15 +314,20 @@ class AvisoInciertoHuerfano(Banco):
         cierre["fallos"] = 1
         cierre["proximo_intento"] = directores._iso(T0 - 10)
         self.escribir_aviso(cierre)
-        self.check_modo("hallado")
+        self.caido()
 
         directores.drenar(self.reg, ahora=T0)
 
         guardado = self.aviso(cierre["id"])
-        self.assertEqual(guardado["estado"], "publicado")
-        self.assertTrue(guardado.get("recibo"))
-        self.assertIn(cierre["id"], self.lineas("check.log"))
-        self.assertEqual(self.sondeos(), [])
+        self.assertEqual(guardado["estado"], "descartado")
+        self.assertEqual(guardado["motivo"], directores.MOTIVO_ENCARGO_CERRADO)
+        self.assertTrue(
+            (self.base / "avisos" / "archivo" / f"{cierre['id']}.json").is_file()
+        )
+        self.assertNotIn(cierre["id"], self.lineas("envios.log"))
+        self.assertNotIn(cierre["id"], self.lineas("check.log"))
+        self.assertEqual(self.sondeos(), ["sondeo-hermes"])
+        self.assertEqual(canales.canales_caidos(self.base, ahora=T0 + 1000), [])
 
     def test_un_aviso_incierto_huerfano_de_un_encargo_terminado_no_bloquea_el_sondeo(self):
         ident = self.encargo_directo()
