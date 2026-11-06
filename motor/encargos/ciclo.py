@@ -1185,7 +1185,10 @@ def _barrer_encargos(
         if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
             arbol = observar(directorio, proc)
-        enc = _refrescar_cuerpo_fuera_de_alcance(registro, enc, gh, espacio, hora)
+        if not parada:
+            enc = _refrescar_cuerpo_fuera_de_alcance(
+                registro, enc, gh, espacio, hora
+            )
         if arbol == "ausente" and enc.proc is not None:
             _soltar_conductor(registro, enc, hora)
         if enc.proc is not None and arbol == "ausente":
@@ -4379,7 +4382,8 @@ def _marcar_deepseek_limpio(
                 "hora": hora,
             },
         },
-        f"entrega:{enc.id}:{enc.fase_activa}:deepseek_limpio:{fase.pr_sha}",
+        f"entrega:{enc.id}:{enc.fase_activa}:deepseek_limpio:"
+        f"{fase.pr_sha}:{fase.deepseek_huella}",
     )
     return registro.fold(enc.id) or enc
 
@@ -7248,6 +7252,11 @@ def marcar_relevo_agotado(
     el PR con lo que hay, o termine con el motivo si todavía no hay producto.
     """
     abiertos = bloqueantes_abiertos(enc)
+    fresco = registro.fold(enc.id)
+    if fresco is not None and len(fresco.ajustes) > len(enc.ajustes):
+        # Una corrección llegó mientras se elegía el modelo. No se convierte
+        # en entrega con pendientes: el próximo barrido se la da al responsable.
+        return fresco
     texto = (
         f"{_RELEVO_AGOTADO} del rol {rol}. El motor entrega lo que hay con los "
         "pendientes abiertos, sin esperar a una persona."

@@ -735,7 +735,7 @@ def _ruta_de(ancla: str) -> str:
 
 
 _RUTA_EN_RESTRICCION = re.compile(
-    r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})(?![\w./-])"
+    r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})(?![\w/-]|\.\w)"
 )
 _PROHIBE = (
     "no tocar",
@@ -795,14 +795,15 @@ def hallazgo_fuera_de_alcance_por_restriccion(
     incluye: list[tuple[str, ...]] = []
     excluye: list[tuple[str, ...]] = []
     for texto in restricciones:
-        bajo = texto.lower()
-        rutas = _rutas_de_restriccion(texto)
-        if not rutas:
-            continue
-        if any(p in bajo for p in _PROHIBE):
-            excluye.append(rutas)
-        elif any(p in bajo for p in _ACOTA):
-            incluye.append(rutas)
+        for clausula in re.split(r";|\.(?=\s|$)", texto):
+            bajo = clausula.lower()
+            rutas = _rutas_de_restriccion(clausula)
+            if not rutas:
+                continue
+            if any(p in bajo for p in _PROHIBE):
+                excluye.append(rutas)
+            elif any(p in bajo for p in _ACOTA):
+                incluye.append(rutas)
     if any(_ruta_cubierta(ruta, rutas) for rutas in excluye):
         return (
             "la restricción expresa del encargo prohíbe tocar "

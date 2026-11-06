@@ -7,7 +7,8 @@ import tempfile
 import unittest
 
 from motor.encargos.ciclo import _paso_entrega, ahora_iso
-from motor.encargos.dominio import bloqueantes_abiertos
+from motor.encargos.comprobacion import hallazgo_fuera_de_alcance_por_restriccion
+from motor.encargos.dominio import Hallazgo, bloqueantes_abiertos
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import (
     _entrega_pr,
@@ -16,6 +17,16 @@ from tests.test_flujo_revisiones import (
 )
 
 RESTRICCION = "Cambio acotado a motor/encargos/cli.py y su prueba"
+
+
+def _hallazgo(ancla: str) -> Hallazgo:
+    return Hallazgo(
+        id="F1",
+        gravedad="bloqueante",
+        criterio="comportamiento",
+        titulo="El comando de integraciones filtra el token",
+        ancla=ancla,
+    )
 
 
 def setUpModule():
@@ -52,6 +63,26 @@ def _cuerpo_del_pr(vuelta) -> str:
 
 
 class HallazgoFueraDeAlcance(unittest.TestCase):
+    def test_restriccion_con_clausulas_clasifica_cada_ruta(self):
+        texto = "Cambio acotado a motor/encargos/cli.py; no tocar motor/otro.py"
+        permitido = _hallazgo("motor/encargos/cli.py:1")
+        prohibido = _hallazgo("motor/otro.py:1")
+        self.assertEqual(
+            hallazgo_fuera_de_alcance_por_restriccion((texto,), permitido), ""
+        )
+        self.assertIn(
+            "prohíbe tocar",
+            hallazgo_fuera_de_alcance_por_restriccion((texto,), prohibido),
+        )
+
+    def test_restriccion_terminada_en_punto_extrae_la_ruta(self):
+        self.assertIn(
+            "prohíbe tocar",
+            hallazgo_fuera_de_alcance_por_restriccion(
+                ("No tocar motor/otro.py.",), _hallazgo("motor/otro.py:1")
+            ),
+        )
+
     def test_restriccion_expresa_deja_fuera_el_hallazgo_y_entrega(self):
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
