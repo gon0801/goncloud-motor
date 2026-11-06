@@ -5064,10 +5064,26 @@ def _anotar_nota_en_pr_tardia(
         encabezado = (
             "" if "## Notas del motor" in cuerpo else "## Notas del motor\n"
         )
-        resto = f"\n\n{encabezado}- {texto}"
         nuevo = f"{cuerpo}\n\n{encabezado}- {texto}".strip()
         if not _cabe_en_el_limite(nuevo):
-            nuevo = _cuerpo_recortado(cuerpo, resto)
+            # No se recorta el cuerpo existente: se perderían en silencio las
+            # notas previas. La nota queda en el estado del encargo.
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "nota_pr",
+                    "data": {
+                        "texto": (
+                            texto
+                            + " (el cuerpo del PR llegó al límite; la nota "
+                            "queda en el estado del encargo)"
+                        ),
+                        "hora": hora,
+                    },
+                },
+                ukey,
+            )
+            return registro.fold(enc.id) or enc
         try:
             gh.actualizar_cuerpo(enc.entrega.repo, fase.pr_numero, nuevo)
         except Exception as exc:

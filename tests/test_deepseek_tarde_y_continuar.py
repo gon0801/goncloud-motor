@@ -343,6 +343,15 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
                 if pr["numero"] == pr_primera
             )["cuerpo"]
             self.assertEqual(cuerpo_dos.count("después de cerrar"), 1)
+            huella = ciclo._huella_comentarios(
+                [{"texto": _comentario(_medio("F11")), "sha": e.fases[0].pr_sha}]
+            )
+            self.assertIsNotNone(
+                r.reg.por_ukey(
+                    f"cuerpo-tardio:{r.enc}:{e.fases[0].id}:"
+                    f"{e.fases[0].pr_sha}:{huella}"
+                )
+            )
 
     def test_un_medium_dentro_del_alcance_antes_del_tope_sigue_bloqueando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -1237,7 +1246,8 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
                 pr for pr in estado["prs"].values()
                 if pr["numero"] == e.pr_numero
             )
-            pr["cuerpo"] = "x" * (ciclo._LIMITE_CUERPO_PR - 5)
+            cuerpo_original = "x" * (ciclo._LIMITE_CUERPO_PR - 5)
+            pr["cuerpo"] = cuerpo_original
             (vuelta.gh.d / "github.json").write_text(
                 json.dumps(estado), encoding="utf-8"
             )
@@ -1252,8 +1262,12 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
                 pr for pr in estado["prs"].values()
                 if pr["numero"] == e.pr_numero
             )["cuerpo"]
-            self.assertLessEqual(len(cuerpo), ciclo._LIMITE_CUERPO_PR)
-            self.assertIn("F26", cuerpo)
+            # No se recorta el cuerpo existente: se perderían notas previas.
+            self.assertEqual(cuerpo, cuerpo_original)
+            e = r.fold()
+            self.assertTrue(
+                any("llegó al límite" in n for n in e.notas_pr), e.notas_pr
+            )
 
 
 if __name__ == "__main__":
