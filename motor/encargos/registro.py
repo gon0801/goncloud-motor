@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -44,16 +45,16 @@ class _CacheDeLaBase:
         self.plegados_hasta: dict[tuple[str, int], _Plegado] = {}
 
 
-# La identidad del fichero separa una base recreada en la misma ruta: un
-# registro nuevo vuelve a empezar los ids y una colisión de token devolvería
-# historia vieja. La cota impide que un proceso que abre muchas bases acumule
-# plegados para siempre.
-_CACHES: OrderedDict[tuple[str, tuple[int, int]], _CacheDeLaBase] = OrderedDict()
+# La identidad del fichero y la firma del primer evento separan una base
+# recreada en la misma ruta: un registro nuevo vuelve a empezar los ids y una
+# colisión de token devolvería historia vieja. La cota impide que un proceso
+# que abre muchas bases acumule plegados para siempre.
+_CACHES: OrderedDict[tuple[str, tuple[int, int], str], _CacheDeLaBase] = OrderedDict()
 _CACHE_MAX = 16
 _CACHES_CANDADO = threading.Lock()
 
 
-def _identidad_de_la_base(base: Path) -> tuple[int, int]:
+def _identidad_del_fichero(base: Path) -> tuple[int, int]:
     try:
         stat = (base / "registro.sqlite").stat()
     except OSError:
@@ -61,8 +62,21 @@ def _identidad_de_la_base(base: Path) -> tuple[int, int]:
     return (int(stat.st_dev), int(stat.st_ino))
 
 
-def _cache_de(base: Path) -> _CacheDeLaBase:
-    clave = (str(base), _identidad_de_la_base(base))
+def _firma_de_la_base(db: sqlite3.Connection) -> str:
+    fila = db.execute(
+        "SELECT id, ts, kind, data FROM events ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not fila:
+        return ""
+    return hashlib.sha256("\0".join(str(x) for x in fila).encode()).hexdigest()
+
+
+def _cache_de(base: Path, db: sqlite3.Connection) -> _CacheDeLaBase:
+    firma = _firma_de_la_base(db)
+    if not firma:
+        # Una base vacía no comparte caché: todavía no tiene identidad estable.
+        return _CacheDeLaBase()
+    clave = (str(base), _identidad_del_fichero(base), firma)
     with _CACHES_CANDADO:
         cache = _CACHES.get(clave)
         if cache is not None:
@@ -122,10 +136,18 @@ class Registro:
             "INSERT OR IGNORE INTO cortes_avisos (version, evento) "
             "SELECT 'cierres-cancelados-v1', COALESCE(MAX(id), 0) FROM events"
         )
-        self._cache = _cache_de(self.base)
+        self._cache_actual: _CacheDeLaBase | None = None
         self._ultimos: dict[str, tuple[int, int]] | None = None
         self._data_version = -1
         self._cambios = -1
+
+    @property
+    def _cache(self) -> _CacheDeLaBase:
+        # Se resuelve en el primer fold: una instancia que nace con la base
+        # vacía y escribe antes de plegar comparte la caché ya poblada.
+        if self._cache_actual is None:
+            self._cache_actual = _cache_de(self.base, self.db)
+        return self._cache_actual
 
     def close(self) -> None:
         self.db.close()
