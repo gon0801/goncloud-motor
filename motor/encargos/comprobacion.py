@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -217,9 +218,10 @@ def leer_disputa(interno: Path) -> tuple[dict, ...] | None:
 
     Formato: `{"hallazgo": "F1", "evidencia": "..."}` o
     `{"disputas": [{"hallazgo": "F1", "evidencia": "..."}]}`. No descarta
-    nada: el motor lo convierte en una pregunta al propietario, que es el
-    único que puede autorizar el descarte. Una lista vacía es una retirada
-    de la disputa: no hay nada que preguntar y no es un error.
+    nada: la decide el revisor independiente con esa evidencia. Si la acepta,
+    incluye el hallazgo en `resueltos` o en `fuera_de_alcance`; si la rechaza,
+    el hallazgo sigue abierto y vuelve al responsable. Una lista vacía es una
+    retirada de la disputa: no hay nada que decidir y no es un error.
     """
     path = interno / "disputa.json"
     if not path.is_file():
@@ -704,6 +706,8 @@ class JuicioValidado:
     # Hallazgos que el revisor dio por resueltos, también los de DeepSeek que
     # el responsable disputó con evidencia.
     resueltos: tuple[str, ...] = ()
+    # Hallazgos externos que el revisor declara fuera de alcance, con su razón.
+    fuera_de_alcance: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -729,6 +733,132 @@ class DefectoJuicio(ValueError):
 
 def _ruta_de(ancla: str) -> str:
     return ancla.split(":")[0].strip()
+
+
+_RUTA_EN_RESTRICCION = re.compile(
+    r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})(?![\w/-]|\.\w)"
+)
+_PROHIBE = (
+    "no tocar",
+    "no modificar",
+    "no cambiar",
+    "sin tocar",
+    "sin modificar",
+    "prohibido",
+)
+_AMBIGUO = (
+    "salvo",
+    "excepto",
+    "fuera de",
+    "ajenos",
+    "ajeno",
+    "que no sea",
+    "que no sean",
+    "distinto",
+    "distinta",
+    "distintos",
+    "distintas",
+    "diferente",
+    "salir de",
+)
+_ACOTA = (
+    "acotad",
+    "limitad",
+    "solo",
+    "sólo",
+    "solamente",
+    "unicamente",
+    "únicamente",
+    "exclusivamente",
+)
+
+
+def _rutas_de_restriccion(texto: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            m.group(1).strip("./").replace("\\", "/")
+            for m in _RUTA_EN_RESTRICCION.finditer(texto)
+        )
+    )
+
+
+def _ruta_cubierta(
+    ruta: str, permitidas: tuple[str, ...], *, incluye: bool = False
+) -> bool:
+    actual = ruta.strip("./").replace("\\", "/")
+    for cruda in permitidas:
+        permitida = cruda.strip("./").replace("\\", "/")
+        if actual == permitida or actual.startswith(permitida.rstrip("/") + "/"):
+            return True
+        if incluye and "/" not in actual:
+            if Path(actual).name == Path(permitida).name:
+                return True
+        if not incluye or not Path(permitida).suffix:
+            continue
+        nombre = Path(actual).name
+        es_prueba = (
+            nombre.startswith("test_")
+            or actual.startswith("tests/")
+            or "/tests/" in f"/{actual}"
+        )
+        if es_prueba and Path(permitida).stem in Path(actual).stem:
+            return True
+    return False
+
+
+def hallazgo_fuera_de_alcance_por_restriccion(
+    restricciones: tuple[str, ...], hallazgo: Hallazgo
+) -> str:
+    """Razón por la que una restricción expresa deja fuera el archivo del hallazgo.
+
+    Una restricción que prohíbe tocar rutas deja fuera esos archivos. Una que
+    acota el cambio a ciertas rutas deja fuera los demás. La heurística solo
+    actúa cuando la restricción nombra rutas y dice «no tocar» o «acotado a»,
+    sin excepciones ni mezclas de prohibición y lista blanca: «salvo»,
+    «excepto», «fuera de», «ajenos a», «que no sea», «distinto», «sino» y una
+    cláusula con «no tocar» y «solo» se dejan al revisor independiente. Una
+    frase sin rutas no autoriza a descartar nada.
+    """
+    ruta = _ruta_de(hallazgo.ancla)
+    if not ruta:
+        return ""
+    incluye: list[tuple[str, ...]] = []
+    excluye: list[tuple[str, ...]] = []
+    # La heurística solo actúa sobre cláusulas sin excepciones: «salvo»,
+    # «fuera de», «que no sea» y sus variantes dejan la decisión al revisor.
+    # Un falso negativo mantiene el hallazgo bloqueando; un falso positivo lo
+    # descartaría sin que el revisor lo haya decidido.
+    for texto in restricciones:
+        for clausula in re.split(r";|\.(?=\s|$)", texto):
+            bajo = clausula.lower()
+            rutas = _rutas_de_restriccion(clausula)
+            if not rutas:
+                continue
+            if any(p in bajo for p in _AMBIGUO) or re.search(r"\bsino\b", bajo):
+                continue
+            if any(p in bajo for p in _PROHIBE) and any(
+                p in bajo for p in _ACOTA
+            ):
+                continue
+            if any(p in bajo for p in _PROHIBE):
+                excluye.append(rutas)
+            elif any(p in bajo for p in _ACOTA):
+                incluye.append(rutas)
+    if any(_ruta_cubierta(ruta, rutas) for rutas in excluye):
+        return (
+            "la restricción expresa del encargo prohíbe tocar "
+            f"{ruta}; el hallazgo lo señala"
+        )
+    if incluye and not any(
+        _ruta_cubierta(ruta, rutas, incluye=True) for rutas in incluye
+    ):
+        permitidas = sorted({p for rutas in incluye for p in rutas})
+        return (
+            "la restricción expresa del encargo limita el cambio a "
+            + ", ".join(permitidas)
+            + f"; el hallazgo señala {ruta}"
+        )
+    return ""
 
 
 def _parametros_de_inspeccion(crudo) -> tuple[tuple[str, str], ...]:
@@ -785,6 +915,7 @@ def validar_juicio(
     *,
     pedidos: tuple[dict, ...] = (),
     error_pedidos: str = "",
+    externos: tuple[Hallazgo, ...] = (),
 ) -> JuicioValidado:
     """Parsea el juicio a tipos en la frontera. Bloquear es un tipo.
 
@@ -812,6 +943,29 @@ def validar_juicio(
     resueltos = {
         str(x) for x in (d.get("resueltos") or ()) if isinstance(x, str)
     }
+    ids_externos = {h.id for h in externos if h.estado == "abierto"}
+    fuera_de_alcance: list[tuple[str, str]] = []
+    crudo_fuera = d.get("fuera_de_alcance") or ()
+    if isinstance(crudo_fuera, dict):
+        crudo_fuera = [
+            {"hallazgo": clave, "razon": valor}
+            for clave, valor in crudo_fuera.items()
+        ]
+    if isinstance(crudo_fuera, (list, tuple)):
+        for item in crudo_fuera:
+            if isinstance(item, dict):
+                hid = str(
+                    item.get("hallazgo") or item.get("id") or ""
+                ).strip()
+                razon = " ".join(
+                    str(item.get("razon") or item.get("motivo") or "").split()
+                )
+            else:
+                hid = str(item or "").strip()
+                razon = ""
+            if hid and razon and hid in ids_externos:
+                fuera_de_alcance.append((hid, razon))
+    fuera_de_alcance = list(dict.fromkeys(fuera_de_alcance))
     cubre_ids = tuple(h.id for h in alcance.abiertos)
     previos = {h.id: h for h in alcance.abiertos}
     hallazgos: list[Hallazgo] = []
@@ -946,10 +1100,15 @@ def validar_juicio(
         inspeccion_faltante=inspeccion_faltante,
         inspeccion=inspeccion,
         resueltos=tuple(sorted(resueltos)),
+        fuera_de_alcance=tuple(fuera_de_alcance),
     )
 
 
-def leer_juicio(path: Path, alcance: AlcanceRevision) -> JuicioValidado | FalloInstrumento:
+def leer_juicio(
+    path: Path,
+    alcance: AlcanceRevision,
+    externos: tuple[Hallazgo, ...] = (),
+) -> JuicioValidado | FalloInstrumento:
     try:
         texto = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
@@ -959,7 +1118,7 @@ def leer_juicio(path: Path, alcance: AlcanceRevision) -> JuicioValidado | FalloI
     except ValueError as exc:
         return FalloInstrumento("juicio", f"juicio no utilizable: {exc}", "json")
     try:
-        return validar_juicio(d, alcance)
+        return validar_juicio(d, alcance, externos=externos)
     except DefectoJuicio as exc:
         return FalloInstrumento(
             "juicio", f"juicio no utilizable: {exc}", f"esquema:{exc.condicion}"

@@ -341,7 +341,11 @@ def _git_de_ensayo(semilla: Path, args: list[str], donde: Path | None = None) ->
         )
 
 
-def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, nivel: str = "pr"):
+def _entrega_pr(
+    caso, tmp: str, clave: str, gh_cls, config: dict | None = None,
+    nivel: str = "pr", texto: str = "agrega saludo.txt con hola",
+    restricciones: tuple[str, ...] = (),
+):
     """Encargo de nivel pr sobre un repo bare real. `vuelta(contenido)` hace
     de implementador y de revisor que aprueba, y devuelve el encargo tras el
     paso de entrega contra el GitHub falso."""
@@ -365,8 +369,9 @@ def _entrega_pr(caso,tmp: str, clave: str, gh_cls, config: dict | None = None, n
     ):
         _git_de_ensayo(semilla, args)
     r = Recorrido(
-        tmp, clave, "agrega saludo.txt con hola",
+        tmp, clave, texto,
         entrega_nivel=nivel, repo=str(bare), base_rama="main",
+        restricciones=restricciones,
     )
     caso.addCleanup(r.reg.close)
     caso.assertEqual(_asegurar_repo(r.fold(), r.espacio), "")

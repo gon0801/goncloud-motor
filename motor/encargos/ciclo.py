@@ -20,6 +20,7 @@ from .comprobacion import (
     VERSION_LECTOR_DEEPSEEK,
     digest,
     firma_producto,
+    hallazgo_fuera_de_alcance_por_restriccion,
     hallazgos_deepseek,
     iniciar_comprobacion,
     instrucciones_responsable,
@@ -1184,6 +1185,10 @@ def _barrer_encargos(
         if por_incorporar:
             enc = _incorporar(registro, enc, espacio, hora, directorio)
             arbol = observar(directorio, proc)
+        if not parada:
+            enc = _refrescar_cuerpo_fuera_de_alcance(
+                registro, enc, gh, espacio, hora
+            )
         if arbol == "ausente" and enc.proc is not None:
             _soltar_conductor(registro, enc, hora)
         if enc.proc is not None and arbol == "ausente":
@@ -1626,6 +1631,44 @@ def _sin_avance(
     )
 
 
+def _disputas_pendientes(
+    registro: Registro, enc: Encargo, interno: Path
+) -> list[tuple]:
+    """Disputas con evidencia que el revisor independiente todavía no decidió.
+
+    Una disputa deja de estar pendiente cuando hay una revisión independiente
+    posterior. Si el revisor la acepta, el hallazgo queda resuelto o fuera de
+    alcance; si la rechaza, sigue abierto y vuelve al responsable.
+    """
+    try:
+        disputas = leer_disputa(interno)
+    except ValueError:
+        return []
+    if not disputas:
+        return []
+    abiertos = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
+    if not abiertos:
+        return []
+    ultima_disputa = 0
+    ultima_revision = 0
+    for evento in registro.eventos(enc.id):
+        if evento["kind"] == "disputa":
+            ultima_disputa = max(ultima_disputa, int(evento["id"]))
+        elif (
+            evento["kind"] == "revision"
+            and (evento["data"].get("origen") or "independiente") == "independiente"
+            and (evento["data"].get("fase") or enc.fase_activa) == enc.fase_activa
+        ):
+            ultima_revision = max(ultima_revision, int(evento["id"]))
+    if not ultima_disputa or ultima_revision > ultima_disputa:
+        return []
+    return [
+        (abiertos[d["hallazgo"]], d["evidencia"])
+        for d in disputas
+        if d["hallazgo"] in abiertos
+    ]
+
+
 def _disputa_de_deepseek(
     registro: Registro, enc: Encargo, interno: Path, hora: str
 ) -> bool:
@@ -1694,6 +1737,18 @@ def _disputa_de_deepseek(
             "data": {"nota": texto, "hora": hora},
         },
         f"disputa-procedimiento:{enc.id}:{ukey[-12:]}",
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "disputa",
+            "data": {
+                "hallazgos": [d["hallazgo"] for d in disputas],
+                "evidencia": texto,
+                "hora": hora,
+            },
+        },
+        f"disputa-dato:{enc.id}:{ukey[-12:]}",
     )
     return False
 
@@ -1897,7 +1952,9 @@ def _juicio_reparado(
             return False
     if not ruta.is_file():
         return False
-    resultado = leer_juicio(ruta, alcance_de(enc))
+    resultado = leer_juicio(
+        ruta, alcance_de(enc), bloqueantes_abiertos(enc, "deepseek")
+    )
     if not isinstance(resultado, JuicioValidado):
         return False
     if clase == "juicio:esquema:efectos":
@@ -2673,6 +2730,7 @@ def _cerrar_con_juicio(
             return registro.fold(enc.id)
     version_previa = enc.revision_vigente.version if enc.revision_vigente else ""
     enc_previo = enc
+    disputa_previa = bool(_disputas_pendientes(registro, enc, interno_de(espacio)))
     revisor = ""
     for rol, _agente, modelo in reversed(enc.modelos):
         if rol == "revisor":
@@ -2714,6 +2772,37 @@ def _cerrar_con_juicio(
                 f"disputa-resuelta:{enc.id}:{h.id}",
             )
         enc = registro.fold(enc.id) or enc
+    fuera_ds = [
+        (hid, razon)
+        for hid, razon in juicio.fuera_de_alcance
+        if hid in abiertos_ds and hid not in ya_resueltos and hid not in ids_ds
+    ]
+    if fuera_ds:
+        hallazgos_juicio = tuple(hallazgos_juicio) + tuple(
+            replace(
+                abiertos_ds[hid],
+                gravedad="observacion",
+                estado="resuelto",
+                cierre_evidencia=razon,
+            )
+            for hid, razon in fuera_ds
+        )
+        for hid, razon in fuera_ds:
+            h = abiertos_ds[hid]
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "hallazgo_fuera_de_alcance",
+                    "data": {
+                        "id": hid,
+                        "titulo": h.titulo,
+                        "razon": razon,
+                        "hora": hora,
+                    },
+                },
+                f"fuera-alcance:{enc.id}:{enc.fase_activa}:{hid}",
+            )
+        enc = registro.fold(enc.id) or enc
     registro.anotar(
         enc.id,
         {
@@ -2741,6 +2830,37 @@ def _cerrar_con_juicio(
         f"revision-dato:{enc.id}:{enc.fase_activa}:{enc.generacion}:{juicio.version}",
     )
     enc = registro.fold(enc.id)
+    if resueltos_ds or fuera_ds:
+        enc = _marcar_deepseek_limpio(registro, enc, hora)
+    if (
+        juicio.veredicto == "aprobado"
+        and disputa_previa
+        and bloqueantes_abiertos(enc, "deepseek")
+    ):
+        abiertos = bloqueantes_abiertos(enc, "deepseek")
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "nota_pr",
+                "data": {
+                    "texto": (
+                        "el revisor independiente no descartó la disputa; "
+                        "el hallazgo vuelve al responsable: "
+                        + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
+                    ),
+                    "hora": hora,
+                },
+            },
+            f"disputa-rechazada:{enc.id}:{enc.generacion}",
+        )
+        _devolver(
+            registro, enc, "investigar", abiertos[0].titulo,
+            "corregir " + ", ".join(h.id for h in abiertos)
+            + "; la disputa con evidencia no fue aceptada por el revisor",
+            hora, f"disputa-rechazada-{enc.generacion}",
+        )
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     if juicio.veredicto == "cambios":
         progreso = hubo_avance(enc_previo, enc)
         abiertos = bloqueantes_abiertos(enc, "independiente")
@@ -3035,6 +3155,21 @@ def _incorporar_responsable(
     if _disputa_de_deepseek(registro, enc, interno, hora):
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
+    pendientes_disputa = _disputas_pendientes(registro, enc, interno)
+    if pendientes_disputa:
+        abiertos_disputa = [h for h, _ in pendientes_disputa]
+        _devolver(
+            registro, enc, "decidir_disputa",
+            "el responsable sostiene con evidencia que no aplican: "
+            + "; ".join(f"{h.id} {h.titulo}" for h in abiertos_disputa),
+            "decidir con la evidencia si el hallazgo aplica; si no aplica, "
+            "descártalo y deja la razón en el PR; si aplica, el responsable "
+            "lo corrige",
+            hora, f"disputa-revisor-{enc.generacion}",
+            rol="revisor",
+        )
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     if error_declaradas:
         _anotar_instrumento(
             registro, enc, "comprobacion", error_declaradas,
@@ -3181,7 +3316,10 @@ def _juicio_de_referencia(enc: Encargo, directorio: Path):
         referencia = json.loads(
             (directorio / "revision.json").read_text(encoding="utf-8")
         )
-        return leer_juicio(Path(referencia["resultado"]), alcance_de(enc))
+        return leer_juicio(
+            Path(referencia["resultado"]), alcance_de(enc),
+            bloqueantes_abiertos(enc, "deepseek"),
+        )
     except (OSError, UnicodeError, ValueError, KeyError, TypeError):
         return None
 
@@ -3377,7 +3515,10 @@ def _incorporar_revisor(
         )
         enc = registro.fold(enc.id)
     alcance = alcance_de(enc)
-    resultado = leer_juicio(Path(referencia["resultado"]), alcance)
+    resultado = leer_juicio(
+        Path(referencia["resultado"]), alcance,
+        bloqueantes_abiertos(enc, "deepseek"),
+    )
     if isinstance(resultado, FalloInstrumento):
         if _bloqueo_entorno(registro, enc, espacio, hora):
             _publica(directorio / "incorporado", hora)
@@ -4230,6 +4371,15 @@ def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
             "## Pendientes abiertos al entregar\n"
             + "\n".join(f"- {p}" for p in pendientes)
         )
+    fuera = getattr(enc, "fuera_de_alcance", ())
+    if fuera:
+        adicionales.append(
+            "## Hallazgos fuera de alcance\n"
+            + "\n".join(
+                f"- {hid} «{titulo}»: {razon}"
+                for hid, titulo, razon in fuera
+            )
+        )
     if notas:
         adicionales.append(
             "## Notas del motor\n" + "\n".join(f"- {n}" for n in notas)
@@ -4246,18 +4396,26 @@ def _cuerpo_pr(enc: Encargo, espacio: Path) -> str:
     return _cuerpo_recortado(texto, resto)
 
 
-def _cuerpo_ya_publicado(registro: Registro, enc: Encargo, sha: str) -> bool:
+def _huella_cuerpo(cuerpo: str) -> str:
+    return hashlib.sha256(cuerpo.encode("utf-8")).hexdigest()[:16]
+
+
+def _cuerpo_ya_publicado(
+    registro: Registro, enc: Encargo, sha: str, huella: str = ""
+) -> bool:
     return any(
         ev["kind"] == "entrega_externa"
         and ev["data"].get("paso") == "pr_cuerpo"
         and ev["data"].get("sha") == sha
+        and (not huella or ev["data"].get("huella") == huella)
         and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
         for ev in registro.eventos(enc.id)
     )
 
 
 def _anotar_cuerpo_publicado(
-    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str
+    registro: Registro, enc: Encargo, numero: int, sha: str, hora: str,
+    huella: str = "",
 ) -> None:
     registro.anotar(
         enc.id,
@@ -4270,10 +4428,11 @@ def _anotar_cuerpo_publicado(
                 "repo": enc.entrega.repo,
                 "numero": numero,
                 "sha": sha,
+                "huella": huella,
                 "hora": hora,
             },
         },
-        f"entrega:{enc.id}:{enc.fase_activa}:pr_cuerpo:{sha}",
+        f"entrega:{enc.id}:{enc.fase_activa}:pr_cuerpo:{sha}:{huella}",
     )
 
 
@@ -4286,10 +4445,12 @@ def _actualizar_cuerpo_pr(
     espacio: Path,
     hora: str,
 ) -> Encargo:
-    if _cuerpo_ya_publicado(registro, enc, sha):
+    cuerpo = _cuerpo_pr(enc, espacio)
+    huella = _huella_cuerpo(cuerpo)
+    if _cuerpo_ya_publicado(registro, enc, sha, huella):
         return enc
     try:
-        gh.actualizar_cuerpo(enc.entrega.repo, numero, _cuerpo_pr(enc, espacio))
+        gh.actualizar_cuerpo(enc.entrega.repo, numero, cuerpo)
     except Exception as exc:
         _anotar_instrumento(
             registro,
@@ -4301,7 +4462,62 @@ def _actualizar_cuerpo_pr(
             f"cuerpo-{sha[:12]}",
         )
         return registro.fold(enc.id) or enc
-    _anotar_cuerpo_publicado(registro, enc, numero, sha, hora)
+    _anotar_cuerpo_publicado(registro, enc, numero, sha, hora, huella)
+    return registro.fold(enc.id) or enc
+
+
+def _refrescar_cuerpo_fuera_de_alcance(
+    registro: Registro, enc: Encargo, gh, espacio: Path, hora: str
+) -> Encargo:
+    """El PR ya abierto recibe la sección de hallazgos fuera de alcance.
+
+    El cuerpo se publica por SHA; una anotación posterior no cambia el SHA, así
+    que la huella del cuerpo decide si hay algo nuevo que publicar.
+    """
+    if (
+        gh is None
+        or not getattr(enc, "pr_numero", 0)
+        or not getattr(enc, "fuera_de_alcance", ())
+    ):
+        return enc
+    return _actualizar_cuerpo_pr(
+        registro, enc, gh, enc.pr_numero, enc.pr_sha, espacio, hora
+    )
+
+
+def _marcar_deepseek_limpio(
+    registro: Registro, enc: Encargo, hora: str
+) -> Encargo:
+    """Una decisión del revisor que cierra el último bloqueante externo deja la
+    fase en nivel pr. Sin esto, una lectura anterior que bajó a `pr_abierto`
+    impedía cerrar aunque ya no quedara nada abierto."""
+    fase = enc.fase_actual
+    if (
+        fase is None
+        or not fase.pr_numero
+        or not fase.pr_sha
+        or bloqueantes_abiertos(enc, "deepseek")
+    ):
+        return enc
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": enc.fase_activa,
+                "intento": enc.intento,
+                "paso": "deepseek_leido",
+                "repo": enc.entrega.repo,
+                "numero": fase.pr_numero,
+                "sha": fase.pr_sha,
+                "huella": fase.deepseek_huella or fase.pr_sha[:16],
+                "recibo": fase.pr_sha,
+                "hora": hora,
+            },
+        },
+        f"entrega:{enc.id}:{enc.fase_activa}:deepseek_limpio:"
+        f"{fase.pr_sha}:{fase.deepseek_huella}",
+    )
     return registro.fold(enc.id) or enc
 
 
@@ -4324,13 +4540,34 @@ def _anotar_lectura_deepseek(
     tiene su clave (huella del comentario y número de lectura del SHA): el
     mismo comentario no anota nada dos veces y un comentario que vuelve a un
     texto anterior sí se lee otra vez."""
-    hallazgos = hallazgos_deepseek(comentarios, sha)
+    hallazgos = list(hallazgos_deepseek(comentarios, sha))
+    fuera: list[tuple[str, str, str]] = []
+    for indice, h in enumerate(hallazgos):
+        if h.gravedad != "bloqueante":
+            continue
+        razon = hallazgo_fuera_de_alcance_por_restriccion(enc.restricciones, h)
+        if razon:
+            fuera.append((h.id, h.titulo, razon))
+            hallazgos[indice] = replace(
+                h, gravedad="observacion", estado="resuelto", cierre_evidencia=razon
+            )
     nuevos_bloq = {h.id for h in hallazgos if h.gravedad == "bloqueante"}
     fusion = list(hallazgos)
     for h in bloqueantes_abiertos(enc, "deepseek"):
         if h.id not in nuevos_bloq:
             fusion.append(replace(h, estado="resuelto"))
     huella = _huella_comentarios(comentarios)
+    for hid, titulo, razon in fuera:
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "hallazgo_fuera_de_alcance",
+                "data": {"id": hid, "titulo": titulo, "razon": razon, "hora": hora},
+            },
+            f"fuera-alcance:{enc.id}:{enc.fase_activa}:{hid}",
+        )
+    if fuera:
+        enc = registro.fold(enc.id) or enc
     lecturas = sum(
         1
         for ev in registro.eventos(enc.id)
@@ -4511,12 +4748,25 @@ def _releer_deepseek(
         and enc.proc is None
         and not enc.reserva
     ):
-        _devolver(
-            registro, enc, "investigar", abiertos[0].titulo,
-            "corregir " + ", ".join(h.id for h in abiertos)
-            + " (DeepSeek); lo aprobado que no cambio se conserva",
-            hora, f"deepseek-{huella}",
+        pendientes_disputa = _disputas_pendientes(
+            registro, enc, interno_de(_espacio(registro.base, enc.id))
         )
+        if pendientes_disputa:
+            _devolver(
+                registro, enc, "decidir_disputa",
+                "el responsable sostiene con evidencia que no aplican: "
+                + "; ".join(f"{h.id} {h.titulo}" for h, _ in pendientes_disputa),
+                "decidir con la evidencia si el hallazgo aplica; si no aplica, "
+                "descártalo y deja la razón en el PR",
+                hora, f"disputa-revisor-{huella}", rol="revisor",
+            )
+        else:
+            _devolver(
+                registro, enc, "investigar", abiertos[0].titulo,
+                "corregir " + ", ".join(h.id for h in abiertos)
+                + " (DeepSeek); lo aprobado que no cambio se conserva",
+                hora, f"deepseek-{huella}",
+            )
     elif (
         devolver
         and not abiertos
@@ -5683,6 +5933,29 @@ def _entregar_con_pendientes(
     pendientes = enc.pendientes_entrega or (
         "el encargo se entrega sin que el revisor haya concluido",
     )
+    if (
+        not (enc.producto and enc.producto.manifiesto)
+        and any(p.startswith(_RELEVO_AGOTADO) for p in pendientes)
+    ):
+        evidencia = (
+            "no hay producto que entregar; el encargo termina con el motivo: "
+            + "; ".join(pendientes)
+        )
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "cierre_forzado",
+                "data": {"evidencia": evidencia, "hora": hora},
+            },
+            f"cierre-forzado:{enc.id}:{enc.fase_activa}:{enc.reaperturas}:"
+            f"sin-producto:{len(pendientes)}",
+        )
+        enc = registro.fold(enc.id) or enc
+        _publica(directorio / "incorporado", hora)
+        if enc.estado == "terminado":
+            _publicar_resultado(registro, enc, hora)
+            _limpiar_encargo_cerrado(registro, enc, hora)
+        return enc
     if not enc.pendientes_entrega:
         registro.anotar(
             enc.id,
@@ -5722,6 +5995,26 @@ def _entregar_con_pendientes(
                                   _reanuda_en(120), hora)
                     return registro.fold(enc.id)
                 if conteo.stdout.strip() == "0":
+                    if any(p.startswith(_RELEVO_AGOTADO) for p in pendientes):
+                        evidencia = (
+                            "no hay commits que entregar en el PR; el encargo "
+                            "termina con el motivo: " + "; ".join(pendientes)
+                        )
+                        registro.anotar(
+                            enc.id,
+                            {
+                                "kind": "cierre_forzado",
+                                "data": {"evidencia": evidencia, "hora": hora},
+                            },
+                            f"cierre-forzado:{enc.id}:{enc.fase_activa}:"
+                            f"{enc.reaperturas}:sin-commits:{len(pendientes)}",
+                        )
+                        enc = registro.fold(enc.id) or enc
+                        _publica(directorio / "incorporado", hora)
+                        if enc.estado == "terminado":
+                            _publicar_resultado(registro, enc, hora)
+                            _limpiar_encargo_cerrado(registro, enc, hora)
+                        return enc
                     marcar_pregunta(registro, enc.id,
                                     f"La fase {enc.fase_activa} no tiene commits para un PR con pendientes; "
                                     "hace falta resolver el bloqueo antes de continuar.", True, hora)
@@ -6043,6 +6336,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
 
     enc = adoptar_politica_despliegue(
         registro, enc, _espacio(registro.base, enc.id), hora
+    )
+    enc = _refrescar_cuerpo_fuera_de_alcance(
+        registro, enc, gh, _espacio(registro.base, enc.id), hora
     )
     if enc.nivel_alcanzado == "desplegado":
         from .despliegue import comprobar_recibo
@@ -6505,9 +6801,26 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             return registro.fold(enc.id)
         relectura_ds = enc.deepseek_sha == sha
         enc = _anotar_lectura_deepseek(registro, enc, numero, sha, comentarios, hora)
+        enc = _refrescar_cuerpo_fuera_de_alcance(
+            registro, enc, gh, espacio, hora
+        )
         abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
         if abiertos_ds:
-            if relectura_ds or hubo_avance(inicio_vuelta, enc):
+            pendientes_disputa = _disputas_pendientes(
+                registro, enc, interno_de(espacio)
+            )
+            if pendientes_disputa:
+                _devolver(
+                    registro, enc, "decidir_disputa",
+                    "el responsable sostiene con evidencia que no aplican: "
+                    + "; ".join(
+                        f"{h.id} {h.titulo}" for h, _ in pendientes_disputa
+                    ),
+                    "decidir con la evidencia si el hallazgo aplica; si no "
+                    "aplica, descártalo y deja la razón en el PR",
+                    hora, f"disputa-revisor-{sha[:12]}", rol="revisor",
+                )
+            elif relectura_ds or hubo_avance(inicio_vuelta, enc):
                 _devolver(
                     registro, enc, "investigar", abiertos_ds[0].titulo,
                     "corregir " + ", ".join(h.id for h in abiertos_ds)
@@ -7112,6 +7425,41 @@ def marcar_pregunta(
         or f"pregunta:{encargo_id}:{hashlib.sha256(texto.encode()).hexdigest()[:12]}",
     )
     return vista(registro.fold(encargo_id))
+
+
+_RELEVO_AGOTADO = "El relevo agotó los modelos autorizados"
+
+
+def marcar_relevo_agotado(
+    registro: Registro, enc: Encargo, rol: str, hora: str
+) -> Encargo:
+    """Un relevo sin otro modelo autorizado no espera a una persona.
+
+    Deja el pendiente en palabras simples y deja que la entrega normal publique
+    el PR con lo que hay, o termine con el motivo si todavía no hay producto.
+    """
+    abiertos = bloqueantes_abiertos(enc)
+    fresco = registro.fold(enc.id)
+    if fresco is not None and len(fresco.ajustes) > len(enc.ajustes):
+        # Una corrección llegó mientras se elegía el modelo. No se convierte
+        # en entrega con pendientes: el próximo barrido se la da al responsable.
+        return fresco
+    texto = (
+        f"{_RELEVO_AGOTADO} del rol {rol}. El motor entrega lo que hay con los "
+        "pendientes abiertos, sin esperar a una persona."
+    )
+    if abiertos:
+        texto += (
+            " Quedan abiertos: "
+            + "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
+            + "."
+        )
+    registro.anotar(
+        enc.id,
+        {"kind": "pendiente_entrega", "data": {"texto": texto, "hora": hora}},
+        f"relevo-agotado:{enc.id}:{enc.fase_activa}:{rol}:{enc.generacion}",
+    )
+    return registro.fold(enc.id) or enc
 
 
 def afirmar(registro: Registro, encargo_id: str, texto: str, hora: str) -> dict:
@@ -7824,7 +8172,9 @@ def _recibir_resultado_nuevo(
         ]
     alcance = alcance_de(enc)
     try:
-        validado = validar_juicio(crudo, alcance)
+        validado = validar_juicio(
+            crudo, alcance, externos=bloqueantes_abiertos(enc, "deepseek")
+        )
     except (ValueError, KeyError, TypeError) as exc:
         return {"rechazado": True, "motivo": str(exc)}
     if validado.veredicto != "aprobado":
@@ -7837,6 +8187,58 @@ def _recibir_resultado_nuevo(
             "rechazado": True,
             "motivo": "la aprobacion no enumera los efectos solicitados",
         }
+    hallazgos_validados = list(validado.hallazgos)
+    abiertos_ds = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
+    aplicados = False
+    ya_resueltos = {h.id for h in hallazgos_validados}
+    marca = validado.evidencia or "descartado por el revisor independiente"
+    for hid in validado.resueltos:
+        h = abiertos_ds.get(hid)
+        if h is None or hid in ya_resueltos:
+            continue
+        hallazgos_validados.append(
+            replace(h, estado="resuelto", cierre_evidencia=marca)
+        )
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "nota_pr",
+                "data": {
+                    "texto": (
+                        f"hallazgo de DeepSeek descartado por el revisor "
+                        f"independiente: {hid} «{h.titulo}» ({marca[:400]})"
+                    ),
+                    "hora": hora,
+                },
+            },
+            f"disputa-resuelta-autoridad:{enc.id}:{hid}",
+        )
+        ya_resueltos.add(hid)
+        aplicados = True
+    for hid, razon in validado.fuera_de_alcance:
+        h = abiertos_ds.get(hid)
+        if h is None or hid in ya_resueltos:
+            continue
+        hallazgos_validados.append(
+            replace(
+                h,
+                gravedad="observacion",
+                estado="resuelto",
+                cierre_evidencia=razon,
+            )
+        )
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "hallazgo_fuera_de_alcance",
+                "data": {"id": hid, "titulo": h.titulo, "razon": razon, "hora": hora},
+            },
+            f"fuera-alcance:{enc.id}:{fase}:{hid}",
+        )
+        ya_resueltos.add(hid)
+        aplicados = True
+    if aplicados:
+        enc = registro.fold(enc.id) or enc
     registro.anotar(
         enc.id,
         {
@@ -7850,7 +8252,7 @@ def _recibir_resultado_nuevo(
                 "revisor": "autoridad",
                 "origen": "independiente",
                 "cubre": list(validado.cubre),
-                "hallazgos": [h.como_dict() for h in validado.hallazgos],
+                "hallazgos": [h.como_dict() for h in hallazgos_validados],
                 "aprobadas": [list(x) for x in validado.aprobadas],
                 "evidencia": validado.evidencia,
                 "efectos_pendientes": list(validado.efectos_pendientes),
@@ -7862,6 +8264,8 @@ def _recibir_resultado_nuevo(
         f"revision-autoridad:{enc.id}:{fase}:{version}",
     )
     enc = registro.fold(enc.id)
+    if aplicados:
+        enc = _marcar_deepseek_limpio(registro, enc, hora)
     from .cierre import comprobar_destino, componer
 
     try:

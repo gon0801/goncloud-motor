@@ -207,6 +207,7 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
     clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
     directorio = registro.base / "despliegues" / clave
     recibo = directorio / "recibo.json"
+    esperar_cierre = False
     with turno(registro.base):
         if recibo.exists():
             try:
@@ -217,41 +218,68 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
                 if datos["estado"] == "ejecutando":
                     proceso = json.loads((directorio / "proceso.json").read_text(encoding="utf-8"))
                     if plataforma.estado_proc(proceso) != "vivo":
-                        datos.update(estado="incierto", motivo="la receta se interrumpió; conciliar producción y rollback antes de reintentar")
-                        _guardar(recibo, datos)
-                reintentable = (
-                    datos["estado"] == "esperando"
-                    and enc.estado in ("recibido", "ejecutando")
-                    and all(p.get("enviado") is False for p in datos.get("pasos", []))
-                    and observacion(registro, enc) == "ausente"
-                )
-                if not reintentable:
-                    return {**datos, "recibo": str(recibo)}
-                previo = directorio / ("preparacion-" + str(time.time_ns()) + ".json")
-                _guardar(previo, datos)
+                        # El trabajador pudo terminar entre la lectura del recibo
+                        # y la comprobación del proceso. Su última escritura es la
+                        # verdad; la espera va fuera del turno para no bloquear al
+                        # propio trabajador que tiene que publicarla.
+                        esperar_cierre = True
+                    else:
+                        return {**datos, "recibo": str(recibo)}
+                if not esperar_cierre:
+                    reintentable = (
+                        datos["estado"] == "esperando"
+                        and enc.estado in ("recibido", "ejecutando")
+                        and all(p.get("enviado") is False for p in datos.get("pasos", []))
+                        and observacion(registro, enc) == "ausente"
+                    )
+                    if not reintentable:
+                        return {**datos, "recibo": str(recibo)}
+                    previo = directorio / ("preparacion-" + str(time.time_ns()) + ".json")
+                    _guardar(previo, datos)
             except (OSError, ValueError, KeyError) as exc:
                 return {"estado": "incierto", "motivo": f"recibo de despliegue no verificable: {exc}"}
-        if not _autorizado_ahora(registro, enc.id, not autoridad_ausente(registro.base)):
-            return {"estado": "esperando", "motivo": "despliegue sin autorización vigente"}
-        directorio.mkdir(parents=True, exist_ok=True)
-        datos = {**identidad, "estado": "ejecutando", "hora": hora, "pasos": [],
-                 "motivo": "ejecutando receta de despliegue del SHA integrado"}
-        _guardar(recibo, datos)
-        _atomico(directorio.parent / (enc.id + ".actual"), clave)
-        _guardar(directorio / "pedido.json", {
-            "base": str(registro.base.resolve()), "espacio": str(espacio.resolve()),
-            "identidad": identidad,
-        })
-        try:
-            proceso = plataforma.lanzar_separado(
-                [sys.executable, "-P", str(Path(__file__).resolve()), str(directorio / "pedido.json")],
-                directorio, os.environ.copy(), directorio / "trabajador.log",
-            )
-            _guardar(directorio / "proceso.json", proceso)
-        except OSError as exc:
-            datos.update(estado="incierto", motivo=f"no se pudo confirmar el arranque del despliegue: {exc}")
+        if not esperar_cierre:
+            if not _autorizado_ahora(registro, enc.id, not autoridad_ausente(registro.base)):
+                return {"estado": "esperando", "motivo": "despliegue sin autorización vigente"}
+            directorio.mkdir(parents=True, exist_ok=True)
+            datos = {**identidad, "estado": "ejecutando", "hora": hora, "pasos": [],
+                     "motivo": "ejecutando receta de despliegue del SHA integrado"}
             _guardar(recibo, datos)
-        return {**datos, "recibo": str(recibo)}
+            _atomico(directorio.parent / (enc.id + ".actual"), clave)
+            _guardar(directorio / "pedido.json", {
+                "base": str(registro.base.resolve()), "espacio": str(espacio.resolve()),
+                "identidad": identidad,
+            })
+            try:
+                proceso = plataforma.lanzar_separado(
+                    [sys.executable, "-P", str(Path(__file__).resolve()), str(directorio / "pedido.json")],
+                    directorio, os.environ.copy(), directorio / "trabajador.log",
+                )
+                _guardar(directorio / "proceso.json", proceso)
+            except OSError as exc:
+                datos.update(estado="incierto", motivo=f"no se pudo confirmar el arranque del despliegue: {exc}")
+                _guardar(recibo, datos)
+            return {**datos, "recibo": str(recibo)}
+    # El trabajador pudo terminar entre la lectura del recibo y la comprobación
+    # del proceso. Su última escritura es la verdad: espera fuera del turno a que
+    # publique el estado final antes de declarar incierto un recibo en curso.
+    for _ in range(100):
+        time.sleep(0.05)
+        try:
+            datos = _leer(recibo, identidad)
+        except (OSError, ValueError, KeyError):
+            break
+        if datos["estado"] != "ejecutando":
+            break
+    with turno(registro.base):
+        try:
+            datos = _leer(recibo, identidad)
+        except (OSError, ValueError, KeyError) as exc:
+            return {"estado": "incierto", "motivo": f"recibo de despliegue no verificable: {exc}"}
+        if datos["estado"] == "ejecutando":
+            datos.update(estado="incierto", motivo="la receta se interrumpió; conciliar producción y rollback antes de reintentar")
+            _guardar(recibo, datos)
+    return {**datos, "recibo": str(recibo)}
 
 
 def _salida(texto: str, maquina) -> str:
@@ -296,7 +324,18 @@ def ejecutar(pedido: Path) -> None:
                 indice = len(datos["pasos"])
                 datos["pasos"].append({"paso": paso, "script": receta[paso], "enviado": None})
                 _guardar(recibo, datos)
-                p, enviado = _correr(reg, identidad["encargo"], paso, receta[paso], copia, env, maquina.bash)
+                try:
+                    p, enviado = _correr(reg, identidad["encargo"], paso, receta[paso], copia, env, maquina.bash)
+                except Exception as exc:
+                    # El recibo no deja un paso a medias: si el trabajador no
+                    # pudo cerrar el paso, el código 125 lo dice y el recibo
+                    # sigue siendo legible para conciliar.
+                    datos["pasos"][indice] = {
+                        "paso": paso, "script": receta[paso], "codigo": 125,
+                        "stdout": "", "stderr": str(exc), "enviado": None,
+                    }
+                    _guardar(recibo, datos)
+                    raise
                 salida = {"paso": paso, "script": receta[paso], "codigo": p.returncode,
                           "stdout": _salida(p.stdout, maquina), "stderr": _salida(p.stderr, maquina),
                           "enviado": enviado}

@@ -72,6 +72,28 @@ def paso(caso):
         time.sleep(0.05)
 
 
+def recibo_final(reg, limite=15):
+    """Espera el recibo que el trabajador publica al terminar, no el parcial.
+
+    El recibo apunta el paso antes de ejecutarlo y escribe su código después.
+    Un supervisor que lee justo entre esas dos escrituras ve el paso sin
+    `codigo`; esperar el estado final es lo que hace determinista la prueba.
+    """
+    fin = time.monotonic() + limite
+    while True:
+        recibos = list((reg.base / "despliegues").rglob("recibo.json"))
+        if recibos:
+            datos = json.loads(recibos[0].read_text())
+            pasos = datos.get("pasos", [])
+            if (
+                datos.get("estado") in ("aplicado", "fallido", "incierto", "esperando")
+                and all("codigo" in p for p in pasos)
+            ):
+                return datos
+        assert time.monotonic() < fin, "el recibo no llegó a su estado final"
+        time.sleep(0.05)
+
+
 class DespliegueReal(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -236,14 +258,28 @@ class DespliegueReal(unittest.TestCase):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
         with (espacio / "d.sh").open("a") as f:
-            f.write("sleep 20\n")
+            f.write("exec sleep 20\n")
         integrar()
         ejecutor = self._ejecucion_en_proceso()
         self.parche(ejecutor, "TOPE_S", 0.2)
+        # La prueba comprueba el camino 124 -> rollback, no la implementación
+        # del Job de Windows del runner. El cierre determinista del proceso
+        # aparta esa capacidad variable de la receta.
+        def matar(proceso):
+            try:
+                proceso.kill()
+            except OSError:
+                pass
+            try:
+                proceso.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+
+        self.parche(plataforma, "matar_grupo", matar)
+        self.parche(plataforma, "presencia_grupo", lambda *a, **k: "ausente")
         final = paso(despliegue)
         assert final.nivel_alcanzado == "integrado"
-        recibo = next((reg.base / "despliegues").rglob("recibo.json"))
-        datos = json.loads(recibo.read_text())
+        datos = recibo_final(reg)
         assert [p["codigo"] for p in datos["pasos"]] == [124, 0]
         assert (destino / "pasos").read_text().splitlines()[-1].startswith("rollback:")
 
