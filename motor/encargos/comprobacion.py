@@ -766,6 +766,7 @@ _ACOTA = (
     "limitad",
     "solo",
     "sólo",
+    "solamente",
     "unicamente",
     "únicamente",
     "exclusivamente",
@@ -812,8 +813,11 @@ def hallazgo_fuera_de_alcance_por_restriccion(
 
     Una restricción que prohíbe tocar rutas deja fuera esos archivos. Una que
     acota el cambio a ciertas rutas deja fuera los demás. La heurística solo
-    actúa cuando la restricción nombra rutas y dice «no tocar» o «acotado a»;
-    una frase sin rutas no autoriza a descartar nada.
+    actúa cuando la restricción nombra rutas y dice «no tocar» o «acotado a»,
+    sin excepciones ni mezclas de prohibición y lista blanca: «salvo»,
+    «excepto», «fuera de», «ajenos a», «que no sea», «distinto», «sino» y una
+    cláusula con «no tocar» y «solo» se dejan al revisor independiente. Una
+    frase sin rutas no autoriza a descartar nada.
     """
     ruta = _ruta_de(hallazgo.ancla)
     if not ruta:
@@ -830,7 +834,7 @@ def hallazgo_fuera_de_alcance_por_restriccion(
             rutas = _rutas_de_restriccion(clausula)
             if not rutas:
                 continue
-            if any(p in bajo for p in _AMBIGUO):
+            if any(p in bajo for p in _AMBIGUO) or re.search(r"\bsino\b", bajo):
                 continue
             if any(p in bajo for p in _PROHIBE) and any(
                 p in bajo for p in _ACOTA

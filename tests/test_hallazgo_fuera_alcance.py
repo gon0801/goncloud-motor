@@ -368,6 +368,19 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
                 "",
             )
 
+    def test_solamente_y_sino_tambien_son_ambiguos(self):
+        for texto in (
+            "No tocar motor/a.py solamente motor/b.py",
+            "No tocar motor/a.py sino motor/b.py",
+        ):
+            for ancla in ("motor/a.py:1", "motor/b.py:1", "motor/c.py:1"):
+                self.assertEqual(
+                    hallazgo_fuera_de_alcance_por_restriccion(
+                        (texto,), _hallazgo(ancla)
+                    ),
+                    "",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
