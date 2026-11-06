@@ -332,6 +332,18 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             # El cuerpo original de la fase anterior no se sobrescribe.
             self.assertIn(cuerpo_antes, cuerpo)
 
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, ahora_iso(), time.time() + 120
+            )
+            estado_dos = json.loads(
+                (vuelta.gh.d / "github.json").read_text()
+            )
+            cuerpo_dos = next(
+                pr for pr in estado_dos["prs"].values()
+                if pr["numero"] == pr_primera
+            )["cuerpo"]
+            self.assertEqual(cuerpo_dos.count("después de cerrar"), 1)
+
     def test_un_medium_dentro_del_alcance_antes_del_tope_sigue_bloqueando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
@@ -1206,6 +1218,42 @@ class CierreDiceQueDeepSeekNoReviso(unittest.TestCase):
             )
             self.assertIn("DeepSeek no revisó", cierre["evidencia"])
             self.assertNotIn("DeepSeek leído", cierre["evidencia"])
+
+
+class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
+    def test_el_cuerpo_del_pr_no_pasa_del_limite(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-limite-cuerpo", _GhPorNumero, nivel="integrado"
+            )
+            e = vuelta("uno")
+            hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+            tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+            self.assertEqual(e.estado, "terminado")
+
+            estado = json.loads((vuelta.gh.d / "github.json").read_text())
+            pr = next(
+                pr for pr in estado["prs"].values()
+                if pr["numero"] == e.pr_numero
+            )
+            pr["cuerpo"] = "x" * (ciclo._LIMITE_CUERPO_PR - 5)
+            (vuelta.gh.d / "github.json").write_text(
+                json.dumps(estado), encoding="utf-8"
+            )
+
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F26"))
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, ahora_iso(), time.time()
+            )
+
+            estado = json.loads((vuelta.gh.d / "github.json").read_text())
+            cuerpo = next(
+                pr for pr in estado["prs"].values()
+                if pr["numero"] == e.pr_numero
+            )["cuerpo"]
+            self.assertLessEqual(len(cuerpo), ciclo._LIMITE_CUERPO_PR)
+            self.assertIn("F26", cuerpo)
 
 
 if __name__ == "__main__":

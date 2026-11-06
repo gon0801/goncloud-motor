@@ -5046,7 +5046,7 @@ def _anotar_nota_en_pr_tardia(
     """Añade la nota al cuerpo actual del PR sin reescribir el de la fase
     vigente. Un PR de una fase anterior conserva su descripción original."""
     serie = f"{enc.id}:{fase.id}:{sha}:{huella}"
-    ukey = f"nota-pr-tardia:{serie}"
+    ukey = f"cuerpo-tardio:{serie}"
     if registro.por_ukey(ukey) is not None:
         return enc
     try:
@@ -5064,7 +5064,10 @@ def _anotar_nota_en_pr_tardia(
         encabezado = (
             "" if "## Notas del motor" in cuerpo else "## Notas del motor\n"
         )
+        resto = f"\n\n{encabezado}- {texto}"
         nuevo = f"{cuerpo}\n\n{encabezado}- {texto}".strip()
+        if not _cabe_en_el_limite(nuevo):
+            nuevo = _cuerpo_recortado(cuerpo, resto)
         try:
             gh.actualizar_cuerpo(enc.entrega.repo, fase.pr_numero, nuevo)
         except Exception as exc:
@@ -5078,19 +5081,7 @@ def _anotar_nota_en_pr_tardia(
             return registro.fold(enc.id) or enc
     registro.anotar(
         enc.id,
-        {
-            "kind": "entrega_externa",
-            "data": {
-                "fase": fase.id,
-                "intento": enc.intento,
-                "paso": "pr_cuerpo_tardio",
-                "repo": enc.entrega.repo,
-                "numero": fase.pr_numero,
-                "sha": sha,
-                "huella": huella,
-                "hora": hora,
-            },
-        },
+        {"kind": "nota_pr", "data": {"texto": texto, "hora": hora}},
         ukey,
     )
     return registro.fold(enc.id) or enc
