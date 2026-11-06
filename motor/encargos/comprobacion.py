@@ -746,16 +746,20 @@ _PROHIBE = (
     "sin modificar",
     "prohibido",
 )
-_GENERICO = ("nada", "archivos", "el cambio", "los archivos")
-_CATEGORIA = (
-    "test",
-    "prueba",
-    "migracion",
-    "migraciones",
-    "contrato",
-    "documentacion",
-    "docs",
-    "configuracion",
+_AMBIGUO = (
+    "salvo",
+    "excepto",
+    "fuera de",
+    "ajenos",
+    "ajeno",
+    "que no sea",
+    "que no sean",
+    "distinto",
+    "distinta",
+    "distintos",
+    "distintas",
+    "diferente",
+    "salir de",
 )
 _ACOTA = (
     "acotad",
@@ -816,53 +820,22 @@ def hallazgo_fuera_de_alcance_por_restriccion(
         return ""
     incluye: list[tuple[str, ...]] = []
     excluye: list[tuple[str, ...]] = []
+    # La heurística solo actúa sobre cláusulas sin excepciones: «salvo»,
+    # «fuera de», «que no sea» y sus variantes dejan la decisión al revisor.
+    # Un falso negativo mantiene el hallazgo bloqueando; un falso positivo lo
+    # descartaría sin que el revisor lo haya decidido.
     for texto in restricciones:
         for clausula in re.split(r";|\.(?=\s|$)", texto):
             bajo = clausula.lower()
-            partes_fuera = re.split(
-                r"\bfuera de\b", clausula, maxsplit=1, flags=re.I
-            )
-            if len(partes_fuera) == 2:
-                antes_txt, despues_txt = partes_fuera
-                derecha = _rutas_de_restriccion(despues_txt)
-                if (
-                    derecha
-                    and any(g in antes_txt.lower() for g in _GENERICO)
-                    and not any(c in antes_txt.lower() for c in _CATEGORIA)
-                ):
-                    incluye.append(derecha)
-                    continue
-                if any(p in bajo for p in _PROHIBE) and not derecha:
-                    rutas = _rutas_de_restriccion(clausula)
-                    if rutas:
-                        excluye.append(rutas)
-                continue
-            partes = re.split(
-                r"\b(?:salvo|excepto)\b", clausula, maxsplit=1, flags=re.I
-            )
-            if len(partes) == 2:
-                antes_txt, despues_txt = partes
-                antes = _rutas_de_restriccion(antes_txt)
-                despues = _rutas_de_restriccion(despues_txt)
-                if antes:
-                    excluidas = tuple(p for p in antes if p not in despues)
-                    if excluidas:
-                        excluye.append(excluidas)
-                    continue
-                if (
-                    despues
-                    and any(g in antes_txt.lower() for g in _GENERICO)
-                    and not any(c in antes_txt.lower() for c in _CATEGORIA)
-                ):
-                    incluye.append(despues)
-                continue
             rutas = _rutas_de_restriccion(clausula)
             if not rutas:
                 continue
-            if any(p in bajo for p in _ACOTA):
-                incluye.append(rutas)
-            elif any(p in bajo for p in _PROHIBE):
+            if any(p in bajo for p in _AMBIGUO):
+                continue
+            if any(p in bajo for p in _PROHIBE):
                 excluye.append(rutas)
+            elif any(p in bajo for p in _ACOTA):
+                incluye.append(rutas)
     if any(_ruta_cubierta(ruta, rutas) for rutas in excluye):
         return (
             "la restricción expresa del encargo prohíbe tocar "

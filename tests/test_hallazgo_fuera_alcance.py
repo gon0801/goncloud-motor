@@ -84,6 +84,8 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
         )
 
     def test_no_tocar_nada_fuera_de_la_ruta_la_deja_dentro(self):
+        # «fuera de» es ambigua: la heurística no descarta nada y el revisor
+        # independiente decide con su juicio.
         texto = "No tocar nada fuera de motor/encargos/cli.py"
         self.assertEqual(
             hallazgo_fuera_de_alcance_por_restriccion(
@@ -91,11 +93,11 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             ),
             "",
         )
-        self.assertIn(
-            "limita el cambio",
+        self.assertEqual(
             hallazgo_fuera_de_alcance_por_restriccion(
                 (texto,), _hallazgo("motor/otro.py:1")
             ),
+            "",
         )
 
     def test_la_prohibicion_no_alcanza_por_tallo_de_prueba(self):
@@ -117,40 +119,27 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
         )
 
     def test_una_excepcion_no_convierte_la_prohibicion_en_lista_blanca(self):
+        # «salvo» deja la decisión al revisor: no se infiere lista blanca ni
+        # prohibición para otras rutas.
         texto = "No tocar motor/a.py salvo motor/b.py"
-        self.assertIn(
-            "prohíbe tocar",
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/a.py:1")
-            ),
-        )
-        self.assertEqual(
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/b.py:1")
-            ),
-            "",
-        )
-        self.assertEqual(
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/c.py:1")
-            ),
-            "",
-        )
+        for ancla in ("motor/a.py:1", "motor/b.py:1", "motor/c.py:1"):
+            self.assertEqual(
+                hallazgo_fuera_de_alcance_por_restriccion(
+                    (texto,), _hallazgo(ancla)
+                ),
+                "",
+            )
 
     def test_un_fuera_de_sin_nada_es_prohibicion_no_lista_blanca(self):
+        # «fuera de» sin una fórmula genérica es ambigua: no se descarta nada.
         texto = "No modificar motor/a.py fuera de lo estrictamente necesario"
-        self.assertIn(
-            "prohíbe tocar",
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/a.py:1")
-            ),
-        )
-        self.assertEqual(
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/c.py:1")
-            ),
-            "",
-        )
+        for ancla in ("motor/a.py:1", "motor/c.py:1"):
+            self.assertEqual(
+                hallazgo_fuera_de_alcance_por_restriccion(
+                    (texto,), _hallazgo(ancla)
+                ),
+                "",
+            )
 
     def test_restriccion_expresa_deja_fuera_el_hallazgo_y_entrega(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -272,34 +261,26 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             self.assertEqual(final.fuera_de_alcance[0][0], "F1")
 
     def test_prohibido_fuera_de_la_ruta_es_lista_blanca(self):
+        # «fuera de» deja la decisión al revisor; no se infiere lista blanca.
         texto = "Prohibido tocar archivos fuera de motor/a.py"
-        self.assertEqual(
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/a.py:1")
-            ),
-            "",
-        )
-        self.assertIn(
-            "limita el cambio",
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/c.py:1")
-            ),
-        )
+        for ancla in ("motor/a.py:1", "motor/c.py:1"):
+            self.assertEqual(
+                hallazgo_fuera_de_alcance_por_restriccion(
+                    (texto,), _hallazgo(ancla)
+                ),
+                "",
+            )
 
     def test_nada_salvo_la_ruta_es_lista_blanca(self):
+        # «salvo» deja la decisión al revisor; no se infiere lista blanca.
         texto = "No tocar nada salvo motor/b.py"
-        self.assertEqual(
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/b.py:1")
-            ),
-            "",
-        )
-        self.assertIn(
-            "limita el cambio",
-            hallazgo_fuera_de_alcance_por_restriccion(
-                (texto,), _hallazgo("motor/c.py:1")
-            ),
-        )
+        for ancla in ("motor/b.py:1", "motor/c.py:1"):
+            self.assertEqual(
+                hallazgo_fuera_de_alcance_por_restriccion(
+                    (texto,), _hallazgo(ancla)
+                ),
+                "",
+            )
 
     def test_el_camino_de_autoridad_aplica_resueltos_externos(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,13 +340,14 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
         )
 
     def test_un_contrato_fuera_de_no_es_lista_blanca(self):
-        self.assertEqual(
-            hallazgo_fuera_de_alcance_por_restriccion(
-                ("No modificar el contrato público fuera de motor/api.py",),
-                _hallazgo("motor/api.py:1"),
-            ),
-            "",
-        )
+        texto = "No modificar el contrato público fuera de motor/api.py"
+        for ancla in ("motor/api.py:1", "motor/otro.py:1"):
+            self.assertEqual(
+                hallazgo_fuera_de_alcance_por_restriccion(
+                    (texto,), _hallazgo(ancla)
+                ),
+                "",
+            )
 
     def test_fuera_de_con_salvo_no_excluye_la_ruta_permitida(self):
         self.assertEqual(
