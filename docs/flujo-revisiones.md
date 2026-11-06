@@ -166,14 +166,15 @@ integra o despliega según el nivel autorizado y pasa a la fase siguiente. No
 fuerza el cierre del encargo. Si después llega un Critical, High o Medium
 dentro del alcance para un SHA ya integrado, se lee como hallazgo tardío y no
 se pierde, aunque el encargo ya haya terminado. El cierre mira los PR de todas
-las fases con entrega externa, no solo el de la fase activa, y sigue
-releyendo el mismo SHA: una revisión limpia puede cambiar después y traer un
-hallazgo, y un aviso ya emitido en una fase no detiene la lectura de las
-siguientes. Durante los primeros 7 días se relee cada minuto y después cada
-30 minutos; los errores también se espacian. Una lectura limpia, un aviso
-ya emitido, una ventana vacía o el paso del tiempo no cierran el SHA: una
-primera revisión puede llegar más tarde y no se pierde. Los bloqueantes de una
-lectura anterior no impiden que el SHA omitido avance.
+las fases con entrega externa, no solo el de la fase activa. El sondeo se
+limita a 7 días desde el cierre del encargo: los primeros 60 minutos relee
+cada minuto y después cada 30 minutos; los errores también se espacian. Los
+encargos cerrados antes de que este cambio empezara a observar no se sondean,
+para no golpear GitHub con los encargos viejos al desplegar. El barrido
+comparte un presupuesto de consultas por pasada; lo que falte se retoma en la
+siguiente. Una lectura limpia o un aviso ya emitido no cierran el SHA antes de
+la ventana. Los bloqueantes de una lectura anterior no impiden que el SHA
+omitido avance.
 
 El hallazgo tardío no cambia el estado del encargo. Queda como nota en el PR
 de su fase y como aviso informativo al director, en palabras simples, para que

@@ -100,11 +100,14 @@ _QUIETUD_VUELTAS = 3
 _RELECTURA_DEEPSEEK_S = 60
 _AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
-# Un encargo cerrado sigue observando su SHA por si llega una revisión tardía:
-# una ventana por tiempo perdería la primera revisión que apareciera después.
-# Para no golpear GitHub de forma constante, los primeros 7 días se relee cada
-# minuto y después cada 30 minutos.
-_SONDEO_DEEPSEEK_LENTO_S = 7 * 24 * 60 * 60
+# El sondeo de un encargo cerrado se limita a 7 días desde su cierre: los
+# primeros 60 minutos relee cada minuto y después cada 30 minutos. Los encargos
+# cerrados antes de que este cambio empezara a observar no se sondean, para no
+# golpear GitHub con los encargos viejos al desplegar.
+_SONDEO_DEEPSEEK_VENTANA_S = 7 * 24 * 60 * 60
+_SONDEO_DEEPSEEK_RAPIDO_S = 60 * 60
+_SONDEO_DEEPSEEK_GRACIA_S = 60
+_SONDEO_CERRADOS_TOPE_POR_PASADA = 5
 _RELECTURA_DEEPSEEK_CERRADO_S = 30 * 60
 _TOPE_LOG_JOB = 80
 _LIMITE_CUERPO_PR = 65_536
@@ -958,6 +961,7 @@ def barrer(
     """Un paso sobre todos los encargos. Cada uno se atiende por separado: lo que
     lance uno no detiene a los demás ni al supervisor (ver `_contener_fallo_de_barrido`)."""
     informes = []
+    presupuesto = [_SONDEO_CERRADOS_TOPE_POR_PASADA]
     for encargo_id in registro.ids():
         try:
             previo = registro.fold(encargo_id)
@@ -965,7 +969,8 @@ def barrer(
                 informes.append(_vista_o_minima(previo))
                 continue
             informes += _barrer_encargos(
-                registro, [encargo_id], hora, epoch, lanzador, umbral_s, gh
+                registro, [encargo_id], hora, epoch, lanzador, umbral_s, gh,
+                presupuesto,
             )
             _RACHA_BARRIDO.pop(encargo_id, None)
         except Exception as exc:
@@ -983,6 +988,7 @@ def _barrer_encargos(
     lanzador,
     umbral_s: float = _UMBRAL_S,
     gh=None,
+    presupuesto: list[int] | None = None,
 ) -> list[dict]:
     """Un paso. `lanzador(enc, prompt, espacio, sesion) -> argv` o None si no hay agente.
 
@@ -1035,7 +1041,7 @@ def _barrer_encargos(
             # las fases, así que no depende de `enc.pr_numero`.
             if enc.estado == "terminado" and not parada:
                 enc = _revisar_deepseek_del_cerrado(
-                    registro, enc, gh, hora, epoch
+                    registro, enc, gh, hora, epoch, presupuesto
                 )
             if enc.estado == "terminado" and enc.pr_numero and not parada:
                 enc = _revisar_ci_del_pr(registro, enc, gh, hora)
@@ -4999,17 +5005,44 @@ def _epochs_de_marca(valor) -> dict[str, float]:
     return salida
 
 
+def _epoch_de_hora(hora: str) -> float:
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(
+            str(hora).replace("Z", "+00:00")
+        ).timestamp()
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def _cierre_epoch(registro: Registro, enc: Encargo) -> float:
+    """La época del cierre del encargo, no la primera vez que el motor lo ve."""
+    for ev in reversed(registro.eventos(enc.id)):
+        if ev["kind"] == "cierre_forzado":
+            return _epoch_de_hora(ev["data"].get("hora") or ev["ts"])
+        if ev["kind"] == "comprobacion" and ev["data"].get("clase") in (
+            "cierre_comprobado", "confirmado"
+        ):
+            return _epoch_de_hora(ev["data"].get("hora") or ev["ts"])
+    return _epoch_de_hora(enc.hora)
+
+
 def _marca_deepseek_cerrado(directorio: Path) -> dict:
     try:
         marca = json.loads(
             (directorio / "deepseek_cerrado.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
-        return {"shas": {}, "inicios": {}}
+        return {"shas": {}, "inicios": {}, "desde": 0.0}
     if not isinstance(marca, dict):
-        return {"shas": {}, "inicios": {}}
+        return {"shas": {}, "inicios": {}, "desde": 0.0}
     shas = _epochs_de_marca(marca.get("shas"))
     inicios = _epochs_de_marca(marca.get("inicios"))
+    try:
+        desde = float(marca.get("desde") or 0)
+    except (TypeError, ValueError):
+        desde = 0.0
     # Formato anterior, de una sola fase: se conserva al actualizar.
     sha = str(marca.get("sha") or "")
     try:
@@ -5019,7 +5052,7 @@ def _marca_deepseek_cerrado(directorio: Path) -> dict:
     if sha and epoch:
         shas.setdefault(sha, epoch)
         inicios.setdefault(sha, epoch)
-    return {"shas": shas, "inicios": inicios}
+    return {"shas": shas, "inicios": inicios, "desde": desde}
 
 
 def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
@@ -5030,6 +5063,7 @@ def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
                 {
                     "shas": marca.get("shas") or {},
                     "inicios": marca.get("inicios") or {},
+                    "desde": float(marca.get("desde") or 0),
                 },
                 sort_keys=True,
             ),
@@ -5139,7 +5173,8 @@ def _avisar_hallazgo_tardio(
 
 
 def _revisar_deepseek_del_cerrado(
-    registro: Registro, enc: Encargo, gh, hora: str, epoch: float
+    registro: Registro, enc: Encargo, gh, hora: str, epoch: float,
+    presupuesto: list[int] | None = None,
 ) -> Encargo:
     """Un hallazgo tardío de DeepSeek en un encargo ya cerrado se avisa.
 
@@ -5151,11 +5186,11 @@ def _revisar_deepseek_del_cerrado(
     fase y como aviso informativo al director, en una sola pasada. El estado
     no cambia. Una ausencia declarada por el sticky no cuenta como hallazgo.
 
-    Una ventana por tiempo perdería la primera revisión que apareciera después
-    de ella, y una lectura limpia o un aviso ya emitido no significan que el
-    comentario no cambie. El sondeo sigue observando; eso sí, los primeros
-    7 días relee cada minuto y después cada 30 minutos, y los errores también
-    se espacian, para no golpear GitHub de forma constante.
+    El sondeo se limita a 7 días desde el cierre del encargo. Los primeros
+    60 minutos relee cada minuto y después cada 30 minutos; los errores también
+    se espacian. Los encargos cerrados antes de que este cambio empezara a
+    observar no se sondean. El presupuesto compartido limita las consultas por
+    pasada de barrido; lo que falte se retoma en la siguiente.
     """
     if (
         gh is None
@@ -5174,23 +5209,32 @@ def _revisar_deepseek_del_cerrado(
     directorio = _directorio(registro.base, enc.id)
     espacio = _espacio(registro.base, enc.id)
     marca = _marca_deepseek_cerrado(directorio)
+    if not marca["desde"]:
+        marca["desde"] = epoch
+        _marcar_deepseek_cerrado(directorio, marca)
+    cierre = _cierre_epoch(registro, enc)
+    if cierre and cierre < marca["desde"] - _SONDEO_DEEPSEEK_GRACIA_S:
+        return enc
+    edad = max(0.0, epoch - cierre) if cierre else 0.0
+    if edad >= _SONDEO_DEEPSEEK_VENTANA_S:
+        return enc
+    if presupuesto is None:
+        presupuesto = [_SONDEO_CERRADOS_TOPE_POR_PASADA]
     leidas = marca["shas"]
-    inicios = marca["inicios"]
     cambio = False
+    espaciado = (
+        _RELECTURA_DEEPSEEK_S
+        if edad < _SONDEO_DEEPSEEK_RAPIDO_S
+        else _RELECTURA_DEEPSEEK_CERRADO_S
+    )
     for fase in fases:
         sha = fase.pr_sha
-        if sha not in inicios:
-            inicios[sha] = epoch
-            cambio = True
-        lento = epoch - inicios[sha] >= _SONDEO_DEEPSEEK_LENTO_S
         desde = epoch - leidas.get(sha, 0.0)
-        espaciado = (
-            _RELECTURA_DEEPSEEK_CERRADO_S
-            if lento
-            else _RELECTURA_DEEPSEEK_S
-        )
         if 0 <= desde < espaciado:
             continue
+        if presupuesto[0] <= 0:
+            break
+        presupuesto[0] -= 1
         try:
             crudos = gh.comentarios_deepseek(
                 enc.entrega.repo, fase.pr_numero, sha
@@ -5222,9 +5266,7 @@ def _revisar_deepseek_del_cerrado(
             registro, enc, fase, sha, huella, abiertos, gh, espacio, hora
         )
     if cambio:
-        _marcar_deepseek_cerrado(
-            directorio, {"shas": leidas, "inicios": inicios}
-        )
+        _marcar_deepseek_cerrado(directorio, marca)
     return enc
 
 

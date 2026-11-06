@@ -13,17 +13,19 @@ import time
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest import mock
 
 from motor.encargos import ciclo
 from motor.encargos.aislamiento import SondaEntorno
-from motor.encargos.ciclo import ahora_iso, barrer
+from motor.encargos.ciclo import ahora_iso, barrer, recibir
 from motor.encargos.dominio import (
     bloqueantes_abiertos,
     decision_proceso,
     reducir,
     vista,
 )
+from motor.encargos.registro import Registro
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import Recorrido, _entrega_pr
 
@@ -524,8 +526,8 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = "DeepSeek: APPROVED"
-            epoch = time.time()
-            hora = ahora_iso()
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
@@ -541,129 +543,128 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
             self.assertTrue(any("F15" in n for n in e.notas_pr), e.notas_pr)
 
-    def test_el_sondeo_espacia_tras_la_ventana(self):
+    def test_el_sondeo_espacia_la_primera_hora_y_despues(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = None
-            epoch = time.time()
-            hora = ahora_iso()
-            ventana = 7 * 24 * 60 * 60
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
             self.assertEqual(len(vuelta.gh.llamadas), 1)
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 10
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 61
             )
             self.assertEqual(len(vuelta.gh.llamadas), 2)
-            # Después de la ventana se sigue mirando, pero cada 30 minutos.
+            # Pasada la primera hora, el espaciado es de 30 minutos.
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ventana + 61 + 600,
-            )
-            self.assertEqual(len(vuelta.gh.llamadas), 2)
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ventana + 61 + 30 * 60,
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 3601
             )
             self.assertEqual(len(vuelta.gh.llamadas), 3)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 3601 + 600
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 3)
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, hora, epoch + 3601 + 30 * 60
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 4)
 
     def test_una_lectura_fallida_no_finaliza_el_sha(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
-            un_ano = 365 * 24 * 60 * 60
-            epoch = time.time()
-            hora = ahora_iso()
+            seis_dias = 6 * 24 * 60 * 60
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             vuelta.gh.textos[e.pr_numero] = None
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
             vuelta.gh.falla = True
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch + un_ano + 61
+                r.reg, r.fold(), vuelta.gh, hora, epoch + seis_dias + 61
             )
             vuelta.gh.falla = False
             vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F23"))
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora,
-                epoch + un_ano + 61 + 3600,
+                epoch + seis_dias + 61 + 3600,
             )
             e = r.fold()
             self.assertEqual(e.estado, "terminado")
             self.assertTrue(any("F23" in n for n in e.notas_pr), e.notas_pr)
 
-    def test_el_primer_medium_posterior_a_los_30_dias_llega(self):
+    def test_un_medium_posterior_a_los_30_dias_no_se_sondea(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = None
-            epoch = time.time()
-            hora = ahora_iso()
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             treinta = 30 * 24 * 60 * 60
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F24"))
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch + treinta + 61
             )
-            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F24"))
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora,
-                epoch + treinta + 61 + 3600,
-            )
             e = r.fold()
             self.assertEqual(e.estado, "terminado")
-            self.assertTrue(any("F24" in n for n in e.notas_pr), e.notas_pr)
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            self.assertFalse(any("F24" in n for n in e.notas_pr), e.notas_pr)
 
-    def test_el_primer_medium_posterior_al_ano_llega(self):
+    def test_un_medium_posterior_al_ano_no_se_sondea(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = None
-            epoch = time.time()
-            hora = ahora_iso()
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             un_ano = 365 * 24 * 60 * 60
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F25"))
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch + un_ano + 61
             )
-            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F25"))
-            ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora,
-                epoch + un_ano + 61 + 3600,
-            )
             e = r.fold()
             self.assertEqual(e.estado, "terminado")
-            self.assertTrue(any("F25" in n for n in e.notas_pr), e.notas_pr)
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            self.assertFalse(any("F25" in n for n in e.notas_pr), e.notas_pr)
 
-    def test_el_primer_medium_despues_de_una_ventana_vacia_llega(self):
+    def test_un_medium_despues_de_una_ventana_vacia_dentro_de_la_semana_llega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = None
-            epoch = time.time()
-            hora = ahora_iso()
-            ventana = 7 * 24 * 60 * 60
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
+            seis_dias = 6 * 24 * 60 * 60
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+                r.reg, r.fold(), vuelta.gh, hora, epoch + seis_dias + 61
             )
             vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F22"))
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ventana + 61 + 3600,
+                epoch + seis_dias + 61 + 3600,
             )
             e = r.fold()
             self.assertEqual(e.estado, "terminado")
             self.assertTrue(any("F22" in n for n in e.notas_pr), e.notas_pr)
 
-    def test_un_medium_posterior_a_la_ventana_de_7_dias_llega(self):
+    def test_un_medium_posterior_a_la_ventana_de_7_dias_no_se_sondea(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = "DeepSeek: APPROVED"
-            epoch = time.time()
-            hora = ahora_iso()
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
@@ -674,25 +675,25 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             )
             e = r.fold()
             self.assertEqual(e.estado, "terminado")
-            self.assertTrue(any("F20" in n for n in e.notas_pr), e.notas_pr)
+            self.assertFalse(any("F20" in n for n in e.notas_pr), e.notas_pr)
 
     def test_una_actualizacion_posterior_a_la_ultima_lectura_llega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
-            ventana = 7 * 24 * 60 * 60
+            seis_dias = 6 * 24 * 60 * 60
             vuelta.gh.textos[e.pr_numero] = "DeepSeek: APPROVED"
-            epoch = time.time()
-            hora = ahora_iso()
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
             ciclo._revisar_deepseek_del_cerrado(
-                r.reg, r.fold(), vuelta.gh, hora, epoch + ventana + 61
+                r.reg, r.fold(), vuelta.gh, hora, epoch + seis_dias + 61
             )
             vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F21"))
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora,
-                epoch + ventana + 61 + 3600,
+                epoch + seis_dias + 61 + 3600,
             )
             e = r.fold()
             self.assertEqual(e.estado, "terminado")
@@ -702,8 +703,8 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.textos[e.pr_numero] = "DeepSeek: APPROVED"
-            epoch = time.time()
-            hora = ahora_iso()
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             ciclo._revisar_deepseek_del_cerrado(
                 r.reg, r.fold(), vuelta.gh, hora, epoch
             )
@@ -719,8 +720,8 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._terminado(tmp)
             vuelta.gh.falla = True
-            epoch = time.time()
-            hora = ahora_iso()
+            epoch = ciclo._epoch_de_hora(e.hora)
+            hora = e.hora
             ciclo._revisar_deepseek_del_cerrado(r.reg, r.fold(), vuelta.gh, hora, epoch)
             self.assertEqual(len(vuelta.gh.llamadas), 1)
             ciclo._revisar_deepseek_del_cerrado(
@@ -1268,6 +1269,101 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
             self.assertTrue(
                 any("llegó al límite" in n for n in e.notas_pr), e.notas_pr
             )
+
+
+class SondeoAcotadoPorCierre(unittest.TestCase):
+    def _terminado(self, reg, clave, hora, repo, numero, sha="a" * 40):
+        enc = recibir(
+            reg, "arregla el CLI", clave, hora,
+            entrega_nivel="pr", repo=repo, base_rama="main",
+        )["encargo"]
+        reg.anotar(
+            enc,
+            {
+                "kind": "fases",
+                "data": {
+                    "fases": [{"id": "uno", "resultado": "saludo.txt"}],
+                    "hora": hora,
+                },
+            },
+            f"{clave}:fases",
+        )
+        for paso in ("commit", "push", "pr_listo"):
+            reg.anotar(
+                enc,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": "uno",
+                        "intento": "",
+                        "paso": paso,
+                        "repo": repo,
+                        "rama": f"encargo/{clave}",
+                        "base": "main",
+                        "numero": numero,
+                        "sha": sha,
+                        "recibo": sha,
+                        "hora": hora,
+                    },
+                },
+                f"{clave}:{paso}",
+            )
+        reg.anotar(
+            enc,
+            {
+                "kind": "entrega_externa",
+                "data": {
+                    "fase": "uno",
+                    "intento": "",
+                    "paso": "deepseek_leido",
+                    "repo": repo,
+                    "numero": numero,
+                    "sha": sha,
+                    "huella": "h",
+                    "recibo": sha,
+                    "hora": hora,
+                },
+            },
+            f"{clave}:ds",
+        )
+        reg.anotar(
+            enc,
+            {
+                "kind": "cierre_forzado",
+                "data": {"evidencia": "cierre de prueba", "hora": hora},
+            },
+            f"{clave}:cierre",
+        )
+        return enc
+
+    def test_los_viejos_no_se_sondean_y_el_recien_cerrado_si(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            repo = str(Path(tmp) / "repo.git")
+            viejo = (
+                datetime.now() - timedelta(days=30)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            for i in range(70):
+                self._terminado(reg, f"viejo-{i}", viejo, repo, 1)
+            gh = _GhCuenta(Path(tmp) / "gh")
+
+            barrer(reg, ahora_iso(), time.time(), lambda *a, **k: None, gh=gh)
+            self.assertEqual(gh.llamadas, [])
+
+            # El marcador de «desde» ya existe: uno recién cerrado sí se sondea.
+            self._terminado(reg, "nuevo", ahora_iso(), repo, 2)
+            epoch = time.time()
+            barrer(reg, ahora_iso(), epoch, lambda *a, **k: None, gh=gh)
+            self.assertTrue(gh.llamadas)
+            llamadas = len(gh.llamadas)
+
+            # A los 7 días del cierre deja de sondearse.
+            barrer(
+                reg, ahora_iso(), epoch + 7 * 24 * 60 * 60 + 1,
+                lambda *a, **k: None, gh=gh,
+            )
+            self.assertEqual(len(gh.llamadas), llamadas)
 
 
 if __name__ == "__main__":
