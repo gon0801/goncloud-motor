@@ -5098,12 +5098,12 @@ def _revisar_deepseek_del_cerrado(
         if sha not in inicios:
             inicios[sha] = epoch
             cambio = True
-        if epoch - inicios[sha] >= _SONDEO_DEEPSEEK_CERRADO_S:
-            finales.add(sha)
-            cambio = True
-            continue
+        vencida = epoch - inicios[sha] >= _SONDEO_DEEPSEEK_CERRADO_S
         desde = epoch - leidas.get(sha, 0.0)
-        if 0 <= desde < _RELECTURA_DEEPSEEK_S:
+        # Al vencer la ventana se hace una última lectura, sin esperar el
+        # espaciado: un comentario que cambió antes del vencimiento no se
+        # pierde. Después de esa lectura el SHA queda final.
+        if not vencida and 0 <= desde < _RELECTURA_DEEPSEEK_S:
             continue
         try:
             crudos = gh.comentarios_deepseek(
@@ -5113,15 +5113,21 @@ def _revisar_deepseek_del_cerrado(
             # El error también se espacia: la marca de la última tentativa
             # vale para la siguiente lectura.
             leidas[sha] = epoch
+            if vencida:
+                finales.add(sha)
             cambio = True
             continue
         leidas[sha] = epoch
         cambio = True
         comentarios = _deepseek_con_contenido(crudos, sha)
         if not comentarios:
+            if vencida:
+                finales.add(sha)
             continue
         huella = _huella_comentarios(comentarios)
         if huella == fase.deepseek_huella:
+            if vencida:
+                finales.add(sha)
             continue
         abiertos = [
             h for h in hallazgos_deepseek(comentarios, sha)
@@ -5131,6 +5137,8 @@ def _revisar_deepseek_del_cerrado(
             )
         ]
         if not abiertos:
+            if vencida:
+                finales.add(sha)
             continue
         clave = _clave_decision_tardia(
             registro, enc, fase.id, sha, huella
@@ -5138,6 +5146,8 @@ def _revisar_deepseek_del_cerrado(
         if registro.por_ukey(clave) is not None:
             # La decisión de esta fase ya está preguntada; seguir con las
             # demás fases en vez de detener el sondeo aquí.
+            if vencida:
+                finales.add(sha)
             continue
         marcar_pregunta(
             registro,
@@ -5152,6 +5162,8 @@ def _revisar_deepseek_del_cerrado(
             ukey=clave,
         )
         enc = registro.fold(enc.id) or enc
+        if vencida:
+            finales.add(sha)
         _marcar_deepseek_cerrado(
             directorio,
             {"shas": leidas, "inicios": inicios, "finales": finales},

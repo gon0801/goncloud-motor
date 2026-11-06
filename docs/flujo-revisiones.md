@@ -170,8 +170,10 @@ las fases con entrega externa, no solo el de la fase activa, y sigue
 releyendo el mismo SHA: una revisión limpia puede cambiar después y traer un
 hallazgo, y una pregunta ya emitida en una fase no detiene la lectura de las
 siguientes. Se espacia ante errores para no golpear GitHub en cada barrido y
-la ventana total es de 7 días; al vencer se deja de consultar ese SHA. Los
-bloqueantes de una lectura anterior no impiden que el SHA omitido avance.
+la ventana total es de 7 días; al vencer se hace una última lectura y después
+se deja de consultar ese SHA, para no perder un comentario que cambió antes
+del vencimiento. Los bloqueantes de una lectura anterior no impiden que el SHA
+omitido avance.
 
 Un ajuste del propietario es la respuesta a una decisión tardía: consume la
 pregunta conservada y el cierre reconoce la misma clave para no volver a
