@@ -6991,9 +6991,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             # 30 min: se trata como ausencia en esta misma pasada.
             texto = (
                 "sin revisión de DeepSeek para el SHA "
-                f"{sha[:12]}: el sticky de ai-review declara que la revisión "
-                "excedió su tiempo límite y no se reintenta; la fase sigue "
-                "como si no hubiera hallazgos"
+                f"{sha[:12]} tras {int(minutos)} min: el sticky de ai-review "
+                "declara que la revisión excedió su tiempo límite y no se "
+                "reintenta; la fase sigue como si no hubiera hallazgos"
             )
             enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
             return _paso_entrega(registro, enc, gh, hora)
