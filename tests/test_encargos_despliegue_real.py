@@ -86,7 +86,7 @@ def recibo_final(reg, limite=15):
             datos = json.loads(recibos[0].read_text())
             pasos = datos.get("pasos", [])
             if (
-                datos.get("estado") in ("aplicado", "fallido", "esperando")
+                datos.get("estado") in ("aplicado", "fallido", "incierto", "esperando")
                 and all("codigo" in p for p in pasos)
             ):
                 return datos
@@ -258,10 +258,25 @@ class DespliegueReal(unittest.TestCase):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
         with (espacio / "d.sh").open("a") as f:
-            f.write("sleep 20\n")
+            f.write("exec sleep 20\n")
         integrar()
         ejecutor = self._ejecucion_en_proceso()
         self.parche(ejecutor, "TOPE_S", 0.2)
+        # La prueba comprueba el camino 124 -> rollback, no la implementación
+        # del Job de Windows del runner. El cierre determinista del proceso
+        # aparta esa capacidad variable de la receta.
+        def matar(proceso):
+            try:
+                proceso.kill()
+            except OSError:
+                pass
+            try:
+                proceso.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+
+        self.parche(plataforma, "matar_grupo", matar)
+        self.parche(plataforma, "presencia_grupo", lambda *a, **k: "ausente")
         final = paso(despliegue)
         assert final.nivel_alcanzado == "integrado"
         datos = recibo_final(reg)

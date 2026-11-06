@@ -4338,7 +4338,11 @@ def _refrescar_cuerpo_fuera_de_alcance(
     El cuerpo se publica por SHA; una anotación posterior no cambia el SHA, así
     que la huella del cuerpo decide si hay algo nuevo que publicar.
     """
-    if gh is None or not enc.pr_numero or not enc.fuera_de_alcance:
+    if (
+        gh is None
+        or not getattr(enc, "pr_numero", 0)
+        or not getattr(enc, "fuera_de_alcance", ())
+    ):
         return enc
     return _actualizar_cuerpo_pr(
         registro, enc, gh, enc.pr_numero, enc.pr_sha, espacio, hora
