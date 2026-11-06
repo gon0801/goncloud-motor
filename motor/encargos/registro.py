@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +28,65 @@ class _Plegado:
 
 def _estable(data: dict) -> dict:
     return {k: v for k, v in data.items() if k != "hora"}
+
+
+class _CacheDeLaBase:
+    """Plegados ya calculados para una base, compartidos por sus `Registro`.
+
+    La conexión sqlite sigue siendo de un solo hilo: cada `Registro` valida los
+    tokens contra su propia conexión y solo toma de aquí el estado ya plegado.
+    El candado cubre los diccionarios; el plegado se hace fuera para no
+    serializar a los hilos que leen encargos distintos.
+    """
+
+    def __init__(self) -> None:
+        self.candado = threading.Lock()
+        self.plegados: dict[str, _Plegado] = {}
+        self.plegados_hasta: dict[tuple[str, int], _Plegado] = {}
+
+
+# La identidad del fichero y la firma del primer evento separan una base
+# recreada en la misma ruta: un registro nuevo vuelve a empezar los ids y una
+# colisión de token devolvería historia vieja. La cota impide que un proceso
+# que abre muchas bases acumule plegados para siempre.
+_CACHES: OrderedDict[tuple[str, tuple[int, int], str], _CacheDeLaBase] = OrderedDict()
+_CACHE_MAX = 16
+_CACHES_CANDADO = threading.Lock()
+
+
+def _identidad_del_fichero(base: Path) -> tuple[int, int]:
+    try:
+        stat = (base / "registro.sqlite").stat()
+    except OSError:
+        return (0, 0)
+    return (int(stat.st_dev), int(stat.st_ino))
+
+
+def _firma_de_la_base(db: sqlite3.Connection) -> str:
+    fila = db.execute(
+        "SELECT id, ts, kind, data FROM events ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not fila:
+        return ""
+    return hashlib.sha256("\0".join(str(x) for x in fila).encode()).hexdigest()
+
+
+def _cache_de(base: Path, db: sqlite3.Connection) -> _CacheDeLaBase:
+    firma = _firma_de_la_base(db)
+    if not firma:
+        # Una base vacía no comparte caché: todavía no tiene identidad estable.
+        return _CacheDeLaBase()
+    clave = (str(base), _identidad_del_fichero(base), firma)
+    with _CACHES_CANDADO:
+        cache = _CACHES.get(clave)
+        if cache is not None:
+            _CACHES.move_to_end(clave)
+            return cache
+        cache = _CacheDeLaBase()
+        _CACHES[clave] = cache
+        while len(_CACHES) > _CACHE_MAX:
+            _CACHES.popitem(last=False)
+        return cache
 
 
 def exigir_base(path: Path) -> Path:
@@ -74,11 +136,18 @@ class Registro:
             "INSERT OR IGNORE INTO cortes_avisos (version, evento) "
             "SELECT 'cierres-cancelados-v1', COALESCE(MAX(id), 0) FROM events"
         )
-        self._plegados: dict[str, _Plegado] = {}
-        self._plegados_hasta: dict[tuple[str, int], _Plegado] = {}
+        self._cache_actual: _CacheDeLaBase | None = None
         self._ultimos: dict[str, tuple[int, int]] | None = None
         self._data_version = -1
         self._cambios = -1
+
+    @property
+    def _cache(self) -> _CacheDeLaBase:
+        # Se resuelve en el primer fold: una instancia que nace con la base
+        # vacía y escribe antes de plegar comparte la caché ya poblada.
+        if self._cache_actual is None:
+            self._cache_actual = _cache_de(self.base, self.db)
+        return self._cache_actual
 
     def close(self) -> None:
         self.db.close()
@@ -209,18 +278,21 @@ class Registro:
         ).fetchone()
         ultimo = int(fila[0] or 0)
         conteo = int(fila[1] or 0)
-        guardado = self._plegados_hasta.get((encargo, hasta))
+        with self._cache.candado:
+            guardado = self._cache.plegados_hasta.get((encargo, hasta))
         if guardado is not None and guardado.ultimo == ultimo and guardado.conteo == conteo:
             return guardado.estado
         estado, ultimo, conteo = self._plegar(encargo, hasta)
-        self._plegados_hasta[(encargo, hasta)] = _Plegado(estado, ultimo, conteo)
+        with self._cache.candado:
+            self._cache.plegados_hasta[(encargo, hasta)] = _Plegado(estado, ultimo, conteo)
         return estado
 
     def fold(self, encargo: str, hasta: int | None = None) -> Encargo | None:
         if hasta is not None:
             return self._fold_hasta(encargo, hasta)
         ultimo, conteo = self._ultimo_y_conteo(encargo)
-        guardado = self._plegados.get(encargo)
+        with self._cache.candado:
+            guardado = self._cache.plegados.get(encargo)
         if guardado is not None and guardado.ultimo == ultimo and guardado.conteo == conteo:
             return guardado.estado
         if (
@@ -237,12 +309,14 @@ class Registro:
                 estado = guardado.estado
                 for ev in nuevos:
                     estado = reducir(estado, ev)
-                self._plegados[encargo] = _Plegado(estado, ultimo, conteo)
+                with self._cache.candado:
+                    self._cache.plegados[encargo] = _Plegado(estado, ultimo, conteo)
                 return estado
         # El token se toma del mismo recorrido que produjo el estado: si otro
         # proceso escribe durante el plegado, el caché no queda adelantado.
         estado, ultimo, conteo = self._plegar(encargo)
-        self._plegados[encargo] = _Plegado(estado, ultimo, conteo)
+        with self._cache.candado:
+            self._cache.plegados[encargo] = _Plegado(estado, ultimo, conteo)
         return estado
 
     def anotar(self, encargo: str, evento: dict, ukey: str) -> str:
