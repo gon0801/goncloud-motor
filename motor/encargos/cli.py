@@ -203,7 +203,8 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         texto = args.texto
         adjuntos: tuple[str, ...] = ()
         if args.archivo:
-            texto = leer_texto(args.archivo)
+            contenido = leer_texto(args.archivo)
+            texto = f"{texto}\n\n{contenido}" if texto else contenido
             adjuntos = (str(args.archivo.resolve()),)
         if not texto.strip():
             print("falta el pedido", file=sys.stderr)
