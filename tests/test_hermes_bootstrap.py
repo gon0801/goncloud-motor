@@ -12,7 +12,7 @@ from motor.flota import actualizaciones
 
 
 class BootstrapDeHermes(unittest.TestCase):
-    def test_usa_solo_stdlib_y_prepara_el_soul(self):
+    def test_usa_solo_stdlib_y_prepara_el_soul(self):  # no-roja-en-base: la base no migró a motor.io; la prueba cuida que la migración conserve el bootstrap
         with tempfile.TemporaryDirectory() as tmp:
             raiz = Path(tmp)
             config, home, instalacion = raiz / "config", raiz / "home", raiz / "py"

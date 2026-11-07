@@ -41,6 +41,7 @@ def _repo(tmp: Path, base_extra: dict[str, str] | None = None) -> Path:
     repo = tmp / "repo"
     repo.mkdir()
     (repo / "tests").mkdir()
+    (repo / "tests/__init__.py").write_text("")
     (repo / "tools").mkdir()
     (repo / "conftest.py").write_text("import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\n")
     (repo / "producto.py").write_text("def valor():\n    return 1\n")
@@ -168,6 +169,63 @@ class PruebasNuevasContraLaBase(unittest.TestCase):
             salida = _corre(repo)
             self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
             self.assertIn("test_param", salida.stderr)
+
+    def test_el_parametrize_de_la_clase_tambien_cuenta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(
+                Path(tmp),
+                {
+                    "tests/test_param_clase.py": (
+                        "import pytest\n\n"
+                        "@pytest.mark.parametrize('x', [1])\n"
+                        "class TestCasos:\n"
+                        "    def test_param(self, x):\n"
+                        "        assert x > 0\n"
+                    )
+                },
+            )
+            (repo / "tests/test_param_clase.py").write_text(
+                "import pytest\n\n"
+                "@pytest.mark.parametrize('x', [1, 2])\n"
+                "class TestCasos:\n"
+                "    def test_param(self, x):\n"
+                "        assert x > 0\n"
+            )
+            _commit(repo, "pruebas")
+            salida = _corre(repo)
+            self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
+            self.assertIn("TestCasos::test_param", salida.stderr)
+
+    def test_un_error_de_coleccion_no_tapa_otra_prueba_que_pasa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / "tests/test_nueva_api.py").write_text(
+                "from producto import funcion_nueva\n\n"
+                "def test_nueva_api():\n"
+                "    assert funcion_nueva() == 2\n"
+            )
+            (repo / "tests/test_pasa.py").write_text(
+                "def test_pasa():\n    assert True\n"
+            )
+            _commit(repo, "pruebas")
+            salida = _corre(repo)
+            self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
+            self.assertIn("tests/test_pasa.py::test_pasa", salida.stderr)
+            self.assertIn("collection failure", salida.stderr)
+
+    def test_los_apoyos_nuevos_viajan_al_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / "tests/auxiliar.py").write_text("VALOR = 1\n")
+            (repo / "tests/test_nueva.py").write_text(
+                "from tests.auxiliar import VALOR\n\n"
+                "def test_que_pasa():\n"
+                "    assert VALOR == 1\n"
+            )
+            _commit(repo, "pruebas")
+            salida = _corre(repo)
+            self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
+            self.assertIn("tests/test_nueva.py::test_que_pasa", salida.stderr)
 
 
 if __name__ == "__main__":

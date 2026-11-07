@@ -310,7 +310,7 @@ class WslTest(unittest.TestCase):
             despues = (w / ".git").read_text(encoding="utf-8").strip()
             self.assertFalse(os.path.isabs(despues.removeprefix("gitdir:").strip()))
 
-    def test_el_guardian_lee_sus_hijos_sin_importar_el_motor(self):
+    def test_el_guardian_lee_sus_hijos_sin_importar_el_motor(self):  # no-roja-en-base: la base lee el guardián con read_text directo; la prueba cuida que la migración conserve stdlib
         import ast
 
         arbol = ast.parse(windows.GUARDIAN_WSL)
