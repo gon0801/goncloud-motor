@@ -115,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("publicar")
     s.add_argument("--home", required=True, type=Path)
     s.add_argument("--salida", required=True, type=Path)
+    s.add_argument("--repo-hermes", type=Path)
 
     s = sub.add_parser("sincronizar")
     s.add_argument("--home", required=True, type=Path)
@@ -133,7 +134,7 @@ def _correr(args) -> int:
         from .compartida import exportar, importar
 
         if args.cmd == "publicar":
-            return _json(exportar(args.home, args.salida))
+            return _json(exportar(args.home, args.salida, args.repo_hermes))
         if str(args.archivo) == "-":
             import tempfile
 
