@@ -16,9 +16,9 @@ from unittest import mock
 from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso
 from motor.encargos.dominio import bloqueantes_abiertos, prompt_responsable, vista
-from motor.github import FakeGitHub
 from tests.test_entrega_misma_version import _barrido, _pasos
 from motor.encargos.aislamiento import SondaEntorno
+from tests.dobles import github_por_numero
 from tests.test_flujo_revisiones import _entrega_pr
 
 
@@ -52,22 +52,8 @@ def _comentario(*hallazgos: dict, nota: str = "DeepSeek") -> str:
     return nota + "\nai-review:findings=" + json.dumps(list(hallazgos))
 
 
-class _GhComentarios(FakeGitHub):
-    """DeepSeek publica el texto de `textos[numero]`, o el de `textos[None]`.
-    Un texto puede ser una función del número de llamada, para que cambie entre
-    dos lecturas."""
-
-    def __init__(self, d):
-        super().__init__(d)
-        self.textos: dict = {}
-        self.llamadas: list = []
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        self.llamadas.append((numero, sha))
-        texto = self.textos.get(numero, self.textos.get(None))
-        if callable(texto):
-            texto = texto(len(self.llamadas))
-        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}] if texto else []
+def _comentarios(directorio):
+    return github_por_numero(directorio, "")
 
 
 def _ids(e) -> list[str]:
@@ -76,7 +62,7 @@ def _ids(e) -> list[str]:
 
 class RelecturaDelMismoSha(unittest.TestCase):
     def _devuelto_por_f1(self, tmp, clave):
-        vuelta, r = _entrega_pr(self, tmp, clave, _GhComentarios)
+        vuelta, r = _entrega_pr(self, tmp, clave, _comentarios)
         vuelta.gh.textos[None] = _comentario(_hallazgo("F1"))
         e = vuelta("uno")
         self.assertEqual(e.estrategia, "investigar")
@@ -147,7 +133,7 @@ class RelecturaDelMismoSha(unittest.TestCase):
 class VeredictoVigenteAlCerrar(unittest.TestCase):
     def test_un_medium_publicado_tras_la_lectura_impide_cerrar_la_fase(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-tardio", _GhComentarios)
+            vuelta, r = _entrega_pr(self, tmp, "ds-tardio", _comentarios)
             vuelta.gh.textos[None] = lambda n: (
                 _comentario() if n == 1 else _comentario(_hallazgo("F6", "medium"))
             )
@@ -159,7 +145,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
 
     def test_sin_cambios_en_el_comentario_la_fase_cierra(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-limpio", _GhComentarios)
+            vuelta, r = _entrega_pr(self, tmp, "ds-limpio", _comentarios)
             vuelta.gh.textos[None] = _comentario()
             e = vuelta("uno")
             self.assertEqual(e.estado, "terminado")
@@ -171,7 +157,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
                 ignore_cleanup_errors=True
             ) as tmp:
                 vuelta, r = _entrega_pr(
-                    self, tmp, f"ds-espera-{nivel}", _GhComentarios, nivel=nivel
+                    self, tmp, f"ds-espera-{nivel}", _comentarios, nivel=nivel
                 )
                 e = vuelta("uno")
                 self.assertNotEqual(e.estado, "terminado")
@@ -190,7 +176,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             return _comentario()
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-directo", _GhComentarios)
+            vuelta, r = _entrega_pr(self, tmp, "ds-directo", _comentarios)
             vuelta.gh.textos[None] = texto
             e = vuelta("uno")
             self.assertEqual(e.nivel_alcanzado, "pr")
@@ -208,7 +194,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
     def test_un_medium_en_un_pr_ya_fusionado_se_avisa_y_no_cambia_el_estado(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-fusionado", _GhComentarios, nivel="integrado"
+                self, tmp, "ds-fusionado", _comentarios, nivel="integrado"
             )
             r.reg.anotar(
                 r.enc,
@@ -247,7 +233,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             return _comentario()
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-sin-puerto", _GhComentarios)
+            vuelta, r = _entrega_pr(self, tmp, "ds-sin-puerto", _comentarios)
             vuelta.gh.textos[None] = texto
             e = vuelta("uno")
             self.assertEqual(e.nivel_alcanzado, "pr")
@@ -260,7 +246,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
 
     def test_un_medium_en_el_pr_de_una_fase_anterior_la_reabre_al_cerrar_el_encargo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-fases", _GhComentarios)
+            vuelta, r = _entrega_pr(self, tmp, "ds-fases", _comentarios)
             r.reg.anotar(
                 r.enc,
                 {
@@ -293,7 +279,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
 
     def test_si_la_fase_no_se_puede_reabrir_el_encargo_no_termina(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-fases-ilegal", _GhComentarios)
+            vuelta, r = _entrega_pr(self, tmp, "ds-fases-ilegal", _comentarios)
             r.reg.anotar(
                 r.enc,
                 {
@@ -332,7 +318,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
                 ignore_cleanup_errors=True
             ) as tmp:
                 vuelta, r = _entrega_pr(
-                    self, tmp, f"ds-{nivel}", _GhComentarios, nivel=nivel
+                    self, tmp, f"ds-{nivel}", _comentarios, nivel=nivel
                 )
                 vuelta.gh.textos[None] = lambda n: (
                     _comentario() if n == 1 else _comentario(_hallazgo("F6", "medium"))
@@ -347,23 +333,10 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
                 self.assertEqual(pr.estado, "abierto")
 
 
-class _GhQueFalla(_GhComentarios):
-    """GitHub falla en las lecturas de `fallos` y luego responde."""
-
-    fallos = 0
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        if self.fallos > 0:
-            self.fallos -= 1
-            self.llamadas.append((numero, sha))
-            raise RuntimeError("gh api: 502")
-        return super().comentarios_deepseek(repo, numero, sha)
-
-
 class RelecturaConGithubCaido(unittest.TestCase):
     def test_un_fallo_no_consume_el_espaciado_y_queda_a_la_vista(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-gh-caido", _GhQueFalla)
+            vuelta, r = _entrega_pr(self, tmp, "ds-gh-caido", _comentarios)
             gh = vuelta.gh
             gh.textos[None] = _comentario(_hallazgo("F1"))
             e = vuelta("uno")
@@ -396,7 +369,7 @@ class RelecturaConGithubCaido(unittest.TestCase):
 
     def test_un_github_caido_un_rato_deja_un_solo_aviso_por_tramo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-gh-tramo", _GhQueFalla)
+            vuelta, r = _entrega_pr(self, tmp, "ds-gh-tramo", _comentarios)
             gh = vuelta.gh
             gh.textos[None] = _comentario(_hallazgo("F1"))
             vuelta("uno")

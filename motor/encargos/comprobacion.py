@@ -11,6 +11,7 @@ constante.
 """
 
 from __future__ import annotations
+from motor.io import leer_json, leer_texto
 
 import hashlib
 import json
@@ -181,7 +182,7 @@ def leer_declaradas(interno: Path) -> list[dict] | None:
     if not path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+        doc = leer_json(path)
     except (OSError, ValueError) as exc:
         raise ValueError(f"comprobaciones.json no se puede leer: {exc}") from exc
     comandos = doc.get("comprobaciones") if isinstance(doc, dict) else doc
@@ -227,7 +228,7 @@ def leer_disputa(interno: Path) -> tuple[dict, ...] | None:
     if not path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = leer_json(path)
     except (OSError, ValueError) as exc:
         raise ValueError(f"disputa.json no se puede leer: {exc}") from exc
     if isinstance(doc, dict) and "disputas" in doc:
@@ -426,7 +427,7 @@ def _ejecutar_declaradas(
     runtime_path = directorio / "ejecuciones-runtime.jsonl"
     runtime = []
     if runtime_path.is_file():
-        for linea in runtime_path.read_text(encoding="utf-8").splitlines()[-100:]:
+        for linea in leer_texto(runtime_path).splitlines()[-100:]:
             try:
                 runtime.append(json.loads(linea))
             except ValueError:
@@ -1110,7 +1111,7 @@ def leer_juicio(
     externos: tuple[Hallazgo, ...] = (),
 ) -> JuicioValidado | FalloInstrumento:
     try:
-        texto = path.read_text(encoding="utf-8-sig")
+        texto = leer_texto(path)
     except (OSError, UnicodeError) as exc:
         return FalloInstrumento("juicio", f"juicio no utilizable: {exc}", "lectura")
     try:

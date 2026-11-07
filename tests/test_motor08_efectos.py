@@ -160,7 +160,7 @@ class RecuperaEfectosTest(unittest.TestCase):
         )
         viejo = commit(fuente, "Escritor anterior")
         git("-C", str(fuente), "tag", "anterior", viejo)
-        for nombre in ("formato.py", "store.py"):
+        for nombre in ("formato.py", "io.py", "store.py"):
             shutil.copy2(RAIZ / "motor" / nombre, paquete / nombre)
         shutil.copytree(
             RAIZ / "motor" / "plataforma",

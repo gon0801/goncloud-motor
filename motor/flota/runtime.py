@@ -1,8 +1,8 @@
 """Vincula el intento a los ejecutables y al paquete de su generación."""
 
 from __future__ import annotations
+from motor.io import leer_json
 
-import json
 import shutil
 from pathlib import Path
 
@@ -11,7 +11,7 @@ def cargar_runtime(generacion: Path) -> dict:
     path = generacion / "runtime.json"
     if not path.exists():
         return {}
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc = leer_json(path)
     if not isinstance(doc, dict) or not isinstance(doc.get("lanzadores", {}), dict):
         raise TypeError("runtime de generacion invalido")
     return doc
@@ -63,7 +63,7 @@ def modelos_de_chain(
     if not politica:
         return ()
     try:
-        tabla = json.loads(_ruta(generacion, politica).read_text(encoding="utf-8"))
+        tabla = leer_json(_ruta(generacion, politica))
     except (OSError, ValueError):
         return ()
     vistos: list[str] = []
@@ -82,7 +82,7 @@ def modelo_de_chain(generacion: Path, funcion: str, prefijo: str) -> str:
     if not politica:
         return ""
     try:
-        tabla = json.loads(_ruta(generacion, politica).read_text(encoding="utf-8"))
+        tabla = leer_json(_ruta(generacion, politica))
     except (OSError, ValueError):
         return ""
     for etiqueta in tabla.get("chains", {}).get(funcion, []):
@@ -109,7 +109,7 @@ def vincular(
     argumentos = resolver_ejecutable(generacion, cmd)
     politica = doc.get("politica")
     if politica and nombre == "grok":
-        tabla = json.loads(_ruta(generacion, politica).read_text(encoding="utf-8"))
+        tabla = leer_json(_ruta(generacion, politica))
         elegible = [
             (ref, esfuerzo.rstrip(")"))
             for ref, _, esfuerzo in (

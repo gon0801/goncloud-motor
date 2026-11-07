@@ -1,6 +1,7 @@
 """Prepara y publica generaciones de herramientas y configuración compartida."""
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import hashlib
 import json
@@ -151,14 +152,11 @@ def _utilidad_configuracion(gen: Path, contrato: dict) -> dict:
         destino = gen / "herramientas/config-utils"
         destino.mkdir(parents=True, exist_ok=True)
         requisitos = destino / "requirements.txt"
-        requisitos.write_text(
-            "PyYAML=="
+        escribir_texto(requisitos, "PyYAML=="
             + version
             + " "
             + " ".join("--hash=sha256:" + h for h in hashes)
-            + "\n",
-            encoding="utf-8",
-        )
+            + "\n")
         _run(
             [
                 uv,
@@ -197,9 +195,7 @@ def _entorno_configuracion(gen: Path, runtime: dict) -> dict:
 def _plugins_hermes(
     config: Path, home: Path, python: list[str], instalacion: Path, env: dict
 ) -> None:
-    manifiesto = json.loads(
-        (config / "director-plugins.json").read_text(encoding="utf-8")
-    )
+    manifiesto = leer_json((config / "director-plugins.json"))
     director = manifiesto["director"]
     if Path(director).name != director:
         raise ValueError("nombre del director invalido")
@@ -211,15 +207,15 @@ from hermes_cli.profiles import create_profile, get_profile_dir
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
 config, director = Path(sys.argv[3]), sys.argv[2]
 poteto = runpy.run_path(str(config / "plugins/goncloud-team/poteto.py"))
-soul = "\\n\\n".join((config / name).read_text(encoding="utf-8") for name in
+soul = "\\n\\n".join(leer_texto((config / name)) for name in
                      ("shared/CONTRACT.md", "shared/BUSINESS.md", "roles/" + director + ".md")) + "\\n\\n" + poteto["bloque"]()
 profile = get_profile_dir(director)
 if not profile.exists():
     create_profile(director, no_alias=True, description="Director de ensayo", soul=soul)
 else:
     target = profile / "SOUL.md"
-    if target.is_file() and target.read_text(encoding="utf-8") == DEFAULT_SOUL_MD:
-        target.write_text(soul, encoding="utf-8")
+    if target.is_file() and leer_texto(target) == DEFAULT_SOUL_MD:
+        escribir_texto(target, soul)
 """
     _run([*python, "-c", bootstrap, str(instalacion), director, str(config)], env=env)
     for plugin in manifiesto["plugins"]:
@@ -321,7 +317,7 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict, vigente: Path | None =
         )
         runtime["poteto"] = str(paquete.relative_to(gen))
         tabla = hermes / "model-routing.source.json"
-        proyeccion = json.loads(tabla.read_text(encoding="utf-8"))
+        proyeccion = leer_json(tabla)
         proyeccion.update(proyectar_tabla(cargar(gen / "manifesto.toml")))
         _atomico(tabla, proyeccion)
         runtime["politica"] = str(tabla.relative_to(gen))
@@ -671,7 +667,7 @@ def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
     if tabla.is_file():
         # El manifiesto de la candidata es el importado. La tabla vigente conserva
         # bindings y metadatos; las cadenas salen de esa proyección.
-        proyeccion = json.loads(tabla.read_text(encoding="utf-8"))
+        proyeccion = leer_json(tabla)
         proyeccion.update(proyectar_tabla(cargar(gen / "manifesto.toml")))
         _atomico(tabla, proyeccion)
         runtime["politica"] = str(tabla.relative_to(gen))
@@ -770,7 +766,7 @@ def preparar(
         if fuente is None and (home / "motor").exists():
             anterior = home / "generaciones" / asignar(home) / "runtime.json"
             if anterior.is_file():
-                anteriores = json.loads(anterior.read_text(encoding="utf-8")).get(
+                anteriores = leer_json(anterior).get(
                     "componentes", []
                 )
                 fusion = {c["nombre"]: c for c in anteriores}
@@ -803,7 +799,7 @@ def preparar(
         if (
             recibo.exists()
             and runtime_path.is_file()
-            and json.loads(recibo.read_text(encoding="utf-8")).get("estado") == "preparada"
+            and leer_json(recibo).get("estado") == "preparada"
         ):
             comprobar_runtime(gen)
             return {
@@ -840,7 +836,7 @@ def preparar(
             gen_vigente = home / "generaciones" / asignar(home)
             ruta_vigente = gen_vigente / "runtime.json"
             if ruta_vigente.is_file():
-                runtime_vigente = json.loads(ruta_vigente.read_text(encoding="utf-8"))
+                runtime_vigente = leer_json(ruta_vigente)
                 vigentes = set(runtime_vigente.get("lanzadores") or {})
         except (OSError, ValueError):
             vigentes = set()
@@ -1030,7 +1026,7 @@ def _comprobar_runtime(gen: Path, recibo: dict) -> None:
         raise ValueError(
             "runtime de la candidata alterado; se conserva la instalacion vigente"
         )
-    runtime = json.loads(path.read_text(encoding="utf-8"))
+    runtime = leer_json(path)
     for nombre, huella in runtime.get("archivos", {}).items():
         ruta = Path(nombre) if Path(nombre).is_absolute() else gen / nombre
         if _sha256(ruta) != huella:
@@ -1059,11 +1055,11 @@ def _comprobar_claw(gen: Path, runtime: dict) -> None:
 def comprobar_runtime(gen: Path) -> dict:
     gen = gen.resolve()
     recibo_path = gen.parents[1] / "preparaciones" / (gen.name + ".json")
-    recibo = json.loads(recibo_path.read_text(encoding="utf-8"))
+    recibo = leer_json(recibo_path)
     if recibo.get("estado") != "preparada":
         raise ValueError("la candidata no tiene una preparacion comprobada")
     _comprobar_runtime(gen, recibo)
-    runtime = json.loads((gen / "runtime.json").read_text(encoding="utf-8"))
+    runtime = leer_json((gen / "runtime.json"))
     if not runtime.get("lanzadores"):
         raise ValueError("la candidata no tiene herramientas utilizables")
     pendientes = {
@@ -1136,12 +1132,12 @@ def estado(home: Path) -> dict:
     generacion = asignar(home)
     runtime_path = home / "generaciones" / generacion / "runtime.json"
     runtime = (
-        json.loads(runtime_path.read_text(encoding="utf-8"))
+        leer_json(runtime_path)
         if runtime_path.is_file()
         else {}
     )
     recibos = [
-        json.loads(p.read_text(encoding="utf-8"))
+        leer_json(p)
         for p in sorted((home / "preparaciones").glob("*.json"))
     ]
     deseadas = (

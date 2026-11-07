@@ -26,63 +26,21 @@ from motor.encargos.dominio import (
     vista,
 )
 from motor.encargos.registro import Registro
-from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import Recorrido, _entrega_pr
+from motor.github import FakeGitHub
+from tests.dobles import github_con_comentario, github_por_numero
 
 
-class _GhConComentario(FakeGitHub):
-    hallazgo: dict | None = None
-    texto: str | None = None
-    falla = False
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        if self.falla:
-            raise RuntimeError("DeepSeek no responde")
-        if self.texto is not None:
-            return [{"texto": self.texto, "autor": "github-actions[bot]", "sha": sha}]
-        if self.hallazgo is None:
-            return []
-        texto = "DeepSeek: CHANGES_REQUESTED\nai-review:findings=" + json.dumps(
-            [self.hallazgo]
-        )
-        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}]
-
-
-class _GhPorNumero(FakeGitHub):
-    """Comentarios por PR; los que no están declarados se aprueban limpios."""
-
-    textos: dict[int, str | None] = {}
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.textos = dict(type(self).textos)
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        texto = self.textos.get(numero, "DeepSeek: APPROVED")
-        if texto is None:
-            return []
-        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}]
-
-
-class _GhStickyTimeout(FakeGitHub):
+def _sticky_aprobado(directorio):
     """El sticky de ai-review declara el timeout de 900 s y que no reintenta."""
-
-    textos: dict[int, str] = {}
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.textos = dict(type(self).textos)
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        texto = self.textos.get(
-            numero,
-            "DeepSeek review\n<!-- ai-review:sticky -->\n"
-            'ai-review:completion={"status":"timeout","retry":false}\n'
-            "ai-review:findings=[]\n"
-            "la revisión excedió el tiempo límite de 900 s; no se reintenta "
-            "porque otro intento tardaría lo mismo",
-        )
-        return [{"texto": texto, "autor": "github-actions[bot]", "sha": sha}]
+    return github_por_numero(
+        directorio,
+        "DeepSeek review\n<!-- ai-review:sticky -->\n"
+        'ai-review:completion={"status":"timeout","retry":false}\n'
+        "ai-review:findings=[]\n"
+        "la revisión excedió el tiempo límite de 900 s; no se reintenta "
+        "porque otro intento tardaría lo mismo",
+    )
 
 
 def _medio(ident: str = "F6") -> dict:
@@ -154,7 +112,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_sticky_timeout_sin_revision_no_espera_ni_finge_aprobacion(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-sticky", _GhStickyTimeout, nivel="integrado"
+                self, tmp, "ds-sticky", _sticky_aprobado, nivel="integrado"
             )
             r.reg.anotar(
                 r.enc,
@@ -201,7 +159,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_un_medium_tardio_en_una_fase_anterior_se_avisa_y_no_frena_el_cierre(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-tardio-integrado", _GhPorNumero, nivel="integrado"
+                self, tmp, "ds-tardio-integrado", github_por_numero, nivel="integrado"
             )
             r.reg.anotar(
                 r.enc,
@@ -242,7 +200,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_un_medium_publicado_despues_del_cierre_se_avisa_y_no_cambia_el_estado(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-cerrado-tardio", _GhPorNumero, nivel="integrado"
+                self, tmp, "ds-cerrado-tardio", github_por_numero, nivel="integrado"
             )
             e = vuelta("uno")
             hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
@@ -276,7 +234,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_un_medium_posterior_al_cierre_en_una_fase_anterior_se_avisa_en_su_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-cerrado-fase-anterior", _GhPorNumero,
+                self, tmp, "ds-cerrado-fase-anterior", github_por_numero,
                 nivel="integrado",
             )
             r.reg.anotar(
@@ -358,7 +316,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_un_medium_dentro_del_alcance_antes_del_tope_sigue_bloqueando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-medium-antes", _GhConComentario, nivel="integrado"
+                self, tmp, "ds-medium-antes", github_con_comentario, nivel="integrado"
             )
             vuelta.gh.hallazgo = _medio()
             e = vuelta("uno")
@@ -376,7 +334,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
 
 def _dos_fases_con_pr_en_la_segunda(caso, tmp: str, clave: str):
     """Encargo de dos fases: la uno integrada y la dos con PR en nivel pr."""
-    vuelta, r = _entrega_pr(caso, tmp, clave, _GhCuenta, nivel="integrado")
+    vuelta, r = _entrega_pr(caso, tmp, clave, github_por_numero, nivel="integrado")
     r.reg.anotar(
         r.enc,
         {
@@ -438,21 +396,6 @@ def _dos_fases_con_pr_en_la_segunda(caso, tmp: str, clave: str):
     return vuelta, r, r.fold()
 
 
-class _GhCuenta(_GhPorNumero):
-    """Cuenta las lecturas de DeepSeek y puede fallar a voluntad."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.llamadas: list[str] = []
-        self.falla = False
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        self.llamadas.append(sha)
-        if self.falla:
-            raise RuntimeError("DeepSeek no responde")
-        return super().comentarios_deepseek(repo, numero, sha)
-
-
 class TopeConBloqueantesAnteriores(unittest.TestCase):
     def test_omitir_resuelve_el_bloqueante_viejo_y_no_finge_una_lectura(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -512,7 +455,7 @@ class TopeConBloqueantesAnteriores(unittest.TestCase):
 class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
     def _terminado(self, tmp: str):
         vuelta, r = _entrega_pr(
-            self, tmp, "ds-sondeo-cerrado", _GhCuenta, nivel="integrado"
+            self, tmp, "ds-sondeo-cerrado", github_por_numero, nivel="integrado"
         )
         e = vuelta("uno")
         hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
@@ -790,7 +733,7 @@ class SondeoNoSeDetieneEnUnaFaseYaAvisada(unittest.TestCase):
     def test_sigue_con_las_fases_siguientes(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-fases-avisadas", _GhPorNumero,
+                self, tmp, "ds-fases-avisadas", github_por_numero,
                 nivel="integrado",
             )
             r.reg.anotar(
@@ -832,7 +775,7 @@ class CierreSinPrEnLaFaseActiva(unittest.TestCase):
     def test_el_sondeo_llega_a_una_fase_anterior_con_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-cierre-sin-pr", _GhPorNumero, nivel="integrado"
+                self, tmp, "ds-cierre-sin-pr", github_por_numero, nivel="integrado"
             )
             r.reg.anotar(
                 r.enc,
@@ -1158,7 +1101,7 @@ class SinRevisionNoAvanzaConBloqueantesDelMismoSha(unittest.TestCase):
     def test_el_tope_no_avanza_con_un_bloqueante_del_sha_vigente(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-f12", _GhConComentario, nivel="integrado"
+                self, tmp, "ds-f12", github_con_comentario, nivel="integrado"
             )
             vuelta.gh.hallazgo = _medio("F12")
             e = vuelta("uno")
@@ -1234,7 +1177,7 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
     def test_el_cuerpo_del_pr_no_pasa_del_limite(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-limite-cuerpo", _GhPorNumero, nivel="integrado"
+                self, tmp, "ds-limite-cuerpo", github_por_numero, nivel="integrado"
             )
             e = vuelta("uno")
             hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
@@ -1346,7 +1289,7 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
             ).strftime("%Y-%m-%dT%H:%M:%SZ")
             for i in range(70):
                 self._terminado(reg, f"viejo-{i}", viejo, repo, 1)
-            gh = _GhCuenta(Path(tmp) / "gh")
+            gh = github_por_numero(Path(tmp) / "gh")
 
             barrer(reg, ahora_iso(), time.time(), lambda *a, **k: None, gh=gh)
             self.assertEqual(gh.llamadas, [])
@@ -1374,7 +1317,7 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
                 datetime.now() - timedelta(days=30)
             ).strftime("%Y-%m-%dT%H:%M:%SZ")
             self._terminado(reg, "viejo", viejo, repo, 1)
-            gh = _GhCuenta(Path(tmp) / "gh")
+            gh = github_por_numero(Path(tmp) / "gh")
             barrer(reg, ahora_iso(), time.time(), lambda *a, **k: None, gh=gh)
             self.assertEqual(gh.llamadas, [])
 
@@ -1401,7 +1344,7 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
             (Path(reg.base) / "ejecucion" / enc / "actual").write_text(
                 "intento-1-x", encoding="utf-8"
             )
-            gh = _GhCuenta(Path(tmp) / "gh")
+            gh = github_por_numero(Path(tmp) / "gh")
             epoch = time.time()
             barrer(reg, ahora_iso(), epoch, lambda *a, **k: None, gh=gh)
             self.assertTrue(gh.llamadas)

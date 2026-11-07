@@ -14,8 +14,8 @@ La lectura se documenta en docs/capacidades-por-maquina.md.
 """
 
 from __future__ import annotations
+from motor.io import leer_json
 
-import json
 import os
 import plistlib
 import re
@@ -86,7 +86,7 @@ def _generacion_vigente(base: Path) -> Path | None:
     `actual` a la generación vigente. Sin flota vinculada no hay generación.
     """
     try:
-        doc = json.loads((base / "flota-home.json").read_text(encoding="utf-8"))
+        doc = leer_json((base / "flota-home.json"))
         home = Path(str(doc["home"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None

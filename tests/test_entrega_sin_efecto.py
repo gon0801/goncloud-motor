@@ -22,7 +22,8 @@ from motor.encargos.ciclo import (
     barrer,
 )
 from motor.encargos.comprobacion import version_producto
-from tests.test_flujo_revisiones import Recorrido, _entrega_pr, _GhConDeepSeek
+from tests.test_flujo_revisiones import Recorrido, _entrega_pr
+from tests.dobles import github_con_hallazgos
 
 _EXCLUIDAS_LEGADAS = (".git", "__pycache__", ".runtime", ".interno")
 
@@ -226,7 +227,7 @@ class FirmaDelProducto(unittest.TestCase):
 
 class EntregaSinEfecto(unittest.TestCase):
     def _con_commit_sin_sha(self, tmp: str, clave: str):
-        vuelta, r = _entrega_pr(self, tmp, clave, _GhConDeepSeek)
+        vuelta, r = _entrega_pr(self, tmp, clave, github_con_hallazgos)
         e = vuelta("uno")
         commit = e.producto.sha_git
         self.assertTrue(commit)
@@ -315,7 +316,7 @@ class EntregaSinEfecto(unittest.TestCase):
 
     def test_la_ukey_del_commit_incluye_la_firma_del_producto(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ukey", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "ukey", github_con_hallazgos)
             e = vuelta("uno")
             commit = e.producto.sha_git
             ukey = (
@@ -329,7 +330,7 @@ class EntregaSinEfecto(unittest.TestCase):
 
 class PublicacionConObservacion(unittest.TestCase):
     def _producto_aprobado(self, tmp: str, clave: str):
-        vuelta, r = _entrega_pr(self, tmp, clave, _GhConDeepSeek)
+        vuelta, r = _entrega_pr(self, tmp, clave, github_con_hallazgos)
         (r.espacio / "saludo.txt").write_text("hola rojo\n", encoding="utf-8")
         r.incorporar()
         r.juicio(

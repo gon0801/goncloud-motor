@@ -6,6 +6,7 @@ El real solo corre con MOTOR_GH_SANDBOX=<dueño/repo> (un repo desechable con un
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import subprocess
@@ -15,7 +16,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from motor.github import FakeGitHub, GhGitHub, MergeRechazado
+from motor.github import FakeGitHub, GhGitHub, GitHubPort, MergeRechazado
 from motor.workspace import git
 
 
@@ -36,6 +37,33 @@ def _bare_con_rama(t: Path) -> tuple[str, str, Path]:
     git("-c", "user.name=a", "-c", "user.email=a@l", "commit", "-q", "-m", "x", cwd=w)
     git("push", "-q", str(bare), "feat", cwd=w)
     return str(bare), git("rev-parse", "HEAD", cwd=w).stdout.strip(), w
+
+
+class ContratoDelDoble(unittest.TestCase):
+    """El único doble implementa el puerto completo, no solo lo que usa cada prueba."""
+
+    def test_fakegithub_implementa_todos_los_metodos_del_puerto(self):  # no-roja-en-base: el doble ya implementaba el puerto en la base; el candado es nuevo
+        metodos = sorted(
+            nombre
+            for nombre in vars(GitHubPort)
+            if not nombre.startswith("_") and callable(getattr(GitHubPort, nombre))
+        )
+        self.assertIn("abrir_pr", metodos)
+        self.assertIn("checks", metodos)
+        self.assertIn("merge", metodos)
+        for nombre in metodos:
+            implementado = getattr(FakeGitHub, nombre, None)
+            self.assertTrue(
+                callable(implementado),
+                f"FakeGitHub no implementa GitHubPort.{nombre}",
+            )
+            del_puerto = inspect.signature(getattr(GitHubPort, nombre))
+            del_doble = inspect.signature(implementado)
+            self.assertEqual(
+                [(p.name, p.default) for p in del_puerto.parameters.values()],
+                [(p.name, p.default) for p in del_doble.parameters.values()],
+                f"FakeGitHub.{nombre} no conserva la firma del puerto",
+            )
 
 
 class ContratoFalso(unittest.TestCase):

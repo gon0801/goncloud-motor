@@ -16,6 +16,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
+      - name: Instalar las herramientas de calidad
+        run: python -m pip install pyright==1.1.414 ruff==0.17.4
+      - name: Tipos, solo lo nuevo
+        run: python tools/calidad.py tipos
+      - name: Lint, solo lo nuevo
+        run: python tools/calidad.py lint
+      - name: Lectura y escritura de texto, solo lo nuevo
+        run: python tools/calidad.py io
       - name: Compilar el codigo
         run: python -m compileall -q motor ops proto tests conftest.py
       - name: Escanear secretos en todo el historial
@@ -24,3 +32,17 @@ jobs:
           ./gitleaks git --redact --no-banner -v .
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
+
+  nuevas-en-rojo:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Las pruebas nuevas fallan contra la base del PR
+        run: python tools/pruebas_nuevas.py --base "origin/${{ github.base_ref }}"

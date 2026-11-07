@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 
 from motor.encargos import ciclo
-from motor.github import FakeGitHub
 from motor.workspace import git
 from tests.test_flujo_revisiones import Recorrido, sonda_sin_aislamiento_del_host
+from tests.dobles import github_por_numero
 from tests.test_github_contrato import _bare_con_rama
 
 
@@ -33,19 +33,6 @@ despliegue: desplegar=ops/deploy.sh checklist=ops/check.sh rollback=ops/back.sh
 
 def setUpModule():
     sonda_sin_aislamiento_del_host()
-
-
-class _GitHubContado(FakeGitHub):
-    def __init__(self, directorio):
-        super().__init__(directorio)
-        self.merges = []
-
-    def merge(self, repo, numero, sha, metodo, mensaje):
-        self.merges.append((numero, sha))
-        return super().merge(repo, numero, sha, metodo, mensaje)
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        return [{"texto": "DeepSeek: APPROVED", "autor": "DeepSeek", "sha": sha}]
 
 
 class ReanudarFaseIntegrada(unittest.TestCase):
@@ -73,7 +60,7 @@ class ReanudarFaseIntegrada(unittest.TestCase):
         sha, causa = ciclo._commit_push(e, r.espacio)
         self.assertEqual(causa, "")
         rama = git("branch", "--show-current", cwd=r.espacio).stdout.strip()
-        gh = _GitHubContado(Path(tmp) / "github")
+        gh = github_por_numero(Path(tmp) / "github")
         pr = gh.abrir_pr(repo, rama, "main", "A: documentación y SQL", "Aprobado")
         gh.marcar_listo(repo, pr.numero)
 

@@ -5,6 +5,7 @@ Separado por conocimiento: `Workspace` sabe de git local, `GitHubPort` de PRs y 
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import contextlib
 import datetime as dt
@@ -85,12 +86,12 @@ def _dir_shims_python() -> Path:
             except OSError:
                 pass
             try:
-                actual = f.read_text(encoding="utf-8")
+                actual = leer_texto(f)
             except OSError:
                 actual = ""
             if actual != contenido:
                 tmp = d / f".{nombre}.tmp"
-                tmp.write_text(contenido, encoding="utf-8")
+                escribir_texto(tmp, contenido)
                 tmp.chmod(0o755)
                 os.replace(tmp, f)
             else:
@@ -159,8 +160,8 @@ def _marca_agente(att) -> tuple[dict | None, str]:
     if hay_pid != hay_ini:
         return None, "parcial"
     try:
-        pid = int(pid_p.read_text(encoding="utf-8").strip())
-        inicio = ini_p.read_text(encoding="utf-8").strip()
+        pid = int(leer_texto(pid_p).strip())
+        inicio = leer_texto(ini_p).strip()
     except (OSError, ValueError):
         return None, "ilegible"
     if not pid or not inicio:
@@ -171,7 +172,7 @@ def _marca_agente(att) -> tuple[dict | None, str]:
     job_p = base / "agent.job"
     try:
         if job_p.exists():
-            job = job_p.read_text(encoding="utf-8").strip()
+            job = leer_texto(job_p).strip()
     except OSError:
         return None, "ilegible"
     return {"pid": pid, "inicio": inicio, "boot_id": boot, "job": job}, ""
@@ -501,7 +502,7 @@ def materializa_pstack(conf_dir: Path, raiz: Path) -> tuple[str, Path] | None:
 
 def _texto_guia(f: Path) -> str:
     """El texto de una guía tal como el anexo del encargo lo pega."""
-    return f.read_text(encoding="utf-8").strip()
+    return leer_texto(f).strip()
 
 
 PLANTILLA_PROMPT = (
@@ -533,7 +534,7 @@ def errores_pstack(d: Path, conf) -> list[str]:
         errores.append("pstack.toml [pstack] commit: falta el commit de la copia fija")
     marca = next(
         (
-            (copia / n).read_text(encoding="utf-8", errors="replace")
+            leer_texto((copia / n), errors="replace")
             for n in ("ORIGEN", "COMMIT")
             if (copia / n).is_file()
         ),
@@ -734,7 +735,7 @@ class Effects:
             ],
         }
         texto = json.dumps(info, ensure_ascii=False)
-        (d / "pstack.json").write_text(texto, encoding="utf-8")
+        escribir_texto((d / "pstack.json"), texto)
         return info
 
     def _seccion_pstack(self, info: dict | None) -> str:
@@ -748,7 +749,7 @@ class Effects:
             (f"Mapa de {info['cli']}", raiz / "pstack-motor" / f"{info['cli']}.md"),
         ):
             if f.is_file():
-                partes.append(f"## {titulo}\n{f.read_text(encoding='utf-8').strip()}\n")
+                partes.append(f"## {titulo}\n{leer_texto(f).strip()}\n")
         partes.append(
             ps.instrucciones(ps.Exigencia.from_dict(info["exigencia"]), info["cli"])
         )
@@ -769,14 +770,14 @@ class Effects:
         """Lee el registro real del intento, guarda `huella.json` y, si el motor exige pstack y falta
         algo, lo anota en huella.json y deja pasar la entrega. Un registro ilegible tambien pasa."""
         try:
-            info = json.loads((d / "pstack.json").read_text(encoding="utf-8"))
+            info = leer_json((d / "pstack.json"))
         except (OSError, ValueError):
             return None
         h = ps.Huella(legible=False)
         fuente = ""
         for r in self._registros_de(info):
             try:
-                texto = Path(r).read_text(encoding="utf-8", errors="replace")
+                texto = leer_texto(Path(r), errors="replace")
             except OSError:
                 continue
             h = ps.huella(texto, info["cli"])
@@ -800,7 +801,7 @@ class Effects:
             },
             ensure_ascii=False,
         )
-        (d / "huella.json").write_text(texto, encoding="utf-8")
+        escribir_texto((d / "huella.json"), texto)
         if info["exigir"] and estado == "no_verificable":
             self._avisa_no_verificable(info["cli"])
         return None
@@ -813,7 +814,7 @@ class Effects:
         if info["cli"] != "grok":
             return registros
         try:
-            texto = Path(registros[-1]).read_text(encoding="utf-8", errors="replace")
+            texto = leer_texto(Path(registros[-1]), errors="replace")
         except OSError:
             return registros
         ids = []
@@ -836,7 +837,7 @@ class Effects:
         if marca.exists():
             return
         marca.parent.mkdir(parents=True, exist_ok=True)
-        marca.write_text(dia, encoding="utf-8")
+        escribir_texto(marca, dia)
         notice_id = f"pstack:{cli}:{dia}"
         texto = (
             f"En {self.cx.maquina.nombre}: no pude leer el registro de {cli}, así que no comprobé que "
@@ -915,8 +916,8 @@ class Effects:
         # un uuid por intento: el CLI lo usa como id de sesión y así el motor sabe qué registro leer
         marca_sesion = d / "sesion"
         if not marca_sesion.exists():
-            marca_sesion.write_text(str(uuid.uuid4()), encoding="utf-8")
-        sesion = marca_sesion.read_text(encoding="utf-8").strip()
+            escribir_texto(marca_sesion, str(uuid.uuid4()))
+        sesion = leer_texto(marca_sesion).strip()
         info_pstack = self._prepara_pstack(
             d, block.lane, a.role, ruta.cli, cwd, sesion, a.correccion, guias_del
         )
@@ -927,7 +928,7 @@ class Effects:
                     plan, snap, block, int(bv.pr["numero"]), a.sha
                 )
         brief = self._encargo(plan, block, a, cwd, rc, info_pstack, snap)
-        (d / "brief.md").write_text(brief, encoding="utf-8")
+        escribir_texto((d / "brief.md"), brief)
         result = d / "result.json"
         prompt = prompt_de_encargo(str(d / "brief.md"), brief)
         argv = argv_de_ruta(
@@ -971,7 +972,7 @@ class Effects:
                 "agentes_por_maquina": self.cx.policy.agentes_por_maquina,
             }
         )
-        (d / "cupos.json").write_text(cupos, encoding="utf-8")
+        escribir_texto((d / "cupos.json"), cupos)
         cmd, cwd_runwrap = comando_runwrap(
             d,
             cwd,
@@ -1216,7 +1217,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                     "kind": "perdido",
                     "detalle": "el proceso desapareció sin dejar resultado",
                 }
-        o = json.loads(oc.read_text(encoding="utf-8"))
+        o = leer_json(oc)
         c = self._juzga_intento(plan, snap, block_id, att, d, o)
         if "toco_carpeta" in o:
             c["toco_carpeta"] = o["toco_carpeta"]
@@ -1282,7 +1283,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
         revisando = att.role == "revisar"
         malo = "sin_resultado" if not revisando else "veredicto_invalido"
         try:
-            res = json.loads(entrega.ruta(d).read_text(encoding="utf-8"))
+            res = leer_json(entrega.ruta(d))
         except OSError:
             return {
                 "kind": "sin_resultado",
@@ -1448,7 +1449,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
     def _entrego(self, plan: Plan, block_id: str, d: Path) -> bool:
         """Hay una entrega válida. El sha del implementador es la punta remota de su rama."""
         try:
-            res = json.loads(entrega.ruta(d).read_text(encoding="utf-8"))
+            res = leer_json(entrega.ruta(d))
         except (OSError, ValueError):
             return False
         punta = ""
@@ -1535,12 +1536,12 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
                 str(proc.get("job") or ""),
             )
         try:
-            pid = int((d / "agent.pid").read_text(encoding="utf-8").strip())
-            inicio = (d / "agent.inicio").read_text(encoding="utf-8").strip()
+            pid = int(leer_texto((d / "agent.pid")).strip())
+            inicio = leer_texto((d / "agent.inicio")).strip()
         except (OSError, ValueError):
             return
         try:
-            job = (d / "agent.job").read_text(encoding="utf-8").strip()
+            job = leer_texto((d / "agent.job")).strip()
         except OSError:
             job = ""
         plataforma.matar_proc(pid, inicio)
@@ -1742,7 +1743,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             if d is not None:
                 oc = d / "outcome.json"
                 if oc.exists():
-                    payload = json.loads(oc.read_text(encoding="utf-8"))
+                    payload = leer_json(oc)
                     if payload.get("error"):
                         oc.replace(d / "outcome-error.json")
                         if kind in ("deploy", "prove"):
@@ -1872,7 +1873,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             tipo = "instalar" if kind == "deploy" else "probar"
             spec["intencion"] = self._id_intencion(a.block, tipo, f"{a.sha}:{h_insumo}:{h_maquina}")
         texto_spec = json.dumps(spec, ensure_ascii=False)
-        (d / "spec.json").write_text(texto_spec, encoding="utf-8")
+        escribir_texto((d / "spec.json"), texto_spec)
         cmd = [
             sys.executable,
             "-m",
@@ -2662,7 +2663,7 @@ Escríbelo una sola vez, al final, con tu panel ya sintetizado. No escribas un v
             with _lock_despliegue(self.cx.home, block.repo):
                 if self._dir_aparte is not None:
                     marca = self._dir_aparte / "desplegando"
-                    marca.write_text(a.sha, encoding="utf-8")
+                    escribir_texto(marca, a.sha)
                 pasos, ok = [], True
                 for paso in (desplegar, checklist):
                     p = _run(f"bash {paso}", w, env, tope, bash=self.cx.maquina.bash)
@@ -2969,13 +2970,13 @@ def comando_runwrap(
 
 def _escribe_marca(ruta: Path, datos: dict) -> None:
     tmp = ruta.with_name(ruta.name + ".tmp")
-    tmp.write_text(json.dumps(datos), encoding="utf-8")
+    escribir_texto(tmp, json.dumps(datos))
     os.replace(tmp, ruta)
 
 
 def _lee_json(ruta: Path) -> dict | None:
     try:
-        data = json.loads(ruta.read_text(encoding="utf-8"))
+        data = leer_json(ruta)
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None

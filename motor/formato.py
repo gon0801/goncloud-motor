@@ -5,6 +5,7 @@ Una intencion sin efecto resuelto impide volver a un escritor que no la entiende
 """
 
 from __future__ import annotations
+from motor.io import leer_json
 
 import ast
 import json
@@ -32,7 +33,7 @@ def leer(home: Path) -> dict | None:
     if not p.exists():
         return None
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = leer_json(p)
     except (OSError, ValueError):
         return {"version": VERSION + 1, "corrupto": True}
     if not isinstance(data, dict) or not isinstance(data.get("version"), int):

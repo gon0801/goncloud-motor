@@ -9,12 +9,13 @@ import unittest
 from motor.encargos.ciclo import _paso_entrega, ahora_iso, recibir_resultado
 from motor.encargos.comprobacion import hallazgo_fuera_de_alcance_por_restriccion
 from motor.encargos.dominio import Hallazgo, bloqueantes_abiertos
-from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import (
     _entrega_pr,
     _interno,
     sonda_sin_aislamiento_del_host,
 )
+
+from tests.dobles import github_con_hallazgo
 
 RESTRICCION = "Cambio acotado a motor/encargos/cli.py y su prueba"
 
@@ -33,28 +34,8 @@ def setUpModule():
     sonda_sin_aislamiento_del_host()
 
 
-class _GhConHallazgo(FakeGitHub):
-    """DeepSeek pide cambios con un hallazgo estructurado en `archivo`."""
-
-    archivo = "motor/integraciones/cli.py"
-    severidad = "medium"
-    identificador = "F1"
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        hallazgos = [
-            {
-                "id": self.identificador,
-                "severity": self.severidad,
-                "title": "El comando de integraciones filtra el token",
-                "file": self.archivo,
-                "line": 176,
-            }
-        ]
-        texto = (
-            "DeepSeek: CHANGES_REQUESTED\nai-review:findings="
-            + json.dumps(hallazgos)
-        )
-        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}]
+def _dentro(directorio):
+    return github_con_hallazgo(directorio, archivo="motor/encargos/cli.py")
 
 
 def _cuerpo_del_pr(vuelta) -> str:
@@ -144,7 +125,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
     def test_restriccion_expresa_deja_fuera_el_hallazgo_y_entrega(self):
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "fuera-1", _GhConHallazgo,
+                self, tmp, "fuera-1", github_con_hallazgo,
                 texto="cambia el comando de encargos",
                 restricciones=(RESTRICCION,),
             )
@@ -165,12 +146,9 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             self.assertIn("motor/integraciones/cli.py", cuerpo)
 
     def test_hallazgo_medium_dentro_del_alcance_sigue_bloqueando(self):
-        class _Dentro(_GhConHallazgo):
-            archivo = "motor/encargos/cli.py"
-
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "dentro-1", _Dentro,
+                self, tmp, "dentro-1", _dentro,
                 texto="cambia el comando de encargos",
                 restricciones=(RESTRICCION,),
             )
@@ -188,7 +166,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
     def test_disputa_no_suma_sin_progreso_y_el_revisor_la_descarta(self):
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "disputa-1", _GhConHallazgo,
+                self, tmp, "disputa-1", github_con_hallazgo,
                 texto="cambia el comando de encargos",
             )
             e = vuelta("hola")
@@ -228,7 +206,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
     def test_el_camino_de_autoridad_aplica_fuera_de_alcance(self):
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "autoridad-1", _GhConHallazgo,
+                self, tmp, "autoridad-1", github_con_hallazgo,
                 texto="cambia el comando de encargos",
             )
             e = vuelta("hola")
@@ -285,7 +263,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
     def test_el_camino_de_autoridad_aplica_resueltos_externos(self):
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "autoridad-resueltos-1", _GhConHallazgo,
+                self, tmp, "autoridad-resueltos-1", github_con_hallazgo,
                 texto="cambia el comando de encargos",
             )
             e = vuelta("hola")

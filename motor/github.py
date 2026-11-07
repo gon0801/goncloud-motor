@@ -11,6 +11,7 @@ checks del SHA exacto -> merge con ese SHA.
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import json
 import os
@@ -21,7 +22,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .repositorios import resolver_repositorio
 from .workspace import git
@@ -834,24 +835,40 @@ class FakeGitHub:
         d.mkdir(parents=True, exist_ok=True)
         if not (d / "github.json").exists():
             self._guardar({"prs": {}, "checks": {}})
+        # Configuración de las pruebas: un solo doble, muchas respuestas.
+        self.responde_deepseek: Callable[[int, str], str | None] | None = None
+        self.textos: dict | list = {}
+        self.llamadas: list[tuple[int, str]] = []
+        self.vistos: list[str] = []
+        self.fallos = 0
+        self.falla = False
+        self.merges: list[tuple[int, str]] = []
+        self.actualizaciones = 0
+        self.fallar_cuerpo = False
+        self.relanzadas: list[tuple[str, str]] = []
+        self.checks_llamadas = 0
+        self.bloquea = False
+        self.intentos: list[str] = []
+        self._reintentos: dict[str, int] = {}
+        self._errores: dict[str, int] = {}
 
     def _cargar(self) -> dict:
         p = self.d / "github.json"
         return (
-            json.loads(p.read_text(encoding="utf-8"))
+            leer_json(p)
             if p.exists()
             else {"prs": {}, "checks": {}}
         )
 
     def _guardar(self, s: dict) -> None:
         tmp = self.d / "github.json.tmp"
-        tmp.write_text(json.dumps(s, indent=1), encoding="utf-8")
+        escribir_texto(tmp, json.dumps(s, indent=1))
         os.replace(tmp, self.d / "github.json")
 
     def _cfg(self, repo: str) -> dict:
         p = self.d / "repos.json"
         return (
-            json.loads(p.read_text(encoding="utf-8")).get(repo, {})
+            leer_json(p).get(repo, {})
             if p.exists()
             else {}
         )
@@ -923,6 +940,9 @@ class FakeGitHub:
             self._guardar(s)
 
     def actualizar_cuerpo(self, repo, numero, cuerpo):
+        self.actualizaciones += 1
+        if self.fallar_cuerpo:
+            raise RuntimeError("gh pr edit: fallo simulado")
         s = self._cargar()
         self._pr(s, repo, numero)["cuerpo"] = cuerpo
         self._guardar(s)
@@ -944,10 +964,74 @@ class FakeGitHub:
                 == 0
             )
 
+    def _checks_de_guion(self, repo, sha, extra, cfg) -> ChecksVerdict:
+        """Corridas declaradas en `repos.json`, sin ejecutar comandos.
+
+        Es la configuración del doble para probar la lectura de CI: estados,
+        reintentos y corridas sin `run_id`.
+        """
+        self.checks_llamadas += 1
+        if self._errores.get(str(repo), 0) > 0:
+            self._errores[str(repo)] -= 1
+            raise RuntimeError("GitHub no respondió")
+        estados = {
+            "success": ("completed", "success"),
+            "failure": ("completed", "failure"),
+            "timed_out": ("completed", "timed_out"),
+            "startup_failure": ("completed", "startup_failure"),
+            "in_progress": ("in_progress", None),
+            "cancelled": ("completed", "cancelled"),
+            "skipped": ("completed", "skipped"),
+            "neutral": ("completed", "neutral"),
+        }
+        intento = self._reintentos.get(str(repo), 0)
+        no_empezo = intento > 0 and bool(cfg.get("reintento_no_empezado"))
+        if no_empezo:
+            corridas = cfg.get("corridas") or {}
+            intento_lectura = 0
+        elif intento > 0 and "corridas_tras_reintento" in cfg:
+            corridas = cfg["corridas_tras_reintento"]
+            intento_lectura = intento
+        else:
+            corridas = (cfg.get("corridas_sha") or {}).get(
+                sha, cfg.get("corridas") or {}
+            )
+            intento_lectura = intento
+        completado = (
+            "2026-11-03T21:46:00Z"
+            if intento_lectura == 0
+            else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        )
+        runs = []
+        for nombre, estado in corridas.items():
+            status, conclusion = estados[estado]
+            rid = 40000 + intento_lectura * 1000 + len(runs)
+            run = {
+                "name": nombre,
+                "status": status,
+                "conclusion": conclusion,
+                "completed_at": completado,
+            }
+            if not cfg.get("sin_run_id"):
+                run.update(
+                    {
+                        "id": rid,
+                        "html_url": f"https://github.com/o/r/actions/runs/{rid}/job/{rid}",
+                        "details_url": f"https://github.com/o/r/actions/runs/{rid}/job/{rid}",
+                    }
+                )
+            runs.append(run)
+        return veredicto(sha, tuple(extra), runs, "")
+
     def checks(self, repo, numero, sha, extra, relanzadas=(), *, base_politica=""):
+        cfg = self._cfg(repo)
+        if any(
+            clave in cfg
+            for clave in ("corridas", "corridas_sha", "corridas_tras_reintento")
+        ):
+            return self._checks_de_guion(repo, sha, extra, cfg)
         s = self._cargar()
         pr = self._pr(s, repo, numero)
-        cfg = self._cfg(repo)
         requeridos = tuple(dict.fromkeys([*cfg.get("requeridos", []), *extra]))
         faltan, fallas = [], []
         for c in requeridos:
@@ -1000,19 +1084,52 @@ class FakeGitHub:
         self._guardar(s)
 
     def relanzar_fallidas(self, repo, run_id):
+        self.relanzadas.append((repo, str(run_id)))
+        self._reintentos[str(repo)] = self._reintentos.get(str(repo), 0) + 1
         s = self._cargar()
         s.setdefault("relanzadas", []).append(
             {"repo": repo, "run_id": str(run_id), "fallidas": True}
         )
         self._guardar(s)
 
+    def fallar_checks(self, repo: str, veces: int = 1) -> None:
+        """Las próximas `veces` lecturas de checks fallan, como un GitHub caído."""
+        self._errores[str(repo)] = veces
+
     def log_fallido(self, repo, run_id) -> str:
         return ""
 
     def log_fallido_job(self, repo, run_id, job, job_id="") -> str:
-        return ""
+        logs = self._cfg(repo).get("logs_job") or {}
+        return str(logs.get(job, ""))
 
     def comentarios_deepseek(self, repo, numero, sha=""):
+        self.llamadas.append((numero, sha))
+        if sha not in self.vistos:
+            self.vistos.append(sha)
+        if self.falla:
+            raise RuntimeError("DeepSeek no responde")
+        if self.fallos > 0:
+            self.fallos -= 1
+            raise RuntimeError("gh api: 502")
+        if callable(self.responde_deepseek):
+            texto = self.responde_deepseek(numero, sha)
+            return (
+                [{"texto": texto, "autor": "DeepSeek", "sha": sha}] if texto else []
+            )
+        if self.textos:
+            if isinstance(self.textos, list):
+                indice = self.vistos.index(sha)
+                texto = (
+                    self.textos[indice] if indice < len(self.textos) else None
+                )
+            else:
+                texto = self.textos.get(numero, self.textos.get(None))
+            if callable(texto):
+                texto = texto(len(self.llamadas))
+            return (
+                [{"texto": texto, "autor": "DeepSeek", "sha": sha}] if texto else []
+            )
         s = self._cargar()
         pr = self._pr(s, repo, numero)
         out = []
@@ -1032,6 +1149,7 @@ class FakeGitHub:
                 )
         return out
 
+
     def disparar_workflow(self, repo, workflow, inputs):
         s = self._cargar()
         s.setdefault("ai_review", []).append(
@@ -1040,6 +1158,9 @@ class FakeGitHub:
         self._guardar(s)
 
     def merge(self, repo, numero, sha, metodo, mensaje):
+        self.intentos.append(sha)
+        if self.bloquea:
+            raise PoliticaBloquea("the base branch policy prohibits the merge")
         s = self._cargar()
         pr = self._pr(s, repo, numero)
         if pr["estado"] == "mergeado":
@@ -1079,12 +1200,18 @@ class FakeGitHub:
         s = self._cargar()
         pr = self._pr(s, repo, numero)
         pr.update(estado="mergeado", merge_commit=commit, head_merge=sha)
+        self.merges.append((numero, sha))
         self._guardar(s)
         return self._vista(repo, pr)
 
     def ver(self, repo, numero):
         s = self._cargar()
         return self._vista(repo, self._pr(s, repo, numero))
+
+
+def _cumple_el_puerto(gh: FakeGitHub) -> GitHubPort:
+    """pyright verifica que el doble implementa todo `GitHubPort`."""
+    return gh
 
 
 def para(maquina_github: str, env: dict | None = None) -> GitHubPort:
