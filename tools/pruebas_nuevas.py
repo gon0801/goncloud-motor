@@ -125,7 +125,7 @@ def _marcador(ruta: Path) -> str:
 
 def _corre_en_base(
     base: str, archivos: list[str], nombres: list[str]
-) -> tuple[set[str], str]:
+) -> tuple[set[str] | None, str]:
     if not archivos or not nombres:
         return set(), ""
     temporal = Path(tempfile.mkdtemp(prefix="pruebas-base-"))
@@ -158,17 +158,18 @@ def _corre_en_base(
             text=True,
             check=False,
         )
+        if not reporte.is_file():
+            return None, corrida.stdout + corrida.stderr
         pasaron: set[str] = set()
-        if reporte.is_file():
-            for caso in ET.parse(reporte).iter("testcase"):
-                if caso.find("failure") is not None:
-                    continue
-                if caso.find("error") is not None:
-                    continue
-                if caso.find("skipped") is not None:
-                    continue
-                nombre = (caso.get("name") or "").split("[")[0].split(".")[-1]
-                pasaron.add(nombre)
+        for caso in ET.parse(reporte).iter("testcase"):
+            if caso.find("failure") is not None:
+                continue
+            if caso.find("error") is not None:
+                continue
+            if caso.find("skipped") is not None:
+                continue
+            nombre = (caso.get("name") or "").split("[")[0].split(".")[-1]
+            pasaron.add(nombre)
         return pasaron, corrida.stdout + corrida.stderr
     finally:
         subprocess.run(
@@ -201,6 +202,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(nombres)} prueba(s) nueva(s) exenta(s); no hay nada que correr")
         return 0
     pasaron, salida = _corre_en_base(base, archivos, seleccionadas)
+    if pasaron is None:
+        print(
+            "no se pudo correr la base (¿falta pytest?):\n" + salida[-2000:],
+            file=sys.stderr,
+        )
+        return 2
     exceptuadas = {n.split("::")[-1] for n in excepciones}
     culpables = sorted(n for n in pasaron if n not in exceptuadas)
     if culpables:
