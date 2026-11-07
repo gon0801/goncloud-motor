@@ -38,13 +38,21 @@ def _commit(repo: Path, mensaje: str) -> None:
     )
 
 
-def _repo(tmp: Path, base_extra: dict[str, str] | None = None) -> Path:
+def _repo(
+    tmp: Path,
+    base_extra: dict[str, str] | None = None,
+    conftest_extra: str = "",
+) -> Path:
     repo = tmp / "repo"
     repo.mkdir()
     (repo / "tests").mkdir()
     (repo / "tests/__init__.py").write_text("")
     (repo / "tools").mkdir()
-    (repo / "conftest.py").write_text("import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\n")
+    (repo / "conftest.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).parent))\n"
+        + conftest_extra
+    )
     (repo / "producto.py").write_text("def valor():\n    return 1\n")
     (repo / "tests/test_existente.py").write_text(
         "def test_viejo():\n    assert True\n"
@@ -61,13 +69,14 @@ def _repo(tmp: Path, base_extra: dict[str, str] | None = None) -> Path:
     return repo
 
 
-def _corre(repo: Path) -> subprocess.CompletedProcess:
+def _corre(repo: Path, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(repo / "tools" / "pruebas_nuevas.py"), "--base", "main"],
         cwd=repo,
         capture_output=True,
         text=True,
         timeout=180,
+        env=env,
     )
 
 
@@ -242,6 +251,42 @@ class PruebasNuevasContraLaBase(unittest.TestCase):
                 timeout=180,
                 env=env,
             )
+            self.assertEqual(
+                salida.returncode, 2, salida.stdout + salida.stderr
+            )
+            self.assertIn("no se pudo correr la base", salida.stderr)
+
+    def test_un_filtro_que_deselecciona_la_prueba_no_aprueba(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / "tests/test_nueva.py").write_text(
+                "def test_pasa_sin_arreglo():\n    assert True\n"
+            )
+            _commit(repo, "pruebas")
+            env = {
+                **os.environ,
+                "PYTEST_ADDOPTS": "-k no_existe_ninguna_prueba_con_este_nombre",
+            }
+            salida = _corre(repo, env=env)
+            self.assertEqual(
+                salida.returncode, 2, salida.stdout + salida.stderr
+            )
+            self.assertIn("no se pudo correr la base", salida.stderr)
+
+    def test_un_error_interno_de_pytest_no_aprueba(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(
+                Path(tmp),
+                conftest_extra=(
+                    "def pytest_collection_modifyitems(session, config, items):\n"
+                    "    raise RuntimeError('fallo de plugin al preparar las pruebas')\n"
+                ),
+            )
+            (repo / "tests/test_nueva.py").write_text(
+                "def test_pasa_sin_arreglo():\n    assert True\n"
+            )
+            _commit(repo, "pruebas")
+            salida = _corre(repo)
             self.assertEqual(
                 salida.returncode, 2, salida.stdout + salida.stderr
             )

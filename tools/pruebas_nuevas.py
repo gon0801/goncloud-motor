@@ -231,10 +231,17 @@ def _corre_en_base(
                 # pytest no arrancó o no dejó resultado: no se puede concluir
                 # que las pruebas sean rojas. Es un fallo del instrumento.
                 return None, no_ejecutadas, "\n".join(salida)
+            if corrida.returncode not in (0, 1):
+                # 2 interrumpido, 3 error interno, 4 uso, 5 nada recolectado.
+                # Cualquiera deja el resultado incompleto y no puede aprobar.
+                salida.append(
+                    f"{ruta}: pytest terminó con {corrida.returncode}; "
+                    "no hay un resultado completo"
+                )
+                return None, no_ejecutadas, "\n".join(salida)
             error_coleccion = _error_de_coleccion(reporte)
             if error_coleccion is not None:
                 no_ejecutadas.append((ruta, error_coleccion))
-                continue
             elegidas = set(seleccion[ruta])
             vistas: set[str] = set()
             for caso in ET.parse(reporte).iter("testcase"):
@@ -252,8 +259,13 @@ def _corre_en_base(
                 ):
                     continue
                 pasaron.add((ruta, nombre_caso))
-            for nombre in sorted(elegidas - vistas):
-                no_ejecutadas.append((ruta, f"no se ejecutó {nombre}"))
+            if error_coleccion is None and vistas != elegidas:
+                # Un filtro o una deselección dejó fuera alguna prueba elegida:
+                # el resultado no sirve para decidir sobre ella.
+                salida.append(
+                    f"{ruta}: no se ejecutaron {sorted(elegidas - vistas)}"
+                )
+                return None, no_ejecutadas, "\n".join(salida)
         return pasaron, no_ejecutadas, "\n".join(salida)
     finally:
         subprocess.run(
@@ -291,7 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     pasaron, no_ejecutadas, salida = _corre_en_base(base, copiar, seleccion)
     if pasaron is None:
         print(
-            "no se pudo correr la base (¿falta pytest?):\n" + salida[-2000:],
+            "no se pudo correr la base (pytest no dejó un resultado válido):\n"
+            + salida[-2000:],
             file=sys.stderr,
         )
         return 2
