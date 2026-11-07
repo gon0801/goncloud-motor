@@ -6532,7 +6532,8 @@ def _entregar_con_pendientes(
         _bloquear_fase(registro, enc, "no hay producto que entregar",
                       "no hay producto que entregar; la fase termina "
                       "bloqueada con el motivo: " + "; ".join(pendientes),
-                      hora, f"sin-producto:{len(pendientes)}")
+                      hora,
+                      f"{enc.reaperturas}:sin-producto:{len(pendientes)}")
         enc = registro.fold(enc.id) or enc
         _publica(directorio / "incorporado", hora)
         if enc.estado == "terminado":
@@ -6584,7 +6585,8 @@ def _entregar_con_pendientes(
                             "no hay commits que entregar en el PR; la fase "
                             "termina bloqueada con el motivo: "
                             + "; ".join(pendientes),
-                            hora, f"sin-commits:{len(pendientes)}",
+                            hora,
+                            f"{enc.reaperturas}:sin-commits:{len(pendientes)}",
                         )
                         enc = registro.fold(enc.id) or enc
                         _publica(directorio / "incorporado", hora)

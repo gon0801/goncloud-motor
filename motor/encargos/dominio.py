@@ -2452,16 +2452,18 @@ def datos_despliegue(item: dict) -> dict:
 
 _ACENTOS = str.maketrans("áéíóúüÁÉÍÓÚÜ", "aeiouuAEIOUU")
 # Enumeración explícita de los ids de las fases dentro de un ajuste del
-# director: «las fases son exactamente 8 con ids B, C, D» o «ids de las fases:
-# B, C». Es el único contraste mecánico entre la propuesta y los ajustes: una
-# lista estructurada, nunca prosa. El resto de un ajuste (una fase «ya
+# director: «las fases son exactamente 8 con ids B, C, D» o «ids de las
+# fases: B, C». La frase es obligatoria y estructurada (con «con ids» o con
+# dos puntos), para que la prosa corriente no enumere por accidente; los
+# separadores admiten coma y las conjunciones y/e/o sin coma («H e I»). Es el
+# único contraste mecánico entre la propuesta y los ajustes: una lista
+# estructurada, nunca prosa suelta. El resto de un ajuste (una fase «ya
 # integrada», un «no la repitas») no muta el estado de las fases: la prosa es
-# ambigua (una negación o una corrección ordinaria usan las mismas palabras) y
-# el orden seguro es el secuencial con sus compuertas normales.
+# ambigua y el orden seguro es el secuencial con sus compuertas normales.
 _ENUMERACION_IDS = re.compile(
-    r"\bids\s+(?:de\s+(?:las\s+)?fases(?:\s+(?:son|seran))?\s*[:\s]|de\s+fases\s*[:\s]"
-    r"|(?:son\s+)?exactamente\s+\d+\s+con\s+ids\s+)?:?\s*"
-    r"([A-Za-z][\w-]*(?:\s*,\s*(?:y\s+)?[A-Za-z][\w-]*)+)"
+    r"(?:con\s+ids|ids\s+de\s+(?:las\s+)?fases(?:\s+(?:son|seran))?\s*:"
+    r"|ids\s+de\s+fases\s*:|exactamente\s+\d+\s+fases\s+con\s+ids)\s*:?\s*"
+    r"([A-Za-z][\w-]*(?:(?:\s*,\s*|\s+[yeo]\s+)[A-Za-z][\w-]*)*)"
 )
 
 
@@ -2483,8 +2485,10 @@ def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
     """El último ajuste del director que enumera los ids de las fases.
 
     La enumeración fija la estructura del plan: una propuesta que declare
-    fases fuera de ella no representa los ajustes vigentes y se rechaza para
-    que el implementador corrija `.interno/fases.json`.
+    fases nuevas fuera de ella no representa los ajustes vigentes y se
+    rechaza para que el implementador corrija `.interno/fases.json`, aunque
+    ninguna de sus fases responda a la enumeración (una propuesta totalmente
+    fuera tampoco la representa).
     """
     for ajuste in reversed(e.ajustes):
         for segmento in _normaliza(ajuste).split(". "):
@@ -2492,7 +2496,13 @@ def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
                 continue
             m = _ENUMERACION_IDS.search(segmento)
             if m:
-                tokens = [t.strip() for t in m.group(1).split(",") if t.strip()]
+                tokens = [
+                    t.strip()
+                    for t in re.split(
+                        r"\s*,\s*|\s+[yeo]\s+", m.group(1)
+                    )
+                    if t.strip()
+                ]
                 if len(tokens) >= 2:
                     return ajuste, tokens
     return None
@@ -2567,20 +2577,17 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     enumeracion = _enumeracion_del_director(e)
     if enumeracion is not None:
         ajuste_enum, tokens = enumeracion
-        if any(
-            any(_fase_corresponde(fid, t) for t in tokens) for fid in nuevos_ids
-        ):
-            fuera = sorted(
-                fid for fid in nuevos_ids
-                if not any(_fase_corresponde(fid, t) for t in tokens)
+        fuera = sorted(
+            fid for fid in nuevos_ids
+            if not any(_fase_corresponde(fid, t) for t in tokens)
+        )
+        if fuera:
+            raise TransicionIlegal(
+                "el ajuste del director enumera las fases ("
+                + ", ".join(tokens)
+                + "); la propuesta declara fases fuera de esa enumeración: "
+                + ", ".join(fuera)
             )
-            if fuera:
-                raise TransicionIlegal(
-                    "el ajuste del director enumera las fases ("
-                    + ", ".join(tokens)
-                    + "); la propuesta declara fases fuera de esa enumeración: "
-                    + ", ".join(fuera)
-                )
     por_id = {f.id: f for f in nuevas}
     for fase in nuevas:
         for dep, _version in fase.requiere:

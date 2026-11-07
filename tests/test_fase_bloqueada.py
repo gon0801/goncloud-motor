@@ -27,6 +27,7 @@ from motor.encargos.dominio import (
     dependencia_bloqueada,
     reducir,
 )
+from motor.encargos.registro import Registro
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import Recorrido, _bloqueante, _entrega_pr
 
@@ -936,6 +937,70 @@ class LaAdopcionConsultaLosAjustesDelDirector(unittest.TestCase):
                 self.assertIsNotNone(disponible)
                 self.assertEqual(disponible.id, "b-receta")
 
+    def test_una_propuesta_totalmente_fuera_de_la_enumeracion_es_defecto(self):
+        e = self._con_ajuste(())
+        with self.assertRaises(TransicionIlegal) as ctx:
+            reducir(
+                e,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "p-uno", "resultado": "uno"},
+                            {"id": "p-dos", "resultado": "dos"},
+                        ],
+                        "hora": HORA,
+                    },
+                },
+            )
+        self.assertIn("p-uno", str(ctx.exception))
+        self.assertIn("p-dos", str(ctx.exception))
+
+    def test_la_enumeracion_con_y_e_sin_coma_completa(self):
+        ajuste = (
+            "Correccion del director: Las fases son exactamente 8 con ids "
+            "b-receta, c-meta, d-sombra, e-pantalla, f-viva, g-retiro, h-api "
+            "e i-datos."
+        )
+        e = self._con_ajuste((), ajuste)
+        with self.assertRaises(TransicionIlegal) as ctx:
+            reducir(
+                e,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "b-receta", "resultado": "b"},
+                            {"id": "i-datos", "resultado": "i"},
+                            {"id": "x-fuera", "resultado": "x"},
+                        ],
+                        "hora": HORA,
+                    },
+                },
+            )
+        self.assertIn("fuera de esa enumeración: x-fuera", str(ctx.exception))
+
+    def test_una_prosa_casual_sin_frase_estructurada_no_enumera(self):
+        e = self._con_ajuste(
+            (),
+            "Correccion: los ids de las fases son largos, revisa el formato "
+            "del archivo.",
+        )
+        e = reducir(
+            e,
+            {
+                "kind": "fases",
+                "data": {
+                    "fases": [
+                        {"id": "p-uno", "resultado": "uno"},
+                        {"id": "p-dos", "resultado": "dos"},
+                    ],
+                    "hora": HORA,
+                },
+            },
+        )
+        self.assertEqual([f.id for f in e.fases], ["p-uno", "p-dos"])
+
     def test_una_repropuesta_no_reordena_para_descapendar(self):
         e = _encargo(
             (
@@ -1138,6 +1203,67 @@ class LaAdopcionConsultaLosAjustesDelDirector(unittest.TestCase):
         self.assertEqual(
             c.requiere,
             (("a", ""), ("b", "")),
+        )
+
+
+class ElBloqueoSinProductoTrasReabrir(unittest.TestCase):
+    """F1: el ukey del bloqueo por falta de producto/commits debe incluir las
+    reaperturas, o el segundo bloqueo tras `reabrir` no llega a aplicarse."""
+
+    def _banco(self):
+        from motor.encargos.ciclo import _RELEVO_AGOTADO, ahora_iso, recibir
+
+        reg = Registro(Path(self._tmp.name) / "base")
+        self.addCleanup(reg.close)
+        ident = recibir(
+            reg, "entrega lo que haya", "fb-sin-producto", ahora_iso()
+        )["encargo"]
+
+        def entregar():
+            reg.anotar(
+                ident,
+                {
+                    "kind": "pendiente_entrega",
+                    "data": {
+                        "texto": (
+                            f"{_RELEVO_AGOTADO} del rol responsable. El motor "
+                            "entrega lo que hay con los pendientes abiertos."
+                        ),
+                        "hora": ahora_iso(),
+                    },
+                },
+                f"pendiente:{reg.fold(ident).reaperturas}",
+            )
+            return _entregar_con_pendientes(reg, reg.fold(ident), None, ahora_iso())
+
+        return reg, ident, entregar
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_el_segundo_bloqueo_sin_producto_aplica_tras_reabrir(self):
+        from motor.encargos import ciclo
+
+        reg, ident, entregar = self._banco()
+        e = entregar()
+        self.assertEqual(e.estado, "terminado")
+        self.assertEqual(e.fases[0].estado, "bloqueada")
+        fase, huella = e.cierre_forzado_fase.id, e.cierre_forzado_huella
+
+        salida = ciclo.ordenar(
+            reg, ident, "reabrir", "reabrir-sin-producto", ahora_iso(),
+            fase=fase, cierre=huella,
+        )
+        self.assertFalse(salida.get("rechazada"), salida.get("motivo"))
+        ciclo.ordenar(reg, ident, "continuar", "continuar-sin-producto", ahora_iso())
+
+        e = entregar()
+        self.assertEqual(e.estado, "terminado", "el segundo bloqueo debe aplicar")
+        self.assertEqual(e.fases[0].estado, "bloqueada")
+        self.assertEqual(
+            len([ev for ev in reg.eventos(ident) if ev["kind"] == "bloqueo_fase"]),
+            2,
         )
 
 
