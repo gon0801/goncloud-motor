@@ -94,6 +94,8 @@ class _TraerMain(unittest.TestCase):
             id="enc_x",
             clave="clave-x",
             entrega=SimpleNamespace(base="main", rama="encargo/enc_x"),
+            nivel_efectivo="",
+            nivel_efectivo_motivo="",
             fase_actual=None,
             fases=(),
             proc=None,
