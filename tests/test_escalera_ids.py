@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -486,6 +487,102 @@ class LaSerieVaciaConBuzonDelLanzadorCuentaSinRevisores(unittest.TestCase):
                 if (ev["data"].get("rol") or "responsable") == "revisor"
             ]
             self.assertEqual(len(turnos_revisor), 2)
+
+
+class LaSerieVaciaConCanalesDelHostCuentaSinRevisores(unittest.TestCase):
+    """F1 (DeepSeek): el host escribe en `.interno` fuera del buzón
+    (`entregas` con los datos de las herramientas, `logs` con los logs del CI)
+    y reescribe el buzón en cada lanzamiento. Esa escritura no es entrega del
+    responsable: la huella la excluye y la corrección vacía sigue contando por
+    la escalera con el único turno del revisor de la serie."""
+
+    def test_la_serie_vacia_cuenta_con_los_canales_del_host_activos(self):
+        from motor.encargos import necesidades
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "escalera-6", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "malo.txt").write_text("X")
+
+            def escribir_canales_del_host():
+                preparar_buzon()
+                entregas = r.espacio / ".interno" / "entregas" / "sol-1"
+                entregas.mkdir(parents=True, exist_ok=True)
+                (entregas / "datos.json").write_text(
+                    json.dumps({"datos": f"corrida-{time.time()}"})
+                )
+                logs = r.espacio / ".interno" / "logs"
+                logs.mkdir(parents=True, exist_ok=True)
+                (logs / "job-bateria.log").write_text("salida del CI\n")
+
+            def preparar_buzon():
+                e = r.fold()
+                necesidades.preparar(
+                    r.espacio, e, f"intento-{e.generacion + 1}", {}
+                )
+
+            def entrega_del_responsable():
+                escribir_canales_del_host()
+                e = r.incorporar()
+                self.assertNotEqual(e.rol, "revisor")
+                self.assertNotEqual(e.estrategia, "revisar_evidencia")
+                return e
+
+            escribir_canales_del_host()
+            e = r.incorporar()
+            self.assertEqual(e.rol, "revisor")
+            r.juicio(
+                {
+                    "veredicto": "cambios",
+                    "evidencia": "lei malo.txt",
+                    "bloqueantes": [_bloqueante("malo.txt no contiene B")],
+                }
+            )
+            escribir_canales_del_host()
+            e = r.incorporar()
+            self.assertEqual(e.estrategia, "investigar")
+
+            e = entrega_del_responsable()
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(e.sin_progreso, 1)
+            e = entrega_del_responsable()
+            self.assertEqual(e.relevos, 1)
+            e = entrega_del_responsable()
+            self.assertTrue(e.pendientes_entrega)
+            self.assertFalse(_lanzaria(e))
+            turnos_revisor = [
+                ev for ev in r.eventos("estrategia")
+                if (ev["data"].get("rol") or "responsable") == "revisor"
+            ]
+            self.assertEqual(len(turnos_revisor), 2)
+
+
+class LaHuellaInternaSoloCuentaArchivosRegulares(unittest.TestCase):
+    """F2 (DeepSeek): `_digest_interno` no debe leer entradas de `.interno`
+    que no sean archivos regulares: un enlace roto no puede tumbar la
+    incorporación ni cambiar la identidad de la entrega."""
+
+    def test_un_enlace_roto_no_cambia_la_huella_ni_cae(self):
+        from motor.encargos.ciclo import _digest_interno
+
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "escalera-7", "malo.txt con B")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "malo.txt").write_text("X")
+            interno = _interno(r)
+            (interno / "cuerpo-pr.md").write_text("con la tabla")
+            antes = _digest_interno(r.espacio)
+            self.assertTrue(antes)
+
+            enlace = interno / "roto"
+            try:
+                enlace.symlink_to(interno / "inexistente")
+            except (OSError, NotImplementedError):
+                self.skipTest("el host no permite crear enlaces")
+            self.assertFalse(enlace.exists())
+            self.assertEqual(_digest_interno(r.espacio), antes)
+            e = r.incorporar()
+            self.assertEqual(e.estrategia, "revisar_evidencia")
 
 
 class LosIdsDevueltosGobiernanLaEscalera(unittest.TestCase):

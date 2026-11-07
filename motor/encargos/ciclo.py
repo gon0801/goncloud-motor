@@ -3106,23 +3106,25 @@ def _incorporar(
 
 
 def _digest_interno(espacio: Path) -> str:
-    """Huella de lo entregado fuera del producto: el árbol `.interno` sin el
-    buzón.
+    """Huella de lo entregado fuera del producto: el árbol `.interno` sin los
+    canales del host.
 
     La firma del producto no lo ve (`.interno` está excluido), y una
     corrección del responsable puede vivir ahí dentro: el cuerpo del PR, las
-    comprobaciones declaradas, una disputa. El buzón se excluye porque lo
-    escribe el host en cada lanzamiento (`necesidades.preparar` reescribe
-    sesion.json, el catálogo y el cliente; peticiones y respuestas son el
-    canal del puente) y no es entrega del responsable. `""` si no hay árbol;
+    comprobaciones declaradas, una disputa. Los canales del host se excluyen
+    porque no son entrega del responsable: `buzon` (el puente que
+    `necesidades.preparar` reescribe en cada lanzamiento), `entregas`
+    (`necesidades` guarda ahí los datos de las herramientas) y `logs`
+    (`_copia_log_job` copia ahí los logs del CI). Solo cuentan archivos
+    regulares: un enlace roto o una cola no se leen. `""` si no hay árbol;
     `"vacio"` si queda vacío."""
     raiz = interno_de(espacio)
     if not raiz.is_dir():
         return ""
-    canal = necesidades.BUZON.name
+    canales = {necesidades.BUZON.name, necesidades.ENTREGAS.name, "logs"}
     partes = []
     for path in sorted(raiz.rglob("*")):
-        if path.is_dir() or path.relative_to(raiz).parts[0] == canal:
+        if not path.is_file() or path.relative_to(raiz).parts[0] in canales:
             continue
         partes.append(
             path.relative_to(espacio).as_posix()
