@@ -500,7 +500,10 @@ class Banco:
             "commit", "-q", "-m", "semilla",
         )
         bare = tmp / "repo.git"
-        _git(semilla, "init", "--bare", "-q", str(bare))
+        # Con main como rama inicial: sin esto el HEAD del bare depende de
+        # init.defaultBranch del host (los runners no la traen) y el sondeo
+        # de recibir ve "repo no legible" en lugar de la regla de merge.
+        _git(semilla, "init", "--bare", "-q", "-b", "main", str(bare))
         _git(semilla, "push", "-q", str(bare), "main")
         _git(bare, "config", "core.longpaths", "true")
 
