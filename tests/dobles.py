@@ -140,5 +140,8 @@ def github_fijo(
 ) -> FakeGitHub:
     """Un PR fijo para las unidades que solo usan `ver` y el rechazo del merge."""
     gh = FakeGitHub(directorio)
-    gh.fijo = (estado, motivo, sha)
+    gh.fijo = True
+    gh.estado = estado
+    gh.motivo = motivo
+    gh.sha = sha
     return gh

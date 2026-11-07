@@ -849,7 +849,10 @@ class FakeGitHub:
         self.archivo: str = ""
         self.severidad: str = ""
         self.identificador: str = ""
-        self.fijo: tuple[str, str, str] | None = None
+        self.fijo: bool = False
+        self.estado: str = "abierto"
+        self.motivo: str = ""
+        self.sha: str = ""
         self.listos: list[int] = []
         self.llamadas: list[tuple[int, str]] = []
         self.vistos: list[str] = []
@@ -1187,8 +1190,8 @@ class FakeGitHub:
     def merge(self, repo, numero, sha, metodo, mensaje):
         if self.responde_merge is not None:
             return self.responde_merge(repo, numero, sha, metodo, mensaje)
-        if self.fijo is not None:
-            raise MergeRechazado(self.fijo[1])
+        if self.fijo:
+            raise MergeRechazado(self.motivo)
         self.intentos.append(sha)
         if self.bloquea:
             raise PoliticaBloquea("the base branch policy prohibits the merge")
@@ -1238,9 +1241,8 @@ class FakeGitHub:
     def ver(self, repo, numero):
         if self.responde_ver is not None:
             return self.responde_ver(repo, numero)
-        if self.fijo is not None:
-            estado, _motivo, sha = self.fijo
-            return PrView(numero, "x", "main", False, sha, estado, "c" * 40)
+        if self.fijo:
+            return PrView(numero, "x", "main", False, self.sha, self.estado, "c" * 40)
         s = self._cargar()
         return self._vista(repo, self._pr(s, repo, numero))
 
