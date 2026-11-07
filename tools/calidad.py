@@ -6,9 +6,11 @@ Uso, igual en local y en CI:
     python3 tools/calidad.py lint
     python3 tools/calidad.py io
 
-Cada modo compara contra `.github/calidad/baseline.json` y falla solo si el
-cambio agrega un error. `--actualizar` regenera la línea base (se hace desde la
-rama base, no desde el PR que se está revisando).
+`tipos` y `lint` comparan contra `.github/calidad/baseline.json` y fallan solo
+si el cambio agrega un error. `io` es estricto: cualquier uso fuera de
+`motor/io.py` falla salvo los archivos exentos por una prohibición expresa.
+`--actualizar` regenera `tipos` y `lint` (se hace desde la rama base, no desde el
+PR que se está revisando).
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ RAIZ = Path(__file__).resolve().parents[1]
 BASE = RAIZ / ".github" / "calidad" / "baseline.json"
 IO_PERMITIDO = RAIZ / "motor" / "io.py"
 MENSAJE_IO = "usa motor.io.leer_json / escribir_texto"
+IO_EXENTOS = {
+    "motor/daemon.py": "modo planes: prohibición expresa de tocarlo",
+}
 
 
 VERSIONES = {"pyright": "1.1.414", "ruff": "0.17.4"}
@@ -47,6 +52,27 @@ def _relativa(ruta: str) -> str:
         return ruta
 
 
+def _json_de_la_herramienta(nombre: str, ejecucion) -> object:
+    """Solo acepta una corrida que produjo un resultado utilizable.
+
+    Pyright y ruff salen con 1 cuando encontraron diagnósticos: eso es una
+    corrida válida. Cualquier otro código, la salida vacía o un JSON que no
+    parsea significan que la herramienta no analizó el código, y entonces el
+    candado no puede decir «sin errores nuevos».
+    """
+    detalle = (ejecucion.stderr or ejecucion.stdout or "")[-2000:]
+    if ejecucion.returncode not in (0, 1):
+        raise SystemExit(
+            f"{nombre} no pudo analizar (código {ejecucion.returncode}):\n{detalle}"
+        )
+    if not ejecucion.stdout.strip():
+        raise SystemExit(f"{nombre} no devolvió resultado:\n{detalle}")
+    try:
+        return json.loads(ejecucion.stdout)
+    except ValueError as exc:
+        raise SystemExit(f"{nombre} no devolvió JSON: {exc}\n{detalle}") from exc
+
+
 def diagnosticos_tipos() -> collections.Counter:
     salida = subprocess.run(
         [*_ejecutable("pyright", "pyright"), "--outputjson"],
@@ -55,10 +81,12 @@ def diagnosticos_tipos() -> collections.Counter:
         text=True,
         check=False,
     )
-    try:
-        datos = json.loads(salida.stdout or "{}")
-    except ValueError as exc:
-        raise SystemExit(f"pyright no devolvió JSON: {exc}\n{salida.stderr[-2000:]}")
+    datos = _json_de_la_herramienta("pyright", salida)
+    if not isinstance(datos, dict) or "generalDiagnostics" not in datos:
+        raise SystemExit(
+            "pyright no devolvió su lista de diagnósticos:\n"
+            + (salida.stderr or salida.stdout or "")[-2000:]
+        )
     cuenta: collections.Counter = collections.Counter()
     for d in datos.get("generalDiagnostics") or []:
         if d.get("severity") != "error":
@@ -81,10 +109,12 @@ def diagnosticos_lint() -> collections.Counter:
         text=True,
         check=False,
     )
-    try:
-        datos = json.loads(salida.stdout or "[]")
-    except ValueError as exc:
-        raise SystemExit(f"ruff no devolvió JSON: {exc}\n{salida.stderr[-2000:]}")
+    datos = _json_de_la_herramienta("ruff", salida)
+    if not isinstance(datos, list):
+        raise SystemExit(
+            "ruff no devolvió su lista de diagnósticos:\n"
+            + (salida.stderr or salida.stdout or "")[-2000:]
+        )
     cuenta: collections.Counter = collections.Counter()
     for d in datos:
         cuenta[
@@ -169,10 +199,34 @@ def _comparar(cuenta: collections.Counter, linea_base: dict, modo: str) -> int:
     return 1
 
 
+def _comparar_io(cuenta: collections.Counter) -> int:
+    """Estricto: un uso fuera de `motor/io.py` falla aunque el archivo ya tuviera
+    usos históricos. Restar créditos por archivo dejaba reintroducir una lectura
+    en un archivo que la migración había limpiado."""
+    fuera = {
+        clave: n
+        for clave, n in cuenta.items()
+        if clave[0] not in IO_EXENTOS
+    }
+    if not fuera:
+        exentos = sum(cuenta.values())
+        detalle = ", ".join(sorted(IO_EXENTOS))
+        print(
+            f"io: sin usos fuera de motor/io.py "
+            f"(exentos: {exentos} en {detalle or 'ninguno'})"
+        )
+        return 0
+    print(f"io: {sum(fuera.values())} error(es) nuevo(s)", file=sys.stderr)
+    for clave, n in sorted(fuera.items()):
+        for _ in range(n):
+            print(f"  {clave[0]}: {clave[1]}; {MENSAJE_IO}", file=sys.stderr)
+    return 1
+
+
 def _actualizar(linea_base: dict) -> None:
     linea_base["tipos"] = _lista(diagnosticos_tipos())
     linea_base["lint"] = _lista(diagnosticos_lint())
-    linea_base["io"] = _lista(usos_io())
+    linea_base.pop("io", None)
     BASE.parent.mkdir(parents=True, exist_ok=True)
     BASE.write_text(json.dumps(linea_base, ensure_ascii=False, indent=1) + "\n")
 
@@ -190,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         return _comparar(diagnosticos_tipos(), linea_base, "tipos")
     if args.modo == "lint":
         return _comparar(diagnosticos_lint(), linea_base, "lint")
-    return _comparar(usos_io(), linea_base, "io")
+    return _comparar_io(usos_io())
 
 
 if __name__ == "__main__":

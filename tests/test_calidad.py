@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import ast
+import json
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from tools.calidad import _comparar, _llamadas_io, _lista
+from tools.calidad import (
+    _comparar,
+    _comparar_io,
+    _llamadas_io,
+    _lista,
+    diagnosticos_lint,
+    diagnosticos_tipos,
+)
 
 
 class DeteccionDeLecturas(unittest.TestCase):
@@ -38,17 +48,69 @@ class ReglasYGenerados(unittest.TestCase):
 
 class ComparacionConLaBase(unittest.TestCase):
     def test_un_error_nuevo_falla(self):
-        linea_base = {"io": _lista({("motor/viejo.py", "read_text"): 1})}
-        actual = {("motor/viejo.py", "read_text"): 1, ("motor/nuevo.py", "write_text"): 1}
-        self.assertEqual(_comparar(actual, linea_base, "io"), 1)
+        linea_base = {"lint": _lista({("motor/viejo.py", "F401", "x"): 1})}
+        actual = {("motor/viejo.py", "F401", "x"): 1, ("motor/nuevo.py", "F401", "y"): 1}
+        self.assertEqual(_comparar(actual, linea_base, "lint"), 1)
 
-    def test_repetir_lo_de_la_base_no_falla(self):
-        linea_base = {"io": _lista({("motor/viejo.py", "read_text"): 2})}
-        self.assertEqual(_comparar({("motor/viejo.py", "read_text"): 2}, linea_base, "io"), 0)
 
-    def test_arreglar_lo_viejo_no_falla(self):
-        linea_base = {"io": _lista({("motor/viejo.py", "read_text"): 2})}
-        self.assertEqual(_comparar({("motor/viejo.py", "read_text"): 1}, linea_base, "io"), 0)
+class LecturasFueraDeMotorIo(unittest.TestCase):
+    def test_una_lectura_nueva_falla(self):
+        actual = {("motor/nuevo.py", "read_text"): 1}
+        self.assertEqual(_comparar_io(actual), 1)
+
+    def test_reintroducir_la_lectura_en_un_archivo_ya_migrado_falla(self):
+        actual = {("motor/encargos/fases.py", "json.loads(read_text)"): 1}
+        self.assertEqual(
+            _comparar_io(actual),
+            1,
+            "los créditos históricos de un archivo no pueden tapar una lectura nueva",
+        )
+
+    def test_daemon_queda_exento_por_el_modo_planes(self):
+        actual = {("motor/daemon.py", "read_text"): 3}
+        self.assertEqual(_comparar_io(actual), 0)
+
+
+class HerramientaQueNoAnaliza(unittest.TestCase):
+    def _corrida(self, codigo, stdout, stderr):
+        return subprocess.CompletedProcess([], codigo, stdout, stderr)
+
+    def test_tipos_falla_si_no_hay_resultado(self):
+        with mock.patch(
+            "tools.calidad.subprocess.run",
+            return_value=self._corrida(2, "", "error de herramienta\n"),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                diagnosticos_tipos()
+        self.assertIn("no pudo analizar", str(ctx.exception))
+
+    def test_lint_falla_si_no_hay_resultado(self):
+        with mock.patch(
+            "tools.calidad.subprocess.run",
+            return_value=self._corrida(2, "", "error de herramienta\n"),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                diagnosticos_lint()
+        self.assertIn("no pudo analizar", str(ctx.exception))
+
+    def test_tipos_acepta_salida_valida_con_diagnosticos(self):
+        datos = {
+            "generalDiagnostics": [
+                {"severity": "error", "file": "/x/motor/a.py", "rule": "r", "message": "m"}
+            ]
+        }
+        with mock.patch(
+            "tools.calidad.subprocess.run",
+            return_value=self._corrida(1, json.dumps(datos), ""),
+        ):
+            self.assertEqual(sum(diagnosticos_tipos().values()), 1)
+
+    def test_lint_acepta_una_lista_vacia_valida(self):
+        with mock.patch(
+            "tools.calidad.subprocess.run",
+            return_value=self._corrida(0, "[]", ""),
+        ):
+            self.assertEqual(sum(diagnosticos_lint().values()), 0)
 
 
 if __name__ == "__main__":
