@@ -2454,16 +2454,18 @@ _ACENTOS = str.maketrans("áéíóúüÁÉÍÓÚÜ", "aeiouuAEIOUU")
 # Enumeración explícita de los ids de las fases dentro de un ajuste del
 # director: «las fases son exactamente 8 con ids B, C, D» o «ids de las
 # fases: B, C». La frase es obligatoria y estructurada (con «con ids» o con
-# dos puntos), para que la prosa corriente no enumere por accidente; los
-# separadores admiten coma y las conjunciones y/e/o sin coma («H e I»). Es el
-# único contraste mecánico entre la propuesta y los ajustes: una lista
-# estructurada, nunca prosa suelta. El resto de un ajuste (una fase «ya
-# integrada», un «no la repitas») no muta el estado de las fases: la prosa es
-# ambigua y el orden seguro es el secuencial con sus compuertas normales.
+# dos puntos), para que la prosa corriente no enumere por accidente; la lista
+# exige comas y admite una conjunción y/e/o solo como cierre de la serie
+# («…, H e I»), nunca como único separador: «con ids claros y cortos» es
+# prosa, no enumeración. Es el único contraste mecánico entre la propuesta y
+# los ajustes: una lista estructurada, nunca prosa suelta. El resto de un
+# ajuste (una fase «ya integrada», un «no la repitas») no muta el estado de
+# las fases: la prosa es ambigua y el orden seguro es el secuencial con sus
+# compuertas normales.
 _ENUMERACION_IDS = re.compile(
     r"(?:con\s+ids|ids\s+de\s+(?:las\s+)?fases(?:\s+(?:son|seran))?\s*:"
     r"|ids\s+de\s+fases\s*:|exactamente\s+\d+\s+fases\s+con\s+ids)\s*:?\s*"
-    r"([A-Za-z][\w-]*(?:(?:\s*,\s*|\s+[yeo]\s+)[A-Za-z][\w-]*)*)"
+    r"([A-Za-z][\w-]*(?:\s*,\s*[A-Za-z][\w-]*)+(?:\s+[yeo]\s+[A-Za-z][\w-]*)?)"
 )
 
 

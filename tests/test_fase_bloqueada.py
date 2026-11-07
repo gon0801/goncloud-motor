@@ -1001,6 +1001,47 @@ class LaAdopcionConsultaLosAjustesDelDirector(unittest.TestCase):
         )
         self.assertEqual([f.id for f in e.fases], ["p-uno", "p-dos"])
 
+    def test_la_conjuncion_sin_coma_no_enumera(self):
+        ajuste = "Correccion: fases.json con ids claros y cortos."
+        e = self._con_ajuste((), ajuste)
+        e = reducir(
+            e,
+            {
+                "kind": "fases",
+                "data": {
+                    "fases": [
+                        {"id": "p-uno", "resultado": "uno"},
+                        {"id": "p-dos", "resultado": "dos"},
+                    ],
+                    "hora": HORA,
+                },
+            },
+        )
+        self.assertEqual([f.id for f in e.fases], ["p-uno", "p-dos"])
+
+    def test_la_conjuncion_cierra_una_serie_con_comas(self):
+        ajuste = (
+            "Correccion del director: las fases son exactamente 8 con ids "
+            "b-receta, c-meta, d-sombra, e-pantalla, f-viva, g-retiro, h-api "
+            "e i-datos."
+        )
+        e = self._con_ajuste((), ajuste)
+        with self.assertRaises(TransicionIlegal):
+            reducir(
+                e,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "b-receta", "resultado": "b"},
+                            {"id": "i-datos", "resultado": "i"},
+                            {"id": "x-fuera", "resultado": "x"},
+                        ],
+                        "hora": HORA,
+                    },
+                },
+            )
+
     def test_una_repropuesta_no_reordena_para_descapendar(self):
         e = _encargo(
             (
