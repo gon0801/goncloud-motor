@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -325,6 +326,41 @@ class RecepcionSondea(unittest.TestCase):
                 gh=FakeGitHub(d),
             )
             enc = reg.fold(salida["encargo"])
+            self.assertEqual(enc.nivel_efectivo, "")
+            self.assertEqual(
+                [e for e in reg.eventos(enc.id) if e["kind"] == "nivel_efectivo"], []
+            )
+
+    def test_la_mirada_lenta_del_remoto_no_bloquea_la_recepcion(self):
+        """F1 de DeepSeek: la recepción no se queda esperando minutos al
+        remoto. El sondeo acota la mirada: si el puerto no contesta a
+        tiempo, la capacidad queda desconocida y el nivel no cambia; el
+        remoto se vuelve a mirar al adoptar fases y al integrar, donde las
+        esperas ya tienen sus caminos propios."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            repo = _bare(t)
+            _maquina(t / "base", ["ssh-goncloud"])
+            reg = self._registro(t)
+
+            class _Lento:
+                def __init__(self, segundos: float):
+                    self.segundos = segundos
+
+                def capacidad(self, repo, base):
+                    time.sleep(self.segundos)
+                    return CapacidadRemota(True, True, True, "tarde pero bloquea")
+
+            with mock.patch("motor.encargos.ciclo.TOPE_MIRADA_S", 0.2):
+                inicio = time.monotonic()
+                salida = recibir(
+                    reg, "pedido", "sondea-lenta", ahora_iso(),
+                    entrega_nivel="desplegado", repo=repo, base_rama="main",
+                    gh=_Lento(3.0),
+                )
+                transcurrido = time.monotonic() - inicio
+            enc = reg.fold(salida["encargo"])
+            self.assertLess(transcurrido, 2.0)
             self.assertEqual(enc.nivel_efectivo, "")
             self.assertEqual(
                 [e for e in reg.eventos(enc.id) if e["kind"] == "nivel_efectivo"], []

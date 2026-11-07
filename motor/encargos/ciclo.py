@@ -10,6 +10,8 @@ import socket
 import stat
 import subprocess
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as MiradaTardia
 from dataclasses import replace
 from pathlib import Path
 
@@ -182,6 +184,23 @@ def _capacidad_desplegar(
     return False, ""
 
 
+TOPE_MIRADA_S = 10.0
+
+
+def _mirada_acotada(consultar):
+    """La mirada de solo lectura al remoto lleva un tope corto: la recepción
+    no se queda bloqueada minutos esperando al remoto (F1 de DeepSeek). Si
+    el puerto no contesta a tiempo, la capacidad queda desconocida y el
+    nivel no cambia; el remoto se vuelve a mirar al adoptar fases y las
+    validaciones al integrar siguen igual. El hilo que queda corriendo
+    termina solo; no lo espera nadie."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(consultar).result(timeout=TOPE_MIRADA_S)
+    finally:
+        pool.shutdown(wait=False)
+
+
 def _sondeo_nivel(
     registro: Registro, enc: Encargo, gh, espacio: Path | None, hora: str
 ) -> None:
@@ -191,7 +210,8 @@ def _sondeo_nivel(
     mergear deja el encargo en `pr`; la máquina sin capacidad declarada de
     desplegar, en `integrado`. Un remoto sin leer, sin configuración de máquina
     o con política desconocida no cambia nada: el flujo normal espera o
-    reintenta por sus propios caminos.
+    reintenta por sus propios caminos. La mirada al remoto lleva un tope
+    (TOPE_MIRADA_S): la recepción no espera minutos a un remoto lento.
     """
     if enc.entrega.nivel not in ("integrado", "desplegado"):
         return
@@ -199,7 +219,14 @@ def _sondeo_nivel(
     integrar_bloqueado = False
     if gh is not None and enc.entrega.base:
         try:
-            capacidad = gh.capacidad(enc.entrega.repo, enc.entrega.base)
+            capacidad = _mirada_acotada(
+                lambda: gh.capacidad(enc.entrega.repo, enc.entrega.base)
+            )
+        except MiradaTardia:
+            causas.append(
+                f"la mirada al remoto no llegó a tiempo ({TOPE_MIRADA_S:g} s); "
+                "sin cambios de nivel"
+            )
         except Exception as exc:  # noqa: BLE001  la mirada no tumba la recepción
             causas.append(
                 f"la mirada al remoto falló ({type(exc).__name__}); sin cambios de nivel"
