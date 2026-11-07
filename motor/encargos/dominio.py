@@ -800,6 +800,10 @@ def nivel_pr_derivado(e: Encargo) -> Encargo:
     ajuste del propietario) dejaba `pr_abierto` y la puerta de integración no
     abría. Aquí se aplica la misma regla que `deepseek_leido`: solo sube, nunca
     baja un integrado o desplegado, y exige el PR y la lectura del mismo SHA.
+
+    Un CI rojo de código del SHA vigente reabrió la fase para corregirlo. Esa
+    reapertura no es un bloqueante de DeepSeek, así que la derivación no puede
+    deshacerla: subir el nivel ahí integraría el PR sin la corrección.
     """
     fase = e.fase_actual
     if fase is None:
@@ -808,6 +812,12 @@ def nivel_pr_derivado(e: Encargo) -> Encargo:
     if _ORDEN_NIVEL.get(actual, 0) >= _ORDEN_NIVEL["pr"]:
         return e
     if not fase.pr_numero or not fase.pr_sha:
+        return e
+    if (
+        fase.ci_pr_estado == "rojo"
+        and fase.ci_pr_sha
+        and fase.ci_pr_sha == fase.pr_sha
+    ):
         return e
     if fase.deepseek_sha != fase.pr_sha:
         return e

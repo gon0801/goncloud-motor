@@ -1247,18 +1247,7 @@ def _barrer_encargos(
                     and enc.rol == "revisor"
                     and _revision_aprobada_vigente(enc)
                 ):
-                    # La aprobación ya cubre el producto y el paso de entrega
-                    # no tiene nada nuevo que publicar. Otro turno del revisor
-                    # gastaría un intento sin cambiar nada: espera visible.
-                    marcar_espera(
-                        registro,
-                        encargo_id,
-                        "la revisión aprobada ya cubre el producto y la entrega "
-                        "no tiene nada nuevo que publicar; no se relanza al revisor",
-                        _reanuda_en(300),
-                        hora,
-                    )
-                    enc = registro.fold(encargo_id) or enc
+                    enc = _esperar_entrega_sin_avance(registro, enc, hora)
                     sin_llm = True
             elif _revision_aprobada_vigente(enc):
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
@@ -4034,6 +4023,39 @@ def _entrega_devuelta_de_la_version(registro: Registro, enc: Encargo) -> bool:
         if ev["kind"] == "entrega_devuelta":
             return ev["data"].get("version") == version
     return False
+
+
+def _esperar_entrega_sin_avance(
+    registro: Registro, enc: Encargo, hora: str
+) -> Encargo:
+    """La aprobación ya cubre el producto y el paso de entrega no tiene nada
+    nuevo que publicar: espera visible, sin gastar otro turno del revisor.
+
+    Sin tope, esa espera se repetiría cada 300 s y quedaría fuera de la
+    vigilancia de quietud, porque el encargo está en `esperando_reintento`.
+    Tras TOPE_FALLOS_ENTREGA esperas seguidas pide ayuda al propietario.
+    """
+    causa = (
+        "la revisión aprobada ya cubre el producto y la entrega no tiene nada "
+        "nuevo que publicar; no se relanza al revisor"
+    )
+    marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+    veces = _fallos_de_entrega_seguidos(registro, enc.id, causa)
+    if veces < TOPE_FALLOS_ENTREGA:
+        return registro.fold(enc.id) or enc
+    marcar_pregunta(
+        registro,
+        enc.id,
+        f"La entrega del PR no avanza desde hace {veces} esperas seguidas: "
+        "la revisión aprobada ya cubre el producto pero el paso de entrega no "
+        "tiene nada nuevo que publicar. Revisa el PR y el estado del encargo; "
+        "si la aprobación sigue vigente, manda un ajuste con director corregir, "
+        "o director parar y después director continuar.",
+        True,
+        hora,
+        f"pregunta-entrega-sin-avance:{enc.id}:{hora}",
+    )
+    return registro.fold(enc.id) or enc
 
 
 def _fallo_de_repo(
