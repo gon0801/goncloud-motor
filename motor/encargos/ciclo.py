@@ -9,8 +9,8 @@ import re
 import socket
 import stat
 import subprocess
+import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as MiradaTardia
 from dataclasses import replace
 from pathlib import Path
@@ -192,13 +192,28 @@ def _mirada_acotada(consultar):
     no se queda bloqueada minutos esperando al remoto (F1 de DeepSeek). Si
     el puerto no contesta a tiempo, la capacidad queda desconocida y el
     nivel no cambia; el remoto se vuelve a mirar al adoptar fases y las
-    validaciones al integrar siguen igual. El hilo que queda corriendo
-    termina solo; no lo espera nadie."""
-    pool = ThreadPoolExecutor(max_workers=1)
-    try:
-        return pool.submit(consultar).result(timeout=TOPE_MIRADA_S)
-    finally:
-        pool.shutdown(wait=False)
+    validaciones al integrar siguen igual. El hilo es daemon: la salida del
+    proceso no lo espera (h_dc2a2b5a — el pool de concurrent.futures se
+    junta al salir aunque shutdown sea wait=False) y el gh rezagado muere
+    con su propio timeout; su resultado tardío jamás se registra."""
+    caja: list = []
+    hecho = threading.Event()
+
+    def _correr():
+        try:
+            caja.append(consultar())
+        except BaseException as exc:  # noqa: BLE001  se reclasifica al llamador
+            caja.append(exc)
+        finally:
+            hecho.set()
+
+    threading.Thread(target=_correr, daemon=True, name="mirada-remoto").start()
+    if not hecho.wait(TOPE_MIRADA_S):
+        raise MiradaTardia(f"la mirada no contestó en {TOPE_MIRADA_S:g} s")
+    resultado = caja[0]
+    if isinstance(resultado, BaseException):
+        raise resultado
+    return resultado
 
 
 def _sondeo_nivel(
