@@ -2483,6 +2483,15 @@ def _fase_corresponde(fid: str, token: str) -> bool:
     return f == t or re.split(r"[-_]", f)[0] == t
 
 
+def _tokens_con_forma_de_id(tokens: list[str]) -> bool:
+    """Forma inequívoca de id para todos los tokens de una enumeración: una
+    letra suelta («b»..«i», como en el ajuste real 12421) o un id compuesto
+    con guion o guion bajo («b-receta», como los ids del evento 12521). Los
+    adjetivos de una frase corriente («cortos», «legibles», «en») no la
+    tienen: sin esta forma, la coincidencia es prosa, no enumeración."""
+    return all(len(t) == 1 or "-" in t or "_" in t for t in tokens)
+
+
 def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
     """El último ajuste del director que enumera los ids de las fases.
 
@@ -2505,7 +2514,7 @@ def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
                     )
                     if t.strip()
                 ]
-                if len(tokens) >= 2:
+                if len(tokens) >= 2 and _tokens_con_forma_de_id(tokens):
                     return ajuste, tokens
     return None
 

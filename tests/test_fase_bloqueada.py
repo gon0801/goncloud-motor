@@ -937,6 +937,55 @@ class LaAdopcionConsultaLosAjustesDelDirector(unittest.TestCase):
                 self.assertIsNotNone(disponible)
                 self.assertEqual(disponible.id, "b-receta")
 
+    def test_una_instruccion_normal_con_comas_no_enumera(self):
+        ajuste = (
+            "Declara las fases en fases.json con ids cortos, claros, en "
+            "minusculas y sin tildes."
+        )
+        e = self._con_ajuste((), ajuste)
+        e = reducir(
+            e,
+            {
+                "kind": "fases",
+                "data": {
+                    "fases": [
+                        {"id": "b-receta", "resultado": "b"},
+                        {
+                            "id": "c-meta",
+                            "resultado": "c",
+                            "requiere": ["b-receta"],
+                        },
+                    ],
+                    "hora": HORA,
+                },
+            },
+        )
+        self.assertEqual([f.id for f in e.fases], ["b-receta", "c-meta"])
+
+    def test_una_prosa_con_ejemplo_de_ids_no_enumera(self):
+        ajuste = (
+            "Escribe las fases con ids legibles, por ejemplo b-receta, c-meta."
+        )
+        e = self._con_ajuste((), ajuste)
+        e = reducir(
+            e,
+            {
+                "kind": "fases",
+                "data": {
+                    "fases": [
+                        {"id": "b-receta", "resultado": "b"},
+                        {
+                            "id": "c-meta",
+                            "resultado": "c",
+                            "requiere": ["b-receta"],
+                        },
+                    ],
+                    "hora": HORA,
+                },
+            },
+        )
+        self.assertEqual([f.id for f in e.fases], ["b-receta", "c-meta"])
+
     def test_una_propuesta_totalmente_fuera_de_la_enumeracion_es_defecto(self):
         e = self._con_ajuste(())
         with self.assertRaises(TransicionIlegal) as ctx:
