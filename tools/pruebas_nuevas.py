@@ -90,10 +90,13 @@ def _texto_en_base(base: str, ruta: str) -> str:
     return salida.stdout if salida.returncode == 0 else ""
 
 
-def _nuevas_o_cambiadas(base: str) -> tuple[dict[str, list[str]], dict[str, str]]:
+def _nuevas_o_cambiadas(
+    base: str,
+) -> tuple[list[str], dict[str, list[str]], dict[str, str]]:
     cambios: dict[str, list[str]] = {}
     excepciones: dict[str, str] = {}
-    for ruta in _archivos_cambiados(base):
+    copiar = _archivos_cambiados(base)
+    for ruta in copiar:
         ruta_abs = RAIZ / ruta
         if not ruta_abs.is_file():
             continue
@@ -111,7 +114,7 @@ def _nuevas_o_cambiadas(base: str) -> tuple[dict[str, list[str]], dict[str, str]
                 excepciones[nombre] = razon or "(sin razón)"
         if tocados:
             cambios[ruta] = tocados
-    return cambios, excepciones
+    return copiar, cambios, excepciones
 
 def _marcador(ruta: Path) -> str:
     try:
@@ -143,6 +146,7 @@ def _corre_en_base(
             "-k",
             filtro,
             f"--junitxml={reporte}",
+            "--continue-on-collection-errors",
             "-q",
             "-p",
             "no:cacheprovider",
@@ -181,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         base = _ref_de_base(args.base)
-        cambios, excepciones = _nuevas_o_cambiadas(base)
+        copiar, cambios, excepciones = _nuevas_o_cambiadas(base)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -192,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     nombres = sorted({n for lista in cambios.values() for n in lista})
     seleccionadas = [n for n in nombres if n not in excepciones]
-    archivos = sorted(cambios)
+    archivos = copiar
     if not seleccionadas:
         print(f"{len(nombres)} prueba(s) nueva(s) exenta(s); no hay nada que correr")
         return 0
@@ -209,8 +213,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {nombre}", file=sys.stderr)
         return 1
     print(f"{len(nombres)} prueba(s) nueva(s) revisada(s); ninguna pasa en la base")
-    if salida.strip():
-        print(salida[-4000:])
     return 0
 
 if __name__ == "__main__":

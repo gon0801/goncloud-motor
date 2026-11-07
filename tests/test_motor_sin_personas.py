@@ -70,7 +70,7 @@ def _bloqueante_dict(titulo: str = "malo.txt no contiene B") -> dict:
 
 
 class SinProgresoRelevaYEntrega(unittest.TestCase):
-    def test_el_mismo_bloqueo_releva_y_luego_entrega_con_pendientes(self):
+    def test_el_mismo_bloqueo_releva_y_luego_entrega_con_pendientes(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "p1", github_con_hallazgos)
             self.addCleanup(r.reg.close)

@@ -151,7 +151,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(_ids(e), [])
 
-    def test_si_deepseek_no_reviso_el_sha_final_el_motor_espera_y_no_integra(self):
+    def test_si_deepseek_no_reviso_el_sha_final_el_motor_espera_y_no_integra(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         for nivel in ("pr", "integrado", "desplegado"):
             with self.subTest(nivel=nivel), tempfile.TemporaryDirectory(
                 ignore_cleanup_errors=True

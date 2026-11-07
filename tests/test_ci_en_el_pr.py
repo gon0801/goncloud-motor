@@ -215,7 +215,7 @@ class RojoDePruebaVuelveAlResponsable(unittest.TestCase):
 
 
 class FoldDeEventosRetirados(unittest.TestCase):
-    def test_un_registro_viejo_con_ci_producto_o_ci_revision_rojo_sigue_plegando(self):
+    def test_un_registro_viejo_con_ci_producto_o_ci_revision_rojo_sigue_plegando(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ci-pr-fold", github_con_corridas)
             e = vuelta("hola\n")
@@ -704,7 +704,7 @@ class UnRojoNoRebajaUnEncargoIntegrado(unittest.TestCase):
 
 
 class ElCierrePorAtajoConciliaLaCabeza(unittest.TestCase):
-    def test_un_head_abierto_distinto_no_se_cierra_con_el_sha_guardado(self):
+    def test_un_head_abierto_distinto_no_se_cierra_con_el_sha_guardado(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ci-pr-head", github_con_corridas)
             e = vuelta("hola\n")

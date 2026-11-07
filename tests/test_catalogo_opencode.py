@@ -44,7 +44,7 @@ class CatalogoCerradoDeOpenCodeGo(unittest.TestCase):
             self.assertIn("opencode-go/deepseek-v4.1-flash", error.getvalue())
             self.assertIn("opencode-go/gemini-4-argon", error.getvalue())
 
-    def test_admite_el_unico_modelo_autorizado(self):
+    def test_admite_el_unico_modelo_autorizado(self):  # no-roja-en-base: la admisión de DeepSeek y de zai ya existía; el candado nuevo es el rechazo
         self.assertEqual(
             solicitar_modelos("opencode-go/deepseek-v4.1-flash", ""),
             (
@@ -56,13 +56,13 @@ class CatalogoCerradoDeOpenCodeGo(unittest.TestCase):
             ),
         )
 
-    def test_no_cambia_otros_proveedores_de_opencode(self):
+    def test_no_cambia_otros_proveedores_de_opencode(self):  # no-roja-en-base: la admisión de DeepSeek y de zai ya existía; el candado nuevo es el rechazo
         self.assertEqual(
             solicitar_modelos("zai-coding-plan/glm-5", ""),
             (("responsable", "opencode", "zai-coding-plan/glm-5"),),
         )
 
-    def test_el_encargo_autorizado_se_acepta(self):
+    def test_el_encargo_autorizado_se_acepta(self):  # no-roja-en-base: la admisión de DeepSeek y de zai ya existía; el candado nuevo es el rechazo
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"
             with contextlib.redirect_stdout(io.StringIO()) as salida:

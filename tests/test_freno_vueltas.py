@@ -98,7 +98,7 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertNotEqual(e.estado, "necesita_usuario")
 
-    def test_dos_fuentes_de_la_misma_vuelta_no_suman(self):
+    def test_dos_fuentes_de_la_misma_vuelta_no_suman(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "fr-1b", github_por_commit)
             vuelta.gh.textos = [_comentario(_hallazgo("F1"))]

@@ -138,7 +138,7 @@ class QuietudDelEncargo(unittest.TestCase):
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(r.eventos("quietud"), [])
 
-    def test_una_espera_con_hora_no_es_quietud(self):
+    def test_una_espera_con_hora_no_es_quietud(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "qt-espera", github_con_hallazgos)
             vuelta("uno")

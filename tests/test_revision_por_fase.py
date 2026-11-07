@@ -251,7 +251,7 @@ class DisputaConEvidencia(unittest.TestCase):
             self.assertEqual(e.impedimento, "")
             self.assertNotEqual(e.estado, "necesita_usuario")
 
-    def test_una_lista_de_disputas_vacia_es_sin_disputa(self):
+    def test_una_lista_de_disputas_vacia_es_sin_disputa(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         for contenido in ({"disputas": []}, []):
             with self.subTest(contenido=contenido), tempfile.TemporaryDirectory(
                 ignore_cleanup_errors=True

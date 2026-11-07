@@ -314,7 +314,7 @@ class EntregaSinEfecto(unittest.TestCase):
             )
             self.assertEqual(roles, ["responsable"])
 
-    def test_la_ukey_del_commit_incluye_la_firma_del_producto(self):
+    def test_la_ukey_del_commit_incluye_la_firma_del_producto(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ukey", github_con_hallazgos)
             e = vuelta("uno")
