@@ -310,6 +310,26 @@ class WslTest(unittest.TestCase):
             despues = (w / ".git").read_text(encoding="utf-8").strip()
             self.assertFalse(os.path.isabs(despues.removeprefix("gitdir:").strip()))
 
+    def test_el_guardian_lee_sus_hijos_sin_importar_el_motor(self):
+        import ast
+
+        arbol = ast.parse(windows.GUARDIAN_WSL)
+        cuerpo = [
+            nodo
+            for nodo in arbol.body
+            if not (
+                isinstance(nodo, ast.Expr)
+                and isinstance(nodo.value, ast.Call)
+                and getattr(nodo.value.func, "id", "") == "main"
+            )
+        ]
+        espacio: dict = {}
+        exec(
+            compile(ast.Module(body=cuerpo, type_ignores=[]), "<guardian>", "exec"),
+            espacio,
+        )
+        self.assertEqual(espacio["hijos_propios"](), [])
+
     def test_argv_wsl_lleva_guardian_y_tope(self):
         argv = windows.argv_wsl("Ubuntu", ["muse", "exec"], timeout=30, ahora=1000.0)
         self.assertEqual(argv[:3], ["wsl.exe", "-d", "Ubuntu"])

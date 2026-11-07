@@ -205,6 +205,17 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hermes_cli.profiles import create_profile, get_profile_dir
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+
+def leer_texto(ruta):
+    # Este programa viaja a otro intérprete con python -c: solo stdlib.
+    with open(ruta, 'r', encoding='utf-8') as archivo:
+        return archivo.read()
+
+
+def escribir_texto(ruta, texto):
+    with open(ruta, 'w', encoding='utf-8', newline='\\n') as archivo:
+        archivo.write(texto)
 config, director = Path(sys.argv[3]), sys.argv[2]
 poteto = runpy.run_path(str(config / "plugins/goncloud-team/poteto.py"))
 soul = "\\n\\n".join(leer_texto((config / name)) for name in

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from motor.io import escribir_texto, leer_json, leer_texto
+
+RAIZ = Path(__file__).resolve().parents[1]
 
 
 class Lectura(unittest.TestCase):
@@ -43,6 +48,21 @@ class Escritura(unittest.TestCase):
             ruta = Path(tmp) / "fases.json"
             escribir_texto(ruta, '{"a": 1}\n')
             self.assertFalse(ruta.read_bytes().startswith(b"\xef\xbb\xbf"))
+
+
+class ClienteIndependiente(unittest.TestCase):
+    def test_corre_solo_con_stdlib_fuera_del_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cliente = Path(tmp) / "cliente.py"
+            shutil.copy2(RAIZ / "motor/encargos/cliente_necesidad.py", cliente)
+            salida = subprocess.run(
+                [sys.executable, "-I", "-B", str(cliente), "--help"],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(salida.returncode, 0, salida.stdout + salida.stderr)
 
 
 if __name__ == "__main__":

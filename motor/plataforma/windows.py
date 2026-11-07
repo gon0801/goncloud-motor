@@ -238,6 +238,12 @@ GUARDIAN_WSL = """
 import ctypes, os, pathlib, signal, subprocess, sys, time
 
 
+def leer_texto(ruta):
+    # El guardián corre con python3 -I -S: solo stdlib, no puede importar el motor.
+    with open(ruta, 'r', encoding='utf-8') as archivo:
+        return archivo.read()
+
+
 def morir_con_el_padre():
     try:
         return ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
