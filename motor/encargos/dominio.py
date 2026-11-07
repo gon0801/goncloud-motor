@@ -535,6 +535,14 @@ class Encargo:
     pausas: tuple[PausaAgente, ...] = ()
     via: str = "durable"
     entrega: EntregaAutorizada = field(default_factory=EntregaAutorizada)
+    # Tope ya comprobado por una mirada de solo lectura del remoto o de la
+    # máquina: "pr" (no se puede integrar) o "integrado" (no se puede
+    # desplegar). Vacío = sin limitación conocida: el objetivo es el nivel
+    # autorizado. Nunca supera a `entrega.nivel`; su motivo vive en el evento
+    # `nivel_efectivo` que lo fijó.
+    nivel_efectivo: str = ""
+    # El motivo en palabras llanas de `nivel_efectivo`, para el aviso y `vista`.
+    nivel_efectivo_motivo: str = ""
     modelos: tuple[tuple[str, str, str], ...] = ()
     modelos_fase: tuple[tuple[str, str, str], ...] = ()
     modelos_solicitados: tuple[tuple[str, str, str], ...] = ()
@@ -1054,12 +1062,18 @@ def sin_nada_en_curso(e: Encargo) -> bool:
     )
 
 
+def nivel_objetivo(e: Encargo) -> str:
+    """El nivel que el cierre exige de verdad: el autorizado, salvo la
+    limitación ya comprobada por el sondeo de capacidad (nunca lo supera)."""
+    return e.nivel_efectivo if e.nivel_efectivo else e.entrega.nivel
+
+
 def nivel_cumplido(e: Encargo) -> bool:
     if e.nivel_alcanzado == "sin_cambios":
         # Sin cambios publicables sólo satisface niveles sin efectos externos;
         # integrado y desplegado exigen el nivel real alcanzado.
-        return e.revisado is not None and e.entrega.nivel in ("terminado", "pr")
-    nivel = e.entrega.nivel
+        return e.revisado is not None and nivel_objetivo(e) in ("terminado", "pr")
+    nivel = nivel_objetivo(e)
     if (
         nivel == "desplegado"
         and e.fase_actual is not None
@@ -1499,6 +1513,24 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
         return e
     if kind == "fases":
         return _adoptar_fases(e, d, hora)
+    if kind == "nivel_efectivo":
+        nivel = str(d.get("nivel") or "")
+        if nivel not in ("", "pr", "integrado"):
+            raise TransicionIlegal(f"nivel efectivo desconocido: {nivel}")
+        if nivel and _ORDEN_NIVEL.get(nivel, 0) >= _ORDEN_NIVEL.get(
+            e.entrega.nivel, 1
+        ):
+            raise TransicionIlegal("el nivel efectivo no supera al solicitado")
+        if nivel == e.nivel_efectivo:
+            return e
+        motivo = str(d.get("motivo") or f"nivel efectivo limitado a {nivel}")
+        return replace(
+            e,
+            nivel_efectivo=nivel,
+            nivel_efectivo_motivo=motivo,
+            ultimo_hecho=motivo,
+            hora=hora or e.hora,
+        )
     if kind == "politica_despliegue":
         e = _fase_de_evento(e, d)
         fase = e.fase_actual
@@ -3801,6 +3833,8 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         },
         "entrega": {
             "nivel_autorizado": e.entrega.nivel,
+            "nivel_efectivo": nivel_objetivo(e),
+            "nivel_efectivo_motivo": e.nivel_efectivo_motivo,
             "nivel_alcanzado": e.nivel_alcanzado,
             "repo": e.entrega.repo,
             "rama": e.rama_entrega,
@@ -4119,6 +4153,12 @@ def prompt_responsable(e: Encargo) -> str:
     ]
     lineas += _bloques_comunes(e)
     lineas.append(f"Nivel de entrega autorizado: {e.entrega.nivel}.")
+    if e.nivel_efectivo:
+        lineas.append(
+            f"El nivel efectivo queda limitado a {e.nivel_efectivo}: "
+            + (e.nivel_efectivo_motivo or "el sondeo de capacidad ya lo comprobó")
+            + ". No intentes ir más allá del nivel efectivo."
+        )
     if not e.fases:
         lineas.append(
             "Este pedido todavía no tiene fases. Antes de implementar, organiza el trabajo "

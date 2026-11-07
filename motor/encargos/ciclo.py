@@ -59,6 +59,7 @@ from .dominio import (
     respuesta_consumida,
     revision_externa_pendiente,
     nivel_cumplido,
+    nivel_objetivo,
     sin_nada_en_curso,
     prompt_responsable,
     prompt_revisor,
@@ -141,6 +142,113 @@ def resolver_entrega(explicita: str | None, repo: str, via: str = "durable") -> 
     return "terminado"
 
 
+def _capacidad_desplegar(
+    base: Path, espacio: Path | None, repo: str
+) -> tuple[bool, str]:
+    """(imposible, motivo) según las capacidades declaradas de la máquina.
+
+    True solo con un hecho declarado: `tiene` sin `ssh-goncloud`, o el
+    `[deploy] requiere` del `.motor.toml` con algo que la máquina no declara.
+    Sin configuración legible, o con una política ilegible o con una receta que
+    una fase aún no creó, la capacidad queda desconocida y eso no cambia nivel.
+    """
+    from motor.conf import (
+        RepoConf,
+        load_maquina,
+        motivo_requiere,
+        requisitos_faltantes,
+    )
+
+    home = base if (base / "maquina.toml").is_file() else Path(
+        os.environ.get("MOTOR_HOME") or Path.home() / ".motor"
+    )
+    try:
+        maquina = load_maquina(home)
+    except (OSError, ValueError):
+        return False, ""
+    requiere = ["ssh-goncloud"]
+    tom = espacio / ".motor.toml" if espacio is not None else None
+    if tom is not None and tom.is_file():
+        try:
+            requiere += list(
+                RepoConf.parse(tom.read_text(encoding="utf-8-sig")).requiere
+            )
+        except (ValueError, TypeError, AttributeError):
+            pass
+    faltan = requisitos_faltantes(tuple(requiere), maquina.tiene)
+    if faltan:
+        return True, motivo_requiere(maquina.nombre, repo, faltan)
+    return False, ""
+
+
+def _sondeo_nivel(
+    registro: Registro, enc: Encargo, gh, espacio: Path | None, hora: str
+) -> None:
+    """Registra el nivel efectivo ya comprobado por miradas de solo lectura.
+
+    Solo un impedimento fijo y legible limita el nivel: el remoto que prohibe
+    mergear deja el encargo en `pr`; la máquina sin capacidad declarada de
+    desplegar, en `integrado`. Un remoto sin leer, sin configuración de máquina
+    o con política desconocida no cambia nada: el flujo normal espera o
+    reintenta por sus propios caminos.
+    """
+    if enc.entrega.nivel not in ("integrado", "desplegado"):
+        return
+    causas: list[str] = []
+    integrar_bloqueado = False
+    if gh is not None and enc.entrega.base:
+        try:
+            capacidad = gh.capacidad(enc.entrega.repo, enc.entrega.base)
+        except Exception as exc:  # noqa: BLE001  la mirada no tumba la recepción
+            causas.append(
+                f"la mirada al remoto falló ({type(exc).__name__}); sin cambios de nivel"
+            )
+        else:
+            if not capacidad.repo_ok:
+                causas.append(f"remoto sin acceso comprobable: {capacidad.detalle}")
+            elif capacidad.integrar_bloqueado:
+                integrar_bloqueado = True
+                causas.append(capacidad.detalle)
+            elif capacidad.integrar_bloqueado is None:
+                causas.append(f"reglas del remoto sin leer: {capacidad.detalle}")
+            elif capacidad.base_ok is False:
+                causas.append(f"{capacidad.detalle}; sin cambios de nivel")
+    desplegar_imposible, motivo_maquina = (False, "")
+    if enc.entrega.nivel == "desplegado":
+        desplegar_imposible, motivo_maquina = _capacidad_desplegar(
+            registro.base, espacio, enc.entrega.repo
+        )
+    nivel = (
+        "pr"
+        if integrar_bloqueado
+        else ("integrado" if desplegar_imposible else "")
+    )
+    if not nivel:
+        return
+    if desplegar_imposible:
+        causas.append(motivo_maquina)
+    motivo = (
+        f"El motor no puede integrar: {'; '.join(causas)}. "
+        f"El encargo queda limitado a pr."
+        if nivel == "pr"
+        else f"La máquina no puede desplegar: {'; '.join(causas)}. "
+        f"El encargo queda limitado a integrado."
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "nivel_efectivo",
+            "data": {"nivel": nivel, "motivo": motivo, "hora": hora},
+        },
+        "nivel-efectivo:%s:%s:%s"
+        % (
+            enc.id,
+            nivel,
+            hashlib.sha256("|".join(causas).encode()).hexdigest()[:12],
+        ),
+    )
+
+
 def recibir(
     registro: Registro,
     texto: str,
@@ -157,6 +265,7 @@ def recibir(
     rama: str = "",
     base_rama: str = "",
     modelos_solicitados: tuple[tuple[str, str, str], ...] = (),
+    gh=None,
 ) -> dict:
     if via == "directa" and entrega_nivel != "terminado":
         raise TransicionIlegal(
@@ -232,6 +341,15 @@ def recibir(
         base_rama,
         modelos_solicitados,
     )
+    if entrega_nivel != "terminado":
+        # Sondeo de solo lectura del remoto antes del primer intento: registra
+        # solo las restricciones ya comprobadas. Sin puerto no hay mirada y el
+        # nivel queda sin cambios. La ruta del espacio va sin crearla: en la
+        # recepción todavía no hay clon ni `.motor.toml` que leer.
+        enc_fresco = registro.fold(encargo)
+        _sondeo_nivel(
+            registro, enc_fresco, gh, registro.base / "espacio" / encargo, hora
+        )
     return vista(registro.fold(encargo), recibo)
 
 
@@ -2372,8 +2490,16 @@ def _intentar_cierre(
                 )
             return registro.fold(enc.id)
     if any(p["operacion"] == "desplegar" for p in pedidos):
-        if enc.entrega.nivel != "desplegado":
-            marcar_pregunta(registro, enc.id, "el encargo no autoriza desplegar", True, hora)
+        if nivel_objetivo(enc) != "desplegado":
+            causa = (
+                "el encargo no autoriza desplegar"
+                if enc.entrega.nivel != "desplegado"
+                else "el nivel efectivo queda limitado a "
+                + nivel_objetivo(enc)
+                + ": "
+                + (enc.nivel_efectivo_motivo or "el sondeo de capacidad ya lo comprobó")
+            )
+            marcar_pregunta(registro, enc.id, causa, True, hora)
             return registro.fold(enc.id)
         if not nivel_cumplido(enc):
             return enc
@@ -3174,6 +3300,13 @@ def _incorporar_responsable(
                 )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
+    enc = registro.fold(enc.id)
+    if enc.entrega.nivel in ("integrado", "desplegado"):
+        # Las fases quedaron adoptadas: antes del siguiente intento o efecto de
+        # entrega se comprueba la capacidad declarada de la máquina. Sin puerto
+        # GitHub aquí, la mirada del remoto vive en `recibir`.
+        _sondeo_nivel(registro, enc, None, espacio, hora)
+        enc = registro.fold(enc.id)
     try:
         declaradas = leer_declaradas(interno)
         error_declaradas = ""
@@ -6567,7 +6700,7 @@ def _entregar_con_pendientes(
             rama = _rama_fase(enc)
             base = (
                 enc.entrega.base
-                if enc.entrega.nivel in ("integrado", "desplegado")
+                if nivel_objetivo(enc) in ("integrado", "desplegado")
                 else _base_fase(enc)
             )
             if not numero:
@@ -7098,7 +7231,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         return registro.fold(enc.id)
     rama = _rama_fase(enc)
     base = (
-        enc.entrega.base if enc.entrega.nivel in ("integrado", "desplegado")
+        enc.entrega.base if nivel_objetivo(enc) in ("integrado", "desplegado")
         else _base_fase(enc)
     )
     firma = enc.producto.firma if enc.producto is not None else ""
@@ -7471,7 +7604,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             rol="revisor",
         )
         return registro.fold(enc.id)
-    if enc.entrega.nivel in ("integrado", "desplegado") and enc.nivel_alcanzado == "pr":
+    if (
+        nivel_objetivo(enc) in ("integrado", "desplegado")
+        and enc.nivel_alcanzado == "pr"
+    ):
         # Aquí `deepseek_sha == pr_sha` por construcción: el bloque de lectura de
         # arriba espera o lee cuando DeepSeek no ha revisado el SHA, así que no
         # se integra uno sin leer.
@@ -7602,7 +7738,7 @@ def _paso_despliegue(
     """El sello se obtiene de la receta ejecutada sobre el commit integrado."""
     from . import despliegue, politica_despliegue
 
-    if enc.entrega.nivel != "desplegado" or enc.nivel_alcanzado != "integrado":
+    if nivel_objetivo(enc) != "desplegado" or enc.nivel_alcanzado != "integrado":
         return enc
     enc = politica_despliegue.adoptar(registro, enc, espacio, hora)
     if nivel_cumplido(enc):

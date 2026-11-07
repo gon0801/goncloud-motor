@@ -223,6 +223,7 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
                 rama=args.rama,
                 base_rama=args.base_rama,
                 modelos_solicitados=solicitar_modelos(args.responsable, args.revisor),
+                gh=_puerto_github(args.base),
             )
         )
     if args.cmd == "ver":
@@ -606,6 +607,7 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
                     modelos_solicitados=solicitar_modelos(
                         msg.get("responsable", ""), msg.get("revisor", "")
                     ),
+                    gh=_puerto_github(base),
                 )
             )
         finally:
