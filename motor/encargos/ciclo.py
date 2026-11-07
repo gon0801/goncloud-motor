@@ -4029,31 +4029,16 @@ def _esperar_entrega_sin_avance(
     registro: Registro, enc: Encargo, hora: str
 ) -> Encargo:
     """La aprobación ya cubre el producto y el paso de entrega no tiene nada
-    nuevo que publicar: espera visible, sin gastar otro turno del revisor.
-
-    Sin tope, esa espera se repetiría cada 300 s y quedaría fuera de la
-    vigilancia de quietud, porque el encargo está en `esperando_reintento`.
-    Tras TOPE_FALLOS_ENTREGA esperas seguidas pide ayuda al propietario.
-    """
-    causa = (
-        "la revisión aprobada ya cubre el producto y la entrega no tiene nada "
-        "nuevo que publicar; no se relanza al revisor"
-    )
-    marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
-    veces = _fallos_de_entrega_seguidos(registro, enc.id, causa)
-    if veces < TOPE_FALLOS_ENTREGA:
-        return registro.fold(enc.id) or enc
-    marcar_pregunta(
+    nuevo que publicar: espera visible, sin gastar otro turno del revisor y sin
+    tope de rondas ni pregunta al propietario. Al vencer el plazo, el barrido
+    vuelve a mirar la entrega por su cuenta."""
+    marcar_espera(
         registro,
         enc.id,
-        f"La entrega del PR no avanza desde hace {veces} esperas seguidas: "
-        "la revisión aprobada ya cubre el producto pero el paso de entrega no "
-        "tiene nada nuevo que publicar. Revisa el PR y el estado del encargo; "
-        "si la aprobación sigue vigente, manda un ajuste con director corregir, "
-        "o director parar y después director continuar.",
-        True,
+        "la revisión aprobada ya cubre el producto y la entrega no tiene nada "
+        "nuevo que publicar; no se relanza al revisor",
+        _reanuda_en(300),
         hora,
-        f"pregunta-entrega-sin-avance:{enc.id}:{hora}",
     )
     return registro.fold(enc.id) or enc
 

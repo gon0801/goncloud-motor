@@ -1261,7 +1261,7 @@ class NivelPrSeRecalculaAlCerrarDeepSeek(unittest.TestCase):
                 esperas,
             )
 
-    def test_la_espera_sin_avance_tiene_tope_y_aviso(self):
+    def test_la_espera_sin_avance_es_visible_sin_relanzar_ni_preguntar(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "entrega-sin-avance-tope", FakeGitHub, nivel="integrado"
@@ -1325,7 +1325,7 @@ class NivelPrSeRecalculaAlCerrarDeepSeek(unittest.TestCase):
                     return_value=None,
                 ),
             ):
-                for _ in range(ciclo.TOPE_FALLOS_ENTREGA):
+                for _ in range(3):
                     actual = r.fold()
                     barrer(
                         r.reg,
@@ -1339,11 +1339,27 @@ class NivelPrSeRecalculaAlCerrarDeepSeek(unittest.TestCase):
             e = r.fold()
             self.assertEqual(
                 e.estado,
-                "necesita_usuario",
-                "la espera se repite sin tope y nadie se entera",
+                "esperando_reintento",
+                "la espera visible no debe convertirse en una espera humana",
             )
+            self.assertEqual(e.preguntas, (), "se abrió una pregunta al propietario")
+            esperas = [
+                ev["data"].get("motivo", "")
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "espera"
+            ]
             self.assertTrue(
-                any("no avanza" in texto for texto in e.preguntas), e.preguntas
+                any("no se relanza al revisor" in motivo for motivo in esperas),
+                esperas,
+            )
+            self.assertFalse(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "pregunta"
+                    and "no avanza" in str(ev["data"].get("texto") or "")
+                ],
+                "no debe pedir ayuda por rondas de espera",
             )
 
     def test_continuar_no_reeleva_un_pr_reabierto_por_ci_rojo(self):
