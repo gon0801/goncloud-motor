@@ -103,7 +103,7 @@ class ContencionDelBarrido(unittest.TestCase):
             enc = b.reg.fold(b.malo)
             self.assertEqual(enc.estado, "terminado")
             self.assertIn("barrido:PermissionError", enc.herramientas_no_disponibles)
-            self.assertTrue(enc.pendientes_entrega)
+            self.assertTrue(enc.fase_actual.pendientes)
             self.assertEqual(
                 len(b.eventos(b.malo, "instrumento_no_disponible")), 1
             )

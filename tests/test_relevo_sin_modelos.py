@@ -90,12 +90,17 @@ class RelevoSinModelos(unittest.TestCase):
         enc = self.barrer_hasta_terminar()
 
         self.assertEqual(enc.estado, "terminado")
-        self.assertTrue(enc.pendientes_entrega)
-        self.assertIn("relevo", " ".join(enc.pendientes_entrega).lower())
+        # El pendiente vive en la fase bloqueada, no en el encargo.
+        self.assertTrue(enc.fase_actual.pendientes)
+        self.assertIn("relevo", " ".join(enc.fase_actual.pendientes).lower())
         self.assertEqual(enc.preguntas, ())
         self.assertTrue(any(
-            ev["kind"] == "cierre_forzado" for ev in self.r.reg.eventos(self.r.enc)
+            ev["kind"] == "bloqueo_fase" for ev in self.r.reg.eventos(self.r.enc)
         ))
+        self.assertEqual(
+            [ev for ev in self.r.reg.eventos(self.r.enc) if ev["kind"] == "cierre_forzado"],
+            [],
+        )
         self.assertIn("no hay producto", enc.evidencia[-1].lower())
 
     def test_el_revisor_sin_otro_modelo_tambien_termina_con_pendientes(self):
@@ -104,8 +109,8 @@ class RelevoSinModelos(unittest.TestCase):
         enc = self.barrer_hasta_terminar()
 
         self.assertEqual(enc.estado, "terminado")
-        self.assertTrue(enc.pendientes_entrega)
-        self.assertIn("revisor", " ".join(enc.pendientes_entrega).lower())
+        self.assertTrue(enc.fase_actual.pendientes)
+        self.assertIn("revisor", " ".join(enc.fase_actual.pendientes).lower())
         self.assertEqual(enc.preguntas, ())
 
     def test_un_modelo_de_relevo_con_cuota_temporal_sigue_en_espera(self):

@@ -1021,8 +1021,11 @@ class ReabrirReusaElPrYLaAprobacion(unittest.TestCase):
             tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             e = ciclo._entregar_con_pendientes(r.reg, r.fold(), vuelta.gh, tarde)
+            # El pendiente de la fase ya no cierra el encargo con
+            # cierre_forzado: bloquea la fase uno, que era terminal aquí (dos
+            # depende de ella), y conserva el PR.
             self.assertEqual(e.estado, "terminado")
-            self.assertEqual(e.fases[0].estado, "preparada")
+            self.assertEqual(e.fases[0].estado, "bloqueada")
             self.assertEqual(e.fases[0].pr_numero, pr_original)
             reabierto = ciclo.ordenar(r.reg, r.enc, "reabrir", "r-1", tarde)
             self.assertFalse(reabierto.get("rechazada"), reabierto)
@@ -1042,9 +1045,10 @@ class ReabrirReusaElPrYLaAprobacion(unittest.TestCase):
                 and ev["data"].get("paso") == "pr_abierto"
             ]
             self.assertEqual(len(aperturas), 1)
-            # El cierre forzado es el de la simulación del caso viejo; el
-            # camino recuperado no añade otro.
-            self.assertEqual(len(r.eventos("cierre_forzado")), 1)
+            # El cierre por fase es un bloqueo_fase; el camino recuperado no
+            # emite cierre_forzado ni repite el bloqueo.
+            self.assertEqual(r.eventos("cierre_forzado"), [])
+            self.assertEqual(len(r.eventos("bloqueo_fase")), 1)
 
 
 class ContinuarRetomaElTrabajo(unittest.TestCase):
