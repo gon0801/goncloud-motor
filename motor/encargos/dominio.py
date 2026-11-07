@@ -1068,6 +1068,18 @@ def nivel_objetivo(e: Encargo) -> str:
     return e.nivel_efectivo if e.nivel_efectivo else e.entrega.nivel
 
 
+def limita_mas_que(nivel: str, vigente: str) -> bool:
+    """True si `nivel` aprieta el tope `vigente` ("": sin limitación conocida).
+
+    El nivel efectivo solo puede hacerse más restrictivo (h_6a425441): una
+    determinación que no aprieta no relaja la que ya está comprobada."""
+    if not nivel:
+        return False
+    if not vigente:
+        return True
+    return _ORDEN_NIVEL[nivel] < _ORDEN_NIVEL[vigente]
+
+
 def nivel_cumplido(e: Encargo) -> bool:
     if e.nivel_alcanzado == "sin_cambios":
         # Sin cambios publicables sólo satisface niveles sin efectos externos;
@@ -1521,6 +1533,14 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             e.entrega.nivel, 1
         ):
             raise TransicionIlegal("el nivel efectivo no supera al solicitado")
+        if e.nivel_efectivo and _ORDEN_NIVEL.get(nivel, 99) > _ORDEN_NIVEL[
+            e.nivel_efectivo
+        ]:
+            # El nivel efectivo es un tope que solo se aprieta: una fuente que
+            # no vio la limitación (p. ej. el sondeo de máquina sin gh) no
+            # relaja lo que otra ya comprobó (h_6a425441). El nivel igual es
+            # un sin registro, no un error.
+            raise TransicionIlegal("el nivel efectivo solo se limita más; no se relaja")
         if nivel == e.nivel_efectivo:
             return e
         motivo = str(d.get("motivo") or f"nivel efectivo limitado a {nivel}")

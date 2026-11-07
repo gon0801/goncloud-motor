@@ -60,6 +60,7 @@ from .dominio import (
     revision_externa_pendiente,
     nivel_cumplido,
     nivel_objetivo,
+    limita_mas_que,
     sin_nada_en_curso,
     prompt_responsable,
     prompt_revisor,
@@ -224,6 +225,11 @@ def _sondeo_nivel(
         else ("integrado" if desplegar_imposible else "")
     )
     if not nivel:
+        return
+    vigente = enc.nivel_efectivo
+    if vigente and not limita_mas_que(nivel, vigente):
+        # La limitación vigente ya es igual o más estricta que esta
+        # determinación: no se relaja ni se duplica (h_6a425441).
         return
     if desplegar_imposible:
         causas.append(motivo_maquina)
