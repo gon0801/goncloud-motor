@@ -501,6 +501,21 @@ class ReduceNivelEfectivo(unittest.TestCase):
         self.assertEqual(enc.nivel_efectivo, "")
         self.assertEqual(enc.nivel_efectivo_motivo, "")
 
+    def test_el_nivel_efectivo_solo_se_limita_mas(self):
+        # h_6a425441: una determinación menos restrictiva no puede relajar la
+        # limitación vigente (pr fijado por el remoto, integrado por la máquina).
+        enc = self._aplicar(self._encargo("desplegado"), "pr")
+        with self.assertRaises(TransicionIlegal):
+            self._aplicar(enc, "integrado")
+        with self.assertRaises(TransicionIlegal):
+            self._aplicar(enc, "")
+
+    def test_una_limitacion_mas_estricta_si_se_aplica(self):
+        enc = self._aplicar(self._encargo("desplegado"), "integrado")
+        apretado = self._aplicar(enc, "pr")
+        self.assertEqual(apretado.nivel_efectivo, "pr")
+        self.assertEqual(nivel_objetivo(apretado), "pr")
+
 
 class _Aprobador(_GhConDeepSeek):
     titulos = ()
@@ -583,6 +598,93 @@ class CompuertasDeAccion(unittest.TestCase):
             self.assertEqual(e.nivel_alcanzado, "pr")
             self.assertEqual(_pasos(r, "integrado"), [])
             self.assertEqual(_pasos(r, "desplegado"), [])
+
+    def test_la_adopcion_no_relaja_el_pr_del_sondeo_de_recibir(self):
+        # h_6a425441: con merge prohibido en el remoto y máquina sin capacidad,
+        # la adopción de fases (sin gh) no sube pr a integrado ni el motor
+        # intenta el merge que ya sabía prohibido.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._preparar(tmp, "desplegado", {"revisiones_requeridas": 1}, [])
+            self._sondea(r, vuelta.gh)
+            self.assertEqual(r.fold().nivel_efectivo, "pr")
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "fases.json").write_text(
+                json.dumps({"fases": [{"id": "a", "resultado": "saludo.txt con hola"}]})
+            )
+            r.incorporar()
+            e = r.fold()
+            self.assertEqual(e.nivel_efectivo, "pr")
+            self.assertEqual(
+                [ev["data"]["nivel"] for ev in r.eventos("nivel_efectivo")], ["pr"]
+            )
+            e = vuelta("hola")
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertNotIn("necesita_usuario", e.estado)
+            self.assertEqual(_pasos(r, "integrado"), [])
+
+
+class ViasDeRecepcion(unittest.TestCase):
+    """h_e94bfa99: la vía de los directores también sondea el remoto."""
+
+    def test_directores_encargar_pasa_el_puerto(self):
+        from motor.integraciones.directores import encargar as encargar_director
+        from motor.encargos.registro import Registro
+
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            repo = _bare(t)
+            d = t / "fake"
+            d.mkdir()
+            (d / "repos.json").write_text(json.dumps({repo: {"revisiones_requeridas": 1}}))
+            _maquina(t / "base", ["ssh-goncloud"])
+            reg = Registro(t / "base")
+            self.addCleanup(reg.close)
+            salida = encargar_director(
+                reg, "pedido", "director-1", ahora_iso(),
+                "hermes", "hermes", "durable",
+                entrega_nivel="integrado", repo=repo, base_rama="main",
+                gh=FakeGitHub(d),
+            )
+            enc = reg.fold(salida["encargo"])
+            self.assertEqual(enc.nivel_efectivo, "pr")
+            self.assertIn("limitado a pr", enc.nivel_efectivo_motivo)
+
+    def test_la_cli_de_directores_sondea_el_remoto(self):
+        from motor.integraciones import cli as cli_directores
+        from motor.encargos.registro import Registro
+        from contextlib import redirect_stdout
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            repo = _bare(t)
+            base = t / "base"
+            base.mkdir()
+            (base / "github.json").write_text(json.dumps({"falso": str(t / "fake")}))
+            _maquina(base, ["ssh-goncloud"])
+            d = t / "fake"
+            d.mkdir()
+            (d / "repos.json").write_text(json.dumps({repo: {"revisiones_requeridas": 1}}))
+            salida = io.StringIO()
+            with redirect_stdout(salida):
+                codigo = cli_directores.main(
+                    [
+                        "encargar", "--base", str(base),
+                        "--texto", "pedido", "--clave", "director-cli",
+                        "--director", "hermes", "--canal", "hermes",
+                        "--via", "durable", "--entrega", "integrado",
+                        "--repo", repo, "--base-rama", "main",
+                    ]
+                )
+            self.assertEqual(codigo, 0)
+            encargo = json.loads(salida.getvalue())["encargo"]
+            reg = Registro(base)
+            self.addCleanup(reg.close)
+            enc = reg.fold(encargo)
+            self.assertEqual(enc.nivel_efectivo, "pr")
+            self.assertIn("limitado a pr", enc.nivel_efectivo_motivo)
 
 
 if __name__ == "__main__":
