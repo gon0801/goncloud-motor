@@ -938,7 +938,7 @@ class MergeTicketTest(Banco):
         self.assertEqual(len(self.eventos("Merged")), 1)
         self.assertEqual(len(self.avisos("externo")), 1, "avisa una vez")
 
-    def test_un_pr_mergeado_por_fuera_se_adopta_y_se_avisa_una_vez(self):
+    def test_un_pr_mergeado_por_fuera_se_adopta_y_se_avisa_una_vez(self):  # no-roja-en-base: solo cambió el stub de PR fijo; el comportamiento probado ya estaba en la base
         plan = self.carga()
         sha = "a" * 40
         self.d.store.append(

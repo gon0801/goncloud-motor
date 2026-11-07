@@ -44,5 +44,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Instalar pytest
+        run: python -m pip install pytest
       - name: Las pruebas nuevas fallan contra la base del PR
         run: python tools/pruebas_nuevas.py --base "origin/${{ github.base_ref }}"

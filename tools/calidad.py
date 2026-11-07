@@ -28,10 +28,15 @@ IO_PERMITIDO = RAIZ / "motor" / "io.py"
 MENSAJE_IO = "usa motor.io.leer_json / escribir_texto"
 
 
+VERSIONES = {"pyright": "1.1.414", "ruff": "0.17.4"}
+
+
 def _ejecutable(nombre: str, modulo: str) -> list[str]:
     ruta = shutil.which(nombre)
     if ruta:
         return [ruta]
+    if shutil.which("uv"):
+        return ["uv", "tool", "run", "--from", f"{nombre}=={VERSIONES[nombre]}", nombre]
     return [sys.executable, "-m", modulo]
 
 
