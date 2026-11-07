@@ -6,6 +6,7 @@ por sí solo autorización ni aprobación.
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import hashlib
 import json
@@ -54,7 +55,7 @@ def leer_propuesta(interno: Path) -> tuple[dict, ...] | None:
         return None
     try:
         # utf-8-sig: en Windows los agentes escriben JSON con BOM y utf-8 lo rechaza.
-        datos = json.loads(path.read_text(encoding="utf-8-sig"))
+        datos = leer_json(path)
     except ValueError as exc:
         raise ValueError(f"{NOMBRE} no es JSON válido: {exc}") from exc
     crudo = datos.get("fases") if isinstance(datos, dict) else datos
@@ -107,7 +108,7 @@ def adoptar(
     try:
         propuesta = leer_propuesta(interno)
     except ValueError as exc:
-        error_path.write_text(str(exc) + "\n", encoding="utf-8")
+        escribir_texto(error_path, str(exc) + "\n")
         return enc, str(exc)
     if propuesta is None:
         return enc, ""
@@ -129,5 +130,5 @@ def adoptar(
         "la propuesta de fases no se pudo adoptar; debe conservar las fases ya "
         "trabajadas y no dejar dependencias circulares ni fases inexistentes"
     )
-    error_path.write_text(defecto + "\n", encoding="utf-8")
+    escribir_texto(error_path, defecto + "\n")
     return registro.fold(enc.id) or enc, defecto

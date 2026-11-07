@@ -1,6 +1,7 @@
 """Adaptadores de los CLI de suscripción, separados de su supervisión."""
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import json
 import os
@@ -111,7 +112,7 @@ def _escribir_si_cambia(destino: Path, texto: str) -> None:
     destino.parent.mkdir(parents=True, exist_ok=True)
     if destino.is_file():
         try:
-            if destino.read_text(encoding="utf-8") == texto:
+            if leer_texto(destino) == texto:
                 return
         except OSError:
             pass
@@ -119,7 +120,7 @@ def _escribir_si_cambia(destino: Path, texto: str) -> None:
         f".{destino.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )
     try:
-        temporal.write_text(texto, encoding="utf-8")
+        escribir_texto(temporal, texto)
         os.replace(temporal, destino)
     finally:
         temporal.unlink(missing_ok=True)
@@ -344,7 +345,7 @@ def _sesion_presente(agente: str) -> bool:
             / "auth.json"
         )
         try:
-            datos = json.loads(path.read_text(encoding="utf-8"))
+            datos = leer_json(path)
             return datos.get("auth_mode") == "chatgpt" and not datos.get(
                 "OPENAI_API_KEY"
             )
@@ -364,7 +365,7 @@ def _sesion_presente(agente: str) -> bool:
             origen = Path(
                 os.environ.get("KIMI_CODE_HOME", str(Path.home() / ".kimi-code"))
             )
-            datos = tomllib.loads((origen / "config.toml").read_text(encoding="utf-8"))
+            datos = tomllib.loads(leer_texto((origen / "config.toml")))
             clave = datos["providers"]["managed:kimi-code"]["oauth"]["key"]
             return (
                 isinstance(clave, str)

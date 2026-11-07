@@ -13,6 +13,7 @@ from pathlib import Path
 
 # El wrapper se ejecuta por ruta absoluta y nunca importa código del espacio del agente.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from motor.io import leer_json, leer_texto
 
 from motor import plataforma
 from motor.encargos.agentes import HERRAMIENTAS_TRAS_EL_TURNO
@@ -438,7 +439,7 @@ class SalidaRuntime:
 
 def _sesion_kimi(indice: Path, espacio: Path) -> str:
     try:
-        lineas = indice.read_text(encoding="utf-8").splitlines()
+        lineas = leer_texto(indice).splitlines()
         cwd = espacio.resolve()
     except (OSError, UnicodeError, RuntimeError):
         return ""
@@ -514,7 +515,7 @@ def _limpiar_temporal_de(spec: dict) -> None:
 
 
 def ejecutar(spec_path: Path) -> int:
-    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec = leer_json(spec_path)
     d = spec_path.parent
     candado = plataforma.candado(d / "arranque.lock")
     if candado is None:

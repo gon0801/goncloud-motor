@@ -18,31 +18,13 @@ from motor.encargos.ciclo import _paso_entrega, ahora_iso, barrer, corregir
 from motor.encargos.dominio import alcance_de, bloqueantes_abiertos
 from tests.test_flujo_revisiones import (
     Recorrido,
-    _GhConDeepSeek,
     _bloqueante,
     _entrega_pr,
     _interno,
     _lanzaria,
 )
 
-
-class _GhConDeepSeekReescrito(_GhConDeepSeek):
-    """DeepSeek reescribe su comentario limpio sobre el mismo SHA."""
-
-    def __init__(self, d):
-        super().__init__(d)
-        self.sufijo = ""
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        if self.titulos:
-            return super().comentarios_deepseek(repo, numero, sha)
-        return [
-            {
-                "texto": "DeepSeek: APPROVED" + self.sufijo,
-                "autor": "DeepSeek",
-                "sha": sha,
-            }
-        ]
+from tests.dobles import github_con_hallazgos
 
 
 def setUpModule():
@@ -87,7 +69,7 @@ def _lanzar(r, lanzador):
 class DeepSeekNoPasaPorOpus(unittest.TestCase):
     def test_dos_correcciones_deepseek_no_gastan_opus_y_la_final_si(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "opus-fase", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "opus-fase", github_con_hallazgos)
             gh = vuelta.gh
             e = vuelta("uno")
             self.assertEqual(e.nivel_alcanzado, "pr_abierto")
@@ -142,7 +124,7 @@ class DeepSeekNoPasaPorOpus(unittest.TestCase):
 
     def test_la_primera_lectura_limpia_tras_corregir_devuelve_a_opus(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "opus-limpia", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "opus-limpia", github_con_hallazgos)
             gh = vuelta.gh
             vuelta("uno")
             gh.titulos = ()
@@ -160,7 +142,7 @@ class DeepSeekNoPasaPorOpus(unittest.TestCase):
     def test_con_un_bloqueante_de_opus_no_se_adelanta_otra_revision(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "opus-bloqueante", _GhConDeepSeekReescrito
+                self, tmp, "opus-bloqueante", github_con_hallazgos
             )
             gh = vuelta.gh
             vuelta("uno")
@@ -200,7 +182,7 @@ class DeepSeekNoPasaPorOpus(unittest.TestCase):
 
     def test_sin_cambios_en_el_tramo_no_hay_revision_final(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "opus-vacio", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "opus-vacio", github_con_hallazgos)
             gh = vuelta.gh
             e = vuelta("uno")
             self.assertEqual(len(_revisiones(r, "independiente")), 1)
@@ -223,7 +205,7 @@ class DeepSeekNoPasaPorOpus(unittest.TestCase):
 class DisputaConEvidencia(unittest.TestCase):
     def test_un_hallazgo_de_deepseek_disputado_lo_decide_el_revisor(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "disputa", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "disputa", github_con_hallazgos)
             e = vuelta("uno")
             abiertos = bloqueantes_abiertos(e, "deepseek")
             self.assertEqual(len(abiertos), 1)
@@ -254,7 +236,7 @@ class DisputaConEvidencia(unittest.TestCase):
 
     def test_una_disputa_invalida_repetida_termina_en_impedimento(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "disputa-invalida", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "disputa-invalida", github_con_hallazgos)
             vuelta("uno")
             (_interno(r) / "disputa.json").write_text(
                 json.dumps({"hallazgo": "", "evidencia": ""})
@@ -269,12 +251,12 @@ class DisputaConEvidencia(unittest.TestCase):
             self.assertEqual(e.impedimento, "")
             self.assertNotEqual(e.estado, "necesita_usuario")
 
-    def test_una_lista_de_disputas_vacia_es_sin_disputa(self):
+    def test_una_lista_de_disputas_vacia_es_sin_disputa(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         for contenido in ({"disputas": []}, []):
             with self.subTest(contenido=contenido), tempfile.TemporaryDirectory(
                 ignore_cleanup_errors=True
             ) as tmp:
-                vuelta, r = _entrega_pr(self, tmp, "disputa-vacia", _GhConDeepSeek)
+                vuelta, r = _entrega_pr(self, tmp, "disputa-vacia", github_con_hallazgos)
                 vuelta("uno")
                 (_interno(r) / "disputa.json").write_text(json.dumps(contenido))
                 e = r.incorporar()
@@ -288,7 +270,7 @@ class DisputaConEvidencia(unittest.TestCase):
 
     def test_la_disputa_invalida_no_deja_una_espera_al_operador(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "disputa-reparada", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "disputa-reparada", github_con_hallazgos)
             vuelta("uno")
             archivo = _interno(r) / "disputa.json"
             archivo.write_text(json.dumps({"hallazgo": "", "evidencia": ""}))

@@ -1,6 +1,7 @@
 """Capacidades de un comando y sus hijos. El Job administra vida, no permisos."""
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import hashlib
 import json
@@ -58,9 +59,9 @@ def path_con_interprete(path: str, runtime: Path) -> str:
     carpeta.mkdir(parents=True, exist_ok=True)
     contenido = f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n'
     destino = carpeta / "python3"
-    if not destino.is_file() or destino.read_text(encoding="utf-8") != contenido:
+    if not destino.is_file() or leer_texto(destino) != contenido:
         temporal = carpeta / ".python3.tmp"
-        temporal.write_text(contenido, encoding="utf-8")
+        escribir_texto(temporal, contenido)
         temporal.chmod(0o755)
         os.replace(temporal, destino)
     partes = path.split(os.pathsep) if path else []
@@ -171,7 +172,7 @@ def _entorno(
         if auth.is_file():
             if nombre == "codex":
                 try:
-                    datos = json.loads(auth.read_text(encoding="utf-8"))
+                    datos = leer_json(auth)
                 except (OSError, ValueError):
                     raise CuentaNoDisponible(
                         nombre, "no se pudo leer el login de suscripcion"
@@ -189,7 +190,7 @@ def _entorno(
 def _preparar_kimi(runtime: Path, cmd: list[str]) -> float:
     origen = Path(os.environ.get("KIMI_CODE_HOME", str(Path.home() / ".kimi-code")))
     try:
-        config = tomllib.loads((origen / "config.toml").read_text(encoding="utf-8"))
+        config = tomllib.loads(leer_texto((origen / "config.toml")))
         alias = (
             cmd[cmd.index("--model") + 1]
             if "--model" in cmd
@@ -270,7 +271,7 @@ def _preparar_kimi(runtime: Path, cmd: list[str]) -> float:
     ):
         if clave in modelo:
             texto.append(clave + " = " + json.dumps(modelo[clave]))
-    (destino / "config.toml").write_text("\n".join(texto) + "\n", encoding="utf-8")
+    escribir_texto((destino / "config.toml"), "\n".join(texto) + "\n")
     (destino / "config.toml").chmod(0o600)
     return acceso.expira
 

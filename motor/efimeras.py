@@ -6,6 +6,7 @@ busca una ruta como texto; `effects.deploy` y `motor programadas` deciden qué h
 """
 
 from __future__ import annotations
+from motor.io import leer_texto
 
 import glob
 import os
@@ -260,7 +261,7 @@ def _extras(maquina: str, conf_dir: Path | None) -> tuple[list[str], list[str], 
     if not f.exists():
         return [], [], ""
     try:
-        sec = tomllib.loads(f.read_text(encoding="utf-8")).get(maquina, {})
+        sec = tomllib.loads(leer_texto(f)).get(maquina, {})
     except (OSError, tomllib.TOMLDecodeError) as e:
         return [], [], f"no pude leer {ARCHIVO_EXTRAS}: {e}"
     archivos, comandos = sec.get("archivos", []), sec.get("comandos", [])
