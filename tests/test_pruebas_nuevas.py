@@ -37,7 +37,7 @@ def _commit(repo: Path, mensaje: str) -> None:
     )
 
 
-def _repo(tmp: Path) -> Path:
+def _repo(tmp: Path, base_extra: dict[str, str] | None = None) -> Path:
     repo = tmp / "repo"
     repo.mkdir()
     (repo / "tests").mkdir()
@@ -47,6 +47,10 @@ def _repo(tmp: Path) -> Path:
     (repo / "tests/test_existente.py").write_text(
         "def test_viejo():\n    assert True\n"
     )
+    for ruta, texto in (base_extra or {}).items():
+        destino = repo / ruta
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_text(texto)
     _git(repo, "init", "-q", "-b", "main")
     _commit(repo, "base")
     _git(repo, "checkout", "-q", "-b", "cambio")
@@ -105,22 +109,65 @@ class PruebasNuevasContraLaBase(unittest.TestCase):
             _commit(repo, "pruebas")
             salida = _corre(repo)
             self.assertEqual(salida.returncode, 0, salida.stdout + salida.stderr)
-            self.assertIn("excepción test_que_pasa_en_la_base", salida.stdout)
+            self.assertIn("excepción", salida.stdout)
+            self.assertIn("test_que_pasa_en_la_base", salida.stdout)
             self.assertIn("comprueba el contrato viejo", salida.stdout)
 
-    def test_399_f2_reconstruido_queda_marcado(self):
-        # Caso real: la prueba pasa aunque se revierta el arreglo.
+    def test_la_excepcion_de_una_clase_no_tapa_la_otra(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp))
-            (repo / "tests/test_399_f2.py").write_text(
-                "from producto import valor\n\n"
-                "def test_399_f2_pasa_aunque_se_revierta():\n"
-                "    assert valor() in (1, 2)\n"
+            (repo / "tests/test_dos_clases.py").write_text(
+                "class TestA:\n"
+                "    def test_igual(self):  # no-roja-en-base: contrato previo\n"
+                "        assert True\n\n"
+                "class TestB:\n"
+                "    def test_igual(self):\n"
+                "        assert True\n"
             )
             _commit(repo, "pruebas")
             salida = _corre(repo)
             self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
-            self.assertIn("test_399_f2_pasa_aunque_se_revierta", salida.stderr)
+            self.assertIn("TestB::test_igual", salida.stderr)
+            self.assertNotIn("prueba(s) nueva(s) revisada(s); ninguna pasa", salida.stdout)
+
+    def test_no_culpa_a_una_prueba_vieja_con_el_mismo_prefijo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(
+                Path(tmp),
+                {"tests/test_arreglo.py": "def test_arreglo_extra():\n    assert True\n"},
+            )
+            (repo / "tests/test_arreglo.py").write_text(
+                "def test_arreglo_extra():\n    assert True\n\n"
+                "def test_arreglo():\n    assert False\n"
+            )
+            _commit(repo, "pruebas")
+            salida = _corre(repo)
+            self.assertEqual(salida.returncode, 0, salida.stdout + salida.stderr)
+            self.assertIn("ninguna pasa en la base", salida.stdout)
+
+    def test_el_caso_nuevo_de_parametrize_queda_en_el_candado(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(
+                Path(tmp),
+                {
+                    "tests/test_param.py": (
+                        "import pytest\n\n"
+                        "@pytest.mark.parametrize('x', [1])\n"
+                        "def test_param(x):\n"
+                        "    assert x > 0\n"
+                    )
+                },
+            )
+            (repo / "tests/test_param.py").write_text(
+                "import pytest\n\n"
+                "@pytest.mark.parametrize('x', [1, 2])\n"
+                "def test_param(x):\n"
+                "    assert x > 0\n"
+            )
+            _commit(repo, "pruebas")
+            salida = _corre(repo)
+            self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
+            self.assertIn("test_param", salida.stderr)
 
 
 if __name__ == "__main__":
