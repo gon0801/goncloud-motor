@@ -485,6 +485,46 @@ vale desde `detenido`. Las salidas son un ajuste (`director corregir`) o
 `director parar` y después `director continuar`; la pregunta las nombra. Las
 dos devuelven el trabajo y empiezan la cuenta de nuevo.
 
+## La compuerta extremo a extremo
+
+`tests/test_compuerta_e2e.py` es la compuerta de cualquier cambio futuro al
+flujo de revisiones, a la entrega o a las fases. Si un cambio toca uno de esos
+flujos, corre esta batería antes de declarar la fase lista. No es una prueba
+más del camino feliz: es la que impide que un arreglo local rompa el
+recorrido real del motor.
+
+El banco empieza en `recibir` y avanza solo con `ciclo.barrer` y el lanzador
+real del adaptador de ensayo. La prueba no inyecta aprobaciones, merges ni
+despliegues, no escribe eventos internos y no usa los caminos privados del
+recorrido (`Recorrido.juicio`, `_incorporar`, `_paso_entrega`,
+`_paso_despliegue`). El agente de ensayo trabaja como un agente de verdad:
+genera `.interno/fases.json`, el producto de cada fase y los juicios de cada
+rol y ronda con el protocolo normal. La prueba solo controla el reloj y el
+puerto (`FakeGitHub`).
+
+El camino feliz encarga tres fases con entrega `desplegado`. Cada fase
+produce su PR, su revisión, el merge en el git local y un recibo de
+despliegue validado por el trabajador real sobre una receta local inocua.
+Al final quedan tres fases `preparada`, tres despliegues, ningún
+`cierre_forzado` y ninguna orden manual. Las variantes cubren los bordes que
+los encargos reales han topado: la fase que crea la receta que usa la
+siguiente, la fase sin despliegue, el revisor que omite en la ronda 2 el
+bloqueante ya corregido sin reabrir la escalera, la fase que se integra y
+despliega con la nota `sin-revisión` cuando DeepSeek no llega al tope, el
+bloqueante real que bloquea su fase y termina el encargo como entrega
+parcial, la fase independiente que corre aunque otra esté bloqueada, la
+prohibición fija de merge que baja el nivel efectivo a `pr` antes del primer
+agente y la regresión de una sola fase hasta `pr` sin DeepSeek.
+
+En Windows el agente de ensayo corre con el bash de Git (nunca el de WSL) y
+escribe sus recetas con saltos LF. La batería corre completa en el job de
+Windows del CI con `MOTOR_EXIGE_WINDOWS=1`.
+
+Lo que la compuerta no prueba: Hermes, `gh` real, `ai-review`, SSH ni Orbit.
+El puerto es `FakeGitHub` y el destino de despliegue es una receta local. El
+reloj salta a las esperas vencidas del propio motor, así que tampoco prueba
+reintentos de red con backoff real.
+
 ## Ejemplos
 
 ```sh
