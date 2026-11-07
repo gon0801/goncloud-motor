@@ -32,6 +32,10 @@ from .manifiesto import Herramienta, cargar, emitir, guardar, proyectar_tabla
 __all__ = ["actualizar", "comprobar_runtime", "descubrir", "estado", "preparar"]
 
 
+def _opciones_repo(padre: Path, base: str) -> list[Path]:
+    return [padre / (base + "-encargos-3-4"), padre / base]
+
+
 def _repos_predeterminados(motor_origen: Path) -> dict[str, Path]:
     padre = motor_origen.parent
     candidatos = {}
@@ -40,7 +44,7 @@ def _repos_predeterminados(motor_origen: Path) -> dict[str, Path]:
         ("claw", "goncloud-openclaw"),
         ("conf", "goncloud-motor-conf"),
     ):
-        opciones = [padre / (base + "-encargos-3-4"), padre / base]
+        opciones = _opciones_repo(padre, base)
         encontrado = next((p for p in opciones if (p / ".git").exists()), None)
         if encontrado:
             candidatos[nombre] = encontrado
@@ -58,7 +62,12 @@ def _snapshot_repos(repos: dict[str, Path]) -> dict:
 
 
 def _crear_generacion(
-    home: Path, motor_origen: Path, componentes: list[dict], repos: dict, politica: str
+    home: Path,
+    motor_origen: Path,
+    componentes: list[dict],
+    repos: dict,
+    politica: str,
+    claw_routing: str = "",
 ) -> tuple[str, Path]:
     motor = home / "motor"
     if not motor.exists():
@@ -66,6 +75,8 @@ def _crear_generacion(
     base = _git(motor_origen, "rev-parse", "HEAD")
     _git(motor, "fetch", str(motor_origen), base)
     snapshot = {"componentes": componentes, "repos": repos, "politica": politica}
+    if claw_routing:
+        snapshot["claw_routing"] = claw_routing
     contenido = (
         json.dumps(snapshot, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
     )
@@ -644,7 +655,9 @@ def _escribir_claw_desde_tabla(gen: Path, tabla: Path) -> Path:
     return destino
 
 
-def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
+def _reutilizar_config(
+    gen: Path, vigente: Path, runtime: dict, claw_routing: dict | None = None
+) -> None:
     if not (vigente / "config").is_dir():
         raise RuntimeError(
             "la replica no tiene la configuracion exportada de la generacion "
@@ -654,6 +667,15 @@ def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
     prefijos = _prefijos_de(vigente)
     nuevo = str(gen.resolve())
     _copiar_arbol(vigente / "config", gen / "config", prefijos, nuevo)
+    if claw_routing is not None:
+        # Verbatim: el hash que queda en runtime["archivos"] es el publicado.
+        destino = gen / "config/hermes" / "claw-routing.json"
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(claw_routing["contenido"].encode("utf-8"))
+        runtime["claw_routing"] = {
+            "revision": claw_routing["revision"],
+            "sha256": claw_routing["sha256"],
+        }
     perfiles = vigente / "perfiles"
     if perfiles.is_dir():
         _copiar_arbol(perfiles, gen / "perfiles", prefijos, nuevo)
@@ -737,6 +759,7 @@ def preparar(
     from .compartida import leer_fuente
 
     fuente = leer_fuente(home)
+    claw_publicado = fuente.get("claw_routing") if fuente is not None else None
     if fuente is not None:
         aprobado = fuente["catalogo"]
         if catalogo is not None and catalogo != aprobado:
@@ -796,7 +819,12 @@ def preparar(
             politica, herramientas=tuple(herramientas[n] for n in sorted(herramientas))
         )
         revision, gen = _crear_generacion(
-            home, motor_origen, componentes, fuentes, emitir(politica)
+            home,
+            motor_origen,
+            componentes,
+            fuentes,
+            emitir(politica),
+            claw_publicado["sha256"] if claw_publicado else "",
         )
         recibo = home / "preparaciones" / (revision + ".json")
         runtime_path = gen / "runtime.json"
@@ -938,7 +966,7 @@ def preparar(
                         "reutilizar config/, perfiles/ y poteto. No se consultan "
                         "checkouts de conf ni de Hermes. Se conserva la instalacion vigente."
                     )
-                _reutilizar_config(gen, gen_vigente, runtime)
+                _reutilizar_config(gen, gen_vigente, runtime, claw_publicado)
             else:
                 _copiar_config(gen, fuentes, runtime, vigente=gen_vigente)
             runtime["archivos"] = {}
@@ -994,6 +1022,11 @@ def preparar(
                     "runtime": str(runtime_path),
                     "integridad_runtime": _sha256(runtime_path),
                     "componentes": nombres,
+                    **(
+                        {"claw_routing": runtime["claw_routing"]}
+                        if "claw_routing" in runtime
+                        else {}
+                    ),
                 },
             )
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
