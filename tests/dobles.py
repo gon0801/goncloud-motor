@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from motor.github import FakeGitHub
+from motor.github import FakeGitHub, MergeRechazado, PrView
 
 
 def _texto(*hallazgos: dict) -> str:
@@ -124,3 +124,29 @@ def github_con_hallazgo(
 def github_con_corridas(d: Path) -> FakeGitHub:
     """DeepSeek aprueba; las corridas salen de la config de `repos.json`."""
     return github_por_numero(d, "DeepSeek: APPROVED")
+
+
+def github_fijo(
+    directorio: Path,
+    *,
+    estado: str = "abierto",
+    motivo: str = "",
+    sha: str = "a" * 40,
+) -> FakeGitHub:
+    """Un PR fijo para las unidades que solo usan `ver` y el rechazo del merge."""
+    gh = FakeGitHub(directorio)
+    gh.estado = estado
+    gh.motivo = motivo
+    gh.sha = sha
+
+    def ver(repo: str, numero: int) -> PrView:
+        del repo
+        return PrView(numero, "x", "main", False, gh.sha, gh.estado, "c" * 40)
+
+    def merge(*args) -> PrView:
+        del args
+        raise MergeRechazado(gh.motivo)
+
+    gh.ver = ver
+    gh.merge = merge
+    return gh
