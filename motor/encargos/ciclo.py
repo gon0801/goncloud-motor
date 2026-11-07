@@ -1235,10 +1235,20 @@ def _barrer_encargos(
             elif _aplica_entrega(enc):
                 antes = len(registro.eventos(encargo_id))
                 enc = _paso_entrega(registro, enc, gh, hora)
-                sin_llm = (
-                    len(registro.eventos(encargo_id)) > antes
-                    or bool(enc.reanuda_en)
+                sin_avance = (
+                    len(registro.eventos(encargo_id)) == antes
+                    and not enc.reanuda_en
                 )
+                sin_llm = not sin_avance or (
+                    enc.rol == "revisor" and _revision_aprobada_vigente(enc)
+                )
+                if (
+                    sin_avance
+                    and enc.rol == "revisor"
+                    and _revision_aprobada_vigente(enc)
+                ):
+                    enc = _esperar_entrega_sin_avance(registro, enc, hora)
+                    sin_llm = True
             elif _revision_aprobada_vigente(enc):
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
                 sin_llm = enc.estado == "terminado" or (
@@ -4013,6 +4023,24 @@ def _entrega_devuelta_de_la_version(registro: Registro, enc: Encargo) -> bool:
         if ev["kind"] == "entrega_devuelta":
             return ev["data"].get("version") == version
     return False
+
+
+def _esperar_entrega_sin_avance(
+    registro: Registro, enc: Encargo, hora: str
+) -> Encargo:
+    """La aprobación ya cubre el producto y el paso de entrega no tiene nada
+    nuevo que publicar: espera visible, sin gastar otro turno del revisor y sin
+    tope de rondas ni pregunta al propietario. Al vencer el plazo, el barrido
+    vuelve a mirar la entrega por su cuenta."""
+    marcar_espera(
+        registro,
+        enc.id,
+        "la revisión aprobada ya cubre el producto y la entrega no tiene nada "
+        "nuevo que publicar; no se relanza al revisor",
+        _reanuda_en(300),
+        hora,
+    )
+    return registro.fold(enc.id) or enc
 
 
 def _fallo_de_repo(
