@@ -366,6 +366,22 @@ class ElCierrePorOmisionNoBorraUnaRedeclaracionConOtroId(unittest.TestCase):
         self.assertEqual(estado.get("h_a"), ("bloqueante", "abierto"))
         self.assertNotIn("F1", estado)
 
+    def test_el_titulo_con_otra_capitalizacion_tambien_redeclara(self):
+        alcance = _alcance((_abierto_con("h_a", "falla el envio"),))
+        valido = self._juicio_con_bloqueante(
+            alcance,
+            {
+                "id": "F3",
+                "criterio": "comportamiento",
+                "titulo": "Falla el Envio",
+                "reproduccion": "cat malo.txt",
+                "ancla": "malo.txt:1",
+            },
+        )
+        estado = {h.id: (h.gravedad, h.estado) for h in valido.hallazgos}
+        self.assertEqual(estado.get("h_a"), ("bloqueante", "abierto"))
+        self.assertNotIn("F3", estado)
+
     def test_en_ruta_conservada_la_redeclaracion_con_otro_id_no_se_degrada(self):
         alcance = AlcanceRevision(
             clase="correccion",

@@ -918,17 +918,18 @@ def _previo_redeclarado(
     """El id del bloqueante declarado puede diferir del id del hallazgo
     abierto que redeclara: el cierre por omisión no debe borrarlo. La
     identidad de fondo es el mismo ancla y título con los que se computa
-    id_hallazgo; solo esa coincidencia repunta el id declarado. La
-    reproducción no identifica: dos defectos distintos comparten comando.
+    id_hallazgo (título en minúsculas y sin espacios repetidos); solo esa
+    coincidencia repunta el id declarado. La reproducción no identifica: dos
+    defectos distintos comparten comando.
     """
-    nuevo_titulo = " ".join(titulo.split())
+    nuevo_titulo = " ".join(titulo.lower().split())
     nuevo_ancla = " ".join(ancla.split())
     for p in abiertos:
         if p.id == hid:
             return p.id
         if (
             nuevo_titulo
-            and " ".join(str(p.titulo or "").split()) == nuevo_titulo
+            and " ".join(str(p.titulo or "").lower().split()) == nuevo_titulo
             and " ".join(str(p.ancla or "").split()) == nuevo_ancla
         ):
             return p.id
