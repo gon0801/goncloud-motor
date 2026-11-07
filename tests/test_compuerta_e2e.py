@@ -19,6 +19,7 @@ Orbit.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
@@ -47,7 +48,7 @@ from motor.encargos.registro import Registro
 from motor.encargos.rutas import elegir
 from motor.github import FakeGitHub
 from tests import git_env_limpio
-from tests.entorno import deja_breakaway
+from tests.entorno import deja_breakaway, requiere_windows
 
 RAIZ = Path(__file__).resolve().parent.parent
 PY = Path(sys.executable).resolve().as_posix()
@@ -155,6 +156,45 @@ class LaSeleccionDelEnsayo(unittest.TestCase):
         )
         self.assertEqual(_sesion_modo(enc, "ensayo", "responsable"), "nueva")
 
+    def test_el_programa_del_agente_fija_salto_de_linea_en_sus_escrituras(self):
+        # En Windows write_text sin newline traduce "\n" a CRLF: la receta que
+        # el agente escribe la ejecuta bash y cada "\r" de fin de línea entra
+        # en la redirección (F1). El programa del agente fija el salto en toda
+        # escritura.
+        arbol = ast.parse(_AGENTE)
+        escrituras = [
+            n
+            for n in ast.walk(arbol)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "write_text"
+        ]
+        self.assertTrue(escrituras, "sin escrituras write_text en el agente")
+        for n in escrituras:
+            claves = {k.arg for k in n.keywords}
+            self.assertIn(
+                "newline", claves, f"write_text sin newline en la linea {n.lineno}"
+            )
+
+    @requiere_windows
+    def test_en_windows_el_agente_escribe_la_receta_con_lf(self):
+        escenario = _escenario_tres_fases(
+            True, Path(tempfile.gettempdir()) / "dest-compuerta"
+        )
+        programa = _AGENTE.replace(
+            "@ESCENARIO@", json.dumps(escenario, ensure_ascii=False, indent=1)
+        )
+        ns: dict = {}
+        exec(compile(programa, "agente.py", "exec"), ns)
+        espacio = Path(tempfile.mkdtemp())
+        interno = espacio / ".interno"
+        interno.mkdir()
+        ns["_escribir"](interno, espacio, "uno")
+        for nombre in ("d.sh", "c.sh", "r.sh", ".motor.toml"):
+            datos = (espacio / nombre).read_bytes()
+            self.assertNotIn(b"\r", datos, f"{nombre} con CR")
+            self.assertIn(b"\n", datos, f"{nombre} sin salto de linea")
+
 
 class _DeepSeekAprueba(FakeGitHub):
     """DeepSeek aprueba cada SHA que le lee el motor."""
@@ -212,23 +252,24 @@ def _escribir(interno: Path, espacio: Path, fase: str) -> None:
     for ruta, contenido in ESCENARIO["producto"].get(fase, {}).items():
         destino = espacio / ruta
         destino.parent.mkdir(parents=True, exist_ok=True)
-        destino.write_text(contenido, encoding="utf-8")
+        destino.write_text(contenido, encoding="utf-8", newline="\\n")
     (interno / "contexto.md").write_text(
         "producto de la fase " + fase + " escrito por el agente de ensayo",
-        encoding="utf-8",
+        encoding="utf-8", newline="\\n",
     )
     (interno / "evidencia.txt").write_text(
         "los archivos de la fase " + fase + " quedaron con el contenido del escenario",
-        encoding="utf-8",
+        encoding="utf-8", newline="\\n",
     )
     (interno / "cuerpo-pr.md").write_text(
         "Fase " + fase + " del banco compuerta. Comprobado con las comprobaciones declaradas.",
-        encoding="utf-8",
+        encoding="utf-8", newline="\\n",
     )
     declaradas = ESCENARIO.get("comprobaciones", {}).get(fase)
     if declaradas:
         (interno / "comprobaciones.json").write_text(
-            json.dumps({"comprobaciones": declaradas}, indent=1), encoding="utf-8"
+            json.dumps({"comprobaciones": declaradas}, indent=1),
+            encoding="utf-8", newline="\\n",
         )
 
 
@@ -239,7 +280,8 @@ def trabajar(espacio: Path, dir_: Path) -> None:
     if not fase:
         # Primera vuelta: organiza el trabajo en fases y toma la primera.
         (interno / "fases.json").write_text(
-            json.dumps({"fases": ESCENARIO["fases"]}, indent=1), encoding="utf-8"
+            json.dumps({"fases": ESCENARIO["fases"]}, indent=1),
+            encoding="utf-8", newline="\\n",
         )
         fase = ESCENARIO["fases"][0]["id"]
     _escribir(interno, espacio, fase)
@@ -251,7 +293,7 @@ def trabajar(espacio: Path, dir_: Path) -> None:
                     for ruta, contenido in fichas.items():
                         destino = espacio / ruta
                         destino.parent.mkdir(parents=True, exist_ok=True)
-                        destino.write_text(contenido, encoding="utf-8")
+                        destino.write_text(contenido, encoding="utf-8", newline="\\n")
 
 
 def revisar(espacio: Path, dir_: Path) -> None:
@@ -290,7 +332,7 @@ def revisar(espacio: Path, dir_: Path) -> None:
             juicio["resueltos"] = sorted(cubre)
         juicio["aprobadas"] = [sorted(exigido)] if exigido else []
     Path(revision["resultado"]).write_text(
-        json.dumps(juicio, ensure_ascii=False), encoding="utf-8"
+        json.dumps(juicio, ensure_ascii=False), encoding="utf-8", newline="\\n"
     )
 
 
