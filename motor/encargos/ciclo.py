@@ -1235,10 +1235,31 @@ def _barrer_encargos(
             elif _aplica_entrega(enc):
                 antes = len(registro.eventos(encargo_id))
                 enc = _paso_entrega(registro, enc, gh, hora)
-                sin_llm = (
-                    len(registro.eventos(encargo_id)) > antes
-                    or bool(enc.reanuda_en)
+                sin_avance = (
+                    len(registro.eventos(encargo_id)) == antes
+                    and not enc.reanuda_en
                 )
+                sin_llm = not sin_avance or (
+                    enc.rol == "revisor" and _revision_aprobada_vigente(enc)
+                )
+                if (
+                    sin_avance
+                    and enc.rol == "revisor"
+                    and _revision_aprobada_vigente(enc)
+                ):
+                    # La aprobación ya cubre el producto y el paso de entrega
+                    # no tiene nada nuevo que publicar. Otro turno del revisor
+                    # gastaría un intento sin cambiar nada: espera visible.
+                    marcar_espera(
+                        registro,
+                        encargo_id,
+                        "la revisión aprobada ya cubre el producto y la entrega "
+                        "no tiene nada nuevo que publicar; no se relanza al revisor",
+                        _reanuda_en(300),
+                        hora,
+                    )
+                    enc = registro.fold(encargo_id) or enc
+                    sin_llm = True
             elif _revision_aprobada_vigente(enc):
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
                 sin_llm = enc.estado == "terminado" or (

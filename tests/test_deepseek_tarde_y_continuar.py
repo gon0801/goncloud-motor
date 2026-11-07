@@ -990,6 +990,272 @@ def _encargo_con_pregunta_vieja(tmp: str) -> Recorrido:
     return r
 
 
+def _encargo_con_medium_en_el_pr(
+    caso, tmp: str, ancla: str = "motor/integraciones/cli.py:176"
+) -> tuple:
+    """El estado real de enc_daf8e41dd3a3fac6: fase única, entrega integrada,
+    revisión aprobada vigente, PR abierto y una lectura de DeepSeek con un
+    Medium abierto. La restricción deja ese archivo fuera de alcance."""
+    vuelta, r = _entrega_pr(
+        caso,
+        tmp,
+        "nivel-pr-deepseek",
+        FakeGitHub,
+        nivel="integrado",
+        restricciones=("Cambio acotado a motor/encargos/cli.py y su prueba.",),
+    )
+    e = vuelta("hola")
+    hora = ahora_iso()
+    sha = e.pr_sha
+    r.reg.anotar(
+        r.enc,
+        {
+            "kind": "revision",
+            "data": {
+                "fase": e.fase_activa,
+                "revision_id": "rev_ds_f1",
+                "version": e.producto.firma,
+                "base_version": "",
+                "alcance": "completa",
+                "veredicto": "cambios",
+                "revisor": "deepseek",
+                "origen": "deepseek",
+                "cubre": ["F1"],
+                "hallazgos": [
+                    {
+                        "id": "F1",
+                        "gravedad": "bloqueante",
+                        "criterio": "comportamiento",
+                        "titulo": "El descarte sigue en el CLI externo",
+                        "ancla": ancla,
+                        "origen": "deepseek",
+                        "estado": "abierto",
+                    }
+                ],
+                "hora": hora,
+            },
+        },
+        "rev-ds-f1",
+    )
+    r.reg.anotar(
+        r.enc,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": e.fase_activa,
+                "intento": e.intento,
+                "paso": "deepseek_leido",
+                "repo": e.entrega.repo,
+                "numero": e.pr_numero,
+                "sha": sha,
+                "huella": "h1",
+                "recibo": sha,
+                "hora": hora,
+            },
+        },
+        "ds-leido-f1",
+    )
+    ciclo.ordenar(r.reg, r.enc, "parar", "parar-replay", hora)
+    r.reg.anotar(
+        r.enc,
+        {"kind": "arbol", "data": {"observacion": "ausente", "hora": hora}},
+        "arbol-replay",
+    )
+    return vuelta, r
+
+
+class NivelPrSeRecalculaAlCerrarDeepSeek(unittest.TestCase):
+    def test_continuar_fuera_de_alcance_integra_el_pr_sin_relanzar_al_revisor(
+        self,
+    ):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _encargo_con_medium_en_el_pr(self, tmp)
+            e = r.fold()
+            self.assertEqual(e.estado, "detenido")
+            self.assertEqual(e.entrega.nivel, "integrado")
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(_ids(e), ["F1"])
+            sha = e.pr_sha
+
+            salida = ciclo.ordenar(
+                r.reg, r.enc, "continuar", "continuar-nivel", ahora_iso()
+            )
+            self.assertFalse(salida.get("rechazada"), salida)
+
+            e = r.fold()
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(_ids(e), [])
+            self.assertTrue(
+                any(hid == "F1" for hid, _titulo, _razon in e.fuera_de_alcance),
+                e.fuera_de_alcance,
+            )
+
+            lanzamientos = []
+
+            def lanzador(enc, prompt, espacio, sesion):
+                lanzamientos.append((enc.estado, enc.rol))
+                return None
+
+            with (
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                barrer(r.reg, ahora_iso(), time.time(), lanzador, gh=vuelta.gh)
+
+            self.assertEqual(lanzamientos, [], "se relanzó un turno que no tocaba")
+            e = r.fold()
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.nivel_alcanzado, "integrado")
+            integrados = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") == "integrado"
+            ]
+            self.assertTrue(integrados, "no se integró el PR")
+            estado_gh = json.loads(
+                (vuelta.gh.d / "github.json").read_text(encoding="utf-8")
+            )
+            pr = next(iter(estado_gh["prs"].values()))
+            self.assertEqual(pr["estado"], "mergeado")
+            self.assertEqual(pr["head_merge"], sha)  # se fusionó el SHA del PR
+
+    def test_un_medium_dentro_del_alcance_sigue_bloqueando(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _encargo_con_medium_en_el_pr(
+                self, tmp, ancla="motor/encargos/cli.py:10"
+            )
+            self.assertEqual(r.fold().nivel_alcanzado, "pr_abierto")
+
+            salida = ciclo.ordenar(
+                r.reg, r.enc, "continuar", "continuar-dentro", ahora_iso()
+            )
+            self.assertFalse(salida.get("rechazada"), salida)
+
+            e = r.fold()
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(_ids(e), ["F1"])
+            self.assertFalse(
+                any(hid == "F1" for hid, _titulo, _razon in e.fuera_de_alcance),
+                e.fuera_de_alcance,
+            )
+
+            with (
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                barrer(
+                    r.reg,
+                    ahora_iso(),
+                    time.time(),
+                    lambda *a, **k: None,
+                    gh=vuelta.gh,
+                )
+
+            e = r.fold()
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(_ids(e), ["F1"])
+            self.assertFalse(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") == "integrado"
+                ],
+                "se integró un PR con un bloqueante de DeepSeek en alcance",
+            )
+
+    def test_una_aprobacion_que_ya_cubre_el_producto_no_relanza_al_revisor(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "entrega-sin-avance", FakeGitHub, nivel="integrado"
+            )
+            e = vuelta("hola")
+            hora = ahora_iso()
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": e.fase_activa,
+                        "intento": e.intento,
+                        "paso": "deepseek_leido",
+                        "repo": e.entrega.repo,
+                        "numero": e.pr_numero,
+                        "sha": e.pr_sha,
+                        "huella": "limpia",
+                        "recibo": e.pr_sha,
+                        "hora": hora,
+                    },
+                },
+                "ds-limpio",
+            )
+            e = r.fold()
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(e.estado, "esperando_reintento")
+            reanuda = e.reanuda_en
+            self.assertTrue(reanuda)
+
+            lanzamientos = []
+
+            def lanzador(enc, prompt, espacio, sesion):
+                lanzamientos.append((enc.estado, enc.rol))
+                return None
+
+            with (
+                mock.patch.object(
+                    ciclo,
+                    "_paso_entrega",
+                    side_effect=lambda registro, enc, gh, hora: enc,
+                ),
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                barrer(r.reg, reanuda, time.time(), lanzador, gh=vuelta.gh)
+
+            self.assertEqual(lanzamientos, [], "se gastó otro intento del revisor")
+            esperas = [
+                ev["data"].get("motivo", "")
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "espera"
+            ]
+            self.assertTrue(
+                any("no se relanza al revisor" in motivo for motivo in esperas),
+                esperas,
+            )
+
+
 class ReabrirReusaElPrYLaAprobacion(unittest.TestCase):
     def test_reabrir_y_continuar_retoman_la_fase_sin_repetir_el_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
