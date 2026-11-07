@@ -228,8 +228,9 @@ def _corre_en_base(
             )
             salida.append(f"{ruta}:\n{corrida.stdout}{corrida.stderr}")
             if not reporte.is_file():
-                no_ejecutadas.append((ruta, "pytest no produjo reporte"))
-                continue
+                # pytest no arrancó o no dejó resultado: no se puede concluir
+                # que las pruebas sean rojas. Es un fallo del instrumento.
+                return None, no_ejecutadas, "\n".join(salida)
             error_coleccion = _error_de_coleccion(reporte)
             if error_coleccion is not None:
                 no_ejecutadas.append((ruta, error_coleccion))

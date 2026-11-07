@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -212,6 +213,39 @@ class PruebasNuevasContraLaBase(unittest.TestCase):
             self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
             self.assertIn("tests/test_pasa.py::test_pasa", salida.stderr)
             self.assertIn("collection failure", salida.stderr)
+
+    def test_si_pytest_no_arranca_el_job_falla(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / "tests/test_nueva.py").write_text(
+                "def test_pasa_sin_arreglo():\n    assert True\n"
+            )
+            _commit(repo, "pruebas")
+            venv = Path(tmp) / "sin-pytest"
+            subprocess.run(
+                [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                check=True,
+                capture_output=True,
+            )
+            python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+            salida = subprocess.run(
+                [
+                    str(python),
+                    str(repo / "tools/pruebas_nuevas.py"),
+                    "--base",
+                    "main",
+                ],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                env=env,
+            )
+            self.assertEqual(
+                salida.returncode, 2, salida.stdout + salida.stderr
+            )
+            self.assertIn("no se pudo correr la base", salida.stderr)
 
     def test_los_apoyos_nuevos_viajan_al_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
