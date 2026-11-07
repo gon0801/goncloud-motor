@@ -20,10 +20,12 @@ de este texto (`cp AGENTS.md CLAUDE.md`); no se edita a mano. La prueba
 
 Los mismos comandos corren en local y en el job `gate` de `.github/workflows/quality.yml`:
 
-- `python3 tools/calidad.py tipos` revisa los tipos de `motor/` con pyright en modo básico.
+- `python3 tools/calidad.py tipos` revisa con pyright en modo básico `motor/` y los dobles de
+  GitHub de `tests/`.
 - `python3 tools/calidad.py lint` revisa el código con ruff.
-- `python3 tools/calidad.py io` falla si aparece un `read_text(`, un `write_text(` o un
-  `json.loads(...read_text...)` nuevo fuera de `motor/io.py`.
+- `python3 tools/calidad.py io` falla ante cualquier `read_text(`, `write_text(` o
+  `json.loads(...read_text...)` fuera de `motor/io.py`; solo `motor/daemon.py` queda exento
+  por la prohibición de tocar el modo planes.
 - `python3 tools/pruebas_nuevas.py --base origin/main` falla si una prueba nueva o cambiada
   pasa con el código de la base, salvo que lleve `# no-roja-en-base: <razón>`.
 

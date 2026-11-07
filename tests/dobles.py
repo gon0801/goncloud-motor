@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from motor.github import FakeGitHub, MergeRechazado, PrView
+from motor.github import FakeGitHub
 
 
 def _texto(*hallazgos: dict) -> str:
@@ -55,7 +55,10 @@ def github_por_numero(
 
     def responder(numero: int, sha: str) -> str:
         del sha
-        texto = gh.textos.get(numero, gh.textos.get(None, defecto))
+        if isinstance(gh.textos, dict):
+            texto = gh.textos.get(numero, gh.textos.get(None, defecto))
+        else:
+            texto = defecto
         if callable(texto):
             texto = texto(len(gh.llamadas))
         return texto if isinstance(texto, str) else ""
@@ -70,8 +73,10 @@ def github_por_commit(d: Path) -> FakeGitHub:
 
     def responder(numero: int, sha: str) -> str:
         del numero
+        textos = gh.textos if isinstance(gh.textos, list) else []
         indice = gh.vistos.index(sha)
-        return gh.textos[indice] if indice < len(gh.textos) else ""
+        texto = textos[indice] if indice < len(textos) else ""
+        return texto if isinstance(texto, str) else ""
 
     gh.responde_deepseek = responder
     return gh
@@ -135,18 +140,5 @@ def github_fijo(
 ) -> FakeGitHub:
     """Un PR fijo para las unidades que solo usan `ver` y el rechazo del merge."""
     gh = FakeGitHub(directorio)
-    gh.estado = estado
-    gh.motivo = motivo
-    gh.sha = sha
-
-    def ver(repo: str, numero: int) -> PrView:
-        del repo
-        return PrView(numero, "x", "main", False, gh.sha, gh.estado, "c" * 40)
-
-    def merge(*args) -> PrView:
-        del args
-        raise MergeRechazado(gh.motivo)
-
-    gh.ver = ver
-    gh.merge = merge
+    gh.fijo = (estado, motivo, sha)
     return gh

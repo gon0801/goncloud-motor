@@ -837,7 +837,20 @@ class FakeGitHub:
             self._guardar({"prs": {}, "checks": {}})
         # Configuración de las pruebas: un solo doble, muchas respuestas.
         self.responde_deepseek: Callable[[int, str], str | None] | None = None
-        self.textos: dict | list = {}
+        self.responde_ver: Callable[[str, int], PrView] | None = None
+        self.responde_checks: Callable[..., ChecksVerdict] | None = None
+        self.responde_merge: Callable[..., PrView] | None = None
+        self.responde_marcar_listo: Callable[[str, int], None] | None = None
+        self.textos: dict[object, object] | list[object] = {}
+        self.titulos: list[str] = []
+        self.sufijo: str = ""
+        self.hallazgo: dict | None = None
+        self.texto: str | None = None
+        self.archivo: str = ""
+        self.severidad: str = ""
+        self.identificador: str = ""
+        self.fijo: tuple[str, str, str] | None = None
+        self.listos: list[int] = []
         self.llamadas: list[tuple[int, str]] = []
         self.vistos: list[str] = []
         self.fallos = 0
@@ -845,7 +858,7 @@ class FakeGitHub:
         self.merges: list[tuple[int, str]] = []
         self.actualizaciones = 0
         self.fallar_cuerpo = False
-        self.relanzadas: list[tuple[str, str]] = []
+        self.relanzadas: list[str] = []
         self.checks_llamadas = 0
         self.bloquea = False
         self.intentos: list[str] = []
@@ -928,6 +941,10 @@ class FakeGitHub:
         raise KeyError(numero)
 
     def marcar_listo(self, repo, numero):
+        if self.responde_marcar_listo is not None:
+            self.responde_marcar_listo(repo, numero)
+            return
+        self.listos.append(numero)
         s = self._cargar()
         self._pr(s, repo, numero)["borrador"] = False
         self._guardar(s)
@@ -1024,6 +1041,15 @@ class FakeGitHub:
         return veredicto(sha, tuple(extra), runs, "")
 
     def checks(self, repo, numero, sha, extra, relanzadas=(), *, base_politica=""):
+        if self.responde_checks is not None:
+            return self.responde_checks(
+                repo,
+                numero,
+                sha,
+                extra,
+                relanzadas,
+                base_politica=base_politica,
+            )
         cfg = self._cfg(repo)
         if any(
             clave in cfg
@@ -1077,6 +1103,7 @@ class FakeGitHub:
         return self.checks(repo, numero, sha, ())
 
     def relanzar_corrida(self, repo, run_id):
+        self.relanzadas.append(str(run_id))
         s = self._cargar()
         s.setdefault("relanzadas", []).append(
             {"repo": repo, "run_id": str(run_id), "fallidas": False}
@@ -1084,7 +1111,7 @@ class FakeGitHub:
         self._guardar(s)
 
     def relanzar_fallidas(self, repo, run_id):
-        self.relanzadas.append((repo, str(run_id)))
+        self.relanzadas.append(str(run_id))
         self._reintentos[str(repo)] = self._reintentos.get(str(repo), 0) + 1
         s = self._cargar()
         s.setdefault("relanzadas", []).append(
@@ -1158,6 +1185,10 @@ class FakeGitHub:
         self._guardar(s)
 
     def merge(self, repo, numero, sha, metodo, mensaje):
+        if self.responde_merge is not None:
+            return self.responde_merge(repo, numero, sha, metodo, mensaje)
+        if self.fijo is not None:
+            raise MergeRechazado(self.fijo[1])
         self.intentos.append(sha)
         if self.bloquea:
             raise PoliticaBloquea("the base branch policy prohibits the merge")
@@ -1205,6 +1236,11 @@ class FakeGitHub:
         return self._vista(repo, pr)
 
     def ver(self, repo, numero):
+        if self.responde_ver is not None:
+            return self.responde_ver(repo, numero)
+        if self.fijo is not None:
+            estado, _motivo, sha = self.fijo
+            return PrView(numero, "x", "main", False, sha, estado, "c" * 40)
         s = self._cargar()
         return self._vista(repo, self._pr(s, repo, numero))
 

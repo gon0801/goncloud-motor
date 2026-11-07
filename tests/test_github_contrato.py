@@ -15,6 +15,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from typing import Any, cast
 
 from motor.github import FakeGitHub, GhGitHub, GitHubPort, MergeRechazado
 from motor.workspace import git
@@ -57,13 +58,20 @@ class ContratoDelDoble(unittest.TestCase):
                 callable(implementado),
                 f"FakeGitHub no implementa GitHubPort.{nombre}",
             )
-            del_puerto = inspect.signature(getattr(GitHubPort, nombre))
-            del_doble = inspect.signature(implementado)
+            del_puerto = inspect.signature(cast(Any, getattr(GitHubPort, nombre)))
+            del_doble = inspect.signature(cast(Any, implementado))
             self.assertEqual(
                 [(p.name, p.default) for p in del_puerto.parameters.values()],
                 [(p.name, p.default) for p in del_doble.parameters.values()],
                 f"FakeGitHub.{nombre} no conserva la firma del puerto",
             )
+
+    def test_github_fijo_usa_el_doble_y_conserva_su_firma(self):
+        from tests.dobles import github_fijo
+
+        gh: GitHubPort = github_fijo(Path(tempfile.mkdtemp(prefix="gh-fijo-")))
+        with self.assertRaises(MergeRechazado):
+            gh.merge(repo="o/r", numero=7, sha="a" * 40, metodo="squash", mensaje="m")
 
 
 class ContratoFalso(unittest.TestCase):
@@ -340,9 +348,10 @@ class PollChecksAnotaLaEsperaTest(unittest.TestCase):
 
     def test_anota_una_vez_por_cambio(self):
         from types import SimpleNamespace
+        from typing import cast
 
         from motor import machine as m
-        from motor.effects import Effects
+        from motor.effects import Contexto, Effects
         from motor.github import ChecksVerdict, PrView
         from motor.plan import parse_plan
         from motor.store import Store
@@ -359,11 +368,13 @@ class PollChecksAnotaLaEsperaTest(unittest.TestCase):
             ChecksVerdict("s", False, False, ("completa",), (), github_termino=False),
             ChecksVerdict("s", False, False, ("completa",), (), github_termino=True),
         ]
-        gh = SimpleNamespace(
-            ver=lambda repo, n: PrView(n, "f", "main", False, "s", "abierto", ""),
-            checks=lambda *a, base_politica="": veredictos.pop(0),
+        gh = FakeGitHub(t / "gh")
+        gh.responde_ver = lambda repo, n: PrView(
+            n, "f", "main", False, "s", "abierto", ""
         )
-        fx = Effects(SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0))
+        gh.responde_checks = lambda *a, base_politica="": veredictos.pop(0)
+        cx = SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0)
+        fx = Effects(cast(Contexto, cx))
         snap = m.fold(plan, [])
         snap.blocks["A"].pr = {"numero": 7}
         for _ in range(3):
