@@ -815,6 +815,7 @@ def nivel_pr_derivado(e: Encargo) -> Encargo:
         return e
     if (
         fase.ci_pr_estado == "rojo"
+        and fase.ci_pr_clase == "codigo"
         and fase.ci_pr_sha
         and fase.ci_pr_sha == fase.pr_sha
     ):
