@@ -242,8 +242,14 @@ class RevisorSinVeredictoReleva(unittest.TestCase):
 
         vuelta(1)
         enc = vuelta(2)
+        self.assertEqual(enc.estrategia, "investigar")
+        self.assertEqual(enc.relevos, 0)
+        self.assertNotEqual(enc.estado, "necesita_usuario")
+        # La tercera vuelta seguida alcanza el tope propio del freno: releva
+        # el rol a otro revisor autorizado.
+        enc = vuelta(3)
         self.assertEqual(enc.rol, "revisor")
-        self.assertGreaterEqual(enc.relevos, 1)
+        self.assertEqual(dict(enc.relevos_por_rol).get("revisor"), 1)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
 

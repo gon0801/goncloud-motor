@@ -2933,22 +2933,15 @@ def _cerrar_con_juicio(
                 hora, "inspeccion", rol="revisor",
             )
             _ligar_inspeccion(registro, enc, espacio, juicio, hora)
-        elif hubo_avance(enc_previo, enc):
+        else:
+            # Salida propia de las no_concluyente: el pedido del revisor vuelve
+            # al responsable y la repetición la cuenta y la corta el freno
+            # (`TOPE_NO_CONCLUYENTES`), no la escalera de los bloqueos.
             _devolver(
                 registro, enc, "investigar",
                 juicio.nota or "evidencia insuficiente para aprobar",
                 juicio.nota or "aportar la evidencia que falta sin rebajar el pedido",
                 hora, "no-concluyente",
-            )
-        else:
-            abiertos = bloqueantes_abiertos(enc)
-            _sin_avance(
-                registro, enc,
-                "; ".join(f"{h.id} {h.titulo}" for h in abiertos)
-                or juicio.nota
-                or "el revisor no concluyo: evidencia insuficiente para aprobar",
-                "el revisor independiente no concluyo y no cerro ningun bloqueante",
-                hora, "no-concluyente", rol="revisor",
             )
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -3112,6 +3105,37 @@ def _incorporar(
     return _incorporar_revisor(registro, enc, espacio, hora, directorio)
 
 
+def _digest_interno(espacio: Path) -> str:
+    """Huella de lo entregado fuera del producto: el árbol `.interno` sin los
+    canales del host.
+
+    La firma del producto no lo ve (`.interno` está excluido), y una
+    corrección del responsable puede vivir ahí dentro: el cuerpo del PR, las
+    comprobaciones declaradas, una disputa. Los canales del host se excluyen
+    porque no son entrega del responsable: `buzon` (el puente que
+    `necesidades.preparar` reescribe en cada lanzamiento), `entregas`
+    (`necesidades` guarda ahí los datos de las herramientas) y `logs`
+    (`_copia_log_job` copia ahí los logs del CI). Solo cuentan archivos
+    regulares: un enlace roto o una cola no se leen. `""` si no hay árbol;
+    `"vacio"` si queda vacío."""
+    raiz = interno_de(espacio)
+    if not raiz.is_dir():
+        return ""
+    canales = {necesidades.BUZON.name, necesidades.ENTREGAS.name, "logs"}
+    partes = []
+    for path in sorted(raiz.rglob("*")):
+        if not path.is_file() or path.relative_to(raiz).parts[0] in canales:
+            continue
+        partes.append(
+            path.relative_to(espacio).as_posix()
+            + ":"
+            + hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+    return (
+        hashlib.sha256("|".join(partes).encode()).hexdigest() if partes else "vacio"
+    )
+
+
 def _incorporar_responsable(
     registro: Registro,
     enc: Encargo,
@@ -3164,6 +3188,7 @@ def _incorporar_responsable(
                 "manifiesto": [list(x) for x in version.manifiesto],
                 "sha_git": commit_entregado,
                 "declara_comprobaciones": declaradas is not None,
+                "interno": _digest_interno(espacio),
                 "fase": enc.fase_activa,
                 "intento": enc.intento,
                 "hora": hora,
@@ -3304,6 +3329,36 @@ def _incorporar_responsable(
             )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
+    entregas = [
+        ev for ev in registro.eventos(enc.id) if ev["kind"] == "producto_listo"
+    ]
+    interno_previo = entregas[-2]["data"].get("interno") if len(entregas) >= 2 else None
+    interno_actual = entregas[-1]["data"].get("interno") if entregas else None
+    abiertos_propios = bloqueantes_abiertos(enc, "independiente")
+    if (
+        not _deepseek_por_releer(enc)
+        and enc.revision_vigente is not None
+        and enc.revision_vigente.version == version.firma
+        and abiertos_propios
+        and not bloqueos_nuevos(enc)
+        and interno_previo is not None
+        and interno_actual == interno_previo
+    ):
+        # La corrección devuelve la versión que el revisor ya juzgó, con los
+        # mismos ids devueltos y sin atenderlos: es una vuelta sin avance y no
+        # gasta otra revisión sobre lo mismo. La entrega solo cuenta como
+        # vacía si tampoco cambió .interno: la firma del producto no lo ve, y
+        # ahí vive una corrección real (el cuerpo del PR, las comprobaciones
+        # declaradas, una disputa).
+        _sin_avance(
+            registro, enc,
+            "; ".join(f"{h.id} {h.titulo}" for h in abiertos_propios),
+            "se devolvio el trabajo y el implementador entrego la misma "
+            f"version ({version.firma[:12]}), sin atender los bloqueantes devueltos",
+            hora, f"misma-version-{version.firma[:12]}",
+        )
+        _publica(directorio / "incorporado", hora)
+        return registro.fold(enc.id)
     if _correccion_deepseek_conserva_aprobadas(enc):
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
@@ -6210,11 +6265,14 @@ def _head_desviado(
     )
     enc = registro.fold(enc.id)
     if ya_avisado:
-        _sin_avance(
-            registro, enc, causa_head,
-            "el head del PR sigue distinto del sha aprobado y entregado; "
-            "decide si se acepta ese head o se repone el sha entregado",
-            hora, f"head-{head_vigente[:12]}",
+        # Salida propia de la conciliación del head: el primer aviso ya volvió
+        # al responsable y el head sigue distinto. Queda en espera visible sin
+        # gastar turnos ni revisores; el paso se reanuda cuando el head
+        # concilie (otro head distinto vuelve a abrir el aviso).
+        marcar_espera(
+            registro, enc.id,
+            causa_head + "; el paso se reanuda cuando el head del PR concilie",
+            _reanuda_desde(hora, 60), hora,
         )
     else:
         _devolver(
@@ -7454,6 +7512,32 @@ def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: st
     )
 
 
+def _espera_despliegue_sin_autoridad(
+    registro: Registro, enc: Encargo, fresco: Encargo, hora: str
+) -> None:
+    """El despliegue que pierde la autoridad queda en espera explícita.
+
+    Sin la espera el planificador volvería a lanzar un turno sobre el mismo
+    paso (sin escrituras), y el recibo de una receta ya aplicada se perdería
+    de vista. La espera se reanuda sola: cuando la autoridad vuelve,
+    `_mirar_autoridad` rearma `escrituras` y el plazo vencido reabre el paso,
+    que concilia el recibo que haya quedado. Una parada ya ordenada no se
+    toca: la maneja su propio camino."""
+    if (
+        not fresco.intentos_nuevos
+        or fresco.estado in ("deteniendo", "detenido", "cancelado", "terminado")
+        or fresco.estado == "esperando_reintento"
+    ):
+        return
+    marcar_espera(
+        registro, enc.id,
+        "la autoridad se perdió durante el paso de despliegue; el paso se "
+        "reanuda cuando la autoridad vuelva y el recibo que haya quedado se "
+        "concilia",
+        _reanuda_desde(hora, 30), hora,
+    )
+
+
 def _paso_despliegue(
     registro: Registro, enc: Encargo, espacio: Path, hora: str
 ) -> Encargo:
@@ -7488,7 +7572,8 @@ def _paso_despliegue(
         resultado = despliegue.iniciar(registro, enc, espacio, politica, hora)
     fresco = registro.fold(enc.id) or enc
     if not fresco.escrituras or not fresco.intentos_nuevos:
-        return fresco
+        _espera_despliegue_sin_autoridad(registro, enc, fresco, hora)
+        return registro.fold(enc.id) or fresco
     if resultado["estado"] != "aplicado":
         causa = resultado["motivo"]
         if resultado.get("recibo"):
@@ -7502,7 +7587,8 @@ def _paso_despliegue(
     # queda disponible para conciliar al continuar el encargo.
     fresco = registro.fold(enc.id) or enc
     if not fresco.escrituras or not fresco.intentos_nuevos:
-        return fresco
+        _espera_despliegue_sin_autoridad(registro, enc, fresco, hora)
+        return registro.fold(enc.id) or fresco
     registro.anotar(
         enc.id,
         {"kind": "entrega_externa", "data": {
