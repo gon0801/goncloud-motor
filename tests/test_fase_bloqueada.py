@@ -1065,6 +1065,24 @@ class LaAdopcionConsultaLosAjustesDelDirector(unittest.TestCase):
                 },
             )
 
+    def test_el_ancla_no_certifica_otra_enumeracion_del_segmento(self):
+        ajuste = (
+            "Escribe las fases con ids bien-escritos, auto-explicativos y "
+            "faciles-de-leer; el plan son exactamente 3 con ids b, c, d."
+        )
+        e = self._con_ajuste((), ajuste)
+        e = reducir(
+            e,
+            {
+                "kind": "fases",
+                "data": {
+                    "fases": [{"id": "d-sombra", "resultado": "d"}],
+                    "hora": HORA,
+                },
+            },
+        )
+        self.assertEqual([f.id for f in e.fases], ["d-sombra"])
+
     def test_una_propuesta_totalmente_fuera_de_la_enumeracion_es_defecto(self):
         e = self._con_ajuste(())
         with self.assertRaises(TransicionIlegal) as ctx:

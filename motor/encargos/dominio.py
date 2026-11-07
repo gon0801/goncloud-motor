@@ -2452,25 +2452,19 @@ def datos_despliegue(item: dict) -> dict:
 
 _ACENTOS = str.maketrans("áéíóúüÁÉÍÓÚÜ", "aeiouuAEIOUU")
 # Enumeración explícita de los ids de las fases dentro de un ajuste del
-# director: «las fases son exactamente 8 con ids B, C, D» o «ids de las
-# fases: B, C». La frase es obligatoria y estructurada (con «con ids» o con
-# dos puntos), para que la prosa corriente no enumere por accidente; la lista
-# exige comas y admite una conjunción y/e/o solo como cierre de la serie
-# («…, H e I»), nunca como único separador: «con ids claros y cortos» es
-# prosa, no enumeración. Es el único contraste mecánico entre la propuesta y
-# los ajustes: una lista estructurada, nunca prosa suelta. El resto de un
-# ajuste (una fase «ya integrada», un «no la repitas») no muta el estado de
-# las fases: la prosa es ambigua y el orden seguro es el secuencial con sus
-# compuertas normales.
+# director: «exactamente N con ids B, C, D». El ancla de conteo y la lista se
+# capturan en la MISMA coincidencia, así que el ancla solo puede certificar
+# la lista que sigue: ninguna otra frase del segmento la hereda. La frase es
+# obligatoria y estructurada para que la prosa corriente no enumere por
+# accidente; los separadores admiten coma y una conjunción y/e/o solo como
+# cierre de la serie («…, H e I»). Es el único contraste mecánico entre la
+# propuesta y los ajustes: una lista estructurada, nunca prosa suelta. El
+# resto de un ajuste (una fase «ya integrada», un «no la repitas») no muta el
+# estado de las fases: la prosa es ambigua y el orden seguro es el secuencial
+# con sus compuertas normales.
 _ENUMERACION_IDS = re.compile(
-    r"(?:con\s+ids|ids\s+de\s+(?:las\s+)?fases(?:\s+(?:son|seran))?\s*:"
-    r"|ids\s+de\s+fases\s*:|exactamente\s+\d+\s+fases\s+con\s+ids)\s*:?\s*"
+    r"\bexactamente\s+(\d+)\s+(?:fases\s+)?con\s+ids\s*:?\s*"
     r"([A-Za-z][\w-]*(?:\s*,\s*[A-Za-z][\w-]*)+(?:\s+[yeo]\s+[A-Za-z][\w-]*)?)"
-)
-# El ancla de conteo: la única forma que ata. La prosa no lleva por accidente
-# un compromiso numérico cuyo largo coincida con la lista.
-_ANCLA_EXACTAMENTE = re.compile(
-    r"\bexactamente\s+(\d+)\s+(?:fases\s+)?con\s+ids\b"
 )
 
 
@@ -2499,16 +2493,17 @@ def _tokens_con_forma_de_id(tokens: list[str]) -> bool:
 
 def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
     """El último ajuste del director que enumera los ids de las fases con el
-    ancla «exactamente N … con ids», con N igual al número de tokens.
+    ancla «exactamente N … con ids», con el ancla y la lista en la misma
+    coincidencia y N igual al número de tokens.
 
-    El ancla es la única forma que ata: la prosa no lleva por accidente un
-    compromiso numérico cuyo largo coincida con la lista, así que ninguna
-    frase corriente — con o sin palabras con guion — produce una enumeración.
-    La enumeración fija la estructura del plan: una propuesta que declare
-    fases nuevas fuera de ella no representa los ajustes vigentes y se
-    rechaza para que el implementador corrija `.interno/fases.json`, aunque
-    ninguna de sus fases responda a la enumeración (una propuesta totalmente
-    fuera tampoco la representa).
+    El ancla es la única forma que ata y no puede certificar otra lista: la
+    prosa no lleva por accidente un compromiso numérico seguido de una lista
+    con exactamente ese largo, y ninguna otra frase del segmento hereda el
+    ancla. La enumeración fija la estructura del plan: una propuesta que
+    declare fases nuevas fuera de ella no representa los ajustes vigentes y
+    se rechaza para que el implementador corrija `.interno/fases.json`,
+    aunque ninguna de sus fases responda a la enumeración (una propuesta
+    totalmente fuera tampoco la representa).
     """
     for ajuste in reversed(e.ajustes):
         for segmento in _normaliza(ajuste).split(". "):
@@ -2519,14 +2514,15 @@ def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
                 tokens = [
                     t.strip()
                     for t in re.split(
-                        r"\s*,\s*|\s+[yeo]\s+", m.group(1)
+                        r"\s*,\s*|\s+[yeo]\s+", m.group(2)
                     )
                     if t.strip()
                 ]
-                if len(tokens) < 2 or not _tokens_con_forma_de_id(tokens):
-                    continue
-                ancla = _ANCLA_EXACTAMENTE.search(segmento)
-                if ancla and int(ancla.group(1)) == len(tokens):
+                if (
+                    len(tokens) == int(m.group(1))
+                    and len(tokens) >= 2
+                    and _tokens_con_forma_de_id(tokens)
+                ):
                     return ajuste, tokens
     return None
 
