@@ -376,28 +376,27 @@ class ChecksTest(unittest.TestCase):
     def test_saltada_en_borrador_se_relanza_una_sola_vez_tras_30_min(self):
         from motor.github import ChecksVerdict, PrView
 
-        gh = SimpleNamespace(
-            ver=lambda repo, n: PrView(n, "f", "main", False, SHA, "abierto", ""),
-            checks=lambda *a, base_politica="": ChecksVerdict(
-                SHA,
-                False,
-                False,
-                ("completa",),
-                (),
-                github_termino=True,
-                corridas=(
-                    {
-                        "nombre": "completa",
-                        "run_id": "42",
-                        "url": "u",
-                        "status": "completed",
-                        "conclusion": "skipped",
-                    },
-                ),
-            ),
-            relanzadas=[],
+        gh = FakeGitHub(Path(tempfile.mkdtemp(prefix="h-gh-")))
+        gh.responde_ver = lambda repo, n: PrView(
+            n, "f", "main", False, SHA, "abierto", ""
         )
-        gh.relanzar_corrida = lambda repo, rid: gh.relanzadas.append(rid)
+        gh.responde_checks = lambda *a, base_politica="": ChecksVerdict(
+            SHA,
+            False,
+            False,
+            ("completa",),
+            (),
+            github_termino=True,
+            corridas=(
+                {
+                    "nombre": "completa",
+                    "run_id": "42",
+                    "url": "u",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                },
+            ),
+        )
         plan, store, fx = self._fx(gh)
         store.append(
             "demo",
@@ -778,13 +777,12 @@ class MergeTest(unittest.TestCase):
         t = Path(tempfile.mkdtemp(prefix="h-fxm-"))
         store = Store(t / "motor.db")
         plan = parse_plan(PLAN)
-        gh = SimpleNamespace(
-            error=error,
-            listos=[],
-            ver=lambda repo, n: PrView(n, "f", "main", False, "b" * 40, "abierto", ""),
-            merge=lambda *a: (_ for _ in ()).throw(error),
+        gh = FakeGitHub(t / "gh")
+        gh.responde_ver = lambda repo, n: PrView(
+            n, "f", "main", False, "b" * 40, "abierto", ""
         )
-        gh.marcar_listo = lambda repo, n: gh.listos.append(n)
+        gh.responde_merge = lambda *a: (_ for _ in ()).throw(error)
+        gh.responde_marcar_listo = lambda repo, n: gh.listos.append(n)
         fx = Effects(SimpleNamespace(store=store, gh=gh, checks_cada_s=0.0))
         snap = m.fold(plan, [])
         snap.blocks["A"].pr = {"numero": 7}

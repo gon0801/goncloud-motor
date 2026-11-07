@@ -1,6 +1,7 @@
 """El ejecutor manda una operación a la autoridad. Si no hay conexión, no sale la escritura."""
 
 from __future__ import annotations
+from motor.io import leer_json, leer_texto
 
 import json
 import os
@@ -22,7 +23,7 @@ def cargar(base: Path) -> dict | None:
     if not path.is_file():
         return None
     try:
-        datos = json.loads(path.read_text(encoding="utf-8"))
+        datos = leer_json(path)
     except (OSError, ValueError) as exc:
         raise ConfigAutoridadInvalida(
             "autoridad.json ilegible; no se habilita autoridad local"
@@ -217,12 +218,12 @@ def _enviar_archivos(
                 )
                 return {"alcanzada": False, "motivo": "TimeoutExpired"}
         texto = (
-            salida.read_text(encoding="utf-8", errors="replace")
+            leer_texto(salida, errors="replace")
             if salida.exists()
             else ""
         )
         err = (
-            error.read_text(encoding="utf-8", errors="replace")
+            leer_texto(error, errors="replace")
             if error.exists()
             else ""
         )

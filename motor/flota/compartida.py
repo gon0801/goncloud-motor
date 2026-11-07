@@ -1,6 +1,7 @@
 """Distribuye una política y sus artefactos fijados sin crear otro publicador."""
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import hashlib
 import json
@@ -73,7 +74,7 @@ def _politica(texto: str):
         raise SnapshotInvalido("el snapshot no contiene un manifiesto TOML")
     with tempfile.TemporaryDirectory(prefix="flota-politica-") as temporal:
         path = Path(temporal) / "manifiesto.toml"
-        path.write_text(texto, encoding="utf-8")
+        escribir_texto(path, texto)
         politica = cargar(path)
     if emitir(politica) != texto:
         raise SnapshotInvalido("el manifiesto no es la salida canonica del publicador")
@@ -237,7 +238,7 @@ def leer_fuente(home: Path) -> dict | None:
         path = home / "fuente-compartida.json"
         if not path.exists():
             return None
-        fuente = json.loads(path.read_text(encoding="utf-8"))
+        fuente = leer_json(path)
         if not isinstance(fuente, dict) or fuente.get("modo") != "replica":
             raise SnapshotInvalido("modo de fuente compartida invalido")
         campos = _campos(fuente.get("schema")) | {"snapshot_sha256"}
@@ -258,7 +259,7 @@ def _catalogo_preparado(home: Path, politica) -> dict:
     actual = home / "actual" / "runtime.json"
     candidatos = []
     if actual.is_file():
-        runtime = json.loads(actual.read_text(encoding="utf-8"))
+        runtime = leer_json(actual)
         candidatos.append(
             {
                 "componentes": runtime.get("componentes"),
@@ -269,7 +270,7 @@ def _catalogo_preparado(home: Path, politica) -> dict:
     for path in sorted(
         carpeta.glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True
     ):
-        recibo = json.loads(path.read_text(encoding="utf-8"))
+        recibo = leer_json(path)
         if recibo.get("estado") == "preparada" and isinstance(
             recibo.get("catalogo"), dict
         ):
@@ -390,7 +391,7 @@ def exportar(
 
 
 def importar(home: Path, archivo: Path) -> dict:
-    snapshot = json.loads(Path(archivo).read_text(encoding="utf-8"))
+    snapshot = leer_json(Path(archivo))
     _validar_snapshot(snapshot)
     home = Path(home).resolve()
     fuente = {

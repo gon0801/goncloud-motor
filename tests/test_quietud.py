@@ -21,10 +21,11 @@ from motor.encargos.ciclo import (
 from tests.test_flujo_revisiones import (
     Recorrido,
     _entrega_pr,
-    _GhConDeepSeek,
     _lanzaria,
     sonda_sin_aislamiento_del_host,
 )
+
+from tests.dobles import github_con_hallazgos
 
 PASO_S = 30
 
@@ -52,7 +53,7 @@ def _quieto_como_en_el_incidente(caso, tmp):
     """DeepSeek dejo un bloqueante sobre el commit y el producto volvio sin
     sha_git, como lo anotaba el codigo anterior: `_aplica_entrega` da verdadero,
     la entrega no anota nada nuevo y ningun agente se lanza."""
-    vuelta, r = _entrega_pr(caso, tmp, "qt-inc", _GhConDeepSeek)
+    vuelta, r = _entrega_pr(caso, tmp, "qt-inc", github_con_hallazgos)
     e = vuelta("uno")
     manifiesto = [list(x) for x in e.producto.manifiesto]
     r.reg.anotar(
@@ -137,9 +138,9 @@ class QuietudDelEncargo(unittest.TestCase):
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(r.eventos("quietud"), [])
 
-    def test_una_espera_con_hora_no_es_quietud(self):
+    def test_una_espera_con_hora_no_es_quietud(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "qt-espera", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "qt-espera", github_con_hallazgos)
             vuelta("uno")
             t = time.time()
             hora = ahora_iso(t)

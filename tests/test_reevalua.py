@@ -17,6 +17,7 @@ from motor.diagnostico import Causa, diagnostico, encargo
 from motor.plan import Plan, parse_plan
 from tests.test_no_caerse import Banco, texto_aviso
 from tests.test_puro import PLAN, entregado, ev, pol
+from tests.dobles import github_fijo
 
 RAIZ = Path(__file__).resolve().parent.parent
 
@@ -937,20 +938,14 @@ class MergeTicketTest(Banco):
         self.assertEqual(len(self.eventos("Merged")), 1)
         self.assertEqual(len(self.avisos("externo")), 1, "avisa una vez")
 
-    def test_un_pr_mergeado_por_fuera_se_adopta_y_se_avisa_una_vez(self):
-        from motor.github import PrView
-
+    def test_un_pr_mergeado_por_fuera_se_adopta_y_se_avisa_una_vez(self):  # no-roja-en-base: solo cambió el stub de PR fijo; el comportamiento probado ya estaba en la base
         plan = self.carga()
         sha = "a" * 40
         self.d.store.append(
             "demo", "A", "PrOpened", {"numero": 7, "rama": "x"}, ukey="pr"
         )
 
-        class Gh:
-            def ver(self, repo, numero):
-                return PrView(numero, "x", "main", False, sha, "mergeado", "c" * 40)
-
-        self.d.fx.cx.gh = Gh()
+        self.d.fx.cx.gh = github_fijo(self.d.home / "gh", estado="mergeado", sha=sha)
         snap = self.d._fold(plan)
         for _ in range(2):  # un reintento con la misma foto del log
             self.d.fx.poll_checks(plan, snap, m.PollChecks("A", sha))

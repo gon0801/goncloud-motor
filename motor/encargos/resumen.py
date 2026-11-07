@@ -7,6 +7,7 @@ rechazara el mensaje.
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import hashlib
 import html
@@ -589,7 +590,7 @@ def asegurar_config(base: Path) -> bool:
 
 def _leer_json(path: Path) -> dict:
     try:
-        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+        doc = leer_json(Path(path))
     except (OSError, ValueError):
         return {}
     return doc if isinstance(doc, dict) else {}
@@ -598,7 +599,7 @@ def _leer_json(path: Path) -> dict:
 def _atomico(path: Path, doc: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporal = path.with_suffix(path.suffix + ".tmp")
-    temporal.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    escribir_texto(temporal, json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
     temporal.replace(path)
 
 

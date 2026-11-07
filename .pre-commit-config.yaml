@@ -7,3 +7,23 @@ repos:
     rev: v6.0.0
     hooks:
       - id: check-merge-conflict
+  - repo: local
+    hooks:
+      - id: calidad-tipos
+        name: pyright, solo lo nuevo
+        entry: python3 tools/calidad.py tipos
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: calidad-lint
+        name: ruff, solo lo nuevo
+        entry: python3 tools/calidad.py lint
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: calidad-io
+        name: lectura y escritura de texto, solo lo nuevo
+        entry: python3 tools/calidad.py io
+        language: system
+        pass_filenames: false
+        always_run: true

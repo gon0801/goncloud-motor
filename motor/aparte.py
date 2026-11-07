@@ -1,4 +1,5 @@
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import argparse
 import json
@@ -54,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     d = Path(a.dir)
     try:
-        spec = json.loads((d / "spec.json").read_text(encoding="utf-8"))
+        spec = leer_json((d / "spec.json"))
         cx = _contexto(Path(a.home))
         fx = Effects(cx)
         fx._dir_aparte = d
@@ -93,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # noqa: BLE001
         payload = {"error": f"{type(e).__name__}: {e}"}
     tmp = d / "outcome.json.tmp"
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    escribir_texto(tmp, json.dumps(payload, ensure_ascii=False))
     os.replace(tmp, d / "outcome.json")
     return 0
 

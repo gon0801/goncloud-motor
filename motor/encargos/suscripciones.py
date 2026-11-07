@@ -1,6 +1,7 @@
 """Entrega al runtime únicamente las cuentas de suscripción autorizadas."""
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import json
 import math
@@ -29,7 +30,7 @@ class CuentaNoDisponible(RuntimeError):
 
 def _guardar(path: Path, datos: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(datos, ensure_ascii=False), encoding="utf-8")
+    escribir_texto(path, json.dumps(datos, ensure_ascii=False))
     path.chmod(0o600)
 
 
@@ -42,7 +43,7 @@ def _claude() -> dict:
     home = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
     archivo = home / ".credentials.json"
     if archivo.is_file():
-        datos = json.loads(archivo.read_text(encoding="utf-8"))
+        datos = leer_json(archivo)
     elif sys.platform == "darwin":
         resultado = subprocess.run(
             [
@@ -78,7 +79,7 @@ def _claude() -> dict:
 
 def _qwen() -> tuple[dict, str]:
     home = Path(os.environ.get("QWEN_HOME", str(Path.home() / ".qwen")))
-    datos = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+    datos = leer_json((home / "settings.json"))
     model = datos.get("model", {})
     if (
         datos.get("security", {}).get("auth", {}).get("selectedType") != "openai"
@@ -96,7 +97,7 @@ def _qwen() -> tuple[dict, str]:
 def _opencode() -> dict:
     home = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
     archivo = home / "opencode/auth.json"
-    datos = json.loads(archivo.read_text(encoding="utf-8")) if archivo.is_file() else {}
+    datos = leer_json(archivo) if archivo.is_file() else {}
     cuentas = {
         p: datos[p]
         for p in _OPENCODE_PLANES
@@ -143,7 +144,7 @@ def _opencode() -> dict:
 
 def _grok() -> dict:
     home = Path(os.environ.get("GROK_HOME", str(Path.home() / ".grok")))
-    cuenta = json.loads((home / "auth.json").read_text(encoding="utf-8")).get(
+    cuenta = leer_json((home / "auth.json")).get(
         _GROK_CUENTA, {}
     )
     if (
@@ -349,7 +350,7 @@ def preparar(agente: str, runtime: Path, cmd: list[str], env: dict[str, str]) ->
 def preparar_kimi_opencode(runtime: Path, env: dict[str, str]) -> None:
     (runtime / ".local/share/opencode").mkdir(parents=True, exist_ok=True)
     config = tomllib.loads(
-        (runtime / ".kimi-code/config.toml").read_text(encoding="utf-8")
+        leer_texto((runtime / ".kimi-code/config.toml"))
     )
     alias = config["default_model"]
     proveedor = config["providers"]["managed:kimi-code"]
@@ -359,7 +360,7 @@ def preparar_kimi_opencode(runtime: Path, env: dict[str, str]) -> None:
         raise CuentaNoDisponible(
             "kimi", "el modelo solicitado no coincide con la identidad del Coding Plan"
         )
-    device = (runtime / ".kimi-code/device_id").read_text(encoding="utf-8").strip()
+    device = leer_texto((runtime / ".kimi-code/device_id")).strip()
     modelo_cliente = {
         "name": api_modelo,
         "tool_call": True,

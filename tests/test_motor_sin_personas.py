@@ -35,10 +35,11 @@ from motor.github import FakeGitHub
 from tests.test_bucle_instrumento import Banco
 from tests.test_flujo_revisiones import (
     Recorrido,
-    _GhConDeepSeek,
     _bloqueante,
     _entrega_pr,
 )
+
+from tests.dobles import github_con_hallazgos
 
 
 # Estas pruebas no ejercitan la jaula: la sonda se da por buena en cualquier host.
@@ -69,9 +70,9 @@ def _bloqueante_dict(titulo: str = "malo.txt no contiene B") -> dict:
 
 
 class SinProgresoRelevaYEntrega(unittest.TestCase):
-    def test_el_mismo_bloqueo_releva_y_luego_entrega_con_pendientes(self):
+    def test_el_mismo_bloqueo_releva_y_luego_entrega_con_pendientes(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "p1", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "p1", github_con_hallazgos)
             self.addCleanup(r.reg.close)
             vuelta.gh.textos = []
             malo = r.espacio / "malo.txt"
@@ -383,7 +384,7 @@ class PreguntaVencidaNoLaContestaUnJuicioViejo(unittest.TestCase):
 class DisputaLaDecideElRevisor(unittest.TestCase):
     def test_la_disputa_no_pide_al_propietario_y_el_revisor_la_resuelve(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "p5", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "p5", github_con_hallazgos)
             self.addCleanup(r.reg.close)
             e = vuelta("uno")
             hallazgo = bloqueantes_abiertos(e, "deepseek")[0]

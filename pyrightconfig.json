@@ -1,0 +1,6 @@
+{
+  "include": ["motor", "tests/dobles.py", "tests/test_github_contrato.py"],
+  "exclude": ["**/__pycache__"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.12"
+}

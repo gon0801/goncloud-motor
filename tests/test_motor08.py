@@ -14,6 +14,7 @@ from motor import machine as m
 from motor.criterios import Aclarar, Criterio, Expediente, Nota, Sugerencia, valorar
 from motor.effects import Effects
 from motor.formato import activa, puede_volver
+from motor.github import FakeGitHub
 from motor.machine import _es_falla_maquina
 from motor.previa import faltantes_de_salida
 from motor.store import Store
@@ -66,7 +67,7 @@ class ModuloTest(unittest.TestCase):
         self.assertIn("tomllib", faltantes_de_salida(tom))
         self.assertTrue(_es_falla_maquina({"ok": False, "detalle": tom}))
 class MergeNoRepiteTest(unittest.TestCase):
-    def test_un_merge_aplicado_no_vuelve_a_escribir(self):
+    def test_un_merge_aplicado_no_vuelve_a_escribir(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         home = Path(tempfile.mkdtemp(prefix="m08-merge-"))
         store = Store(home / "motor.db")
         plan = parse_plan(PLAN)
@@ -74,14 +75,14 @@ class MergeNoRepiteTest(unittest.TestCase):
         ident = "A:merge:" + sha + ":7"
         store.append("demo", "A", "Intencion", {"id": ident, "tipo": "merge"}, ukey=claves.intencion("demo", ident))
         store.append("demo", "A", "EfectoObservado", {"intencion": ident, "resultado": "aplicado"}, ukey=claves.efecto_observado("demo", ident, "aplicado"))
-        llamadas = []
+        gh = FakeGitHub(home / "gh")
         fx = Effects(SimpleNamespace(home=home, store=store))
         fx.notify = lambda *a, **k: None
         fx._ya_mergeado = lambda *a, **k: False
-        fx.cx.gh = SimpleNamespace(merge=lambda *a, **k: llamadas.append("x"))
+        fx.cx.gh = gh
         snap = m.fold(plan, [ev("Verified", "A", {"sha": sha, "ok": True}), ev("PrOpened", "A", {"numero": 7})])
         fx.merge(plan, snap, m.Merge(m.MergeTicket("A", sha, 7)))
-        self.assertEqual(llamadas, [])
+        self.assertEqual(gh.intentos, [])
 
 
 class AclararLlegaADecideTest(unittest.TestCase):
