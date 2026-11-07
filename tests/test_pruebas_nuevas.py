@@ -273,6 +273,56 @@ class PruebasNuevasContraLaBase(unittest.TestCase):
             )
             self.assertIn("no se pudo correr la base", salida.stderr)
 
+    def test_un_pytest_que_sale_3_con_reporte_valido_no_aprueba(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / "tests/test_nueva.py").write_text(
+                "def test_pasa_sin_arreglo():\n    assert True\n"
+            )
+            _commit(repo, "pruebas")
+            falso = Path(tmp) / "falsopytest"
+            falso.mkdir()
+            (falso / "pytest.py").write_text(
+                "import pathlib, sys\n"
+                "destino = next(\n"
+                "    a.split('=', 1)[1] for a in sys.argv[1:]\n"
+                "    if a.startswith('--junitxml=')\n"
+                ")\n"
+                "pathlib.Path(destino).write_text(\n"
+                "    '<?xml version=\"1.0\" encoding=\"utf-8\"?>'\n"
+                "    '<testsuites><testsuite name=\"pytest\" tests=\"1\" errors=\"0\"'\n"
+                "    ' failures=\"0\" skipped=\"0\">'\n"
+                "    '<testcase classname=\"tests.test_nueva\"'\n"
+                "    ' name=\"test_pasa_sin_arreglo\" time=\"0\"/>'\n"
+                "    '</testsuite></testsuites>',\n"
+                "    encoding='utf-8',\n"
+                ")\n"
+                "raise SystemExit(3)\n"
+            )
+            env = {**os.environ, "PYTHONPATH": str(falso)}
+            salida = _corre(repo, env=env)
+            self.assertEqual(
+                salida.returncode, 2, salida.stdout + salida.stderr
+            )
+            self.assertIn("pytest terminó con 3", salida.stderr)
+            self.assertIn("no hay un resultado completo", salida.stderr)
+
+    def test_un_archivo_que_no_colecciona_y_ninguna_pasa_no_aborta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / "tests/test_rota.py").write_text(
+                "from producto import no_existe\n\n"
+                "def test_rota():\n"
+                "    assert False\n"
+            )
+            _commit(repo, "pruebas")
+            salida = _corre(repo)
+            self.assertEqual(
+                salida.returncode, 0, salida.stdout + salida.stderr
+            )
+            self.assertIn("tests/test_rota.py: collection failure", salida.stderr)
+            self.assertIn("ninguna pasa en la base", salida.stdout)
+
     def test_un_error_interno_de_pytest_no_aprueba(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(

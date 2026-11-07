@@ -67,7 +67,7 @@ class ModuloTest(unittest.TestCase):
         self.assertIn("tomllib", faltantes_de_salida(tom))
         self.assertTrue(_es_falla_maquina({"ok": False, "detalle": tom}))
 class MergeNoRepiteTest(unittest.TestCase):
-    def test_un_merge_aplicado_no_vuelve_a_escribir(self):
+    def test_un_merge_aplicado_no_vuelve_a_escribir(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         home = Path(tempfile.mkdtemp(prefix="m08-merge-"))
         store = Store(home / "motor.db")
         plan = parse_plan(PLAN)
