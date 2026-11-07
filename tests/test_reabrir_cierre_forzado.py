@@ -151,7 +151,11 @@ class ReabrirCierreForzado(unittest.TestCase):
             }}, f"pendiente-{n}")
             ciclo._entregar_con_pendientes(r.reg, r.fold(), None, r.hora)
             self.assertEqual(r.fold().estado, "terminado")
-        self.assertEqual(len(r.eventos("cierre_forzado")), 3)
+        # El pendiente de la fase ya no emite cierre_forzado: bloquea la fase
+        # con su evento propio; la identidad vigente es la del último bloqueo.
+        # El único cierre_forzado es el histórico que simuló el setUp.
+        self.assertEqual(len(r.eventos("cierre_forzado")), 1)
+        self.assertEqual(len(r.eventos("bloqueo_fase")), 2)
 
     def test_reabrir_invalida_el_marcador_del_cierre_anterior(self):
         r = self.r
