@@ -986,6 +986,85 @@ class LaAdopcionConsultaLosAjustesDelDirector(unittest.TestCase):
         )
         self.assertEqual([f.id for f in e.fases], ["b-receta", "c-meta"])
 
+    def test_la_prosa_compuesta_con_guiones_no_enumera(self):
+        ajuste = (
+            "Escribe fases.json con ids auto-explicativos, bien-formados y "
+            "faciles-de-leer."
+        )
+        e = self._con_ajuste((), ajuste)
+        e = reducir(
+            e,
+            {
+                "kind": "fases",
+                "data": {
+                    "fases": [
+                        {"id": "b-receta", "resultado": "b"},
+                        {
+                            "id": "c-meta",
+                            "resultado": "c",
+                            "requiere": ["b-receta"],
+                        },
+                    ],
+                    "hora": HORA,
+                },
+            },
+        )
+        self.assertEqual([f.id for f in e.fases], ["b-receta", "c-meta"])
+
+    def test_un_ancla_con_conteo_mentiroso_no_ata(self):
+        ajuste = (
+            "Correccion del director: las fases son exactamente 5 con ids "
+            "b-receta, c-meta, d-sombra."
+        )
+        e = self._con_ajuste((), ajuste)
+        e = reducir(
+            e,
+            {
+                "kind": "fases",
+                "data": {
+                    "fases": [
+                        {"id": "b-receta", "resultado": "b"},
+                        {
+                            "id": "c-meta",
+                            "resultado": "c",
+                            "requiere": ["b-receta"],
+                        },
+                        {
+                            "id": "d-sombra",
+                            "resultado": "d",
+                            "requiere": ["c-meta"],
+                        },
+                    ],
+                    "hora": HORA,
+                },
+            },
+        )
+        self.assertEqual(
+            [f.id for f in e.fases],
+            ["b-receta", "c-meta", "d-sombra"],
+        )
+
+    def test_el_ancla_verdadera_at_a_y_rechaza_a_las_fuera(self):
+        ajuste = (
+            "Correccion del director: las fases son exactamente 3 con ids "
+            "b-receta, c-meta, d-sombra."
+        )
+        e = self._con_ajuste((), ajuste)
+        with self.assertRaises(TransicionIlegal):
+            reducir(
+                e,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "b-receta", "resultado": "b"},
+                            {"id": "x-fuera", "resultado": "x"},
+                        ],
+                        "hora": HORA,
+                    },
+                },
+            )
+
     def test_una_propuesta_totalmente_fuera_de_la_enumeracion_es_defecto(self):
         e = self._con_ajuste(())
         with self.assertRaises(TransicionIlegal) as ctx:

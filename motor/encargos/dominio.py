@@ -2467,6 +2467,11 @@ _ENUMERACION_IDS = re.compile(
     r"|ids\s+de\s+fases\s*:|exactamente\s+\d+\s+fases\s+con\s+ids)\s*:?\s*"
     r"([A-Za-z][\w-]*(?:\s*,\s*[A-Za-z][\w-]*)+(?:\s+[yeo]\s+[A-Za-z][\w-]*)?)"
 )
+# El ancla de conteo: la única forma que ata. La prosa no lleva por accidente
+# un compromiso numérico cuyo largo coincida con la lista.
+_ANCLA_EXACTAMENTE = re.compile(
+    r"\bexactamente\s+(\d+)\s+(?:fases\s+)?con\s+ids\b"
+)
 
 
 def _normaliza(texto: str) -> str:
@@ -2493,8 +2498,12 @@ def _tokens_con_forma_de_id(tokens: list[str]) -> bool:
 
 
 def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
-    """El último ajuste del director que enumera los ids de las fases.
+    """El último ajuste del director que enumera los ids de las fases con el
+    ancla «exactamente N … con ids», con N igual al número de tokens.
 
+    El ancla es la única forma que ata: la prosa no lleva por accidente un
+    compromiso numérico cuyo largo coincida con la lista, así que ninguna
+    frase corriente — con o sin palabras con guion — produce una enumeración.
     La enumeración fija la estructura del plan: una propuesta que declare
     fases nuevas fuera de ella no representa los ajustes vigentes y se
     rechaza para que el implementador corrija `.interno/fases.json`, aunque
@@ -2514,7 +2523,10 @@ def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
                     )
                     if t.strip()
                 ]
-                if len(tokens) >= 2 and _tokens_con_forma_de_id(tokens):
+                if len(tokens) < 2 or not _tokens_con_forma_de_id(tokens):
+                    continue
+                ancla = _ANCLA_EXACTAMENTE.search(segmento)
+                if ancla and int(ancla.group(1)) == len(tokens):
                     return ajuste, tokens
     return None
 
