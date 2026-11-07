@@ -53,6 +53,17 @@ def _abierto(hid: str, titulo: str = "") -> Hallazgo:
     )
 
 
+def _abierto_con(hid: str, titulo: str) -> Hallazgo:
+    return Hallazgo(
+        id=hid,
+        gravedad="bloqueante",
+        criterio="comportamiento",
+        titulo=titulo,
+        reproduccion="cat malo.txt",
+        ancla="malo.txt:1",
+    )
+
+
 def _juicio(datos: dict, alcance: AlcanceRevision, externos=()):
     return validar_juicio(
         {"version": "v2", **datos},
@@ -232,12 +243,12 @@ class Recorrido:
         return [e for e in self.reg.eventos(self.enc) if e["kind"] == kind]
 
 
-def _bloqueante(hid: str, titulo: str) -> dict:
+def _bloqueante(hid: str, titulo: str, reproduccion: str = "cat malo.txt") -> dict:
     return {
         "id": hid,
         "criterio": "comportamiento",
         "titulo": titulo,
-        "reproduccion": "cat malo.txt",
+        "reproduccion": reproduccion,
         "ancla": "malo.txt:1",
     }
 
@@ -317,6 +328,121 @@ class LaRegresionDeLasRevisiones12231Y12324(unittest.TestCase):
             self.assertIn(ids[8], resueltos_en_evento)
 
 
+class ElCierrePorOmisionNoBorraUnaRedeclaracionConOtroId(unittest.TestCase):
+    """Caso F1 (DeepSeek).
+
+    El id del bloqueante declarado puede diferir del id del hallazgo abierto
+    que redeclara: el revisor lo nombra distinto o el título deriva. El cierre
+    por omisión solo cierra lo que la revisión ya no reporta; una
+    redeclaración con otro id y el mismo contenido no es una omisión.
+    """
+
+    def _juicio_con_bloqueante(
+        self, alcance: AlcanceRevision, bloqueante: dict
+    ) -> object:
+        return _juicio(
+            {
+                "veredicto": "cambios",
+                "evidencia": "sigue roto",
+                "bloqueantes": [bloqueante],
+            },
+            alcance,
+        )
+
+    def test_mismo_ancla_y_titulo_con_otro_id_deja_el_hallazgo_abierto(self):
+        alcance = _alcance((_abierto_con("h_a", "falla el envio"),))
+        valido = self._juicio_con_bloqueante(
+            alcance,
+            {
+                "id": "F1",
+                "criterio": "comportamiento",
+                "titulo": "falla el envio",
+                "reproduccion": "cat malo.txt",
+                "ancla": "malo.txt:1",
+            },
+        )
+        self.assertEqual(valido.veredicto, "cambios")
+        estado = {h.id: (h.gravedad, h.estado) for h in valido.hallazgos}
+        self.assertEqual(estado.get("h_a"), ("bloqueante", "abierto"))
+        self.assertNotIn("F1", estado)
+
+    def test_en_ruta_conservada_la_redeclaracion_con_otro_id_no_se_degrada(self):
+        alcance = AlcanceRevision(
+            clase="correccion",
+            version="v2",
+            base_version="v1",
+            abiertos=(_abierto_con("h_a", "falla el envio"),),
+            tocadas=("malo.txt",),
+            conservadas=("malo.txt",),
+            manifiesto=(("malo.txt", "h2"),),
+        )
+        valido = self._juicio_con_bloqueante(
+            alcance,
+            {
+                "id": "F1",
+                "criterio": "comportamiento",
+                "titulo": "falla el envio",
+                "reproduccion": "cat malo.txt",
+                "ancla": "malo.txt:1",
+            },
+        )
+        estado = {h.id: (h.gravedad, h.estado) for h in valido.hallazgos}
+        self.assertEqual(estado.get("h_a"), ("bloqueante", "abierto"))
+        self.assertNotIn("F1", estado)
+
+    def test_otro_id_con_otro_contenido_si_queda_cerrado_por_omision(self):
+        alcance = _alcance((_abierto_con("h_a", "falla el envio"),))
+        valido = self._juicio_con_bloqueante(
+            alcance,
+            {
+                "id": "F9",
+                "criterio": "comportamiento",
+                "titulo": "falta la migracion",
+                "reproduccion": "python migra.py",
+                "ancla": "migra.py:3",
+            },
+        )
+        self.assertEqual(valido.veredicto, "cambios")
+        estado = {h.id: h.estado for h in valido.hallazgos}
+        self.assertEqual(estado.get("h_a"), "resuelto")
+        self.assertEqual(estado.get("F9"), "abierto")
+
+    def test_en_el_estado_la_redeclaracion_con_otro_id_mantiene_el_bloqueante(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = Recorrido(tmp, "cubierto-3", "malo.txt con un bloqueante")
+            self.addCleanup(r.reg.close)
+            (r.espacio / "malo.txt").write_text("X")
+            e = r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "cambios",
+                    "evidencia": "lei malo.txt",
+                    "bloqueantes": [_bloqueante("h_0", "bloqueante h_0")],
+                }
+            )
+            e = r.incorporar()
+            self.assertEqual({h.id for h in bloqueantes_abiertos(e)}, {"h_0"})
+            # La revisión de la corrección redeclara el mismo defecto con
+            # otro id: el estado conserva h_0 abierto y no crea h_0b.
+            (r.espacio / "malo.txt").write_text("Y")
+            e = r.incorporar()
+            self.assertEqual(e.rol, "revisor")
+            r.juicio(
+                {
+                    "veredicto": "cambios",
+                    "evidencia": "sigue roto, con otro nombre",
+                    "bloqueantes": [_bloqueante("h_0b", "bloqueante h_0")],
+                }
+            )
+            e = r.incorporar()
+            self.assertEqual({h.id for h in bloqueantes_abiertos(e)}, {"h_0"})
+            h_0 = [h for h in e.fase_actual.hallazgos if h.id == "h_0"][-1]
+            self.assertEqual(h_0.estado, "abierto")
+            self.assertNotIn(
+                "h_0b", {h.id for h in e.fase_actual.hallazgos}
+            )
+
+
 class ElCierrePorOmisionNoEsUnCierreDelPropietario(unittest.TestCase):
     """Caso h_54e00c90.
 
@@ -341,7 +467,7 @@ class ElCierrePorOmisionNoEsUnCierreDelPropietario(unittest.TestCase):
                     "evidencia": "lei malo.txt",
                     "bloqueantes": [
                         _bloqueante("h_0", "bloqueante h_0"),
-                        _bloqueante("h_1", "bloqueante h_1"),
+                        _bloqueante("h_1", "bloqueante h_1", "cat otro.txt"),
                     ],
                 }
             )
@@ -358,7 +484,9 @@ class ElCierrePorOmisionNoEsUnCierreDelPropietario(unittest.TestCase):
                 {
                     "veredicto": "cambios",
                     "evidencia": "h_1 sigue",
-                    "bloqueantes": [_bloqueante("h_1", "bloqueante h_1")],
+                    "bloqueantes": [
+                        _bloqueante("h_1", "bloqueante h_1", "cat otro.txt")
+                    ],
                 }
             )
             e = r.incorporar()
@@ -370,8 +498,8 @@ class ElCierrePorOmisionNoEsUnCierreDelPropietario(unittest.TestCase):
                 "El propietario declaró cerrados",
                 "\n".join(_bloques_comunes(e)),
             )
-            # La revisión siguiente vuelve a reportar h_0 con la misma
-            # reproducción: reabre y vuelve al responsable.
+            # La revisión siguiente vuelve a reportar h_0 con su reproducción
+            # original: reabre y vuelve al responsable.
             (r.espacio / "malo.txt").write_text("Z")
             e = r.incorporar()
             self.assertEqual(e.rol, "revisor")
@@ -381,7 +509,7 @@ class ElCierrePorOmisionNoEsUnCierreDelPropietario(unittest.TestCase):
                     "evidencia": "h_0 y h_1 siguen",
                     "bloqueantes": [
                         _bloqueante("h_0", "bloqueante h_0"),
-                        _bloqueante("h_1", "bloqueante h_1"),
+                        _bloqueante("h_1", "bloqueante h_1", "cat otro.txt"),
                     ],
                 }
             )

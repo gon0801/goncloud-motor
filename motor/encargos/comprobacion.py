@@ -909,6 +909,32 @@ def _inspeccion_de(crudo) -> InspeccionPedido:
     )
 
 
+def _previo_redeclarado(
+    abiertos: tuple[Hallazgo, ...],
+    hid: str,
+    titulo: str,
+    ancla: str,
+) -> str:
+    """El id del bloqueante declarado puede diferir del id del hallazgo
+    abierto que redeclara: el cierre por omisión no debe borrarlo. La
+    identidad de fondo es el mismo ancla y título con los que se computa
+    id_hallazgo; solo esa coincidencia repunta el id declarado. La
+    reproducción no identifica: dos defectos distintos comparten comando.
+    """
+    nuevo_titulo = " ".join(titulo.split())
+    nuevo_ancla = " ".join(ancla.split())
+    for p in abiertos:
+        if p.id == hid:
+            return p.id
+        if (
+            nuevo_titulo
+            and " ".join(str(p.titulo or "").split()) == nuevo_titulo
+            and " ".join(str(p.ancla or "").split()) == nuevo_ancla
+        ):
+            return p.id
+    return hid
+
+
 def validar_juicio(
     d: dict,
     alcance: AlcanceRevision,
@@ -983,6 +1009,7 @@ def validar_juicio(
         reproduccion = str(b.get("reproduccion") or "").strip()
         ancla = str(b.get("ancla") or "")
         hid = str(b.get("id") or "") or id_hallazgo("independiente", ancla, titulo)
+        hid = _previo_redeclarado(alcance.abiertos, hid, titulo, ancla)
         bloqueante = criterio in CRITERIOS and bool(reproduccion)
         if (
             bloqueante
