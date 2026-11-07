@@ -32,6 +32,10 @@ from .manifiesto import Herramienta, cargar, emitir, guardar, proyectar_tabla
 __all__ = ["actualizar", "comprobar_runtime", "descubrir", "estado", "preparar"]
 
 
+def _opciones_repo(padre: Path, base: str) -> list[Path]:
+    return [padre / (base + "-encargos-3-4"), padre / base]
+
+
 def _repos_predeterminados(motor_origen: Path) -> dict[str, Path]:
     padre = motor_origen.parent
     candidatos = {}
@@ -40,7 +44,7 @@ def _repos_predeterminados(motor_origen: Path) -> dict[str, Path]:
         ("claw", "goncloud-openclaw"),
         ("conf", "goncloud-motor-conf"),
     ):
-        opciones = [padre / (base + "-encargos-3-4"), padre / base]
+        opciones = _opciones_repo(padre, base)
         encontrado = next((p for p in opciones if (p / ".git").exists()), None)
         if encontrado:
             candidatos[nombre] = encontrado

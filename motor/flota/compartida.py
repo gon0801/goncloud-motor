@@ -311,14 +311,16 @@ def _leer_claw_routing(repo: Path) -> dict:
     return {"contenido": contenido, "sha256": _sha256(datos), "revision": revision}
 
 
-def _buscar_hermes(motor_origen: Path) -> Path | None:
-    from .actualizaciones import _repos_predeterminados
+def _candidatos_hermes(motor_origen: Path) -> list[Path]:
+    """Checkouts de goncloud-hermes junto al motor, en orden de preferencia."""
+    from .actualizaciones import _opciones_repo
 
-    encontrado = _repos_predeterminados(motor_origen).get("hermes")
-    if encontrado is not None:
-        return encontrado
-    equivalente = motor_origen.parent / "motor-config" / "hermes"
-    return equivalente if (equivalente / ".git").exists() else None
+    padre = motor_origen.parent
+    opciones = [
+        *_opciones_repo(padre, "goncloud-hermes"),
+        padre / "motor-config" / "hermes",
+    ]
+    return [p for p in opciones if (p / ".git").exists()]
 
 
 def _informe_claw(claw: dict | None, motivo: str = "") -> dict:
@@ -331,13 +333,16 @@ def _claw_publicable(repo_hermes: Path | None, motor_origen: Path) -> dict | Non
     """El claw-routing a publicar. Un --repo-hermes explicito que no sirve falla."""
     if repo_hermes is not None:
         return _leer_claw_routing(Path(repo_hermes).resolve())
-    repo = _buscar_hermes(motor_origen)
-    if repo is None:
+    candidatos = _candidatos_hermes(motor_origen)
+    if not candidatos:
         raise _SinClaw("no se encontro un checkout git de goncloud-hermes")
-    try:
-        return _leer_claw_routing(repo.resolve())
-    except ValueError as exc:
-        raise _SinClaw(str(exc)) from exc
+    fallos = []
+    for repo in candidatos:
+        try:
+            return _leer_claw_routing(repo.resolve())
+        except ValueError as exc:
+            fallos.append(str(exc))
+    raise _SinClaw("; ".join(fallos))
 
 
 def exportar(

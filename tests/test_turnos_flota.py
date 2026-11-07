@@ -1061,9 +1061,26 @@ class TurnosFlota(unittest.TestCase):
     def test_publicar_busca_motor_config_hermes_junto_al_motor(self):
         origen = _repo(self.base / "ws" / "motor")
         hermes = self._repo_hermes("ws/motor-config/hermes", thinking=True)
-        from motor.flota.compartida import _buscar_hermes
+        from motor.flota.compartida import _candidatos_hermes
 
-        self.assertEqual(_buscar_hermes(origen), hermes)
+        self.assertEqual(_candidatos_hermes(origen), [hermes])
+
+    def test_publicar_prueba_los_respaldos_si_el_primer_checkout_no_sirve(self):
+        origen = _repo(self.base / "ws2" / "motor")
+        _repo(self.base / "ws2" / "goncloud-hermes-encargos-3-4")  # sin routing
+        bueno = self._repo_hermes("ws2/goncloud-hermes", thinking=True)
+        from motor.flota.compartida import _claw_publicable
+
+        claw = _claw_publicable(None, origen)
+        self.assertEqual(
+            claw["revision"],
+            subprocess.run(
+                ["git", "-C", str(bueno), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+        )
 
     def test_un_repo_hermes_explicito_sin_claw_routing_falla(self):
         sin = _repo(self.base / "hermes-vacio")
