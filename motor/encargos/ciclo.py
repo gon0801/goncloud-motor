@@ -41,6 +41,10 @@ from .dominio import (
     FASE_IMPLICITA,
     HUELLA_DEEPSEEK_SIN_REVISION,
     TOPE_NO_CONCLUYENTES,
+    _EVENTOS_DE_MARCADOR,
+    _NOTA_COPIA_SESION,
+    _clase_de_fallo,
+    _fallo_transitorio,
     TransicionIlegal,
     alcance_de,
     ajustes_cubiertos,
@@ -104,16 +108,6 @@ _UMBRAL_S = 30
 # primera del supervisor tras una caída.
 _QUIETUD_S = 600
 _QUIETUD_VUELTAS = 3
-# Los marcadores son observaciones del motor, no hechos del encargo: no cuentan
-# como movimiento cuando se mide la quietud (antes vivían en archivos y tampoco
-# la reiniciaban).
-_EVENTOS_DE_MARCADOR = (
-    "incorporado",
-    "quietud_vigilada",
-    "deepseek_lectura",
-    "deepseek_cerrado",
-    "ci_sondeo",
-)
 _RELECTURA_DEEPSEEK_S = 60
 _AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
@@ -737,6 +731,10 @@ def _ya_incorporado(enc: Encargo | None) -> bool:
     return enc is not None and enc.generacion in enc.incorporado
 
 
+def _ultima_firma(enc: Encargo | None) -> str:
+    return enc.ultima_firma if enc is not None else ""
+
+
 def _marcar_incorporado(registro: Registro, enc: Encargo, hora: str) -> None:
     """El resultado de este intento ya se incorporó. La generación identifica
     el intento y la marca vive en el registro, no en su directorio."""
@@ -827,7 +825,6 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
                         )
 
 
-_NOTA_COPIA_SESION = "copia de sesión "
 
 
 def _copiar_sesion_sin_caer(
@@ -1097,10 +1094,7 @@ def _contener_fallo_de_barrido(
             return None
         if any(i.clase == clase for i in enc.impedimentos):
             return _vista_o_minima(enc)  # ya aparcado: no se llena el registro
-        total = sum(
-            ev["kind"] == "instrumento_fallo" and ev["data"].get("fuente") == _FUENTE_BARRIDO
-            for ev in registro.eventos(encargo_id)
-        )
+        total = enc.fallos_barrido
         _anotar_instrumento(
             registro, enc, _FUENTE_BARRIDO, causa,
             "reintentar en la vuelta siguiente"
@@ -1513,11 +1507,7 @@ def _barrer_encargos(
                 )
                 enc = registro.fold(encargo_id)
         firma = firma_espacio(espacio)
-        firma_previa = ""
-        for ev in reversed(registro.eventos(encargo_id)):
-            if ev["data"].get("firma"):
-                firma_previa = ev["data"]["firma"]
-                break
+        firma_previa = _ultima_firma(enc)
         if (
             firma
             and firma != firma_previa
@@ -1757,6 +1747,24 @@ def _vigilar_quietud(
         and sin_nada_en_curso(enc)
     )
     if not quieto:
+        # Al dejar de estar quieto la observacion se olvida, como el archivo que
+        # se borraba. Se anota una sola vez para no llenar el registro.
+        if enc.quietud_vigilada[1] != 0:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "quietud_vigilada",
+                    "data": {
+                        "evento": 0,
+                        "vueltas": 0,
+                        "desde": 0.0,
+                        "visto": epoch,
+                        "hora": hora,
+                    },
+                },
+                f"quietud-vigilada:{enc.id}:reset:{int(epoch * 1000)}",
+            )
+            return registro.fold(enc.id) or enc
         return enc
     # La propia observacion no cuenta como movimiento: el objetivo es el ultimo
     # evento que no sea una vuelta de quietud.
@@ -1798,7 +1806,7 @@ def _vigilar_quietud(
                 "hora": hora,
             },
         },
-        f"quietud-vigilada:{enc.id}:{ultimo}:{vueltas}",
+        f"quietud-vigilada:{enc.id}:{ultimo}:{int(epoch * 1000)}",
     )
     return registro.fold(enc.id) or enc
 
@@ -1923,23 +1931,17 @@ def _corte_de_instrumento(
     repite la misma causa, el relevo se agota y el encargo entrega con
     pendientes. No es un tope de rondas: exige clase y causa idénticas y el
     mismo producto."""
+    enc = registro.fold(enc.id) or enc
     version = enc.producto.firma if enc.producto else ""
-    fallos = [
-        ev
-        for ev in registro.eventos(enc.id)
-        if ev["kind"] == "instrumento_fallo"
-        and str(ev["data"].get("version") or "") == version
-    ]
+    fallos = [f for f in enc.fallos_instrumento if f[0] == version]
     if len(fallos) < 3:
         return False
     ultimo, previo = fallos[-1], fallos[-2]
-    if ultimo["data"].get("clase") != previo["data"].get("clase"):
+    if ultimo[1] != previo[1]:
         return False
-    if _texto_normalizado(ultimo["data"].get("causa")) != _texto_normalizado(
-        previo["data"].get("causa")
-    ):
+    if _texto_normalizado(ultimo[2]) != _texto_normalizado(previo[2]):
         return False
-    clase = str(ultimo["data"].get("clase") or "")
+    clase = ultimo[1]
     clave = hashlib.sha256(
         f"{clase}|{_texto_normalizado(causa)}|{version}".encode()
     ).hexdigest()[:16]
@@ -2111,6 +2113,7 @@ def _disputas_pendientes(
         return []
     if not disputas:
         return []
+    enc = registro.fold(enc.id) or enc
     abiertos = {h.id: h for h in bloqueantes_abiertos(enc, "deepseek")}
     if not abiertos:
         return []
@@ -2318,15 +2321,10 @@ def _evidencia_de(clase: str) -> str:
     return _EVIDENCIA_DE.get(clase, "la comprobación de la causa")
 
 
-def _apariciones(registro, enc: Encargo, clase: str) -> int:
+def _apariciones(enc: Encargo, clase: str) -> int:
     """Cuántas veces apareció esta causa. Sube al registrarla y al resolverla,
     así una retransmisión no crea un evento y una recaída sí."""
-    return sum(
-        1
-        for ev in registro.eventos(enc.id)
-        if ev["kind"] in ("impedimento", "impedimento_resuelto")
-        and ev["data"].get("clase") == clase
-    )
+    return dict(enc.apariciones).get(clase, 0)
 
 
 def _anotar_impedimento(
@@ -2334,6 +2332,7 @@ def _anotar_impedimento(
     agente: str = "",
 ) -> None:
     """`agente` es el que se iba a lanzar si la causa depende de él (su shell)."""
+    enc = registro.fold(enc.id) or enc
     if any(
         i.clase == clase and i.causa == causa and i.condicion == condicion
         and i.agente == agente
@@ -2353,11 +2352,12 @@ def _anotar_impedimento(
                 "hora": hora,
             },
         },
-        f"impedimento:{enc.id}:{clase}:{_apariciones(registro, enc, clase) + 1}",
+        f"impedimento:{enc.id}:{clase}:{_apariciones(enc, clase) + 1}",
     )
 
 
 def _resolver_impedimento(registro, enc: Encargo, clase: str, hora: str) -> None:
+    enc = registro.fold(enc.id) or enc
     registro.anotar(
         enc.id,
         {
@@ -2368,7 +2368,7 @@ def _resolver_impedimento(registro, enc: Encargo, clase: str, hora: str) -> None
                 "hora": hora,
             },
         },
-        f"impedimento-resuelto:{enc.id}:{clase}:{_apariciones(registro, enc, clase)}",
+        f"impedimento-resuelto:{enc.id}:{clase}:{_apariciones(enc, clase)}",
     )
 
 
@@ -2395,11 +2395,8 @@ def _juicio_reparado(
     incorporación. `None` si el registro no conserva qué archivo falló."""
     if registro is None:
         return None
-    artefacto = ""
-    for ev in reversed(registro.eventos(enc.id)):
-        if ev["kind"] == "instrumento_fallo" and ev["data"].get("clase") == clase:
-            artefacto = str(ev["data"].get("artefacto") or "")
-            break
+    enc = registro.fold(enc.id) or enc
+    artefacto = dict(enc.artefactos_instrumento).get(clase, "")
     if not artefacto:
         return None
     ruta = Path(artefacto)
@@ -2515,14 +2512,11 @@ def _impedimento_de_instrumento(
     cuando el caso queda manejado (la tercera falla ya no gasta un turno de
     reparación leyendo el fold anterior) y False cuando el llamador debe
     devolver el trabajo para reparar el instrumento."""
+    enc = registro.fold(enc.id) or enc
     _corte_de_instrumento(
         registro, enc, causa, hora, f"impedimento-{clase}", str(enc.rol or "responsable")
     )
-    previas = sum(
-        1
-        for ev in registro.eventos(enc.id)
-        if ev["kind"] == "instrumento_fallo" and ev["data"].get("clase") == clase
-    )
+    previas = sum(1 for f in enc.fallos_instrumento if f[1] == clase)
     if previas < 2:
         return False
     if _instrumento_se_puede_omitir(clase):
@@ -2688,14 +2682,8 @@ def _aplica_entrega(enc: Encargo) -> bool:
 
 
 def _evidencia_revision(registro: Registro, enc: Encargo) -> str:
-    for ev in reversed(registro.eventos(enc.id)):
-        if (
-            ev["kind"] == "revision"
-            and (ev["data"].get("origen") or "independiente") == "independiente"
-            and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
-        ):
-            return str(ev["data"].get("evidencia") or "")
-    return ""
+    enc = registro.fold(enc.id) or enc
+    return dict(enc.evidencias_revision).get(enc.fase_activa, "")
 
 
 def _producto_no_aprobado(enc: Encargo, espacio: Path):
@@ -3534,14 +3522,7 @@ def _incorporar(
         if outcome.get("fallo_runtime"):
             from .rutas import fallo
 
-            seguidas = 1
-            for evento in reversed(registro.eventos(enc.id)):
-                if evento["data"].get("agente") != agente:
-                    continue
-                if evento["kind"] == "proveedor_disponible":
-                    break
-                if evento["kind"] == "proveedor_fallo":
-                    seguidas += 1
+            seguidas = dict(enc.fallos_proveedor).get(agente, 0) + 1
             causa = fallo(
                 agente,
                 outcome["fallo_runtime"],
@@ -3817,11 +3798,9 @@ def _incorporar_responsable(
             )
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
-    entregas = [
-        ev for ev in registro.eventos(enc.id) if ev["kind"] == "producto_listo"
-    ]
-    interno_previo = entregas[-2]["data"].get("interno") if len(entregas) >= 2 else None
-    interno_actual = entregas[-1]["data"].get("interno") if entregas else None
+    entregas = enc.internos_producto
+    interno_previo = entregas[-2] if len(entregas) >= 2 else None
+    interno_actual = entregas[-1] if entregas else None
     abiertos_propios = bloqueantes_abiertos(enc, "independiente")
     if (
         not _deepseek_por_releer(enc)
@@ -4456,90 +4435,22 @@ def _causa_con_aviso(
     if len(texto) > espacio:
         texto = texto[: espacio - 1].rstrip() + "…"
     return f"{texto}. {aviso}"
-# Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
-_ENTRE_REINTENTOS = (
-    "plazo", "espera", "instrumento_fallo", "reserva", "reserva_cerrada",
-    "contexto_entrega",
-)
-# Un fallo de red o de servicio no es una causa reproducible: sigue reintentando.
-_FALLOS_TRANSITORIOS = (
-    "could not resolve host", "temporary failure in name resolution",
-    "network is unreachable", "connection timed out", "connection reset",
-    "connection refused", "connection closed", "operation timed out",
-    "remote end hung up unexpectedly", "the remote end hung up",
-    "early eof", "broken pipe",
-    "resource temporarily unavailable", "http 429", "http 500", "http 502",
-    "http 503", "http 504", "returned error: 429", "returned error: 500",
-    "returned error: 502", "returned error: 503", "returned error: 504",
-)
-
-
-_FALLOS_PERMANENTES = (
-    "http 400", "http 401", "http 403", "http 404", "http 413", "http 422",
-    "returned error: 400", "returned error: 401", "returned error: 403",
-    "returned error: 404", "returned error: 413", "returned error: 422",
-)
-
-
-def _fallo_transitorio(causa: str) -> bool:
-    texto = str(causa or "").lower()
-    if any(marca in texto for marca in _FALLOS_PERMANENTES):
-        return False
-    if "rpc failed" in texto:
-        return True
-    return any(marca in texto for marca in _FALLOS_TRANSITORIOS)
-
-
-def _clase_de_fallo(causa: str) -> str:
-    """La operación que falló, sin el detalle que cambia entre reintentos (la
-    salida de git con rutas temporales, pids o hashes): tras el primer `: ` va
-    el detalle, y los hashes sueltos del encabezado tampoco cuentan."""
-    operacion = str(causa).split(": ", 1)[0]
-    return re.sub(r"[0-9a-f]{7,40}", "#", operacion).strip().lower()
-
-
-def _fallos_de_repo_seguidos(registro: Registro, encargo_id: str, causa: str) -> int:
+def _fallos_de_repo_seguidos(enc: Encargo, causa: str) -> int:
     """Esperas seguidas por el mismo fallo (la misma operación), sin nada
     distinto entre ellas. Un ajuste, una respuesta, una orden o un intento que sí
-    arrancó las cortan."""
+    arrancó las cortan. El reducer mantiene la serie."""
     clase = _clase_de_fallo(causa)
-    seguidos = 0
-    for ev in reversed(registro.eventos(encargo_id)):
-        if ev["kind"] == "espera":
-            if _clase_de_fallo(ev["data"].get("motivo") or "") != clase:
-                break
-            seguidos += 1
-        elif ev["kind"] == "procedimiento" and str(ev["data"].get("nota") or "").startswith(
-            _NOTA_COPIA_SESION
-        ):
-            continue  # el aviso de una copia de sesión fallida no es un cambio
-        elif ev["kind"] not in _ENTRE_REINTENTOS:
-            break
-    return seguidos
+    guardada, seguidos = enc.fallos_repo
+    return seguidos if guardada == clase else 0
 
 
-def _fallos_de_entrega_seguidos(
-    registro: Registro, encargo_id: str, causa: str
-) -> int:
+def _fallos_de_entrega_seguidos(enc: Encargo, causa: str) -> int:
     """Esperas seguidas por el mismo fallo de entrega, sin contar las
     transitorias. Un ajuste, una respuesta, una orden o un intento que empezó
-    las cortan."""
+    las cortan. El reducer mantiene la serie."""
     clase = _clase_de_fallo(causa)
-    seguidos = 0
-    for ev in reversed(registro.eventos(encargo_id)):
-        if ev["kind"] == "espera":
-            motivo = ev["data"].get("motivo") or ""
-            if _clase_de_fallo(motivo) != clase:
-                break
-            if not _fallo_transitorio(motivo):
-                seguidos += 1
-        elif ev["kind"] == "procedimiento" and str(ev["data"].get("nota") or "").startswith(
-            _NOTA_COPIA_SESION
-        ):
-            continue  # el aviso de una copia de sesión fallida no es un cambio
-        elif ev["kind"] not in _ENTRE_REINTENTOS:
-            break
-    return seguidos
+    guardada, seguidos = enc.fallos_entrega
+    return seguidos if guardada == clase else 0
 
 
 def _entrega_devuelta_pendiente(registro: Registro, enc: Encargo) -> bool:
@@ -4607,7 +4518,7 @@ def _fallo_de_repo(
     )
     marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
     enc = registro.fold(enc.id) or enc
-    veces = _fallos_de_repo_seguidos(registro, enc.id, causa)
+    veces = _fallos_de_repo_seguidos(enc, causa)
     if veces < TOPE_FALLOS_REPO:
         return
     texto = (
@@ -5155,14 +5066,11 @@ def _cuerpo_ya_publicado(
     registro: Registro, enc: Encargo, sha: str, huella: str = "",
     fase_id: str = "",
 ) -> bool:
+    enc = registro.fold(enc.id) or enc
     fase = fase_id or enc.fase_activa
     return any(
-        ev["kind"] == "entrega_externa"
-        and ev["data"].get("paso") == "pr_cuerpo"
-        and ev["data"].get("sha") == sha
-        and (not huella or ev["data"].get("huella") == huella)
-        and (ev["data"].get("fase") or enc.fase_activa) == fase
-        for ev in registro.eventos(enc.id)
+        f == fase and s == sha and (not huella or h == huella)
+        for f, s, h in enc.cuerpos_publicados
     )
 
 
@@ -5357,14 +5265,10 @@ def _anotar_lectura_deepseek(
         )
     if fuera:
         enc = registro.fold(enc.id) or enc
-    lecturas = sum(
-        1
-        for ev in registro.eventos(enc.id)
-        if ev["kind"] == "entrega_externa"
-        and ev["data"].get("paso") == "deepseek_leido"
-        and ev["data"].get("sha") == sha
-        and (ev["data"].get("fase") or enc.fase_activa) == enc.fase_activa
-    )
+    enc = registro.fold(enc.id) or enc
+    lecturas = dict(
+        ((f, s), n) for f, s, n in enc.lecturas_deepseek
+    ).get((enc.fase_activa, sha), 0)
     serie = f"{sha}:lector{VERSION_LECTOR_DEEPSEEK}:{huella}:{lecturas}"
     registro.anotar(
         enc.id,
@@ -5610,13 +5514,9 @@ def _cierre_epoch(registro: Registro, enc: Encargo) -> float:
     o el bloqueo de la última fase: un encargo cerrado como entrega parcial
     tiene su época en el `bloqueo_fase`, no en el cierre de una fase anterior.
     """
-    for ev in reversed(registro.eventos(enc.id)):
-        if ev["kind"] in ("cierre_forzado", "bloqueo_fase"):
-            return _epoch_de_hora(ev["data"].get("hora") or ev["ts"])
-        if ev["kind"] == "comprobacion" and ev["data"].get("clase") in (
-            "cierre_comprobado", "confirmado"
-        ):
-            return _epoch_de_hora(ev["data"].get("hora") or ev["ts"])
+    enc = registro.fold(enc.id) or enc
+    if enc.hora_cierre:
+        return _epoch_de_hora(enc.hora_cierre)
     return _epoch_de_hora(enc.hora)
 
 
@@ -7160,11 +7060,8 @@ def _bloquear_fase(
 def _preguntas_pedidas_al_revisor(
     registro: Registro, enc: Encargo
 ) -> list:
-    pedidas = {
-        str(ev["data"].get("solicitud") or "")
-        for ev in registro.eventos(enc.id)
-        if ev["kind"] == "respuesta_revisor_pedida"
-    }
+    enc = registro.fold(enc.id) or enc
+    pedidas = set(enc.preguntas_pedidas)
     return [s for s in enc.solicitudes if s.id in pedidas]
 
 
@@ -7361,7 +7258,7 @@ def _paso_entrega_paso(
                 )
         corte = not _fallo_transitorio(causa) and (
             _entrega_devuelta_de_la_version(registro, enc)
-            or _fallos_de_entrega_seguidos(registro, enc.id, causa) + 1
+            or _fallos_de_entrega_seguidos(enc, causa) + 1
             >= TOPE_FALLOS_ENTREGA
         )
         # El aviso del resumen lee la causa del ultimo instrumento_fallo. En el

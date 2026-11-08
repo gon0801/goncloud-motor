@@ -37,42 +37,24 @@ IO_EXENTOS = {
 # sin pasar por el registro. `marcadores` falla con cualquiera que no esté.
 MARCADORES_EVENTOS = {
     "_alcance_para_revision": 1,
-    "_anotar_lectura_deepseek": 1,
-    "_apariciones": 1,
-    "_barrer_encargos": 1,
-    "_cierre_epoch": 1,
-    "_contener_fallo_de_barrido": 1,
-    "_corte_de_instrumento": 1,
-    "_cuerpo_ya_publicado": 1,
     "_disputas_pendientes": 1,
-    "_evidencia_revision": 1,
-    "_fallos_de_entrega_seguidos": 1,
-    "_fallos_de_repo_seguidos": 1,
     "_fase_de_resultado": 1,
-    "_impedimento_de_instrumento": 1,
-    "_incorporar": 1,
-    "_incorporar_responsable": 1,
-    "_juicio_reparado": 1,
     "_marcador_autoridad_final": 1,
     "_mirar_autoridad": 2,
     "_nuevo_cierre_tras_marcador": 1,
     "_observacion_de_la_version": 1,
     "_paso_entrega_paso": 1,
-    "_preguntas_pedidas_al_revisor": 1,
     "_recibir_resultado_nuevo": 1,
     "_resultado_desde_fold": 1,
     "_soltar_conductor": 1,
 }
+# Literales `.json` que son entradas del agente o del protocolo, no marcadores
+# del motor. Un `.json` nuevo en `ciclo.py` no entra sin pasar por esta lista.
 MARCADORES_JSON = {
-    ".json",
     "arranque.json",
     "auth.json",
-    "ci-sondeo.json",
-    "cierre.json",
     "comprobaciones.json",
     "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
-    "deepseek_cerrado.json",
-    "deepseek_lectura.json",
     "disputa.json",
     "fases.json",
     "flota-home.json",
@@ -85,11 +67,24 @@ MARCADORES_JSON = {
     "outcome.json",
     "pedido-efecto.json",
     "proc.json",
-    "quietud.json",
     "resultado.json",
     "revision.json",
     "wrapper.json",
 }
+# Los cinco marcadores retirados y el `incorporado` sin extensión: no pueden
+# volver a decidir fuera del registro. Solo la migración los nombra.
+MARCADORES_RETIRADOS = {
+    "incorporado",
+    "quietud.json",
+    "deepseek_lectura.json",
+    "deepseek_cerrado.json",
+    "ci-sondeo.json",
+    "cierre.json",
+}
+MIGRACION = {"_migrar_un_marcador", "migrar_marcadores"}
+# La inspección recorre archivos `.json` del espacio: es una lectura, no un
+# marcador que decida.
+JSON_EXCEPCIONES = {("_texto_inspeccion_resuelta", ".json")}
 MENSAJE_MARCADORES = "anótalo como evento y derívalo en dominio"
 
 
@@ -248,7 +243,17 @@ def _recorridos_de_marcadores(arbol: ast.AST) -> collections.Counter:
 
         def visit_Constant(self, nodo: ast.Constant) -> None:
             if isinstance(nodo.value, str) and nodo.value.endswith(".json"):
-                cuenta[("json", nodo.value)] += 1
+                cuenta[("json", pila[-1] if pila else "<module>", nodo.value)] += 1
+
+        def visit_BinOp(self, nodo: ast.BinOp) -> None:
+            if isinstance(nodo.op, ast.Div):
+                for lado in (nodo.left, nodo.right):
+                    if isinstance(lado, ast.Constant) and isinstance(lado.value, str):
+                        if lado.value in MARCADORES_RETIRADOS:
+                            cuenta[
+                                ("path", pila[-1] if pila else "<module>", lado.value)
+                            ] += 1
+            self.generic_visit(nodo)
 
     Visita().visit(arbol)
     return cuenta
@@ -261,13 +266,24 @@ def marcadores_nuevos() -> collections.Counter:
     except SyntaxError as exc:
         raise SystemExit(f"no se puede leer {ruta}: {exc}")
     nuevos: collections.Counter = collections.Counter()
-    for (tipo, clave), n in _recorridos_de_marcadores(arbol).items():
+    for clave, n in _recorridos_de_marcadores(arbol).items():
+        tipo = clave[0]
         if tipo == "eventos":
-            permitido = MARCADORES_EVENTOS.get(clave, 0)
-        else:
-            permitido = n if clave in MARCADORES_JSON else 0
-        if n > permitido:
-            nuevos[(tipo, clave)] = n - permitido
+            permitido = MARCADORES_EVENTOS.get(clave[1], 0)
+            if n > permitido:
+                nuevos[clave] = n - permitido
+        elif tipo == "json":
+            funcion, valor = clave[1], clave[2]
+            if (funcion, valor) in JSON_EXCEPCIONES:
+                continue
+            if funcion in MIGRACION and valor in MARCADORES_RETIRADOS:
+                continue
+            if valor not in MARCADORES_JSON:
+                nuevos[clave] = n
+        elif tipo == "path":
+            funcion, valor = clave[1], clave[2]
+            if funcion not in MIGRACION:
+                nuevos[clave] = n
     return nuevos
 
 
@@ -331,10 +347,12 @@ def _comparar_marcadores(nuevos: collections.Counter) -> int:
         print("marcadores: sin recorridos crudos ni .json nuevos en ciclo.py")
         return 0
     print(f"marcadores: {sum(nuevos.values())} nuevo(s)", file=sys.stderr)
-    for (tipo, clave), n in sorted(nuevos.items()):
+    for clave, n in sorted(nuevos.items()):
+        tipo = clave[0]
+        detalle = " ".join(str(x) for x in clave[1:])
         for _ in range(n):
             print(
-                f"  motor/encargos/ciclo.py: {tipo} {clave}; {MENSAJE_MARCADORES}",
+                f"  motor/encargos/ciclo.py: {tipo} {detalle}; {MENSAJE_MARCADORES}",
                 file=sys.stderr,
             )
     return 1

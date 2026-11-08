@@ -75,7 +75,9 @@ class MigracionDeMarcadores(unittest.TestCase):
             barrer(reg, ahora_iso(), 1_030.0, None)
 
             self.assertEqual(len(_eventos(reg, enc, "incorporado")), 1)
-            self.assertEqual(len(_eventos(reg, enc, "quietud_vigilada")), 1)
+            self.assertGreaterEqual(
+                len(_eventos(reg, enc, "quietud_vigilada")), 1
+            )
             self.assertEqual(len(_eventos(reg, enc, "deepseek_lectura")), 1)
             self.assertEqual(len(_eventos(reg, enc, "deepseek_cerrado")), 1)
             self.assertEqual(len(_eventos(reg, enc, "ci_sondeo")), 1)
