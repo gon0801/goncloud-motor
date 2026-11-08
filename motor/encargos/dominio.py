@@ -1043,6 +1043,23 @@ def clave_escalera(e: Encargo, rol: str) -> str:
     )
 
 
+def _clave_del_sin_progreso(e: Encargo, d: dict, rol: str) -> str:
+    """La identidad del punto que gasta un evento `sin_progreso`.
+
+    Un corte de instrumento trae su propia causa (`instrumento:<clave>`):
+    dos causas distintas no comparten escalón y la misma causa sí, aunque el
+    producto y los bloqueantes sean los mismos. Los demás eventos se leen por
+    los ids y los datos del propietario, como el resto de la escalera.
+    """
+    huella = str(d.get("huella") or "")
+    if huella.startswith("instrumento:"):
+        return (
+            f"{e.fase_activa}:{e.avances}:{rol}:{huella}:"
+            f"{_huella_operador(e)}"
+        )
+    return clave_escalera(e, rol)
+
+
 def pasos_escalera(
     e: Encargo, rol: str, clave: str | None = None
 ) -> tuple[str, ...]:
@@ -1884,7 +1901,7 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
         # del pedido del revisor) y los pasos ya gastados se guardan sobre esa
         # clave. No hay contador global que resincronizar.
         rol = str(d.get("rol") or "responsable")
-        clave = clave_escalera(e, rol)
+        clave = _clave_del_sin_progreso(e, d, rol)
         diagnostico = str(d.get("diagnostico") or d.get("causa") or "")
         e = replace(e, vuelta_contada=e.generacion)
         if d.get("nueva"):
