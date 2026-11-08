@@ -1,0 +1,1574 @@
+{
+ "tipos": [
+  [
+   [
+    "motor/avisos.py",
+    "reportOptionalMemberAccess",
+    "\"que_hacer\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/criterios.py",
+    "reportArgumentType",
+    "Argument of type \"str\" cannot be assigned to parameter \"fase\" of type \"Fase\" in function \"__init__\"\n  Type \"str\" is not assignable to type \"Fase\"\n    \"str\" is not assignable to type \"Literal['acepta']\"\n    \"str\" is not assignable to type \"Literal['integracion']\"\n    \"str\" is not assignable to type \"Literal['instalacion']\"\n    \"str\" is not assignable to type \"Literal['prueba_real']\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/criterios.py",
+    "reportArgumentType",
+    "Argument of type \"str\" cannot be assigned to parameter \"proteccion\" of type \"Literal['seguridad', 'datos_dinero', 'comportamiento', 'prueba_exigible']\" in function \"__init__\"\n  Type \"str\" is not assignable to type \"Literal['seguridad', 'datos_dinero', 'comportamiento', 'prueba_exigible']\"\n    \"str\" is not assignable to type \"Literal['seguridad']\"\n    \"str\" is not assignable to type \"Literal['datos_dinero']\"\n    \"str\" is not assignable to type \"Literal['comportamiento']\"\n    \"str\" is not assignable to type \"Literal['prueba_exigible']\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/daemon.py",
+    "reportArgumentType",
+    "Argument of type \"dict[Unknown, Unknown] | None\" cannot be assigned to parameter \"d\" of type \"dict[Unknown, Unknown]\" in function \"from_dict\"\n  Type \"dict[Unknown, Unknown] | None\" is not assignable to type \"dict[Unknown, Unknown]\"\n    \"None\" is not assignable to \"dict[Unknown, Unknown]\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/daemon.py",
+    "reportArgumentType",
+    "Argument of type \"dict[Unknown, Unknown] | None\" cannot be assigned to parameter \"plan\" of type \"dict[Unknown, Unknown]\" in function \"_huella\"\n  Type \"dict[Unknown, Unknown] | None\" is not assignable to type \"dict[Unknown, Unknown]\"\n    \"None\" is not assignable to \"dict[Unknown, Unknown]\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/daemon.py",
+    "reportArgumentType",
+    "Argument of type \"dict[str, int] | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"dict[str, int] | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"dict[str, int]\" is not assignable to \"Iterable[list[bytes]]\"\n      Type parameter \"_T_co@Iterable\" is covariant, but \"str\" is not a subtype of \"list[bytes]\"\n        \"str\" is not assignable to \"list[bytes]\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/daemon.py",
+    "reportAssignmentType",
+    "Type \"dict[bytes, bytes]\" is not assignable to declared type \"dict[str, int]\"\n  \"dict[bytes, bytes]\" is not assignable to \"dict[str, int]\"\n    Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n    Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"int\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/daemon.py",
+    "reportCallIssue",
+    "No overloads for \"__init__\" match the provided arguments"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/daemon.py",
+    "reportOptionalMemberAccess",
+    "\"get\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/daemon.py",
+    "reportOptionalSubscript",
+    "Object of type \"None\" is not subscriptable"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/diagnostico.py",
+    "reportOptionalMemberAccess",
+    "\"get\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportArgumentType",
+    "Argument of type \"Literal[True]\" cannot be assigned to parameter \"value\" of type \"str\" in function \"__setitem__\"\n  \"Literal[True]\" is not assignable to \"str\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportArgumentType",
+    "Argument of type \"str | Unknown | None\" cannot be assigned to parameter \"retry_after_s\" of type \"float | None\" in function \"pausa_cuenta_s\"\n  Type \"str | Unknown | None\" is not assignable to type \"float | None\"\n    Type \"str\" is not assignable to type \"float | None\"\n      \"str\" is not assignable to \"float\"\n      \"str\" is not assignable to \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportArgumentType",
+    "Argument of type \"tuple[str | None, Literal[False]]\" cannot be assigned to parameter \"object\" of type \"tuple[str, bool]\" in function \"append\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportAttributeAccessIssue",
+    "\"LK_LOCK\" is not a known attribute of module \"msvcrt\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportAttributeAccessIssue",
+    "\"LK_UNLCK\" is not a known attribute of module \"msvcrt\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportAttributeAccessIssue",
+    "\"locking\" is not a known attribute of module \"msvcrt\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportAttributeAccessIssue",
+    "Cannot access attribute \"faltas\" for class \"Cumple\"\n  Attribute \"faltas\" is unknown"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportOperatorIssue",
+    "Operator \"+\" not supported for types \"float\" and \"float | None\"\n  Operator \"+\" not supported for types \"float\" and \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportOptionalMemberAccess",
+    "\"get\" is not a known attribute of \"None\""
+   ],
+   "8"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "reportOptionalSubscript",
+    "Object of type \"None\" is not subscriptable"
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/efimeras.py",
+    "reportOptionalMemberAccess",
+    "\"group\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/arranque.py",
+    "reportOptionalIterable",
+    "Object of type \"None\" cannot be used as iterable value"
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/autenticacion_kimi.py",
+    "reportArgumentType",
+    "Argument of type \"Unknown | None\" cannot be assigned to parameter \"token\" of type \"str\" in function \"_claims\"\n  Type \"Unknown | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\""
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/encargos/autenticacion_kimi.py",
+    "reportArgumentType",
+    "Argument of type \"Unknown | str | None\" cannot be assigned to parameter \"refresh\" of type \"str\" in function \"_refresh\"\n  Type \"Unknown | str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/autenticacion_kimi.py",
+    "reportArgumentType",
+    "Argument of type \"Unknown | str | None\" cannot be assigned to parameter \"token\" of type \"str\" in function \"_claims\"\n  Type \"Unknown | str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/autenticacion_kimi.py",
+    "reportOptionalMemberAccess",
+    "\"get\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/autenticacion_kimi.py",
+    "reportOptionalSubscript",
+    "Object of type \"None\" is not subscriptable"
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"e\" of type \"Encargo\" in function \"decision_fallo\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"e\" of type \"Encargo\" in function \"vista\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "13"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_anotar_impedimento\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_anotar_instrumento\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_aplica_entrega\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_autoridad_cerrada_resuelta\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_decision\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_devolver_correcciones\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_edad\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_entregar_con_pendientes\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_incorporar\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_intentar_cierre\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_lanzar_uno\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_limpiar_encargo_cerrado\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_mirar_autoridad\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_paso_entrega\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_refrescar_cuerpo_fuera_de_alcance\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_releer_deepseek\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_revisar_ci_del_pr\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_revisar_deepseek_del_cerrado\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_revision_aprobada_vigente\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_soltar_conductor\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_sonda_entorno\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_vigilar_quietud\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Encargo | None\" cannot be assigned to parameter \"enc\" of type \"Encargo\" in function \"_vista_o_minima\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"Unknown | Path | None\" cannot be assigned to parameter \"home\" of type \"Path\" in function \"anotar_trabajo\"\n  Type \"Unknown | Path | None\" is not assignable to type \"Path\"\n    \"None\" is not assignable to \"Path\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"list[str]\" cannot be assigned to parameter \"value\" of type \"str\" in function \"__setitem__\"\n  \"list[str]\" is not assignable to \"str\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportArgumentType",
+    "Argument of type \"object\" cannot be assigned to parameter \"sequence\" of type \"SupportsLenAndGetItem[_T@reversed]\" in function \"__new__\"\n  \"object\" is incompatible with protocol \"SupportsLenAndGetItem[_T@reversed]\"\n    \"__len__\" is not present\n    \"__getitem__\" is not present"
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportAssignmentType",
+    "Type \"Encargo | None\" is not assignable to declared type \"Encargo\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "18"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportAttributeAccessIssue",
+    "Cannot access attribute \"ver\" for class \"object\"\n  Attribute \"ver\" is unknown"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportCallIssue",
+    "No overloads for \"__new__\" match the provided arguments"
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"abrir_pr\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"actualizar_cuerpo\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"deepseek_huella\" is not a known attribute of \"None\""
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"entrega\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"estado\" is not a known attribute of \"None\""
+   ],
+   "11"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"firma_fallo\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"get\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"id\" is not a known attribute of \"None\""
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"impedimento\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"integrado_sha\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"intentos_nuevos\" is not a known attribute of \"None\""
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"marcar_listo\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"pendientes_entrega\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"pr_numero\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"proc\" is not a known attribute of \"None\""
+   ],
+   "8"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"replace\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"requiere\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"reserva\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"ver\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalMemberAccess",
+    "\"via\" is not a known attribute of \"None\""
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportOptionalSubscript",
+    "Object of type \"None\" is not subscriptable"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/ciclo.py",
+    "reportReturnType",
+    "Type \"Encargo | None\" is not assignable to return type \"Encargo\"\n  Type \"Encargo | None\" is not assignable to type \"Encargo\"\n    \"None\" is not assignable to \"Encargo\""
+   ],
+   "61"
+  ],
+  [
+   [
+    "motor/encargos/cierre.py",
+    "reportOptionalMemberAccess",
+    "\"desplegado_recibo\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/cierre.py",
+    "reportOptionalMemberAccess",
+    "\"firma\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/cli.py",
+    "reportOptionalCall",
+    "Object of type \"None\" cannot be called"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/cli.py",
+    "reportOptionalMemberAccess",
+    "\"agentes\" is not a known attribute of \"None\""
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/encargos/cli.py",
+    "reportOptionalMemberAccess",
+    "\"estado\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/cli.py",
+    "reportOptionalMemberAccess",
+    "\"modelos_solicitados\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/comprobacion.py",
+    "reportArgumentType",
+    "Argument of type \"Path | None\" cannot be assigned to parameter \"base\" of type \"Path\" in function \"__init__\"\n  Type \"Path | None\" is not assignable to type \"Path\"\n    \"None\" is not assignable to \"Path\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/comprobacion.py",
+    "reportArgumentType",
+    "Argument of type \"Path | None\" cannot be assigned to parameter \"base\" of type \"Path\" in function \"leer_parada_local\"\n  Type \"Path | None\" is not assignable to type \"Path\"\n    \"None\" is not assignable to \"Path\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/comprobacion.py",
+    "reportArgumentType",
+    "Argument of type \"Path | None\" cannot be assigned to parameter \"base\" of type \"Path\" in function \"turno\"\n  Type \"Path | None\" is not assignable to type \"Path\"\n    \"None\" is not assignable to \"Path\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/encargos/dominio.py",
+    "reportArgumentType",
+    "Argument of type \"Fase | None\" cannot be assigned to parameter \"fase\" of type \"Fase\" in function \"_reabrir_en_el_pr\"\n  Type \"Fase | None\" is not assignable to type \"Fase\"\n    \"None\" is not assignable to \"Fase\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/dominio.py",
+    "reportOptionalMemberAccess",
+    "\"id\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/dominio.py",
+    "reportOptionalMemberAccess",
+    "\"inspeccion_pendiente\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/frontera.py",
+    "reportAttributeAccessIssue",
+    "Cannot assign to attribute \"vigente\" for class \"DestinoEnsayo\"\n  Expression of type \"() -> bool\" cannot be assigned to attribute \"vigente\" of class \"DestinoEnsayo\"\n    \"FunctionType\" is not assignable to \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/entrega.py",
+    "reportIndexIssue",
+    "\"__getitem__\" method not defined on type \"object\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/catalogos.py",
+    "reportArgumentType",
+    "Argument of type \"str | None\" cannot be assigned to parameter \"ejecutable\" of type \"str\" in function \"_argv\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/catalogos.py",
+    "reportArgumentType",
+    "Argument of type \"str | None\" cannot be assigned to parameter \"ejecutable\" of type \"str\" in function \"_codex_modelos\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/catalogos.py",
+    "reportOptionalIterable",
+    "Object of type \"None\" cannot be used as iterable value"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/catalogos.py",
+    "reportOptionalMemberAccess",
+    "\"close\" is not a known attribute of \"None\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/flota/catalogos.py",
+    "reportOptionalMemberAccess",
+    "\"flush\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/catalogos.py",
+    "reportOptionalMemberAccess",
+    "\"write\" is not a known attribute of \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/control.py",
+    "reportArgumentType",
+    "Argument of type \"Literal[True]\" cannot be assigned to parameter \"value\" of type \"str\" in function \"__setitem__\"\n  \"Literal[True]\" is not assignable to \"str\""
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/flota/control.py",
+    "reportArgumentType",
+    "Argument of type \"Path | None\" cannot be assigned to parameter \"gen\" of type \"Path\" in function \"_lanzadores_de\"\n  Type \"Path | None\" is not assignable to type \"Path\"\n    \"None\" is not assignable to \"Path\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/distribuidores.py",
+    "reportArgumentType",
+    "Argument of type \"dict[str, str | int]\" cannot be assigned to parameter \"m\" of type \"Iterable[tuple[str, str]]\" in function \"update\"\n  \"Literal['estado']\" is not assignable to \"tuple[str, str]\"\n  \"Literal['winerror']\" is not assignable to \"tuple[str, str]\"\n  \"Literal['motivo']\" is not assignable to \"tuple[str, str]\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/distribuidores.py",
+    "reportArgumentType",
+    "Argument of type \"str | None\" cannot be assigned to parameter \"args\" of type \"StrPath\" in function \"__init__\"\n  Type \"str | None\" is not assignable to type \"StrPath\"\n    Type \"None\" is not assignable to type \"StrPath\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"PathLike[str]\"\n        \"__fspath__\" is not present"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/distribuidores.py",
+    "reportArgumentType",
+    "Argument of type \"str | None\" cannot be assigned to parameter \"args\" of type \"StrPath\" in function \"__new__\"\n  Type \"str | None\" is not assignable to type \"StrPath\"\n    Type \"None\" is not assignable to type \"StrPath\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"PathLike[str]\"\n        \"__fspath__\" is not present"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/distribuidores.py",
+    "reportCallIssue",
+    "No overloads for \"update\" match the provided arguments"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/manifiesto.py",
+    "reportArgumentType",
+    "Argument of type \"tuple[tuple[str, str], ...]\" cannot be assigned to parameter \"value\" of type \"None\" in function \"__setitem__\"\n  \"tuple[tuple[str, str], ...]\" is not assignable to \"None\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/turnos.py",
+    "reportArgumentType",
+    "Argument of type \"Path | None\" cannot be assigned to parameter \"gen\" of type \"Path\" in function \"_turno_agente\"\n  Type \"Path | None\" is not assignable to type \"Path\"\n    \"None\" is not assignable to \"Path\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/turnos.py",
+    "reportOptionalCall",
+    "Object of type \"None\" cannot be called"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/machine.py",
+    "reportArgumentType",
+    "Argument of type \"Unknown | dict[Unknown, Unknown] | None\" cannot be assigned to parameter \"outcome\" of type \"dict[Unknown, Unknown]\" in function \"_aclaracion_resuelta\"\n  Type \"Unknown | dict[Unknown, Unknown] | None\" is not assignable to type \"dict[Unknown, Unknown]\"\n    \"None\" is not assignable to \"dict[Unknown, Unknown]\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/machine.py",
+    "reportGeneralTypeIssues",
+    "Expected mapping for dictionary unpack operator"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/machine.py",
+    "reportOptionalMemberAccess",
+    "\"get\" is not a known attribute of \"None\""
+   ],
+   "4"
+  ],
+  [
+   [
+    "motor/machine.py",
+    "reportOptionalSubscript",
+    "Object of type \"None\" is not subscriptable"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/notify.py",
+    "reportArgumentType",
+    "Argument of type \"Literal[0]\" cannot be assigned to parameter \"value\" of type \"str\" in function \"__setitem__\"\n  \"Literal[0]\" is not assignable to \"str\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/plataforma/__init__.py",
+    "reportAttributeAccessIssue",
+    "Cannot assign to attribute \"_motor_liberar\" for class \"Popen[Unknown]\"\n  Attribute \"_motor_liberar\" is unknown"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/plataforma/windows.py",
+    "reportAttributeAccessIssue",
+    "\"LK_NBLCK\" is not a known attribute of module \"msvcrt\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/plataforma/windows.py",
+    "reportAttributeAccessIssue",
+    "\"WinDLL\" is not a known attribute of module \"ctypes\""
+   ],
+   "13"
+  ],
+  [
+   [
+    "motor/plataforma/windows.py",
+    "reportAttributeAccessIssue",
+    "\"WinError\" is not a known attribute of module \"ctypes\""
+   ],
+   "5"
+  ],
+  [
+   [
+    "motor/plataforma/windows.py",
+    "reportAttributeAccessIssue",
+    "\"get_last_error\" is not a known attribute of module \"ctypes\""
+   ],
+   "8"
+  ],
+  [
+   [
+    "motor/plataforma/windows.py",
+    "reportAttributeAccessIssue",
+    "\"locking\" is not a known attribute of module \"msvcrt\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/plataforma/windows.py",
+    "reportAttributeAccessIssue",
+    "Cannot access attribute \"_handle\" for class \"Popen[Unknown]\"\n  Attribute \"_handle\" is unknown"
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/plataforma/windows.py",
+    "reportAttributeAccessIssue",
+    "Cannot assign to attribute \"_motor_liberar\" for class \"Popen[str]\"\n  Attribute \"_motor_liberar\" is unknown"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/pstack.py",
+    "reportOptionalMemberAccess",
+    "\"get\" is not a known attribute of \"None\""
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/servicio.py",
+    "reportArgumentType",
+    "Argument of type \"list[Unknown]\" cannot be assigned to parameter \"value\" of type \"str\" in function \"__setitem__\"\n  \"list[Unknown]\" is not assignable to \"str\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/store.py",
+    "reportArgumentType",
+    "Argument of type \"int | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"int | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\""
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/store.py",
+    "reportArgumentType",
+    "Argument of type \"int | None\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"int | None\" is not assignable to type \"ConvertibleToInt\"\n    Type \"None\" is not assignable to type \"ConvertibleToInt\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"None\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"None\" is incompatible with protocol \"SupportsIndex\"\n  ..."
+   ],
+   "1"
+  ]
+ ],
+ "lint": [
+  [
+   [
+    "docs/evidence/correcciones-3-4/demo-durable.py",
+    "E401",
+    "Multiple imports on one line"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/demo-durable.py",
+    "E702",
+    "Multiple statements on one line (semicolon)"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-canal.py",
+    "E401",
+    "Multiple imports on one line"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-canal.py",
+    "E701",
+    "Multiple statements on one line (colon)"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-canal.py",
+    "E702",
+    "Multiple statements on one line (semicolon)"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-promocion-ejecutor.py",
+    "E401",
+    "Multiple imports on one line"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-promocion-ejecutor.py",
+    "E702",
+    "Multiple statements on one line (semicolon)"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-promocion-ejecutor.py",
+    "F401",
+    "`motor.integraciones.directores.resultado_directo` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-revision.py",
+    "E401",
+    "Multiple imports on one line"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-revision.py",
+    "E402",
+    "Module level import not at top of file"
+   ],
+   "2"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-revision.py",
+    "E702",
+    "Multiple statements on one line (semicolon)"
+   ],
+   "2"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-ronda-2.py",
+    "E401",
+    "Multiple imports on one line"
+   ],
+   "1"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-ronda-2.py",
+    "E402",
+    "Module level import not at top of file"
+   ],
+   "2"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-ronda-2.py",
+    "E701",
+    "Multiple statements on one line (colon)"
+   ],
+   "2"
+  ],
+  [
+   [
+    "docs/evidence/correcciones-3-4/verif-ronda-2.py",
+    "E702",
+    "Multiple statements on one line (semicolon)"
+   ],
+   "12"
+  ],
+  [
+   [
+    "motor/daemon.py",
+    "B023",
+    "Function definition does not bind loop variable `plan`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/doctor.py",
+    "B905",
+    "`zip()` without an explicit `strict=` parameter"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/effects.py",
+    "B905",
+    "`zip()` without an explicit `strict=` parameter"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/autenticacion_kimi.py",
+    "E731",
+    "Do not assign a `lambda` expression, use a `def`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/cliente_necesidad.py",
+    "B904",
+    "Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/despliegue.py",
+    "E731",
+    "Do not assign a `lambda` expression, use a `def`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/necesidades.py",
+    "F401",
+    "`motor.plataforma` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/politica_despliegue.py",
+    "B905",
+    "`zip()` without an explicit `strict=` parameter"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/encargos/politica_despliegue.py",
+    "E731",
+    "Do not assign a `lambda` expression, use a `def`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/flota/actualizaciones.py",
+    "B904",
+    "Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling"
+   ],
+   "3"
+  ],
+  [
+   [
+    "motor/flota/catalogos.py",
+    "E741",
+    "Ambiguous variable name: `l`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/github.py",
+    "B905",
+    "`zip()` without an explicit `strict=` parameter"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/integraciones/directores.py",
+    "B007",
+    "Loop control variable `ident` not used within loop body"
+   ],
+   "2"
+  ],
+  [
+   [
+    "motor/previa.py",
+    "F401",
+    "`.effects._run` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/previa.py",
+    "F401",
+    "`shutil` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "motor/previa.py",
+    "F841",
+    "Local variable `env` is assigned to but never used"
+   ],
+   "1"
+  ],
+  [
+   [
+    "ops/ensayo_encargos.py",
+    "E402",
+    "Module level import not at top of file"
+   ],
+   "2"
+  ],
+  [
+   [
+    "ops/ensayo_fases_3_4.py",
+    "F841",
+    "Local variable `control` is assigned to but never used"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/entorno.py",
+    "F401",
+    "`pathlib.Path` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_aviso_cierre.py",
+    "F841",
+    "Local variable `ident` is assigned to but never used"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_avisos_canal_caido.py",
+    "F841",
+    "Local variable `ident` is assigned to but never used"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_bucle_instrumento.py",
+    "F401",
+    "`subprocess` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_capacidades_lanzador.py",
+    "B023",
+    "Function definition does not bind loop variable `esperado`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_capacidades_lanzador.py",
+    "B023",
+    "Function definition does not bind loop variable `falla`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_ci_en_el_pr.py",
+    "F401",
+    "`pathlib.Path` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_ci_en_el_pr.py",
+    "F541",
+    "f-string without any placeholders"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_ci_en_el_pr.py",
+    "F841",
+    "Local variable `repo` is assigned to but never used"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_cuerpo_pr.py",
+    "F401",
+    "`tests.test_flujo_revisiones.Recorrido` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_director_capacidades.py",
+    "F401",
+    "`plistlib` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_director_capacidades.py",
+    "F841",
+    "Local variable `secciones_reales` is assigned to but never used"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_entrega_misma_version.py",
+    "F401",
+    "`dataclasses.replace` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_entrega_misma_version.py",
+    "F401",
+    "`motor.encargos.ciclo` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_entrega_misma_version.py",
+    "F401",
+    "`motor.github.FakeGitHub` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_entrega_misma_version.py",
+    "F401",
+    "`unittest.mock` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_freno_vueltas.py",
+    "F401",
+    "`motor.encargos.dominio.bloqueantes_abiertos` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_freno_vueltas.py",
+    "F401",
+    "`motor.github.ChecksVerdict` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_freno_vueltas.py",
+    "F401",
+    "`tests.test_entrega_misma_version._barrido` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_freno_vueltas.py",
+    "F401",
+    "`tests.test_entrega_misma_version._rerun_del_check` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_freno_vueltas.py",
+    "F401",
+    "`time` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_github_despliegue.py",
+    "B023",
+    "Function definition does not bind loop variable `texto`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_motor_sin_personas.py",
+    "F841",
+    "Local variable `vuelta_gh` is assigned to but never used"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_no_caerse.py",
+    "B023",
+    "Function definition does not bind loop variable `lanzados`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_politica_despliegue_fase.py",
+    "B905",
+    "`zip()` without an explicit `strict=` parameter"
+   ],
+   "2"
+  ],
+  [
+   [
+    "tests/test_prepara_pc.py",
+    "E731",
+    "Do not assign a `lambda` expression, use a `def`"
+   ],
+   "3"
+  ],
+  [
+   [
+    "tests/test_previa.py",
+    "F401",
+    "`tests.test_puro.ev` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_puro.py",
+    "B006",
+    "Do not use mutable data structures for argument defaults"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_rama_fase.py",
+    "F401",
+    "`json` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_reabrir_cierre_forzado.py",
+    "F401",
+    "`pathlib.Path` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_reevalua.py",
+    "F401",
+    "`motor.conf.RepoConf` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_relevo.py",
+    "B006",
+    "Do not use mutable data structures for argument defaults"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_relevo_sin_modelos.py",
+    "F401",
+    "`json` imported but unused"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_runwrap.py",
+    "B905",
+    "`zip()` without an explicit `strict=` parameter"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tests/test_sesion_interprete.py",
+    "B023",
+    "Function definition does not bind loop variable `pedidos`"
+   ],
+   "1"
+  ],
+  [
+   [
+    "tools/calidad.py",
+    "B904",
+    "Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling"
+   ],
+   "3"
+  ]
+ ]
+}

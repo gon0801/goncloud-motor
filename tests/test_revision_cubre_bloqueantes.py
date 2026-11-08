@@ -15,19 +15,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from motor.encargos.ciclo import _sin_avance, ahora_iso, recibir
+from motor.encargos.ciclo import ahora_iso, recibir
 from motor.encargos.comprobacion import firma_producto, validar_juicio
 from motor.encargos.dominio import (
     AlcanceRevision,
     Hallazgo,
     _bloques_comunes,
-    alcance_de,
     bloqueantes_abiertos,
-    reducir,
-    vista,
 )
 from motor.encargos.registro import Registro
-from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
 
 
 def _alcance(hallazgos: tuple[Hallazgo, ...], clase: str = "correccion") -> AlcanceRevision:

@@ -810,6 +810,43 @@ def bloqueantes_abiertos(e: Encargo, origen: str = "") -> tuple[Hallazgo, ...]:
     )
 
 
+def nivel_pr_derivado(e: Encargo) -> Encargo:
+    """Sube a `pr` una fase con PR abierto y una lectura de DeepSeek sin
+    bloqueantes sobre el SHA vigente.
+
+    «DeepSeek leyó el SHA sin bloqueantes» y el nivel `pr` se guardaban por
+    separado. Cualquier camino que cierre el último bloqueante sin anotar una
+    lectura (un continuar que descarta lo que la restricción deja fuera, un
+    ajuste del propietario) dejaba `pr_abierto` y la puerta de integración no
+    abría. Aquí se aplica la misma regla que `deepseek_leido`: solo sube, nunca
+    baja un integrado o desplegado, y exige el PR y la lectura del mismo SHA.
+
+    Un CI rojo de código del SHA vigente reabrió la fase para corregirlo. Esa
+    reapertura no es un bloqueante de DeepSeek, así que la derivación no puede
+    deshacerla: subir el nivel ahí integraría el PR sin la corrección.
+    """
+    fase = e.fase_actual
+    if fase is None:
+        return e
+    actual = fase.nivel_alcanzado
+    if _ORDEN_NIVEL.get(actual, 0) >= _ORDEN_NIVEL["pr"]:
+        return e
+    if not fase.pr_numero or not fase.pr_sha:
+        return e
+    if (
+        fase.ci_pr_estado == "rojo"
+        and fase.ci_pr_clase == "codigo"
+        and fase.ci_pr_sha
+        and fase.ci_pr_sha == fase.pr_sha
+    ):
+        return e
+    if fase.deepseek_sha != fase.pr_sha:
+        return e
+    if bloqueantes_abiertos(e, "deepseek"):
+        return e
+    return con_fase(e, replace(fase, nivel_alcanzado="pr"))
+
+
 def _fusionar(
     actuales: tuple[Hallazgo, ...], nuevos: tuple[Hallazgo, ...]
 ) -> tuple[Hallazgo, ...]:
@@ -2787,7 +2824,9 @@ def _limpiar_para_continuar(e: Encargo) -> Encargo:
                     fuera = [x for x in fuera if x[0] != h.id]
                     fuera.append((h.id, h.titulo, razon))
             hallazgos.append(h)
-        e = con_fase(e, replace(fase, hallazgos=tuple(hallazgos)))
+        e = nivel_pr_derivado(
+            con_fase(e, replace(fase, hallazgos=tuple(hallazgos)))
+        )
     return replace(
         e,
         preguntas=(),
@@ -3251,7 +3290,8 @@ def _cerrar_hallazgos(
         else h
         for h in fase.hallazgos
     )
-    return _con_progreso(e, con_fase(e, replace(fase, hallazgos=hallazgos))), pedidos
+    nuevo = _con_progreso(e, con_fase(e, replace(fase, hallazgos=hallazgos)))
+    return nivel_pr_derivado(nuevo), pedidos
 
 
 def _pedido_de_revision(fase_id: str, d: dict) -> tuple[str, ...]:

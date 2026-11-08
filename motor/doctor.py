@@ -7,6 +7,7 @@ PATH = `path_extra` + el PATH del servicio (no el de quien teclea).
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto
 
 import os
 import string
@@ -89,7 +90,7 @@ def _prueba(
     ) as t:
         d = Path(t)
         brief, result = d / "brief.md", d / "result.json"
-        brief.write_text(ENCARGO + "\n", encoding="utf-8")
+        escribir_texto(brief, ENCARGO + "\n")
         argv = argv_de_ruta(
             ruta,
             brief=str(brief),
