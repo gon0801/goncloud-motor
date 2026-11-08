@@ -1,6 +1,7 @@
 """La escritura externa pasa por aquí. El trabajador no abre el destino."""
 
 from __future__ import annotations
+from motor.io import leer_json
 
 import hashlib
 import json
@@ -106,7 +107,7 @@ class DestinoEnsayo:
         path = self.raiz / f"{_nombre(clave)}.json"
         if not path.exists():
             return {"estado": "ausente"}
-        return json.loads(path.read_text(encoding="utf-8"))
+        return leer_json(path)
 
     def aplicar(self, clave: str, cuerpo: str, operacion: str = "") -> dict:
         with turno(self.raiz.parent):
@@ -644,7 +645,7 @@ def _activar_parada_local(base: Path, clave: str, hora: str) -> dict:
     """Impide trabajo en este host. No escribe el registro canónico ni autoriza escrituras."""
     path = Path(base) / "parada-local.json"
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+        return leer_json(path)
     recibo = "loc_" + hashlib.sha256(clave.encode()).hexdigest()[:12]
     datos = {"clave": clave, "recibo": recibo, "hora": hora, "escrituras": False}
     _atomico(path, json.dumps(datos, sort_keys=True))
@@ -655,4 +656,4 @@ def leer_parada_local(base: Path) -> dict | None:
     path = Path(base) / "parada-local.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return leer_json(path)

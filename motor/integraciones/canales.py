@@ -5,6 +5,7 @@ Kuma. Leerlo no toca el canal: un canal caído no puede esconder que está caíd
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import json
 import re
@@ -62,7 +63,7 @@ def _ruta(base: Path, canal: str) -> Path:
 
 def _leer(path: Path) -> dict:
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = leer_json(path)
     except (OSError, ValueError):
         return {}
     return doc if isinstance(doc, dict) else {}
@@ -71,7 +72,7 @@ def _leer(path: Path) -> dict:
 def _guardar(path: Path, doc: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporal = path.with_suffix(".tmp")
-    temporal.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    escribir_texto(temporal, json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
     temporal.replace(path)
 
 

@@ -27,6 +27,7 @@
 """
 
 from __future__ import annotations
+from motor.io import leer_json, leer_texto
 
 import argparse
 import json
@@ -77,7 +78,7 @@ def _huella_pstack(d: Path) -> tuple[dict[str, tuple[int, int]], bool]:
     cuenta siempre; con pid, solo si su shim sigue vivo) según el `pstack.json` del intento.
     Se mira cada archivo, no su carpeta: agregar líneas a un archivo no mueve la hora de la carpeta."""
     try:
-        registros = json.loads((d / "pstack.json").read_text(encoding="utf-8"))[
+        registros = leer_json((d / "pstack.json"))[
             "registros"
         ]
     except (OSError, ValueError, KeyError, TypeError):
@@ -101,7 +102,7 @@ def _huella_pstack(d: Path) -> tuple[dict[str, tuple[int, int]], bool]:
     abierta = False
     for f in (d / "llamadas").glob("*.json"):
         try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
+            rec = leer_json(f)
         except (OSError, ValueError):
             continue
         if not (isinstance(rec, dict) and "fin" in rec and rec["fin"] is None):
@@ -302,8 +303,8 @@ def main(argv: list[str] | None = None) -> int:
                     "cerrado_tras_resultado": cerrado,
                     "timed_out": timed_out,
                     "no_progress": no_progress,
-                    "tail": log.read_text(errors="replace", encoding="utf-8")[-2000:],
-                    "stderr_tail": errores.read_text(errors="replace", encoding="utf-8")[-2000:],
+                    "tail": leer_texto(log, errors="replace")[-2000:],
+                    "stderr_tail": leer_texto(errores, errors="replace")[-2000:],
                     "fotos": fotos[-5:],
                     "segundos": round(time.time() - inicio, 1),
                     "toco_carpeta": _huella_arbol(cwd) != antes,
