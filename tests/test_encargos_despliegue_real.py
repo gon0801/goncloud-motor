@@ -63,7 +63,10 @@ def git(raiz, *args):
 
 def paso(caso):
     reg, ident, espacio, *_ = caso
-    limite = time.monotonic() + 15
+    # 30 s: en un runner hospedado cargado el trabajador tarda en publicar el
+    # recibo; el modulo entero corrio 7 min en esa condicion y los 15 s
+    # anteriores salieron apretados.
+    limite = time.monotonic() + 30
     while True:
         final = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
         if "ejecutando receta" not in final.motivo or final.nivel_alcanzado == "desplegado":
@@ -72,7 +75,7 @@ def paso(caso):
         time.sleep(0.05)
 
 
-def recibo_final(reg, limite=15):
+def recibo_final(reg, limite=30):
     """Espera el recibo que el trabajador publica al terminar, no el parcial.
 
     El recibo apunta el paso antes de ejecutarlo y escribe su código después.
@@ -150,7 +153,7 @@ class DespliegueReal(unittest.TestCase):
         # Una edición local posterior nunca es la receta que llega a producción.
         (espacio / "d.sh").write_text("exit 91\n")
         final = paso(despliegue)
-        assert final.nivel_alcanzado == "desplegado"
+        assert final.nivel_alcanzado == "desplegado", final.motivo
         assert (destino / "pasos").read_text().splitlines() == [
             f"desplegar:{sha}", f"checklist:{sha}",
         ]
@@ -336,7 +339,7 @@ class DespliegueReal(unittest.TestCase):
         assert final.nivel_alcanzado == "integrado"
         assert not (destino / "pasos").exists()
 
-    def test_parada_espera_al_rollback_y_no_sella(self):  # no-roja-en-base: solo amplia la ventana de espera 10->30 s por el coste del runner de Windows; el comportamiento afirmado es el de la base
+    def test_parada_espera_al_rollback_y_no_sella(self):  # no-roja-en-base: amplía ventanas de espera del test (10->30 s y 5->15 s) por el coste del runner de Windows; el comportamiento afirmado es el de la base
         despliegue = self.despliegue
         from motor.encargos.despliegue import observacion
         reg, ident, espacio, destino, integrar = despliegue
@@ -361,7 +364,10 @@ class DespliegueReal(unittest.TestCase):
             inicio = time.monotonic()
             enc = ciclo._paso_despliegue(reg, reg.fold(ident), espacio, HORA)
             assert enc.nivel_alcanzado == "integrado"
-            assert time.monotonic() - inicio < 5  # la receta larga no bloquea al supervisor
+            # 15 s: lo que se afirma es que el paso no bloquea los 20 s del
+            # script; sin carga vuelve en ~1 s y en un runner cargado el
+            # arranque del bash y del trabajador se comio el tope de 5 s.
+            assert time.monotonic() - inicio < 15  # la receta larga no bloquea al supervisor
             esperar(lambda: (destino / "pasos").exists())
             ciclo.ordenar(reg, ident, "parar", "parar-durante-script", HORA)
             esperar(lambda: "rollback:" in (destino / "pasos").read_text())
