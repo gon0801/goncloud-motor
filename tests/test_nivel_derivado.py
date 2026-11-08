@@ -148,7 +148,7 @@ class ConPr(_Nivel):
         )
         self.assertEqual(e.nivel_alcanzado, "sin_cambios")
 
-    def test_una_reapertura_por_correccion_vuelve_a_pr_abierto(self):  # no-roja-en-base: caracterización de la reapertura en el mismo PR
+    def test_un_ci_rojo_del_sha_vigente_vuelve_a_pr_abierto(self):
         self.pr_abierto()
         self.deepseek()
         e = self.anotar(
