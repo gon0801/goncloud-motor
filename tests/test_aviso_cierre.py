@@ -266,7 +266,7 @@ class ElCierreEnLlano(Base):
         for prohibido in PROHIBIDOS:
             self.assertNotIn(prohibido, cuerpo)
 
-    def test_el_cierre_cancelado_o_sin_cambios_no_trae_la_frase_del_nivel(self):
+    def test_el_cierre_cancelado_o_sin_cambios_no_trae_la_frase_del_nivel(self):  # no-roja-en-base: sobre la base la frase no existe y la ausencia ya se cumple; la prueba fija el borde nuevo de que cancelado y sin_cambios no la traigan
         cancelado = self.b.encargo(
             "# cancelado con nivel\n\nAlgo que se cancela.",
             "cancela-nivel",
