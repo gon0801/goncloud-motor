@@ -17,6 +17,7 @@ from motor.encargos.ciclo import (
     consultar,
     corregir,
     ordenar,
+    plegar_aislado,
     recibir,
     resolver_entrega,
 )
@@ -1196,7 +1197,7 @@ def _apariciones_de_impedimentos(registro: Registro, encargo: str) -> dict[str, 
     """Cuántas veces se trabó el encargo por cada clase: cada paso de "no pendiente" a "pendiente" cuenta una."""
     estado, previas, cuenta = None, set(), {}
     for evento in registro.eventos(encargo):
-        estado = reducir(estado, evento)
+        estado = reducir(estado, evento, nuevo=False)
         ahora = {i.clase for i in estado.impedimentos}
         for clase in ahora - previas:
             cuenta[clase] = cuenta.get(clase, 0) + 1
@@ -1942,13 +1943,16 @@ def _cerrar_inciertos_sin_destino(encargos: dict, vista: VistaAvisos) -> None:
     Los de un encargo cerrado o de un encargo que ya no existe no vuelven a probar
     el transporte; el de un encargo activo sigue su conciliación normal. El cierre
     también se descarta: el punto 4 no abre una excepción para él y un encargo
-    cerrado no vuelve a mandar mensajes.
+    cerrado no vuelve a mandar mensajes. Un encargo que no pliega no se da por
+    cerrado: su historia ilegible no prueba que el destino se haya ido.
     """
     for ident, doc in list(vista.docs.items()):
         if doc.get("estado") != "incierto" or doc.get("tipo") == "resumen":
             continue
         encargo = str(doc.get("encargo") or "")
         enc = encargos.get(encargo) if encargo else None
+        if encargo in encargos and enc is None:
+            continue
         if enc is not None and enc.estado not in ("terminado", "cancelado"):
             continue
         doc["estado"] = "descartado"
@@ -1983,7 +1987,9 @@ def drenar(
     corte = registro.corte_avisos()
     corte_cierres = registro.corte_avisos("cierres-cancelados-v1")
     vista = VistaAvisos(registro.base)
-    encargos = {ident: registro.fold(ident) for ident in registro.ids()}
+    encargos = {
+        ident: plegar_aislado(registro, ident) for ident in registro.ids()
+    }
     terminados = {i for i, e in encargos.items() if e is not None and e.estado == "terminado"}
     _cerrar_inciertos_sin_destino(encargos, vista)
     if terminados:
