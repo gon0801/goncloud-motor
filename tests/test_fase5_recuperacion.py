@@ -197,9 +197,32 @@ class RecuperacionFase5(unittest.TestCase):
                     self.assertFalse(dominio.bloqueantes_abiertos(final))
                     self.assertEqual(next(h.estado for h in final.hallazgos if h.id == "F1"), "resuelto")
                     self.assertEqual(next(h.ancla for h in final.hallazgos if h.id == "F2"), "reporte.md:46")
-                    antes = len(reg.eventos(ident))
+                    marcadores = (
+                        "incorporado",
+                        "quietud_vigilada",
+                        "deepseek_lectura",
+                        "deepseek_cerrado",
+                        "ci_sondeo",
+                    )
+
+                    def decisiones():
+                        return [
+                            ev
+                            for ev in reg.eventos(ident)
+                            if ev["kind"] not in marcadores
+                        ]
+
+                    antes = len(decisiones())
                     ciclo.barrer(reg, HORA, 0, None, gh=gh)
-                    self.assertEqual(len(reg.eventos(ident)), antes)
+                    self.assertEqual(len(decisiones()), antes)
+                    self.assertTrue(
+                        [
+                            ev
+                            for ev in reg.eventos(ident)
+                            if ev["kind"] in marcadores
+                        ],
+                        "el sondeo del cerrado vive en el registro",
+                    )
             finally:
                 reg.close()
 

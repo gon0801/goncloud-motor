@@ -122,7 +122,12 @@ class JsonDelAgenteConBom(unittest.TestCase):
             return {"alcanzada": True, "salida": {"cerrado": True}}
 
         enc = SimpleNamespace(
-            id="enc_prueba", estado="corriendo", candidato=None, conductor="tok"
+            id="enc_prueba",
+            estado="corriendo",
+            candidato=None,
+            conductor="tok",
+            generacion=0,
+            incorporado=(),
         )
         registro = SimpleNamespace(base=Path(self._tmp.name))
         with mock.patch.object(transporte, "cargar", return_value={}), mock.patch.object(
