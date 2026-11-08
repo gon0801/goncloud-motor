@@ -194,6 +194,8 @@ def _correr(args) -> int:
                     "host": args.host,
                     "sesion": args.sesion,
                 }
+            from motor.encargos.cli import _puerto_github
+
             return _json(
                 encargar(
                     reg,
@@ -211,6 +213,7 @@ def _correr(args) -> int:
                     base_rama=args.base_rama,
                     modelos_solicitados=solicitar_modelos(args.responsable, args.revisor),
                     restricciones=tuple(args.restriccion),
+                    gh=_puerto_github(args.base),
                 )
             )
         if args.cmd == "registrar-sesion":

@@ -96,6 +96,12 @@ def componer(enc: Encargo, pedidos: list[dict], evidencia: str) -> dict:
             )
     if enc.nivel_alcanzado == "desplegado":
         detalle += " Recibo de la receta: " + enc.fase_actual.desplegado_recibo
+    if enc.nivel_efectivo:
+        detalle += (
+            f" El nivel efectivo quedó limitado a {enc.nivel_efectivo}: "
+            + (enc.nivel_efectivo_motivo or "el sondeo de capacidad ya lo comprobó")
+            + "."
+        )
     return {
         "clase": "cierre_comprobado",
         "fase": enc.fase_activa,

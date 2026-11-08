@@ -330,6 +330,27 @@ def clasificar_merge(error: BaseException) -> MergeRechazado:
     return PoliticaBloquea(texto)
 
 
+def _causa_corta(e: BaseException) -> str:
+    return " ".join(str(e).split())[:300]
+
+
+@dataclass(frozen=True)
+class CapacidadRemota:
+    """Lo que una mirada de solo lectura al remoto ya deja comprobado.
+
+    `integrar_bloqueado`: True solo con una regla fija y legible que impide
+    mergear (revisiones humanas requeridas o el actor sin permiso de push);
+    False cuando todas las fuentes consultadas salieron limpias; None cuando
+    algo quedó sin leer (red, 403 ambiguo, respuesta ilegible). None nunca
+    baja un nivel: produce espera o reintento en el flujo normal.
+    """
+
+    repo_ok: bool
+    base_ok: bool | None
+    integrar_bloqueado: bool | None
+    detalle: str = ""
+
+
 class GitHubPort(Protocol):
     def abrir_pr(
         self, repo: str, rama: str, base: str, titulo: str, cuerpo: str
@@ -364,6 +385,7 @@ class GitHubPort(Protocol):
     def disparar_workflow(
         self, repo: str, workflow: str, inputs: dict
     ) -> None: ...
+    def capacidad(self, repo: str, base: str) -> CapacidadRemota: ...
 
 
 # --------------------------------------------------------------------------- real
@@ -821,6 +843,79 @@ class GhGitHub:
         except Exception:  # noqa: BLE001  cualquier fallo (red, gh, JSON) = no se sabe
             return False
 
+    def capacidad(self, repo, base):
+        """Mirada de solo lectura: acceso al repo, rama base y reglas fijas de
+        merge. No abre PR ni mergea. Solo una regla fija y legible (revisiones
+        humanas requeridas sobre la base, o el actor sin push) devuelve True;
+        lo que no se pudo leer queda None y no baja ningún nivel."""
+        n = self.nombre(repo)
+        detalle: list[str] = []
+        try:
+            cuerpo = json.loads(self._gh("api", f"repos/{n}"))
+        except (RuntimeError, ValueError) as e:
+            return CapacidadRemota(
+                False, None, None, f"repo no legible: {_causa_corta(e)}"
+            )
+        integrar = False
+        perms = cuerpo.get("permissions") or {}
+        if perms and not perms.get("push", True):
+            integrar = True
+            detalle.append("el actor no tiene permiso de push sobre el repo")
+        try:
+            self._gh("api", f"repos/{n}/branches/{base}")
+        except RuntimeError as e:
+            if self._es_404(e):
+                detalle.append(f"la rama base {base} no está en el remoto")
+                return CapacidadRemota(True, False, None, "; ".join(detalle))
+            detalle.append(f"no se pudo leer la rama {base}: {_causa_corta(e)}")
+            return CapacidadRemota(True, None, None, "; ".join(detalle))
+        revisiones = 0
+        try:
+            prot = json.loads(self._gh("api", f"repos/{n}/branches/{base}/protection"))
+            revisiones = max(
+                revisiones,
+                int(
+                    (prot.get("required_pull_request_reviews") or {}).get(
+                        "required_approving_review_count"
+                    )
+                    or 0
+                ),
+            )
+        except RuntimeError as e:
+            # "Branch not protected" y el 403 del plan gratis dicen que no hay
+            # protección que leer: fuente limpia. Cualquier otra respuesta sin
+            # leer deja la conclusión en desconocido.
+            if not (self._sin_proteccion(e) or self._sin_funcion_en_el_plan(e)):
+                detalle.append(f"protección de {base} sin leer: {_causa_corta(e)}")
+                return CapacidadRemota(True, True, None, "; ".join(detalle))
+        try:
+            for pagina in self._paginas(
+                self._gh("api", f"repos/{n}/rules/branches/{base}", "--paginate")
+            ):
+                for regla in pagina if isinstance(pagina, list) else []:
+                    if isinstance(regla, dict) and regla.get("type") == "pull_request":
+                        revisiones = max(
+                            revisiones,
+                            int(
+                                (regla.get("parameters") or {}).get(
+                                    "required_approving_review_count"
+                                )
+                                or 0
+                            ),
+                        )
+        except RuntimeError as e:
+            if not self._sin_funcion_en_el_plan(e):
+                detalle.append(f"reglas de {base} sin leer: {_causa_corta(e)}")
+                return CapacidadRemota(True, True, None, "; ".join(detalle))
+        if revisiones >= 1:
+            integrar = True
+            detalle.append(
+                f"{base} exige {revisiones} aprobación(es) que el motor no puede dejar"
+            )
+        if not detalle:
+            detalle.append("sin reglas fijas de merge en el remoto")
+        return CapacidadRemota(True, True, integrar, "; ".join(detalle))
+
 
 # --------------------------------------------------------------------------- falso
 
@@ -828,7 +923,9 @@ class GhGitHub:
 class FakeGitHub:
     """Estado en `<dir>/github.json`. La "protección" y los checks salen de `<dir>/repos.json`:
     {"<repo>": {"requeridos": ["ci"], "solo_listo": ["completa"], "checks": {"ci": "./ci.sh"}, "privado": true}}.
-    Los checks corren el comando en una copia limpia del SHA; los de `solo_listo` no corren en borrador."""
+    Los checks corren el comando en una copia limpia del SHA; los de `solo_listo` no corren en borrador.
+    Reglas fijas de merge: "revisiones_requeridas": N o "sin_push": true bloquean `merge` y `capacidad`;
+    "capacidad": "desconocida" simula un remoto cuyas reglas no se pueden leer (no baja ningún nivel)."""
 
     def __init__(self, d: Path):
         self.d = d
@@ -895,6 +992,31 @@ class FakeGitHub:
 
     def es_privado(self, repo):
         return bool(self._cfg(repo).get("privado", True))
+
+    def capacidad(self, repo, base):
+        """Solo lectura sobre el repo local y las reglas fijas de repos.json."""
+        cfg = self._cfg(repo)
+        if str(cfg.get("capacidad") or "") == "desconocida":
+            return CapacidadRemota(True, None, None, "el remoto no deja leer sus reglas")
+        if not git("ls-remote", repo, "HEAD").stdout.strip():
+            return CapacidadRemota(False, None, None, "repo no legible")
+        if not self._punta(repo, base):
+            return CapacidadRemota(
+                True, False, None, f"la rama base {base} no está en el remoto"
+            )
+        revisiones = int(cfg.get("revisiones_requeridas") or 0)
+        if revisiones >= 1:
+            return CapacidadRemota(
+                True,
+                True,
+                True,
+                f"{base} exige {revisiones} aprobación(es) que el motor no puede dejar",
+            )
+        if cfg.get("sin_push"):
+            return CapacidadRemota(
+                True, True, True, "el actor no tiene permiso de push sobre el repo"
+            )
+        return CapacidadRemota(True, True, False, "sin reglas fijas de merge en el remoto")
 
     def _vista(self, repo: str, pr: dict) -> PrView:
         head = (
@@ -1199,6 +1321,11 @@ class FakeGitHub:
         pr = self._pr(s, repo, numero)
         if pr["estado"] == "mergeado":
             return self._vista(repo, pr)
+        cfg = self._cfg(repo)
+        if int(cfg.get("revisiones_requeridas") or 0) >= 1 or cfg.get("sin_push"):
+            raise PoliticaBloquea(
+                "la política de la rama prohibe el merge de forma fija"
+            )
         punta = self._punta(repo, pr["rama"])
         if punta != sha:
             raise PuntaMovida(
@@ -1260,6 +1387,7 @@ def para(maquina_github: str, env: dict | None = None) -> GitHubPort:
 
 __all__ = [
     "Borrador",
+    "CapacidadRemota",
     "ChecksVerdict",
     "Conflicto",
     "FakeGitHub",

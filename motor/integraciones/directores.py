@@ -299,6 +299,7 @@ def encargar(
     base_rama: str = "",
     modelos_solicitados: tuple[tuple[str, str, str], ...] = (),
     restricciones: tuple[str, ...] = (),
+    gh=None,
 ) -> dict:
     canal = nombre_canal(canal)
     entrega_nivel = resolver_entrega(entrega_nivel, repo, via)
@@ -317,6 +318,7 @@ def encargar(
         rama=rama,
         base_rama=base_rama,
         modelos_solicitados=modelos_solicitados,
+        gh=gh,
     )
     if via == "directa" and not salida.get("conflicto"):
         path = registro.base / "directo" / f"{salida['encargo']}.json"
