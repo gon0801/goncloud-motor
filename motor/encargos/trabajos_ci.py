@@ -25,6 +25,7 @@ solo se lee `jobs_extra=...`, que puede añadir un job; nunca quitar.
 """
 
 from __future__ import annotations
+from motor.io import leer_json
 
 import argparse
 import json
@@ -169,7 +170,7 @@ def _evento() -> dict:
     if not ruta or not Path(ruta).is_file():
         return {}
     try:
-        return json.loads(Path(ruta).read_text(encoding="utf-8"))
+        return leer_json(Path(ruta))
     except (OSError, ValueError):
         return {}
 

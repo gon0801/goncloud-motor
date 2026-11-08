@@ -1,4 +1,5 @@
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import hashlib
 import json
@@ -15,14 +16,14 @@ from .manifiesto import Politica, cargar, guardar, proyectar_tabla
 def _atomico(path: Path, doc: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporal = path.with_suffix(path.suffix + ".tmp")
-    temporal.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    escribir_texto(temporal, json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
     temporal.replace(path)
 
 
 def _leer(path: Path) -> dict | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return leer_json(path)
 
 
 def _git(motor: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -280,7 +281,7 @@ def _comprobar_paquete_completo(home: Path, gen: Path) -> None:
 
 def _lanzadores_de(gen: Path) -> set[str]:
     try:
-        runtime = json.loads((gen / "runtime.json").read_text(encoding="utf-8"))
+        runtime = leer_json((gen / "runtime.json"))
     except (OSError, ValueError, TypeError):
         return set()
     lanzadores = runtime.get("lanzadores")
@@ -725,7 +726,7 @@ def anotar_respaldo(home: Path, politica: Politica, respaldo: dict) -> Politica:
 
 def _json_objeto(path: Path) -> dict:
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = leer_json(path)
     except (OSError, ValueError) as exc:
         raise ValueError(f"JSON invalido en el paquete: {path.name}") from exc
     if not isinstance(doc, dict):
@@ -813,9 +814,7 @@ def publicar_proyeccion(home: Path, politica: Politica, paquete: Path) -> dict:
             raise ValueError("la proyección necesita el puesto dirigir")
         skill_rel, runtime_paths = _localizar_paquete(Path(paquete))
         texto = json.dumps(tabla, ensure_ascii=False, indent=2) + "\n"
-        (temporal / "model-routing.source.json").write_text(
-            texto, encoding="utf-8"
-        )
+        escribir_texto((temporal / "model-routing.source.json"), texto)
         poteto = temporal / "poteto"
         shutil.copytree(paquete, poteto)
         digest = hashlib.sha256((poteto / skill_rel).read_bytes()).hexdigest()
@@ -839,12 +838,9 @@ def publicar_proyeccion(home: Path, politica: Politica, paquete: Path) -> dict:
                 {"what": "tools", "digest": "sha256:" + herramientas.hexdigest()},
             ],
         }
-        (temporal / "flota.json").write_text(
-            json.dumps(flota, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        json.loads((temporal / "model-routing.source.json").read_text(encoding="utf-8"))
-        json.loads((temporal / "flota.json").read_text(encoding="utf-8"))
+        escribir_texto((temporal / "flota.json"), json.dumps(flota, ensure_ascii=False, indent=2) + "\n")
+        leer_json((temporal / "model-routing.source.json"))
+        leer_json((temporal / "flota.json"))
     except BaseException:
         shutil.rmtree(temporal, ignore_errors=True)
         raise

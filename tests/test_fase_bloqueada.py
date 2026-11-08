@@ -685,7 +685,6 @@ class ElHallazgoTardioDeLaBloqueadaNoSePierde(unittest.TestCase):
 
     def test_la_epoca_del_cierre_parcial_es_la_del_bloqueo(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            from datetime import datetime, timedelta, timezone
             from tests.test_flujo_revisiones import _paso_entrega
 
             vuelta, r = _entrega_pr(self, tmp, "fb-epoch", _GhPorNumero, nivel="pr")

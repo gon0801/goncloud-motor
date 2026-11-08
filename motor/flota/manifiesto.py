@@ -1,4 +1,5 @@
 from __future__ import annotations
+from motor.io import escribir_texto, leer_texto
 
 import json
 from dataclasses import dataclass
@@ -65,7 +66,7 @@ def _exigir_texto(valor: object, campo: str) -> str:
 
 def cargar(path: Path) -> Politica:
     try:
-        doc = tomllib.loads(path.read_text(encoding="utf-8"))
+        doc = tomllib.loads(leer_texto(path))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ManifiestoInvalido(str(exc)) from exc
     return desde_doc(doc)
@@ -196,7 +197,7 @@ def guardar(path: Path, politica: Politica) -> None:
     texto = emitir(politica)
     desde_doc(tomllib.loads(texto))
     temporal = path.with_suffix(path.suffix + ".tmp")
-    temporal.write_text(texto, encoding="utf-8")
+    escribir_texto(temporal, texto)
     temporal.replace(path)
 
 

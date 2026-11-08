@@ -680,7 +680,9 @@ class TurnosFlota(unittest.TestCase):
         self.assertEqual(revertir(self.home)["accion"], "revertido")
         self.assertEqual(asignar(self.home), a)
 
-    def _replica(self, nombre: str, con_openclaw: bool = False):
+    def _replica(
+        self, nombre: str, con_openclaw: bool = False, repo_hermes: Path | None = None
+    ):
         """Home de réplica con una generación vigente que ya exportó config y perfiles."""
         origen, _a, gen_a = self._flota(nombre)
         _runtime_preparada(self.home, gen_a, "grok", "v1")
@@ -723,7 +725,9 @@ class TurnosFlota(unittest.TestCase):
             ),
         )
         snap = self.base / (nombre + "-snap.json")
-        exportar(self.home, snap)
+        self.publicado = exportar(
+            self.home, snap, repo_hermes=repo_hermes, motor_origen=origen
+        )
         importar(self.home, snap)
         plugin = gen_a / "config/hermes/plugins/goncloud-team/poteto.py"
         plugin.write_text(
@@ -914,6 +918,304 @@ class TurnosFlota(unittest.TestCase):
         }
         self.assertIn(Path("perfiles/claw/openclaw.json").parts, declarados)
         self.assertIn(Path("perfiles/claw/modelos.json").parts, declarados)
+
+    def _repo_hermes(self, nombre: str, thinking: bool) -> Path:
+        repo = _repo(self.base / nombre)
+        (repo / "claw-routing.json").write_text(
+            json.dumps({"agents": {"main": {"row": "director", "thinking": thinking}}})
+            + "\n",
+            encoding="utf-8",
+        )
+        for args in (("add", "claw-routing.json"), ("commit", "-qm", "routing")):
+            subprocess.run(
+                ["git", "-C", str(repo), *args], check=True, capture_output=True
+            )
+        return repo
+
+    def _claw_con_thinking(self, gen_a: Path, thinking: bool) -> None:
+        """La vigente trae su claw_models.py (lee claw-routing.json junto a scripts/)
+        y un claw-routing.json con el thinking que ya tenia."""
+        hermes = gen_a / "config/hermes"
+        (hermes / "model-routing.source.json").write_text(
+            json.dumps({"chains": {"director": ["viejo/modelo (low)"]}}) + "\n",
+            encoding="utf-8",
+        )
+        (hermes / "claw-routing.json").write_text(
+            json.dumps({"agents": {"main": {"row": "director", "thinking": thinking}}})
+            + "\n",
+            encoding="utf-8",
+        )
+        script = hermes / "scripts/claw_models.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "raiz = Path(__file__).resolve().parents[1]\n"
+            "ruta = json.loads((raiz / 'claw-routing.json').read_text(encoding='utf-8'))\n"
+            "pensar = ruta['agents']['main']['thinking']\n"
+            "deseado = {'agents': {'entries': {'main': {'thinking': pensar}}}}\n"
+            "if 'desired' in args:\n"
+            "    print(json.dumps(deseado))\n"
+            "elif 'check' in args:\n"
+            "    vivo = json.load(open(args[args.index('--live') + 1], encoding='utf-8'))\n"
+            "    if vivo['agents']['entries']['main']['thinking'] != pensar:\n"
+            "        raise SystemExit(1)\n",
+            encoding="utf-8",
+        )
+
+    def _preparar_replica(self, origen: Path) -> dict:
+        def fake(doc_, destino, gen, home):
+            destino.mkdir(parents=True)
+            marca = destino / "cli.py"
+            marca.write_text("print(" + repr(doc_["version"]) + ")", encoding="utf-8")
+            return [sys.executable, str(marca)], doc_["version"], None
+
+        with patch(
+            "motor.flota.actualizaciones._preparar_componente", side_effect=fake
+        ):
+            return preparar(self.home, motor_origen=origen, repos={})
+
+    def _thinking_claw(self, salida: dict) -> bool:
+        nueva = self.home / "generaciones" / salida["generacion"]
+        abierto = json.loads(
+            (nueva / "perfiles/claw/openclaw.json").read_text(encoding="utf-8")
+        )
+        return abierto["agents"]["entries"]["main"]["thinking"]
+
+    def test_publicar_lleva_el_claw_routing_de_la_revision_confirmada(self):
+        repo = self._repo_hermes("hermes-publica", thinking=True)
+        confirmada = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        (repo / "claw-routing.json").write_text(
+            '{"agents": {"main": {"thinking": false}}, "sin_confirmar": 1}\n',
+            encoding="utf-8",
+        )
+        self._replica("origen-publica", repo_hermes=repo)
+        snapshot = json.loads(
+            (self.base / "origen-publica-snap.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(snapshot["schema"], "goncloud.flota.compartida.v2")
+        claw = snapshot["claw_routing"]
+        self.assertEqual(claw["revision"], confirmada)
+        self.assertEqual(
+            json.loads(claw["contenido"])["agents"]["main"]["thinking"], True
+        )
+        self.assertNotIn("sin_confirmar", claw["contenido"])
+        self.assertEqual(claw["sha256"], hashlib.sha256(claw["contenido"].encode()).hexdigest())
+        self.assertEqual(
+            self.publicado["claw_routing"],
+            {"incluido": True, "revision": confirmada, "sha256": claw["sha256"]},
+        )
+        fuente = json.loads(
+            (self.home / "fuente-compartida.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(fuente["claw_routing"], claw)
+
+    def test_la_orden_publicar_acepta_repo_hermes(self):
+        import contextlib
+        import io
+
+        from motor.flota import cli
+
+        repo = self._repo_hermes("hermes-cli", thinking=True)
+        origen, _gen = self._replica("origen-cli")
+        salida = self.base / "cli-snap.json"
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), patch(
+            "motor.flota.compartida.leer_fuente", return_value=None
+        ):
+            rc = cli.main(
+                [
+                    "publicar",
+                    "--home",
+                    str(self.home),
+                    "--salida",
+                    str(salida),
+                    "--repo-hermes",
+                    str(repo),
+                ]
+            )
+        self.assertEqual(rc, 0)
+        informe = json.loads(buffer.getvalue())["claw_routing"]
+        self.assertTrue(informe["incluido"])
+        self.assertEqual(
+            json.loads(salida.read_text(encoding="utf-8"))["claw_routing"]["sha256"],
+            informe["sha256"],
+        )
+
+    def test_publicar_sin_checkout_hermes_publica_como_antes(self):
+        self._replica("origen-sin-hermes")
+        snapshot = json.loads(
+            (self.base / "origen-sin-hermes-snap.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(snapshot["schema"], "goncloud.flota.compartida.v1")
+        self.assertNotIn("claw_routing", snapshot)
+        self.assertFalse(self.publicado["claw_routing"]["incluido"])
+        self.assertIn("goncloud-hermes", self.publicado["claw_routing"]["motivo"])
+
+    def test_publicar_busca_motor_config_hermes_junto_al_motor(self):
+        origen = _repo(self.base / "ws" / "motor")
+        hermes = self._repo_hermes("ws/motor-config/hermes", thinking=True)
+        from motor.flota.compartida import _candidatos_hermes
+
+        self.assertEqual(_candidatos_hermes(origen), [hermes])
+
+    def test_publicar_prueba_los_respaldos_si_el_primer_checkout_no_sirve(self):
+        origen = _repo(self.base / "ws2" / "motor")
+        _repo(self.base / "ws2" / "goncloud-hermes-encargos-3-4")  # sin routing
+        bueno = self._repo_hermes("ws2/goncloud-hermes", thinking=True)
+        from motor.flota.compartida import _claw_publicable
+
+        claw = _claw_publicable(None, origen)
+        self.assertEqual(
+            claw["revision"],
+            subprocess.run(
+                ["git", "-C", str(bueno), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+        )
+
+    def test_un_repo_hermes_explicito_sin_claw_routing_falla(self):
+        sin = _repo(self.base / "hermes-vacio")
+        with self.assertRaises(ValueError):
+            self._replica("origen-explicito", repo_hermes=sin)
+
+    def test_la_replica_arma_claw_con_el_routing_publicado_no_el_vigente(self):
+        repo = self._repo_hermes("hermes-true", thinking=True)
+        origen, gen_a = self._replica(
+            "origen-routing", con_openclaw=True, repo_hermes=repo
+        )
+        self._claw_con_thinking(gen_a, thinking=False)
+        salida = self._preparar_replica(origen)
+        self.assertIs(self._thinking_claw(salida), True)
+        nueva = self.home / "generaciones" / salida["generacion"]
+        publicado = self.publicado["claw_routing"]
+        runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            runtime["archivos"]["config/hermes/claw-routing.json"],
+            publicado["sha256"],
+        )
+        self.assertEqual(
+            runtime["claw_routing"],
+            {"revision": publicado["revision"], "sha256": publicado["sha256"]},
+        )
+        recibo = json.loads(
+            (self.home / "preparaciones" / (salida["generacion"] + ".json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(recibo["claw_routing"], runtime["claw_routing"])
+        self.assertEqual(
+            _sha256(nueva / "config/hermes/claw-routing.json"), publicado["sha256"]
+        )
+        self.assertIn(
+            '"thinking": false',
+            (gen_a / "config/hermes/claw-routing.json").read_text(encoding="utf-8"),
+        )
+
+    def test_un_routing_nuevo_con_el_mismo_manifiesto_es_otra_generacion(self):
+        falso = self._repo_hermes("hermes-false", thinking=False)
+        origen, gen_a = self._replica(
+            "origen-dos-routing", con_openclaw=True, repo_hermes=falso
+        )
+        self._claw_con_thinking(gen_a, thinking=False)
+        primera = self._preparar_replica(origen)
+        self.assertIs(self._thinking_claw(primera), False)
+
+        verdadero = self._repo_hermes("hermes-true-2", thinking=True)
+        snap = self.base / "segundo-snap.json"
+        # Mismo manifiesto y catalogo: se reedita solo el campo publicado.
+        previo = json.loads(
+            (self.base / "origen-dos-routing-snap.json").read_text(encoding="utf-8")
+        )
+        from motor.flota.compartida import _json_bytes, _leer_claw_routing, _sha256 as _h
+
+        previo["claw_routing"] = _leer_claw_routing(verdadero)
+        previo.pop("snapshot_sha256")
+        previo["snapshot_sha256"] = _h(_json_bytes(previo))
+        snap.write_bytes(_json_bytes(previo))
+        importar(self.home, snap)
+        segunda = self._preparar_replica(origen)
+        self.assertNotEqual(segunda["generacion"], primera["generacion"])
+        self.assertFalse(segunda.get("reutilizada"))
+        self.assertIs(self._thinking_claw(segunda), True)
+
+    def test_un_snapshot_sin_el_campo_prepara_como_antes(self):
+        origen, gen_a = self._replica("origen-v1", con_openclaw=True)
+        self._claw_con_thinking(gen_a, thinking=False)
+        salida = self._preparar_replica(origen)
+        self.assertIs(self._thinking_claw(salida), False)
+        nueva = self.home / "generaciones" / salida["generacion"]
+        runtime = json.loads((nueva / "runtime.json").read_text(encoding="utf-8"))
+        self.assertNotIn("claw_routing", runtime)
+        self.assertEqual(
+            json.loads(
+                (self.home / "fuente-compartida.json").read_text(encoding="utf-8")
+            )["schema"],
+            "goncloud.flota.compartida.v1",
+        )
+
+    def test_un_claw_routing_alterado_se_rechaza_y_conserva_la_fuente(self):
+        from motor.flota.compartida import SnapshotInvalido, _json_bytes, _sha256 as _h
+
+        repo = self._repo_hermes("hermes-alterable", thinking=True)
+        self._replica("origen-alterado-routing", repo_hermes=repo)
+        fuente = self.home / "fuente-compartida.json"
+        vigente = fuente.read_bytes()
+        original = json.loads(
+            (self.base / "origen-alterado-routing-snap.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        def reafirmar(doc: dict) -> dict:
+            doc.pop("snapshot_sha256", None)
+            doc["snapshot_sha256"] = _h(_json_bytes(doc))
+            return doc
+
+        def con(claw: dict, **cambios) -> dict:
+            doc = {**original, "claw_routing": {**claw, **cambios}}
+            return doc
+
+        claw = original["claw_routing"]
+        alterado = claw["contenido"].replace("true", "false")
+        sin_agents = '{"otro": {}}\n'
+        casos = {
+            "contenido alterado, hash del snapshot recalculado": reafirmar(
+                con(claw, contenido=alterado)
+            ),
+            "contenido alterado con el hash del snapshot viejo": con(
+                claw, contenido=alterado
+            ),
+            "sin agents aunque los hashes coincidan": reafirmar(
+                con(claw, contenido=sin_agents, sha256=_h(sin_agents.encode()))
+            ),
+            "no es JSON aunque los hashes coincidan": reafirmar(
+                con(claw, contenido="no json", sha256=_h(b"no json"))
+            ),
+            "revision invalida": reafirmar(con(claw, revision="HEAD")),
+            "campo extra": reafirmar(con(claw, extra="x")),
+            "esquema v1 con el campo": reafirmar(
+                {**original, "schema": "goncloud.flota.compartida.v1"}
+            ),
+            "esquema v2 sin el campo": reafirmar(
+                {k: v for k, v in original.items() if k != "claw_routing"}
+            ),
+        }
+        for nombre, doc in casos.items():
+            with self.subTest(nombre):
+                archivo = self.base / "alterado.json"
+                archivo.write_bytes(_json_bytes(doc))
+                with self.assertRaises(SnapshotInvalido):
+                    importar(self.home, archivo)
+                self.assertEqual(fuente.read_bytes(), vigente)
 
     def test_la_misma_pieza_se_reutiliza_si_no_se_puede_preparar(self):
         origen, gen_a = self._replica("origen-reuso")

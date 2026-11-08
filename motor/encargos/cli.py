@@ -1,6 +1,7 @@
 """Comandos del encargo. El texto del pedido no entra al argv remoto."""
 
 from __future__ import annotations
+from motor.io import leer_json, leer_texto
 
 import argparse
 import json
@@ -203,7 +204,8 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         texto = args.texto
         adjuntos: tuple[str, ...] = ()
         if args.archivo:
-            texto = args.archivo.read_text(encoding="utf-8")
+            contenido = leer_texto(args.archivo)
+            texto = f"{texto}\n\n{contenido}" if texto else contenido
             adjuntos = (str(args.archivo.resolve()),)
         if not texto.strip():
             print("falta el pedido", file=sys.stderr)
@@ -337,7 +339,7 @@ def _puerto_github(base: Path):
     if not path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = leer_json(path)
     except (OSError, ValueError):
         return None
     if not isinstance(doc, dict):
@@ -372,7 +374,7 @@ def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
         generacion = None
         referencia = reg.base / "ejecucion" / enc.id / f"intento-{enc.generacion}-{enc.conductor}" / "generacion.json"
         if referencia.is_file():
-            generacion = Path(json.loads(referencia.read_text(encoding="utf-8"))["ruta"])
+            generacion = Path(leer_json(referencia)["ruta"])
         autorizados = {
             agente: (solicitado[1],) if solicitado else _modelos_para(agente, rol, generacion)
             for agente in candidatas

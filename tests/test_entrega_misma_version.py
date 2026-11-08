@@ -9,18 +9,15 @@ import subprocess
 import tempfile
 import time
 import unittest
-from dataclasses import replace
-from unittest import mock
 
-from motor.encargos import ciclo
 from motor.encargos.ciclo import _aplica_entrega, _paso_entrega, ahora_iso, barrer
-from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import (
     _entrega_pr,
-    _GhConDeepSeek,
     _lanzaria,
     sonda_sin_aislamiento_del_host,
 )
+
+from tests.dobles import github_con_hallazgos
 
 
 def setUpModule():
@@ -38,7 +35,7 @@ def _turno_sin_llm(r, gh):
 class MismaVersionTrasDevolucion(unittest.TestCase):
     def test_deepseek_misma_version_recupera_sha_y_releva_sin_quedar_quieto(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "mv-ds", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "mv-ds", github_con_hallazgos)
             e = vuelta("uno")
             self.assertEqual(e.estrategia, "investigar")
             commit = e.producto.sha_git
@@ -70,7 +67,7 @@ class MismaVersionTrasDevolucion(unittest.TestCase):
 
     def test_una_version_distinta_no_hereda_el_commit(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "mv-otra", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "mv-otra", github_con_hallazgos)
             e = vuelta("uno")
             commit = e.producto.sha_git
             e = vuelta("dos")
@@ -79,7 +76,7 @@ class MismaVersionTrasDevolucion(unittest.TestCase):
 
     def test_misma_firma_con_otra_cabeza_de_git_no_hereda_el_commit(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "mv-cabeza", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "mv-cabeza", github_con_hallazgos)
             vuelta("uno")
             subprocess.run(
                 ["git", "-C", str(r.espacio), "reset", "--quiet", "--soft", "HEAD~1"],

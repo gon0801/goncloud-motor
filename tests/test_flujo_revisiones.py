@@ -47,6 +47,7 @@ from motor.encargos.dominio import (
 from motor.encargos.registro import Registro
 from motor.flota.runtime import exigir_poteto
 from motor.github import FakeGitHub, GhGitHub
+from tests.dobles import github_con_hallazgos
 from tests.entorno import HAY_AISLAMIENTO, SIN_AISLAMIENTO
 from tests import git_env_limpio
 
@@ -295,22 +296,6 @@ def _bloqueante(titulo: str, repro: str = "cat malo.txt") -> dict:
         "reproduccion": repro,
         "ancla": "malo.txt:1",
     }
-
-
-class _GhConDeepSeek(FakeGitHub):
-    """DeepSeek pide cambios con los bloqueantes de `titulos`, en cada SHA."""
-
-    titulos = ("Fuga de token en el log",)
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        if not self.titulos:
-            return [{"texto": "DeepSeek: APPROVED", "autor": "DeepSeek", "sha": sha}]
-        hallazgos = [
-            {"id": f"ds_{t}", "severity": "high", "title": t, "file": "saludo.txt"}
-            for t in self.titulos
-        ]
-        texto = "DeepSeek: CHANGES_REQUESTED\nai-review:findings=" + json.dumps(hallazgos)
-        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}]
 
 
 def _contiene(letra: str) -> str:
@@ -767,7 +752,7 @@ class FlujoRevisiones(unittest.TestCase):
 
     def test_deepseek_con_el_mismo_bloqueante_dos_vueltas_seguidas_releva(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-1", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "ds-1", github_con_hallazgos)
             e = vuelta("uno")
             self.assertEqual(e.estrategia, "investigar")
             self.assertEqual(e.sin_progreso, 0)
@@ -784,7 +769,7 @@ class FlujoRevisiones(unittest.TestCase):
 
     def test_deepseek_que_cierra_un_bloqueante_y_trae_otro_es_avance(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ds-2", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "ds-2", github_con_hallazgos)
             e = vuelta("uno")
             self.assertEqual(e.estrategia, "investigar")
             for i in range(4):
