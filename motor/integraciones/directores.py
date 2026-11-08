@@ -22,7 +22,14 @@ from motor.encargos.ciclo import (
     resolver_entrega,
 )
 from motor.encargos import resumen as resumen_encargos
-from motor.encargos.dominio import TransicionIlegal, espera_inspeccion_consumida, reducir
+from motor.encargos.dominio import (
+    TransicionIlegal,
+    espera_inspeccion_consumida,
+    hubo_relevo,
+    reducir,
+    total_relevos,
+    ultima_huella_relevo,
+)
 from motor.encargos.registro import Registro
 from motor.integraciones import canales
 
@@ -858,7 +865,7 @@ def _cuerpo_de_cierre(enc) -> str:
             " Una herramienta no estaba disponible y se siguió con la "
             "evidencia que había."
         )
-    if getattr(enc, "relevos", 0):
+    if hubo_relevo(enc):
         cuerpo += " Se cambió de modelo para continuar sin esperar a nadie."
     return f"{cuerpo} {nota}".rstrip()
 
@@ -1291,11 +1298,11 @@ def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dic
                 ),
             }
         )
-    if getattr(enc, "relevos", 0):
+    if hubo_relevo(enc):
         hechos.append(
             {
                 "tipo": "relevo",
-                "identidad": f"{enc.relevo_huella}:{enc.relevos}",
+                "identidad": f"{ultima_huella_relevo(enc)}:{total_relevos(enc)}",
                 "texto": (
                     "Cambié de modelo para seguir con tu encargo. "
                     "El trabajo continúa sin que hagas nada."

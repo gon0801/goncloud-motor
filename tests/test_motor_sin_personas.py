@@ -274,6 +274,8 @@ class RelevoPorRol(unittest.TestCase):
                 return lanzar
 
             def paso(registro, hora, epoch, lanzador, **kw):
+                from motor.encargos.dominio import clave_escalera
+
                 actual = registro.fold(encargo)
                 actual = replace(
                     actual,
@@ -282,9 +284,16 @@ class RelevoPorRol(unittest.TestCase):
                         ("responsable", "claude", "claude/opus"),
                         ("revisor", "claude", "claude/sonnet"),
                     ),
-                    relevos=1,
-                    relevos_por_rol=(("responsable", 1),),
-                    relevo_huella_por_rol=(("responsable", "bloqueo-1"),),
+                )
+                actual = replace(
+                    actual,
+                    escalones=(
+                        (
+                            "responsable",
+                            clave_escalera(actual, "responsable"),
+                            "relevo",
+                        ),
+                    ),
                 )
                 self.assertEqual(relevos_de(actual, "responsable"), 1)
                 self.assertEqual(relevos_de(actual, "revisor"), 0)
@@ -1104,7 +1113,7 @@ class AvisosInformanSinPedirNada(unittest.TestCase):
             enc = reg.fold(recibo["encargo"])
         enc = replace(
             enc,
-            relevos=1,
+            escalones=(("responsable", "aviso", "relevo"),),
             pendientes_entrega=("un bloqueo abierto",),
             herramientas_no_disponibles=("comprobacion",),
         )

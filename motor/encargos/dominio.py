@@ -559,8 +559,6 @@ class Encargo:
     viva_revisor: bool = False
     sesion_modo: str = ""
     poteto_digest: str = ""
-    bloqueo_huella: str = ""
-    sin_progreso: int = 0
     # Los bloqueos (ids) abiertos cuando el trabajo volvió al responsable por última
     # vez: lo que el responsable ya sabe. Uno abierto que no está aquí es información
     # nueva, no «el mismo bloqueo».
@@ -572,14 +570,11 @@ class Encargo:
     # mismo, y qué pidió la última (fase, versión, texto, recurso, objetivo, huella).
     no_concluyentes: int = 0
     no_concluyente_ref: tuple[str, ...] = ()
-    # El punto donde el encargo ya relevó a otro modelo del mismo rol. Si el
-    # relevo tampoco avanza en ese mismo punto, se entrega con pendientes.
-    relevo_huella: str = ""
-    relevos: int = 0
-    # El relevo es por rol: uno del responsable no marca al revisor como ya
-    # relevado ni lo deja sin turno.
-    relevos_por_rol: tuple[tuple[str, int], ...] = ()
-    relevo_huella_por_rol: tuple[tuple[str, str], ...] = ()
+    # La escalera no se guarda como contador: se guarda qué pasos ya gastó cada
+    # rol sobre un conjunto de ids. La clave identifica ese conjunto (los ids
+    # devueltos al responsable, o el pedido del revisor); un avance o un hecho
+    # nuevo cambia la clave y estrena escalera sin reiniciar ningún campo.
+    escalones: tuple[tuple[str, str, str], ...] = ()
     # Pendientes que se escriben en el cuerpo del PR cuando el encargo entrega
     # sin que el revisor haya concluido o sin la revisión externa.
     pendientes_entrega: tuple[str, ...] = ()
@@ -653,6 +648,37 @@ class Encargo:
     @property
     def nivel_alcanzado(self) -> str:
         return nivel_de(self.fase_actual)
+
+    # Vistas derivadas de `escalones`. No son campos ni se escriben: la
+    # escalera se lee del registro y solo cambia con los ids o los datos del
+    # propietario.
+    @property
+    def sin_progreso(self) -> int:
+        return sin_progreso_de(self, "responsable")
+
+    @property
+    def relevos(self) -> int:
+        return sum(relevos_de(self, rol) for rol in _roles_con_escalones(self))
+
+    @property
+    def relevos_por_rol(self) -> tuple[tuple[str, int], ...]:
+        return tuple(
+            sorted(
+                (rol, relevos_de(self, rol))
+                for rol in _roles_con_escalones(self)
+                if relevos_de(self, rol)
+            )
+        )
+
+    @property
+    def relevo_huella_por_rol(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            sorted(
+                (rol, clave_escalera(self, rol))
+                for rol in _roles_con_escalones(self)
+                if relevos_de(self, rol)
+            )
+        )
 
     @property
     def pr_numero(self) -> int:
@@ -731,14 +757,13 @@ def sesiones_de_fase_nueva(e: Encargo) -> Encargo:
     que `reabrir` responda al cierre por fase que sigue vigente.
     """
     return replace(
-        _reiniciar_escalera(e),
+        _sin_repeticiones(e),
         modelos_fase=(),
-        bloqueo_huella="",
-        sin_progreso=0,
         firma_fallo="",
         repeticiones=0,
         vuelta_contada=0,
         devuelto_con=(),
+        pendientes_entrega=(),
         sesion_responsable="",
         sesion_revisor="",
         viva_responsable=False,
@@ -994,28 +1019,99 @@ def hubo_avance(previo: Encargo, e: Encargo) -> bool:
     )
 
 
-def relevos_de(e: Encargo, rol: str) -> int:
-    return dict(e.relevos_por_rol).get(rol or "responsable", 0)
+def _huella_operador(e: Encargo) -> str:
+    """La información que el propietario aportó (ajustes y respuestas)."""
+    partes = list(e.ajustes)
+    for sol in e.solicitudes:
+        partes.extend(sol.respuestas_propietario)
+    return hashlib.sha256("\0".join(partes).encode()).hexdigest()
 
 
-def relevo_huella_de(e: Encargo, rol: str) -> str:
-    return dict(e.relevo_huella_por_rol).get(rol or "responsable", "")
+def _roles_con_escalones(e: Encargo) -> set[str]:
+    return {rol for rol, _clave, _paso in e.escalones}
 
 
-def _con_relevo_de(
-    e: Encargo, rol: str, huella: str
-) -> tuple[tuple[tuple[str, int], ...], tuple[tuple[str, str], ...]]:
+def clave_escalera(e: Encargo, rol: str) -> str:
+    """El conjunto de hechos que define el escalón vigente de un rol.
+
+    El del responsable son los ids abiertos y la información del propietario;
+    el del revisor, el pedido que repite. Un avance, un bloqueante nuevo o un
+    dato del propietario cambia la clave y la escalera empieza sola: no hay
+    contador que reiniciar.
+    """
     rol = rol or "responsable"
-    relevos = dict(e.relevos_por_rol)
-    relevos[rol] = relevos.get(rol, 0) + 1
-    huellas = dict(e.relevo_huella_por_rol)
-    huellas[rol] = huella
-    return tuple(sorted(relevos.items())), tuple(sorted(huellas.items()))
+    if rol == "revisor":
+        ref = e.no_concluyente_ref[0] if e.no_concluyente_ref else ""
+        return f"{e.fase_activa}:revisor:{ref}"
+    return (
+        f"{e.fase_activa}:responsable:{huella_bloqueo(e)}:{_huella_operador(e)}"
+    )
+
+
+def pasos_escalera(
+    e: Encargo, rol: str, clave: str | None = None
+) -> tuple[str, ...]:
+    rol = rol or "responsable"
+    clave = clave_escalera(e, rol) if clave is None else clave
+    return tuple(p for r, c, p in e.escalones if r == rol and c == clave)
+
+
+def escalon_gastado(e: Encargo, rol: str, paso: str, clave: str | None = None) -> bool:
+    return paso in pasos_escalera(e, rol, clave)
+
+
+def siguiente_escalon(e: Encargo, rol: str, clave: str | None = None) -> str:
+    """Qué toca en el punto vigente: diagnosticar, relevar o entregar."""
+    pasos = pasos_escalera(e, rol, clave)
+    if "relevo" in pasos or "pendientes" in pasos:
+        return "pendientes"
+    if "diagnostico" in pasos:
+        return "relevo"
+    return "diagnostico"
+
+
+def con_escalon(e: Encargo, rol: str, clave: str, paso: str) -> Encargo:
+    """Anota un paso de la escalera. El hecho queda en el registro y la clave
+    dice a qué ids pertenece; no se guarda un contador aparte."""
+    rol = rol or "responsable"
+    if (rol, clave, paso) in e.escalones:
+        return e
+    return replace(e, escalones=e.escalones + ((rol, clave, paso),))
+
+
+def relevos_de(e: Encargo, rol: str) -> int:
+    return pasos_escalera(e, rol).count("relevo")
+
+
+def hubo_relevo(e: Encargo, rol: str = "") -> bool:
+    return any(
+        p == "relevo" and (not rol or r == rol) for r, _c, p in e.escalones
+    )
+
+
+def total_relevos(e: Encargo) -> int:
+    return sum(1 for _r, _c, p in e.escalones if p == "relevo")
+
+
+def ultima_huella_relevo(e: Encargo) -> str:
+    for _r, clave, paso in reversed(e.escalones):
+        if paso == "relevo":
+            return clave
+    return ""
+
+
+def sin_progreso_de(e: Encargo, rol: str = "responsable") -> int:
+    pasos = pasos_escalera(e, rol)
+    if "pendientes" in pasos:
+        return 2
+    return 1 if pasos else 0
 
 
 def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Encargo:
-    """Reinicia la escalera al cerrar bloqueantes o resolver una revisión.
-    Repetir una aprobación no resuelve lo que sigue bloqueando la entrega."""
+    """Reinicia la cuenta del freno al cerrar bloqueantes o resolver una
+    revisión. Repetir una aprobación no resuelve lo que sigue bloqueando la
+    entrega. La escalera no se toca: un avance cambia la clave de los ids y la
+    deja estrenada por sí sola."""
     aprobacion_nueva = concluyente and (
         previo.revision_vigente is None
         or previo.revision_vigente.veredicto != "aprobado"
@@ -1027,13 +1123,11 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
     fase = e.fase_actual
     if fase is not None and cerrados - set(fase.cerrados):
         e = con_fase(e, replace(fase, cerrados=tuple(sorted(set(fase.cerrados) | cerrados))))
-    e = replace(e, bloqueo_huella=huella_bloqueo(e))
     if not avance:
         return e
-    # Un avance, venga de la revisión o de un check que se puso verde, cierra
-    # también la cuenta de revisiones no_concluyente repetidas y el punto donde
-    # el encargo ya había relevado: el siguiente bloqueo estrena escalera.
-    return _reiniciar_escalera(replace(e, sin_progreso=0))
+    # Un avance cierra la cuenta de revisiones no_concluyente repetidas y los
+    # pendientes que dejó un relevo anterior. La escalera ya cambió de clave.
+    return replace(_sin_repeticiones(e), pendientes_entrega=())
 
 
 def fuente_de_impedimento(clase: str) -> str:
@@ -1448,7 +1542,7 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
                     "el propietario declaro cerrados: " + ", ".join(cerrados)
                 ),
             )
-        e = _soltar_impedimento_de_inspeccion(_reiniciar_escalera(e))
+        e = _soltar_impedimento_de_inspeccion(_nueva_info_del_propietario(e))
         if e.estado == "detenido":
             return replace(
                 e,
@@ -1793,37 +1887,40 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
             hora=hora or e.hora,
         )
     if kind == "sin_progreso":
-        huella = str(d.get("huella") or "")
-        veces = e.sin_progreso + 1 if huella and huella == e.bloqueo_huella else 1
-        if d.get("nueva"):
-            # La vuelta trajo bloqueantes nuevos: es información nueva, no «el mismo
-            # bloqueo». La escalera empieza de cero y no tiene tope mientras siga
-            # llegando información nueva.
-            veces = 0
+        # La escalera se lee de los ids: la clave sale del conjunto abierto (o
+        # del pedido del revisor) y los pasos ya gastados se guardan sobre esa
+        # clave. No hay contador global que resincronizar.
+        rol = str(d.get("rol") or "responsable")
+        clave = clave_escalera(e, rol)
         diagnostico = str(d.get("diagnostico") or d.get("causa") or "")
         e = replace(e, vuelta_contada=e.generacion)
+        if d.get("nueva"):
+            # La vuelta trajo bloqueantes nuevos: es información nueva, no «el
+            # mismo bloqueo». La clave nueva estrena escalera sola.
+            return replace(
+                e,
+                ultimo_hecho="la vuelta trajo bloqueantes nuevos: vuelven al responsable",
+                hora=hora or e.hora,
+            )
         if d.get("escalar"):
             # El mismo bloqueo sin información nueva ya no detiene el encargo.
             # Primero pasa el rol a otro modelo autorizado; si el relevo
             # tampoco avanza, se entrega el PR con los pendientes escritos.
-            # La escalera es por rol: un relevo del responsable no deja al
-            # revisor sin turno ni fuerza la entrega sin revisar.
-            rol = str(d.get("rol") or "responsable")
-            huella_previa = relevo_huella_de(e, rol)
-            if huella and huella == huella_previa and relevos_de(e, rol) >= 1:
+            # La escalera es por rol y por clave: un relevo del responsable no
+            # deja al revisor sin turno ni fuerza la entrega sin revisar.
+            if escalon_gastado(e, rol, "relevo", clave) or escalon_gastado(
+                e, rol, "pendientes", clave
+            ):
                 pendiente = diagnostico or (
-                    "el bloqueo sigue abierto tras el relevo: "
-                    + (e.bloqueo_huella or huella)
+                    "el bloqueo sigue abierto tras el relevo: " + clave
                 )
                 return replace(
-                    e,
+                    con_escalon(e, rol, clave, "pendientes"),
                     estado=(
                         "recibido"
                         if e.estado in ("recibido", "ejecutando")
                         else e.estado
                     ),
-                    bloqueo_huella=huella or e.bloqueo_huella,
-                    sin_progreso=veces,
                     pendientes_entrega=e.pendientes_entrega + (pendiente,),
                     motivo=diagnostico or "el relevo tampoco avanzó en el mismo bloqueo",
                     siguiente="entregar el PR con los pendientes abiertos",
@@ -1832,39 +1929,20 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
                     ),
                     hora=hora or e.hora,
                 )
-            relevos_por_rol, relevo_huella_por_rol = _con_relevo_de(
-                e, rol, huella or e.relevo_huella
-            )
             return replace(
-                e,
+                con_escalon(e, rol, clave, "relevo"),
                 estado=(
                     "recibido"
                     if e.estado in ("recibido", "ejecutando")
                     else e.estado
                 ),
-                bloqueo_huella=huella or e.bloqueo_huella,
-                sin_progreso=1,
-                relevo_huella=huella or e.relevo_huella,
-                relevos=e.relevos + 1,
-                relevos_por_rol=relevos_por_rol,
-                relevo_huella_por_rol=relevo_huella_por_rol,
                 motivo=diagnostico or "el mismo bloqueo sin progreso",
                 siguiente="seguir con otro modelo autorizado del mismo rol",
                 ultimo_hecho=diagnostico or "se releva a otro modelo del mismo rol",
                 hora=hora or e.hora,
             )
-        if d.get("nueva"):
-            return replace(
-                e,
-                bloqueo_huella=huella or e.bloqueo_huella,
-                sin_progreso=0,
-                ultimo_hecho="la vuelta trajo bloqueantes nuevos: vuelven al responsable",
-                hora=hora or e.hora,
-            )
         return replace(
-            e,
-            bloqueo_huella=huella or e.bloqueo_huella,
-            sin_progreso=veces,
+            con_escalon(e, rol, clave, "diagnostico"),
             motivo="la corrección no resolvió el bloqueo",
             siguiente="diagnosticar por qué la corrección no resolvió el bloqueo",
             ultimo_hecho="sin progreso: ningun bloqueante cerrado en la vuelta",
@@ -2344,7 +2422,7 @@ def _respuesta(e: Encargo, d: dict, hora: str) -> Encargo:
         hora=hora or e.hora,
     )
     return _reanudar_inspeccion(
-        _soltar_impedimento_de_inspeccion(_reiniciar_escalera(e)), ident
+        _soltar_impedimento_de_inspeccion(_nueva_info_del_propietario(e)), ident
     )
 
 
@@ -2814,6 +2892,44 @@ def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
     return "responsable", "investigar"
 
 
+def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
+    """Un bloqueante que una restricción expresa deja fuera no sostiene el encargo.
+
+    No es un reinicio de campos: aplica la restricción al hallazgo guardado y
+    deja el hecho en `fuera_de_alcance`, con su razón, para el PR.
+    """
+    fase = e.fase_actual
+    if fase is None:
+        return e
+    from .comprobacion import hallazgo_fuera_de_alcance_por_restriccion
+
+    fuera = list(e.fuera_de_alcance)
+    hallazgos = []
+    for h in fase.hallazgos:
+        if (
+            h.origen == "deepseek"
+            and h.gravedad == "bloqueante"
+            and h.estado == "abierto"
+        ):
+            razon = hallazgo_fuera_de_alcance_por_restriccion(e.restricciones, h)
+            if razon:
+                h = replace(
+                    h,
+                    gravedad="observacion",
+                    estado="resuelto",
+                    cierre_evidencia=razon,
+                )
+                fuera = [x for x in fuera if x[0] != h.id]
+                fuera.append((h.id, h.titulo, razon))
+        hallazgos.append(h)
+    if tuple(hallazgos) == fase.hallazgos:
+        return e
+    return replace(
+        con_fase(e, replace(fase, hallazgos=tuple(hallazgos))),
+        fuera_de_alcance=tuple(fuera),
+    )
+
+
 def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     accion = d["accion"]
     if accion == "reabrir":
@@ -2872,75 +2988,20 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             raise TransicionIlegal(
                 "continuar espera el estado detenido o una pausa sin proceso"
             )
+        # Continuar rearma el trabajo y quita lo que impedía lanzarlo, pero no
+        # reinicia la escalera ni la cuenta del freno: esos hechos se derivan
+        # del registro y solo cambian con información nueva. La restricción
+        # expresa sí se aplica: un bloqueante que deja fuera no sostiene el
+        # encargo.
+        e = _retomar(_fuera_de_alcance_por_restricciones(e), hora)
+        if e.no_concluyentes < TOPE_NO_CONCLUYENTES:
+            e = replace(e, pendientes_entrega=())
         return replace(
-            _retomar(_limpiar_para_continuar(e), hora),
+            e,
             proc=None, herramienta="", conductor="", intento="",
+            motivo="", causa="", reanuda_en="",
         )
     raise TransicionIlegal(f"orden desconocida: {accion}")
-
-def _limpiar_para_continuar(e: Encargo) -> Encargo:
-    """Un continuar explícito quita el estado que el motor ya no exige.
-
-    La pregunta vieja, los contadores de la vuelta que la produjo y los
-    bloqueantes externos que una restricción expresa deja fuera dejan de
-    sostener el encargo. Una pregunta ligada a una inspección que sigue
-    esperando al propietario vuelve a ponerse en `_retomar`; las demás causas
-    que sigan vigentes se vuelven a preguntar en la pasada siguiente.
-    """
-    fase = e.fase_actual
-    fuera = list(e.fuera_de_alcance)
-    if fase is not None:
-        from .comprobacion import hallazgo_fuera_de_alcance_por_restriccion
-
-        hallazgos = []
-        for h in fase.hallazgos:
-            if (
-                h.origen == "deepseek"
-                and h.gravedad == "bloqueante"
-                and h.estado == "abierto"
-            ):
-                razon = hallazgo_fuera_de_alcance_por_restriccion(
-                    e.restricciones, h
-                )
-                if razon:
-                    h = replace(
-                        h,
-                        gravedad="observacion",
-                        estado="resuelto",
-                        cierre_evidencia=razon,
-                    )
-                    fuera = [x for x in fuera if x[0] != h.id]
-                    fuera.append((h.id, h.titulo, razon))
-            hallazgos.append(h)
-        e = con_fase(e, replace(fase, hallazgos=tuple(hallazgos)))
-    limpio = dict(
-        preguntas=(),
-        sin_progreso=0,
-        bloqueo_huella="",
-        firma_fallo="",
-        repeticiones=0,
-        vuelta_contada=0,
-        devuelto_con=(),
-        fuera_de_alcance=tuple(fuera),
-        motivo="",
-        causa="",
-        reanuda_en="",
-    )
-    if e.no_concluyentes >= TOPE_NO_CONCLUYENTES:
-        # Continuar no es un ajuste ni una respuesta: sin un dato nuevo no
-        # reabre el freno del revisor ni borra lo que el tope dejó pendiente.
-        return replace(e, **limpio)
-    return replace(
-        e,
-        **limpio,
-        pendientes_entrega=(),
-        relevo_huella="",
-        relevos=0,
-        relevos_por_rol=(),
-        relevo_huella_por_rol=(),
-        no_concluyentes=0,
-        no_concluyente_ref=(),
-    )
 
 
 def _retomar(e: Encargo, hora: str) -> Encargo:
@@ -3282,16 +3343,13 @@ def _sin_repeticiones(e: Encargo) -> Encargo:
     return replace(e, no_concluyentes=0, no_concluyente_ref=())
 
 
-def _reiniciar_escalera(e: Encargo) -> Encargo:
-    """Avance real o corrección del propietario: se estrena escalera de relevo."""
-    return replace(
-        _sin_repeticiones(e),
-        relevo_huella="",
-        relevos=0,
-        relevos_por_rol=(),
-        relevo_huella_por_rol=(),
-        pendientes_entrega=(),
-    )
+def _nueva_info_del_propietario(e: Encargo) -> Encargo:
+    """Cierra la cuenta del freno y los pendientes de un relevo anterior.
+
+    La escalera no se reinicia a mano: la clave del rol incluye los ajustes y
+    las respuestas, así que el dato nuevo la estrena por sí solo.
+    """
+    return replace(_sin_repeticiones(e), pendientes_entrega=())
 
 
 def _texto_normalizado(valor: str) -> str:
@@ -3436,7 +3494,6 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
     fase = e.fase_actual
     version = ref[1][:12]
     causa = str(d.get("evidencia") or "").strip() or "sin evidencia nueva"
-    clave = ref[0]
     pedido = (
         f"pidiendo lo mismo: «{faltante}»"
         if faltante
@@ -3448,10 +3505,12 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
     )
     if fase is not None:
         e = con_fase(e, replace(fase, inspeccion_pendiente=""))
-    if relevo_huella_de(e, "revisor") == clave and relevos_de(e, "revisor") >= 1:
+    if escalon_gastado(e, "revisor", "relevo") or escalon_gastado(
+        e, "revisor", "pendientes"
+    ):
         # El revisor de relevo tampoco concluyó: se entrega con la nota.
         return replace(
-            e,
+            con_escalon(e, "revisor", clave_escalera(e, "revisor"), "pendientes"),
             estado=(
                 "recibido"
                 if e.estado in ("recibido", "ejecutando")
@@ -3462,19 +3521,13 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
             siguiente="entregar el PR con la revisión sin veredicto",
             ultimo_hecho=motivo,
         )
-    relevos_por_rol, relevo_huella_por_rol = _con_relevo_de(e, "revisor", clave)
     return replace(
-        e,
+        con_escalon(e, "revisor", clave_escalera(e, "revisor"), "relevo"),
         estado=(
             "recibido"
             if e.estado in ("recibido", "ejecutando")
             else e.estado
         ),
-        relevo_huella=clave,
-        relevos=e.relevos + 1,
-        relevos_por_rol=relevos_por_rol,
-        relevo_huella_por_rol=relevo_huella_por_rol,
-        sin_progreso=1,
         motivo=motivo,
         siguiente="seguir con otro revisor autorizado sobre la misma versión",
         ultimo_hecho=motivo,
@@ -3955,8 +4008,8 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         "hora": e.hora,
         "motivo": e.motivo,
         "relevo": {
-            "huella": e.relevo_huella,
-            "veces": e.relevos,
+            "huella": ultima_huella_relevo(e),
+            "veces": total_relevos(e),
         },
         "pendientes_entrega": list(e.pendientes_entrega),
         "fuera_de_alcance": [
