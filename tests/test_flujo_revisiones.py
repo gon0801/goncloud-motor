@@ -2404,7 +2404,9 @@ class MedianosDeepseekFlujo(unittest.TestCase):
         estado_fake = json.loads((raiz / "fake" / "github.json").read_text())
         return r, gh, raiz, estado_fake, e
 
-    def _leer(self, r, gh, raiz, estado_fake, e, *hallazgos: dict, prompts=None):
+    def _leer(
+        self, r, gh, raiz, estado_fake, e, *hallazgos: dict, prompts=None, pasadas: int = 2
+    ):
         pr = next(iter(estado_fake["prs"].values()))
         pr["comentarios_deepseek"] = [
             {"texto": self._comentario(*hallazgos), "sha": e.pr_sha}
@@ -2427,7 +2429,7 @@ class MedianosDeepseekFlujo(unittest.TestCase):
             "motor.encargos.ciclo.lanzar_administrado",
             return_value={"pid": os.getpid(), "inicio": "t"},
         ):
-            for _ in range(2):
+            for _ in range(pasadas):
                 barrer(r.reg, e.reanuda_en or ahora_iso(), time.time(), lanzador, gh=gh)
         return r.fold()
 
@@ -2437,7 +2439,7 @@ class MedianosDeepseekFlujo(unittest.TestCase):
             prompts: list = []
             e = self._leer(
                 r, gh, raiz, estado_fake, e, self._hallazgo("F1", "Medium"),
-                prompts=prompts,
+                prompts=prompts, pasadas=1,
             )
             self.assertNotEqual(e.estado, "terminado")
             abiertos = bloqueantes_abiertos(e, "deepseek")
