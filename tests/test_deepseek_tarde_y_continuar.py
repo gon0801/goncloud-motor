@@ -1445,7 +1445,7 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
             r = _encargo_con_pregunta_vieja(tmp)
             self.addCleanup(r.reg.close)
             antes = r.fold()
-            self.assertEqual(antes.estado, "necesita_usuario")
+            self.assertNotEqual(antes.estado, "necesita_usuario")
             self.assertEqual(antes.relevos, 1)
             self.assertEqual(_ids(antes), ["F1"])
             self.assertEqual(antes.devuelto_con, ("F1",))
@@ -1532,11 +1532,11 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
                 ]
             )
 
-    def test_continuar_desde_necesita_usuario_no_obliga_a_parar_primero(self):
+    def test_continuar_con_una_pregunta_vieja_no_obliga_a_parar_primero(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = _encargo_con_pregunta_vieja(tmp)
             self.addCleanup(r.reg.close)
-            self.assertEqual(r.fold().estado, "necesita_usuario")
+            self.assertNotEqual(r.fold().estado, "necesita_usuario")
 
             salida = ciclo.ordenar(r.reg, r.enc, "continuar", "directo", ahora_iso())
 

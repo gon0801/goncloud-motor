@@ -133,7 +133,8 @@ class PausaEntreFases(unittest.TestCase):
             }}, "pendiente-sin-trabajo")
             with mock.patch.object(gh, "abrir_pr", wraps=gh.abrir_pr) as abrir:
                 final = ciclo._entregar_con_pendientes(r.reg, r.fold(), gh, r.hora)
-            self.assertEqual(final.estado, "necesita_usuario")
+            self.assertNotEqual(final.estado, "necesita_usuario")
+            self.assertEqual(final.fase_actual.estado, "bloqueada")
             self.assertEqual(abrir.call_count, 0)
             self.assertEqual(r.eventos("cierre_forzado"), [])
 

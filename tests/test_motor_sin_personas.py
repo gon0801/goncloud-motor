@@ -626,8 +626,8 @@ class CuotaUsaOtroModelo(unittest.TestCase):
             )
 
 
-class PreguntaSinRespuestaLaContestaElRevisor(unittest.TestCase):
-    def test_una_pregunta_vencida_se_contesta_y_el_trabajo_sigue(self):
+class PreguntaSinRespuestaNoDetieneElMotor(unittest.TestCase):
+    def test_una_pregunta_vencida_queda_visible_y_el_trabajo_sigue(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "p8", "dato.txt con 42")
             self.addCleanup(r.reg.close)
@@ -660,35 +660,10 @@ class PreguntaSinRespuestaLaContestaElRevisor(unittest.TestCase):
             )
             barrer(r.reg, ahora_iso(), time.time(), _llamador)
             enc = r.fold()
-            self.assertEqual(enc.rol, "revisor")
-            self.assertEqual(enc.estrategia, "responder_pregunta")
+            self.assertNotEqual(enc.estado, "necesita_usuario")
+            self.assertIn(enc.estado, ("recibido", "ejecutando"))
             self.assertEqual(enc.solicitudes[0].estado, "pregunta")
-
-            r.juicio(
-                {
-                    "veredicto": "aprobado",
-                    "evidencia": "Autorizo leer el log remoto: es un log de prueba",
-                }
-            )
-            r.incorporar()
-            enc = r.fold()
-            self.assertNotEqual(enc.solicitudes[0].estado, "pregunta")
-            self.assertTrue(
-                any(
-                    "contestada por el revisor" in n for n in enc.notas_pr
-                ),
-                enc.notas_pr,
-            )
-            respuestas = [
-                ev["data"]
-                for ev in r.reg.eventos(r.enc)
-                if ev["kind"] == "respuesta"
-            ]
-            self.assertTrue(respuestas)
-            self.assertIn("log de prueba", respuestas[-1]["texto"])
-            self.assertEqual(respuestas[-1]["autor"], "revisor")
-
-
+            self.assertEqual(enc.solicitudes[0].pregunta, "¿sigo sin el log?")
 
 
 class AlCerrarLimpiaSuDisco(unittest.TestCase):

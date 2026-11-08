@@ -80,7 +80,7 @@ def _quieto_como_en_el_incidente(caso, tmp):
 
 
 class QuietudDelEncargo(unittest.TestCase):
-    def test_el_incidente_termina_en_necesita_usuario_con_la_causa(self):
+    def test_el_incidente_deja_un_pendiente_visible_sin_esperar_a_una_persona(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _quieto_como_en_el_incidente(self, tmp)
             t = time.time()
@@ -92,7 +92,7 @@ class QuietudDelEncargo(unittest.TestCase):
             self.assertEqual(r.eventos("quietud"), [])
 
             e = _barrido_quieto(r, vuelta.gh, t + _QUIETUD_S)
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertNotEqual(e.estado, "necesita_usuario")
             [evento] = r.eventos("quietud")
             causa = evento["data"]["causa"]
             self.assertIn("sin ningun evento nuevo", causa)
@@ -100,12 +100,11 @@ class QuietudDelEncargo(unittest.TestCase):
             self.assertIn("la entrega se considera pendiente: si", causa)
             self.assertIn("Se intento", causa)
             self.assertEqual(e.motivo, causa)
-            self.assertIn(causa, e.preguntas)
+            self.assertIn(causa, e.pendientes_entrega)
             self.assertGreaterEqual(evento["data"]["vueltas"], _QUIETUD_VUELTAS)
 
-            total = len(r.reg.eventos(r.enc))
-            _barrido_quieto(r, vuelta.gh, t + _QUIETUD_S + PASO_S)
-            self.assertEqual(len(r.reg.eventos(r.enc)), total)
+            # El pendiente visible es el destino: la entrega con pendientes corre
+            # sola en el siguiente barrido, sin lanzar otro turno ni preguntar.
             self.assertFalse(_lanzaria(r.fold()))
 
     def test_un_evento_nuevo_reinicia_la_cuenta(self):
@@ -125,8 +124,9 @@ class QuietudDelEncargo(unittest.TestCase):
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(r.eventos("quietud"), [])
             e = _barrido_quieto(r, vuelta.gh, reinicio + _QUIETUD_S)
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(len(r.eventos("quietud")), 1)
+            self.assertTrue(e.pendientes_entrega)
 
     def test_un_hueco_largo_entre_vueltas_no_cuenta_como_vueltas_seguidas(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

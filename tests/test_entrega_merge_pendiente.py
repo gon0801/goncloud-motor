@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from unittest import mock
 
-from motor.encargos.ciclo import barrer
+from motor.encargos.ciclo import ahora_iso, barrer
 from motor.github import GhGitHub, PoliticaBloquea, PuntaMovida
 from tests.test_flujo_revisiones import (
     _entrega_pr,
@@ -99,28 +101,43 @@ class EntregaMergePendiente(unittest.TestCase):
         self.assertEqual(vuelta.gh.intentos, [e.pr_sha, e.pr_sha])
         self.assertEqual(r.eventos("revision"), revisiones)
 
-    def test_requerido_fallido_pregunta_aunque_otro_siga_en_marcha(self):
+    def test_requerido_fallido_vuelve_al_responsable_sin_pregunta(self):
         vuelta, r = self.preparar()
         vuelta.gh.api.requeridos.append({"name": "seguridad", "bucket": "fail", "state": "FAILURE"})
         e = vuelta("hola")
-        self.assertEqual(e.estado, "necesita_usuario")
+        self.assertNotEqual(e.estado, "necesita_usuario")
         self.assertEqual(e.nivel_alcanzado, "pr")
-        self.assertTrue(e.preguntas)
+        self.assertEqual(e.preguntas, ())
+        self.assertEqual(e.rol, "responsable")
+        self.assertEqual(e.estrategia, "pon_en_verde")
+        self.assertIn("seguridad", e.motivo)
+        self.assertEqual(r.eventos("pregunta"), [])
+        bloqueadas = [
+            ev["data"] for ev in r.eventos("entrega_bloqueada")
+            if ev["data"].get("sha") == e.pr_sha
+        ]
+        self.assertEqual(len(bloqueadas), 1)
+        self.assertIn("seguridad", bloqueadas[0]["causa"])
 
-    def test_revision_humana_requerida_pregunta_aunque_ci_siga_en_marcha(self):
+    def test_revision_humana_requerida_deja_impedimento_y_entrega_con_pendientes(self):
         vuelta, r = self.preparar()
         vuelta.gh.api.revision = "REVIEW_REQUIRED"
         e = vuelta("hola")
-        self.assertEqual(e.estado, "necesita_usuario")
+        self.assertNotEqual(e.estado, "necesita_usuario")
         self.assertEqual(e.nivel_alcanzado, "pr")
-        self.assertTrue(e.preguntas)
+        self.assertEqual(e.preguntas, ())
+        self.assertTrue(e.pendientes_entrega)
+        self.assertIn("merge", [i.clase for i in e.impedimentos])
+        self.assertEqual(r.eventos("pregunta"), [])
 
-    def test_otro_bloqueo_de_politica_con_checks_verdes_pregunta(self):
+    def test_otro_bloqueo_de_politica_con_checks_verdes_deja_pendientes(self):
         vuelta, r = self.preparar()
         vuelta.gh.api.requeridos = [{"name": "ci", "bucket": "pass", "state": "SUCCESS"}]
         e = vuelta("hola")
-        self.assertEqual(e.estado, "necesita_usuario")
+        self.assertNotEqual(e.estado, "necesita_usuario")
         self.assertEqual(e.nivel_alcanzado, "pr")
+        self.assertEqual(e.preguntas, ())
+        self.assertTrue(e.pendientes_entrega)
 
     def test_fallo_al_leer_checks_reintenta_sin_decision_humana(self):
         vuelta, r = self.preparar()
@@ -129,6 +146,53 @@ class EntregaMergePendiente(unittest.TestCase):
         self.assertEqual(e.estado, "esperando_reintento")
         self.assertEqual(e.preguntas, ())
         self.assertIn("503", e.motivo)
+
+    def test_ci_rojo_devuelve_con_el_log_y_se_reintenta_sobre_el_sha_nuevo(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+        log = "gate: FAILED test_algo.py::test_x - AssertionError: falta B"
+        vuelta, r = _entrega_pr(
+            self, tmp, "merge-ci-rojo", _politica_con_checks, nivel="integrado",
+            config={"logs_job": {"gate": log}},
+        )
+        base_checks = vuelta.gh.checks_requeridos
+
+        def checks_con_log(repo, numero, sha):
+            v = base_checks(repo, numero, sha)
+            return replace(
+                v,
+                corridas_fallidas=(
+                    {"nombre": "gate", "url": "u", "run_id": "run-1", "job_id": "job-1"},
+                ),
+            )
+
+        vuelta.gh.checks_requeridos = checks_con_log
+        vuelta.gh.api.requeridos.append(
+            {"name": "gate", "bucket": "fail", "state": "FAILURE"}
+        )
+        e = vuelta("hola")
+        self.assertNotEqual(e.estado, "necesita_usuario")
+        self.assertEqual(e.preguntas, ())
+        self.assertEqual(e.rol, "responsable")
+        self.assertIn("pon en verde gate", e.motivo)
+        self.assertIn("gate: FAILED", e.siguiente)
+        self.assertEqual(r.eventos("pregunta"), [])
+        sha_rojo = e.pr_sha
+
+        vuelta.gh.bloquea = False
+        vuelta.gh.api.requeridos = [
+            {"name": "gate", "bucket": "pass", "state": "SUCCESS"}
+        ]
+        (r.espacio / "saludo.txt").write_text("hola corregido")
+        r.incorporar()
+        r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt corregido"})
+        r.incorporar()
+        barrer(r.reg, ahora_iso(), time.time(), None, gh=vuelta.gh)
+        final = r.fold()
+        self.assertEqual(final.estado, "terminado")
+        self.assertEqual(final.nivel_alcanzado, "integrado")
+        self.assertNotEqual(final.pr_sha, sha_rojo)
+        self.assertEqual(vuelta.gh.intentos[-1], final.pr_sha)
+        self.assertEqual(r.eventos("pregunta"), [])
 
 
 class ChecksRequeridosParaMerge(unittest.TestCase):

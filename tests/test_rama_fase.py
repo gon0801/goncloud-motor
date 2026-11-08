@@ -160,6 +160,14 @@ def _reintentar(r: Recorrido, lanzamientos: list, reloj: list) -> None:
             return
 
 
+def _bloqueo_visible(enc) -> bool:
+    return bool(
+        enc.pendientes_entrega
+        or enc.impedimento
+        or any(i.clase == "repo" for i in enc.impedimentos)
+    )
+
+
 class UnFalloDeGitRepetidoPideAyuda(_Repo):
     CAUSA = "no se pudo crear la rama x desde origin/main: error: tu arbol tiene cambios"
 
@@ -199,7 +207,8 @@ class UnFalloDeGitRepetidoPideAyuda(_Repo):
 
             self.reintentar(r)
             enc = r.fold()
-            self.assertEqual(enc.estado, "necesita_usuario")
+            self.assertNotEqual(enc.estado, "necesita_usuario")
+            self.assertTrue(_bloqueo_visible(enc))
             self.assertIn("3 veces seguidas", enc.motivo)
             self.assertIn(self.CAUSA, enc.motivo)
             self.assertEqual(_esperas(r), 3)
@@ -207,7 +216,7 @@ class UnFalloDeGitRepetidoPideAyuda(_Repo):
             self.reintentar(r)
             self.reintentar(r)
             self.assertEqual(_esperas(r), 3)
-            self.assertEqual(r.fold().estado, "necesita_usuario")
+            self.assertTrue(_bloqueo_visible(r.fold()))
         self.assertEqual(self.lanzamientos, [])
 
     def test_causas_distintas_no_se_suman(self):
@@ -240,7 +249,8 @@ class UnFalloDeGitRepetidoPideAyuda(_Repo):
             for _ in range(3):
                 self.reintentar(r)
         enc = r.fold()
-        self.assertEqual(enc.estado, "necesita_usuario")
+        self.assertNotEqual(enc.estado, "necesita_usuario")
+        self.assertTrue(_bloqueo_visible(enc))
         self.assertIn("3 veces seguidas", enc.motivo)
         self.assertIn("1122334455667788", enc.motivo)
 
@@ -265,7 +275,8 @@ class UnFalloDeGitRepetidoPideAyuda(_Repo):
         with mock.patch.object(ciclo, "_asegurar_repo", return_value=self.CAUSA):
             for _ in range(3):
                 self.reintentar(r)
-        self.assertEqual(r.fold().estado, "necesita_usuario")
+        self.assertNotEqual(r.fold().estado, "necesita_usuario")
+        self.assertTrue(_bloqueo_visible(r.fold()))
 
         ciclo.corregir(r.reg, r.enc, "Ya deje el repo en orden.", "aj-1", ahora_iso())
         self.assertEqual(r.fold().estado, "recibido")
@@ -282,7 +293,8 @@ class UnFalloDeGitRepetidoPideAyuda(_Repo):
         with mock.patch.object(ciclo, "_asegurar_repo", return_value=self.CAUSA):
             for _ in range(3):
                 self.reintentar(r)
-        self.assertEqual(r.fold().estado, "necesita_usuario")
+        self.assertNotEqual(r.fold().estado, "necesita_usuario")
+        self.assertTrue(_bloqueo_visible(r.fold()))
         return r
 
     def _el_reintento_pasa_del_repo(self, r: Recorrido) -> None:

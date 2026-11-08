@@ -1246,7 +1246,7 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
             estado_fake = json.loads((raiz / "fake" / "github.json").read_text())
             self.assertEqual(estado_fake["prs"], {})
 
-    def test_inspeccion_pendiente_pasa_por_el_puente_y_no_repite(self):
+    def test_inspeccion_pendiente_vuelve_al_revisor_sin_esperar_a_una_persona(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "insp-1", "Crea dato.txt con 42")
             self.addCleanup(r.reg.close)
@@ -1275,13 +1275,20 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
                     r.incorporar()
                     barrer(r.reg, ahora_iso(), time.time(), lanzador)
             e = r.fold()
-            self.assertEqual(lanzamientos, [])
-            self.assertEqual(len(r.eventos("revision")), 1)
-            self.assertEqual(e.estado, "necesita_usuario")
+            self.assertTrue(lanzamientos)
+            self.assertEqual(
+                {rol for rol, _prompt in lanzamientos}, {"revisor"}
+            )
+            self.assertEqual(len(r.eventos("revision")), 2)
+            self.assertEqual(e.no_concluyentes, 2)
+            self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(
                 e.inspeccion_pendiente, "consultar metricas de cuenta"
             )
             self.assertEqual(len(e.solicitudes), 1)
+            self.assertIn(
+                "consulta sin capacidad concedida", lanzamientos[-1][1]
+            )
 
             from motor.encargos.necesidades import responder
 
@@ -1290,8 +1297,8 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
                 "propietario", "insp-1", ahora_iso(),
             )
             barrer(r.reg, ahora_iso(), time.time(), lanzador)
-            self.assertEqual([rol for rol, _prompt in lanzamientos], ["revisor"])
-            self.assertIn("estado: respuesta", lanzamientos[0][1])
+            self.assertEqual(lanzamientos[-1][0], "revisor")
+            self.assertIn("estado: respuesta", lanzamientos[-1][1])
 
     def test_poteto_local_llega_con_las_skills_hermanas(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2162,23 +2169,23 @@ class CorreccionEnCursoFlujo(unittest.TestCase):
             self.assertEqual(len(prompts), 1)
             self.assertIn("prioriza el modo Windows", prompts[0][1])
 
-    def test_en_necesita_usuario_se_acepta_y_reabre_el_trabajo(self):
+    def test_una_pregunta_no_bloquea_y_el_ajuste_reabre_el_trabajo(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = self._recorrido(tmp)
             hora = ahora_iso()
             marcar_pregunta(r.reg, r.enc, "que formato prefieres", True, hora)
-            self.assertEqual(r.fold().estado, "necesita_usuario")
+            e = r.fold()
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertIn("que formato prefieres", e.preguntas)
             prompts: list = []
-            self._barrer(r, self._lanzador(prompts))
-            self.assertEqual(prompts, [])
             salida = corregir(r.reg, r.enc, "usa el formato largo", "c1", hora)
             self.assertFalse(salida.get("rechazada"))
             e = r.fold()
             self.assertEqual(e.estado, "recibido")
             self.assertTrue(e.intentos_nuevos)
             self._barrer(r, self._lanzador(prompts))
-            self.assertEqual(len(prompts), 1)
-            self.assertIn("usa el formato largo", prompts[0][1])
+            self.assertTrue(prompts)
+            self.assertTrue(any("usa el formato largo" in p for _r, p in prompts))
 
     def test_detenido_sigue_detenido_hasta_continuar(self):
         with tempfile.TemporaryDirectory() as tmp:

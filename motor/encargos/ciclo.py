@@ -91,6 +91,7 @@ from .sesion import (
     preparar_administrado,
     recuperar_arranque,
 )
+from .resultado import Avanzo, Espera, NecesitaAgente, permite_lanzar
 from .suscripciones import CuentaNoDisponible
 
 _UMBRAL_S = 30
@@ -1281,12 +1282,6 @@ def _barrer_encargos(
                     f"buzon-fallo:{encargo_id}:{type(exc).__name__}",
                 )
             enc = registro.fold(encargo_id) or enc
-        if not parada and enc.estado not in (
-            "cancelado", "terminado", "detenido", "deteniendo"
-        ):
-            enc = _autocontestar_preguntas(
-                registro, enc, espacio, directorio, hora, lanzador
-            )
         if (
             not parada
             and enc.pendientes_entrega
@@ -1363,7 +1358,6 @@ def _barrer_encargos(
                 "cancelado",
                 "terminado",
                 "esperando_reintento",
-                "necesita_usuario",
             )
         )
         if not parada and enc.via != "directa":
@@ -1386,8 +1380,10 @@ def _barrer_encargos(
                 {"kind": "intento_cerrado", "data": {"hora": hora}},
                 f"intento-cerrado:{encargo_id}:{enc.proc.pid}:{enc.proc.inicio}",
             )
-            enc = registro.fold(encargo_id)
-        sin_llm = False
+            enc = registro.fold(encargo_id) or enc
+        resultado_paso = NecesitaAgente(
+            str(getattr(enc, "rol", "") or "responsable")
+        )
         if (
             not parada
             and enc.proc is None
@@ -1397,34 +1393,37 @@ def _barrer_encargos(
             and enc.estado in ("recibido", "ejecutando")
             and enc.via != "directa"
         ):
+            antes = len(registro.eventos(encargo_id))
             if (
                 _aplica_entrega(enc) or _revision_aprobada_vigente(enc)
             ) and _devolver_correcciones(registro, enc, hora):
                 enc = registro.fold(encargo_id)
             elif _aplica_entrega(enc):
-                antes = len(registro.eventos(encargo_id))
                 enc = _paso_entrega(registro, enc, gh, hora)
                 sin_avance = (
                     len(registro.eventos(encargo_id)) == antes
                     and not enc.reanuda_en
                 )
-                sin_llm = not sin_avance or (
-                    enc.rol == "revisor" and _revision_aprobada_vigente(enc)
-                )
-                if (
-                    sin_avance
-                    and enc.rol == "revisor"
-                    and _revision_aprobada_vigente(enc)
-                ):
+                if not sin_avance:
+                    resultado_paso = Avanzo()
+                elif enc.rol == "revisor" and _revision_aprobada_vigente(enc):
                     enc = _esperar_entrega_sin_avance(registro, enc, hora)
-                    sin_llm = True
+                    resultado_paso = Espera(enc.reanuda_en, enc.motivo)
+                else:
+                    resultado_paso = NecesitaAgente(
+            str(getattr(enc, "rol", "") or "responsable")
+        )
             elif _revision_aprobada_vigente(enc):
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
-                sin_llm = enc.estado == "terminado" or (
+                if enc.estado == "terminado" or (
                     enc.rol == "revisor" and _revision_aprobada_vigente(enc)
-                )
-            if sin_llm:
-                arbol = observar(directorio, proc)
+                ):
+                    resultado_paso = Avanzo()
+                else:
+                    resultado_paso = NecesitaAgente(
+            str(getattr(enc, "rol", "") or "responsable")
+        )
+            arbol = observar(directorio, proc)
         if enc.estado == "terminado" and enc.pr_numero and not parada:
             enc = _revisar_ci_del_pr(registro, enc, gh, hora)
         sin_hecho = _edad(enc, epoch) >= umbral_s
@@ -1434,7 +1433,7 @@ def _barrer_encargos(
             if observar_despliegue(registro, enc) != "ausente":
                 arbol = "incierto"
         decision = _decision(enc, arbol, directorio, sin_hecho, hora)
-        if sin_llm:
+        if not permite_lanzar(resultado_paso):
             decision["lanzar"] = False
         if parada:
             decision["lanzar"] = False
@@ -1470,7 +1469,7 @@ def _barrer_encargos(
                 ):
                     enc = _incorporar_revisor(registro, enc, espacio, hora, directorio)
                 decision = _decision(enc, arbol, directorio, sin_hecho, hora)
-                if sin_llm:
+                if not permite_lanzar(resultado_paso):
                     decision["lanzar"] = False
         # Y el entorno se comprueba antes de consumir otro turno, no después de
         # que falle. Si la comprobación no puede hacerse, tampoco acredita nada.
@@ -1548,7 +1547,8 @@ def _vigilar_quietud(
 ) -> Encargo:
     """Cuenta vueltas seguidas en las que el encargo no tiene nada en curso y el
     registro no se movio. Al pasar el umbral deja un evento `quietud` con la
-    causa y lo pasa a necesita_usuario. Cualquier evento nuevo reinicia la cuenta."""
+    causa y la deja como pendiente visible para entregar con lo que hay.
+    Cualquier evento nuevo reinicia la cuenta."""
     ruta = _directorio(registro.base, enc.id) / "quietud.json"
     quieto = (
         not parada
@@ -2554,7 +2554,15 @@ def _intentar_cierre(
                 + ": "
                 + (enc.nivel_efectivo_motivo or "el sondeo de capacidad ya lo comprobó")
             )
-            marcar_pregunta(registro, enc.id, causa, True, hora)
+            _anotar_impedimento(
+                registro, enc, "autorizacion", causa,
+                "que el encargo autorice desplegar o no lo pida", hora,
+            )
+            registro.anotar(
+                enc.id,
+                {"kind": "pendiente_entrega", "data": {"texto": causa, "hora": hora}},
+                f"pendiente-despliegue-no-autorizado:{enc.id}",
+            )
             return registro.fold(enc.id)
         if not nivel_cumplido(enc):
             return enc
@@ -2747,15 +2755,8 @@ def _ligar_inspeccion(
     ident = _id_inspeccion(enc, juicio, registro.base)
     previa = next((s for s in enc.solicitudes if s.id == ident), None)
     if fase.inspeccion_solicitud == ident and previa is not None:
-        if previa.estado == "pregunta" and enc.estado in ("recibido", "ejecutando"):
-            marcar_pregunta(
-                registro,
-                enc.id,
-                previa.pregunta or juicio.inspeccion_faltante,
-                True,
-                hora,
-                f"pregunta-inspeccion:{enc.id}:{ident}:{enc.generacion}",
-            )
+        # La pregunta ya está registrada como solicitud visible y no bloquea: el
+        # barrido sigue y el freno de no concluyentes acota la repetición.
         return
     # Con la liga puesta pero sin solicitud registrada (llegó tarde, con el
     # encargo detenido) el pedido se vuelve a encolar en vez de darse por atendido.
@@ -2830,15 +2831,10 @@ def _ligar_inspeccion(
             # La liga nace con su solicitud: una liga sin solicitud no bloquea.
             necesidades.registrar_pedida(registro, enc, crudo, hora)
             if recursos[pedido.recurso].get("autorizacion") == "propietario":
-                marcar_pregunta(
-                    registro,
-                    enc.id,
-                    pregunta
-                    + f"El recurso {pedido.recurso} exige tu autorización para "
-                    f"{pedido.operacion}; responde a la solicitud {ident}.",
-                    True,
-                    hora,
-                )
+                # La solicitud queda visible y admite respuesta, pero no detiene
+                # el trabajo: el revisor sigue con lo que tenga y la repetición
+                # la corta el freno de no concluyentes.
+                pass
             return
     registro.anotar(
         enc.id,
@@ -2872,14 +2868,19 @@ def _ligar_inspeccion(
         },
         f"solicitud:{enc.id}:{ident}",
     )
-    marcar_pregunta(
-        registro,
+    registro.anotar(
         enc.id,
-        pregunta
-        + "Ninguna capacidad concedida del puente la cubre. Concede la capacidad "
-        f"o responde a la solicitud {ident} con el dato o la autorización.",
-        True,
-        hora,
+        {
+            "kind": "procedimiento",
+            "data": {
+                "nota": (
+                    "consulta sin capacidad concedida, visible como solicitud "
+                    f"{ident}; el trabajo sigue sin esperar respuesta"
+                ),
+                "hora": hora,
+            },
+        },
+        f"consulta-sin-capacidad:{enc.id}:{ident}",
     )
 
 
@@ -3688,7 +3689,27 @@ def _salta_inspeccion(
         # que el juicio acredite como consumida. Se consume para que
         # `_ligar_inspeccion` vuelva a encolar el pedido en vez de descartarlo.
         return False
-    if sol.estado not in ("pendiente", "pregunta"):
+    if sol.estado == "pregunta":
+        # La pregunta por autorización no bloquea: el juicio se consume como una
+        # revisión más y la repetición la cuenta el freno de no concluyentes.
+        marca = marca_inspeccion_entregada(sol)
+        if fase.inspeccion_entregada != marca:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "inspeccion_entregada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "solicitud": sol.id,
+                        "marca": marca,
+                        "hora": hora,
+                    },
+                },
+                f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
+            )
+        return False
+    if sol.estado != "pendiente":
         marca = marca_inspeccion_entregada(sol)
         if fase.inspeccion_entregada != marca:
             registro.anotar(
@@ -4286,26 +4307,38 @@ def _fallo_de_repo(
     registro: Registro, enc: Encargo, causa: str, hora: str, serie: str
 ) -> None:
     """El repo no quedó listo: espera y reintenta. El mismo fallo
-    TOPE_FALLOS_REPO veces seguidas pide ayuda al propietario con la causa."""
+    TOPE_FALLOS_REPO veces seguidas deja un impedimento visible y se entrega lo
+    que haya con los pendientes, sin esperar a una persona."""
     _anotar_instrumento(
         registro, enc, "github", causa,
         "dejar accesible el repo declarado y reintentar",
         hora, serie,
     )
     marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+    enc = registro.fold(enc.id) or enc
     veces = _fallos_de_repo_seguidos(registro, enc.id, causa)
     if veces < TOPE_FALLOS_REPO:
         return
-    marcar_pregunta(
-        registro,
-        enc.id,
+    texto = (
         f"Git falló {veces} veces seguidas en la misma operación y el motor dejó "
-        f"de reintentar. Último error: {causa}. Corrige el repositorio o el espacio y manda un "
-        "ajuste con director corregir para que reintente; también sirve director "
-        "parar y después director continuar.",
-        True,
-        hora,
-        f"pregunta-repo:{enc.id}:{hora}",
+        f"de reintentar. Último error: {causa}. Corrige el repositorio o el "
+        "espacio y manda un ajuste con director corregir para que reintente; "
+        "también sirve director parar y después director continuar."
+    )
+    if enc.estado == "esperando_reintento":
+        registro.anotar(
+            enc.id,
+            {"kind": "plazo", "data": {"hora": hora}},
+            f"plazo-repo:{enc.id}:{veces}",
+        )
+    _anotar_impedimento(
+        registro, enc, "repo", texto,
+        "que el repositorio y el espacio vuelvan a responder", hora,
+    )
+    registro.anotar(
+        enc.id,
+        {"kind": "pendiente_entrega", "data": {"texto": texto, "hora": hora}},
+        f"pendiente-repo:{enc.id}:{veces}",
     )
 
 
@@ -5269,7 +5302,7 @@ def _releer_deepseek(
         devolver
         and not abiertos
         and enc.estado not in (
-            "terminado", "cancelado", "deteniendo", "detenido", "necesita_usuario"
+            "terminado", "cancelado", "deteniendo", "detenido"
         )
         and enc.proc is None
         and not enc.reserva
@@ -6695,7 +6728,6 @@ def _head_antes_de_cerrar(
 
 
 _TOPE_DEEPSEEK_MIN = 30
-_TOPE_PREGUNTA_MIN = 10
 
 
 def _entregar_con_pendientes(
@@ -6791,10 +6823,20 @@ def _entregar_con_pendientes(
                             _publicar_resultado(registro, enc, hora)
                             _limpiar_encargo_cerrado(registro, enc, hora)
                         return enc
-                    marcar_pregunta(registro, enc.id,
-                                    f"La fase {enc.fase_activa} no tiene commits para un PR con pendientes; "
-                                    "hace falta resolver el bloqueo antes de continuar.", True, hora)
-                    return registro.fold(enc.id)
+                    _bloquear_fase(
+                        registro, enc,
+                        "no hay commits que entregar en el PR",
+                        "no hay commits que entregar en el PR; la fase termina "
+                        "bloqueada con el motivo: " + "; ".join(pendientes),
+                        hora,
+                        f"{enc.reaperturas}:sin-commits-sin-relevo:{len(pendientes)}",
+                    )
+                    enc = registro.fold(enc.id) or enc
+                    _publica(directorio / "incorporado", hora)
+                    if enc.estado == "terminado":
+                        _publicar_resultado(registro, enc, hora)
+                        _limpiar_encargo_cerrado(registro, enc, hora)
+                    return enc
             cuerpo = _cuerpo_pr(
                 replace(enc, pendientes_entrega=tuple(pendientes)), espacio
             )
@@ -6890,25 +6932,6 @@ def _bloquear_fase(
     )
 
 
-def _hora_de_solicitud(registro: Registro, encargo: str, ident: str) -> str:
-    for ev in registro.eventos(encargo):
-        if ev["kind"] == "solicitud" and str(ev["data"].get("id") or "") == ident:
-            return str(ev["data"].get("hora") or ev["ts"] or "")
-    return ""
-
-
-def _hora_de_pedido_al_revisor(
-    registro: Registro, encargo: str, ident: str
-) -> str:
-    for ev in registro.eventos(encargo):
-        if (
-            ev["kind"] == "respuesta_revisor_pedida"
-            and str(ev["data"].get("solicitud") or "") == ident
-        ):
-            return str(ev["data"].get("hora") or ev["ts"] or "")
-    return ""
-
-
 def _preguntas_pedidas_al_revisor(
     registro: Registro, enc: Encargo
 ) -> list:
@@ -6984,143 +7007,6 @@ def _contestar_con_juicio_del_revisor(
             )
         except (OSError, ValueError, TransicionIlegal):
             pass
-        enc = registro.fold(enc.id) or enc
-    return enc
-
-
-def _contestar_como_responsable(
-    registro: Registro,
-    enc: Encargo,
-    espacio: Path,
-    directorio: Path,
-    sol,
-    hora: str,
-) -> Encargo:
-    """Si el revisor no llega a decidir, el responsable sigue con la opción más
-    razonable y lo deja escrito; nunca deja la pregunta esperando a una persona."""
-    texto = (
-        "Sin decisión del revisor en el tiempo de espera; el responsable sigue "
-        "con la opción más razonable y no espera respuesta: "
-        + (sol.pregunta or sol.motivo or "continuar")
-    )[:2000]
-    try:
-        salida = necesidades.responder(
-            registro, enc.id, sol.id, texto, "responsable",
-            f"responsable-pregunta:{sol.id}:{enc.generacion}", hora,
-        )
-    except TransicionIlegal:
-        return enc
-    if not salida.get("aplicada"):
-        return enc
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "nota_pr",
-            "data": {
-                "texto": (
-                    f"pregunta {sol.id} contestada por el responsable al no "
-                    f"aplicar el revisor: {sol.pregunta or sol.motivo}"
-                ),
-                "hora": hora,
-            },
-        },
-        f"nota-pregunta-responsable:{enc.id}:{sol.id}",
-    )
-    enc = registro.fold(enc.id) or enc
-    try:
-        necesidades.continuar_respuestas(registro, enc, espacio, directorio, hora)
-    except (OSError, ValueError, TransicionIlegal):
-        pass
-    return registro.fold(enc.id) or enc
-
-
-def _turno_de_revisor_en_curso(enc: Encargo) -> bool:
-    """Un juicio que ya está en curso no vio la pregunta: no se le atribuye."""
-    return enc.rol == "revisor" and (enc.proc is not None or enc.reserva)
-
-
-def _autocontestar_preguntas(
-    registro: Registro,
-    enc: Encargo,
-    espacio: Path,
-    directorio: Path,
-    hora: str,
-    lanzador=None,
-) -> Encargo:
-    """Una pregunta del agente que nadie responde en un rato corto pasa al
-    revisor: se le pide un juicio con la pregunta delante y su evidencia decide.
-    Si el revisor no llega a decidir, el responsable sigue con la opción más
-    razonable y la deja anotada para el PR. Nunca espera a una persona."""
-    pendientes = [
-        sol
-        for sol in enc.solicitudes
-        if sol.estado == "pregunta"
-        and _minutos_desde(
-            _hora_de_solicitud(registro, enc.id, sol.id) or enc.hora, hora
-        )
-        >= _TOPE_PREGUNTA_MIN
-    ]
-    if not pendientes:
-        return enc
-    if enc.pendientes_entrega:
-        return enc
-    por_pedir = []
-    for sol in pendientes:
-        if _turno_de_revisor_en_curso(enc):
-            # El turno vivo no vio esta pregunta; se pide al terminar, en un
-            # juicio nuevo que sí la tenga delante.
-            continue
-        pedida = _hora_de_pedido_al_revisor(registro, enc.id, sol.id)
-        if not pedida:
-            por_pedir.append(sol)
-            continue
-        if (
-            _minutos_desde(pedida, hora) >= _TOPE_PREGUNTA_MIN
-            and enc.proc is None
-            and not enc.reserva
-        ):
-            enc = _contestar_como_responsable(
-                registro, enc, espacio, directorio, sol, hora
-            )
-    if not por_pedir:
-        return enc
-    for sol in por_pedir:
-        texto = str(sol.pregunta or sol.motivo or "pregunta del agente")
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "nota_pr",
-                "data": {
-                    "texto": f"pregunta del agente al revisor: {texto}",
-                    "hora": hora,
-                },
-            },
-            f"nota-pregunta-pedida:{enc.id}:{sol.id}",
-        )
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "respuesta_revisor_pedida",
-                "data": {"solicitud": sol.id, "pregunta": texto, "hora": hora},
-            },
-            f"respuesta-revisor-pedida:{enc.id}:{sol.id}",
-        )
-    enc = registro.fold(enc.id) or enc
-    if lanzador is not None:
-        _devolver(
-            registro,
-            enc,
-            "responder_pregunta",
-            "; ".join(
-                str(s.pregunta or s.motivo or "pregunta del agente")
-                for s in por_pedir
-            )[:500],
-            "responder con la evidencia disponible; si no aplica, el "
-            "responsable sigue con la opción más razonable y lo deja en el PR",
-            hora,
-            f"pregunta-revisor:{por_pedir[0].id}",
-            rol="revisor",
-        )
         enc = registro.fold(enc.id) or enc
     return enc
 
@@ -7696,7 +7582,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             from motor.github import MergeRechazado, PoliticaBloquea
 
             causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
-            necesita_usuario = isinstance(exc, MergeRechazado)
+            checks = None
+            lectura_fallida = False
             if isinstance(exc, PoliticaBloquea):
                 try:
                     checks = gh.checks_requeridos(
@@ -7705,33 +7592,88 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 except MergeRechazado as rechazo:
                     causa += f"; {rechazo}"
                 except Exception as lectura:
-                    necesita_usuario = False
+                    lectura_fallida = True
                     causa += f"; no se pudieron leer los checks requeridos: {lectura}"
-                else:
-                    if (
-                        checks.en_marcha
-                        and not checks.fallas
-                        and set(checks.faltan) <= set(checks.en_marcha)
-                    ):
-                        marcar_espera(
-                            registro, enc.id,
-                            f"esperando checks requeridos del PR #{enc.pr_numero}: "
-                            + ", ".join(checks.en_marcha),
-                            _reanuda_desde(hora, 120), hora,
-                        )
-                        return registro.fold(enc.id)
-                    if checks.fallas:
-                        causa += "; checks requeridos fallidos: " + ", ".join(checks.fallas)
+            if lectura_fallida:
+                # No saber el estado de los checks no es un rechazo de la
+                # política: se reintenta, sin preguntar a nadie.
+                marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+                return registro.fold(enc.id) or enc
+            if checks is not None and (
+                checks.en_marcha
+                and not checks.fallas
+                and set(checks.faltan) <= set(checks.en_marcha)
+            ):
+                marcar_espera(
+                    registro, enc.id,
+                    f"esperando checks requeridos del PR #{enc.pr_numero}: "
+                    + ", ".join(checks.en_marcha),
+                    _reanuda_desde(hora, 120), hora,
+                )
+                return registro.fold(enc.id)
+            if checks is not None and checks.fallas:
+                # El CI rojo explica por qué no hubo merge: vuelve al responsable
+                # con el log del check, no a una pregunta. La fase conserva la
+                # aprobación; deja de entregarse mientras el SHA siga en rojo.
+                rojos = ", ".join(checks.fallas)
+                sha = str(enc.pr_sha or "")
+                espacio = _espacio(registro.base, enc.id)
+                log = _logs_de_fallidos(gh, enc.entrega.repo, checks, espacio)
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "entrega_bloqueada",
+                        "data": {
+                            "fase": enc.fase_activa,
+                            "sha": sha,
+                            "causa": "checks requeridos en rojo: " + rojos,
+                            "hora": hora,
+                        },
+                    },
+                    f"entrega-bloqueada:{enc.id}:{sha}:{rojos}",
+                )
+                _devolver(
+                    registro,
+                    enc,
+                    "pon_en_verde",
+                    f"pon en verde {rojos}",
+                    (
+                        "El merge del PR #"
+                        f"{enc.pr_numero} no ocurrió porque los checks requeridos "
+                        f"están en rojo: {rojos}. Corrige el producto y vuelve a "
+                        "entregar; el CI no es una compuerta, solo explica por qué "
+                        "no se integró."
+                        + (f"\n{log}" if log else "")
+                    )[:4000],
+                    hora,
+                    f"merge-ci-{sha[:12]}",
+                    rol="responsable",
+                )
+                return registro.fold(enc.id) or enc
+            # Un rechazo que no viene de un check (permisos, conflicto, punta
+            # movida) es un impedimento visible con entrega con pendientes.
             _anotar_instrumento(
                 registro, enc, "github", causa,
                 "resolver la causa del merge rechazado sobre el SHA revisado",
                 hora, f"merge-{enc.pr_sha[:12]}",
             )
-            if necesita_usuario:
-                marcar_pregunta(registro, enc.id, causa, True, hora)
-            else:
-                marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-            return registro.fold(enc.id)
+            _anotar_impedimento(
+                registro, enc, "merge", causa,
+                "que el repositorio permita integrar el SHA revisado",
+                hora,
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "pendiente_entrega",
+                    "data": {
+                        "texto": "merge rechazado: " + causa[:400],
+                        "hora": hora,
+                    },
+                },
+                f"pendiente-merge:{enc.id}:{enc.pr_sha}",
+            )
+            return registro.fold(enc.id) or enc
         registro.anotar(
             enc.id,
             {
@@ -7757,16 +7699,28 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
 
 
 def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: str) -> None:
-    # Continuar reabre el trabajo sin cambiar intento ni generación. La misma
-    # causa debe bloquear otra vez, una sola vez por esa intervención.
-    continuacion = next((
-        ev["id"] for ev in reversed(registro.eventos(enc.id))
-        if ev["kind"] == "orden" and ev["data"].get("accion") == "continuar"
-    ), 0)
+    """El despliegue que no puede completarse deja un impedimento visible y un
+    pendiente de entrega; no pregunta ni espera a una persona."""
     huella = hashlib.sha256(causa.encode()).hexdigest()[:12]
-    marcar_pregunta(
-        registro, enc.id, causa, True, hora,
-        ukey=f"pregunta-despliegue:{enc.id}:{enc.fase_activa}:{continuacion}:{huella}",
+    if enc.estado == "esperando_reintento":
+        # El fallo reemplaza una espera de la receta que ya no corre: sin
+        # reabrirla, el pendiente quedaría dormido hasta el plazo.
+        registro.anotar(
+            enc.id,
+            {"kind": "plazo", "data": {"hora": hora}},
+            f"plazo-despliegue:{enc.id}:{huella}",
+        )
+    _anotar_impedimento(
+        registro, enc, "despliegue:" + huella, causa,
+        "que el despliegue pueda completarse o se retire del pedido", hora,
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "pendiente_entrega",
+            "data": {"texto": "despliegue: " + causa[:400], "hora": hora},
+        },
+        f"pendiente-despliegue:{enc.id}:{enc.fase_activa}:{huella}",
     )
 
 
@@ -8215,7 +8169,23 @@ def _lanzar_uno_en_turno(
             proc = lanzar_administrado(directorio, token)
         except CuentaNoDisponible as exc:
             _liberar_flota()
-            marcar_pregunta(registro, enc.id, str(exc), True, hora)
+            from .rutas import fallo
+
+            agente = agente_lanzado or enc.agente or rol
+            causa = fallo(agente, str(exc), hora, 1, modelo=modelo_lanzado)
+            registro.anotar(
+                enc.id,
+                {"kind": "proveedor_fallo", "data": {**causa, "hora": hora}},
+                f"proveedor-fallo:{enc.id}:{hora}",
+            )
+            if not enc.agentes:
+                marcar_espera(
+                    registro,
+                    enc.id,
+                    "cuenta del agente: " + str(exc),
+                    causa["hasta"],
+                    hora,
+                )
             return
         except Exception:
             _liberar_flota()

@@ -26,7 +26,6 @@ ESTADOS_ACTIVOS = (
     "ejecutando",
     "esperando_reintento",
     "conciliando",
-    "necesita_usuario",
     "deteniendo",
 )
 TOPE_MENSAJE = 4096
@@ -220,9 +219,6 @@ def _espera_en_palabras(motivo: str) -> str:
 
 
 def _paso(enc: Encargo) -> str:
-    if enc.estado == "necesita_usuario":
-        motivo = _frase(enc.motivo or (enc.preguntas[-1] if enc.preguntas else ""), 160)
-        return f"necesita tu decisión: {motivo}" if motivo else "necesita tu decisión"
     if enc.estado == "deteniendo":
         motivo = _frase(enc.motivo, 120)
         return f"deteniéndose: {motivo}" if motivo else "deteniéndose"
@@ -387,17 +383,11 @@ def _desde_estado(enc: Encargo, eventos: list[dict]) -> float | None:
 
 
 def _decisiones_de(enc: Encargo) -> list[tuple[str, str]]:
-    salida: list[tuple[str, str]] = []
-    titulo = _titulo(enc)
-    if enc.estado == "necesita_usuario":
-        motivo = _frase(enc.motivo or (enc.preguntas[-1] if enc.preguntas else ""), 200)
-        salida.append((titulo, motivo or "hace falta una decisión"))
-    for solicitud in enc.solicitudes:
-        if solicitud.estado != "pregunta":
-            continue
-        texto = _frase(solicitud.pregunta or solicitud.motivo, 200)
-        salida.append((titulo, texto or "hay una pregunta pendiente"))
-    return salida
+    """El motor ya no deja decisiones pendientes del propietario.
+
+    Se conserva la función para el contrato del resumen, pero nunca devuelve
+    filas: las preguntas históricas quedan como aviso y el trabajo sigue."""
+    return []
 
 
 def _entrada(enc: Encargo, eventos: list[dict], ahora: float) -> Entrada:

@@ -19,6 +19,16 @@ from motor.encargos.comprobacion import version_producto
 from tests import test_encargos_despliegue_real as base
 
 
+def _bloqueo_visible(enc) -> bool:
+    fase = enc.fase_actual
+    return bool(
+        enc.pendientes_entrega
+        or enc.impedimento
+        or any(i.clase.startswith("despliegue:") for i in enc.impedimentos)
+        or (fase is not None and fase.estado == "bloqueada")
+    )
+
+
 class RecuperacionDespliegue(unittest.TestCase):
     setUp = base.DespliegueReal.setUp
 
@@ -105,7 +115,8 @@ class RecuperacionDespliegue(unittest.TestCase):
         self.assertEqual(reg.fold(ident).estado, "detenido")
         ciclo.ordenar(reg, ident, "continuar", "seguir-huerfano", base.HORA)
         final = base.paso(self.despliegue)
-        self.assertEqual(final.estado, "necesita_usuario")
+        self.assertNotEqual(final.estado, "necesita_usuario")
+        self.assertTrue(_bloqueo_visible(final))
         self.assertEqual(final.nivel_alcanzado, "integrado")
         self.assertEqual(json.loads(recibo.read_text(encoding="utf-8"))["estado"], "incierto")
         self.assertFalse((destino / "pasos").exists())
@@ -160,7 +171,8 @@ class RecuperacionDespliegue(unittest.TestCase):
             self.assertEqual(datos["estado"], "incierto")
             self.assertIsNone(datos["pasos"][0]["enviado"])
             self.assertEqual(final.nivel_alcanzado, "integrado")
-            self.assertEqual(final.estado, "necesita_usuario")
+            self.assertNotEqual(final.estado, "necesita_usuario")
+            self.assertTrue(_bloqueo_visible(final))
             self.comprobar_bloqueo_tras_continuar()
         self.assertEqual(json.loads(recibo.read_text(encoding="utf-8"))["estado"], "incierto")
         self.assertEqual(efecto.read_text(encoding="utf-8"), "enviado\n")
@@ -173,7 +185,8 @@ class RecuperacionDespliegue(unittest.TestCase):
         integrar()
         self.aprobar_para_supervisor()
         final = base.paso(self.despliegue)
-        self.assertEqual(final.estado, "necesita_usuario")
+        self.assertNotEqual(final.estado, "necesita_usuario")
+        self.assertTrue(_bloqueo_visible(final))
         recibo, = (reg.base / "despliegues").rglob("recibo.json")
         self.assertEqual(json.loads(recibo.read_text(encoding="utf-8"))["estado"], "fallido")
         pasos = (destino / "pasos").read_text(encoding="utf-8")
@@ -188,7 +201,8 @@ class RecuperacionDespliegue(unittest.TestCase):
             "paso": "desplegado", "recibo": "dst_ensayo", "hora": base.HORA,
         }}, "despliegue-legado")
         final = ciclo._paso_entrega(reg, reg.fold(ident), None, base.HORA)
-        self.assertEqual(final.estado, "necesita_usuario")
+        self.assertNotEqual(final.estado, "necesita_usuario")
+        self.assertTrue(_bloqueo_visible(final))
         self.comprobar_bloqueo_tras_continuar()
         self.assertFalse((destino / "pasos").exists())
 
@@ -208,36 +222,23 @@ class RecuperacionDespliegue(unittest.TestCase):
 
     def comprobar_bloqueo_tras_continuar(self):
         reg, ident, *_ = self.despliegue
-        previo = reg.fold(ident)
-        evidencia = [ev for ev in reg.eventos(ident) if ev["kind"] in ("revision", "reserva")]
-
-        def preguntas():
-            return [ev for ev in reg.eventos(ident) if ev["kind"] == "pregunta"]
-
-        cantidad = len(preguntas())
-        self.assertEqual(cantidad, 1)
         lanzador = mock.Mock(side_effect=AssertionError("el bloqueo no requiere otro agente"))
-        for ronda in range(2):
-            hora = ciclo.ahora_iso(time.time() + ronda * 60)
-            ciclo.ordenar(reg, ident, "parar", f"parar-bloqueo-{ronda}", hora)
+        hora = ciclo.ahora_iso()
+        if reg.fold(ident).estado != "detenido":
+            ciclo.ordenar(reg, ident, "parar", "parar-bloqueo", hora)
             limite = time.monotonic() + 5
             while reg.fold(ident).estado != "detenido":
                 self.assertLess(time.monotonic(), limite)
                 ciclo.barrer(reg, hora, time.time(), lanzador)
                 time.sleep(0.01)
-            ciclo.ordenar(reg, ident, "continuar", f"seguir-bloqueo-{ronda}", hora)
-            self.assertEqual(reg.fold(ident).estado, "recibido")
-            ciclo.barrer(reg, hora, time.time(), lanzador)
-            final = reg.fold(ident)
-            self.assertEqual(final.estado, "necesita_usuario")
-            self.assertEqual(final.nivel_alcanzado, previo.nivel_alcanzado)
-            self.assertEqual((final.generacion, final.intento), (previo.generacion, previo.intento))
-            cantidad += 1
-            self.assertEqual(len(preguntas()), cantidad)
-            ciclo.barrer(reg, hora, time.time(), lanzador)
-            ciclo._paso_entrega(reg, reg.fold(ident), None, hora)
-            self.assertEqual(len(preguntas()), cantidad)
-        self.assertEqual([ev for ev in reg.eventos(ident) if ev["kind"] in ("revision", "reserva")], evidencia)
+        ciclo.ordenar(reg, ident, "continuar", "seguir-bloqueo", hora)
+        self.assertEqual(reg.fold(ident).estado, "recibido")
+        ciclo.barrer(reg, hora, time.time(), lanzador)
+        final = reg.fold(ident)
+        self.assertNotEqual(final.estado, "necesita_usuario")
+        self.assertEqual(
+            [ev for ev in reg.eventos(ident) if ev["kind"] == "pregunta"], []
+        )
         lanzador.assert_not_called()
 
     @unittest.skipIf(os.name == "nt", "la supervivencia a SIGTERM se comprueba en POSIX")

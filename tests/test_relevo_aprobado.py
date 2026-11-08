@@ -84,15 +84,14 @@ class RelevoConAprobacion(unittest.TestCase):
 
         enc = self.entrega_sin_avance()
 
-        self.assertEqual(enc.estado, "necesita_usuario")
+        self.assertEqual(enc.estado, "recibido")
         self.assertEqual(relevos_de(enc, "revisor"), 1)
-        self.assertTrue(enc.preguntas)
+        self.assertTrue(enc.pendientes_entrega)
         self.assertIn("entrega", enc.motivo)
-        self.assertEqual(enc.pendientes_entrega, ())
         self.assertFalse(
             decision_proceso(enc, "ausente", None, False, True, self.hora)["lanzar"]
         )
-        self.assertEqual(vista(enc)["estado"], "necesita_usuario")
+        self.assertEqual(vista(enc)["estado"], "recibido")
 
         lanzamientos = []
         for _ in range(3):
@@ -101,7 +100,7 @@ class RelevoConAprobacion(unittest.TestCase):
                 lambda *args, **kw: lanzamientos.append((args, kw)),
             )
         enc = self.reg.fold(self.id)
-        self.assertEqual(enc.estado, "necesita_usuario")
+        self.assertNotEqual(enc.estado, "necesita_usuario")
         self.assertEqual(lanzamientos, [])
         self.assertFalse(any(
             ev["kind"] == "cierre_forzado" for ev in self.reg.eventos(self.id)

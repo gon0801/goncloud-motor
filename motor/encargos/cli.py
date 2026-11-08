@@ -112,7 +112,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("encargo")
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--texto", required=True)
-    s.add_argument("--bloquea", action="store_true")
 
     s = sub.add_parser("responder")
     s.add_argument("encargo")
@@ -285,7 +284,8 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
             marcar_espera(reg, args.encargo, args.motivo, args.reanuda_en, hora)
         )
     if args.cmd == "pregunta":
-        return _json(marcar_pregunta(reg, args.encargo, args.texto, args.bloquea, hora))
+        # La pregunta es un aviso: no cambia el estado ni espera a una persona.
+        return _json(marcar_pregunta(reg, args.encargo, args.texto, False, hora))
     if args.cmd == "responder":
         from .ciclo import _directorio, _espacio
         from .necesidades import continuar_respuestas, responder

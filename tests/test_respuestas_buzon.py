@@ -305,7 +305,7 @@ class AjusteYRespuestaReabrenElTurno(_Flujo):
             "t-quietud-turno",
         )
         enc = r.fold()
-        self.assertEqual(enc.estado, "necesita_usuario")
+        self.assertNotEqual(enc.estado, "necesita_usuario")
         self.assertEqual(enc.solicitudes[0].estado, "pregunta")
         self.assertEqual(enc.solicitudes[0].intento, "rev-1")
         self.assertEqual(enc.intento, "rev-2")
@@ -351,18 +351,18 @@ class AjusteYRespuestaReabrenElTurno(_Flujo):
 
 
 class PreguntaAbiertaNoDejaRecibidoMudo(_Flujo):
-    def test_un_ajuste_con_la_pregunta_abierta_cuenta_como_respuesta(self):
+    def test_un_ajuste_con_la_pregunta_abierta_no_detiene_el_trabajo(self):
         r = self.recorrido("preg-1")
         self.pedir(r)
-        self.assertEqual(r.fold().estado, "necesita_usuario")
+        self.assertNotEqual(r.fold().estado, "necesita_usuario")
         self.barrer(r)
-        self.assertEqual(self.lanzamientos, [])
+        self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])
 
         corregir(r.reg, r.enc, "Sin CI propio: usa el log que adjunte.", "aj-1", ahora_iso())
         self.barrer(r)
 
-        self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])
-        self.assertIn("Sin CI propio", self.lanzamientos[0][1])
+        self.assertEqual(self.lanzamientos[-1][0], "revisor")
+        self.assertIn("Sin CI propio", self.lanzamientos[-1][1])
 
     def test_un_ajuste_con_el_encargo_detenido_arranca_al_continuar(self):
         r = self.recorrido("preg-2")
@@ -389,11 +389,10 @@ class PreguntaAbiertaNoDejaRecibidoMudo(_Flujo):
 
         salida = ordenar(r.reg, r.enc, "continuar", "c-1", ahora_iso())
 
-        self.assertEqual(salida["estado"], "necesita_usuario")
-        self.assertIn(pregunta, salida["motivo"])
-        self.assertIn(pregunta, salida["preguntas"])
+        self.assertEqual(salida["estado"], "recibido")
+        self.assertEqual(r.fold().solicitudes[0].pregunta, pregunta)
         self.barrer(r)
-        self.assertEqual(self.lanzamientos, [])
+        self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])
         self.assertTrue(ident)
 
 

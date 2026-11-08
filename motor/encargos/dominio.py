@@ -20,7 +20,6 @@ ESTADOS = (
     "ejecutando",
     "esperando_reintento",
     "conciliando",
-    "necesita_usuario",
     "deteniendo",
     "detenido",
     "cancelado",
@@ -1088,8 +1087,8 @@ def sin_nada_en_curso(e: Encargo) -> bool:
         )
     ):
         return False
-    # Una pregunta del propietario sin estado `necesita_usuario` es un recibido
-    # mudo: nadie la va a contestar porque nadie sabe que está abierta.
+    # Una pregunta del propietario ya no es una espera: queda como aviso y el
+    # barrido sigue. Un recibido sin pregunta tampoco se da por quieto.
     return not (
         e.fases
         and (
@@ -1154,8 +1153,12 @@ def inspeccion_bloquea(e: Encargo) -> bool:
         # La liga apunta a una solicitud que nunca se registró (llegó tarde, con
         # el encargo detenido): nadie la va a resolver, no puede bloquear.
         return False
-    if sol.estado in ("pendiente", "pregunta"):
+    if sol.estado == "pendiente":
         return True
+    if sol.estado == "pregunta":
+        # La consulta espera autorización, pero eso ya no detiene el motor: la
+        # pregunta queda visible y la revisión sigue con la evidencia disponible.
+        return False
     return respuesta_consumida(fase, marca_inspeccion_entregada(sol))
 
 
@@ -1236,6 +1239,20 @@ def _entrega_de(d: dict) -> EntregaAutorizada:
 
 
 def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encargo:
+    """Pliega un evento y rechaza cualquier estado fuera de `ESTADOS`.
+
+    La validación es del plegado, no de un campo aparte: un evento histórico que
+    intente un estado retirado se rechaza como `TransicionIlegal` en vez de
+    reabrir una espera que ya no existe."""
+    resultado = _reducir(estado, evento, nuevo)
+    if resultado.estado not in ESTADOS:
+        raise TransicionIlegal(
+            f"estado fuera del conjunto de la reducción: {resultado.estado}"
+        )
+    return resultado
+
+
+def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encargo:
     kind = evento["kind"]
     d = evento["data"]
     hora = str(d.get("hora") or "")
@@ -1388,13 +1405,6 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 hora=hora,
                 ultimo_hecho="ajuste incorporado con el trabajo detenido",
                 siguiente="seguir detenido hasta continuar",
-            )
-        if e.estado == "necesita_usuario":
-            # Un ajuste es la respuesta del propietario y retoma el trabajo.
-            # Las preguntas que siguen vigentes las vuelve a poner `_retomar`.
-            return replace(
-                _retomar(e, hora),
-                ultimo_hecho="corrección incorporada; se retoma el trabajo",
             )
         return e
     if kind == "procedimiento":
@@ -1755,39 +1765,11 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                     "el bloqueo sigue abierto tras el relevo: "
                     + (e.bloqueo_huella or huella)
                 )
-                if (
-                    e.revision_vigente is not None
-                    and e.revision_vigente.veredicto == "aprobado"
-                    and not _bloqueos_abiertos(e)
-                ):
-                    pregunta = (
-                        "El relevo aprobó sin resolver la entrega: " + pendiente
-                        + ". ¿Qué debe cambiar para completar la entrega autorizada?"
-                    )
-                    return replace(
-                        e,
-                        estado=(
-                            "necesita_usuario"
-                            if e.estado not in _CERRADOS
-                            else e.estado
-                        ),
-                        bloqueo_huella=huella,
-                        sin_progreso=veces,
-                        preguntas=(
-                            e.preguntas
-                            if pregunta in e.preguntas
-                            else e.preguntas + (pregunta,)
-                        ),
-                        motivo=pendiente,
-                        siguiente="hace falta una decisión del usuario para completar la entrega",
-                        ultimo_hecho="el relevo aprobó, pero la entrega sigue bloqueada",
-                        hora=hora or e.hora,
-                    )
                 return replace(
                     e,
                     estado=(
                         "recibido"
-                        if e.estado in ("recibido", "ejecutando", "necesita_usuario")
+                        if e.estado in ("recibido", "ejecutando")
                         else e.estado
                     ),
                     bloqueo_huella=huella or e.bloqueo_huella,
@@ -1807,7 +1789,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
                 e,
                 estado=(
                     "recibido"
-                    if e.estado in ("recibido", "ejecutando", "necesita_usuario")
+                    if e.estado in ("recibido", "ejecutando")
                     else e.estado
                 ),
                 bloqueo_huella=huella or e.bloqueo_huella,
@@ -1966,16 +1948,18 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             hora=hora or e.hora,
         )
     if kind == "pregunta":
-        bloquea = bool(d.get("bloquea_todo"))
+        # Aviso informativo: una pregunta no cambia el estado ni detiene el
+        # encargo. Los eventos históricos con `bloquea_todo` se pliegan igual,
+        # sin reabrir una espera que el motor ya no tiene.
+        texto = str(d.get("texto") or "")
         return replace(
             e,
-            preguntas=e.preguntas if d["texto"] in e.preguntas else e.preguntas + (d["texto"],),
-            estado="necesita_usuario" if bloquea else e.estado,
-            motivo=d["texto"] if bloquea else e.motivo,
-            siguiente="hace falta una decisión del usuario" if bloquea else e.siguiente,
+            preguntas=e.preguntas if texto in e.preguntas else e.preguntas + (texto,),
             hora=hora or e.hora,
         )
     if kind == "quietud":
+        # La quietud es un dato del diagnóstico, no una espera. Se convierte en
+        # un pendiente visible que el barrido entrega con lo que haya.
         causa = str(d.get("causa") or "").strip()
         if not causa:
             raise TransicionIlegal("la quietud necesita causa")
@@ -1983,10 +1967,13 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             return e
         return replace(
             e,
-            estado="necesita_usuario",
-            preguntas=e.preguntas + (causa,),
+            pendientes_entrega=(
+                e.pendientes_entrega
+                if causa in e.pendientes_entrega
+                else e.pendientes_entrega + (causa,)
+            ),
             motivo=causa,
-            siguiente="hace falta una decisión del usuario",
+            siguiente="entregar el PR con los pendientes abiertos",
             ultimo_hecho=causa,
             hora=hora or e.hora,
         )
@@ -2237,19 +2224,10 @@ def _soltar_impedimento_de_inspeccion(e: Encargo) -> Encargo:
 
 
 def _reanudar_inspeccion(e: Encargo, ident: str) -> Encargo:
-    fase = e.fase_actual
-    if (
-        e.estado == "necesita_usuario"
-        and fase is not None
-        and fase.inspeccion_solicitud == ident
-        and not inspeccion_bloquea(e)
-    ):
-        return replace(
-            e,
-            estado="recibido",
-            motivo="",
-            siguiente="continuar la revisión con la inspección resuelta",
-        )
+    """La resolución o respuesta se consume en el flujo normal.
+
+    Ya no hay un estado de espera humana que reabrir: el barrido vuelve a
+    ofrecer el trabajo con la información nueva."""
     return e
 
 
@@ -2830,10 +2808,9 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
             and not e.reserva
             and e.intentos_nuevos
         )
-        if e.estado not in ("detenido", "necesita_usuario") and not rearmar:
+        if e.estado != "detenido" and not rearmar:
             raise TransicionIlegal(
-                "continuar espera el estado detenido, una pausa sin proceso "
-                "o una pregunta del usuario"
+                "continuar espera el estado detenido o una pausa sin proceso"
             )
         return replace(
             _retomar(_limpiar_para_continuar(e), hora),
@@ -2902,21 +2879,12 @@ def _limpiar_para_continuar(e: Encargo) -> Encargo:
 
 
 def _retomar(e: Encargo, hora: str) -> Encargo:
-    """Vuelve a abrir el trabajo. Si una pregunta del propietario sigue abierta
-    y bloquea la fase, no queda en `recibido`: dice cuál es."""
-    e = _retomar_trabajo(e, hora)
-    sol = pregunta_de_inspeccion(e) if e.estado == "recibido" else None
-    if sol is None:
-        return e
-    texto = sol.pregunta or e.fase_actual.inspeccion_pendiente
-    return replace(
-        e,
-        estado="necesita_usuario",
-        motivo=texto,
-        siguiente="hace falta una decisión del usuario",
-        ultimo_hecho=f"se continuó, pero la solicitud {sol.id} sigue esperando al propietario",
-        preguntas=e.preguntas if texto in e.preguntas else e.preguntas + (texto,),
-    )
+    """Vuelve a abrir el trabajo sin esperar a una persona.
+
+    La inspección pendiente no lo deja en un estado mudo: el barrido la atiende
+    con una capacidad concedida, la devuelve al revisor o la entrega como
+    pendiente visible."""
+    return _retomar_trabajo(e, hora)
 
 
 def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:
@@ -3403,7 +3371,7 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
             e,
             estado=(
                 "recibido"
-                if e.estado in ("recibido", "ejecutando", "necesita_usuario")
+                if e.estado in ("recibido", "ejecutando")
                 else e.estado
             ),
             pendientes_entrega=e.pendientes_entrega + (motivo,),
@@ -3416,7 +3384,7 @@ def _contar_no_concluyentes(e: Encargo, d: dict, origen: str, veredicto: str) ->
         e,
         estado=(
             "recibido"
-            if e.estado in ("recibido", "ejecutando", "necesita_usuario")
+            if e.estado in ("recibido", "ejecutando")
             else e.estado
         ),
         relevo_huella=clave,
@@ -3847,8 +3815,6 @@ def seguimiento_de(e: Encargo) -> dict:
 def vista(e: Encargo, recibo: str = "") -> dict:
     if e.estado == "esperando_reintento" and (not e.motivo or not e.reanuda_en):
         raise TransicionIlegal("espera incompleta")
-    if e.estado == "necesita_usuario" and not e.preguntas:
-        raise TransicionIlegal("falta la pregunta")
     if e.estado == "conciliando" and not any(x.estado == "incierto" for x in e.efectos):
         raise TransicionIlegal("conciliando sin efecto incierto")
     if e.estado == "terminado" and not e.evidencia:
@@ -4049,8 +4015,6 @@ def decision_proceso(
     if e.fases and all(f.estado == "preparada" for f in e.fases):
         return {"matar": False, "lanzar": False, "eventos": []}
     if e.fases and _fase_disponible(e.fases) is None:
-        return {"matar": False, "lanzar": False, "eventos": []}
-    if e.estado == "necesita_usuario" and not e.pendientes:
         return {"matar": False, "lanzar": False, "eventos": []}
     if arbol == "incierto":
         return {"matar": False, "lanzar": False, "eventos": []}

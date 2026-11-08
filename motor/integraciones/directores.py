@@ -1265,27 +1265,31 @@ def hechos_de_avance(enc, apariciones: dict[str, int] | None = None) -> list[dic
         preguntadas.update(t for t in (sol.pregunta, sol.motivo, pregunta) if t)
         hechos.append(
             {
-                "tipo": "pregunta",
+                "tipo": "aviso",
                 "identidad": sol.id,
                 "solicitud": sol.id,
                 "texto": _con_remision(
-                    "Necesito tu decisión para seguir." + (f" {pregunta}" if pregunta else ""),
+                    "Aviso: el trabajo sigue sin esperarte."
+                    + (f" {pregunta}" if pregunta else ""),
                     tecnico,
                 ),
             }
         )
-    if enc.estado == "necesita_usuario" and enc.motivo:
-        pregunta, tecnico = _llano(enc.motivo)
-        if not {enc.motivo, pregunta} & preguntadas:
-            hechos.append(
-                {
-                    "tipo": "pregunta",
-                    "identidad": "usuario:" + hashlib.sha256(enc.motivo.encode()).hexdigest()[:12],
-                    "texto": _con_remision(
-                        f"Necesito tu decisión para seguir. {pregunta}".rstrip(), tecnico
-                    ),
-                }
-            )
+    for texto in enc.preguntas:
+        if not texto or texto in preguntadas:
+            continue
+        pregunta, tecnico = _llano(texto)
+        if not pregunta:
+            continue
+        hechos.append(
+            {
+                "tipo": "aviso",
+                "identidad": "aviso:" + hashlib.sha256(texto.encode()).hexdigest()[:12],
+                "texto": _con_remision(
+                    "Aviso: el trabajo sigue sin esperarte. " + pregunta, tecnico
+                ),
+            }
+        )
     if getattr(enc, "relevos", 0):
         hechos.append(
             {
