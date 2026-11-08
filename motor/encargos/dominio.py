@@ -217,6 +217,125 @@ class AlcanceRevision:
     manifiesto: tuple[tuple[str, str], ...] = ()
 
 
+def _epochs(valor) -> tuple[tuple[str, float], ...]:
+    if not isinstance(valor, dict):
+        return ()
+    salida = []
+    for sha, epoch in valor.items():
+        try:
+            salida.append((str(sha), float(epoch)))
+        except (TypeError, ValueError):
+            continue
+    return tuple(sorted(salida))
+
+
+def _epochs_dict(valor: tuple[tuple[str, float], ...]) -> dict[str, float]:
+    return dict(valor)
+
+
+@dataclass(frozen=True)
+class LecturaDeepSeek:
+    """La última lectura de DeepSeek de un SHA: el espaciado y el error viven
+    en el registro, no en `deepseek_lectura.json`."""
+
+    sha: str = ""
+    epoch: float = 0.0
+    error: str = ""
+    aviso: float = 0.0
+
+    @classmethod
+    def de_dict(cls, d: dict) -> "LecturaDeepSeek":
+        try:
+            epoch = float(d.get("epoch") or 0)
+        except (TypeError, ValueError):
+            epoch = 0.0
+        try:
+            aviso = float(d.get("aviso") or 0)
+        except (TypeError, ValueError):
+            aviso = 0.0
+        return cls(
+            sha=str(d.get("sha") or ""),
+            epoch=epoch,
+            error=str(d.get("error") or ""),
+            aviso=aviso,
+        )
+
+    def como_dict(self) -> dict:
+        return {
+            "sha": self.sha,
+            "epoch": self.epoch,
+            "error": self.error,
+            "aviso": self.aviso,
+        }
+
+
+@dataclass(frozen=True)
+class MarcasDeepSeekCerrado:
+    """Los SHA ya leídos de un encargo cerrado y desde cuándo se sondea."""
+
+    shas: tuple[tuple[str, float], ...] = ()
+    inicios: tuple[tuple[str, float], ...] = ()
+    desde: float = 0.0
+
+    @classmethod
+    def de_dict(cls, d: dict) -> "MarcasDeepSeekCerrado":
+        try:
+            desde = float(d.get("desde") or 0)
+        except (TypeError, ValueError):
+            desde = 0.0
+        shas = _epochs(d.get("shas"))
+        inicios = _epochs(d.get("inicios"))
+        # Formato anterior, de una sola fase: se conserva al actualizar.
+        sha = str(d.get("sha") or "")
+        try:
+            epoch = float(d.get("epoch") or 0)
+        except (TypeError, ValueError):
+            epoch = 0.0
+        if sha and epoch:
+            if sha not in dict(shas):
+                shas = tuple(sorted(shas + ((sha, epoch),)))
+            if sha not in dict(inicios):
+                inicios = tuple(sorted(inicios + ((sha, epoch),)))
+        return cls(shas=shas, inicios=inicios, desde=desde)
+
+    def como_dict(self) -> dict:
+        return {
+            "shas": _epochs_dict(self.shas),
+            "inicios": _epochs_dict(self.inicios),
+            "desde": self.desde,
+        }
+
+
+@dataclass(frozen=True)
+class SondeoCI:
+    """El avance del sondeo del CI de un SHA. Reemplaza `ci-sondeo.json`."""
+
+    sha: str = ""
+    primero: str = ""
+    ultimo: str = ""
+    sondeos: int = 0
+    errores_limite: int = 0
+
+    @classmethod
+    def de_dict(cls, d: dict) -> "SondeoCI":
+        return cls(
+            sha=str(d.get("sha") or ""),
+            primero=str(d.get("primero") or ""),
+            ultimo=str(d.get("ultimo") or ""),
+            sondeos=int(d.get("sondeos") or 0),
+            errores_limite=int(d.get("errores_limite") or 0),
+        )
+
+    def como_dict(self) -> dict:
+        return {
+            "sha": self.sha,
+            "primero": self.primero,
+            "ultimo": self.ultimo,
+            "sondeos": self.sondeos,
+            "errores_limite": self.errores_limite,
+        }
+
+
 FASE_IMPLICITA = "fase_unica"
 # Revisiones no_concluyente seguidas, sobre la misma versión y pidiendo lo mismo,
 # tras las cuales el encargo pide ayuda al propietario en vez de otro turno.
@@ -580,6 +699,16 @@ class Encargo:
     # bloqueante, aprobación concluyente sin bloqueos). Es la época de la
     # escalera: crece sola con el hecho, no se reinicia a mano.
     avances: int = 0
+    # Marcadores que antes vivían en archivos y decidían fuera del registro.
+    # Cada uno es ahora un hecho: el reducer guarda su última marca y el ciclo
+    # la lee sin recorrer eventos ni abrir un `.json`.
+    incorporado: tuple[int, ...] = ()
+    quietud_vigilada: tuple[int, int, float, float] = (0, 0, 0.0, 0.0)
+    lectura_deepseek: LecturaDeepSeek = field(default_factory=LecturaDeepSeek)
+    deepseek_cerrado: MarcasDeepSeekCerrado = field(
+        default_factory=MarcasDeepSeekCerrado
+    )
+    sondeo_ci: SondeoCI = field(default_factory=SondeoCI)
     # Pendientes que se escriben en el cuerpo del PR cuando el encargo entrega
     # sin que el revisor haya concluido o sin la revisión externa.
     pendientes_entrega: tuple[str, ...] = ()
@@ -1897,6 +2026,40 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
         if fase is None or str(d.get("fase") or fase.id) != fase.id:
             return e
         return con_fase(e, replace(fase, deepseek_error=str(d.get("causa") or "")))
+    if kind == "incorporado":
+        # El resultado de un intento ya se incorporó. La generación identifica
+        # el intento; la marca sobrevive a la limpieza de su directorio.
+        try:
+            generacion = int(d.get("generacion") or 0)
+        except (TypeError, ValueError):
+            raise TransicionIlegal(
+                "la incorporación necesita una generación"
+            ) from None
+        if generacion < 0:
+            raise TransicionIlegal("la incorporación necesita una generación")
+        marcas = e.incorporado if generacion in e.incorporado else (
+            tuple(sorted(e.incorporado + (generacion,)))
+        )
+        return replace(e, incorporado=marcas)
+    if kind == "quietud_vigilada":
+        # Una vuelta del supervisor observó el encargo quieto sobre el evento
+        # `evento`. La cuenta vive en el registro; un evento nuevo la estrena.
+        try:
+            evento_id = int(d.get("evento") or 0)
+            vueltas = int(d.get("vueltas") or 0)
+            desde = float(d.get("desde") or 0)
+            visto = float(d.get("visto") or 0)
+        except (TypeError, ValueError):
+            raise TransicionIlegal(
+                "la quietud vigilada necesita números"
+            ) from None
+        return replace(e, quietud_vigilada=(evento_id, vueltas, desde, visto))
+    if kind == "deepseek_lectura":
+        return replace(e, lectura_deepseek=LecturaDeepSeek.de_dict(d))
+    if kind == "deepseek_cerrado":
+        return replace(e, deepseek_cerrado=MarcasDeepSeekCerrado.de_dict(d))
+    if kind == "ci_sondeo":
+        return replace(e, sondeo_ci=SondeoCI.de_dict(d))
     if kind == "fase_reabierta":
         return _fase_reabierta(e, d, hora)
     if kind == "entrada_incorporada":

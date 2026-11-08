@@ -1608,9 +1608,14 @@ class CierreDiceQueDeepSeekNoReviso(unittest.TestCase):
             e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
             self.assertEqual(e.estado, "terminado")
 
-            cierre = json.loads(
-                (r.base / "ejecucion" / r.enc / "cierre.json").read_text()
-            )
+            cierres = [
+                ev["data"]
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "comprobacion"
+                and ev["data"].get("clase") == "cierre_comprobado"
+            ]
+            self.assertTrue(cierres, "el cierre queda en el registro")
+            cierre = cierres[-1]
             self.assertIn("DeepSeek no revisó", cierre["evidencia"])
             self.assertNotIn("DeepSeek leído", cierre["evidencia"])
 
@@ -1792,10 +1797,10 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
             self.assertTrue(gh.llamadas)
 
             ciclo._limpiar_encargo_cerrado(reg, reg.fold(enc), ahora_iso())
-            marca = (
-                Path(reg.base) / "ejecucion" / enc / "deepseek_cerrado.json"
-            )
-            self.assertTrue(marca.is_file())
+            marcas = [
+                ev for ev in reg.eventos(enc) if ev["kind"] == "deepseek_cerrado"
+            ]
+            self.assertTrue(marcas, "el sondeo vive en el registro, no en el intento")
 
             gh.llamadas.clear()
             barrer(

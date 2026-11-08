@@ -249,7 +249,7 @@ class Recorrido:
             else None
         )
         salida = _incorporar(self.reg, self.fold(), self.espacio, self.hora, self.d)
-        if not marca.is_file() and (
+        if n not in self.fold().incorporado and (
             self.espacio / ".interno" / "comprobaciones.json"
         ).is_file():
             fin = time.time() + 15

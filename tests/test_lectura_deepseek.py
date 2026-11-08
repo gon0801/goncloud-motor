@@ -97,13 +97,25 @@ class RelecturaDelMismoSha(unittest.TestCase):
     def test_el_mismo_comentario_no_anota_eventos_repetidos(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = self._devuelto_por_f1(tmp, "ds-igual")
-            antes = len(r.reg.eventos(r.enc))
+
+            def decisiones() -> list[dict]:
+                return [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] != "deepseek_lectura"
+                ]
+
+            antes = decisiones()
             llamadas = len(vuelta.gh.llamadas)
             t0 = time.time()
             for i in range(3):
                 e = _barrido(r, vuelta.gh, t0 + 61 * i)
             self.assertEqual(len(vuelta.gh.llamadas) - llamadas, 3)
-            self.assertEqual(len(r.reg.eventos(r.enc)), antes)
+            self.assertEqual(decisiones(), antes)
+            self.assertTrue(
+                [ev for ev in r.reg.eventos(r.enc) if ev["kind"] == "deepseek_lectura"],
+                "el espaciado de la lectura vive en el registro",
+            )
             self.assertEqual(_ids(e), ["F1"])
 
     def test_barridos_seguidos_no_golpean_a_github(self):
