@@ -878,8 +878,10 @@ def nivel_de(fase: Fase | None) -> str:
         return "integrado"
     if paso == "sin_cambios":
         return "sin_cambios"
-    if not (fase.pr_numero and fase.pr_sha):
+    if not fase.pr_numero:
         return "terminado" if fase.estado == "preparada" else "ninguno"
+    if not fase.pr_sha:
+        return "pr_abierto"
     if paso == "pr_con_pendientes":
         return "pr"
     if (
