@@ -349,8 +349,9 @@ el encargo cuenta las revisiones independientes `no_concluyente` seguidas que
 piden lo mismo sobre la misma versión: el mismo texto de inspección o el mismo
 recurso. La cuenta es propia (`no_concluyentes`) y no toca `sin_progreso`,
 la escalera de diagnóstico de los bloqueos. A la tercera
-(`TOPE_NO_CONCLUYENTES`) el encargo queda en `necesita_usuario` con la causa
-de la última revisión y no gasta otro turno del revisor.
+(`TOPE_NO_CONCLUYENTES`) el encargo releva el rol del revisor a otro modelo
+autorizado, con la causa de la última revisión en el motivo; si el revisor
+de relevo tampoco concluye, el barrido entrega el PR con la nota y termina.
 
 La cuenta empieza de nuevo con otra versión del producto, otro pedido, un
 bloqueante cerrado, otro veredicto, un ajuste o una respuesta del propietario.
@@ -361,8 +362,13 @@ archivo), pedirlo de nuevo no cuenta como repetir.
 
 El nivel se fija al encargar (`--entrega`), no a mitad de camino. Los niveles
 `pr`, `integrado` y `desplegado` exigen `--repo` y `--base-rama` desde el
-inicio. `terminado` siempre distingue nivel autorizado y nivel alcanzado: el
-encargo termina solo cuando el alcanzado iguala al autorizado.
+inicio. `terminado` siempre distingue nivel autorizado, efectivo y alcanzado:
+el encargo termina cuando el alcanzado iguala al objetivo real, que es el
+autorizado salvo la limitación ya comprobada por el sondeo de capacidad
+(`nivel_efectivo`, que nunca lo supera). Con una prohibición comprobada de
+integrar, un encargo pedido hasta `integrado` o `desplegado` cierra en `pr`,
+con el motivo llano en el aviso y en el cierre; una capacidad desconocida no
+cambia el nivel.
 
 - `terminado` (defecto): revisión independiente aprobada sobre la versión
   vigente + recibos de los efectos pedidos. No se toca GitHub.
