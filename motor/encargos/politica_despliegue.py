@@ -1,6 +1,7 @@
 """Contrato de despliegue por fase, leído sin validar el resto del plan legado."""
 
 from __future__ import annotations
+from motor.io import leer_texto
 
 from dataclasses import dataclass, replace
 import hashlib
@@ -82,7 +83,7 @@ def _leer(espacio: Path, archivo: Path, enc: Encargo) -> tuple[str, str] | None:
                 return None
         if revisiones:
             return None
-        return archivo.read_text(encoding="utf-8-sig"), relativo or str(archivo)
+        return leer_texto(archivo), relativo or str(archivo)
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return None
 

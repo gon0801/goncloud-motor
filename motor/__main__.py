@@ -25,6 +25,7 @@ daemon esté caído (el pedido queda encolado y se toma al volver).
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import argparse
 import json
@@ -62,7 +63,7 @@ def _encola(home: Path, msg: dict, buzon: Path | None = None) -> str:
     inbox = buzon or home / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     tmp = inbox / f".{cmd_id}.tmp"
-    tmp.write_text(json.dumps(msg, ensure_ascii=False), encoding="utf-8")
+    escribir_texto(tmp, json.dumps(msg, ensure_ascii=False))
     tmp.rename(inbox / f"{time.time_ns()}-{cmd_id}.json")
     return cmd_id
 
@@ -81,7 +82,7 @@ def _en_bandeja(home: Path, cmd_id: str, buzon: Path | None = None) -> bool:
             continue
         for f in inbox.glob("*.json"):
             try:
-                data = json.loads(f.read_text(encoding="utf-8"))
+                data = leer_json(f)
             except (OSError, ValueError):
                 continue
             if isinstance(data, dict) and data.get("cmd_id") == cmd_id:
@@ -93,7 +94,7 @@ def _recibo(home: Path, cmd_id: str, buzon: Path | None = None) -> dict:
     local = home / "recibos" / f"{cmd_id}.json"
     if local.is_file():
         try:
-            data = json.loads(local.read_text(encoding="utf-8"))
+            data = leer_json(local)
         except (OSError, ValueError):
             data = None
         if isinstance(data, dict) and data.get("cmd_id") == cmd_id:
@@ -135,7 +136,7 @@ def _guarda_recibo(home: Path, cmd_id: str, estado: str, detalle: str, extra: di
     dest.mkdir(parents=True, exist_ok=True)
     payload = {"cmd_id": cmd_id, "estado": estado, "detalle": detalle, **extra}
     tmp = dest / f".{cmd_id}.tmp"
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    escribir_texto(tmp, json.dumps(payload, ensure_ascii=False))
     os.replace(tmp, dest / f"{cmd_id}.json")
 
 
@@ -210,7 +211,7 @@ def _valida(path: Path, home: Path | None):
             conf.escalera("implementar"),
         )
     plan = parse_plan(
-        path.read_text(encoding="utf-8"),
+        leer_texto(path),
         modelos=modelos,
     )
     if tabla and (malos := revisa_sin_quien(plan, tabla)):
@@ -452,7 +453,7 @@ def _errores_programadas(d: Path) -> list[str]:
     if not f.exists():
         return []
     try:
-        raw = tomllib.loads(f.read_text(encoding="utf-8"))
+        raw = tomllib.loads(leer_texto(f))
     except (OSError, tomllib.TOMLDecodeError) as e:
         return [f"{efimeras.ARCHIVO_EXTRAS}: {e}"]
     maquinas: set[str] = set()
@@ -460,7 +461,7 @@ def _errores_programadas(d: Path) -> list[str]:
         maquinas.add(m_.stem)
         try:
             maquinas.add(
-                tomllib.loads(m_.read_text(encoding="utf-8")).get("nombre", "")
+                tomllib.loads(leer_texto(m_)).get("nombre", "")
             )
         except (OSError, tomllib.TOMLDecodeError):
             pass
@@ -522,12 +523,12 @@ def conf_valida(d: Path) -> list[str]:
             sorted((d / "maquinas").glob("*.toml")) if (d / "maquinas").is_dir() else []
         ):
             try:
-                valida_maquina(tomllib.loads(f.read_text(encoding="utf-8")))
+                valida_maquina(tomllib.loads(leer_texto(f)))
             except (ConfError, OSError, tomllib.TOMLDecodeError) as e:
                 errores.append(f"maquinas/{f.name}: {e}")
         if SECRETO_CONF.search(
             "\n".join(
-                p.read_text(errors="replace", encoding="utf-8")
+                leer_texto(p, errors="replace")
                 for p in d.rglob("*.toml")
             )
         ):
@@ -591,7 +592,7 @@ def _vuelve_a_la_buena(home: Path, d: Path, error: str):
     from .workspace import git
 
     buena = home / "conf-buena"
-    sha = buena.read_text(encoding="utf-8").strip() if buena.is_file() else ""
+    sha = leer_texto(buena).strip() if buena.is_file() else ""
     if not sha:
         return _sin_donde_volver(
             f"la conf no carga y no hay conf-buena a dónde volver: {error}"

@@ -27,6 +27,7 @@ from urllib.request import (
 # El script se lanza con `-P`, que no agrega la raíz del repo al camino de
 # importación. Sin esta línea `import motor` falla dentro del subproceso real.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from motor.io import leer_json
 
 CONFIG = "capacidades.json"
 
@@ -144,7 +145,7 @@ def cargar(base: Path) -> dict[str, dict]:
     if not path.is_file():
         return {}
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = leer_json(path)
     except (OSError, ValueError) as exc:
         raise ConfigInvalida(f"{CONFIG} no se puede leer: {exc}") from exc
     if not isinstance(doc, dict) or not isinstance(doc.get("recursos", {}), dict):
@@ -606,7 +607,7 @@ def main(argv: list[str]) -> int:
     if len(argv) != 2 or argv[0] != "--spec":
         print("uso: capacidades.py --spec <archivo>", file=sys.stderr)
         return 2
-    spec = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
+    spec = leer_json(Path(argv[1]))
     destino = Path(spec["destino"])
     try:
         recurso = spec["recurso"]

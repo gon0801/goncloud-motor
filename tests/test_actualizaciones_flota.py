@@ -194,6 +194,32 @@ class ActualizacionesFlota(unittest.TestCase):
             rc = flota_ciclo.main(["--home", str(home)])
         self.assertEqual(rc, 0)
 
+    def test_flota_ciclo_publicador_reenvia_repo_hermes_y_motor_origen(self):
+        from ops import flota_ciclo
+
+        home = self.base / "home-ciclo-hermes"
+        home.mkdir()
+        (home / "manifiesto.toml").write_text("", encoding="utf-8")
+        hermes, origen = self.base / "hermes", self.base / "motor"
+        with (
+            patch("ops.flota_ciclo.leer_fuente", return_value=None),
+            patch("ops.flota_ciclo.cargar"),
+            patch("ops.flota_ciclo.proyectar_tabla"),
+            patch("ops.flota_ciclo.descubrir_modelos"),
+            patch(
+                "ops.flota_ciclo.publicar_politica_modelos",
+                return_value={"recibos": []},
+            ),
+            patch("ops.flota_ciclo.actualizar", return_value={"accion": "igual"}),
+            patch("ops.flota_ciclo.estado", return_value={}),
+            patch("ops.flota_ciclo.exportar", return_value={}) as exportar,
+        ):
+            flota_ciclo.ciclo(
+                home, motor_origen=origen, repos={"hermes": hermes}
+            )
+        self.assertEqual(exportar.call_args.kwargs["repo_hermes"], hermes)
+        self.assertEqual(exportar.call_args.kwargs["motor_origen"], origen)
+
     def test_flota_ciclo_primer_arranque_del_publicador_llega_a_preparar(self):
         from ops import flota_ciclo
 

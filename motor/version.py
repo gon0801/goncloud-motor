@@ -6,6 +6,7 @@ el código que haya en disco (la instalación lo actualiza antes de relanzar).
 """
 
 from __future__ import annotations
+from motor.io import leer_texto
 
 import re
 import subprocess
@@ -33,7 +34,7 @@ def sha_actual(raiz: Path = RAIZ) -> str:
 def version_en_disco(raiz: Path = RAIZ) -> str:
     """La versión del código que hay en disco ahora (el proceso en marcha puede traer otra más vieja)."""
     try:
-        texto = (raiz / "motor" / "__init__.py").read_text(encoding="utf-8")
+        texto = leer_texto((raiz / "motor" / "__init__.py"))
     except OSError:
         return ""
     m = re.search(r'^__version__\s*=\s*"([^"]+)"', texto, re.M)

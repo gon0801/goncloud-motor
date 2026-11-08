@@ -1,6 +1,7 @@
 """Identidad de procesos del intento. El avance no se mide por el tamaño del log."""
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import json
 import os
@@ -35,9 +36,7 @@ def observar(directorio: Path, proc: dict | None) -> str:
     if estado != "ausente":
         return estado
     try:
-        identidades = json.loads(
-            (directorio / "arbol.json").read_text(encoding="utf-8")
-        )
+        identidades = leer_json((directorio / "arbol.json"))
         raiz_inicio = str(proc.get("inicio") or "")
         for x in identidades:
             inicio = str(x.get("inicio") or "")
@@ -67,7 +66,7 @@ def herramienta_en_curso(directorio: Path) -> bool | None:
     if not path.exists():
         return None
     try:
-        datos = json.loads(path.read_text(encoding="utf-8"))
+        datos = leer_json(path)
     except (OSError, ValueError):
         return True
     if datos.get("observada"):
@@ -78,7 +77,7 @@ def herramienta_en_curso(directorio: Path) -> bool | None:
                 return None
             return False
         try:
-            agente = int((directorio / "agent.pid").read_text(encoding="utf-8"))
+            agente = int(leer_texto((directorio / "agent.pid")))
         except (OSError, ValueError):
             return None
         actuales = descendientes(agente)
@@ -122,7 +121,7 @@ def _base_de(cwd: Path) -> Path | None:
 def _persistir_proc(directorio: Path, proc: dict) -> None:
     directorio.mkdir(parents=True, exist_ok=True)
     tmp = directorio / "proc.json.tmp"
-    tmp.write_text(json.dumps(proc), encoding="utf-8")
+    escribir_texto(tmp, json.dumps(proc))
     os.replace(tmp, directorio / "proc.json")
 
 
@@ -192,7 +191,7 @@ def lanzar_administrado(directorio: Path, token: str) -> dict:
     proc = plataforma.lanzar_separado(
         argv, directorio, os.environ.copy(), directorio / "wrapper.log"
     )
-    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec = leer_json(spec_path)
     proc.update(
         {
             "aislamiento": spec["aislamiento"],
@@ -289,13 +288,13 @@ def recuperar_arranque(directorio: Path) -> tuple[str, dict | None]:
 
     spec_path = directorio / "arranque.json"
     try:
-        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        spec = leer_json(spec_path)
     except (OSError, ValueError):
         return "incierto", None
     with turno(Path(spec["base"])):
         for nombre in ("proc.json", "wrapper.json"):
             try:
-                proc = json.loads((directorio / nombre).read_text(encoding="utf-8"))
+                proc = leer_json((directorio / nombre))
             except (OSError, ValueError):
                 continue
             if proc.get("token") == spec["token"]:
@@ -414,7 +413,7 @@ def guardar_descendientes(directorio: Path, raiz: int) -> list[dict] | None:
         return None
     path = directorio / "arbol.json"
     try:
-        previos = json.loads(path.read_text(encoding="utf-8"))
+        previos = leer_json(path)
     except (OSError, ValueError):
         previos = []
     for ident in previos:
@@ -428,7 +427,7 @@ def comprobador_actual(directorio: Path) -> tuple[Path, dict | None] | None:
     path = directorio / "comprobador-actual"
     if not path.is_file():
         return None
-    nombre = path.read_text(encoding="utf-8").strip()
+    nombre = leer_texto(path).strip()
     if not nombre.startswith("comprobador-") or "/" in nombre or "\\" in nombre:
         return None
     cd = directorio / nombre

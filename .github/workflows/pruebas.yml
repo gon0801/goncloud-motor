@@ -55,6 +55,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Instalar pytest para la prueba del job de pruebas nuevas
+        run: python -m pip install pytest
       - name: Parte de la bateria
         run: python -m tests.reparto correr --parte ${{ matrix.parte }}
 

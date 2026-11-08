@@ -348,7 +348,11 @@ class DespliegueReal(unittest.TestCase):
         integrar()
 
         def esperar(condicion):
-            fin = time.monotonic() + 10
+            # 30 s: el camino del producto tras la parada puede gastar hasta
+            # ~6 s (1 s de sondeo + 5 s de esperar el grupo muerto en
+            # Windows) más el arranque del bash; en un runner cargado los
+            # 10 s anteriores salieron apretados.
+            fin = time.monotonic() + 30
             while not condicion():
                 assert time.monotonic() < fin
                 time.sleep(0.05)

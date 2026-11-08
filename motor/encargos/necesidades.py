@@ -8,6 +8,7 @@ decide el trabajo: conserva hechos y devuelve datos o la causa de la espera.
 """
 
 from __future__ import annotations
+from motor.io import leer_json
 
 import json
 import os
@@ -66,7 +67,7 @@ def _publica(path: Path, doc: dict, raiz: Path | None = None) -> None:
 def _leer(path: Path) -> dict | None:
     try:
         # utf-8-sig: el buzón lo escriben agentes, y en Windows su JSON trae BOM.
-        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+        doc = leer_json(path)
     except (OSError, ValueError):
         return None
     return doc if isinstance(doc, dict) else None
@@ -602,7 +603,6 @@ def _esperar_herramienta(
 ) -> dict:
     """Espera a la herramienta que ya estaba en marcha; no lanza otra. `espera`
     acota cuánto: una herramienta lenta que ya espera no retiene el barrido."""
-    from motor import plataforma
 
     pid = int(marca.get("pid") or 0)
     inicio = str(marca.get("inicio") or "")

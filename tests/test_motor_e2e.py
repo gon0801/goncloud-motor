@@ -30,6 +30,7 @@ from motor.notify import lint_plain  # noqa: E402
 from motor.plan import Plan  # noqa: E402
 from motor.store import Store  # noqa: E402
 from motor.workspace import foto_wip, git  # noqa: E402
+from tests.dobles import github_fijo  # noqa: E402
 
 ENV = {**os.environ, "PYTHONPATH": str(RAIZ), "PYTHONUTF8": "1"}
 
@@ -99,7 +100,6 @@ def avisos_pendientes(home: Path, prefijo: str) -> list[dict]:
         ):
             encontrados.append(aviso)
     return encontrados
-
 
 class Banco(unittest.TestCase):
     def setUp(self):
@@ -587,8 +587,6 @@ class TestSoloElMotorMergea(Banco):
         self.assertEqual((r.returncode, r.stdout.strip()), (0, "real pr view 3"))
 
     def _daemon_con_pr(self):
-        from motor.github import PrView
-
         self.home, self.plan = sandbox.create(self.tmp / "b")
         motor(
             "entrega",
@@ -605,20 +603,7 @@ class TestSoloElMotorMergea(Banco):
         d.store.append("demo", "A", "PrOpened", {"numero": 7, "rama": "x"})
         snap = m.fold(plan, d.store.events("demo"))
 
-        class GhFalso:
-            estado, motivo = "abierto", ""
-
-            def ver(self, repo, numero):
-                return PrView(
-                    numero, "x", "main", False, "a" * 40, self.estado, "c" * 40
-                )
-
-            def merge(self, *a):
-                from motor.github import MergeRechazado
-
-                raise MergeRechazado(self.motivo)
-
-        d.fx.cx.gh = GhFalso()
+        d.fx.cx.gh = github_fijo(self.home / "gh")
         return d, plan, snap
 
     def test_rechazo_de_github_no_es_tarea_del_agente(self):

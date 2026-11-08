@@ -5,6 +5,7 @@ Un archivo ilegible cuenta como retenido y no se pisa.
 """
 
 from __future__ import annotations
+from motor.io import leer_json
 
 import json
 import os
@@ -42,7 +43,7 @@ def leer(home: Path) -> Hold | None:
     if not p.exists():
         return None
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = leer_json(p)
     except (OSError, ValueError):
         return Hold(_VERSION, "", "", "", "", cause="la retención no se puede leer")
     if not isinstance(data, dict):

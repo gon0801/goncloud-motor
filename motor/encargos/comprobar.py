@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from motor.io import leer_json
 
 from motor import plataforma
 from motor.encargos.comprobacion import interno_de, observar_comprobaciones
@@ -17,7 +18,7 @@ from motor.runwrap import _publica
 
 
 def main(path: Path) -> int:
-    spec = json.loads(path.read_text(encoding="utf-8"))
+    spec = leer_json(path)
     candado = plataforma.candado(path.parent / "arranque.lock")
     if candado is None:
         return 1

@@ -28,61 +28,24 @@ from motor.encargos.dominio import (
 from motor.encargos.registro import Registro
 from motor.github import FakeGitHub
 from tests.test_flujo_revisiones import Recorrido, _entrega_pr
+from tests.dobles import github_con_comentario, github_por_numero
 
 
-class _GhConComentario(FakeGitHub):
-    hallazgo: dict | None = None
-    texto: str | None = None
-    falla = False
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        if self.falla:
-            raise RuntimeError("DeepSeek no responde")
-        if self.texto is not None:
-            return [{"texto": self.texto, "autor": "github-actions[bot]", "sha": sha}]
-        if self.hallazgo is None:
-            return []
-        texto = "DeepSeek: CHANGES_REQUESTED\nai-review:findings=" + json.dumps(
-            [self.hallazgo]
-        )
-        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}]
-
-
-class _GhPorNumero(FakeGitHub):
-    """Comentarios por PR; los que no están declarados se aprueban limpios."""
-
-    textos: dict[int, str | None] = {}
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.textos = dict(type(self).textos)
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        texto = self.textos.get(numero, "DeepSeek: APPROVED")
-        if texto is None:
-            return []
-        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}]
-
-
-class _GhStickyTimeout(FakeGitHub):
+def _sticky_aprobado(directorio):
     """El sticky de ai-review declara el timeout de 900 s y que no reintenta."""
+    return github_por_numero(
+        directorio,
+        "DeepSeek review\n<!-- ai-review:sticky -->\n"
+        'ai-review:completion={"status":"timeout","retry":false}\n'
+        "ai-review:findings=[]\n"
+        "la revisión excedió el tiempo límite de 900 s; no se reintenta "
+        "porque otro intento tardaría lo mismo",
+    )
 
-    textos: dict[int, str] = {}
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.textos = dict(type(self).textos)
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        texto = self.textos.get(
-            numero,
-            "DeepSeek review\n<!-- ai-review:sticky -->\n"
-            'ai-review:completion={"status":"timeout","retry":false}\n'
-            "ai-review:findings=[]\n"
-            "la revisión excedió el tiempo límite de 900 s; no se reintenta "
-            "porque otro intento tardaría lo mismo",
-        )
-        return [{"texto": texto, "autor": "github-actions[bot]", "sha": sha}]
+def _aprobado(directorio):
+    """DeepSeek aprueba el SHA sin hallazgos."""
+    return github_por_numero(directorio, "DeepSeek: APPROVED")
 
 
 def _medio(ident: str = "F6") -> dict:
@@ -154,7 +117,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_sticky_timeout_sin_revision_no_espera_ni_finge_aprobacion(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-sticky", _GhStickyTimeout, nivel="integrado"
+                self, tmp, "ds-sticky", _sticky_aprobado, nivel="integrado"
             )
             r.reg.anotar(
                 r.enc,
@@ -201,7 +164,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_un_medium_tardio_en_una_fase_anterior_se_avisa_y_no_frena_el_cierre(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-tardio-integrado", _GhPorNumero, nivel="integrado"
+                self, tmp, "ds-tardio-integrado", github_por_numero, nivel="integrado"
             )
             r.reg.anotar(
                 r.enc,
@@ -242,7 +205,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_un_medium_publicado_despues_del_cierre_se_avisa_y_no_cambia_el_estado(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-cerrado-tardio", _GhPorNumero, nivel="integrado"
+                self, tmp, "ds-cerrado-tardio", github_por_numero, nivel="integrado"
             )
             e = vuelta("uno")
             hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
@@ -276,7 +239,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_un_medium_posterior_al_cierre_en_una_fase_anterior_se_avisa_en_su_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-cerrado-fase-anterior", _GhPorNumero,
+                self, tmp, "ds-cerrado-fase-anterior", github_por_numero,
                 nivel="integrado",
             )
             r.reg.anotar(
@@ -358,7 +321,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
     def test_un_medium_dentro_del_alcance_antes_del_tope_sigue_bloqueando(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-medium-antes", _GhConComentario, nivel="integrado"
+                self, tmp, "ds-medium-antes", github_con_comentario, nivel="integrado"
             )
             vuelta.gh.hallazgo = _medio()
             e = vuelta("uno")
@@ -376,7 +339,7 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
 
 def _dos_fases_con_pr_en_la_segunda(caso, tmp: str, clave: str):
     """Encargo de dos fases: la uno integrada y la dos con PR en nivel pr."""
-    vuelta, r = _entrega_pr(caso, tmp, clave, _GhCuenta, nivel="integrado")
+    vuelta, r = _entrega_pr(caso, tmp, clave, github_por_numero, nivel="integrado")
     r.reg.anotar(
         r.enc,
         {
@@ -438,21 +401,6 @@ def _dos_fases_con_pr_en_la_segunda(caso, tmp: str, clave: str):
     return vuelta, r, r.fold()
 
 
-class _GhCuenta(_GhPorNumero):
-    """Cuenta las lecturas de DeepSeek y puede fallar a voluntad."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.llamadas: list[str] = []
-        self.falla = False
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        self.llamadas.append(sha)
-        if self.falla:
-            raise RuntimeError("DeepSeek no responde")
-        return super().comentarios_deepseek(repo, numero, sha)
-
-
 class TopeConBloqueantesAnteriores(unittest.TestCase):
     def test_omitir_resuelve_el_bloqueante_viejo_y_no_finge_una_lectura(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -512,7 +460,7 @@ class TopeConBloqueantesAnteriores(unittest.TestCase):
 class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
     def _terminado(self, tmp: str):
         vuelta, r = _entrega_pr(
-            self, tmp, "ds-sondeo-cerrado", _GhCuenta, nivel="integrado"
+            self, tmp, "ds-sondeo-cerrado", github_por_numero, nivel="integrado"
         )
         e = vuelta("uno")
         hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
@@ -790,7 +738,7 @@ class SondeoNoSeDetieneEnUnaFaseYaAvisada(unittest.TestCase):
     def test_sigue_con_las_fases_siguientes(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-fases-avisadas", _GhPorNumero,
+                self, tmp, "ds-fases-avisadas", github_por_numero,
                 nivel="integrado",
             )
             r.reg.anotar(
@@ -832,7 +780,7 @@ class CierreSinPrEnLaFaseActiva(unittest.TestCase):
     def test_el_sondeo_llega_a_una_fase_anterior_con_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-cierre-sin-pr", _GhPorNumero, nivel="integrado"
+                self, tmp, "ds-cierre-sin-pr", github_por_numero, nivel="integrado"
             )
             r.reg.anotar(
                 r.enc,
@@ -988,6 +936,444 @@ def _encargo_con_pregunta_vieja(tmp: str) -> Recorrido:
         "pregunta-vieja",
     )
     return r
+
+
+def _encargo_con_medium_en_el_pr(
+    caso, tmp: str, ancla: str = "motor/integraciones/cli.py:176"
+) -> tuple:
+    """El estado real de enc_daf8e41dd3a3fac6: fase única, entrega integrada,
+    revisión aprobada vigente, PR abierto y una lectura de DeepSeek con un
+    Medium abierto. La restricción deja ese archivo fuera de alcance."""
+    vuelta, r = _entrega_pr(
+        caso,
+        tmp,
+        "nivel-pr-deepseek",
+        FakeGitHub,
+        nivel="integrado",
+        restricciones=("Cambio acotado a motor/encargos/cli.py y su prueba.",),
+    )
+    e = vuelta("hola")
+    hora = ahora_iso()
+    sha = e.pr_sha
+    r.reg.anotar(
+        r.enc,
+        {
+            "kind": "revision",
+            "data": {
+                "fase": e.fase_activa,
+                "revision_id": "rev_ds_f1",
+                "version": e.producto.firma,
+                "base_version": "",
+                "alcance": "completa",
+                "veredicto": "cambios",
+                "revisor": "deepseek",
+                "origen": "deepseek",
+                "cubre": ["F1"],
+                "hallazgos": [
+                    {
+                        "id": "F1",
+                        "gravedad": "bloqueante",
+                        "criterio": "comportamiento",
+                        "titulo": "El descarte sigue en el CLI externo",
+                        "ancla": ancla,
+                        "origen": "deepseek",
+                        "estado": "abierto",
+                    }
+                ],
+                "hora": hora,
+            },
+        },
+        "rev-ds-f1",
+    )
+    r.reg.anotar(
+        r.enc,
+        {
+            "kind": "entrega_externa",
+            "data": {
+                "fase": e.fase_activa,
+                "intento": e.intento,
+                "paso": "deepseek_leido",
+                "repo": e.entrega.repo,
+                "numero": e.pr_numero,
+                "sha": sha,
+                "huella": "h1",
+                "recibo": sha,
+                "hora": hora,
+            },
+        },
+        "ds-leido-f1",
+    )
+    ciclo.ordenar(r.reg, r.enc, "parar", "parar-replay", hora)
+    r.reg.anotar(
+        r.enc,
+        {"kind": "arbol", "data": {"observacion": "ausente", "hora": hora}},
+        "arbol-replay",
+    )
+    return vuelta, r
+
+
+class NivelPrSeRecalculaAlCerrarDeepSeek(unittest.TestCase):
+    def test_continuar_fuera_de_alcance_integra_el_pr_sin_relanzar_al_revisor(
+        self,
+    ):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _encargo_con_medium_en_el_pr(self, tmp)
+            e = r.fold()
+            self.assertEqual(e.estado, "detenido")
+            self.assertEqual(e.entrega.nivel, "integrado")
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(_ids(e), ["F1"])
+            sha = e.pr_sha
+
+            salida = ciclo.ordenar(
+                r.reg, r.enc, "continuar", "continuar-nivel", ahora_iso()
+            )
+            self.assertFalse(salida.get("rechazada"), salida)
+
+            e = r.fold()
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(_ids(e), [])
+            self.assertTrue(
+                any(hid == "F1" for hid, _titulo, _razon in e.fuera_de_alcance),
+                e.fuera_de_alcance,
+            )
+
+            lanzamientos = []
+
+            def lanzador(enc, prompt, espacio, sesion):
+                lanzamientos.append((enc.estado, enc.rol))
+                return None
+
+            with (
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                barrer(r.reg, ahora_iso(), time.time(), lanzador, gh=vuelta.gh)
+
+            self.assertEqual(lanzamientos, [], "se relanzó un turno que no tocaba")
+            e = r.fold()
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.nivel_alcanzado, "integrado")
+            integrados = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "entrega_externa"
+                and ev["data"].get("paso") == "integrado"
+            ]
+            self.assertTrue(integrados, "no se integró el PR")
+            estado_gh = json.loads(
+                (vuelta.gh.d / "github.json").read_text(encoding="utf-8")
+            )
+            pr = next(iter(estado_gh["prs"].values()))
+            self.assertEqual(pr["estado"], "mergeado")
+            self.assertEqual(pr["head_merge"], sha)  # se fusionó el SHA del PR
+
+    def test_un_medium_dentro_del_alcance_sigue_bloqueando(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _encargo_con_medium_en_el_pr(
+                self, tmp, ancla="motor/encargos/cli.py:10"
+            )
+            self.assertEqual(r.fold().nivel_alcanzado, "pr_abierto")
+
+            salida = ciclo.ordenar(
+                r.reg, r.enc, "continuar", "continuar-dentro", ahora_iso()
+            )
+            self.assertFalse(salida.get("rechazada"), salida)
+
+            e = r.fold()
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(_ids(e), ["F1"])
+            self.assertFalse(
+                any(hid == "F1" for hid, _titulo, _razon in e.fuera_de_alcance),
+                e.fuera_de_alcance,
+            )
+
+            with (
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                barrer(
+                    r.reg,
+                    ahora_iso(),
+                    time.time(),
+                    lambda *a, **k: None,
+                    gh=vuelta.gh,
+                )
+
+            e = r.fold()
+            self.assertNotEqual(e.estado, "terminado")
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(_ids(e), ["F1"])
+            self.assertFalse(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") == "integrado"
+                ],
+                "se integró un PR con un bloqueante de DeepSeek en alcance",
+            )
+
+    def test_una_aprobacion_que_ya_cubre_el_producto_no_relanza_al_revisor(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "entrega-sin-avance", FakeGitHub, nivel="integrado"
+            )
+            e = vuelta("hola")
+            hora = ahora_iso()
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": e.fase_activa,
+                        "intento": e.intento,
+                        "paso": "deepseek_leido",
+                        "repo": e.entrega.repo,
+                        "numero": e.pr_numero,
+                        "sha": e.pr_sha,
+                        "huella": "limpia",
+                        "recibo": e.pr_sha,
+                        "hora": hora,
+                    },
+                },
+                "ds-limpio",
+            )
+            e = r.fold()
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            self.assertEqual(e.estado, "esperando_reintento")
+            reanuda = e.reanuda_en
+            self.assertTrue(reanuda)
+
+            lanzamientos = []
+
+            def lanzador(enc, prompt, espacio, sesion):
+                lanzamientos.append((enc.estado, enc.rol))
+                return None
+
+            with (
+                mock.patch.object(
+                    ciclo,
+                    "_paso_entrega",
+                    side_effect=lambda registro, enc, gh, hora: enc,
+                ),
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                barrer(r.reg, reanuda, time.time(), lanzador, gh=vuelta.gh)
+
+            self.assertEqual(lanzamientos, [], "se gastó otro intento del revisor")
+            esperas = [
+                ev["data"].get("motivo", "")
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "espera"
+            ]
+            self.assertTrue(
+                any("no se relanza al revisor" in motivo for motivo in esperas),
+                esperas,
+            )
+
+    def test_la_espera_sin_avance_es_visible_sin_relanzar_ni_preguntar(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "entrega-sin-avance-tope", FakeGitHub, nivel="integrado"
+            )
+            e = vuelta("hola")
+            hora = ahora_iso()
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "entrega_externa",
+                    "data": {
+                        "fase": e.fase_activa,
+                        "intento": e.intento,
+                        "paso": "deepseek_leido",
+                        "repo": e.entrega.repo,
+                        "numero": e.pr_numero,
+                        "sha": e.pr_sha,
+                        "huella": "limpia",
+                        "recibo": e.pr_sha,
+                        "hora": hora,
+                    },
+                },
+                "ds-limpio-tope",
+            )
+            self.assertEqual(r.fold().nivel_alcanzado, "pr")
+
+            lanzamientos = []
+
+            def lanzador(enc, prompt, espacio, sesion):
+                lanzamientos.append((enc.estado, enc.rol))
+                return None
+
+            reloj = {"n": 0}
+
+            def reanuda(segundos):
+                from datetime import datetime, timedelta, timezone
+
+                reloj["n"] += 1
+                return (
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=segundos + reloj["n"])
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            with (
+                mock.patch.object(
+                    ciclo,
+                    "_paso_entrega",
+                    side_effect=lambda registro, enc, gh, hora: enc,
+                ),
+                mock.patch.object(ciclo, "_reanuda_en", side_effect=reanuda),
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                for _ in range(3):
+                    actual = r.fold()
+                    barrer(
+                        r.reg,
+                        actual.reanuda_en or ahora_iso(),
+                        time.time(),
+                        lanzador,
+                        gh=vuelta.gh,
+                    )
+
+            self.assertEqual(lanzamientos, [], "se gastó otro intento del revisor")
+            e = r.fold()
+            self.assertEqual(
+                e.estado,
+                "esperando_reintento",
+                "la espera visible no debe convertirse en una espera humana",
+            )
+            self.assertEqual(e.preguntas, (), "se abrió una pregunta al propietario")
+            esperas = [
+                ev["data"].get("motivo", "")
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "espera"
+            ]
+            self.assertTrue(
+                any("no se relanza al revisor" in motivo for motivo in esperas),
+                esperas,
+            )
+            self.assertFalse(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "pregunta"
+                    and "no avanza" in str(ev["data"].get("texto") or "")
+                ],
+                "no debe pedir ayuda por rondas de espera",
+            )
+
+    def test_continuar_no_reeleva_un_pr_reabierto_por_ci_rojo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ci-rojo-continuar", _aprobado, nivel="pr"
+            )
+            e = vuelta("hola\n")
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.nivel_alcanzado, "pr")
+
+            e = ciclo._anotar_ci_del_pr(
+                r.reg,
+                e,
+                ukey="ci-rojo-continuar",
+                fase=e.fase_activa,
+                sha=e.pr_sha,
+                estado="rojo",
+                fallas=("bateria",),
+                causa="ERROR: 3 failed, 0 passed in tests/test_bateria.py",
+                reabrir=True,
+                clase="codigo",
+                hora=ahora_iso(),
+            )
+            self.assertEqual(e.estado, "recibido")
+            self.assertEqual(e.rol, "responsable")
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+
+            salida = ciclo.ordenar(
+                r.reg, r.enc, "continuar", "continuar-ci-rojo", ahora_iso()
+            )
+            self.assertFalse(salida.get("rechazada"), salida)
+            e = r.fold()
+            self.assertEqual(
+                e.nivel_alcanzado,
+                "pr_abierto",
+                "continuar deshizo la reapertura por CI rojo",
+            )
+
+            with (
+                mock.patch(
+                    "motor.encargos.aislamiento.sondear",
+                    return_value=SondaEntorno(True),
+                ),
+                mock.patch(
+                    "motor.flota.runtime.exigir_poteto",
+                    return_value=("/tmp/poteto-mode", "digest"),
+                ),
+                mock.patch(
+                    "motor.encargos.ciclo._copiar_sesion_sin_caer",
+                    return_value=None,
+                ),
+            ):
+                barrer(
+                    r.reg,
+                    ahora_iso(),
+                    time.time(),
+                    lambda *a, **k: None,
+                    gh=vuelta.gh,
+                )
+
+            e = r.fold()
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertFalse(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") == "integrado"
+                ],
+                "se integró el PR sin corregir el CI rojo",
+            )
 
 
 class ReabrirReusaElPrYLaAprobacion(unittest.TestCase):
@@ -1162,7 +1548,7 @@ class SinRevisionNoAvanzaConBloqueantesDelMismoSha(unittest.TestCase):
     def test_el_tope_no_avanza_con_un_bloqueante_del_sha_vigente(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-f12", _GhConComentario, nivel="integrado"
+                self, tmp, "ds-f12", github_con_comentario, nivel="integrado"
             )
             vuelta.gh.hallazgo = _medio("F12")
             e = vuelta("uno")
@@ -1238,7 +1624,7 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
     def test_el_cuerpo_del_pr_no_pasa_del_limite(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-limite-cuerpo", _GhPorNumero, nivel="integrado"
+                self, tmp, "ds-limite-cuerpo", github_por_numero, nivel="integrado"
             )
             e = vuelta("uno")
             hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
@@ -1350,7 +1736,7 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
             ).strftime("%Y-%m-%dT%H:%M:%SZ")
             for i in range(70):
                 self._terminado(reg, f"viejo-{i}", viejo, repo, 1)
-            gh = _GhCuenta(Path(tmp) / "gh")
+            gh = github_por_numero(Path(tmp) / "gh")
 
             barrer(reg, ahora_iso(), time.time(), lambda *a, **k: None, gh=gh)
             self.assertEqual(gh.llamadas, [])
@@ -1378,7 +1764,7 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
                 datetime.now() - timedelta(days=30)
             ).strftime("%Y-%m-%dT%H:%M:%SZ")
             self._terminado(reg, "viejo", viejo, repo, 1)
-            gh = _GhCuenta(Path(tmp) / "gh")
+            gh = github_por_numero(Path(tmp) / "gh")
             barrer(reg, ahora_iso(), time.time(), lambda *a, **k: None, gh=gh)
             self.assertEqual(gh.llamadas, [])
 
@@ -1405,7 +1791,7 @@ class SondeoAcotadoPorCierre(unittest.TestCase):
             (Path(reg.base) / "ejecucion" / enc / "actual").write_text(
                 "intento-1-x", encoding="utf-8"
             )
-            gh = _GhCuenta(Path(tmp) / "gh")
+            gh = github_por_numero(Path(tmp) / "gh")
             epoch = time.time()
             barrer(reg, ahora_iso(), epoch, lambda *a, **k: None, gh=gh)
             self.assertTrue(gh.llamadas)

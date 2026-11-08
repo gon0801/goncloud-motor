@@ -1,4 +1,5 @@
 from __future__ import annotations
+from motor.io import leer_texto
 
 import argparse
 import json
@@ -173,7 +174,7 @@ def _correr(args) -> int:
             texto = args.texto
             adjuntos: tuple[str, ...] = ()
             if args.archivo:
-                texto = args.archivo.read_text(encoding="utf-8")
+                texto = leer_texto(args.archivo)
                 adjuntos = (str(args.archivo.resolve()),)
             if not texto.strip():
                 print("falta el pedido", file=sys.stderr)
