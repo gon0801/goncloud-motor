@@ -30,6 +30,7 @@ from .ciclo import (
 from .dominio import relevos_de
 from .frontera import DestinoEnsayo, despachar
 from .registro import BaseProhibida, Registro, exigir_base
+from .rutas import candidatas_de, elegir, proximo, solicitado_de
 from .seleccion import solicitar_modelos
 
 
@@ -352,21 +353,12 @@ def _puerto_github(base: Path):
     return None
 
 
-def _supervisor(reg: Registro, args) -> int:
-    from .frontera import turno
-    from .rutas import candidatas_de, elegir, proximo, solicitado_de
-
-    if args.respaldo and not args.agente:
-        raise ValueError("--respaldo necesita --agente como ruta principal")
-    ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
-    if not ruta and not any(
-        reg.fold(i).agentes or reg.fold(i).modelos_solicitados for i in reg.ids()
-    ):
-        raise ValueError(
-            "supervisor sin ruta de agentes: configura --agente o una ruta "
-            "persistida en los encargos; sin ruta los pedidos quedarian "
-            "en recibido indefinidamente"
-        )
+def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
+    """El lanzador de producción para una ruta de agentes: elige por rol con
+    `_modelos_para`/`_disponible` y lanza por el adaptador elegido. `ruta`
+    vacía deja que cada encargo use su cadena persistida (modelos solicitados).
+    El banco de compuerta lo usa con una ruta fija, que es lo que el supervisor
+    recibe de `--agente`."""
 
     def lanzar(enc, prompt, espacio, sesion):
         hora = ahora_iso()
@@ -440,6 +432,42 @@ def _supervisor(reg: Registro, args) -> int:
                      proximo(replace(enc, agentes=candidatas), hora, set(disponibles)), hora)
         return None
 
+    return lanzar
+
+
+def marcar_ruta(reg: Registro, ruta: tuple[str, ...], hora: str) -> None:
+    """La ruta del supervisor se queda persistida en cada encargo abierto, con
+    el mismo ukey de la CLI: si el supervisor muere, la recuperación la lee."""
+
+    from .frontera import turno
+
+    if not ruta:
+        return
+    with turno(reg.base):
+        for ident in reg.ids():
+            enc = reg.fold(ident)
+            if enc.agentes != ruta and enc.estado not in ("terminado", "cancelado"):
+                reg.anotar(
+                    ident,
+                    {"kind": "ruta_agentes", "data": {"agentes": list(ruta), "hora": hora}},
+                    f"ruta:{ident}:{len(reg.eventos(ident))}",
+                )
+
+
+def _supervisor(reg: Registro, args) -> int:
+    if args.respaldo and not args.agente:
+        raise ValueError("--respaldo necesita --agente como ruta principal")
+    ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
+    if not ruta and not any(
+        reg.fold(i).agentes or reg.fold(i).modelos_solicitados for i in reg.ids()
+    ):
+        raise ValueError(
+            "supervisor sin ruta de agentes: configura --agente o una ruta "
+            "persistida en los encargos; sin ruta los pedidos quedarian "
+            "en recibido indefinidamente"
+        )
+
+    lanzar = lanzar_de_ruta(reg, ruta)
     # En el bucle los avisos corren en un hilo aparte con tope por pasada: la cadencia del barrido no
     # depende del canal, ni cuando funciona. Con --una-vez no hay cadencia que cuidar ni pasada siguiente
     # que retome lo que un tope dejara sin enviar: drena en línea y por completo.
@@ -453,22 +481,7 @@ def _supervisor(reg: Registro, args) -> int:
 
     def paso() -> list[dict]:
         hora = ahora_iso()
-        if ruta:
-            with turno(reg.base):
-                for ident in reg.ids():
-                    enc = reg.fold(ident)
-                    if enc.agentes != ruta and enc.estado not in (
-                        "terminado",
-                        "cancelado",
-                    ):
-                        reg.anotar(
-                            ident,
-                            {
-                                "kind": "ruta_agentes",
-                                "data": {"agentes": list(ruta), "hora": hora},
-                            },
-                            f"ruta:{ident}:{len(reg.eventos(ident))}",
-                        )
+        marcar_ruta(reg, ruta, hora)
         habilitado = ruta or any(
             reg.fold(ident).agentes or reg.fold(ident).modelos_solicitados for ident in reg.ids()
         )

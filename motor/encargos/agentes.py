@@ -386,9 +386,32 @@ def _sesion_presente(agente: str) -> bool:
     return False
 
 
+def _bash_de_ensayo() -> str:
+    """El bash con el que corre trabajo.sh, o "" si el host no tiene uno que
+    sirva. En POSIX, el bash del PATH. En Windows, el bash de la instalación
+    de Git resuelto por `aislamiento._bash_de_git`: el bash.exe que el PATH de
+    Windows resuelve primero es el de WSL (System32), que no ve las rutas
+    `C:/...` del espacio."""
+    if os.name != "nt":
+        return "bash" if shutil.which("bash") else ""
+    from .aislamiento import _bash_de_git
+
+    ruta = _bash_de_git(dict(os.environ))
+    from motor.plataforma.windows import es_bash_de_wsl
+
+    if es_bash_de_wsl(ruta) or not os.path.isfile(ruta):
+        return ""
+    return ruta
+
+
 def _disponible(agente: str, generacion: Path | None = None) -> bool:
-    if agente in ("sleep", "ensayo"):
+    if agente == "sleep":
+        # El lanzador duerme con /bin/bash, que Windows no trae.
         return os.name != "nt"
+    if agente == "ensayo":
+        # El lanzador corre trabajo.sh con un bash que vea las rutas del
+        # espacio: en Windows solo el bash de Git sirve.
+        return bool(_bash_de_ensayo())
     if agente not in ADAPTADORES:
         return False
     if resolver_binario(agente, generacion) is None:
@@ -416,6 +439,12 @@ def _modelos_para(agente: str, rol: str, generacion: Path | None) -> tuple[str, 
             refs = ()
         if refs:
             return refs
+    if agente == "ensayo":
+        # La identidad es propia del adaptador y distingue el rol: el
+        # lanzador de producción excluye para el revisor las identidades con
+        # las que ya corrió el responsable, y una sola identidad dejaría al
+        # revisor sin modelo distinto.
+        return (f"ensayo/{rol}",)
     return (ADAPTADORES[agente].modelo if agente in ADAPTADORES else "",)
 
 
@@ -523,7 +552,10 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
 
     def ensayo(enc, prompt: Path, espacio: Path, sesion: str):
         del enc, prompt, sesion
-        return ["/bin/bash", str(espacio / "trabajo.sh")]
+        # El bash lo resuelve _bash_de_ensayo (bash del PATH en POSIX, bash de
+        # Git en Windows, nunca el de WSL) y la ruta va en formato posix: el
+        # bash de Git acepta `C:/...` y ningún host depende de /bin/bash.
+        return [_bash_de_ensayo() or "bash", (espacio / "trabajo.sh").as_posix()]
 
     def muse(enc, prompt: Path, espacio: Path, sesion: str):
         previa = (
