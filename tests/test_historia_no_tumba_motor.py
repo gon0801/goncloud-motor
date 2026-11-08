@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 from motor.encargos import cli
+from motor.encargos import ciclo as ciclo_encargos
 from motor.encargos.ciclo import ahora_iso, recibir
 from motor.encargos.registro import Registro
 
@@ -194,6 +195,27 @@ class SupervisorQueAisla(unittest.TestCase):
             },
             "roto:fases",
         )
+        self.aviso_incierto = "av_incierto_del_roto"
+        avisos = self.reg.base / "avisos"
+        avisos.mkdir(parents=True, exist_ok=True)
+        (avisos / f"{self.aviso_incierto}.json").write_text(
+            json.dumps(
+                {
+                    "id": self.aviso_incierto,
+                    "encargo": self.roto,
+                    "canal": "tg",
+                    "evidencia": "avance:inicio:inicio",
+                    "estado": "incierto",
+                    "tipo": "avance",
+                    "recibo": "",
+                    "fallos": 1,
+                    "proximo_intento": "1970-01-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        ciclo_encargos._PLEGADOS_ILEGIBLES.clear()
+        self.addCleanup(ciclo_encargos._PLEGADOS_ILEGIBLES.clear)
 
     def _supervisor(self, agente: str) -> None:
         args = argparse.Namespace(
@@ -225,6 +247,21 @@ class SupervisorQueAisla(unittest.TestCase):
         self.assertEqual(
             [e for e in self.reg.eventos(self.roto) if e["kind"] == "instrumento_fallo"],
             [],
+        )
+        guardado = json.loads(
+            (
+                self.reg.base / "avisos" / f"{self.aviso_incierto}.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            guardado["estado"],
+            "incierto",
+            "un aviso de un encargo ilegible no se da por cerrado",
+        )
+        self.assertFalse(
+            (
+                self.reg.base / "avisos" / "archivo" / f"{self.aviso_incierto}.json"
+            ).exists()
         )
 
 

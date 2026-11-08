@@ -1943,13 +1943,16 @@ def _cerrar_inciertos_sin_destino(encargos: dict, vista: VistaAvisos) -> None:
     Los de un encargo cerrado o de un encargo que ya no existe no vuelven a probar
     el transporte; el de un encargo activo sigue su conciliación normal. El cierre
     también se descarta: el punto 4 no abre una excepción para él y un encargo
-    cerrado no vuelve a mandar mensajes.
+    cerrado no vuelve a mandar mensajes. Un encargo que no pliega no se da por
+    cerrado: su historia ilegible no prueba que el destino se haya ido.
     """
     for ident, doc in list(vista.docs.items()):
         if doc.get("estado") != "incierto" or doc.get("tipo") == "resumen":
             continue
         encargo = str(doc.get("encargo") or "")
         enc = encargos.get(encargo) if encargo else None
+        if encargo in encargos and enc is None:
+            continue
         if enc is not None and enc.estado not in ("terminado", "cancelado"):
             continue
         doc["estado"] = "descartado"
