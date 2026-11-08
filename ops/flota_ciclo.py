@@ -50,7 +50,12 @@ def ciclo(
             manifiesto, tabla, catalogos, hermes_repo=(repos or {}).get("hermes")
         )
         resultado = actualizar(home, **opciones, sin_turnos=sin_turnos)
-        publicada = exportar(home, salida or home / "publicada.json")
+        publicada = exportar(
+            home,
+            salida or home / "publicada.json",
+            repo_hermes=(repos or {}).get("hermes"),
+            motor_origen=motor_origen,
+        )
         return {
             "modo": "publicador",
             "modelos": modelos["recibos"],

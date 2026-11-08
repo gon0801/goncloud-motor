@@ -17,7 +17,6 @@ from motor.encargos.ciclo import (
 from motor.encargos.comprobacion import instrucciones_responsable
 from motor.github import FakeGitHub, GhGitHub
 from tests.test_flujo_revisiones import (
-    Recorrido,
     _entrega_pr,
     _interno,
     sonda_sin_aislamiento_del_host,
@@ -33,27 +32,6 @@ def setUpModule():
 def _pr_unico(gh) -> dict:
     estado = json.loads((gh.d / "github.json").read_text(encoding="utf-8"))
     return next(iter(estado["prs"].values()))
-
-
-class _GhFallaCuerpo(FakeGitHub):
-    """El primer intento de actualizar el cuerpo falla, como un error de `gh`."""
-
-    fallar = True
-
-    def actualizar_cuerpo(self, repo, numero, cuerpo):
-        if self.fallar:
-            raise RuntimeError("gh pr edit: fallo simulado")
-        return super().actualizar_cuerpo(repo, numero, cuerpo)
-
-
-class _GhCuentaCuerpo(FakeGitHub):
-    def __init__(self, d):
-        super().__init__(d)
-        self.actualizaciones = 0
-
-    def actualizar_cuerpo(self, repo, numero, cuerpo):
-        self.actualizaciones += 1
-        return super().actualizar_cuerpo(repo, numero, cuerpo)
 
 
 class _GhCapturaCuerpo(GhGitHub):
@@ -365,7 +343,7 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
     def test_actualiza_una_vez_por_version_y_no_repite_el_mismo_sha(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "cuerpo-idempotente", _GhCuentaCuerpo
+                self, tmp, "cuerpo-idempotente", FakeGitHub
             )
             (_interno(r) / "cuerpo-pr.md").write_text(
                 "primera version", encoding="utf-8"
@@ -387,7 +365,8 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
 
     def test_un_fallo_al_publicar_el_cuerpo_deja_evento_y_la_entrega_sigue(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "cuerpo-fallo-visible", _GhFallaCuerpo)
+            vuelta, r = _entrega_pr(self, tmp, "cuerpo-fallo-visible", FakeGitHub)
+            vuelta.gh.fallar_cuerpo = True
             (_interno(r) / "cuerpo-pr.md").write_text(
                 "primera version", encoding="utf-8"
             )
@@ -430,8 +409,9 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
     def test_fallo_al_actualizar_no_detiene_y_se_reintenta(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "cuerpo-republica-fallo", _GhFallaCuerpo
+                self, tmp, "cuerpo-republica-fallo", FakeGitHub
             )
+            vuelta.gh.fallar_cuerpo = True
             (_interno(r) / "cuerpo-pr.md").write_text(
                 "primera version", encoding="utf-8"
             )
@@ -451,7 +431,7 @@ class CuerpoDelPrAlRepublicar(unittest.TestCase):
             ]
             self.assertTrue(fallos)
 
-            vuelta.gh.fallar = False
+            vuelta.gh.fallar_cuerpo = False
             _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
 
             self.assertEqual(

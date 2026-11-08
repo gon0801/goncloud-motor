@@ -1,6 +1,7 @@
 """Conserva el backend de la cuenta Meta que administra el cliente oficial."""
 
 from __future__ import annotations
+from motor.io import leer_json, leer_texto
 
 import json
 import os
@@ -25,7 +26,7 @@ def ruta_cuenta() -> Path:
 
 def cuenta_muse(*, exportar: bool = False) -> dict:
     path = ruta_cuenta()
-    datos = json.loads(path.read_text(encoding="utf-8"))
+    datos = leer_json(path)
     cuenta = datos.get("providers", {}).get("meta", {})
     if (
         not isinstance(cuenta, dict)
@@ -97,7 +98,7 @@ def ejecutable_muse() -> Path:
     if os.name != "nt":
         version = path.parent / ".muse-version"
         if version.is_file():
-            valor = version.read_text(encoding="utf-8").strip()
+            valor = leer_texto(version).strip()
             if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-R[0-9]+(?:\.[0-9]+)?", valor):
                 raise RuntimeError("la version instalada de Muse es invalida")
             nativo = path.with_name("muse-bin-" + valor)

@@ -10,6 +10,7 @@
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import subprocess
 import sys
@@ -146,7 +147,7 @@ def vincular_base(base: Path, flota_home: Path, canal: Path | None = None) -> di
     doc = None
     if canal is not None:
         try:
-            doc = json.loads(Path(canal).read_text(encoding="utf-8-sig"))
+            doc = leer_json(Path(canal))
         except ValueError as exc:
             raise ValueError(f"el canal vinculado no es JSON valido: {exc}") from exc
         if not isinstance(doc, dict) or not doc:
@@ -162,15 +163,10 @@ def vincular_base(base: Path, flota_home: Path, canal: Path | None = None) -> di
                     f"el canal {nombre} no trae comando ni conciliacion utilizables"
                 )
     base.mkdir(parents=True, exist_ok=True)
-    (base / "flota-home.json").write_text(
-        json.dumps({"home": str(flota_home)}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    escribir_texto((base / "flota-home.json"), json.dumps({"home": str(flota_home)}, ensure_ascii=False))
     salida = {"flota_home": str(flota_home)}
     if doc is not None:
-        (base / "canal.json").write_text(
-            json.dumps(doc, ensure_ascii=False), encoding="utf-8"
-        )
+        escribir_texto((base / "canal.json"), json.dumps(doc, ensure_ascii=False))
         salida["canales"] = sorted(doc)
         canal_resumen = next(
             (
@@ -181,12 +177,9 @@ def vincular_base(base: Path, flota_home: Path, canal: Path | None = None) -> di
             "",
         )
         if canal_resumen and not (base / "resumen-config.json").exists():
-            (base / "resumen-config.json").write_text(
-                json.dumps(
+            escribir_texto((base / "resumen-config.json"), json.dumps(
                     {"canal": canal_resumen, "intervalo_min": 60}, ensure_ascii=False
-                ),
-                encoding="utf-8",
-            )
+                ))
     return salida
 
 

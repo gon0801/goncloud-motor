@@ -20,6 +20,8 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from motor.io import leer_json, leer_texto
+
 from motor import plataforma
 from motor.conf import load_maquina
 from motor.effects import _lock_despliegue, _posix, con_python_de_comando, entorno_maquina
@@ -74,7 +76,7 @@ def _correr(reg, encargo: str, paso: str, script: str, copia: Path, env: dict, b
                 pass
         # Los hijos locales del script también tienen que terminar antes de
         # pasar al siguiente paso o afirmar que el trabajador se detuvo.
-        ident = json.loads(marca.read_text(encoding="utf-8"))
+        ident = leer_json(marca)
         if os.name == "nt":
             plataforma.matar_grupo(proceso)
         else:
@@ -123,7 +125,7 @@ def _rutas(receta: dict) -> None:
 
 
 def _leer(path: Path, identidad: dict) -> dict:
-    datos = json.loads(path.read_text(encoding="utf-8"))
+    datos = leer_json(path)
     if any(datos.get(k) != v for k, v in identidad.items()):
         raise ValueError("el recibo de despliegue no corresponde a esta fase, SHA y receta")
     if datos.get("estado") == "aplicado":
@@ -161,12 +163,12 @@ def observacion(registro, enc) -> str:
     if not puntero.exists():
         return "ausente"
     try:
-        clave = puntero.read_text(encoding="utf-8").strip()
+        clave = leer_texto(puntero).strip()
         if not re.fullmatch(r"[0-9a-f]{64}", clave):
             return "incierto"
         directorio = puntero.parent / clave
-        datos = json.loads((directorio / "recibo.json").read_text(encoding="utf-8"))
-        proceso = json.loads((directorio / "proceso.json").read_text(encoding="utf-8"))
+        datos = leer_json((directorio / "recibo.json"))
+        proceso = leer_json((directorio / "proceso.json"))
         if datos.get("encargo") != enc.id:
             return "incierto"
         if plataforma.estado_proc(proceso) == "vivo":
@@ -174,7 +176,7 @@ def observacion(registro, enc) -> str:
         comando_path = directorio / "comando.json"
         if not comando_path.exists():
             return "ausente"
-        comando = json.loads(comando_path.read_text(encoding="utf-8"))
+        comando = leer_json(comando_path)
         if comando.get("estado") == "no_enviado":
             return "ausente"
         if not comando.get("inicio") or not comando.get("pid"):
@@ -216,7 +218,7 @@ def iniciar(registro, enc, espacio: Path, politica, hora: str) -> dict:
                     return {**datos, "estado": "ejecutando", "recibo": str(recibo),
                             "motivo": "ejecutando receta de despliegue: finalizando trabajador"}
                 if datos["estado"] == "ejecutando":
-                    proceso = json.loads((directorio / "proceso.json").read_text(encoding="utf-8"))
+                    proceso = leer_json((directorio / "proceso.json"))
                     if plataforma.estado_proc(proceso) != "vivo":
                         # El trabajador pudo terminar entre la lectura del recibo
                         # y la comprobación del proceso. Su última escritura es la
@@ -293,7 +295,7 @@ def _salida(texto: str, maquina) -> str:
 
 
 def ejecutar(pedido: Path) -> None:
-    spec = json.loads(pedido.read_text(encoding="utf-8"))
+    spec = leer_json(pedido)
     base, espacio = Path(spec["base"]), Path(spec["espacio"])
     identidad = spec["identidad"]
     recibo, copia = pedido.parent / "recibo.json", pedido.parent / "repo"

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import argparse
 import json
@@ -115,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("publicar")
     s.add_argument("--home", required=True, type=Path)
     s.add_argument("--salida", required=True, type=Path)
+    s.add_argument("--repo-hermes", type=Path)
 
     s = sub.add_parser("sincronizar")
     s.add_argument("--home", required=True, type=Path)
@@ -133,13 +135,13 @@ def _correr(args) -> int:
         from .compartida import exportar, importar
 
         if args.cmd == "publicar":
-            return _json(exportar(args.home, args.salida))
+            return _json(exportar(args.home, args.salida, args.repo_hermes))
         if str(args.archivo) == "-":
             import tempfile
 
             with tempfile.TemporaryDirectory(prefix="flota-fuente-") as tmp:
                 archivo = Path(tmp) / "snapshot.json"
-                archivo.write_text(sys.stdin.read(), encoding="utf-8")
+                escribir_texto(archivo, sys.stdin.read())
                 return _json(importar(args.home, archivo))
         return _json(importar(args.home, args.archivo))
     if args.cmd in ("descubrir", "preparar", "actualizar", "estado"):
@@ -154,7 +156,7 @@ def _correr(args) -> int:
         if args.cmd == "estado":
             return _json(actualizaciones.estado(args.home))
         catalogo = (
-            json.loads(args.catalogo.read_text(encoding="utf-8"))
+            leer_json(args.catalogo)
             if args.catalogo is not None
             else actualizaciones.descubrir(args.componentes)
             if args.componentes
@@ -196,7 +198,7 @@ def _correr(args) -> int:
             )
         manifiesto = args.manifiesto or args.home / "manifiesto.toml"
         if args.tabla is not None:
-            tabla = json.loads(args.tabla.read_text(encoding="utf-8"))
+            tabla = leer_json(args.tabla)
         elif manifiesto.is_file():
             tabla = proyectar_tabla(cargar(manifiesto))
         else:
@@ -217,7 +219,7 @@ def _correr(args) -> int:
                 )
             )
     if args.cmd == "sembrar":
-        tabla = json.loads(args.tabla.read_text(encoding="utf-8"))
+        tabla = leer_json(args.tabla)
         politica = sembrar_tabla(tabla, args.generacion)
         guardar(args.salida, politica)
         return _json(

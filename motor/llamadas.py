@@ -13,6 +13,7 @@ El libro de cuentas vive en `<home>/llamadas/`: un archivo por agente o llamada 
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import json
 import os
@@ -39,7 +40,7 @@ def registra(home: Path, clave: str, rec: dict) -> None:
     d = libro(home)
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f".{clave}.tmp"
-    tmp.write_text(json.dumps(rec), encoding="utf-8")
+    escribir_texto(tmp, json.dumps(rec))
     os.replace(tmp, d / f"{clave}.json")
 
 
@@ -55,7 +56,7 @@ def vivos(home: Path) -> list[dict]:
     out = []
     for f in sorted(libro(home).glob("*.json")) if libro(home).is_dir() else ():
         try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
+            rec = leer_json(f)
             vivo = plataforma.pid_vivo(int(rec["pid"]))
         except (OSError, ValueError, KeyError):
             continue
