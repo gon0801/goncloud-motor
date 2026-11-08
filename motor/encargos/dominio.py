@@ -1792,10 +1792,9 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             # La nota es de la fase que la produjo; el log del encargo se
             # conserva para vista y prompts. Sin fases declaradas no se crea
             # ninguna fase nueva por escribir una nota.
-            if e.fases and texto not in e.fase_actual.notas:
-                e = con_fase(
-                    e, replace(e.fase_actual, notas=e.fase_actual.notas + (texto,))
-                )
+            fase = e.fase_actual
+            if e.fases and fase is not None and texto not in fase.notas:
+                e = con_fase(e, replace(fase, notas=fase.notas + (texto,)))
             return replace(e, notas_pr=e.notas_pr + (texto,), hora=hora or e.hora)
         return e
     if kind == "hallazgo_fuera_de_alcance":
