@@ -178,6 +178,7 @@ class Registro:
                         "kind": kind_prev,
                         "data": json.loads(data_prev),
                     },
+                    nuevo=False,
                 )
             try:
                 reducir(estado, {"kind": kind, "data": data}, nuevo=True)
@@ -273,7 +274,7 @@ class Registro:
         ultimo = 0
         conteo = 0
         for ev in self._rango(encargo, 0, hasta):
-            estado = reducir(estado, ev)
+            estado = reducir(estado, ev, nuevo=False)
             ultimo = ev["id"]
             conteo += 1
         return estado, ultimo, conteo
@@ -315,7 +316,7 @@ class Registro:
             ):
                 estado = guardado.estado
                 for ev in nuevos:
-                    estado = reducir(estado, ev)
+                    estado = reducir(estado, ev, nuevo=False)
                 with self._cache.candado:
                     self._cache.plegados[encargo] = _Plegado(estado, ultimo, conteo)
                 return estado

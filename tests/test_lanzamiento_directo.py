@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from unittest import mock
 
 from motor.encargos import aislamiento
 from motor.encargos.aislamiento import aislar
+from motor.encargos.suscripciones import CuentaNoDisponible
 
 SANDBOX = "/usr/bin/sandbox-exec"
 ES_POSIX = os.name != "nt"
@@ -369,6 +371,86 @@ class MuseUsaLaConfiguracionReal(unittest.TestCase):
             self.assertFalse((runtime / ".config" / "muse" / "auth.json").exists())
             self.assertTrue((Path(env["HOME"]) / ".config/muse/auth.json").is_file())
             self.assertEqual(auth.read_text(encoding="utf-8"), contenido)
+
+
+class CredencialPropiaDeDeepSeek(unittest.TestCase):
+    """DeepSeek por su API propia recibe solo su credencial, nunca la de Go."""
+
+    def _host(
+        self, base: Path, auth: dict, db: dict[str, dict] | None = None
+    ) -> Path:
+        host = base / "host"
+        (host / "opencode").mkdir(parents=True)
+        (host / "opencode" / "auth.json").write_text(
+            json.dumps(auth), encoding="utf-8"
+        )
+        if db:
+            conexion = sqlite3.connect(host / "opencode" / "opencode.db")
+            conexion.execute(
+                "CREATE TABLE credential (integration_id TEXT, value TEXT, "
+                "active INTEGER, time_updated INTEGER)"
+            )
+            for proveedor, cuenta in db.items():
+                conexion.execute(
+                    "INSERT INTO credential VALUES (?, ?, 1, 1)",
+                    (proveedor, json.dumps(cuenta)),
+                )
+            conexion.commit()
+            conexion.close()
+        return host
+
+    def _lanzar(self, base: Path, host: Path):
+        _espacio, runtime = _coincidencia(base)
+        cmd = ["opencode", "run", "--model", "deepseek/deepseek-flash"]
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(host)}):
+            env = aislamiento._entorno(runtime, True, cmd, agente="opencode")
+        return runtime, env
+
+    def _comprobar_aislamiento(self, auth: dict, db: dict[str, dict] | None):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            host = self._host(base, auth, db)
+            runtime, env = self._lanzar(base, host)
+            archivo = runtime / ".local/share/opencode/auth.json"
+            texto = archivo.read_text(encoding="utf-8")
+            self.assertEqual(
+                json.loads(texto), {"deepseek": {"type": "api", "key": "clave-propia"}}
+            )
+            self.assertNotIn("clave-go", texto)
+            config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+            self.assertEqual(config["enabled_providers"], ["deepseek"])
+            self.assertEqual(env["XDG_DATA_HOME"], str(runtime / ".local/share"))
+
+    def test_entrega_solo_la_credencial_propia_desde_auth_json(self):
+        self._comprobar_aislamiento(
+            {
+                "opencode-go": {"type": "api", "key": "clave-go"},
+                "deepseek": {"type": "api", "key": "clave-propia"},
+            },
+            None,
+        )
+
+    def test_entrega_solo_la_credencial_propia_desde_opencode_db(self):
+        self._comprobar_aislamiento(
+            {"opencode-go": {"type": "api", "key": "clave-go"}},
+            {"deepseek": {"type": "api", "key": "clave-propia"}},
+        )
+
+    def test_sin_credencial_propia_no_cae_a_go(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp).resolve()
+            host = self._host(
+                base, {"opencode-go": {"type": "api", "key": "clave-go"}}
+            )
+            _espacio, runtime = _coincidencia(base)
+            cmd = ["opencode", "run", "--model", "deepseek/deepseek-flash"]
+            with self.assertRaises(CuentaNoDisponible) as error:
+                with mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(host)}):
+                    aislamiento._entorno(runtime, True, cmd, agente="opencode")
+            self.assertIn("deepseek", str(error.exception))
+            self.assertFalse(
+                (runtime / ".local/share/opencode/auth.json").exists()
+            )
 
 
 if __name__ == "__main__":

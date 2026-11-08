@@ -6,6 +6,12 @@ import os
 from dataclasses import dataclass
 
 
+# David, 7-nov: la API propia de DeepSeek corre por el cliente OpenCode con
+# `--standalone` y su propia credencial. No se mezcla con OpenCode Go.
+PREFIJO_DEEPSEEK_API = "deepseek/"
+DEEPSEEK_API_PROVEEDOR = "deepseek"
+
+
 @dataclass(frozen=True)
 class Adaptador:
     prefijos: tuple[str, ...]
@@ -37,9 +43,9 @@ ADAPTADORES = {
         ("api.anthropic.com", "claude.ai"),
     ),
     "opencode": Adaptador(
-        ("opencode-go/", "zai/", "zai-coding-plan/"),
+        ("opencode-go/", "zai/", "zai-coding-plan/", PREFIJO_DEEPSEEK_API),
         "opencode-go/deepseek-v4.1-flash",
-        ("opencode.ai", "api.z.ai"),
+        ("opencode.ai", "api.z.ai", "api.deepseek.com"),
     ),
     "qwen": Adaptador(
         ("qwen/",), "qwen/qwen3.8-max", ("token-plan.ap-southeast-1.maas.aliyuncs.com",)

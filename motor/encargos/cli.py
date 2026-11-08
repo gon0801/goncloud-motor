@@ -24,6 +24,7 @@ from .ciclo import (
     marcar_relevo_agotado,
     ordenar,
     parada_local,
+    plegar_aislado,
     recibir,
     resolver_entrega,
 )
@@ -445,7 +446,9 @@ def marcar_ruta(reg: Registro, ruta: tuple[str, ...], hora: str) -> None:
         return
     with turno(reg.base):
         for ident in reg.ids():
-            enc = reg.fold(ident)
+            enc = plegar_aislado(reg, ident)
+            if enc is None:
+                continue
             if enc.agentes != ruta and enc.estado not in ("terminado", "cancelado"):
                 reg.anotar(
                     ident,
@@ -459,6 +462,7 @@ def _atender_respuestas_antes_del_barrido(reg: Registro, hora: str) -> None:
 
     El barrido puede abrir el turno del revisor en la misma pasada; si la
     respuesta se atendiera después, ese primer turno correría sin su resultado.
+    Un encargo que no pliega se aísla y no deja sin respuesta a los demás.
     """
     try:
         from .ciclo import _directorio, _espacio
@@ -467,7 +471,7 @@ def _atender_respuestas_antes_del_barrido(reg: Registro, hora: str) -> None:
         return
     for ident in reg.ids():
         try:
-            enc = reg.fold(ident)
+            enc = plegar_aislado(reg, ident)
             if enc is None:
                 continue
             if any(s.estado == "respuesta" for s in enc.solicitudes):
@@ -519,13 +523,24 @@ def _paso_del_supervisor(
     return salida
 
 
+def _hay_ruta(reg: Registro, ruta: tuple[str, ...]) -> bool:
+    """Hay una ruta fija o al menos un encargo legible con ruta persistida.
+
+    Un encargo que no pliega no aporta ruta y no impide mirar los demás."""
+    if ruta:
+        return True
+    for ident in reg.ids():
+        enc = plegar_aislado(reg, ident)
+        if enc is not None and (enc.agentes or enc.modelos_solicitados):
+            return True
+    return False
+
+
 def _supervisor(reg: Registro, args) -> int:
     if args.respaldo and not args.agente:
         raise ValueError("--respaldo necesita --agente como ruta principal")
     ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
-    if not ruta and not any(
-        reg.fold(i).agentes or reg.fold(i).modelos_solicitados for i in reg.ids()
-    ):
+    if not _hay_ruta(reg, ruta):
         raise ValueError(
             "supervisor sin ruta de agentes: configura --agente o una ruta "
             "persistida en los encargos; sin ruta los pedidos quedarian "
@@ -547,9 +562,7 @@ def _supervisor(reg: Registro, args) -> int:
     def paso() -> list[dict]:
         hora = ahora_iso()
         marcar_ruta(reg, ruta, hora)
-        habilitado = bool(ruta) or any(
-            reg.fold(ident).agentes or reg.fold(ident).modelos_solicitados for ident in reg.ids()
-        )
+        habilitado = _hay_ruta(reg, ruta)
         return _paso_del_supervisor(
             reg,
             hora,
