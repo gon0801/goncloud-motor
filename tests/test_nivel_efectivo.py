@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -327,6 +329,96 @@ class RecepcionSondea(unittest.TestCase):
             self.assertEqual(
                 [e for e in reg.eventos(enc.id) if e["kind"] == "nivel_efectivo"], []
             )
+
+    def test_la_mirada_lenta_del_remoto_no_bloquea_la_recepcion(self):
+        """F1 de DeepSeek: la recepción no se queda esperando minutos al
+        remoto. El sondeo acota la mirada: si el puerto no contesta a
+        tiempo, la capacidad queda desconocida y el nivel no cambia; el
+        remoto se vuelve a mirar al adoptar fases y al integrar, donde las
+        esperas ya tienen sus caminos propios."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            repo = _bare(t)
+            _maquina(t / "base", ["ssh-goncloud"])
+            reg = self._registro(t)
+
+            class _Lento:
+                def __init__(self, segundos: float):
+                    self.segundos = segundos
+
+                def capacidad(self, repo, base):
+                    time.sleep(self.segundos)
+                    return CapacidadRemota(True, True, True, "tarde pero bloquea")
+
+            with mock.patch("motor.encargos.ciclo.TOPE_MIRADA_S", 0.2):
+                inicio = time.monotonic()
+                salida = recibir(
+                    reg, "pedido", "sondea-lenta", ahora_iso(),
+                    entrega_nivel="desplegado", repo=repo, base_rama="main",
+                    gh=_Lento(3.0),
+                )
+                transcurrido = time.monotonic() - inicio
+            enc = reg.fold(salida["encargo"])
+            self.assertLess(transcurrido, 2.0)
+            self.assertEqual(enc.nivel_efectivo, "")
+            self.assertEqual(
+                [e for e in reg.eventos(enc.id) if e["kind"] == "nivel_efectivo"], []
+            )
+
+    def test_el_fin_de_la_cli_no_espera_al_remoto_lento(self):
+        """h_dc2a2b5a: el tope de la mirada tiene que desbloquear también el
+        fin del proceso de `motor encargar`. La salida del intérprete se
+        junta con los hilos no daemon (el pool de concurrent.futures lo
+        registraba aunque shutdown fuera wait=False), así que la prueba mide
+        el fin del proceso real de la CLI como subproceso, con el gh real
+        elegido por base/github.json {"real": true} y un gh lento en el
+        PATH: la recepción vuelve con el tope y el proceso termina después,
+        sin esperar las cuatro llamadas del gh rezagado."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            repo = t / "repo"
+            repo.mkdir()
+            for args in (
+                ("init", "-q", "-b", "main"),
+                ("remote", "add", "origin", "https://github.com/ejemplo/repo.git"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    check=True, capture_output=True,
+                )
+            gh_lento = t / "gh-lento"
+            gh_lento.mkdir()
+            falso = gh_lento / "gh"
+            falso.write_text("#!/bin/sh\nsleep 15\necho '{}'\n", encoding="utf-8")
+            falso.chmod(0o755)
+            base = t / "base"
+            base.mkdir()
+            (base / "github.json").write_text('{"real": true}', encoding="utf-8")
+            env = dict(os.environ)
+            env["PATH"] = f"{gh_lento}{os.pathsep}{env.get('PATH', '')}"
+            inicio = time.monotonic()
+            hecho = subprocess.run(
+                [
+                    sys.executable, "-c",
+                    "import sys; from motor.encargos.cli import main; "
+                    "sys.exit(main(sys.argv[1:]))",
+                    "encargar",
+                    "--base", str(base),
+                    "--texto", "pedido",
+                    "--clave", "k1-cli-lenta",
+                    "--entrega", "desplegado",
+                    "--repo", str(repo),
+                    "--base-rama", "main",
+                ],
+                capture_output=True, text=True, env=env, timeout=90,
+            )
+            transcurrido = time.monotonic() - inicio
+            self.assertEqual(hecho.returncode, 0, hecho.stderr[-400:])
+            self.assertIn('"encargo"', hecho.stdout)
+            # El tope de la mirada es 10 s: la recepción vuelve con él y el
+            # proceso termina después; el gh lento tarda 15 s por llamada y
+            # sin el hilo daemon el proceso lo esperaba al salir (~60 s).
+            self.assertLess(transcurrido, 18.0)
 
     def test_sin_puerto_queda_desconocido(self):
         with tempfile.TemporaryDirectory() as tmp:
