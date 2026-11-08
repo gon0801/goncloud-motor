@@ -27,6 +27,12 @@ PENDIENTE = 3
 FALLO = 2
 
 
+def _leer_json(path: Path):
+    # Se copia solo este archivo a espacios ajenos: no puede importar `motor.io`.
+    with open(path, "r", encoding="utf-8-sig") as archivo:
+        return json.load(archivo)
+
+
 def _publica(path: Path, doc: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -39,7 +45,7 @@ def _publica(path: Path, doc: dict) -> None:
 
 def _sesion() -> dict:
     try:
-        doc = json.loads(SESION.read_text(encoding="utf-8"))
+        doc = _leer_json(SESION)
     except (OSError, ValueError):
         raise SystemExit(
             "no hay sesion.json: este directorio no es un espacio de encargo con el puente abierto"
@@ -55,7 +61,7 @@ def _esperar(ident: str, segundos: float) -> dict | None:
         path = RESPUESTAS / f"{ident}.json"
         if path.is_file():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                return _leer_json(path)
             except ValueError:
                 pass
         if time.time() >= fin:
@@ -128,13 +134,13 @@ def ver(args) -> int:
     if not path.is_file():
         print(json.dumps({"estado": "pendiente", "id": args.id}, ensure_ascii=False))
         return PENDIENTE
-    return _imprimir(json.loads(path.read_text(encoding="utf-8")))
+    return _imprimir(_leer_json(path))
 
 
 def catalogo(args) -> int:
     _sesion()
     try:
-        doc = json.loads(CATALOGO.read_text(encoding="utf-8"))
+        doc = _leer_json(CATALOGO)
     except (OSError, ValueError):
         doc = {"recursos": [], "nota": "el host no concedio capacidades externas"}
     print(json.dumps(doc, ensure_ascii=False, sort_keys=True))

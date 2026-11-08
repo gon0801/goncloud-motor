@@ -15,7 +15,6 @@ lectura de DeepSeek, están en tests/test_lectura_deepseek.py. Aquí:
 from __future__ import annotations
 
 import tempfile
-import time
 import unittest
 from unittest import mock
 
@@ -23,13 +22,12 @@ from motor.encargos import ciclo
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso
 from motor.encargos.dominio import (
-    bloqueantes_abiertos,
     revision_externa_pendiente,
 )
-from motor.github import ChecksVerdict, FakeGitHub, veredicto
-from tests.test_entrega_misma_version import _barrido, _rerun_del_check
+from motor.github import veredicto
 from tests.test_flujo_revisiones import Recorrido, _entrega_pr, _lanzaria
 from tests.test_lectura_deepseek import _comentario, _hallazgo, _ids
+from tests.dobles import github_por_commit
 
 
 def setUpModule():
@@ -44,23 +42,6 @@ def tearDownModule():
     parche = globals().pop("_PARCHE_SONDA", None)
     if parche is not None:
         parche.stop()
-
-
-class _GhPorCommit(FakeGitHub):
-    """DeepSeek publica `textos[i]` sobre el i-ésimo commit que el motor le pregunta,
-    o nada si `textos[i]` es None o falta: la revisión de ese commit aún no llegó."""
-
-    def __init__(self, d):
-        super().__init__(d)
-        self.textos: list = []
-        self.vistos: list[str] = []
-
-    def comentarios_deepseek(self, repo, numero, sha=""):
-        if sha not in self.vistos:
-            self.vistos.append(sha)
-        i = self.vistos.index(sha)
-        texto = self.textos[i] if i < len(self.textos) else None
-        return [{"texto": texto, "autor": "DeepSeek", "sha": sha}] if texto else []
 
 
 def _devolver_el_trabajo(r, marca: str) -> None:
@@ -87,7 +68,7 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
     def _en_espera_del_commit_nuevo(self, tmp, clave):
         """F1 abierto del commit viejo; el responsable entregó otro commit y DeepSeek
         aún no lo revisó (es el estado de enc_1b8916e8a0bac627 a las 07:46Z)."""
-        vuelta, r = _entrega_pr(self, tmp, clave, _GhPorCommit)
+        vuelta, r = _entrega_pr(self, tmp, clave, github_por_commit)
         gh = vuelta.gh
         gh.textos = [_comentario(_hallazgo("F1"))]
         e = vuelta("uno")
@@ -117,9 +98,9 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertNotEqual(e.estado, "necesita_usuario")
 
-    def test_dos_fuentes_de_la_misma_vuelta_no_suman(self):
+    def test_dos_fuentes_de_la_misma_vuelta_no_suman(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fr-1b", _GhPorCommit)
+            vuelta, r = _entrega_pr(self, tmp, "fr-1b", github_por_commit)
             vuelta.gh.textos = [_comentario(_hallazgo("F1"))]
             e = vuelta("uno")
             hora = ahora_iso()
@@ -132,7 +113,7 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
 
     def test_la_vuelta_siguiente_si_cuenta_y_releva(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fr-1c", _GhPorCommit)
+            vuelta, r = _entrega_pr(self, tmp, "fr-1c", github_por_commit)
             vuelta.gh.textos = [_comentario(_hallazgo("F1"))]
             vuelta("uno")
             r.incorporar()
@@ -147,7 +128,7 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
 class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
     def test_con_deepseek_pendiente_del_commit_nuevo_el_freno_no_escala(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fr-2", _GhPorCommit)
+            vuelta, r = _entrega_pr(self, tmp, "fr-2", github_por_commit)
             gh = vuelta.gh
             gh.textos = [_comentario(_hallazgo("F1"))]
             vuelta("uno")
@@ -183,7 +164,7 @@ class CommitNuevoConElNivelPrYaAlcanzado(unittest.TestCase):
 
     def test_el_commit_nuevo_se_lee_antes_de_cerrar(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fr-sha", _GhPorCommit)
+            vuelta, r = _entrega_pr(self, tmp, "fr-sha", github_por_commit)
             gh = vuelta.gh
             gh.textos = [_comentario(), _comentario()]
             real = gh.comentarios_deepseek
@@ -242,7 +223,7 @@ class ChecksEnMarcha(unittest.TestCase):
 
 class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
     def _tras_el_diagnostico_de_f4(self, tmp, clave):
-        vuelta, r = _entrega_pr(self, tmp, clave, _GhPorCommit)
+        vuelta, r = _entrega_pr(self, tmp, clave, github_por_commit)
         gh = vuelta.gh
         gh.textos = [_comentario(_hallazgo("F4"))]
         e = vuelta("uno")
@@ -297,7 +278,7 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
 
     def test_una_serie_que_siempre_trae_hallazgos_nuevos_no_escala_por_si_sola(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fr-5d", _GhPorCommit)
+            vuelta, r = _entrega_pr(self, tmp, "fr-5d", github_por_commit)
             gh = vuelta.gh
             acumulados = [_hallazgo("F0")]
             gh.textos = [_comentario(*acumulados)]
@@ -316,7 +297,7 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
 
     def test_cerrar_un_bloqueante_reinicia_la_serie(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fr-5e", _GhPorCommit)
+            vuelta, r = _entrega_pr(self, tmp, "fr-5e", github_por_commit)
             gh = vuelta.gh
             gh.textos = [
                 _comentario(_hallazgo("F0")),

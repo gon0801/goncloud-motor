@@ -11,10 +11,11 @@ from unittest import mock
 from motor.encargos.ciclo import barrer
 from motor.github import GhGitHub, PoliticaBloquea, PuntaMovida
 from tests.test_flujo_revisiones import (
-    _GhConDeepSeek,
     _entrega_pr,
     sonda_sin_aislamiento_del_host,
 )
+
+from tests.dobles import github_con_corridas
 
 
 def setUpModule():
@@ -48,30 +49,30 @@ class _GitHubChecks(GhGitHub):
         raise AssertionError(args)
 
 
-class _PoliticaConChecks(_GhConDeepSeek):
-    titulos = ()
+def _politica_con_checks(directorio):
+    """El doble aprueba; el merge lo bloquea la política y los requeridos salen del CLI falso."""
+    gh = github_con_corridas(directorio)
+    gh.api = _GitHubChecks()
+    gh.bloquea = True
 
-    def __init__(self, directorio):
-        super().__init__(directorio)
-        self.api = _GitHubChecks()
-        self.bloquea = True
-        self.intentos = []
+    def checks_requeridos(repo, numero, sha):
+        del repo
+        return gh.api.checks_requeridos("o/r", numero, sha)
 
-    def merge(self, repo, numero, sha, metodo, mensaje):
-        self.intentos.append(sha)
-        self.api.sha = sha
-        if self.bloquea:
-            raise PoliticaBloquea("the base branch policy prohibits the merge")
-        return super().merge(repo, numero, sha, metodo, mensaje)
+    gh.checks_requeridos = checks_requeridos
 
-    def checks_requeridos(self, repo, numero, sha):
-        return self.api.checks_requeridos("o/r", numero, sha)
+    def merge(repo, numero, sha, metodo, mensaje):
+        gh.api.sha = sha
+        return _merge(repo, numero, sha, metodo, mensaje)
 
+    _merge = gh.merge
+    gh.merge = merge
+    return gh
 
 class EntregaMergePendiente(unittest.TestCase):
     def preparar(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
-        return _entrega_pr(self, tmp, "merge-ci", _PoliticaConChecks, nivel="integrado")
+        return _entrega_pr(self, tmp, "merge-ci", _politica_con_checks, nivel="integrado")
 
     def test_requerido_en_marcha_espera_y_el_supervisor_integra_sin_preguntar(self):
         vuelta, r = self.preparar()

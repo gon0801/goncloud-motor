@@ -1,6 +1,7 @@
 """Fuentes oficiales y preparación aislada de los distribuidores soportados."""
 
 from __future__ import annotations
+from motor.io import leer_json
 
 import base64
 import hashlib
@@ -339,7 +340,7 @@ def _instalar_npm(doc: dict, artefacto: Path, destino: Path, cache: Path) -> lis
         env=_entorno_generacion(destino.parents[1]),
     )
     paquete = destino / "node_modules" / doc["paquete"]
-    metadata = json.loads((paquete / "package.json").read_text(encoding="utf-8"))
+    metadata = leer_json((paquete / "package.json"))
     if (
         metadata.get("name") != doc["paquete"]
         or metadata.get("version") != doc["version"]
@@ -382,7 +383,7 @@ def _instalar_npm(doc: dict, artefacto: Path, destino: Path, cache: Path) -> lis
 
 def _runtime_hermes(destino: Path) -> dict:
     codigo, store = destino / "src", destino / "tools"
-    facts = json.loads((store / "facts.json").read_text(encoding="utf-8"))
+    facts = leer_json((store / "facts.json"))
     entry = (store / facts["packages"]["python"]["entry"]).resolve()
     if store.resolve() not in entry.parents:
         raise ValueError("Python de PM fuera de su almacen")

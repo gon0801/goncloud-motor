@@ -1,6 +1,7 @@
 """El supervisor conserva OAuth; los trabajadores reciben solo acceso de suscripción."""
 
 from __future__ import annotations
+from motor.io import leer_texto
 
 import base64
 import contextlib
@@ -176,7 +177,7 @@ def _respuesta(raw: bytes, anterior: dict, *, permitir_vencido: bool = False) ->
 def _refresh(
     origen: Path, refresh: str, oauth_host: str = "https://auth.kimi.com"
 ) -> bytes:
-    device = (origen / "device_id").read_text(encoding="utf-8").strip()
+    device = leer_texto((origen / "device_id")).strip()
     _exigir(
         bool(device) and all(" " <= c <= "~" for c in device),
         "device OAuth de Kimi invalido",

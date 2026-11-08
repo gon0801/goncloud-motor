@@ -1,4 +1,5 @@
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import hashlib
 import json
@@ -28,14 +29,14 @@ from motor.integraciones import canales
 def _atomico(path: Path, doc: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporal = path.with_suffix(path.suffix + ".tmp")
-    temporal.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    escribir_texto(temporal, json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
     temporal.replace(path)
 
 
 def _leer(path: Path) -> dict | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return leer_json(path)
 
 
 ESPERA_BASE_S = 60
@@ -77,7 +78,7 @@ class VistaAvisos:
     def _cargar_indice(self) -> None:
         path = self.archivo / "resumenes.json"
         try:
-            crudo = json.loads(path.read_text(encoding="utf-8"))
+            crudo = leer_json(path)
         except (OSError, ValueError):
             crudo = None
         if isinstance(crudo, dict) and isinstance(crudo.get("avisos"), dict):
@@ -454,7 +455,7 @@ def _asegurar_producto(
     espacio.mkdir(parents=True, exist_ok=True)
     destino = espacio / "resultado.txt"
     if destino.exists():
-        cuerpo = destino.read_text(encoding="utf-8")
+        cuerpo = leer_texto(destino)
         if cuerpo != texto:
             salida = consultar(registro, encargo)
             salida["conflicto"] = True
@@ -462,7 +463,7 @@ def _asegurar_producto(
             return None, salida
         return cuerpo, None
     temporal = destino.with_suffix(".txt.tmp")
-    temporal.write_text(texto, encoding="utf-8")
+    escribir_texto(temporal, texto)
     temporal.replace(destino)
     return texto, None
 
@@ -542,7 +543,7 @@ def conciliar_autoridad(registro: Registro) -> dict:
 
     for path in sorted(carpeta.glob("*.json")):
         try:
-            mensaje = json.loads(path.read_text(encoding="utf-8"))
+            mensaje = leer_json(path)
         except (OSError, ValueError):
             pendientes.append(str(path))
             continue
@@ -598,7 +599,7 @@ def _tiene_pendiente(registro: Registro, encargo: str) -> bool:
         return False
     for path in sorted(carpeta.glob("*.json")):
         try:
-            mensaje = json.loads(path.read_text(encoding="utf-8"))
+            mensaje = leer_json(path)
         except (OSError, ValueError):
             continue
         if str(mensaje.get("encargo") or "") == encargo:
@@ -771,7 +772,7 @@ def _cuerpo_del_aviso(registro: Registro, encargo: str, evidencia: str) -> str |
         c in "0123456789abcdef" for c in evidencia
     )
     if destino.is_file():
-        cuerpo = destino.read_text(encoding="utf-8")
+        cuerpo = leer_texto(destino)
         if es_hash:
             return cuerpo if hashlib.sha256(cuerpo.encode()).hexdigest() == evidencia else None
         return cuerpo
@@ -867,7 +868,7 @@ def _config_canal(registro: Registro, canal: str) -> dict | None:
     if not path.is_file():
         return None
     try:
-        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+        doc = leer_json(path)
     except (OSError, ValueError):
         return {"error": "canal.json ilegible"}
     if not isinstance(doc, dict):
@@ -1653,7 +1654,7 @@ def _reintentar_avisos_sueltos(
             continue
         entrega = registro.base / "canal" / nombre / str(doc.get("id") or "")
         try:
-            cuerpo = entrega.read_text(encoding="utf-8")
+            cuerpo = leer_texto(entrega)
         except OSError:
             continue
         publicados.append(_publicar_aviso(registro, doc, cuerpo, cortar, vuelta, vista))
@@ -1842,9 +1843,9 @@ def _publicar_aviso(
     if not entrega.exists():
         canal_dir.mkdir(parents=True, exist_ok=True)
         temporal = entrega.with_suffix(".tmp")
-        temporal.write_text(cuerpo, encoding="utf-8")
+        escribir_texto(temporal, cuerpo)
         temporal.replace(entrega)
-    if entrega.read_text(encoding="utf-8") != cuerpo:
+    if leer_texto(entrega) != cuerpo:
         guardado["estado"] = "incierto"
         guardado["motivo"] = "el canal tiene otro contenido y no se puede conciliar"
         guardar(guardado)

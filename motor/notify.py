@@ -6,6 +6,7 @@ compare las dos marcas. `lint_plain` rechaza SHAs, rutas, jerga y más de 8 lín
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import datetime as dt
 import json
@@ -257,7 +258,7 @@ class Notifier:
             "key": key,
         }
         tmp = self.pend / f".{nombre}.tmp"
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        escribir_texto(tmp, json.dumps(payload, ensure_ascii=False))
         os.replace(tmp, self.pend / f"{nombre}.json")
 
     def encola(self, key: str, texto: str) -> None:
@@ -270,16 +271,16 @@ class Notifier:
         if not src.is_file():
             return False
         try:
-            data = json.loads(src.read_text(encoding="utf-8"))
+            data = leer_json(src)
         except (OSError, ValueError):
-            data = {"notice_id": notice_id, "texto": src.read_text(encoding="utf-8")}
+            data = {"notice_id": notice_id, "texto": leer_texto(src)}
         if not isinstance(data, dict):
             data = {"notice_id": notice_id, "texto": str(data)}
         data["notice_id"] = notice_id
         data["no_antes"] = 0
         self.pend.mkdir(parents=True, exist_ok=True)
         tmp = self.pend / f".{nombre}.tmp"
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        escribir_texto(tmp, json.dumps(data, ensure_ascii=False))
         os.replace(tmp, self.pend / nombre)
         src.unlink()
         return True
@@ -288,7 +289,7 @@ class Notifier:
         self.causa = texto
         try:
             self.pend.parent.mkdir(parents=True, exist_ok=True)
-            (self.pend.parent / "causa.txt").write_text(texto, encoding="utf-8")
+            escribir_texto((self.pend.parent / "causa.txt"), texto)
         except OSError:
             pass
 
@@ -301,7 +302,7 @@ class Notifier:
 
     def _espera(self, path: Path) -> None:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = leer_json(path)
         except (OSError, ValueError):
             return
         if not isinstance(data, dict) or "notice_id" not in data:
@@ -310,11 +311,11 @@ class Notifier:
         data["intento"] = n
         data["no_antes"] = time.time() + min(30 * (2 ** min(n, 5)), 900)
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        escribir_texto(tmp, json.dumps(data, ensure_ascii=False))
         os.replace(tmp, path)
 
     def _texto(self, path: Path) -> str:
-        crudo = path.read_text(encoding="utf-8")
+        crudo = leer_texto(path)
         if path.suffix != ".json":
             return crudo
         try:
@@ -329,7 +330,7 @@ class Notifier:
         if path.suffix != ".json":
             return True
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = leer_json(path)
         except (OSError, ValueError):
             return True
         if not isinstance(data, dict):
@@ -437,7 +438,7 @@ def salud(home: Path, eventos=None) -> dict:
     marca = base / "causa.txt"
     if marca.is_file():
         try:
-            causa = marca.read_text(encoding="utf-8").strip().splitlines()[0][:200]
+            causa = leer_texto(marca).strip().splitlines()[0][:200]
         except OSError:
             causa = ""
     if malos:

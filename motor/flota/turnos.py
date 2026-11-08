@@ -8,6 +8,7 @@ falla en la candidata bloquea la activación y avisa al usuario.
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto
 
 import os
 import socket
@@ -63,7 +64,7 @@ def _turno_agente(
     inicio = time.time()
     try:
         prompt = espacio / "prompt.txt"
-        prompt.write_text(PROMPT_TURNO, encoding="utf-8")
+        escribir_texto(prompt, PROMPT_TURNO)
         enc = SimpleNamespace(
             rol="responsable", sesion_responsable="", sesion_revisor="", modelos=[]
         )

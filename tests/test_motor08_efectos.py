@@ -120,7 +120,7 @@ class RecuperaEfectosTest(unittest.TestCase):
         self.fx._efecto(uno, "A", i1, "no_aplicado")
         self.assertTrue(puede_volver(self.home, self.store.events())[0])
 
-    def test_reinstalar_y_fallar_checklist_vuelve_a_revision_real_sin_autorizar_escritor_viejo(
+    def test_reinstalar_y_fallar_checklist_vuelve_a_revision_real_sin_autorizar_escritor_viejo(  # no-roja-en-base: la copia del paquete suma io.py por la migración; el comportamiento probado ya estaba en la base
         self,
     ):
         usuario = self.home / "usuario"
@@ -160,7 +160,7 @@ class RecuperaEfectosTest(unittest.TestCase):
         )
         viejo = commit(fuente, "Escritor anterior")
         git("-C", str(fuente), "tag", "anterior", viejo)
-        for nombre in ("formato.py", "store.py"):
+        for nombre in ("formato.py", "io.py", "store.py"):
             shutil.copy2(RAIZ / "motor" / nombre, paquete / nombre)
         shutil.copytree(
             RAIZ / "motor" / "plataforma",

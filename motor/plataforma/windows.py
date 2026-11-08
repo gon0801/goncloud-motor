@@ -9,6 +9,7 @@ En la Mac se prueban las partes puras (`resolve_shim`, `flags_creacion`, `tarea_
 """
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_texto
 
 import os
 import re
@@ -139,11 +140,11 @@ def carpeta_python_real() -> Path | None:
             p = d / nombre
             contenido = f'#!/bin/sh\nexec "{exe}" "$@"\n'
             try:
-                actual = p.read_text(encoding="utf-8")
+                actual = leer_texto(p)
             except OSError:
                 actual = ""
             if actual != contenido:
-                p.write_text(contenido, encoding="utf-8")
+                escribir_texto(p, contenido)
                 p.chmod(0o755)
     except OSError:
         return None
@@ -237,6 +238,12 @@ GUARDIAN_WSL = """
 import ctypes, os, pathlib, signal, subprocess, sys, time
 
 
+def leer_texto(ruta):
+    # El guardián corre con python3 -I -S: solo stdlib, no puede importar el motor.
+    with open(ruta, 'r', encoding='utf-8') as archivo:
+        return archivo.read()
+
+
 def morir_con_el_padre():
     try:
         return ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
@@ -251,7 +258,7 @@ def padre_ido(padre):
 def hijos_propios():
     f = pathlib.Path('/proc/self/task') / str(os.getpid()) / 'children'
     try:
-        return [int(x) for x in f.read_text(encoding="utf-8").split()]
+        return [int(x) for x in leer_texto(f).split()]
     except OSError:
         return []
 
