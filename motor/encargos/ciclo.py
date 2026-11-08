@@ -172,9 +172,7 @@ def _capacidad_desplegar(
     tom = espacio / ".motor.toml" if espacio is not None else None
     if tom is not None and tom.is_file():
         try:
-            requiere += list(
-                RepoConf.parse(tom.read_text(encoding="utf-8-sig")).requiere
-            )
+            requiere += list(RepoConf.parse(leer_texto(tom)).requiere)
         except (ValueError, TypeError, AttributeError):
             pass
     faltan = requisitos_faltantes(tuple(requiere), maquina.tiene)
@@ -354,9 +352,10 @@ def recibir(
         # nivel queda sin cambios. La ruta del espacio va sin crearla: en la
         # recepción todavía no hay clon ni `.motor.toml` que leer.
         enc_fresco = registro.fold(encargo)
-        _sondeo_nivel(
-            registro, enc_fresco, gh, registro.base / "espacio" / encargo, hora
-        )
+        if enc_fresco is not None:
+            _sondeo_nivel(
+                registro, enc_fresco, gh, registro.base / "espacio" / encargo, hora
+            )
     return vista(registro.fold(encargo), recibo)
 
 
@@ -3315,12 +3314,14 @@ def _incorporar_responsable(
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
     enc = registro.fold(enc.id)
-    if enc.entrega.nivel in ("integrado", "desplegado"):
+    if enc is not None and enc.entrega.nivel in ("integrado", "desplegado"):
         # Las fases quedaron adoptadas: antes del siguiente intento o efecto de
         # entrega se comprueba la capacidad declarada de la máquina. Sin puerto
         # GitHub aquí, la mirada del remoto vive en `recibir`.
         _sondeo_nivel(registro, enc, None, espacio, hora)
-        enc = registro.fold(enc.id)
+        tras_sondeo = registro.fold(enc.id)
+        if tras_sondeo is not None:
+            enc = tras_sondeo
     try:
         declaradas = leer_declaradas(interno)
         error_declaradas = ""

@@ -31,10 +31,10 @@ from motor.github import (
     PoliticaBloquea,
 )
 from tests.test_flujo_revisiones import (
-    _GhConDeepSeek,
     _entrega_pr,
     sonda_sin_aislamiento_del_host,
 )
+from tests.dobles import github_con_hallazgos
 
 
 def setUpModule():
@@ -155,8 +155,6 @@ class CapacidadDelPuerto(unittest.TestCase):
         self.assertIn("de forma fija", str(lanzado.exception))
 
     def test_el_real_lee_proteccion_reglas_y_permisos(self):
-        api = f"api repos/{self.repo}"
-
         def con_revisiones(a):
             if a[:2] == ("api", f"repos/{self.repo}/branches/main/protection"):
                 return json.dumps(
@@ -517,8 +515,9 @@ class ReduceNivelEfectivo(unittest.TestCase):
         self.assertEqual(nivel_objetivo(apretado), "pr")
 
 
-class _Aprobador(_GhConDeepSeek):
-    titulos = ()
+def _aprobador(d):
+    """DeepSeek aprueba: el doble unico del main sin hallazgos."""
+    return github_con_hallazgos(d, titulos=())
 
 
 class CompuertasDeAccion(unittest.TestCase):
@@ -526,7 +525,7 @@ class CompuertasDeAccion(unittest.TestCase):
     cierra en integrado; con merge prohibido el encargo cierra en pr."""
 
     def _preparar(self, tmp: str, nivel: str, config: dict, tiene: list[str]):
-        vuelta, r = _entrega_pr(self, tmp, "compuerta-" + nivel, _Aprobador, config=config, nivel=nivel)
+        vuelta, r = _entrega_pr(self, tmp, "compuerta-" + nivel, _aprobador, config=config, nivel=nivel)
         _maquina(r.base, tiene)
         return vuelta, r
 
