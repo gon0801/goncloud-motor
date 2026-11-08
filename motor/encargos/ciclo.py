@@ -1285,10 +1285,19 @@ def _migrar_un_marcador(
     ruta.unlink(missing_ok=True)
 
 
+_MIGRACION_FALLIDA: set[tuple[str, str]] = set()
+
+
 def migrar_marcadores(registro: Registro, hora: str) -> None:
     """Convierte los marcadores de una instalación anterior en eventos una sola
     vez. El evento se persiste antes de borrar el archivo: si el motor cae en
-    medio, la siguiente vuelta ve la `ukey` y solo termina el borrado."""
+    medio, la siguiente vuelta ve la `ukey` y solo termina el borrado.
+
+    La historia de cada encargo se pliega aislada: una historia rota no impide
+    migrar los demás ni detiene el barrido. `append` también pliega esa historia
+    y puede fallar; ese encargo se reintenta en la vuelta siguiente."""
+    import sys
+
     identidad = _identidad_de_base(registro.base)
     if identidad in _MARCADORES_MIGRADOS:
         return
@@ -1300,14 +1309,28 @@ def migrar_marcadores(registro: Registro, hora: str) -> None:
         "ci-sondeo.json",
         "cierre.json",
     )
+    fallo = False
     for encargo_id in registro.ids():
-        enc = registro.fold(encargo_id)
+        enc = plegar_aislado(registro, encargo_id)
         if enc is None:
             continue
-        for directorio in _directorios_del_encargo(registro.base, encargo_id):
-            for nombre in nombres:
-                _migrar_un_marcador(registro, enc, directorio, nombre, hora)
-    _MARCADORES_MIGRADOS.add(identidad)
+        try:
+            for directorio in _directorios_del_encargo(registro.base, encargo_id):
+                for nombre in nombres:
+                    _migrar_un_marcador(registro, enc, directorio, nombre, hora)
+        except Exception as exc:  # noqa: BLE001  un encargo no tumba la migración
+            fallo = True
+            clave = (encargo_id, type(exc).__name__)
+            if clave not in _MIGRACION_FALLIDA:
+                _MIGRACION_FALLIDA.add(clave)
+                print(
+                    f"no se pudo migrar {encargo_id} ({type(exc).__name__}): "
+                    f"{_causa_de_excepcion(exc)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    if not fallo:
+        _MARCADORES_MIGRADOS.add(identidad)
 
 
 def barrer(

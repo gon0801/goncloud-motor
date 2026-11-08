@@ -203,3 +203,53 @@ class CaidasEntreElEfectoYLaMarca(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MigracionAislada(unittest.TestCase):
+    def test_una_historia_rota_no_tumba_la_migracion_ni_el_barrido(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            bueno = recibir(
+                reg, "pedido bueno", "migra-bueno", ahora_iso(), via="directa"
+            )["encargo"]
+            roto = recibir(
+                reg, "pedido roto", "migra-roto", ahora_iso(), via="directa"
+            )["encargo"]
+            directorio = Path(reg.base) / "ejecucion" / bueno
+            directorio.mkdir(parents=True, exist_ok=True)
+            (directorio / "incorporado").write_text(ahora_iso(), encoding="utf-8")
+            # Una historia que no pliega: el evento entra directo, sin `append`.
+            reg.db.execute(
+                "INSERT INTO events (ts, encargo, kind, data, ukey) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (ahora_iso(), roto, "kind_desconocido", "{}", "roto:1"),
+            )
+            barrer(reg, ahora_iso(), 1.0, None)
+            self.assertEqual(len(_eventos(reg, bueno, "incorporado")), 1)
+
+
+class SerieDeEntrega(unittest.TestCase):
+    def test_una_espera_transitoria_de_otra_clase_corta_la_serie(self):  # no-roja-en-base: la base ya cortaba la serie con otra clase; la regresión fue de esta unidad
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            enc = recibir(reg, "pedido", "serie-entrega", ahora_iso())["encargo"]
+            permanente = "git push: remote rechazo el cambio"
+            transitoria = "git pull: connection timed out"
+            for i, motivo in enumerate((permanente, permanente, transitoria)):
+                reg.anotar(
+                    enc,
+                    {
+                        "kind": "espera",
+                        "data": {
+                            "motivo": motivo,
+                            "reanuda_en": f"2030-01-01T00:00:0{i}Z",
+                            "hora": ahora_iso(),
+                        },
+                    },
+                    f"espera-serie:{i}",
+                )
+            e = reg.fold(enc)
+            self.assertEqual(ciclo._fallos_de_entrega_seguidos(e, permanente), 0)
+            self.assertEqual(ciclo._fallos_de_entrega_seguidos(e, transitoria), 0)

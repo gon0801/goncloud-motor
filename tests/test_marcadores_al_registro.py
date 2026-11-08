@@ -112,8 +112,8 @@ class MigracionDeMarcadores(unittest.TestCase):
                 return real(ruta, missing_ok=missing_ok)
 
             with mock.patch.object(Path, "unlink", falla):
-                with self.assertRaises(OSError):
-                    barrer(reg, ahora_iso(), 1_000.0, None)
+                # La migración contiene el fallo de un encargo: el barrido sigue.
+                barrer(reg, ahora_iso(), 1_000.0, None)
 
             self.assertTrue(
                 (directorio / "deepseek_lectura.json").exists(),

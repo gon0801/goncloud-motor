@@ -2611,11 +2611,13 @@ def _con_hechos_derivados(e: Encargo, evento: dict) -> Encargo:
             repo_n += 1
         else:
             repo_clase, repo_n = clase, 1
-        if not _fallo_transitorio(motivo):
-            if clase == ent_clase:
-                ent_n += 1
-            else:
-                ent_clase, ent_n = clase, 1
+        transitorio = _fallo_transitorio(motivo)
+        if clase != ent_clase:
+            # Una espera de otra clase corta la serie, aunque sea transitoria:
+            # la serie de entrega se mide sobre el mismo fallo.
+            ent_clase, ent_n = clase, 0 if transitorio else 1
+        elif not transitorio:
+            ent_n += 1
     elif kind == "procedimiento" and str(d.get("nota") or "").startswith(
         _NOTA_COPIA_SESION
     ):
