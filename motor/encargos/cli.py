@@ -455,8 +455,6 @@ def marcar_ruta(reg: Registro, ruta: tuple[str, ...], hora: str) -> None:
 
 
 def _supervisor(reg: Registro, args) -> int:
-    from .frontera import turno
-
     if args.respaldo and not args.agente:
         raise ValueError("--respaldo necesita --agente como ruta principal")
     ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
