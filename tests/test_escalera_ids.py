@@ -208,7 +208,7 @@ class ElDespliegueQuePierdeAutoridadQuedaEnEsperaExplicita(unittest.TestCase):
         self.assertEqual(len(desplegados), 1)
         self.assertEqual(desplegados[0]["data"]["recibo"], recibo)
 
-    def test_una_parada_ordenada_no_queda_en_espera_de_autoridad(self):
+    def test_una_parada_ordenada_no_queda_en_espera_de_autoridad(self):  # no-roja-en-base: la base no tiene la espera de autoridad; la prueba afirma que la parada ordenada no caiga en ella, limite que la base cumple por ausencia
         reg, ident, espacio = _despliegue_en_marcha(self, "autoridad-despliegue-3")
         from motor.encargos.ciclo import ordenar
 
@@ -589,7 +589,7 @@ class LosIdsDevueltosGobiernanLaEscalera(unittest.TestCase):
     """Cerrar un bloqueante o recibir uno nuevo reinicia la escalera, aunque
     queden otros abiertos: la comparación es por los ids devueltos."""
 
-    def test_cerrar_uno_de_varios_reinicia_la_escalera(self):
+    def test_cerrar_uno_de_varios_reinicia_la_escalera(self):  # no-roja-en-base: la base ya reinicia al cerrar un bloqueante nombrado; lo nuevo (resta de ids devueltos) lo cubren las pruebas que si son rojas en la base
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "escalera-2", "malo.txt con B")
             self.addCleanup(r.reg.close)
