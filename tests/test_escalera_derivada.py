@@ -147,5 +147,71 @@ class ElRelevoDeInstrumentoRotaElModelo(unittest.TestCase):
             self.assertEqual(relevos_de(e, "responsable"), 1)
 
 
+
+class ElRelevoNoCuentaPuntosSuperados(unittest.TestCase):
+    """F6 (DeepSeek): el relevo de un punto anterior no rota el modelo del nuevo.
+
+    `relevos_de` es la entrada de `cli` para rotar. Si cuenta el relevo de un
+    conjunto de ids que la escalera ya superó, el modelo rota en un punto que
+    todavía no relevó.
+    """
+
+    def _revision(self, reg, ident, hid: str) -> None:
+        reg.anotar(
+            ident,
+            {
+                "kind": "revision",
+                "data": {
+                    "alcance": "completa",
+                    "veredicto": "cambios",
+                    "origen": "independiente",
+                    "revisor": "opus",
+                    "version": "",
+                    "hallazgos": [
+                        {
+                            "id": hid,
+                            "gravedad": "bloqueante",
+                            "criterio": "comportamiento",
+                            "titulo": f"falla {hid}",
+                            "reproduccion": "cat malo.txt",
+                            "ancla": "malo.txt:1",
+                            "origen": "independiente",
+                            "estado": "abierto",
+                        }
+                    ],
+                },
+            },
+            f"revision-{hid}",
+        )
+
+    def test_el_relevo_de_un_punto_superado_no_cuenta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            ident = recibir(reg, "pedido", "puntos-f6", ahora_iso())["encargo"]
+            self._revision(reg, ident, "A")
+            reg.anotar(
+                ident,
+                {
+                    "kind": "sin_progreso",
+                    "data": {
+                        "huella": "x",
+                        "diagnostico": "A sigue",
+                        "escalar": True,
+                        "rol": "responsable",
+                        "hora": ahora_iso(),
+                    },
+                },
+                "relevo-A",
+            )
+            self.assertEqual(relevos_de(reg.fold(ident), "responsable"), 1)
+
+            # B se abre junto a A: el punto cambia sin un avance que reinicie
+            # la época. El relevo de {A} quedó superado.
+            self._revision(reg, ident, "B")
+            e = reg.fold(ident)
+            self.assertEqual(relevos_de(e, "responsable"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1043,10 +1043,9 @@ def clave_escalera(e: Encargo, rol: str) -> str:
 def _prefijo_epoca(e: Encargo, rol: str) -> str:
     """Los hechos que reinician la escalera del rol, sin el punto de ids.
 
-    Todas las claves de un rol dentro de la misma época empiezan por este
-    prefijo: el punto vigente (los ids o el pedido) y los cortes de instrumento
-    de ese rol. Así `relevos_de` cuenta los relevos de la época, también el del
-    instrumento, que es lo que rota el modelo.
+    Es la parte de la clave que comparten todos los puntos de la misma época;
+    el punto vigente (los ids o el pedido) se agrega después. Una época nueva
+    deja atrás los relevos de sus puntos anteriores.
     """
     rol = rol or "responsable"
     if rol == "revisor":
@@ -1059,14 +1058,15 @@ def _prefijo_epoca(e: Encargo, rol: str) -> str:
 def _clave_del_sin_progreso(e: Encargo, d: dict, rol: str) -> str:
     """La identidad del punto que gasta un evento `sin_progreso`.
 
-    Un corte de instrumento trae su propia causa (`instrumento:<clave>`):
-    dos causas distintas no comparten escalón y la misma causa sí, aunque el
-    producto y los bloqueantes sean los mismos. Los demás eventos se leen por
-    los ids y los datos del propietario, como el resto de la escalera.
+    Un corte de instrumento cuelga del punto vigente y conserva su causa
+    (`instrumento:<clave>`): dos causas distintas no comparten escalón y la
+    misma causa sí, aunque el producto y los bloqueantes sean los mismos. Los
+    demás eventos se leen por los ids y los datos del propietario, como el
+    resto de la escalera.
     """
     huella = str(d.get("huella") or "")
     if huella.startswith("instrumento:"):
-        return _prefijo_epoca(e, rol) + huella
+        return clave_escalera(e, rol) + ":" + huella
     return clave_escalera(e, rol)
 
 
@@ -1102,18 +1102,21 @@ def con_escalon(e: Encargo, rol: str, clave: str, paso: str) -> Encargo:
 
 
 def relevos_de(e: Encargo, rol: str) -> int:
-    """Cuántos relevos gastó el rol en la época vigente.
+    """Cuántos relevos gastó el rol en el punto vigente.
 
-    Cuenta el del punto de ids y el de cada corte de instrumento: en 874daed
-    el corte también rotaba el modelo. Los relevos de una época anterior no
-    cuentan porque el prefijo cambió.
+    Cuenta el del punto de ids y los cortes de instrumento de ese mismo punto,
+    que también rotan el modelo. Los relevos de un punto o una época anteriores
+    no cuentan: la escalera ya los superó.
     """
     rol = rol or "responsable"
-    prefijo = _prefijo_epoca(e, rol)
+    punto = clave_escalera(e, rol)
+    marca_instrumento = punto + ":instrumento:"
     return sum(
         1
         for r, clave, paso in e.escalones
-        if r == rol and clave.startswith(prefijo) and paso == "relevo"
+        if r == rol
+        and paso == "relevo"
+        and (clave == punto or clave.startswith(marca_instrumento))
     )
 
 
