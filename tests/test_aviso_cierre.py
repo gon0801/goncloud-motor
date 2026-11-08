@@ -89,9 +89,26 @@ class Banco:
             json.dumps(guardado), encoding="utf-8"
         )
 
-    def encargo(self, texto: str, clave: str) -> str:
+    def encargo(
+        self,
+        texto: str,
+        clave: str,
+        entrega_nivel: str = "",
+        repo: str = "",
+        base_rama: str = "",
+        via: str = "directa",
+    ) -> str:
         return directores.encargar(
-            self.reg, texto, clave, HORA, "hermes", "tg", "directa"
+            self.reg,
+            texto,
+            clave,
+            HORA,
+            "hermes",
+            "tg",
+            via,
+            entrega_nivel=entrega_nivel,
+            repo=repo,
+            base_rama=base_rama,
         )["encargo"]
 
     def terminar(self, ident: str, pasos: list[dict] | None = None) -> None:
@@ -214,6 +231,40 @@ class ElCierreEnLlano(Base):
             cuerpos[ids[dos]],
             "Terminó tu encargo «fase-b listo para revisar». Quedó desplegado. listo",
         )
+
+    def test_el_cierre_con_nivel_efectivo_trae_el_motivo_llano(self):
+        ident = self.b.encargo(
+            "# fase-a listo para revisar\n\nTrabaja el pedido y comprueba.",
+            "fase-a",
+            entrega_nivel="desplegado",
+            repo="ejemplo/repo",
+            base_rama="main",
+            via="durable",
+        )
+        self.b.reg.anotar(
+            ident,
+            {
+                "kind": "nivel_efectivo",
+                "data": {
+                    "nivel": "pr",
+                    "motivo": "el remoto exige revisiones antes del merge",
+                    "hora": HORA,
+                },
+            },
+            f"nivel-{ident}",
+        )
+        self.b.reg.anotar(
+            ident,
+            {"kind": "entrega_externa", "data": {"paso": "pr_listo", "numero": 20, "hora": HORA}},
+            f"paso-{ident}",
+        )
+        cuerpo = directores._cuerpo_de_cierre(self.b.reg.fold(ident))
+        self.assertIn("#20", cuerpo)
+        self.assertIn("quedó en pr", cuerpo)
+        self.assertIn("el remoto exige revisiones antes del merge", cuerpo)
+        self.assertLess(len(cuerpo), 400)
+        for prohibido in PROHIBIDOS:
+            self.assertNotIn(prohibido, cuerpo)
 
     def test_un_encargo_cancelado_lo_dice_en_una_frase_simple(self):
         ident = self.b.encargo(

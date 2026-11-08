@@ -66,7 +66,8 @@ tipados con id estable y rutas aprobadas. Todo lo demás se deriva de ahí.
    y al riesgo del cambio. El código valida el formato del juicio. Una revisión
    adicional se justifica por lo que permite comprobar, sin repetir evidencia
    válida por rutina.
-7. Con el nivel de entrega autorizado, el cierre decide (§ Niveles).
+7. Con el objetivo real del nivel de entrega (el efectivo, § Niveles), el
+   cierre decide.
 
 ## Correcciones
 
@@ -162,7 +163,8 @@ con evidencia.
 La espera de DeepSeek tiene un tope de 30 minutos. Si el revisor independiente
 ya aprobó y el tope vence sin comentario, el motor deja la nota «sin revisión
 de DeepSeek tras N min» en el PR y sigue la fase como si no hubiera hallazgos:
-integra o despliega según el nivel autorizado y pasa a la fase siguiente. No
+integra o despliega según el nivel efectivo (el objetivo real) y pasa a la
+fase siguiente. No
 fuerza el cierre del encargo. Si después llega un Critical, High o Medium
 dentro del alcance para un SHA ya integrado, se lee como hallazgo tardío y no
 se pierde, aunque el encargo ya haya terminado. El cierre mira los PR de todas
@@ -266,10 +268,10 @@ tampoco es «el mismo bloqueo»: es información nueva (ver más abajo). Volver 
 cerrar algo que ya se cerró y se reabrió no es avance ni información nueva. El
 primer bloqueante que se ve no tiene con qué compararse y cuenta como avance.
 
-Una vuelta sin avance incluye al revisor que no concluye (`no_concluyente`
-sin inspección faltante), al implementador que cambia archivos con el mismo
-bloqueante abierto y a DeepSeek que mantiene el mismo bloqueante tras
-republicar el PR. La primera vuelta sin
+Una vuelta sin avance incluye al implementador que cambia archivos con el
+mismo bloqueante abierto y a DeepSeek que mantiene el mismo bloqueante tras
+republicar el PR. El revisor que no concluye no entra aquí: tiene su cuenta
+propia, con su salida propia (ver más abajo). La primera vuelta sin
 avance no repite: el responsable diagnostica por qué la corrección no lo
 resolvió. La segunda seguida releva el mismo rol a otro modelo autorizado; si
 el relevo tampoco avanza, el encargo entrega el PR con los pendientes abiertos
@@ -347,11 +349,12 @@ Una revisión `no_concluyente` que nombra una inspección no cierra ni abre
 bloqueantes, así que el freno de `sin_progreso` por bloqueos no la veía. Ahora
 el encargo cuenta las revisiones independientes `no_concluyente` seguidas que
 piden lo mismo sobre la misma versión: el mismo texto de inspección o el mismo
-recurso. La cuenta es propia (`no_concluyentes`) y no toca `sin_progreso`,
-la escalera de diagnóstico de los bloqueos. A la tercera
-(`TOPE_NO_CONCLUYENTES`) el encargo releva el rol del revisor a otro modelo
-autorizado, con la causa de la última revisión en el motivo; si el revisor
-de relevo tampoco concluye, el barrido entrega el PR con la nota y termina.
+recurso. La cuenta es propia (`no_concluyentes`) y no alimenta la escalera
+de los bloqueos; el relevo que ordena el tope se anota en el estado igual
+que cualquier relevo. A la tercera (`TOPE_NO_CONCLUYENTES`) el encargo
+releva el rol del revisor a otro modelo autorizado, con la causa de la
+última revisión en el motivo; si el revisor de relevo tampoco concluye, el
+barrido entrega el PR con la nota y termina.
 
 La cuenta empieza de nuevo con otra versión del producto, otro pedido, un
 bloqueante cerrado, otro veredicto, un ajuste o una respuesta del propietario.
@@ -546,7 +549,8 @@ python3 -B -m motor encargar --base /tmp/ensayo --clave fix-1 \
 
 `ver` muestra producto (archivos y firma), modelos de implementador y revisor,
 revisión vigente (veredicto, bloqueantes abiertos, observaciones) y entrega
-(nivel autorizado, alcanzado, PR y SHA de DeepSeek leído).
+(nivel autorizado, efectivo con su motivo, alcanzado, PR y SHA de DeepSeek
+leído).
 
 ## Compatibilidad
 
