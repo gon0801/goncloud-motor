@@ -106,7 +106,7 @@ class LaRevisionConcluyenteCierraLoCubierto(unittest.TestCase):
         self.assertEqual(estado.get("h_b"), "resuelto")
         self.assertEqual(estado.get("h_c"), "abierto")
 
-    def test_no_concluyente_no_cierra_nada_por_omision(self):
+    def test_no_concluyente_no_cierra_nada_por_omision(self):  # no-roja-en-base: la base ya cumple este limite porque el cierre por omision todavia no existe; la prueba lo conserva
         alcance = _alcance((_abierto("h_a"), _abierto("h_b")))
         valido = _juicio(
             {
@@ -120,7 +120,7 @@ class LaRevisionConcluyenteCierraLoCubierto(unittest.TestCase):
             all(h.estado == "abierto" for h in valido.hallazgos if h.id in {"h_a", "h_b"})
         )
 
-    def test_un_instrumento_fallido_no_cierra_nada_por_omision(self):
+    def test_un_instrumento_fallido_no_cierra_nada_por_omision(self):  # no-roja-en-base: la base ya cumple este limite porque el cierre por omision todavia no existe; la prueba lo conserva
         alcance = _alcance((_abierto("h_a"), _abierto("h_b")))
         valido = _juicio(
             {

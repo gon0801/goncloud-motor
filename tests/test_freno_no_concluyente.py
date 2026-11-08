@@ -123,7 +123,7 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         self.assertEqual(enc.relevos, 1)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
-    def test_pedidos_distintos_en_la_misma_fase_cuentan(self):
+    def test_pedidos_distintos_en_la_misma_fase_cuentan(self):  # no-roja-en-base: la base ya cuenta pedidos distintos por separado; la fase amplia la cuenta a versiones nuevas, cubierta por las pruebas rojas
         r = self.recorrido("freno-5", con_recurso=True)
         self.herramienta_ok()
         self.vuelta(r, "a.txt", "el log del job jaula-linux")
@@ -132,7 +132,7 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         self.assertEqual(enc.no_concluyentes, 2)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
-    def test_el_freno_de_bloqueos_no_hereda_las_vueltas_de_inspeccion(self):
+    def test_el_freno_de_bloqueos_no_hereda_las_vueltas_de_inspeccion(self):  # no-roja-en-base: la base ya lleva las dos cuentas separadas; la prueba conserva el limite mientras la fase amplia la de no_concluyentes
         r = self.recorrido("freno-7", con_recurso=True)
         self.herramienta_ok()
         bloqueante = [_bloqueante("Fuga de token en el log")]
