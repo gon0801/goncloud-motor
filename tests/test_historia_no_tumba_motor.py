@@ -22,6 +22,7 @@ from motor.encargos import cli
 from motor.encargos import ciclo as ciclo_encargos
 from motor.encargos.ciclo import ahora_iso, recibir
 from motor.encargos.registro import Registro
+from motor.integraciones import directores
 
 ENUMERACION = (
     "Correccion del director: las fases son exactamente 8 con ids B, C, D, E, "
@@ -55,6 +56,10 @@ def _sembrar(reg: Registro, encargo: str, kind: str, data: dict, ukey: str) -> N
             ukey,
         ),
     )
+
+
+def _olvidar_plegados_ilegibles() -> None:
+    getattr(ciclo_encargos, "_PLEGADOS_ILEGIBLES", set()).clear()
 
 
 def _historial_de_la_pc(reg: Registro, encargo: str) -> None:
@@ -214,8 +219,8 @@ class SupervisorQueAisla(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        ciclo_encargos._PLEGADOS_ILEGIBLES.clear()
-        self.addCleanup(ciclo_encargos._PLEGADOS_ILEGIBLES.clear)
+        _olvidar_plegados_ilegibles()
+        self.addCleanup(_olvidar_plegados_ilegibles)
 
     def _supervisor(self, agente: str) -> None:
         args = argparse.Namespace(
@@ -263,6 +268,94 @@ class SupervisorQueAisla(unittest.TestCase):
                 self.reg.base / "avisos" / "archivo" / f"{self.aviso_incierto}.json"
             ).exists()
         )
+
+
+class DrenajeQueAisla(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.reg = Registro(Path(self.tmp) / "base")
+        self.addCleanup(self.reg.close)
+        self.sano = recibir(
+            self.reg, "pedido sano", "clave-sana", ahora_iso(), canal="tg"
+        )["encargo"]
+        _sembrar(
+            self.reg,
+            self.sano,
+            "fases",
+            {
+                "fases": [{"id": "A", "resultado": "fase comprobada"}],
+                "hora": "2026-11-06T04:00:00Z",
+            },
+            "drenaje:sano:fases",
+        )
+        self.roto = "enc_roto_drenaje"
+        _sembrar(
+            self.reg,
+            self.roto,
+            "entrega",
+            {
+                "id": self.roto,
+                "clave": "clave-rota",
+                "huella": "huella",
+                "texto": "historia incoherente",
+                "via": "durable",
+                "entrega_nivel": "terminado",
+                "recibo": "rec-roto",
+                "hora": "2026-11-06T03:50:10Z",
+            },
+            "drenaje:roto:entrega",
+        )
+        _sembrar(
+            self.reg,
+            self.roto,
+            "fases",
+            {
+                "fases": [
+                    {"id": "a", "requiere": [{"fase": "b", "version": ""}], "resultado": "A"},
+                    {"id": "b", "requiere": [{"fase": "a", "version": ""}], "resultado": "B"},
+                ],
+                "hora": "2026-11-06T04:00:00Z",
+            },
+            "drenaje:roto:fases",
+        )
+        self.aviso_incierto = "av_incierto_drenaje"
+        avisos = self.reg.base / "avisos"
+        avisos.mkdir(parents=True, exist_ok=True)
+        (avisos / f"{self.aviso_incierto}.json").write_text(
+            json.dumps(
+                {
+                    "id": self.aviso_incierto,
+                    "encargo": self.roto,
+                    "canal": "tg",
+                    "evidencia": "avance:inicio:inicio",
+                    "estado": "incierto",
+                    "tipo": "avance",
+                    "recibo": "",
+                    "fallos": 1,
+                    "proximo_intento": "1970-01-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        _olvidar_plegados_ilegibles()
+        self.addCleanup(_olvidar_plegados_ilegibles)
+
+    def test_el_drenaje_sigue_tras_el_encargo_que_no_pliega(self):
+        salida = directores.drenar(self.reg)
+
+        publicados = {str(a.get("encargo") or "") for a in salida["avisos"]}
+        self.assertIn(
+            self.sano,
+            publicados,
+            "el drenaje aisló el fallo y siguió hasta el encargo sano",
+        )
+        guardado = json.loads(
+            (
+                self.reg.base / "avisos" / f"{self.aviso_incierto}.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(guardado["estado"], "incierto")
 
 
 if __name__ == "__main__":
