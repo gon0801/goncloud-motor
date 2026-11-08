@@ -3313,15 +3313,18 @@ def _incorporar_responsable(
                 )
             _publica(directorio / "incorporado", hora)
             return registro.fold(enc.id)
-    enc = registro.fold(enc.id)
-    if enc is not None and enc.entrega.nivel in ("integrado", "desplegado"):
-        # Las fases quedaron adoptadas: antes del siguiente intento o efecto de
-        # entrega se comprueba la capacidad declarada de la máquina. Sin puerto
-        # GitHub aquí, la mirada del remoto vive en `recibir`.
-        _sondeo_nivel(registro, enc, None, espacio, hora)
-        tras_sondeo = registro.fold(enc.id)
-        if tras_sondeo is not None:
-            enc = tras_sondeo
+    enc_fases = registro.fold(enc.id)
+    if enc_fases is not None:
+        enc = enc_fases
+        if enc.entrega.nivel in ("integrado", "desplegado"):
+            # Las fases quedaron adoptadas: antes del siguiente intento o
+            # efecto de entrega se comprueba la capacidad declarada de la
+            # máquina. Sin puerto GitHub aquí, la mirada del remoto vive en
+            # `recibir`.
+            _sondeo_nivel(registro, enc, None, espacio, hora)
+            tras_sondeo = registro.fold(enc.id)
+            if tras_sondeo is not None:
+                enc = tras_sondeo
     try:
         declaradas = leer_declaradas(interno)
         error_declaradas = ""
