@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import unittest
 
-from motor.encargos import dominio as dom
 from motor.encargos.ciclo import ahora_iso, corregir
+from motor.encargos.dominio import bloqueantes_abiertos
 from tests.test_flujo_revisiones import _bloqueante
 from tests.test_respuestas_buzon import _Flujo
 
@@ -91,7 +91,7 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         self.barrer(r)
         self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])
 
-    def test_otra_version_empieza_la_cuenta_de_nuevo(self):
+    def test_otra_version_no_empieza_la_cuenta(self):
         r = self.recorrido("freno-3", con_recurso=True)
         self.herramienta_ok()
         self.vuelta(r, "a.txt")
@@ -104,35 +104,35 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         enc = r.fold()
         versiones = [x["data"]["version"] for x in r.eventos("revision")]
         self.assertEqual(len(set(versiones)), 2, versiones)
-        self.assertEqual(enc.no_concluyentes, 1)
+        self.assertEqual(enc.no_concluyentes, 3)
+        self.assertEqual(enc.relevos, 1)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
-    def test_un_recurso_que_cambio_no_es_repetir(self):
+    def test_un_recurso_que_cambio_tambien_cuenta_hasta_el_tope(self):
         r = self.recorrido("freno-4", con_recurso=True)
         self.herramienta_ok()
-        for i in range(4):
-            (self.raiz_ci / "indice.txt").write_text("contenido " * (i + 1))
-            self.vuelta(r, "indice.txt")
-            enc = r.fold()
-            self.assertEqual(enc.no_concluyentes, 1, i)
-            self.assertNotEqual(enc.estado, "necesita_usuario")
+        self.vuelta(r, "indice.txt")
+        self.assertEqual(r.fold().no_concluyentes, 1)
+        (self.raiz_ci / "indice.txt").write_text("contenido " * 2)
+        self.vuelta(r, "indice.txt")
+        self.assertEqual(r.fold().no_concluyentes, 2)
+        (self.raiz_ci / "indice.txt").write_text("contenido " * 3)
+        self.vuelta(r, "indice.txt")
+        enc = r.fold()
+        self.assertEqual(enc.no_concluyentes, 3)
+        self.assertEqual(enc.relevos, 1)
+        self.assertNotEqual(enc.estado, "necesita_usuario")
 
-    def test_pedidos_distintos_sin_relacion_no_cuentan(self):
+    def test_pedidos_distintos_en_la_misma_fase_cuentan(self):  # no-roja-en-base: la base ya cuenta pedidos distintos por separado; la fase amplia la cuenta a versiones nuevas, cubierta por las pruebas rojas
         r = self.recorrido("freno-5", con_recurso=True)
         self.herramienta_ok()
         self.vuelta(r, "a.txt", "el log del job jaula-linux")
+        self.vuelta(r, "b.txt", "el hash del commit integrado")
         enc = r.fold()
-        ref = dom._pedido_de_revision(
-            enc.fase_activa,
-            {
-                "version": enc.fases[0].revision_vigente.version,
-                "inspeccion_faltante": "el hash del commit integrado",
-                "pedido": {"operacion": "sqlite.consultar", "recurso": "bd"},
-            },
-        )
-        self.assertFalse(dom._repite_pedido(enc.no_concluyente_ref, ref))
+        self.assertEqual(enc.no_concluyentes, 2)
+        self.assertNotEqual(enc.estado, "necesita_usuario")
 
-    def test_el_freno_de_bloqueos_no_hereda_las_vueltas_de_inspeccion(self):
+    def test_el_freno_de_bloqueos_no_hereda_las_vueltas_de_inspeccion(self):  # no-roja-en-base: la base ya lleva las dos cuentas separadas; la prueba conserva el limite mientras la fase amplia la de no_concluyentes
         r = self.recorrido("freno-7", con_recurso=True)
         self.herramienta_ok()
         bloqueante = [_bloqueante("Fuga de token en el log")]
@@ -145,18 +145,25 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         self.assertEqual(r.fold().no_concluyentes, 2)
 
         self.abrir_turno(r)
-        r.juicio({"veredicto": "cambios", "hallazgos": bloqueante, "nota": "sigue"})
+        r.juicio(
+            {
+                "veredicto": "cambios",
+                "bloqueantes": bloqueante,
+                "evidencia": "lei el log; el bloqueo sigue",
+            }
+        )
         r.incorporar()
         self.cerrar_turno(r)
 
         enc = r.fold()
         self.assertEqual(enc.no_concluyentes, 0)
-        self.assertEqual(enc.sin_progreso, 1)
-        self.assertEqual(enc.estrategia, "diagnosticar_bloqueo")
+        self.assertEqual(enc.sin_progreso, 0)
+        self.assertEqual(enc.estrategia, "investigar")
+        self.assertTrue(bloqueantes_abiertos(enc))
         self.assertNotEqual(enc.estado, "necesita_usuario")
         self.assertNotIn("tras el diagnostico", enc.motivo)
 
-    def test_un_veredicto_distinto_corta_la_cuenta(self):
+    def test_la_no_concluyente_sin_inspeccion_tambien_cuenta(self):
         r = self.recorrido("freno-6", con_recurso=True)
         self.herramienta_ok()
         self.vuelta(r, "a.txt")
@@ -166,7 +173,10 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         r.juicio({"veredicto": "no_concluyente", "evidencia": "falta", "nota": "sin pedido"})
         r.incorporar()
         self.cerrar_turno(r)
-        self.assertEqual(r.fold().no_concluyentes, 0)
+        enc = r.fold()
+        self.assertEqual(enc.no_concluyentes, 3)
+        self.assertEqual(enc.relevos, 1)
+        self.assertNotEqual(enc.estado, "necesita_usuario")
 
 
 if __name__ == "__main__":

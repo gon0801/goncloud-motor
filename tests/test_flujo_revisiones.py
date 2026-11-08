@@ -533,46 +533,6 @@ class FlujoRevisiones(unittest.TestCase):
                 any(f["data"]["fuente"] == "comprobacion" for f in fallos)
             )
 
-    def test_sin_progreso_diagnostica_releva_y_luego_entrega_con_pendientes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            r = Recorrido(tmp, "sp-1", "malo.txt con B")
-            self.addCleanup(r.reg.close)
-            malo = r.espacio / "malo.txt"
-            malo.write_text("X")
-
-            def vuelta_rechazo():
-                r.incorporar()
-                r.juicio(
-                    {
-                        "veredicto": "cambios",
-                        "evidencia": "lei malo.txt",
-                        "bloqueantes": [
-                            {
-                                "criterio": "comportamiento",
-                                "titulo": "malo.txt no contiene B",
-                                "reproduccion": "cat malo.txt -> X",
-                                "ancla": "malo.txt:1",
-                            }
-                        ],
-                    }
-                )
-                return r.incorporar()
-
-            e = vuelta_rechazo()
-            self.assertEqual(e.estrategia, "investigar")
-            e = vuelta_rechazo()
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
-            self.assertNotEqual(e.estado, "necesita_usuario")
-            e = vuelta_rechazo()
-            self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
-            self.assertEqual(e.pendientes_entrega, ())
-            e = vuelta_rechazo()
-            self.assertTrue(e.pendientes_entrega)
-            self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(malo.read_text(), "X")
-
     def test_cambiar_archivos_con_el_mismo_bloqueante_releva_y_entrega(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-3", "malo.txt con B")
@@ -640,7 +600,11 @@ class FlujoRevisiones(unittest.TestCase):
                 self.assertNotEqual(e.estado, "necesita_usuario", i)
                 self.assertTrue(_lanzaria(e), i)
 
-    def test_revisor_que_no_concluye_dos_vueltas_releva_y_entrega(self):
+    def test_la_serie_no_concluyente_llega_al_tope_releva_y_entrega(self):
+        """El revisor que no concluye sobre la misma versión vuelve a correr
+        hasta el tope propio (`TOPE_NO_CONCLUYENTES`): releva y entrega con la
+        nota. La escalera de los bloqueos no participa: no hay un solo evento
+        `sin_progreso`."""
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "nc-1", "dato.txt con 42")
             self.addCleanup(r.reg.close)
@@ -658,18 +622,22 @@ class FlujoRevisiones(unittest.TestCase):
                 return r.incorporar()
 
             e = vuelta(1)
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertTrue(_lanzaria(e))
             e = vuelta(2)
-            self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
-            self.assertTrue(e.motivo)
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.relevos, 0)
             self.assertTrue(_lanzaria(e))
             e = vuelta(3)
+            self.assertNotEqual(e.estado, "necesita_usuario")
+            self.assertEqual(dict(e.relevos_por_rol).get("revisor"), 1)
+            self.assertTrue(_lanzaria(e))
+            e = vuelta(4)
             self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
+            self.assertEqual(r.eventos("sin_progreso"), [])
 
     def test_aprobar_corta_la_racha_y_la_fase_nueva_empieza_en_cero(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -691,8 +659,8 @@ class FlujoRevisiones(unittest.TestCase):
             r.juicio({"veredicto": "no_concluyente", "evidencia": "duda en a"})
             e = r.incorporar()
             self.assertEqual(e.fase_activa, "a")
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
             r.incorporar()
             r.juicio({"veredicto": "aprobado", "evidencia": "cat a.txt -> A"})
             e = r.incorporar()
@@ -703,8 +671,8 @@ class FlujoRevisiones(unittest.TestCase):
             r.juicio({"veredicto": "no_concluyente", "evidencia": "primera duda en b"})
             e = r.incorporar()
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
             self.assertTrue(_lanzaria(e))
 
     def test_no_concluyente_con_el_primer_bloqueante_es_avance(self):
@@ -732,12 +700,11 @@ class FlujoRevisiones(unittest.TestCase):
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertTrue(_lanzaria(e))
             e = vuelta(2, [])
-            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
+            self.assertEqual(e.estrategia, "investigar")
+            self.assertEqual(e.sin_progreso, 0)
             e = vuelta(3, [])
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
-            self.assertIn("malo.txt no contiene B", e.motivo)
+            self.assertEqual(dict(e.relevos_por_rol).get("revisor"), 1)
             self.assertTrue(_lanzaria(e))
             e = vuelta(4, [])
             self.assertTrue(e.pendientes_entrega)
@@ -776,7 +743,7 @@ class FlujoRevisiones(unittest.TestCase):
                     self.assertNotEqual(e.estado, "necesita_usuario")
                     self.assertTrue(_lanzaria(e))
                 elif i == 1:
-                    self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
+                    self.assertEqual(e.estrategia, "investigar")
                 elif i == 2:
                     self.assertNotEqual(e.estado, "necesita_usuario")
                     self.assertEqual(e.relevos, 1)
