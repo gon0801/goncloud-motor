@@ -795,7 +795,9 @@ def _cuerpo_de_cierre(enc) -> str:
     rutas y las versiones se quedan en el registro y en el PR. La nota de
     correcciones que ningún intento recibió viaja en el cierre: es texto del
     propietario que debe volverle (la escribe el cierre en dos versiones, con
-    y sin tildes).
+    y sin tildes). Con fases bloqueadas el cierre dice que la entrega es
+    parcial y enumera, con motivos, lo preparado, lo bloqueado y lo que no se
+    ejecutó.
     """
     titulo = _titulo_del_pedido(enc.texto, enc.clave)
     if enc.estado == "cancelado":
@@ -811,10 +813,18 @@ def _cuerpo_de_cierre(enc) -> str:
         )
     else:
         cuerpo = f"Terminó tu encargo «{titulo}»."
+    bloqueadas = [
+        f for f in getattr(enc, "fases", ()) or () if f.estado == "bloqueada"
+    ]
+    if bloqueadas:
+        cuerpo += " " + _entrega_parcial_llana(enc, bloqueadas)
     nota = " ".join(
         nota for nota in enc.procedimiento if "intento pudo recibir" in nota
     )
-    if getattr(enc, "pendientes_entrega", ()):
+    tiene_pendientes = bool(getattr(enc, "pendientes_entrega", ())) or any(
+        f.pendientes for f in getattr(enc, "fases", ()) or ()
+    )
+    if tiene_pendientes:
         cuerpo += (
             " Quedaron pendientes abiertos escritos en el PR; "
             "no hace falta que hagas nada para que el trabajo siga."
@@ -827,6 +837,28 @@ def _cuerpo_de_cierre(enc) -> str:
     if getattr(enc, "relevos", 0):
         cuerpo += " Se cambió de modelo para continuar sin esperar a nadie."
     return f"{cuerpo} {nota}".rstrip()
+
+
+def _entrega_parcial_llana(enc, bloqueadas) -> str:
+    """La enumeración del cierre parcial, en una frase por grupo."""
+    fases = getattr(enc, "fases", ()) or ()
+    from motor.encargos.dominio import dependencia_bloqueada
+
+    listas = [f for f in fases if f.estado == "preparada"]
+    partes = [f"Entrega parcial: {len(listas)} fases listas"]
+    for fase in bloqueadas:
+        causa = " ".join(str(fase.bloqueo_causa or "").split())
+        causa = causa.split(". ")[0] if causa else "sin causa registrada"
+        partes.append(f"la fase {fase.id} quedó bloqueada: {causa[:160]}")
+    for fase in fases:
+        if fase.estado in ("preparada", "bloqueada"):
+            continue
+        condena = dependencia_bloqueada(fases, fase)
+        partes.append(
+            f"la fase {fase.id} no se ejecutó: dependía de la fase {condena}, "
+            "que quedó bloqueada"
+        )
+    return ". ".join(partes) + "."
 
 
 def _config_canal(registro: Registro, canal: str) -> dict | None:

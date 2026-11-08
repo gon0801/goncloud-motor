@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import socket
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -221,7 +222,9 @@ FASE_IMPLICITA = "fase_unica"
 # Revisiones no_concluyente seguidas, sobre la misma versión y pidiendo lo mismo,
 # tras las cuales el encargo pide ayuda al propietario en vez de otro turno.
 TOPE_NO_CONCLUYENTES = 3
-ESTADOS_FASE = ("pendiente", "trabajo", "revision", "entrega", "preparada")
+# `bloqueada` es terminal: la fase agotó sus recuperaciones con un impedimento
+# sin resolver y no habilita a sus dependientes.
+ESTADOS_FASE = ("pendiente", "trabajo", "revision", "entrega", "preparada", "bloqueada")
 
 
 @dataclass(frozen=True)
@@ -230,7 +233,8 @@ class Fase:
 
     El estado avanza producto -> revision -> entrega -> preparada. Una fase
     preparada ya no se vuelve a ejecutar; sus datos son los que consume la
-    siguiente fase.
+    siguiente fase. Una fase bloqueada tampoco se vuelve a ejecutar: agotó sus
+    recuperaciones con un impedimento sin resolver.
     """
 
     id: str
@@ -264,6 +268,15 @@ class Fase:
     rama: str = ""
     base: str = ""
     evidencia: str = ""
+    # Causa del bloqueo, en palabras del impedimento que agotó las
+    # recuperaciones. Solo la usan las fases bloqueadas.
+    bloqueo_causa: str = ""
+    # Pendientes propios de la fase: se guardan aquí, no en el encargo, para
+    # que el PR y el aviso de otra fase no los copie.
+    pendientes: tuple[str, ...] = ()
+    # Notas del motor producidas por esta fase (la falta de una revisión, una
+    # publicación fallida): el PR de otra fase no las copia.
+    notas: tuple[str, ...] = ()
     inspeccion_pendiente: str = ""
     inspeccion_solicitud: str = ""
     inspeccion_entregada: str = ""
@@ -288,6 +301,10 @@ class Fase:
             raise TransicionIlegal(f"estado de fase desconocido: {self.estado}")
         if self.estado == "preparada" and not (self.evidencia or self.revision_vigente):
             raise TransicionIlegal(f"la fase {self.id} no se prepara sin resultado comprobado")
+        if self.estado == "bloqueada" and not (self.evidencia and self.bloqueo_causa):
+            raise TransicionIlegal(
+                f"la fase {self.id} no se bloquea sin causa y evidencia"
+            )
 
     def como_dict(self) -> dict:
         return {
@@ -324,6 +341,9 @@ class Fase:
             "rama": self.rama,
             "base": self.base,
             "evidencia": self.evidencia,
+            "bloqueo_causa": self.bloqueo_causa,
+            "pendientes": list(self.pendientes),
+            "notas": list(self.notas),
             "inspeccion_pendiente": self.inspeccion_pendiente,
             "inspeccion_solicitud": self.inspeccion_solicitud,
             "inspeccion_entregada": self.inspeccion_entregada,
@@ -694,12 +714,12 @@ def sesiones_de_fase_nueva(e: Encargo) -> Encargo:
     Las dos épocas cambian para que el id de sesión de cada rol sea nuevo; los
     ids guardados se olvidan para que el lanzamiento no reanude un contexto que
     ya no corresponde. El resumen de lo anterior va en el prompt, armado desde
-    el fold (pedido, ajustes, fases cerradas y hallazgos abiertos).
+    el fold (pedido, ajustes, fases cerradas y hallazgos abiertos). La
+    identidad del cierre vigente no se toca: sobrevive al avance de fase para
+    que `reabrir` responda al cierre por fase que sigue vigente.
     """
     return replace(
         _reiniciar_escalera(e),
-        cierre_forzado_fase=None,
-        cierre_forzado_huella="",
         modelos_fase=(),
         bloqueo_huella="",
         sin_progreso=0,
@@ -1769,6 +1789,12 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
     if kind == "nota_pr":
         texto = str(d.get("texto") or "").strip()
         if texto and texto not in e.notas_pr:
+            # La nota es de la fase que la produjo; el log del encargo se
+            # conserva para vista y prompts. Sin fases declaradas no se crea
+            # ninguna fase nueva por escribir una nota.
+            fase = e.fase_actual
+            if e.fases and fase is not None and texto not in fase.notas:
+                e = con_fase(e, replace(fase, notas=fase.notas + (texto,)))
             return replace(e, notas_pr=e.notas_pr + (texto,), hora=hora or e.hora)
         return e
     if kind == "hallazgo_fuera_de_alcance":
@@ -1849,6 +1875,8 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             motivo="",
             hora=hora or e.hora,
         )
+    if kind == "bloqueo_fase":
+        return _bloqueo_fase(e, d, hora)
     if kind == "arbol":
         return _arbol(e, d, hora)
     if kind == "comprobacion":
@@ -2320,14 +2348,57 @@ def _fusionar_requiere(
     )
 
 
+def dependencia_bloqueada(fases: tuple[Fase, ...], fase: Fase) -> str:
+    """Id de la fase bloqueada que condena a `fase`, o vacío si no hay ninguna.
+
+    La condena viaja por las dependencias declaradas, directas y transitivas.
+    Una fase sin dependencias declaradas tiene una implícita: su antecesora en
+    el orden del plan. Una lista vacía no acredita independencia, así que el
+    orden secuencial se conserva hasta que el plan diga otra cosa.
+    """
+    por_id = {f.id: f for f in fases}
+    orden = {f.id: i for i, f in enumerate(fases)}
+    vistos: set[str] = set()
+    pila = [fase.id]
+    while pila:
+        fid = pila.pop()
+        if fid in vistos:
+            continue
+        vistos.add(fid)
+        actual = por_id.get(fid)
+        if actual is None:
+            continue
+        if actual.estado == "bloqueada":
+            return actual.id
+        deps = [dep for dep, _version in actual.requiere]
+        if not deps and orden.get(fid, 0) > 0:
+            deps = [fases[orden[fid] - 1].id]
+        pila.extend(deps)
+    return ""
+
+
+def queda_trabajo(fases: tuple[Fase, ...]) -> bool:
+    """Queda fase alcanzable: que no esté preparada ni bloqueada ni condenada
+    por una bloqueada. Si no queda, el encargo termina como entrega parcial."""
+    return any(
+        f.estado not in ("preparada", "bloqueada")
+        and not dependencia_bloqueada(fases, f)
+        for f in fases
+    )
+
+
 def _fase_disponible(fases: tuple[Fase, ...]) -> Fase | None:
-    """Primera fase no preparada cuya dependencia ya está preparada."""
+    """Primera fase ejecutable: no preparada ni bloqueada, con sus dependencias
+    preparadas y sin una bloqueada en su cadena."""
     preparadas = {f.id for f in fases if f.estado == "preparada"}
     for fase in fases:
-        if fase.estado == "preparada":
+        if fase.estado in ("preparada", "bloqueada"):
             continue
-        if all(dep in preparadas for dep, _version in fase.requiere):
-            return fase
+        if not all(dep in preparadas for dep, _version in fase.requiere):
+            continue
+        if dependencia_bloqueada(fases, fase):
+            continue
+        return fase
     return None
 
 
@@ -2415,6 +2486,83 @@ def datos_despliegue(item: dict) -> dict:
     return salida
 
 
+_ACENTOS = str.maketrans("áéíóúüÁÉÍÓÚÜ", "aeiouuAEIOUU")
+# Enumeración explícita de los ids de las fases dentro de un ajuste del
+# director: «exactamente N con ids B, C, D». El ancla de conteo y la lista se
+# capturan en la MISMA coincidencia, así que el ancla solo puede certificar
+# la lista que sigue: ninguna otra frase del segmento la hereda. La frase es
+# obligatoria y estructurada para que la prosa corriente no enumere por
+# accidente; los separadores admiten coma y una conjunción y/e/o solo como
+# cierre de la serie («…, H e I»). Es el único contraste mecánico entre la
+# propuesta y los ajustes: una lista estructurada, nunca prosa suelta. El
+# resto de un ajuste (una fase «ya integrada», un «no la repitas») no muta el
+# estado de las fases: la prosa es ambigua y el orden seguro es el secuencial
+# con sus compuertas normales.
+_ENUMERACION_IDS = re.compile(
+    r"\bexactamente\s+(\d+)\s+(?:fases\s+)?con\s+ids\s*:?\s*"
+    r"([A-Za-z][\w-]*(?:\s*,\s*[A-Za-z][\w-]*)+(?:\s+[yeo]\s+[A-Za-z][\w-]*)?)"
+)
+
+
+def _normaliza(texto: str) -> str:
+    return " ".join(str(texto or "").translate(_ACENTOS).lower().split())
+
+
+def _fase_corresponde(fid: str, token: str) -> bool:
+    """El id de la fase responde al token del ajuste: igualdad o su primer
+    segmento («b-receta» responde a «B»)."""
+    t = token.strip().lower()
+    if not t:
+        return False
+    f = fid.strip().lower()
+    return f == t or re.split(r"[-_]", f)[0] == t
+
+
+def _tokens_con_forma_de_id(tokens: list[str]) -> bool:
+    """Forma inequívoca de id para todos los tokens de una enumeración: una
+    letra suelta («b»..«i», como en el ajuste real 12421) o un id compuesto
+    con guion o guion bajo («b-receta», como los ids del evento 12521). Los
+    adjetivos de una frase corriente («cortos», «legibles», «en») no la
+    tienen: sin esta forma, la coincidencia es prosa, no enumeración."""
+    return all(len(t) == 1 or "-" in t or "_" in t for t in tokens)
+
+
+def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
+    """El último ajuste del director que enumera los ids de las fases con el
+    ancla «exactamente N … con ids», con el ancla y la lista en la misma
+    coincidencia y N igual al número de tokens.
+
+    El ancla es la única forma que ata y no puede certificar otra lista: la
+    prosa no lleva por accidente un compromiso numérico seguido de una lista
+    con exactamente ese largo, y ninguna otra frase del segmento hereda el
+    ancla. La enumeración fija la estructura del plan: una propuesta que
+    declare fases nuevas fuera de ella no representa los ajustes vigentes y
+    se rechaza para que el implementador corrija `.interno/fases.json`,
+    aunque ninguna de sus fases responda a la enumeración (una propuesta
+    totalmente fuera tampoco la representa).
+    """
+    for ajuste in reversed(e.ajustes):
+        for segmento in _normaliza(ajuste).split(". "):
+            if "fase" not in segmento:
+                continue
+            m = _ENUMERACION_IDS.search(segmento)
+            if m:
+                tokens = [
+                    t.strip()
+                    for t in re.split(
+                        r"\s*,\s*|\s+[yeo]\s+", m.group(2)
+                    )
+                    if t.strip()
+                ]
+                if (
+                    len(tokens) == int(m.group(1))
+                    and len(tokens) >= 2
+                    and _tokens_con_forma_de_id(tokens)
+                ):
+                    return ajuste, tokens
+    return None
+
+
 def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     """La propuesta de fases se valida aquí y no borra trabajo ya obtenido.
 
@@ -2427,6 +2575,7 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
         raise TransicionIlegal("la propuesta de fases está vacía")
     existentes = {f.id: f for f in e.fases}
     nuevas: list[Fase] = []
+    nuevos_ids: set[str] = set()
     vistos: set[str] = set()
     for item in crudo:
         if not isinstance(item, dict):
@@ -2444,6 +2593,7 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
         if previa is None:
             if not resultado:
                 raise TransicionIlegal(f"la fase {fid} no declara resultado")
+            nuevos_ids.add(fid)
             nuevas.append(
                 Fase(
                     id=fid,
@@ -2479,6 +2629,20 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     for fid in existentes:
         if fid not in vistos:
             raise TransicionIlegal(f"la propuesta omite la fase existente {fid}")
+    enumeracion = _enumeracion_del_director(e)
+    if enumeracion is not None:
+        ajuste_enum, tokens = enumeracion
+        fuera = sorted(
+            fid for fid in nuevos_ids
+            if not any(_fase_corresponde(fid, t) for t in tokens)
+        )
+        if fuera:
+            raise TransicionIlegal(
+                "el ajuste del director enumera las fases ("
+                + ", ".join(tokens)
+                + "); la propuesta declara fases fuera de esa enumeración: "
+                + ", ".join(fuera)
+            )
     por_id = {f.id: f for f in nuevas}
     for fase in nuevas:
         for dep, _version in fase.requiere:
@@ -2487,6 +2651,31 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
             if dep == fase.id:
                 raise TransicionIlegal(f"la fase {fase.id} se requiere a sí misma")
     _sin_ciclo(tuple(nuevas))
+    # El orden secuencial implícito vive en el orden de la lista: una
+    # repropuesta puede deswirear la condena de una fase sin tocar su
+    # `requiere`, reordenando o insertando fases. Se compara la condena de
+    # todas las fases ejecutables entre el estado viejo y la propuesta
+    # (con su orden y sus dependencias); perderla por propuesta no está
+    # acreditado por nadie: el orden lo reconcilia el director. Apretarla o
+    # conservarla sí se permite.
+    propuestas = tuple(nuevas)
+    for f in propuestas:
+        if f.estado in ("preparada", "bloqueada"):
+            continue
+        condenada_vieja = next(
+            (
+                dependencia_bloqueada(e.fases, vieja)
+                for vieja in e.fases
+                if vieja.id == f.id
+            ),
+            "",
+        )
+        if condenada_vieja and not dependencia_bloqueada(propuestas, f):
+            raise TransicionIlegal(
+                f"la propuesta deja a la fase {f.id} de estar condenada por la "
+                f"fase bloqueada {condenada_vieja} (reorden, inserción o "
+                "dependencias nuevas); el orden lo reconcilia el director"
+            )
     actual = next((f for f in nuevas if f.id == e.fase_activa), None)
     preparadas = {f.id for f in nuevas if f.estado == "preparada"}
     disponible = _fase_disponible(tuple(nuevas))
@@ -2727,6 +2916,88 @@ def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:
         ),
         ultimo_hecho="se continuó el mismo encargo",
         hora=hora or e.hora,
+    )
+
+
+def _bloqueo_fase(e: Encargo, d: dict, hora: str) -> Encargo:
+    """El pendiente de una fase la bloquea sin terminar el encargo completo.
+
+    La fase queda `bloqueada` con causa y evidencia; sus pendientes se guardan
+    en la fase, no en el encargo, para que el PR de otra fase no los copie. La
+    identidad del cierre vigente queda fijada como en el cierre forzado, así
+    que `reabrir` sirve igual para los cierres por fase. Si otra fase tiene
+    dependencias válidas, el encargo sigue con ella; si no queda ninguna
+    alcanzable, el encargo termina como entrega parcial.
+    """
+    evidencia = str(d.get("evidencia") or "").strip()
+    if not evidencia:
+        raise TransicionIlegal("bloqueo de fase sin evidencia")
+    if e.estado in _CERRADOS:
+        raise TransicionIlegal("el encargo ya cerró")
+    e = asegurar_fase(e)
+    fase = e.fase_actual
+    if fase is None:
+        raise TransicionIlegal("no hay fase que bloquear")
+    if fase.estado == "bloqueada":
+        raise TransicionIlegal(f"la fase {fase.id} ya está bloqueada")
+    causa = " ".join(str(d.get("causa") or evidencia).split())
+    e = replace(
+        e,
+        cierre_forzado_fase=fase,
+        cierre_forzado_huella=hashlib.sha256(
+            json.dumps([e.id, fase.id, hora, evidencia, e.reaperturas]).encode()
+        ).hexdigest(),
+    )
+    e = con_fase(
+        e,
+        replace(
+            fase,
+            estado="bloqueada",
+            bloqueo_causa=causa,
+            evidencia=evidencia,
+            pendientes=tuple(e.pendientes_entrega),
+        ),
+    )
+    e = replace(
+        e,
+        pendientes_entrega=(),
+        ultimo_hecho=evidencia,
+        hora=hora or e.hora,
+    )
+    disponible = _fase_disponible(e.fases)
+    if disponible is not None:
+        resultado = replace(
+            e,
+            estado="recibido",
+            fase_activa=disponible.id,
+            rol="responsable",
+            estrategia="investigar",
+            motivo="",
+            siguiente=f"trabajar la fase {disponible.id}",
+            intentos_nuevos=True,
+            escrituras=e.autoridad,
+            devuelto_con=(),
+        )
+        return (
+            sesiones_de_fase_nueva(resultado)
+            if disponible.id != fase.id
+            else resultado
+        )
+    if queda_trabajo(e.fases):
+        return replace(
+            e,
+            estado="recibido",
+            rol="",
+            siguiente="esperar a que una dependencia se prepare",
+        )
+    return replace(
+        e,
+        estado="terminado",
+        evidencia=e.evidencia + (evidencia,),
+        intentos_nuevos=False,
+        escrituras=False,
+        motivo="",
+        siguiente="ninguna",
     )
 
 
@@ -3330,7 +3601,7 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                     hora=hora or e.hora,
                 )
             )
-        if pendientes:
+        if pendientes and queda_trabajo(fases):
             resultado = replace(
                 e,
                 fases=fases,
@@ -3361,13 +3632,16 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
         vistas = d.get("ajustes_vistos")
         if nuevo and vistas is not None and len(e.ajustes) > int(vistas):
             raise TransicionIlegal("llegó una corrección durante el cierre")
+        # Con fases bloqueadas el cierre es una entrega parcial: la identidad
+        # del cierre por fase se conserva para que `reabrir` la encuentre.
+        completo = not pendientes
         return replace(
             e,
             fases=fases,
             estado="terminado",
             evidencia=evidencias,
-            cierre_forzado_fase=None,
-            cierre_forzado_huella="",
+            cierre_forzado_fase=None if completo else e.cierre_forzado_fase,
+            cierre_forzado_huella="" if completo else e.cierre_forzado_huella,
             intentos_nuevos=False,
             escrituras=False,
             ultimo_hecho=evidencia,
@@ -3606,6 +3880,9 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         "objetivo": {
             "fases": len(e.fases),
             "preparadas": len(e.fases_preparadas()),
+            "bloqueadas": len(
+                [f for f in e.fases if f.estado == "bloqueada"]
+            ),
             "completo": e.objetivo_completo(),
             "resultado_actual": e.fase_actual.resultado if e.fase_actual else "",
         },

@@ -35,6 +35,7 @@ from .comprobacion import (
 from . import capacidades, necesidades, trabajos_ci
 from .dominio import (
     Encargo,
+    Fase,
     FASE_IMPLICITA,
     HUELLA_DEEPSEEK_SIN_REVISION,
     TOPE_NO_CONCLUYENTES,
@@ -104,10 +105,12 @@ _REINTENTO_FORZADO_S = 15
 # El sondeo de un encargo cerrado se limita a 7 días desde su cierre: los
 # primeros 60 minutos relee cada minuto y después cada 30 minutos. Los encargos
 # cerrados antes de que este cambio empezara a observar no se sondean, para no
-# golpear GitHub con los encargos viejos al desplegar.
+# golpear GitHub con los encargos viejos al desplegar. La gracia cubre la pausa
+# de un supervisor entre el cierre y su primera pasada (un reinicio, una caída),
+# no los encargos de días atrás.
 _SONDEO_DEEPSEEK_VENTANA_S = 7 * 24 * 60 * 60
 _SONDEO_DEEPSEEK_RAPIDO_S = 60 * 60
-_SONDEO_DEEPSEEK_GRACIA_S = 60
+_SONDEO_DEEPSEEK_GRACIA_S = 30 * 60
 _SONDEO_CERRADOS_TOPE_POR_PASADA = 5
 _RELECTURA_DEEPSEEK_CERRADO_S = 30 * 60
 _TOPE_LOG_JOB = 80
@@ -4135,6 +4138,28 @@ def _es_rama_sin_fase(enc: Encargo, fase, actual: str, rama: str) -> bool:
     )
 
 
+def _duena_de_rama(enc: Encargo, rama: str) -> Fase | None:
+    """La fase cuya rama es `rama`, o None si es la rama sin fase."""
+    for fase in enc.fases:
+        if _rama_de_fase(enc, fase) == rama:
+            return fase
+    return None
+
+
+def _descartar_cambios_de_bloqueada(espacio: Path) -> None:
+    """Descarta el trabajo sin confirmar de una fase bloqueada.
+
+    La fase que sigue parte de su base: ni cambios pendientes ni archivos
+    exclusivos de la bloqueada, aunque su commit o su publicación fallaran.
+    `.interno` y `.runtime` viven fuera del producto y no se tocan."""
+    _git(espacio, "reset", "--hard", "--quiet", "HEAD")
+    _git(
+        espacio, "clean", "-fdq",
+        "--exclude=.interno", "--exclude=.interno/**",
+        "--exclude=.runtime", "--exclude=.runtime/**",
+    )
+
+
 def _asegurar_repo(
     enc: Encargo,
     espacio: Path,
@@ -4174,6 +4199,11 @@ def _asegurar_repo(
         actual = _git(espacio, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         if actual != rama:
             fase = enc.fase_actual
+            saliente = _duena_de_rama(enc, actual)
+            if saliente is not None and saliente.estado == "bloqueada":
+                # La bloqueada dejó el árbol sucio: la fase que sigue parte de
+                # su base sin sus cambios pendientes ni sus archivos exclusivos.
+                _descartar_cambios_de_bloqueada(espacio)
             if _es_rama_sin_fase(enc, fase, actual, rama) and _git(
                 espacio, "rev-parse", "--verify", "--quiet", f"refs/heads/{rama}"
             ).returncode != 0:
@@ -4560,8 +4590,21 @@ def _cuerpo_pr(enc: Encargo, espacio: Path, fase_id: str = "") -> str:
         texto = defecto
     texto = texto.replace("\x00", "").rstrip()
     adicionales: list[str] = []
+    # Notas y pendientes por fase: el cuerpo de una fase lleva lo suyo, no el
+    # de otras. Los pendientes del encargo valen mientras la entrega está en
+    # curso; cuando la fase ya se bloqueó, viven en la fase.
+    fases = getattr(enc, "fases", ())
+    fase = None
+    if fase_id:
+        fase = next((f for f in fases if f.id == fase_id), None)
+    elif fases:
+        fase = enc.fase_actual
     pendientes = getattr(enc, "pendientes_entrega", ())
-    notas = getattr(enc, "notas_pr", ())
+    if not pendientes and fase is not None:
+        pendientes = fase.pendientes
+    notas = fase.notas if fase is not None else ()
+    if not notas:
+        notas = getattr(enc, "notas_pr", ()) if fase is None else ()
     if pendientes:
         adicionales.append(
             "## Pendientes abiertos al entregar\n"
@@ -5091,9 +5134,14 @@ def _epoch_de_hora(hora: str) -> float:
 
 
 def _cierre_epoch(registro: Registro, enc: Encargo) -> float:
-    """La época del cierre del encargo, no la primera vez que el motor lo ve."""
+    """La época del cierre del encargo, no la primera vez que el motor lo ve.
+
+    El cierre puede ser una comprobación confirmada, un cierre forzado histórico
+    o el bloqueo de la última fase: un encargo cerrado como entrega parcial
+    tiene su época en el `bloqueo_fase`, no en el cierre de una fase anterior.
+    """
     for ev in reversed(registro.eventos(enc.id)):
-        if ev["kind"] == "cierre_forzado":
+        if ev["kind"] in ("cierre_forzado", "bloqueo_fase"):
             return _epoch_de_hora(ev["data"].get("hora") or ev["ts"])
         if ev["kind"] == "comprobacion" and ev["data"].get("clase") in (
             "cierre_comprobado", "confirmado"
@@ -6471,9 +6519,11 @@ def _entregar_con_pendientes(
     """Entrega lo que hay sin esperar a una persona.
 
     Publica el PR (o actualiza el ya abierto) con los pendientes y las notas del
-    motor escritos en el cuerpo, y termina el encargo. Si el nivel autorizado no
-    tiene puerto externo o el PR no se puede publicar, igual termina: deja dicho
-    en la evidencia qué faltó.
+    motor escritos en el cuerpo, y bloquea la fase con causa y evidencia; el
+    encargo sigue con la siguiente fase que tenga dependencias válidas, o
+    termina como entrega parcial si no queda ninguna alcanzable. Si el nivel
+    autorizado no tiene puerto externo o el PR no se puede publicar, igual
+    bloquea: deja dicho en la evidencia qué faltó.
     """
     from motor.runwrap import _publica
 
@@ -6486,23 +6536,16 @@ def _entregar_con_pendientes(
     pendientes = enc.pendientes_entrega or (
         "el encargo se entrega sin que el revisor haya concluido",
     )
+    causa = ""
     if (
         not (enc.producto and enc.producto.manifiesto)
         and any(p.startswith(_RELEVO_AGOTADO) for p in pendientes)
     ):
-        evidencia = (
-            "no hay producto que entregar; el encargo termina con el motivo: "
-            + "; ".join(pendientes)
-        )
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "cierre_forzado",
-                "data": {"evidencia": evidencia, "hora": hora},
-            },
-            f"cierre-forzado:{enc.id}:{enc.fase_activa}:{enc.reaperturas}:"
-            f"sin-producto:{len(pendientes)}",
-        )
+        _bloquear_fase(registro, enc, "no hay producto que entregar",
+                      "no hay producto que entregar; la fase termina "
+                      "bloqueada con el motivo: " + "; ".join(pendientes),
+                      hora,
+                      f"{enc.reaperturas}:sin-producto:{len(pendientes)}")
         enc = registro.fold(enc.id) or enc
         _publica(directorio / "incorporado", hora)
         if enc.estado == "terminado":
@@ -6520,7 +6563,6 @@ def _entregar_con_pendientes(
         )
         enc = registro.fold(enc.id) or enc
     publicable = enc.entrega.nivel != "terminado" and gh is not None
-    causa = ""
     if enc.entrega.nivel != "terminado" and gh is None:
         causa = (
             "nivel de entrega "
@@ -6549,17 +6591,13 @@ def _entregar_con_pendientes(
                     return registro.fold(enc.id)
                 if conteo.stdout.strip() == "0":
                     if any(p.startswith(_RELEVO_AGOTADO) for p in pendientes):
-                        evidencia = (
-                            "no hay commits que entregar en el PR; el encargo "
-                            "termina con el motivo: " + "; ".join(pendientes)
-                        )
-                        registro.anotar(
-                            enc.id,
-                            {
-                                "kind": "cierre_forzado",
-                                "data": {"evidencia": evidencia, "hora": hora},
-                            },
-                            f"cierre-forzado:{enc.id}:{enc.fase_activa}:"
+                        _bloquear_fase(
+                            registro, enc,
+                            "no hay commits que entregar en el PR",
+                            "no hay commits que entregar en el PR; la fase "
+                            "termina bloqueada con el motivo: "
+                            + "; ".join(pendientes),
+                            hora,
                             f"{enc.reaperturas}:sin-commits:{len(pendientes)}",
                         )
                         enc = registro.fold(enc.id) or enc
@@ -6628,23 +6666,43 @@ def _entregar_con_pendientes(
             f"entrega:{enc.id}:{enc.fase_activa}:pr_con_pendientes:{numero}:{sha}",
         )
         enc = registro.fold(enc.id) or enc
-    evidencia = "entregado con pendientes abiertos: " + "; ".join(pendientes)
+    evidencia = "la fase se entrega con pendientes abiertos: " + "; ".join(pendientes)
+    if numero:
+        evidencia += f"; el PR #{numero} queda publicado con ellos"
     if causa:
         evidencia += f". No se pudo publicar el PR: {str(causa)[:400]}"
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "cierre_forzado",
-            "data": {"evidencia": evidencia, "hora": hora},
-        },
-        f"cierre-forzado:{enc.id}:{enc.fase_activa}:{enc.reaperturas}:{len(pendientes)}:{sha}",
-    )
+    _bloquear_fase(registro, enc, pendientes[0], evidencia, hora,
+                   f"{enc.reaperturas}:{len(pendientes)}:{sha}")
     enc = registro.fold(enc.id) or enc
     _publica(directorio / "incorporado", hora)
     if enc.estado == "terminado":
         _publicar_resultado(registro, enc, hora)
         _limpiar_encargo_cerrado(registro, enc, hora)
     return enc
+
+
+def _bloquear_fase(
+    registro: Registro, enc: Encargo, causa: str, evidencia: str, hora: str,
+    serie: str,
+) -> None:
+    """Bloquea la fase activa con causa y evidencia.
+
+    El evento `bloqueo_fase` no termina el encargo: el reductor avanza a la
+    siguiente fase con dependencias válidas o cierra como entrega parcial. La
+    serie hace idempotente el evento por encargo, fase, reaperturas y SHA.
+    """
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "bloqueo_fase",
+            "data": {
+                "causa": " ".join(str(causa).split())[:400],
+                "evidencia": " ".join(str(evidencia).split())[:2000],
+                "hora": hora,
+            },
+        },
+        f"bloqueo-fase:{enc.id}:{enc.fase_activa}:{serie}",
+    )
 
 
 def _hora_de_solicitud(registro: Registro, encargo: str, ident: str) -> str:
