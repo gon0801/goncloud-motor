@@ -176,12 +176,13 @@ class Registro:
                 "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
                 (ts, encargo, kind, payload, ukey),
             )
+            nuevo_id = int(cursor.lastrowid or 0)
             self.db.execute("COMMIT")
-            self._recordar_plegado(encargo, aplicado, int(cursor.lastrowid or 0), conteo + 1)
-            return "nuevo"
         except Exception:
             self.db.execute("ROLLBACK")
             raise
+        self._recordar_plegado(encargo, aplicado, nuevo_id, conteo + 1)
+        return "nuevo"
 
     def por_ukey(self, ukey: str) -> dict | None:
         row = self.db.execute(
