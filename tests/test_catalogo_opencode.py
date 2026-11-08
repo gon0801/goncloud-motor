@@ -7,13 +7,15 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from motor.encargos import agentes
 from motor.encargos.seleccion import solicitar_modelos
 from motor.integraciones import cli as director_cli
 
 
-def _encargar(base: Path, responsable: str) -> list[str]:
-    return [
+def _encargar(base: Path, responsable: str, revisor: str = "") -> list[str]:
+    argv = [
         "encargar",
         "--base",
         str(base),
@@ -30,6 +32,9 @@ def _encargar(base: Path, responsable: str) -> list[str]:
         "--responsable",
         responsable,
     ]
+    if revisor:
+        argv.extend(["--revisor", revisor])
+    return argv
 
 
 class CatalogoCerradoDeOpenCodeGo(unittest.TestCase):
@@ -73,6 +78,66 @@ class CatalogoCerradoDeOpenCodeGo(unittest.TestCase):
                     0,
                 )
             self.assertIn("encargo", salida.getvalue())
+
+
+class DeepSeekPorSuApiPropia(unittest.TestCase):
+    """La API propia de DeepSeek corre por OpenCode sin abrir el plan Go."""
+
+    def test_admite_flash_con_opus_de_revisor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(io.StringIO()) as salida:
+                self.assertEqual(
+                    director_cli.main(
+                        _encargar(
+                            Path(tmp) / "base",
+                            "deepseek/deepseek-flash",
+                            "anthropic/claude-opus-5-5",
+                        )
+                    ),
+                    0,
+                )
+            self.assertIn("encargo", salida.getvalue())
+
+    def test_el_lanzador_usa_la_superficie_del_cli_actual(self):
+        enc = SimpleNamespace(
+            rol="responsable",
+            sesion_responsable="ses_anterior",
+            sesion_revisor="",
+        )
+        argv = agentes._lanzador(
+            "opencode", "deepseek/deepseek-flash", "reanudada"
+        )(enc, Path("/intento/prompt.md"), Path("/intento"), "sesion-motor")
+        self.assertEqual(
+            argv[:9],
+            [
+                "opencode",
+                "run",
+                "--standalone",
+                "--auto",
+                "--format",
+                "json",
+                "--model",
+                "deepseek/deepseek-flash",
+                "--session",
+            ],
+        )
+        self.assertEqual(argv[9], "ses_anterior")
+        self.assertNotIn("--pure", argv)
+        self.assertNotIn("--variant", argv)
+        self.assertEqual(
+            argv[-1],
+            "Lee el pedido y las instrucciones en "
+            "/intento/prompt.md. Ejecuta el trabajo autorizado.",
+        )
+
+    def test_sin_sesion_previa_estrena_sesion(self):  # no-roja-en-base: la ausencia de --session ya existía; el candado nuevo es la superficie del CLI
+        enc = SimpleNamespace(
+            rol="responsable", sesion_responsable="", sesion_revisor=""
+        )
+        argv = agentes._lanzador("opencode", "deepseek/deepseek-flash", "nueva")(
+            enc, Path("/intento/prompt.md"), Path("/intento"), "sesion-motor"
+        )
+        self.assertNotIn("--session", argv)
 
 
 if __name__ == "__main__":

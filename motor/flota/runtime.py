@@ -3,8 +3,20 @@
 from __future__ import annotations
 from motor.io import leer_json
 
+import re
 import shutil
+import subprocess
+from functools import lru_cache
 from pathlib import Path
+
+from motor.encargos.catalogo_agentes import PREFIJO_DEEPSEEK_API
+
+_TOPE_AYUDA_S = 30
+_BANDERA = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]*)(?![\w-])")
+
+
+class SuperficieOpenCodeNoAcreditada(RuntimeError):
+    """El OpenCode ligado al intento no declara una forma compatible."""
 
 
 def cargar_runtime(generacion: Path) -> dict:
@@ -101,12 +113,101 @@ def _poner_modelo(argumentos: list[str], opciones: tuple[str, ...], valor: str) 
         argumentos.extend([opciones[0], valor])
 
 
+def _modelo_de(argumentos: list[str]) -> str:
+    for indice, argumento in enumerate(argumentos):
+        if argumento in ("--model", "-m") and indice + 1 < len(argumentos):
+            return argumentos[indice + 1]
+    return ""
+
+
+def _ejecutable_de(prefijo: list[str]) -> str:
+    candidato = prefijo[-1]
+    if Path(candidato).is_file():
+        return str(Path(candidato).resolve())
+    hallado = shutil.which(candidato)
+    if hallado:
+        return hallado
+    raise SuperficieOpenCodeNoAcreditada(
+        "no se encontro el ejecutable de OpenCode: " + candidato
+    )
+
+
+# La clave incluye mtime y tamano para no repetir la sonda si el CLI no cambia
+# y para volver a consultarla si la generacion publica otro ejecutable.
+@lru_cache(maxsize=16)
+def _ayuda_de(prefijo: tuple[str, ...], _mtime_ns: int, _tamano: int) -> str:
+    try:
+        hecho = subprocess.run(
+            [*prefijo, "run", "--help"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_TOPE_AYUDA_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SuperficieOpenCodeNoAcreditada(
+            "no se pudo consultar la ayuda de OpenCode: " + type(exc).__name__
+        ) from exc
+    if hecho.returncode != 0:
+        raise SuperficieOpenCodeNoAcreditada(
+            "la ayuda de OpenCode termino con codigo " + str(hecho.returncode)
+        )
+    texto = (hecho.stdout or "") + "\n" + (hecho.stderr or "")
+    if not texto.strip():
+        raise SuperficieOpenCodeNoAcreditada(
+            "la ayuda de OpenCode no devolvio opciones por stdout ni por stderr"
+        )
+    return texto
+
+
+def _banderas_de_opencode(prefijo: list[str]) -> frozenset[str]:
+    real = _ejecutable_de(prefijo)
+    try:
+        estado = Path(real).stat()
+    except OSError as exc:
+        raise SuperficieOpenCodeNoAcreditada(
+            "no se pudo leer el ejecutable de OpenCode: " + real
+        ) from exc
+    texto = _ayuda_de((*prefijo[:-1], real), estado.st_mtime_ns, estado.st_size)
+    banderas = frozenset(_BANDERA.findall(texto))
+    if "--standalone" not in banderas and "--pure" not in banderas:
+        raise SuperficieOpenCodeNoAcreditada(
+            "el OpenCode ligado al intento no ofrece ni --standalone ni --pure: "
+            + real
+        )
+    return banderas
+
+
+def _adaptar_deepseek(argumentos: list[str], cmd: list[str]) -> list[str]:
+    """Ajusta solo la ruta deepseek/ a la superficie del OpenCode efectivo."""
+    # resolver_ejecutable antepone el lanzador de la generacion; el resto de
+    # argumentos conserva su posicion.
+    prefijo = argumentos[: len(argumentos) - len(cmd) + 1]
+    banderas = _banderas_de_opencode(prefijo)
+    if "--standalone" in banderas:
+        return [argumento for argumento in argumentos if argumento != "--pure"]
+    if "--standalone" in argumentos:
+        return [
+            "--pure" if argumento == "--standalone" else argumento
+            for argumento in argumentos
+        ]
+    if "--pure" not in argumentos:
+        posicion = argumentos.index("run") + 1 if "run" in argumentos else 1
+        return [*argumentos[:posicion], "--pure", *argumentos[posicion:]]
+    return argumentos
+
+
 def vincular(
     generacion: Path, cmd: list[str], *, funcion: str = "codigo", modelo_explicito: bool = False
 ) -> list[str]:
     nombre = Path(cmd[0]).stem.lower()
     doc = cargar_runtime(generacion)
     argumentos = resolver_ejecutable(generacion, cmd)
+    if nombre == "opencode" and _modelo_de(argumentos).startswith(PREFIJO_DEEPSEEK_API):
+        argumentos = _adaptar_deepseek(argumentos, cmd)
     politica = doc.get("politica")
     if politica and nombre == "grok":
         tabla = leer_json(_ruta(generacion, politica))

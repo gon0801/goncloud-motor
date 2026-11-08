@@ -16,9 +16,11 @@ from pathlib import Path
 import tomllib
 
 from .agentes import SIN_SEGUNDO_PLANO
+from .catalogo_agentes import DEEPSEEK_API_PROVEEDOR
 
 _TOKEN_PLAN = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 _OPENCODE_PLANES = ("opencode-go", "zai-coding-plan")
+_OPENCODE_CUENTAS = (*_OPENCODE_PLANES, DEEPSEEK_API_PROVEEDOR)
 _GROK_CUENTA = "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"
 
 
@@ -100,7 +102,7 @@ def _opencode() -> dict:
     datos = leer_json(archivo) if archivo.is_file() else {}
     cuentas = {
         p: datos[p]
-        for p in _OPENCODE_PLANES
+        for p in _OPENCODE_CUENTAS
         if isinstance(datos.get(p), dict)
         and datos[p].get("type") == "api"
         and datos[p].get("key")
@@ -112,7 +114,7 @@ def _opencode() -> dict:
                 fila[1] for fila in conexion.execute("PRAGMA table_info(credential)")
             }
             if {"integration_id", "value", "active", "time_updated"} <= columnas:
-                for proveedor in _OPENCODE_PLANES:
+                for proveedor in _OPENCODE_CUENTAS:
                     fila = conexion.execute(
                         "SELECT value FROM credential WHERE integration_id=? AND active=1 ORDER BY time_updated DESC LIMIT 1",
                         (proveedor,),
@@ -330,9 +332,12 @@ def preparar(agente: str, runtime: Path, cmd: list[str], env: dict[str, str]) ->
         proveedor = cmd[cmd.index("--model") + 1].partition("/")[0]
         cuentas = leer_cuenta(agente)
         if proveedor not in cuentas:
-            raise CuentaNoDisponible(
-                agente, "falta la cuenta de suscripcion solicitada"
+            motivo = (
+                "falta la credencial propia de deepseek; este encargo no usa OpenCode Go"
+                if proveedor == DEEPSEEK_API_PROVEEDOR
+                else "falta la cuenta de suscripcion solicitada"
             )
+            raise CuentaNoDisponible(agente, motivo)
         _guardar(
             runtime / ".local/share/opencode/auth.json", {proveedor: cuentas[proveedor]}
         )

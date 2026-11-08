@@ -12,7 +12,12 @@ import sys
 import uuid
 from pathlib import Path
 
-from .catalogo_agentes import ADAPTADORES, cliente_para, modelo_canonico
+from .catalogo_agentes import (
+    ADAPTADORES,
+    PREFIJO_DEEPSEEK_API,
+    cliente_para,
+    modelo_canonico,
+)
 
 # El lanzamiento corre con --print: el proceso sale cuando el agente responde y
 # nadie lo despierta, asi que una tarea en segundo plano se queda sin dueno.
@@ -586,6 +591,30 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             if (enc.rol or "responsable") == "revisor"
             else enc.sesion_responsable
         )
+        texto = (
+            "Lee el pedido y las instrucciones en "
+            + str(prompt)
+            + ". Ejecuta el trabajo autorizado."
+        )
+        if referencia.startswith(PREFIJO_DEEPSEEK_API):
+            # El CLI nuevo ya no admite --pure ni --variant. Si la flota liga
+            # un CLI anterior, vincular cambia --standalone por --pure.
+            return [
+                "opencode",
+                "run",
+                "--standalone",
+                "--auto",
+                "--format",
+                "json",
+                "--model",
+                referencia,
+                *(
+                    ["--session", previa]
+                    if sesion_modo == "reanudada" and previa
+                    else []
+                ),
+                texto,
+            ]
         return [
             "opencode",
             "run",
@@ -598,9 +627,7 @@ def _lanzador(agente: str, modelo: str = "", sesion_modo: str = "nueva"):
             "--variant",
             "high",
             *(["--session", previa] if sesion_modo == "reanudada" and previa else []),
-            "Lee el pedido y las instrucciones en "
-            + str(prompt)
-            + ". Ejecuta el trabajo autorizado.",
+            texto,
         ]
 
     def suscripcion(enc, prompt: Path, espacio: Path, sesion: str):
