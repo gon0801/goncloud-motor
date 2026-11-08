@@ -3366,7 +3366,7 @@ def _incorporar_responsable(
             hora, f"misma-version-{version.firma[:12]}",
         )
         _publica(directorio / "incorporado", hora)
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc
     if _correccion_deepseek_conserva_aprobadas(enc):
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
