@@ -826,7 +826,12 @@ def _cuerpo_de_cierre(enc) -> str:
         and pedido_nivel in ("integrado", "desplegado")
         and llano in ("pr", "integrado")
         and llano != pedido_nivel
+        and llano == efectivo
     ):
+        # La frase solo sale cuando el alcanzado coincide con el tope
+        # efectivo: es el caso donde la limitación explica el desenlace.
+        # Si el encargo quedó por debajo del efectivo (una fase bloqueada,
+        # pendientes), el motivo real vive en la enumeración parcial.
         cuerpo += (
             f" Tu encargo pedía llegar a {pedido_nivel} y quedó en "
             f"{llano}: {getattr(enc, 'nivel_efectivo_motivo', '') or 'hay una limitación comprobada'}."

@@ -306,6 +306,92 @@ class ElCierreEnLlano(Base):
         cuerpo = directores._cuerpo_de_cierre(self.b.reg.fold(vacio))
         self.assertNotIn("pedía llegar", cuerpo)
 
+    def test_el_aviso_no_atribuye_al_nivel_efectivo_un_pr_que_no_explica(self):
+        ident = self.b.encargo(
+            "# Orbit pagos\n\nTrabaja el pedido y comprueba.",
+            "orbit-pagos",
+            entrega_nivel="desplegado",
+            repo="ejemplo/repo",
+            base_rama="main",
+            via="durable",
+        )
+        self.b.reg.anotar(
+            ident,
+            {
+                "kind": "fases",
+                "data": {"fases": [{"id": "fase_unica", "resultado": "fase"}], "hora": HORA},
+            },
+            f"fases-{ident}",
+        )
+        self.b.reg.anotar(
+            ident,
+            {
+                "kind": "nivel_efectivo",
+                "data": {
+                    "nivel": "integrado",
+                    "motivo": "esta máquina no puede desplegar: le falta ssh-goncloud",
+                    "hora": HORA,
+                },
+            },
+            f"nivel-{ident}",
+        )
+        self.b.reg.anotar(
+            ident,
+            {"kind": "entrega_externa", "data": {"paso": "pr_listo", "numero": 20, "hora": HORA}},
+            f"paso-{ident}",
+        )
+        self.b.reg.anotar(
+            ident,
+            {
+                "kind": "bloqueo_fase",
+                "data": {
+                    "causa": "bloqueante abierto: fuga de token en el log",
+                    "evidencia": "el relevo agotó la recuperación del bloqueante",
+                    "hora": HORA,
+                },
+            },
+            f"bloqueo-{ident}",
+        )
+        enc = self.b.reg.fold(ident)
+        self.assertEqual(enc.estado, "terminado")
+        cuerpo = directores._cuerpo_de_cierre(enc)
+        self.assertNotIn("pedía llegar", cuerpo)
+        self.assertIn("Entrega parcial", cuerpo)
+        self.assertIn("bloqueante abierto", cuerpo)
+
+    def test_el_aviso_trae_el_motivo_cuando_el_alcanzado_iguala_al_efectivo(self):
+        ident = self.b.encargo(
+            "# fase-a lista para revisar\n\nTrabaja el pedido y comprueba.",
+            "fase-a",
+            entrega_nivel="desplegado",
+            repo="ejemplo/repo",
+            base_rama="main",
+            via="durable",
+        )
+        self.b.reg.anotar(
+            ident,
+            {
+                "kind": "nivel_efectivo",
+                "data": {
+                    "nivel": "integrado",
+                    "motivo": "esta máquina no puede desplegar: le falta ssh-goncloud",
+                    "hora": HORA,
+                },
+            },
+            f"nivel-{ident}",
+        )
+        self.b.terminar(
+            ident,
+            [
+                {"paso": "pr_listo", "numero": 21},
+                {"paso": "deepseek_leido"},
+                {"paso": "integrado"},
+            ],
+        )
+        cuerpo = directores._cuerpo_de_cierre(self.b.reg.fold(ident))
+        self.assertIn("y quedó en integrado:", cuerpo)
+        self.assertIn("le falta ssh-goncloud", cuerpo)
+
     def test_un_encargo_cancelado_lo_dice_en_una_frase_simple(self):
         ident = self.b.encargo(
             "# Un pedido que no pudo terminar\n\nAlgo que se cancela.",
