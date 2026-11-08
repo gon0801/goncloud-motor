@@ -570,11 +570,16 @@ class Encargo:
     # mismo, y qué pidió la última (fase, versión, texto, recurso, objetivo, huella).
     no_concluyentes: int = 0
     no_concluyente_ref: tuple[str, ...] = ()
-    # La escalera no se guarda como contador: se guarda qué pasos ya gastó cada
-    # rol sobre un conjunto de ids. La clave identifica ese conjunto (los ids
-    # devueltos al responsable, o el pedido del revisor); un avance o un hecho
-    # nuevo cambia la clave y estrena escalera sin reiniciar ningún campo.
+    # La escalera no se guarda como contador de vueltas: se guarda qué pasos ya
+    # gastó cada rol sobre un conjunto de ids. La clave identifica ese conjunto
+    # (los ids devueltos al responsable, o el pedido del revisor) y el número de
+    # avances registrados; un avance o un hecho nuevo la estrena sin reiniciar
+    # ningún campo.
     escalones: tuple[tuple[str, str, str], ...] = ()
+    # Cuántos avances reales registró el encargo (bloqueante cerrado, primer
+    # bloqueante, aprobación concluyente sin bloqueos). Es la época de la
+    # escalera: crece sola con el hecho, no se reinicia a mano.
+    avances: int = 0
     # Pendientes que se escriben en el cuerpo del PR cuando el encargo entrega
     # sin que el revisor haya concluido o sin la revisión externa.
     pendientes_entrega: tuple[str, ...] = ()
@@ -648,37 +653,6 @@ class Encargo:
     @property
     def nivel_alcanzado(self) -> str:
         return nivel_de(self.fase_actual)
-
-    # Vistas derivadas de `escalones`. No son campos ni se escriben: la
-    # escalera se lee del registro y solo cambia con los ids o los datos del
-    # propietario.
-    @property
-    def sin_progreso(self) -> int:
-        return sin_progreso_de(self, "responsable")
-
-    @property
-    def relevos(self) -> int:
-        return sum(relevos_de(self, rol) for rol in _roles_con_escalones(self))
-
-    @property
-    def relevos_por_rol(self) -> tuple[tuple[str, int], ...]:
-        return tuple(
-            sorted(
-                (rol, relevos_de(self, rol))
-                for rol in _roles_con_escalones(self)
-                if relevos_de(self, rol)
-            )
-        )
-
-    @property
-    def relevo_huella_por_rol(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            sorted(
-                (rol, clave_escalera(self, rol))
-                for rol in _roles_con_escalones(self)
-                if relevos_de(self, rol)
-            )
-        )
 
     @property
     def pr_numero(self) -> int:
@@ -764,6 +738,7 @@ def sesiones_de_fase_nueva(e: Encargo) -> Encargo:
         vuelta_contada=0,
         devuelto_con=(),
         pendientes_entrega=(),
+        avances=e.avances + 1,
         sesion_responsable="",
         sesion_revisor="",
         viva_responsable=False,
@@ -1027,24 +1002,44 @@ def _huella_operador(e: Encargo) -> str:
     return hashlib.sha256("\0".join(partes).encode()).hexdigest()
 
 
-def _roles_con_escalones(e: Encargo) -> set[str]:
-    return {rol for rol, _clave, _paso in e.escalones}
+def _huella_escalera_revisor(e: Encargo) -> str:
+    """El punto de la escalera del revisor, derivado de los hechos que la
+    estrenaban en 874daed: un avance (ids o cerrados), un dato del propietario,
+    una aprobación concluyente, una reapertura o un cambio de fase. No cambia
+    con cada revisión no concluyente, que es lo que la escalera cuenta."""
+    fase = e.fase_actual
+    partes = [
+        e.fase_activa,
+        str(e.reaperturas),
+        str(e.avances),
+        _huella_operador(e),
+    ]
+    if fase is not None:
+        partes += [
+            huella_bloqueo(e),
+            ",".join(sorted(fase.cerrados)),
+            ",".join(sorted(f"{r}:{h}" for r, h in fase.aprobadas)),
+            fase.revisado.firma if fase.revisado else "",
+        ]
+    return hashlib.sha256("\0".join(partes).encode()).hexdigest()
 
 
 def clave_escalera(e: Encargo, rol: str) -> str:
     """El conjunto de hechos que define el escalón vigente de un rol.
 
     El del responsable son los ids abiertos y la información del propietario;
-    el del revisor, el pedido que repite. Un avance, un bloqueante nuevo o un
-    dato del propietario cambia la clave y la escalera empieza sola: no hay
-    contador que reiniciar.
+    el del revisor, ese mismo punto de avance más el pedido que repite. Un
+    avance, un bloqueante nuevo, una aprobación concluyente o un dato del
+    propietario cambia la clave y la escalera empieza sola: no hay contador que
+    reiniciar.
     """
     rol = rol or "responsable"
     if rol == "revisor":
         ref = e.no_concluyente_ref[0] if e.no_concluyente_ref else ""
-        return f"{e.fase_activa}:revisor:{ref}"
+        return f"{_huella_escalera_revisor(e)}:revisor:{ref}"
     return (
-        f"{e.fase_activa}:responsable:{huella_bloqueo(e)}:{_huella_operador(e)}"
+        f"{e.fase_activa}:responsable:{e.avances}:"
+        f"{huella_bloqueo(e)}:{_huella_operador(e)}"
     )
 
 
@@ -1100,18 +1095,11 @@ def ultima_huella_relevo(e: Encargo) -> str:
     return ""
 
 
-def sin_progreso_de(e: Encargo, rol: str = "responsable") -> int:
-    pasos = pasos_escalera(e, rol)
-    if "pendientes" in pasos:
-        return 2
-    return 1 if pasos else 0
-
-
 def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Encargo:
     """Reinicia la cuenta del freno al cerrar bloqueantes o resolver una
     revisión. Repetir una aprobación no resuelve lo que sigue bloqueando la
-    entrega. La escalera no se toca: un avance cambia la clave de los ids y la
-    deja estrenada por sí sola."""
+    entrega. Un avance real incrementa `avances`, la época que estrena la
+    escalera de cada rol sin reiniciar campos."""
     aprobacion_nueva = concluyente and (
         previo.revision_vigente is None
         or previo.revision_vigente.veredicto != "aprobado"
@@ -1126,8 +1114,13 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
     if not avance:
         return e
     # Un avance cierra la cuenta de revisiones no_concluyente repetidas y los
-    # pendientes que dejó un relevo anterior. La escalera ya cambió de clave.
-    return replace(_sin_repeticiones(e), pendientes_entrega=())
+    # pendientes que dejó un relevo anterior. La época de la escalera crece y
+    # los ids también cambian de clave: la escalera se estrena sola.
+    return replace(
+        _sin_repeticiones(e),
+        avances=e.avances + 1,
+        pendientes_entrega=(),
+    )
 
 
 def fuente_de_impedimento(clase: str) -> str:

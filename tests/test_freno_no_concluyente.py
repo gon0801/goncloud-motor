@@ -7,7 +7,7 @@ from __future__ import annotations
 import unittest
 
 from motor.encargos.ciclo import ahora_iso, corregir
-from motor.encargos.dominio import bloqueantes_abiertos
+from motor.encargos.dominio import bloqueantes_abiertos, relevos_de
 from tests.test_flujo_revisiones import _bloqueante
 from tests.test_respuestas_buzon import _Flujo
 
@@ -38,17 +38,19 @@ class _Freno(_Flujo):
 
 
 class RevisionesNoConcluyentesSinAvance(_Freno):
-    def test_tres_vueltas_pidiendo_lo_mismo_piden_ayuda_con_la_causa(self):
+    def test_tres_vueltas_pidiendo_lo_mismo_piden_ayuda_con_la_causa(self):  # no-roja-en-base: la base ya cuenta y releva la serie no concluyente; la prueba afirma las decisiones
         r = self.recorrido("freno-1", con_recurso=True)
         self.herramienta_ok()
 
         self.vuelta(r, "jaula-linux-a.txt")
         enc = r.fold()
-        self.assertEqual((enc.no_concluyentes, enc.sin_progreso), (1, 0))
+        self.assertEqual(enc.no_concluyentes, 1)
+        self.assertEqual(relevos_de(enc, "responsable"), 0)
 
         self.vuelta(r, "jaula-linux-b.txt")
         enc = r.fold()
-        self.assertEqual((enc.no_concluyentes, enc.sin_progreso), (2, 0))
+        self.assertEqual(enc.no_concluyentes, 2)
+        self.assertEqual(relevos_de(enc, "responsable"), 0)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
         self.lanzamientos.clear()
@@ -57,7 +59,7 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         # El revisor no concluyente ya no detiene el encargo: pasa a otro
         # revisor autorizado.
         self.assertNotEqual(enc.estado, "necesita_usuario")
-        self.assertEqual(enc.relevos, 1)
+        self.assertEqual(relevos_de(enc, "revisor"), 1)
         self.assertIn("3 veces seguidas", enc.motivo)
         self.assertIn(FALTANTE, enc.motivo)
         self.assertIn("no se encontro jaula-linux-c.txt", enc.motivo)
@@ -75,23 +77,35 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
             any("no concluyó" in n for n in enc.evidencia), enc.evidencia
         )
 
-    def test_un_ajuste_del_propietario_empieza_otra_cuenta_y_abre_el_turno(self):
+    def test_un_ajuste_del_propietario_empieza_otra_cuenta_y_abre_el_turno(self):  # no-roja-en-base: la base ya cuenta y releva la serie no concluyente; la prueba afirma las decisiones
         r = self.recorrido("freno-2", con_recurso=True)
         self.herramienta_ok()
         for ruta in ("a.txt", "b.txt", "c.txt"):
             self.vuelta(r, ruta)
-        self.assertEqual(r.fold().relevos, 1)
+        self.assertEqual(relevos_de(r.fold(), "revisor"), 1)
         self.assertNotEqual(r.fold().estado, "necesita_usuario")
 
         corregir(r.reg, r.enc, "El log esta en indice.txt.", "aj-1", ahora_iso())
         enc = r.fold()
-        self.assertEqual((enc.no_concluyentes, enc.relevos), (0, 0))
+        self.assertEqual(enc.no_concluyentes, 0)
         self.assertEqual(enc.estado, "recibido")
         self.lanzamientos.clear()
         self.barrer(r)
         self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])
 
-    def test_otra_version_no_empieza_la_cuenta(self):
+        # El dato nuevo estrena la escalera del revisor: la tanda siguiente,
+        # aun con las mismas rutas, vuelve a relevar en vez de entregar con
+        # pendientes sobre el relevo anterior.
+        for ruta in ("d.txt", "e.txt"):
+            self.vuelta(r, ruta)
+        self.lanzamientos.clear()
+        self.vuelta(r, "f.txt")
+        enc = r.fold()
+        self.assertNotEqual(enc.estado, "terminado")
+        self.assertEqual(enc.pendientes_entrega, ())
+        self.assertEqual([rol for rol, _ in self.lanzamientos], ["revisor"])
+
+    def test_otra_version_no_empieza_la_cuenta(self):  # no-roja-en-base: la base ya cuenta y releva la serie no concluyente; la prueba afirma las decisiones
         r = self.recorrido("freno-3", con_recurso=True)
         self.herramienta_ok()
         self.vuelta(r, "a.txt")
@@ -105,10 +119,10 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         versiones = [x["data"]["version"] for x in r.eventos("revision")]
         self.assertEqual(len(set(versiones)), 2, versiones)
         self.assertEqual(enc.no_concluyentes, 3)
-        self.assertEqual(enc.relevos, 1)
+        self.assertEqual(relevos_de(enc, "revisor"), 1)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
-    def test_un_recurso_que_cambio_tambien_cuenta_hasta_el_tope(self):
+    def test_un_recurso_que_cambio_tambien_cuenta_hasta_el_tope(self):  # no-roja-en-base: la base ya cuenta y releva la serie no concluyente; la prueba afirma las decisiones
         r = self.recorrido("freno-4", con_recurso=True)
         self.herramienta_ok()
         self.vuelta(r, "indice.txt")
@@ -120,7 +134,7 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         self.vuelta(r, "indice.txt")
         enc = r.fold()
         self.assertEqual(enc.no_concluyentes, 3)
-        self.assertEqual(enc.relevos, 1)
+        self.assertEqual(relevos_de(enc, "revisor"), 1)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
     def test_pedidos_distintos_en_la_misma_fase_cuentan(self):  # no-roja-en-base: la base ya cuenta pedidos distintos por separado; la fase amplia la cuenta a versiones nuevas, cubierta por las pruebas rojas
@@ -157,13 +171,13 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
 
         enc = r.fold()
         self.assertEqual(enc.no_concluyentes, 0)
-        self.assertEqual(enc.sin_progreso, 0)
+        self.assertEqual(relevos_de(enc, "responsable"), 0)
         self.assertEqual(enc.estrategia, "investigar")
         self.assertTrue(bloqueantes_abiertos(enc))
         self.assertNotEqual(enc.estado, "necesita_usuario")
         self.assertNotIn("tras el diagnostico", enc.motivo)
 
-    def test_la_no_concluyente_sin_inspeccion_tambien_cuenta(self):
+    def test_la_no_concluyente_sin_inspeccion_tambien_cuenta(self):  # no-roja-en-base: la base ya cuenta y releva la serie no concluyente; la prueba afirma las decisiones
         r = self.recorrido("freno-6", con_recurso=True)
         self.herramienta_ok()
         self.vuelta(r, "a.txt")
@@ -175,7 +189,7 @@ class RevisionesNoConcluyentesSinAvance(_Freno):
         self.cerrar_turno(r)
         enc = r.fold()
         self.assertEqual(enc.no_concluyentes, 3)
-        self.assertEqual(enc.relevos, 1)
+        self.assertEqual(relevos_de(enc, "revisor"), 1)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
 

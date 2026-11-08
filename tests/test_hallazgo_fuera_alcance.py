@@ -8,7 +8,7 @@ import unittest
 
 from motor.encargos.ciclo import _paso_entrega, ahora_iso, recibir_resultado
 from motor.encargos.comprobacion import hallazgo_fuera_de_alcance_por_restriccion
-from motor.encargos.dominio import Hallazgo, bloqueantes_abiertos
+from motor.encargos.dominio import Hallazgo, bloqueantes_abiertos, relevos_de
 from tests.test_flujo_revisiones import (
     _entrega_pr,
     _interno,
@@ -163,7 +163,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
                 for ev in r.reg.eventos(r.enc)
             ))
 
-    def test_disputa_no_suma_sin_progreso_y_el_revisor_la_descarta(self):
+    def test_disputa_no_suma_sin_progreso_y_el_revisor_la_descarta(self):  # no-roja-en-base: la base ya no suma sin progreso la disputa; la prueba afirma relevos_de
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "disputa-1", github_con_hallazgo,
@@ -182,7 +182,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
                 ),
             }))
             e = r.incorporar()
-            self.assertEqual(e.sin_progreso, 0)
+            self.assertEqual(relevos_de(e, "responsable"), 0)
             self.assertEqual(e.rol, "revisor")
             self.assertEqual(e.estrategia, "decidir_disputa")
             self.assertEqual([h.id for h in bloqueantes_abiertos(e, "deepseek")], ["F1"])

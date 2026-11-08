@@ -48,7 +48,7 @@ class ContinuarNoReiniciaLaEscalera(unittest.TestCase):
         )
         r.incorporar()
         e = r.incorporar()
-        self.assertEqual(e.sin_progreso, 1)
+        self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
         self.assertEqual(relevos_de(e, "responsable"), 0)
         return r
 
@@ -72,7 +72,8 @@ class ContinuarNoReiniciaLaEscalera(unittest.TestCase):
 
             ciclo.ordenar(r.reg, r.enc, "continuar", "continuar-escalera", ciclo.ahora_iso())
             continuado = r.fold()
-            self.assertEqual(continuado.sin_progreso, 1)
+            self.assertEqual(continuado.estrategia, "diagnosticar_bloqueo")
+            self.assertEqual(relevos_de(continuado, "responsable"), 0)
 
             e = r.incorporar()
             self.assertEqual(relevos_de(e, "responsable"), 1)

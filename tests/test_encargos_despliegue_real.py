@@ -11,6 +11,7 @@ from unittest import mock
 
 from motor import plataforma
 from motor.encargos import ciclo
+from motor.encargos.dominio import relevos_de
 from motor.encargos.registro import Registro
 from tests.entorno import deja_breakaway
 
@@ -194,7 +195,7 @@ class DespliegueReal(unittest.TestCase):
     def test_falla_despliegue_75_ejecuta_rollback_y_nunca_sella(self):
         self.comprobar_falla("d.sh", 75)
 
-    def test_sin_capacidad_espera_sin_consumir_revisor(self):
+    def test_sin_capacidad_espera_sin_consumir_revisor(self):  # no-roja-en-base: la base ya espera sin consumir revisor; la prueba migra del contador a relevos_de
         despliegue = self.despliegue
         reg, _, _, destino, integrar = despliegue
         integrar()
@@ -203,7 +204,7 @@ class DespliegueReal(unittest.TestCase):
         assert final.nivel_alcanzado == "integrado"
         assert final.estado == "esperando_reintento"
         assert "ssh-goncloud" in final.motivo
-        assert final.relevos == 0
+        assert relevos_de(final, "responsable") == 0
         assert not (destino / "pasos").exists()
 
     def test_pedido_ensayo_no_acredita_despliegue_sin_receta(self):

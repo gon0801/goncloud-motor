@@ -9,6 +9,7 @@ from unittest import mock
 from types import SimpleNamespace
 
 from motor.encargos import ciclo, cli
+from motor.encargos.dominio import relevos_de
 from tests import test_reanudar_fase_integrada as integrado
 
 setUpModule = integrado.setUpModule
@@ -109,10 +110,7 @@ class PausaEntreFases(unittest.TestCase):
             final = ciclo._paso_entrega(r.reg, r.fold(), gh, r.hora)
 
             self.assertEqual(final.fase_activa, "motor-despliegue")
-            self.assertEqual(final.relevos_por_rol, ())
-            self.assertEqual(final.relevo_huella_por_rol, ())
-            self.assertEqual(final.relevos, 0)
-            self.assertEqual(final.sin_progreso, 0)
+            self.assertEqual(relevos_de(final, "responsable"), 0)
             self.assertEqual(final.pendientes_entrega, ())
 
     def test_una_fase_sin_commits_no_publica_pr_ni_cierra_forzada(self):

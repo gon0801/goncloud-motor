@@ -23,6 +23,7 @@ from motor.encargos.dominio import (
     bloqueantes_abiertos,
     decision_proceso,
     reducir,
+    relevos_de,
     vista,
 )
 from motor.encargos.registro import Registro
@@ -1448,7 +1449,7 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
             self.addCleanup(r.reg.close)
             antes = r.fold()
             self.assertNotEqual(antes.estado, "necesita_usuario")
-            self.assertEqual(antes.relevos, 1)
+            self.assertEqual(relevos_de(antes, "responsable"), 1)
             self.assertEqual(_ids(antes), ["F1"])
             self.assertEqual(antes.devuelto_con, ("F1",))
             self.assertEqual(antes.intento, "intento-viejo")
@@ -1462,8 +1463,7 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
             self.assertEqual(e.estado, "recibido")
             # Continuar no reinicia la escalera: los hechos no cambiaron.
             self.assertEqual(e.preguntas, preguntas)
-            self.assertEqual(e.relevos, 1)
-            self.assertEqual(e.sin_progreso, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             self.assertEqual(e.devuelto_con, ("F1",))
             self.assertEqual(e.intento, "")
             self.assertEqual(e.conductor, "")
@@ -1510,7 +1510,7 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
                 reserva=False,
                 preguntas=("no queda otro modelo autorizado",),
             )
-            self.assertEqual((trabado.relevos, trabado.sin_progreso), (1, 1))
+            self.assertEqual(relevos_de(trabado, "responsable"), 1)
 
             nuevo = reducir(
                 trabado,
@@ -1520,7 +1520,7 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
             self.assertEqual(nuevo.estado, "recibido")
             self.assertEqual(nuevo.preguntas, trabado.preguntas)
             # Continuar no reinicia la escalera: el hecho no cambió.
-            self.assertEqual((nuevo.relevos, nuevo.sin_progreso), (1, 1))
+            self.assertEqual(relevos_de(nuevo, "responsable"), 1)
             self.assertTrue(
                 decision_proceso(nuevo, "ausente", None, False, True, nuevo.hora)[
                     "lanzar"
