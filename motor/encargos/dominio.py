@@ -1571,7 +1571,12 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encar
             raise TransicionIlegal("asociación a una fase inexistente")
         return e
     if kind == "fases":
-        return _adoptar_fases(e, d, hora)
+        # Un evento que ya trae id viene del registro: se pliega como historia
+        # aunque la enumeración vigente del director sea más estrecha que la del
+        # momento. La propuesta nueva se valida antes de escribir.
+        return _adoptar_fases(
+            e, d, hora, validar_enumeracion=nuevo or "id" not in evento
+        )
     if kind == "nivel_efectivo":
         nivel = str(d.get("nivel") or "")
         if nivel not in ("", "pr", "integrado"):
@@ -2593,7 +2598,9 @@ def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
     return None
 
 
-def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
+def _adoptar_fases(
+    e: Encargo, d: dict, hora: str, validar_enumeracion: bool = True
+) -> Encargo:
     """La propuesta de fases se valida aquí y no borra trabajo ya obtenido.
 
     El formato lo escribe el implementador, nunca el usuario del encargo.
@@ -2659,7 +2666,7 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     for fid in existentes:
         if fid not in vistos:
             raise TransicionIlegal(f"la propuesta omite la fase existente {fid}")
-    enumeracion = _enumeracion_del_director(e)
+    enumeracion = _enumeracion_del_director(e) if validar_enumeracion else None
     if enumeracion is not None:
         ajuste_enum, tokens = enumeracion
         fuera = sorted(
@@ -2855,26 +2862,33 @@ def _limpiar_para_continuar(e: Encargo) -> Encargo:
         e = nivel_pr_derivado(
             con_fase(e, replace(fase, hallazgos=tuple(hallazgos)))
         )
-    return replace(
-        e,
+    limpio = dict(
         preguntas=(),
-        pendientes_entrega=(),
         sin_progreso=0,
         bloqueo_huella="",
         firma_fallo="",
         repeticiones=0,
         vuelta_contada=0,
         devuelto_con=(),
+        fuera_de_alcance=tuple(fuera),
+        motivo="",
+        causa="",
+        reanuda_en="",
+    )
+    if e.no_concluyentes >= TOPE_NO_CONCLUYENTES:
+        # Continuar no es un ajuste ni una respuesta: sin un dato nuevo no
+        # reabre el freno del revisor ni borra lo que el tope dejó pendiente.
+        return replace(e, **limpio)
+    return replace(
+        e,
+        **limpio,
+        pendientes_entrega=(),
         relevo_huella="",
         relevos=0,
         relevos_por_rol=(),
         relevo_huella_por_rol=(),
         no_concluyentes=0,
         no_concluyente_ref=(),
-        fuera_de_alcance=tuple(fuera),
-        motivo="",
-        causa="",
-        reanuda_en="",
     )
 
 
@@ -2883,8 +2897,26 @@ def _retomar(e: Encargo, hora: str) -> Encargo:
 
     La inspección pendiente no lo deja en un estado mudo: el barrido la atiende
     con una capacidad concedida, la devuelve al revisor o la entrega como
-    pendiente visible."""
-    return _retomar_trabajo(e, hora)
+    pendiente visible. Continuar no es información nueva: con el freno del
+    revisor en el tope no se relanza la revisión, se entrega con el pendiente."""
+    resultado = _retomar_trabajo(e, hora)
+    if (
+        e.no_concluyentes >= TOPE_NO_CONCLUYENTES
+        and not resultado.pendientes_entrega
+    ):
+        motivo = (
+            "El revisor no concluyó tras el tope de vueltas seguidas y se "
+            "continuó sin un ajuste ni una respuesta nuevos: se entrega con "
+            "los pendientes abiertos; un ajuste nuevo reabre la revisión."
+        )
+        resultado = replace(
+            resultado,
+            pendientes_entrega=resultado.pendientes_entrega + (motivo,),
+            motivo=motivo,
+            siguiente="entregar con los pendientes abiertos",
+            ultimo_hecho=motivo,
+        )
+    return resultado
 
 
 def _retomar_trabajo(e: Encargo, hora: str) -> Encargo:

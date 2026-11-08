@@ -255,6 +255,43 @@ class BucleInstrumento(unittest.TestCase):
         )
         self.assertLessEqual(len(banco.eventos("producto_listo")), 4)
 
+    def test_la_cuenta_no_disponible_no_pregunta_en_varias_vueltas(self):
+        from motor.encargos.suscripciones import CuentaNoDisponible
+
+        self.sonda["actual"] = RECUPERADO
+        banco = self.banco()
+
+        with mock.patch(
+            "motor.encargos.ciclo.preparar_administrado",
+            side_effect=CuentaNoDisponible("claude", "sin cuota"),
+        ):
+            for _ in range(3):
+                banco.barrer()
+        e = banco.fold()
+        self.assertNotEqual(e.estado, "necesita_usuario")
+        self.assertEqual(banco.eventos("pregunta"), [])
+        self.assertTrue(banco.eventos("proveedor_fallo"))
+
+    def test_la_misma_causa_dos_reparaciones_no_vuelve_al_responsable(self):
+        banco = self.banco()
+        with mock.patch("motor.encargos.aislamiento.sondear", return_value=RECUPERADO):
+            for vuelta in range(3):
+                banco.correr(f"responsable-{vuelta}")
+                banco.fallo_de_comprobacion(
+                    "el comprobador externo no arranca"
+                )
+                banco.correr(f"revisor-{vuelta}")
+        e = banco.fold()
+        self.assertNotEqual(e.estado, "necesita_usuario")
+        self.assertTrue(e.relevos >= 1 or e.pendientes_entrega, e)
+        antes = len(banco.lanzamientos)
+        banco.barrer(3)
+        self.assertEqual(
+            [x for x in banco.lanzamientos[antes:] if x.startswith("responsable:")],
+            [],
+        )
+        self.assertNotEqual(banco.fold().estado, "necesita_usuario")
+
     def test_la_tercera_falla_no_gasta_un_turno_de_reparacion(self):
         banco = self.banco()
         with mock.patch("motor.encargos.aislamiento.sondear", return_value=RECUPERADO):

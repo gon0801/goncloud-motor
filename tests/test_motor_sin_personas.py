@@ -658,10 +658,11 @@ class PreguntaSinRespuestaNoDetieneElMotor(unittest.TestCase):
                 },
                 "sol-1",
             )
-            barrer(r.reg, ahora_iso(), time.time(), _llamador)
-            enc = r.fold()
-            self.assertNotEqual(enc.estado, "necesita_usuario")
-            self.assertIn(enc.estado, ("recibido", "ejecutando"))
+            for _ in range(3):
+                barrer(r.reg, ahora_iso(), time.time(), _llamador)
+                enc = r.fold()
+                self.assertNotEqual(enc.estado, "necesita_usuario")
+                self.assertIn(enc.estado, ("recibido", "ejecutando"))
             self.assertEqual(enc.solicitudes[0].estado, "pregunta")
             self.assertEqual(enc.solicitudes[0].pregunta, "¿sigo sin el log?")
 

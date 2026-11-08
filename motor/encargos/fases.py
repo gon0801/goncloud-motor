@@ -12,7 +12,12 @@ import hashlib
 import json
 from pathlib import Path
 
-from .dominio import Encargo, TransicionIlegal, datos_despliegue
+from .dominio import (
+    Encargo,
+    TransicionIlegal,
+    datos_despliegue,
+    defecto_al_adoptar_fases,
+)
 from .registro import Registro
 
 NOMBRE = "fases.json"
@@ -112,6 +117,10 @@ def adoptar(
         return enc, str(exc)
     if propuesta is None:
         return enc, ""
+    defecto_previo = defecto_al_adoptar_fases(enc, propuesta)
+    if defecto_previo:
+        escribir_texto(error_path, defecto_previo + "\n")
+        return enc, defecto_previo
     huella = hashlib.sha256(
         json.dumps(list(propuesta), sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()[:16]

@@ -454,6 +454,68 @@ def marcar_ruta(reg: Registro, ruta: tuple[str, ...], hora: str) -> None:
                 )
 
 
+def _atender_respuestas_antes_del_barrido(reg: Registro, hora: str) -> None:
+    """Una respuesta registrada se ejecuta o se deniega antes de lanzar.
+
+    El barrido puede abrir el turno del revisor en la misma pasada; si la
+    respuesta se atendiera después, ese primer turno correría sin su resultado.
+    """
+    try:
+        from .ciclo import _directorio, _espacio
+        from .necesidades import continuar_respuestas
+
+        for ident in reg.ids():
+            enc = reg.fold(ident)
+            if enc is None:
+                continue
+            if any(s.estado == "respuesta" for s in enc.solicitudes):
+                continuar_respuestas(
+                    reg,
+                    enc,
+                    _espacio(reg.base, ident),
+                    _directorio(reg.base, ident),
+                    hora,
+                )
+    except Exception:
+        pass
+
+
+def _paso_del_supervisor(
+    reg: Registro,
+    hora: str,
+    lanzar,
+    habilitado: bool,
+    umbral,
+    gh,
+    drenador,
+) -> list[dict]:
+    _atender_respuestas_antes_del_barrido(reg, hora)
+    salida = barrer(
+        reg,
+        hora,
+        time.time(),
+        lanzar if habilitado else None,
+        umbral_s=umbral,
+        gh=gh,
+    )
+    try:
+        if drenador is None:
+            from motor.integraciones.directores import drenar
+
+            drenar(reg)
+        else:
+            drenador.lanzar()
+    except Exception:
+        pass
+    try:
+        from motor.integraciones.directores import conciliar_autoridad
+
+        conciliar_autoridad(reg)
+    except Exception:
+        pass
+    return salida
+
+
 def _supervisor(reg: Registro, args) -> int:
     if args.respaldo and not args.agente:
         raise ValueError("--respaldo necesita --agente como ruta principal")
@@ -482,51 +544,18 @@ def _supervisor(reg: Registro, args) -> int:
     def paso() -> list[dict]:
         hora = ahora_iso()
         marcar_ruta(reg, ruta, hora)
-        habilitado = ruta or any(
+        habilitado = bool(ruta) or any(
             reg.fold(ident).agentes or reg.fold(ident).modelos_solicitados for ident in reg.ids()
         )
-        salida = barrer(
+        return _paso_del_supervisor(
             reg,
             hora,
-            time.time(),
-            lanzar if habilitado else None,
-            umbral_s=args.umbral,
-            gh=_puerto_github(reg.base),
+            lanzar,
+            habilitado,
+            args.umbral,
+            _puerto_github(reg.base),
+            drenador,
         )
-        try:
-            if drenador is None:
-                from motor.integraciones.directores import drenar
-
-                drenar(reg)
-            else:
-                drenador.lanzar()
-        except Exception:
-            pass
-        try:
-            from .ciclo import _directorio, _espacio
-            from .necesidades import continuar_respuestas
-
-            for ident in reg.ids():
-                enc = reg.fold(ident)
-                if enc is None:
-                    continue
-                if any(s.estado == "respuesta" for s in enc.solicitudes):
-                    continuar_respuestas(
-                        reg,
-                        enc,
-                        _espacio(reg.base, ident),
-                        _directorio(reg.base, ident),
-                        hora,
-                    )
-        except Exception:
-            pass
-        try:
-            from motor.integraciones.directores import conciliar_autoridad
-
-            conciliar_autoridad(reg)
-        except Exception:
-            pass
-        return salida
 
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))
