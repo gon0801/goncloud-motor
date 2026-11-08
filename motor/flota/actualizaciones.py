@@ -1,6 +1,7 @@
 """Prepara y publica generaciones de herramientas y configuración compartida."""
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json
 
 import hashlib
 import json
@@ -32,6 +33,10 @@ from .manifiesto import Herramienta, cargar, emitir, guardar, proyectar_tabla
 __all__ = ["actualizar", "comprobar_runtime", "descubrir", "estado", "preparar"]
 
 
+def _opciones_repo(padre: Path, base: str) -> list[Path]:
+    return [padre / (base + "-encargos-3-4"), padre / base]
+
+
 def _repos_predeterminados(motor_origen: Path) -> dict[str, Path]:
     padre = motor_origen.parent
     candidatos = {}
@@ -40,7 +45,7 @@ def _repos_predeterminados(motor_origen: Path) -> dict[str, Path]:
         ("claw", "goncloud-openclaw"),
         ("conf", "goncloud-motor-conf"),
     ):
-        opciones = [padre / (base + "-encargos-3-4"), padre / base]
+        opciones = _opciones_repo(padre, base)
         encontrado = next((p for p in opciones if (p / ".git").exists()), None)
         if encontrado:
             candidatos[nombre] = encontrado
@@ -58,7 +63,12 @@ def _snapshot_repos(repos: dict[str, Path]) -> dict:
 
 
 def _crear_generacion(
-    home: Path, motor_origen: Path, componentes: list[dict], repos: dict, politica: str
+    home: Path,
+    motor_origen: Path,
+    componentes: list[dict],
+    repos: dict,
+    politica: str,
+    claw_routing: str = "",
 ) -> tuple[str, Path]:
     motor = home / "motor"
     if not motor.exists():
@@ -66,6 +76,8 @@ def _crear_generacion(
     base = _git(motor_origen, "rev-parse", "HEAD")
     _git(motor, "fetch", str(motor_origen), base)
     snapshot = {"componentes": componentes, "repos": repos, "politica": politica}
+    if claw_routing:
+        snapshot["claw_routing"] = claw_routing
     contenido = (
         json.dumps(snapshot, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
     )
@@ -151,14 +163,11 @@ def _utilidad_configuracion(gen: Path, contrato: dict) -> dict:
         destino = gen / "herramientas/config-utils"
         destino.mkdir(parents=True, exist_ok=True)
         requisitos = destino / "requirements.txt"
-        requisitos.write_text(
-            "PyYAML=="
+        escribir_texto(requisitos, "PyYAML=="
             + version
             + " "
             + " ".join("--hash=sha256:" + h for h in hashes)
-            + "\n",
-            encoding="utf-8",
-        )
+            + "\n")
         _run(
             [
                 uv,
@@ -197,9 +206,7 @@ def _entorno_configuracion(gen: Path, runtime: dict) -> dict:
 def _plugins_hermes(
     config: Path, home: Path, python: list[str], instalacion: Path, env: dict
 ) -> None:
-    manifiesto = json.loads(
-        (config / "director-plugins.json").read_text(encoding="utf-8")
-    )
+    manifiesto = leer_json((config / "director-plugins.json"))
     director = manifiesto["director"]
     if Path(director).name != director:
         raise ValueError("nombre del director invalido")
@@ -209,17 +216,28 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hermes_cli.profiles import create_profile, get_profile_dir
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+
+def leer_texto(ruta):
+    # Este programa viaja a otro intérprete con python -c: solo stdlib.
+    with open(ruta, 'r', encoding='utf-8') as archivo:
+        return archivo.read()
+
+
+def escribir_texto(ruta, texto):
+    with open(ruta, 'w', encoding='utf-8', newline='\\n') as archivo:
+        archivo.write(texto)
 config, director = Path(sys.argv[3]), sys.argv[2]
 poteto = runpy.run_path(str(config / "plugins/goncloud-team/poteto.py"))
-soul = "\\n\\n".join((config / name).read_text(encoding="utf-8") for name in
+soul = "\\n\\n".join(leer_texto((config / name)) for name in
                      ("shared/CONTRACT.md", "shared/BUSINESS.md", "roles/" + director + ".md")) + "\\n\\n" + poteto["bloque"]()
 profile = get_profile_dir(director)
 if not profile.exists():
     create_profile(director, no_alias=True, description="Director de ensayo", soul=soul)
 else:
     target = profile / "SOUL.md"
-    if target.is_file() and target.read_text(encoding="utf-8") == DEFAULT_SOUL_MD:
-        target.write_text(soul, encoding="utf-8")
+    if target.is_file() and leer_texto(target) == DEFAULT_SOUL_MD:
+        escribir_texto(target, soul)
 """
     _run([*python, "-c", bootstrap, str(instalacion), director, str(config)], env=env)
     for plugin in manifiesto["plugins"]:
@@ -321,7 +339,7 @@ def _copiar_config(gen: Path, repos: dict, runtime: dict, vigente: Path | None =
         )
         runtime["poteto"] = str(paquete.relative_to(gen))
         tabla = hermes / "model-routing.source.json"
-        proyeccion = json.loads(tabla.read_text(encoding="utf-8"))
+        proyeccion = leer_json(tabla)
         proyeccion.update(proyectar_tabla(cargar(gen / "manifesto.toml")))
         _atomico(tabla, proyeccion)
         runtime["politica"] = str(tabla.relative_to(gen))
@@ -644,7 +662,9 @@ def _escribir_claw_desde_tabla(gen: Path, tabla: Path) -> Path:
     return destino
 
 
-def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
+def _reutilizar_config(
+    gen: Path, vigente: Path, runtime: dict, claw_routing: dict | None = None
+) -> None:
     if not (vigente / "config").is_dir():
         raise RuntimeError(
             "la replica no tiene la configuracion exportada de la generacion "
@@ -654,6 +674,15 @@ def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
     prefijos = _prefijos_de(vigente)
     nuevo = str(gen.resolve())
     _copiar_arbol(vigente / "config", gen / "config", prefijos, nuevo)
+    if claw_routing is not None:
+        # Verbatim: el hash que queda en runtime["archivos"] es el publicado.
+        destino = gen / "config/hermes" / "claw-routing.json"
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(claw_routing["contenido"].encode("utf-8"))
+        runtime["claw_routing"] = {
+            "revision": claw_routing["revision"],
+            "sha256": claw_routing["sha256"],
+        }
     perfiles = vigente / "perfiles"
     if perfiles.is_dir():
         _copiar_arbol(perfiles, gen / "perfiles", prefijos, nuevo)
@@ -671,7 +700,7 @@ def _reutilizar_config(gen: Path, vigente: Path, runtime: dict) -> None:
     if tabla.is_file():
         # El manifiesto de la candidata es el importado. La tabla vigente conserva
         # bindings y metadatos; las cadenas salen de esa proyección.
-        proyeccion = json.loads(tabla.read_text(encoding="utf-8"))
+        proyeccion = leer_json(tabla)
         proyeccion.update(proyectar_tabla(cargar(gen / "manifesto.toml")))
         _atomico(tabla, proyeccion)
         runtime["politica"] = str(tabla.relative_to(gen))
@@ -737,6 +766,7 @@ def preparar(
     from .compartida import leer_fuente
 
     fuente = leer_fuente(home)
+    claw_publicado = fuente.get("claw_routing") if fuente is not None else None
     if fuente is not None:
         aprobado = fuente["catalogo"]
         if catalogo is not None and catalogo != aprobado:
@@ -770,7 +800,7 @@ def preparar(
         if fuente is None and (home / "motor").exists():
             anterior = home / "generaciones" / asignar(home) / "runtime.json"
             if anterior.is_file():
-                anteriores = json.loads(anterior.read_text(encoding="utf-8")).get(
+                anteriores = leer_json(anterior).get(
                     "componentes", []
                 )
                 fusion = {c["nombre"]: c for c in anteriores}
@@ -796,14 +826,19 @@ def preparar(
             politica, herramientas=tuple(herramientas[n] for n in sorted(herramientas))
         )
         revision, gen = _crear_generacion(
-            home, motor_origen, componentes, fuentes, emitir(politica)
+            home,
+            motor_origen,
+            componentes,
+            fuentes,
+            emitir(politica),
+            claw_publicado["sha256"] if claw_publicado else "",
         )
         recibo = home / "preparaciones" / (revision + ".json")
         runtime_path = gen / "runtime.json"
         if (
             recibo.exists()
             and runtime_path.is_file()
-            and json.loads(recibo.read_text(encoding="utf-8")).get("estado") == "preparada"
+            and leer_json(recibo).get("estado") == "preparada"
         ):
             comprobar_runtime(gen)
             return {
@@ -840,7 +875,7 @@ def preparar(
             gen_vigente = home / "generaciones" / asignar(home)
             ruta_vigente = gen_vigente / "runtime.json"
             if ruta_vigente.is_file():
-                runtime_vigente = json.loads(ruta_vigente.read_text(encoding="utf-8"))
+                runtime_vigente = leer_json(ruta_vigente)
                 vigentes = set(runtime_vigente.get("lanzadores") or {})
         except (OSError, ValueError):
             vigentes = set()
@@ -938,7 +973,7 @@ def preparar(
                         "reutilizar config/, perfiles/ y poteto. No se consultan "
                         "checkouts de conf ni de Hermes. Se conserva la instalacion vigente."
                     )
-                _reutilizar_config(gen, gen_vigente, runtime)
+                _reutilizar_config(gen, gen_vigente, runtime, claw_publicado)
             else:
                 _copiar_config(gen, fuentes, runtime, vigente=gen_vigente)
             runtime["archivos"] = {}
@@ -994,6 +1029,11 @@ def preparar(
                     "runtime": str(runtime_path),
                     "integridad_runtime": _sha256(runtime_path),
                     "componentes": nombres,
+                    **(
+                        {"claw_routing": runtime["claw_routing"]}
+                        if "claw_routing" in runtime
+                        else {}
+                    ),
                 },
             )
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -1030,7 +1070,7 @@ def _comprobar_runtime(gen: Path, recibo: dict) -> None:
         raise ValueError(
             "runtime de la candidata alterado; se conserva la instalacion vigente"
         )
-    runtime = json.loads(path.read_text(encoding="utf-8"))
+    runtime = leer_json(path)
     for nombre, huella in runtime.get("archivos", {}).items():
         ruta = Path(nombre) if Path(nombre).is_absolute() else gen / nombre
         if _sha256(ruta) != huella:
@@ -1059,11 +1099,11 @@ def _comprobar_claw(gen: Path, runtime: dict) -> None:
 def comprobar_runtime(gen: Path) -> dict:
     gen = gen.resolve()
     recibo_path = gen.parents[1] / "preparaciones" / (gen.name + ".json")
-    recibo = json.loads(recibo_path.read_text(encoding="utf-8"))
+    recibo = leer_json(recibo_path)
     if recibo.get("estado") != "preparada":
         raise ValueError("la candidata no tiene una preparacion comprobada")
     _comprobar_runtime(gen, recibo)
-    runtime = json.loads((gen / "runtime.json").read_text(encoding="utf-8"))
+    runtime = leer_json((gen / "runtime.json"))
     if not runtime.get("lanzadores"):
         raise ValueError("la candidata no tiene herramientas utilizables")
     pendientes = {
@@ -1136,12 +1176,12 @@ def estado(home: Path) -> dict:
     generacion = asignar(home)
     runtime_path = home / "generaciones" / generacion / "runtime.json"
     runtime = (
-        json.loads(runtime_path.read_text(encoding="utf-8"))
+        leer_json(runtime_path)
         if runtime_path.is_file()
         else {}
     )
     recibos = [
-        json.loads(p.read_text(encoding="utf-8"))
+        leer_json(p)
         for p in sorted((home / "preparaciones").glob("*.json"))
     ]
     deseadas = (

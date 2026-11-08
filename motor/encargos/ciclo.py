@@ -1,6 +1,7 @@
 """Ciclo de vida del encargo. No decide el trabajo de la aplicación."""
 
 from __future__ import annotations
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import hashlib
 import json
@@ -541,7 +542,7 @@ def _directorio(base: Path, encargo_id: str) -> Path:
     raiz.mkdir(parents=True, exist_ok=True)
     actual = raiz / "actual"
     if actual.is_file():
-        nombre = actual.read_text(encoding="utf-8").strip()
+        nombre = leer_texto(actual).strip()
         if nombre.startswith("intento-") and "/" not in nombre and "\\" not in nombre:
             return raiz / nombre
     return raiz
@@ -576,7 +577,7 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
         indice_destino = destino / ".kimi-code/session_index.jsonl"
         indice_destino.parent.mkdir(parents=True, exist_ok=True)
         filas = []
-        for linea in indice_kimi.read_text(encoding="utf-8").splitlines():
+        for linea in leer_texto(indice_kimi).splitlines():
             if not linea.strip():
                 continue
             try:
@@ -592,7 +593,7 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
             if antigua.is_relative_to(origen):
                 fila["sessionDir"] = str(destino / antigua.relative_to(origen))
             filas.append(json.dumps(fila))
-        indice_destino.write_text("\n".join(filas) + ("\n" if filas else ""), encoding="utf-8")
+        escribir_texto(indice_destino, "\n".join(filas) + ("\n" if filas else ""))
 
     muse = destino / ".local/share/muse/session-index.db"
     if muse.is_file() and not muse.is_symlink():
@@ -689,7 +690,7 @@ def _leer_proc(directorio: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return leer_json(path)
     except (OSError, ValueError):
         return None
 
@@ -1131,7 +1132,7 @@ def _barrer_encargos(
         observacion_path = directorio / "herramienta.json"
         if enc.proc and observacion_path.is_file():
             try:
-                obs = json.loads(observacion_path.read_text(encoding="utf-8"))
+                obs = leer_json(observacion_path)
                 secuencia = int(obs.get("secuencia") or 0)
             except (OSError, ValueError, TypeError):
                 secuencia = 0
@@ -1235,10 +1236,20 @@ def _barrer_encargos(
             elif _aplica_entrega(enc):
                 antes = len(registro.eventos(encargo_id))
                 enc = _paso_entrega(registro, enc, gh, hora)
-                sin_llm = (
-                    len(registro.eventos(encargo_id)) > antes
-                    or bool(enc.reanuda_en)
+                sin_avance = (
+                    len(registro.eventos(encargo_id)) == antes
+                    and not enc.reanuda_en
                 )
+                sin_llm = not sin_avance or (
+                    enc.rol == "revisor" and _revision_aprobada_vigente(enc)
+                )
+                if (
+                    sin_avance
+                    and enc.rol == "revisor"
+                    and _revision_aprobada_vigente(enc)
+                ):
+                    enc = _esperar_entrega_sin_avance(registro, enc, hora)
+                    sin_llm = True
             elif _revision_aprobada_vigente(enc):
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
                 sin_llm = enc.estado == "terminado" or (
@@ -1383,7 +1394,7 @@ def _vigilar_quietud(
         return enc
     ultimo = registro.ultimo_evento(enc.id)
     try:
-        previo = json.loads(ruta.read_text(encoding="utf-8"))
+        previo = leer_json(ruta)
         if not isinstance(previo, dict):
             previo = {}
     except (OSError, ValueError):
@@ -1415,12 +1426,9 @@ def _vigilar_quietud(
         ruta.unlink(missing_ok=True)
         return registro.fold(enc.id) or enc
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    ruta.write_text(
-        json.dumps(
+    escribir_texto(ruta, json.dumps(
             {"evento": ultimo, "vueltas": vueltas, "desde": desde, "visto": epoch}
-        ),
-        encoding="utf-8",
-    )
+        ))
     return enc
 
 
@@ -1431,7 +1439,7 @@ def _pedidos_efecto(espacio: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
-        datos = json.loads(path.read_text(encoding="utf-8-sig"))
+        datos = leer_json(path)
     except (OSError, ValueError) as exc:
         raise ValueError(f"pedido-efecto.json no se puede leer: {exc}") from exc
     if isinstance(datos, dict):
@@ -1960,7 +1968,7 @@ def _juicio_reparado(
     ruta = Path(artefacto)
     if clase == "juicio:referencia" or ruta.name == "revision.json":
         try:
-            referencia = json.loads(ruta.read_text(encoding="utf-8"))
+            referencia = leer_json(ruta)
             if not isinstance(referencia, dict):
                 return False
             if _version_de_referencia(referencia, enc) != (
@@ -2972,7 +2980,7 @@ def _incorporar(
         _publica(directorio / "incorporado", hora)
         return enc
     if outcome_path.is_file():
-        outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+        outcome = leer_json(outcome_path)
         sesion_runtime = str(outcome.get("sesion_runtime") or "")
         if sesion_runtime:
             registro.anotar(
@@ -2985,7 +2993,7 @@ def _incorporar(
             )
             enc = registro.fold(enc.id)
         spec = (
-            json.loads((directorio / "arranque.json").read_text(encoding="utf-8"))
+            leer_json((directorio / "arranque.json"))
             if (directorio / "arranque.json").is_file()
             else {}
         )
@@ -3237,7 +3245,7 @@ def _incorporar_responsable(
         esperadas = declaradas
         if path.is_file():
             try:
-                candidata = json.loads(path.read_text(encoding="utf-8"))
+                candidata = leer_json(path)
             except ValueError:
                 candidata = None
             if candidata and _observacion_corresponde(
@@ -3333,9 +3341,7 @@ def _incorporar_responsable(
 def _juicio_de_referencia(enc: Encargo, directorio: Path):
     """El juicio que la referencia señala, o None si no se puede leer."""
     try:
-        referencia = json.loads(
-            (directorio / "revision.json").read_text(encoding="utf-8")
-        )
+        referencia = leer_json((directorio / "revision.json"))
         return leer_juicio(
             Path(referencia["resultado"]), alcance_de(enc),
             bloqueantes_abiertos(enc, "deepseek"),
@@ -3487,7 +3493,7 @@ def _incorporar_revisor(
         _publica(directorio / "incorporado", hora)
         return registro.fold(enc.id)
     try:
-        referencia = json.loads(ref_path.read_text(encoding="utf-8"))
+        referencia = leer_json(ref_path)
         if not isinstance(referencia, dict) or not str(
             referencia.get("resultado") or ""
         ):
@@ -3607,7 +3613,7 @@ def _alcance_para_revision(
     if observacion is None:
         for fuente in sorted(raiz.glob("intento-*/observaciones.json")):
             try:
-                candidata = json.loads(fuente.read_text(encoding="utf-8"))
+                candidata = leer_json(fuente)
             except (OSError, ValueError):
                 continue
             if (
@@ -4013,6 +4019,24 @@ def _entrega_devuelta_de_la_version(registro: Registro, enc: Encargo) -> bool:
         if ev["kind"] == "entrega_devuelta":
             return ev["data"].get("version") == version
     return False
+
+
+def _esperar_entrega_sin_avance(
+    registro: Registro, enc: Encargo, hora: str
+) -> Encargo:
+    """La aprobación ya cubre el producto y el paso de entrega no tiene nada
+    nuevo que publicar: espera visible, sin gastar otro turno del revisor y sin
+    tope de rondas ni pregunta al propietario. Al vencer el plazo, el barrido
+    vuelve a mirar la entrega por su cuenta."""
+    marcar_espera(
+        registro,
+        enc.id,
+        "la revisión aprobada ya cubre el producto y la entrega no tiene nada "
+        "nuevo que publicar; no se relanza al revisor",
+        _reanuda_en(300),
+        hora,
+    )
+    return registro.fold(enc.id) or enc
 
 
 def _fallo_de_repo(
@@ -4816,9 +4840,7 @@ def _anotar_lectura_deepseek(
 
 def _marca_deepseek(directorio: Path) -> dict:
     try:
-        marca = json.loads(
-            (directorio / "deepseek_lectura.json").read_text(encoding="utf-8")
-        )
+        marca = leer_json((directorio / "deepseek_lectura.json"))
     except (OSError, ValueError):
         return {}
     return marca if isinstance(marca, dict) else {}
@@ -4829,12 +4851,9 @@ def _marcar_lectura_deepseek(
 ) -> None:
     try:
         directorio.mkdir(parents=True, exist_ok=True)
-        (directorio / "deepseek_lectura.json").write_text(
-            json.dumps(
+        escribir_texto((directorio / "deepseek_lectura.json"), json.dumps(
                 {"sha": sha, "epoch": epoch, "error": error, "aviso": aviso}
-            ),
-            encoding="utf-8",
-        )
+            ))
     except OSError:
         pass
 
@@ -5030,9 +5049,7 @@ def _cierre_epoch(registro: Registro, enc: Encargo) -> float:
 
 def _marca_deepseek_cerrado(directorio: Path) -> dict:
     try:
-        marca = json.loads(
-            (directorio / "deepseek_cerrado.json").read_text(encoding="utf-8")
-        )
+        marca = leer_json((directorio / "deepseek_cerrado.json"))
     except (OSError, ValueError):
         return {"shas": {}, "inicios": {}, "desde": 0.0}
     if not isinstance(marca, dict):
@@ -5058,17 +5075,14 @@ def _marca_deepseek_cerrado(directorio: Path) -> dict:
 def _marcar_deepseek_cerrado(directorio: Path, marca: dict) -> None:
     try:
         directorio.mkdir(parents=True, exist_ok=True)
-        (directorio / "deepseek_cerrado.json").write_text(
-            json.dumps(
+        escribir_texto((directorio / "deepseek_cerrado.json"), json.dumps(
                 {
                     "shas": marca.get("shas") or {},
                     "inicios": marca.get("inicios") or {},
                     "desde": float(marca.get("desde") or 0),
                 },
                 sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
+            ))
     except OSError:
         pass
 
@@ -5834,7 +5848,7 @@ def _ruta_sondeo_ci(registro: Registro, encargo_id: str) -> Path:
 
 def _leer_sondeo_ci(ruta: Path) -> dict:
     try:
-        doc = json.loads(ruta.read_text(encoding="utf-8"))
+        doc = leer_json(ruta)
     except (OSError, ValueError):
         return {}
     return doc if isinstance(doc, dict) else {}
@@ -5844,9 +5858,7 @@ def _guardar_sondeo_ci(ruta: Path, doc: dict) -> None:
     try:
         ruta.parent.mkdir(parents=True, exist_ok=True)
         temporal = ruta.with_suffix(".json.tmp")
-        temporal.write_text(
-            json.dumps(doc, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        escribir_texto(temporal, json.dumps(doc, ensure_ascii=False) + "\n")
         temporal.replace(ruta)
     except OSError:
         pass
@@ -6254,7 +6266,7 @@ def _observacion_de_la_version(
     if not path.is_file():
         return None
     try:
-        candidata = json.loads(path.read_text(encoding="utf-8"))
+        candidata = leer_json(path)
     except (OSError, ValueError):
         return None
     if _observacion_corresponde(candidata, version, declaradas):
@@ -7683,7 +7695,7 @@ def _lanzar_uno_en_turno(
         for fuente in sorted(raiz.glob("intento-*/observaciones*.json")):
             copia = runtime / "observaciones" / fuente.parent.name / fuente.name
             copia.parent.mkdir(parents=True, exist_ok=True)
-            _publica(copia, fuente.read_text(encoding="utf-8"))
+            _publica(copia, leer_texto(fuente))
             contenido = contenido.replace(str(fuente), str(copia))
             for nota in enc.procedimiento:
                 _, separador, referencia = nota.partition("observaciones del supervisor ")
@@ -7714,7 +7726,7 @@ def _lanzar_uno_en_turno(
         try:
             flota_home_path = registro.base / "flota-home.json"
             if flota_home_path.is_file():
-                flota_doc = json.loads(flota_home_path.read_text(encoding="utf-8"))
+                flota_doc = leer_json(flota_home_path)
                 home_flota = str(flota_doc.get("home") or "")
                 if home_flota:
                     from motor.flota.control import _cerrojo_flota
@@ -8279,8 +8291,8 @@ def _soltar_conductor(registro: Registro, enc: Encargo, hora: str) -> bool:
         and not (directorio / "incorporado").is_file()
     ):
         try:
-            ref = json.loads((directorio / "revision.json").read_text(encoding="utf-8"))
-            juicio = json.loads(Path(ref["resultado"]).read_text(encoding="utf-8-sig"))
+            ref = leer_json((directorio / "revision.json"))
+            juicio = leer_json(Path(ref["resultado"]))
             pendiente = pendiente or juicio.get("clase") in (
                 "confirmado",
                 "producto_aprobado",
@@ -8448,13 +8460,9 @@ def _resultado_desde_fold(
         }
         return observacion, juicio
     try:
-        referencia = json.loads(
-            (directorio / "revision.json").read_text(encoding="utf-8")
-        )
-        observacion = json.loads(
-            Path(referencia["observaciones"]).read_text(encoding="utf-8")
-        )
-        juicio = json.loads(Path(referencia["resultado"]).read_text(encoding="utf-8-sig"))
+        referencia = leer_json((directorio / "revision.json"))
+        observacion = leer_json(Path(referencia["observaciones"]))
+        juicio = leer_json(Path(referencia["resultado"]))
         return observacion, juicio
     except (OSError, ValueError, KeyError):
         return {}, None

@@ -24,6 +24,7 @@ sys.path.insert(
 )  # la raíz del repo: `import motor`
 
 from motor import llamadas  # noqa: E402
+from motor.io import escribir_texto, leer_json  # noqa: E402
 
 
 def cli_real(cli: str) -> str | None:
@@ -52,7 +53,7 @@ def main() -> int:
         return subprocess.call(
             [real, *args], env=entorno
         )  # fuera de un encargo: pasa sin contar
-    cupos = json.loads(cupos_f.read_text(encoding="utf-8"))
+    cupos = leer_json(cupos_f)
     home = Path(cupos["home"])
     modelo, cuenta = llamadas.elige_ruta(cli, args, cupos["rutas"])
     clave = f"llamada-{uuid.uuid4().hex[:12]}"
@@ -83,13 +84,13 @@ def main() -> int:
         "pid": os.getpid(),
         "fin": None,
     }
-    (reg / f"{clave}.json").write_text(json.dumps(rec), encoding="utf-8")
+    escribir_texto((reg / f"{clave}.json"), json.dumps(rec))
     try:
         salida = subprocess.call([real, *args], env=entorno)
     finally:
         llamadas.quita(home, clave)
         rec["fin"] = time.time()
-        (reg / f"{clave}.json").write_text(json.dumps(rec), encoding="utf-8")
+        escribir_texto((reg / f"{clave}.json"), json.dumps(rec))
     return salida
 
 

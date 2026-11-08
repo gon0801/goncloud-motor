@@ -53,6 +53,20 @@ ADAPTADORES = {
 }
 
 
+# David, 1-nov: por OpenCode Go solo corre DeepSeek. El plan no se abre a
+# cualquier `opencode-go/*` aunque el cliente sepa hablarlo.
+OPENCODE_GO_UNICO = "opencode-go/deepseek-v4.1-flash"
+
+
+def validar_modelo(referencia: str) -> None:
+    """Rechaza un modelo que el plan no autoriza, antes de encolarlo."""
+    if referencia.startswith("opencode-go/") and referencia != OPENCODE_GO_UNICO:
+        raise ValueError(
+            "OpenCode Go solo admite "
+            f"{OPENCODE_GO_UNICO}; recibido: {referencia}"
+        )
+
+
 def modelo_canonico(referencia: str) -> str:
     if referencia.startswith("kimi/"):
         return "kimi-code/" + referencia.partition("/")[2]

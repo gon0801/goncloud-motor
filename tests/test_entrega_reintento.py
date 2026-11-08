@@ -15,10 +15,11 @@ from unittest import mock
 from motor.encargos import ciclo, resumen
 from tests.test_flujo_revisiones import (
     _entrega_pr,
-    _GhConDeepSeek,
     _lanzaria,
     sonda_sin_aislamiento_del_host,
 )
+
+from tests.dobles import github_con_hallazgos
 
 
 def setUpModule():
@@ -35,7 +36,7 @@ def _barrido(r, gh, t: float):
 
 
 class FalloRepetidoDeEntrega(unittest.TestCase):
-    def test_la_misma_falla_de_git_dos_veces_devuelve_al_responsable(self):
+    def test_la_misma_falla_de_git_dos_veces_devuelve_al_responsable(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         causa = "git push fallo: remote rejected: protected branch hook declined"
         llamadas = []
 
@@ -44,7 +45,7 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             return ("", causa)
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fallo-git-2", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "fallo-git-2", github_con_hallazgos)
             with mock.patch.object(ciclo, "_commit_push", side_effect=falla):
                 e1 = vuelta("hola")
                 self.assertEqual(e1.estado, "esperando_reintento")
@@ -81,10 +82,10 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertEqual(e3.estado, "recibido")
             self.assertEqual(e3.estrategia, "investigar")
 
-    def test_el_aviso_dice_que_el_motor_dejo_de_reintentar(self):
+    def test_el_aviso_dice_que_el_motor_dejo_de_reintentar(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         causa = "git push fallo: remote rejected: protected branch hook declined"
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fallo-git-aviso", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "fallo-git-aviso", github_con_hallazgos)
             with mock.patch.object(ciclo, "_commit_push", return_value=("", causa)):
                 e1 = vuelta("hola")
                 eventos_e1 = list(r.reg.eventos(r.enc))
@@ -111,14 +112,14 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertIn("protected branch hook declined", " ".join(alertas))
             self.assertEqual(resumen._decisiones_de(e2), [])
 
-    def test_el_aviso_con_causa_larga_dice_el_corte(self):
+    def test_el_aviso_con_causa_larga_dice_el_corte(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         causa = (
             "git push fallo: remote rejected: protected branch hook declined "
             "by repository policy at https://github.com/gon0801/goncloud-motor"
         )
         self.assertEqual(len(causa), 129)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fallo-git-causa", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "fallo-git-causa", github_con_hallazgos)
             with mock.patch.object(ciclo, "_commit_push", return_value=("", causa)):
                 e1 = vuelta("hola")
                 e2 = _barrido(r, vuelta.gh, _epoch(e1.reanuda_en))
@@ -136,7 +137,7 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
     def test_corregir_solo_el_repositorio_vuelve_a_entregar(self):
         causa = "git push fallo: remote rejected: protected branch hook declined"
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fallo-git-repo", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "fallo-git-repo", github_con_hallazgos)
             with mock.patch.object(ciclo, "_commit_push", return_value=("", causa)):
                 e1 = vuelta("hola")
                 e2 = _barrido(r, vuelta.gh, _epoch(e1.reanuda_en))
@@ -156,11 +157,11 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertIn(e3.nivel_alcanzado, ("pr", "pr_abierto"))
             self.assertEqual(len(r.eventos("espera")), 1)
 
-    def test_dos_clases_distintas_no_pierden_el_segundo_fallo(self):
+    def test_dos_clases_distintas_no_pierden_el_segundo_fallo(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         causa_add = "git add fallo: path is ignored"
         causa_push = "git push fallo: remote rejected"
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fallo-dos-clases", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "fallo-dos-clases", github_con_hallazgos)
             with mock.patch.object(
                 ciclo,
                 "_commit_push",
@@ -177,13 +178,13 @@ class FalloRepetidoDeEntrega(unittest.TestCase):
             self.assertEqual(e2.estado, "esperando_reintento")
             self.assertEqual(len(r.eventos("espera")), 2)
 
-    def test_una_falla_transitoria_sigue_reintentando(self):
+    def test_una_falla_transitoria_sigue_reintentando(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         causa = (
             "git push fallo: fatal: unable to access 'https://github.com/o/r.git/': "
             "Could not resolve host: github.com"
         )
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "fallo-git-red", _GhConDeepSeek)
+            vuelta, r = _entrega_pr(self, tmp, "fallo-git-red", github_con_hallazgos)
             with mock.patch.object(ciclo, "_commit_push", return_value=("", causa)):
                 e1 = vuelta("hola")
                 self.assertEqual(e1.estado, "esperando_reintento")

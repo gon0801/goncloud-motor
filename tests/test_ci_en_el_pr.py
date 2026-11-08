@@ -11,12 +11,10 @@ import tempfile
 import time
 import unittest
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 
 from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso
-from motor.github import veredicto
 from motor.encargos.dominio import (
     TransicionIlegal,
     con_fase,
@@ -25,10 +23,12 @@ from motor.encargos.dominio import (
 )
 from motor.integraciones import directores
 from tests.test_flujo_revisiones import (
-    _GhConDeepSeek,
     _entrega_pr,
     sonda_sin_aislamiento_del_host,
 )
+
+from tests.dobles import github_con_corridas
+
 
 LOG_BATERIA = "ERROR: 3 failed, 0 passed in tests/test_bateria.py"
 LOG_GATE = "leaks found: 13\nfinding: generic-api-key en docs/viejo.md"
@@ -107,101 +107,6 @@ def setUpModule():
     sonda_sin_aislamiento_del_host()
 
 
-class _GhConCorridas(_GhConDeepSeek):
-    titulos = ()
-
-    def __init__(self, d):
-        super().__init__(d)
-        self.relanzadas = []
-        self.checks_llamadas = 0
-        self._reintentos = {}
-        self._errores = {}
-
-    def fallar_checks(self, repo: str, veces: int = 1) -> None:
-        self._errores[str(repo)] = veces
-
-    def checks(self, repo, numero, sha, extra, relanzadas=(), *, base_politica=""):
-        self.checks_llamadas += 1
-        if self._errores.get(str(repo), 0) > 0:
-            self._errores[str(repo)] -= 1
-            raise RuntimeError("GitHub no respondió")
-        cfg = self._cfg(repo)
-        estados = {
-            "success": ("completed", "success"),
-            "failure": ("completed", "failure"),
-            "timed_out": ("completed", "timed_out"),
-            "startup_failure": ("completed", "startup_failure"),
-            "in_progress": ("in_progress", None),
-            "cancelled": ("completed", "cancelled"),
-            "skipped": ("completed", "skipped"),
-            "neutral": ("completed", "neutral"),
-        }
-        intento = self._reintentos.get(str(repo), 0)
-        no_empezo = intento > 0 and bool(cfg.get("reintento_no_empezado"))
-        if no_empezo:
-            corridas = cfg.get("corridas") or {}
-            intento_lectura = 0
-        elif intento > 0 and "corridas_tras_reintento" in cfg:
-            corridas = cfg["corridas_tras_reintento"]
-            intento_lectura = intento
-        else:
-            corridas = (cfg.get("corridas_sha") or {}).get(
-                sha, cfg.get("corridas") or {}
-            )
-            intento_lectura = intento
-        completado = _VACIO if intento_lectura == 0 else ahora_iso()
-        runs = []
-        for nombre, estado in corridas.items():
-            status, conclusion = estados[estado]
-            rid = 40000 + intento_lectura * 1000 + len(runs)
-            job_id = rid
-            runs.append(
-                {
-                    "name": nombre,
-                    "status": status,
-                    "conclusion": conclusion,
-                    "completed_at": completado,
-                    "id": job_id,
-                    "html_url": f"https://github.com/o/r/actions/runs/{rid}/job/{job_id}",
-                    "details_url": f"https://github.com/o/r/actions/runs/{rid}/job/{job_id}",
-                }
-            )
-        return veredicto(sha, tuple(extra), runs, "")
-
-    def log_fallido_job(self, repo, run_id, job, job_id=""):
-        logs = self._cfg(repo).get("logs_job") or {}
-        return str(logs.get(job, ""))
-
-    def relanzar_fallidas(self, repo, run_id):
-        self.relanzadas.append((repo, str(run_id)))
-        self._reintentos[str(repo)] = self._reintentos.get(str(repo), 0) + 1
-
-
-class _GhSinRunId(_GhConCorridas):
-    """Las corridas no traen el id del run (sin urls): el rerun es imposible."""
-
-    def checks(self, repo, numero, sha, extra, relanzadas=(), *, base_politica=""):
-        self.checks_llamadas += 1
-        cfg = self._cfg(repo)
-        estados = {
-            "cancelled": ("completed", "cancelled"),
-            "failure": ("completed", "failure"),
-        }
-        runs = []
-        for nombre, estado in (cfg.get("corridas") or {}).items():
-            status, conclusion = estados[estado]
-            runs.append(
-                {
-                    "name": nombre,
-                    "status": status,
-                    "conclusion": conclusion,
-                    "completed_at": _VACIO,
-                    "id": 50001,
-                }
-            )
-        return veredicto(sha, tuple(extra), runs, "")
-
-
 def _segunda_corrida(vuelta, repo: str, corridas: dict, logs: dict | None = None):
     ruta = vuelta.gh.d / "repos.json"
     cfg = json.loads(ruta.read_text())
@@ -240,7 +145,7 @@ def _sondeos(r):
 class EntregaSinCiAntesDelPr(unittest.TestCase):
     def test_termina_con_la_aprobacion_sin_pedir_ci(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ci-pr-1", _GhConCorridas)
+            vuelta, r = _entrega_pr(self, tmp, "ci-pr-1", github_con_corridas)
             e = vuelta("hola\n")
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(e.nivel_alcanzado, "pr")
@@ -258,7 +163,7 @@ class RojoDePruebaVuelveAlResponsable(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-2",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
             )
             e = vuelta("hola\n")
@@ -292,7 +197,7 @@ class RojoDePruebaVuelveAlResponsable(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-2b",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
             )
             e = vuelta("hola\n")
@@ -310,9 +215,9 @@ class RojoDePruebaVuelveAlResponsable(unittest.TestCase):
 
 
 class FoldDeEventosRetirados(unittest.TestCase):
-    def test_un_registro_viejo_con_ci_producto_o_ci_revision_rojo_sigue_plegando(self):
+    def test_un_registro_viejo_con_ci_producto_o_ci_revision_rojo_sigue_plegando(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ci-pr-fold", _GhConCorridas)
+            vuelta, r = _entrega_pr(self, tmp, "ci-pr-fold", github_con_corridas)
             e = vuelta("hola\n")
             for kind, data, ukey in (
                 ("ci_producto", {"version": "vieja", "fallas": []}, "legado-ci-producto"),
@@ -335,7 +240,7 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-3",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"gate": "failure"}, "logs_job": {"gate": LOG_GATE}},
             )
             e = vuelta("hola\n")
@@ -365,7 +270,7 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-4",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"gate": "failure"}, "logs_job": {"gate": LOG_GATE}},
             )
             e = vuelta("hola\n")
@@ -401,7 +306,7 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             logs = {"gate": LOG_GATE_LARGO_CON_HALLAZGOS}
             vuelta, r = _entrega_pr(
-                self, tmp, "ci-pr-largo", _GhConCorridas,
+                self, tmp, "ci-pr-largo", github_con_corridas,
                 {"corridas": {"gate": "failure"}, "logs_job": logs},
             )
             e = vuelta("hola\n")
@@ -420,7 +325,7 @@ class RojoDeTuberiaSeRelanzaUnaVez(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-rerun",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"gate": "failure"}, "logs_job": {"gate": LOG_GATE}},
             )
             e = vuelta("hola\n")
@@ -451,7 +356,7 @@ class ElReintentoSinEmpezarNoSondeaCadaBarrido(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-error-limite",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "in_progress"}},
             )
             e = vuelta("hola\n")
@@ -480,7 +385,7 @@ class ElReintentoSinEmpezarNoSondeaCadaBarrido(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-error-limite-verde",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "in_progress"}},
             )
             e = vuelta("hola\n")
@@ -509,7 +414,7 @@ class ElReintentoSinEmpezarNoSondeaCadaBarrido(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-rerun-tarde",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"gate": "failure"}, "logs_job": {"gate": LOG_GATE}},
             )
             e = vuelta("hola\n")
@@ -539,8 +444,8 @@ class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-sin-run-id",
-                _GhSinRunId,
-                {"corridas": {"bateria": "cancelled"}},
+                github_con_corridas,
+                {"corridas": {"bateria": "cancelled"}, "sin_run_id": True},
             )
             e = vuelta("hola\n")
             repo = e.entrega.repo
@@ -564,7 +469,7 @@ class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-cancel-1",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "cancelled"}},
             )
             e = vuelta("hola\n")
@@ -588,7 +493,7 @@ class CancelacionTambienSeRelanzaUnaVez(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-cancel-2",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "cancelled"}},
             )
             e = vuelta("hola\n")
@@ -620,7 +525,7 @@ class RojoInciertoNoDevuelveNiReintenta(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-5",
-                _GhConCorridas,
+                github_con_corridas,
                 {
                     "corridas": {"bateria": "failure"},
                     "logs_job": {"bateria": LOG_INCIERTO},
@@ -646,7 +551,7 @@ class ElSondeoSeEspacia(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-sondeo",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "in_progress"}},
             )
             e = vuelta("hola\n")
@@ -669,7 +574,7 @@ class ElSondeoSeEspacia(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-sondeo-tope",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "in_progress"}},
             )
             e = vuelta("hola\n")
@@ -695,7 +600,7 @@ class ElSondeoSeEspacia(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-sondeo-final",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "in_progress"}},
             )
             e = vuelta("hola\n")
@@ -722,7 +627,7 @@ class UnErrorDeLecturaNoPierdeElResultado(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-error",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
             )
             e = vuelta("hola\n")
@@ -744,7 +649,7 @@ class ElBarridoRevisaElCiDelPr(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-barrido",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
             )
             e = vuelta("hola\n")
@@ -764,7 +669,7 @@ class UnRojoNoRebajaUnEncargoIntegrado(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-integrado",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "failure"}, "logs_job": {"bateria": LOG_BATERIA}},
             )
             e = vuelta("hola\n")
@@ -799,9 +704,9 @@ class UnRojoNoRebajaUnEncargoIntegrado(unittest.TestCase):
 
 
 class ElCierrePorAtajoConciliaLaCabeza(unittest.TestCase):
-    def test_un_head_abierto_distinto_no_se_cierra_con_el_sha_guardado(self):
+    def test_un_head_abierto_distinto_no_se_cierra_con_el_sha_guardado(self):  # no-roja-en-base: solo cambió el doble de GitHub; el comportamiento probado ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r = _entrega_pr(self, tmp, "ci-pr-head", _GhConCorridas)
+            vuelta, r = _entrega_pr(self, tmp, "ci-pr-head", github_con_corridas)
             e = vuelta("hola\n")
             fase = e.fase_actual
             producto = fase.producto
@@ -977,7 +882,7 @@ class CorreccionTrasTerminar(unittest.TestCase):
         # y el encargo, ya terminado, rechazó la corrección (rec_4e0e48b70680).
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "corr-terminado", _GhConCorridas,
+                self, tmp, "corr-terminado", github_con_corridas,
                 {"corridas": {"gate": "success"}},
             )
             self.addCleanup(r.reg.close)
@@ -1002,7 +907,7 @@ class CorreccionTrasTerminar(unittest.TestCase):
     def test_una_correccion_con_el_pr_ya_mergeado_se_rechaza(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "corr-mergeado", _GhConCorridas,
+                self, tmp, "corr-mergeado", github_con_corridas,
                 {"corridas": {"gate": "success"}},
             )
             self.addCleanup(r.reg.close)
@@ -1021,7 +926,7 @@ class CorreccionTrasTerminar(unittest.TestCase):
     def test_sin_poder_leer_el_pr_la_correccion_se_rechaza(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "corr-sin-gh", _GhConCorridas,
+                self, tmp, "corr-sin-gh", github_con_corridas,
                 {"corridas": {"gate": "success"}},
             )
             self.addCleanup(r.reg.close)
@@ -1033,7 +938,7 @@ class CorreccionTrasTerminar(unittest.TestCase):
     def test_sin_puerto_explicito_usa_el_github_del_registro(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "corr-puerto", _GhConCorridas,
+                self, tmp, "corr-puerto", github_con_corridas,
                 {"corridas": {"gate": "success"}},
             )
             self.addCleanup(r.reg.close)
@@ -1048,7 +953,7 @@ class CorreccionTrasTerminar(unittest.TestCase):
     def test_si_github_falla_al_leer_el_pr_se_rechaza(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "corr-gh-falla", _GhConCorridas,
+                self, tmp, "corr-gh-falla", github_con_corridas,
                 {"corridas": {"gate": "success"}},
             )
             self.addCleanup(r.reg.close)
@@ -1066,7 +971,7 @@ class CorreccionTrasTerminar(unittest.TestCase):
     def test_una_correccion_tras_integrar_se_rechaza(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "corr-integrado", _GhConCorridas,
+                self, tmp, "corr-integrado", github_con_corridas,
                 {"corridas": {"gate": "success"}},
             )
             self.addCleanup(r.reg.close)
@@ -1089,7 +994,7 @@ class PendienteOVerdeNoDetiene(unittest.TestCase):
                 self,
                 tmp,
                 "ci-pr-6",
-                _GhConCorridas,
+                github_con_corridas,
                 {"corridas": {"bateria": "in_progress"}},
             )
             e = vuelta("hola\n")

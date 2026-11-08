@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from .catalogo_agentes import agente_del_modelo, identidad_modelo, modelo_canonico
+from .catalogo_agentes import (
+    agente_del_modelo,
+    identidad_modelo,
+    modelo_canonico,
+    validar_modelo,
+)
 
 
 def solicitar_modelos(
@@ -15,6 +20,7 @@ def solicitar_modelos(
         if not referencia:
             continue
         referencia = modelo_canonico(referencia)
+        validar_modelo(referencia)
         _proveedor, separador, modelo = referencia.partition("/")
         agente = agente_del_modelo(referencia)
         if not agente or not separador or not modelo.strip():
