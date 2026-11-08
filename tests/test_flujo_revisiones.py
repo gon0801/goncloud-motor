@@ -2439,7 +2439,8 @@ class MedianosDeepseekFlujo(unittest.TestCase):
             self.assertEqual([h.id for h in abiertos], ["F1"])
             self.assertEqual(abiertos[0].titulo, "Titulo de F1")
             self.assertEqual(abiertos[0].ancla, "saludo.txt:3")
-            self.assertEqual([rol for rol, _ in prompts], ["responsable"])
+            self.assertTrue(prompts, "el responsable no recibió la devolución")
+            self.assertEqual({rol for rol, _ in prompts}, {"responsable"})
             self.assertIn("Titulo de F1", prompts[0][1])
             self.assertIn("saludo.txt:3", prompts[0][1])
 

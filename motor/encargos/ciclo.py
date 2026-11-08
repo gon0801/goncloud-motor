@@ -1428,6 +1428,12 @@ def _barrer_encargos(
             if observar_despliegue(registro, enc) != "ausente":
                 arbol = "incierto"
         decision = _decision(enc, arbol, directorio, sin_hecho, hora)
+        if isinstance(resultado_paso, Devolver):
+            # Devolver entrega el trabajo a un rol: el turno siguiente es suyo.
+            # No es una espera ni un avance: el rol nombrado tiene que correr.
+            resultado_paso = NecesitaAgente(
+                str(resultado_paso.rol or getattr(enc, "rol", "") or "responsable")
+            )
         if not permite_lanzar(resultado_paso):
             decision["lanzar"] = False
         if parada:
@@ -2595,7 +2601,7 @@ def _intentar_cierre_paso(
         stale = _producto_no_aprobado(enc, espacio)
         if stale is not None:
             return _reabrir_revision(registro, enc, stale, hora), Devolver(
-                "responsable", "el producto cambió desde la revisión aprobada"
+                "revisor", "el producto cambió desde la revisión aprobada"
             )
     try:
         pedidos = _pedidos_efecto(espacio)
@@ -7205,7 +7211,7 @@ def _paso_entrega_paso(
     stale = _producto_no_aprobado(enc, espacio)
     if stale is not None:
         return _reabrir_revision(registro, enc, stale, hora), Devolver(
-            "responsable", "el producto cambió desde la revisión aprobada"
+            "revisor", "el producto cambió desde la revisión aprobada"
         )
     espera = _espera_por_observacion(registro, enc, espacio, directorio, hora)
     if espera is not None:

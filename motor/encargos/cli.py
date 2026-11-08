@@ -463,8 +463,10 @@ def _atender_respuestas_antes_del_barrido(reg: Registro, hora: str) -> None:
     try:
         from .ciclo import _directorio, _espacio
         from .necesidades import continuar_respuestas
-
-        for ident in reg.ids():
+    except Exception:
+        return
+    for ident in reg.ids():
+        try:
             enc = reg.fold(ident)
             if enc is None:
                 continue
@@ -476,8 +478,9 @@ def _atender_respuestas_antes_del_barrido(reg: Registro, hora: str) -> None:
                     _directorio(reg.base, ident),
                     hora,
                 )
-    except Exception:
-        pass
+        except Exception:
+            # El fallo de un encargo no deja sin respuesta a los demás.
+            continue
 
 
 def _paso_del_supervisor(
