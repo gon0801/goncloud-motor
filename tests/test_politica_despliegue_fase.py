@@ -57,7 +57,7 @@ class PoliticaDeFase(unittest.TestCase):
         return ruta
 
     def integrada(self, enc):
-        return con_fase(enc, replace(enc.fase_actual, nivel_alcanzado="integrado"))
+        return con_fase(enc, replace(enc.fase_actual, ultimo_paso_entrega="integrado"))
 
     def test_ids_descriptivos_corresponden_a_los_nueve_bloques_en_orden(self):
         from motor.encargos.politica_despliegue import resolver

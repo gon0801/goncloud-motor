@@ -3168,8 +3168,6 @@ def _cerrar_con_juicio(
         f"revision-dato:{enc.id}:{enc.fase_activa}:{enc.generacion}:{juicio.version}",
     )
     enc = registro.fold(enc.id)
-    if resueltos_ds or fuera_ds:
-        enc = _marcar_deepseek_limpio(registro, enc, hora)
     if (
         juicio.veredicto == "aprobado"
         and disputa_previa
@@ -5084,42 +5082,6 @@ def _refrescar_cuerpo_fuera_de_alcance(
     return _actualizar_cuerpo_pr(
         registro, enc, gh, enc.pr_numero, enc.pr_sha, espacio, hora
     )
-
-
-def _marcar_deepseek_limpio(
-    registro: Registro, enc: Encargo, hora: str
-) -> Encargo:
-    """Una decisión del revisor que cierra el último bloqueante externo deja la
-    fase en nivel pr. Sin esto, una lectura anterior que bajó a `pr_abierto`
-    impedía cerrar aunque ya no quedara nada abierto."""
-    fase = enc.fase_actual
-    if (
-        fase is None
-        or not fase.pr_numero
-        or not fase.pr_sha
-        or bloqueantes_abiertos(enc, "deepseek")
-    ):
-        return enc
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "entrega_externa",
-            "data": {
-                "fase": enc.fase_activa,
-                "intento": enc.intento,
-                "paso": "deepseek_leido",
-                "repo": enc.entrega.repo,
-                "numero": fase.pr_numero,
-                "sha": fase.pr_sha,
-                "huella": fase.deepseek_huella or fase.pr_sha[:16],
-                "recibo": fase.pr_sha,
-                "hora": hora,
-            },
-        },
-        f"entrega:{enc.id}:{enc.fase_activa}:deepseek_limpio:"
-        f"{fase.pr_sha}:{fase.deepseek_huella}",
-    )
-    return registro.fold(enc.id) or enc
 
 
 def _huella_comentarios(comentarios: list[dict]) -> str:
@@ -9238,8 +9200,6 @@ def _recibir_resultado_nuevo(
         f"revision-autoridad:{enc.id}:{fase}:{version}",
     )
     enc = registro.fold(enc.id)
-    if aplicados:
-        enc = _marcar_deepseek_limpio(registro, enc, hora)
     from .cierre import comprobar_destino, componer
 
     try:

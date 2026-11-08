@@ -246,7 +246,10 @@ class Fase:
     aprobadas: tuple[tuple[str, str], ...] = ()
     revision_vigente: RefRevision | None = None
     deepseek_vigente: RefRevision | None = None
-    nivel_alcanzado: str = "ninguno"
+    # Último paso de la entrega externa que cambia el nivel. Es un hecho del
+    # registro, no el nivel: `nivel_de` lo combina con el PR, la lectura de
+    # DeepSeek y los bloqueantes abiertos.
+    ultimo_paso_entrega: str = ""
     pr_numero: int = 0
     pr_sha: str = ""
     deepseek_sha: str = ""
@@ -358,6 +361,9 @@ class Fase:
             },
         }
 
+    @property
+    def nivel_alcanzado(self) -> str:
+        return nivel_de(self)
 
 
 @dataclass(frozen=True)
@@ -646,8 +652,7 @@ class Encargo:
 
     @property
     def nivel_alcanzado(self) -> str:
-        fase = self.fase_actual
-        return fase.nivel_alcanzado if fase else "ninguno"
+        return nivel_de(self.fase_actual)
 
     @property
     def pr_numero(self) -> int:
@@ -817,41 +822,80 @@ def bloqueantes_abiertos(e: Encargo, origen: str = "") -> tuple[Hallazgo, ...]:
     )
 
 
-def nivel_pr_derivado(e: Encargo) -> Encargo:
-    """Sube a `pr` una fase con PR abierto y una lectura de DeepSeek sin
-    bloqueantes sobre el SHA vigente.
+_PASOS_QUE_DECIDEN_NIVEL = (
+    "pr_abierto",
+    "pr_listo",
+    "commit",
+    "push",
+    "pr_con_pendientes",
+    "deepseek_leido",
+    "deepseek_sin_revision",
+    "integrado",
+    "desplegado",
+    "sin_cambios",
+)
 
-    «DeepSeek leyó el SHA sin bloqueantes» y el nivel `pr` se guardaban por
-    separado. Cualquier camino que cierre el último bloqueante sin anotar una
-    lectura (un continuar que descarta lo que la restricción deja fuera, un
-    ajuste del propietario) dejaba `pr_abierto` y la puerta de integración no
-    abría. Aquí se aplica la misma regla que `deepseek_leido`: solo sube, nunca
-    baja un integrado o desplegado, y exige el PR y la lectura del mismo SHA.
 
-    Un CI rojo de código del SHA vigente reabrió la fase para corregirlo. Esa
-    reapertura no es un bloqueante de DeepSeek, así que la derivación no puede
-    deshacerla: subir el nivel ahí integraría el PR sin la corrección.
+def _bloqueantes_de_la_fase(fase: Fase, origen: str = "") -> tuple[Hallazgo, ...]:
+    return tuple(
+        h
+        for h in fase.hallazgos
+        if h.gravedad == "bloqueante"
+        and h.estado == "abierto"
+        and (not origen or h.origen == origen)
+    )
+
+
+def nivel_de(fase: Fase | None) -> str:
+    """El nivel alcanzado sale de hechos registrados, no de un campo aparte.
+
+    Contrato, una fila por caso:
+
+    - sin PR: una fase preparada alcanzó `terminado`; el resto, `ninguno`;
+    - PR con SHA: `pr_abierto` mientras la lectura de DeepSeek no cubra el SHA;
+    - cambio de head (`commit`, `push`, `pr_abierto`, `pr_listo`): vuelve a
+      `pr_abierto` aunque el SHA anterior estuviera leído;
+    - lectura de DeepSeek del SHA vigente sin bloqueantes abiertos: `pr`;
+    - `deepseek_sin_revision` (omisión tras el tope): `pr` si no quedan
+      bloqueantes de DeepSeek abiertos;
+    - un Critical, High o Medium de DeepSeek abierto en alcance: `pr_abierto`;
+    - CI rojo de código sobre el SHA vigente: `pr_abierto` hasta corregirlo;
+    - `pr_con_pendientes`: `pr` aunque la revisión no haya concluido;
+    - `sin_cambios`: `sin_cambios`, solo satisface niveles sin efectos externos;
+    - merge: `integrado`; despliegue: `desplegado`.
+
+    La reapertura de la fase por una corrección vuelve a dejar
+    `ultimo_paso_entrega` en `pr_abierto`; solo otra lectura de DeepSeek del
+    SHA nuevo la sube. Así una relectura con bloqueantes baja el nivel sin una
+    rama aparte y una corrección posterior no integra lo que no se revisó.
     """
-    fase = e.fase_actual
     if fase is None:
-        return e
-    actual = fase.nivel_alcanzado
-    if _ORDEN_NIVEL.get(actual, 0) >= _ORDEN_NIVEL["pr"]:
-        return e
-    if not fase.pr_numero or not fase.pr_sha:
-        return e
+        return "ninguno"
+    paso = fase.ultimo_paso_entrega
+    if paso == "desplegado":
+        return "desplegado"
+    if paso == "integrado":
+        return "integrado"
+    if paso == "sin_cambios":
+        return "sin_cambios"
+    if not (fase.pr_numero and fase.pr_sha):
+        return "terminado" if fase.estado == "preparada" else "ninguno"
+    if paso == "pr_con_pendientes":
+        return "pr"
     if (
         fase.ci_pr_estado == "rojo"
         and fase.ci_pr_clase == "codigo"
         and fase.ci_pr_sha
         and fase.ci_pr_sha == fase.pr_sha
     ):
-        return e
-    if fase.deepseek_sha != fase.pr_sha:
-        return e
-    if bloqueantes_abiertos(e, "deepseek"):
-        return e
-    return con_fase(e, replace(fase, nivel_alcanzado="pr"))
+        return "pr_abierto"
+    if (
+        paso in ("deepseek_leido", "deepseek_sin_revision")
+        and fase.deepseek_sha == fase.pr_sha
+        and not _bloqueantes_de_la_fase(fase, "deepseek")
+    ):
+        return "pr"
+    return "pr_abierto"
 
 
 def _fusionar(
@@ -1888,19 +1932,9 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
             json.dumps([e.id, fase.id, hora, evidencia, e.reaperturas]).encode()
         ).hexdigest())
         if fase is not None:
-            nivel = (
-                fase.nivel_alcanzado
-                if fase.nivel_alcanzado != "ninguno"
-                else "terminado"
-            )
             e = con_fase(
                 e,
-                replace(
-                    fase,
-                    estado="preparada",
-                    nivel_alcanzado=nivel,
-                    evidencia=evidencia,
-                ),
+                replace(fase, estado="preparada", evidencia=evidencia),
             )
         return replace(
             e,
@@ -2043,14 +2077,7 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
         fases = e.fases
         if fase is not None:
             fases = tuple(
-                replace(
-                    fase,
-                    estado="preparada",
-                    nivel_alcanzado=fase.nivel_alcanzado
-                    if fase.nivel_alcanzado != "ninguno"
-                    else "terminado",
-                    evidencia=evidencia,
-                )
+                replace(fase, estado="preparada", evidencia=evidencia)
                 if f.id == fase.id
                 else f
                 for f in e.fases
@@ -2883,9 +2910,7 @@ def _limpiar_para_continuar(e: Encargo) -> Encargo:
                     fuera = [x for x in fuera if x[0] != h.id]
                     fuera.append((h.id, h.titulo, razon))
             hallazgos.append(h)
-        e = nivel_pr_derivado(
-            con_fase(e, replace(fase, hallazgos=tuple(hallazgos)))
-        )
+        e = con_fase(e, replace(fase, hallazgos=tuple(hallazgos)))
     limpio = dict(
         preguntas=(),
         sin_progreso=0,
@@ -3158,7 +3183,7 @@ def _reabrir_en_el_pr(
     e: Encargo, fase: Fase, causa: str, siguiente: str, hora: str
 ) -> Encargo:
     """La fase vuelve al responsable en su misma rama y su mismo PR."""
-    reabierta = replace(fase, estado="entrega", nivel_alcanzado="pr_abierto")
+    reabierta = replace(fase, estado="entrega", ultimo_paso_entrega="pr_abierto")
     return sesiones_de_fase_nueva(
         replace(
             con_fase(e, reabierta),
@@ -3366,7 +3391,7 @@ def _cerrar_hallazgos(
         for h in fase.hallazgos
     )
     nuevo = _con_progreso(e, con_fase(e, replace(fase, hallazgos=hallazgos)))
-    return nivel_pr_derivado(nuevo), pedidos
+    return nuevo, pedidos
 
 
 def _pedido_de_revision(fase_id: str, d: dict) -> tuple[str, ...]:
@@ -3461,50 +3486,14 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
         raise TransicionIlegal("no hay fase para la entrega")
     paso = str(d.get("paso") or "")
     sha = str(d.get("sha") or "")
-    bajar = False
-    candidato = fase.nivel_alcanzado
-    if paso in ("pr_abierto", "pr_listo"):
-        candidato = "pr_abierto"
-    elif paso == "pr_con_pendientes":
-        # El motor entrega el PR con pendientes: el nivel pr queda alcanzado
-        # aunque el revisor no haya concluido.
-        candidato = "pr"
-    elif paso == "deepseek_sin_revision":
-        # La fase sigue como si la revisión externa no tuviera hallazgos. Los
-        # bloqueantes que queden son de una lectura anterior y no frenan este
-        # SHA: el motor ya los cerró con la razón de la omisión. Si la lectura
-        # abierta es la del mismo SHA, sus bloqueantes siguen bloqueando y el
-        # nivel no avanza.
-        if e.deepseek_sha == sha and bloqueantes_abiertos(e, "deepseek"):
-            candidato = fase.nivel_alcanzado
-        else:
-            candidato = "pr"
-    elif paso == "deepseek_leido":
-        if not bloqueantes_abiertos(e, "deepseek"):
-            candidato = "pr"
-        elif d.get("huella") and fase.nivel_alcanzado == "pr":
-            # Una relectura que trae un bloqueante deja de dar la fase por
-            # cumplida: sigue sin cerrar hasta que DeepSeek lo dé por resuelto.
-            candidato = "pr_abierto"
-            bajar = True
-    elif paso == "integrado":
-        candidato = "integrado"
-    elif paso == "desplegado":
-        candidato = "desplegado"
-    elif paso == "sin_cambios":
-        candidato = "sin_cambios"
-    if (
-        paso != "sin_cambios"
-        and not bajar
-        and _ORDEN_NIVEL.get(candidato, 0) < _ORDEN_NIVEL.get(fase.nivel_alcanzado, 0)
-    ):
-        candidato = fase.nivel_alcanzado
     producto = fase.producto
     if paso == "commit" and producto is not None and sha:
         producto = replace(producto, sha_git=sha)
     nueva = replace(
         fase,
-        nivel_alcanzado=candidato,
+        ultimo_paso_entrega=(
+            paso if paso in _PASOS_QUE_DECIDEN_NIVEL else fase.ultimo_paso_entrega
+        ),
         pr_numero=int(d.get("numero") or fase.pr_numero or 0),
         pr_sha=sha
         if paso in ("commit", "push", "pr_abierto", "pr_listo", "pr_con_pendientes")
@@ -3563,7 +3552,7 @@ def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:
     causa = str(d.get("causa") or "DeepSeek dejó un hallazgo abierto")
     return sesiones_de_fase_nueva(
         replace(
-            con_fase(e, replace(fase, estado="entrega", nivel_alcanzado="pr_abierto")),
+            con_fase(e, replace(fase, estado="entrega", ultimo_paso_entrega="pr_abierto")),
             fase_activa=fase.id,
             estado="recibido",
             rol="responsable",
@@ -3634,10 +3623,7 @@ def _comprobacion(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encarg
                 ultimo_hecho=evidencia,
                 siguiente="completar la entrega externa autorizada",
             )
-        nivel = e.nivel_alcanzado if e.nivel_alcanzado != "ninguno" else "terminado"
-        preparada = replace(
-            fase, estado="preparada", nivel_alcanzado=nivel, evidencia=evidencia
-        )
+        preparada = replace(fase, estado="preparada", evidencia=evidencia)
         firma = fase.producto.firma if fase.producto else ""
         fases = _preparar_con_entrada(e.fases, preparada, firma)
         disponible = _fase_disponible(fases)

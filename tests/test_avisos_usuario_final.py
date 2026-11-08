@@ -115,7 +115,13 @@ class SoloAvisosDeUsuarioFinal(Base):
     def test_los_avisos_que_van_se_escriben_en_espanol_llano(self):
         ident = self.b.encargo()
         enc = self.b.reg.fold(ident)
-        fase = replace(enc.fases[0], pr_numero=7, pr_sha="a" * 40, nivel_alcanzado="pr")
+        fase = replace(
+            enc.fases[0],
+            pr_numero=7,
+            pr_sha="a" * 40,
+            deepseek_sha="a" * 40,
+            ultimo_paso_entrega="deepseek_leido",
+        )
         enc = replace(enc, fases=(fase,))
         self.b.reg.anotar(ident, {"kind": "impedimento", "data": {
             "clase": "comprobacion", "causa": "falta un entorno macOS en motor/x.py",
