@@ -815,6 +815,27 @@ def _cuerpo_de_cierre(enc) -> str:
         )
     else:
         cuerpo = f"Terminó tu encargo «{titulo}»."
+    efectivo = getattr(enc, "nivel_efectivo", "")
+    pedido_nivel = getattr(getattr(enc, "entrega", None), "nivel", "")
+    llano = {"pr": "pr", "pr_abierto": "pr", "integrado": "integrado"}.get(
+        enc.nivel_alcanzado
+    )
+    if (
+        enc.estado != "cancelado"
+        and efectivo
+        and pedido_nivel in ("integrado", "desplegado")
+        and llano in ("pr", "integrado")
+        and llano != pedido_nivel
+        and llano == efectivo
+    ):
+        # La frase solo sale cuando el alcanzado coincide con el tope
+        # efectivo: es el caso donde la limitación explica el desenlace.
+        # Si el encargo quedó por debajo del efectivo (una fase bloqueada,
+        # pendientes), el motivo real vive en la enumeración parcial.
+        cuerpo += (
+            f" Tu encargo pedía llegar a {pedido_nivel} y quedó en "
+            f"{llano}: {getattr(enc, 'nivel_efectivo_motivo', '') or 'hay una limitación comprobada'}."
+        )
     bloqueadas = [
         f for f in getattr(enc, "fases", ()) or () if f.estado == "bloqueada"
     ]
