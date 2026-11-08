@@ -336,7 +336,7 @@ class DespliegueReal(unittest.TestCase):
         assert final.nivel_alcanzado == "integrado"
         assert not (destino / "pasos").exists()
 
-    def test_parada_espera_al_rollback_y_no_sella(self):
+    def test_parada_espera_al_rollback_y_no_sella(self):  # no-roja-en-base: solo amplia la ventana de espera 10->30 s por el coste del runner de Windows; el comportamiento afirmado es el de la base
         despliegue = self.despliegue
         from motor.encargos.despliegue import observacion
         reg, ident, espacio, destino, integrar = despliegue
