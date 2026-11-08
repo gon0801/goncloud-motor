@@ -146,7 +146,7 @@ class DespliegueReal(unittest.TestCase):
         self.addCleanup(parche.stop)
         parche.start()
 
-    def test_ejecuta_sha_mergeado_y_guarda_salidas_sin_repetir(self):
+    def test_ejecuta_sha_mergeado_y_guarda_salidas_sin_repetir(self):  # no-roja-en-base: sobre la base el despliegue feliz tambien llega a desplegado; la prueba caracteriza el camino que la fase conserva y agrega el motivo al fallo
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
         sha = integrar()
@@ -339,7 +339,7 @@ class DespliegueReal(unittest.TestCase):
         assert final.nivel_alcanzado == "integrado"
         assert not (destino / "pasos").exists()
 
-    def test_parada_espera_al_rollback_y_no_sella(self):  # no-roja-en-base: amplía ventanas de espera del test (10->30 s y 5->15 s) por el coste del runner de Windows; el comportamiento afirmado es el de la base
+    def test_parada_espera_al_rollback_y_no_sella(self):  # no-roja-en-base: amplía ventanas de espera del test (10->30->120 s y 5->15 s) por el coste del runner de Windows; el comportamiento afirmado es el de la base
         despliegue = self.despliegue
         from motor.encargos.despliegue import observacion
         reg, ident, espacio, destino, integrar = despliegue
@@ -351,11 +351,12 @@ class DespliegueReal(unittest.TestCase):
         integrar()
 
         def esperar(condicion):
-            # 30 s: el camino del producto tras la parada puede gastar hasta
-            # ~6 s (1 s de sondeo + 5 s de esperar el grupo muerto en
-            # Windows) más el arranque del bash; en un runner cargado los
-            # 10 s anteriores salieron apretados.
-            fin = time.monotonic() + 30
+            # 120 s: la espera es de vivacidad (el estado se alcanza en
+            # segundos sin carga), no de latencia. El camino del producto
+            # tras la parada puede gastar ~6 s (sondeo + grupo muerto en
+            # Windows) mas el arranque del bash de la reversa, y en un
+            # runner cargado eso ya derroto ventanas de 10 y de 30 s.
+            fin = time.monotonic() + 120
             while not condicion():
                 assert time.monotonic() < fin
                 time.sleep(0.05)
