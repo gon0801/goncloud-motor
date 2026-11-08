@@ -166,30 +166,18 @@ class Registro:
                 if row[0] == encargo and row[1] == kind and _estable(guardado) == _estable(data):
                     return "igual"
                 return "ajena"
-            estado = None
-            for id_prev, kind_prev, data_prev in self.db.execute(
-                "SELECT id, kind, data FROM events WHERE encargo = ? ORDER BY id",
-                (encargo,),
-            ):
-                estado = reducir(
-                    estado,
-                    {
-                        "id": id_prev,
-                        "kind": kind_prev,
-                        "data": json.loads(data_prev),
-                    },
-                    nuevo=False,
-                )
+            estado, _ultimo, conteo = self._estado_vigente(encargo)
             try:
-                reducir(estado, {"kind": kind, "data": data}, nuevo=True)
+                aplicado = reducir(estado, {"kind": kind, "data": data}, nuevo=True)
             except TransicionIlegal:
                 self.db.execute("ROLLBACK")
                 return "ilegal"
-            self.db.execute(
+            cursor = self.db.execute(
                 "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
                 (ts, encargo, kind, payload, ukey),
             )
             self.db.execute("COMMIT")
+            self._recordar_plegado(encargo, aplicado, int(cursor.lastrowid or 0), conteo + 1)
             return "nuevo"
         except Exception:
             self.db.execute("ROLLBACK")
@@ -299,14 +287,23 @@ class Registro:
             self._cache.plegados_hasta[(encargo, hasta)] = _Plegado(estado, ultimo, conteo)
         return estado
 
-    def fold(self, encargo: str, hasta: int | None = None) -> Encargo | None:
-        if hasta is not None:
-            return self._fold_hasta(encargo, hasta)
+    def _estado_vigente(self, encargo: str) -> tuple[Encargo | None, int, int]:
+        """El plegado que coincide con lo persistido, reutilizando la caché.
+
+        `fold` y `append` lo usan: dentro de `BEGIN IMMEDIATE` ningún otro
+        escritor cambia la base entre la validación y el insert, así que lo que
+        se aplica en memoria es exactamente lo que queda guardado. Un token que
+        no coincide se repliega desde el último punto válido."""
         ultimo, conteo = self._ultimo_y_conteo(encargo)
+        if ultimo == 0:
+            # Sin eventos el estado es None: no se resuelve la caché de una base
+            # todavía vacía, que no tiene identidad estable (firma del primer
+            # evento) hasta que el primer append confirme.
+            return None, 0, 0
         with self._cache.candado:
             guardado = self._cache.plegados.get(encargo)
         if guardado is not None and guardado.ultimo == ultimo and guardado.conteo == conteo:
-            return guardado.estado
+            return guardado.estado, ultimo, conteo
         if (
             guardado is not None
             and guardado.ultimo < ultimo
@@ -323,13 +320,29 @@ class Registro:
                     estado = reducir(estado, ev, nuevo=False)
                 with self._cache.candado:
                     self._cache.plegados[encargo] = _Plegado(estado, ultimo, conteo)
-                return estado
+                return estado, ultimo, conteo
         # El token se toma del mismo recorrido que produjo el estado: si otro
         # proceso escribe durante el plegado, el caché no queda adelantado.
         estado, ultimo, conteo = self._plegar(encargo)
         with self._cache.candado:
             self._cache.plegados[encargo] = _Plegado(estado, ultimo, conteo)
-        return estado
+        return estado, ultimo, conteo
+
+    def _recordar_plegado(
+        self, encargo: str, estado: Encargo, ultimo: int, conteo: int
+    ) -> None:
+        """Deja la caché en el estado que se acaba de confirmar y evita el
+        `GROUP BY` del siguiente `append` en esta conexión."""
+        with self._cache.candado:
+            self._cache.plegados[encargo] = _Plegado(estado, ultimo, conteo)
+        if self._ultimos is not None:
+            self._ultimos[encargo] = (ultimo, conteo)
+            self._cambios = self.db.total_changes
+
+    def fold(self, encargo: str, hasta: int | None = None) -> Encargo | None:
+        if hasta is not None:
+            return self._fold_hasta(encargo, hasta)
+        return self._estado_vigente(encargo)[0]
 
     def anotar(self, encargo: str, evento: dict, ukey: str) -> str:
         data = dict(evento["data"])

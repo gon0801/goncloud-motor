@@ -1311,11 +1311,18 @@ def migrar_marcadores(registro: Registro, hora: str) -> None:
     )
     fallo = False
     for encargo_id in registro.ids():
+        directorios = [
+            directorio
+            for directorio in _directorios_del_encargo(registro.base, encargo_id)
+            if any((directorio / nombre).is_file() for nombre in nombres)
+        ]
+        if not directorios:
+            continue
         enc = plegar_aislado(registro, encargo_id)
         if enc is None:
             continue
         try:
-            for directorio in _directorios_del_encargo(registro.base, encargo_id):
+            for directorio in directorios:
                 for nombre in nombres:
                     _migrar_un_marcador(registro, enc, directorio, nombre, hora)
         except Exception as exc:  # noqa: BLE001  un encargo no tumba la migración
@@ -2643,8 +2650,10 @@ def _revision_aprobada_vigente(enc: Encargo) -> bool:
 
 
 def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
+    fase = enc.fase_actual
     return bool(
-        enc.deepseek_vigente is not None
+        fase is not None
+        and fase.deepseek_vigente is not None
         and enc.revision_vigente is not None
         and enc.revision_vigente.veredicto == "aprobado"
         and (
@@ -2666,9 +2675,11 @@ def _bloqueo_externo_abierto(enc: Encargo) -> str:
 
 
 def _deepseek_por_releer(enc: Encargo) -> bool:
+    fase = enc.fase_actual
     return bool(
-        enc.deepseek_vigente is not None
-        and enc.deepseek_vigente.lector_version < VERSION_LECTOR_DEEPSEEK
+        fase is not None
+        and fase.deepseek_vigente is not None
+        and fase.deepseek_vigente.lector_version < VERSION_LECTOR_DEEPSEEK
         and bloqueantes_abiertos(enc, "deepseek")
         and revision_independiente_cubre_producto(enc)
     )
@@ -2694,7 +2705,8 @@ def _aplica_entrega(enc: Encargo) -> bool:
     if bloqueantes_abiertos(enc, "independiente"):
         return False
     return (
-        enc.deepseek_vigente is not None
+        fase is not None
+        and fase.deepseek_vigente is not None
         and enc.producto is not None
         and (enc.producto.sha_git != enc.deepseek_sha or _deepseek_por_releer(enc))
         and (
@@ -2727,9 +2739,10 @@ def _producto_no_aprobado(enc: Encargo, espacio: Path):
     ):
         return None
     referencias = {enc.producto.firma}
+    fase = enc.fase_actual
     if not _correccion_deepseek_conserva_aprobadas(enc):
-        if enc.revisado is not None:
-            referencias.add(enc.revisado.firma)
+        if fase is not None and fase.revisado is not None:
+            referencias.add(fase.revisado.firma)
         if enc.revision_vigente is not None:
             referencias.add(enc.revision_vigente.version)
     referencias.discard("")

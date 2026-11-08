@@ -291,7 +291,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             self.assertTrue(salida.get("registrado"), salida)
             final = r.fold()
             self.assertEqual(bloqueantes_abiertos(final, "deepseek"), ())
-            cerrado = next(h for h in final.hallazgos if h.id == "F1")
+            cerrado = next(h for h in final.fase_actual.hallazgos if h.id == "F1")
             self.assertEqual(cerrado.estado, "resuelto")
             self.assertEqual(
                 cerrado.cierre_evidencia, "la evidencia del revisor descarta el hallazgo"

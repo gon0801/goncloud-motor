@@ -458,7 +458,7 @@ class FlujoRevisiones(unittest.TestCase):
             e = r.incorporar()
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(bueno.read_text(), "A")
-            self.assertIn(("bueno.txt", e.aprobadas[0][1]), tuple(e.aprobadas))
+            self.assertIn(("bueno.txt", e.fase_actual.aprobadas[0][1]), tuple(e.fase_actual.aprobadas))
 
     def test_juicio_roto_es_instrumento_y_no_rehace(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1276,7 +1276,7 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
             self.assertEqual(e.no_concluyentes, 2)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(
-                e.inspeccion_pendiente, "consultar metricas de cuenta"
+                e.fase_actual.inspeccion_pendiente, "consultar metricas de cuenta"
             )
             self.assertEqual(len(e.solicitudes), 1)
             self.assertIn(

@@ -195,8 +195,8 @@ class RecuperacionFase5(unittest.TestCase):
                     final = reg.fold(ident)
                     self.assertEqual(final.estado, "terminado")
                     self.assertFalse(dominio.bloqueantes_abiertos(final))
-                    self.assertEqual(next(h.estado for h in final.hallazgos if h.id == "F1"), "resuelto")
-                    self.assertEqual(next(h.ancla for h in final.hallazgos if h.id == "F2"), "reporte.md:46")
+                    self.assertEqual(next(h.estado for h in final.fase_actual.hallazgos if h.id == "F1"), "resuelto")
+                    self.assertEqual(next(h.ancla for h in final.fase_actual.hallazgos if h.id == "F2"), "reporte.md:46")
                     marcadores = (
                         "incorporado",
                         "quietud_vigilada",

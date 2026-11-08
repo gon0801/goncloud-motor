@@ -117,7 +117,7 @@ class OrbitEntrega(unittest.TestCase):
                 all(args[args.index("-R") + 1] == "owner/orbit" for args in llamadas)
             )
 
-    def test_revision_incierta_no_funda_una_aprobacion_de_correccion(self):
+    def test_revision_incierta_no_funda_una_aprobacion_de_correccion(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory() as tmp:
             reg = Registro(Path(tmp))
             self.addCleanup(reg.close)
@@ -146,7 +146,7 @@ class OrbitEntrega(unittest.TestCase):
                 veredicto="no_concluyente",
                 aprobadas=[],
             )
-            self.assertIsNone(e.revisado)
+            self.assertIsNone(e.fase_actual.revisado)
             self.assertEqual(alcance_de(e).clase, "completa")
             anotar(
                 "producto_listo",
@@ -193,8 +193,8 @@ class OrbitEntrega(unittest.TestCase):
                 aprobadas=[],
             )
             self.assertEqual(e.revision_vigente.veredicto, "no_concluyente")
-            self.assertEqual(e.revisado.firma, "v2")
-            self.assertEqual(e.aprobadas, (("b.py", "b1"),))
+            self.assertEqual(e.fase_actual.revisado.firma, "v2")
+            self.assertEqual(e.fase_actual.aprobadas, (("b.py", "b1"),))
             alcance = alcance_de(e)
             self.assertEqual(
                 (

@@ -826,29 +826,9 @@ class Encargo:
         return fase.producto if fase else None
 
     @property
-    def revisado(self) -> VersionProducto | None:
-        fase = self.fase_actual
-        return fase.revisado if fase else None
-
-    @property
-    def hallazgos(self) -> tuple[Hallazgo, ...]:
-        fase = self.fase_actual
-        return fase.hallazgos if fase else ()
-
-    @property
-    def aprobadas(self) -> tuple[tuple[str, str], ...]:
-        fase = self.fase_actual
-        return fase.aprobadas if fase else ()
-
-    @property
     def revision_vigente(self) -> RefRevision | None:
         fase = self.fase_actual
         return fase.revision_vigente if fase else None
-
-    @property
-    def deepseek_vigente(self) -> RefRevision | None:
-        fase = self.fase_actual
-        return fase.deepseek_vigente if fase else None
 
     @property
     def nivel_alcanzado(self) -> str:
@@ -873,23 +853,6 @@ class Encargo:
     def deepseek_huella(self) -> str:
         fase = self.fase_actual
         return fase.deepseek_huella if fase else ""
-
-    @property
-    def deepseek_error(self) -> str:
-        fase = self.fase_actual
-        return fase.deepseek_error if fase else ""
-
-    @property
-    def rama_entrega(self) -> str:
-        fase = self.fase_actual
-        if fase is not None and fase.rama:
-            return fase.rama
-        return self.entrega.rama
-
-    @property
-    def inspeccion_pendiente(self) -> str:
-        fase = self.fase_actual
-        return fase.inspeccion_pendiente if fase else ""
 
     def fases_preparadas(self) -> tuple[Fase, ...]:
         return tuple(f for f in self.fases if f.estado == "preparada")
@@ -1013,9 +976,10 @@ def puede_recibir_intento(e: Encargo) -> bool:
 
 
 def bloqueantes_abiertos(e: Encargo, origen: str = "") -> tuple[Hallazgo, ...]:
+    fase = e.fase_actual
     return tuple(
         h
-        for h in e.hallazgos
+        for h in (fase.hallazgos if fase else ())
         if h.gravedad == "bloqueante"
         and h.estado == "abierto"
         and (not origen or h.origen == origen)
@@ -1398,9 +1362,15 @@ def _con_impedimentos(
 
 
 def alcance_de(e: Encargo) -> AlcanceRevision:
-    version = e.producto.firma if e.producto else ""
-    manifiesto = e.producto.manifiesto if e.producto else ()
-    if e.revision_vigente is None or e.revisado is None or e.producto is None:
+    fase = e.fase_actual
+    version = fase.producto.firma if fase and fase.producto else ""
+    manifiesto = fase.producto.manifiesto if fase and fase.producto else ()
+    if (
+        fase is None
+        or fase.revision_vigente is None
+        or fase.revisado is None
+        or fase.producto is None
+    ):
         return AlcanceRevision(
             clase="completa",
             version=version,
@@ -1408,16 +1378,16 @@ def alcance_de(e: Encargo) -> AlcanceRevision:
             abiertos=bloqueantes_abiertos(e, "independiente"),
             manifiesto=manifiesto,
         )
-    base = dict(e.revisado.manifiesto)
+    base = dict(fase.revisado.manifiesto)
     actual = dict(manifiesto)
     tocadas = tuple(
         sorted(r for r in set(base) | set(actual) if base.get(r) != actual.get(r))
     )
-    conservadas = tuple(r for r, h in e.aprobadas if actual.get(r) == h)
+    conservadas = tuple(r for r, h in fase.aprobadas if actual.get(r) == h)
     return AlcanceRevision(
         clase="correccion",
         version=version,
-        base_version=e.revisado.firma,
+        base_version=fase.revisado.firma,
         abiertos=bloqueantes_abiertos(e, "independiente"),
         tocadas=tocadas,
         conservadas=conservadas,
@@ -1492,10 +1462,15 @@ def limita_mas_que(nivel: str, vigente: str) -> bool:
 
 
 def nivel_cumplido(e: Encargo) -> bool:
+    fase = e.fase_actual
     if e.nivel_alcanzado == "sin_cambios":
         # Sin cambios publicables sólo satisface niveles sin efectos externos;
         # integrado y desplegado exigen el nivel real alcanzado.
-        return e.revisado is not None and nivel_objetivo(e) in ("terminado", "pr")
+        return (
+            fase is not None
+            and fase.revisado is not None
+            and nivel_objetivo(e) in ("terminado", "pr")
+        )
     nivel = nivel_objetivo(e)
     if (
         nivel == "desplegado"
@@ -4310,6 +4285,8 @@ def vista(e: Encargo, recibo: str = "") -> dict:
         return ""
 
     ref = e.revision_vigente
+    fase = e.fase_actual
+    rama = fase.rama if fase is not None and fase.rama else e.entrega.rama
     return {
         "encargo": e.id,
         "estado": e.estado,
@@ -4323,8 +4300,12 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             "revisor": _modelo("revisor"),
         },
         "producto": {
-            "archivos": [r for r, _ in e.producto.manifiesto] if e.producto else [],
-            "firma": e.producto.firma if e.producto else "",
+            "archivos": [r for r, _ in fase.producto.manifiesto]
+            if fase is not None and fase.producto
+            else [],
+            "firma": fase.producto.firma
+            if fase is not None and fase.producto
+            else "",
         },
         "revision": {
             "version": ref.version if ref else "",
@@ -4334,7 +4315,7 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             ],
             "observaciones": [
                 h.titulo
-                for h in e.hallazgos
+                for h in (fase.hallazgos if fase is not None else ())
                 if h.gravedad == "observacion" and h.estado == "abierto"
             ],
         },
@@ -4344,14 +4325,14 @@ def vista(e: Encargo, recibo: str = "") -> dict:
             "nivel_efectivo_motivo": e.nivel_efectivo_motivo,
             "nivel_alcanzado": e.nivel_alcanzado,
             "repo": e.entrega.repo,
-            "rama": e.rama_entrega,
+            "rama": rama,
             "base": e.entrega.base,
             "pr": {"numero": e.pr_numero, "sha": e.pr_sha},
             "deepseek": {
                 "sha": e.deepseek_sha,
                 "leida": bool(e.deepseek_sha)
                 and e.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION,
-                "error": e.deepseek_error,
+                "error": fase.deepseek_error if fase is not None else "",
             },
         },
         "fases": [f.como_dict() for f in e.fases],
@@ -4675,6 +4656,7 @@ def prompt_responsable(e: Encargo) -> str:
             "Después trabaja solo la primera fase. Un formato inválido se te devuelve para corregirlo."
         )
     lineas += _bloque_fases(e)
+    fase = e.fase_actual
     abiertos = bloqueantes_abiertos(e)
 
     if abiertos:
@@ -4700,10 +4682,10 @@ def prompt_responsable(e: Encargo) -> str:
                 "independiente decide con esa evidencia si aplica y su decisión "
                 "queda escrita en el PR."
             )
-    if e.aprobadas:
+    if fase is not None and fase.aprobadas:
         lineas.append(
             "Rutas ya aprobadas; no las reescribas sin necesidad:\n"
-            + "\n".join(r for r, _ in e.aprobadas)
+            + "\n".join(r for r, _ in fase.aprobadas)
         )
     if e.causa or e.motivo:
         lineas.append(
