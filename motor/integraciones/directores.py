@@ -17,6 +17,7 @@ from motor.encargos.ciclo import (
     consultar,
     corregir,
     ordenar,
+    plegar_aislado,
     recibir,
     resolver_entrega,
 )
@@ -1196,7 +1197,7 @@ def _apariciones_de_impedimentos(registro: Registro, encargo: str) -> dict[str, 
     """Cuántas veces se trabó el encargo por cada clase: cada paso de "no pendiente" a "pendiente" cuenta una."""
     estado, previas, cuenta = None, set(), {}
     for evento in registro.eventos(encargo):
-        estado = reducir(estado, evento)
+        estado = reducir(estado, evento, nuevo=False)
         ahora = {i.clase for i in estado.impedimentos}
         for clase in ahora - previas:
             cuenta[clase] = cuenta.get(clase, 0) + 1
@@ -1983,7 +1984,9 @@ def drenar(
     corte = registro.corte_avisos()
     corte_cierres = registro.corte_avisos("cierres-cancelados-v1")
     vista = VistaAvisos(registro.base)
-    encargos = {ident: registro.fold(ident) for ident in registro.ids()}
+    encargos = {
+        ident: plegar_aislado(registro, ident) for ident in registro.ids()
+    }
     terminados = {i for i, e in encargos.items() if e is not None and e.estado == "terminado"}
     _cerrar_inciertos_sin_destino(encargos, vista)
     if terminados:

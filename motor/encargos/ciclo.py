@@ -1016,6 +1016,34 @@ def _causa_de_excepcion(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}{donde}"[:2000]
 
 
+# Un encargo cuya historia no pliega es un estado posible. Su fallo se dice una
+# vez por encargo y clase de error, no en cada vuelta del supervisor.
+_PLEGADOS_ILEGIBLES: set[tuple[str, str]] = set()
+
+
+def plegar_aislado(registro: Registro, encargo_id: str) -> Encargo | None:
+    """Pliega un encargo sin que su historia rota detenga a los demás.
+
+    `None` avisa que ese encargo no se pudo leer en esta vuelta. No se intenta
+    anotar nada en él: `append` también pliega su historia y volvería a fallar.
+    """
+    import sys
+
+    try:
+        return registro.fold(encargo_id)
+    except Exception as exc:
+        clase = type(exc).__name__
+        clave = (encargo_id, clase)
+        if clave not in _PLEGADOS_ILEGIBLES:
+            _PLEGADOS_ILEGIBLES.add(clave)
+            print(
+                f"no se pudo plegar {encargo_id} ({clase}): {_causa_de_excepcion(exc)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return None
+
+
 def _contener_fallo_de_barrido(
     registro: Registro, encargo_id: str, exc: Exception, hora: str
 ) -> dict | None:
@@ -1133,7 +1161,9 @@ def barrer(
     presupuesto = [_SONDEO_CERRADOS_TOPE_POR_PASADA]
     for encargo_id in registro.ids():
         try:
-            previo = registro.fold(encargo_id)
+            previo = plegar_aislado(registro, encargo_id)
+            if previo is None:
+                continue
             if _aparcado_por_barrido(previo):
                 informes.append(_vista_o_minima(previo))
                 continue

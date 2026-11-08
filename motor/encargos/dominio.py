@@ -1235,7 +1235,13 @@ def _entrega_de(d: dict) -> EntregaAutorizada:
     return EntregaAutorizada(nivel=nivel, repo=repo, rama=rama, base=base)
 
 
-def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encargo:
+def reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
+    """Aplica un evento al estado.
+
+    `nuevo=True` es el camino de escritura: la propuesta se valida con las
+    reglas de hoy. El registro plegado pasa `nuevo=False`, porque un evento
+    guardado ya se aceptó y se aplica tal como entró.
+    """
     kind = evento["kind"]
     d = evento["data"]
     hora = str(d.get("hora") or "")
@@ -1561,7 +1567,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = False) -> Encarg
             raise TransicionIlegal("asociación a una fase inexistente")
         return e
     if kind == "fases":
-        return _adoptar_fases(e, d, hora)
+        return _adoptar_fases(e, d, hora, nuevo)
     if kind == "nivel_efectivo":
         nivel = str(d.get("nivel") or "")
         if nivel not in ("", "pr", "integrado"):
@@ -2615,28 +2621,42 @@ def _enumeracion_del_director(e: Encargo) -> tuple[str, list[str]] | None:
     return None
 
 
-def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
+def _adoptar_fases(e: Encargo, d: dict, hora: str, nuevo: bool = False) -> Encargo:
     """La propuesta de fases se valida aquí y no borra trabajo ya obtenido.
 
-    El formato lo escribe el implementador, nunca el usuario del encargo.
+    El formato lo escribe el implementador, nunca el usuario del encargo. Las
+    reglas que juzgan la propuesta (formato, no reescribir, enumeración del
+    director, condena) solo corren al escribir el evento. Un evento guardado ya
+    fue aceptado con las reglas de su día; al plegar se aplica tal como entró,
+    aunque una regla posterior lo habría rechazado. Las reglas que sostienen el
+    grafo (dependencia inexistente, ciclo) siguen corriendo: una historia que
+    las incumple es un registro incoherente, no una propuesta vieja.
     """
     crudo = d.get("fases")
     if isinstance(crudo, dict):
         crudo = crudo.get("fases")
     if not isinstance(crudo, (list, tuple)) or not crudo:
-        raise TransicionIlegal("la propuesta de fases está vacía")
+        if nuevo:
+            raise TransicionIlegal("la propuesta de fases está vacía")
+        return e
     existentes = {f.id: f for f in e.fases}
     nuevas: list[Fase] = []
     nuevos_ids: set[str] = set()
     vistos: set[str] = set()
     for item in crudo:
         if not isinstance(item, dict):
-            raise TransicionIlegal("cada fase debe ser un objeto")
+            if nuevo:
+                raise TransicionIlegal("cada fase debe ser un objeto")
+            continue
         fid = str(item.get("id") or "").strip()
         if not fid or not all(c.isalnum() or c in "-_" for c in fid):
-            raise TransicionIlegal(f"id de fase inválido: {fid!r}")
+            if nuevo:
+                raise TransicionIlegal(f"id de fase inválido: {fid!r}")
+            continue
         if fid in vistos:
-            raise TransicionIlegal(f"fase repetida: {fid}")
+            if nuevo:
+                raise TransicionIlegal(f"fase repetida: {fid}")
+            continue
         vistos.add(fid)
         resultado = str(item.get("resultado") or "").strip()
         requiere = _requiere_de(item)
@@ -2644,7 +2664,9 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
         previa = existentes.get(fid)
         if previa is None:
             if not resultado:
-                raise TransicionIlegal(f"la fase {fid} no declara resultado")
+                if nuevo:
+                    raise TransicionIlegal(f"la fase {fid} no declara resultado")
+                continue
             nuevos_ids.add(fid)
             nuevas.append(
                 Fase(
@@ -2656,18 +2678,26 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
                 )
             )
             continue
-        if previa.estado != "pendiente" and resultado and resultado != previa.resultado:
+        if (
+            nuevo
+            and previa.estado != "pendiente"
+            and resultado
+            and resultado != previa.resultado
+        ):
             raise TransicionIlegal(f"no se reescribe el resultado de la fase {fid}")
-        if previa.estado != "pendiente" or previa.despliegue_fuente:
+        if (nuevo and previa.estado != "pendiente") or previa.despliegue_fuente:
             if any(getattr(previa, k) != v for k, v in despliegue.items()):
-                raise TransicionIlegal(f"no se reescribe el despliegue de la fase {fid} ya trabajada")
+                if nuevo:
+                    raise TransicionIlegal(
+                        f"no se reescribe el despliegue de la fase {fid} ya trabajada"
+                    )
         if previa.estado != "pendiente":
             fusionada = _fusionar_requiere(previa.requiere, requiere)
-            if fusionada != previa.requiere:
+            if nuevo and fusionada != previa.requiere:
                 raise TransicionIlegal(
                     f"no se reescriben las dependencias de la fase {fid} ya trabajada"
                 )
-            requiere_final = previa.requiere
+            requiere_final = fusionada if not nuevo else previa.requiere
         else:
             requiere_final = _fusionar_requiere(previa.requiere, requiere)
         nuevas.append(
@@ -2679,10 +2709,10 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
             )
         )
     for fid in existentes:
-        if fid not in vistos:
+        if fid not in vistos and nuevo:
             raise TransicionIlegal(f"la propuesta omite la fase existente {fid}")
     enumeracion = _enumeracion_del_director(e)
-    if enumeracion is not None:
+    if nuevo and enumeracion is not None:
         ajuste_enum, tokens = enumeracion
         fuera = sorted(
             fid for fid in nuevos_ids
@@ -2695,6 +2725,8 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
                 + "); la propuesta declara fases fuera de esa enumeración: "
                 + ", ".join(fuera)
             )
+    if not nuevas:
+        return e
     por_id = {f.id: f for f in nuevas}
     for fase in nuevas:
         for dep, _version in fase.requiere:
@@ -2709,10 +2741,11 @@ def _adoptar_fases(e: Encargo, d: dict, hora: str) -> Encargo:
     # todas las fases ejecutables entre el estado viejo y la propuesta
     # (con su orden y sus dependencias); perderla por propuesta no está
     # acreditado por nadie: el orden lo reconcilia el director. Apretarla o
-    # conservarla sí se permite.
+    # conservarla sí se permite. Solo al escribir: una historia ya aceptada se
+    # aplica tal como entró.
     propuestas = tuple(nuevas)
     for f in propuestas:
-        if f.estado in ("preparada", "bloqueada"):
+        if not nuevo or f.estado in ("preparada", "bloqueada"):
             continue
         condenada_vieja = next(
             (
@@ -2759,7 +2792,7 @@ def defecto_al_adoptar_fases(e: Encargo, fases) -> str:
     archivo tenga forma de propuesta no basta si deja un ciclo o reescribe una
     fase ya trabajada."""
     try:
-        _adoptar_fases(e, {"fases": list(fases)}, e.hora)
+        _adoptar_fases(e, {"fases": list(fases)}, e.hora, nuevo=True)
     except TransicionIlegal as exc:
         return str(exc)
     return ""

@@ -347,7 +347,7 @@ def _desde(enc: Encargo, eventos: list[dict]) -> float | None:
     rearme: tuple[str | None, float | None] | None = None
     try:
         for evento in eventos:
-            actual = reducir(anterior, evento)
+            actual = reducir(anterior, evento, nuevo=False)
             visible = _paso(actual)
             kind = str(evento.get("kind") or "")
             if anterior is not None and visible != clave:
@@ -377,7 +377,7 @@ def _desde_estado(enc: Encargo, eventos: list[dict]) -> float | None:
     marca: str | None = None
     try:
         for evento in eventos:
-            actual = reducir(anterior, evento)
+            actual = reducir(anterior, evento, nuevo=False)
             if (anterior.estado if anterior else None) != actual.estado:
                 marca = str(evento.get("ts") or "") or marca
             anterior = actual
@@ -477,12 +477,14 @@ def _firma(entradas: tuple[Entrada, ...], decisiones: tuple[tuple[str, str], ...
 
 
 def construir(registro: Registro, ahora: float | None = None, host: str = "") -> Resumen:
+    from .ciclo import plegar_aislado
+
     momento = time.time() if ahora is None else float(ahora)
     entradas: list[Entrada] = []
     decisiones: list[tuple[str, str]] = []
     vistos: set[tuple[str, str]] = set()
     for ident in registro.ids():
-        enc = registro.fold(ident)
+        enc = plegar_aislado(registro, ident)
         if enc is None or enc.estado not in ESTADOS_ACTIVOS:
             continue
         eventos = registro.eventos(ident)
