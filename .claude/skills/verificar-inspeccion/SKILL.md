@@ -44,10 +44,10 @@ Comprueba trece reglas:
 Córrela si el cambio toca alguna de las funciones de la tabla de cobertura. Para verlo, compara el commit de sincronía con el árbol de trabajo (incluye lo que no tiene commit), con la función entera alrededor de cada cambio:
 
 ```sh
-git --no-pager diff --no-ext-diff -W 322cd51 -- motor/encargos/dominio.py motor/encargos/ciclo.py motor/encargos/necesidades.py motor/encargos/cli.py
+git --no-pager diff --no-ext-diff -W eb047d5 -- motor/encargos/dominio.py motor/encargos/ciclo.py motor/encargos/necesidades.py motor/encargos/cli.py
 ```
 
-Con `-W` cada trozo trae la función entera: la función que contiene el cambio es la primera línea `def` del contexto. El encabezado `@@` nombra la función anterior; no lo uses. Si la salida de `git diff` llega resumida, mándala a un archivo y léela ahí. Busca esas funciones en la columna "Código" de la tabla de cobertura. `322cd51` es el commit de sincronía; ver abajo. Los arreglos de #152 modelados aquí están en el árbol de trabajo de este espacio, todavía sin commit.
+Con `-W` cada trozo trae la función entera: la función que contiene el cambio es la primera línea `def` del contexto. El encabezado `@@` nombra la función anterior; no lo uses. Si la salida de `git diff` llega resumida, mándala a un archivo y léela ahí. Busca esas funciones en la columna "Código" de la tabla de cobertura. `eb047d5` es el commit de sincronía; ver abajo. Los arreglos de #152 modelados aquí ya están en ese commit.
 
 ## Cómo correrla
 
@@ -140,7 +140,7 @@ Cada constante de `main.cfg` es una rama concreta del código. Cada acción del 
 | `Ajustar` | reducción `ajuste`: `_soltar_impedimento_de_inspeccion`, `_sin_repeticiones`/`_reiniciar_escalera` (la cuenta del freno y `pendientes_entrega` empiezan de nuevo). Es la salida de la entrega con pendientes | |
 | `pendiente` (variable) | `Encargo.pendientes_entrega`: la espera visible que deja la quietud o el tope del freno. La entrega con pendientes bloquea la fase; un ajuste nuevo la limpia | |
 
-**Commit de sincronía: `322cd51`** (`nada-espera-persona: retira necesita_usuario y cada paso devuelve un resultado cerrado`), más los arreglos de #152 que están en el árbol de trabajo de este espacio. En ese commit se comprobó que el modelo describe `dominio._respuesta`, `_reanudar_inspeccion`, `_retomar`, `_contar_no_concluyentes`, `ciclo._ligar_inspeccion`, `_salta_inspeccion`, `_incorporar_revisor`, `_entregar_con_pendientes`, `necesidades.atender`, `continuar_respuestas`, `cli.paso` y `resultado.py`; los tres arreglos de #152 (pregunta que no bloquea, continuar sin reabrir y respuesta antes de barrer) todavía no tienen commit propio: cuando lo tengan, mueve el hash. Muévelo solo después de releer las funciones de la tabla en el código nuevo y confirmar que el modelo sigue diciendo lo mismo.
+**Commit de sincronía: `eb047d5`** (`nada-espera-persona: cierra los hallazgos del replay, el instrumento y #152`). En ese commit se comprobó que el modelo describe `dominio._respuesta`, `_reanudar_inspeccion`, `_retomar`, `_contar_no_concluyentes`, `ciclo._ligar_inspeccion`, `_salta_inspeccion`, `_incorporar_revisor`, `_entregar_con_pendientes`, `necesidades.atender`, `continuar_respuestas`, `cli._paso_del_supervisor` y `resultado.py`, con los tres arreglos de #152 (pregunta que no bloquea, continuar sin reabrir y respuesta antes de barrer). Muévelo solo después de releer las funciones de la tabla en el código nuevo y confirmar que el modelo sigue diciendo lo mismo.
 
 Qué cuenta en el modelo:
 
@@ -178,7 +178,7 @@ Las tres reglas estrictas que main rompía ya están en `main.cfg` y pasan. Los 
   2. Comprueba que la regla que tocaste todavía puede fallar: invierte en una copia de `main.cfg` la constante que la sostiene. La tabla de abajo dice qué se espera.
   3. Mueve el commit de sincronía.
 
-Qué pasa al invertir cada constante en `main.cfg`, medido sobre `322cd51` más los arreglos de #152 del árbol de trabajo (largo en estados de TLC). Si tu cambio hace una de estas inversiones, la tabla ya te dice el resultado; córrelo igual para tener el camino:
+Qué pasa al invertir cada constante en `main.cfg`, medido sobre `eb047d5` (largo en estados de TLC). Si tu cambio hace una de estas inversiones, la tabla ya te dice el resultado; córrelo igual para tener el camino:
 
 | Constante invertida | Resultado |
 |---|---|
