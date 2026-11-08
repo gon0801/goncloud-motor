@@ -306,7 +306,7 @@ class ElCierreEnLlano(Base):
         cuerpo = directores._cuerpo_de_cierre(self.b.reg.fold(vacio))
         self.assertNotIn("pedía llegar", cuerpo)
 
-    def test_el_aviso_no_atribuye_al_nivel_efectivo_un_pr_que_no_explica(self):
+    def test_el_aviso_no_atribuye_al_nivel_efectivo_un_pr_que_no_explica(self):  # no-roja-en-base: sobre la base la frase no existe y la ausencia ya se cumple; la prueba fija el borde nuevo de h_40e1d616, que el aviso no atribuya al nivel efectivo lo que un bloqueante causó
         ident = self.b.encargo(
             "# Orbit pagos\n\nTrabaja el pedido y comprueba.",
             "orbit-pagos",
