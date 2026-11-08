@@ -331,6 +331,48 @@ class DespliegueReal(unittest.TestCase):
         self.assertTrue(enviado)
         self.assertEqual(proceso.returncode, 0)
 
+    def test_un_grupo_que_no_confirma_su_salida_falla_cerrado(self):  # no-roja-en-base: caracterización del fallo cerrado; la base ya lanza al primer «vivo» y el arreglo conserva que no se dé por detenido
+        # El reintento del cierre transitorio no puede volverse un «dar por
+        # ausente»: si el grupo sigue vivo o no se puede mirar, _correr falla
+        # cerrado y no encadena el paso siguiente.
+        from motor.encargos import despliegue as ejecutor
+
+        reg, ident, _, _, _ = self.despliegue
+        copia = reg.base / "copia-falsa-falla"
+        copia.mkdir()
+        (copia / "r.sh").write_text("exit 0\n", encoding="utf-8")
+
+        class Proceso:
+            pid = 424243
+            returncode = 0
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        class Creado:
+            proceso = Proceso()
+            job = "Local\\goncloud-motor-prueba-falla"
+            separacion = "sin_breakaway"
+
+            def liberar(self):
+                pass
+
+        actual = {"valor": "vivo"}
+        self.parche(ejecutor, "_posix", lambda cmd, bash="": (["true"], True, None))
+        self.parche(plataforma, "crear_proceso", lambda *a, **k: Creado())
+        self.parche(plataforma, "hora_inicio", lambda pid: "100")
+        self.parche(plataforma, "boot_id", lambda: "boot")
+        self.parche(plataforma, "matar_grupo", lambda p: None)
+        self.parche(plataforma, "matar_grupo_pid", lambda *a: None)
+        self.parche(plataforma, "presencia_grupo", lambda *a, **k: actual["valor"])
+        for actual["valor"] in ("vivo", "incierto"):
+            with self.subTest(presencia=actual["valor"]):
+                with self.assertRaisesRegex(RuntimeError, "no confirma su salida"):
+                    ejecutor._correr(reg, ident, "rollback", "r.sh", copia, {}, "")
+
     def test_parada_durante_preparacion_no_inicia_escritura(self):
         despliegue = self.despliegue
         reg, ident, espacio, destino, integrar = despliegue
