@@ -336,7 +336,7 @@ class DespliegueReal(unittest.TestCase):
         assert final.nivel_alcanzado == "integrado"
         assert not (destino / "pasos").exists()
 
-    def test_parada_espera_al_rollback_y_no_sella(self):
+    def test_parada_espera_al_rollback_y_no_sella(self):  # no-roja-en-base: solo amplia la ventana de espera 10->30 s por el coste del runner de Windows; el comportamiento afirmado es el de la base
         despliegue = self.despliegue
         from motor.encargos.despliegue import observacion
         reg, ident, espacio, destino, integrar = despliegue
@@ -348,7 +348,11 @@ class DespliegueReal(unittest.TestCase):
         integrar()
 
         def esperar(condicion):
-            fin = time.monotonic() + 10
+            # 30 s: el camino del producto tras la parada puede gastar hasta
+            # ~6 s (1 s de sondeo + 5 s de esperar el grupo muerto en
+            # Windows) más el arranque del bash; en un runner cargado los
+            # 10 s anteriores salieron apretados.
+            fin = time.monotonic() + 30
             while not condicion():
                 assert time.monotonic() < fin
                 time.sleep(0.05)
