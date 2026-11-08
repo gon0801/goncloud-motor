@@ -116,5 +116,36 @@ class ElCorteDeInstrumentoConservaLaCausa(unittest.TestCase):
             self.assertNotEqual(e.estado, "terminado")
 
 
+class ElRelevoDeInstrumentoRotaElModelo(unittest.TestCase):
+    """F5 (DeepSeek): el corte de instrumento cuenta como relevo del rol.
+
+    `cli` decide rotar el modelo con `relevos_de(enc, rol) > 0`. El corte de
+    instrumento es un relevo de esa época; si no cuenta, el rol sigue con el
+    mismo modelo que ya falló.
+    """
+
+    def test_el_corte_de_instrumento_cuenta_como_relevo_del_rol(self):  # no-roja-en-base: la base ya cuenta el corte como relevo y rota el modelo; la prueba conserva esa decision al derivar la escalera
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            self.addCleanup(reg.close)
+            ident = recibir(reg, "pedido", "instrumento-f5", ahora_iso())["encargo"]
+            reg.anotar(
+                ident,
+                {
+                    "kind": "sin_progreso",
+                    "data": {
+                        "huella": "instrumento:abc123",
+                        "diagnostico": "el comprobador falló dos veces igual",
+                        "escalar": True,
+                        "rol": "responsable",
+                        "hora": ahora_iso(),
+                    },
+                },
+                "corte-instrumento-unico",
+            )
+            e = reg.fold(ident)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

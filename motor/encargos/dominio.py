@@ -1036,10 +1036,23 @@ def clave_escalera(e: Encargo, rol: str) -> str:
     rol = rol or "responsable"
     if rol == "revisor":
         ref = e.no_concluyente_ref[0] if e.no_concluyente_ref else ""
-        return f"{_huella_escalera_revisor(e)}:revisor:{ref}"
+        return _prefijo_epoca(e, rol) + ref
+    return _prefijo_epoca(e, rol) + huella_bloqueo(e)
+
+
+def _prefijo_epoca(e: Encargo, rol: str) -> str:
+    """Los hechos que reinician la escalera del rol, sin el punto de ids.
+
+    Todas las claves de un rol dentro de la misma época empiezan por este
+    prefijo: el punto vigente (los ids o el pedido) y los cortes de instrumento
+    de ese rol. Así `relevos_de` cuenta los relevos de la época, también el del
+    instrumento, que es lo que rota el modelo.
+    """
+    rol = rol or "responsable"
+    if rol == "revisor":
+        return f"{_huella_escalera_revisor(e)}:revisor:"
     return (
-        f"{e.fase_activa}:responsable:{e.avances}:"
-        f"{huella_bloqueo(e)}:{_huella_operador(e)}"
+        f"{e.fase_activa}:responsable:{e.avances}:{_huella_operador(e)}:"
     )
 
 
@@ -1053,10 +1066,7 @@ def _clave_del_sin_progreso(e: Encargo, d: dict, rol: str) -> str:
     """
     huella = str(d.get("huella") or "")
     if huella.startswith("instrumento:"):
-        return (
-            f"{e.fase_activa}:{e.avances}:{rol}:{huella}:"
-            f"{_huella_operador(e)}"
-        )
+        return _prefijo_epoca(e, rol) + huella
     return clave_escalera(e, rol)
 
 
@@ -1092,7 +1102,19 @@ def con_escalon(e: Encargo, rol: str, clave: str, paso: str) -> Encargo:
 
 
 def relevos_de(e: Encargo, rol: str) -> int:
-    return pasos_escalera(e, rol).count("relevo")
+    """Cuántos relevos gastó el rol en la época vigente.
+
+    Cuenta el del punto de ids y el de cada corte de instrumento: en 874daed
+    el corte también rotaba el modelo. Los relevos de una época anterior no
+    cuentan porque el prefijo cambió.
+    """
+    rol = rol or "responsable"
+    prefijo = _prefijo_epoca(e, rol)
+    return sum(
+        1
+        for r, clave, paso in e.escalones
+        if r == rol and clave.startswith(prefijo) and paso == "relevo"
+    )
 
 
 def hubo_relevo(e: Encargo, rol: str = "") -> bool:
