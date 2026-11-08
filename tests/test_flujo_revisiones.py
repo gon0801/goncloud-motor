@@ -2414,13 +2414,18 @@ class MedianosDeepseekFlujo(unittest.TestCase):
         def lanzador(enc, prompt, espacio, sesion):
             if prompts is not None:
                 prompts.append((enc.rol, Path(prompt).read_text(encoding="utf-8")))
-            return None
+            return ["/bin/echo", "sin proveedor"]
 
         with mock.patch(
             "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
         ), mock.patch(
             "motor.flota.runtime.exigir_poteto",
             return_value=(raiz / "poteto.md", "digest"),
+        ), mock.patch(
+            "motor.encargos.ciclo.preparar_administrado", return_value=None
+        ), mock.patch(
+            "motor.encargos.ciclo.lanzar_administrado",
+            return_value={"pid": os.getpid(), "inicio": "t"},
         ):
             for _ in range(2):
                 barrer(r.reg, e.reanuda_en or ahora_iso(), time.time(), lanzador, gh=gh)
@@ -2439,8 +2444,7 @@ class MedianosDeepseekFlujo(unittest.TestCase):
             self.assertEqual([h.id for h in abiertos], ["F1"])
             self.assertEqual(abiertos[0].titulo, "Titulo de F1")
             self.assertEqual(abiertos[0].ancla, "saludo.txt:3")
-            self.assertTrue(prompts, "el responsable no recibió la devolución")
-            self.assertEqual({rol for rol, _ in prompts}, {"responsable"})
+            self.assertEqual([rol for rol, _ in prompts], ["responsable"])
             self.assertIn("Titulo de F1", prompts[0][1])
             self.assertIn("saludo.txt:3", prompts[0][1])
 

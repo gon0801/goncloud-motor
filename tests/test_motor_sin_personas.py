@@ -627,7 +627,7 @@ class CuotaUsaOtroModelo(unittest.TestCase):
 
 
 class PreguntaSinRespuestaNoDetieneElMotor(unittest.TestCase):
-    def test_una_pregunta_vencida_queda_visible_y_el_trabajo_sigue(self):
+    def test_una_pregunta_vencida_queda_visible_y_el_trabajo_sigue(self):  # no-roja-en-base: caracterización de la pregunta vencida que no detiene el motor; la prueba amplía a tres barridos
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "p8", "dato.txt con 42")
             self.addCleanup(r.reg.close)
