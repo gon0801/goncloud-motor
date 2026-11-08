@@ -260,7 +260,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
                 "",
             )
 
-    def test_el_camino_de_autoridad_aplica_resueltos_externos(self):
+    def test_el_camino_de_autoridad_aplica_resueltos_externos(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "autoridad-resueltos-1", github_con_hallazgo,

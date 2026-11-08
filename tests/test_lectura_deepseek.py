@@ -346,7 +346,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
 
 
 class RelecturaConGithubCaido(unittest.TestCase):
-    def test_un_fallo_no_consume_el_espaciado_y_queda_a_la_vista(self):
+    def test_un_fallo_no_consume_el_espaciado_y_queda_a_la_vista(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-gh-caido", _comentarios)
             gh = vuelta.gh
@@ -379,7 +379,7 @@ class RelecturaConGithubCaido(unittest.TestCase):
             self.assertEqual(e.nivel_alcanzado, "pr")
             self.assertEqual(e.fase_actual.deepseek_error, "")
 
-    def test_un_github_caido_un_rato_deja_un_solo_aviso_por_tramo(self):
+    def test_un_github_caido_un_rato_deja_un_solo_aviso_por_tramo(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-gh-tramo", _comentarios)
             gh = vuelta.gh

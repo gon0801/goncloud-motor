@@ -123,7 +123,7 @@ class RecuperacionFase5(unittest.TestCase):
                 finally:
                     reg.close()
 
-    def test_deepseek_schema3_concilia_F1_resuelto_ya_persistido(self):
+    def test_deepseek_schema3_concilia_F1_resuelto_ya_persistido(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         sha = "aa335ac97b3a85a6fdade67fbcc5ada58c869d2f"
         contenido = {
             "schema": 3,

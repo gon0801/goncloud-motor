@@ -410,7 +410,7 @@ class FlujoRevisiones(unittest.TestCase):
             )
             self.assertEqual(v["entrega"]["nivel_alcanzado"], "terminado")
 
-    def test_correccion_acotada_conserva_lo_aprobado(self):
+    def test_correccion_acotada_conserva_lo_aprobado(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "corr-1", "bueno.txt con A y malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -1239,7 +1239,7 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
             estado_fake = json.loads((raiz / "fake" / "github.json").read_text())
             self.assertEqual(estado_fake["prs"], {})
 
-    def test_inspeccion_pendiente_vuelve_al_revisor_sin_esperar_a_una_persona(self):
+    def test_inspeccion_pendiente_vuelve_al_revisor_sin_esperar_a_una_persona(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "insp-1", "Crea dato.txt con 42")
             self.addCleanup(r.reg.close)
