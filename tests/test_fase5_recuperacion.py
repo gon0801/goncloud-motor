@@ -335,7 +335,7 @@ class RecuperacionFase5(unittest.TestCase):
                 avisos = directores.drenar(reg)["avisos"]
                 enviados = {(a["encargo"], a.get("tipo")) for a in avisos if a["entregado"]}
                 self.assertEqual(enviados, {
-                    ("antiguo", "pregunta"), ("cerrado", None), (nuevo, "inicio"),
+                    ("antiguo", "aviso"), ("cerrado", None), (nuevo, "inicio"),
                 })
                 anterior = reg.fold("antiguo", hasta=corte)
                 historico = next(h for h in directores.hechos_de_avance(anterior) if h["tipo"] == "inicio")

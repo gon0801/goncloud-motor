@@ -49,6 +49,7 @@ from .dominio import (
     correcciones_sin_ver,
     puede_recibir_intento,
     revision_independiente_cubre_producto,
+    _texto_normalizado,
     decision_fallo,
     decision_proceso,
     defecto_al_adoptar_fases,
@@ -91,6 +92,7 @@ from .sesion import (
     preparar_administrado,
     recuperar_arranque,
 )
+from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, permite_lanzar
 from .suscripciones import CuentaNoDisponible
 
 _UMBRAL_S = 30
@@ -1311,12 +1313,6 @@ def _barrer_encargos(
                     f"buzon-fallo:{encargo_id}:{type(exc).__name__}",
                 )
             enc = registro.fold(encargo_id) or enc
-        if not parada and enc.estado not in (
-            "cancelado", "terminado", "detenido", "deteniendo"
-        ):
-            enc = _autocontestar_preguntas(
-                registro, enc, espacio, directorio, hora, lanzador
-            )
         if (
             not parada
             and enc.pendientes_entrega
@@ -1393,7 +1389,6 @@ def _barrer_encargos(
                 "cancelado",
                 "terminado",
                 "esperando_reintento",
-                "necesita_usuario",
             )
         )
         if not parada and enc.via != "directa":
@@ -1416,8 +1411,10 @@ def _barrer_encargos(
                 {"kind": "intento_cerrado", "data": {"hora": hora}},
                 f"intento-cerrado:{encargo_id}:{enc.proc.pid}:{enc.proc.inicio}",
             )
-            enc = registro.fold(encargo_id)
-        sin_llm = False
+            enc = registro.fold(encargo_id) or enc
+        resultado_paso: Resultado = NecesitaAgente(
+            str(getattr(enc, "rol", "") or "responsable")
+        )
         if (
             not parada
             and enc.proc is None
@@ -1431,30 +1428,27 @@ def _barrer_encargos(
                 _aplica_entrega(enc) or _revision_aprobada_vigente(enc)
             ) and _devolver_correcciones(registro, enc, hora):
                 enc = registro.fold(encargo_id)
+                resultado_paso = NecesitaAgente("responsable")
             elif _aplica_entrega(enc):
-                antes = len(registro.eventos(encargo_id))
+                _RESULTADOS_DE_PASO.pop(encargo_id, None)
                 enc = _paso_entrega(registro, enc, gh, hora)
-                sin_avance = (
-                    len(registro.eventos(encargo_id)) == antes
-                    and not enc.reanuda_en
-                )
-                sin_llm = not sin_avance or (
-                    enc.rol == "revisor" and _revision_aprobada_vigente(enc)
+                resultado_paso = _RESULTADOS_DE_PASO.pop(
+                    encargo_id, NecesitaAgente(str(enc.rol or "responsable"))
                 )
                 if (
-                    sin_avance
+                    isinstance(resultado_paso, NecesitaAgente)
                     and enc.rol == "revisor"
                     and _revision_aprobada_vigente(enc)
                 ):
                     enc = _esperar_entrega_sin_avance(registro, enc, hora)
-                    sin_llm = True
+                    resultado_paso = Espera(enc.reanuda_en, enc.motivo)
             elif _revision_aprobada_vigente(enc):
+                _RESULTADOS_DE_PASO.pop(encargo_id, None)
                 enc = _intentar_cierre(registro, enc, espacio, directorio, hora)
-                sin_llm = enc.estado == "terminado" or (
-                    enc.rol == "revisor" and _revision_aprobada_vigente(enc)
+                resultado_paso = _RESULTADOS_DE_PASO.pop(
+                    encargo_id, NecesitaAgente(str(enc.rol or "responsable"))
                 )
-            if sin_llm:
-                arbol = observar(directorio, proc)
+            arbol = observar(directorio, proc)
         if enc.estado == "terminado" and enc.pr_numero and not parada:
             enc = _revisar_ci_del_pr(registro, enc, gh, hora)
         sin_hecho = _edad(enc, epoch) >= umbral_s
@@ -1464,7 +1458,13 @@ def _barrer_encargos(
             if observar_despliegue(registro, enc) != "ausente":
                 arbol = "incierto"
         decision = _decision(enc, arbol, directorio, sin_hecho, hora)
-        if sin_llm:
+        if isinstance(resultado_paso, Devolver):
+            # Devolver entrega el trabajo a un rol: el turno siguiente es suyo.
+            # No es una espera ni un avance: el rol nombrado tiene que correr.
+            resultado_paso = NecesitaAgente(
+                str(resultado_paso.rol or getattr(enc, "rol", "") or "responsable")
+            )
+        if not permite_lanzar(resultado_paso):
             decision["lanzar"] = False
         if parada:
             decision["lanzar"] = False
@@ -1500,7 +1500,7 @@ def _barrer_encargos(
                 ):
                     enc = _incorporar_revisor(registro, enc, espacio, hora, directorio)
                 decision = _decision(enc, arbol, directorio, sin_hecho, hora)
-                if sin_llm:
+                if not permite_lanzar(resultado_paso):
                     decision["lanzar"] = False
         # Y el entorno se comprueba antes de consumir otro turno, no después de
         # que falle. Si la comprobación no puede hacerse, tampoco acredita nada.
@@ -1578,7 +1578,8 @@ def _vigilar_quietud(
 ) -> Encargo:
     """Cuenta vueltas seguidas en las que el encargo no tiene nada en curso y el
     registro no se movio. Al pasar el umbral deja un evento `quietud` con la
-    causa y lo pasa a necesita_usuario. Cualquier evento nuevo reinicia la cuenta."""
+    causa y la deja como pendiente visible para entregar con lo que hay.
+    Cualquier evento nuevo reinicia la cuenta."""
     ruta = _directorio(registro.base, enc.id) / "quietud.json"
     quieto = (
         not parada
@@ -1735,6 +1736,62 @@ def _anotar_instrumento(
     )
 
 
+def _corte_de_instrumento(
+    registro: Registro,
+    enc: Encargo,
+    causa: str,
+    hora: str,
+    serie: str,
+    rol: str,
+) -> bool:
+    """La misma causa de instrumento sobre el mismo producto en dos intentos
+    seguidos no vuelve al responsable.
+
+    Deja un hecho visible y pasa el rol a otro modelo autorizado; si el relevo
+    repite la misma causa, el relevo se agota y el encargo entrega con
+    pendientes. No es un tope de rondas: exige clase y causa idénticas y el
+    mismo producto."""
+    version = enc.producto.firma if enc.producto else ""
+    fallos = [
+        ev
+        for ev in registro.eventos(enc.id)
+        if ev["kind"] == "instrumento_fallo"
+        and str(ev["data"].get("version") or "") == version
+    ]
+    if len(fallos) < 3:
+        return False
+    ultimo, previo = fallos[-1], fallos[-2]
+    if ultimo["data"].get("clase") != previo["data"].get("clase"):
+        return False
+    if _texto_normalizado(ultimo["data"].get("causa")) != _texto_normalizado(
+        previo["data"].get("causa")
+    ):
+        return False
+    clase = str(ultimo["data"].get("clase") or "")
+    clave = hashlib.sha256(
+        f"{clase}|{_texto_normalizado(causa)}|{version}".encode()
+    ).hexdigest()[:16]
+    diagnostico = (
+        f"el instrumento {clase or 'de comprobación'} falló dos veces seguidas "
+        f"con la misma causa sobre el mismo producto: {str(causa)[:400]}"
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "sin_progreso",
+            "data": {
+                "huella": f"instrumento:{clave}",
+                "diagnostico": diagnostico,
+                "escalar": True,
+                "rol": rol or "responsable",
+                "hora": hora,
+            },
+        },
+        f"instrumento-corte:{enc.id}:{clave}:{enc.generacion}:{serie}",
+    )
+    return True
+
+
 def _devolver(
     registro: Registro,
     enc: Encargo,
@@ -1745,6 +1802,10 @@ def _devolver(
     serie: str,
     rol: str = "responsable",
 ) -> None:
+    if estrategia == "reparar_instrumento" and _corte_de_instrumento(
+        registro, enc, motivo, hora, serie, rol
+    ):
+        return
     registro.anotar(
         enc.id,
         {
@@ -1759,6 +1820,16 @@ def _devolver(
         },
         f"devolucion:{enc.id}:{enc.generacion}:{serie}",
     )
+
+
+def _necesita_agente(enc: Encargo) -> tuple[Encargo, Resultado]:
+    """El paso no avanzó y necesita un turno del rol que lleva el encargo."""
+    return enc, NecesitaAgente(str(getattr(enc, "rol", "") or "responsable"))
+
+
+def _con_espera(enc: Encargo) -> tuple[Encargo, Resultado]:
+    """La espera visible ya quedó registrada en el encargo."""
+    return enc, Espera(enc.reanuda_en, enc.motivo)
 
 
 def _sin_avance(
@@ -2276,6 +2347,9 @@ def _impedimento_de_instrumento(
     cuando el caso queda manejado (la tercera falla ya no gasta un turno de
     reparación leyendo el fold anterior) y False cuando el llamador debe
     devolver el trabajo para reparar el instrumento."""
+    _corte_de_instrumento(
+        registro, enc, causa, hora, f"impedimento-{clase}", str(enc.rol or "responsable")
+    )
     previas = sum(
         1
         for ev in registro.eventos(enc.id)
@@ -2519,14 +2593,14 @@ def _reabrir_revision(
     return registro.fold(enc.id)
 
 
-def _intentar_cierre(
+def _intentar_cierre_paso(
     registro: Registro,
     enc: Encargo,
     espacio: Path,
     directorio: Path,
     hora: str,
     veredicto_comprobado: bool = False,
-) -> Encargo:
+) -> tuple[Encargo, Resultado]:
     """Despacha efectos con recibo y compone el cierre si el nivel se cumplio.
 
     Lo usan _cerrar_con_juicio y el reintento sin LLM de barrer: un efecto
@@ -2537,6 +2611,7 @@ def _intentar_cierre(
     llega aquí sin ese paso (`veredicto_comprobado` falso) no cierra: el
     siguiente paso de entrega lo hace con el veredicto vigente.
     """
+
     if (
         not veredicto_comprobado
         and enc.entrega.nivel in ("pr", "integrado", "desplegado")
@@ -2544,15 +2619,20 @@ def _intentar_cierre(
         and enc.pr_numero
         and enc.estado != "terminado"
     ):
-        return enc
+        return _necesita_agente(enc)
     from motor.runwrap import _publica
 
     if _devolver_correcciones(registro, enc, hora):
-        return registro.fold(enc.id)
+        return (
+            registro.fold(enc.id) or enc,
+            NecesitaAgente("responsable"),
+        )
     if enc.producto is not None and not enc.producto.sha_git:
         stale = _producto_no_aprobado(enc, espacio)
         if stale is not None:
-            return _reabrir_revision(registro, enc, stale, hora)
+            return _reabrir_revision(registro, enc, stale, hora), Devolver(
+                "revisor", "el producto cambió desde la revisión aprobada"
+            )
     try:
         pedidos = _pedidos_efecto(espacio)
     except (ValueError, TypeError) as exc:
@@ -2564,16 +2644,19 @@ def _intentar_cierre(
         if _instrumento_omitido(enc, "pedido-efecto.json"):
             pedidos = []
         else:
-            if not _impedimento_de_instrumento(
+            manejado = _impedimento_de_instrumento(
                 registro, enc, "pedido-efecto.json", str(exc),
                 "que .interno/pedido-efecto.json vuelva a validar", hora,
-            ):
+            )
+            if not manejado:
                 _devolver(
                     registro, enc, "reparar_instrumento", str(exc),
                     "corregir la solicitud interna sin tocar el producto",
                     hora, "pedidos",
                 )
-            return registro.fold(enc.id)
+            return registro.fold(enc.id) or enc, (
+                Avanzo() if manejado else Devolver("responsable", "reparar el instrumento")
+            )
     if any(p["operacion"] == "desplegar" for p in pedidos):
         if nivel_objetivo(enc) != "desplegado":
             causa = (
@@ -2584,10 +2667,18 @@ def _intentar_cierre(
                 + ": "
                 + (enc.nivel_efectivo_motivo or "el sondeo de capacidad ya lo comprobó")
             )
-            marcar_pregunta(registro, enc.id, causa, True, hora)
-            return registro.fold(enc.id)
+            _anotar_impedimento(
+                registro, enc, "autorizacion", causa,
+                "que el encargo autorice desplegar o no lo pida", hora,
+            )
+            registro.anotar(
+                enc.id,
+                {"kind": "pendiente_entrega", "data": {"texto": causa, "hora": hora}},
+                f"pendiente-despliegue-no-autorizado:{enc.id}",
+            )
+            return registro.fold(enc.id) or enc, Avanzo()
         if not nivel_cumplido(enc):
-            return enc
+            return _necesita_agente(enc)
         pedidos = [p for p in pedidos if p["operacion"] != "desplegar"]
     if pedidos and not enc.autoridad:
         marcar_espera(
@@ -2597,7 +2688,7 @@ def _intentar_cierre(
             _reanuda_en(30),
             hora,
         )
-        return registro.fold(enc.id)
+        return _con_espera(registro.fold(enc.id) or enc)
     destino = DestinoEnsayo(registro.base / "destino")
     for pedido in pedidos:
         resultado = despachar(
@@ -2624,10 +2715,10 @@ def _intentar_cierre(
                 _reanuda_en(30),
                 hora,
             )
-            return registro.fold(enc.id)
+            return _con_espera(registro.fold(enc.id) or enc)
     enc = registro.fold(enc.id)
     if enc.entrega.nivel != "terminado" and not nivel_cumplido(enc):
-        return enc
+        return _necesita_agente(enc)
     from .cierre import componer
 
     try:
@@ -2638,7 +2729,7 @@ def _intentar_cierre(
             "completar lo que falta para el cierre sin tocar el producto aprobado",
             hora, f"cierre-{enc.generacion}",
         )
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc, Avanzo()
     sin_recibir = [
         n
         for n in enc.procedimiento
@@ -2660,9 +2751,29 @@ def _intentar_cierre(
     enc = registro.fold(enc.id)
     if resultado == "ilegal" and correcciones_sin_ver(enc):
         _devolver_correcciones(registro, enc, hora)
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc, NecesitaAgente("responsable")
     if enc.estado == "terminado":
         _publicar_resultado(registro, enc, hora)
+    return enc, Avanzo()
+
+
+
+_RESULTADOS_DE_PASO: dict[str, Resultado] = {}
+
+
+def _intentar_cierre(
+    registro: Registro,
+    enc: Encargo,
+    espacio: Path,
+    directorio: Path,
+    hora: str,
+    veredicto_comprobado: bool = False,
+) -> Encargo:
+    """Ejecuta el cierre y conserva el resultado cerrado que devolvió el paso."""
+    enc, resultado = _intentar_cierre_paso(
+        registro, enc, espacio, directorio, hora, veredicto_comprobado
+    )
+    _RESULTADOS_DE_PASO[enc.id] = resultado
     return enc
 
 
@@ -2777,15 +2888,8 @@ def _ligar_inspeccion(
     ident = _id_inspeccion(enc, juicio, registro.base)
     previa = next((s for s in enc.solicitudes if s.id == ident), None)
     if fase.inspeccion_solicitud == ident and previa is not None:
-        if previa.estado == "pregunta" and enc.estado in ("recibido", "ejecutando"):
-            marcar_pregunta(
-                registro,
-                enc.id,
-                previa.pregunta or juicio.inspeccion_faltante,
-                True,
-                hora,
-                f"pregunta-inspeccion:{enc.id}:{ident}:{enc.generacion}",
-            )
+        # La pregunta ya está registrada como solicitud visible y no bloquea: el
+        # barrido sigue y el freno de no concluyentes acota la repetición.
         return
     # Con la liga puesta pero sin solicitud registrada (llegó tarde, con el
     # encargo detenido) el pedido se vuelve a encolar en vez de darse por atendido.
@@ -2860,15 +2964,10 @@ def _ligar_inspeccion(
             # La liga nace con su solicitud: una liga sin solicitud no bloquea.
             necesidades.registrar_pedida(registro, enc, crudo, hora)
             if recursos[pedido.recurso].get("autorizacion") == "propietario":
-                marcar_pregunta(
-                    registro,
-                    enc.id,
-                    pregunta
-                    + f"El recurso {pedido.recurso} exige tu autorización para "
-                    f"{pedido.operacion}; responde a la solicitud {ident}.",
-                    True,
-                    hora,
-                )
+                # La solicitud queda visible y admite respuesta, pero no detiene
+                # el trabajo: el revisor sigue con lo que tenga y la repetición
+                # la corta el freno de no concluyentes.
+                pass
             return
     registro.anotar(
         enc.id,
@@ -2902,14 +3001,19 @@ def _ligar_inspeccion(
         },
         f"solicitud:{enc.id}:{ident}",
     )
-    marcar_pregunta(
-        registro,
+    registro.anotar(
         enc.id,
-        pregunta
-        + "Ninguna capacidad concedida del puente la cubre. Concede la capacidad "
-        f"o responde a la solicitud {ident} con el dato o la autorización.",
-        True,
-        hora,
+        {
+            "kind": "procedimiento",
+            "data": {
+                "nota": (
+                    "consulta sin capacidad concedida, visible como solicitud "
+                    f"{ident}; el trabajo sigue sin esperar respuesta"
+                ),
+                "hora": hora,
+            },
+        },
+        f"consulta-sin-capacidad:{enc.id}:{ident}",
     )
 
 
@@ -3718,7 +3822,29 @@ def _salta_inspeccion(
         # que el juicio acredite como consumida. Se consume para que
         # `_ligar_inspeccion` vuelva a encolar el pedido en vez de descartarlo.
         return False
-    if sol.estado not in ("pendiente", "pregunta"):
+    if sol.estado == "pregunta":
+        # La pregunta por autorización no bloquea: el juicio se consume como una
+        # revisión más y la repetición la cuenta el freno de no concluyentes.
+        # Un pedido repetido sin respuesta no queda callado: deja el pendiente
+        # visible para entregar con lo que hay, sin esperar a una persona.
+        marca = marca_inspeccion_entregada(sol)
+        if fase.inspeccion_entregada != marca:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "inspeccion_entregada",
+                    "data": {
+                        "fase": enc.fase_activa,
+                        "intento": enc.intento,
+                        "solicitud": sol.id,
+                        "marca": marca,
+                        "hora": hora,
+                    },
+                },
+                f"inspeccion-entregada:{enc.id}:{enc.fase_activa}:{marca}",
+            )
+        return False
+    if sol.estado != "pendiente":
         marca = marca_inspeccion_entregada(sol)
         if fase.inspeccion_entregada != marca:
             registro.anotar(
@@ -4316,26 +4442,38 @@ def _fallo_de_repo(
     registro: Registro, enc: Encargo, causa: str, hora: str, serie: str
 ) -> None:
     """El repo no quedó listo: espera y reintenta. El mismo fallo
-    TOPE_FALLOS_REPO veces seguidas pide ayuda al propietario con la causa."""
+    TOPE_FALLOS_REPO veces seguidas deja un impedimento visible y se entrega lo
+    que haya con los pendientes, sin esperar a una persona."""
     _anotar_instrumento(
         registro, enc, "github", causa,
         "dejar accesible el repo declarado y reintentar",
         hora, serie,
     )
     marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
+    enc = registro.fold(enc.id) or enc
     veces = _fallos_de_repo_seguidos(registro, enc.id, causa)
     if veces < TOPE_FALLOS_REPO:
         return
-    marcar_pregunta(
-        registro,
-        enc.id,
+    texto = (
         f"Git falló {veces} veces seguidas en la misma operación y el motor dejó "
-        f"de reintentar. Último error: {causa}. Corrige el repositorio o el espacio y manda un "
-        "ajuste con director corregir para que reintente; también sirve director "
-        "parar y después director continuar.",
-        True,
-        hora,
-        f"pregunta-repo:{enc.id}:{hora}",
+        f"de reintentar. Último error: {causa}. Corrige el repositorio o el "
+        "espacio y manda un ajuste con director corregir para que reintente; "
+        "también sirve director parar y después director continuar."
+    )
+    if enc.estado == "esperando_reintento":
+        registro.anotar(
+            enc.id,
+            {"kind": "plazo", "data": {"hora": hora}},
+            f"plazo-repo:{enc.id}:{veces}",
+        )
+    _anotar_impedimento(
+        registro, enc, "repo", texto,
+        "que el repositorio y el espacio vuelvan a responder", hora,
+    )
+    registro.anotar(
+        enc.id,
+        {"kind": "pendiente_entrega", "data": {"texto": texto, "hora": hora}},
+        f"pendiente-repo:{enc.id}:{veces}",
     )
 
 
@@ -5299,7 +5437,7 @@ def _releer_deepseek(
         devolver
         and not abiertos
         and enc.estado not in (
-            "terminado", "cancelado", "deteniendo", "detenido", "necesita_usuario"
+            "terminado", "cancelado", "deteniendo", "detenido"
         )
         and enc.proc is None
         and not enc.reserva
@@ -6725,7 +6863,6 @@ def _head_antes_de_cerrar(
 
 
 _TOPE_DEEPSEEK_MIN = 30
-_TOPE_PREGUNTA_MIN = 10
 
 
 def _entregar_con_pendientes(
@@ -6821,10 +6958,20 @@ def _entregar_con_pendientes(
                             _publicar_resultado(registro, enc, hora)
                             _limpiar_encargo_cerrado(registro, enc, hora)
                         return enc
-                    marcar_pregunta(registro, enc.id,
-                                    f"La fase {enc.fase_activa} no tiene commits para un PR con pendientes; "
-                                    "hace falta resolver el bloqueo antes de continuar.", True, hora)
-                    return registro.fold(enc.id)
+                    _bloquear_fase(
+                        registro, enc,
+                        "no hay commits que entregar en el PR",
+                        "no hay commits que entregar en el PR; la fase termina "
+                        "bloqueada con el motivo: " + "; ".join(pendientes),
+                        hora,
+                        f"{enc.reaperturas}:sin-commits-sin-relevo:{len(pendientes)}",
+                    )
+                    enc = registro.fold(enc.id) or enc
+                    _publica(directorio / "incorporado", hora)
+                    if enc.estado == "terminado":
+                        _publicar_resultado(registro, enc, hora)
+                        _limpiar_encargo_cerrado(registro, enc, hora)
+                    return enc
             cuerpo = _cuerpo_pr(
                 replace(enc, pendientes_entrega=tuple(pendientes)), espacio
             )
@@ -6920,25 +7067,6 @@ def _bloquear_fase(
     )
 
 
-def _hora_de_solicitud(registro: Registro, encargo: str, ident: str) -> str:
-    for ev in registro.eventos(encargo):
-        if ev["kind"] == "solicitud" and str(ev["data"].get("id") or "") == ident:
-            return str(ev["data"].get("hora") or ev["ts"] or "")
-    return ""
-
-
-def _hora_de_pedido_al_revisor(
-    registro: Registro, encargo: str, ident: str
-) -> str:
-    for ev in registro.eventos(encargo):
-        if (
-            ev["kind"] == "respuesta_revisor_pedida"
-            and str(ev["data"].get("solicitud") or "") == ident
-        ):
-            return str(ev["data"].get("hora") or ev["ts"] or "")
-    return ""
-
-
 def _preguntas_pedidas_al_revisor(
     registro: Registro, enc: Encargo
 ) -> list:
@@ -7018,146 +7146,12 @@ def _contestar_con_juicio_del_revisor(
     return enc
 
 
-def _contestar_como_responsable(
-    registro: Registro,
-    enc: Encargo,
-    espacio: Path,
-    directorio: Path,
-    sol,
-    hora: str,
-) -> Encargo:
-    """Si el revisor no llega a decidir, el responsable sigue con la opción más
-    razonable y lo deja escrito; nunca deja la pregunta esperando a una persona."""
-    texto = (
-        "Sin decisión del revisor en el tiempo de espera; el responsable sigue "
-        "con la opción más razonable y no espera respuesta: "
-        + (sol.pregunta or sol.motivo or "continuar")
-    )[:2000]
-    try:
-        salida = necesidades.responder(
-            registro, enc.id, sol.id, texto, "responsable",
-            f"responsable-pregunta:{sol.id}:{enc.generacion}", hora,
-        )
-    except TransicionIlegal:
-        return enc
-    if not salida.get("aplicada"):
-        return enc
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "nota_pr",
-            "data": {
-                "texto": (
-                    f"pregunta {sol.id} contestada por el responsable al no "
-                    f"aplicar el revisor: {sol.pregunta or sol.motivo}"
-                ),
-                "hora": hora,
-            },
-        },
-        f"nota-pregunta-responsable:{enc.id}:{sol.id}",
-    )
-    enc = registro.fold(enc.id) or enc
-    try:
-        necesidades.continuar_respuestas(registro, enc, espacio, directorio, hora)
-    except (OSError, ValueError, TransicionIlegal):
-        pass
-    return registro.fold(enc.id) or enc
-
-
-def _turno_de_revisor_en_curso(enc: Encargo) -> bool:
-    """Un juicio que ya está en curso no vio la pregunta: no se le atribuye."""
-    return enc.rol == "revisor" and (enc.proc is not None or enc.reserva)
-
-
-def _autocontestar_preguntas(
-    registro: Registro,
-    enc: Encargo,
-    espacio: Path,
-    directorio: Path,
-    hora: str,
-    lanzador=None,
-) -> Encargo:
-    """Una pregunta del agente que nadie responde en un rato corto pasa al
-    revisor: se le pide un juicio con la pregunta delante y su evidencia decide.
-    Si el revisor no llega a decidir, el responsable sigue con la opción más
-    razonable y la deja anotada para el PR. Nunca espera a una persona."""
-    pendientes = [
-        sol
-        for sol in enc.solicitudes
-        if sol.estado == "pregunta"
-        and _minutos_desde(
-            _hora_de_solicitud(registro, enc.id, sol.id) or enc.hora, hora
-        )
-        >= _TOPE_PREGUNTA_MIN
-    ]
-    if not pendientes:
-        return enc
-    if enc.pendientes_entrega:
-        return enc
-    por_pedir = []
-    for sol in pendientes:
-        if _turno_de_revisor_en_curso(enc):
-            # El turno vivo no vio esta pregunta; se pide al terminar, en un
-            # juicio nuevo que sí la tenga delante.
-            continue
-        pedida = _hora_de_pedido_al_revisor(registro, enc.id, sol.id)
-        if not pedida:
-            por_pedir.append(sol)
-            continue
-        if (
-            _minutos_desde(pedida, hora) >= _TOPE_PREGUNTA_MIN
-            and enc.proc is None
-            and not enc.reserva
-        ):
-            enc = _contestar_como_responsable(
-                registro, enc, espacio, directorio, sol, hora
-            )
-    if not por_pedir:
-        return enc
-    for sol in por_pedir:
-        texto = str(sol.pregunta or sol.motivo or "pregunta del agente")
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "nota_pr",
-                "data": {
-                    "texto": f"pregunta del agente al revisor: {texto}",
-                    "hora": hora,
-                },
-            },
-            f"nota-pregunta-pedida:{enc.id}:{sol.id}",
-        )
-        registro.anotar(
-            enc.id,
-            {
-                "kind": "respuesta_revisor_pedida",
-                "data": {"solicitud": sol.id, "pregunta": texto, "hora": hora},
-            },
-            f"respuesta-revisor-pedida:{enc.id}:{sol.id}",
-        )
-    enc = registro.fold(enc.id) or enc
-    if lanzador is not None:
-        _devolver(
-            registro,
-            enc,
-            "responder_pregunta",
-            "; ".join(
-                str(s.pregunta or s.motivo or "pregunta del agente")
-                for s in por_pedir
-            )[:500],
-            "responder con la evidencia disponible; si no aplica, el "
-            "responsable sigue con la opción más razonable y lo deja en el PR",
-            hora,
-            f"pregunta-revisor:{por_pedir[0].id}",
-            rol="revisor",
-        )
-        enc = registro.fold(enc.id) or enc
-    return enc
-
-
-def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
+def _paso_entrega_paso(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> tuple[Encargo, Resultado]:
     """Entrega externa sin LLM: commit/push del supervisor, PR listo y
     espera de la revision de DeepSeek por SHA. Idempotente por paso+SHA."""
+
     from .politica_despliegue import adoptar as adoptar_politica_despliegue
 
     enc = adoptar_politica_despliegue(
@@ -7173,11 +7167,11 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             comprobar_recibo(enc)
         except ValueError as exc:
             _preguntar_despliegue(registro, enc, str(exc), hora)
-            return registro.fold(enc.id) or enc
+            return registro.fold(enc.id) or enc, Avanzo()
     if _devolver_correcciones(registro, enc, hora):
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc, NecesitaAgente("responsable")
     if _entrega_devuelta_pendiente(registro, enc):
-        return enc
+        return enc, Avanzo()
     if (
         nivel_cumplido(enc)
         and enc.estado != "terminado"
@@ -7188,19 +7182,25 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
     ):
         desviado = _head_antes_de_cerrar(registro, enc, gh, hora)
         if desviado is not None:
-            return desviado
-        return _cerrar_con_veredicto(
-            registro, enc, gh, _espacio(registro.base, enc.id),
-            _directorio(registro.base, enc.id), hora,
+            return desviado, Avanzo()
+        return (
+            _cerrar_con_veredicto(
+                registro, enc, gh, _espacio(registro.base, enc.id),
+                _directorio(registro.base, enc.id), hora,
+            ),
+            Avanzo(),
         )
     if enc.entrega.nivel == "desplegado" and enc.nivel_alcanzado == "integrado":
         enc = _paso_despliegue(registro, enc, _espacio(registro.base, enc.id), hora)
         if nivel_cumplido(enc):
-            return _cerrar_con_veredicto(
-                registro, enc, gh, _espacio(registro.base, enc.id),
-                _directorio(registro.base, enc.id), hora,
+            return (
+                _cerrar_con_veredicto(
+                    registro, enc, gh, _espacio(registro.base, enc.id),
+                    _directorio(registro.base, enc.id), hora,
+                ),
+                Avanzo(),
             )
-        return enc
+        return _necesita_agente(enc)
     if gh is None:
         causa = (
             "nivel de entrega "
@@ -7213,7 +7213,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             hora, "sin-puerto",
         )
         marcar_espera(registro, enc.id, causa, _reanuda_en(300), hora)
-        return registro.fold(enc.id)
+        return _con_espera(registro.fold(enc.id) or enc)
     espacio = _espacio(registro.base, enc.id)
     directorio = _directorio(registro.base, enc.id)
     if _git(espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
@@ -7223,7 +7223,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             "resolver el conflicto, 'git add' y 'git commit'; después continuar la entrega",
             hora, f"mezcla-{enc.generacion}",
         )
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc, Devolver("responsable", causa)
     causa = _asegurar_repo(enc, espacio, registro, hora)
     if causa:
         if causa.startswith("conflicto al incorporar la entrada"):
@@ -7234,16 +7234,18 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 "el trabajo propio; lo aprobado que no cambio se conserva",
                 hora, f"entrada-{enc.generacion}",
             )
-            return registro.fold(enc.id)
+            return registro.fold(enc.id) or enc, Devolver("responsable", causa)
         _fallo_de_repo(registro, enc, causa, hora, "repo-entrega")
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc, Avanzo()
     enc = registro.fold(enc.id) or enc
     stale = _producto_no_aprobado(enc, espacio)
     if stale is not None:
-        return _reabrir_revision(registro, enc, stale, hora)
+        return _reabrir_revision(registro, enc, stale, hora), Devolver(
+            "revisor", "el producto cambió desde la revisión aprobada"
+        )
     espera = _espera_por_observacion(registro, enc, espacio, directorio, hora)
     if espera is not None:
-        return espera
+        return espera, Espera(espera.reanuda_en, espera.motivo)
     sha, causa = _commit_push(enc, espacio)
     if causa:
         punta = ""
@@ -7261,8 +7263,11 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 # F10: un fallo de push con la punta en el sha entregado no es
                 # desviación — el push propio no aterrizó todavía (el sha local
                 # puede estar más adelantado): reintento genérico, no desvío.
-                return _head_desviado(
-                    registro, enc, hora, enc.pr_numero, entregado, punta
+                return (
+                    _head_desviado(
+                        registro, enc, hora, enc.pr_numero, entregado, punta
+                    ),
+                    Avanzo(),
                 )
         corte = not _fallo_transitorio(causa) and (
             _entrega_devuelta_de_la_version(registro, enc)
@@ -7320,9 +7325,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 "su aprobación",
                 hora, f"push-{enc.generacion}",
             )
-            return registro.fold(enc.id)
+            return registro.fold(enc.id) or enc, Devolver("responsable", causa)
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-        return registro.fold(enc.id)
+        return _con_espera(registro.fold(enc.id) or enc)
     rama = _rama_fase(enc)
     base = (
         enc.entrega.base if nivel_objetivo(enc) in ("integrado", "desplegado")
@@ -7366,7 +7371,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 hora, f"pr-ver-{enc.generacion}",
             )
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-            return registro.fold(enc.id)
+            return _con_espera(registro.fold(enc.id) or enc)
         numero = enc.pr_numero
         recibo = vista_pr.merge_commit or vista_pr.head
         if (
@@ -7396,10 +7401,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             )
             enc = registro.fold(enc.id)
             if nivel_cumplido(enc):
-                return _intentar_cierre(
+                return _intentar_cierre_paso(
                     registro, enc, espacio, directorio, hora
                 )
-            return enc
+            return _necesita_agente(enc)
         if vista_pr.estado == "abierto":
             enc = _actualizar_cuerpo_pr(
                 registro, enc, gh, numero, sha, espacio, hora
@@ -7435,7 +7440,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                         },
                         f"entrega:{enc.id}:{enc.fase_activa}:sin_cambios:{sha}",
                     )
-                    return _intentar_cierre(
+                    return _intentar_cierre_paso(
                         registro, registro.fold(enc.id) or enc, espacio, directorio, hora
                     )
                 if enc.entrega.nivel in ("integrado", "desplegado"):
@@ -7469,16 +7474,16 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     )
                     enc = registro.fold(enc.id)
                     if nivel_cumplido(enc):
-                        return _intentar_cierre(
+                        return _intentar_cierre_paso(
                             registro, enc, espacio, directorio, hora
                         )
                     # desplegado sin diff: no se abre un PR vacío.
                     enc = _paso_despliegue(registro, enc, espacio, hora)
                     if nivel_cumplido(enc) and enc.estado != "terminado":
-                        return _intentar_cierre(
+                        return _intentar_cierre_paso(
                             registro, enc, espacio, directorio, hora
                         )
-                    return enc
+                    return _necesita_agente(enc)
         try:
             pr = gh.abrir_pr(
                 enc.entrega.repo,
@@ -7540,7 +7545,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 hora, f"pr-{enc.generacion}",
             )
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-            return registro.fold(enc.id)
+            return _con_espera(registro.fold(enc.id) or enc)
     enc = registro.fold(enc.id)
     inicio_vuelta = enc
     por_releer = _deepseek_por_releer(enc) and (
@@ -7578,10 +7583,10 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 )
                 enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
                 if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
-                    return enc
-                return _paso_entrega(registro, enc, gh, hora)
+                    return enc, Avanzo()
+                return _paso_entrega_paso(registro, enc, gh, hora)
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-            return registro.fold(enc.id)
+            return _con_espera(registro.fold(enc.id) or enc)
         comentarios = _deepseek_con_contenido(leidos, sha)
         if leidos and not comentarios:
             # El sticky de ai-review declara que la revisión excedió su límite
@@ -7595,8 +7600,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             )
             enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
             if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
-                return enc
-            return _paso_entrega(registro, enc, gh, hora)
+                return enc, Avanzo()
+            return _paso_entrega_paso(registro, enc, gh, hora)
         if not comentarios:
             disparado = any(
                 ev["kind"] == "entrega_externa"
@@ -7630,8 +7635,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 )
                 enc = _omitir_deepseek(registro, enc, numero, sha, texto, hora)
                 if enc.deepseek_huella != HUELLA_DEEPSEEK_SIN_REVISION:
-                    return enc
-                return _paso_entrega(registro, enc, gh, hora)
+                    return enc, Avanzo()
+                return _paso_entrega_paso(registro, enc, gh, hora)
             marcar_espera(
                 registro,
                 enc.id,
@@ -7639,7 +7644,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 _reanuda_desde(hora, 60),
                 hora,
             )
-            return registro.fold(enc.id)
+            return _con_espera(registro.fold(enc.id) or enc)
         relectura_ds = enc.deepseek_sha == sha
         enc = _anotar_lectura_deepseek(registro, enc, numero, sha, comentarios, hora)
         enc = _refrescar_cuerpo_fuera_de_alcance(
@@ -7677,13 +7682,15 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                     "mantiene el mismo bloqueante",
                     hora, f"deepseek-{sha[:12]}",
                 )
-            return registro.fold(enc.id)
+            return registro.fold(enc.id) or enc, Devolver(
+                str(enc.rol or "responsable"), "DeepSeek mantiene el bloqueo"
+            )
     enc = registro.fold(enc.id)
     if not _revision_aprobada_vigente(enc):
         if bloqueantes_abiertos(enc, "deepseek"):
             # Sigue siendo el turno de DeepSeek: no se adelanta Opus ni se
             # integra nada con un High o Medium abierto.
-            return registro.fold(enc.id)
+            return _necesita_agente(registro.fold(enc.id) or enc)
         # DeepSeek ya no tiene bloqueantes, pero la corrección cambió el
         # producto desde la última aprobación de Opus. Ninguna corrección se
         # integra ni se cierra sin que Opus vea el tramo final; si no cambió
@@ -7697,7 +7704,9 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             f"revision-final-{enc.producto.firma if enc.producto else ''}",
             rol="revisor",
         )
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc, Devolver(
+            "revisor", "revisión final del tramo corregido"
+        )
     if (
         nivel_objetivo(enc) in ("integrado", "desplegado")
         and enc.nivel_alcanzado == "pr"
@@ -7707,7 +7716,7 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         # se integra uno sin leer.
         devuelto = _veredicto_antes_de_cerrar(registro, enc, gh, hora)
         if devuelto is not None:
-            return devuelto
+            return devuelto, Avanzo()
         try:
             vista_pr = gh.ver(enc.entrega.repo, enc.pr_numero)
             if vista_pr.base != enc.entrega.base:
@@ -7726,7 +7735,8 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
             from motor.github import MergeRechazado, PoliticaBloquea
 
             causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
-            necesita_usuario = isinstance(exc, MergeRechazado)
+            checks = None
+            lectura_fallida = False
             if isinstance(exc, PoliticaBloquea):
                 try:
                     checks = gh.checks_requeridos(
@@ -7735,33 +7745,90 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
                 except MergeRechazado as rechazo:
                     causa += f"; {rechazo}"
                 except Exception as lectura:
-                    necesita_usuario = False
+                    lectura_fallida = True
                     causa += f"; no se pudieron leer los checks requeridos: {lectura}"
-                else:
-                    if (
-                        checks.en_marcha
-                        and not checks.fallas
-                        and set(checks.faltan) <= set(checks.en_marcha)
-                    ):
-                        marcar_espera(
-                            registro, enc.id,
-                            f"esperando checks requeridos del PR #{enc.pr_numero}: "
-                            + ", ".join(checks.en_marcha),
-                            _reanuda_desde(hora, 120), hora,
-                        )
-                        return registro.fold(enc.id)
-                    if checks.fallas:
-                        causa += "; checks requeridos fallidos: " + ", ".join(checks.fallas)
+            if lectura_fallida:
+                # No saber el estado de los checks no es un rechazo de la
+                # política: se reintenta, sin preguntar a nadie.
+                marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+                return _con_espera(registro.fold(enc.id) or enc)
+            if checks is not None and (
+                checks.en_marcha
+                and not checks.fallas
+                and set(checks.faltan) <= set(checks.en_marcha)
+            ):
+                marcar_espera(
+                    registro, enc.id,
+                    f"esperando checks requeridos del PR #{enc.pr_numero}: "
+                    + ", ".join(checks.en_marcha),
+                    _reanuda_desde(hora, 120), hora,
+                )
+                return _con_espera(registro.fold(enc.id) or enc)
+            if checks is not None and checks.fallas:
+                # El CI rojo explica por qué no hubo merge: vuelve al responsable
+                # con el log del check, no a una pregunta. La fase conserva la
+                # aprobación; deja de entregarse mientras el SHA siga en rojo.
+                rojos = ", ".join(checks.fallas)
+                sha = str(enc.pr_sha or "")
+                espacio = _espacio(registro.base, enc.id)
+                log = _logs_de_fallidos(gh, enc.entrega.repo, checks, espacio)
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "entrega_bloqueada",
+                        "data": {
+                            "fase": enc.fase_activa,
+                            "sha": sha,
+                            "causa": "checks requeridos en rojo: " + rojos,
+                            "hora": hora,
+                        },
+                    },
+                    f"entrega-bloqueada:{enc.id}:{sha}:{rojos}",
+                )
+                _devolver(
+                    registro,
+                    enc,
+                    "pon_en_verde",
+                    f"pon en verde {rojos}",
+                    (
+                        "El merge del PR #"
+                        f"{enc.pr_numero} no ocurrió porque los checks requeridos "
+                        f"están en rojo: {rojos}. Corrige el producto y vuelve a "
+                        "entregar; el CI no es una compuerta, solo explica por qué "
+                        "no se integró."
+                        + (f"\n{log}" if log else "")
+                    )[:4000],
+                    hora,
+                    f"merge-ci-{sha[:12]}",
+                    rol="responsable",
+                )
+                return registro.fold(enc.id) or enc, Devolver(
+                    "responsable", f"pon en verde {rojos}"
+                )
+            # Un rechazo que no viene de un check (permisos, conflicto, punta
+            # movida) es un impedimento visible con entrega con pendientes.
             _anotar_instrumento(
                 registro, enc, "github", causa,
                 "resolver la causa del merge rechazado sobre el SHA revisado",
                 hora, f"merge-{enc.pr_sha[:12]}",
             )
-            if necesita_usuario:
-                marcar_pregunta(registro, enc.id, causa, True, hora)
-            else:
-                marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
-            return registro.fold(enc.id)
+            _anotar_impedimento(
+                registro, enc, "merge", causa,
+                "que el repositorio permita integrar el SHA revisado",
+                hora,
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "pendiente_entrega",
+                    "data": {
+                        "texto": "merge rechazado: " + causa[:400],
+                        "hora": hora,
+                    },
+                },
+                f"pendiente-merge:{enc.id}:{enc.pr_sha}",
+            )
+            return registro.fold(enc.id) or enc, Avanzo()
         registro.anotar(
             enc.id,
             {
@@ -7782,21 +7849,44 @@ def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
         enc = registro.fold(enc.id)
     enc = _paso_despliegue(registro, enc, espacio, hora)
     if nivel_cumplido(enc):
-        return _cerrar_con_veredicto(registro, enc, gh, espacio, directorio, hora)
+        return (
+            _cerrar_con_veredicto(registro, enc, gh, espacio, directorio, hora),
+            Avanzo(),
+        )
+    return _necesita_agente(enc)
+
+
+
+def _paso_entrega(registro: Registro, enc: Encargo, gh, hora: str) -> Encargo:
+    """Ejecuta el paso de entrega y conserva el resultado cerrado que devolvió."""
+    enc, resultado = _paso_entrega_paso(registro, enc, gh, hora)
+    _RESULTADOS_DE_PASO[enc.id] = resultado
     return enc
 
 
 def _preguntar_despliegue(registro: Registro, enc: Encargo, causa: str, hora: str) -> None:
-    # Continuar reabre el trabajo sin cambiar intento ni generación. La misma
-    # causa debe bloquear otra vez, una sola vez por esa intervención.
-    continuacion = next((
-        ev["id"] for ev in reversed(registro.eventos(enc.id))
-        if ev["kind"] == "orden" and ev["data"].get("accion") == "continuar"
-    ), 0)
+    """El despliegue que no puede completarse deja un impedimento visible y un
+    pendiente de entrega; no pregunta ni espera a una persona."""
     huella = hashlib.sha256(causa.encode()).hexdigest()[:12]
-    marcar_pregunta(
-        registro, enc.id, causa, True, hora,
-        ukey=f"pregunta-despliegue:{enc.id}:{enc.fase_activa}:{continuacion}:{huella}",
+    if enc.estado == "esperando_reintento":
+        # El fallo reemplaza una espera de la receta que ya no corre: sin
+        # reabrirla, el pendiente quedaría dormido hasta el plazo.
+        registro.anotar(
+            enc.id,
+            {"kind": "plazo", "data": {"hora": hora}},
+            f"plazo-despliegue:{enc.id}:{huella}",
+        )
+    _anotar_impedimento(
+        registro, enc, "despliegue:" + huella, causa,
+        "que el despliegue pueda completarse o se retire del pedido", hora,
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "pendiente_entrega",
+            "data": {"texto": "despliegue: " + causa[:400], "hora": hora},
+        },
+        f"pendiente-despliegue:{enc.id}:{enc.fase_activa}:{huella}",
     )
 
 
@@ -8245,7 +8335,23 @@ def _lanzar_uno_en_turno(
             proc = lanzar_administrado(directorio, token)
         except CuentaNoDisponible as exc:
             _liberar_flota()
-            marcar_pregunta(registro, enc.id, str(exc), True, hora)
+            from .rutas import fallo
+
+            agente = agente_lanzado or enc.agente or rol
+            causa = fallo(agente, str(exc), hora, 1, modelo=modelo_lanzado)
+            registro.anotar(
+                enc.id,
+                {"kind": "proveedor_fallo", "data": {**causa, "hora": hora}},
+                f"proveedor-fallo:{enc.id}:{hora}",
+            )
+            if not enc.agentes:
+                marcar_espera(
+                    registro,
+                    enc.id,
+                    "cuenta del agente: " + str(exc),
+                    causa["hasta"],
+                    hora,
+                )
             return
         except Exception:
             _liberar_flota()

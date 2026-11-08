@@ -143,18 +143,18 @@ class SoloAvisosDeUsuarioFinal(Base):
             "texto": texto, "bloquea_todo": True, "hora": HORA,
         }}, "pregunta")
         enc = self.b.reg.fold(ident)
-        return [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "pregunta"]
+        return [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "aviso"]
 
     def test_una_pregunta_limpia_llega_tal_cual(self):
         self.assertEqual(
             self._preguntas("¿Publico la versión final del informe?"),
-            ["Necesito tu decisión para seguir. ¿Publico la versión final del informe?"],
+            ["Aviso: el trabajo sigue sin esperarte. ¿Publico la versión final del informe?"],
         )
 
     def test_una_pregunta_con_detalle_tecnico_conserva_su_objeto_y_remite_al_estado(self):
         self.assertEqual(
             self._preguntas("¿Uso la cuenta de `ops/cuenta.json` para publicar?"),
-            ["Necesito tu decisión para seguir. ¿Uso la cuenta de un archivo para publicar? "
+            ["Aviso: el trabajo sigue sin esperarte. ¿Uso la cuenta de un archivo para publicar? "
              "El detalle técnico está en el estado del encargo."],
         )
 
@@ -164,7 +164,7 @@ class SoloAvisosDeUsuarioFinal(Base):
         )
         self.assertEqual(
             textos,
-            ["Necesito tu decisión para seguir. ¿Declaro en un archivo solo un comando? "
+            ["Aviso: el trabajo sigue sin esperarte. ¿Declaro en un archivo solo un comando? "
              "El detalle técnico está en el estado del encargo."],
         )
 
@@ -187,8 +187,8 @@ class SoloAvisosDeUsuarioFinal(Base):
         enc = replace(
             self.b.reg.fold(ident), estado="necesita_usuario", motivo=texto, solicitudes=(solicitud,)
         )
-        preguntas = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "pregunta"]
-        self.assertEqual(preguntas, [f"Necesito tu decisión para seguir. {texto}"])
+        avisos = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "aviso"]
+        self.assertEqual(avisos, [f"Aviso: el trabajo sigue sin esperarte. {texto}"])
 
     def test_una_pregunta_distinta_del_encargo_que_espera_se_avisa_aparte(self):
         ident = self.b.encargo()
@@ -200,8 +200,8 @@ class SoloAvisosDeUsuarioFinal(Base):
             self.b.reg.fold(ident), estado="necesita_usuario", motivo="¿Cambio el título?",
             solicitudes=(solicitud,),
         )
-        preguntas = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "pregunta"]
-        self.assertEqual(len(preguntas), 2)
+        avisos = [h["texto"] for h in directores.hechos_de_avance(enc) if h["tipo"] == "aviso"]
+        self.assertEqual(len(avisos), 1)
 
     def test_un_bloqueo_nuevo_de_la_misma_clase_se_avisa_otra_vez(self):
         ident = self.b.encargo()

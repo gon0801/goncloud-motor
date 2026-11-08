@@ -113,7 +113,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("encargo")
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--texto", required=True)
-    s.add_argument("--bloquea", action="store_true")
 
     s = sub.add_parser("responder")
     s.add_argument("encargo")
@@ -286,7 +285,8 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
             marcar_espera(reg, args.encargo, args.motivo, args.reanuda_en, hora)
         )
     if args.cmd == "pregunta":
-        return _json(marcar_pregunta(reg, args.encargo, args.texto, args.bloquea, hora))
+        # La pregunta es un aviso: no cambia el estado ni espera a una persona.
+        return _json(marcar_pregunta(reg, args.encargo, args.texto, False, hora))
     if args.cmd == "responder":
         from .ciclo import _directorio, _espacio
         from .necesidades import continuar_respuestas, responder
@@ -457,6 +457,72 @@ def marcar_ruta(reg: Registro, ruta: tuple[str, ...], hora: str) -> None:
                 )
 
 
+def _atender_respuestas_antes_del_barrido(reg: Registro, hora: str) -> None:
+    """Una respuesta registrada se ejecuta o se deniega antes de lanzar.
+
+    El barrido puede abrir el turno del revisor en la misma pasada; si la
+    respuesta se atendiera después, ese primer turno correría sin su resultado.
+    Un encargo que no pliega se aísla y no deja sin respuesta a los demás.
+    """
+    try:
+        from .ciclo import _directorio, _espacio
+        from .necesidades import continuar_respuestas
+    except Exception:
+        return
+    for ident in reg.ids():
+        try:
+            enc = plegar_aislado(reg, ident)
+            if enc is None:
+                continue
+            if any(s.estado == "respuesta" for s in enc.solicitudes):
+                continuar_respuestas(
+                    reg,
+                    enc,
+                    _espacio(reg.base, ident),
+                    _directorio(reg.base, ident),
+                    hora,
+                )
+        except Exception:
+            # El fallo de un encargo no deja sin respuesta a los demás.
+            continue
+
+
+def _paso_del_supervisor(
+    reg: Registro,
+    hora: str,
+    lanzar,
+    habilitado: bool,
+    umbral,
+    gh,
+    drenador,
+) -> list[dict]:
+    _atender_respuestas_antes_del_barrido(reg, hora)
+    salida = barrer(
+        reg,
+        hora,
+        time.time(),
+        lanzar if habilitado else None,
+        umbral_s=umbral,
+        gh=gh,
+    )
+    try:
+        if drenador is None:
+            from motor.integraciones.directores import drenar
+
+            drenar(reg)
+        else:
+            drenador.lanzar()
+    except Exception:
+        pass
+    try:
+        from motor.integraciones.directores import conciliar_autoridad
+
+        conciliar_autoridad(reg)
+    except Exception:
+        pass
+    return salida
+
+
 def _hay_ruta(reg: Registro, ruta: tuple[str, ...]) -> bool:
     """Hay una ruta fija o al menos un encargo legible con ruta persistida.
 
@@ -497,48 +563,15 @@ def _supervisor(reg: Registro, args) -> int:
         hora = ahora_iso()
         marcar_ruta(reg, ruta, hora)
         habilitado = _hay_ruta(reg, ruta)
-        salida = barrer(
+        return _paso_del_supervisor(
             reg,
             hora,
-            time.time(),
-            lanzar if habilitado else None,
-            umbral_s=args.umbral,
-            gh=_puerto_github(reg.base),
+            lanzar,
+            habilitado,
+            args.umbral,
+            _puerto_github(reg.base),
+            drenador,
         )
-        try:
-            if drenador is None:
-                from motor.integraciones.directores import drenar
-
-                drenar(reg)
-            else:
-                drenador.lanzar()
-        except Exception:
-            pass
-        try:
-            from .ciclo import _directorio, _espacio
-            from .necesidades import continuar_respuestas
-
-            for ident in reg.ids():
-                enc = plegar_aislado(reg, ident)
-                if enc is None:
-                    continue
-                if any(s.estado == "respuesta" for s in enc.solicitudes):
-                    continuar_respuestas(
-                        reg,
-                        enc,
-                        _espacio(reg.base, ident),
-                        _directorio(reg.base, ident),
-                        hora,
-                    )
-        except Exception:
-            pass
-        try:
-            from motor.integraciones.directores import conciliar_autoridad
-
-            conciliar_autoridad(reg)
-        except Exception:
-            pass
-        return salida
 
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))

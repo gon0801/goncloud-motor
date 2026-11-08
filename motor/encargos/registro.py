@@ -167,12 +167,18 @@ class Registro:
                     return "igual"
                 return "ajena"
             estado = None
-            for kind_prev, data_prev in self.db.execute(
-                "SELECT kind, data FROM events WHERE encargo = ? ORDER BY id",
+            for id_prev, kind_prev, data_prev in self.db.execute(
+                "SELECT id, kind, data FROM events WHERE encargo = ? ORDER BY id",
                 (encargo,),
             ):
                 estado = reducir(
-                    estado, {"kind": kind_prev, "data": json.loads(data_prev)}, nuevo=False
+                    estado,
+                    {
+                        "id": id_prev,
+                        "kind": kind_prev,
+                        "data": json.loads(data_prev),
+                    },
+                    nuevo=False,
                 )
             try:
                 reducir(estado, {"kind": kind, "data": data}, nuevo=True)

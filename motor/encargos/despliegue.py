@@ -29,10 +29,25 @@ from motor.encargos.frontera import _atomico, _autorizado_ahora, autoridad_ausen
 from motor.encargos.registro import Registro
 
 TOPE_S = 900
+# Con KILL_ON_JOB_CLOSE el Job de Windows tarda un instante en desaparecer; mientras
+# tanto OpenJobObject puede responder acceso denegado. Eso no es un grupo vivo: se
+# reintenta la observación hasta que el sistema termine de cerrarlo.
+ESPERA_GRUPO_S = 5.0
 
 
 def _guardar(path: Path, datos: dict) -> None:
     _atomico(path, json.dumps(datos, ensure_ascii=False, sort_keys=True))
+
+
+def _grupo_ausente(pid: int, inicio: str, job: str) -> bool:
+    """Confirma la salida del grupo tras matarlo, tolerando el cierre transitorio del Job."""
+    fin = time.monotonic() + ESPERA_GRUPO_S
+    while True:
+        if plataforma.presencia_grupo(pid, inicio, job) == "ausente":
+            return True
+        if time.monotonic() >= fin:
+            return False
+        time.sleep(0.05)
 
 
 def _correr(reg, encargo: str, paso: str, script: str, copia: Path, env: dict, bash: str):
@@ -81,7 +96,7 @@ def _correr(reg, encargo: str, paso: str, script: str, copia: Path, env: dict, b
             plataforma.matar_grupo(proceso)
         else:
             plataforma.matar_grupo_pid(proceso.pid, ident["inicio"])
-        if plataforma.presencia_grupo(proceso.pid, ident["inicio"], ident["job"]) != "ausente":
+        if not _grupo_ausente(proceso.pid, ident["inicio"], ident["job"]):
             raise RuntimeError("el grupo del script todavía no confirma su salida")
         out.seek(0)
         err.seek(0)
