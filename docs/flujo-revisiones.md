@@ -346,20 +346,18 @@ solicitud, un ajuste que ningún intento ha visto o un recurso que cambió.
 ### Revisiones `no_concluyente` repetidas
 
 Una revisión `no_concluyente` que nombra una inspección no cierra ni abre
-bloqueantes, así que el freno de `sin_progreso` por bloqueos no la veía. Ahora
-el encargo cuenta las revisiones independientes `no_concluyente` seguidas que
-piden lo mismo sobre la misma versión: el mismo texto de inspección o el mismo
-recurso. La cuenta es propia (`no_concluyentes`) y no alimenta la escalera
-de los bloqueos; el relevo que ordena el tope se anota en el estado igual
-que cualquier relevo. A la tercera (`TOPE_NO_CONCLUYENTES`) el encargo
-releva el rol del revisor a otro modelo autorizado, con la causa de la
-última revisión en el motivo; si el revisor de relevo tampoco concluye, el
-barrido entrega el PR con la nota y termina.
+bloqueantes. Ahora el encargo cuenta las revisiones independientes
+`no_concluyente` seguidas en la misma fase: contar no se reinicia con otra
+versión del producto ni con otro pedido del revisor (pedidos distintos y
+recursos que cambiaron cuentan). La cuenta es propia (`no_concluyentes`) y
+no alimenta la escalera de los bloqueos; el relevo que ordena el tope se
+anota en el estado igual que cualquier relevo. A la tercera
+(`TOPE_NO_CONCLUYENTES`) el encargo releva el rol del revisor a otro modelo
+autorizado, con la causa de la última revisión en el motivo; si el revisor
+de relevo tampoco concluye, el barrido entrega el PR con la nota y termina.
 
-La cuenta empieza de nuevo con otra versión del producto, otro pedido, un
-bloqueante cerrado, otro veredicto, un ajuste o una respuesta del propietario.
-Si el recurso pedido cambió desde la última lectura (otra huella del mismo
-archivo), pedirlo de nuevo no cuenta como repetir.
+La cuenta empieza de nuevo con un ajuste o una respuesta del propietario o
+con un veredicto distinto de `no_concluyente`.
 
 ## Niveles de entrega
 

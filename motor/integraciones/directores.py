@@ -817,14 +817,19 @@ def _cuerpo_de_cierre(enc) -> str:
         cuerpo = f"Terminó tu encargo «{titulo}»."
     efectivo = getattr(enc, "nivel_efectivo", "")
     pedido_nivel = getattr(getattr(enc, "entrega", None), "nivel", "")
+    llano = {"pr": "pr", "pr_abierto": "pr", "integrado": "integrado"}.get(
+        enc.nivel_alcanzado
+    )
     if (
-        efectivo
+        enc.estado != "cancelado"
+        and efectivo
         and pedido_nivel in ("integrado", "desplegado")
-        and enc.nivel_alcanzado != pedido_nivel
+        and llano in ("pr", "integrado")
+        and llano != pedido_nivel
     ):
         cuerpo += (
             f" Tu encargo pedía llegar a {pedido_nivel} y quedó en "
-            f"{enc.nivel_alcanzado}: {getattr(enc, 'nivel_efectivo_motivo', '') or 'hay una limitación comprobada'}."
+            f"{llano}: {getattr(enc, 'nivel_efectivo_motivo', '') or 'hay una limitación comprobada'}."
         )
     bloqueadas = [
         f for f in getattr(enc, "fases", ()) or () if f.estado == "bloqueada"

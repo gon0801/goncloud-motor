@@ -260,11 +260,51 @@ class ElCierreEnLlano(Base):
         )
         cuerpo = directores._cuerpo_de_cierre(self.b.reg.fold(ident))
         self.assertIn("#20", cuerpo)
-        self.assertIn("quedó en pr", cuerpo)
+        self.assertIn("y quedó en pr:", cuerpo)
         self.assertIn("el remoto exige revisiones antes del merge", cuerpo)
         self.assertLess(len(cuerpo), 400)
         for prohibido in PROHIBIDOS:
             self.assertNotIn(prohibido, cuerpo)
+
+    def test_el_cierre_cancelado_o_sin_cambios_no_trae_la_frase_del_nivel(self):
+        cancelado = self.b.encargo(
+            "# cancelado con nivel\n\nAlgo que se cancela.",
+            "cancela-nivel",
+            entrega_nivel="desplegado",
+            repo="ejemplo/repo",
+            base_rama="main",
+            via="durable",
+        )
+        self.b.reg.anotar(
+            cancelado,
+            {
+                "kind": "nivel_efectivo",
+                "data": {"nivel": "pr", "motivo": "el remoto exige revisiones antes del merge", "hora": HORA},
+            },
+            f"nivel-{cancelado}",
+        )
+        self.b.cancelar(cancelado)
+        cuerpo = directores._cuerpo_de_cierre(self.b.reg.fold(cancelado))
+        self.assertIn("cancelado", cuerpo)
+        self.assertNotIn("pedía llegar", cuerpo)
+        vacio = self.b.encargo(
+            "# sin cambios con nivel\n\nTrabaja el pedido y comprueba.",
+            "sin-cambios-nivel",
+            entrega_nivel="desplegado",
+            repo="ejemplo/repo",
+            base_rama="main",
+            via="durable",
+        )
+        self.b.reg.anotar(
+            vacio,
+            {
+                "kind": "nivel_efectivo",
+                "data": {"nivel": "pr", "motivo": "el remoto exige revisiones antes del merge", "hora": HORA},
+            },
+            f"nivel-{vacio}",
+        )
+        cuerpo = directores._cuerpo_de_cierre(self.b.reg.fold(vacio))
+        self.assertNotIn("pedía llegar", cuerpo)
 
     def test_un_encargo_cancelado_lo_dice_en_una_frase_simple(self):
         ident = self.b.encargo(
