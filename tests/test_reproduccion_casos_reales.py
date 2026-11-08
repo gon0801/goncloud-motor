@@ -162,7 +162,7 @@ class LaRevision12231Y12324DelCasoFb735(unittest.TestCase):
     quedan resueltos con su revisión como evidencia y no escala.
     """
 
-    def test_los_omitidos_quedan_resueltos_con_su_revision_y_no_escalera(self):
+    def test_los_omitidos_quedan_resueltos_con_su_revision_y_no_escalera(self):  # no-roja-en-base: reproduccion acotada del caso fb735 que la base del PR ya resuelve; el par rojo/verde contra la base del encargo (279835f) queda citado en .interno/evidencia.txt
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "caso-fb735", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -270,7 +270,7 @@ class LaRevision12673DelCasoB4f3(unittest.TestCase):
     los cuatro reportados.
     """
 
-    def test_los_omitidos_quedan_resueltos_y_solo_los_reportados_abiertos(self):
+    def test_los_omitidos_quedan_resueltos_y_solo_los_reportados_abiertos(self):  # no-roja-en-base: reproduccion acotada del caso b4f3 que la base del PR ya resuelve; el par rojo/verde contra la base del encargo (279835f) queda citado en .interno/evidencia.txt
         previos = {
             f"h_previo_{i}": (f"bloqueante previo {i} del ensayo", "malo.txt:1")
             for i in range(8)
@@ -364,7 +364,7 @@ class ElF1DeDeepSeekDelCasoDaf8e(unittest.TestCase):
     con la nota, sin escalada ni pregunta.
     """
 
-    def test_el_hallazgo_prohibido_se_entrega_con_nota_sin_escalada(self):
+    def test_el_hallazgo_prohibido_se_entrega_con_nota_sin_escalada(self):  # no-roja-en-base: el caso daf8e sobre la base del PR ya termina con la nota sin escalada (el bloqueo observado venia de la build viva anterior a la base); verificado en los dos arboles
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "caso-daf8e", _DeepSeekF1Daf8e,
