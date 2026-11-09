@@ -128,6 +128,33 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
             if ev["kind"] == "reserva" and ev["data"].get("rol") == rol
         ]
 
+    def _observar_lote(
+        self, r, e, declaradas: list[dict], rcs: dict[int, int]
+    ) -> None:
+        ejecuciones = [
+            {
+                **cmd,
+                "rc": rcs[i],
+                "stdout": "OK\n" if rcs[i] == 0 else "",
+                "stderr": "" if rcs[i] == 0 else STDERR_EN_ROJO,
+            }
+            for i, cmd in enumerate(declaradas)
+        ]
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "observacion_supervisor",
+                "data": {
+                    "version": e.producto.firma,
+                    "comprobaciones": declaradas,
+                    "ejecuciones": ejecuciones,
+                    "hora": ahora_iso(),
+                },
+            },
+            f"t-observacion:{r.enc}:{e.producto.firma}:"
+            + "-".join(str(rcs[i]) for i in range(len(declaradas))),
+        )
+
     def test_una_comprobacion_en_rojo_abre_un_intento_del_responsable(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._aprobado(tmp, "roja-abre")
@@ -404,6 +431,125 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                     for h in (e.fase_actual.hallazgos if e.fase_actual else ())
                 ),
                 "el bloqueo no se marca resuelto sin una observacion en verde",
+            )
+
+    def test_quitar_una_comprobacion_no_resuelve_su_bloqueo(self):
+        """Retirar una sola comprobacion no resuelve su bloqueo sin verde.
+
+        La otra comprobacion sigue declarada y pasa; el bloqueo de la retirada
+        sigue abierto, la fase no publica y queda el pendiente visible.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "una-retirada",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            roja = {
+                "objetivo": "una comprobacion que falla",
+                "argv": ["python3", "-m", "unittest", "tests.test_a"],
+            }
+            verde = {
+                "objetivo": "una comprobacion que pasa",
+                "argv": ["python3", "-m", "unittest", "tests.test_b"],
+            }
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [roja, verde]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [roja, verde], {0: 1, 1: 0})
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [verde]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [verde], {0: 0})
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(len(abiertos), 1, "el bloqueo retirado sigue abierto")
+            self.assertIn("una comprobacion que falla", abiertos[0].titulo)
+            self.assertFalse(
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "no se publica la version sin una observacion en verde de la "
+                "comprobacion retirada",
+            )
+            self.assertTrue(
+                any("dejo de observarse" in p for p in e.pendientes_entrega),
+                "la fase lleva el pendiente de la comprobacion no observada",
+            )
+
+    def test_un_comentario_nuevo_de_deepseek_no_relanza_al_revisor_con_rojo(self):
+        """Un comentario nuevo de DeepSeek no adelanta al revisor.
+
+        Con un rojo del supervisor abierto, el turno es del responsable: la
+        revision final del tramo espera a que ese bloqueo se resuelva.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "f6-rojo-deepseek",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            declaradas = self._declarar(r)
+            self._observar(r, e, declaradas, rc=1, stderr=STDERR_EN_ROJO)
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            vuelta.gh.sufijo = " (revision nueva)"
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(
+                r, vuelta.gh, _lanzador(roles, prompts), t=time.time() + 3600
+            )
+
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertNotIn(
+                "revisor",
+                roles,
+                "un comentario nuevo de DeepSeek no relanza al revisor mientras "
+                "el rojo del supervisor sigue abierto",
+            )
+            self.assertFalse(
+                any(
+                    ev["kind"] == "estrategia"
+                    and ev["data"].get("rol") == "revisor"
+                    and ev["data"].get("estrategia") == "revisar_evidencia"
+                    for ev in nuevos
+                ),
+                "no se relanza la revision final con el rojo del supervisor abierto",
             )
 
     def test_replay_del_prefijo_real_hasta_67595_abre_intento(self):

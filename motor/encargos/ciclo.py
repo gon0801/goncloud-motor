@@ -5653,13 +5653,15 @@ def _releer_deepseek(
         and enc.revision_vigente is not None
         and enc.revision_vigente.veredicto == "aprobado"
         and not bloqueantes_abiertos(enc, "independiente")
+        and not bloqueantes_abiertos(enc, "supervisor")
         and not _revision_aprobada_vigente(enc)
     ):
         # DeepSeek quedó limpio. Si la corrección cambió el producto desde la
         # última aprobación de Opus, el tramo acumulado necesita su única
-        # revisión final antes de integrar o cerrar. Con un bloqueante de Opus
-        # abierto o un veredicto que no es «aprobado», sigue el ciclo normal:
-        # el turno es del responsable, no otra revisión sobre lo ya rechazado.
+        # revisión final antes de integrar o cerrar. Con un bloqueante de Opus o
+        # del supervisor abierto, o un veredicto que no es «aprobado», sigue el
+        # ciclo normal: el turno es del responsable, no otra revisión sobre lo
+        # ya rechazado.
         _devolver(
             registro, enc, "revisar_evidencia",
             "DeepSeek quedó sin bloqueantes; falta la revisión final del tramo corregido",
@@ -6980,6 +6982,31 @@ def _fallas_de_observacion(
     return rojas, instrumentos
 
 
+def _id_de_comprobacion(ejecucion: dict) -> str:
+    """La identidad estable de una comprobacion: objetivo y argv."""
+    objetivo = str(ejecucion.get("objetivo") or "comprobacion")
+    argv = ejecucion.get("argv")
+    comando = (
+        " ".join(str(x) for x in argv)
+        if isinstance(argv, list) and argv
+        else ""
+    )
+    return id_hallazgo("supervisor", comando, objetivo)
+
+
+def _ids_observados_verdes(observacion: dict) -> set[str]:
+    """Las comprobaciones que esta observacion ejecuto y paso en verde."""
+    verdes: set[str] = set()
+    for ejecucion in observacion.get("ejecuciones") or []:
+        if not isinstance(ejecucion, dict) or ejecucion.get("error_instrumento"):
+            continue
+        rc = ejecucion.get("rc")
+        if rc is None or str(rc) != "0":
+            continue
+        verdes.add(_id_de_comprobacion(ejecucion))
+    return verdes
+
+
 def _hallazgos_en_rojo(observacion: dict) -> list[dict]:
     """Las comprobaciones en rojo como bloqueantes con identidad estable.
 
@@ -7004,7 +7031,7 @@ def _hallazgos_en_rojo(observacion: dict) -> list[dict]:
         )
         salida.append(
             {
-                "id": id_hallazgo("supervisor", comando, objetivo),
+                "id": _id_de_comprobacion(ejecucion),
                 "gravedad": "bloqueante",
                 "criterio": "comportamiento",
                 "titulo": f"comprobacion del supervisor en rojo: {objetivo}",
@@ -7040,11 +7067,57 @@ def _registrar_comprobaciones(
             "data": {
                 "version": version,
                 "hallazgos": hallazgos,
+                # Solo lo observado y verde cierra un bloqueo: una comprobacion
+                # retirada de la declaracion no prueba que se resolvio.
+                "verdes": sorted(_ids_observados_verdes(observacion)),
                 "hora": hora,
             },
         },
         f"comprobaciones-supervisor:{enc.id}:{enc.generacion}:"
         f"{_huella_de_fallas(observacion)}",
+    )
+    return registro.fold(enc.id) or enc
+
+
+def _bloqueos_sin_observacion(enc: Encargo, observacion: dict) -> list:
+    """Bloqueos del supervisor que esta observacion no vio ni en rojo ni en verde.
+
+    Son los que quedan abiertos porque su comprobacion salio de la declaracion
+    (o cambio de comando): retirarla no prueba que se resolvio.
+    """
+    fase = enc.fase_actual
+    if fase is None:
+        return []
+    rojos = {h["id"] for h in _hallazgos_en_rojo(observacion)}
+    verdes = _ids_observados_verdes(observacion)
+    return [
+        h
+        for h in fase.hallazgos
+        if h.origen == "supervisor"
+        and h.estado == "abierto"
+        and h.id not in rojos
+        and h.id not in verdes
+    ]
+
+
+def _pendiente_de_bloqueo_no_observado(
+    registro: Registro, enc: Encargo, bloques: list, hora: str
+) -> Encargo:
+    """Deja visible que un bloqueo no se resolvio porque su comprobacion se retiro."""
+    titulos = "; ".join(h.titulo for h in bloques)
+    texto = (
+        "una comprobacion declarada dejo de observarse sin una observacion en "
+        "verde que la resuelva; el bloqueo del supervisor sigue abierto y se "
+        "entrega con este pendiente: " + titulos
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "pendiente_entrega",
+            "data": {"texto": texto, "hora": hora},
+        },
+        f"pendiente-comprobaciones-sin-observar:{enc.id}:{enc.generacion}:"
+        + ",".join(sorted(h.id for h in bloques)),
     )
     return registro.fold(enc.id) or enc
 
@@ -7155,7 +7228,15 @@ def _espera_por_observacion(
         )
         return registro.fold(enc.id) or enc, Devolver("responsable", causa)
     if not fallas:
-        _registrar_comprobaciones(registro, enc, observacion, version, hora)
+        enc = _registrar_comprobaciones(registro, enc, observacion, version, hora)
+        sin_observar = _bloqueos_sin_observacion(enc, observacion)
+        if sin_observar:
+            # Una declaracion retirada no resuelve su bloqueo: queda abierto y
+            # la fase se entrega con el pendiente, nunca como si hubiera pasado.
+            enc = _pendiente_de_bloqueo_no_observado(
+                registro, enc, sin_observar, hora
+            )
+            return enc, Avanzo()
         return None
     enc = _registrar_comprobaciones(registro, enc, observacion, version, hora)
     causa = "la comprobacion del supervisor esta en rojo: " + "\n".join(fallas)

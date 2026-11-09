@@ -2030,8 +2030,9 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
     if kind == "comprobaciones_supervisor":
         # Las comprobaciones en rojo de una observacion son trabajo bloqueante
         # con la misma identidad que un hallazgo: objetivo y argv. Al escribir
-        # la observacion se abren las que fallan y se cierran las que ya no
-        # aparecen, para que `_sin_avance` mida el avance por ids.
+        # la observacion se abren las que fallan y se cierran las que esta
+        # observacion ejecuto y paso en verde. Una comprobacion retirada de la
+        # declaracion no se cierra: no hay observacion en verde que la resuelva.
         fase = e.fase_actual
         if fase is None:
             return e
@@ -2041,9 +2042,12 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             if isinstance(h, dict)
         )
         ids = {h.id for h in nuevos}
+        verdes = set(d.get("verdes") or ())
+        con_verdes = "verdes" in d
         previos = tuple(
             replace(h, estado="resuelto")
             if h.origen == "supervisor" and h.estado == "abierto" and h.id not in ids
+            and (not con_verdes or h.id in verdes)
             else h
             for h in fase.hallazgos
         )
