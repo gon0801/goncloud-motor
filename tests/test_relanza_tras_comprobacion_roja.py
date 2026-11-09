@@ -573,54 +573,71 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 "con el comando en verde la publicacion sigue",
             )
 
-    def test_cambiar_el_argv_devuelve_al_responsable_sin_bloquear(self):
-        """Cambiar el comando deja el bloqueo abierto y devuelve el turno.
+    def test_un_cambio_de_argv_con_el_mismo_objetivo_sale_del_ciclo(self):  # no-roja-en-base: caracterización de que el reemplazo en verde con el mismo objetivo cierra el bloqueo y sale del ciclo; la regla anterior de origin/main ya lo cerraba
+        """Un comando nuevo con el mismo objetivo cierra el bloqueo y sale.
 
-        El bloqueo viejo no se observo en verde; la fase no se entrega parcial
-        ni queda bloqueada: el responsable recibe el turno para restituir la
-        comprobacion o justificar el cambio.
+        Es la carrera del hallazgo: el responsable cambia el argv, la
+        comprobacion nueva pasa en verde y el encargo no se queda devolviendo el
+        turno en cada pasada. Se corren varias vueltas para demostrar que sale.
         """
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._aprobado(
-                tmp, "argv-cambia",
+                tmp, "argv-mismo-objetivo",
                 lambda d: github_con_hallazgos(d, titulos=()),
             )
-            roja = {
-                "objetivo": "el check rojo",
-                "argv": ["python3", "-m", "unittest", "tests.test_a"],
+            objetivo = "pruebas del modulo"
+            viejo = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_viejo"],
             }
             nuevo = {
-                "objetivo": "el check rojo",
-                "argv": ["python3", "-m", "unittest", "-v", "tests.test_a"],
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_nuevo"],
             }
             interno = r.espacio / ".interno"
             interno.mkdir(exist_ok=True)
             (interno / "comprobaciones.json").write_text(
-                json.dumps({"comprobaciones": [roja]}), encoding="utf-8"
+                json.dumps({"comprobaciones": [viejo]}), encoding="utf-8"
             )
-            self._observar_lote(r, e, [roja], {0: 1})
-
+            self._observar_lote(r, e, [viejo], {0: 1})
             roles: list[str] = []
             prompts: list[str] = []
             _barrido(r, vuelta.gh, _lanzador(roles, prompts))
             self.assertIn("responsable", roles)
-            e = r.fold()
-            r.reg.anotar(
-                r.enc,
-                {"kind": "reserva_cerrada", "data": {}},
-                f"t-cierre:{e.generacion}",
-            )
 
             (interno / "comprobaciones.json").write_text(
                 json.dumps({"comprobaciones": [nuevo]}), encoding="utf-8"
             )
-            self._observar_lote(r, e, [nuevo], {0: 0})
-            antes = len(r.reg.eventos(r.enc))
-            roles = []
-            prompts = []
-            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self._observar_lote(r, r.fold(), [nuevo], {0: 0})
 
-            nuevos = r.reg.eventos(r.enc)[antes:]
+            salio = False
+            for _ in range(8):
+                e = r.fold()
+                abiertos = [
+                    h
+                    for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                    if h.origen == "supervisor" and h.estado == "abierto"
+                ]
+                if not abiertos and any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso")
+                    in ("commit", "push", "pr_listo")
+                    for ev in r.reg.eventos(r.enc)
+                ):
+                    salio = True
+                    break
+                if e.estado == "terminado":
+                    salio = not abiertos
+                    break
+                r.reg.anotar(
+                    r.enc,
+                    {"kind": "reserva_cerrada", "data": {}},
+                    f"t-cierre:{e.generacion}",
+                )
+                roles = []
+                prompts = []
+                _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
             e = r.fold()
             abiertos = [
                 h
@@ -628,24 +645,91 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 if h.origen == "supervisor" and h.estado == "abierto"
             ]
             self.assertEqual(
-                len(abiertos), 1, "el bloqueo del comando viejo sigue abierto"
+                abiertos, [], "el reemplazo en verde cierra el bloqueo viejo"
             )
-            self.assertIn(
-                "responsable", roles,
-                "el turno vuelve al responsable para restituir o justificar",
+            self.assertTrue(salio, "el encargo sale del ciclo en pocas vueltas")
+
+    def test_un_bloqueo_con_la_identidad_vieja_se_cierra_por_su_objetivo(self):  # no-roja-en-base: caracterización de que un bloqueo con el id viejo se cierra por su objetivo; en origin/main la regla anterior cerraba lo ausente
+        """Un bloqueo con el id viejo (objetivo+argv) se cierra por objetivo.
+
+        #425 escribio la identidad con el objetivo y el argv. Tras cambiar la
+        identidad al comando, ninguna observacion produce ese id; el reemplazo
+        en verde con el mismo objetivo lo cierra.
+        """
+        from motor.encargos.dominio import id_hallazgo
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "identidad-vieja",
+                lambda d: github_con_hallazgos(d, titulos=()),
             )
-            self.assertNotEqual(e.estado, "terminado", "no hay entrega parcial")
-            self.assertNotEqual(
-                e.fase_actual.estado, "bloqueada", "la fase no queda bloqueada"
+            objetivo = "pruebas del modulo"
+            viejo = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_viejo"],
+            }
+            nuevo = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_nuevo"],
+            }
+            comando_viejo = " ".join(viejo["argv"])
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "comprobaciones_supervisor",
+                    "data": {
+                        "version": e.producto.firma,
+                        "hallazgos": [{
+                            "id": id_hallazgo(
+                                "supervisor", comando_viejo, objetivo
+                            ),
+                            "gravedad": "bloqueante",
+                            "criterio": "comportamiento",
+                            "titulo": (
+                                "comprobacion del supervisor en rojo: "
+                                + objetivo
+                            ),
+                            "reproduccion": "rc 1",
+                            "ancla": comando_viejo,
+                            "origen": "supervisor",
+                            "estado": "abierto",
+                        }],
+                        "verdes": [],
+                        "hora": ahora_iso(),
+                    },
+                },
+                "bloque-identidad-vieja",
             )
-            self.assertFalse(
-                any(
-                    ev["kind"] == "entrega_externa"
-                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
-                    for ev in nuevos
-                ),
-                "no se publica sin el verde del comando viejo",
+            e = r.fold()
+            self.assertTrue(
+                [
+                    h
+                    for h in e.fase_actual.hallazgos
+                    if h.origen == "supervisor" and h.estado == "abierto"
+                ],
+                "el escenario abre el bloqueo con la identidad vieja",
             )
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [nuevo]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [nuevo], {0: 0})
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(
+                abiertos, [],
+                "el reemplazo por objetivo cierra el bloqueo con id viejo",
+            )
+
 
     def test_una_observacion_en_verde_cierra_el_bloqueo_rojo(self):  # no-roja-en-base: caracterización de que una observación en verde del mismo check cierra el bloqueo del supervisor
         """Una comprobacion en verde cierra el bloqueo rojo del supervisor.
