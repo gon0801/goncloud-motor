@@ -1637,7 +1637,14 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
                 pr for pr in estado["prs"].values()
                 if pr["numero"] == e.pr_numero
             )
-            cuerpo_original = "x" * (ciclo._LIMITE_CUERPO_PR - 5)
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "cuerpo-pr.md").write_text("x" * 65_450, encoding="utf-8")
+            cuerpo_original = (
+                "x" * 65_450
+                + "\n\n## Notas del motor\n- nota previa\n\n"
+                + f"Encargo {e.id}. Fase: {e.fase_activa}."
+            )
             pr["cuerpo"] = cuerpo_original
             (vuelta.gh.d / "github.json").write_text(
                 json.dumps(estado), encoding="utf-8"
@@ -1653,11 +1660,23 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
                 pr for pr in estado["prs"].values()
                 if pr["numero"] == e.pr_numero
             )["cuerpo"]
-            # No se recorta el cuerpo existente: se perderían notas previas.
-            self.assertEqual(cuerpo, cuerpo_original)
+            # La nota llega al PR: el recorte cae en el texto del responsable,
+            # nunca en el cierre del motor.
+            self.assertLessEqual(len(cuerpo), ciclo._LIMITE_CUERPO_PR)
+            self.assertIn("después de cerrar", cuerpo)
+            self.assertIn("nota previa", cuerpo)
+            self.assertEqual(
+                cuerpo.count("## Notas del motor"),
+                1,
+                "no se duplica la sección de notas",
+            )
+            self.assertTrue(
+                cuerpo.rstrip().endswith(f"Encargo {e.id}. Fase: {e.fase_activa}."),
+                "la línea del encargo tiene que quedar al final",
+            )
             e = r.fold()
             self.assertTrue(
-                any("llegó al límite" in n for n in e.notas_pr), e.notas_pr
+                any("después de cerrar" in n for n in e.notas_pr), e.notas_pr
             )
 
 

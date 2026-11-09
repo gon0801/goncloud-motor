@@ -28,6 +28,10 @@ jobs:
         run: python tools/calidad.py marcadores
       - name: La tabla de decisiones se genera desde su fuente única
         run: python tools/calidad.py politica
+      - name: Una sola puerta publica el cuerpo del PR
+        run: python tools/candados.py cuerpo
+      - name: La configuración de secretos no se debilita en silencio
+        run: python tools/candados.py secretos
       - name: Compilar el codigo
         run: python -m compileall -q motor ops proto tests conftest.py
       - name: Escanear secretos en todo el historial

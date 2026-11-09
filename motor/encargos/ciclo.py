@@ -5263,16 +5263,28 @@ def _leer_cuerpo_del_espacio(espacio: Path) -> str | None:
             os.close(fd)
 
 
-def _cabe_en_el_limite(cuerpo: str) -> bool:
-    """GitHub acepta 65 536 caracteres, pero el API también se queja por bytes
-    (64 KiB en varios casos): se respetan las dos medidas."""
-    return (
+def _cuerpo_con_limite(texto: str, cierre: str) -> str:
+    """La única puerta del cuerpo: aplica el límite y conserva el cierre.
+
+    GitHub acepta 65 536 caracteres, pero el API también se queja por bytes
+    (64 KiB en varios casos): se respetan las dos medidas. El cierre lleva la
+    línea del encargo y las notas del motor, así que el recorte cae solo en el
+    texto del responsable.
+    """
+    if not cierre:
+        cuerpo = texto
+    elif texto:
+        cuerpo = f"{texto}\n\n{cierre}"
+    else:
+        cuerpo = cierre
+    if (
         len(cuerpo) <= _LIMITE_CUERPO_PR
         and len(cuerpo.encode("utf-8")) <= _LIMITE_CUERPO_PR
+    ):
+        return cuerpo
+    resto = (
+        f"{_NOTA_CUERPO_RECORTADO}\n\n{cierre}" if cierre else _NOTA_CUERPO_RECORTADO
     )
-
-
-def _cuerpo_recortado(texto: str, resto: str) -> str:
     max_caracteres = _LIMITE_CUERPO_PR - len(resto)
     max_bytes = _LIMITE_CUERPO_PR - len(resto.encode("utf-8"))
     if max_caracteres <= 0 or max_bytes <= 0:
@@ -5281,6 +5293,53 @@ def _cuerpo_recortado(texto: str, resto: str) -> str:
     if len(candidato.encode("utf-8")) > max_bytes:
         candidato = candidato.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
     return f"{candidato}{resto}"
+
+
+_SECCIONES_DEL_MOTOR = (
+    "## Pendientes abiertos al entregar",
+    "## Hallazgos fuera de alcance",
+    "## Notas del motor",
+)
+_LINEA_DEL_ENCARGO = re.compile(r"(?m)^Encargo [^\n]*\. Fase: [^\n]*\.$")
+
+
+def _separar_cierre(cuerpo: str) -> tuple[str, str]:
+    """Separa el texto del responsable del cierre del motor.
+
+    El cierre agrupa las secciones del motor y la línea del encargo, que va al
+    final. Sin esa línea, todo el cuerpo es texto recortable.
+    """
+    lineas = list(_LINEA_DEL_ENCARGO.finditer(cuerpo))
+    if not lineas:
+        return cuerpo, ""
+    inicio = lineas[-1].start()
+    while inicio > 0:
+        fin_bloque = inicio
+        while fin_bloque > 0 and cuerpo[fin_bloque - 1] == "\n":
+            fin_bloque -= 1
+        separador = cuerpo.rfind("\n\n", 0, fin_bloque)
+        inicio_bloque = 0 if separador < 0 else separador + 2
+        bloque = cuerpo[inicio_bloque:fin_bloque]
+        if not any(bloque.startswith(s) for s in _SECCIONES_DEL_MOTOR):
+            break
+        inicio = inicio_bloque
+    return cuerpo[:inicio].rstrip(), cuerpo[inicio:].lstrip("\n")
+
+
+def _agregar_nota_al_cierre(cierre: str, nota: str) -> str:
+    """Añade la nota a las notas del motor, antes de la línea del encargo."""
+    encabezado = _SECCIONES_DEL_MOTOR[-1]
+    if encabezado in cierre:
+        inicio = cierre.index(encabezado) + len(encabezado)
+        fin = cierre.find("\n\n", inicio)
+        if fin < 0:
+            return cierre.rstrip("\n") + f"\n- {nota}"
+        return cierre[:fin] + f"\n- {nota}" + cierre[fin:]
+    linea = _LINEA_DEL_ENCARGO.search(cierre)
+    if linea is not None:
+        inicio = linea.start()
+        return cierre[:inicio] + f"{encabezado}\n- {nota}\n\n" + cierre[inicio:]
+    return cierre.rstrip("\n") + f"\n\n{encabezado}\n- {nota}"
 
 
 def _anotar_excepcion(
@@ -5343,14 +5402,14 @@ def _excepciones_del_registro(
     ]
 
 
-def _cuerpo_pr(
+def _partes_cuerpo_pr(
     enc: Encargo, espacio: Path, fase_id: str = "", excepciones=(),
-) -> str:
-    """El cuerpo del PR: lo que el responsable dejó en `.interno/cuerpo-pr.md`,
-    con una línea final que identifica el encargo y la fase. Sin archivo o vacío
-    se conserva el cuerpo de siempre. Los pendientes y notas del motor se añaden
-    siempre después del texto del responsable. `fase_id` permite publicar el
-    cuerpo de una fase anterior, como la de un hallazgo tardío."""
+) -> tuple[str, str]:
+    """El texto del responsable y el cierre del motor, por separado.
+
+    El cierre lleva pendientes, hallazgos fuera de alcance, notas y la línea
+    final del encargo; nunca se recorta. `fase_id` permite armar el cuerpo de
+    una fase anterior, como la de un hallazgo tardío."""
     defecto = f"Encargo {enc.id}. Revision independiente aprobada."
     texto = _leer_cuerpo_del_espacio(espacio)
     vacio = texto is None or not texto.replace("\x00", "").strip()
@@ -5392,9 +5451,7 @@ def _cuerpo_pr(
             "## Notas del motor\n" + "\n".join(f"- {n}" for n in notas)
         )
     if vacio and not adicionales and not excepciones:
-        return defecto
-    if adicionales:
-        texto = texto + "\n\n" + "\n\n".join(adicionales)
+        return defecto, ""
     linea = (
         f"Encargo {enc.id}. Fase: "
         f"{fase_id or enc.fase_activa or FASE_IMPLICITA}."
@@ -5408,11 +5465,17 @@ def _cuerpo_pr(
             + json.dumps(list(excepciones), ensure_ascii=False, sort_keys=True)
             + " -->"
         )
-    cuerpo = f"{texto}\n\n{linea}{marca}"
-    if _cabe_en_el_limite(cuerpo):
-        return cuerpo
-    resto = f"{_NOTA_CUERPO_RECORTADO}\n\n{linea}{marca}"
-    return _cuerpo_recortado(texto, resto)
+    return texto, "\n\n".join([*adicionales, linea + marca])
+
+
+def _cuerpo_pr(
+    enc: Encargo, espacio: Path, fase_id: str = "", excepciones=(),
+) -> str:
+    """El cuerpo publicado: el texto del responsable más el cierre del motor,
+    con el límite aplicado. Sin archivo o vacío se conserva el cuerpo de
+    siempre. `fase_id` permite publicar el cuerpo de una fase anterior."""
+    texto, cierre = _partes_cuerpo_pr(enc, espacio, fase_id, excepciones)
+    return _cuerpo_con_limite(texto, cierre)
 
 
 def _huella_cuerpo(cuerpo: str) -> str:
@@ -5455,6 +5518,45 @@ def _anotar_cuerpo_publicado(
     )
 
 
+def _escribir_cuerpo_pr(
+    gh, repo: str, numero: int, texto: str, cierre: str
+) -> None:
+    """El único lugar que edita el cuerpo de un PR ya abierto.
+
+    Aplica el límite y conserva el cierre: el recorte cae solo en el texto del
+    responsable. Un fallo de GitHub sube a quien llama, que decide si reintenta
+    en la próxima pasada o si lo registra como entrega fallida.
+    """
+    gh.actualizar_cuerpo(repo, numero, _cuerpo_con_limite(texto, cierre))
+
+
+def _publicar_cuerpo_pr(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    numero: int,
+    sha: str,
+    espacio: Path,
+    hora: str,
+    fase_id: str = "",
+) -> Encargo:
+    """Publica el cuerpo y anota su huella; un fallo de GitHub sube."""
+    texto, cierre = _partes_cuerpo_pr(
+        enc,
+        espacio,
+        fase_id,
+        _excepciones_del_registro(registro, enc, enc.pr_sha or sha),
+    )
+    huella = _huella_cuerpo(_cuerpo_con_limite(texto, cierre))
+    if _cuerpo_ya_publicado(registro, enc, sha, huella, fase_id):
+        return enc
+    _escribir_cuerpo_pr(gh, enc.entrega.repo, numero, texto, cierre)
+    _anotar_cuerpo_publicado(
+        registro, enc, numero, sha, hora, huella, fase_id
+    )
+    return registro.fold(enc.id) or enc
+
+
 def _actualizar_cuerpo_pr(
     registro: Registro,
     enc: Encargo,
@@ -5465,17 +5567,10 @@ def _actualizar_cuerpo_pr(
     hora: str,
     fase_id: str = "",
 ) -> Encargo:
-    cuerpo = _cuerpo_pr(
-        enc,
-        espacio,
-        fase_id,
-        _excepciones_del_registro(registro, enc, enc.pr_sha or sha),
-    )
-    huella = _huella_cuerpo(cuerpo)
-    if _cuerpo_ya_publicado(registro, enc, sha, huella, fase_id):
-        return enc
     try:
-        gh.actualizar_cuerpo(enc.entrega.repo, numero, cuerpo)
+        return _publicar_cuerpo_pr(
+            registro, enc, gh, numero, sha, espacio, hora, fase_id
+        )
     except Exception as exc:
         _anotar_instrumento(
             registro,
@@ -5487,10 +5582,6 @@ def _actualizar_cuerpo_pr(
             f"cuerpo-{sha[:12]}",
         )
         return registro.fold(enc.id) or enc
-    _anotar_cuerpo_publicado(
-        registro, enc, numero, sha, hora, huella, fase_id
-    )
-    return registro.fold(enc.id) or enc
 
 
 def _refrescar_cuerpo_excepciones(
@@ -5921,12 +6012,33 @@ def _marcar_deepseek_cerrado(
     )
 
 
+def _recorte_es_seguro(texto_cuerpo: str, espacio: Path | None) -> bool:
+    """El recorte no pierde texto: lo publicado sigue en `.interno/cuerpo-pr.md`.
+
+    Un cuerpo de una fase anterior ya no está en ese archivo. Recortarlo sería
+    irreversible y la nota de recorte mentiría, así que ese camino no recorta.
+    """
+    if espacio is None:
+        return False
+    fuente = _leer_cuerpo_del_espacio(espacio)
+    if fuente is None:
+        return False
+    fuente = fuente.replace("\x00", "").rstrip()
+    resto = texto_cuerpo
+    if resto.endswith(_NOTA_CUERPO_RECORTADO):
+        resto = resto[: -len(_NOTA_CUERPO_RECORTADO)].rstrip()
+    return fuente.startswith(resto)
+
+
 def _anotar_nota_en_pr_tardia(
     registro: Registro, enc: Encargo, gh, fase, sha: str, huella: str,
-    texto: str, hora: str,
+    texto: str, hora: str, espacio: Path | None = None,
 ) -> Encargo:
     """Añade la nota al cuerpo actual del PR sin reescribir el de la fase
-    vigente. Un PR de una fase anterior conserva su descripción original."""
+    vigente. Un PR de una fase anterior conserva su descripción original: la
+    nota entra en las notas del motor, antes de la línea del encargo, y el
+    recorte cae solo en el texto del responsable cuando ese texto sigue en
+    `.interno/cuerpo-pr.md`. Si no, el cuerpo publicado no se recorta."""
     serie = f"{enc.id}:{fase.id}:{sha}:{huella}"
     ukey = f"cuerpo-tardio:{serie}"
     if registro.por_ukey(ukey) is not None:
@@ -5943,22 +6055,27 @@ def _anotar_nota_en_pr_tardia(
         return registro.fold(enc.id) or enc
     cuerpo = str(getattr(vista, "cuerpo", "") or "").rstrip()
     if texto not in cuerpo:
-        encabezado = (
-            "" if "## Notas del motor" in cuerpo else "## Notas del motor\n"
+        texto_cuerpo, cierre = _separar_cierre(cuerpo)
+        if not cierre:
+            cierre = (
+                f"Encargo {enc.id}. Fase: {fase.id or enc.fase_activa}."
+            )
+        nuevo_cierre = _agregar_nota_al_cierre(cierre, texto)
+        combinado = (
+            f"{texto_cuerpo}\n\n{nuevo_cierre}" if texto_cuerpo else nuevo_cierre
         )
-        nuevo = f"{cuerpo}\n\n{encabezado}- {texto}".strip()
-        if not _cabe_en_el_limite(nuevo):
-            # No se recorta el cuerpo existente: se perderían en silencio las
-            # notas previas. La nota queda en el estado del encargo.
+        ajustado = _cuerpo_con_limite(texto_cuerpo, nuevo_cierre)
+        if ajustado != combinado and not _recorte_es_seguro(texto_cuerpo, espacio):
+            # No se recorta un cuerpo ya publicado que no se puede recuperar:
+            # se perdería la descripción del responsable en silencio.
             registro.anotar(
                 enc.id,
                 {
                     "kind": "nota_pr",
                     "data": {
                         "texto": (
-                            texto
-                            + " (el cuerpo del PR llegó al límite; la nota "
-                            "queda en el estado del encargo)"
+                            texto + " (el cuerpo ya publicado no se recorta; "
+                            "la nota queda en el estado del encargo)"
                         ),
                         "hora": hora,
                     },
@@ -5967,7 +6084,9 @@ def _anotar_nota_en_pr_tardia(
             )
             return registro.fold(enc.id) or enc
         try:
-            gh.actualizar_cuerpo(enc.entrega.repo, fase.pr_numero, nuevo)
+            _escribir_cuerpo_pr(
+                gh, enc.entrega.repo, fase.pr_numero, texto_cuerpo, nuevo_cierre
+            )
         except Exception as exc:
             _anotar_instrumento(
                 registro, enc, "github",
@@ -6015,7 +6134,7 @@ def _avisar_hallazgo_tardio(
     enc = registro.fold(enc.id) or enc
     if gh is not None and espacio is not None:
         enc = _anotar_nota_en_pr_tardia(
-            registro, enc, gh, fase, sha, huella, texto, hora
+            registro, enc, gh, fase, sha, huella, texto, hora, espacio
         )
     return enc
 
@@ -7598,16 +7717,15 @@ def _entregar_con_pendientes(
                         _publicar_resultado(registro, enc, hora)
                         _limpiar_encargo_cerrado(registro, enc, hora)
                     return enc
-            cuerpo = _cuerpo_pr(
-                replace(enc, pendientes_entrega=tuple(pendientes)),
-                espacio,
-                excepciones=_excepciones_del_registro(
-                    registro, enc, enc.pr_sha or sha
-                ),
-            )
+            con_pendientes = replace(enc, pendientes_entrega=tuple(pendientes))
             try:
                 if numero:
-                    gh.actualizar_cuerpo(enc.entrega.repo, numero, cuerpo)
+                    # Este camino termina el encargo: un fallo al editar el
+                    # cuerpo no se traga, o la evidencia diría que el PR quedó
+                    # publicado cuando no lo está.
+                    enc = _publicar_cuerpo_pr(
+                        registro, con_pendientes, gh, numero, sha, espacio, hora
+                    )
                     vista = gh.ver(enc.entrega.repo, numero)
                     sha = str(getattr(vista, "head", "") or sha)
                 else:
@@ -7616,7 +7734,13 @@ def _entregar_con_pendientes(
                         rama,
                         base,
                         f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
-                        cuerpo,
+                        _cuerpo_pr(
+                            con_pendientes,
+                            espacio,
+                            excepciones=_excepciones_del_registro(
+                                registro, enc, enc.pr_sha or sha
+                            ),
+                        ),
                     )
                     numero = int(pr.numero)
                     sha = str(pr.head or sha)
@@ -7659,7 +7783,7 @@ def _entregar_con_pendientes(
         )
         enc = registro.fold(enc.id) or enc
     evidencia = "la fase se entrega con pendientes abiertos: " + "; ".join(pendientes)
-    if numero:
+    if numero and not causa:
         evidencia += f"; el PR #{numero} queda publicado con ellos"
     if causa:
         evidencia += f". No se pudo publicar el PR: {str(causa)[:400]}"
