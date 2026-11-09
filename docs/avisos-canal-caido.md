@@ -31,7 +31,8 @@ y el aviso remite al estado del encargo para el detalle.
   retoma en cada pasada después de su `proximo_intento`, con el cuerpo que quedó en `canal/<canal>/<id>`. Los
   encargos detenidos, cancelados o terminados no reabren avisos de avance, y esos avisos no impiden que el canal caído se
   sondee. El sondeo solo lo detiene un aviso vigente, no archivado, de un encargo activo pendiente de entrega en su canal
-  (o un resumen con envío activo); todo lo demás se archiva o se ignora sin bloquear. Si no queda otro aviso de esa lista,
+  (o un resumen con envío activo); todo lo demás se archiva o se ignora sin bloquear. Un cierre que vuelve sin recibo en
+  la misma pasada tampoco detiene el sondeo: su encargo ya está cerrado. Si no queda otro aviso de esa lista,
   la pasada prueba la conciliación `sondeo-<canal>` y recupera el canal cuando responde.
 
 ## Los avisos no frenan el barrido

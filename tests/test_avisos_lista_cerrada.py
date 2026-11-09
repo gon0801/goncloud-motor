@@ -40,6 +40,12 @@ CONCILIACION = (
     "print(json.dumps({'ausente':True}))\n"
 )
 
+SIN_RECIBO = (
+    "import sys\n"
+    "sys.stdin.read()\n"
+    "print('{}')\n"
+)
+
 
 class Banco(unittest.TestCase):
     def setUp(self):
@@ -102,6 +108,14 @@ class Banco(unittest.TestCase):
         carpeta = self.base / "canal" / "hermes"
         carpeta.mkdir(parents=True, exist_ok=True)
         (carpeta / ident).write_text(texto, encoding="utf-8")
+
+    def sin_recibo(self) -> None:
+        envio = Path(self._tmp.name) / "envio_sin_recibo.py"
+        envio.write_text(SIN_RECIBO, encoding="utf-8")
+        ruta = self.base / "canal.json"
+        config = json.loads(ruta.read_text(encoding="utf-8"))
+        config["hermes"]["comando"] = [sys.executable, "-B", str(envio)]
+        ruta.write_text(json.dumps(config), encoding="utf-8")
 
     def caido(self) -> None:
         canales.registrar_pasada(
@@ -333,6 +347,31 @@ class ListaCerrada(Banco):
             self.sondeos(),
             ["sondeo-hermes"],
             "un pendiente que el estado vigente ya no genera no lo visita nadie",
+        )
+
+    def test_el_cierre_incierto_de_la_misma_pasada_no_bloquea_el_sondeo(self):
+        ident = self.encargo(via="directa")
+        self.terminar(ident)
+        self.sin_recibo()
+        self.caido()
+
+        directores.drenar(self.reg, ahora=T0)
+
+        cierre = directores._aviso_de(self.reg.fold(ident))
+        self.assertEqual(
+            self.guardado(cierre["id"])["estado"],
+            "incierto",
+            "el envío del cierre vuelve sin recibo en esta misma pasada",
+        )
+        self.assertEqual(
+            self.sondeos(),
+            ["sondeo-hermes"],
+            "el cierre de un encargo cerrado no es de un encargo activo: no detiene el sondeo",
+        )
+        self.assertEqual(
+            canales.canales_caidos(self.base, ahora=T0 + 1000),
+            [],
+            "el sondeo recupera el canal en la misma pasada",
         )
 
     def test_un_aviso_vigente_de_un_encargo_activo_se_entrega_una_sola_vez(self):  # no-roja-en-base: caracterización de la entrega idempotente

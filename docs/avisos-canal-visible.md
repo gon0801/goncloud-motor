@@ -40,7 +40,9 @@ Decisiones de la fase `canal-visible` (`motor/integraciones/canales.py`).
   una marca aparte. Todo lo demás se archiva o se ignora sin bloquear: un aviso de un encargo cerrado o que ya no existe,
   un cierre de un cancelado anterior al corte de cierres, un aviso huérfano que el estado vigente ya no genera y un resumen
   con el envío apagado. Un `incierto` de un encargo activo sí cuenta porque la pasada lo retoma desde su cuerpo guardado;
-  un `pendiente` que el estado vigente ya no genera no lo visita nadie y no frena el sondeo. Una respuesta `ausente` o
+  un `pendiente` que el estado vigente ya no genera no lo visita nadie y no frena el sondeo. Un cierre que vuelve sin
+  recibo en la misma pasada tampoco cuenta: su encargo ya está cerrado, no es activo, y el sondeo recupera el canal ese
+  mismo turno. Una respuesta `ausente` o
   `hallado` lo marca recuperado, igual que un envío con recibo; sin `conciliacion`, el canal se deja como está. El sondeo
   no manda mensajes: `ultimo_intento` dice cuándo fue la última prueba. Un aviso pendiente solo recupera el canal con una
   entrega probada (un envío con recibo o una conciliación `hallado`); con `ausente` decide el envío que sigue en la misma

@@ -1583,8 +1583,9 @@ def _bloquea_el_sondeo(
     de un encargo cerrado o que ya no existe no se reabre. De un encargo activo
     cuenta un `incierto`, que se retoma desde su cuerpo guardado, y un
     `pendiente` que su estado vigente todavía genera; un `pendiente` huérfano no
-    lo visita nadie y no debe frenar el sondeo. Todo lo demás se archiva o se
-    ignora sin bloquear.
+    lo visita nadie y no debe frenar el sondeo. Un cierre que acaba de quedar
+    `incierto` en esta misma pasada tampoco frena: su encargo ya está cerrado.
+    Todo lo demás se archiva o se ignora sin bloquear.
     """
     if doc.get("estado") not in _ESTADOS_PENDIENTES_DE_ENTREGA:
         return False
