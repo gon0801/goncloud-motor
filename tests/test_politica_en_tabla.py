@@ -9,8 +9,10 @@ nombra el defecto, no por una importación ni por una firma.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -109,6 +111,29 @@ def _entorno(tmp: Path) -> dict:
     }
 
 
+def _servicio_del_cli(env: dict) -> str:
+    """El ítem del Llavero que busca el CLI 2.1.319, medido con `security` falso.
+
+    Con `CLAUDE_SECURESTORAGE_CONFIG_DIR` definido y vacío usa el ítem sin
+    sufijo; con ese valor no vacío, o con solo `CLAUDE_CONFIG_DIR`, añade
+    `-<sha256 del directorio>` que el login del usuario no creó.
+    """
+    config = str(env.get("CLAUDE_CONFIG_DIR") or "")
+    if "CLAUDE_SECURESTORAGE_CONFIG_DIR" in env:
+        sufijo = ""
+        if env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]:
+            sufijo = "-" + hashlib.sha256(
+                env["CLAUDE_SECURESTORAGE_CONFIG_DIR"].encode()
+            ).hexdigest()[:8]
+    else:
+        sufijo = (
+            ""
+            if not config
+            else "-" + hashlib.sha256(config.encode()).hexdigest()[:8]
+        )
+    return "Claude Code-credentials" + sufijo
+
+
 class _SesionFalsa(unittest.TestCase):
     """Un host con Claude y Codex, sin leer el Llavero real."""
 
@@ -202,6 +227,43 @@ class TablaUnica(unittest.TestCase):
             )
             e = vuelta("uno")
         self.assertNotEqual(_ids(e), [])
+
+    def test_llevar_el_codigo_al_valor_de_la_tabla_no_saca_el_hallazgo(self):  # no-roja-en-base: caracterización: la base ya lo dejaba bloquear
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._con_titulo(
+                tmp,
+                "politica-al-valor",
+                "el tope de DeepSeek en ciclo.py es 60; cambiar de 60 a 30 "
+                "minutos como fija la tabla",
+            )
+            e = vuelta("uno")
+        self.assertNotEqual(_ids(e), [])
+
+    def test_continuar_no_vuelve_a_juzgar_la_politica(self):  # no-roja-en-base: caracterización: la base ya aplicaba el evento guardado como se aceptó
+        from motor.encargos.dominio import con_fase, reducir
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "politica-continuar", github_por_numero
+            )
+            vuelta("uno")
+            e = r.fold()
+        h = Hallazgo(
+            id="ds_x",
+            gravedad="bloqueante",
+            criterio="comportamiento",
+            titulo="bajar el tope de DeepSeek de 30 a 15 minutos",
+            origen="deepseek",
+        )
+        e = con_fase(e, replace(e.fase_actual, hallazgos=(h,)))
+        e = replace(
+            e, estado="detenido", proc=None, reserva=False, intentos_nuevos=True
+        )
+        evento = {"kind": "orden", "data": {"accion": "continuar", "hora": e.hora}}
+        escrito = reducir(e, evento, nuevo=True)
+        plegado = reducir(e, evento, nuevo=False)
+        self.assertEqual(_ids(escrito), ["ds_x"])
+        self.assertEqual(_ids(plegado), ["ds_x"])
 
 
 class LimitesDeLaPolitica(unittest.TestCase):
@@ -332,6 +394,125 @@ class LecturaDeLaSesion(_SesionFalsa):
                     f"el secreto del Llavero: {exc}"
                 )
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
+
+    def test_el_cli_busca_el_item_del_llavero_sin_sufijo(self):
+        from motor.encargos import suscripciones
+
+        with tempfile.TemporaryDirectory() as tmp:
+            llamadas = []
+            valido = json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "sk-ant-oat-x",
+                        "scopes": ["user:inference"],
+                        "expiresAt": (time.time() + 3600) * 1000,
+                    }
+                }
+            )
+
+            def correr(argv, **kw):
+                del kw
+                llamadas.append(list(argv))
+                if "-w" in argv:
+                    return mock.Mock(returncode=0, stdout=valido, stderr="")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            env: dict[str, str] = {}
+            with (
+                mock.patch.object(Path, "home", return_value=Path(tmp)),
+                mock.patch.dict("os.environ", {}, clear=True),
+                mock.patch.object(
+                    suscripciones.subprocess, "run", side_effect=correr
+                ),
+                mock.patch.object(suscripciones.sys, "platform", "darwin"),
+            ):
+                suscripciones.preparar(
+                    "claude", Path(tmp) / "rt", ["claude", "--model", "x"], env
+                )
+                suscripciones.disponible("claude")
+        self.assertEqual(
+            env.get("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+            "",
+            "con CLAUDE_CONFIG_DIR propio el CLI busca "
+            "«Claude Code-credentials-<8 hex>», que el login no creó",
+        )
+        self.assertEqual(_servicio_del_cli(env), "Claude Code-credentials")
+        servicios = [a[a.index("-s") + 1] for a in llamadas if "-s" in a]
+        self.assertIn("Claude Code-credentials", servicios)
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and shutil.which("claude"),
+        "necesita el CLI de Claude en macOS",
+    )
+    def test_el_cli_lanzado_busca_el_item_sin_sufijo(self):
+        from motor.encargos import suscripciones
+
+        real_run = subprocess.run
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            bin_ = tmp / "bin"
+            bin_.mkdir()
+            log = tmp / "security.log"
+            log.write_text("", encoding="utf-8")
+            sh = bin_ / "security"
+            sh.write_text(
+                '#!/bin/sh\necho "$@" >> "$PROBE_LOG"\nexit 1\n', encoding="utf-8"
+            )
+            sh.chmod(0o755)
+            env: dict[str, str] = {
+                "HOME": str(tmp),
+                "PATH": f"{bin_}:{os.environ.get('PATH', '')}",
+                "PROBE_LOG": str(log),
+            }
+            valido = json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "sk-ant-oat-x",
+                        "scopes": ["user:inference"],
+                        "expiresAt": (time.time() + 3600) * 1000,
+                    }
+                }
+            )
+
+            def correr(argv, **kw):
+                del kw
+                if "-w" in argv:
+                    return mock.Mock(returncode=0, stdout=valido, stderr="")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with (
+                mock.patch.object(Path, "home", return_value=tmp),
+                mock.patch.object(
+                    suscripciones.subprocess, "run", side_effect=correr
+                ),
+                mock.patch.object(suscripciones.sys, "platform", "darwin"),
+            ):
+                suscripciones.preparar(
+                    "claude", tmp / "rt", ["claude", "--model", "x"], env
+                )
+            env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+            try:
+                real_run(
+                    ["claude", "--print", "--model", "claude-sonnet-5-5", "di hola"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=25,
+                )
+            except subprocess.TimeoutExpired:
+                pass
+            texto = log.read_text(encoding="utf-8")
+        servicios = []
+        for linea in texto.splitlines():
+            if "find-generic-password" in linea and "-s " in linea:
+                servicios.append(linea.split("-s ", 1)[1].strip())
+        self.assertIn(
+            "Claude Code-credentials", servicios, f"el CLI buscó {servicios}"
+        )
+        self.assertFalse(
+            any(s.startswith("Claude Code-credentials-") for s in servicios),
+            servicios,
+        )
 
     def test_una_sesion_ilegible_relega_a_astra(self):
         self.host("ilegible")

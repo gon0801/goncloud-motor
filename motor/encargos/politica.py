@@ -214,8 +214,12 @@ _INCUMPLE = (
 
 
 _PROPUESTAS = (
-    # «de 30 a 15 minutos» propone dos valores; el primero es el vigente.
-    re.compile(r"\bde\s+(\d{1,6})\s*(?:minutos?|min|d[ií]as?)?\s*a\s+(\d{1,6})"),
+    # «de 60 a 30»: 60 es el valor actual del código y 30 la propuesta. Solo
+    # cuenta el destino; llevar el código al valor de la tabla no cambia la
+    # regla del propietario.
+    re.compile(
+        r"\bde\s+\d{1,6}\s*(?:minutos?|min|d[ií]as?|consultas?)?\s*a\s+(\d{1,6})"
+    ),
     re.compile(
         r"\b(?:deber[ií]a|deber[ií]an|debe|deben|should(?:\s+be)?|hay\s+que)"
         r"\s+(?:ser|be|usar|use)?\s*(\d{1,6})"
@@ -223,7 +227,8 @@ _PROPUESTAS = (
     re.compile(
         r"\b(?:subir|sube|suban|bajar|baja|bajan|aumentar|aumenta|reducir|"
         r"reduce|ampliar|ampl[ií]a|amplia|cambiar|change|lower|raise|increase|"
-        r"decrease)\b[^\d]{0,30}(\d{1,6})"
+        r"decrease)\b[^\d]{0,30}?(?:\ba\s+(\d{1,6})|"
+        r"(\d{1,6})\s*(?:minutos?|min|d[ií]as?|consultas?))"
     ),
 )
 

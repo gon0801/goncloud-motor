@@ -1718,7 +1718,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             ),
         )
     if kind == "orden":
-        return _orden(e, d, hora, nuevo)
+        return _orden(e, d, hora)
     if kind == "ajuste":
         if e.estado == "terminado":
             # Con el PR abierto la corrección vuelve al responsable en la misma
@@ -3264,19 +3264,18 @@ def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
     return "responsable", "investigar"
 
 
-def _fuera_de_alcance_por_restricciones(e: Encargo, nuevo: bool = True) -> Encargo:
+def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
     """Un bloqueante que una restricción expresa deja fuera no sostiene el encargo.
 
     No es un reinicio de campos: aplica la restricción al hallazgo guardado y
-    deja el hecho en `fuera_de_alcance`, con su razón, para el PR. La política
-    solo juzga al escribir: al plegar, el evento guardado se aplica como se
-    aceptó.
+    deja el hecho en `fuera_de_alcance`, con su razón, para el PR. El filtro de
+    política no vive aquí: se decide al anotar la lectura de DeepSeek
+    (`ciclo._anotar_lectura_deepseek`), donde queda el evento que lo sostiene.
     """
     fase = e.fase_actual
     if fase is None:
         return e
     from .comprobacion import hallazgo_fuera_de_alcance_por_restriccion
-    from .politica import hallazgo_contra_politica
 
     fuera = list(e.fuera_de_alcance)
     hallazgos = []
@@ -3291,7 +3290,7 @@ def _fuera_de_alcance_por_restricciones(e: Encargo, nuevo: bool = True) -> Encar
                 h,
                 permisos=e.permisos,
                 prohibiciones=e.prohibiciones,
-            ) or (hallazgo_contra_politica(h) if nuevo else "")
+            )
             if razon:
                 h = replace(
                     h,
@@ -3310,7 +3309,7 @@ def _fuera_de_alcance_por_restricciones(e: Encargo, nuevo: bool = True) -> Encar
     )
 
 
-def _orden(e: Encargo, d: dict, hora: str, nuevo: bool = True) -> Encargo:
+def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
     accion = d["accion"]
     if accion == "reabrir":
         fase = e.cierre_forzado_fase
@@ -3373,7 +3372,7 @@ def _orden(e: Encargo, d: dict, hora: str, nuevo: bool = True) -> Encargo:
         # del registro y solo cambian con información nueva. La restricción
         # expresa sí se aplica: un bloqueante que deja fuera no sostiene el
         # encargo.
-        e = _retomar(_fuera_de_alcance_por_restricciones(e, nuevo), hora)
+        e = _retomar(_fuera_de_alcance_por_restricciones(e), hora)
         if e.no_concluyentes < TOPE_NO_CONCLUYENTES:
             e = replace(e, pendientes_entrega=())
         return replace(

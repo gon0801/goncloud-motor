@@ -265,6 +265,8 @@ def preparar(agente: str, runtime: Path, cmd: list[str], env: dict[str, str]) ->
         # estar permitida, pero el CLI sí puede usarla. Por eso aquí no se lee
         # el secreto ni se exporta: solo se copia la copia en archivo si existe.
         home = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+        if home.resolve() == (runtime / ".claude").resolve():
+            home = Path.home() / ".claude"
         archivo = home / ".credentials.json"
         destino = runtime / ".claude/.credentials.json"
         if archivo.is_file() and archivo.resolve() != destino.resolve():
@@ -273,6 +275,10 @@ def preparar(agente: str, runtime: Path, cmd: list[str], env: dict[str, str]) ->
             destino.chmod(0o600)
         env.update(
             CLAUDE_CONFIG_DIR=str(runtime / ".claude"),
+            # El CLI deriva el nombre del ítem del Llavero de esta variable:
+            # con un valor no vacío añade un sufijo que el login del usuario
+            # nunca creó; vacío usa el mismo ítem sin sufijo que _claude_existe.
+            CLAUDE_SECURESTORAGE_CONFIG_DIR="",
             DISABLE_AUTOUPDATER="1",
             DISABLE_TELEMETRY="1",
             DISABLE_ERROR_REPORTING="1",
