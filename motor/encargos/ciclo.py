@@ -7000,31 +7000,36 @@ def _espera_por_observacion(
     if declaradas is None or enc.producto is None:
         if declaradas is None and enc.producto is not None:
             enc = registro.fold(enc.id) or enc
-            version = version_producto(espacio).firma
-            omitido = _instrumento_omitido(enc, "comprobaciones.json")
             abierto_sup = any(
                 h.origen == "supervisor" and h.estado == "abierto"
                 for h in (enc.fase_actual.hallazgos if enc.fase_actual else ())
             )
-            enc = _registrar_comprobaciones(
-                registro, enc, {"ejecuciones": []}, version, hora
-            )
-            if omitido and abierto_sup:
+            if abierto_sup:
+                # Sin una observacion en verde el bloqueo no se resuelve. Se
+                # deja abierto y visible, y la fase se entrega con un pendiente
+                # en vez de publicarse como si la comprobacion hubiera pasado.
+                omitido = _instrumento_omitido(enc, "comprobaciones.json")
+                texto = (
+                    "las comprobaciones declaradas no se pudieron volver a "
+                    "observar: el comprobador quedo omitido tras fallos iguales; "
+                    "el bloqueo del supervisor sigue abierto y se entrega con "
+                    "este pendiente"
+                    if omitido
+                    else "las comprobaciones declaradas desaparecieron sin una "
+                    "observacion en verde sobre el producto vigente; el bloqueo "
+                    "del supervisor sigue abierto y se entrega con este pendiente"
+                )
                 registro.anotar(
                     enc.id,
                     {
                         "kind": "pendiente_entrega",
-                        "data": {
-                            "texto": (
-                                "las comprobaciones declaradas no se pudieron "
-                                "volver a observar: el comprobador quedo omitido "
-                                "tras fallos iguales; se entrega con este pendiente"
-                            ),
-                            "hora": hora,
-                        },
+                        "data": {"texto": texto, "hora": hora},
                     },
-                    f"pendiente-comprobaciones-omitidas:{enc.id}:{enc.generacion}",
+                    f"pendiente-comprobaciones-"
+                    f"{'omitidas' if omitido else 'retiradas'}:"
+                    f"{enc.id}:{enc.generacion}",
                 )
+                return registro.fold(enc.id) or enc, Avanzo()
         return None
     version = version_producto(espacio).firma
     esperadas = declaradas
