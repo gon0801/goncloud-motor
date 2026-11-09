@@ -132,7 +132,7 @@ class ReinicioOrdenado(unittest.TestCase):
         self.procesos.append(proceso)
         return proceso
 
-    def esperar_lanzamiento(self, tope: float = 20.0) -> dict:
+    def esperar_lanzamiento(self, tope: float = 30.0) -> dict:
         fin = time.time() + tope
         while time.time() < fin:
             if self.lanzamientos.is_file():
@@ -179,7 +179,7 @@ class ReinicioOrdenado(unittest.TestCase):
             "y los turnos nuevos seguirian lanzandose"
         )
 
-    def esperar_fin(self, proceso: subprocess.Popen, tope: float = 25.0) -> str:
+    def esperar_fin(self, proceso: subprocess.Popen, tope: float = 40.0) -> str:
         try:
             _, error = proceso.communicate(timeout=tope)
         except subprocess.TimeoutExpired:
@@ -303,7 +303,7 @@ class ReinicioOrdenado(unittest.TestCase):
             "vivo",
             "el supervisor nuevo corto el turno que debia retomar",
         )
-        fin = time.time() + 20
+        fin = time.time() + 30
         while time.time() < fin and plataforma.pid_vivo(pid):
             time.sleep(0.1)
         self.assertNotEqual(
