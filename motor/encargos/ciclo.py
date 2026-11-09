@@ -95,6 +95,14 @@ from .sesion import (
     preparar_administrado,
     recuperar_arranque,
 )
+from .lectura import Error as ErrorLectura
+from .lectura import Leido, Pendiente as PendienteLectura
+from .politica import (
+    CERRADOS_POR_PASADA,
+    CERRADOS_VENTANA_S,
+    TOPE_DEEPSEEK_MIN,
+    hallazgo_contra_politica,
+)
 from .resultado import Avanzo, Devolver, Espera, NecesitaAgente, Resultado, permite_lanzar
 from .suscripciones import CuentaNoDisponible
 
@@ -117,10 +125,8 @@ _REINTENTO_FORZADO_S = 15
 # golpear GitHub con los encargos viejos al desplegar. La gracia cubre la pausa
 # de un supervisor entre el cierre y su primera pasada (un reinicio, una caída),
 # no los encargos de días atrás.
-_SONDEO_DEEPSEEK_VENTANA_S = 7 * 24 * 60 * 60
 _SONDEO_DEEPSEEK_RAPIDO_S = 60 * 60
 _SONDEO_DEEPSEEK_GRACIA_S = 30 * 60
-_SONDEO_CERRADOS_TOPE_POR_PASADA = 5
 _RELECTURA_DEEPSEEK_CERRADO_S = 30 * 60
 _TOPE_LOG_JOB = 80
 _LIMITE_CUERPO_PR = 65_536
@@ -309,6 +315,8 @@ def recibir(
     director: str = "",
     adjuntos: tuple[str, ...] = (),
     restricciones: tuple[str, ...] = (),
+    permisos: tuple[str, ...] = (),
+    prohibiciones: tuple[str, ...] = (),
     canal: str = "",
     via: str = "durable",
     detenido: bool = False,
@@ -323,7 +331,9 @@ def recibir(
         raise TransicionIlegal(
             "la via directa no entrega niveles externos; usa la via durable"
         )
-    huella = huella_entrega(texto, adjuntos, restricciones)
+    huella = huella_entrega(
+        texto, adjuntos, restricciones, permisos, prohibiciones
+    )
     ukey = f"entrega:{clave}"
     prev = registro.por_ukey(ukey)
     if prev:
@@ -363,6 +373,8 @@ def recibir(
         "director": director,
         "adjuntos": list(adjuntos),
         "restricciones": list(restricciones),
+        "permisos": list(permisos),
+        "prohibiciones": list(prohibiciones),
         "canal": canal,
         "via": via,
         "detenido": detenido,
@@ -384,6 +396,8 @@ def recibir(
         hora,
         director,
         restricciones,
+        permisos,
+        prohibiciones,
         adjuntos,
         canal,
         via,
@@ -1352,7 +1366,7 @@ def barrer(
     lance uno no detiene a los demás ni al supervisor (ver `_contener_fallo_de_barrido`)."""
     migrar_marcadores(registro, hora)
     informes = []
-    presupuesto = [_SONDEO_CERRADOS_TOPE_POR_PASADA]
+    presupuesto = [CERRADOS_POR_PASADA]
     for encargo_id in registro.ids():
         try:
             previo = plegar_aislado(registro, encargo_id)
@@ -4875,6 +4889,24 @@ def _resolver_bloqueantes_deepseek_omitido(
     return registro.fold(enc.id) or enc
 
 
+def _leer_deepseek(
+    gh, repo: str, numero: int, sha: str, desde: str
+) -> Leido | PendienteLectura | ErrorLectura:
+    """La revisión externa como lectura tipada, sin convertirla a bool.
+
+    `Pendiente` es «todavía no hay comentario»; `Error` conserva la causa de la
+    lectura; `Leido` trae los comentarios, aunque solo sean avisos de timeout.
+    """
+    try:
+        leidos = gh.comentarios_deepseek(repo, numero, sha)
+    except Exception as exc:  # noqa: BLE001  la causa se conserva, no se adivina
+        return ErrorLectura(str(exc) or type(exc).__name__)
+    if not leidos:
+        return PendienteLectura(desde)
+    comentarios = _deepseek_con_contenido(leidos, sha)
+    return Leido((leidos, comentarios))
+
+
 def _omitir_deepseek(
     registro: Registro, enc: Encargo, numero: int, sha: str, texto: str, hora: str
 ) -> Encargo:
@@ -5278,7 +5310,12 @@ def _anotar_lectura_deepseek(
     for indice, h in enumerate(hallazgos):
         if h.gravedad != "bloqueante":
             continue
-        razon = hallazgo_fuera_de_alcance_por_restriccion(enc.restricciones, h)
+        razon = hallazgo_fuera_de_alcance_por_restriccion(
+            enc.restricciones,
+            h,
+            permisos=enc.permisos,
+            prohibiciones=enc.prohibiciones,
+        ) or hallazgo_contra_politica(h)
         if razon:
             fuera.append((h.id, h.titulo, razon))
             hallazgos[indice] = replace(
@@ -5728,10 +5765,10 @@ def _revisar_deepseek_del_cerrado(
     if cierre and cierre < marca["desde"] - _SONDEO_DEEPSEEK_GRACIA_S:
         return enc
     edad = max(0.0, epoch - cierre) if cierre else 0.0
-    if edad >= _SONDEO_DEEPSEEK_VENTANA_S:
+    if edad >= CERRADOS_VENTANA_S:
         return enc
     if presupuesto is None:
-        presupuesto = [_SONDEO_CERRADOS_TOPE_POR_PASADA]
+        presupuesto = [CERRADOS_POR_PASADA]
     leidas = marca["shas"]
     cambio = False
     espaciado = (
@@ -5769,7 +5806,10 @@ def _revisar_deepseek_del_cerrado(
             h for h in hallazgos_deepseek(comentarios, sha)
             if h.gravedad == "bloqueante"
             and not hallazgo_fuera_de_alcance_por_restriccion(
-                enc.restricciones, h
+                enc.restricciones,
+                h,
+                permisos=enc.permisos,
+                prohibiciones=enc.prohibiciones,
             )
         ]
         if not abiertos:
@@ -6350,6 +6390,14 @@ def _guardar_sondeo_ci(
     )
 
 
+def _leer_veredicto_ci(gh, enc: Encargo, sha: str) -> Leido | ErrorLectura:
+    """El CI del PR como lectura tipada; un error nunca cuenta como verde."""
+    try:
+        return Leido(gh.checks(enc.entrega.repo, enc.pr_numero, sha, ()))
+    except Exception as exc:  # noqa: BLE001  la causa se conserva
+        return ErrorLectura(str(exc) or type(exc).__name__)
+
+
 def _revisar_ci_del_pr(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> Encargo:
@@ -6406,9 +6454,9 @@ def _revisar_ci_del_pr(
             },
             hora,
         )
-    try:
-        veredicto_ci = gh.checks(enc.entrega.repo, enc.pr_numero, sha, ())
-    except Exception as exc:
+    lectura_ci = _leer_veredicto_ci(gh, enc, sha)
+    if isinstance(lectura_ci, ErrorLectura):
+        exc = lectura_ci.causa
         if al_limite:
             hechos = int(sondeo.get("errores_limite") or 0)
             if hechos < 1:
@@ -6470,6 +6518,7 @@ def _revisar_ci_del_pr(
             f"ci-pr-error:{enc.id}:{sha}",
         )
         return registro.fold(enc.id) or enc
+    veredicto_ci = lectura_ci.datos
     corridas = tuple(
         c
         for c in (getattr(veredicto_ci, "corridas", ()) or ())
@@ -6506,7 +6555,7 @@ def _revisar_ci_del_pr(
                 "conclusion": "failure",
                 "status": "completed",
             }
-            for nombre in veredicto_ci.fallas
+            for nombre in getattr(veredicto_ci, "fallas", ())
         ]
     if not caidas:
         return _anotar_ci_del_pr(
@@ -6889,9 +6938,6 @@ def _head_antes_de_cerrar(
     if head and head != enc.pr_sha:
         return _head_desviado(registro, enc, hora, enc.pr_numero, enc.pr_sha, head)
     return None
-
-
-_TOPE_DEEPSEEK_MIN = 30
 
 
 def _entregar_con_pendientes(
@@ -7588,16 +7634,18 @@ def _paso_entrega_paso(
             hora,
         )
         minutos = _minutos_desde(primera, hora)
-        try:
-            leidos = gh.comentarios_deepseek(enc.entrega.repo, numero, sha)
-        except Exception as exc:
+        lectura_ds = _leer_deepseek(
+            gh, enc.entrega.repo, numero, sha, primera
+        )
+        if isinstance(lectura_ds, ErrorLectura):
+            exc = lectura_ds.causa
             causa = f"no se pudieron leer los comentarios de DeepSeek: {exc}"
             _anotar_instrumento(
                 registro, enc, "github", causa,
                 "reintentar la lectura de DeepSeek para el mismo SHA",
                 hora, f"deepseek-leer-{sha[:12]}",
             )
-            if minutos >= _TOPE_DEEPSEEK_MIN:
+            if minutos >= TOPE_DEEPSEEK_MIN:
                 texto = (
                     "sin revisión de DeepSeek para el SHA "
                     f"{sha[:12]} tras {int(minutos)} min (no se pudo leer: "
@@ -7610,7 +7658,12 @@ def _paso_entrega_paso(
                 return _paso_entrega_paso(registro, enc, gh, hora)
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return _con_espera(registro.fold(enc.id) or enc)
-        comentarios = _deepseek_con_contenido(leidos, sha)
+        if isinstance(lectura_ds, PendienteLectura):
+            leidos: list[dict] = []
+            comentarios: list[dict] = []
+        else:
+            datos_ds = lectura_ds.datos
+            leidos, comentarios = datos_ds if isinstance(datos_ds, tuple) else ([], [])
         if leidos and not comentarios:
             # El sticky de ai-review declara que la revisión excedió su límite
             # y no se reintenta. No es una revisión aprobada ni una espera de
@@ -7650,7 +7703,7 @@ def _paso_entrega_paso(
                     },
                     f"entrega:{enc.id}:{enc.fase_activa}:deepseek_disparado:{sha}",
                 )
-            if minutos >= _TOPE_DEEPSEEK_MIN:
+            if minutos >= TOPE_DEEPSEEK_MIN:
                 texto = (
                     "sin revisión de DeepSeek para el SHA "
                     f"{sha[:12]} tras {int(minutos)} min; la fase sigue como "
@@ -8498,6 +8551,8 @@ def _espejo_entrega(
     hora: str,
     director: str,
     restricciones: tuple[str, ...],
+    permisos: tuple[str, ...] = (),
+    prohibiciones: tuple[str, ...] = (),
     adjuntos: tuple[str, ...] = (),
     canal: str = "",
     via: str = "durable",
@@ -8519,6 +8574,8 @@ def _espejo_entrega(
             "texto": texto,
             "director": director or "ejecutor",
             "restricciones": list(restricciones),
+            "permisos": list(permisos),
+            "prohibiciones": list(prohibiciones),
             "adjuntos": list(adjuntos),
             "canal": canal,
             "via": via,

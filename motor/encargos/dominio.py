@@ -667,6 +667,10 @@ class Encargo:
     adjuntos: tuple[str, ...]
     restricciones: tuple[str, ...]
     canal: str
+    # Restricciones estructuradas desde la entrada: rutas que el pedido permite
+    # o prohíbe tocar. Se comparan por ruta, no por prosa.
+    permisos: tuple[str, ...] = ()
+    prohibiciones: tuple[str, ...] = ()
     ajustes: tuple[str, ...] = ()
     # Cuántos ajustes llevaba el prompt del último intento que llegó a abrirse.
     # Un ajuste posterior no lo vio ningún intento: no se cierra ni se entrega.
@@ -913,12 +917,16 @@ def sesiones_de_fase_nueva(e: Encargo) -> Encargo:
 
 
 def huella_entrega(
-    texto: str, adjuntos: tuple[str, ...], restricciones: tuple[str, ...]
+    texto: str,
+    adjuntos: tuple[str, ...],
+    restricciones: tuple[str, ...],
+    permisos: tuple[str, ...] = (),
+    prohibiciones: tuple[str, ...] = (),
 ) -> str:
     h = hashlib.sha256()
     h.update(texto.encode())
     h.update(b"\0")
-    for parte in adjuntos + restricciones:
+    for parte in adjuntos + restricciones + permisos + prohibiciones:
         h.update(parte.encode())
         h.update(b"\0")
     return h.hexdigest()
@@ -1630,6 +1638,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 adjuntos=tuple(d.get("adjuntos") or ()),
                 restricciones=tuple(d.get("restricciones") or ()),
                 canal=d.get("canal") or "",
+                permisos=tuple(d.get("permisos") or ()),
+                prohibiciones=tuple(d.get("prohibiciones") or ()),
                 estado="detenido",
                 ultimo_hecho="importado detenido sin escrituras",
                 hora=hora,
@@ -1650,6 +1660,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             adjuntos=tuple(d.get("adjuntos") or ()),
             restricciones=tuple(d.get("restricciones") or ()),
             canal=d.get("canal") or "",
+            permisos=tuple(d.get("permisos") or ()),
+            prohibiciones=tuple(d.get("prohibiciones") or ()),
             ultimo_hecho="pedido recibido",
             hora=hora,
             siguiente=(
@@ -3262,6 +3274,7 @@ def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
     if fase is None:
         return e
     from .comprobacion import hallazgo_fuera_de_alcance_por_restriccion
+    from .politica import hallazgo_contra_politica
 
     fuera = list(e.fuera_de_alcance)
     hallazgos = []
@@ -3271,7 +3284,12 @@ def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
             and h.gravedad == "bloqueante"
             and h.estado == "abierto"
         ):
-            razon = hallazgo_fuera_de_alcance_por_restriccion(e.restricciones, h)
+            razon = hallazgo_fuera_de_alcance_por_restriccion(
+                e.restricciones,
+                h,
+                permisos=e.permisos,
+                prohibiciones=e.prohibiciones,
+            ) or hallazgo_contra_politica(h)
             if razon:
                 h = replace(
                     h,
@@ -4567,6 +4585,16 @@ def _bloques_comunes(e: Encargo) -> list[str]:
         lineas.append(
             "Prohibiciones expresas del propietario. No las trates como hipótesis del plan:\n"
             + "\n".join(e.restricciones)
+        )
+    if e.permisos:
+        lineas.append(
+            "Rutas permitidas por el pedido (globs; fuera de ellas no se toca):\n"
+            + "\n".join(e.permisos)
+        )
+    if e.prohibiciones:
+        lineas.append(
+            "Rutas prohibidas por el pedido (globs):\n"
+            + "\n".join(e.prohibiciones)
         )
     if e.ajustes:
         lineas.append(

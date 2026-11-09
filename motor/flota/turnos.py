@@ -145,8 +145,18 @@ def turnos_candidata(
     for agente in nombres:
         if agente not in ADAPTADORES:
             continue
-        if not _sesion_presente(agente):
+        from motor.encargos.lectura import Leido, Pendiente, causa_de
+
+        sesion = _sesion_presente(agente)
+        if sesion is True:
+            sesion = Leido(True)
+        elif sesion is False:
+            sesion = Pendiente("")
+        if not isinstance(sesion, Leido):
             turnos[agente] = {"estado": "sin_sesion"}
+            causa = causa_de(sesion)
+            if causa:
+                turnos[agente]["error"] = causa
             continue
         argv_candidata = resolver_lanzador(agente, gen)
         argv_vigente = resolver_lanzador(agente, vigente)
