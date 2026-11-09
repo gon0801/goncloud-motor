@@ -22,6 +22,7 @@ from motor.encargos import capacidades as cap
 from motor.encargos import ciclo
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso, barrer, recibir
+from motor.encargos.dominio import vista
 from motor.encargos.registro import Registro
 from motor.github import CapacidadRemota
 from tests.test_flujo_revisiones import (
@@ -106,9 +107,10 @@ class ComprobarAlRecibir(unittest.TestCase):
         self.assertIn("entrega:github", clases)
         causa = next(i.causa for i in enc.impedimentos if i.clase == "entrega:github")
         self.assertIn("command not found", causa)
-        # El impedimento de entrega no es la causa principal: no frena el
-        # producto. El pendiente se decide al publicar, cuando ya hay trabajo.
-        self.assertEqual(enc.impedimento, "")
+        # La causa queda visible aunque no frene el producto; el pendiente se
+        # decide al publicar, cuando ya hay trabajo.
+        self.assertEqual(enc.impedimento, "entrega:github")
+        self.assertIn("command not found", enc.impedimento_causa)
         self.assertEqual(enc.pendientes_entrega, ())
         self.assertEqual(
             [e for e in self.reg.eventos(enc.id) if e["kind"] == "espera"], []
@@ -132,7 +134,8 @@ class ComprobarAlRecibir(unittest.TestCase):
         self.assertIn("entrega:github", clases)
         causa = next(i.causa for i in enc.impedimentos if i.clase == "entrega:github")
         self.assertIn("gh auth login", causa)
-        self.assertEqual(enc.impedimento, "")
+        self.assertEqual(enc.impedimento, "entrega:github")
+        self.assertIn("gh auth login", enc.impedimento_causa)
         self.assertEqual(enc.pendientes_entrega, ())
 
     def test_push_rechazado_por_llave_queda_como_impedimento_al_recibir(self):
@@ -227,6 +230,41 @@ class ComprobarAlRecibir(unittest.TestCase):
         self.assertEqual(enc.impedimento, "github")
         self.assertEqual(enc.impedimento_causa, "la herramienta fallo")
         self.assertIn("entrega:github", [i.clase for i in enc.impedimentos])
+
+    def test_un_impedimento_de_entrega_en_ejecucion_no_rompe_la_vista(self):  # no-roja-en-base: caracterización de que la base no dejaba vacía la causa
+        repo = _bare(Path(self._tmp.name))
+        puerto = _Puerto(CapacidadRemota(True, True, False, "sin reglas fijas"))
+        salida = self._recibir(str(repo), puerto, clave="entrega-ejecuta")
+        encargo = salida["encargo"]
+        self.reg.anotar(
+            encargo,
+            {
+                "kind": "reserva",
+                "data": {
+                    "rol": "responsable",
+                    "generacion": 1,
+                    "hora": ahora_iso(),
+                },
+            },
+            "t-reserva-ejecuta",
+        )
+        enc = self.reg.fold(encargo)
+        self.assertEqual(enc.estado, "ejecutando")
+
+        ciclo._anotar_impedimento(
+            self.reg,
+            enc,
+            "entrega:github",
+            "gh no pudo comprobar x: gh: command not found",
+            "instalar gh, autenticarlo para el repo y volver a recibir",
+            ahora_iso(),
+        )
+        enc = self.reg.fold(encargo)
+        visto = vista(enc)
+        self.assertEqual(visto["estado"], "ejecutando")
+        self.assertEqual(visto["impedimento"]["clase"], "entrega:github")
+        self.assertEqual(enc.impedimento, "entrega:github")
+        self.assertIn("command not found", enc.impedimento_causa)
 
     def test_una_falla_transitoria_no_deja_impedimento(self):  # no-roja-en-base: caracterización de que una caída de red no cambia el nivel
         repo = _bare(Path(self._tmp.name))
