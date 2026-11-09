@@ -46,6 +46,9 @@ cuenta y se reintenta con la misma espera; el vigilante no se cae por eso.
    lanzamientos).
 4. Parar a propósito (por ejemplo, para desplegar): `... --parar`. El vigilante cierra el
    árbol del supervisor, no lo relanza y sale. El siguiente arranque borra esa petición.
+   Para el despliegue completo de las tres máquinas no hace falta hacerlo a mano:
+   `bash ops/despliega-encargos.sh` ejecuta esta parada, el checkout del SHA y el
+   arranque con `--estado` en `session 1` e `in_job false`.
 
 Archivos en `~/.motor-encargos/`: `vigilante.log` (cada lanzamiento, código de salida y
 espera; rota a 1 MB), `vigilante.json`, `vigilante.lock` (un solo vigilante por usuario) y
