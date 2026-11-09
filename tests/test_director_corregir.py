@@ -45,7 +45,7 @@ class DirectorCorregir(unittest.TestCase):
         return self._correr(argv)
 
     def test_de_punta_a_punta_con_el_encargo_recibido(self):
-        for director in ("hermes", "claw", "openbot"):
+        for director in ("hermes", "claw", "openbot", "mausbot"):
             with self.subTest(director=director), tempfile.TemporaryDirectory() as tmp:
                 base = Path(tmp) / "base"
                 encargo = self._encargar(base, director)

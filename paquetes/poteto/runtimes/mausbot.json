@@ -1,0 +1,9 @@
+{
+  "runtime": "mausbot",
+  "subagente": "openmausbot-cli",
+  "terminal": "local",
+  "skill": "SKILL.md",
+  "parada": true,
+  "recepcion": false,
+  "respuesta": "motor director responder"
+}
