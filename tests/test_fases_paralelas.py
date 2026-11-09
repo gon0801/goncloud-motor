@@ -159,6 +159,145 @@ class LaEntregaCubreTodasLasPuntas(_Banco):
         )
 
 
+class LaDependenciaIntegradaPorSquashTraeSuContenido(_Banco):
+    def _escenario_squash(self, requiere):
+        sha_a = self._rama("encargo/enc_x-A", "a.txt", "de A\n")
+        sha_b = self._rama("encargo/enc_x-B", "b.txt", "de B\n")
+        trabajo = self.raiz / "trabajo"
+        _git(trabajo, "checkout", "--quiet", "-B", "main", "origin/main")
+        _git(trabajo, "merge", "--squash", "--quiet", "encargo/enc_x-A")
+        _git(trabajo, "commit", "--quiet", "-m", "A (squash)")
+        squash = _git(trabajo, "rev-parse", "HEAD").stdout.strip()
+        _git(trabajo, "push", "--quiet", "origin", "main")
+
+        self.espacio = self.raiz / "espacio"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(self.bare), str(self.espacio)],
+            check=True,
+        )
+        _git(
+            self.espacio,
+            "checkout", "--quiet", "-B", "encargo/enc_x-C",
+            "origin/encargo/enc_x-B",
+        )
+        a = Fase(
+            id="A", resultado="a", estado="preparada", evidencia="listo",
+            ultimo_paso_entrega="integrado", integrado_sha=squash,
+            producto=VersionProducto(firma="fA", manifiesto=(), sha_git=sha_a),
+        )
+        b = Fase(
+            id="B", resultado="b", estado="preparada", evidencia="listo",
+            producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
+        )
+        c = Fase(id="C", resultado="c", estado="trabajo", requiere=requiere)
+        enc = Encargo(
+            id="enc_x", clave="clave-x", huella="huella", director="cli",
+            texto="pedido", adjuntos=(), restricciones=(), canal="canal",
+            entrega=EntregaAutorizada(
+                nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
+            ),
+            fases=(a, b, c), fase_activa="C", estado="ejecutando", generacion=1,
+        )
+        return enc, sha_a, squash
+
+    def _comprobar_contenido(self):
+        self.assertEqual((self.espacio / "a.txt").read_text(), "de A\n")
+        self.assertEqual(
+            _git(self.espacio, "merge", "--no-edit", "origin/main", check=False)
+            .returncode,
+            0,
+        )
+        self.assertEqual((self.espacio / "a.txt").read_text(), "de A\n")
+
+    def test_squash_omitida_trae_su_contenido(self):
+        enc, sha_a, _squash = self._escenario_squash((("B", "fB"),))
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self._comprobar_contenido()
+
+    def test_squash_ya_unido_sin_contenido_trae_su_contenido(self):
+        enc, sha_a, squash = self._escenario_squash((("B", "fB"),))
+        _git(
+            self.espacio,
+            "merge", "-s", "ours", "--no-ff", "--quiet",
+            "-m", "ancestria sin contenido", squash,
+        )
+        self.assertFalse((self.espacio / "a.txt").exists())
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self._comprobar_contenido()
+
+    def test_squash_declarada_sin_version_trae_su_contenido(self):  # no-roja-en-base: la base ya traia el contenido de la dependencia declarada sin version; la prueba guarda esa conducta
+        enc, sha_a, _squash = self._escenario_squash((("A", ""), ("B", "fB")))
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self._comprobar_contenido()
+
+
+class LaFaseReabiertaNoIncorporaFasesPosteriores(_Banco):
+    def test_la_fase_reabierta_no_trae_su_dependiente(self):  # no-roja-en-base: la base no incorporaba entradas no declaradas; la prueba vigila que el guard nuevo no meta la fase posterior en el PR de la reabierta
+        sha_a = self._rama("encargo/enc_x-A", "a.txt", "de A\n")
+        trabajo = self.raiz / "trabajo"
+        _git(trabajo, "checkout", "--quiet", "-B", "encargo/enc_x-B", "encargo/enc_x-A")
+        (trabajo / "b.txt").write_text("de B\n")
+        _git(trabajo, "add", "-A")
+        _git(trabajo, "commit", "--quiet", "-m", "B")
+        sha_b = _git(trabajo, "rev-parse", "HEAD").stdout.strip()
+        _git(trabajo, "push", "--quiet", "origin", "encargo/enc_x-B:refs/heads/encargo/enc_x-B")
+
+        self.espacio = self.raiz / "espacio"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(self.bare), str(self.espacio)],
+            check=True,
+        )
+        _git(
+            self.espacio,
+            "checkout", "--quiet", "-B", "encargo/enc_x-A",
+            "origin/encargo/enc_x-A",
+        )
+        a = Fase(
+            id="A", resultado="a", estado="entrega", evidencia="listo",
+            producto=VersionProducto(firma="fA", manifiesto=(), sha_git=sha_a),
+        )
+        b = Fase(
+            id="B", resultado="b", estado="preparada", evidencia="listo",
+            requiere=(("A", "fA"),),
+            producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
+        )
+        enc = Encargo(
+            id="enc_x", clave="clave-x", huella="huella", director="cli",
+            texto="pedido", adjuntos=(), restricciones=(), canal="canal",
+            entrega=EntregaAutorizada(
+                nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
+            ),
+            fases=(a, b), fase_activa="A", estado="recibido", generacion=1,
+        )
+
+        if hasattr(ciclo, "_entradas_de"):
+            self.assertEqual(
+                [f.id for f in ciclo._entradas_de(enc, enc.fase_actual)], []
+            )
+        if hasattr(ciclo, "_faltan_puntas_finales"):
+            self.assertEqual(
+                ciclo._faltan_puntas_finales(enc, self.espacio, sha_a), []
+            )
+        self.assertEqual(ciclo._incorporar_entradas(enc, self.espacio), "")
+        self.assertFalse(
+            _es_ancestro(self.espacio, sha_b),
+            "la fase A reabierta incorporo la fase posterior B",
+        )
+        self.assertFalse((self.espacio / "b.txt").exists())
+
+
 class LaBaseConVariasDependenciasQuedaDefinida(_Banco):
     def test_dos_dependencias_vivas_usan_la_base_de_entrega(self):
         enc, sha_a, sha_b = self._encargo((("A", "fA"), ("B", "fB")))
