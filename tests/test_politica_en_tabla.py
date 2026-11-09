@@ -52,6 +52,27 @@ def _terminado(caso, tmp: str, clave: str):
     return vuelta, r, e
 
 
+def _primera_entrega(r) -> str:
+    """La hora del primer evento de entrega del SHA, como la elige el ciclo."""
+    eventos = r.reg.eventos(r.enc)
+    sha = next(
+        (
+            str(ev["data"].get("sha") or "")
+            for ev in eventos
+            if ev["kind"] == "entrega_externa"
+            and ev["data"].get("paso") == "pr_listo"
+        ),
+        "",
+    )
+    return next(
+        str(ev["data"].get("hora") or ev["ts"])
+        for ev in eventos
+        if ev["kind"] == "entrega_externa"
+        and ev["data"].get("paso") in ("pr_listo", "commit")
+        and ev["data"].get("sha") == sha
+    )
+
+
 def _revisor(enc):
     return replace(
         enc,
@@ -272,9 +293,12 @@ class LimitesDeLaPolitica(unittest.TestCase):
             vuelta, r = _entrega_pr(
                 self, tmp, "politica-ds", partial(github_por_numero, defecto="")
             )
-            inicio = time.time()
             e = vuelta("uno")
             self.assertEqual(e.estado, "esperando_reintento")
+            # La espera empieza en el `pr_listo` que quedó registrado, no en
+            # `time.time()` de la prueba: la hora ISO se trunca a segundos y
+            # medir desde antes del registro corría el límite a 30 min.
+            inicio = ciclo._epoch_de_hora(_primera_entrega(r))
             e = ciclo._paso_entrega(
                 r.reg, r.fold(), vuelta.gh, ahora_iso(inicio + 29 * 60)
             )
