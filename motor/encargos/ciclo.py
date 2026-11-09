@@ -5251,7 +5251,7 @@ def _leer_cuerpo_del_espacio(espacio: Path) -> str | None:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             return None
-        entrada = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+        entrada = os.fdopen(fd, "r", encoding="utf-8-sig", errors="replace")
         fd = -1
         with entrada:
             try:
@@ -6104,6 +6104,87 @@ def _anotar_nota_en_pr_tardia(
     return registro.fold(enc.id) or enc
 
 
+def _pr_del_hallazgo_sigue_abierto(gh, enc: Encargo, fase) -> bool:
+    """El PR de la fase admite una corrección aunque el encargo ya cerró.
+
+    Un PR mergeado o cerrado no vuelve a abrirse; una lectura fallida tampoco
+    se toma por abierta."""
+    try:
+        vista = gh.ver(enc.entrega.repo, fase.pr_numero)
+    except Exception:
+        return False
+    return str(getattr(vista, "estado", "") or "") == "abierto"
+
+
+def _reabrir_por_hallazgo_tardio(
+    registro: Registro, enc: Encargo, fase, sha: str, huella: str,
+    comentarios: list[dict], abiertos: list, hora: str,
+) -> Encargo:
+    """Un bloqueante tardío con el PR todavía abierto vuelve al responsable.
+
+    Reutiliza el camino normal de correcciones (`fase_reabierta`) y anota la
+    lectura de DeepSeek de esa fase después de reabrirla, igual que el cierre
+    que la advierte antes de terminar. Con el encargo ya cerrado, la marca
+    `tardia` permite la transición desde `terminado`."""
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "fase_reabierta",
+            "data": {
+                "fase": fase.id,
+                "sha": sha,
+                "numero": fase.pr_numero,
+                "tardia": True,
+                "causa": (
+                    f"DeepSeek dejó abierto en el PR #{fase.pr_numero} de la "
+                    f"fase {fase.id} después del cierre: "
+                    + "; ".join(h.titulo for h in abiertos)
+                ),
+                "hora": hora,
+            },
+        },
+        f"reabierta-tardia:{enc.id}:{fase.id}:{sha}:{huella}",
+    )
+    enc = registro.fold(enc.id) or enc
+    enc = _anotar_lectura_deepseek(
+        registro, enc, fase.pr_numero, sha, comentarios, hora
+    )
+    abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
+    _devolver(
+        registro, enc, "investigar",
+        abiertos_ds[0].titulo if abiertos_ds else abiertos[0].titulo,
+        "corregir " + ", ".join(h.id for h in abiertos_ds)
+        + f" (DeepSeek) en el PR #{fase.pr_numero}; lo aprobado que no cambió "
+        "se conserva",
+        hora, f"deepseek-tardio-{huella}",
+    )
+    return registro.fold(enc.id) or enc
+
+
+def _notar_observacion_tardia(
+    registro: Registro, enc: Encargo, fase, sha: str, huella: str,
+    observaciones: list, gh, espacio: Path, hora: str,
+) -> Encargo:
+    """Un Low tardío deja su nota en el PR, sin aviso ni reapertura."""
+    detalle = "; ".join(f"{h.id} {h.titulo}" for h in observaciones)
+    texto = (
+        f"DeepSeek dejó observaciones ({detalle}) en el PR #{fase.pr_numero} "
+        f"de la fase {fase.id} después de cerrar; no bloquean el encargo."
+    )
+    serie = f"{enc.id}:{fase.id}:{sha}:{huella}"
+    registro.anotar(
+        enc.id,
+        {"kind": "nota_pr", "data": {"texto": texto, "hora": hora}},
+        f"nota-observacion-tardia:{serie}",
+    )
+    enc = registro.fold(enc.id) or enc
+    if gh is not None and espacio is not None:
+        enc = _anotar_nota_en_pr_tardia(
+            registro, enc, gh, fase, sha, huella, texto, hora, espacio
+        )
+    return enc
+
+
 def _avisar_hallazgo_tardio(
     registro: Registro, enc: Encargo, fase, sha: str, huella: str,
     abiertos: list, gh, espacio: Path, hora: str,
@@ -6148,10 +6229,12 @@ def _revisar_deepseek_del_cerrado(
     El encargo terminado no vuelve al ciclo normal, así que la relectura de
     DeepSeek —que excluye los cerrados— nunca lo vería. Se miran los PR de
     todas las fases con entrega externa, no solo el de la fase activa: una
-    revisión tardía sobre una fase anterior integrada también se avisa. Cada
-    Critical, High o Medium dentro del alcance queda como nota en el PR de su
-    fase y como aviso informativo al director, en una sola pasada. El estado
-    no cambia. Una ausencia declarada por el sticky no cuenta como hallazgo.
+    revisión tardía sobre una fase anterior integrada también se avisa. Un
+    Critical, High o Medium dentro del alcance cuyo PR siga abierto reabre el
+    encargo para corregirlo en esa misma rama y ese mismo PR; con el PR ya
+    mergeado queda como nota en el PR de su fase y como aviso informativo al
+    director. Un Low solo deja su nota. Una ausencia declarada por el sticky no
+    cuenta como hallazgo.
 
     El sondeo se limita a 7 días desde el cierre del encargo. Los primeros
     60 minutos relee cada minuto y después cada 30 minutos; los errores también
@@ -6220,8 +6303,9 @@ def _revisar_deepseek_del_cerrado(
         huella = _huella_comentarios(comentarios)
         if huella == fase.deepseek_huella:
             continue
+        hallazgos = hallazgos_deepseek(comentarios, sha)
         abiertos = [
-            h for h in hallazgos_deepseek(comentarios, sha)
+            h for h in hallazgos
             if h.gravedad == "bloqueante"
             and not hallazgo_fuera_de_alcance_por_restriccion(
                 enc.restricciones,
@@ -6231,7 +6315,29 @@ def _revisar_deepseek_del_cerrado(
             )
         ]
         if not abiertos:
+            # Solo los Low del bloque estructurado dejan nota. Un comentario
+            # limpio sin bloque no es una observación del revisor.
+            con_bloque = any(
+                "ai-review:findings=" in str(c.get("texto") or "")
+                for c in comentarios
+            )
+            observaciones = (
+                [h for h in hallazgos if h.gravedad != "bloqueante"]
+                if con_bloque
+                else []
+            )
+            if observaciones:
+                enc = _notar_observacion_tardia(
+                    registro, enc, fase, sha, huella, observaciones, gh, espacio, hora
+                )
             continue
+        if (
+            fase.estado in ("preparada", "bloqueada")
+            and _pr_del_hallazgo_sigue_abierto(gh, enc, fase)
+        ):
+            return _reabrir_por_hallazgo_tardio(
+                registro, enc, fase, sha, huella, comentarios, abiertos, hora
+            )
         enc = _avisar_hallazgo_tardio(
             registro, enc, fase, sha, huella, abiertos, gh, espacio, hora
         )

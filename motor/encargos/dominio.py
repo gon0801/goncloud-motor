@@ -4123,13 +4123,16 @@ def _entrega_externa(e: Encargo, d: dict, hora: str) -> Encargo:
 
 def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:
     """DeepSeek dejó un High o un Medium abierto en el PR de una fase ya
-    preparada, cuando el encargo iba a terminar. La fase vuelve al responsable
-    en su misma rama y su mismo PR; las demás conservan lo que tienen."""
+    preparada, cuando el encargo iba a terminar, o en el PR todavía abierto de
+    un encargo ya cerrado. La fase vuelve al responsable en su misma rama y su
+    mismo PR; las demás conservan lo que tienen."""
     pedida = str(d.get("fase") or "")
     fase = next((f for f in e.fases if f.id == pedida), None)
-    if fase is None or fase.estado != "preparada":
-        raise TransicionIlegal("solo se reabre una fase preparada")
-    if e.estado in ("terminado", "cancelado", "deteniendo", "detenido"):
+    tardia = bool(d.get("tardia")) and e.estado == "terminado"
+    settle = ("preparada", "bloqueada") if tardia else ("preparada",)
+    if fase is None or fase.estado not in settle:
+        raise TransicionIlegal("solo se reabre una fase asentada")
+    if e.estado in ("terminado", "cancelado", "deteniendo", "detenido") and not tardia:
         raise TransicionIlegal("el encargo ya no admite reabrir una fase")
     causa = str(d.get("causa") or "DeepSeek dejó un hallazgo abierto")
     return sesiones_de_fase_nueva(

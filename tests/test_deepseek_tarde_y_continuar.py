@@ -59,6 +59,16 @@ def _medio(ident: str = "F6") -> dict:
     }
 
 
+def _bajo(ident: str = "F27") -> dict:
+    return {
+        "id": ident,
+        "severity": "low",
+        "status": "open",
+        "title": f"observacion {ident}",
+        "file": "saludo.txt",
+    }
+
+
 def _comentario(*hallazgos: dict) -> str:
     return "DeepSeek: CHANGES_REQUESTED\nai-review:findings=" + json.dumps(
         list(hallazgos)
@@ -203,10 +213,57 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             )
             self.assertEqual(e.preguntas, ())
 
-    def test_un_medium_publicado_despues_del_cierre_se_avisa_y_no_cambia_el_estado(self):
+    def test_un_medium_publicado_despues_del_cierre_con_el_pr_abierto_reabre_el_encargo(self):
+        # Antes se exigía que todo Medium tardío dejara el encargo en
+        # `terminado`. David (30-oct) decidió que un Medium se corrige en el
+        # mismo encargo y el mismo PR: mientras el PR siga abierto, el encargo
+        # vuelve al responsable. Con el PR ya mergeado no hay dónde corregir y
+        # se conserva el aviso.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
-                self, tmp, "ds-cerrado-tardio", github_por_numero, nivel="integrado"
+                self, tmp, "ds-cerrado-tardio", github_por_numero, nivel="pr"
+            )
+            e = vuelta("uno")
+            hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+            tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+            self.assertEqual(e.estado, "terminado")
+            self.assertEqual(e.nivel_alcanzado, "pr")
+            numero = e.pr_numero
+            self.assertEqual(vuelta.gh.ver(e.entrega.repo, numero).estado, "abierto")
+
+            vuelta.gh.textos[numero] = _comentario(_medio("F10"))
+            barrer(
+                r.reg, ahora_iso(), time.time(), lambda *a, **k: None,
+                gh=vuelta.gh,
+            )
+
+            e = r.fold()
+            self.assertEqual(
+                e.estado,
+                "recibido",
+                "un Medium tardío con el PR abierto debe reabrir el encargo",
+            )
+            self.assertEqual(e.rol, "responsable")
+            self.assertEqual(e.fase_activa, "fase_unica")
+            self.assertEqual(e.pr_numero, numero, "tiene que ser el mismo PR")
+            self.assertEqual(_ids(e), ["F10"])
+            self.assertEqual(e.nivel_alcanzado, "pr_abierto")
+            self.assertEqual(e.preguntas, ())
+            self.assertFalse(
+                any("F10" in n for n in e.notas_pr),
+                "el Medium no se queda como nota: vuelve al responsable",
+            )
+            self.assertFalse(
+                any("abre otro encargo" in n for n in e.procedimiento),
+                e.procedimiento,
+            )
+            self.assertTrue(r.eventos("fase_reabierta"), "no se anotó la reapertura")
+
+    def test_un_medium_publicado_despues_del_cierre_con_el_pr_mergeado_solo_avisa(self):  # no-roja-en-base: fija el caso mergeado, cuyo comportamiento no cambia
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-cerrado-mergeado", github_por_numero, nivel="integrado"
             )
             e = vuelta("uno")
             hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
@@ -229,13 +286,39 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
                 e.procedimiento,
             )
             self.assertEqual(r.eventos("pregunta"), [])
+            self.assertEqual(r.eventos("fase_reabierta"), [])
 
-            antes = len(e.notas_pr)
+    def test_un_low_publicado_despues_del_cierre_solo_deja_nota(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-cerrado-low", github_por_numero, nivel="pr"
+            )
+            e = vuelta("uno")
+            hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+            tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+            self.assertEqual(e.estado, "terminado")
+            avisos_antes = len(e.procedimiento)
+
+            vuelta.gh.textos[e.pr_numero] = _comentario(_bajo("F27"))
             barrer(
-                r.reg, ahora_iso(), time.time() + 120, lambda *a, **k: None,
+                r.reg, ahora_iso(), time.time(), lambda *a, **k: None,
                 gh=vuelta.gh,
             )
-            self.assertEqual(len(r.fold().notas_pr), antes)
+
+            e = r.fold()
+            self.assertEqual(e.estado, "terminado", "un Low no reabre el encargo")
+            self.assertTrue(any("F27" in n for n in e.notas_pr), e.notas_pr)
+            estado_gh = json.loads((vuelta.gh.d / "github.json").read_text())
+            cuerpo = next(
+                pr for pr in estado_gh["prs"].values()
+                if pr["numero"] == e.pr_numero
+            )["cuerpo"]
+            self.assertIn("no bloquean el encargo", cuerpo)
+            self.assertEqual(
+                len(e.procedimiento), avisos_antes, "un Low no avisa al director"
+            )
+            self.assertEqual(r.eventos("fase_reabierta"), [])
 
     def test_un_medium_posterior_al_cierre_en_una_fase_anterior_se_avisa_en_su_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -491,6 +574,21 @@ class SondeoDeCerradosVeActualizaciones(unittest.TestCase):
             e = r.fold()
             self.assertEqual(e.estado, "terminado")
             self.assertTrue(any("F15" in n for n in e.notas_pr), e.notas_pr)
+
+    def test_una_aprobacion_limpia_tardia_no_deja_nota(self):  # no-roja-en-base: guarda que el filtro de Low no note aprobaciones; la base ya no anotaba nada
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = "DeepSeek: APPROVED\nsin hallazgos"
+            ciclo._revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, e.hora, ciclo._epoch_de_hora(e.hora)
+            )
+
+            e = r.fold()
+            self.assertEqual(e.estado, "terminado")
+            self.assertFalse(any("sin hallazgos" in n for n in e.notas_pr), e.notas_pr)
+            self.assertFalse(
+                any("sin hallazgos" in n for n in e.procedimiento), e.procedimiento
+            )
 
     def test_el_sondeo_espacia_la_primera_hora_y_despues(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
