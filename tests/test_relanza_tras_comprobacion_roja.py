@@ -215,6 +215,59 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
             )
             self.assertTrue(self._reservas(r))
 
+    def test_reentrega_con_la_misma_falla_escala_por_ids(self):
+        """La misma comprobacion en rojo no gasta otra vuelta identica.
+
+        El responsable vuelve a entregar sin cambiar el producto. El mismo id
+        abierto no es avance: `_sin_avance` pasa por diagnostico, relevo y
+        entrega con pendientes, sin contador nuevo ni tope de rondas.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(tmp, "roja-bucle")
+            declaradas = self._declarar(r)
+            self._observar(r, e, declaradas, rc=1, stderr=STDERR_EN_ROJO)
+
+            for _ in range(6):
+                roles: list[str] = []
+                prompts: list[str] = []
+                _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+                e = r.fold()
+                if not e.reserva:
+                    break
+                r.reg.anotar(
+                    r.enc,
+                    {"kind": "reserva_cerrada", "data": {}},
+                    f"t-cierre:{e.generacion}",
+                )
+
+            eventos = r.reg.eventos(r.enc)
+            escalados = [
+                ev
+                for ev in eventos
+                if ev["kind"] == "sin_progreso" and ev["data"].get("escalar")
+            ]
+            self.assertTrue(
+                escalados,
+                "la misma comprobacion abierta no gasta otra vuelta identica: "
+                "la escalera por ids la diagnostica, la releva y la entrega con "
+                "pendientes",
+            )
+            estrategias = [
+                ev["data"].get("estrategia")
+                for ev in eventos
+                if ev["kind"] == "estrategia"
+            ]
+            self.assertIn(
+                "diagnosticar_bloqueo",
+                estrategias,
+                "la re-entrega sin avance pide un diagnostico, no otro intento "
+                "identico de investigar",
+            )
+            self.assertTrue(
+                r.fold().pendientes_entrega,
+                "la escalera termina entregando con los pendientes abiertos",
+            )
+
     def test_replay_del_prefijo_real_hasta_67595_abre_intento(self):
         """Reconstruye los eventos decisivos de `enc_0dc2b585542ac181` hasta
         67595: producto `e12f5e899f5d`, revisión aprobada, la observación del
