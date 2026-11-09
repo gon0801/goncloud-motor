@@ -36,7 +36,12 @@ TABLAS = "sqlite.tablas"
 CONSULTAR = "sqlite.consultar"
 SNAPSHOT = "sqlite.snapshot"
 REMOTO = "remoto.leer"
+CI_LOG = "ci.log"
 DECISION = "decision.registrar"
+
+# El recurso del host que habilita leer el log del PR del encargo. El repo y el
+# PR salen del contexto del encargo, nunca de un parametro del agente.
+CI_GITHUB = "ci-github"
 
 OPERACIONES_SIN_RECURSO = (DECISION,)
 # Operaciones cuyo resultado incluye un archivo que el supervisor publica en el espacio.
@@ -182,6 +187,8 @@ def catalogo(recursos: dict[str, dict]) -> list[dict]:
             operaciones = [TABLAS, CONSULTAR, SNAPSHOT]
         else:
             operaciones = [REMOTO]
+            if nombre == CI_GITHUB:
+                operaciones.append(CI_LOG)
         salida.append(
             {
                 "recurso": nombre,
@@ -511,6 +518,240 @@ def _resolver_log_ci(
     }
 
 
+def _entero_de(valor, campo: str) -> int:
+    texto = str(valor or "").strip()
+    if not texto.isdigit() or int(texto) <= 0 or len(texto) > 12:
+        raise ValueError(
+            f"ci.log necesita el parametro {campo} con un numero positivo"
+        )
+    return int(texto)
+
+
+def _sha_de(valor) -> str:
+    texto = str(valor or "").strip().lower()
+    if texto and not re.fullmatch(r"[0-9a-f]{7,40}", texto):
+        raise ValueError("ci.log necesita el parametro sha con 7 a 40 hex")
+    return texto
+
+
+def _corridas_del_check(corridas, nombre: str) -> list[dict]:
+    """Las corridas cuyo nombre es el pedido, o sus partes de matriz."""
+    exactas = [c for c in corridas if str(c.get("nombre") or "") == nombre]
+    if exactas:
+        return exactas
+    return [
+        c
+        for c in corridas
+        if str(c.get("nombre") or "").startswith(nombre + " (")
+    ]
+
+
+def _log_de_check(
+    parametros: dict,
+    espacio: Path | None,
+    contexto: dict | None,
+) -> dict:
+    """Baja el log de un check del PR del encargo y lo deja en su espacio.
+
+    Reutiliza el mismo camino que `_logs_de_fallidos`: `gh.log_fallido_job`
+    para bajar, `_copia_log_job` para publicar y `_recorte_log_job` para el
+    extracto. El `repo`, el PR y el SHA salen solo del contexto del encargo:
+    no lee otro repo ni otro PR. Un check inexistente o una descarga que falla
+    devuelven `error` con causa y alternativa; la operacion no espera a nadie.
+    """
+    from motor.github import GhGitHub
+
+    # Absoluta: este archivo también corre como script (`python -P ... --spec`),
+    # donde una importación relativa no tiene paquete.
+    from motor.encargos.ciclo import _copia_log_job, _recorte_log_job
+
+    if espacio is None:
+        return {
+            "estado": "error",
+            "motivo": "ci.log necesita el espacio del encargo para dejar la copia",
+            "alternativa": "pedirla por el buzon del encargo",
+        }
+    datos_encargo = contexto if isinstance(contexto, dict) else {}
+    try:
+        pr = int(datos_encargo.get("pr") or 0)
+    except (TypeError, ValueError):
+        pr = 0
+    if pr <= 0:
+        return {
+            "estado": "error",
+            "motivo": "el encargo todavia no tiene un PR; ci.log solo lee el PR del encargo",
+            "alternativa": "volver a pedir el log cuando exista el PR de entrega",
+        }
+    try:
+        pedido_pr = _entero_de(parametros.get("pr"), "pr") if parametros.get("pr") else 0
+    except ValueError as exc:
+        return {
+            "estado": "error",
+            "motivo": str(exc),
+            "alternativa": "usar el numero del PR del encargo o omitir pr",
+        }
+    if pedido_pr and pedido_pr != pr:
+        return {
+            "estado": "error",
+            "motivo": (
+                f"el PR #{pedido_pr} no es el del encargo (#{pr}); "
+                "ci.log no lee PRs ajenos"
+            ),
+            "alternativa": "pedir el log del PR del encargo",
+        }
+    sha = str(datos_encargo.get("sha") or "").strip().lower()
+    try:
+        pedido_sha = _sha_de(parametros.get("sha"))
+    except ValueError as exc:
+        return {
+            "estado": "error",
+            "motivo": str(exc),
+            "alternativa": "usar el SHA del PR del encargo o omitir sha",
+        }
+    if pedido_sha and not sha.startswith(pedido_sha):
+        return {
+            "estado": "error",
+            "motivo": (
+                f"el SHA {pedido_sha} no es el del PR del encargo "
+                f"({sha[:12] or 'sin SHA'}); ci.log solo lee ese PR"
+            ),
+            "alternativa": "pedir el log del SHA del PR del encargo",
+        }
+    if not sha:
+        return {
+            "estado": "error",
+            "motivo": "el encargo no tiene un SHA de PR del que leer el check",
+            "alternativa": "volver a pedir el log cuando el PR tenga su commit",
+        }
+    repo = str(datos_encargo.get("repo") or "").strip()
+    if not repo:
+        return {
+            "estado": "error",
+            "motivo": "el encargo no declara el repo del PR",
+            "alternativa": "pedir la capacidad desde el buzon del encargo",
+        }
+    nombre = str(parametros.get("job") or "").strip()
+    if not nombre or len(nombre) > 200:
+        return {
+            "estado": "error",
+            "motivo": (
+                "ci.log necesita el parametro job con el nombre exacto del "
+                "check o job del PR del encargo"
+            ),
+            "alternativa": "volver a pedirla con --parametro job=<nombre>",
+        }
+    try:
+        gh = GhGitHub()
+        veredicto = gh.checks(repo, pr, sha, ())
+    except Exception as exc:  # noqa: BLE001  una descarga sin red no frena el turno
+        return {
+            "estado": "error",
+            "motivo": (
+                "no se pudieron leer los checks del PR "
+                f"#{pr}: {type(exc).__name__}: {exc}"
+            )[:600],
+            "alternativa": (
+                "reintentar cuando GitHub responda o pedir el log al responsable"
+            ),
+        }
+    corridas = _corridas_del_check(veredicto.corridas, nombre)
+    if not corridas:
+        disponibles = sorted(
+            {
+                str(c.get("nombre") or "")
+                for c in veredicto.corridas
+                if str(c.get("nombre") or "")
+            }
+        )
+        motivo = f"el check {nombre!r} no existe en el PR #{pr}"
+        if disponibles:
+            motivo += "; checks reales: " + ", ".join(disponibles)
+        return {
+            "estado": "error",
+            "motivo": motivo,
+            "datos": {"pr": pr, "sha": sha, "checks": disponibles},
+            "alternativa": "pedir uno de los checks reales que lista la respuesta",
+        }
+    textos: dict[str, tuple[str, str, str]] = {}
+    recortado = False
+    for corrida in corridas:
+        etiqueta = str(corrida.get("nombre") or nombre)
+        run_id = str(corrida.get("run_id") or corrida.get("run_id_corrida") or "")
+        job_id = str(corrida.get("job_id") or "")
+        if not run_id:
+            continue
+        try:
+            texto = gh.log_fallido_job(repo, run_id, etiqueta, job_id)
+        except Exception:  # noqa: BLE001  un job sin log no frena la respuesta
+            texto = ""
+        if not texto:
+            continue
+        if len(texto.encode("utf-8", errors="replace")) > MAX_LOG:
+            texto = texto.encode("utf-8", errors="replace")[:MAX_LOG].decode(
+                "utf-8", errors="ignore"
+            )
+            recortado = True
+        copia = _copia_log_job(espacio, etiqueta, run_id, job_id, texto)
+        textos[etiqueta] = (texto, copia, run_id)
+    if not textos:
+        return {
+            "estado": "error",
+            "motivo": (
+                f"GitHub no devolvio el log del check {nombre!r}; puede que no "
+                "exista o que todavia no tenga log"
+            ),
+            "datos": {"pr": pr, "sha": sha, "check": nombre},
+            "alternativa": (
+                "pedir otro check o volver a pedirlo cuando el check tenga "
+                "resultado"
+            ),
+        }
+    partes = []
+    copias = []
+    bytes_totales = 0
+    for etiqueta, (texto, copia, run_id) in textos.items():
+        bytes_totales += len(texto.encode("utf-8", errors="replace"))
+        if copia:
+            copias.append(str(Path(espacio) / copia))
+        cabeza = f"log de {etiqueta} (run {run_id})"
+        if copia:
+            cabeza += f"\ncopia literal: {copia}"
+        partes.append(cabeza + "\n" + _recorte_log_job(texto, etiqueta, copia))
+    texto_respuesta = "\n\n".join(partes)
+    if len(texto_respuesta.encode("utf-8", errors="replace")) > MAX_TEXTO:
+        texto_respuesta = texto_respuesta.encode("utf-8", errors="replace")[
+            :MAX_TEXTO
+        ].decode("utf-8", errors="ignore")
+        recortado = True
+    runs = {etiqueta: datos[2] for etiqueta, datos in textos.items()}
+    return {
+        "estado": "ok",
+        "datos": {
+            "pr": pr,
+            "sha": sha,
+            "check": nombre,
+            "checks": sorted(textos),
+            "run": next(iter(runs.values())) if len(runs) == 1 else "",
+            "runs": runs,
+            "copia": copias[-1] if copias else "",
+            "copias": copias,
+            "texto": texto_respuesta,
+            "bytes": bytes_totales,
+            "recortado": recortado,
+        },
+        "evidencia": {
+            "tipo": "ci_log",
+            "pr": pr,
+            "sha": sha,
+            "check": nombre,
+            "checks": sorted(textos),
+            "copias": copias,
+            "bytes": bytes_totales,
+            "recortado": recortado,
+        },
+    }
+
+
 def _leer_http(recurso: dict, relativa: str, destino: Path) -> dict:
     base = str(recurso.get("url") or "").strip()
     if not base:
@@ -670,6 +911,8 @@ def ejecutar(
         if operacion == SNAPSHOT:
             ruta = _ruta_absoluta(concedido.get("ruta") or "")
             return _snapshot(ruta, destino)
+        if operacion == CI_LOG:
+            return _log_de_check(parametros, espacio, contexto)
         if operacion == REMOTO:
             relativa = _ruta_relativa(str(parametros.get("ruta") or ""))
             if str(concedido.get("transporte") or "fichero") == "http":

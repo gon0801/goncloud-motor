@@ -594,7 +594,7 @@ Escribe SOLO tu juicio en {resultado}, con este objeto JSON interno.
 "aprobadas":["ruta revisada y aprobada"],
 "efectos_pendientes":["id exacto de cada solicitud de efecto que apruebas"],
 "inspeccion_faltante":"inspeccion concreta que falta, solo si el veredicto es no_concluyente",
-"inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
+ "inspeccion":{{"operacion":"sqlite.tablas|sqlite.consultar|sqlite.snapshot|remoto.leer|ci.log", "recurso":"nombre exacto del catalogo concedido", "parametros":{{"sql":"SELECT ..."}}}},
 "ampliacion":"motivo si revisaste fuera de las rutas tocadas",
 "instrumento":{{"causa":"que fallo del instrumento, si aplica"}}}}
 Si el producto cumple y solo faltan efectos del adaptador, aprueba y enumera en
@@ -605,7 +605,10 @@ Aprueba solo si lo observado demuestra el objetivo dentro del alcance. Si falta 
 usa no_concluyente y nombra en inspeccion_faltante la inspeccion concreta que falta. Si esa
 inspeccion la puede resolver una capacidad concedida por el buzon, declara el campo inspeccion
 con esa operacion y recurso exactos, solo en ese caso: el motor la pide por ese medio y te
-devuelve el resultado; no la pidas de otro modo ni esperes sin declararla. Una inspeccion
+devuelve el resultado; no la pidas de otro modo ni esperes sin declararla. Si la inspeccion es
+ci.log, usa el parametro job con el nombre exacto del check o job del PR de tu encargo; el motor
+baja su log y deja la copia en tu espacio, y si no existe o falla la descarga te lo dice sin
+esperar a nadie. Una inspeccion
 vacia (campo omitido, vacio o nulo) cuenta como que no la pides; en un veredicto aprobado
 omite el campo o dejalo vacio. No modifiques el producto
 ni rebajes el pedido. Usa las skills y apoyos que aporten evidencia con los accesos concedidos.
@@ -914,6 +917,7 @@ def _inspeccion_de(crudo) -> InspeccionPedido:
         capacidades.CONSULTAR,
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
+        capacidades.CI_LOG,
     )
     if operacion not in conocidas:
         raise DefectoJuicio(

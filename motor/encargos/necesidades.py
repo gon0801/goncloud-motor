@@ -144,6 +144,7 @@ Operaciones:
 - `sqlite.consultar --recurso <r> --parametro sql="SELECT ..."`: solo lectura, una sentencia.
 - `sqlite.snapshot --recurso <r>`: copia consistente con origen y huella; la ruta queda en la respuesta.
 - `remoto.leer --recurso <r> --parametro ruta="archivo/relativo"`: recurso remoto autorizado. `texto` trae solo los primeros 64 KB; si `texto_recortado` es true, el archivo completo está en `copia`, dentro del espacio.
+- `ci.log --recurso ci-github --parametro job="nombre del check"`: solo lectura. Baja el log literal de un check o job del PR del encargo y deja la copia en el espacio; no sirve para otro repo ni otro PR. `pr` y `sha` son opcionales y deben ser los del encargo.
 Añade `--motivo` con para qué la necesitas. Si la respuesta es `pregunta`, queda una autorización
 pendiente con su id: sigue con lo demás o espera con `python3 {cliente} ver <id>`. Una respuesta
 `error` trae la causa y la alternativa; corrige la solicitud en lugar de repetirla igual.
@@ -204,6 +205,7 @@ def _solicitud_de(enc, crudo: dict) -> Solicitud:
         capacidades.CONSULTAR,
         capacidades.SNAPSHOT,
         capacidades.REMOTO,
+        capacidades.CI_LOG,
         capacidades.DECISION,
     )
     if operacion not in conocidas:
