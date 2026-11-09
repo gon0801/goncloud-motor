@@ -22,7 +22,7 @@ from motor.encargos import capacidades as cap
 from motor.encargos import ciclo
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso, barrer, recibir
-from motor.encargos.dominio import vista
+from motor.encargos.dominio import prompt_responsable, vista
 from motor.encargos.registro import Registro
 from motor.github import CapacidadRemota
 from tests.test_flujo_revisiones import (
@@ -115,6 +115,31 @@ class ComprobarAlRecibir(unittest.TestCase):
         self.assertEqual(
             [e for e in self.reg.eventos(enc.id) if e["kind"] == "espera"], []
         )
+
+    def test_la_causa_de_entrega_no_se_cuela_en_el_prompt_como_esperar(self):
+        repo = _bare(Path(self._tmp.name))
+        puerto = _Puerto(CapacidadRemota(False, None, None, "gh: command not found"))
+        salida = self._recibir(str(repo), puerto, clave="entrega-prompt")
+        encargo = salida["encargo"]
+        enc = self.reg.fold(encargo)
+        self.assertEqual(enc.impedimento, "entrega:github")
+
+        prompt = prompt_responsable(enc)
+        self.assertNotIn("esperar a que se cumpla", prompt)
+        self.assertEqual(vista(enc)["impedimento"]["clase"], "entrega:github")
+
+        # Una causa que sí frena el trabajo sigue pidiendo esperar.
+        ciclo._anotar_impedimento(
+            self.reg,
+            enc,
+            "entorno",
+            "el temporal del CLI no es escribible",
+            "revisar los permisos del temporal",
+            ahora_iso(),
+        )
+        enc = self.reg.fold(encargo)
+        self.assertEqual(enc.impedimento, "entorno")
+        self.assertIn("esperar a que se cumpla", prompt_responsable(enc))
 
     def test_gh_sin_autenticar_queda_como_impedimento_al_recibir(self):
         repo = _bare(Path(self._tmp.name))

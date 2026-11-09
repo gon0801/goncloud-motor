@@ -2152,12 +2152,16 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             str(d.get("agente") or ""),
         )
         e = _con_impedimentos(e, tuple(pendientes.values()), hora)
-        return replace(
-            e,
-            motivo=e.impedimento_causa,
-            siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
-            ultimo_hecho=e.impedimento_causa,
-        )
+        if impedimento_bloquea_trabajo(e):
+            return replace(
+                e,
+                motivo=e.impedimento_causa,
+                siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
+                ultimo_hecho=e.impedimento_causa,
+            )
+        # Un aviso de entrega no frena el producto: se anota como hecho visible
+        # pero el responsable sigue trabajando, no espera.
+        return replace(e, ultimo_hecho=e.impedimento_causa)
     if kind == "impedimento_resuelto":
         clase = str(d.get("clase") or d.get("huella") or "")
         evidencia = str(d.get("evidencia") or "")
@@ -2167,16 +2171,15 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         if len(restantes) == len(e.impedimentos):
             return e
         e = _con_impedimentos(e, restantes, hora)
-        return replace(
-            e,
-            motivo=e.impedimento_causa,
-            siguiente=(
-                "esperar a que se cumpla: " + e.impedimento_condicion
-                if e.impedimentos
-                else "seguir el mismo encargo"
-            ),
-            ultimo_hecho="impedimento resuelto: " + evidencia,
-        )
+        hecho = "impedimento resuelto: " + evidencia
+        if impedimento_bloquea_trabajo(e):
+            return replace(
+                e,
+                motivo=e.impedimento_causa,
+                siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
+                ultimo_hecho=hecho,
+            )
+        return replace(e, motivo="", siguiente="seguir el mismo encargo", ultimo_hecho=hecho)
     if kind == "entrega_externa":
         return _entrega_externa(e, d, hora)
     if kind == "entrega_bloqueada":
@@ -2840,16 +2843,15 @@ def _soltar_impedimento_de_inspeccion(e: Encargo) -> Encargo:
     if len(restantes) == len(e.impedimentos):
         return e
     e = _con_impedimentos(e, restantes)
-    return replace(
-        e,
-        motivo=e.impedimento_causa,
-        siguiente=(
-            "esperar a que se cumpla: " + e.impedimento_condicion
-            if e.impedimentos
-            else "seguir el mismo encargo"
-        ),
-        ultimo_hecho="el propietario aportó información nueva; el revisor retoma la inspección",
-    )
+    hecho = "el propietario aportó información nueva; el revisor retoma la inspección"
+    if impedimento_bloquea_trabajo(e):
+        return replace(
+            e,
+            motivo=e.impedimento_causa,
+            siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
+            ultimo_hecho=hecho,
+        )
+    return replace(e, motivo="", siguiente="seguir el mismo encargo", ultimo_hecho=hecho)
 
 
 def _reanudar_inspeccion(e: Encargo, ident: str) -> Encargo:
