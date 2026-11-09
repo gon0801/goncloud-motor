@@ -4527,16 +4527,24 @@ def _deps_vivas(enc: Encargo, fase) -> list:
 def _entradas_de(enc: Encargo, fase) -> list:
     """Fases cuya punta final revisada debe contener la entrega.
 
-    Primero las dependencias declaradas y despues toda fase ya preparada del
-    encargo: una propuesta que omita una punta paralela no deja el producto
-    incompleto.
+    Primero las dependencias declaradas. Despues las fases ya preparadas
+    anteriores a la que entrega: una propuesta que omita una punta paralela no
+    deja el producto incompleto, pero una fase posterior no entra en el PR de
+    esta. Al reabrir una fase, sus dependientes ya preparados son posteriores y
+    se quedan fuera; mezclarlos invertiria la dependencia y meteria en su PR el
+    trabajo de las fases que esperan por ella.
     """
     vistas: dict[str, Fase] = {}
     for dep in _deps_de(enc, fase):
         vistas[dep.id] = dep
+    orden = {f.id: i for i, f in enumerate(enc.fases)}
+    tope = orden.get(fase.id) if fase is not None else None
     for otra in enc.fases:
-        if otra.estado == "preparada" and (fase is None or otra.id != fase.id):
-            vistas.setdefault(otra.id, otra)
+        if otra.estado != "preparada" or (fase is not None and otra.id == fase.id):
+            continue
+        if tope is not None and orden.get(otra.id, len(enc.fases)) >= tope:
+            continue
+        vistas.setdefault(otra.id, otra)
     return list(vistas.values())
 
 
@@ -4565,7 +4573,7 @@ def _es_ancestro(espacio: Path, sha: str, ref: str = "HEAD") -> bool:
 def _faltan_puntas_finales(enc: Encargo, espacio: Path, sha: str) -> list[str]:
     """Fases terminadas cuya punta final no es ancestro del producto `sha`."""
     faltan = []
-    for fase in enc.fases:
+    for fase in _entradas_de(enc, enc.fase_actual):
         if fase.estado != "preparada" or fase.id == enc.fase_activa:
             continue
         punta = _punta_final(fase)
@@ -4608,6 +4616,41 @@ def _traer_base_integrada(espacio: Path, dep_id: str, sha: str) -> str:
     return ""
 
 
+def _padres_de(espacio: Path, sha: str) -> list[str]:
+    salida = _git(espacio, "rev-list", "--parents", "-n", "1", sha).stdout.split()
+    return salida[1:]
+
+
+def _squash_aplicado(espacio: Path, sha: str) -> bool:
+    """El cambio de `sha` ya esta en HEAD, aunque `sha` no sea su ancestro.
+
+    Un squash reescribe el commit: la ancestria no basta. Se comparan los
+    blobs de las rutas que cambio. Si HEAD conserva la version de la base en
+    alguna, el cambio no se aplico. Una ruta que HEAD ya modifico de otra
+    forma cuenta como aplicada. Un merge real no se deduce de un solo diff y
+    su ancestria ya implica su contenido.
+    """
+    padres = _padres_de(espacio, sha)
+    if len(padres) != 1:
+        return False
+    base = padres[0]
+
+    def blob(ref: str, ruta: str) -> str:
+        r = _git(espacio, "rev-parse", "--verify", "--quiet", f"{ref}:{ruta}")
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    rutas = _git(
+        espacio, "diff-tree", "--no-commit-id", "--name-only", "-r", sha
+    ).stdout.splitlines()
+    for ruta in rutas:
+        en_head = blob("HEAD", ruta)
+        if en_head == blob(sha, ruta):
+            continue
+        if en_head == blob(base, ruta):
+            return False
+    return True
+
+
 def _merge_ancestria(espacio: Path, dep_id: str, sha: str) -> str:
     """Incorpora la ancestría de un commit cuyo contenido ya está en HEAD.
 
@@ -4639,12 +4682,13 @@ def _incorporar_entradas(
 ) -> str:
     """Incorpora la punta final revisada de cada fase terminada al producto.
 
-    Cubre las dependencias declaradas y toda fase ya preparada del encargo,
-    aunque la propuesta no la ponga en `requiere`: el producto no sale en
-    silencio sin una punta. Nunca rebasea: `git merge --no-ff` con el commit
-    efectivo de la fase. Si la fase se integro con squash, falta la ancestria
-    del commit integrado y se une con `-s ours`, arbol intacto. Devuelve la
-    causa si no se pudo, nombrando la fase.
+    Cubre las dependencias declaradas y las fases ya preparadas anteriores a
+    la que entrega, aunque la propuesta no las ponga en `requiere`: el producto
+    no sale en silencio sin una punta. Nunca rebasea: mezcla con `-s ours` solo
+    la ancestria de un squash cuyo contenido ya esta en el arbol. Si el commit
+    revisado no es ancestro, se mezcla de verdad, porque el squash pudo
+    integrarse en una base de la que esta fase no desciende. Devuelve la causa
+    si no se pudo, nombrando la fase.
     """
     if _git(espacio, "rev-parse", "--verify", "--quiet", "MERGE_HEAD").returncode == 0:
         return ""
@@ -4690,47 +4734,65 @@ def _incorporar_entradas(
                 )
             integrado = resuelto.stdout.strip() or dep.integrado_sha
         rama_dep = _rama_de_fase(enc, dep)
-        punta = integrado or dep.producto.sha_git
-        base = _ref_existente(espacio, punta, f"origin/{rama_dep}")
-        if not base:
+        revisado = _ref_existente(
+            espacio, dep.producto.sha_git or "", f"origin/{rama_dep}"
+        )
+        if not revisado and not integrado:
             return (
                 f"no se encontro la punta final de la fase {dep.id} "
-                f"({punta or rama_dep})"
+                f"({dep.producto.sha_git or rama_dep})"
             )
-        sha_ref = (
-            _git(espacio, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
-            .stdout.strip()
-            or base
-        )
-        if _es_ancestro(espacio, sha_ref):
-            continue
-        if integrado and sha_ref == integrado:
-            # Un squash reescribe el commit integrado sin cambiar el contenido:
-            # se une la ancestria sin reescribir el arbol.
+        presente = bool(revisado) and _es_ancestro(espacio, revisado)
+        if not presente and integrado and _es_ancestro(espacio, integrado):
+            # Un merge real que ya es ancestro incluye su contenido. Un squash
+            # reescribe el commit, asi que hay que mirar su arbol.
+            presente = len(_padres_de(espacio, integrado)) != 1 or _squash_aplicado(
+                espacio, integrado
+            )
+        if not presente:
+            if not revisado and _es_ancestro(espacio, integrado):
+                return (
+                    "no se pudo incorporar el contenido de la fase "
+                    f"{dep.id}: no esta disponible su commit revisado"
+                )
+            # El contenido revisado no esta en la rama. Se mezcla de verdad,
+            # aunque haya un commit integrado: un squash en una base de la que
+            # esta fase no desciende no trae sus archivos, y unir solo su
+            # ancestria haria que el merge en la base borrara la fase.
+            contenido = revisado or integrado
+            sha_ref = (
+                _git(
+                    espacio,
+                    "rev-parse", "--verify", "--quiet", f"{contenido}^{{commit}}",
+                )
+                .stdout.strip()
+                or contenido
+            )
+            r = _git(
+                espacio,
+                "-c", "user.name=motor de encargos",
+                "-c", "user.email=motor@localhost",
+                "merge", "--no-ff", "--quiet",
+                "-m", f"incorporar la entrada {dep.id} ({sha_ref[:12]})",
+                sha_ref,
+            )
+            if r.returncode != 0:
+                _git(espacio, "merge", "--abort")
+                return (
+                    f"conflicto al incorporar la entrada {dep.id} ({sha_ref}): "
+                    f"{r.stderr.strip()[-300:]}"
+                )
+            _anotar(dep, sha_ref)
+            if registro is not None:
+                fase = (registro.fold(enc.id) or enc).fase_actual
+        if integrado and not _es_ancestro(espacio, integrado):
+            # El contenido ya esta; solo falta unir la ancestria del squash.
             causa = _merge_ancestria(espacio, dep.id, integrado)
             if causa:
                 return causa
             _anotar(dep, integrado)
             if registro is not None:
                 fase = (registro.fold(enc.id) or enc).fase_actual
-            continue
-        r = _git(
-            espacio,
-            "-c", "user.name=motor de encargos",
-            "-c", "user.email=motor@localhost",
-            "merge", "--no-ff", "--quiet",
-            "-m", f"incorporar la entrada {dep.id} ({sha_ref[:12]})",
-            sha_ref,
-        )
-        if r.returncode != 0:
-            _git(espacio, "merge", "--abort")
-            return (
-                f"conflicto al incorporar la entrada {dep.id} ({sha_ref}): "
-                f"{r.stderr.strip()[-300:]}"
-            )
-        _anotar(dep, sha_ref)
-        if registro is not None:
-            fase = (registro.fold(enc.id) or enc).fase_actual
     return ""
 
 
