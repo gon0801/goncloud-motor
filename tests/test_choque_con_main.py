@@ -15,6 +15,7 @@ from pathlib import Path
 
 from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso
+from motor.github import GhGitHub
 from tests.test_flujo_revisiones import _entrega_pr, sonda_sin_aislamiento_del_host
 
 from tests.dobles import github_con_corridas
@@ -137,6 +138,30 @@ class ChoqueAntesDelMerge(unittest.TestCase):
 
 
 class MergeableAunSinCalcular(unittest.TestCase):
+    def test_la_lectura_de_produccion_reintenta_ante_unknown(self):
+        gh = GhGitHub(env={})
+        respuestas = iter(
+            [
+                json.dumps({"mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN"}),
+                json.dumps({"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}),
+            ]
+        )
+        lecturas = []
+
+        def responder(*args):
+            lecturas.append(args)
+            return next(respuestas)
+
+        gh._gh = responder
+        gh.dormir = lambda _s: None
+
+        estado = gh.estado_merge("o/r", 7)
+
+        self.assertEqual(estado.estado, "choca")
+        self.assertEqual(
+            len(lecturas), 2, "la primera respuesta UNKNOWN vuelve a preguntar"
+        )
+
     def test_reintenta_hasta_que_github_calcula_el_choque(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
