@@ -803,6 +803,11 @@ class Encargo:
     # Excepciones del check de merge derivadas de eventos `excepcion`:
     # (tipo, sha, id, motivo, hora). Única fuente del marcador `motor:excepciones=`.
     excepciones: tuple[tuple[str, str, str, str, str], ...] = ()
+    # Fuera de alcance heredado de un evento `hallazgo_fuera_de_alcance`:
+    # (id, motivo, hora). Solo alimenta el marcador cuando el encargo no tiene
+    # excepciones estructuradas. No incluye lo que agrega
+    # `_fuera_de_alcance_por_restricciones`, que no se juzgó en un SHA.
+    excepciones_legado: tuple[tuple[str, str, str], ...] = ()
     # Las causas pendientes del entorno o del instrumento. Mientras haya una,
     # ningún proceso nuevo: cada una se levanta con su propia comprobación.
     impedimento: str = ""
@@ -2269,9 +2274,11 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         razon = " ".join(str(d.get("razon") or "").split())
         if hid and razon:
             actuales = tuple(x for x in e.fuera_de_alcance if x[0] != hid)
+            legado = tuple(x for x in e.excepciones_legado if x[0] != hid)
             return replace(
                 e,
                 fuera_de_alcance=actuales + ((hid, titulo, razon),),
+                excepciones_legado=legado + ((hid, razon, hora),),
                 hora=hora or e.hora,
             )
         return e

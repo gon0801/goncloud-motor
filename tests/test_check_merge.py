@@ -197,6 +197,7 @@ class MarcadorEnElCuerpo(unittest.TestCase):
         )
         self.assertEqual(marcador[0]["sha"], "a" * 40)
         self.assertEqual(marcador[0]["id"], "F9")
+        self.assertEqual(marcador[0]["hora"], "2026-11-08T10:01:00Z")
 
     def test_la_excepcion_se_deriva_del_evento_y_llega_al_marcador(self):
         # El dato se anota como evento y se deriva en el dominio: `fold` lo
@@ -261,6 +262,59 @@ class MarcadorEnElCuerpo(unittest.TestCase):
                 "hora": "2026-11-08T10:01:00Z",
             }],
         )
+
+    def test_un_fuera_de_alcance_por_restriccion_no_exceptua_otro_sha(self):
+        # La entrada que agrega `_fuera_de_alcance_por_restricciones` no tiene
+        # evento ni SHA: nunca se juzgó en un SHA, así que no puede exceptuar
+        # un hallazgo abierto en el SHA vigente.
+        from motor.encargos import ciclo
+        from motor.encargos.registro import Registro
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            try:
+                ident = ciclo.recibir(
+                    reg, "arregla el CLI", "restriccion-sha",
+                    "2026-11-08T10:00:00Z", entrega_nivel="terminado",
+                    restricciones=(
+                        "Cambio acotado a motor/encargos/cli.py y su prueba.",
+                    ),
+                )["encargo"]
+                reg.anotar(
+                    ident,
+                    {
+                        "kind": "revision",
+                        "data": {
+                            "fase": "", "veredicto": "cambios",
+                            "revisor": "deepseek", "origen": "deepseek",
+                            "version": "", "alcance": "completa",
+                            "hallazgos": [{
+                                "id": "F9",
+                                "gravedad": "bloqueante",
+                                "criterio": "comportamiento",
+                                "titulo": "el descarte sigue en el CLI externo",
+                                "ancla": "motor/integraciones/cli.py:176",
+                                "origen": "deepseek",
+                                "estado": "abierto",
+                            }],
+                            "hora": "2026-11-08T10:01:00Z",
+                        },
+                    },
+                    "rev-restriccion",
+                )
+                ciclo.ordenar(
+                    reg, ident, "continuar", "c-1", "2026-11-08T10:02:00Z"
+                )
+                encargo = reg.fold(ident)
+                self.assertIn(
+                    "F9", [hid for hid, _titulo, _razon in encargo.fuera_de_alcance]
+                )
+                self.assertEqual(encargo.excepciones_legado, ())
+                self.assertEqual(
+                    ciclo._excepciones_del_registro(reg, encargo, "c" * 40), []
+                )
+            finally:
+                reg.close()
 
 
 class PublicacionDelCheck(unittest.TestCase):

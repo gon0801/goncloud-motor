@@ -5120,8 +5120,9 @@ def _excepciones_del_registro(
 
     Salen del pliegue: `Encargo.excepciones` deriva los eventos `excepcion`. Un
     encargo anterior a esa marca conserva los `hallazgo_fuera_de_alcance` como
-    fuente mientras no haya ninguno estructurado. El SHA de un evento viejo es
-    el de la fase.
+    fuente mientras no haya ninguno estructurado, con su hora. Las entradas que
+    `_fuera_de_alcance_por_restricciones` agrega sin evento no exceptúan: nunca
+    se juzgaron en un SHA.
     """
     enc = registro.fold(enc.id) or enc
     if enc.excepciones:
@@ -5141,9 +5142,9 @@ def _excepciones_del_registro(
             "sha": str(sha or ""),
             "id": str(hid or "").strip(),
             "motivo": " ".join(str(razon or "").split()),
-            "hora": "",
+            "hora": str(hora_evento or ""),
         }
-        for hid, _titulo, razon in enc.fuera_de_alcance
+        for hid, razon, hora_evento in enc.excepciones_legado
         if str(hid or "").strip() and str(razon or "").strip()
     ]
 
