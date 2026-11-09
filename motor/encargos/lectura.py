@@ -20,7 +20,12 @@ class Leido:
 
 @dataclass(frozen=True)
 class Pendiente:
-    """La lectura todavía no está; `desde` es cuándo empezó la espera."""
+    """La lectura todavía no está.
+
+    `desde` es cuándo empezó la espera o, cuando se conoce, la causa de la
+    ausencia (por ejemplo, el ejecutable que falta); nunca se descarta al
+    mostrarla.
+    """
 
     desde: str = ""
 
@@ -44,5 +49,5 @@ def causa_de(lectura: Lectura) -> str:
     if isinstance(lectura, Error):
         return lectura.causa or "no se pudo leer"
     if isinstance(lectura, Pendiente):
-        return "todavía no hay lectura"
+        return lectura.desde or "no hay sesión en este host"
     return ""

@@ -926,9 +926,22 @@ def huella_entrega(
     h = hashlib.sha256()
     h.update(texto.encode())
     h.update(b"\0")
-    for parte in adjuntos + restricciones + permisos + prohibiciones:
+    # Los campos anteriores conservan la huella de siempre. Los nuevos llevan
+    # su marca de grupo: así un permiso y una prohibición no comparten huella.
+    for parte in adjuntos + restricciones:
         h.update(parte.encode())
         h.update(b"\0")
+    for grupo, partes in (
+        (b"\1permisos", permisos),
+        (b"\1prohibiciones", prohibiciones),
+    ):
+        if not partes:
+            continue
+        h.update(grupo)
+        h.update(b"\0")
+        for parte in partes:
+            h.update(parte.encode())
+            h.update(b"\0")
     return h.hexdigest()
 
 

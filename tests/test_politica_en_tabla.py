@@ -530,6 +530,58 @@ class LecturaDeLaSesion(_SesionFalsa):
         self.assertEqual(resultado[1]["modelo"], ASTRA)
         self.assertNotIn("no tiene runtime", motivo)
 
+    def test_el_relevo_respeta_la_exclusion_del_autor(self):
+        self.host("ilegible")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            _, r = _entrega_pr(
+                self, tmp, "politica-relevo-excluido", github_por_numero
+            )
+            e = replace(
+                _revisor(r.fold()),
+                modelos=(("responsable", "codex", ASTRA),),
+            )
+            resultado, motivo = _lanzar(r, e)
+        self.assertIsNone(
+            resultado, "el relevo eligió al autor excluido: " + str(resultado)
+        )
+        self.assertIn("no pude leer la sesión de Claude", motivo)
+
+    def test_el_relevo_respeta_una_pausa_de_cuota(self):
+        from motor.encargos.dominio import PausaAgente
+
+        self.host("ilegible")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            _, r = _entrega_pr(
+                self, tmp, "politica-relevo-pausado", github_por_numero
+            )
+            e = replace(
+                _revisor(r.fold()),
+                pausas=(
+                    PausaAgente(
+                        agente="codex",
+                        modelo=ASTRA,
+                        hasta="2099-01-01T00:00:00Z",
+                        causa="cuota temporal",
+                    ),
+                ),
+            )
+            resultado, motivo = _lanzar(r, e)
+        self.assertIsNone(
+            resultado, "el relevo ignoró la pausa del modelo: " + str(resultado)
+        )
+        self.assertIn("no pude leer la sesión de Claude", motivo)
+
+    def test_la_espera_conserva_la_causa_del_ejecutable_que_falta(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            _, r = _entrega_pr(
+                self, tmp, "politica-sin-ejecutable", github_por_numero
+            )
+            with mock.patch.object(agentes, "resolver_binario", return_value=None):
+                resultado, motivo = _lanzar(r, _revisor(r.fold()))
+        self.assertIsNone(resultado)
+        self.assertIn("no hay ejecutable de claude en este host", motivo)
+        self.assertNotIn("no tiene runtime", motivo)
+
     def test_una_sesion_que_falta_sigue_diciendo_que_falta(self):
         self.host("falta")
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -580,46 +632,91 @@ class RestriccionesEstructuradas(unittest.TestCase):
             self.assertEqual(enc.permisos, ("motor/encargos/**",))
             self.assertEqual(enc.prohibiciones, ("docs/**",))
 
-    def _firma(self):
-        from motor.encargos.comprobacion import (
-            hallazgo_fuera_de_alcance_por_restriccion,
+    def test_permisos_y_prohibiciones_no_comparten_huella(self):
+        from motor import __main__ as motor_cli
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+
+            def encargar(permitir, prohibir, espera=0):
+                argv = [
+                    "encargar",
+                    "--base",
+                    str(base),
+                    "--clave",
+                    "huella-glob",
+                    "--texto",
+                    "acota el cambio",
+                ]
+                for glob in permitir:
+                    argv += ["--permitir", glob]
+                for glob in prohibir:
+                    argv += ["--prohibir", glob]
+                with (
+                    contextlib.redirect_stdout(io.StringIO()) as salida,
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    codigo = motor_cli.main(argv)
+                self.assertEqual(codigo, espera)
+                return json.loads(salida.getvalue())
+
+            primero = encargar(["a"], ["b"])
+            self.assertFalse(primero.get("conflicto"))
+            self.assertFalse(encargar(["a"], ["b"]).get("conflicto"))
+            self.assertTrue(
+                encargar(["a", "b"], [], espera=2).get("conflicto"),
+                "permisos y prohibiciones comparten huella",
+            )
+
+    def _puede(self, campo: str) -> bool:
+        from motor.encargos.ciclo import recibir
+
+        return campo in inspect.signature(recibir).parameters
+
+    def test_una_prohibicion_estructurada_saca_el_archivo_de_punta_a_punta(self):
+        from tests.dobles import github_con_hallazgo
+
+        kw = (
+            {"prohibiciones": ("motor/integraciones/**",)}
+            if self._puede("prohibiciones")
+            else {}
+        )
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "politica-prohibe-e2e",
+                github_con_hallazgo,
+                **kw,
+            )
+            e = vuelta("uno")
+        self.assertEqual(_ids(e), [])
+        razones = [x[2] for x in e.fuera_de_alcance]
+        self.assertTrue(
+            any("prohíbe tocar motor/integraciones/**" in x for x in razones),
+            razones,
         )
 
-        return hallazgo_fuera_de_alcance_por_restriccion
+    def test_una_lista_blanca_estructurada_saca_lo_que_no_cubre_de_punta_a_punta(self):
+        from tests.dobles import github_con_hallazgo
 
-    def test_una_prohibicion_saca_el_archivo_que_cubre(self):
-        fn = self._firma()
-        self.assertIn(
-            "prohibiciones",
-            inspect.signature(fn).parameters,
-            "la restricción estructurada no se compara por ruta: falta --prohibir",
+        kw = {"permisos": ("docs/**",)} if self._puede("permisos") else {}
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self,
+                tmp,
+                "politica-permite-e2e",
+                github_con_hallazgo,
+                **kw,
+            )
+            e = vuelta("uno")
+        self.assertEqual(_ids(e), [])
+        razones = [x[2] for x in e.fuera_de_alcance]
+        self.assertTrue(
+            any("limita el cambio a docs/**" in x for x in razones), razones
         )
-        h = Hallazgo(
-            id="F1",
-            gravedad="bloqueante",
-            criterio="seguridad",
-            titulo="token en el log",
-            ancla="motor/integraciones/cli.py:176",
-        )
-        razon = fn((), h, prohibiciones=("motor/integraciones/**",))
-        self.assertIn("prohíbe tocar motor/integraciones/**", razon)
-
-    def test_una_lista_blanca_saca_lo_que_no_cubre(self):
-        fn = self._firma()
-        self.assertIn(
-            "permisos",
-            inspect.signature(fn).parameters,
-            "la lista blanca estructurada no se compara por ruta: falta --permitir",
-        )
-        h = Hallazgo(
-            id="F2",
-            gravedad="bloqueante",
-            criterio="seguridad",
-            titulo="token en el log",
-            ancla="motor/integraciones/cli.py:176",
-        )
-        razon = fn((), h, permisos=("docs/**",))
-        self.assertIn("limita el cambio a docs/**", razon)
 
 
 class CaracterizacionesDeLoQueYaFunciona(unittest.TestCase):

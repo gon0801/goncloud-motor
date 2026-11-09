@@ -24,7 +24,7 @@ from .catalogo_agentes import (
     identidad_modelo,
 )
 from .lectura import Error as ErrorLectura
-from .lectura import Leido, Lectura
+from .lectura import Leido, Lectura, Pendiente as PendienteLectura
 from .politica import relevo_de_sesion
 from .ciclo import (
     afirmar,
@@ -392,6 +392,8 @@ def _motivo_de_sesion(agente: str, lectura: Lectura) -> str:
                 f"{lectura.causa}"
             )
         return f"no pude leer la sesión de {nombre}: {lectura.causa}"
+    if isinstance(lectura, PendienteLectura) and lectura.desde:
+        return f"{lectura.desde} ({nombre})"
     return f"no hay sesión de {nombre} en este host"
 
 
@@ -401,11 +403,16 @@ def _relevo_para_sesion(
     autorizados: dict[str, tuple[str, ...]],
     lecturas: dict[str, Lectura],
     generacion: Path | None,
+    enc=None,
+    hora: str = "",
+    excluir: frozenset[str] = frozenset(),
 ) -> tuple[str, str] | None:
     """El relevo que la política autoriza cuando la sesión no se puede leer.
 
     Solo actúa sobre la causa que el propietario decidió (Opus ilegible para
-    revisar): un modelo que de verdad falta no se sustituye.
+    revisar): un modelo que de verdad falta no se sustituye. El sustituto pasa
+    por `elegir`, así respeta las mismas exclusiones y pausas que un modelo
+    normal del rol.
     """
     if solicitado:
         preferido_agente, preferido = solicitado
@@ -426,9 +433,17 @@ def _relevo_para_sesion(
     agente = agente_del_modelo(sustituto)
     if not agente:
         return None
-    if isinstance(leer_disponible(agente, generacion), Leido):
+    if not isinstance(leer_disponible(agente, generacion), Leido):
+        return None
+    if enc is None:
         return agente, sustituto
-    return None
+    return elegir(
+        replace(enc, agentes=(agente,)),
+        hora,
+        {agente: (sustituto,)},
+        rol=rol,
+        excluir_modelos=excluir,
+    )
 
 
 def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
@@ -486,7 +501,7 @@ def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
             argv = _lanzador(agente, modelo, modo)(enc, prompt, espacio, sesion)
             return argv, {"agente": agente, "modelo": modelo, "sesion_modo": modo}
         relevo_por_sesion = _relevo_para_sesion(
-            rol, solicitado, autorizados, lecturas, generacion
+            rol, solicitado, autorizados, lecturas, generacion, enc, hora, excluir
         )
         if relevo_por_sesion:
             agente, modelo = relevo_por_sesion
