@@ -320,6 +320,45 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             )
             self.assertEqual(r.eventos("fase_reabierta"), [])
 
+    def test_un_medium_tardio_que_pide_cambiar_la_politica_no_reabre(self):  # no-roja-en-base: la base solo avisaba cualquier Medium tardío; guarda que la reapertura nueva excluya las reglas de David
+        # Un hallazgo que pide mover una regla de David queda fuera de alcance:
+        # no se corrige en este PR y no puede reabrir el encargo. El camino
+        # normal ya lo descarta; el sondeo tardío tiene que hacer lo mismo y no
+        # dejar una reapertura sin ids.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-cerrado-politica", github_por_numero, nivel="pr"
+            )
+            e = vuelta("uno")
+            hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+            tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            e = ciclo._paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+            self.assertEqual(e.estado, "terminado")
+
+            vuelta.gh.textos[e.pr_numero] = _comentario(
+                {
+                    "id": "F40",
+                    "severity": "medium",
+                    "status": "open",
+                    "title": "bajar el tope de DeepSeek de 30 a 15 minutos",
+                    "file": "saludo.txt",
+                }
+            )
+            barrer(
+                r.reg, ahora_iso(), time.time(), lambda *a, **k: None,
+                gh=vuelta.gh,
+            )
+
+            e = r.fold()
+            self.assertEqual(
+                e.estado,
+                "terminado",
+                "una decisión de política no se resuelve reabriendo el encargo",
+            )
+            self.assertEqual(r.eventos("fase_reabierta"), [])
+            self.assertEqual(_ids(e), [])
+            self.assertEqual(e.preguntas, ())
+
     def test_un_medium_posterior_al_cierre_en_una_fase_anterior_se_avisa_en_su_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(

@@ -4129,9 +4129,8 @@ def _fase_reabierta(e: Encargo, d: dict, hora: str) -> Encargo:
     pedida = str(d.get("fase") or "")
     fase = next((f for f in e.fases if f.id == pedida), None)
     tardia = bool(d.get("tardia")) and e.estado == "terminado"
-    settle = ("preparada", "bloqueada") if tardia else ("preparada",)
-    if fase is None or fase.estado not in settle:
-        raise TransicionIlegal("solo se reabre una fase asentada")
+    if fase is None or fase.estado != "preparada":
+        raise TransicionIlegal("solo se reabre una fase preparada")
     if e.estado in ("terminado", "cancelado", "deteniendo", "detenido") and not tardia:
         raise TransicionIlegal("el encargo ya no admite reabrir una fase")
     causa = str(d.get("causa") or "DeepSeek dejó un hallazgo abierto")

@@ -6150,10 +6150,11 @@ def _reabrir_por_hallazgo_tardio(
         registro, enc, fase.pr_numero, sha, comentarios, hora
     )
     abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
+    vigentes = abiertos_ds or abiertos
     _devolver(
         registro, enc, "investigar",
-        abiertos_ds[0].titulo if abiertos_ds else abiertos[0].titulo,
-        "corregir " + ", ".join(h.id for h in abiertos_ds)
+        vigentes[0].titulo,
+        "corregir " + ", ".join(h.id for h in vigentes)
         + f" (DeepSeek) en el PR #{fase.pr_numero}; lo aprobado que no cambió "
         "se conserva",
         hora, f"deepseek-tardio-{huella}",
@@ -6313,6 +6314,7 @@ def _revisar_deepseek_del_cerrado(
                 permisos=enc.permisos,
                 prohibiciones=enc.prohibiciones,
             )
+            and not hallazgo_contra_politica(h)
         ]
         if not abiertos:
             # Solo los Low del bloque estructurado dejan nota. Un comentario
@@ -6332,7 +6334,7 @@ def _revisar_deepseek_del_cerrado(
                 )
             continue
         if (
-            fase.estado in ("preparada", "bloqueada")
+            fase.estado == "preparada"
             and _pr_del_hallazgo_sigue_abierto(gh, enc, fase)
         ):
             return _reabrir_por_hallazgo_tardio(
