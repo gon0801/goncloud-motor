@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -10,7 +11,16 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from motor.encargos.ciclo import _LIMITE_CUERPO_PR, _cuerpo_pr
+from motor.encargos import ciclo
+from motor.encargos.ciclo import (
+    _LIMITE_CUERPO_PR,
+    _anotar_nota_en_pr_tardia,
+    _cuerpo_pr,
+    _entregar_con_pendientes,
+    ahora_iso,
+)
+from motor.github import FakeGitHub
+from tests.test_flujo_revisiones import _bloqueante, _entrega_pr
 
 RAIZ = Path(__file__).resolve().parents[1]
 CONFIG = (
@@ -119,6 +129,48 @@ class UnaSolaPuertaPublicaElCuerpo(unittest.TestCase):
             )
             self.assertIn("fuera de `_escribir_cuerpo_pr`", salida.stderr)
 
+    def test_una_puerta_nueva_que_escribe_un_cuerpo_sin_limite_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp)
+            destino = raiz / "motor" / "encargos" / "ciclo.py"
+            destino.parent.mkdir(parents=True)
+            destino.write_text(
+                (RAIZ / "motor" / "encargos" / "ciclo.py").read_text(encoding="utf-8")
+                + "\n\ndef _nota_nueva(gh, repo, numero, cuerpo, nota):\n"
+                "    _escribir_cuerpo_pr(gh, repo, numero, cuerpo + '\\n\\n' + nota)\n",
+                encoding="utf-8",
+            )
+
+            salida = _correr(raiz, "cuerpo")
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "una llamada nueva a la puerta sin el cierre debe fallar el check",
+            )
+            self.assertIn("sin el cierre del motor", salida.stderr)
+
+    def test_abrir_un_pr_con_un_cuerpo_sin_limite_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = Path(tmp)
+            destino = raiz / "motor" / "encargos" / "ciclo.py"
+            destino.parent.mkdir(parents=True)
+            destino.write_text(
+                (RAIZ / "motor" / "encargos" / "ciclo.py").read_text(encoding="utf-8")
+                + "\n\ndef _abrir_otro(gh, repo, rama, base, texto):\n"
+                "    return gh.abrir_pr(repo, rama, base, 't', texto * 1000)\n",
+                encoding="utf-8",
+            )
+
+            salida = _correr(raiz, "cuerpo")
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "abrir un PR con un cuerpo que no pasa por el limite debe fallar",
+            )
+            self.assertIn("abre un PR sin el limite", salida.stderr)
+
 
 class CandadosDeSecretos(unittest.TestCase):
     def _revisar(self, raiz: Path) -> subprocess.CompletedProcess:
@@ -203,7 +255,7 @@ class CandadosDeSecretos(unittest.TestCase):
             ruta.write_text(
                 texto.replace(
                     "correr = por_rutas | agregados",
-                    "correr = por_rutas - agregados",
+                    "correr = set(extra) or (por_rutas | agregados)",
                     1,
                 ),
                 encoding="utf-8",
@@ -214,7 +266,7 @@ class CandadosDeSecretos(unittest.TestCase):
             self.assertEqual(
                 salida.returncode,
                 1,
-                "el mensaje del commit no puede quitar la bateria",
+                "el mensaje del commit no puede decidir que jobs corren",
             )
             self.assertIn("puede quitar jobs por el mensaje del commit", salida.stderr)
 
@@ -240,10 +292,277 @@ class CandadosDeSecretos(unittest.TestCase):
             )
             self.assertIn("falta la regla de secretos", salida.stderr)
 
+    def test_una_clave_nueva_en_la_allowlist_de_gitleaks_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto + "\n                commits = ['abc123']\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "una clave nueva dentro de [[allowlists]] debilita el candado",
+            )
+            self.assertIn("clave nueva en la allowlist", salida.stderr)
+
+    def test_una_stopword_nueva_en_la_allowlist_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto + "\n                stopwords = ['AKIA']\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
+            self.assertIn("clave nueva en la allowlist", salida.stderr)
+
+    def test_quitar_target_rules_de_la_allowlist_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto.replace(
+                    'targetRules = ["generic-api-key", "sentry-access-token", '
+                    '"discord-api-token"]\n',
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "sin targetRules las rutas quedan permitidas para todas las reglas",
+            )
+            self.assertIn("targetRules", salida.stderr)
+
+    def test_apagar_las_reglas_por_defecto_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto.replace("useDefault = true", "useDefault = false", 1),
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode, 1, "apagar useDefault apaga todas las reglas"
+            )
+            self.assertIn("useDefault", salida.stderr)
+
+    def test_la_bateria_no_se_apaga_por_el_mensaje_con_una_interseccion(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / "motor" / "encargos" / "trabajos_ci.py"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto.replace(
+                    "correr = por_rutas | agregados",
+                    "correr = (por_rutas & set(extra)) if extra else "
+                    "(por_rutas | agregados)",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "la interseccion con el mensaje deja jobs sin correr",
+            )
+            self.assertIn("puede quitar jobs por el mensaje del commit", salida.stderr)
+
+    def test_la_regla_de_secretos_en_un_comentario_no_cuenta(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / "motor" / "encargos" / "comprobacion.py"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto.replace(
+                    "Nunca subas credenciales ni llaves a un repo",
+                    "La regla de secretos vive en un comentario",
+                    1,
+                )
+                + "\n# Nunca subas credenciales ni llaves a un repo\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "la regla debe estar en el prompt, no en un comentario",
+            )
+            self.assertIn("falta la regla de secretos", salida.stderr)
+
     def test_el_arbol_real_no_debilita_los_candados(self):
         salida = self._revisar(RAIZ)
 
         self.assertEqual(salida.returncode, 0, salida.stderr)
+
+
+class _GhFallaElCuerpo(FakeGitHub):
+    def actualizar_cuerpo(self, repo, numero, cuerpo):
+        raise RuntimeError("HTTP 502")
+
+
+class EntregarConPendientesNoMienteSiElCuerpoFalla(unittest.TestCase):
+    def _abrir_intento(self, r, serie: str) -> None:
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "intento_abierto",
+                "data": {
+                    "id": f"intento-{serie}",
+                    "pid": 1,
+                    "inicio": r.hora,
+                    "rol": r.fold().rol or "responsable",
+                    "hora": r.hora,
+                },
+            },
+            f"t-intento-{serie}",
+        )
+
+    def _cerrar_intento(self, r) -> None:
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "intento_cerrado",
+                "data": {"pid": 1, "inicio": r.hora, "hora": r.hora},
+            },
+            f"t-intento-cerrado:{r.fold().generacion}",
+        )
+
+    def _hasta_pendientes(self, r):
+        (r.espacio / "malo.txt").write_text("X")
+        r.incorporar()
+        r.juicio(
+            {
+                "veredicto": "cambios",
+                "evidencia": "lei malo.txt",
+                "bloqueantes": [_bloqueante("malo.txt no contiene B")],
+            }
+        )
+        for _ in range(4):
+            e = r.incorporar()
+        self.assertTrue(e.pendientes_entrega)
+        return e
+
+    def test_un_fallo_al_editar_el_cuerpo_no_se_registra_como_publicado(self):  # no-roja-en-base: el comportamiento correcto ya existe en 2298ff3; la fase lo perdió
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "pendientes-cuerpo-falla", FakeGitHub, nivel="pr"
+            )
+            self._hasta_pendientes(r)
+            e = _entregar_con_pendientes(r.reg, r.fold(), vuelta.gh, r.hora)
+            self.assertTrue(e.pr_numero, "el primer PR con pendientes se publica")
+            publicados_antes = [
+                ev
+                for ev in r.eventos("entrega_externa")
+                if ev["data"].get("paso") == "pr_con_pendientes"
+            ]
+
+            fase = e.cierre_forzado_fase
+            ciclo.ordenar(
+                r.reg, r.enc, "reabrir", "reabrir-parcial", r.hora,
+                fase=fase.id, cierre=e.cierre_forzado_huella,
+            )
+            ciclo.ordenar(r.reg, r.enc, "continuar", "continuar-parcial", r.hora)
+            self._abrir_intento(r, "post-continuar")
+            (r.espacio / "malo.txt").write_text("X")
+            r.incorporar()
+            self._cerrar_intento(r)
+            r.juicio(
+                {
+                    "veredicto": "cambios",
+                    "evidencia": "lei malo.txt",
+                    "bloqueantes": [_bloqueante("malo.txt no contiene B")],
+                }
+            )
+            for _ in range(6):
+                e = r.incorporar()
+            self.assertTrue(e.pendientes_entrega, e.pendientes_entrega)
+
+            gh_roto = _GhFallaElCuerpo(vuelta.gh.d)
+            _entregar_con_pendientes(r.reg, r.fold(), gh_roto, r.hora)
+
+            bloqueos = r.eventos("bloqueo_fase")
+            evidencia = str(bloqueos[-1]["data"].get("evidencia") or "")
+            self.assertIn("No se pudo publicar el PR", evidencia)
+            self.assertNotIn("queda publicado", evidencia)
+            notas = [str(n["data"].get("texto") or "") for n in r.eventos("nota_pr")]
+            self.assertTrue(
+                any("no se pudo publicar el PR con pendientes" in n for n in notas),
+                notas,
+            )
+            publicados_despues = [
+                ev
+                for ev in r.eventos("entrega_externa")
+                if ev["data"].get("paso") == "pr_con_pendientes"
+            ]
+            self.assertEqual(len(publicados_despues), len(publicados_antes))
+
+
+class LaNotaTardiaConservaElFinal(unittest.TestCase):
+    def test_con_un_cuerpo_largo_la_nota_llega_y_la_linea_queda_al_final(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "nota-tardia-70k", FakeGitHub, nivel="pr"
+            )
+            e = vuelta("uno")
+            fase = e.fase_actual
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "cuerpo-pr.md").write_text(
+                "# Cambios\n\n" + ("detalle " * 12_000), encoding="utf-8"
+            )
+            cuerpo = _cuerpo_pr(e, r.espacio, fase.id)
+            self.assertGreater(len(cuerpo), 60_000)
+            gh = vuelta.gh
+            gh.responde_ver = lambda repo, numero: SimpleNamespace(
+                cuerpo=cuerpo, head="a" * 40
+            )
+
+            _anotar_nota_en_pr_tardia(
+                r.reg, r.fold(), gh, fase, "a" * 40, "huella-tardia",
+                "F9 tardio medium", ahora_iso(),
+            )
+
+            estado = json.loads((gh.d / "github.json").read_text())
+            pr = next(
+                pr for pr in estado["prs"].values()
+                if pr["numero"] == fase.pr_numero
+            )
+            publicado = str(pr["cuerpo"])
+            self.assertIn(
+                "F9 tardio medium", publicado,
+                "con un cuerpo de 70 KB la nota tiene que llegar al PR",
+            )
+            self.assertTrue(
+                publicado.rstrip().endswith(f"Encargo {r.enc}. Fase: {fase.id}."),
+                "la linea del encargo tiene que quedar al final",
+            )
+            self.assertLessEqual(len(publicado), _LIMITE_CUERPO_PR)
 
 
 if __name__ == "__main__":

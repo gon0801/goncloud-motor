@@ -1653,11 +1653,17 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
                 pr for pr in estado["prs"].values()
                 if pr["numero"] == e.pr_numero
             )["cuerpo"]
-            # No se recorta el cuerpo existente: se perderían notas previas.
-            self.assertEqual(cuerpo, cuerpo_original)
+            # La nota llega al PR: el recorte cae en el texto del responsable,
+            # nunca en el cierre del motor.
+            self.assertLessEqual(len(cuerpo), ciclo._LIMITE_CUERPO_PR)
+            self.assertIn("después de cerrar", cuerpo)
+            self.assertTrue(
+                cuerpo.rstrip().endswith(f"Encargo {e.id}. Fase: {e.fase_activa}."),
+                "la línea del encargo tiene que quedar al final",
+            )
             e = r.fold()
             self.assertTrue(
-                any("llegó al límite" in n for n in e.notas_pr), e.notas_pr
+                any("después de cerrar" in n for n in e.notas_pr), e.notas_pr
             )
 
 

@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -44,13 +46,14 @@ HOOKS = frozenset(
         "calidad-io",
     }
 )
+ALLOWLIST_CLAVES = frozenset({"description", "targetRules", "paths", "regexes"})
+TARGET_RULES = frozenset(
+    {"generic-api-key", "sentry-access-token", "discord-api-token"}
+)
 REGLA_SECRETOS = "Nunca subas credenciales ni llaves a un repo"
 _FECHA = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _EXCEPCION = re.compile(r"#\s*excepcion:", re.IGNORECASE)
 _CADENA = re.compile(r"'''([^']*)'''|\"([^\"]*)\"|'([^']*)'")
-# El mensaje del commit solo puede sumar jobs. Un literal que hable de saltar
-# la bateria es la forma en que #344 la apagaba.
-_SALTOS = ("skip", "saltar", "no-ci", "sin-ci", "bateria=false", "bateria:false")
 
 
 def _leer(raiz: Path, relativa: str) -> str:
@@ -79,12 +82,44 @@ def _entradas_de_lista(lineas: list[str], clave: str) -> list[tuple[str, int, st
     return entradas
 
 
+def _claves_de_allowlist(lineas: list[str]) -> list[tuple[str, int, str]]:
+    """Cada clave de cada bloque `[[allowlists]]`, con su línea."""
+    claves: list[tuple[str, int, str]] = []
+    dentro = False
+    for numero, linea in enumerate(lineas, start=1):
+        limpia = linea.split("#", 1)[0].strip()
+        if limpia.startswith("[["):
+            dentro = limpia == "[[allowlists]]"
+            continue
+        if limpia.startswith("["):
+            dentro = False
+            continue
+        if not dentro:
+            continue
+        encontrada = re.match(r"([A-Za-z0-9_.-]+)\s*=", limpia)
+        if encontrada:
+            claves.append((encontrada.group(1), numero, linea))
+    return claves
+
+
+def _linea_anotada(lineas: list[str], clave: str) -> bool:
+    return any(clave in linea and _anotada(linea) for linea in lineas)
+
+
 def _revisar_gitleaks(raiz: Path) -> list[str]:
     try:
-        lineas = _leer(raiz, ".gitleaks.toml").splitlines()
+        texto = _leer(raiz, ".gitleaks.toml")
     except OSError as exc:
         return [f".gitleaks.toml: no se puede leer ({exc})"]
+    lineas = texto.splitlines()
     problemas = []
+    for clave, numero, linea in _claves_de_allowlist(lineas):
+        if clave in ALLOWLIST_CLAVES or _anotada(linea):
+            continue
+        problemas.append(
+            f".gitleaks.toml:{numero}: clave nueva en la allowlist "
+            f"({clave}); anota la excepcion en la misma linea con razon y fecha"
+        )
     for valor, numero, linea in _entradas_de_lista(lineas, "paths"):
         if valor in ALLOWLIST_GITLEAKS or _anotada(linea):
             continue
@@ -99,6 +134,36 @@ def _revisar_gitleaks(raiz: Path) -> list[str]:
             f".gitleaks.toml:{numero}: regex nuevo en la allowlist "
             f"({valor}); anota la excepcion en la misma linea con razon y fecha"
         )
+    try:
+        config = tomllib.loads(texto)
+    except tomllib.TOMLDecodeError as exc:
+        problemas.append(f".gitleaks.toml: no se puede leer ({exc})")
+        return problemas
+    extend = config.get("extend") or {}
+    if extend.get("useDefault") is not True and not _linea_anotada(
+        lineas, "useDefault"
+    ):
+        problemas.append(
+            ".gitleaks.toml: useDefault apagado; las reglas por defecto no "
+            "corren. Anota la excepcion en la misma linea con razon y fecha"
+        )
+    for bloque in config.get("allowlists") or []:
+        if not isinstance(bloque, dict):
+            continue
+        rutas = bloque.get("paths") or []
+        reglas = bloque.get("targetRules")
+        if rutas and not reglas and not _linea_anotada(lineas, "targetRules"):
+            problemas.append(
+                ".gitleaks.toml: la allowlist tiene rutas sin targetRules, "
+                "asi que valen para todas las reglas; exceptua con razon y fecha"
+            )
+            continue
+        extra = set(reglas or ()) - TARGET_RULES
+        if extra and not _linea_anotada(lineas, "targetRules"):
+            problemas.append(
+                ".gitleaks.toml: targetRules suma reglas "
+                f"({sorted(extra)}); la allowlist cubre mas de lo aceptado"
+            )
     return problemas
 
 
@@ -132,43 +197,66 @@ def _funcion(arbol: ast.AST, nombre: str) -> ast.FunctionDef | None:
     return None
 
 
-def _quita_jobs(nodo: ast.AST) -> bool:
-    """Solo la seleccion puede encoger: restar o descartar de `por_rutas`/`correr`."""
-    for hijo in ast.walk(nodo):
-        if isinstance(hijo, ast.BinOp) and isinstance(hijo.op, ast.Sub):
-            if {"correr", "por_rutas"} & {
-                x.id for x in ast.walk(hijo.left) if isinstance(x, ast.Name)
-            }:
-                return True
-        if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Attribute):
-            valor = hijo.func.value
-            if (
-                isinstance(valor, ast.Name)
-                and valor.id in ("correr", "por_rutas")
-                and hijo.func.attr
-                in ("remove", "discard", "difference", "symmetric_difference")
-            ):
-                return True
-    return False
+_RUTAS_DE_PRUEBA = (
+    ("motor/encargos/ciclo.py",),
+    ("tests/test_menores_repetidos.py",),
+    ("ops/tests/correr.sh",),
+    ("conf-ejemplo/x.json",),
+    ("docs/diseno-flujo-revisiones.md",),
+    ("docs/otro.md",),
+)
+_EXTRAS_DE_PRUEBA = (
+    (),
+    ("bateria",),
+    ("macos",),
+    ("windows",),
+    ("ops-tests",),
+    ("macos", "windows"),
+)
+
+
+def _cargar_modulo(raiz: Path, relativa: str):
+    ruta = raiz / relativa
+    if str(RAIZ) not in sys.path:
+        sys.path.insert(0, str(RAIZ))
+    nombre = "candados_" + re.sub(r"\W", "_", relativa)
+    especificacion = importlib.util.spec_from_file_location(nombre, ruta)
+    if especificacion is None or especificacion.loader is None:
+        raise ImportError(f"no se puede cargar {ruta}")
+    modulo = importlib.util.module_from_spec(especificacion)
+    especificacion.loader.exec_module(modulo)
+    return modulo
 
 
 def _revisar_bateria(raiz: Path) -> list[str]:
+    """La seleccion solo puede sumar jobs por el mensaje del commit.
+
+    Se prueba el comportamiento: para las rutas de muestra, agregar cualquier
+    `extra` no puede quitar un job que el diff ya activaba. Asi cualquier forma
+    de recorte (resta, interseccion, un `or` que reemplaza) falla.
+    """
     ruta = "motor/encargos/trabajos_ci.py"
     try:
         fuente = _leer(raiz, ruta)
         arbol = ast.parse(fuente)
-    except (OSError, SyntaxError) as exc:
+        modulo = _cargar_modulo(raiz, ruta)
+    except (OSError, SyntaxError, ImportError) as exc:
         return [f"{ruta}: no se puede leer ({exc})"]
     problemas = []
-    extra = _funcion(arbol, "_jobs_extra")
-    calcular = _funcion(arbol, "_calcular")
-    if extra is None or calcular is None:
-        return [f"{ruta}: falta la seleccion por diff (_jobs_extra/_calcular)"]
-    for nombre, nodo in (("_jobs_extra", extra), ("_calcular", calcular)):
-        if _quita_jobs(nodo):
-            problemas.append(
-                f"{ruta}: {nombre} puede quitar jobs por el mensaje del commit"
-            )
+    for rutas in _RUTAS_DE_PRUEBA:
+        esperados = set(modulo.trabajos_a_correr(rutas))
+        if not esperados:
+            continue
+        for extra in _EXTRAS_DE_PRUEBA:
+            valores, _ = modulo._calcular(rutas, extra)
+            activos = {job for job, corre in valores.items() if corre}
+            faltan = esperados - activos
+            if faltan:
+                problemas.append(
+                    f"{ruta}: puede quitar jobs por el mensaje del commit "
+                    f"(deja de correr {sorted(faltan)} con extra={extra})"
+                )
+                break
     buscadores = [
         nodo
         for nodo in ast.walk(arbol)
@@ -184,14 +272,6 @@ def _revisar_bateria(raiz: Path) -> list[str]:
                 f"{ruta}:{nodo.lineno}: lee el mensaje del commit fuera de "
                 "_jobs_extra; solo `jobs_extra=` puede sumar jobs"
             )
-    for nodo in ast.walk(arbol):
-        if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
-            bajo = nodo.value.lower()
-            if any(salto in bajo for salto in _SALTOS):
-                problemas.append(
-                    f"{ruta}:{getattr(nodo, 'lineno', 0)}: literal que permite "
-                    f"saltar la bateria ({nodo.value!r})"
-                )
     return problemas
 
 
@@ -212,14 +292,22 @@ def _revisar_prompt(raiz: Path) -> list[str]:
     ruta = "motor/encargos/comprobacion.py"
     try:
         texto = _leer(raiz, ruta)
-    except OSError as exc:
+        arbol = ast.parse(texto)
+    except (OSError, SyntaxError) as exc:
         return [f"{ruta}: no se puede leer ({exc})"]
-    if REGLA_SECRETOS not in texto:
-        return [
-            f"{ruta}: falta la regla de secretos del responsable "
-            f"({REGLA_SECRETOS!r})"
-        ]
-    return []
+    funcion = _funcion(arbol, "instrucciones_responsable")
+    if funcion is not None:
+        for nodo in ast.walk(funcion):
+            if (
+                isinstance(nodo, ast.Constant)
+                and isinstance(nodo.value, str)
+                and REGLA_SECRETOS in nodo.value
+            ):
+                return []
+    return [
+        f"{ruta}: falta la regla de secretos del responsable "
+        f"({REGLA_SECRETOS!r}); un comentario no cuenta como prompt"
+    ]
 
 
 def revisar_secretos(raiz: Path = RAIZ) -> list[str]:
@@ -229,6 +317,27 @@ def revisar_secretos(raiz: Path = RAIZ) -> list[str]:
         *_revisar_bateria(raiz),
         *_revisar_prompt(raiz),
     ]
+
+
+def _llama_a(nodo: ast.AST, nombre: str) -> bool:
+    return (
+        isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Name)
+        and nodo.func.id == nombre
+    )
+
+
+def _argumento(call: ast.Call, indice: int, nombre: str) -> ast.expr | None:
+    if len(call.args) > indice:
+        return call.args[indice]
+    for clave in call.keywords:
+        if clave.arg == nombre:
+            return clave.value
+    return None
+
+
+def _cuerpo_limitado(nodo: ast.expr | None) -> bool:
+    return _llama_a(nodo, "_cuerpo_con_limite") or _llama_a(nodo, "_cuerpo_pr")
 
 
 def revisar_cuerpo(raiz: Path = RAIZ) -> list[str]:
@@ -249,6 +358,29 @@ def revisar_cuerpo(raiz: Path = RAIZ) -> list[str]:
                     f"{ruta}:{nodo.lineno}: edita el cuerpo del PR fuera de "
                     "`_escribir_cuerpo_pr`"
                 )
+        if _llama_a(nodo, "_escribir_cuerpo_pr"):
+            cierre = _argumento(nodo, 4, "cierre")
+            vacio = (
+                cierre is None
+                or isinstance(cierre, ast.Constant)
+                and (cierre.value is None or cierre.value == "")
+            )
+            if len(nodo.args) != 5 or nodo.keywords or vacio:
+                problemas.append(
+                    f"{ruta}:{nodo.lineno}: llama a `_escribir_cuerpo_pr` sin "
+                    "el cierre del motor; la puerta recorta solo el texto"
+                )
+        if (
+            isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Attribute)
+            and nodo.func.attr == "abrir_pr"
+        ):
+            cuerpo = _argumento(nodo, 4, "cuerpo")
+            if not _cuerpo_limitado(cuerpo):
+                problemas.append(
+                    f"{ruta}:{nodo.lineno}: abre un PR sin el limite del "
+                    "cuerpo; usa `_cuerpo_pr` o `_cuerpo_con_limite`"
+                )
     permitidos = {
         "_LIMITE_CUERPO_PR": {"_leer_cuerpo_del_espacio", "_cuerpo_con_limite"},
         "_NOTA_CUERPO_RECORTADO": {"_cuerpo_con_limite"},
@@ -265,8 +397,13 @@ def revisar_cuerpo(raiz: Path = RAIZ) -> list[str]:
                     f"{ruta}:{nodo.lineno}: usa {nodo.id} fuera de la puerta "
                     "del limite `_cuerpo_con_limite`"
                 )
-    if _funcion(arbol, "_escribir_cuerpo_pr") is None:
+    puerta = _funcion(arbol, "_escribir_cuerpo_pr")
+    if puerta is None:
         problemas.append(f"{ruta}: falta la puerta unica `_escribir_cuerpo_pr`")
+    elif not any(_llama_a(nodo, "_cuerpo_con_limite") for nodo in ast.walk(puerta)):
+        problemas.append(
+            f"{ruta}: `_escribir_cuerpo_pr` no aplica el limite del cuerpo"
+        )
     if _funcion(arbol, "_cuerpo_con_limite") is None:
         problemas.append(f"{ruta}: falta la puerta del limite `_cuerpo_con_limite`")
     return problemas
