@@ -45,6 +45,8 @@ from .dominio import (
     _NOTA_COPIA_SESION,
     _clase_de_fallo,
     _fallo_transitorio,
+    fallo_permanente_de_entrega,
+    impedimento_bloquea_trabajo,
     TransicionIlegal,
     alcance_de,
     ajustes_cubiertos,
@@ -222,39 +224,112 @@ def _mirada_acotada(consultar):
     return resultado
 
 
+def _problemas_de_entrega(
+    enc: Encargo, gh, causa_gh: str
+) -> list[tuple[str, str, str]]:
+    """Causas de la entrega que la máquina ya deja ver al recibir."""
+    problemas: list[tuple[str, str, str]] = []
+    if gh is None:
+        return problemas
+    if causa_gh:
+        problemas.append(
+            (
+                "entrega:github",
+                f"gh no pudo comprobar {enc.entrega.repo}: {causa_gh}",
+                "instalar gh, autenticarlo para el repo y volver a recibir",
+            )
+        )
+    ssh = _ssh_del_repo(str(enc.entrega.repo or ""))
+    if ssh:
+        causa = _comprobar_remoto_ssh(ssh)
+        if causa:
+            problemas.append(
+                (
+                    "entrega:ssh",
+                    f"el remoto ssh {ssh} no responde con la llave de la máquina: {causa}",
+                    "dejar la llave ssh autorizada para el repo",
+                )
+            )
+        else:
+            causa = _comprobar_push_ssh(ssh, _rama_fase(enc))
+            if causa:
+                problemas.append(
+                    (
+                        "entrega:ssh",
+                        f"git push --dry-run a la rama propia falló: {causa}",
+                        "dejar la llave ssh autorizada para escribir en el repo",
+                    )
+                )
+    return problemas
+
+
+def _sondeo_entrega(
+    registro: Registro,
+    enc: Encargo,
+    gh,
+    causa_gh: str,
+    hora: str,
+) -> None:
+    """Comprueba al recibir, no al entregar, que la entrega puede publicarse.
+
+    Reutiliza la mirada de solo lectura del puerto (`gh.capacidad`) y añade las
+    sondas git de ssh y push. Solo una causa permanente queda como impedimento
+    visible desde el inicio; un fallo transitorio o desconocido sigue el camino
+    normal. No deja un pendiente de entrega: el producto todavía no existe y el
+    turno del agente debe correr. La entrega con pendientes se decide al
+    publicar, cuando ya hay trabajo que entregar. Sin puerto no se inventa una
+    causa.
+    """
+    if enc.entrega.nivel not in ("pr", "integrado", "desplegado"):
+        return
+    permanentes = [
+        (clase, causa, condicion)
+        for clase, causa, condicion in _problemas_de_entrega(enc, gh, causa_gh)
+        if fallo_permanente_de_entrega(causa)
+    ]
+    for clase, causa, condicion in permanentes:
+        _anotar_impedimento(registro, enc, clase, causa, condicion, hora)
+
+
 def _sondeo_nivel(
     registro: Registro, enc: Encargo, gh, espacio: Path | None, hora: str
 ) -> None:
-    """Registra el nivel efectivo ya comprobado por miradas de solo lectura.
+    """Registra el nivel efectivo y el estado de la entrega ya comprobados.
 
     Solo un impedimento fijo y legible limita el nivel: el remoto que prohibe
     mergear deja el encargo en `pr`; la máquina sin capacidad declarada de
     desplegar, en `integrado`. Un remoto sin leer, sin configuración de máquina
     o con política desconocida no cambia nada: el flujo normal espera o
-    reintenta por sus propios caminos. La mirada al remoto lleva un tope
-    (TOPE_MIRADA_S): la recepción no espera minutos a un remoto lento.
+    reintenta por sus propios caminos. La misma mirada de solo lectura alimenta
+    la comprobación de la entrega, así que un remoto lento no se consulta dos
+    veces. La mirada lleva un tope (TOPE_MIRADA_S): la recepción no espera
+    minutos al remoto.
     """
-    if enc.entrega.nivel not in ("integrado", "desplegado"):
+    if enc.entrega.nivel not in ("pr", "integrado", "desplegado"):
         return
     causas: list[str] = []
     integrar_bloqueado = False
+    capacidad = None
+    causa_gh = ""
     if gh is not None and enc.entrega.base:
         try:
             capacidad = _mirada_acotada(
                 lambda: gh.capacidad(enc.entrega.repo, enc.entrega.base)
             )
         except MiradaTardia:
-            causas.append(
-                f"la mirada al remoto no llegó a tiempo ({TOPE_MIRADA_S:g} s); "
-                "sin cambios de nivel"
+            causa_gh = (
+                f"la mirada al remoto no llegó a tiempo ({TOPE_MIRADA_S:g} s)"
             )
+            causas.append(causa_gh + "; sin cambios de nivel")
         except Exception as exc:  # noqa: BLE001  la mirada no tumba la recepción
-            causas.append(
-                f"la mirada al remoto falló ({type(exc).__name__}); sin cambios de nivel"
-            )
+            causa_gh = f"la mirada al remoto falló ({type(exc).__name__}: {exc})"
+            causas.append(causa_gh + "; sin cambios de nivel")
         else:
             if not capacidad.repo_ok:
-                causas.append(f"remoto sin acceso comprobable: {capacidad.detalle}")
+                causa_gh = (
+                    f"remoto sin acceso comprobable: {capacidad.detalle}"
+                )
+                causas.append(causa_gh)
             elif capacidad.integrar_bloqueado:
                 integrar_bloqueado = True
                 causas.append(capacidad.detalle)
@@ -262,6 +337,9 @@ def _sondeo_nivel(
                 causas.append(f"reglas del remoto sin leer: {capacidad.detalle}")
             elif capacidad.base_ok is False:
                 causas.append(f"{capacidad.detalle}; sin cambios de nivel")
+    _sondeo_entrega(registro, enc, gh, causa_gh, hora)
+    if enc.entrega.nivel not in ("integrado", "desplegado"):
+        return
     desplegar_imposible, motivo_maquina = (False, "")
     if enc.entrega.nivel == "desplegado":
         desplegar_imposible, motivo_maquina = _capacidad_desplegar(
@@ -301,6 +379,103 @@ def _sondeo_nivel(
             hashlib.sha256("|".join(causas).encode()).hexdigest()[:12],
         ),
     )
+
+
+TOPE_ENTREGA_S = 10.0
+
+
+def _ssh_del_repo(repo: str) -> str:
+    """El remoto ssh con el que ya cuenta la máquina, o "" si el repo es local."""
+    from motor.repositorios import resolver_repositorio
+
+    try:
+        resuelto = resolver_repositorio(repo)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+    remoto = str(getattr(resuelto, "remoto", "") or "")
+    if remoto.startswith(("git@", "ssh://")):
+        return remoto
+    if remoto.startswith(("https://", "http://")):
+        github = str(getattr(resuelto, "github", "") or "")
+        if github and not github.startswith(("/", ".", "~")):
+            return f"git@github.com:{github}.git"
+    return ""
+
+
+def _comprobar_remoto_ssh(url: str) -> str:
+    """Lectura del remoto ssh sin escribir. "" si llega; la causa exacta si no."""
+    try:
+        r = subprocess.run(
+            ["git", "ls-remote", "--", url],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            timeout=TOPE_ENTREGA_S,
+            env={
+                **os.environ,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_ASKPASS": "true",
+            },
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"no se pudo ejecutar git: {type(exc).__name__}: {exc}"
+    if r.returncode == 0:
+        return ""
+    return (r.stderr or r.stdout).strip()[-300:]
+
+
+def _comprobar_push_ssh(url: str, rama: str) -> str:
+    """`git push --dry-run` a una rama propia desde un repo temporal."""
+    import tempfile
+
+    destino = f"HEAD:refs/heads/{(rama or 'motor')}-preflight"
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true"}
+    with tempfile.TemporaryDirectory(prefix="motor-preflight-") as temporal:
+        for argv in (
+            ["git", "init", "--quiet", "-b", "preflight", temporal],
+            [
+                "git", "-C", temporal,
+                "-c", "user.name=motor", "-c", "user.email=motor@localhost",
+                "commit", "--quiet", "--allow-empty", "-m", "preflight",
+            ],
+            ["git", "-C", temporal, "remote", "add", "origin", url],
+        ):
+            try:
+                r = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdin=subprocess.DEVNULL,
+                    timeout=TOPE_ENTREGA_S,
+                    env=env,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                return f"no se pudo preparar la prueba: {type(exc).__name__}: {exc}"
+            if r.returncode != 0:
+                return (r.stderr or r.stdout).strip()[-300:]
+        try:
+            r = subprocess.run(
+                [
+                    "git", "-C", temporal, "push", "--dry-run", "--quiet",
+                    "origin", destino,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdin=subprocess.DEVNULL,
+                timeout=TOPE_ENTREGA_S,
+                env=env,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"no se pudo ejecutar git push: {type(exc).__name__}: {exc}"
+        if r.returncode == 0:
+            return ""
+        return (r.stderr or r.stdout).strip()[-300:]
 
 
 def recibir(
@@ -1617,7 +1792,7 @@ def _barrer_encargos(
             not parada
             and enc.proc is None
             and not enc.reserva
-            and not enc.impedimento
+            and not impedimento_bloquea_trabajo(enc)
             and enc.intentos_nuevos
             and enc.estado in ("recibido", "ejecutando")
             and enc.via != "directa"
@@ -4651,6 +4826,15 @@ def _descartar_cambios_de_bloqueada(espacio: Path) -> None:
     )
 
 
+def _fuente_de_clon(repo) -> str:
+    """El clon de un repo de GitHub va por ssh: no depende de credenciales https."""
+    fuente = str(getattr(repo, "fuente", "") or "")
+    github = str(getattr(repo, "github", "") or "")
+    if github and fuente.lower().startswith(("https://", "http://")):
+        return f"git@github.com:{github}.git"
+    return fuente
+
+
 def _asegurar_repo(
     enc: Encargo,
     espacio: Path,
@@ -4734,7 +4918,7 @@ def _asegurar_repo(
             f"{enc.entrega.repo}; no se mezcla sobre un trabajo existente"
         )
     r = subprocess.run(
-        ["git", "clone", "--quiet", "--", repo.fuente, str(espacio / ".clon-tmp")],
+        ["git", "clone", "--quiet", "--", _fuente_de_clon(repo), str(espacio / ".clon-tmp")],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -7580,6 +7764,41 @@ def _contestar_con_juicio_del_revisor(
     return enc
 
 
+def _entregar_con_falla_permanente(
+    registro: Registro, enc: Encargo, causa: str, hora: str, serie: str
+) -> Encargo:
+    """Una causa que no cambia esperando deja el aviso visible y el pendiente.
+
+    No se reintenta en bucle: el barrido siguiente entrega el trabajo con el
+    pendiente escrito (o bloquea la fase con la causa) sin esperar a una persona.
+    """
+    _anotar_instrumento(
+        registro, enc, "github", causa,
+        "dejar la llave ssh y gh disponibles en la máquina, o relevar",
+        hora, f"{serie}-{enc.generacion}-permanente",
+    )
+    _anotar_impedimento(
+        registro, enc, "entrega:publicar", causa,
+        "que la máquina tenga llave ssh y gh autenticado para el repo",
+        hora,
+    )
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "pendiente_entrega",
+            "data": {
+                "texto": (
+                    "la entrega no se pudo publicar por una causa "
+                    f"permanente de esta máquina: {causa}"
+                )[:2000],
+                "hora": hora,
+            },
+        },
+        f"pendiente-entrega-publicar:{enc.id}:{enc.generacion}",
+    )
+    return registro.fold(enc.id) or enc
+
+
 def _paso_entrega_paso(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> tuple[Encargo, Resultado]:
@@ -7703,6 +7922,14 @@ def _paso_entrega_paso(
                     ),
                     Avanzo(),
                 )
+        if not _fallo_transitorio(causa) and fallo_permanente_de_entrega(causa):
+            # La llave rechazada, el gh ausente y la credencial inválida no
+            # mejoran esperando: quedan visibles y el encargo entrega lo que
+            # haya con el pendiente escrito, sin bucle de horas. Una red caída
+            # que menciona el remoto sigue siendo transitoria y va a Espera.
+            return _entregar_con_falla_permanente(
+                registro, enc, causa, hora, "push"
+            ), Avanzo()
         corte = not _fallo_transitorio(causa) and (
             _entrega_devuelta_de_la_version(registro, enc)
             or _fallos_de_entrega_seguidos(enc, causa) + 1
@@ -7978,7 +8205,84 @@ def _paso_entrega_paso(
                 registro, enc, gh, numero, sha, espacio, hora
             )
         except Exception as exc:
+            if "no commits between" in str(exc).lower():
+                # La rama no tiene nada publicable sobre su base: no es un
+                # fallo del agente ni un PR imposible. Se entrega como
+                # `sin_cambios` (o se concilia integrado si ya está contenido).
+                if enc.entrega.nivel == "pr":
+                    registro.anotar(
+                        enc.id,
+                        {
+                            "kind": "entrega_externa",
+                            "data": {
+                                "fase": enc.fase_activa,
+                                "intento": enc.intento,
+                                "paso": "sin_cambios",
+                                "repo": enc.entrega.repo,
+                                "rama": rama,
+                                "base": base,
+                                "sha": sha,
+                                "recibo": sha,
+                                "evidencia": (
+                                    f"fase {enc.fase_activa} sin commits "
+                                    f"publicables sobre {base}: {exc}"
+                                ),
+                                "hora": hora,
+                            },
+                        },
+                        f"entrega:{enc.id}:{enc.fase_activa}:sin_cambios:{sha}",
+                    )
+                    return _intentar_cierre_paso(
+                        registro, registro.fold(enc.id) or enc,
+                        espacio, directorio, hora,
+                    )
+                ref_base = _ref_existente(espacio, f"origin/{base}", base)
+                punta = (
+                    _git(
+                        espacio, "rev-parse", "--verify", "--quiet",
+                        f"{ref_base}^{{commit}}",
+                    ).stdout.strip()
+                    if ref_base
+                    else sha
+                )
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "entrega_externa",
+                        "data": {
+                            "fase": enc.fase_activa,
+                            "intento": enc.intento,
+                            "paso": "integrado",
+                            "repo": enc.entrega.repo,
+                            "rama": rama,
+                            "base": base,
+                            "sha": punta or sha,
+                            "recibo": punta or sha,
+                            "evidencia": (
+                                f"fase {enc.fase_activa} ya contenida en "
+                                f"{base}: {exc}"
+                            ),
+                            "hora": hora,
+                        },
+                    },
+                    f"entrega:{enc.id}:{enc.fase_activa}:integrado:{sha}",
+                )
+                enc = registro.fold(enc.id) or enc
+                if nivel_cumplido(enc):
+                    return _intentar_cierre_paso(
+                        registro, enc, espacio, directorio, hora
+                    )
+                enc = _paso_despliegue(registro, enc, espacio, hora)
+                if nivel_cumplido(enc) and enc.estado != "terminado":
+                    return _intentar_cierre_paso(
+                        registro, enc, espacio, directorio, hora
+                    )
+                return registro.fold(enc.id) or enc, Avanzo()
             causa = f"no se pudo abrir o preparar el PR: {exc}"
+            if not _fallo_transitorio(causa) and fallo_permanente_de_entrega(causa):
+                return _entregar_con_falla_permanente(
+                    registro, enc, causa, hora, "pr"
+                ), Avanzo()
             _anotar_instrumento(
                 registro, enc, "github", causa,
                 "reintentar la apertura del PR de la misma rama",
@@ -8448,7 +8752,7 @@ def _lanzar_uno_en_turno(
             enc.via == "directa"
             or enc.proc is not None
             or enc.reserva
-            or enc.impedimento
+            or impedimento_bloquea_trabajo(enc)
             or leer_parada_local(registro.base)
             or (enc.fases and all(f.estado == "preparada" for f in enc.fases))
         ):

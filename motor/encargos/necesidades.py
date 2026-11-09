@@ -1432,7 +1432,10 @@ def atender(
         previo = (
             _resultado_huerfano(espacio, sol, directorio) if previa is not None else None
         )
-        if previo is not None and str(previo.get("estado") or "") != "pregunta":
+        if previo is not None and str(previo.get("estado") or "") not in (
+            "pregunta",
+            "pendiente",
+        ):
             resultado = previo
             if sol.operacion in capacidades.CON_ARCHIVO and resultado.get("estado") == "ok":
                 resultado = _publicar_snapshot(espacio, sol, resultado, directorio)
