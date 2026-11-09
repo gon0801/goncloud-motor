@@ -1549,72 +1549,63 @@ class Vuelta:
 
 
 _ESTADOS_SIN_AVANCE = frozenset({"cancelado", "detenido", "deteniendo", "terminado"})
+_ESTADOS_PENDIENTES_DE_ENTREGA = frozenset({"incierto", "pendiente"})
 
 
-def _aviso_de_terminado_vigente(doc: dict, enc) -> bool:
-    """Si el aviso es uno que `drenar` vuelve a visitar para un encargo terminado.
+def _avisos_derivados(registro: Registro, enc) -> set[str]:
+    """Los ids que el fold vigente de un encargo activo vuelve a visitar.
 
-    De un terminado solo se visitan el cierre vigente y el `ci_rojo` que el estado todavía genera.
-    Cualquier otro aviso suyo es huérfano y no debe impedir el sondeo.
+    Es la única fuente de vigencia: no hay una marca aparte. Solo se llama para
+    encargos activos; un cerrado no mantiene avisos de avance.
     """
-    ident = str(doc.get("id") or "")
-    if enc.evidencia and ident == str(_aviso_de(enc).get("id") or ""):
-        return True
-    return any(
-        ident == str(_aviso_de_hecho(enc, hecho).get("id") or "")
-        for hecho in hechos_de_avance(enc)
+    if not enc.canal:
+        return set()
+    apariciones = (
+        _apariciones_de_impedimentos(registro, enc.id) if enc.impedimento else None
     )
+    return {
+        str(_aviso_de_hecho(enc, hecho)["id"])
+        for hecho in hechos_de_avance(enc, apariciones)
+    }
 
 
-def _aviso_de_cancelado_vigente(
-    registro: Registro, doc: dict, enc, corte_cierres: int
-) -> bool:
-    """Si el cierre de un cancelado sigue siendo el que `drenar` visita.
-
-    Un cancelado anterior al corte de cierres es historia y no reabre aviso. Uno posterior sí, y su
-    cierre pendiente prueba el transporte; cualquier otro aviso suyo es huérfano.
-    """
-    if str(doc.get("id") or "") != str(_aviso_de(enc).get("id") or ""):
-        return False
-    al_corte = registro.fold(enc.id, hasta=corte_cierres)
-    return al_corte is None or al_corte.estado != "cancelado"
-
-
-def _aviso_retomable(
+def _bloquea_el_sondeo(
     doc: dict,
     encargos: dict,
     resumen_activo: bool,
     registro: Registro,
-    corte_cierres: int,
 ) -> bool:
-    """Si la pasada puede volver a intentar el aviso; si no, no prueba el transporte del canal.
+    """La lista cerrada de lo que sí detiene el sondeo de un canal caído.
 
-    Un aviso de resumen no nombra encargo y solo lo retoma `resumen_encargos` mientras el envío de
-    resumen tenga canal activo; apagado no lo toca nadie. Un aviso de un encargo detenido o que ya
-    no existe no se reabre. Uno de un terminado solo prueba si es su cierre o su `ci_rojo` vigente;
-    `_descartar_avances_de_terminados` no borra un `ci_rojo` huérfano del terminado. Uno de un
-    cancelado solo prueba si es su cierre vigente.
+    Solo un aviso vigente, no archivado (`vista.docs` no trae los archivados),
+    de un encargo activo, pendiente de entrega en su canal. Un aviso de resumen
+    sin encargo cuenta mientras el envío de resumen tenga canal activo. Un aviso
+    de un encargo cerrado o que ya no existe no se reabre. De un encargo activo
+    cuenta un `incierto`, que se retoma desde su cuerpo guardado, y un
+    `pendiente` que su estado vigente todavía genera; un `pendiente` huérfano no
+    lo visita nadie y no debe frenar el sondeo. Un cierre que acaba de quedar
+    `incierto` en esta misma pasada tampoco frena: su encargo ya está cerrado.
+    Todo lo demás se archiva o se ignora sin bloquear.
     """
+    if doc.get("estado") not in _ESTADOS_PENDIENTES_DE_ENTREGA:
+        return False
     encargo = str(doc.get("encargo") or "")
     if not encargo:
         return resumen_activo
     enc = encargos.get(encargo)
-    if enc is None:
+    if enc is None or enc.estado in _ESTADOS_SIN_AVANCE:
         return False
-    if enc.estado == "terminado":
-        return _aviso_de_terminado_vigente(doc, enc)
-    if enc.estado == "cancelado":
-        return _aviso_de_cancelado_vigente(registro, doc, enc, corte_cierres)
-    return enc.estado not in _ESTADOS_SIN_AVANCE
+    if doc.get("estado") == "incierto":
+        return True
+    return str(doc.get("id") or "") in _avisos_derivados(registro, enc)
 
 
 def _canales_con_avisos_pendientes(
     registro: Registro,
     encargos: dict,
-    corte_cierres: int,
     vista: "VistaAvisos | None" = None,
 ) -> set[str]:
-    """Los canales con un aviso que todavía prueba su transporte: incierto o pendiente."""
+    """Los canales con un aviso que sí bloquea el sondeo, según la lista cerrada."""
     pendientes: set[str] = set()
     resumen_activo = bool(resumen_encargos.config_envio(registro.base)[0])
     if vista is not None:
@@ -1629,11 +1620,7 @@ def _canales_con_avisos_pendientes(
             if doc:
                 docs.append(doc)
     for doc in docs:
-        if doc.get("estado") not in ("incierto", "pendiente"):
-            continue
-        if not _aviso_retomable(
-            doc, encargos, resumen_activo, registro, corte_cierres
-        ):
+        if not _bloquea_el_sondeo(doc, encargos, resumen_activo, registro):
             continue
         try:
             pendientes.add(nombre_canal(str(doc.get("canal") or "")))
@@ -1699,11 +1686,10 @@ def _sondear_canales(
     registro: Registro,
     vuelta: Vuelta,
     encargos: dict,
-    corte_cierres: int,
     vista: "VistaAvisos | None" = None,
 ) -> None:
     """Un canal caído sin avisos pendientes se prueba con su conciliación, a lo sumo una vez por intervalo."""
-    pendientes = _canales_con_avisos_pendientes(registro, encargos, corte_cierres, vista)
+    pendientes = _canales_con_avisos_pendientes(registro, encargos, vista)
     for canal in canales.canales_en_fallo(registro.base):
         if vuelta.agotada():
             return
@@ -2081,7 +2067,7 @@ def drenar(
     publicados.extend(
         _reintentar_avisos_sueltos(registro, vuelta, vistos, cortar, encargos, vista)
     )
-    _sondear_canales(registro, vuelta, encargos, corte_cierres, vista)
+    _sondear_canales(registro, vuelta, encargos, vista)
     existentes_cierre = {**vista.resumenes, **vista.docs}
     for firma, episodio in envios_resumen:
         try:
