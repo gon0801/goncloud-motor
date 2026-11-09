@@ -13,6 +13,7 @@ el mismo camino en las tres maquinas: en Windows no hay senales POSIX y
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -29,17 +30,29 @@ from motor.__main__ import main as motor_main
 from motor.encargos import cli
 from motor.encargos.ciclo import ahora_iso, recibir
 from motor.encargos.registro import Registro
+from tests.entorno import deja_breakaway
 
 RAIZ = Path(__file__).resolve().parent.parent
 
+# El runner hospedado de Windows corre dentro de un Job que niega
+# CREATE_BREAKAWAY_FROM_JOB; la PC sí separa. Donde no se puede separar, el
+# wrapper se lanza igual en otro proceso dentro del Job del runner: prueba
+# drenaje, archivo de orden, 75 y que el nuevo supervisor retoma sin relanzar,
+# salvo la marca de breakaway, que cubre la PC.
+SEPARA_TRABAJADOR = os.name != "nt" or deja_breakaway()
+
 DRIVER = """
 import json, sys
+from motor import plataforma
 from motor.__main__ import main as motor_main
 from motor.encargos import cli
+from tests.test_reinicio_ordenado import _lanzar_sin_breakaway
 
 config = json.loads(sys.argv[1])
 lanzamientos = config["lanzamientos"]
 turno_s = config["turno_s"]
+if config.get("sin_separacion"):
+    plataforma.lanzar_separado = _lanzar_sin_breakaway
 
 codigo = (
     "import json, pathlib, time\\n"
@@ -75,6 +88,31 @@ def _codigo_agente(lanzamientos: Path, turno_s: float) -> str:
         "    f.flush()\n"
         f"time.sleep({turno_s!r})\n"
     )
+
+
+_GRUPO_SIN_BREAKAWAY = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+    subprocess, "CREATE_NO_WINDOW", 0
+)
+
+
+def _lanzar_sin_breakaway(cmd, cwd, env, log):
+    with open(log, "ab") as out:
+        proceso = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            creationflags=_GRUPO_SIN_BREAKAWAY,
+        )
+    return {
+        "pid": proceso.pid,
+        "boot_id": plataforma.boot_id(),
+        "inicio": plataforma.hora_inicio(proceso.pid),
+        "job": "",
+        "separacion": "sin_breakaway",
+    }
 
 
 def _lanzador_falso(lanzamientos: Path, turno_s: float):
@@ -120,6 +158,7 @@ class ReinicioOrdenado(unittest.TestCase):
             ],
             "lanzamientos": str(self.lanzamientos),
             "turno_s": turno_s,
+            "sin_separacion": not SEPARA_TRABAJADOR,
         }
         proceso = subprocess.Popen(
             [sys.executable, str(self.driver), json.dumps(config)],
@@ -197,9 +236,18 @@ class ReinicioOrdenado(unittest.TestCase):
         )
 
     def pasada(self, turno_s: float = 0) -> None:
-        with mock.patch.object(
-            cli, "_lanzador", _lanzador_falso(self.lanzamientos, turno_s)
-        ):
+        with contextlib.ExitStack() as pila:
+            pila.enter_context(
+                mock.patch.object(
+                    cli, "_lanzador", _lanzador_falso(self.lanzamientos, turno_s)
+                )
+            )
+            if not SEPARA_TRABAJADOR:
+                pila.enter_context(
+                    mock.patch.object(
+                        plataforma, "lanzar_separado", _lanzar_sin_breakaway
+                    )
+                )
             cli.main(
                 [
                     "supervisor",
@@ -324,8 +372,6 @@ class ReinicioOrdenado(unittest.TestCase):
         self.assertIsNone(enc.proc, "el turno terminado no quedo cerrado")
 
     def test_la_orden_por_archivo_es_el_camino_de_windows_sin_senales(self):
-        if shutil.which("bash") is None:
-            self.skipTest("el agente de ensayo necesita bash (Git Bash en Windows)")
         self.encargar("primero", "trabajo en curso")
         proceso = self.arrancar(turno_s=1)
         primero = self.esperar_lanzamiento()

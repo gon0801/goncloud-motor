@@ -272,6 +272,14 @@ class ModulosWindows(unittest.TestCase):
         self.assertIn("tests.test_prepara_pc", preparacion)
         self.assertIn("tests.test_encargos_despliegue_real", encargos)
 
+    def test_un_cambio_al_bucle_corre_el_reinicio_ordenado_en_windows(self):
+        modulos = trabajos_ci.modulos_windows(["motor/encargos/cli.py"])
+        self.assertIn(
+            "tests.test_reinicio_ordenado",
+            modulos,
+            "el reinicio del supervisor no se prueba en el job windows",
+        )
+
     def test_una_ruta_desconocida_corre_la_bateria_completa(self):
         self.assertTrue(hasattr(trabajos_ci, "MODULOS_WINDOWS_COMPLETO"))
         self.assertEqual(

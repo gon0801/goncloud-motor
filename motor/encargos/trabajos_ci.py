@@ -109,6 +109,7 @@ MODULOS_WINDOWS_COMPLETO = (
     "tests.test_relevo_sin_modelos",
     "tests.test_cli_reabrir",
     "tests.test_compuerta_e2e",
+    "tests.test_reinicio_ordenado",
 )
 
 # Qué módulos de Windows ejercitan cada parte. Un cambio suma los grupos que
@@ -148,6 +149,7 @@ _GRUPOS_WINDOWS = (
             "tests.test_director_capacidades",
             "tests.test_lanzamiento_directo_windows",
             "tests.test_compuerta_e2e",
+            "tests.test_reinicio_ordenado",
         ),
     ),
     (
