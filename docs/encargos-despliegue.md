@@ -28,8 +28,10 @@ el árbol del supervisor en ese SHA y que el registro de encargos pliegue entero
 En la PC el comando y el comprobador usan el intérprete de `motor-runtime`
 (`MOTOR_PC_PYTHON`), no `uv run`: la junction de uv no se puede recorrer desde ssh.
 El motor viejo de planes se sigue instalando con `ops/instala-todo.sh` en
-`~/motor`, `~/motor-conf` y `~/.motor`; ese comando no toca el motor de encargos
-y el comando nuevo nunca toca esas rutas.
+`~/motor`, `~/motor-conf` y `~/.motor`. Ese comando además deja el árbol del
+supervisor de encargos en su etiqueta fija `v1.0.35` y lo reinicia, así que no
+sirve para desplegar encargos; para eso está el comando nuevo, que nunca toca
+`~/motor`, `~/motor-conf` ni `~/.motor`.
 
 El resto de este documento describe el contrato de despliegue por fase que ejecuta
 el propio motor con recetas `despliegue:`.

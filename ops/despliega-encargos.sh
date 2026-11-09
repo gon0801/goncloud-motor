@@ -205,7 +205,11 @@ try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(1)
-sys.exit(0 if d.get("parado") else 1)'
+# Sin vigilante ni supervisor anotado no hay nada que parar: --parar solo dejó
+# su petición y el arranque la borra.
+if d.get("parado") or (not d.get("vigilante_pid") and not d.get("supervisor_pid")):
+    sys.exit(0)
+sys.exit(1)'
 }
 
 pc_esperar_parado() { # <ruta> <tope>
@@ -243,15 +247,8 @@ falla() { # <maquina> <paso> <causa> <anterior>
 }
 
 for m in $maquinas; do
-  paso="leer el árbol del supervisor"
-  runtime="$(ruta_runtime_encargos_de "$m" 2>/dev/null)" \
-    || falla "$m" "$paso" "no pude leer el árbol del supervisor" ""
-  if [ -z "$runtime" ]; then
-    falla "$m" "$paso" "no hay un árbol de encargos distinto de ~/motor" ""
-  fi
-  # Un reintento tras una falla a mitad no pierde el anterior: si ya hay un
-  # pendiente o un recibo para el mismo destino, ese anterior es el que se
-  # conserva para volver.
+  # El pendiente que ya hubiera manda sobre el HEAD del árbol: si el reintento
+  # falla antes de leer el árbol, el anterior original no se pierde.
   estado="$(lee_estado_encargos "$m" 2>/dev/null)" || estado=""
   pasada_sha="$(printf '%s\n' "$estado" | sed -n '1p')"
   pasada_completa="$(printf '%s\n' "$estado" | sed -n '2p')"
@@ -260,11 +257,22 @@ for m in $maquinas; do
   pendiente_anterior="$(printf '%s\n' "$estado" | sed -n '5p')"
   pendiente_destino="$(printf '%s\n' "$estado" | sed -n '6p')"
   recibo_anterior="$(printf '%s\n' "$estado" | sed -n '7p')"
+  anterior_previo=""
+  if [ "$pendiente_destino" = "$sha" ] && [ -n "$pendiente_anterior" ]; then
+    anterior_previo="$pendiente_anterior"
+  fi
+
+  paso="leer el árbol del supervisor"
+  runtime="$(ruta_runtime_encargos_de "$m" 2>/dev/null)" \
+    || falla "$m" "$paso" "no pude leer el árbol del supervisor" "$anterior_previo"
+  if [ -z "$runtime" ]; then
+    falla "$m" "$paso" "no hay un árbol de encargos distinto de ~/motor" "$anterior_previo"
+  fi
 
   cabeza="$(sha_del_arbol "$m" "$runtime" 2>/dev/null)" || cabeza=""
   anterior="$cabeza"
-  if [ "$pendiente_destino" = "$sha" ] && [ -n "$pendiente_anterior" ]; then
-    anterior="$pendiente_anterior"
+  if [ -n "$anterior_previo" ]; then
+    anterior="$anterior_previo"
   elif [ "$recibo_sha" = "$sha" ] && [ -n "$recibo_anterior" ]; then
     anterior="$recibo_anterior"
   fi

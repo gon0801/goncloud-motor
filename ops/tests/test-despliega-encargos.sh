@@ -71,10 +71,12 @@ case "$host" in
     case "$cmd" in
       *iniciar_encargos_pc.py*--parar*)
         : >"$phome/.motor-encargos/vigilante.parar"
-        printf '{"parado": true}\n'
+        if [ -n "${FAKE_PC_SIN_VIGILANTE:-}" ]; then printf '{}\n'; else printf '{"parado": true}\n'; fi
         exit 0 ;;
       *iniciar_encargos_pc.py*--estado*)
-        if [ -f "$phome/.motor-encargos/vigilante.parar" ]; then
+        if [ -n "${FAKE_PC_SIN_VIGILANTE:-}" ] && [ ! -f "$phome/.motor-encargos/arrancado" ]; then
+          printf '{}\n'
+        elif [ -f "$phome/.motor-encargos/vigilante.parar" ]; then
           printf '{"parado": true}\n'
         else
           printf '{"supervisor_pid": 4242, "supervisor": {"sid": "S-1-5-21", "session": 1, "in_job": false}, "parado": false}\n'
@@ -86,6 +88,7 @@ case "$host" in
           exit 1
         fi
         rm -f "$phome/.motor-encargos/vigilante.parar"
+        : >"$phome/.motor-encargos/arrancado"
         sha="$(git -C "$phome/motor-sucesor" rev-parse HEAD 2>/dev/null || true)"
         printf '{"sha": "%s", "ruta": "%s", "hora": "2026-11-09T10:00:00Z", "completa": true, "encargos": 0, "pid": %s}\n' \
           "$sha" "$phome/motor-sucesor" "$FAKE_PID" >"$phome/.motor-encargos/supervisor-pasada.json"
@@ -209,6 +212,22 @@ contiene "dice el anterior que conserva" "$S/salida" "conserva el anterior (${AN
   || fallo "el reintento de la Mac perdió el anterior en el pendiente"
 [ "$(campo_json "$S/mini/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
   || fallo "el reintento de la Mini perdió el anterior en el pendiente"
+
+echo "# la PC sin vigilante no culpa a la parada"
+reset_maquinas
+espera "despliega sin vigilante en la PC" 0 env FAKE_PC_SIN_VIGILANTE=1 bash "$SCRIPT" --sha "$SHA"
+contiene "lo dice" "$S/salida" "desplegado en:mac mini pc"
+[ "$(git -C "$S/pc-home/motor-sucesor" rev-parse HEAD)" = "$SHA" ] || fallo "la PC no quedó en el SHA"
+grep -q -- '--parar' "$FAKE_LOG" || fallo "la PC no pasó por --parar"
+
+echo "# un fallo temprano del reintento no borra el anterior"
+reset_maquinas
+espera "la primera corrida falla en la PC" '!0' env FAKE_PC_ARRANQUE_FALLA=1 bash "$SCRIPT" --sha "$SHA"
+rm -rf "$S/mac/motor-sucesor"
+espera "el reintento se niega por la Mac" '!0' bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la Mac y el paso" "$S/salida" "FALLA mac en leer el árbol del supervisor"
+[ "$(campo_json "$S/mac/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
+  || fallo "el fallo temprano borró el anterior que se quería conservar"
 
 echo "# el comprobador no cae al recibo del motor viejo"
 reset_maquinas
