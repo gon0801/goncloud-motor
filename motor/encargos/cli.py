@@ -745,7 +745,13 @@ def _ordenar_reinicio(base: Path, clave: str, tope: int, hora: str) -> dict:
 
 
 def _tomar_orden_reinicio(base: Path) -> dict | None:
-    """Consume la orden (la borra) para que el supervisor nuevo no la repita."""
+    """Consume la orden (la borra) para que el supervisor nuevo no la repita.
+
+    Solo se da por tomada si el borrado se completó. Si el archivo sigue en la
+    base, el supervisor nuevo lo vería como una orden nueva y reiniciaría en
+    bucle; se devuelve None y el bucle lo reintenta en la vuelta siguiente,
+    mientras `lanzar_si_no_hay_orden` deja de lanzar turnos nuevos.
+    """
     ruta = _ruta_orden_reinicio(base)
     if not ruta.is_file():
         return None
@@ -758,8 +764,17 @@ def _tomar_orden_reinicio(base: Path) -> dict | None:
         pass
     try:
         ruta.unlink()
-    except OSError:
-        pass
+    except FileNotFoundError:
+        # Otro supervisor la consumió entre la lectura y el borrado.
+        return None
+    except OSError as exc:
+        print(
+            f"motor: no pude consumir la orden de reinicio ({exc}); "
+            "no se da por tomada y se reintenta",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
     return orden
 
 

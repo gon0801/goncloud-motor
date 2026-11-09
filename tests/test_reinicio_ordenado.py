@@ -371,6 +371,22 @@ class ReinicioOrdenado(unittest.TestCase):
         assert enc is not None
         self.assertIsNone(enc.proc, "el turno terminado no quedo cerrado")
 
+    def test_si_el_borrado_de_la_orden_falla_no_se_da_por_tomada(self):
+        self.orden(tope_s=5, clave="no-se-borra")
+        ruta = self.base / "reiniciar-supervisor.json"
+        with mock.patch.object(Path, "unlink", side_effect=PermissionError("ocupado")):
+            tomada = cli._tomar_orden_reinicio(self.base)
+        self.assertIsNone(
+            tomada,
+            "el supervisor tomo una orden que sigue en la base y reiniciaria en bucle",
+        )
+        self.assertTrue(ruta.is_file(), "la orden desaparecio aunque el borrado fallo")
+        tomada = cli._tomar_orden_reinicio(self.base)
+        self.assertIsNotNone(
+            tomada, "la orden no se pudo tomar cuando el borrado ya funciona"
+        )
+        self.assertFalse(ruta.exists(), "la orden quedo en la base tras consumirla")
+
     def test_la_orden_por_archivo_es_el_camino_de_windows_sin_senales(self):
         self.encargar("primero", "trabajo en curso")
         proceso = self.arrancar(turno_s=1)
