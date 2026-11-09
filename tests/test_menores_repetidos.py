@@ -351,6 +351,48 @@ class CandadosDeSecretos(unittest.TestCase):
             )
             self.assertIn("targetRules", salida.stderr)
 
+    def test_una_regla_deshabilitada_en_extend_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto.replace(
+                    "useDefault = true",
+                    'useDefault = true\ndisabledRules = ["generic-api-key"]',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "disabledRules apaga reglas de gitleaks",
+            )
+            self.assertIn("disabledRules", salida.stderr)
+
+    def test_una_regla_deshabilitada_con_excepcion_pasa(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto.replace(
+                    "useDefault = true",
+                    'useDefault = true\ndisabledRules = ["generic-api-key"]  '
+                    "# excepcion: revisado por David 2026-11-09",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(salida.returncode, 0, salida.stderr)
+
     def test_apagar_las_reglas_por_defecto_falla(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             raiz = _arbol_temporal(tmp)

@@ -744,6 +744,13 @@ def _revisar_gitleaks(raiz: Path) -> list[str]:
             ".gitleaks.toml: useDefault apagado; las reglas por defecto no "
             "corren. Anota la excepcion en la misma linea con razon y fecha"
         )
+    deshabilitadas = _lista(extend.get("disabledRules"))
+    if deshabilitadas and not _hay_excepcion(lineas, set(deshabilitadas)):
+        problemas.append(
+            ".gitleaks.toml: disabledRules apaga reglas de gitleaks "
+            f"({', '.join(sorted(deshabilitadas))}); anota la excepcion en la "
+            "misma linea con razon y fecha"
+        )
     globales = [config.get("allowlist")]
     globales.extend(config.get("allowlists") or [])
     for bloque in globales:
