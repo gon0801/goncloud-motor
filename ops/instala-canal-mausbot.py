@@ -33,7 +33,7 @@ def _entrada(python: str, transporte: str) -> dict:
 def instalar(base: Path, python: str, transporte: str) -> dict:
     ruta = base / "canal.json"
     try:
-        doc = json.loads(ruta.read_text(encoding="utf-8"))
+        doc = json.loads(ruta.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         doc = {}
     if not isinstance(doc, dict):

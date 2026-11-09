@@ -332,22 +332,67 @@ class CanalMausbot(unittest.TestCase):
         self.assertEqual(segunda.returncode, 0, segunda.stderr.decode())
         self.assertEqual((base / "canal.json").read_bytes(), antes)
 
-    def test_parar_sin_parada_demostrada_rechaza_a_mausbot(self):
+    def test_instalador_tolera_el_bom_de_canal_json(self):
+        base = self.tmp / "pc-bom"
+        base.mkdir()
+        original = {
+            "telegram": {"comando": ["tg", "send"]},
+            "hermes": {"comando": ["hm", "send"]},
+        }
+        (base / "canal.json").write_bytes(
+            b"\xef\xbb\xbf" + json.dumps(original).encode("utf-8")
+        )
+        comando = [
+            sys.executable, str(INSTALADOR), "--base", str(base),
+            "--python", "py", "--transporte", "tr",
+        ]
+        hecho = subprocess.run(comando, capture_output=True, timeout=20)
+        self.assertEqual(hecho.returncode, 0, hecho.stderr.decode())
+        doc = json.loads((base / "canal.json").read_text(encoding="utf-8"))
+        self.assertEqual(doc["telegram"], original["telegram"])
+        self.assertEqual(doc["hermes"], original["hermes"])
+        self.assertEqual(
+            doc["mausbot"],
+            {
+                "comando": ["py", "tr", "send"],
+                "conciliacion": ["py", "tr", "check"],
+                "idempotente": True,
+            },
+        )
+
+    def test_la_compuerta_parar_de_mausbot_lee_la_capacidad(self):
         reg = Registro(self.base)
         self.addCleanup(reg.close)
         recibo = directores.encargar(
-            reg, "Haz algo", "clave-1", "2026-01-01T00:00:00Z",
+            reg, "Haz algo", "clave-parar", "2026-01-01T00:00:00Z",
             "mausbot", "mausbot", "durable",
         )
-        salida = directores.relay(
-            reg, recibo["encargo"], "parar", "parar-1",
+        politica = self.base / "politica"
+        politica.mkdir(parents=True, exist_ok=True)
+        (politica / "mausbot.json").write_text(
+            json.dumps({"parada": False}), encoding="utf-8"
+        )
+        apagada = directores.relay(
+            reg, recibo["encargo"], "parar", "parar-apagada",
             "2026-01-01T00:00:01Z", "mausbot",
         )
-        self.assertFalse(salida["parada_ofrecida"])
+        self.assertFalse(apagada["parada_ofrecida"])
         self.assertEqual(
-            salida["motivo"],
+            apagada["motivo"],
             "MausBot no tiene parada demostrada; el trabajo sigue",
         )
+        self.assertEqual(reg.fold(recibo["encargo"]).estado, "recibido")
+        (politica / "mausbot.json").write_text(
+            json.dumps({"parada": True}), encoding="utf-8"
+        )
+        encendida = directores.relay(
+            reg, recibo["encargo"], "parar", "parar-encendida",
+            "2026-01-01T00:00:02Z", "mausbot",
+        )
+        self.assertFalse(encendida.get("rechazada", False))
+        self.assertEqual(encendida["estado"], "deteniendo")
+        self.assertEqual(encendida["motivo"], "parada aceptada")
+        self.assertEqual(reg.fold(recibo["encargo"]).estado, "deteniendo")
 
 
 def _limpiar(tmp: Path) -> None:
