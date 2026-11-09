@@ -95,9 +95,9 @@ if [ "$reiniciado" = 1 ] && [ -z "${FAKE_SIN_PASADA:-}" ] && [ -n "$pasa_sha" ];
 fi
 if [ "$host" = gwpc ]; then
   ok_pc() { [ -z "${FAKE_PC_FALLA:-}" ] || { echo "git: no pude" >&2; exit 1; }; }
-  if [[ "$*" == *'python -c "'* && "$*" != *sol_remoto* ]]; then
+  if [[ "$*" == *' -c "'* && "$*" != *sol_remoto* ]]; then
     cmd="$*"
-    tmp="${cmd#*python -c \"}"
+    tmp="${cmd#* -c \"}"
     code="${tmp%%\"*}"
     rest="${tmp#*\"}"
     # shellcheck disable=SC2086

@@ -10,6 +10,9 @@ CONF_URL="${MOTOR_CONF_URL:-git@github.com:gon0801/goncloud-motor-conf.git}"
 ETIQUETA="${MOTOR_ETIQUETA:-v1.0.35}"
 PC_USUARIO="${MOTOR_PC_USUARIO:-ehven}"
 PC_UV="${MOTOR_PC_UV:-C:\\Users\\ehven\\.local\\bin\\uv.exe}"
+# El intérprete de motor-runtime de la PC es el que funciona por ssh. La junction
+# de uv no se puede recorrer desde ssh (os error 448).
+PC_PYTHON="${MOTOR_PC_PYTHON:-C:\\Users\\ehven\\motor-runtime\\cpython-3.11.16-windows-x86_64-none\\python.exe}"
 TAREA_PC="GoncloudMotor"
 SERVICIO_MAC="com.goncloud.motor"
 
@@ -49,6 +52,15 @@ py_pc() {
   local code=$1
   shift
   ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python -c \"$code\" $*"
+}
+
+# py_pc_runtime <codigo> [args...]: el intérprete de motor-runtime, el que responde
+# por ssh en la PC. Para el motor de encargos; py_pc sigue siendo el de la instalación
+# vieja de planes.
+py_pc_runtime() {
+  local code=$1
+  shift
+  ssh_a "$(host_de pc)" "$PC_PYTHON -B -c \"$code\" $*"
 }
 
 # Programa real en argv, en base64: el python remoto no puede llevar comillas ni if/else.
@@ -124,6 +136,12 @@ py_pc_prog() {
   py_pc "$PC_EXEC" "$b64" "$@"
 }
 
+py_pc_runtime_prog() {
+  local b64=$1
+  shift
+  py_pc_runtime "$PC_EXEC" "$b64" "$@"
+}
+
 lee_archivo_pc() {
   py_pc_prog "$LEE_ARCHIVO_PC_B64" "$1"
 }
@@ -165,6 +183,12 @@ maquina_local_pc() {
   py_pc 'import base64,sys; programa=base64.b64decode(sys.argv.pop(1)); exec(programa)' "$programa" "$@"
 }
 
+maquina_local_pc_runtime() {
+  local programa
+  programa="$(origen_maquina_b64)" || return 1
+  py_pc_runtime 'import base64,sys; programa=base64.b64decode(sys.argv.pop(1)); exec(programa)' "$programa" "$@"
+}
+
 # ruta_runtime_de <m>: el árbol distinto de ~/motor que ejecuta el supervisor en
 # esa máquina, vacío si el despliegue ya instala en el mismo árbol. La decisión
 # vive en ops/maquina_local.py.
@@ -179,6 +203,17 @@ set -euo pipefail
 programa=$2
 python3 -c 'import base64,sys; programa=base64.b64decode(sys.argv.pop(1)); exec(programa)' "$programa" ruta_runtime
 REMOTO
+  fi
+}
+
+# ruta_runtime_encargos_de <m>: el árbol del supervisor de encargos. En la PC usa
+# el intérprete de motor-runtime porque uv no se puede recorrer desde ssh.
+ruta_runtime_encargos_de() {
+  local m=$1
+  if [ "$m" = pc ]; then
+    maquina_local_pc_runtime ruta_runtime | tr -d '\r'
+  else
+    ruta_runtime_de "$m"
   fi
 }
 

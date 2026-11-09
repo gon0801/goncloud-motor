@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Instala el motor en la Mac, la Mini y/o la PC.
+# Instala el motor viejo de planes en la Mac, la Mini y/o la PC (~/motor, ~/motor-conf,
+# ~/.motor). No es el motor de encargos: para eso, ops/despliega-encargos.sh, que
+# nunca toca esas rutas.
 # --maquina mac|mini|pc instala solo esa. Sin ella, las tres.
 # --conf-sha SHA fija la configuración. Sin ella se toma una vez el HEAD del remoto
 # y no se vuelve a seguir la rama.
@@ -625,7 +627,7 @@ case "$espera" in
   "" | *[!0-9]*) espera=120 ;;
 esac
 echo "Comprobando el despliegue en:$MAQUINAS (hasta ${espera}s para la pasada con ${sha:0:12})"
-if ! bash "$aqui/comprueba-despliegue.sh" --sha "$sha" --maquina "$MAQUINAS" --espera "$espera" --reinicio; then
+if ! bash "$aqui/comprueba-despliegue.sh" --sha "$sha" --maquina "$MAQUINAS" --espera "$espera" --reinicio --recibo-viejo; then
   echo "El código quedó instalado en:$MAQUINAS, pero el despliegue no se comprueba en todas. Reinicia el supervisor con ${sha:0:12} y repite; la comprobación es idempotente." >&2
   exit 1
 fi
