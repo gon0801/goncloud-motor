@@ -349,6 +349,32 @@ class ListaCerrada(Banco):
             "un pendiente que el estado vigente ya no genera no lo visita nadie",
         )
 
+    def test_un_pendiente_vigente_de_un_encargo_activo_si_bloquea_el_sondeo(self):  # no-roja-en-base: caracterización de la rama positiva del predicado
+        ident = self.encargo()
+        self.reg.anotar(
+            ident,
+            {
+                "kind": "fases",
+                "data": {"fases": [{"id": "A", "resultado": "fase"}], "hora": HORA},
+            },
+            "fase",
+        )
+        self.caido()
+
+        directores.drenar(self.reg, cortar="antes", ahora=T0)
+
+        inicio = directores.id_aviso(ident, "avance:inicio:inicio")
+        self.assertEqual(self.guardado(inicio)["estado"], "pendiente")
+        self.assertEqual(
+            self.sondeos(),
+            [],
+            "un pendiente que el estado vigente todavía genera sí detiene el sondeo",
+        )
+        self.assertEqual(
+            [c["canal"] for c in canales.canales_caidos(self.base, ahora=T0 + 1000)],
+            ["hermes"],
+        )
+
     def test_el_cierre_incierto_de_la_misma_pasada_no_bloquea_el_sondeo(self):
         ident = self.encargo(via="directa")
         self.terminar(ident)
