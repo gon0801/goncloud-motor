@@ -30,6 +30,7 @@ PRUEBAS = (
     "tests.test_relevo_sin_modelos",
     "tests.test_cli_reabrir",
     "tests.test_compuerta_e2e",
+    "tests.test_reinicio_ordenado",
 )
 
 

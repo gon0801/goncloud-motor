@@ -49,6 +49,14 @@ from .rutas import candidatas_de, elegir, proximo, solicitado_de
 from .seleccion import solicitar_modelos
 
 
+# Orden de reinicio ordenado. El comando deja el pedido en la base y el bucle lo
+# consume al empezar una vuelta; el recibo queda aparte para que un supervisor
+# nuevo no lo confunda con otra orden.
+ORDEN_REINICIO = "reiniciar-supervisor.json"
+RECIBO_REINICIO = "supervisor-reinicio.json"
+REINICIO_TOPE_S = 300
+
+
 def _json(datos: dict) -> int:
     print(json.dumps(datos, ensure_ascii=False, sort_keys=True))
     if datos.get("conflicto") or datos.get("rechazada"):
@@ -157,6 +165,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--umbral", type=float, default=30.0)
     s.add_argument("--agente", choices=(*ADAPTADORES, "sleep", "ensayo"), default="")
     s.add_argument("--respaldo", choices=tuple(ADAPTADORES), action="append", default=[])
+
+    s = sub.add_parser("reiniciar-supervisor")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--clave", default="")
+    s.add_argument("--tope", type=int, default=REINICIO_TOPE_S)
 
     s = sub.add_parser("traer-main")
     s.add_argument("encargo")
@@ -341,6 +354,10 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
         return _json(afirmar(reg, args.encargo, args.texto, hora))
     if args.cmd == "parada-local":
         return _json(parada_local(reg.base, args.clave, hora))
+    if args.cmd == "reiniciar-supervisor":
+        return _json(
+            _ordenar_reinicio(reg.base, args.clave, args.tope, hora)
+        )
     if args.cmd == "supervisor":
         return _supervisor(reg, args)
     print(f"comando desconocido: {args.cmd}", file=sys.stderr)
@@ -676,6 +693,180 @@ def _hay_ruta(reg: Registro, ruta: tuple[str, ...]) -> bool:
     return False
 
 
+def _ruta_orden_reinicio(base: Path) -> Path:
+    return Path(base) / ORDEN_REINICIO
+
+
+def _tope_del_orden(orden: dict) -> int:
+    valor = orden.get("tope_s", REINICIO_TOPE_S)
+    if isinstance(valor, bool) or not isinstance(valor, int):
+        return REINICIO_TOPE_S
+    return max(0, min(valor, 900))
+
+
+def _ordenar_reinicio(base: Path, clave: str, tope: int, hora: str) -> dict:
+    """Deja la orden de reinicio ordenado en la base.
+
+    Es un archivo, no una señal: en Windows `taskkill /F` no se puede atrapar y
+    en Mac y la Mini `launchctl kickstart -k` manda SIGTERM sin esperar a que el
+    supervisor termine. El bucle lee el archivo en cada vuelta, así el mismo
+    camino sirve en las tres máquinas.
+    """
+    ruta = _ruta_orden_reinicio(base)
+    if ruta.is_file():
+        try:
+            previo = leer_json(ruta)
+        except (OSError, ValueError):
+            previo = None
+        if isinstance(previo, dict):
+            return {
+                "orden": "reinicio",
+                "archivo": str(ruta),
+                "clave": str(previo.get("clave") or ""),
+                "hora": str(previo.get("hora") or ""),
+                "tope_s": _tope_del_orden(previo),
+                "repetida": True,
+            }
+    documento = {
+        "clave": clave or f"reinicio-{hora}",
+        "hora": hora,
+        "tope_s": max(0, min(int(tope), 900)),
+    }
+    temporal = ruta.with_name(ruta.name + ".tmp")
+    escribir_texto(temporal, json.dumps(documento, ensure_ascii=False, sort_keys=True))
+    os.replace(temporal, ruta)
+    return {
+        "orden": "reinicio",
+        "archivo": str(ruta),
+        "clave": documento["clave"],
+        "hora": hora,
+        "tope_s": documento["tope_s"],
+    }
+
+
+def _tomar_orden_reinicio(base: Path) -> dict | None:
+    """Consume la orden (la borra) para que el supervisor nuevo no la repita.
+
+    Solo se da por tomada si el borrado se completó. Si el archivo sigue en la
+    base, el supervisor nuevo lo vería como una orden nueva y reiniciaría en
+    bucle; se devuelve None y el bucle lo reintenta en la vuelta siguiente,
+    mientras `lanzar_si_no_hay_orden` deja de lanzar turnos nuevos.
+    """
+    ruta = _ruta_orden_reinicio(base)
+    if not ruta.is_file():
+        return None
+    orden: dict = {}
+    try:
+        leido = leer_json(ruta)
+        if isinstance(leido, dict):
+            orden = leido
+    except (OSError, ValueError):
+        pass
+    try:
+        ruta.unlink()
+    except FileNotFoundError:
+        # Otro supervisor la consumió entre la lectura y el borrado.
+        return None
+    except OSError as exc:
+        print(
+            f"motor: no pude consumir la orden de reinicio ({exc}); "
+            "no se da por tomada y se reintenta",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    return orden
+
+
+def _turnos_en_curso(reg: Registro) -> list[dict]:
+    """Los intentos con proceso o reserva abiertos, tal como los ve el registro.
+
+    Un turno separado sigue vivo aunque el supervisor muera; esta lista es la
+    que el recibo deja dicha y la que el reinicio espera a que cierre.
+    """
+    vivos = []
+    for ident in reg.ids():
+        enc = plegar_aislado(reg, ident)
+        if enc is None or (enc.proc is None and not enc.reserva):
+            continue
+        proc = enc.proc
+        vivos.append(
+            {
+                "encargo": ident,
+                "generacion": enc.generacion,
+                "rol": enc.rol,
+                "token": enc.candidato or enc.conductor,
+                "pid": proc.pid if proc is not None else None,
+                "inicio": proc.inicio if proc is not None else "",
+                "host": (proc.host if proc is not None else "") or enc.host,
+                "estado": enc.estado,
+                "reserva": bool(enc.reserva),
+            }
+        )
+    return vivos
+
+
+def _anotar_reinicio(
+    base: Path, orden: dict, vivos: list[dict], motivo: str, tope_s: int, hora: str
+) -> None:
+    documento = {
+        "hora": hora,
+        "clave": str(orden.get("clave") or ""),
+        "motivo": motivo,
+        "tope_s": tope_s,
+        "vivos": vivos,
+    }
+    ruta = Path(base) / RECIBO_REINICIO
+    temporal = ruta.with_name(ruta.name + ".tmp")
+    escribir_texto(
+        temporal, json.dumps(documento, ensure_ascii=False, sort_keys=True)
+    )
+    os.replace(temporal, ruta)
+    if vivos:
+        nombres = ", ".join(
+            f"{v['encargo']} (pid {v['pid']}, reserva {v['reserva']})" for v in vivos
+        )
+        print(
+            f"motor: reinicio con tope vencido; quedan vivos: {nombres}",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(
+            "motor: reinicio ordenado, sin turnos en curso",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _drenar_y_salir(reg: Registro, paso, orden: dict, intervalo: float) -> int:
+    """Espera a que cierren los turnos en curso y sale para que el servicio relance.
+
+    Con el tope vencido sale igual y deja en el recibo qué turnos siguieron
+    vivos: sus trabajadores son separados, así que el supervisor nuevo los
+    encuentra por su proceso y los retoma sin relanzarlos.
+    """
+    from motor.version import SALIDA_RELANZAR
+
+    tope_s = _tope_del_orden(orden)
+    pausa = intervalo if intervalo > 0 else 0.05
+    pausa = min(pausa, 1.0)
+    fin = time.monotonic() + tope_s
+    vivos = _turnos_en_curso(reg)
+    while vivos and time.monotonic() < fin:
+        try:
+            paso(permitir_lanzar=False)
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+        time.sleep(pausa)
+        vivos = _turnos_en_curso(reg)
+    motivo = "drenado" if not vivos else "tope"
+    _anotar_reinicio(reg.base, orden, vivos, motivo, tope_s, ahora_iso())
+    return SALIDA_RELANZAR
+
+
 def _supervisor(reg: Registro, args) -> int:
     from motor import version
 
@@ -701,21 +892,29 @@ def _supervisor(reg: Registro, args) -> int:
 
         resumen_encargos.asegurar_config(reg.base)
     drenador = None if args.una_vez else DrenadoAparte(reg.base)
+    base = reg.base
 
-    def paso() -> list[dict]:
+    def lanzar_si_no_hay_orden(enc, prompt, espacio, sesion):
+        # La orden se mira también justo antes de cada lanzamiento: si llega a
+        # mitad de una pasada, esa pasada no empieza turnos nuevos.
+        if _ruta_orden_reinicio(base).is_file():
+            return None
+        return lanzar(enc, prompt, espacio, sesion)
+
+    def paso(permitir_lanzar: bool = True) -> list[dict]:
         hora = ahora_iso()
         marcar_ruta(reg, ruta, hora)
-        habilitado = _hay_ruta(reg, ruta)
+        habilitado = permitir_lanzar and _hay_ruta(reg, ruta)
         informes = _paso_del_supervisor(
             reg,
             hora,
-            lanzar,
+            lanzar_si_no_hay_orden,
             habilitado,
             args.umbral,
-            _puerto_github(reg.base),
+            _puerto_github(base),
             drenador,
         )
-        _marcar_pasada(reg.base, hora, informes)
+        _marcar_pasada(base, hora, informes)
         return informes
 
     if args.una_vez:
@@ -725,7 +924,6 @@ def _supervisor(reg: Registro, args) -> int:
 
     from motor.integraciones.canales import canales_caidos
 
-    base = reg.base
     # La señal del supervisor lee MOTOR_KUMA_URL del secretos.env de su propia base (en la Mini,
     # ~/.motor-encargos/secretos.env). El daemon del modo planes lee el de ~/.motor: cada proceso, su archivo.
     try:
@@ -744,6 +942,9 @@ def _supervisor(reg: Registro, args) -> int:
     try:
         fallidas = 0
         while True:
+            orden = _tomar_orden_reinicio(base)
+            if orden is not None:
+                return _drenar_y_salir(reg, paso, orden, args.intervalo)
             try:
                 informes = paso()
             except Exception:
