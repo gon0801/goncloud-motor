@@ -6805,6 +6805,51 @@ def _observacion_de_la_version(
     return None
 
 
+_TOPE_COLA_DE_FALLO = 1200
+
+
+def _cola_de_salida(texto: object) -> str:
+    """El final de una salida, que es donde el fallo deja su causa."""
+    texto = str(texto or "").strip()
+    if len(texto) <= _TOPE_COLA_DE_FALLO:
+        return texto
+    return "[...]\n" + texto[-_TOPE_COLA_DE_FALLO:]
+
+
+def _detalle_en_rojo(ejecucion: dict) -> str:
+    """Objetivo, argv, rc y el final de stdout/stderr de una comprobacion en
+    rojo, para que el responsable corrija exactamente lo que fallo."""
+    objetivo = str(ejecucion.get("objetivo") or "comprobacion")
+    argv = ejecucion.get("argv")
+    comando = (
+        " ".join(str(x) for x in argv)
+        if isinstance(argv, list) and argv
+        else "(sin argv)"
+    )
+    lineas = [f"{objetivo}: rc {ejecucion.get('rc')} (argv: {comando})"]
+    for nombre in ("stdout", "stderr"):
+        cola = _cola_de_salida(ejecucion.get(nombre))
+        if cola:
+            lineas.append(f"{nombre} (final):\n{cola}")
+    return "\n".join(lineas)
+
+
+def _huella_de_fallas(observacion: dict) -> str:
+    """Identidad estable de las comprobaciones en rojo.
+
+    Usa objetivo, argv y rc, no la salida: un `Ran 26 tests in 5.370s` distinto
+    no es otra falla ni abre otra vuelta. Un cambio de comando o de rc si lo es.
+    """
+    firmas = [
+        [str(e.get("objetivo") or "comprobacion"), e.get("argv"), e.get("rc")]
+        for e in observacion.get("ejecuciones") or []
+        if isinstance(e, dict)
+        and not e.get("error_instrumento")
+        and (e.get("rc") is None or str(e.get("rc")) != "0")
+    ]
+    return digest({"fallas": firmas})[:12]
+
+
 def _fallas_de_observacion(
     observacion: dict,
 ) -> tuple[list[str], list[str]]:
@@ -6822,7 +6867,7 @@ def _fallas_de_observacion(
         if error:
             instrumentos.append(f"{objetivo}: {error}")
         elif ejecucion.get("rc") is None or str(ejecucion.get("rc")) != "0":
-            rojas.append(f"{objetivo}: rc {ejecucion.get('rc')}")
+            rojas.append(_detalle_en_rojo(ejecucion))
     return rojas, instrumentos
 
 
@@ -6832,12 +6877,15 @@ def _espera_por_observacion(
     espacio: Path,
     directorio: Path,
     hora: str,
-) -> Encargo | None:
+) -> tuple[Encargo, Resultado] | None:
     """None si la version vigente ya tiene una observacion verde del comprobador.
 
     Con comprobaciones declaradas, commit y push esperan a que el comprobador
-    registre su observacion sobre esta version. Si la observacion trae una
-    comprobacion en rojo, la version vuelve al responsable y no se publica.
+    registre su observacion sobre esta version: eso es una `Espera`. Si la
+    observacion trae una comprobacion en rojo, la version vuelve al responsable
+    y no se publica: eso es un `Devolver`, que abre su intento. Un `Devolver`
+    no puede viajar como si fuera una espera, o el trabajo queda dormido hasta
+    la quietud.
     """
     try:
         declaradas = leer_declaradas(interno_de(espacio))
@@ -6859,7 +6907,9 @@ def _espera_por_observacion(
                     "corregir .interno/comprobaciones.json sin tocar el producto",
                     hora, f"comprobaciones-{enc.generacion}",
                 )
-            return registro.fold(enc.id)
+                return registro.fold(enc.id) or enc, Devolver("responsable", str(exc))
+            observado = registro.fold(enc.id) or enc
+            return observado, Espera(observado.reanuda_en, observado.motivo)
     if declaradas is None or enc.producto is None:
         return None
     version = version_producto(espacio).firma
@@ -6877,7 +6927,8 @@ def _espera_por_observacion(
             _reanuda_en(30),
             hora,
         )
-        return registro.fold(enc.id)
+        observado = registro.fold(enc.id) or enc
+        return observado, Espera(observado.reanuda_en, observado.motivo)
     fallas, instrumentos = _fallas_de_observacion(observacion)
     if instrumentos:
         causa = "la observacion del comprobador no se pudo usar: " + "; ".join(
@@ -6892,10 +6943,10 @@ def _espera_por_observacion(
             hora,
             f"observacion-instrumento-{version[:12]}",
         )
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc, Devolver("responsable", causa)
     if not fallas:
         return None
-    causa = "la comprobacion del supervisor esta en rojo: " + "; ".join(fallas)
+    causa = "la comprobacion del supervisor esta en rojo: " + "\n".join(fallas)
     _devolver(
         registro,
         enc,
@@ -6904,9 +6955,9 @@ def _espera_por_observacion(
         "corregir la comprobacion en rojo antes de publicar; lo aprobado que "
         "no cambio se conserva",
         hora,
-        f"observacion-roja-{version[:12]}",
+        f"observacion-roja-{version[:12]}-{_huella_de_fallas(observacion)}",
     )
-    return registro.fold(enc.id)
+    return registro.fold(enc.id) or enc, Devolver("responsable", causa)
 
 
 def _head_antes_de_cerrar(
@@ -7306,9 +7357,9 @@ def _paso_entrega_paso(
         return _reabrir_revision(registro, enc, stale, hora), Devolver(
             "revisor", "el producto cambió desde la revisión aprobada"
         )
-    espera = _espera_por_observacion(registro, enc, espacio, directorio, hora)
-    if espera is not None:
-        return espera, Espera(espera.reanuda_en, espera.motivo)
+    observado = _espera_por_observacion(registro, enc, espacio, directorio, hora)
+    if observado is not None:
+        return observado
     sha, causa = _commit_push(enc, espacio)
     if causa:
         punta = ""
