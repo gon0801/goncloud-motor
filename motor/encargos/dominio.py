@@ -1636,6 +1636,11 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo
     return resultado
 
 
+def normaliza_comando(texto: object) -> str:
+    """El comando de una comprobacion con los espacios normalizados."""
+    return " ".join(str(texto or "").split())
+
+
 def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
     kind = evento["kind"]
     d = evento["data"]
@@ -2043,11 +2048,18 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         )
         ids = {h.id for h in nuevos}
         verdes = set(d.get("verdes") or ())
+        comandos_verdes = {
+            normaliza_comando(x) for x in (d.get("verdes_comandos") or ())
+        }
         con_verdes = "verdes" in d
         previos = tuple(
             replace(h, estado="resuelto")
             if h.origen == "supervisor" and h.estado == "abierto" and h.id not in ids
-            and (not con_verdes or h.id in verdes)
+            and (
+                not con_verdes
+                or h.id in verdes
+                or normaliza_comando(h.ancla) in comandos_verdes
+            )
             else h
             for h in fase.hallazgos
         )

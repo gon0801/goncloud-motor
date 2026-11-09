@@ -64,6 +64,7 @@ from .dominio import (
     id_encargo,
     id_hallazgo,
     marca_inspeccion_entregada,
+    normaliza_comando,
     inspeccion_bloquea,
     respuesta_consumida,
     revision_externa_pendiente,
@@ -7011,6 +7012,29 @@ def _ids_observados_verdes(observacion: dict) -> set[str]:
     return verdes
 
 
+def _comandos_observados_verdes(observacion: dict) -> set[str]:
+    """Los comandos que esta observacion ejecuto y paso en verde.
+
+    Un bloqueo guardado con una identidad anterior (objetivo mas argv) no casa
+    por id con la identidad actual; el mismo comando en verde lo cierra.
+    """
+    comandos: set[str] = set()
+    for ejecucion in observacion.get("ejecuciones") or []:
+        if not isinstance(ejecucion, dict) or ejecucion.get("error_instrumento"):
+            continue
+        rc = ejecucion.get("rc")
+        if rc is None or str(rc) != "0":
+            continue
+        argv = ejecucion.get("argv")
+        comando = (
+            " ".join(str(x) for x in argv)
+            if isinstance(argv, list) and argv
+            else ""
+        )
+        comandos.add(normaliza_comando(comando))
+    return comandos
+
+
 def _hallazgos_en_rojo(observacion: dict) -> list[dict]:
     """Las comprobaciones en rojo como bloqueantes con identidad estable.
 
@@ -7074,6 +7098,9 @@ def _registrar_comprobaciones(
                 # Solo lo observado y verde cierra un bloqueo: una comprobacion
                 # retirada de la declaracion no prueba que se resolvio.
                 "verdes": sorted(_ids_observados_verdes(observacion)),
+                "verdes_comandos": sorted(
+                    _comandos_observados_verdes(observacion)
+                ),
                 "hora": hora,
             },
         },
@@ -7094,6 +7121,7 @@ def _bloqueos_sin_observacion(enc: Encargo, observacion: dict) -> list:
         return []
     rojos = {h["id"] for h in _hallazgos_en_rojo(observacion)}
     verdes = _ids_observados_verdes(observacion)
+    comandos = _comandos_observados_verdes(observacion)
     return [
         h
         for h in fase.hallazgos
@@ -7101,6 +7129,7 @@ def _bloqueos_sin_observacion(enc: Encargo, observacion: dict) -> list:
         and h.estado == "abierto"
         and h.id not in rojos
         and h.id not in verdes
+        and normaliza_comando(h.ancla) not in comandos
     ]
 
 

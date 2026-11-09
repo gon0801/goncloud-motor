@@ -721,6 +721,81 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 "no se publica como si la comprobacion retirada hubiera pasado",
             )
 
+    def test_un_bloqueo_con_la_identidad_anterior_se_cierra_por_su_comando(self):  # no-roja-en-base: caracterización de que el bloqueo con la identidad anterior se cierra con el mismo comando en verde; en origin/main la regla anterior cerraba lo ausente
+        """Un bloqueo guardado con el id viejo (objetivo+argv) se cierra por comando.
+
+        #425 escribia la identidad con el objetivo y el argv. La identidad actual
+        es el comando; sin un cierre por comando ese bloqueo no podria cerrarse
+        nunca. La misma orden observada en verde lo resuelve.
+        """
+        from motor.encargos.dominio import id_hallazgo
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "identidad-anterior",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            objetivo = "pruebas del modulo"
+            check = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_a"],
+            }
+            comando = " ".join(check["argv"])
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "comprobaciones_supervisor",
+                    "data": {
+                        "version": e.producto.firma,
+                        "hallazgos": [{
+                            "id": id_hallazgo("supervisor", comando, objetivo),
+                            "gravedad": "bloqueante",
+                            "criterio": "comportamiento",
+                            "titulo": (
+                                "comprobacion del supervisor en rojo: "
+                                + objetivo
+                            ),
+                            "reproduccion": "rc 1",
+                            "ancla": comando,
+                            "origen": "supervisor",
+                            "estado": "abierto",
+                        }],
+                        "verdes": [],
+                        "hora": ahora_iso(),
+                    },
+                },
+                "bloque-identidad-anterior",
+            )
+            e = r.fold()
+            self.assertTrue(
+                [
+                    h
+                    for h in e.fase_actual.hallazgos
+                    if h.origen == "supervisor" and h.estado == "abierto"
+                ],
+                "el escenario abre el bloqueo con la identidad anterior",
+            )
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [check]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [check], {0: 0})
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(
+                abiertos, [],
+                "el mismo comando en verde cierra el bloqueo con id anterior",
+            )
+
     def test_una_observacion_en_verde_cierra_el_bloqueo_rojo(self):  # no-roja-en-base: caracterización de que una observación en verde del mismo check cierra el bloqueo del supervisor
         """Una comprobacion en verde cierra el bloqueo rojo del supervisor.
 
