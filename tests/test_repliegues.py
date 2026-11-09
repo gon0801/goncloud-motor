@@ -14,6 +14,8 @@ from unittest import mock
 
 from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso, recibir
+from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase
+from motor.encargos.necesidades import contexto_de
 from motor.encargos.registro import Registro
 
 HORA = "2026-11-08T12:00:00Z"
@@ -169,3 +171,56 @@ class MigracionConUnArchivo(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContextoDeNecesidades(Base):
+    def _encargo_con_fase(self, fase: Fase, rama_entrega: str) -> Encargo:
+        return Encargo(
+            id="enc_contexto",
+            clave="contexto",
+            huella="h",
+            director="hermes",
+            texto="un pedido",
+            adjuntos=(),
+            restricciones=(),
+            canal="tg",
+            fases=(fase,),
+            fase_activa=fase.id,
+            entrega=EntregaAutorizada(rama=rama_entrega),
+        )
+
+    def test_la_rama_es_la_de_la_fase_vigente(self):  # no-roja-en-base: la propiedad rama_entrega se borró en esta unidad; la prueba fija contexto_de tras el borrado
+        enc = self._encargo_con_fase(
+            Fase(id="a", resultado="fase", rama="rama/fase"), "rama/entrega"
+        )
+
+        self.assertEqual(contexto_de(enc)["rama"], "rama/fase")
+
+    def test_sin_rama_en_la_fase_usa_la_de_la_entrega(self):  # no-roja-en-base: la propiedad rama_entrega se borró en esta unidad; la prueba fija el respaldo de contexto_de
+        enc = self._encargo_con_fase(Fase(id="a", resultado="fase"), "rama/entrega")
+
+        self.assertEqual(contexto_de(enc)["rama"], "rama/entrega")
+
+
+class MigracionContenida(Base):
+    def test_un_fallo_al_listar_los_directorios_no_tumba_la_migracion(self):  # no-roja-en-base: la migración de 3b ya contenía el listado; la prueba fija que no se pierde
+        sano = self.encargo("sano")
+        roto = self.encargo("roto")
+        directorio = Path(self.reg.base) / "ejecucion" / sano
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "incorporado").write_text(HORA, encoding="utf-8")
+        original = ciclo._directorios_del_encargo
+
+        def rompe(base: Path, encargo_id: str):
+            if encargo_id == roto:
+                raise OSError("directorio ilegible")
+            return original(base, encargo_id)
+
+        with mock.patch.object(ciclo, "_directorios_del_encargo", rompe):
+            try:
+                ciclo.migrar_marcadores(self.reg, HORA)
+            except OSError as exc:
+                self.fail(f"la migración no contuvo el fallo de un encargo: {exc}")
+
+        eventos = [ev for ev in self.reg.eventos(sano) if ev["kind"] == "incorporado"]
+        self.assertEqual(len(eventos), 1)

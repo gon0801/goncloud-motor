@@ -932,10 +932,13 @@ def contexto_de(enc) -> dict:
     base = str(getattr(fase, "base", "") or "").strip()
     if not base:
         base = str(getattr(getattr(enc, "entrega", None), "base", "") or "").strip()
+    rama = str(getattr(fase, "rama", "") or "")
+    if not rama:
+        rama = str(getattr(getattr(enc, "entrega", None), "rama", "") or "")
     return {
         "pr": int(getattr(enc, "pr_numero", 0) or 0),
         "sha": str(getattr(enc, "pr_sha", "") or ""),
-        "rama": str(getattr(enc, "rama_entrega", "") or ""),
+        "rama": rama,
         "repo": str(getattr(getattr(enc, "entrega", None), "repo", "") or ""),
         "base": base,
     }

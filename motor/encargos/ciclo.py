@@ -1311,17 +1311,17 @@ def migrar_marcadores(registro: Registro, hora: str) -> None:
     )
     fallo = False
     for encargo_id in registro.ids():
-        directorios = [
-            directorio
-            for directorio in _directorios_del_encargo(registro.base, encargo_id)
-            if any((directorio / nombre).is_file() for nombre in nombres)
-        ]
-        if not directorios:
-            continue
-        enc = plegar_aislado(registro, encargo_id)
-        if enc is None:
-            continue
         try:
+            directorios = [
+                directorio
+                for directorio in _directorios_del_encargo(registro.base, encargo_id)
+                if any((directorio / nombre).is_file() for nombre in nombres)
+            ]
+            if not directorios:
+                continue
+            enc = plegar_aislado(registro, encargo_id)
+            if enc is None:
+                continue
             for directorio in directorios:
                 for nombre in nombres:
                     _migrar_un_marcador(registro, enc, directorio, nombre, hora)
