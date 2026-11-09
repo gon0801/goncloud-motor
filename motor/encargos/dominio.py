@@ -2254,18 +2254,16 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         version = str(d.get("version") or "").strip()
         if fase is None or not dep or not version:
             raise TransicionIlegal("la entrada incorporada necesita fase, dep y versión")
-        if not any(d_ == dep for d_, _v in fase.requiere):
-            raise TransicionIlegal(f"la fase {fase.id} no consume a {dep}")
+        declarada = any(d_ == dep for d_, _v in fase.requiere)
+        requiere = tuple(
+            (d_, version if d_ == dep else v) for d_, v in fase.requiere
+        )
+        if not declarada:
+            # La propuesta omitio esta punta terminada; la entrega la incorpora
+            # y la fase queda consumiendola a la version revisada.
+            requiere = requiere + ((dep, version),)
         return replace(
-            con_fase(
-                e,
-                replace(
-                    fase,
-                    requiere=tuple(
-                        (d_, version if d_ == dep else v) for d_, v in fase.requiere
-                    ),
-                ),
-            ),
+            con_fase(e, replace(fase, requiere=requiere)),
             ultimo_hecho=f"entrada de {dep} incorporada: {version[:12]}",
             hora=hora or e.hora,
         )
