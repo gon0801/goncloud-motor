@@ -11,6 +11,7 @@ import time
 import unittest
 
 from motor.encargos.ciclo import _aplica_entrega, _paso_entrega, ahora_iso, barrer
+from motor.encargos.dominio import relevos_de
 from tests.test_flujo_revisiones import (
     _entrega_pr,
     _lanzaria,
@@ -33,7 +34,7 @@ def _turno_sin_llm(r, gh):
 
 
 class MismaVersionTrasDevolucion(unittest.TestCase):
-    def test_deepseek_misma_version_recupera_sha_y_releva_sin_quedar_quieto(self):
+    def test_deepseek_misma_version_recupera_sha_y_releva_sin_quedar_quieto(self):  # no-roja-en-base: la base ya releva con la misma version; la prueba migra del contador a relevos_de
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "mv-ds", github_con_hallazgos)
             e = vuelta("uno")
@@ -47,7 +48,6 @@ class MismaVersionTrasDevolucion(unittest.TestCase):
             self.assertEqual(e.producto.sha_git, commit)
             self.assertFalse(_aplica_entrega(e))
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertTrue(_lanzaria(e))
             antes = len(r.reg.eventos(r.enc))
@@ -57,7 +57,7 @@ class MismaVersionTrasDevolucion(unittest.TestCase):
             r.incorporar()
             e = r.fold()
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             self.assertIn("DeepSeek", e.motivo)
             self.assertFalse(_aplica_entrega(e))
             self.assertTrue(_lanzaria(e))

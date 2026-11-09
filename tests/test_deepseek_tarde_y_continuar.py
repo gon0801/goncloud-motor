@@ -23,6 +23,7 @@ from motor.encargos.dominio import (
     bloqueantes_abiertos,
     decision_proceso,
     reducir,
+    relevos_de,
     vista,
 )
 from motor.encargos.registro import Registro
@@ -826,7 +827,9 @@ class CierreSinPrEnLaFaseActiva(unittest.TestCase):
             self.assertTrue(any("F11" in n for n in e.notas_pr), e.notas_pr)
 
 
-def _encargo_con_pregunta_vieja(tmp: str) -> Recorrido:
+def _encargo_con_pregunta_vieja(
+    tmp: str, ancla: str = "motor/integraciones/cli.py:176"
+) -> Recorrido:
     """Reconstruye el estado de enc_daf8e41dd3a3fac6 con eventos mínimos."""
     r = Recorrido(
         tmp,
@@ -853,7 +856,7 @@ def _encargo_con_pregunta_vieja(tmp: str) -> Recorrido:
                         "gravedad": "bloqueante",
                         "criterio": "comportamiento",
                         "titulo": "El descarte sigue en el CLI externo",
-                        "ancla": "motor/integraciones/cli.py:176",
+                        "ancla": ancla,
                         "origen": "deepseek",
                         "estado": "abierto",
                     }
@@ -1438,40 +1441,34 @@ class ReabrirReusaElPrYLaAprobacion(unittest.TestCase):
 
 
 class ContinuarRetomaElTrabajo(unittest.TestCase):
-    def test_el_caso_del_registro_tras_continuar_lanza_un_intento_y_limpia_la_pregunta(
+    def test_continuar_rearma_el_trabajo_y_conserva_la_escalera_y_la_pregunta(
         self,
     ):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = _encargo_con_pregunta_vieja(tmp)
+            r = _encargo_con_pregunta_vieja(tmp, "motor/encargos/cli.py:10")
             self.addCleanup(r.reg.close)
             antes = r.fold()
             self.assertNotEqual(antes.estado, "necesita_usuario")
-            self.assertEqual(antes.relevos, 1)
+            self.assertEqual(relevos_de(antes, "responsable"), 1)
             self.assertEqual(_ids(antes), ["F1"])
             self.assertEqual(antes.devuelto_con, ("F1",))
             self.assertEqual(antes.intento, "intento-viejo")
             self.assertEqual(antes.conductor, "conductor-viejo")
+            preguntas = antes.preguntas
 
             salida = ciclo.ordenar(r.reg, r.enc, "continuar", "continuar-viejo", ahora_iso())
             self.assertFalse(salida.get("rechazada"), salida)
 
             e = r.fold()
             self.assertEqual(e.estado, "recibido")
-            self.assertEqual(e.preguntas, ())
-            self.assertEqual(e.relevos, 0)
-            self.assertEqual(e.sin_progreso, 0)
-            self.assertEqual(e.devuelto_con, ())
+            # Continuar no reinicia la escalera: los hechos no cambiaron.
+            self.assertEqual(e.preguntas, preguntas)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
+            self.assertEqual(e.devuelto_con, ("F1",))
             self.assertEqual(e.intento, "")
             self.assertEqual(e.conductor, "")
-            self.assertEqual(_ids(e), [])
-            self.assertEqual(
-                [h.id for h in e.fase_actual.hallazgos if h.estado == "abierto"],
-                [],
-            )
-            self.assertTrue(
-                any(hid == "F1" for hid, _titulo, _razon in e.fuera_de_alcance),
-                e.fuera_de_alcance,
-            )
+            self.assertEqual(_ids(e), ["F1"])
+            self.assertEqual(e.fuera_de_alcance, ())
             self.assertTrue(
                 decision_proceso(e, "ausente", None, False, True, e.hora)["lanzar"]
             )
@@ -1504,18 +1501,16 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
 
     def test_un_recibido_trabado_sin_proceso_se_rearma_con_continuar(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            r = _encargo_con_pregunta_vieja(tmp)
+            r = _encargo_con_pregunta_vieja(tmp, "motor/encargos/cli.py:10")
             self.addCleanup(r.reg.close)
             trabado = replace(
                 r.fold(),
                 estado="recibido",
                 proc=None,
                 reserva=False,
-                relevos=1,
-                relevos_por_rol=(("responsable", 1),),
-                sin_progreso=1,
                 preguntas=("no queda otro modelo autorizado",),
             )
+            self.assertEqual(relevos_de(trabado, "responsable"), 1)
 
             nuevo = reducir(
                 trabado,
@@ -1523,9 +1518,9 @@ class ContinuarRetomaElTrabajo(unittest.TestCase):
             )
 
             self.assertEqual(nuevo.estado, "recibido")
-            self.assertEqual(nuevo.preguntas, ())
-            self.assertEqual(nuevo.relevos, 0)
-            self.assertEqual(nuevo.sin_progreso, 0)
+            self.assertEqual(nuevo.preguntas, trabado.preguntas)
+            # Continuar no reinicia la escalera: el hecho no cambió.
+            self.assertEqual(relevos_de(nuevo, "responsable"), 1)
             self.assertTrue(
                 decision_proceso(nuevo, "ausente", None, False, True, nuevo.hora)[
                     "lanzar"

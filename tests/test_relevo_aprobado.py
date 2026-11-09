@@ -106,14 +106,14 @@ class RelevoConAprobacion(unittest.TestCase):
             ev["kind"] == "cierre_forzado" for ev in self.reg.eventos(self.id)
         ))
 
-    def test_concluir_una_revision_pendiente_si_empieza_otra_escalera(self):
+    def test_concluir_una_revision_pendiente_si_empieza_otra_escalera(self):  # no-roja-en-base: la base ya estrena la escalera al concluir la revision pendiente; la prueba afirma relevos_de
         self.anotar("revision", veredicto="no_concluyente", version="version-1")
         self.relevar()
 
         enc = self.aprobar()
 
-        self.assertEqual(enc.sin_progreso, 0)
         self.assertEqual(relevos_de(enc, "revisor"), 0)
+        self.assertEqual(enc.pendientes_entrega, ())
 
 
 if __name__ == "__main__":

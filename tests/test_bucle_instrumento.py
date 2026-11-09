@@ -24,7 +24,7 @@ from unittest import mock
 from motor.encargos.aislamiento import SondaEntorno, sondear
 from motor.encargos.ciclo import _incorporar, ahora_iso, barrer, recibir
 from motor.encargos.comprobacion import firma_producto
-from motor.encargos.dominio import fuentes_autorizadas, vista
+from motor.encargos.dominio import fuentes_autorizadas, relevos_de, vista
 from motor.encargos.registro import Registro
 
 IMPEDIMENTO = SondaEntorno(
@@ -272,7 +272,7 @@ class BucleInstrumento(unittest.TestCase):
         self.assertEqual(banco.eventos("pregunta"), [])
         self.assertTrue(banco.eventos("proveedor_fallo"))
 
-    def test_la_misma_causa_dos_reparaciones_no_vuelve_al_responsable(self):
+    def test_la_misma_causa_dos_reparaciones_no_vuelve_al_responsable(self):  # no-roja-en-base: la base ya releva o entrega tras el mismo instrumento; la prueba migra del contador a relevos_de
         banco = self.banco()
         with mock.patch("motor.encargos.aislamiento.sondear", return_value=RECUPERADO):
             for vuelta in range(3):
@@ -283,7 +283,7 @@ class BucleInstrumento(unittest.TestCase):
                 banco.correr(f"revisor-{vuelta}")
         e = banco.fold()
         self.assertNotEqual(e.estado, "necesita_usuario")
-        self.assertTrue(e.relevos >= 1 or e.pendientes_entrega, e)
+        self.assertTrue(relevos_de(e, "responsable") >= 1 or e.pendientes_entrega, e)
         antes = len(banco.lanzamientos)
         banco.barrer(3)
         self.assertEqual(

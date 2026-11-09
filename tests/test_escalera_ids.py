@@ -17,7 +17,11 @@ from unittest import mock
 from motor.encargos import despliegue as ejecutor
 from motor.encargos.ciclo import _incorporar, _paso_despliegue, ahora_iso, recibir
 from motor.encargos.comprobacion import firma_producto
-from motor.encargos.dominio import bloqueantes_abiertos, decision_proceso
+from motor.encargos.dominio import (
+    bloqueantes_abiertos,
+    decision_proceso,
+    relevos_de,
+)
 from motor.encargos.registro import Registro
 
 HORA = "2026-11-06T12:00:00+00:00"
@@ -149,7 +153,7 @@ class ElDespliegueQuePierdeAutoridadQuedaEnEsperaExplicita(unittest.TestCase):
     paso de despliegue, el paso retorna sin registrar una espera y el
     planificador puede volver a lanzar un turno sobre el mismo paso."""
 
-    def test_la_perdida_durante_el_paso_deja_espera_y_no_lanza_turnos(self):
+    def test_la_perdida_durante_el_paso_deja_espera_y_no_lanza_turnos(self):  # no-roja-en-base: la base ya recorre la escalera por ids; la prueba migra del contador a la estrategia y relevos_de
         reg, ident, espacio = _despliegue_en_marcha(self, "autoridad-despliegue-1")
 
         def iniciar_con_caida(registro, enc, espacio, politica, hora):
@@ -163,14 +167,14 @@ class ElDespliegueQuePierdeAutoridadQuedaEnEsperaExplicita(unittest.TestCase):
         self.assertTrue(final.reanuda_en)
         self.assertFalse(final.escrituras)
         self.assertFalse(_lanzaria(final))
-        self.assertEqual(final.relevos, 0)
+        self.assertEqual(relevos_de(final, "responsable"), 0)
         self.assertEqual(
             [e for e in reg.eventos(ident)
              if e["kind"] == "entrega_externa" and e["data"].get("paso") == "desplegado"],
             [],
         )
 
-    def test_la_perdida_tras_aplicar_concilia_el_recibo_al_reanudar(self):
+    def test_la_perdida_tras_aplicar_concilia_el_recibo_al_reanudar(self):  # no-roja-en-base: la base ya recorre la escalera por ids; la prueba migra del contador a la estrategia y relevos_de
         reg, ident, espacio = _despliegue_en_marcha(self, "autoridad-despliegue-2")
         recibo = str(Path(reg.base) / "despliegues" / "recibo.json")
 
@@ -200,7 +204,7 @@ class ElDespliegueQuePierdeAutoridadQuedaEnEsperaExplicita(unittest.TestCase):
         with mock.patch.object(ejecutor, "iniciar", side_effect=iniciar_aplica):
             final = _paso_despliegue(reg, reg.fold(ident), espacio, HORA_TARDE)
         self.assertEqual(final.nivel_alcanzado, "desplegado")
-        self.assertEqual(final.relevos, 0)
+        self.assertEqual(relevos_de(final, "responsable"), 0)
         desplegados = [
             e for e in reg.eventos(ident)
             if e["kind"] == "entrega_externa" and e["data"].get("paso") == "desplegado"
@@ -230,7 +234,7 @@ class LaCorreccionVaciaTerminaEnDecisionExplicitaSinRevisores(unittest.TestCase)
     vuelve a correr sobre la versión que ya juzgó: un solo turno en toda la
     serie, el primero."""
 
-    def test_las_vueltas_sin_avance_llegan_a_pendientes_sin_revisor_nuevo(self):
+    def test_las_vueltas_sin_avance_llegan_a_pendientes_sin_revisor_nuevo(self):  # no-roja-en-base: la base ya recorre la escalera por ids; la prueba migra del contador a la estrategia y relevos_de
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "escalera-1", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -259,10 +263,8 @@ class LaCorreccionVaciaTerminaEnDecisionExplicitaSinRevisores(unittest.TestCase)
 
             e = entrega_la_misma_version()
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
             e = entrega_la_misma_version()
-            self.assertEqual(e.relevos, 1)
-            self.assertEqual(dict(e.relevos_por_rol).get("responsable"), 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             self.assertNotEqual(e.estado, "necesita_usuario")
             e = entrega_la_misma_version()
             self.assertTrue(e.pendientes_entrega)
@@ -282,7 +284,7 @@ class LaSerieNoConcluyenteUsaSuTopeSinEscalera(unittest.TestCase):
     el pedido del revisor vuelve al responsable y la repetición la cuenta y la
     corta el freno propio (`TOPE_NO_CONCLUYENTES`)."""
 
-    def test_ningun_evento_de_escalera_y_salida_por_el_tope(self):
+    def test_ningun_evento_de_escalera_y_salida_por_el_tope(self):  # no-roja-en-base: la base ya recorre la escalera por ids; la prueba migra del contador a la estrategia y relevos_de
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "escalera-3", "dato.txt con 42")
             self.addCleanup(r.reg.close)
@@ -302,13 +304,12 @@ class LaSerieNoConcluyenteUsaSuTopeSinEscalera(unittest.TestCase):
 
             e = vuelta(1)
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
             self.assertNotEqual(e.estado, "necesita_usuario")
             e = vuelta(2)
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.relevos, 0)
+            self.assertEqual(relevos_de(e, "revisor"), 0)
             e = vuelta(3)
-            self.assertEqual(dict(e.relevos_por_rol).get("revisor"), 1)
+            self.assertEqual(relevos_de(e, "revisor"), 1)
             self.assertEqual(e.pendientes_entrega, ())
             e = vuelta(4)
             self.assertTrue(e.pendientes_entrega)
@@ -374,7 +375,7 @@ class LaCorreccionEnInternoLlegaAlRevisor(unittest.TestCase):
     solo cuenta cuando la entrega tampoco cambió dentro de `.interno`; si
     cambió, la corrección llega al revisor."""
 
-    def test_el_revisor_ve_la_correccion_de_interno(self):
+    def test_el_revisor_ve_la_correccion_de_interno(self):  # no-roja-en-base: la base ya recorre la escalera por ids; la prueba migra del contador a la estrategia y relevos_de
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "escalera-4", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -419,11 +420,10 @@ class LaCorreccionEnInternoLlegaAlRevisor(unittest.TestCase):
             )
             e = r.incorporar()
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
             e = r.incorporar()
             self.assertNotEqual(e.rol, "revisor")
             self.assertNotEqual(e.estrategia, "revisar_evidencia")
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             turnos_revisor = [
                 ev for ev in r.eventos("estrategia")
                 if (ev["data"].get("rol") or "responsable") == "revisor"
@@ -438,7 +438,7 @@ class LaSerieVaciaConBuzonDelLanzadorCuentaSinRevisores(unittest.TestCase):
     la excluye y la corrección vacía sigue contando por la escalera, con el
     único turno del revisor de la serie."""
 
-    def test_la_serie_vacia_cuenta_con_el_buzon_reescrito_en_cada_turno(self):
+    def test_la_serie_vacia_cuenta_con_el_buzon_reescrito_en_cada_turno(self):  # no-roja-en-base: la base ya recorre la escalera por ids; la prueba migra del contador a la estrategia y relevos_de
         from motor.encargos import necesidades
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -475,9 +475,8 @@ class LaSerieVaciaConBuzonDelLanzadorCuentaSinRevisores(unittest.TestCase):
 
             e = entrega_del_responsable()
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
             e = entrega_del_responsable()
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             e = entrega_del_responsable()
             self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
@@ -496,7 +495,7 @@ class LaSerieVaciaConCanalesDelHostCuentaSinRevisores(unittest.TestCase):
     responsable: la huella la excluye y la corrección vacía sigue contando por
     la escalera con el único turno del revisor de la serie."""
 
-    def test_la_serie_vacia_cuenta_con_los_canales_del_host_activos(self):
+    def test_la_serie_vacia_cuenta_con_los_canales_del_host_activos(self):  # no-roja-en-base: la base ya recorre la escalera por ids; la prueba migra del contador a la estrategia y relevos_de
         from motor.encargos import necesidades
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -544,9 +543,8 @@ class LaSerieVaciaConCanalesDelHostCuentaSinRevisores(unittest.TestCase):
 
             e = entrega_del_responsable()
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
             e = entrega_del_responsable()
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             e = entrega_del_responsable()
             self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
@@ -609,12 +607,11 @@ class LosIdsDevueltosGobiernanLaEscalera(unittest.TestCase):
             e = vuelta([_bloqueante("malo.txt no contiene B")])
             self.assertEqual(e.estrategia, "investigar")
             e = vuelta([_bloqueante("malo.txt no contiene B")])
-            self.assertEqual(e.sin_progreso, 1)
+            self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             # El revisor cierra el bloqueante y abre otro: información nueva,
             # la escalera empieza de cero aunque el producto cambie o no.
             (r.espacio / "malo.txt").write_text("B")
             e = vuelta([_bloqueante("malo.txt falla en el paso 2")])
-            self.assertEqual(e.sin_progreso, 0)
             self.assertEqual(e.estrategia, "investigar")
             ids_devueltos = set(e.devuelto_con)
             self.assertEqual(

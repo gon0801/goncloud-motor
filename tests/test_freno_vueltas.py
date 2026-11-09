@@ -21,9 +21,7 @@ from unittest import mock
 from motor.encargos import ciclo
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso
-from motor.encargos.dominio import (
-    revision_externa_pendiente,
-)
+from motor.encargos.dominio import relevos_de, revision_externa_pendiente
 from motor.github import veredicto
 from tests.test_flujo_revisiones import Recorrido, _entrega_pr, _lanzaria
 from tests.test_lectura_deepseek import _comentario, _hallazgo, _ids
@@ -81,7 +79,7 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
         self.assertEqual(e.estado, "esperando_reintento")
         return vuelta, r, gh
 
-    def test_observacion_y_lectura_de_deepseek_en_un_barrido_cuentan_una_vez(self):
+    def test_observacion_y_lectura_de_deepseek_en_un_barrido_cuentan_una_vez(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, gh = self._en_espera_del_commit_nuevo(tmp, "fr-1")
             gh.textos = [_comentario(_hallazgo("F1")), _comentario(_hallazgo("F1"))]
@@ -94,7 +92,6 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
             if ciclo._aplica_entrega(e):
                 e = ciclo._paso_entrega(r.reg, e, gh, ahora_iso())
 
-            self.assertEqual(e.sin_progreso, 1)
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertNotEqual(e.estado, "necesita_usuario")
 
@@ -107,26 +104,25 @@ class UnaVueltaCuentaUnaVez(unittest.TestCase):
             ciclo._sin_avance(r.reg, e, "F1", "fuente uno", hora, "uno")
             ciclo._sin_avance(r.reg, r.fold(), "F1", "fuente dos", hora, "dos")
             e = r.fold()
-            self.assertEqual(e.sin_progreso, 1)
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
             self.assertNotEqual(e.estado, "necesita_usuario")
 
-    def test_la_vuelta_siguiente_si_cuenta_y_releva(self):
+    def test_la_vuelta_siguiente_si_cuenta_y_releva(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "fr-1c", github_por_commit)
             vuelta.gh.textos = [_comentario(_hallazgo("F1"))]
             vuelta("uno")
             r.incorporar()
-            self.assertEqual(r.fold().sin_progreso, 1)
+            self.assertEqual(r.fold().estrategia, "diagnosticar_bloqueo")
             r.incorporar()
             e = r.fold()
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             self.assertTrue(_lanzaria(e))
 
 
 class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
-    def test_con_deepseek_pendiente_del_commit_nuevo_el_freno_no_escala(self):
+    def test_con_deepseek_pendiente_del_commit_nuevo_el_freno_no_escala(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "fr-2", github_por_commit)
             gh = vuelta.gh
@@ -142,7 +138,6 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
                 _devolver_el_trabajo(r, f"p{i}")
                 r.incorporar()
                 e = r.fold()
-                self.assertEqual(e.sin_progreso, 0, i)
                 self.assertNotEqual(e.estado, "necesita_usuario", i)
                 self.assertNotEqual(e.estrategia, "diagnosticar_bloqueo", i)
             self.assertEqual(
@@ -155,7 +150,6 @@ class SinContarConUnaRevisionExternaPendiente(unittest.TestCase):
             gh.textos = [_comentario(_hallazgo("F1")), _comentario()]
             e = ciclo._paso_entrega(r.reg, r.fold(), gh, ahora_iso())
             self.assertEqual(_ids(e), [])
-            self.assertEqual(e.sin_progreso, 0)
             self.assertEqual(e.nivel_alcanzado, "pr")
 
 class CommitNuevoConElNivelPrYaAlcanzado(unittest.TestCase):
@@ -231,10 +225,9 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
         r.incorporar()
         e = r.fold()
         self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-        self.assertEqual(e.sin_progreso, 1)
         return vuelta, r, gh
 
-    def test_f5_y_f6_nuevos_tras_el_diagnostico_vuelven_al_responsable(self):
+    def test_f5_y_f6_nuevos_tras_el_diagnostico_vuelven_al_responsable(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, gh = self._tras_el_diagnostico_de_f4(tmp, "fr-5")
             gh.textos = [
@@ -245,20 +238,19 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             self.assertEqual(_ids(e), ["F4", "F5", "F6"])
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
             self.assertTrue(_lanzaria(e))
 
-    def test_los_mismos_bloqueantes_tras_el_diagnostico_relevan(self):
+    def test_los_mismos_bloqueantes_tras_el_diagnostico_relevan(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, gh = self._tras_el_diagnostico_de_f4(tmp, "fr-5b")
             r.incorporar()
             e = r.fold()
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             self.assertTrue(_lanzaria(e))
             self.assertEqual(e.pendientes_entrega, ())
 
-    def test_lo_nuevo_y_luego_lo_mismo_recorre_la_escalera_otra_vez(self):
+    def test_lo_nuevo_y_luego_lo_mismo_recorre_la_escalera_otra_vez(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, gh = self._tras_el_diagnostico_de_f4(tmp, "fr-5c")
             gh.textos = [
@@ -270,13 +262,12 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             r.incorporar()
             e = r.fold()
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
             r.incorporar()
             e = r.fold()
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
 
-    def test_una_serie_que_siempre_trae_hallazgos_nuevos_no_escala_por_si_sola(self):
+    def test_una_serie_que_siempre_trae_hallazgos_nuevos_no_escala_por_si_sola(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "fr-5d", github_por_commit)
             gh = vuelta.gh
@@ -291,11 +282,10 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
                 gh.textos.append(_comentario(*acumulados))
                 e = vuelta(f"v{i}")
                 self.assertEqual(e.estrategia, "investigar", i)
-                self.assertEqual(e.sin_progreso, 0, i)
                 self.assertNotEqual(e.estado, "necesita_usuario", i)
                 self.assertTrue(_lanzaria(e), i)
 
-    def test_cerrar_un_bloqueante_reinicia_la_serie(self):
+    def test_cerrar_un_bloqueante_reinicia_la_serie(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "fr-5e", github_por_commit)
             gh = vuelta.gh
@@ -309,7 +299,7 @@ class UnBloqueanteNuevoEsInformacionNueva(unittest.TestCase):
             self.assertEqual(e.estrategia, "investigar")
             e = vuelta("v2")
             self.assertEqual(_ids(e), ["F1"])
-            self.assertEqual(e.sin_progreso, 0)
+            self.assertEqual(e.estrategia, "investigar")
 
 
 class SinTopeDeVueltasNuevas(unittest.TestCase):
@@ -356,7 +346,7 @@ class SinTopeDeVueltasNuevas(unittest.TestCase):
                 self.assertEqual(e.estrategia, "investigar", i)
 
 
-    def test_dos_fuentes_con_hallazgos_nuevos_en_un_barrido_no_escalan(self):
+    def test_dos_fuentes_con_hallazgos_nuevos_en_un_barrido_no_escalan(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         # F5 de la revision de DeepSeek sobre #254: con el contador de vueltas nuevas
         # y su tope, dos fuentes del mismo barrido que traian un bloqueante nuevo cada
         # una contaban la vuelta dos veces y el encargo escalaba a la tercera. Sin
@@ -405,7 +395,6 @@ class SinTopeDeVueltasNuevas(unittest.TestCase):
                 fuente(f"B{i}", f"deepseek-{i}")
                 e = r.fold()
                 self.assertNotEqual(e.estado, "necesita_usuario", i)
-                self.assertEqual(e.sin_progreso, 0, i)
                 self.assertEqual(e.estrategia, "investigar", i)
                 self.assertLessEqual({f"A{i}", f"B{i}"}, set(e.devuelto_con), i)
                 self.assertTrue(_lanzaria(e), i)

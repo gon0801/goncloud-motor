@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from motor.encargos import ciclo
-from motor.encargos.dominio import TransicionIlegal, reducir
+from motor.encargos.dominio import TransicionIlegal, reducir, relevos_de
 from tests import test_reanudar_fase_integrada as integrado
 
 setUpModule = integrado.setUpModule
@@ -49,7 +49,7 @@ class ReabrirCierreForzado(unittest.TestCase):
         self.assertFalse(salida.get("rechazada"), salida.get("motivo"))
         return r.fold()
 
-    def test_reabrir_restaura_b_con_a_intacta_y_espera_continuar(self):
+    def test_reabrir_restaura_b_con_a_intacta_y_espera_continuar(self):  # no-roja-en-base: la base ya estrena la escalera al reabrir; la prueba afirma relevos_de
         r = self.r
         nuevo = self.reabrir()
         self.assertEqual(nuevo.estado, "detenido")
@@ -57,7 +57,7 @@ class ReabrirCierreForzado(unittest.TestCase):
         self.assertEqual(nuevo.fase_activa, "motor-despliegue")
         self.assertFalse(nuevo.escrituras or nuevo.intentos_nuevos)
         self.assertEqual(nuevo.pendientes_entrega, ())
-        self.assertEqual(nuevo.relevos_por_rol, ())
+        self.assertEqual(relevos_de(nuevo, "responsable"), 0)
         self.assertEqual(nuevo.conductor, "")
         self.assertEqual(nuevo.intento, "")
         lanzador = mock.Mock(side_effect=AssertionError("no autorizado"))

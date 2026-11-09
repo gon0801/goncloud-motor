@@ -27,7 +27,7 @@ from motor.encargos import ciclo
 from motor.encargos import cli as motor_cli
 from motor.encargos.aislamiento import SondaEntorno
 from motor.encargos.ciclo import ahora_iso, barrer, _cuerpo_pr
-from motor.encargos.dominio import PausaAgente, bloqueantes_abiertos
+from motor.encargos.dominio import PausaAgente, bloqueantes_abiertos, relevos_de
 from motor.encargos.registro import Registro
 from motor.encargos.rutas import elegir
 from motor.integraciones import cli as director_cli
@@ -93,7 +93,7 @@ class SinProgresoRelevaYEntrega(unittest.TestCase):
             ronda(2)
             e = ronda(3)
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             e = ronda(4)
             self.assertTrue(e.pendientes_entrega)
             self.assertNotEqual(e.estado, "necesita_usuario")
@@ -206,7 +206,7 @@ class DeepSeekTieneTope(unittest.TestCase):
 
 
 class RevisorSinVeredictoReleva(unittest.TestCase):
-    def test_el_revisor_que_no_concluye_releva_y_luego_entrega(self):
+    def test_el_revisor_que_no_concluye_releva_y_luego_entrega(self):  # no-roja-en-base: la base ya releva y entrega sin persona; la prueba afirma relevos por rol
         from tests.test_freno_no_concluyente import _Freno
 
         caso = _Freno(methodName="runTest")
@@ -218,12 +218,12 @@ class RevisorSinVeredictoReleva(unittest.TestCase):
             caso.vuelta(r, ruta)
         e = r.fold()
         self.assertNotEqual(e.estado, "necesita_usuario")
-        self.assertEqual(e.relevos, 1)
+        self.assertEqual(relevos_de(e, "revisor"), 1)
         caso.vuelta(r, "d.txt")
         e = r.fold()
         self.assertTrue(e.pendientes_entrega or e.estado == "terminado")
 
-    def test_sin_inspeccion_faltante_el_relevo_va_a_otro_revisor(self):
+    def test_sin_inspeccion_faltante_el_relevo_va_a_otro_revisor(self):  # no-roja-en-base: la base ya releva y entrega sin persona; la prueba afirma relevos por rol
         from tests.test_freno_no_concluyente import _Freno
 
         caso = _Freno(methodName="runTest")
@@ -244,13 +244,13 @@ class RevisorSinVeredictoReleva(unittest.TestCase):
         vuelta(1)
         enc = vuelta(2)
         self.assertEqual(enc.estrategia, "investigar")
-        self.assertEqual(enc.relevos, 0)
+        self.assertEqual(relevos_de(enc, "revisor"), 0)
         self.assertNotEqual(enc.estado, "necesita_usuario")
         # La tercera vuelta seguida alcanza el tope propio del freno: releva
         # el rol a otro revisor autorizado.
         enc = vuelta(3)
         self.assertEqual(enc.rol, "revisor")
-        self.assertEqual(dict(enc.relevos_por_rol).get("revisor"), 1)
+        self.assertEqual(relevos_de(enc, "revisor"), 1)
         self.assertNotEqual(enc.estado, "necesita_usuario")
 
 
@@ -274,6 +274,8 @@ class RelevoPorRol(unittest.TestCase):
                 return lanzar
 
             def paso(registro, hora, epoch, lanzador, **kw):
+                from motor.encargos.dominio import clave_escalera
+
                 actual = registro.fold(encargo)
                 actual = replace(
                     actual,
@@ -282,9 +284,16 @@ class RelevoPorRol(unittest.TestCase):
                         ("responsable", "claude", "claude/opus"),
                         ("revisor", "claude", "claude/sonnet"),
                     ),
-                    relevos=1,
-                    relevos_por_rol=(("responsable", 1),),
-                    relevo_huella_por_rol=(("responsable", "bloqueo-1"),),
+                )
+                actual = replace(
+                    actual,
+                    escalones=(
+                        (
+                            "responsable",
+                            clave_escalera(actual, "responsable"),
+                            "relevo",
+                        ),
+                    ),
                 )
                 self.assertEqual(relevos_de(actual, "responsable"), 1)
                 self.assertEqual(relevos_de(actual, "revisor"), 0)
@@ -1104,7 +1113,7 @@ class AvisosInformanSinPedirNada(unittest.TestCase):
             enc = reg.fold(recibo["encargo"])
         enc = replace(
             enc,
-            relevos=1,
+            escalones=(("responsable", "aviso", "relevo"),),
             pendientes_entrega=("un bloqueo abierto",),
             herramientas_no_disponibles=("comprobacion",),
         )

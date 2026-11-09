@@ -42,6 +42,7 @@ from motor.encargos.dominio import (
     decision_proceso,
     hubo_avance,
     reducir,
+    relevos_de,
     vista,
 )
 from motor.encargos.registro import Registro
@@ -533,7 +534,7 @@ class FlujoRevisiones(unittest.TestCase):
                 any(f["data"]["fuente"] == "comprobacion" for f in fallos)
             )
 
-    def test_cambiar_archivos_con_el_mismo_bloqueante_releva_y_entrega(self):
+    def test_cambiar_archivos_con_el_mismo_bloqueante_releva_y_entrega(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-3", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -553,22 +554,20 @@ class FlujoRevisiones(unittest.TestCase):
 
             e = vuelta(1)
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
             e = vuelta(2)
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertTrue(_lanzaria(e))
             e = vuelta(3)
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             self.assertIn("malo.txt no contiene B", e.motivo)
             self.assertTrue(_lanzaria(e))
             e = vuelta(4)
             self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
 
-    def test_bloqueantes_nuevos_devuelven_al_responsable_sin_tope(self):
+    def test_bloqueantes_nuevos_devuelven_al_responsable_sin_tope(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         parche = mock.patch(
             "motor.encargos.aislamiento.sondear", return_value=SondaEntorno(True)
         )
@@ -596,11 +595,10 @@ class FlujoRevisiones(unittest.TestCase):
             for i in range(1, 7):
                 e = vuelta(i)
                 self.assertEqual(e.estrategia, "investigar", i)
-                self.assertEqual(e.sin_progreso, 0, i)
                 self.assertNotEqual(e.estado, "necesita_usuario", i)
                 self.assertTrue(_lanzaria(e), i)
 
-    def test_la_serie_no_concluyente_llega_al_tope_releva_y_entrega(self):
+    def test_la_serie_no_concluyente_llega_al_tope_releva_y_entrega(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         """El revisor que no concluye sobre la misma versión vuelve a correr
         hasta el tope propio (`TOPE_NO_CONCLUYENTES`): releva y entrega con la
         nota. La escalera de los bloqueos no participa: no hay un solo evento
@@ -623,23 +621,22 @@ class FlujoRevisiones(unittest.TestCase):
 
             e = vuelta(1)
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertTrue(_lanzaria(e))
             e = vuelta(2)
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.relevos, 0)
+            self.assertEqual(relevos_de(e, "revisor"), 0)
             self.assertTrue(_lanzaria(e))
             e = vuelta(3)
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(dict(e.relevos_por_rol).get("revisor"), 1)
+            self.assertEqual(relevos_de(e, "revisor"), 1)
             self.assertTrue(_lanzaria(e))
             e = vuelta(4)
             self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
             self.assertEqual(r.eventos("sin_progreso"), [])
 
-    def test_aprobar_corta_la_racha_y_la_fase_nueva_empieza_en_cero(self):
+    def test_aprobar_corta_la_racha_y_la_fase_nueva_empieza_en_cero(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "nc-3", "a.txt con A y b.txt con B")
             self.addCleanup(r.reg.close)
@@ -660,22 +657,22 @@ class FlujoRevisiones(unittest.TestCase):
             e = r.incorporar()
             self.assertEqual(e.fase_activa, "a")
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
+            self.assertEqual(relevos_de(e, "responsable"), 0)
             r.incorporar()
             r.juicio({"veredicto": "aprobado", "evidencia": "cat a.txt -> A"})
             e = r.incorporar()
             self.assertEqual(e.fase_activa, "b")
-            self.assertEqual(e.sin_progreso, 0)
+            self.assertEqual(relevos_de(e, "responsable"), 0)
             (r.espacio / "b.txt").write_text("B")
             r.incorporar()
             r.juicio({"veredicto": "no_concluyente", "evidencia": "primera duda en b"})
             e = r.incorporar()
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
+            self.assertEqual(relevos_de(e, "responsable"), 0)
             self.assertTrue(_lanzaria(e))
 
-    def test_no_concluyente_con_el_primer_bloqueante_es_avance(self):
+    def test_no_concluyente_con_el_primer_bloqueante_es_avance(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "nc-4", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -696,21 +693,20 @@ class FlujoRevisiones(unittest.TestCase):
             e = vuelta(1, [_bloqueante("malo.txt no contiene B")])
             self.assertTrue(bloqueantes_abiertos(e))
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
+            self.assertEqual(relevos_de(e, "responsable"), 0)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertTrue(_lanzaria(e))
             e = vuelta(2, [])
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
             e = vuelta(3, [])
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(dict(e.relevos_por_rol).get("revisor"), 1)
+            self.assertEqual(relevos_de(e, "revisor"), 1)
             self.assertTrue(_lanzaria(e))
             e = vuelta(4, [])
             self.assertTrue(e.pendientes_entrega)
             self.assertFalse(_lanzaria(e))
 
-    def test_no_concluyente_que_cierra_un_bloqueante_es_avance(self):
+    def test_no_concluyente_que_cierra_un_bloqueante_es_avance(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "nc-2", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -746,28 +742,26 @@ class FlujoRevisiones(unittest.TestCase):
                     self.assertEqual(e.estrategia, "investigar")
                 elif i == 2:
                     self.assertNotEqual(e.estado, "necesita_usuario")
-                    self.assertEqual(e.relevos, 1)
+                    self.assertEqual(relevos_de(e, "revisor"), 1)
                 else:
                     self.assertTrue(e.pendientes_entrega)
 
-    def test_deepseek_con_el_mismo_bloqueante_dos_vueltas_seguidas_releva(self):
+    def test_deepseek_con_el_mismo_bloqueante_dos_vueltas_seguidas_releva(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-1", github_con_hallazgos)
             e = vuelta("uno")
             self.assertEqual(e.estrategia, "investigar")
-            self.assertEqual(e.sin_progreso, 0)
             e = vuelta("dos")
             self.assertEqual(e.estrategia, "diagnosticar_bloqueo")
-            self.assertEqual(e.sin_progreso, 1)
             self.assertNotEqual(e.estado, "necesita_usuario")
             e = vuelta("tres")
             self.assertNotEqual(e.estado, "necesita_usuario")
-            self.assertEqual(e.relevos, 1)
+            self.assertEqual(relevos_de(e, "responsable"), 1)
             self.assertIn("DeepSeek", e.motivo)
             e = vuelta("cuatro")
             self.assertTrue(e.pendientes_entrega)
 
-    def test_deepseek_que_cierra_un_bloqueante_y_trae_otro_es_avance(self):
+    def test_deepseek_que_cierra_un_bloqueante_y_trae_otro_es_avance(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-2", github_con_hallazgos)
             e = vuelta("uno")
@@ -776,11 +770,10 @@ class FlujoRevisiones(unittest.TestCase):
                 vuelta.gh.titulos = (f"Falla {i} en el log",)
                 e = vuelta(f"v{i}")
                 self.assertEqual(e.estrategia, "investigar")
-                self.assertEqual(e.sin_progreso, 0)
                 self.assertNotEqual(e.estado, "necesita_usuario")
                 self.assertTrue(_lanzaria(e))
 
-    def test_rondas_con_progreso_sin_tope(self):
+    def test_rondas_con_progreso_sin_tope(self):  # no-roja-en-base: la base ya muestra esta escalera; la prueba afirma estrategia y relevos por rol en vez del contador
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             r = Recorrido(tmp, "sp-2", "malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -804,7 +797,7 @@ class FlujoRevisiones(unittest.TestCase):
                 )
                 e = r.incorporar()
                 self.assertNotEqual(e.estado, "necesita_usuario")
-                self.assertEqual(e.sin_progreso, 0)
+                self.assertEqual(relevos_de(e, "responsable"), 0)
                 self.assertTrue(_lanzaria(e))
                 cerrados = [h.id for h in bloqueantes_abiertos(e, "independiente")]
             malo.write_text("B")

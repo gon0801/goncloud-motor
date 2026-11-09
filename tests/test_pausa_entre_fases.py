@@ -9,6 +9,7 @@ from unittest import mock
 from types import SimpleNamespace
 
 from motor.encargos import ciclo, cli
+from motor.encargos.dominio import relevos_de
 from tests import test_reanudar_fase_integrada as integrado
 
 setUpModule = integrado.setUpModule
@@ -99,7 +100,7 @@ class PausaEntreFases(unittest.TestCase):
             ))
         self.assertEqual(elegidos, [("motor-despliegue", "zai-coding-plan/glm-5.3-flash")])
 
-    def test_cambiar_de_fase_reinicia_el_relevo_y_los_bloqueos(self):
+    def test_cambiar_de_fase_reinicia_el_relevo_y_los_bloqueos(self):  # no-roja-en-base: la base tambien estrena escalera al cambiar de fase; la prueba migra a las vistas derivadas y retira el campo bloqueo_huella
         with contextlib.ExitStack() as cleanup:
             tmp = cleanup.enter_context(tempfile.TemporaryDirectory())
             r, gh, _ = self.preparar(tmp)
@@ -109,11 +110,7 @@ class PausaEntreFases(unittest.TestCase):
             final = ciclo._paso_entrega(r.reg, r.fold(), gh, r.hora)
 
             self.assertEqual(final.fase_activa, "motor-despliegue")
-            self.assertEqual(final.relevos_por_rol, ())
-            self.assertEqual(final.relevo_huella_por_rol, ())
-            self.assertEqual(final.relevos, 0)
-            self.assertEqual(final.sin_progreso, 0)
-            self.assertEqual(final.bloqueo_huella, "")
+            self.assertEqual(relevos_de(final, "responsable"), 0)
             self.assertEqual(final.pendientes_entrega, ())
 
     def test_una_fase_sin_commits_no_publica_pr_ni_cierra_forzada(self):

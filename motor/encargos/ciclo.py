@@ -70,8 +70,7 @@ from .dominio import (
     prompt_revisor,
     recibo_de,
     reducir,
-    relevo_huella_de,
-    relevos_de,
+    siguiente_escalon,
     vista,
 )
 from .frontera import (
@@ -1881,12 +1880,8 @@ def _sin_avance(
             hora, f"nuevos-{serie}",
         )
         return
-    if enc.sin_progreso >= 1:
-        ya_relevado = (
-            huella
-            and huella == relevo_huella_de(enc, rol)
-            and relevos_de(enc, rol) >= 1
-        )
+    siguiente = siguiente_escalon(enc, rol)
+    if siguiente != "diagnostico":
         registro.anotar(
             enc.id,
             {
@@ -1904,7 +1899,7 @@ def _sin_avance(
             },
             base + ":escalar",
         )
-        if not ya_relevado:
+        if siguiente == "relevo":
             _devolver(
                 registro, enc, enc.estrategia or "investigar", abierto,
                 "el mismo bloqueo sigue: sigue con otro modelo autorizado del "
