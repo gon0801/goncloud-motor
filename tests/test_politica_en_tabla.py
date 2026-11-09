@@ -90,6 +90,19 @@ class TablaUnica(unittest.TestCase):
         self.assertIn("regla del propietario", razon)
         self.assertIn("DeepSeek", razon)
 
+    def test_un_numero_que_no_es_una_propuesta_no_saca_el_hallazgo(self):
+        politica = _politica()
+        h = Hallazgo(
+            id="F3",
+            gravedad="bloqueante",
+            criterio="operativo",
+            titulo=(
+                "cambiar la redacción del tope de DeepSeek de 30 min en la "
+                "línea 42 del README"
+            ),
+        )
+        self.assertEqual(politica.hallazgo_contra_politica(h), "")
+
     def test_un_hallazgo_que_dice_que_el_codigo_incumple_sigue_siendo_normal(self):
         politica = _politica()
         h = Hallazgo(

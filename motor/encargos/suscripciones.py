@@ -54,6 +54,13 @@ def _claude_existe() -> Lectura:
     preguntar por los atributos del elemento del Llavero no pide ese permiso.
     Así la disponibilidad no depende de una lectura que macOS puede negar.
     """
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    if token:
+        return (
+            Leido(True)
+            if token.startswith("sk-ant-oat")
+            else ErrorLectura("Claude necesita un token OAuth de suscripcion")
+        )
     home = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
     if (home / ".credentials.json").is_file():
         return Leido(True)

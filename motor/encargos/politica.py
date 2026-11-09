@@ -207,8 +207,29 @@ _INCUMPLE = (
 )
 
 
-def _numeros(texto: str) -> list[int]:
-    return [int(n) for n in re.findall(r"\b(\d{1,6})\b", texto)]
+_PROPUESTAS = (
+    # «de 30 a 15 minutos» propone dos valores; el primero es el vigente.
+    re.compile(r"\bde\s+(\d{1,6})\s*(?:minutos?|min|d[ií]as?)?\s*a\s+(\d{1,6})"),
+    re.compile(
+        r"\b(?:deber[ií]a|deber[ií]an|debe|deben|should(?:\s+be)?|hay\s+que)"
+        r"\s+(?:ser|be|usar|use)?\s*(\d{1,6})"
+    ),
+    re.compile(
+        r"\b(?:subir|sube|suban|bajar|baja|bajan|aumentar|aumenta|reducir|"
+        r"reduce|ampliar|ampl[ií]a|amplia|cambiar|change|lower|raise|increase|"
+        r"decrease)\b[^\d]{0,30}(\d{1,6})"
+    ),
+)
+
+
+def _propuestas(texto: str) -> list[int]:
+    """Solo los números que el hallazgo propone como valor nuevo."""
+    vistos: list[int] = []
+    for patron in _PROPUESTAS:
+        for grupos in patron.findall(texto):
+            valores = grupos if isinstance(grupos, tuple) else (grupos,)
+            vistos.extend(int(v) for v in valores if v)
+    return vistos
 
 
 def hallazgo_contra_politica(hallazgo) -> str:
@@ -229,13 +250,13 @@ def hallazgo_contra_politica(hallazgo) -> str:
         return ""
     if not any(marca in texto for marca in _SOLICITA_CAMBIO):
         return ""
-    numeros = _numeros(texto)
+    propuestas = _propuestas(texto)
     for fila in FILAS:
         if fila.valor_numerico is None:
             continue
         if not any(clave in texto for clave in fila.claves):
             continue
-        if any(n != fila.valor_numerico for n in numeros):
+        if any(n != fila.valor_numerico for n in propuestas):
             return (
                 "el hallazgo pide cambiar el valor de una regla del propietario: "
                 f"«{fila.regla}» = {fila.valor} ({fila.decision}); una decisión "
