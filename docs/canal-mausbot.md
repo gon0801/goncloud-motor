@@ -28,8 +28,8 @@ python -B -m motor director encargar ^
 El transporte toma el destinatario de `sesion` en
 `canal-identidad\<encargo>.json`; así `ingenieria` recibe en su propio bot y el
 enrutado no depende de que exista una entrada de canal por bot. Sin `--sesion`,
-o si dice `mausbot`, el aviso va a `MausBot`. El mismo `--canal` y `--sesion`
-sirven para `corregir`, `responder`, `parar` y `continuar`.
+o si dice `mausbot`, el aviso va a `MausBot`. Para `corregir` y `responder` usa el mismo `--canal`
+y `--sesion`; para `parar`, `continuar` y `cancelar`, el mismo `--canal`.
 
 ## Instalar
 
