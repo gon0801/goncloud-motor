@@ -6983,15 +6983,19 @@ def _fallas_de_observacion(
 
 
 def _id_de_comprobacion(ejecucion: dict) -> str:
-    """La identidad estable de una comprobacion: objetivo y argv."""
-    objetivo = str(ejecucion.get("objetivo") or "comprobacion")
+    """La identidad estable de una comprobacion: su comando, no su prosa.
+
+    El objetivo puede cambiar de redaccion sin que cambie la comprobacion. Si
+    cambia el argv, es otro comando y la observacion no puede cerrar el bloqueo
+    viejo: ese bloqueo vuelve al responsable.
+    """
     argv = ejecucion.get("argv")
     comando = (
         " ".join(str(x) for x in argv)
         if isinstance(argv, list) and argv
         else ""
     )
-    return id_hallazgo("supervisor", comando, objetivo)
+    return id_hallazgo("supervisor", comando, "")
 
 
 def _ids_observados_verdes(observacion: dict) -> set[str]:
@@ -7083,7 +7087,7 @@ def _bloqueos_sin_observacion(enc: Encargo, observacion: dict) -> list:
     """Bloqueos del supervisor que esta observacion no vio ni en rojo ni en verde.
 
     Son los que quedan abiertos porque su comprobacion salio de la declaracion
-    (o cambio de comando): retirarla no prueba que se resolvio.
+    o cambio de comando: retirarla no prueba que se resolvio.
     """
     fase = enc.fase_actual
     if fase is None:
@@ -7098,28 +7102,6 @@ def _bloqueos_sin_observacion(enc: Encargo, observacion: dict) -> list:
         and h.id not in rojos
         and h.id not in verdes
     ]
-
-
-def _pendiente_de_bloqueo_no_observado(
-    registro: Registro, enc: Encargo, bloques: list, hora: str
-) -> Encargo:
-    """Deja visible que un bloqueo no se resolvio porque su comprobacion se retiro."""
-    titulos = "; ".join(h.titulo for h in bloques)
-    texto = (
-        "una comprobacion declarada dejo de observarse sin una observacion en "
-        "verde que la resuelva; el bloqueo del supervisor sigue abierto y se "
-        "entrega con este pendiente: " + titulos
-    )
-    registro.anotar(
-        enc.id,
-        {
-            "kind": "pendiente_entrega",
-            "data": {"texto": texto, "hora": hora},
-        },
-        f"pendiente-comprobaciones-sin-observar:{enc.id}:{enc.generacion}:"
-        + ",".join(sorted(h.id for h in bloques)),
-    )
-    return registro.fold(enc.id) or enc
 
 
 def _espera_por_observacion(
@@ -7231,12 +7213,22 @@ def _espera_por_observacion(
         enc = _registrar_comprobaciones(registro, enc, observacion, version, hora)
         sin_observar = _bloqueos_sin_observacion(enc, observacion)
         if sin_observar:
-            # Una declaracion retirada no resuelve su bloqueo: queda abierto y
-            # la fase se entrega con el pendiente, nunca como si hubiera pasado.
-            enc = _pendiente_de_bloqueo_no_observado(
-                registro, enc, sin_observar, hora
+            # Un bloqueo que esta observacion no vio (comprobacion retirada o con
+            # otro comando) no se resuelve y no se entrega como pendiente:
+            # vuelve al responsable para que la restituya o justifique el cambio.
+            causa = (
+                "el bloqueo del supervisor no se observo en la comprobacion "
+                "declarada: " + "; ".join(h.titulo for h in sin_observar)
+                + ". Restituye esa comprobacion o justifica el cambio de "
+                "comando; el bloqueo sigue abierto"
             )
-            return enc, Avanzo()
+            _devolver(
+                registro, enc, "investigar", causa,
+                "redeclarar la comprobacion retirada o cambiada y observarla en "
+                "verde; el bloqueo sigue abierto",
+                hora, f"observacion-sin-{_huella_de_fallas(observacion)}",
+            )
+            return registro.fold(enc.id) or enc, Devolver("responsable", causa)
         return None
     enc = _registrar_comprobaciones(registro, enc, observacion, version, hora)
     causa = "la comprobacion del supervisor esta en rojo: " + "\n".join(fallas)

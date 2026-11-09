@@ -437,7 +437,8 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
         """Retirar una sola comprobacion no resuelve su bloqueo sin verde.
 
         La otra comprobacion sigue declarada y pasa; el bloqueo de la retirada
-        sigue abierto, la fase no publica y queda el pendiente visible.
+        sigue abierto y el turno vuelve al responsable para que la restituya o
+        justifique el cambio, en vez de bloquear la fase y entregar parcial.
         """
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._aprobado(
@@ -488,6 +489,10 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
             ]
             self.assertEqual(len(abiertos), 1, "el bloqueo retirado sigue abierto")
             self.assertIn("una comprobacion que falla", abiertos[0].titulo)
+            self.assertIn(
+                "responsable", roles,
+                "el turno vuelve al responsable, no se entrega parcial",
+            )
             self.assertFalse(
                 any(
                     ev["kind"] == "entrega_externa"
@@ -497,9 +502,149 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 "no se publica la version sin una observacion en verde de la "
                 "comprobacion retirada",
             )
+            self.assertNotEqual(
+                e.estado, "terminado", "la fase no termina ni entrega parcial"
+            )
+            self.assertNotEqual(
+                e.fase_actual.estado, "bloqueada", "la fase no queda bloqueada"
+            )
+
+    def test_cambiar_el_objetivo_del_mismo_comando_cierra_el_bloqueo(self):  # no-roja-en-base: caracterización de que el mismo comando en verde cierra el bloqueo aunque cambie la prosa del objetivo
+        """Cambiar solo el texto del objetivo no inventa otro bloqueo.
+
+        La identidad es el comando: la misma argv observada en verde cierra el
+        bloqueo rojo aunque cambie la redaccion del objetivo.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "objetivo-cambia",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            argv = ["python3", "-m", "unittest", "tests.test_a"]
+            roja = {"objetivo": "el check falla con el sticky de 394", "argv": argv}
+            verde = {
+                "objetivo": "el check falla con el sticky real de #394 (F9 High)",
+                "argv": argv,
+            }
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [roja]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [roja], {0: 1})
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [verde]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [verde], {0: 0})
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(
+                abiertos, [],
+                "el verde del mismo comando cierra el bloqueo aunque cambie el objetivo",
+            )
+            nuevos = r.reg.eventos(r.enc)[antes:]
             self.assertTrue(
-                any("dejo de observarse" in p for p in e.pendientes_entrega),
-                "la fase lleva el pendiente de la comprobacion no observada",
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "con el comando en verde la publicacion sigue",
+            )
+
+    def test_cambiar_el_argv_devuelve_al_responsable_sin_bloquear(self):
+        """Cambiar el comando deja el bloqueo abierto y devuelve el turno.
+
+        El bloqueo viejo no se observo en verde; la fase no se entrega parcial
+        ni queda bloqueada: el responsable recibe el turno para restituir la
+        comprobacion o justificar el cambio.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "argv-cambia",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            roja = {
+                "objetivo": "el check rojo",
+                "argv": ["python3", "-m", "unittest", "tests.test_a"],
+            }
+            nuevo = {
+                "objetivo": "el check rojo",
+                "argv": ["python3", "-m", "unittest", "-v", "tests.test_a"],
+            }
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [roja]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [roja], {0: 1})
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [nuevo]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [nuevo], {0: 0})
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(
+                len(abiertos), 1, "el bloqueo del comando viejo sigue abierto"
+            )
+            self.assertIn(
+                "responsable", roles,
+                "el turno vuelve al responsable para restituir o justificar",
+            )
+            self.assertNotEqual(e.estado, "terminado", "no hay entrega parcial")
+            self.assertNotEqual(
+                e.fase_actual.estado, "bloqueada", "la fase no queda bloqueada"
+            )
+            self.assertFalse(
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "no se publica sin el verde del comando viejo",
             )
 
     def test_una_observacion_en_verde_cierra_el_bloqueo_rojo(self):  # no-roja-en-base: caracterización de que una observación en verde del mismo check cierra el bloqueo del supervisor
