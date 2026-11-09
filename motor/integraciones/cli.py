@@ -141,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--home", type=Path, default=None)
     s.add_argument("--json", action="store_true")
+    s.add_argument("--vivo", action="store_true")
 
     args = ap.parse_args(argv)
     try:
@@ -156,7 +157,7 @@ def _registro(base: Path) -> Registro:
 
 def _correr(args) -> int:
     if args.cmd == "capacidades":
-        datos = reporte_capacidades(args.base, args.home)
+        datos = reporte_capacidades(args.base, args.home, vivo=args.vivo)
         if args.json:
             print(json.dumps(datos, ensure_ascii=False, indent=2))
         else:

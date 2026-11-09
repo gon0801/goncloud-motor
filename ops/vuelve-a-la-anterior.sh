@@ -169,6 +169,14 @@ if [ -n "$ref_maquina" ]; then
 fi
 anota_rev origen ""
 git -C "$motor" checkout -q --detach "$revision" || falla_rev codigo "checkout del codigo"
+runtime="$(python3 -c 'import base64,sys; programa=base64.b64decode(sys.argv.pop(1)); exec(programa)' "$maquina_programa" ruta_runtime)"
+if [ -n "$runtime" ] && [ "$runtime" != "$motor" ]; then
+  [ -e "$runtime/.git" ] || falla_rev codigo "el árbol del supervisor no es un clon: $runtime"
+  if ! git -C "$runtime" cat-file -e "$revision^{commit}" 2>/dev/null; then
+    git -C "$runtime" fetch -q --tags --force origin
+  fi
+  git -C "$runtime" checkout -q --detach "$revision" || falla_rev codigo "checkout del árbol del supervisor"
+fi
 if [ -n "$conf_ant" ] && [ -d "$conf/.git" ]; then
   git -C "$conf" checkout -q --detach "$conf_ant" || falla_rev conf "checkout de la conf"
   fuente_toml="$conf/maquinas/$m.toml"
@@ -312,6 +320,11 @@ v=limite_declarado(sys.stdin.read()); print("" if v is None else v)' <<<"$texto"
   fi
   anota_pc origen "" || return 1
   ssh_a "$h" "git -C $u\\motor checkout -q --detach $revision" || { anota_pc codigo "checkout del codigo"; return 1; }
+  runtime="$(maquina_local_pc ruta_runtime | tr -d '\r')" || return 1
+  if [ -n "$runtime" ]; then
+    ssh_a "$h" "git -C \"$runtime\" fetch -q --tags --force origin" || { echo "pc: no pude traer la etiqueta al árbol del supervisor" >&2; return 1; }
+    ssh_a "$h" "git -C \"$runtime\" checkout -q --detach $revision" || { echo "pc: no pude volver el árbol del supervisor" >&2; return 1; }
+  fi
   if [ -n "$conf_ant" ]; then
     ssh_a "$h" "git -C $u\\motor-conf checkout -q --detach $conf_ant" || { anota_pc conf "checkout de la conf"; return 1; }
     if [ -z "$ref_maquina" ]; then
@@ -336,7 +349,15 @@ for m in $MAQUINAS; do
   rc=$?
   if [ "$rc" -eq 0 ]; then
     printf '%s\n' "$out"
-    case "$out" in *"de vuelta en"*) movidas="$movidas $m" ;; esac
+    case "$out" in
+      *"de vuelta en"*)
+        if reinicia_supervisor "$m"; then
+          movidas="$movidas $m"
+        else
+          echo "FALLÓ $m: el reinicio falló" >&2
+          fallaron="$fallaron $m"
+        fi ;;
+    esac
   else
     printf '%s\n' "$out" >&2
     echo "FALLÓ $m" >&2

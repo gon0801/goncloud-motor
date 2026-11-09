@@ -128,6 +128,33 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
             if ev["kind"] == "reserva" and ev["data"].get("rol") == rol
         ]
 
+    def _observar_lote(
+        self, r, e, declaradas: list[dict], rcs: dict[int, int]
+    ) -> None:
+        ejecuciones = [
+            {
+                **cmd,
+                "rc": rcs[i],
+                "stdout": "OK\n" if rcs[i] == 0 else "",
+                "stderr": "" if rcs[i] == 0 else STDERR_EN_ROJO,
+            }
+            for i, cmd in enumerate(declaradas)
+        ]
+        r.reg.anotar(
+            r.enc,
+            {
+                "kind": "observacion_supervisor",
+                "data": {
+                    "version": e.producto.firma,
+                    "comprobaciones": declaradas,
+                    "ejecuciones": ejecuciones,
+                    "hora": ahora_iso(),
+                },
+            },
+            f"t-observacion:{r.enc}:{e.producto.firma}:"
+            + "-".join(str(rcs[i]) for i in range(len(declaradas))),
+        )
+
     def test_una_comprobacion_en_rojo_abre_un_intento_del_responsable(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._aprobado(tmp, "roja-abre")
@@ -405,6 +432,530 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 ),
                 "el bloqueo no se marca resuelto sin una observacion en verde",
             )
+
+    def test_quitar_una_comprobacion_no_resuelve_su_bloqueo(self):
+        """Retirar una sola comprobacion no resuelve su bloqueo sin verde.
+
+        La otra comprobacion sigue declarada y pasa; el bloqueo de la retirada
+        sigue abierto y el turno vuelve al responsable para que la restituya o
+        justifique el cambio, en vez de bloquear la fase y entregar parcial.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "una-retirada",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            roja = {
+                "objetivo": "una comprobacion que falla",
+                "argv": ["python3", "-m", "unittest", "tests.test_a"],
+            }
+            verde = {
+                "objetivo": "una comprobacion que pasa",
+                "argv": ["python3", "-m", "unittest", "tests.test_b"],
+            }
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [roja, verde]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [roja, verde], {0: 1, 1: 0})
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [verde]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [verde], {0: 0})
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(len(abiertos), 1, "el bloqueo retirado sigue abierto")
+            self.assertIn("una comprobacion que falla", abiertos[0].titulo)
+            self.assertIn(
+                "responsable", roles,
+                "el turno vuelve al responsable, no se entrega parcial",
+            )
+            self.assertFalse(
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "no se publica la version sin una observacion en verde de la "
+                "comprobacion retirada",
+            )
+            self.assertNotEqual(
+                e.estado, "terminado", "la fase no termina ni entrega parcial"
+            )
+            self.assertNotEqual(
+                e.fase_actual.estado, "bloqueada", "la fase no queda bloqueada"
+            )
+
+    def test_cambiar_el_objetivo_del_mismo_comando_cierra_el_bloqueo(self):  # no-roja-en-base: caracterización de que el mismo comando en verde cierra el bloqueo aunque cambie la prosa del objetivo
+        """Cambiar solo el texto del objetivo no inventa otro bloqueo.
+
+        La identidad es el comando: la misma argv observada en verde cierra el
+        bloqueo rojo aunque cambie la redaccion del objetivo.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "objetivo-cambia",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            argv = ["python3", "-m", "unittest", "tests.test_a"]
+            roja = {"objetivo": "el check falla con el sticky de 394", "argv": argv}
+            verde = {
+                "objetivo": "el check falla con el sticky real de #394 (F9 High)",
+                "argv": argv,
+            }
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [roja]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [roja], {0: 1})
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [verde]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [verde], {0: 0})
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(
+                abiertos, [],
+                "el verde del mismo comando cierra el bloqueo aunque cambie el objetivo",
+            )
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertTrue(
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "con el comando en verde la publicacion sigue",
+            )
+
+    def test_el_bloqueo_no_observado_escala_y_sale_del_ciclo(self):
+        """El bloqueo que la observacion no ve pasa por la escalera y sale.
+
+        Un comando nuevo con el mismo objetivo no cierra el bloqueo viejo por
+        compartir la prosa del objetivo: entra en la escalera, el responsable
+        recibe turnos y, si no hay verde del comando viejo, se entrega con el
+        pendiente escrito. Ni bucle infinito ni resolucion silenciosa.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "no-observado-escala",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            objetivo = "pruebas del modulo"
+            viejo = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_viejo"],
+            }
+            nuevo = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_nuevo"],
+            }
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [viejo]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [viejo], {0: 1})
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [nuevo]}), encoding="utf-8"
+            )
+            self._observar_lote(r, r.fold(), [nuevo], {0: 0})
+
+            salio = False
+            for _ in range(8):
+                e = r.fold()
+                if (
+                    e.estado == "terminado"
+                    or (e.fase_actual and e.fase_actual.estado == "bloqueada")
+                ):
+                    salio = True
+                    break
+                r.reg.anotar(
+                    r.enc,
+                    {"kind": "reserva_cerrada", "data": {}},
+                    f"t-cierre:{e.generacion}",
+                )
+                roles = []
+                prompts = []
+                _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            eventos = r.reg.eventos(r.enc)
+            escalares = [
+                ev
+                for ev in eventos
+                if ev["kind"] == "sin_progreso" and ev["data"].get("escalar")
+            ]
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertTrue(
+                salio, "el bloqueo no observado sale del ciclo por la escalera"
+            )
+            self.assertTrue(
+                escalares, "la escalera registro el relevo y el pendiente"
+            )
+            self.assertTrue(
+                abiertos or e.pendientes_entrega,
+                "el bloqueo no se resuelve en silencio",
+            )
+
+    def test_una_comprobacion_verde_con_el_mismo_objetivo_no_resuelve_un_bloqueo_retirado(self):
+        """Compartir el objetivo no resuelve un bloqueo retirado.
+
+        Se retira la comprobacion A y se declara B con el mismo objetivo; B
+        pasa en verde. El bloqueo de A sigue abierto: no hay evidencia de que A
+        se resolviera, y la prosa del objetivo no es una aprobacion.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "objetivo-compartido",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            objetivo = "pruebas del modulo"
+            retirada = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_a"],
+            }
+            otra = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_b"],
+            }
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [retirada]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [retirada], {0: 1})
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [otra]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [otra], {0: 0})
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertEqual(
+                len(abiertos), 1,
+                "el verde de otra comprobacion con el mismo objetivo no cierra "
+                "el bloqueo retirado",
+            )
+            self.assertIn("tests.test_a", abiertos[0].ancla)
+            self.assertFalse(
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "no se publica como si la comprobacion retirada hubiera pasado",
+            )
+
+    def test_un_bloqueo_con_la_identidad_anterior_se_cierra_por_su_comando(self):  # no-roja-en-base: caracterización de que el bloqueo con la identidad anterior se cierra con el mismo comando en verde; en origin/main la regla anterior cerraba lo ausente
+        """Un bloqueo guardado con el id viejo (objetivo+argv) se cierra por comando.
+
+        #425 escribia la identidad con el objetivo y el argv. La identidad actual
+        es el comando; sin un cierre por comando ese bloqueo no podria cerrarse
+        nunca. La misma orden observada en verde lo resuelve.
+        """
+        from motor.encargos.dominio import id_hallazgo
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "identidad-anterior",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            objetivo = "pruebas del modulo"
+            check = {
+                "objetivo": objetivo,
+                "argv": ["python3", "-m", "unittest", "tests.test_a"],
+            }
+            comando = " ".join(check["argv"])
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "comprobaciones_supervisor",
+                    "data": {
+                        "version": e.producto.firma,
+                        "hallazgos": [{
+                            "id": id_hallazgo("supervisor", comando, objetivo),
+                            "gravedad": "bloqueante",
+                            "criterio": "comportamiento",
+                            "titulo": (
+                                "comprobacion del supervisor en rojo: "
+                                + objetivo
+                            ),
+                            "reproduccion": "rc 1",
+                            "ancla": comando,
+                            "origen": "supervisor",
+                            "estado": "abierto",
+                        }],
+                        "verdes": [],
+                        "hora": ahora_iso(),
+                    },
+                },
+                "bloque-identidad-anterior",
+            )
+            e = r.fold()
+            self.assertTrue(
+                [
+                    h
+                    for h in e.fase_actual.hallazgos
+                    if h.origen == "supervisor" and h.estado == "abierto"
+                ],
+                "el escenario abre el bloqueo con la identidad anterior",
+            )
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": [check]}), encoding="utf-8"
+            )
+            self._observar_lote(r, e, [check], {0: 0})
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(
+                abiertos, [],
+                "el mismo comando en verde cierra el bloqueo con id anterior",
+            )
+
+    def test_una_observacion_en_verde_cierra_el_bloqueo_rojo(self):  # no-roja-en-base: caracterización de que una observación en verde del mismo check cierra el bloqueo del supervisor
+        """Una comprobacion en verde cierra el bloqueo rojo del supervisor.
+
+        La identidad es objetivo y argv: si la misma comprobacion se observa con
+        rc 0 sobre la misma version, el bloqueo se resuelve y la publicacion
+        sigue. Es la cara complementaria de retirar la comprobacion.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "verde-cierra",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            declaradas = self._declarar(r)
+            self._observar(r, e, declaradas, rc=1, stderr=STDERR_EN_ROJO)
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(len(abiertos), 1, "el rojo abre el bloqueo")
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            self._observar(r, e, declaradas, rc=0, stdout="OK\n")
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(
+                abiertos, [], "la observacion en verde cierra el bloqueo"
+            )
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertTrue(
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "con la comprobacion en verde la publicacion sigue",
+            )
+
+    def test_un_comentario_nuevo_de_deepseek_no_relanza_al_revisor_con_rojo(self):
+        """Un comentario nuevo de DeepSeek no adelanta al revisor.
+
+        La carrera vive en la condicion de `_releer_deepseek`: se llama a la
+        funcion real con un registro real y el estado minimo de un PR abierto,
+        una aprobacion anterior al producto vigente y un rojo del supervisor.
+        Con ese rojo abierto, el turno es del responsable.
+        """
+        from motor.encargos import ciclo
+        from motor.encargos.registro import Registro
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            try:
+                ident = ciclo.recibir(
+                    reg, "arregla el CLI", "f6-rojo-deepseek",
+                    "2026-11-09T09:00:00Z", entrega_nivel="pr",
+                    repo="o/r", base_rama="main",
+                )["encargo"]
+                sha = "a" * 40
+                hora = "2026-11-09T10:00:00Z"
+                reg.anotar(
+                    ident,
+                    {"kind": "producto_listo", "data": {
+                        "fase": "", "version": "v2",
+                        "manifiesto": [["saludo.txt", "aaa"]],
+                        "sha_git": "", "hora": hora,
+                    }},
+                    "f6-producto",
+                )
+                reg.anotar(
+                    ident,
+                    {"kind": "revision", "data": {
+                        "fase": "", "revision_id": "r1", "version": "v1",
+                        "base_version": "", "alcance": "completa",
+                        "veredicto": "aprobado", "revisor": "opus",
+                        "origen": "independiente", "cubre": [],
+                        "hallazgos": [], "hora": hora,
+                    }},
+                    "f6-aprobado",
+                )
+                for ukey, paso in (
+                    ("f6-pr", "pr_abierto"), ("f6-ds", "deepseek_leido")
+                ):
+                    reg.anotar(
+                        ident,
+                        {"kind": "entrega_externa", "data": {
+                            "fase": "", "paso": paso, "repo": "o/r",
+                            "numero": 1, "sha": sha,
+                            "huella": "h-viejo" if paso == "deepseek_leido" else "",
+                            "hora": hora,
+                        }},
+                        ukey,
+                    )
+                reg.anotar(
+                    ident,
+                    {"kind": "comprobaciones_supervisor", "data": {
+                        "version": "v2",
+                        "hallazgos": [{
+                            "id": "h_sup", "gravedad": "bloqueante",
+                            "criterio": "comportamiento",
+                            "titulo": "comprobacion del supervisor en rojo: x",
+                            "reproduccion": "rc 1", "ancla": "x",
+                            "origen": "supervisor", "estado": "abierto",
+                        }],
+                        "verdes": [], "hora": hora,
+                    }},
+                    "f6-rojo",
+                )
+                e = reg.fold(ident)
+                self.assertTrue(
+                    [
+                        h for h in e.fase_actual.hallazgos
+                        if h.origen == "supervisor" and h.estado == "abierto"
+                    ],
+                    "el escenario abre un rojo del supervisor",
+                )
+
+                class Gh:
+                    def comentarios_deepseek(self, repo, numero, sha):
+                        return [{
+                            "texto": "DeepSeek: APPROVED (revision nueva)",
+                            "sha": sha,
+                        }]
+
+                ciclo._releer_deepseek(
+                    reg, e, Gh(), Path(tmp), "2026-11-09T11:00:00Z", time.time()
+                )
+                estrategias = [
+                    ev
+                    for ev in reg.eventos(ident)
+                    if ev["kind"] == "estrategia"
+                    and ev["data"].get("rol") == "revisor"
+                    and ev["data"].get("estrategia") == "revisar_evidencia"
+                ]
+                self.assertEqual(
+                    estrategias,
+                    [],
+                    "un comentario nuevo de DeepSeek no relanza al revisor "
+                    "mientras el rojo del supervisor sigue abierto",
+                )
+            finally:
+                reg.close()
 
     def test_replay_del_prefijo_real_hasta_67595_abre_intento(self):
         """Reconstruye los eventos decisivos de `enc_0dc2b585542ac181` hasta

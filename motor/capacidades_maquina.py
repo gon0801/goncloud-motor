@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -397,7 +398,14 @@ def _arranque(correr, launch_agents_dir: Path | None = None) -> dict:
 # ------------------------------------------------------------------ reporte
 
 
-def reporte(base: Path, home: Path | None = None, correr=None, which=None) -> dict:
+def reporte(
+    base: Path,
+    home: Path | None = None,
+    correr=None,
+    which=None,
+    vivo: bool = False,
+    turnos_fn=None,
+) -> dict:
     correr = correr or _correr
     base = Path(base)
     which = which or shutil.which
@@ -443,6 +451,13 @@ def reporte(base: Path, home: Path | None = None, correr=None, which=None) -> di
         nombre = maquina.nombre if maquina is not None else ""
     except Exception:  # noqa: BLE001 - el nombre es informativo, no una condición
         pass
+    datos_vivo = {}
+    if vivo:
+        from motor.flota import turnos as turnos_flota
+
+        ejecutar_turnos = turnos_fn or turnos_flota.turnos_vivos
+        with tempfile.TemporaryDirectory(prefix="motor-vivo-") as tmp:
+            datos_vivo = ejecutar_turnos(generacion, Path(tmp))
     faltas = [
         f"{clave}: {seccion['detalle']}"
         for clave, seccion in secciones.items()
@@ -456,6 +471,7 @@ def reporte(base: Path, home: Path | None = None, correr=None, which=None) -> di
             "ejecutable": sys.executable,
         },
         **secciones,
+        **({"vivo": datos_vivo} if vivo else {}),
         "faltas": faltas,
         "ok": not faltas,
     }
@@ -474,6 +490,18 @@ def texto(datos: dict) -> str:
         for fila in seccion.get("filas", []):
             nombre = fila.get("recurso") or fila.get("agente") or fila.get("mecanismo") or ""
             lineas.append(f"  {nombre:<10} {fila.get('estado', '?'):<5}  {fila.get('detalle') or ''}")
+    vivo = datos.get("vivo") or {}
+    if vivo:
+        lineas.append(
+            "vivo       "
+            + ("ok" if not vivo.get("fallidos") else "fallo")
+            + f"  un turno por agente{'' if vivo.get('generacion') else ' (sin generación vigente)'}"
+        )
+        for agente, turno in sorted((vivo.get("turnos") or {}).items()):
+            detalle = turno.get("error") or turno.get("salida") or turno.get("estado") or ""
+            lineas.append(
+                f"  {agente:<10} {str(turno.get('estado') or '?'):<12}  {detalle}"
+            )
     if datos.get("faltas"):
         lineas.append("faltas:")
         lineas.extend(f"  - {f}" for f in datos["faltas"])

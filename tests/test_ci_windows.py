@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import entorno
+from motor.encargos import trabajos_ci
 
 FLUJO = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pruebas.yml"
 PRUEBAS = (
@@ -24,6 +25,11 @@ PRUEBAS = (
     "tests.test_director_capacidades",
     "tests.test_encargos_despliegue_real",
     "tests.test_despliegue_recuperacion",
+    "tests.test_pausa_entre_fases",
+    "tests.test_reabrir_cierre_forzado",
+    "tests.test_relevo_sin_modelos",
+    "tests.test_cli_reabrir",
+    "tests.test_compuerta_e2e",
 )
 
 
@@ -43,9 +49,17 @@ class PruebasDeWindowsEnCi(unittest.TestCase):
         return lineas[0]
 
     def test_el_job_corre_cada_modulo_de_pruebas_de_windows(self):
-        comando = self.comando().split()
+        # La lista vive en trabajos_ci: el job la recibe por la salida del prep.
+        self.assertTrue(
+            hasattr(trabajos_ci, "MODULOS_WINDOWS_COMPLETO"),
+            "el job de Windows sigue con la lista fija en el workflow",
+        )
+        self.assertEqual(
+            tuple(PRUEBAS), trabajos_ci.MODULOS_WINDOWS_COMPLETO
+        )
+        comando = self.comando()
+        self.assertIn("needs.prep.outputs.modulos_windows", comando)
         for prueba in PRUEBAS:
-            self.assertIn(prueba, comando)
             self.assertTrue((FLUJO.parents[2] / (prueba.replace(".", "/") + ".py")).is_file())
 
     def test_el_job_corre_en_windows_y_exige_windows_en_lugar_de_saltar(self):

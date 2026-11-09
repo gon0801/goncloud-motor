@@ -36,6 +36,7 @@ _EVENTOS_DE_MARCADOR = (
     "deepseek_lectura",
     "deepseek_cerrado",
     "ci_sondeo",
+    "excepcion",
 )
 
 # Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
@@ -799,6 +800,14 @@ class Encargo:
     # Hallazgos externos que una restricción expresa o el revisor dejaron fuera
     # de alcance: (id, título, razón). No bloquean; se escriben en el PR.
     fuera_de_alcance: tuple[tuple[str, str, str], ...] = ()
+    # Excepciones del check de merge derivadas de eventos `excepcion`:
+    # (tipo, sha, id, motivo, hora). Única fuente del marcador `motor:excepciones=`.
+    excepciones: tuple[tuple[str, str, str, str, str], ...] = ()
+    # Fuera de alcance heredado de un evento `hallazgo_fuera_de_alcance`:
+    # (id, motivo, hora). Solo alimenta el marcador cuando el encargo no tiene
+    # excepciones estructuradas. No incluye lo que agrega
+    # `_fuera_de_alcance_por_restricciones`, que no se juzgó en un SHA.
+    excepciones_legado: tuple[tuple[str, str, str], ...] = ()
     # Las causas pendientes del entorno o del instrumento. Mientras haya una,
     # ningún proceso nuevo: cada una se levanta con su propia comprobación.
     impedimento: str = ""
@@ -1627,6 +1636,11 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo
     return resultado
 
 
+def normaliza_comando(texto: object) -> str:
+    """El comando de una comprobacion con los espacios normalizados."""
+    return " ".join(str(texto or "").split())
+
+
 def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
     kind = evento["kind"]
     d = evento["data"]
@@ -2020,9 +2034,10 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         )
     if kind == "comprobaciones_supervisor":
         # Las comprobaciones en rojo de una observacion son trabajo bloqueante
-        # con la misma identidad que un hallazgo: objetivo y argv. Al escribir
-        # la observacion se abren las que fallan y se cierran las que ya no
-        # aparecen, para que `_sin_avance` mida el avance por ids.
+        # con la misma identidad que un hallazgo: el comando. Al escribir la
+        # observacion se abren las que fallan y se cierran las que esta
+        # observacion ejecuto y paso en verde. Una comprobacion retirada o con
+        # otro comando no se cierra: no hay observacion en verde que la resuelva.
         fase = e.fase_actual
         if fase is None:
             return e
@@ -2032,9 +2047,19 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             if isinstance(h, dict)
         )
         ids = {h.id for h in nuevos}
+        verdes = set(d.get("verdes") or ())
+        comandos_verdes = {
+            normaliza_comando(x) for x in (d.get("verdes_comandos") or ())
+        }
+        con_verdes = "verdes" in d
         previos = tuple(
             replace(h, estado="resuelto")
             if h.origen == "supervisor" and h.estado == "abierto" and h.id not in ids
+            and (
+                not con_verdes
+                or h.id in verdes
+                or normaliza_comando(h.ancla) in comandos_verdes
+            )
             else h
             for h in fase.hallazgos
         )
@@ -2265,9 +2290,11 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         razon = " ".join(str(d.get("razon") or "").split())
         if hid and razon:
             actuales = tuple(x for x in e.fuera_de_alcance if x[0] != hid)
+            legado = tuple(x for x in e.excepciones_legado if x[0] != hid)
             return replace(
                 e,
                 fuera_de_alcance=actuales + ((hid, titulo, razon),),
+                excepciones_legado=legado + ((hid, razon, hora),),
                 hora=hora or e.hora,
             )
         return e
@@ -2536,6 +2563,26 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             ),
             hora=hora or e.hora,
         )
+
+    if kind == "excepcion":
+        # La excepción del check de merge se deriva del pliegue: tipo, SHA e id
+        # con su motivo y hora. El último evento de una misma clave manda.
+        tipo = str(d.get("tipo") or "descarte")
+        sha = str(d.get("sha") or "")
+        hid = str(d.get("id") or "")
+        if sha and tipo in ("descarte", "fuera_alcance", "omision"):
+            motivo = " ".join(str(d.get("motivo") or "").split())
+            clave = (tipo, sha, hid)
+            actuales = tuple(
+                x for x in e.excepciones if (x[0], x[1], x[2]) != clave
+            )
+            return replace(
+                e,
+                excepciones=actuales
+                + ((tipo, sha, hid, motivo, str(d.get("hora") or "")),),
+                hora=hora or e.hora,
+            )
+        return replace(e, hora=hora or e.hora)
 
     if kind in (
         "ci_producto",

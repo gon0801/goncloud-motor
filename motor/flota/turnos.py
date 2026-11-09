@@ -48,13 +48,14 @@ def _recorte(texto: str) -> str:
 
 
 def _turno_agente(
-    agente: str, gen: Path, raiz: Path, tope_s: int = TOPE_TURNO_S
+    agente: str, gen: Path | None, raiz: Path, tope_s: int = TOPE_TURNO_S
 ) -> dict:
     """Un turno de una palabra con el mismo camino de lanzamiento del motor.
 
     El espacio vive en <raiz>/corriendo/<agente>-<marca>/espacio/<agente> para
     cumplir el acceso de aislar, y el runtime aparte guarda la copia de la
-    suscripción; los dos se borran al terminar el turno.
+    suscripción; los dos se borran al terminar el turno. Sin generación se usa
+    el lanzador del PATH, que es lo que ve `motor director capacidades`.
     """
     marca = uuid.uuid4().hex[:8]
     scratch = Path(raiz) / "corriendo" / f"{agente}-{marca}"
@@ -72,13 +73,14 @@ def _turno_agente(
         cmd = _lanzador(agente, modelos[0], "nueva")(
             enc, prompt, espacio, str(uuid.uuid4())
         )
-        cmd = vincular(gen, cmd, funcion="codigo")
+        if gen is not None:
+            cmd = vincular(gen, cmd, funcion="codigo")
         comando = aislar(
             cmd,
             espacio,
             runtime,
             suscripcion=True,
-            lecturas_extra=(gen,),
+            lecturas_extra=(gen,) if gen is not None else (),
             agente=agente,
             interprete=True,
         )
@@ -210,6 +212,52 @@ def turnos_candidata(
     }
     _atomico(home / "turnos" / f"{gen.name}.json", informe)
     return informe
+
+
+def turnos_vivos(
+    generacion: Path | None,
+    raiz: Path,
+    agentes=None,
+    tope_s: int = TOPE_TURNO_S,
+) -> dict:
+    """Un turno mínimo por agente autorizado, sin tocar el registro.
+
+    Autorizado es el agente del catálogo que tiene sesión legible y lanzador
+    resoluble. El error de cada uno se conserva literal; un turno no cambia
+    el estado de ningún encargo.
+    """
+    from motor.encargos.catalogo_agentes import ADAPTADORES
+    from motor.encargos.lectura import Leido, Pendiente, causa_de
+
+    nombres = list(agentes) if agentes else sorted(ADAPTADORES)
+    turnos: dict[str, dict] = {}
+    for agente in nombres:
+        if agente not in ADAPTADORES:
+            continue
+        sesion = _sesion_presente(agente)
+        if sesion is True:
+            sesion = Leido(True)
+        elif sesion is False:
+            sesion = Pendiente("")
+        if not isinstance(sesion, Leido):
+            turnos[agente] = {"estado": "sin_sesion"}
+            causa = causa_de(sesion)
+            if causa:
+                turnos[agente]["error"] = causa
+            continue
+        if resolver_lanzador(agente, generacion) is None:
+            turnos[agente] = {
+                "estado": "sin_ejecutable",
+                "error": f"{agente} no tiene lanzador resoluble en esta máquina",
+            }
+            continue
+        turnos[agente] = _turno_agente(agente, generacion, raiz, tope_s)
+    fallidos = [a for a, t in turnos.items() if t.get("estado") == "fallo"]
+    return {
+        "generacion": generacion.name if generacion is not None else "",
+        "turnos": turnos,
+        "fallidos": fallidos,
+    }
 
 
 def avisar_rechazo(

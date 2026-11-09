@@ -1,11 +1,12 @@
 """Comandos del encargo. El texto del pedido no entra al argv remoto."""
 
 from __future__ import annotations
-from motor.io import leer_json, leer_texto
+from motor.io import escribir_texto, leer_json, leer_texto
 
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 from dataclasses import replace
@@ -601,6 +602,31 @@ def _atender_respuestas_antes_del_barrido(reg: Registro, hora: str) -> None:
             continue
 
 
+def _marcar_pasada(base: Path, hora: str, informes: list[dict]) -> None:
+    """Deja el recibo de una pasada completa del supervisor con su SHA.
+
+    La comprobación final del despliegue lo lee: sin esta marca no hay pasada
+    que demuestre que el código nuevo arrancó y atendió encargos. El SHA es el
+    que el proceso fijó al arrancar, no el que haya en disco: un supervisor
+    viejo que sigue vivo no acredita el código nuevo.
+    """
+    from motor import version
+
+    doc = {
+        "sha": version.sha_de_arranque(),
+        "ruta": str(version.RAIZ),
+        "hora": hora,
+        "completa": True,
+        "encargos": len(informes),
+        "maquina": socket.gethostname(),
+        "pid": os.getpid(),
+    }
+    ruta = Path(base) / "supervisor-pasada.json"
+    temporal = ruta.with_suffix(".json.tmp")
+    escribir_texto(temporal, json.dumps(doc, ensure_ascii=False, sort_keys=True))
+    os.replace(temporal, ruta)
+
+
 def _paso_del_supervisor(
     reg: Registro,
     hora: str,
@@ -651,6 +677,9 @@ def _hay_ruta(reg: Registro, ruta: tuple[str, ...]) -> bool:
 
 
 def _supervisor(reg: Registro, args) -> int:
+    from motor import version
+
+    version.sha_de_arranque()
     if args.respaldo and not args.agente:
         raise ValueError("--respaldo necesita --agente como ruta principal")
     ruta = tuple(dict.fromkeys([args.agente, *args.respaldo])) if args.agente else ()
@@ -677,7 +706,7 @@ def _supervisor(reg: Registro, args) -> int:
         hora = ahora_iso()
         marcar_ruta(reg, ruta, hora)
         habilitado = _hay_ruta(reg, ruta)
-        return _paso_del_supervisor(
+        informes = _paso_del_supervisor(
             reg,
             hora,
             lanzar,
@@ -686,6 +715,8 @@ def _supervisor(reg: Registro, args) -> int:
             _puerto_github(reg.base),
             drenador,
         )
+        _marcar_pasada(reg.base, hora, informes)
+        return informes
 
     if args.una_vez:
         print(json.dumps(paso(), ensure_ascii=False))

@@ -124,7 +124,7 @@ class ReporteCompletoTest(unittest.TestCase):
         self.addCleanup(_limpiar, self.tmp)
         self.home, self.base = _conf_de_prueba(self.tmp)
 
-    def _reporte(self, dobles=None):
+    def _reporte(self, dobles=None, **extra):
         dobles = dobles or Dobles()
         secciones_reales = (cm._jaula, cm._arranque)
         with mock.patch.dict(
@@ -137,7 +137,7 @@ class ReporteCompletoTest(unittest.TestCase):
             }), mock.patch.object(cm, "_arranque", lambda *a, **k: {
                 "mecanismo": "launchd", "estado": "ok", "detalle": "plist con KeepAlive",
             }), _puertas_de_windows():
-                return cm.reporte(self.base, self.home, dobles.correr, dobles.which)
+                return cm.reporte(self.base, self.home, dobles.correr, dobles.which, **extra)
 
     def test_maquina_completa_no_tiene_faltas(self):
         datos = self._reporte()
@@ -163,6 +163,37 @@ class ReporteCompletoTest(unittest.TestCase):
             self.assertNotIn("token-secreto-123", texto)
             self.assertNotIn("http://10.0.0.9/api/push/abc123", texto)
             self.assertIn("MOTOR_KUMA_URL", texto)
+
+    def test_vivo_reporta_un_turno_por_agente_sin_tocar_el_registro(self):
+        import inspect
+
+        self.assertIn(
+            "vivo",
+            inspect.signature(cm.reporte).parameters,
+            "capacidades no ofrece turnos reales bajo demanda",
+        )
+        llamadas = []
+
+        def falso_turnos(generacion, raiz):
+            llamadas.append((generacion, raiz))
+            return {
+                "generacion": "g1",
+                "turnos": {
+                    "codex": {"estado": "ok", "salida": "listo"},
+                    "grok": {"estado": "fallo", "error": "sin sesión de grok"},
+                },
+                "fallidos": ["grok"],
+            }
+
+        datos = self._reporte(vivo=True, turnos_fn=falso_turnos)
+        self.assertFalse((self.base / "registro.sqlite").exists())
+        self.assertFalse((self.base / "encargos").exists())
+        self.assertEqual(len(llamadas), 1)
+        self.assertEqual(datos["vivo"]["fallidos"], ["grok"])
+        self.assertEqual(datos["vivo"]["turnos"]["codex"]["estado"], "ok")
+        texto = cm.texto(datos)
+        self.assertIn("vivo", texto)
+        self.assertIn("sin sesión de grok", texto)
 
     def test_texto_es_legible_y_nombra_las_faltas(self):
         (self.base / "evidencia-ci").rmdir()
@@ -246,14 +277,14 @@ class ReporteIncompletoTest(unittest.TestCase):
         self.home = self.tmp / ".motor-vacia"
         self.home.mkdir()
 
-    def _reporte(self, dobles):
+    def _reporte(self, dobles, **extra):
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch.object(cm, "_jaula", lambda *a, **k: {
                 "mecanismo": "directo", "estado": "falta", "detalle": "sin lanzamiento de trabajadores",
             }), mock.patch.object(cm, "_arranque", lambda *a, **k: {
                 "mecanismo": "launchd", "estado": "falta", "detalle": "sin plist",
             }), _puertas_de_windows():
-                return cm.reporte(self.base, self.home, dobles.correr, dobles.which)
+                return cm.reporte(self.base, self.home, dobles.correr, dobles.which, **extra)
 
     def test_base_vacia_y_home_vacio_acumula_faltas(self):
         datos = self._reporte(Dobles(gh_ok=False))

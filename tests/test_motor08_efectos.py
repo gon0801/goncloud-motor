@@ -183,7 +183,12 @@ class RecuperaEfectosTest(unittest.TestCase):
         conf_remota = self.home / "conf.git"
         git("clone", "-q", "--bare", str(conf), str(conf_remota))
         ops = fuente / "ops"
-        for nombre in ("instala-todo.sh", "vuelve-a-la-anterior.sh", "maquina_local.py"):
+        for nombre in (
+            "instala-todo.sh",
+            "vuelve-a-la-anterior.sh",
+            "maquina_local.py",
+            "comprueba-despliegue.sh",
+        ):
             shutil.copy2(RAIZ / "ops" / nombre, ops / nombre)
         (ops / "lib.sh").write_text(
             (RAIZ / "ops/lib.sh").read_text(encoding="utf-8")
@@ -204,9 +209,36 @@ class RecuperaEfectosTest(unittest.TestCase):
             "MOTOR_SHA": actual,
             "MOTOR_INSTALA_RAIZ": str(fuente),
             "MOTOR_RAMA": "main",
+            "MOTOR_ESPERA_DESPLIEGUE": "0",
             "PRUEBA_REPO": str(remoto),
             "PRUEBA_CONF": str(conf_remota),
         }
+        # La comprobación final lee la pasada del supervisor: este lanzador
+        # local deja el SHA instalado con un pid vivo antes de instalar.
+        pasada = usuario / ".motor-encargos"
+        pasada.mkdir()
+        (pasada / "supervisor-pasada.json").write_text(
+            json.dumps(
+                {
+                    "sha": actual,
+                    "ruta": str(usuario / "motor"),
+                    "hora": "2026-11-08T10:00:00Z",
+                    "completa": True,
+                    "encargos": 1,
+                    "maquina": "mac",
+                    "pid": os.getpid(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        # El despliegue reinicia el LaunchAgent; el doble local solo deja el 0
+        # para no tocar el supervisor real de esta máquina.
+        bin_dir = self.home / "bin"
+        bin_dir.mkdir()
+        lanzador = bin_dir / "launchctl"
+        lanzador.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        lanzador.chmod(0o755)
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
         instalacion = subprocess.run(
             ["bash", str(ops / "instala-todo.sh")], env=env, capture_output=True, text=True
         )

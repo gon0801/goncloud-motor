@@ -124,7 +124,8 @@ class Dependencias(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}):
             with mock.patch.object(trabajos_ci, "_git", falso_git):
-                return trabajos_ci.seleccion(evento)
+                valores, _modulos = trabajos_ci.seleccion(evento)
+                return valores
 
     @staticmethod
     def _pr(base="base123", rama="encargo/enc_1"):
@@ -257,6 +258,100 @@ class Workflow(unittest.TestCase):
                         trabajos_ci.afecta(job, [ruta]),
                         f"{job} ejecuta {ruta} pero no la declara",
                     )
+
+
+class ModulosWindows(unittest.TestCase):
+    def test_dos_origenes_distintos_eligen_modulos_distintos(self):
+        self.assertTrue(
+            hasattr(trabajos_ci, "modulos_windows"),
+            "el job de Windows no elige módulos por las rutas tocadas",
+        )
+        preparacion = trabajos_ci.modulos_windows(["ops/prepara_pc.py"])
+        encargos = trabajos_ci.modulos_windows(["motor/encargos/ciclo.py"])
+        self.assertNotEqual(preparacion, encargos)
+        self.assertIn("tests.test_prepara_pc", preparacion)
+        self.assertIn("tests.test_encargos_despliegue_real", encargos)
+
+    def test_una_ruta_desconocida_corre_la_bateria_completa(self):
+        self.assertTrue(hasattr(trabajos_ci, "MODULOS_WINDOWS_COMPLETO"))
+        self.assertEqual(
+            trabajos_ci.modulos_windows(["docs/desconocido.md"]),
+            trabajos_ci.MODULOS_WINDOWS_COMPLETO,
+        )
+        self.assertEqual(
+            trabajos_ci.modulos_windows([".github/workflows/pruebas.yml"]),
+            trabajos_ci.MODULOS_WINDOWS_COMPLETO,
+        )
+
+    def test_una_ruta_desconocida_junto_a_una_conocida_corre_todo(self):
+        # motor/io.py no está en ningún grupo pero activa windows: acotar por
+        # la ruta conocida dejaría fuera las pruebas que ese cambio importa.
+        self.assertTrue(
+            hasattr(trabajos_ci, "modulos_windows"),
+            "el job de Windows no elige módulos por las rutas tocadas",
+        )
+        self.assertEqual(
+            trabajos_ci.modulos_windows(["ops/prepara_pc.py", "motor/io.py"]),
+            trabajos_ci.MODULOS_WINDOWS_COMPLETO,
+        )
+
+    def test_una_prueba_de_la_familia_test_windows_cae_en_su_grupo(self):
+        # El prefijo `tests/test_windows` no es un directorio: sin el comodín
+        # `tests/test_windows_wsl.py` nunca coincidía con su grupo.
+        self.assertTrue(
+            hasattr(trabajos_ci, "modulos_windows"),
+            "el job de Windows no elige módulos por las rutas tocadas",
+        )
+        modulos = trabajos_ci.modulos_windows(["tests/test_windows_wsl.py"])
+        self.assertIn("tests.test_windows_wsl", modulos)
+        modulos = trabajos_ci.modulos_windows(
+            ["motor/encargos/ciclo.py", "tests/test_windows_wsl.py"]
+        )
+        self.assertIn("tests.test_windows_wsl", modulos)
+
+    def test_con_git_roto_main_corre_todos_y_publica_la_bateria_completa(self):
+        import contextlib
+        import io
+
+        salida = io.StringIO()
+
+        def roto(*_args):
+            raise RuntimeError("bad object")
+
+        try:
+            with contextlib.redirect_stdout(salida), mock.patch.dict(
+                os.environ,
+                {
+                    "GITHUB_EVENT_NAME": "pull_request",
+                    "GITHUB_OUTPUT": "",
+                    "GITHUB_EVENT_PATH": "",
+                },
+            ), mock.patch.object(trabajos_ci, "_git", roto):
+                rc = trabajos_ci.main(["--github-output"])
+        except RuntimeError as exc:
+            self.fail(f"con git roto el prep abortó en vez de correr todo: {exc}")
+        self.assertEqual(rc, 0)
+        texto = salida.getvalue()
+        for job in trabajos_ci.TRABAJOS:
+            self.assertIn(f"{job.replace('-', '_')}=true", texto)
+        self.assertIn(
+            "modulos_windows=" + " ".join(trabajos_ci.MODULOS_WINDOWS_COMPLETO),
+            texto,
+        )
+
+    def test_la_salida_de_github_lleva_los_modulos(self):
+        self.assertTrue(hasattr(trabajos_ci, "modulos_windows"))
+        import contextlib
+        import io
+
+        salida = io.StringIO()
+        with contextlib.redirect_stdout(salida), mock.patch.dict(
+            os.environ, {"GITHUB_OUTPUT": ""}
+        ):
+            trabajos_ci.main(["--rutas", "ops/prepara_pc.py", "--github-output"])
+        texto = salida.getvalue()
+        self.assertIn("modulos_windows=", texto)
+        self.assertIn("tests.test_prepara_pc", texto)
 
 
 if __name__ == "__main__":
