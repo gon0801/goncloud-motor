@@ -1637,7 +1637,11 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
                 pr for pr in estado["prs"].values()
                 if pr["numero"] == e.pr_numero
             )
-            cuerpo_original = "x" * (ciclo._LIMITE_CUERPO_PR - 5)
+            cuerpo_original = (
+                "x" * 60_000
+                + "\n\n## Notas del motor\n- nota previa\n\n"
+                + f"Encargo {e.id}. Fase: {e.fase_activa}."
+            )
             pr["cuerpo"] = cuerpo_original
             (vuelta.gh.d / "github.json").write_text(
                 json.dumps(estado), encoding="utf-8"
@@ -1657,6 +1661,12 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
             # nunca en el cierre del motor.
             self.assertLessEqual(len(cuerpo), ciclo._LIMITE_CUERPO_PR)
             self.assertIn("después de cerrar", cuerpo)
+            self.assertIn("nota previa", cuerpo)
+            self.assertEqual(
+                cuerpo.count("## Notas del motor"),
+                1,
+                "no se duplica la sección de notas",
+            )
             self.assertTrue(
                 cuerpo.rstrip().endswith(f"Encargo {e.id}. Fase: {e.fase_activa}."),
                 "la línea del encargo tiene que quedar al final",

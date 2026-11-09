@@ -82,17 +82,23 @@ def _entradas_de_lista(lineas: list[str], clave: str) -> list[tuple[str, int, st
     return entradas
 
 
+TABLAS_DE_ALLOWLIST = frozenset(
+    {"[allowlist]", "[rules.allowlist]", "[[allowlists]]", "[[rules.allowlists]]"}
+)
+
+
 def _claves_de_allowlist(lineas: list[str]) -> list[tuple[str, int, str]]:
-    """Cada clave de cada bloque `[[allowlists]]`, con su línea."""
+    """Cada clave de cada tabla de allowlist que acepta gitleaks, con su línea.
+
+    Cubre la global `[allowlist]` y `[[allowlists]]`, y las de una regla
+    `[rules.allowlist]` y `[[rules.allowlists]]`.
+    """
     claves: list[tuple[str, int, str]] = []
     dentro = False
     for numero, linea in enumerate(lineas, start=1):
         limpia = linea.split("#", 1)[0].strip()
-        if limpia.startswith("[["):
-            dentro = limpia == "[[allowlists]]"
-            continue
         if limpia.startswith("["):
-            dentro = False
+            dentro = limpia in TABLAS_DE_ALLOWLIST
             continue
         if not dentro:
             continue
@@ -147,7 +153,9 @@ def _revisar_gitleaks(raiz: Path) -> list[str]:
             ".gitleaks.toml: useDefault apagado; las reglas por defecto no "
             "corren. Anota la excepcion en la misma linea con razon y fecha"
         )
-    for bloque in config.get("allowlists") or []:
+    globales = [config.get("allowlist")]
+    globales.extend(config.get("allowlists") or [])
+    for bloque in globales:
         if not isinstance(bloque, dict):
             continue
         rutas = bloque.get("paths") or []
@@ -213,6 +221,18 @@ _EXTRAS_DE_PRUEBA = (
     ("ops-tests",),
     ("macos", "windows"),
 )
+_MENSAJES_DE_PRUEBA = (
+    "arregla el CLI",
+    "[sin-bateria]",
+    "[skip ci]",
+    "skip",
+    "saltar",
+    "no-ci",
+    "sin-ci",
+    "bateria=false",
+    "feat: [sin-bateria] arreglo",
+)
+_RUTAS_DE_CAMBIO = ("motor/encargos/ciclo.py",)
 
 
 def _cargar_modulo(raiz: Path, relativa: str):
@@ -228,12 +248,32 @@ def _cargar_modulo(raiz: Path, relativa: str):
     return modulo
 
 
+def _activos_con_mensaje(modulo, mensaje: str) -> set[str]:
+    originales = (
+        modulo.mensaje_de_git, modulo.cambios_de_git, modulo._base_y_head
+    )
+    try:
+        modulo.mensaje_de_git = lambda head: mensaje
+        modulo.cambios_de_git = lambda base, head: _RUTAS_DE_CAMBIO
+        modulo._base_y_head = lambda evento: ("a" * 40, "b" * 40)
+        valores, _ = modulo.seleccion({"pull_request": {}})
+        return {job for job, corre in valores.items() if corre}
+    finally:
+        (
+            modulo.mensaje_de_git,
+            modulo.cambios_de_git,
+            modulo._base_y_head,
+        ) = originales
+
+
 def _revisar_bateria(raiz: Path) -> list[str]:
     """La seleccion solo puede sumar jobs por el mensaje del commit.
 
     Se prueba el comportamiento: para las rutas de muestra, agregar cualquier
-    `extra` no puede quitar un job que el diff ya activaba. Asi cualquier forma
-    de recorte (resta, interseccion, un `or` que reemplaza) falla.
+    `extra` no puede quitar un job que el diff ya activaba, y `seleccion` con
+    un mensaje adversarial tiene que correr al menos lo mismo que con uno
+    neutro. Asi cualquier forma de recorte (resta, interseccion, un `or` que
+    reemplaza o una rama por el texto) falla.
     """
     ruta = "motor/encargos/trabajos_ci.py"
     try:
@@ -246,11 +286,16 @@ def _revisar_bateria(raiz: Path) -> list[str]:
     except Exception as exc:
         return [f"{ruta}: no se puede cargar para probar la seleccion ({exc})"]
     problemas = []
+    extras = list(_EXTRAS_DE_PRUEBA)
+    for mensaje in _MENSAJES_DE_PRUEBA:
+        extra = modulo._jobs_extra(mensaje)
+        if extra not in extras:
+            extras.append(extra)
     for rutas in _RUTAS_DE_PRUEBA:
         esperados = set(modulo.trabajos_a_correr(rutas))
         if not esperados:
             continue
-        for extra in _EXTRAS_DE_PRUEBA:
+        for extra in extras:
             valores, _ = modulo._calcular(rutas, extra)
             activos = {job for job, corre in valores.items() if corre}
             faltan = esperados - activos
@@ -258,6 +303,17 @@ def _revisar_bateria(raiz: Path) -> list[str]:
                 problemas.append(
                     f"{ruta}: puede quitar jobs por el mensaje del commit "
                     f"(deja de correr {sorted(faltan)} con extra={extra})"
+                )
+                break
+    base = _activos_con_mensaje(modulo, _MENSAJES_DE_PRUEBA[0])
+    if base:
+        for mensaje in _MENSAJES_DE_PRUEBA[1:]:
+            activos = _activos_con_mensaje(modulo, mensaje)
+            faltan = base - activos
+            if faltan:
+                problemas.append(
+                    f"{ruta}: puede quitar jobs por el mensaje del commit "
+                    f"(con {mensaje!r} deja de correr {sorted(faltan)})"
                 )
                 break
     buscadores = [
@@ -271,6 +327,29 @@ def _revisar_bateria(raiz: Path) -> list[str]:
     ]
     for nodo in buscadores:
         if _funcion_que_contiene(arbol, nodo) != "_jobs_extra":
+            problemas.append(
+                f"{ruta}:{nodo.lineno}: lee el mensaje del commit fuera de "
+                "_jobs_extra; solo `jobs_extra=` puede sumar jobs"
+            )
+    llamadas_extra = [
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Name)
+        and nodo.func.id == "_jobs_extra"
+    ]
+    dentro = set()
+    for llamada in llamadas_extra:
+        for argumento in llamada.args:
+            for nodo in ast.walk(argumento):
+                dentro.add(id(nodo))
+    for nodo in ast.walk(arbol):
+        if (
+            isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Name)
+            and nodo.func.id == "mensaje_de_git"
+            and id(nodo) not in dentro
+        ):
             problemas.append(
                 f"{ruta}:{nodo.lineno}: lee el mensaje del commit fuera de "
                 "_jobs_extra; solo `jobs_extra=` puede sumar jobs"

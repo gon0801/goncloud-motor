@@ -391,6 +391,99 @@ class CandadosDeSecretos(unittest.TestCase):
             )
             self.assertIn("puede quitar jobs por el mensaje del commit", salida.stderr)
 
+    def test_la_bateria_no_se_apaga_por_el_mensaje_fuera_de_jobs_extra(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / "motor" / "encargos" / "trabajos_ci.py"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto.replace(
+                    "        extra = _jobs_extra(mensaje_de_git(head)) if head else ()",
+                    '        if "[sin-bateria]" in mensaje_de_git(head):\n'
+                    "            return _calcular((), ())\n"
+                    "        extra = _jobs_extra(mensaje_de_git(head)) if head else ()",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "el mensaje del commit no puede decidir la seleccion fuera de _jobs_extra",
+            )
+            self.assertIn("lee el mensaje del commit fuera de _jobs_extra", salida.stderr)
+
+    def test_la_bateria_no_se_apaga_por_un_extra_que_no_es_un_job(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / "motor" / "encargos" / "trabajos_ci.py"
+            texto = ruta.read_text(encoding="utf-8")
+            texto = texto.replace(
+                "    if not m:\n        return ()",
+                '    if "saltar" in str(mensaje or ""):\n'
+                '        return ("saltar",)\n'
+                "    if not m:\n        return ()",
+                1,
+            )
+            texto = texto.replace(
+                "correr = por_rutas | agregados",
+                'correr = set() if "saltar" in extra else (por_rutas | agregados)',
+                1,
+            )
+            ruta.write_text(texto, encoding="utf-8")
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "un extra que apaga todos los jobs tiene que fallar",
+            )
+            self.assertIn("puede quitar jobs por el mensaje del commit", salida.stderr)
+
+    def test_una_allowlist_legada_con_stopwords_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto + "\n[allowlist]\nstopwords = ['AKIA']\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "la tabla [allowlist] tambien debilita el candado",
+            )
+            self.assertIn("clave nueva en la allowlist", salida.stderr)
+
+    def test_una_allowlist_de_regla_con_stopwords_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto
+                + "\n[[rules]]\nid = 'generic-api-key'\n"
+                "[[rules.allowlists]]\nstopwords = ['AKIA']\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "una allowlist por regla tambien debilita el candado",
+            )
+            self.assertIn("clave nueva en la allowlist", salida.stderr)
+
     def test_la_regla_de_secretos_en_un_comentario_no_cuenta(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             raiz = _arbol_temporal(tmp)
@@ -532,6 +625,99 @@ class EntregarConPendientesNoMienteSiElCuerpoFalla(unittest.TestCase):
 
 
 class LaNotaTardiaConservaElFinal(unittest.TestCase):
+    def _enc_con_secciones(self, ident: str, fase_id: str):
+        fase = SimpleNamespace(
+            id=fase_id,
+            pendientes=("pendiente previo",),
+            notas=("nota previa",),
+        )
+        return SimpleNamespace(
+            id=ident,
+            fase_activa=fase_id,
+            fase_actual=fase,
+            fases=(fase,),
+            pendientes_entrega=(),
+            fuera_de_alcance=(("h_prev", "previo", "razon previa"),),
+            notas_pr=(),
+        )
+
+    def _publicar_y_anotar(self, tmp: str, clave: str, detalle: str, excepciones=()):
+        vuelta, r = _entrega_pr(self, tmp, clave, FakeGitHub, nivel="pr")
+        e = vuelta("uno")
+        fase = e.fase_actual
+        interno = r.espacio / ".interno"
+        interno.mkdir(exist_ok=True)
+        (interno / "cuerpo-pr.md").write_text(detalle, encoding="utf-8")
+        enc = self._enc_con_secciones(e.id, fase.id)
+        cuerpo = _cuerpo_pr(enc, r.espacio, fase.id, excepciones)
+        gh = vuelta.gh
+        gh.responde_ver = lambda repo, numero: SimpleNamespace(
+            cuerpo=cuerpo, head="a" * 40
+        )
+
+        _anotar_nota_en_pr_tardia(
+            r.reg, e, gh, fase, "a" * 40, "huella-tardia",
+            "F9 tardio medium", ahora_iso(),
+        )
+
+        estado = json.loads((gh.d / "github.json").read_text())
+        pr = next(
+            pr for pr in estado["prs"].values()
+            if pr["numero"] == fase.pr_numero
+        )
+        return str(pr["cuerpo"]), fase, e.id
+
+    def test_conserva_las_secciones_del_motor_que_el_pr_ya_tenia(self):
+        for detalle in ("# Cambios\n\ncuerpo corto", "# Cambios\n\n" + "detalle " * 12_000):
+            with self.subTest(largo=len(detalle) > 60_000):
+                with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                    publicado, fase, _ident = self._publicar_y_anotar(
+                        tmp, f"nota-previa-{len(detalle)}", detalle
+                    )
+
+                    self.assertLessEqual(len(publicado), _LIMITE_CUERPO_PR)
+                    self.assertEqual(
+                        publicado.count("## Notas del motor"),
+                        1,
+                        "no se duplica la seccion de notas",
+                    )
+                    self.assertEqual(
+                        publicado.count("nota previa"),
+                        1,
+                        "la nota previa se conserva una sola vez",
+                    )
+                    self.assertIn("pendiente previo", publicado)
+                    self.assertIn("razon previa", publicado)
+                    self.assertIn("F9 tardio medium", publicado)
+                    self.assertTrue(
+                        publicado.rstrip().endswith(f"Fase: {fase.id}."),
+                        "la linea del encargo queda al final",
+                    )
+
+    def test_conserva_el_marcador_de_excepciones_y_la_nota_previa(self):
+        excepciones = [
+            {
+                "tipo": "fuera_alcance",
+                "sha": "a" * 40,
+                "id": "h_fuera",
+                "motivo": "fuera de alcance",
+                "hora": "2026-11-09T00:00:00Z",
+            }
+        ]
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            publicado, fase, ident = self._publicar_y_anotar(
+                tmp, "nota-marcador", "# Cambios\n\n" + "detalle " * 12_000,
+                excepciones,
+            )
+
+            self.assertLessEqual(len(publicado), _LIMITE_CUERPO_PR)
+            self.assertEqual(publicado.count("## Notas del motor"), 1)
+            self.assertEqual(publicado.count("nota previa"), 1)
+            self.assertIn(
+                f"Encargo {ident}. Fase: {fase.id}.\n<!-- motor:excepciones=",
+                publicado,
+            )
+
     def test_con_un_cuerpo_largo_la_nota_llega_y_la_linea_queda_al_final(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(

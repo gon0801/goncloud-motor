@@ -5313,14 +5313,16 @@ def _separar_cierre(cuerpo: str) -> tuple[str, str]:
     if not lineas:
         return cuerpo, ""
     inicio = lineas[-1].start()
-    while True:
-        separador = cuerpo.rfind("\n\n", 0, inicio)
-        if separador < 0:
-            break
-        bloque = cuerpo[separador + 2 : inicio]
+    while inicio > 0:
+        fin_bloque = inicio
+        while fin_bloque > 0 and cuerpo[fin_bloque - 1] == "\n":
+            fin_bloque -= 1
+        separador = cuerpo.rfind("\n\n", 0, fin_bloque)
+        inicio_bloque = 0 if separador < 0 else separador + 2
+        bloque = cuerpo[inicio_bloque:fin_bloque]
         if not any(bloque.startswith(s) for s in _SECCIONES_DEL_MOTOR):
             break
-        inicio = separador + 2
+        inicio = inicio_bloque
     return cuerpo[:inicio].rstrip(), cuerpo[inicio:].lstrip("\n")
 
 
