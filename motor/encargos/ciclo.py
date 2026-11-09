@@ -62,6 +62,7 @@ from .dominio import (
     huella_entrega,
     hubo_avance,
     id_encargo,
+    id_hallazgo,
     inspeccion_bloquea,
     marca_inspeccion_entregada,
     respuesta_consumida,
@@ -2708,8 +2709,12 @@ def _aplica_entrega(enc: Encargo) -> bool:
         # La aprobación se conserva; sólo deja de ser aplicable a la entrega
         # mientras el producto vigente siga en rojo.
         return False
-    if not bloqueantes_abiertos(enc):
-        return _revision_aprobada_vigente(enc)
+    if not bloqueantes_abiertos(enc, "independiente") and not bloqueantes_abiertos(
+        enc, "deepseek"
+    ):
+        # Los bloqueos del supervisor no frenan el paso de entrega: el propio
+        # paso los lee de la observacion y devuelve el trabajo con su detalle.
+        return revision_independiente_cubre_producto(enc)
     if bloqueantes_abiertos(enc, "independiente"):
         return False
     return (
@@ -6871,6 +6876,75 @@ def _fallas_de_observacion(
     return rojas, instrumentos
 
 
+def _hallazgos_en_rojo(observacion: dict) -> list[dict]:
+    """Las comprobaciones en rojo como bloqueantes con identidad estable.
+
+    El id usa objetivo y argv, no la salida ni el rc: la misma comprobacion que
+    vuelve a fallar es el mismo bloqueo, y una nueva entrega con el mismo id
+    abierto pasa por la escalera de `_sin_avance` en vez de abrir otra vuelta
+    identica.
+    """
+    salida = []
+    for ejecucion in observacion.get("ejecuciones") or []:
+        if not isinstance(ejecucion, dict) or ejecucion.get("error_instrumento"):
+            continue
+        rc = ejecucion.get("rc")
+        if rc is None or str(rc) == "0":
+            continue
+        objetivo = str(ejecucion.get("objetivo") or "comprobacion")
+        argv = ejecucion.get("argv")
+        comando = (
+            " ".join(str(x) for x in argv)
+            if isinstance(argv, list) and argv
+            else ""
+        )
+        salida.append(
+            {
+                "id": id_hallazgo("supervisor", comando, objetivo),
+                "gravedad": "bloqueante",
+                "criterio": "comportamiento",
+                "titulo": f"comprobacion del supervisor en rojo: {objetivo}",
+                "reproduccion": _detalle_en_rojo(ejecucion),
+                "ancla": comando,
+                "origen": "supervisor",
+                "estado": "abierto",
+            }
+        )
+    return salida
+
+
+def _registrar_comprobaciones(
+    registro: Registro,
+    enc: Encargo,
+    observacion: dict,
+    version: str,
+    hora: str,
+) -> Encargo:
+    """Abre y cierra los bloqueos de las comprobaciones de esta observacion."""
+    fase = enc.fase_actual
+    if fase is None:
+        return enc
+    hallazgos = _hallazgos_en_rojo(observacion)
+    if not hallazgos and not any(
+        h.origen == "supervisor" and h.estado == "abierto" for h in fase.hallazgos
+    ):
+        return enc
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "comprobaciones_supervisor",
+            "data": {
+                "version": version,
+                "hallazgos": hallazgos,
+                "hora": hora,
+            },
+        },
+        f"comprobaciones-supervisor:{enc.id}:{enc.generacion}:"
+        f"{_huella_de_fallas(observacion)}",
+    )
+    return registro.fold(enc.id) or enc
+
+
 def _espera_por_observacion(
     registro: Registro,
     enc: Encargo,
@@ -6945,19 +7019,22 @@ def _espera_por_observacion(
         )
         return registro.fold(enc.id) or enc, Devolver("responsable", causa)
     if not fallas:
+        _registrar_comprobaciones(registro, enc, observacion, version, hora)
         return None
+    enc = _registrar_comprobaciones(registro, enc, observacion, version, hora)
     causa = "la comprobacion del supervisor esta en rojo: " + "\n".join(fallas)
-    _devolver(
+    _sin_avance(
         registro,
         enc,
-        "investigar",
         causa,
-        "corregir la comprobacion en rojo antes de publicar; lo aprobado que "
-        "no cambio se conserva",
+        "se devolvio la comprobacion en rojo y la version no cambio",
         hora,
         f"observacion-roja-{version[:12]}-{_huella_de_fallas(observacion)}",
     )
-    return registro.fold(enc.id) or enc, Devolver("responsable", causa)
+    nuevo = registro.fold(enc.id) or enc
+    if nuevo.pendientes_entrega and nuevo.pendientes_entrega != enc.pendientes_entrega:
+        return nuevo, Avanzo()
+    return nuevo, Devolver("responsable", causa)
 
 
 def _head_antes_de_cerrar(
