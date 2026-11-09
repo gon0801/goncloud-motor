@@ -1636,27 +1636,6 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo
     return resultado
 
 
-_PREFIJO_COMPROBACION = "comprobacion del supervisor en rojo: "
-
-
-def normaliza_objetivo(texto: object) -> str:
-    """El objetivo de una comprobacion, con los espacios normalizados."""
-    return " ".join(str(texto or "").split())
-
-
-def objetivo_de_comprobacion(h: Hallazgo) -> str:
-    """El objetivo con que se declaro una comprobacion del supervisor.
-
-    El bloqueo guarda el titulo con el prefijo que puso `_hallazgos_en_rojo`; el
-    objetivo es lo que queda detras. Sirve para reconocer un reemplazo del mismo
-    objetivo aunque el comando haya cambiado.
-    """
-    titulo = normaliza_objetivo(h.titulo)
-    if titulo.startswith(_PREFIJO_COMPROBACION):
-        return normaliza_objetivo(titulo[len(_PREFIJO_COMPROBACION):])
-    return titulo
-
-
 def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
     kind = evento["kind"]
     d = evento["data"]
@@ -2050,11 +2029,10 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         )
     if kind == "comprobaciones_supervisor":
         # Las comprobaciones en rojo de una observacion son trabajo bloqueante
-        # con la misma identidad que un hallazgo: objetivo y argv. Al escribir
-        # la observacion se abren las que fallan y se cierran las que esta
-        # observacion ejecuto y paso en verde: por el mismo comando o por el
-        # mismo objetivo (el comando cambio y la comprobacion se reemplazo).
-        # Una comprobacion retirada sin reemplazo no se cierra.
+        # con la misma identidad que un hallazgo: el comando. Al escribir la
+        # observacion se abren las que fallan y se cierran las que esta
+        # observacion ejecuto y paso en verde. Una comprobacion retirada o con
+        # otro comando no se cierra: no hay observacion en verde que la resuelva.
         fase = e.fase_actual
         if fase is None:
             return e
@@ -2065,18 +2043,11 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         )
         ids = {h.id for h in nuevos}
         verdes = set(d.get("verdes") or ())
-        objetivos_verdes = {
-            normaliza_objetivo(x) for x in (d.get("verdes_objetivos") or ())
-        }
         con_verdes = "verdes" in d
         previos = tuple(
             replace(h, estado="resuelto")
             if h.origen == "supervisor" and h.estado == "abierto" and h.id not in ids
-            and (
-                not con_verdes
-                or h.id in verdes
-                or objetivo_de_comprobacion(h) in objetivos_verdes
-            )
+            and (not con_verdes or h.id in verdes)
             else h
             for h in fase.hallazgos
         )

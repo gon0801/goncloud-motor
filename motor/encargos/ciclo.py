@@ -64,8 +64,6 @@ from .dominio import (
     id_encargo,
     id_hallazgo,
     marca_inspeccion_entregada,
-    normaliza_objetivo,
-    objetivo_de_comprobacion,
     inspeccion_bloquea,
     respuesta_consumida,
     revision_externa_pendiente,
@@ -7013,23 +7011,6 @@ def _ids_observados_verdes(observacion: dict) -> set[str]:
     return verdes
 
 
-def _objetivos_observados_verdes(observacion: dict) -> set[str]:
-    """Los objetivos de las comprobaciones que esta observacion paso en verde.
-
-    Un comando puede cambiar y la comprobacion seguir siendo la misma por su
-    objetivo; esa observacion en verde cierra el bloqueo viejo.
-    """
-    objetivos: set[str] = set()
-    for ejecucion in observacion.get("ejecuciones") or []:
-        if not isinstance(ejecucion, dict) or ejecucion.get("error_instrumento"):
-            continue
-        rc = ejecucion.get("rc")
-        if rc is None or str(rc) != "0":
-            continue
-        objetivos.add(normaliza_objetivo(ejecucion.get("objetivo")))
-    return objetivos
-
-
 def _hallazgos_en_rojo(observacion: dict) -> list[dict]:
     """Las comprobaciones en rojo como bloqueantes con identidad estable.
 
@@ -7093,9 +7074,6 @@ def _registrar_comprobaciones(
                 # Solo lo observado y verde cierra un bloqueo: una comprobacion
                 # retirada de la declaracion no prueba que se resolvio.
                 "verdes": sorted(_ids_observados_verdes(observacion)),
-                "verdes_objetivos": sorted(
-                    _objetivos_observados_verdes(observacion)
-                ),
                 "hora": hora,
             },
         },
@@ -7109,15 +7087,13 @@ def _bloqueos_sin_observacion(enc: Encargo, observacion: dict) -> list:
     """Bloqueos del supervisor que esta observacion no vio ni en rojo ni en verde.
 
     Son los que quedan abiertos porque su comprobacion salio de la declaracion
-    sin un reemplazo en verde. Un cambio de comando con el mismo objetivo si
-    cuenta como reemplazo y no llega aqui.
+    o cambio de comando: retirarla no prueba que se resolvio.
     """
     fase = enc.fase_actual
     if fase is None:
         return []
     rojos = {h["id"] for h in _hallazgos_en_rojo(observacion)}
     verdes = _ids_observados_verdes(observacion)
-    objetivos = _objetivos_observados_verdes(observacion)
     return [
         h
         for h in fase.hallazgos
@@ -7125,7 +7101,6 @@ def _bloqueos_sin_observacion(enc: Encargo, observacion: dict) -> list:
         and h.estado == "abierto"
         and h.id not in rojos
         and h.id not in verdes
-        and objetivo_de_comprobacion(h) not in objetivos
     ]
 
 
@@ -7239,18 +7214,19 @@ def _espera_por_observacion(
         sin_observar = _bloqueos_sin_observacion(enc, observacion)
         if sin_observar:
             # Un bloqueo que esta observacion no vio (comprobacion retirada o con
-            # otro comando) no se resuelve y no se entrega como pendiente:
-            # vuelve al responsable para que la restituya o justifique el cambio.
+            # otro comando) no se resuelve. Pasa por la escalera: diagnostico,
+            # relevo y, si nada avanza, entrega con el pendiente escrito; nunca
+            # se cierra en silencio ni se queda devolviendo el turno para siempre.
             causa = (
                 "el bloqueo del supervisor no se observo en la comprobacion "
                 "declarada: " + "; ".join(h.titulo for h in sin_observar)
                 + ". Restituye esa comprobacion o justifica el cambio de "
                 "comando; el bloqueo sigue abierto"
             )
-            _devolver(
-                registro, enc, "investigar", causa,
+            _sin_avance(
+                registro, enc, causa,
                 "redeclarar la comprobacion retirada o cambiada y observarla en "
-                "verde; el bloqueo sigue abierto",
+                "verde",
                 hora, f"observacion-sin-{_huella_de_fallas(observacion)}",
             )
             return registro.fold(enc.id) or enc, Devolver("responsable", causa)
