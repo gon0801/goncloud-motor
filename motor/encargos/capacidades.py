@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -424,6 +425,92 @@ def _leer_archivo(raiz: Path, relativa: str, destino: Path) -> dict:
     }
 
 
+_SHA_EN_NOMBRE = re.compile(r"(?<![0-9a-f])([0-9a-f]{7,40})(?![0-9a-f])")
+
+
+def _partes_de_log(nombre: str) -> tuple[str, str]:
+    """(job, sha) de un nombre de evidencia como `bateria-abc1234-unittest.txt`.
+
+    El job es todo lo que hay antes del SHA, tal cual: `bateria-parte-1` conserva
+    su número de parte y no se confunde con `bateria-parte-3`.
+    """
+    partes = nombre.rsplit(".", 1)[0]
+    hallado = _SHA_EN_NOMBRE.search(partes.lower())
+    if hallado is None:
+        return partes, ""
+    return partes[: hallado.start()].rstrip("-_."), hallado.group(1)
+
+
+def _resolver_log_ci(
+    raiz: Path, relativa: str, destino: Path, contexto: dict | None, recurso: str
+) -> dict:
+    """Un log de CI pedido antes de que exista no es error ni un fallo del agente.
+
+    Si el archivo exacto no está, busca otro run u otro job del mismo SHA. Si
+    el job no existe con ese nombre, lista los jobs reales del run. Si todavía
+    no hay PR o el CI del SHA no dejó el archivo, devuelve `pendiente` para que
+    la política de espera lo vuelva a mirar sin gastar un turno.
+    """
+    solicitado = Path(relativa).name
+    sha = _partes_de_log(solicitado)[1]
+    try:
+        archivos = sorted(
+            p for p in raiz.rglob("*") if p.is_file() and not _es_enlace(p)
+        )
+    except OSError:
+        archivos = []
+    mismos = [p for p in archivos if sha and sha in p.name.lower()]
+    if mismos:
+        job = _partes_de_log(solicitado)[0]
+        el_mismo_job = [p for p in mismos if _partes_de_log(p.name)[0] == job]
+        if el_mismo_job:
+            elegido = el_mismo_job[0].relative_to(raiz).as_posix()
+            resultado = _leer_archivo(raiz, elegido, destino)
+            resultado["datos"] = {
+                **resultado["datos"],
+                "encontrado": elegido,
+                "pedido": relativa,
+            }
+            return resultado
+        jobs = sorted({_partes_de_log(p.name)[0] for p in mismos})
+        return {
+            "estado": "error",
+            "motivo": (
+                f"el job {job!r} no existe para el SHA {sha}; "
+                f"jobs reales: {', '.join(jobs)}"
+            ),
+            "datos": {"jobs": jobs, "sha": sha, "pedido": relativa},
+            "alternativa": "pedir uno de los jobs reales que lista la respuesta",
+        }
+    datos = dict(contexto or {})
+    if int(datos.get("pr") or 0) == 0:
+        return {
+            "estado": "pendiente",
+            "motivo": (
+                "el encargo todavía no tiene un PR de entrega; el log se leerá "
+                "en cuanto el CI lo deje"
+            ),
+            "datos": {"recurso": recurso, "pedido": relativa},
+        }
+    sha_actual = str(datos.get("sha") or "").lower()
+    if sha and sha_actual.startswith(sha):
+        return {
+            "estado": "pendiente",
+            "motivo": f"el CI del SHA {sha} todavía no dejó el archivo {relativa}",
+            "datos": {"recurso": recurso, "sha": sha, "pedido": relativa},
+        }
+    jobs = sorted({_partes_de_log(p.name)[0] for p in archivos})
+    motivo = f"el recurso no tiene el archivo {relativa}"
+    if jobs:
+        motivo += f"; jobs reales: {', '.join(jobs)}"
+    return {
+        "estado": "error",
+        "motivo": motivo,
+        "datos": {"jobs": jobs, "pedido": relativa},
+        "alternativa": "pedir uno de los jobs reales que lista la respuesta",
+    }
+
+
 def _leer_http(recurso: dict, relativa: str, destino: Path) -> dict:
     base = str(recurso.get("url") or "").strip()
     if not base:
@@ -587,7 +674,13 @@ def ejecutar(
             relativa = _ruta_relativa(str(parametros.get("ruta") or ""))
             if str(concedido.get("transporte") or "fichero") == "http":
                 return _leer_http(concedido, relativa, destino)
-            return _leer_archivo(_ruta_absoluta(concedido.get("raiz") or ""), relativa, destino)
+            raiz = _ruta_absoluta(concedido.get("raiz") or "")
+            try:
+                return _leer_archivo(raiz, relativa, destino)
+            except FileNotFoundError:
+                if recurso != "ci-github":
+                    raise
+                return _resolver_log_ci(raiz, relativa, destino, contexto, recurso)
     except (ValueError, FileNotFoundError, ConfigInvalida) as exc:
         return {
             "estado": "error",

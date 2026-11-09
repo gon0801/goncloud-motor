@@ -63,11 +63,41 @@ _FALLOS_TRANSITORIOS = (
     "returned error: 502", "returned error: 503", "returned error: 504",
 )
 
+# Una sola lista de causas que no se arreglan reintentando. La usan el corte de
+# la serie de esperas y el destino de la entrega: llave rechazada, gh ausente,
+# credencial inválida y los rechazos fijos del remoto. Lo que aparece también
+# con red caída (timeout, DNS, conexión cerrada) no entra aquí: es transitorio.
 _FALLOS_PERMANENTES = (
     "http 400", "http 401", "http 403", "http 404", "http 413", "http 422",
     "returned error: 400", "returned error: 401", "returned error: 403",
     "returned error: 404", "returned error: 413", "returned error: 422",
+    "permission denied (publickey)",
+    "host key verification failed",
+    "gh: command not found",
+    "gh: not found",
+    "gh no encontrado",
+    "no se encontro gh",
+    "gh auth login",
+    "not logged in",
+    "not authenticated",
+    "no accounts",
+    "authentication required",
+    "authentication failed",
+    "bad credentials",
+    "invalid username or password",
+    "could not read username",
+    "could not read password",
+    "terminal prompts disabled",
+    "no está instalado",
+    "no esta instalado",
+    "not installed",
 )
+
+
+def fallo_permanente_de_entrega(causa: str) -> bool:
+    """Una falla que otra vuelta en la misma máquina no puede resolver."""
+    texto = str(causa or "").lower()
+    return any(marca in texto for marca in _FALLOS_PERMANENTES)
 
 
 def _fallo_transitorio(causa: str) -> bool:
@@ -1360,15 +1390,38 @@ def _con_progreso(previo: Encargo, e: Encargo, concluyente: bool = False) -> Enc
 
 
 def fuente_de_impedimento(clase: str) -> str:
+    # La entrega tiene su propia fuente: una máquina sin llave o sin gh puede
+    # producir el producto; solo no puede publicarlo.
+    if clase.startswith("entrega:"):
+        return "entrega"
     return "entorno" if clase == "entorno" else "instrumento"
+
+
+def impedimento_bloquea_trabajo(e: Encargo) -> bool:
+    """Solo una causa que impide producir frena el turno. La de entrega deja
+    trabajar: se atiende al publicar o al entregar con pendientes, aunque el
+    aviso siga visible en el registro."""
+    if not e.impedimentos:
+        return bool(e.impedimento) and not str(e.impedimento).startswith("entrega:")
+    return any(
+        fuente_de_impedimento(i.clase) != "entrega" for i in e.impedimentos
+    )
 
 
 def _con_impedimentos(
     e: Encargo, impedimentos: tuple[Impedimento, ...], hora: str = ""
 ) -> Encargo:
-    """Recompone la causa vigente a partir del conjunto. La primera por clase
-    alimenta los campos que ya leen el estado y la consulta."""
-    ordenados = tuple(sorted(impedimentos, key=lambda i: i.clase))
+    """Recompone la causa vigente a partir del conjunto. La primera causa que
+    frena el trabajo alimenta los campos que ya leen el estado y la consulta; si
+    no hay ninguna, la de entrega queda igualmente como causa visible. Nunca se
+    deja `impedimento_causa` vacía con impedimentos presentes: `vista` exige un
+    hecho y el aviso tiene que decir por qué."""
+    ordenados = tuple(
+        sorted(
+            impedimentos,
+            key=lambda i: (fuente_de_impedimento(i.clase) == "entrega", i.clase),
+        )
+    )
     if not ordenados:
         return replace(
             e,
@@ -1443,17 +1496,19 @@ def revision_independiente_cubre_producto(e: Encargo) -> bool:
 
 def sin_nada_en_curso(e: Encargo) -> bool:
     """Encargo abierto que no explica por qué no avanza: no espera con hora, no
-    pide al usuario, no está detenido, y ningún agente, reserva, impedimento
-    registrado, inspección pendiente ni dependencia entre fases lo sostiene.
-    Si además el barrido no lanza nada y el registro no se mueve, está quieto."""
+    pide al usuario, no está detenido, y ningún agente, reserva, impedimento que
+    impida producir, inspección pendiente ni dependencia entre fases lo sostiene.
+    Un impedimento de entrega no frena el producto y por eso no apaga el
+    vigilante: el encargo quieto sigue dejando `quietud` y se entrega con lo que
+    haya. Si además el barrido no lanza nada y el registro no se mueve, está
+    quieto."""
     if (
         e.estado not in ("recibido", "ejecutando")
         or not e.intentos_nuevos
         or e.via == "directa"
         or e.proc is not None
         or e.reserva
-        or e.impedimento
-        or e.impedimentos
+        or impedimento_bloquea_trabajo(e)
         or e.pendientes_entrega
         or (inspeccion_bloquea(e) and pregunta_de_inspeccion(e) is None)
         or any(
@@ -2097,12 +2152,16 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             str(d.get("agente") or ""),
         )
         e = _con_impedimentos(e, tuple(pendientes.values()), hora)
-        return replace(
-            e,
-            motivo=e.impedimento_causa,
-            siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
-            ultimo_hecho=e.impedimento_causa,
-        )
+        if impedimento_bloquea_trabajo(e):
+            return replace(
+                e,
+                motivo=e.impedimento_causa,
+                siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
+                ultimo_hecho=e.impedimento_causa,
+            )
+        # Un aviso de entrega no frena el producto: se anota como hecho visible
+        # pero el responsable sigue trabajando, no espera.
+        return replace(e, ultimo_hecho=e.impedimento_causa)
     if kind == "impedimento_resuelto":
         clase = str(d.get("clase") or d.get("huella") or "")
         evidencia = str(d.get("evidencia") or "")
@@ -2112,16 +2171,15 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         if len(restantes) == len(e.impedimentos):
             return e
         e = _con_impedimentos(e, restantes, hora)
-        return replace(
-            e,
-            motivo=e.impedimento_causa,
-            siguiente=(
-                "esperar a que se cumpla: " + e.impedimento_condicion
-                if e.impedimentos
-                else "seguir el mismo encargo"
-            ),
-            ultimo_hecho="impedimento resuelto: " + evidencia,
-        )
+        hecho = "impedimento resuelto: " + evidencia
+        if impedimento_bloquea_trabajo(e):
+            return replace(
+                e,
+                motivo=e.impedimento_causa,
+                siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
+                ultimo_hecho=hecho,
+            )
+        return replace(e, motivo="", siguiente="seguir el mismo encargo", ultimo_hecho=hecho)
     if kind == "entrega_externa":
         return _entrega_externa(e, d, hora)
     if kind == "entrega_bloqueada":
@@ -2785,16 +2843,15 @@ def _soltar_impedimento_de_inspeccion(e: Encargo) -> Encargo:
     if len(restantes) == len(e.impedimentos):
         return e
     e = _con_impedimentos(e, restantes)
-    return replace(
-        e,
-        motivo=e.impedimento_causa,
-        siguiente=(
-            "esperar a que se cumpla: " + e.impedimento_condicion
-            if e.impedimentos
-            else "seguir el mismo encargo"
-        ),
-        ultimo_hecho="el propietario aportó información nueva; el revisor retoma la inspección",
-    )
+    hecho = "el propietario aportó información nueva; el revisor retoma la inspección"
+    if impedimento_bloquea_trabajo(e):
+        return replace(
+            e,
+            motivo=e.impedimento_causa,
+            siguiente="esperar a que se cumpla: " + e.impedimento_condicion,
+            ultimo_hecho=hecho,
+        )
+    return replace(e, motivo="", siguiente="seguir el mismo encargo", ultimo_hecho=hecho)
 
 
 def _reanudar_inspeccion(e: Encargo, ident: str) -> Encargo:
@@ -4573,9 +4630,11 @@ def decision_proceso(
         # Ya no se lanza otro turno: el supervisor entrega lo que hay, con los
         # pendientes escritos, sin esperar a ninguna persona.
         return {"matar": False, "lanzar": False, "eventos": []}
-    # Con un impedimento del entorno pendiente, otro proceso repetiría el mismo
-    # trabajo sin información nueva. La huella sólo se limpia con evidencia.
-    if e.impedimento:
+    # Con un impedimento del entorno o del instrumento pendiente, otro proceso
+    # repetiría el mismo trabajo sin información nueva. La huella sólo se limpia
+    # con evidencia. Los de entrega no frenan el producto: la máquina puede
+    # trabajar y luego publicar o entregar con pendientes.
+    if impedimento_bloquea_trabajo(e):
         return {"matar": False, "lanzar": False, "eventos": []}
     espera = espera_inspeccion_consumida(e)
     if espera is not None:

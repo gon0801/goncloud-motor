@@ -12,6 +12,7 @@ from unittest import mock
 from motor.encargos.ciclo import (
     _QUIETUD_S,
     _QUIETUD_VUELTAS,
+    _anotar_impedimento,
     _aplica_entrega,
     _paso_entrega,
     ahora_iso,
@@ -160,6 +161,43 @@ class QuietudDelEncargo(unittest.TestCase):
                 e = _barrido(r, None, t + i)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(r.eventos("quietud"), [])
+
+    def test_un_impedimento_de_entrega_no_apaga_el_vigilante(self):
+        """La máquina sin gh o sin llave deja un impedimento de entrega que no
+        frena el producto; la red de seguridad de quietud tiene que seguir
+        viendo el encargo quieto y entregarlo con lo que haya."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _quieto_como_en_el_incidente(self, tmp)
+            _anotar_impedimento(
+                r.reg,
+                r.fold(),
+                "entrega:github",
+                "gh no pudo comprobar x: remoto sin acceso comprobable: "
+                "gh: command not found",
+                "instalar gh, autenticarlo para el repo y volver a recibir",
+                ahora_iso(),
+            )
+            self.assertIn(
+                "entrega:github", [i.clase for i in r.fold().impedimentos]
+            )
+
+            t = time.time()
+            e = r.fold()
+            # El paso de entrega se deja fuera, como `_barrido_quieto` deja
+            # fuera el lanzamiento: así el impedimento sigue presente y se mide
+            # solo el vigilante. La resolución al publicar tiene su prueba.
+            with mock.patch(
+                "motor.encargos.ciclo._paso_entrega",
+                side_effect=lambda registro, enc, gh, hora: enc,
+            ):
+                for i in range(0, 4 * _QUIETUD_S + PASO_S, PASO_S):
+                    e = _barrido_quieto(r, vuelta.gh, t + i)
+
+            self.assertEqual(len(r.eventos("quietud")), 1)
+            self.assertEqual(e.estado, "terminado")
+            self.assertIn(
+                "entrega:github", [i.clase for i in e.impedimentos]
+            )
 
     def test_sin_el_detector_el_incidente_sigue_quieto(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
