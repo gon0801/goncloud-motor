@@ -268,11 +268,11 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 "la escalera termina entregando con los pendientes abiertos",
             )
 
-    def test_sin_comprobaciones_declaradas_cierra_el_bloqueo_y_no_relanza_al_revisor(self):
-        """Un bloqueo del supervisor sin observacion no puede quedar abierto.
+    def test_sin_comprobaciones_declaradas_deja_pendiente_y_no_relanza_al_revisor(self):
+        """Retirar las comprobaciones no resuelve el bloqueo sin observacion verde.
 
-        Si la version vigente ya no declara comprobaciones, el bloqueo se cierra
-        y el flujo no devuelve `revisar_evidencia` al revisor en cada barrido.
+        El bloqueo del supervisor sigue abierto, la fase no se publica en ese
+        barrido y queda un pendiente visible. El revisor no se relanza.
         """
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._aprobado(
@@ -316,23 +316,33 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 ),
                 "no se repite el Devolver(revisor) por el bloqueo sin observacion",
             )
-            e = r.fold()
             self.assertFalse(
-                [
-                    h
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "no se publica la version sin una observacion en verde",
+            )
+            e = r.fold()
+            self.assertTrue(
+                any(
+                    h.origen == "supervisor" and h.estado == "abierto"
                     for h in (e.fase_actual.hallazgos if e.fase_actual else ())
-                    if h.origen == "supervisor" and h.estado == "abierto"
-                ],
-                "el bloqueo del supervisor se cierra cuando ya no hay "
-                "comprobaciones declaradas",
+                ),
+                "el bloqueo no se marca resuelto sin una observacion en verde",
+            )
+            self.assertTrue(
+                any("desaparecieron" in p for p in e.pendientes_entrega),
+                "la fase lleva el pendiente de las comprobaciones retiradas",
             )
 
-    def test_si_el_comprobador_se_omite_deja_pendiente_y_cierra_el_bloqueo(self):
-        """Sin instrumento, el bloqueo se cierra y queda el pendiente visible.
+    def test_si_el_comprobador_se_omite_deja_pendiente_y_no_relanza_al_revisor(self):
+        """Sin instrumento, el bloqueo sigue abierto y queda el pendiente visible.
 
         Un comprobador omitido tras fallos iguales no prueba que la falla se
-        resolvio: el bloqueo se cierra para no relanzar al revisor y la entrega
-        lleva el pendiente escrito.
+        resolvio: el bloqueo no se marca resuelto, la entrega lleva el
+        pendiente escrito y el revisor no se relanza.
         """
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r, e = self._aprobado(
@@ -388,12 +398,12 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 any("comprobador quedo omitido" in p for p in e.pendientes_entrega),
                 "el pendiente deja escrito que el comprobador no pudo observar",
             )
-            self.assertFalse(
-                [
-                    h
+            self.assertTrue(
+                any(
+                    h.origen == "supervisor" and h.estado == "abierto"
                     for h in (e.fase_actual.hallazgos if e.fase_actual else ())
-                    if h.origen == "supervisor" and h.estado == "abierto"
-                ]
+                ),
+                "el bloqueo no se marca resuelto sin una observacion en verde",
             )
 
     def test_replay_del_prefijo_real_hasta_67595_abre_intento(self):
