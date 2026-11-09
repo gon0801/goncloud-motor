@@ -1637,8 +1637,11 @@ class NotaTardiaRespetaElLimiteDelCuerpo(unittest.TestCase):
                 pr for pr in estado["prs"].values()
                 if pr["numero"] == e.pr_numero
             )
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "cuerpo-pr.md").write_text("x" * 65_450, encoding="utf-8")
             cuerpo_original = (
-                "x" * 60_000
+                "x" * 65_450
                 + "\n\n## Notas del motor\n- nota previa\n\n"
                 + f"Encargo {e.id}. Fase: {e.fase_activa}."
             )

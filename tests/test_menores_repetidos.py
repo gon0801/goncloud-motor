@@ -25,6 +25,7 @@ from tests.test_flujo_revisiones import _bloqueante, _entrega_pr
 RAIZ = Path(__file__).resolve().parents[1]
 CONFIG = (
     ".gitleaks.toml",
+    ".gitleaksignore",
     ".pre-commit-config.yaml",
     "motor/encargos/trabajos_ci.py",
     "motor/encargos/comprobacion.py",
@@ -607,6 +608,40 @@ class CandadosDeSecretos(unittest.TestCase):
             )
             self.assertIn("lee el historial fuera de mensaje_de_git", salida.stderr)
 
+    def test_agregar_una_huella_a_gitleaksignore_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaksignore"
+            ruta.write_text(
+                ruta.read_text(encoding="utf-8")
+                + "deadbeef:tests/algo.py:generic-api-key:1\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "una huella nueva en .gitleaksignore silencia un secreto",
+            )
+            self.assertIn("huella nueva sin excepcion", salida.stderr)
+
+    def test_una_huella_nueva_con_excepcion_en_gitleaksignore_pasa(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaksignore"
+            ruta.write_text(
+                ruta.read_text(encoding="utf-8")
+                + "deadbeef:tests/algo.py:generic-api-key:1  "
+                "# excepcion: revisado por David 2026-11-09\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(salida.returncode, 0, salida.stderr)
+
     def test_la_regla_de_secretos_en_un_comentario_no_cuenta(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             raiz = _arbol_temporal(tmp)
@@ -780,7 +815,7 @@ class LaNotaTardiaConservaElFinal(unittest.TestCase):
 
         _anotar_nota_en_pr_tardia(
             r.reg, e, gh, fase, "a" * 40, "huella-tardia",
-            "F9 tardio medium", ahora_iso(),
+            "F9 tardio medium", ahora_iso(), r.espacio,
         )
 
         estado = json.loads((gh.d / "github.json").read_text())
@@ -841,6 +876,53 @@ class LaNotaTardiaConservaElFinal(unittest.TestCase):
                 publicado,
             )
 
+    def test_no_recorta_un_cuerpo_publicado_que_no_esta_en_el_archivo(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "nota-no-recuperable", FakeGitHub, nivel="pr"
+            )
+            e = vuelta("uno")
+            fase = e.fase_actual
+            interno = r.espacio / ".interno"
+            interno.mkdir(exist_ok=True)
+            (interno / "cuerpo-pr.md").write_text(
+                "el cuerpo de otra fase, no este", encoding="utf-8"
+            )
+            cuerpo = (
+                "y" * 65_440
+                + "\n\n## Notas del motor\n- nota previa\n\n"
+                + f"Encargo {e.id}. Fase: {fase.id}."
+            )
+            gh = vuelta.gh
+            gh.responde_ver = lambda repo, numero: SimpleNamespace(
+                cuerpo=cuerpo, head="a" * 40
+            )
+            estado = json.loads((gh.d / "github.json").read_text())
+            antes = next(
+                pr for pr in estado["prs"].values()
+                if pr["numero"] == fase.pr_numero
+            )["cuerpo"]
+
+            _anotar_nota_en_pr_tardia(
+                r.reg, r.fold(), gh, fase, "a" * 40, "huella-tardia",
+                "F9 tardio medium", ahora_iso(), r.espacio,
+            )
+
+            estado = json.loads((gh.d / "github.json").read_text())
+            publicado = next(
+                pr for pr in estado["prs"].values()
+                if pr["numero"] == fase.pr_numero
+            )["cuerpo"]
+            self.assertEqual(
+                publicado, antes, "el cuerpo ya publicado no se recorta"
+            )
+            self.assertNotIn("F9 tardio medium", publicado)
+            notas = r.fold().notas_pr
+            self.assertTrue(
+                any("no se recorta" in n and "F9 tardio medium" in n for n in notas),
+                notas,
+            )
+
     def test_con_un_cuerpo_largo_la_nota_llega_y_la_linea_queda_al_final(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
@@ -862,7 +944,7 @@ class LaNotaTardiaConservaElFinal(unittest.TestCase):
 
             _anotar_nota_en_pr_tardia(
                 r.reg, r.fold(), gh, fase, "a" * 40, "huella-tardia",
-                "F9 tardio medium", ahora_iso(),
+                "F9 tardio medium", ahora_iso(), r.espacio,
             )
 
             estado = json.loads((gh.d / "github.json").read_text())

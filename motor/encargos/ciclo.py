@@ -6012,14 +6012,33 @@ def _marcar_deepseek_cerrado(
     )
 
 
+def _recorte_es_seguro(texto_cuerpo: str, espacio: Path | None) -> bool:
+    """El recorte no pierde texto: lo publicado sigue en `.interno/cuerpo-pr.md`.
+
+    Un cuerpo de una fase anterior ya no está en ese archivo. Recortarlo sería
+    irreversible y la nota de recorte mentiría, así que ese camino no recorta.
+    """
+    if espacio is None:
+        return False
+    fuente = _leer_cuerpo_del_espacio(espacio)
+    if fuente is None:
+        return False
+    fuente = fuente.replace("\x00", "").rstrip()
+    resto = texto_cuerpo
+    if resto.endswith(_NOTA_CUERPO_RECORTADO):
+        resto = resto[: -len(_NOTA_CUERPO_RECORTADO)].rstrip()
+    return fuente.startswith(resto)
+
+
 def _anotar_nota_en_pr_tardia(
     registro: Registro, enc: Encargo, gh, fase, sha: str, huella: str,
-    texto: str, hora: str,
+    texto: str, hora: str, espacio: Path | None = None,
 ) -> Encargo:
     """Añade la nota al cuerpo actual del PR sin reescribir el de la fase
     vigente. Un PR de una fase anterior conserva su descripción original: la
     nota entra en las notas del motor, antes de la línea del encargo, y el
-    recorte cae solo en el texto del responsable."""
+    recorte cae solo en el texto del responsable cuando ese texto sigue en
+    `.interno/cuerpo-pr.md`. Si no, el cuerpo publicado no se recorta."""
     serie = f"{enc.id}:{fase.id}:{sha}:{huella}"
     ukey = f"cuerpo-tardio:{serie}"
     if registro.por_ukey(ukey) is not None:
@@ -6042,6 +6061,28 @@ def _anotar_nota_en_pr_tardia(
                 f"Encargo {enc.id}. Fase: {fase.id or enc.fase_activa}."
             )
         nuevo_cierre = _agregar_nota_al_cierre(cierre, texto)
+        combinado = (
+            f"{texto_cuerpo}\n\n{nuevo_cierre}" if texto_cuerpo else nuevo_cierre
+        )
+        ajustado = _cuerpo_con_limite(texto_cuerpo, nuevo_cierre)
+        if ajustado != combinado and not _recorte_es_seguro(texto_cuerpo, espacio):
+            # No se recorta un cuerpo ya publicado que no se puede recuperar:
+            # se perdería la descripción del responsable en silencio.
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "nota_pr",
+                    "data": {
+                        "texto": (
+                            texto + " (el cuerpo ya publicado no se recorta; "
+                            "la nota queda en el estado del encargo)"
+                        ),
+                        "hora": hora,
+                    },
+                },
+                ukey,
+            )
+            return registro.fold(enc.id) or enc
         try:
             _escribir_cuerpo_pr(
                 gh, enc.entrega.repo, fase.pr_numero, texto_cuerpo, nuevo_cierre
@@ -6093,7 +6134,7 @@ def _avisar_hallazgo_tardio(
     enc = registro.fold(enc.id) or enc
     if gh is not None and espacio is not None:
         enc = _anotar_nota_en_pr_tardia(
-            registro, enc, gh, fase, sha, huella, texto, hora
+            registro, enc, gh, fase, sha, huella, texto, hora, espacio
         )
     return enc
 
