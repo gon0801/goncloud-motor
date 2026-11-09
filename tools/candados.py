@@ -179,7 +179,7 @@ def _revisar_bateria(raiz: Path) -> list[str]:
         and nodo.func.attr in ("search", "match", "findall", "fullmatch")
     ]
     for nodo in buscadores:
-        if not _dentro_de(arbol, nodo, "_jobs_extra"):
+        if _funcion_que_contiene(arbol, nodo) != "_jobs_extra":
             problemas.append(
                 f"{ruta}:{nodo.lineno}: lee el mensaje del commit fuera de "
                 "_jobs_extra; solo `jobs_extra=` puede sumar jobs"
@@ -195,28 +195,17 @@ def _revisar_bateria(raiz: Path) -> list[str]:
     return problemas
 
 
-def _dentro_de(arbol: ast.AST, objetivo: ast.AST, nombre: str) -> bool:
-    pila: list[str] = []
-
-    class Visita(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.encontrado = False
-
-        def visit_FunctionDef(self, nodo):
-            pila.append(nodo.name)
-            self.generic_visit(nodo)
-            pila.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_Call(self, nodo):
-            if nodo is objetivo and pila and pila[-1] == nombre:
-                self.encontrado = True
-            self.generic_visit(nodo)
-
-    visita = Visita()
-    visita.visit(arbol)
-    return visita.encontrado
+def _funcion_que_contiene(arbol: ast.AST, objetivo: ast.AST) -> str:
+    """El nombre de la funcion mas interna que contiene la linea del nodo."""
+    linea = getattr(objetivo, "lineno", 0)
+    mejor: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if nodo.lineno <= linea <= (nodo.end_lineno or nodo.lineno):
+            if mejor is None or nodo.lineno > mejor.lineno:
+                mejor = nodo
+    return mejor.name if mejor is not None else "<module>"
 
 
 def _revisar_prompt(raiz: Path) -> list[str]:
@@ -249,19 +238,33 @@ def revisar_cuerpo(raiz: Path = RAIZ) -> list[str]:
     except (OSError, SyntaxError) as exc:
         return [f"{ruta}: no se puede leer ({exc})"]
     problemas = []
-    escritores = []
     for nodo in ast.walk(arbol):
         if (
             isinstance(nodo, ast.Call)
             and isinstance(nodo.func, ast.Attribute)
             and nodo.func.attr == "actualizar_cuerpo"
         ):
-            if not _dentro_de(arbol, nodo, "_escribir_cuerpo_pr"):
-                escritores.append(getattr(nodo, "lineno", 0))
-    for linea in escritores:
-        problemas.append(
-            f"{ruta}:{linea}: edita el cuerpo del PR fuera de `_escribir_cuerpo_pr`"
-        )
+            if _funcion_que_contiene(arbol, nodo) != "_escribir_cuerpo_pr":
+                problemas.append(
+                    f"{ruta}:{nodo.lineno}: edita el cuerpo del PR fuera de "
+                    "`_escribir_cuerpo_pr`"
+                )
+    permitidos = {
+        "_LIMITE_CUERPO_PR": {"_leer_cuerpo_del_espacio", "_cuerpo_con_limite"},
+        "_NOTA_CUERPO_RECORTADO": {"_cuerpo_con_limite"},
+    }
+    for nodo in ast.walk(arbol):
+        if (
+            isinstance(nodo, ast.Name)
+            and isinstance(nodo.ctx, ast.Load)
+            and nodo.id in permitidos
+        ):
+            funciones = permitidos[nodo.id]
+            if _funcion_que_contiene(arbol, nodo) not in funciones:
+                problemas.append(
+                    f"{ruta}:{nodo.lineno}: usa {nodo.id} fuera de la puerta "
+                    "del limite `_cuerpo_con_limite`"
+                )
     if _funcion(arbol, "_escribir_cuerpo_pr") is None:
         problemas.append(f"{ruta}: falta la puerta unica `_escribir_cuerpo_pr`")
     if _funcion(arbol, "_cuerpo_con_limite") is None:
