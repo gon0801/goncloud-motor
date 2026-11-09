@@ -62,6 +62,7 @@ from .dominio import (
     huella_entrega,
     hubo_avance,
     id_encargo,
+    id_hallazgo,
     inspeccion_bloquea,
     marca_inspeccion_entregada,
     respuesta_consumida,
@@ -1634,7 +1635,7 @@ def _barrer_encargos(
                 if (
                     isinstance(resultado_paso, NecesitaAgente)
                     and enc.rol == "revisor"
-                    and _revision_aprobada_vigente(enc)
+                    and _revision_aprobada_sin_bloqueos_ajenos(enc)
                 ):
                     enc = _esperar_entrega_sin_avance(registro, enc, hora)
                     resultado_paso = Espera(enc.reanuda_en, enc.motivo)
@@ -2657,6 +2658,19 @@ def _revision_aprobada_vigente(enc: Encargo) -> bool:
     return revision_independiente_cubre_producto(enc) and not bloqueantes_abiertos(enc)
 
 
+def _revision_aprobada_sin_bloqueos_ajenos(enc: Encargo) -> bool:
+    """La revisión vigente cubre el producto y no queda un bloqueo de otro rol.
+
+    Los bloqueos del supervisor no cuentan aquí: el paso de entrega los lee de
+    la observación y los cierra o los devuelve antes de publicar o cerrar. Los
+    del revisor independiente y los de DeepSeek sí siguen exigiendo su turno.
+    """
+    return revision_independiente_cubre_producto(enc) and not (
+        bloqueantes_abiertos(enc, "independiente")
+        or bloqueantes_abiertos(enc, "deepseek")
+    )
+
+
 def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
     fase = enc.fase_actual
     return bool(
@@ -2708,8 +2722,12 @@ def _aplica_entrega(enc: Encargo) -> bool:
         # La aprobación se conserva; sólo deja de ser aplicable a la entrega
         # mientras el producto vigente siga en rojo.
         return False
-    if not bloqueantes_abiertos(enc):
-        return _revision_aprobada_vigente(enc)
+    if not bloqueantes_abiertos(enc, "independiente") and not bloqueantes_abiertos(
+        enc, "deepseek"
+    ):
+        # Los bloqueos del supervisor no frenan el paso de entrega: el propio
+        # paso los lee de la observacion y devuelve el trabajo con su detalle.
+        return revision_independiente_cubre_producto(enc)
     if bloqueantes_abiertos(enc, "independiente"):
         return False
     return (
@@ -6916,6 +6934,51 @@ def _observacion_de_la_version(
     return None
 
 
+_TOPE_COLA_DE_FALLO = 1200
+
+
+def _cola_de_salida(texto: object) -> str:
+    """El final de una salida, que es donde el fallo deja su causa."""
+    texto = str(texto or "").strip()
+    if len(texto) <= _TOPE_COLA_DE_FALLO:
+        return texto
+    return "[...]\n" + texto[-_TOPE_COLA_DE_FALLO:]
+
+
+def _detalle_en_rojo(ejecucion: dict) -> str:
+    """Objetivo, argv, rc y el final de stdout/stderr de una comprobacion en
+    rojo, para que el responsable corrija exactamente lo que fallo."""
+    objetivo = str(ejecucion.get("objetivo") or "comprobacion")
+    argv = ejecucion.get("argv")
+    comando = (
+        " ".join(str(x) for x in argv)
+        if isinstance(argv, list) and argv
+        else "(sin argv)"
+    )
+    lineas = [f"{objetivo}: rc {ejecucion.get('rc')} (argv: {comando})"]
+    for nombre in ("stdout", "stderr"):
+        cola = _cola_de_salida(ejecucion.get(nombre))
+        if cola:
+            lineas.append(f"{nombre} (final):\n{cola}")
+    return "\n".join(lineas)
+
+
+def _huella_de_fallas(observacion: dict) -> str:
+    """Identidad estable de las comprobaciones en rojo.
+
+    Usa objetivo, argv y rc, no la salida: un `Ran 26 tests in 5.370s` distinto
+    no es otra falla ni abre otra vuelta. Un cambio de comando o de rc si lo es.
+    """
+    firmas = [
+        [str(e.get("objetivo") or "comprobacion"), e.get("argv"), e.get("rc")]
+        for e in observacion.get("ejecuciones") or []
+        if isinstance(e, dict)
+        and not e.get("error_instrumento")
+        and (e.get("rc") is None or str(e.get("rc")) != "0")
+    ]
+    return digest({"fallas": firmas})[:12]
+
+
 def _fallas_de_observacion(
     observacion: dict,
 ) -> tuple[list[str], list[str]]:
@@ -6933,8 +6996,77 @@ def _fallas_de_observacion(
         if error:
             instrumentos.append(f"{objetivo}: {error}")
         elif ejecucion.get("rc") is None or str(ejecucion.get("rc")) != "0":
-            rojas.append(f"{objetivo}: rc {ejecucion.get('rc')}")
+            rojas.append(_detalle_en_rojo(ejecucion))
     return rojas, instrumentos
+
+
+def _hallazgos_en_rojo(observacion: dict) -> list[dict]:
+    """Las comprobaciones en rojo como bloqueantes con identidad estable.
+
+    El id usa objetivo y argv, no la salida ni el rc: la misma comprobacion que
+    vuelve a fallar es el mismo bloqueo, y una nueva entrega con el mismo id
+    abierto pasa por la escalera de `_sin_avance` en vez de abrir otra vuelta
+    identica.
+    """
+    salida = []
+    for ejecucion in observacion.get("ejecuciones") or []:
+        if not isinstance(ejecucion, dict) or ejecucion.get("error_instrumento"):
+            continue
+        rc = ejecucion.get("rc")
+        if rc is None or str(rc) == "0":
+            continue
+        objetivo = str(ejecucion.get("objetivo") or "comprobacion")
+        argv = ejecucion.get("argv")
+        comando = (
+            " ".join(str(x) for x in argv)
+            if isinstance(argv, list) and argv
+            else ""
+        )
+        salida.append(
+            {
+                "id": id_hallazgo("supervisor", comando, objetivo),
+                "gravedad": "bloqueante",
+                "criterio": "comportamiento",
+                "titulo": f"comprobacion del supervisor en rojo: {objetivo}",
+                "reproduccion": _detalle_en_rojo(ejecucion),
+                "ancla": comando,
+                "origen": "supervisor",
+                "estado": "abierto",
+            }
+        )
+    return salida
+
+
+def _registrar_comprobaciones(
+    registro: Registro,
+    enc: Encargo,
+    observacion: dict,
+    version: str,
+    hora: str,
+) -> Encargo:
+    """Abre y cierra los bloqueos de las comprobaciones de esta observacion."""
+    fase = enc.fase_actual
+    if fase is None:
+        return enc
+    hallazgos = _hallazgos_en_rojo(observacion)
+    if not hallazgos and not any(
+        h.origen == "supervisor" and h.estado == "abierto" for h in fase.hallazgos
+    ):
+        return enc
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "comprobaciones_supervisor",
+            "data": {
+                "version": version,
+                "hallazgos": hallazgos,
+                "hora": hora,
+            },
+        },
+        f"comprobaciones-supervisor:{enc.id}:{enc.generacion}:"
+        f"{_huella_de_fallas(observacion)}",
+    )
+    return registro.fold(enc.id) or enc
 
 
 def _espera_por_observacion(
@@ -6943,12 +7075,15 @@ def _espera_por_observacion(
     espacio: Path,
     directorio: Path,
     hora: str,
-) -> Encargo | None:
+) -> tuple[Encargo, Resultado] | None:
     """None si la version vigente ya tiene una observacion verde del comprobador.
 
     Con comprobaciones declaradas, commit y push esperan a que el comprobador
-    registre su observacion sobre esta version. Si la observacion trae una
-    comprobacion en rojo, la version vuelve al responsable y no se publica.
+    registre su observacion sobre esta version: eso es una `Espera`. Si la
+    observacion trae una comprobacion en rojo, la version vuelve al responsable
+    y no se publica: eso es un `Devolver`, que abre su intento. Un `Devolver`
+    no puede viajar como si fuera una espera, o el trabajo queda dormido hasta
+    la quietud.
     """
     try:
         declaradas = leer_declaradas(interno_de(espacio))
@@ -6970,8 +7105,42 @@ def _espera_por_observacion(
                     "corregir .interno/comprobaciones.json sin tocar el producto",
                     hora, f"comprobaciones-{enc.generacion}",
                 )
-            return registro.fold(enc.id)
+                return registro.fold(enc.id) or enc, Devolver("responsable", str(exc))
+            observado = registro.fold(enc.id) or enc
+            return observado, Espera(observado.reanuda_en, observado.motivo)
     if declaradas is None or enc.producto is None:
+        if declaradas is None and enc.producto is not None:
+            enc = registro.fold(enc.id) or enc
+            abierto_sup = any(
+                h.origen == "supervisor" and h.estado == "abierto"
+                for h in (enc.fase_actual.hallazgos if enc.fase_actual else ())
+            )
+            if abierto_sup:
+                # Sin una observacion en verde el bloqueo no se resuelve. Se
+                # deja abierto y visible, y la fase se entrega con un pendiente
+                # en vez de publicarse como si la comprobacion hubiera pasado.
+                omitido = _instrumento_omitido(enc, "comprobaciones.json")
+                texto = (
+                    "las comprobaciones declaradas no se pudieron volver a "
+                    "observar: el comprobador quedo omitido tras fallos iguales; "
+                    "el bloqueo del supervisor sigue abierto y se entrega con "
+                    "este pendiente"
+                    if omitido
+                    else "las comprobaciones declaradas desaparecieron sin una "
+                    "observacion en verde sobre el producto vigente; el bloqueo "
+                    "del supervisor sigue abierto y se entrega con este pendiente"
+                )
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "pendiente_entrega",
+                        "data": {"texto": texto, "hora": hora},
+                    },
+                    f"pendiente-comprobaciones-"
+                    f"{'omitidas' if omitido else 'retiradas'}:"
+                    f"{enc.id}:{enc.generacion}",
+                )
+                return registro.fold(enc.id) or enc, Avanzo()
         return None
     version = version_producto(espacio).firma
     esperadas = declaradas
@@ -6988,7 +7157,8 @@ def _espera_por_observacion(
             _reanuda_en(30),
             hora,
         )
-        return registro.fold(enc.id)
+        observado = registro.fold(enc.id) or enc
+        return observado, Espera(observado.reanuda_en, observado.motivo)
     fallas, instrumentos = _fallas_de_observacion(observacion)
     if instrumentos:
         causa = "la observacion del comprobador no se pudo usar: " + "; ".join(
@@ -7003,21 +7173,24 @@ def _espera_por_observacion(
             hora,
             f"observacion-instrumento-{version[:12]}",
         )
-        return registro.fold(enc.id)
+        return registro.fold(enc.id) or enc, Devolver("responsable", causa)
     if not fallas:
+        _registrar_comprobaciones(registro, enc, observacion, version, hora)
         return None
-    causa = "la comprobacion del supervisor esta en rojo: " + "; ".join(fallas)
-    _devolver(
+    enc = _registrar_comprobaciones(registro, enc, observacion, version, hora)
+    causa = "la comprobacion del supervisor esta en rojo: " + "\n".join(fallas)
+    _sin_avance(
         registro,
         enc,
-        "investigar",
         causa,
-        "corregir la comprobacion en rojo antes de publicar; lo aprobado que "
-        "no cambio se conserva",
+        "se devolvio la comprobacion en rojo y la version no cambio",
         hora,
-        f"observacion-roja-{version[:12]}",
+        f"observacion-roja-{version[:12]}-{_huella_de_fallas(observacion)}",
     )
-    return registro.fold(enc.id)
+    nuevo = registro.fold(enc.id) or enc
+    if nuevo.pendientes_entrega and nuevo.pendientes_entrega != enc.pendientes_entrega:
+        return nuevo, Avanzo()
+    return nuevo, Devolver("responsable", causa)
 
 
 def _head_antes_de_cerrar(
@@ -7421,9 +7594,9 @@ def _paso_entrega_paso(
         return _reabrir_revision(registro, enc, stale, hora), Devolver(
             "revisor", "el producto cambió desde la revisión aprobada"
         )
-    espera = _espera_por_observacion(registro, enc, espacio, directorio, hora)
-    if espera is not None:
-        return espera, Espera(espera.reanuda_en, espera.motivo)
+    observado = _espera_por_observacion(registro, enc, espacio, directorio, hora)
+    if observado is not None:
+        return observado
     sha, causa = _commit_push(enc, espacio)
     if causa:
         punta = ""
@@ -7877,7 +8050,7 @@ def _paso_entrega_paso(
                 str(enc.rol or "responsable"), "DeepSeek mantiene el bloqueo"
             )
     enc = registro.fold(enc.id)
-    if not _revision_aprobada_vigente(enc):
+    if not _revision_aprobada_sin_bloqueos_ajenos(enc):
         if bloqueantes_abiertos(enc, "deepseek"):
             # Sigue siendo el turno de DeepSeek: no se adelanta Opus ni se
             # integra nada con un High o Medium abierto.

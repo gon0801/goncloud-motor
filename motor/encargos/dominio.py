@@ -2018,6 +2018,37 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             ultimo_hecho="comprobaciones observadas por el supervisor",
             hora=hora or e.hora,
         )
+    if kind == "comprobaciones_supervisor":
+        # Las comprobaciones en rojo de una observacion son trabajo bloqueante
+        # con la misma identidad que un hallazgo: objetivo y argv. Al escribir
+        # la observacion se abren las que fallan y se cierran las que ya no
+        # aparecen, para que `_sin_avance` mida el avance por ids.
+        fase = e.fase_actual
+        if fase is None:
+            return e
+        nuevos = tuple(
+            Hallazgo.desde(h)
+            for h in (d.get("hallazgos") or ())
+            if isinstance(h, dict)
+        )
+        ids = {h.id for h in nuevos}
+        previos = tuple(
+            replace(h, estado="resuelto")
+            if h.origen == "supervisor" and h.estado == "abierto" and h.id not in ids
+            else h
+            for h in fase.hallazgos
+        )
+        hallazgos = _fusionar(previos, nuevos)
+        if hallazgos == fase.hallazgos:
+            return replace(e, hora=hora or e.hora)
+        actualizado = replace(
+            con_fase(e, replace(fase, hallazgos=hallazgos)),
+            ultimo_hecho="comprobaciones del supervisor registradas",
+            hora=hora or e.hora,
+        )
+        if _bloqueos_abiertos(e) - _bloqueos_abiertos(actualizado):
+            return _con_progreso(e, actualizado)
+        return actualizado
     if kind == "revision":
         return _revision(e, d, hora)
     if kind == "instrumento_fallo":
