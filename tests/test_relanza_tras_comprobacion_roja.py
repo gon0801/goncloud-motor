@@ -502,6 +502,63 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 "la fase lleva el pendiente de la comprobacion no observada",
             )
 
+    def test_una_observacion_en_verde_cierra_el_bloqueo_rojo(self):  # no-roja-en-base: caracterización de que una observación en verde del mismo check cierra el bloqueo del supervisor
+        """Una comprobacion en verde cierra el bloqueo rojo del supervisor.
+
+        La identidad es objetivo y argv: si la misma comprobacion se observa con
+        rc 0 sobre la misma version, el bloqueo se resuelve y la publicacion
+        sigue. Es la cara complementaria de retirar la comprobacion.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "verde-cierra",
+                lambda d: github_con_hallazgos(d, titulos=()),
+            )
+            declaradas = self._declarar(r)
+            self._observar(r, e, declaradas, rc=1, stderr=STDERR_EN_ROJO)
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(len(abiertos), 1, "el rojo abre el bloqueo")
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            self._observar(r, e, declaradas, rc=0, stdout="OK\n")
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            e = r.fold()
+            abiertos = [
+                h
+                for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                if h.origen == "supervisor" and h.estado == "abierto"
+            ]
+            self.assertEqual(
+                abiertos, [], "la observacion en verde cierra el bloqueo"
+            )
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertTrue(
+                any(
+                    ev["kind"] == "entrega_externa"
+                    and ev["data"].get("paso") in ("commit", "push", "pr_listo")
+                    for ev in nuevos
+                ),
+                "con la comprobacion en verde la publicacion sigue",
+            )
+
     def test_un_comentario_nuevo_de_deepseek_no_relanza_al_revisor_con_rojo(self):
         """Un comentario nuevo de DeepSeek no adelanta al revisor.
 
