@@ -715,7 +715,7 @@ class ElCierrePorAtajoConciliaLaCabeza(unittest.TestCase):
             fase2 = replace(
                 fase,
                 estado="entrega",
-                nivel_alcanzado="pr",
+                ultimo_paso_entrega="deepseek_leido",
                 deepseek_sha=e.pr_sha,
                 producto=producto,
             )
@@ -978,7 +978,7 @@ class CorreccionTrasTerminar(unittest.TestCase):
             e = vuelta("hola\n")
             self.assertEqual(e.estado, "terminado")
             integrado = con_fase(
-                e, replace(e.fase_actual, nivel_alcanzado="integrado")
+                e, replace(e.fase_actual, ultimo_paso_entrega="integrado")
             )
             with self.assertRaises(TransicionIlegal):
                 reducir(
