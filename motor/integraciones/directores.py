@@ -1413,7 +1413,9 @@ def _canal_de_origen(
 # Los directores que atienden encargos en esta máquina. Cualquiera de ellos
 # puede corregir, parar o continuar un encargo de la máquina; queda registrado
 # quién lo hizo.
-DIRECTORES_DE_LA_MAQUINA = frozenset({"hermes", "claw", "openbot", "operador"})
+DIRECTORES_DE_LA_MAQUINA = frozenset(
+    {"hermes", "claw", "openbot", "mausbot", "operador"}
+)
 
 
 def corregir_canal(
@@ -2146,8 +2148,50 @@ def capacidades_openbot(argv: list[str]) -> dict:
     }
 
 
-def guardar_capacidades(base: Path, doc: dict) -> None:
-    _atomico(base / "politica" / "openbot.json", doc)
+def capacidades_mausbot(argv: list[str]) -> dict:
+    from .transporte_mausbot import entorno
+
+    try:
+        ayuda = subprocess.run(
+            argv + ["--help"],
+            capture_output=True,
+            text=True,
+            timeout=TRANSPORTE_TIMEOUT_S,
+            env=entorno(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {
+            "entrega": False,
+            "consulta": False,
+            "parada": False,
+            "timeout_cancela": True,
+            "skills": False,
+            "publicacion_de_sesion": False,
+            "recepcion": False,
+            "rc_ayuda": -1,
+        }
+    texto = "\n".join(
+        parte for parte in (ayuda.stdout, ayuda.stderr) if parte
+    ).lower()
+    return {
+        "entrega": any(marca in texto for marca in ("send", "run")),
+        "consulta": any(marca in texto for marca in ("messages", "wait")),
+        "parada": "interrupt" in texto,
+        "timeout_cancela": True,
+        "skills": False,
+        "publicacion_de_sesion": False,
+        "recepcion": any(
+            marca in texto for marca in ("reply", "responder", "inbound")
+        ),
+        "rc_ayuda": ayuda.returncode,
+    }
+
+
+def guardar_capacidades(base: Path, doc: dict, director: str = "openbot") -> None:
+    _atomico(base / "politica" / f"{director}.json", doc)
+
+
+NOMBRE_DE_DIRECTOR_CON_PARADA = {"openbot": "OpenBot", "mausbot": "MausBot"}
 
 
 def relay(
@@ -2178,12 +2222,15 @@ def relay(
             "motivo": "el canal no es un director registrado de la máquina",
             "encargo": encargo,
         }
-    if accion == "parar" and enc.director == "openbot":
-        caps = _leer(registro.base / "politica" / "openbot.json") or {}
+    if accion == "parar" and enc.director in NOMBRE_DE_DIRECTOR_CON_PARADA:
+        nombre = NOMBRE_DE_DIRECTOR_CON_PARADA[enc.director]
+        caps = _leer(registro.base / "politica" / f"{enc.director}.json") or {}
         if not caps.get("parada"):
             salida = consultar(registro, encargo)
             salida["parada_ofrecida"] = False
-            salida["motivo"] = "OpenBot no tiene parada demostrada; el trabajo sigue"
+            salida["motivo"] = (
+                f"{nombre} no tiene parada demostrada; el trabajo sigue"
+            )
             return salida
     autor = f"director:{canal}" if str(canal or "") else ""
     if accion == "reabrir":

@@ -13,6 +13,7 @@ from motor.capacidades_maquina import reporte as reporte_capacidades
 from motor.capacidades_maquina import texto as texto_capacidades
 
 from .directores import (
+    capacidades_mausbot,
     capacidades_openbot,
     cerrar_sesion,
     conciliar_autoridad,
@@ -44,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("encargar")
     s.add_argument("--base", type=Path, required=True)
-    s.add_argument("--director", choices=("hermes", "claw", "openbot"), required=True)
+    s.add_argument("--director", choices=("hermes", "claw", "openbot", "mausbot"), required=True)
     s.add_argument("--via", choices=("directa", "durable"), required=True)
     s.add_argument("--canal", required=True)
     s.add_argument("--clave", required=True)
@@ -137,6 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--cli", required=True)
 
+    s = sub.add_parser("capacidades-mausbot")
+    s.add_argument("--base", type=Path, required=True)
+    s.add_argument("--cli", default="")
+
     s = sub.add_parser("capacidades")
     s.add_argument("--base", type=Path, required=True)
     s.add_argument("--home", type=Path, default=None)
@@ -167,6 +172,17 @@ def _correr(args) -> int:
         doc = capacidades_openbot(args.cli.split())
         base = exigir_base(args.base)
         guardar_capacidades(base, doc)
+        return _json(doc)
+    if args.cmd == "capacidades-mausbot":
+        if args.cli.strip():
+            argv = args.cli.split()
+        else:
+            from .transporte_mausbot import argv_base
+
+            argv = argv_base()
+        doc = capacidades_mausbot(argv)
+        base = exigir_base(args.base)
+        guardar_capacidades(base, doc, "mausbot")
         return _json(doc)
     reg = _registro(args.base)
     try:
