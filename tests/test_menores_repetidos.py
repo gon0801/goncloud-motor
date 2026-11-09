@@ -515,6 +515,14 @@ class EntregarConPendientesNoMienteSiElCuerpoFalla(unittest.TestCase):
                 any("no se pudo publicar el PR con pendientes" in n for n in notas),
                 notas,
             )
+            plegado = r.fold()
+            self.assertTrue(
+                any(
+                    "no se pudo publicar el PR con pendientes" in n
+                    for n in plegado.notas_pr
+                ),
+                plegado.notas_pr,
+            )
             publicados_despues = [
                 ev
                 for ev in r.eventos("entrega_externa")
