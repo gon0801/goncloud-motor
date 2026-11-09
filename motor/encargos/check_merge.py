@@ -36,7 +36,9 @@ def excepciones_del_cuerpo(cuerpo: str) -> tuple[dict, ...]:
     Un marcador ilegible o un tipo desconocido no exceptúan: se descartan y el
     check sigue con lo que el sticky demuestre."""
     texto = str(cuerpo or "")
-    inicio = texto.find(MARCA_EXCEPCIONES)
+    # El motor añade su marcador al final del cuerpo. La prosa del PR puede
+    # citar la marca antes; solo la última es la que el motor escribió.
+    inicio = texto.rfind(MARCA_EXCEPCIONES)
     if inicio < 0:
         return ()
     resto = texto[inicio + len(MARCA_EXCEPCIONES):].lstrip()

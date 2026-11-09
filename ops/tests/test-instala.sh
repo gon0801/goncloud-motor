@@ -230,9 +230,11 @@ cat >"$S/bin/launchctl" <<'FAKE'
 case "$1" in
   print)
     case "$2" in
-      gui/*/ai.goncloud.motor-encargos) exit 0 ;;
+      gui/*/ai.goncloud.motor-encargos)
+        [ -z "${FAKE_SIN_CARGADO:-}" ] && exit 0 || exit 1 ;;
       *) [ -e "$HOME/.cargado" ] ;;
     esac ;;
+  bootstrap) exit 0 ;;
   kickstart)
     case "${3:-}" in
       gui/*/ai.goncloud.motor-encargos)
@@ -269,7 +271,7 @@ exec $GIT_REAL "\$@"
 FAKE
 chmod +x "$S/bin/git"
 
-reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-home" "$S/pc-codigo-creado" "$S/pc-formato" "$S/pc-formato-bloquea" "$S/pc-fetch-hecho" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-conf-sha" "$S/pc-etiqueta-anterior" "$S/pc-instalacion.json" "$S/pc-instalacion-pendiente.json" "$S/pc-reinicio" "$S/checkout-n" "$S/launchd"/*; mkdir -p "$S/mac/.local/bin" "$S/mini/.local/bin" "$S/pc-home/.motor-encargos"; printf '{"supervisor_pid":4242}\n' >"$S/pc-home/.motor-encargos/vigilante.json"; ln -sfn "$S/bin/git" "$S/mac/.local/bin/git"; ln -sfn "$S/bin/git" "$S/mini/.local/bin/git"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_PC_SIN_FORMATO FAKE_PC_REVPARSE_RC FAKE_PC_OBJETO_TRAS_FETCH FAKE_SUDO_FALLA FAKE_PC_TAREA_RC FAKE_GIT_CHECKOUT_FALLA_EN FAKE_SIN_PASADA FAKE_SIN_REINICIO FAKE_TASKKILL_FALLA MOTOR_ETIQUETA MOTOR_SHA; }
+reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-home" "$S/pc-codigo-creado" "$S/pc-formato" "$S/pc-formato-bloquea" "$S/pc-fetch-hecho" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-conf-sha" "$S/pc-etiqueta-anterior" "$S/pc-instalacion.json" "$S/pc-instalacion-pendiente.json" "$S/pc-reinicio" "$S/checkout-n" "$S/launchd"/*; mkdir -p "$S/mac/.local/bin" "$S/mini/.local/bin" "$S/pc-home/.motor-encargos"; printf '{"supervisor_pid":4242}\n' >"$S/pc-home/.motor-encargos/vigilante.json"; ln -sfn "$S/bin/git" "$S/mac/.local/bin/git"; ln -sfn "$S/bin/git" "$S/mini/.local/bin/git"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_PC_SIN_FORMATO FAKE_PC_REVPARSE_RC FAKE_PC_OBJETO_TRAS_FETCH FAKE_SUDO_FALLA FAKE_PC_TAREA_RC FAKE_GIT_CHECKOUT_FALLA_EN FAKE_SIN_PASADA FAKE_SIN_REINICIO FAKE_SIN_CARGADO FAKE_TASKKILL_FALLA MOTOR_ETIQUETA MOTOR_SHA; }
 TAG="$(unset MOTOR_ETIQUETA; . "$RAIZ/ops/lib.sh"; echo "$ETIQUETA")"
 I="$RAIZ/ops/instala-todo.sh"
 D="$RAIZ/ops/desinstala-todo.sh"
@@ -957,5 +959,23 @@ grep -q "Instalado en:" "$S/salida" && fallo "declaró Instalado con un reinicio
 reset
 FAKE_TASKKILL_FALLA=1 en_mac espera "el reinicio de la PC que falla se dice" '!0' bash "$I" --maquina pc
 contiene "la causa nombra el reinicio de la PC" "$S/salida" "el reinicio falló"
+
+# El reinicio no exige que el servicio ya esté cargado: si el plist existe, lo
+# carga. Si no está instalado, lo dice en vez de fingir que reinició.
+reset
+mkdir -p "$S/mac/Library/LaunchAgents"
+cat >"$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.goncloud.motor-encargos</string>
+<key>WorkingDirectory</key><string>$S/mac/motor</string>
+</dict></plist>
+PLIST
+FAKE_SIN_CARGADO=1 en_mac espera "un servicio instalado sin cargar se arranca" 0 bash "$I" --maquina mac
+contiene "la comprobación acredita la Mac" "$S/salida" "OK mac"
+
+reset
+FAKE_SIN_CARGADO=1 en_mac espera "sin servicio instalado no se declara" '!0' bash "$I" --maquina mac
+contiene "dice que el servicio no está instalado" "$S/salida" "no está instalado"
 
 termina

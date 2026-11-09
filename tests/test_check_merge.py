@@ -112,6 +112,18 @@ class StickyRealTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(resultado["exceptuados"], ["F10"])
 
+    def test_usa_el_ultimo_marcador_que_escribe_el_motor(self):
+        # La prosa del PR puede citar la marca antes; el motor la escribe al
+        # final. Solo la última aparición exceptúa.
+        sticky = _sticky(394)
+        solo_f9 = dict(sticky)
+        solo_f9["texto"] = _solo_hallazgo(sticky["texto"], "F9")
+        cuerpo = _excepcion(sticky["sha"], "F10") + "\n\n" + _excepcion(sticky["sha"], "F9")
+        resultado, rc = self._check([solo_f9], cuerpo, sticky["sha"])
+        self.assertEqual(resultado["estado"], "pasa")
+        self.assertEqual(rc, 0)
+        self.assertEqual(resultado["exceptuados"], ["F9"])
+
     def test_falla_con_un_descarte_de_otro_sha(self):
         sticky = _sticky(394)
         otro = "0" * 40
@@ -208,6 +220,16 @@ class PublicacionDelCheck(unittest.TestCase):
         self.assertIn("workflow_dispatch:", texto)
         self.assertIn("types: [opened, synchronize, reopened, edited]", texto)
         self.assertIn("state=open", texto)
+
+    def test_el_titulo_del_workflow_run_no_entra_al_script(self):
+        # display_title lo controla el evento: interpolarlo en un run de un job
+        # con checks: write permite inyectar comandos. Va por env y variable.
+        texto = self.flujo()
+        self.assertNotIn('numeros="${{', texto)
+        self.assertIn(
+            "TITULO_RUN: ${{ github.event.workflow_run.display_title }}", texto
+        )
+        self.assertIn('numeros="$TITULO_RUN"', texto)
 
     def test_pendiente_no_satisface_el_check_requerido(self):
         texto = self.flujo()

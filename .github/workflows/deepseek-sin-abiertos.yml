@@ -39,22 +39,30 @@ jobs:
         id: prs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Los datos del evento van por el entorno: el shell no los vuelve a
+          # interpretar. Interpolar display_title en el script de un job con
+          # checks: write permitía inyectar comandos.
+          EVENTO: ${{ github.event_name }}
+          TITULO_RUN: ${{ github.event.workflow_run.display_title }}
+          PR_ARRANQUE: ${{ github.event.pull_request.number }}
+          PR_WORKFLOW: ${{ github.event.workflow_run.pull_requests[0].number }}
+          PR_DISPATCH: ${{ inputs.pr }}
         run: |
           set -euo pipefail
-          repo="${{ github.repository }}"
+          repo="$GITHUB_REPOSITORY"
           numeros=""
-          case "${{ github.event_name }}" in
+          case "$EVENTO" in
             pull_request)
-              numeros="${{ github.event.pull_request.number }}"
+              numeros="$PR_ARRANQUE"
               ;;
             workflow_run)
-              numeros="${{ github.event.workflow_run.pull_requests[0].number }}"
+              numeros="$PR_WORKFLOW"
               if [ -z "$numeros" ]; then
-                numeros="${{ github.event.workflow_run.display_title }}"
+                numeros="$TITULO_RUN"
               fi
               ;;
             workflow_dispatch)
-              numeros="${{ inputs.pr }}"
+              numeros="$PR_DISPATCH"
               ;;
             schedule)
               numeros="$(gh api --paginate "repos/${repo}/pulls?state=open&per_page=100" --jq '.[].number' | tr '\n' ' ')"
@@ -72,9 +80,11 @@ jobs:
       - name: Evaluar y publicar el check por PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Números ya validados por el paso anterior; van por el entorno.
+          PRS: ${{ steps.prs.outputs.numeros }}
         run: |
           set -euo pipefail
-          repo="${{ github.repository }}"
+          repo="$GITHUB_REPOSITORY"
 
           publicar() { # sha estado conclusion summary
             local sha=$1 estado=$2 conclusion=$3 summary=$4 id
@@ -107,7 +117,7 @@ jobs:
             fi
           }
 
-          for numero in ${{ steps.prs.outputs.numeros }}; do
+          for numero in $PRS; do
             [ -n "$numero" ] || continue
             sha="$(gh api "repos/${repo}/pulls/${numero}" --jq .head.sha)"
             set +e

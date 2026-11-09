@@ -183,9 +183,10 @@ REMOTO
 }
 
 # reinicia_supervisor <m>: relanza el supervisor justo después de mover su
-# árbol. En Mac y Mini con kickstart -k sobre el LaunchAgent; en la PC matando
-# solo el supervisor, que el vigilante vuelve a lanzar en 5 s. Si no se puede,
-# quien llama falla y lo dice por máquina.
+# árbol. En Mac y Mini usa el LaunchAgent: si el plist está instalado pero no
+# cargado, lo carga; si no está instalado, lo dice. En la PC mata solo el
+# supervisor, que el vigilante vuelve a lanzar en 5 s. Si no se puede, quien
+# llama falla y lo dice por máquina.
 reinicia_supervisor() {
   local m=$1 pid
   if [ "$m" = pc ]; then
@@ -197,9 +198,13 @@ reinicia_supervisor() {
   en_posix "$m" "$m" <<'REMOTO'
 set -euo pipefail
 label="ai.goncloud.motor-encargos"
+plist="$HOME/Library/LaunchAgents/$label.plist"
 if ! launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
-  echo "el servicio $label no está cargado" >&2
-  exit 1
+  if [ ! -f "$plist" ]; then
+    echo "el servicio $label no está instalado: $plist" >&2
+    exit 1
+  fi
+  launchctl bootstrap "gui/$(id -u)" "$plist"
 fi
 launchctl kickstart -k "gui/$(id -u)/$label"
 REMOTO
