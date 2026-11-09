@@ -6450,6 +6450,13 @@ def _veredicto_antes_de_cerrar(
         abiertos = [
             h for h in hallazgos_deepseek(comentarios, previa.pr_sha)
             if h.gravedad == "bloqueante"
+            and not hallazgo_fuera_de_alcance_por_restriccion(
+                enc.restricciones,
+                h,
+                permisos=enc.permisos,
+                prohibiciones=enc.prohibiciones,
+            )
+            and not hallazgo_contra_politica(h)
         ]
         if not abiertos:
             continue
@@ -6490,10 +6497,11 @@ def _veredicto_antes_de_cerrar(
             registro, enc, previa.pr_numero, previa.pr_sha, comentarios, hora
         )
         abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
+        vigentes = abiertos_ds or abiertos
         _devolver(
             registro, enc, "investigar",
-            abiertos_ds[0].titulo if abiertos_ds else abiertos[0].titulo,
-            "corregir " + ", ".join(h.id for h in abiertos_ds)
+            vigentes[0].titulo,
+            "corregir " + ", ".join(h.id for h in vigentes)
             + f" (DeepSeek) en el PR #{previa.pr_numero}; lo aprobado que no "
             "cambio se conserva",
             hora, f"deepseek-{huella}",

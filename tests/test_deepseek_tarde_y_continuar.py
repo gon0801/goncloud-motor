@@ -359,6 +359,59 @@ class TopeDeDeepSeekNoTerminaElEncargo(unittest.TestCase):
             self.assertEqual(_ids(e), [])
             self.assertEqual(e.preguntas, ())
 
+    def test_un_medium_tardio_que_pide_cambiar_la_politica_no_reabre_una_fase_anterior(self):
+        # F5: la reapertura al cerrar el encargo miraba los hallazgos crudos de
+        # la fase anterior sin el filtro de la lectura normal. Un hallazgo que
+        # pide mover una regla de David reabría esa fase y devolvía una causa
+        # sin ids. Tiene que quedar fuera de alcance, como en el resto del flujo.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-cierre-politica", github_por_numero, nivel="pr"
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "fases",
+                    "data": {
+                        "fases": [
+                            {"id": "uno", "resultado": "saludo.txt con uno"},
+                            {
+                                "id": "dos",
+                                "resultado": "saludo.txt con dos",
+                                "requiere": ["uno"],
+                            },
+                        ],
+                        "hora": r.hora,
+                    },
+                },
+                "fases-cierre-politica",
+            )
+            e = vuelta("uno")
+            self.assertEqual(e.fase_activa, "dos")
+            primera = e.fases[0]
+            self.assertEqual(primera.estado, "preparada")
+            self.assertEqual(primera.nivel_alcanzado, "pr")
+            self.assertTrue(primera.pr_numero)
+
+            vuelta.gh.textos[primera.pr_numero] = _comentario(
+                {
+                    "id": "F50",
+                    "severity": "medium",
+                    "status": "open",
+                    "title": "bajar el tope de DeepSeek de 30 a 15 minutos",
+                    "file": "saludo.txt",
+                }
+            )
+            e = vuelta("dos")
+
+            self.assertEqual(
+                e.estado,
+                "terminado",
+                "una decisión de política no reabre una fase anterior al cerrar",
+            )
+            self.assertEqual(r.eventos("fase_reabierta"), [])
+            self.assertEqual(e.fase_activa, "dos")
+
     def test_un_medium_posterior_al_cierre_en_una_fase_anterior_se_avisa_en_su_pr(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
