@@ -239,9 +239,12 @@ def _revisar_bateria(raiz: Path) -> list[str]:
     try:
         fuente = _leer(raiz, ruta)
         arbol = ast.parse(fuente)
-        modulo = _cargar_modulo(raiz, ruta)
-    except (OSError, SyntaxError, ImportError) as exc:
+    except (OSError, SyntaxError) as exc:
         return [f"{ruta}: no se puede leer ({exc})"]
+    try:
+        modulo = _cargar_modulo(raiz, ruta)
+    except Exception as exc:
+        return [f"{ruta}: no se puede cargar para probar la seleccion ({exc})"]
     problemas = []
     for rutas in _RUTAS_DE_PRUEBA:
         esperados = set(modulo.trabajos_a_correr(rutas))
