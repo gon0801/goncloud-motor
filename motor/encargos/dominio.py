@@ -1718,7 +1718,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             ),
         )
     if kind == "orden":
-        return _orden(e, d, hora)
+        return _orden(e, d, hora, nuevo)
     if kind == "ajuste":
         if e.estado == "terminado":
             # Con el PR abierto la corrección vuelve al responsable en la misma
@@ -3264,11 +3264,13 @@ def _rol_de_continuacion(e: Encargo, fase: Fase) -> tuple[str, str]:
     return "responsable", "investigar"
 
 
-def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
+def _fuera_de_alcance_por_restricciones(e: Encargo, nuevo: bool = True) -> Encargo:
     """Un bloqueante que una restricción expresa deja fuera no sostiene el encargo.
 
     No es un reinicio de campos: aplica la restricción al hallazgo guardado y
-    deja el hecho en `fuera_de_alcance`, con su razón, para el PR.
+    deja el hecho en `fuera_de_alcance`, con su razón, para el PR. La política
+    solo juzga al escribir: al plegar, el evento guardado se aplica como se
+    aceptó.
     """
     fase = e.fase_actual
     if fase is None:
@@ -3289,7 +3291,7 @@ def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
                 h,
                 permisos=e.permisos,
                 prohibiciones=e.prohibiciones,
-            ) or hallazgo_contra_politica(h)
+            ) or (hallazgo_contra_politica(h) if nuevo else "")
             if razon:
                 h = replace(
                     h,
@@ -3308,7 +3310,7 @@ def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
     )
 
 
-def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
+def _orden(e: Encargo, d: dict, hora: str, nuevo: bool = True) -> Encargo:
     accion = d["accion"]
     if accion == "reabrir":
         fase = e.cierre_forzado_fase
@@ -3371,7 +3373,7 @@ def _orden(e: Encargo, d: dict, hora: str) -> Encargo:
         # del registro y solo cambian con información nueva. La restricción
         # expresa sí se aplica: un bloqueante que deja fuera no sostiene el
         # encargo.
-        e = _retomar(_fuera_de_alcance_por_restricciones(e), hora)
+        e = _retomar(_fuera_de_alcance_por_restricciones(e, nuevo), hora)
         if e.no_concluyentes < TOPE_NO_CONCLUYENTES:
             e = replace(e, pendientes_entrega=())
         return replace(
