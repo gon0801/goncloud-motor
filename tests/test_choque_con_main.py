@@ -170,6 +170,14 @@ class MergeableAunSinCalcular(unittest.TestCase):
                 [ev["data"]["estado"] for ev in r.reg.eventos(r.enc) if ev["kind"] == "ci_pr"],
                 ["sin_resultado"],
             )
+            self.assertIn(
+                "traer main",
+                " ".join(_notas(r)),
+                "el choque leído por el CI también llama a traer_main",
+            )
+            self.assertEqual(_estrategias(r)[-1]["estrategia"], "integrar_main")
+            self.assertIn("el PR choca con main", _estrategias(r)[-1]["motivo"])
+            self.assertIn("conflicto en saludo.txt", " ".join(_notas(r)))
 
 
 if __name__ == "__main__":

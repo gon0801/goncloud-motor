@@ -6960,8 +6960,9 @@ def _revisar_ci_del_pr(
     choque = _choque_para_el_ci(gh, enc)
     if choque:
         # Un PR que choca no dispara CI: esperar 90 minutos daría por
-        # «sin resultado» lo que en realidad es un choque con la base.
-        return _anotar_ci_del_pr(
+        # «sin resultado» lo que en realidad es un choque con la base. El
+        # encargo vuelve a estar activo para traer la base con `traer_main`.
+        enc = _anotar_ci_del_pr(
             registro,
             enc,
             ukey=ukey,
@@ -6969,8 +6970,12 @@ def _revisar_ci_del_pr(
             sha=sha,
             estado="sin_resultado",
             causa=choque,
+            reabrir=True,
             hora=hora,
         )
+        if enc.estado in ("recibido", "ejecutando") and not enc.reserva:
+            return _traer_la_base_al_pr(registro, enc, hora)[0]
+        return enc
     primero = str(sondeo.get("primero") or hora)
     edad = _segundos_entre(primero, hora)
     al_limite = edad is not None and edad >= _CI_SONDEO_MAX_S
