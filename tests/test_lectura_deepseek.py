@@ -346,7 +346,7 @@ class VeredictoVigenteAlCerrar(unittest.TestCase):
 
 
 class RelecturaConGithubCaido(unittest.TestCase):
-    def test_un_fallo_no_consume_el_espaciado_y_queda_a_la_vista(self):
+    def test_un_fallo_no_consume_el_espaciado_y_queda_a_la_vista(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-gh-caido", _comentarios)
             gh = vuelta.gh
@@ -373,13 +373,13 @@ class RelecturaConGithubCaido(unittest.TestCase):
             self.assertIn("502", fallos[0]["data"]["causa"])
             self.assertEqual(_ids(e), ["F1"])
             self.assertNotEqual(e.estado, "esperando_reintento")
-            self.assertIn("502", e.deepseek_error)
+            self.assertIn("502", e.fase_actual.deepseek_error)
             e = _barrido(r, gh, t0 + 16)
             self.assertEqual(_ids(e), [])
             self.assertEqual(e.nivel_alcanzado, "pr")
-            self.assertEqual(e.deepseek_error, "")
+            self.assertEqual(e.fase_actual.deepseek_error, "")
 
-    def test_un_github_caido_un_rato_deja_un_solo_aviso_por_tramo(self):
+    def test_un_github_caido_un_rato_deja_un_solo_aviso_por_tramo(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(self, tmp, "ds-gh-tramo", _comentarios)
             gh = vuelta.gh
@@ -396,8 +396,8 @@ class RelecturaConGithubCaido(unittest.TestCase):
                 if ev["kind"] == "lectura_fallida" and ev["data"]["causa"]
             ]
             self.assertEqual(len(avisos), 1)
-            self.assertIn("502", e.deepseek_error)
-            self.assertEqual(vista(e)["entrega"]["deepseek"]["error"], e.deepseek_error)
+            self.assertIn("502", e.fase_actual.deepseek_error)
+            self.assertEqual(vista(e)["entrega"]["deepseek"]["error"], e.fase_actual.deepseek_error)
 
             # Si dura, otro aviso pasados 10 minutos desde el último.
             _barrido(r, gh, t0 + 599)

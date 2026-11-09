@@ -260,7 +260,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
                 "",
             )
 
-    def test_el_camino_de_autoridad_aplica_resueltos_externos(self):
+    def test_el_camino_de_autoridad_aplica_resueltos_externos(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory() as tmp:
             vuelta, r = _entrega_pr(
                 self, tmp, "autoridad-resueltos-1", github_con_hallazgo,
@@ -291,7 +291,7 @@ class HallazgoFueraDeAlcance(unittest.TestCase):
             self.assertTrue(salida.get("registrado"), salida)
             final = r.fold()
             self.assertEqual(bloqueantes_abiertos(final, "deepseek"), ())
-            cerrado = next(h for h in final.hallazgos if h.id == "F1")
+            cerrado = next(h for h in final.fase_actual.hallazgos if h.id == "F1")
             self.assertEqual(cerrado.estado, "resuelto")
             self.assertEqual(
                 cerrado.cierre_evidencia, "la evidencia del revisor descarta el hallazgo"

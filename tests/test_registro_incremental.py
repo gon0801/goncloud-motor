@@ -49,7 +49,10 @@ class Base(unittest.TestCase):
         return encargo
 
     def nota(self, encargo: str, nota: str) -> str:
-        return self.reg.anotar(
+        return self.nota_de(self.reg, encargo, nota)
+
+    def nota_de(self, registro: Registro, encargo: str, nota: str) -> str:
+        return registro.anotar(
             encargo,
             {"kind": "procedimiento", "data": {"nota": nota, "hora": HORA}},
             f"nota:{encargo}:{nota}",
@@ -109,14 +112,16 @@ class Incremental(Base):
         encargo = self.crear()
         self.nota(encargo, "n0")
         self.reg.fold(encargo)
-        anterior = self.reg.ultimo_evento(encargo)
         with mock.patch.object(self.reg, "_rango", wraps=self.reg._rango) as leidos:
             self.assertEqual(self.reg.fold(encargo).procedimiento, ("n0",))
             self.assertEqual(leidos.call_count, 0)
             self.nota(encargo, "n1")
-            nuevo = self.reg.ultimo_evento(encargo)
             self.assertEqual(self.reg.fold(encargo).procedimiento, ("n0", "n1"))
-            leidos.assert_called_once_with(encargo, anterior, nuevo)
+            self.assertEqual(
+                leidos.call_count,
+                0,
+                "el append dejó la caché en el estado que confirmó",
+            )
 
     def test_el_plegado_completo_cachea_el_token_de_su_estado(self):
         encargo = self.crear()
@@ -126,13 +131,18 @@ class Incremental(Base):
         self.assertEqual(self.reg.fold(encargo).procedimiento, ("n0",))
         self.assertEqual(self.reg.fold(encargo), desde_cero(self.reg, encargo))
 
-    def test_con_un_evento_nuevo_lee_solo_el_rango_nuevo(self):
+    def test_con_un_insert_directo_de_otra_conexion_lee_solo_el_rango_nuevo(self):  # no-roja-en-base: caracterización del plegado incremental ante un evento que no pasó por append
         encargo = self.crear()
         self.nota(encargo, "n0")
         self.reg.fold(encargo)
         anterior = self.reg.ultimo_evento(encargo)
-        self.nota(encargo, "n1")
-        nuevo = self.reg.ultimo_evento(encargo)
+        otro = Registro(self.base)
+        self.addCleanup(otro.close)
+        otro.db.execute(
+            "INSERT INTO events (ts, encargo, kind, data, ukey) VALUES (?,?,?,?,?)",
+            (HORA, encargo, "procedimiento", '{"nota": "n1", "hora": "x"}', "nota-directa"),
+        )
+        nuevo = otro.ultimo_evento(encargo)
         with mock.patch.object(self.reg, "_rango", wraps=self.reg._rango) as leidos:
             self.assertEqual(self.reg.fold(encargo).procedimiento, ("n0", "n1"))
         leidos.assert_called_once_with(encargo, anterior, nuevo)

@@ -410,7 +410,7 @@ class FlujoRevisiones(unittest.TestCase):
             )
             self.assertEqual(v["entrega"]["nivel_alcanzado"], "terminado")
 
-    def test_correccion_acotada_conserva_lo_aprobado(self):
+    def test_correccion_acotada_conserva_lo_aprobado(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "corr-1", "bueno.txt con A y malo.txt con B")
             self.addCleanup(r.reg.close)
@@ -458,7 +458,7 @@ class FlujoRevisiones(unittest.TestCase):
             e = r.incorporar()
             self.assertEqual(e.estado, "terminado")
             self.assertEqual(bueno.read_text(), "A")
-            self.assertIn(("bueno.txt", e.aprobadas[0][1]), tuple(e.aprobadas))
+            self.assertIn(("bueno.txt", e.fase_actual.aprobadas[0][1]), tuple(e.fase_actual.aprobadas))
 
     def test_juicio_roto_es_instrumento_y_no_rehace(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1239,7 +1239,7 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
             estado_fake = json.loads((raiz / "fake" / "github.json").read_text())
             self.assertEqual(estado_fake["prs"], {})
 
-    def test_inspeccion_pendiente_vuelve_al_revisor_sin_esperar_a_una_persona(self):
+    def test_inspeccion_pendiente_vuelve_al_revisor_sin_esperar_a_una_persona(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         with tempfile.TemporaryDirectory() as tmp:
             r = Recorrido(tmp, "insp-1", "Crea dato.txt con 42")
             self.addCleanup(r.reg.close)
@@ -1276,7 +1276,7 @@ class CorreccionesRevisionFlujo(unittest.TestCase):
             self.assertEqual(e.no_concluyentes, 2)
             self.assertNotEqual(e.estado, "necesita_usuario")
             self.assertEqual(
-                e.inspeccion_pendiente, "consultar metricas de cuenta"
+                e.fase_actual.inspeccion_pendiente, "consultar metricas de cuenta"
             )
             self.assertEqual(len(e.solicitudes), 1)
             self.assertIn(

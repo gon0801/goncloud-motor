@@ -123,7 +123,7 @@ class RecuperacionFase5(unittest.TestCase):
                 finally:
                     reg.close()
 
-    def test_deepseek_schema3_concilia_F1_resuelto_ya_persistido(self):
+    def test_deepseek_schema3_concilia_F1_resuelto_ya_persistido(self):  # no-roja-en-base: la prueba migra de los proxies de Encargo a fase_actual; el comportamiento ya estaba en la base
         sha = "aa335ac97b3a85a6fdade67fbcc5ada58c869d2f"
         contenido = {
             "schema": 3,
@@ -195,8 +195,8 @@ class RecuperacionFase5(unittest.TestCase):
                     final = reg.fold(ident)
                     self.assertEqual(final.estado, "terminado")
                     self.assertFalse(dominio.bloqueantes_abiertos(final))
-                    self.assertEqual(next(h.estado for h in final.hallazgos if h.id == "F1"), "resuelto")
-                    self.assertEqual(next(h.ancla for h in final.hallazgos if h.id == "F2"), "reporte.md:46")
+                    self.assertEqual(next(h.estado for h in final.fase_actual.hallazgos if h.id == "F1"), "resuelto")
+                    self.assertEqual(next(h.ancla for h in final.fase_actual.hallazgos if h.id == "F2"), "reporte.md:46")
                     marcadores = (
                         "incorporado",
                         "quietud_vigilada",
