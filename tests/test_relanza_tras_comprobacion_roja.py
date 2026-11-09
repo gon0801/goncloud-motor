@@ -327,6 +327,75 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
                 "comprobaciones declaradas",
             )
 
+    def test_si_el_comprobador_se_omite_deja_pendiente_y_cierra_el_bloqueo(self):
+        """Sin instrumento, el bloqueo se cierra y queda el pendiente visible.
+
+        Un comprobador omitido tras fallos iguales no prueba que la falla se
+        resolvio: el bloqueo se cierra para no relanzar al revisor y la entrega
+        lleva el pendiente escrito.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "omitido", lambda d: github_con_hallazgos(d, titulos=())
+            )
+            declaradas = self._declarar(r)
+            self._observar(r, e, declaradas, rc=1, stderr=STDERR_EN_ROJO)
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            self.assertTrue(e.reserva)
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+            r.reg.anotar(
+                r.enc,
+                {
+                    "kind": "instrumento_no_disponible",
+                    "data": {
+                        "clase": "comprobaciones.json",
+                        "causa": "tres fallos iguales",
+                        "hora": ahora_iso(),
+                    },
+                },
+                "t-omitido",
+            )
+            (r.espacio / ".interno" / "comprobaciones.json").write_text(
+                "{", encoding="utf-8"
+            )
+
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertNotIn("revisor", roles)
+            self.assertFalse(
+                any(
+                    ev["kind"] == "estrategia"
+                    and ev["data"].get("rol") == "revisor"
+                    and ev["data"].get("estrategia") == "revisar_evidencia"
+                    for ev in nuevos
+                )
+            )
+            e = r.fold()
+            self.assertTrue(
+                any("comprobador quedo omitido" in p for p in e.pendientes_entrega),
+                "el pendiente deja escrito que el comprobador no pudo observar",
+            )
+            self.assertFalse(
+                [
+                    h
+                    for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                    if h.origen == "supervisor" and h.estado == "abierto"
+                ]
+            )
+
     def test_replay_del_prefijo_real_hasta_67595_abre_intento(self):
         """Reconstruye los eventos decisivos de `enc_0dc2b585542ac181` hasta
         67595: producto `e12f5e899f5d`, revisión aprobada, la observación del
