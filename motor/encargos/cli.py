@@ -519,6 +519,10 @@ def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
                 for agente in autorizados
                 if agente not in disponibles
             ]
+            if solicitado and causas:
+                causas = [
+                    f"{causa} (modelo solicitado {solicitado[1]})" for causa in causas
+                ]
             motivo = (
                 "; ".join(motivos)
                 or "; ".join(causas)
