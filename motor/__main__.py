@@ -636,6 +636,7 @@ _CMDS_ENCARGO = {
     "afirmacion",
     "parada-local",
     "supervisor",
+    "reiniciar-supervisor",
     "encargos-aplicar",
     "encargos-migrar",
     "traer-main",
