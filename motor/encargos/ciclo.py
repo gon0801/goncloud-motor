@@ -239,25 +239,25 @@ def _problemas_de_entrega(
                 "instalar gh, autenticarlo para el repo y volver a recibir",
             )
         )
-    ssh = _ssh_del_repo(str(enc.entrega.repo or ""))
-    if ssh:
-        causa = _comprobar_remoto_ssh(ssh)
+    remoto = _remoto_del_repo(str(enc.entrega.repo or ""))
+    if remoto:
+        causa = _comprobar_remoto(remoto)
         if causa:
             problemas.append(
                 (
                     "entrega:ssh",
-                    f"el remoto ssh {ssh} no responde con la llave de la máquina: {causa}",
-                    "dejar la llave ssh autorizada para el repo",
+                    f"el remoto {remoto} no responde con el transporte configurado: {causa}",
+                    "dejar el remoto accesible con la llave ssh o la credencial configurada",
                 )
             )
         else:
-            causa = _comprobar_push_ssh(ssh, _rama_fase(enc))
+            causa = _comprobar_push(remoto, _rama_fase(enc))
             if causa:
                 problemas.append(
                     (
                         "entrega:ssh",
                         f"git push --dry-run a la rama propia falló: {causa}",
-                        "dejar la llave ssh autorizada para escribir en el repo",
+                        "dejar el remoto accesible para escribir en el repo",
                     )
                 )
     return problemas
@@ -273,9 +273,9 @@ def _sondeo_entrega(
     """Comprueba al recibir, no al entregar, que la entrega puede publicarse.
 
     Reutiliza la mirada de solo lectura del puerto (`gh.capacidad`) y añade las
-    sondas git de ssh y push. Solo una causa permanente queda como impedimento
-    visible desde el inicio; un fallo transitorio o desconocido sigue el camino
-    normal. No deja un pendiente de entrega: el producto todavía no existe y el
+    sondas del remoto configurado y del push. Solo una causa permanente queda
+    como impedimento visible desde el inicio; un fallo transitorio o desconocido
+    sigue el camino normal. No deja un pendiente de entrega: el producto todavía no existe y el
     turno del agente debe correr. La entrega con pendientes se decide al
     publicar, cuando ya hay trabajo que entregar. Sin puerto no se inventa una
     causa.
@@ -384,8 +384,12 @@ def _sondeo_nivel(
 TOPE_ENTREGA_S = 10.0
 
 
-def _ssh_del_repo(repo: str) -> str:
-    """El remoto ssh con el que ya cuenta la máquina, o "" si el repo es local."""
+def _remoto_del_repo(repo: str) -> str:
+    """El remoto configurado del repo, o "" si es local.
+
+    Se respeta el transporte que ya tiene el repo (ssh o https) y lo que git
+    tenga configurado para él; no se reescribe a `git@github.com`.
+    """
     from motor.repositorios import resolver_repositorio
 
     try:
@@ -393,17 +397,15 @@ def _ssh_del_repo(repo: str) -> str:
     except (OSError, ValueError, subprocess.SubprocessError):
         return ""
     remoto = str(getattr(resuelto, "remoto", "") or "")
-    if remoto.startswith(("git@", "ssh://")):
+    if remoto.startswith(("git@", "ssh://", "http://", "https://")):
         return remoto
-    if remoto.startswith(("https://", "http://")):
-        github = str(getattr(resuelto, "github", "") or "")
-        if github and not github.startswith(("/", ".", "~")):
-            return f"git@github.com:{github}.git"
+    if re.match(r"[^/@]+@[^/:]+:", remoto):
+        return remoto
     return ""
 
 
-def _comprobar_remoto_ssh(url: str) -> str:
-    """Lectura del remoto ssh sin escribir. "" si llega; la causa exacta si no."""
+def _comprobar_remoto(url: str) -> str:
+    """Lectura del remoto sin escribir y sin pedir credenciales. "" si llega."""
     try:
         r = subprocess.run(
             ["git", "ls-remote", "--", url],
@@ -426,7 +428,7 @@ def _comprobar_remoto_ssh(url: str) -> str:
     return (r.stderr or r.stdout).strip()[-300:]
 
 
-def _comprobar_push_ssh(url: str, rama: str) -> str:
+def _comprobar_push(url: str, rama: str) -> str:
     """`git push --dry-run` a una rama propia desde un repo temporal."""
     import tempfile
 
@@ -2585,6 +2587,22 @@ def _resolver_impedimento(registro, enc: Encargo, clase: str, hora: str) -> None
         },
         f"impedimento-resuelto:{enc.id}:{clase}:{_apariciones(enc, clase)}",
     )
+
+
+def _resolver_impedimentos_de_entrega(
+    registro, enc: Encargo, hora: str, clases: tuple[str, ...]
+) -> None:
+    """Levanta el aviso de entrega cuando la operación que lo causó ya pasó.
+
+    Un impedimento de entrega no se resuelve por sondeo (no hay puerto en la
+    verificación de la recepción); se resuelve con la prueba real: el push o la
+    publicación que antes fallaba. Así no queda para siempre como causa.
+    """
+    enc = registro.fold(enc.id) or enc
+    for impedimento in list(enc.impedimentos):
+        if impedimento.clase in clases:
+            _resolver_impedimento(registro, enc, impedimento.clase, hora)
+            enc = registro.fold(enc.id) or enc
 
 
 def _bloqueo_entorno(registro, enc: Encargo, espacio: Path, hora: str) -> bool:
@@ -4826,15 +4844,6 @@ def _descartar_cambios_de_bloqueada(espacio: Path) -> None:
     )
 
 
-def _fuente_de_clon(repo) -> str:
-    """El clon de un repo de GitHub va por ssh: no depende de credenciales https."""
-    fuente = str(getattr(repo, "fuente", "") or "")
-    github = str(getattr(repo, "github", "") or "")
-    if github and fuente.lower().startswith(("https://", "http://")):
-        return f"git@github.com:{github}.git"
-    return fuente
-
-
 def _asegurar_repo(
     enc: Encargo,
     espacio: Path,
@@ -4918,7 +4927,7 @@ def _asegurar_repo(
             f"{enc.entrega.repo}; no se mezcla sobre un trabajo existente"
         )
     r = subprocess.run(
-        ["git", "clone", "--quiet", "--", _fuente_de_clon(repo), str(espacio / ".clon-tmp")],
+        ["git", "clone", "--quiet", "--", repo.fuente, str(espacio / ".clon-tmp")],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -7989,6 +7998,11 @@ def _paso_entrega_paso(
             return registro.fold(enc.id) or enc, Devolver("responsable", causa)
         marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
         return _con_espera(registro.fold(enc.id) or enc)
+    # El push de la rama funcionó: la causa de transporte de la recepción ya
+    # no está y su aviso se levanta. Si la publicación falla después, se anota
+    # la causa de la publicación.
+    _resolver_impedimentos_de_entrega(registro, enc, hora, ("entrega:ssh",))
+    enc = registro.fold(enc.id) or enc
     rama = _rama_fase(enc)
     base = (
         enc.entrega.base if nivel_objetivo(enc) in ("integrado", "desplegado")
@@ -8290,6 +8304,10 @@ def _paso_entrega_paso(
             )
             marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
             return _con_espera(registro.fold(enc.id) or enc)
+    # El PR se consultó o se abrió: la máquina sí alcanza el remoto y publica.
+    _resolver_impedimentos_de_entrega(
+        registro, enc, hora, ("entrega:github", "entrega:publicar")
+    )
     enc = registro.fold(enc.id)
     inicio_vuelta = enc
     por_releer = _deepseek_por_releer(enc) and (

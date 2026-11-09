@@ -183,8 +183,15 @@ class QuietudDelEncargo(unittest.TestCase):
 
             t = time.time()
             e = r.fold()
-            for i in range(0, 4 * _QUIETUD_S + PASO_S, PASO_S):
-                e = _barrido_quieto(r, vuelta.gh, t + i)
+            # El paso de entrega se deja fuera, como `_barrido_quieto` deja
+            # fuera el lanzamiento: así el impedimento sigue presente y se mide
+            # solo el vigilante. La resolución al publicar tiene su prueba.
+            with mock.patch(
+                "motor.encargos.ciclo._paso_entrega",
+                side_effect=lambda registro, enc, gh, hora: enc,
+            ):
+                for i in range(0, 4 * _QUIETUD_S + PASO_S, PASO_S):
+                    e = _barrido_quieto(r, vuelta.gh, t + i)
 
             self.assertEqual(len(r.eventos("quietud")), 1)
             self.assertEqual(e.estado, "terminado")

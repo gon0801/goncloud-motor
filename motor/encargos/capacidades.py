@@ -429,13 +429,16 @@ _SHA_EN_NOMBRE = re.compile(r"(?<![0-9a-f])([0-9a-f]{7,40})(?![0-9a-f])")
 
 
 def _partes_de_log(nombre: str) -> tuple[str, str]:
-    """(job, sha) de un nombre de evidencia como `bateria-abc1234-unittest.txt`."""
+    """(job, sha) de un nombre de evidencia como `bateria-abc1234-unittest.txt`.
+
+    El job es todo lo que hay antes del SHA, tal cual: `bateria-parte-1` conserva
+    su número de parte y no se confunde con `bateria-parte-3`.
+    """
     partes = nombre.rsplit(".", 1)[0]
     hallado = _SHA_EN_NOMBRE.search(partes.lower())
     if hallado is None:
         return partes, ""
-    job = partes[: hallado.start()].rstrip("-_.")
-    return re.sub(r"[-_]\d+$", "", job), hallado.group(1)
+    return partes[: hallado.start()].rstrip("-_."), hallado.group(1)
 
 
 def _resolver_log_ci(

@@ -10,6 +10,7 @@ declaran caracterización.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -103,9 +104,11 @@ class ComprobarAlRecibir(unittest.TestCase):
 
         clases = [i.clase for i in enc.impedimentos]
         self.assertIn("entrega:github", clases)
-        self.assertIn("command not found", enc.impedimento_causa)
-        # El pendiente se decide al publicar, cuando ya hay trabajo: dejarlo en
-        # la recepción cerraba el encargo vacío en el primer barrido.
+        causa = next(i.causa for i in enc.impedimentos if i.clase == "entrega:github")
+        self.assertIn("command not found", causa)
+        # El impedimento de entrega no es la causa principal: no frena el
+        # producto. El pendiente se decide al publicar, cuando ya hay trabajo.
+        self.assertEqual(enc.impedimento, "")
         self.assertEqual(enc.pendientes_entrega, ())
         self.assertEqual(
             [e for e in self.reg.eventos(enc.id) if e["kind"] == "espera"], []
@@ -127,7 +130,9 @@ class ComprobarAlRecibir(unittest.TestCase):
 
         clases = [i.clase for i in enc.impedimentos]
         self.assertIn("entrega:github", clases)
-        self.assertIn("gh auth login", enc.impedimento_causa)
+        causa = next(i.causa for i in enc.impedimentos if i.clase == "entrega:github")
+        self.assertIn("gh auth login", causa)
+        self.assertEqual(enc.impedimento, "")
         self.assertEqual(enc.pendientes_entrega, ())
 
     def test_push_rechazado_por_llave_queda_como_impedimento_al_recibir(self):
@@ -158,6 +163,70 @@ class ComprobarAlRecibir(unittest.TestCase):
         self.assertEqual(
             [e for e in self.reg.eventos(enc.id) if e["kind"] == "espera"], []
         )
+
+    def test_el_preflight_usa_el_remoto_configurado_sin_forzar_github(self):
+        tmp = Path(self._tmp.name)
+        local = tmp / "repo-local"
+        local.mkdir()
+        subprocess.run(
+            ["git", "init", "--quiet", "-b", "main", str(local)], check=True
+        )
+        remoto = "https://example.test/grupo/proyecto.git"
+        subprocess.run(
+            ["git", "-C", str(local), "remote", "add", "origin", remoto],
+            check=True,
+        )
+        registro = tmp / "git-remoto.txt"
+        real = shutil.which("git")
+        assert real is not None
+        falso = tmp / "git-falso"
+        falso.mkdir()
+        git = falso / "git"
+        git.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"ls-remote\" ]; then\n"
+            f"  echo \"$@\" >> '{registro}'\n"
+            "  echo \"fatal: could not read Username for 'https://example.test': "
+            "terminal prompts disabled\" >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            f"exec '{real}' \"$@\"\n",
+            encoding="utf-8",
+        )
+        git.chmod(0o755)
+        puerto = _Puerto(CapacidadRemota(True, True, False, "sin reglas fijas"))
+        with mock.patch.dict(
+            os.environ, {"PATH": f"{falso}{os.pathsep}{os.environ.get('PATH', '')}"}
+        ):
+            salida = self._recibir(str(local), puerto, clave="entrega-remoto")
+        enc = self.reg.fold(salida["encargo"])
+
+        self.assertIn("entrega:ssh", [i.clase for i in enc.impedimentos])
+        causa = next(i.causa for i in enc.impedimentos if i.clase == "entrega:ssh")
+        self.assertIn("example.test", causa)
+        usado = registro.read_text(encoding="utf-8")
+        self.assertIn(remoto, usado)
+        self.assertNotIn("github.com", usado)
+
+    def test_un_impedimento_de_entrega_no_es_la_causa_principal(self):
+        repo = _bare(Path(self._tmp.name))
+        puerto = _Puerto(CapacidadRemota(False, None, None, "gh: command not found"))
+        salida = self._recibir(str(repo), puerto, clave="entrega-principal")
+        enc = self.reg.fold(salida["encargo"])
+        self.assertIn("entrega:github", [i.clase for i in enc.impedimentos])
+
+        ciclo._anotar_impedimento(
+            self.reg,
+            enc,
+            "github",
+            "la herramienta fallo",
+            "reintentar la herramienta",
+            ahora_iso(),
+        )
+        enc = self.reg.fold(salida["encargo"])
+        self.assertEqual(enc.impedimento, "github")
+        self.assertEqual(enc.impedimento_causa, "la herramienta fallo")
+        self.assertIn("entrega:github", [i.clase for i in enc.impedimentos])
 
     def test_una_falla_transitoria_no_deja_impedimento(self):  # no-roja-en-base: caracterización de que una caída de red no cambia el nivel
         repo = _bare(Path(self._tmp.name))
@@ -283,6 +352,40 @@ class FallaPermanenteDeEntrega(unittest.TestCase):
                 any("permanente" in p.lower() for p in enc.pendientes_entrega)
             )
 
+    def test_un_impedimento_de_entrega_se_resuelve_al_publicar(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "resuelve-entrega", github_con_hallazgos
+            )
+            for clase in ("entrega:github", "entrega:ssh", "entrega:publicar"):
+                ciclo._anotar_impedimento(
+                    r.reg,
+                    r.fold(),
+                    clase,
+                    f"{clase}: prueba",
+                    "reintentar la operación",
+                    ahora_iso(),
+                )
+            enc = vuelta("hola")
+
+            resueltos = {
+                ev["data"]["clase"]
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "impedimento_resuelto"
+            }
+            self.assertEqual(
+                resueltos,
+                {"entrega:github", "entrega:ssh", "entrega:publicar"},
+            )
+            self.assertEqual(
+                [
+                    i.clase
+                    for i in enc.impedimentos
+                    if i.clase.startswith("entrega:")
+                ],
+                [],
+            )
+
     def test_no_commits_between_termina_en_sin_cambios(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             vuelta, r = _entrega_pr(
@@ -328,6 +431,17 @@ class LogDeCiEsperaLoQuePide(unittest.TestCase):
             self.destino,
             contexto=contexto,
         )
+
+    def test_un_job_de_la_matriz_conserva_su_numero_de_parte(self):
+        (self.raiz / f"bateria-parte-1-{self.SHA}-unittest.txt").write_text(
+            "parte 1\n", encoding="utf-8"
+        )
+        resultado = self._leer(
+            f"bateria-parte-3-{self.SHA}-unittest.txt",
+            {"pr": 7, "sha": self.SHA},
+        )
+        self.assertEqual(resultado["estado"], "error")
+        self.assertEqual(resultado["datos"]["jobs"], ["bateria-parte-1"])
 
     def test_sin_pr_todavia_es_pendiente_y_luego_llega(self):
         ruta = f"bateria-{self.SHA}-unittest.txt"

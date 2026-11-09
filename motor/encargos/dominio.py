@@ -1411,9 +1411,16 @@ def impedimento_bloquea_trabajo(e: Encargo) -> bool:
 def _con_impedimentos(
     e: Encargo, impedimentos: tuple[Impedimento, ...], hora: str = ""
 ) -> Encargo:
-    """Recompone la causa vigente a partir del conjunto. La primera por clase
-    alimenta los campos que ya leen el estado y la consulta."""
-    ordenados = tuple(sorted(impedimentos, key=lambda i: i.clase))
+    """Recompone la causa vigente a partir del conjunto. La primera causa que
+    frena el trabajo alimenta los campos que ya leen el estado y la consulta.
+    Un impedimento de entrega no es causa principal: no frena el producto y
+    puede resolverse al publicar."""
+    ordenados = tuple(
+        sorted(
+            impedimentos,
+            key=lambda i: (fuente_de_impedimento(i.clase) == "entrega", i.clase),
+        )
+    )
     if not ordenados:
         return replace(
             e,
@@ -1424,7 +1431,24 @@ def _con_impedimentos(
             impedimento_fuente="",
             hora=hora or e.hora,
         )
-    primero = ordenados[0]
+    primero = next(
+        (
+            i
+            for i in ordenados
+            if fuente_de_impedimento(i.clase) != "entrega"
+        ),
+        None,
+    )
+    if primero is None:
+        return replace(
+            e,
+            impedimentos=ordenados,
+            impedimento="",
+            impedimento_causa="",
+            impedimento_condicion="",
+            impedimento_fuente="",
+            hora=hora or e.hora,
+        )
     return replace(
         e,
         impedimentos=ordenados,
