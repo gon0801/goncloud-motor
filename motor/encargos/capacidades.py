@@ -630,6 +630,16 @@ def _log_de_check(
             "motivo": "el encargo no declara el repo del PR",
             "alternativa": "pedir la capacidad desde el buzon del encargo",
         }
+    pedido_repo = str(parametros.get("repo") or "").strip()
+    if pedido_repo and pedido_repo != repo:
+        return {
+            "estado": "error",
+            "motivo": (
+                f"el repo {pedido_repo} no es el del encargo ({repo}); "
+                "ci.log no lee otros repos"
+            ),
+            "alternativa": "pedir el log del PR del encargo",
+        }
     nombre = str(parametros.get("job") or "").strip()
     if not nombre or len(nombre) > 200:
         return {
@@ -673,18 +683,21 @@ def _log_de_check(
             "alternativa": "pedir uno de los checks reales que lista la respuesta",
         }
     textos: dict[str, tuple[str, str, str]] = {}
+    sin_log: list[str] = []
     recortado = False
     for corrida in corridas:
         etiqueta = str(corrida.get("nombre") or nombre)
         run_id = str(corrida.get("run_id") or corrida.get("run_id_corrida") or "")
         job_id = str(corrida.get("job_id") or "")
         if not run_id:
+            sin_log.append(etiqueta)
             continue
         try:
             texto = gh.log_fallido_job(repo, run_id, etiqueta, job_id)
         except Exception:  # noqa: BLE001  un job sin log no frena la respuesta
             texto = ""
         if not texto:
+            sin_log.append(etiqueta)
             continue
         if len(texto.encode("utf-8", errors="replace")) > MAX_LOG:
             texto = texto.encode("utf-8", errors="replace")[:MAX_LOG].decode(
@@ -700,7 +713,12 @@ def _log_de_check(
                 f"GitHub no devolvio el log del check {nombre!r}; puede que no "
                 "exista o que todavia no tenga log"
             ),
-            "datos": {"pr": pr, "sha": sha, "check": nombre},
+            "datos": {
+                "pr": pr,
+                "sha": sha,
+                "check": nombre,
+                "sin_log": sin_log,
+            },
             "alternativa": (
                 "pedir otro check o volver a pedirlo cuando el check tenga "
                 "resultado"
@@ -718,6 +736,8 @@ def _log_de_check(
             cabeza += f"\ncopia literal: {copia}"
         partes.append(cabeza + "\n" + _recorte_log_job(texto, etiqueta, copia))
     texto_respuesta = "\n\n".join(partes)
+    if sin_log:
+        texto_respuesta += "\n\n[sin log: " + ", ".join(sin_log) + "]"
     if len(texto_respuesta.encode("utf-8", errors="replace")) > MAX_TEXTO:
         texto_respuesta = texto_respuesta.encode("utf-8", errors="replace")[
             :MAX_TEXTO
@@ -738,6 +758,7 @@ def _log_de_check(
             "texto": texto_respuesta,
             "bytes": bytes_totales,
             "recortado": recortado,
+            "sin_log": sin_log,
         },
         "evidencia": {
             "tipo": "ci_log",
@@ -748,6 +769,7 @@ def _log_de_check(
             "copias": copias,
             "bytes": bytes_totales,
             "recortado": recortado,
+            "sin_log": sin_log,
         },
     }
 

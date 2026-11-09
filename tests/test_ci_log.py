@@ -155,13 +155,49 @@ class _CiLog(unittest.TestCase):
         self.assertIn("no es el del encargo", r["motivo"])
         self.assertEqual(gh.llamadas, [])
 
-    def test_usa_el_repo_del_encargo_y_no_uno_del_parametro(self):
+    def test_rechaza_un_repo_ajeno_al_encargo(self):
         gh = GhDeMentira()
 
         r = self.pedir(gh, {"repo": "otro/r"})
 
+        self.assertEqual(r["estado"], "error", r)
+        self.assertIn("no es el del encargo", r["motivo"])
+        self.assertIn("no lee otros repos", r["motivo"])
+        self.assertEqual(gh.llamadas, [])
+
+    def test_acepta_el_repo_del_encargo_si_llega(self):
+        gh = GhDeMentira()
+
+        r = self.pedir(gh, {"repo": "o/r"})
+
         self.assertEqual(r["estado"], "ok", r)
         self.assertEqual(gh.llamadas_de("checks")[0][1], "o/r")
+
+    def test_una_matriz_avisa_de_las_partes_sin_log(self):
+        corridas = [
+            {
+                "nombre": "bateria (1, 2)",
+                "run_id": "77",
+                "job_id": "11",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "nombre": "bateria (2, 2)",
+                "run_id": "77",
+                "job_id": "12",
+                "status": "completed",
+                "conclusion": "failure",
+            },
+        ]
+        gh = GhDeMentira(corridas=corridas, logs={"bateria (1, 2)": "parte uno\n"})
+
+        r = self.pedir(gh, {"job": "bateria"})
+
+        self.assertEqual(r["estado"], "ok", r)
+        self.assertEqual(r["datos"]["checks"], ["bateria (1, 2)"])
+        self.assertEqual(r["datos"]["sin_log"], ["bateria (2, 2)"])
+        self.assertIn("sin log", r["datos"]["texto"])
 
     def test_sin_pr_del_encargo_no_lee_nada(self):
         gh = GhDeMentira()
