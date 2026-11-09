@@ -4,8 +4,8 @@ from __future__ import annotations
 from motor.io import escribir_texto, leer_json, leer_texto
 
 import json
-import math
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -30,10 +30,6 @@ class CuentaNoDisponible(RuntimeError):
     def __init__(self, agente: str, motivo: str):
         self.agente = agente
         super().__init__(f"Cuenta de {agente}: {motivo}")
-
-
-class SesionAusente(RuntimeError):
-    """La sesión no existe en el host; no es un fallo de lectura."""
 
 
 def _guardar(path: Path, datos: dict) -> None:
@@ -90,55 +86,6 @@ def _claude_existe() -> Lectura:
         "no se pudo consultar el Llavero"
         + (f": {detalle}" if detalle else "")
     )
-
-
-def _claude() -> dict:
-    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-    if token:
-        if not token.startswith("sk-ant-oat"):
-            raise RuntimeError("Claude necesita un token OAuth de suscripcion")
-        return {"accessToken": token, "scopes": ["user:inference"]}
-    home = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
-    archivo = home / ".credentials.json"
-    if archivo.is_file():
-        datos = leer_json(archivo)
-    elif sys.platform == "darwin":
-        resultado = subprocess.run(
-            [
-                "/usr/bin/security",
-                "find-generic-password",
-                "-s",
-                "Claude Code-credentials",
-                "-w",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        detalle = (resultado.stderr or resultado.stdout or "").strip()[-300:]
-        if resultado.returncode:
-            if _sin_elemento(detalle):
-                raise SesionAusente("no hay sesión de Claude en el Llavero del host")
-            raise RuntimeError(
-                "no se pudo leer la sesión del Llavero"
-                + (f": {detalle}" if detalle else "")
-            )
-        datos = json.loads(resultado.stdout)
-    else:
-        raise SesionAusente("no hay sesión de Claude en el host")
-    cuenta = datos.get("claudeAiOauth", {})
-    if not cuenta.get("accessToken") or "user:inference" not in cuenta.get(
-        "scopes", []
-    ):
-        raise RuntimeError(
-            "Claude necesita OAuth de suscripcion con acceso a inferencia"
-        )
-    if cuenta.get("expiresAt") is not None and not math.isfinite(
-        float(cuenta["expiresAt"])
-    ):
-        raise RuntimeError("el vencimiento OAuth de Claude es invalido")
-    return cuenta
 
 
 def _qwen() -> tuple[dict, str]:
@@ -241,8 +188,6 @@ def disponible(agente: str) -> Lectura:
         return Pendiente("")
     try:
         return Leido(lector())
-    except SesionAusente:
-        return Pendiente("")
     except (
         OSError,
         ValueError,
@@ -263,7 +208,7 @@ def leer_cuenta(agente: str):
             from .autenticacion_muse import cuenta_muse
 
             return cuenta_muse(exportar=True)
-        return {"claude": _claude, "qwen": _qwen, "opencode": _opencode, "grok": _grok}[
+        return {"qwen": _qwen, "opencode": _opencode, "grok": _grok}[
             agente
         ]()
     except RuntimeError as exc:
@@ -315,37 +260,19 @@ def preparar(agente: str, runtime: Path, cmd: list[str], env: dict[str, str]) ->
             GROK_HOME=str(runtime / ".grok"), MOTOR_GROK_ACCESS_EXPIRES_AT=str(expira)
         )
     elif agente == "claude":
-        cuenta = leer_cuenta(agente)
-        expira = float(cuenta.get("expiresAt") or 0) / 1000
-        if expira and expira <= time.time():
-            inicio_flags = (
-                cmd.index("--safe-mode")
-                if "--safe-mode" in cmd
-                else cmd.index("--model")
-            )
-            try:
-                subprocess.run(
-                    [*cmd[:inicio_flags], "--print", "--safe-mode"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=45,
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                raise CuentaNoDisponible(
-                    agente, "no se pudo renovar la suscripcion en el host"
-                ) from None
-            cuenta = leer_cuenta(agente)
-            expira = float(cuenta.get("expiresAt") or 0) / 1000
-            if expira and expira <= time.time():
-                raise CuentaNoDisponible(
-                    agente,
-                    "el cliente oficial no pudo renovar el acceso de suscripcion en el host",
-                )
+        # El CLI lee su propia sesión del Llavero. Cuando macOS renueva la
+        # llave, la lectura del secreto desde el motor (`security -w`) deja de
+        # estar permitida, pero el CLI sí puede usarla. Por eso aquí no se lee
+        # el secreto ni se exporta: solo se copia la copia en archivo si existe.
+        home = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+        archivo = home / ".credentials.json"
+        destino = runtime / ".claude/.credentials.json"
+        if archivo.is_file() and archivo.resolve() != destino.resolve():
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(archivo, destino)
+            destino.chmod(0o600)
         env.update(
             CLAUDE_CONFIG_DIR=str(runtime / ".claude"),
-            CLAUDE_CODE_OAUTH_TOKEN=cuenta["accessToken"],
             DISABLE_AUTOUPDATER="1",
             DISABLE_TELEMETRY="1",
             DISABLE_ERROR_REPORTING="1",
@@ -356,8 +283,6 @@ def preparar(agente: str, runtime: Path, cmd: list[str], env: dict[str, str]) ->
             # (motor/encargos/agentes.py, SIN_SEGUNDO_PLANO).
             **SIN_SEGUNDO_PLANO,
         )
-        if expira:
-            env["MOTOR_CLAUDE_ACCESS_EXPIRES_AT"] = str(expira)
         _guardar(
             runtime / ".claude/settings.json",
             {"skipDangerousModePermissionPrompt": True},

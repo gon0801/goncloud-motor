@@ -2,13 +2,18 @@
 
 La tabla vive en `motor/encargos/politica.py`; `AGENTS.md` se genera desde
 ella. Los topes que ya funcionaban se prueban como caracterizaciones. La
-lectura de la sesión de un modelo y las restricciones estructuradas son el
-arreglo: sus pruebas fallan en la base en la aserción que nombra el defecto.
+lectura de la sesión de un modelo, el relevo autorizado y las restricciones
+estructuradas son el arreglo: sus pruebas fallan en la base en la aserción que
+nombra el defecto, no por una importación ni por una firma.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
+import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -17,33 +22,16 @@ from functools import partial
 from pathlib import Path
 from unittest import mock
 
-from motor.encargos import ciclo
+from motor.encargos import agentes, ciclo, cli, suscripciones
 from motor.encargos.ciclo import ahora_iso
 from motor.encargos.dominio import Hallazgo, bloqueantes_abiertos
-from tests.dobles import github_por_numero
+from tests.dobles import github_con_hallazgos, github_por_numero
 from tests.test_flujo_revisiones import _entrega_pr
 
 
-def _politica():
-    try:
-        from motor.encargos import politica
-    except ImportError as exc:  # noqa: BLE001
-        raise AssertionError(
-            "falta motor/encargos/politica.py: las decisiones no tienen una "
-            "sola fuente"
-        ) from exc
-    return politica
-
-
-def _lectura():
-    try:
-        from motor.encargos import lectura
-    except ImportError as exc:  # noqa: BLE001
-        raise AssertionError(
-            "falta motor/encargos/lectura.py: la lectura no está separada de "
-            "la decisión"
-        ) from exc
-    return lectura
+RAIZ = Path(__file__).resolve().parents[1]
+OPUS = "anthropic/claude-opus-5-5"
+ASTRA = "openai/gpt-6-astra"
 
 
 def _ids(e) -> list[str]:
@@ -62,59 +50,158 @@ def _terminado(caso, tmp: str, clave: str):
     return vuelta, r, e
 
 
-class TablaUnica(unittest.TestCase):
-    def test_agents_se_genera_desde_politica(self):
-        politica = _politica()
-        raiz = Path(__file__).resolve().parents[1]
-        publicado = politica.tabla_de_agents(
-            (raiz / "AGENTS.md").read_text(encoding="utf-8")
+def _revisor(enc):
+    return replace(
+        enc,
+        rol="revisor",
+        agentes=("claude",),
+        modelos_solicitados=(("revisor", "claude", OPUS),),
+    )
+
+
+def _lanzar(r, enc):
+    """El lanzador real de producción para el rol revisor."""
+    antes = len(r.reg.eventos(r.enc))
+    resultado = cli.lanzar_de_ruta(r.reg, ())(enc, Path("/dev/null"), r.espacio, "s-1")
+    motivos = [
+        ev["data"]["motivo"]
+        for ev in r.reg.eventos(r.enc)[antes:]
+        if ev["kind"] == "espera"
+    ]
+    return resultado, (motivos[-1] if motivos else "")
+
+
+def _security(modo: str):
+    """Un `security` falso: renovada, falta o ilegible.
+
+    Los demás subprocess (git del banco) siguen su camino real.
+    """
+    real = subprocess.run
+    aplicacion = (
+        "security: SecKeychainItemCopyContent: User interaction is not allowed."
+    )
+    ausente = (
+        "security: SecKeychainSearchCopyNext: The specified item could not be "
+        "found in the keychain."
+    )
+
+    def correr(argv, **kw):
+        if not argv or Path(str(argv[0])).name != "security":
+            return real(argv, **kw)
+        if "-w" in argv:
+            if modo in ("renovada", "falta", "ilegible"):
+                return mock.Mock(returncode=44, stdout="", stderr=aplicacion)
+            return mock.Mock(returncode=0, stdout="{}", stderr="")
+        if modo == "renovada":
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        if modo == "falta":
+            return mock.Mock(returncode=44, stdout="", stderr=ausente)
+        return mock.Mock(returncode=44, stdout="", stderr=aplicacion)
+
+    return correr
+
+
+def _entorno(tmp: Path) -> dict:
+    return {
+        "HOME": str(tmp),
+        "CLAUDE_CONFIG_DIR": str(tmp / "claude"),
+        "CODEX_HOME": str(tmp / "codex"),
+    }
+
+
+class _SesionFalsa(unittest.TestCase):
+    """Un host con Claude y Codex, sin leer el Llavero real."""
+
+    def host(self, modo: str):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "codex").mkdir()
+        (tmp / "codex" / "auth.json").write_text(
+            json.dumps({"auth_mode": "chatgpt"}), encoding="utf-8"
         )
-        self.assertEqual(publicado, politica.tabla_markdown())
+        parches = [
+            mock.patch.dict("os.environ", _entorno(tmp), clear=True),
+            mock.patch.object(agentes, "resolver_binario", return_value="/usr/bin/true"),
+            mock.patch.object(suscripciones.sys, "platform", "darwin"),
+            mock.patch.object(
+                suscripciones.subprocess, "run", side_effect=_security(modo)
+            ),
+        ]
+        for parche in parches:
+            parche.start()
+            self.addCleanup(parche.stop)
+        return tmp
+
+
+class TablaUnica(unittest.TestCase):
+    def test_la_tabla_de_agents_se_genera_y_el_check_la_protege(self):
+        corrida = subprocess.run(
+            [sys.executable, str(RAIZ / "tools" / "calidad.py"), "politica"],
+            cwd=RAIZ,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(
+            corrida.returncode,
+            0,
+            "la tabla de AGENTS.md no se genera desde una sola fuente: "
+            + (corrida.stderr or corrida.stdout).strip(),
+        )
 
     def test_los_topes_no_viven_en_ciclo(self):
-        politica = _politica()
-        self.assertEqual(politica.TOPE_DEEPSEEK_MIN, 30)
-        self.assertFalse(hasattr(ciclo, "_TOPE_DEEPSEEK_MIN"))
-        self.assertFalse(hasattr(ciclo, "_SONDEO_CERRADOS_TOPE_POR_PASADA"))
-        self.assertFalse(hasattr(ciclo, "_SONDEO_DEEPSEEK_VENTANA_S"))
+        for nombre in (
+            "_TOPE_DEEPSEEK_MIN",
+            "_SONDEO_CERRADOS_TOPE_POR_PASADA",
+            "_SONDEO_DEEPSEEK_VENTANA_S",
+            "_SONDEO_DEEPSEEK_GRACIA_S",
+            "_SONDEO_DEEPSEEK_RAPIDO_S",
+            "_RELECTURA_DEEPSEEK_CERRADO_S",
+        ):
+            self.assertFalse(
+                hasattr(ciclo, nombre),
+                f"el tope suelto {nombre} sigue en ciclo.py; se lee de la tabla",
+            )
+
+    def _con_titulo(self, tmp: str, clave: str, titulo: str):
+        vuelta, r = _entrega_pr(
+            self, tmp, clave, partial(github_con_hallazgos, titulos=(titulo,))
+        )
+        return vuelta, r
 
     def test_un_hallazgo_que_pide_cambiar_la_regla_cita_la_fila(self):
-        politica = _politica()
-        h = Hallazgo(
-            id="F1",
-            gravedad="bloqueante",
-            criterio="operativo",
-            titulo="bajar el tope de DeepSeek de 30 a 15 minutos",
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._con_titulo(
+                tmp, "politica-cambio", "bajar el tope de DeepSeek de 30 a 15 minutos"
+            )
+            e = vuelta("uno")
+        self.assertEqual(_ids(e), [])
+        razones = [x[2] for x in e.fuera_de_alcance]
+        self.assertTrue(
+            any("regla del propietario" in razon for razon in razones), razones
         )
-        razon = politica.hallazgo_contra_politica(h)
-        self.assertIn("regla del propietario", razon)
-        self.assertIn("DeepSeek", razon)
 
-    def test_un_numero_que_no_es_una_propuesta_no_saca_el_hallazgo(self):
-        politica = _politica()
-        h = Hallazgo(
-            id="F3",
-            gravedad="bloqueante",
-            criterio="operativo",
-            titulo=(
+    def test_un_hallazgo_que_dice_que_el_codigo_incumple_sigue_siendo_normal(self):  # no-roja-en-base: caracterización: un incumplimiento real ya bloqueaba en la base
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._con_titulo(
+                tmp,
+                "politica-incumple",
+                "el sondeo de cerrados hace 10 consultas por pasada; debería "
+                "ser 5 como dice la tabla, incumpliendo la regla",
+            )
+            e = vuelta("uno")
+        self.assertNotEqual(_ids(e), [])
+
+    def test_un_numero_que_no_es_una_propuesta_no_saca_el_hallazgo(self):  # no-roja-en-base: caracterización: una mención numérica ya bloqueaba en la base
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = self._con_titulo(
+                tmp,
+                "politica-redaccion",
                 "cambiar la redacción del tope de DeepSeek de 30 min en la "
-                "línea 42 del README"
-            ),
-        )
-        self.assertEqual(politica.hallazgo_contra_politica(h), "")
-
-    def test_un_hallazgo_que_dice_que_el_codigo_incumple_sigue_siendo_normal(self):
-        politica = _politica()
-        h = Hallazgo(
-            id="F2",
-            gravedad="bloqueante",
-            criterio="comportamiento",
-            titulo=(
-                "el código no respeta el tope de DeepSeek de 30 min: hoy "
-                "espera 60"
-            ),
-        )
-        self.assertEqual(politica.hallazgo_contra_politica(h), "")
+                "línea 42 del README",
+            )
+            e = vuelta("uno")
+        self.assertNotEqual(_ids(e), [])
 
 
 class LimitesDeLaPolitica(unittest.TestCase):
@@ -217,105 +304,61 @@ class LimitesDeLaPolitica(unittest.TestCase):
             self.assertEqual(e.estado, "terminado")
 
 
-class LecturaDeLaSesion(unittest.TestCase):
-    _ERROR_MACOS = (
-        "security: SecKeychainSearchCopyNext: The specified item could not be "
-        "found in the keychain."
-    )
+class LecturaDeLaSesion(_SesionFalsa):
+    def test_tras_renovar_la_sesion_el_motor_lanza_claude(self):
+        self.host("renovada")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            _, r = _entrega_pr(
+                self, tmp, "politica-renueva", github_por_numero
+            )
+            resultado, motivo = _lanzar(r, _revisor(r.fold()))
+        self.assertIsNotNone(
+            resultado,
+            "después de renovar la sesión el motor no lanza a Claude: " + motivo,
+        )
+        self.assertEqual(resultado[1]["agente"], "claude")
 
-    def _seguridad(self, falla_con_w: bool):
-        def correr(argv, **kw):
-            del kw
-            if falla_con_w and "-w" in argv:
-                return mock.Mock(returncode=44, stdout="", stderr=self._ERROR_MACOS)
-            if not falla_con_w and "-w" not in argv:
-                return mock.Mock(returncode=44, stdout="", stderr=self._ERROR_MACOS)
-            return mock.Mock(returncode=0, stdout="", stderr="")
+    def test_tras_renovar_la_sesion_el_lanzamiento_no_lee_el_secreto(self):
+        self.host("renovada")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            env: dict[str, str] = {}
+            try:
+                suscripciones.preparar(
+                    "claude", Path(tmp) / "rt", ["claude", "--model", "x"], env
+                )
+            except suscripciones.CuentaNoDisponible as exc:
+                self.fail(
+                    "después de renovar la sesión, el lanzamiento sigue leyendo "
+                    f"el secreto del Llavero: {exc}"
+                )
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
 
-        return correr
-
-    def test_una_sesion_renovada_sigue_disponible_sin_leer_el_secreto(self):
-        lectura = _lectura()
-        from motor.encargos import suscripciones
-
-        with tempfile.TemporaryDirectory() as tmp:
-            with (
-                mock.patch.object(Path, "home", return_value=Path(tmp)),
-                mock.patch.dict("os.environ", {}, clear=True),
-                mock.patch.object(
-                    suscripciones.subprocess, "run",
-                    side_effect=self._seguridad(falla_con_w=True),
-                ),
-                mock.patch.object(suscripciones.sys, "platform", "darwin"),
-            ):
-                sesion = suscripciones.disponible("claude")
-        self.assertIsInstance(sesion, lectura.Leido)
+    def test_una_sesion_ilegible_relega_a_astra(self):
+        self.host("ilegible")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            _, r = _entrega_pr(
+                self, tmp, "politica-relevo", github_por_numero
+            )
+            resultado, motivo = _lanzar(r, _revisor(r.fold()))
+        self.assertIsNotNone(
+            resultado,
+            "una sesión ilegible de Opus no esperó a una persona ni relevó: "
+            + motivo,
+        )
+        self.assertEqual(resultado[1]["agente"], "codex")
+        self.assertEqual(resultado[1]["modelo"], ASTRA)
+        self.assertNotIn("no tiene runtime", motivo)
 
     def test_una_sesion_que_falta_sigue_diciendo_que_falta(self):
-        lectura = _lectura()
-        from motor.encargos import suscripciones
-
-        with tempfile.TemporaryDirectory() as tmp:
-            with (
-                mock.patch.object(Path, "home", return_value=Path(tmp)),
-                mock.patch.dict("os.environ", {}, clear=True),
-                mock.patch.object(
-                    suscripciones.subprocess, "run",
-                    side_effect=self._seguridad(falla_con_w=False),
-                ),
-                mock.patch.object(suscripciones.sys, "platform", "darwin"),
-            ):
-                sesion = suscripciones.disponible("claude")
-        self.assertIsInstance(sesion, lectura.Pendiente)
-
-    def test_la_espera_nombra_la_causa_real_y_no_el_texto_viejo(self):
-        lectura = _lectura()
-        from motor.encargos import cli
-
-        motivo = cli._motivo_de_sesion(
-            "claude", lectura.Error("la lectura del Llavero fue revocada")
-        )
-        self.assertIn("no pude leer la sesión de Claude del Llavero", motivo)
-        self.assertIn("revocada", motivo)
+        self.host("falta")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            _, r = _entrega_pr(
+                self, tmp, "politica-falta", github_por_numero
+            )
+            resultado, motivo = _lanzar(r, _revisor(r.fold()))
+        self.assertIsNone(resultado)
+        self.assertIn("no hay sesión de Claude en este host", motivo)
         self.assertNotIn("no tiene runtime", motivo)
-        falta = cli._motivo_de_sesion("claude", lectura.Pendiente(""))
-        self.assertEqual(falta, "no hay sesión de Claude en este host")
-
-    def test_opus_ilegible_relega_a_astra(self):
-        lectura = _lectura()
-        from motor.encargos import cli
-
-        autorizados = {("claude"): ("anthropic/claude-opus-5-5",)}
-        lecturas = {"claude": lectura.Error("revocado")}
-        with mock.patch.object(
-            cli, "leer_disponible", return_value=lectura.Leido(True)
-        ):
-            relevo = cli._relevo_para_sesion(
-                "revisor",
-                ("claude", "anthropic/claude-opus-5-5"),
-                autorizados,
-                lecturas,
-                None,
-            )
-        self.assertEqual(relevo, ("codex", "openai/gpt-6-astra"))
-
-    def test_un_modelo_que_de_verdad_falta_no_se_releva(self):
-        lectura = _lectura()
-        from motor.encargos import cli
-
-        autorizados = {("claude"): ("anthropic/claude-opus-5-5",)}
-        lecturas = {"claude": lectura.Pendiente("")}
-        with mock.patch.object(
-            cli, "leer_disponible", return_value=lectura.Leido(True)
-        ):
-            relevo = cli._relevo_para_sesion(
-                "revisor",
-                ("claude", "anthropic/claude-opus-5-5"),
-                autorizados,
-                lecturas,
-                None,
-            )
-        self.assertIsNone(relevo)
 
 
 class RestriccionesEstructuradas(unittest.TestCase):
@@ -356,11 +399,20 @@ class RestriccionesEstructuradas(unittest.TestCase):
             self.assertEqual(enc.permisos, ("motor/encargos/**",))
             self.assertEqual(enc.prohibiciones, ("docs/**",))
 
-    def test_una_prohibicion_saca_el_archivo_que_cubre(self):
+    def _firma(self):
         from motor.encargos.comprobacion import (
             hallazgo_fuera_de_alcance_por_restriccion,
         )
 
+        return hallazgo_fuera_de_alcance_por_restriccion
+
+    def test_una_prohibicion_saca_el_archivo_que_cubre(self):
+        fn = self._firma()
+        self.assertIn(
+            "prohibiciones",
+            inspect.signature(fn).parameters,
+            "la restricción estructurada no se compara por ruta: falta --prohibir",
+        )
         h = Hallazgo(
             id="F1",
             gravedad="bloqueante",
@@ -368,22 +420,16 @@ class RestriccionesEstructuradas(unittest.TestCase):
             titulo="token en el log",
             ancla="motor/integraciones/cli.py:176",
         )
-        try:
-            razon = hallazgo_fuera_de_alcance_por_restriccion(
-                (), h, prohibiciones=("motor/integraciones/**",)
-            )
-        except TypeError:
-            self.fail(
-                "la restricción estructurada no se compara por ruta: falta "
-                "--prohibir/--permitir"
-            )
+        razon = fn((), h, prohibiciones=("motor/integraciones/**",))
         self.assertIn("prohíbe tocar motor/integraciones/**", razon)
 
     def test_una_lista_blanca_saca_lo_que_no_cubre(self):
-        from motor.encargos.comprobacion import (
-            hallazgo_fuera_de_alcance_por_restriccion,
+        fn = self._firma()
+        self.assertIn(
+            "permisos",
+            inspect.signature(fn).parameters,
+            "la lista blanca estructurada no se compara por ruta: falta --permitir",
         )
-
         h = Hallazgo(
             id="F2",
             gravedad="bloqueante",
@@ -391,15 +437,7 @@ class RestriccionesEstructuradas(unittest.TestCase):
             titulo="token en el log",
             ancla="motor/integraciones/cli.py:176",
         )
-        try:
-            razon = hallazgo_fuera_de_alcance_por_restriccion(
-                (), h, permisos=("docs/**",)
-            )
-        except TypeError:
-            self.fail(
-                "la lista blanca estructurada no se compara por ruta: falta "
-                "--permitir"
-            )
+        razon = fn((), h, permisos=("docs/**",))
         self.assertIn("limita el cambio a docs/**", razon)
 
 

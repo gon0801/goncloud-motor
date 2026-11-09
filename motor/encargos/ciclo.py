@@ -98,7 +98,10 @@ from .sesion import (
 from .lectura import Error as ErrorLectura
 from .lectura import Leido, Pendiente as PendienteLectura
 from .politica import (
+    CERRADOS_GRACIA_S,
     CERRADOS_POR_PASADA,
+    CERRADOS_RELECTURA_S,
+    CERRADOS_SONDEO_RAPIDO_S,
     CERRADOS_VENTANA_S,
     TOPE_DEEPSEEK_MIN,
     hallazgo_contra_politica,
@@ -119,15 +122,6 @@ _QUIETUD_VUELTAS = 3
 _RELECTURA_DEEPSEEK_S = 60
 _AVISO_LECTURA_DEEPSEEK_S = 600
 _REINTENTO_FORZADO_S = 15
-# El sondeo de un encargo cerrado se limita a 7 días desde su cierre: los
-# primeros 60 minutos relee cada minuto y después cada 30 minutos. Los encargos
-# cerrados antes de que este cambio empezara a observar no se sondean, para no
-# golpear GitHub con los encargos viejos al desplegar. La gracia cubre la pausa
-# de un supervisor entre el cierre y su primera pasada (un reinicio, una caída),
-# no los encargos de días atrás.
-_SONDEO_DEEPSEEK_RAPIDO_S = 60 * 60
-_SONDEO_DEEPSEEK_GRACIA_S = 30 * 60
-_RELECTURA_DEEPSEEK_CERRADO_S = 30 * 60
 _TOPE_LOG_JOB = 80
 _LIMITE_CUERPO_PR = 65_536
 _NOTA_CUERPO_RECORTADO = (
@@ -5762,7 +5756,7 @@ def _revisar_deepseek_del_cerrado(
         marca["desde"] = epoch
         _marcar_deepseek_cerrado(registro, enc, marca, hora)
     cierre = _cierre_epoch(registro, enc)
-    if cierre and cierre < marca["desde"] - _SONDEO_DEEPSEEK_GRACIA_S:
+    if cierre and cierre < marca["desde"] - CERRADOS_GRACIA_S:
         return enc
     edad = max(0.0, epoch - cierre) if cierre else 0.0
     if edad >= CERRADOS_VENTANA_S:
@@ -5773,8 +5767,8 @@ def _revisar_deepseek_del_cerrado(
     cambio = False
     espaciado = (
         _RELECTURA_DEEPSEEK_S
-        if edad < _SONDEO_DEEPSEEK_RAPIDO_S
-        else _RELECTURA_DEEPSEEK_CERRADO_S
+        if edad < CERRADOS_SONDEO_RAPIDO_S
+        else CERRADOS_RELECTURA_S
     )
     for fase in fases:
         sha = fase.pr_sha

@@ -16,6 +16,11 @@ from dataclasses import dataclass
 TOPE_DEEPSEEK_MIN = 30
 CERRADOS_VENTANA_S = 7 * 24 * 60 * 60
 CERRADOS_POR_PASADA = 5
+# Cadencia del sondeo de cerrados: rápido la primera hora, espaciado después y
+# una gracia para la pausa del supervisor entre el cierre y su primera pasada.
+CERRADOS_SONDEO_RAPIDO_S = 60 * 60
+CERRADOS_GRACIA_S = 30 * 60
+CERRADOS_RELECTURA_S = 30 * 60
 SIN_TOPE_RONDAS = True
 CI_BLOQUEA_MERGE = False
 # Critical, High y Medium bloquean mientras estén dentro del alcance del pedido.
@@ -38,7 +43,7 @@ class Fila:
     decision: str
     comportamiento: str
     claves: tuple[str, ...] = ()
-    valor_numerico: int | None = None
+    valores_numericos: tuple[int, ...] = ()
 
 
 FILAS: tuple[Fila, ...] = (
@@ -49,7 +54,7 @@ FILAS: tuple[Fila, ...] = (
         decision="David, 6-nov",
         comportamiento="a los 29 min espera; a los 31 min omite con la causa escrita",
         claves=("deepseek", "tope", "revisión externa", "revision externa"),
-        valor_numerico=TOPE_DEEPSEEK_MIN,
+        valores_numericos=(TOPE_DEEPSEEK_MIN,),
     ),
     Fila(
         id="cerrados",
@@ -58,7 +63,7 @@ FILAS: tuple[Fila, ...] = (
         decision="David, 6-nov",
         comportamiento="a los 6 días sondea; a los 8 no; 5 consultas entran y la 6.ª queda para la pasada siguiente",
         claves=("cerrado", "sondeo", "días", "dias"),
-        valor_numerico=CERRADOS_VENTANA_S // 86400,
+        valores_numericos=(CERRADOS_VENTANA_S // 86400, CERRADOS_POR_PASADA),
     ),
     Fila(
         id="ci_no_compuerta",
@@ -200,7 +205,8 @@ _SOLICITA_CAMBIO = (
     "lower", "raise", "change", "instead of",
 )
 _INCUMPLE = (
-    "incumple", "no cumple", "no respeta", "no se respeta", "no aplica",
+    "incumple", "incumplen", "incumpliendo", "incumplimiento", "no cumple",
+    "no respeta", "no se respeta", "no aplica",
     "no se aplica", "no implementa", "no está implementado", "no esta implementado",
     "difiere de", "falta", "faltan", "ignora", "bug", "does not", "doesn't",
     "not applied", "not implemented", "ignores",
@@ -252,11 +258,11 @@ def hallazgo_contra_politica(hallazgo) -> str:
         return ""
     propuestas = _propuestas(texto)
     for fila in FILAS:
-        if fila.valor_numerico is None:
+        if not fila.valores_numericos:
             continue
         if not any(clave in texto for clave in fila.claves):
             continue
-        if any(n != fila.valor_numerico for n in propuestas):
+        if any(n not in fila.valores_numericos for n in propuestas):
             return (
                 "el hallazgo pide cambiar el valor de una regla del propietario: "
                 f"«{fila.regla}» = {fila.valor} ({fila.decision}); una decisión "
