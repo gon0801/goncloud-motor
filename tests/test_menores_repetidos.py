@@ -484,6 +484,129 @@ class CandadosDeSecretos(unittest.TestCase):
             )
             self.assertIn("clave nueva en la allowlist", salida.stderr)
 
+    def test_una_allowlist_de_regla_en_tabla_inline_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto
+                + "\n[[rules]]\nid = 'generic-api-key'\n"
+                "allowlists = [ { paths = ['''motor/.*'''] } ]\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "una allowlist de regla inline agrega una ruta nueva",
+            )
+            self.assertIn("entrada nueva en la allowlist", salida.stderr)
+
+    def test_una_allowlist_de_regla_inline_con_stopwords_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto
+                + "\n[[rules]]\nid = 'generic-api-key'\n"
+                "allowlist = { stopwords = ['AKIA'] }\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
+            self.assertIn("clave nueva en la allowlist", salida.stderr)
+
+    def test_una_allowlist_raiz_con_clave_punto_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto + "\nallowlist.stopwords = ['AKIA']\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(salida.returncode, 1, salida.stdout + salida.stderr)
+            self.assertIn("clave nueva en la allowlist", salida.stderr)
+
+    def test_una_allowlist_de_regla_inline_con_excepcion_pasa(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / ".gitleaks.toml"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto
+                + "\n[[rules]]\nid = 'generic-api-key'\n"
+                "allowlists = [ { paths = ['''motor/.*'''] } ]  "
+                "# excepcion: revisado por David 2026-11-09\n",
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(salida.returncode, 0, salida.stderr)
+
+    def test_un_token_inventado_que_apaga_la_bateria_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / "motor" / "encargos" / "trabajos_ci.py"
+            texto = ruta.read_text(encoding="utf-8")
+            texto = texto.replace(
+                "    if not m:\n        return ()",
+                '    if "[ligero]" in str(mensaje or ""):\n'
+                '        return ("ligero",)\n'
+                "    if not m:\n        return ()",
+                1,
+            )
+            texto = texto.replace(
+                "correr = por_rutas | agregados",
+                'correr = set() if "ligero" in extra else (por_rutas | agregados)',
+                1,
+            )
+            ruta.write_text(texto, encoding="utf-8")
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "un job inventado no puede decidir la seleccion",
+            )
+            self.assertIn("_jobs_extra", salida.stderr)
+
+    def test_leer_git_log_fuera_de_mensaje_de_git_falla(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            raiz = _arbol_temporal(tmp)
+            ruta = raiz / "motor" / "encargos" / "trabajos_ci.py"
+            texto = ruta.read_text(encoding="utf-8")
+            ruta.write_text(
+                texto.replace(
+                    "        extra = _jobs_extra(mensaje_de_git(head)) if head else ()",
+                    '        if "[ligero]" in _git("log", "-1", "--format=%B", head):\n'
+                    "            return _calcular((), ())\n"
+                    "        extra = _jobs_extra(mensaje_de_git(head)) if head else ()",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            salida = self._revisar(raiz)
+
+            self.assertEqual(
+                salida.returncode,
+                1,
+                "nada fuera de mensaje_de_git puede leer el historial",
+            )
+            self.assertIn("lee el historial fuera de mensaje_de_git", salida.stderr)
+
     def test_la_regla_de_secretos_en_un_comentario_no_cuenta(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             raiz = _arbol_temporal(tmp)

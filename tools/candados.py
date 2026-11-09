@@ -112,6 +112,64 @@ def _linea_anotada(lineas: list[str], clave: str) -> bool:
     return any(clave in linea and _anotada(linea) for linea in lineas)
 
 
+CLAVES_CON_EFECTO = frozenset(
+    {"paths", "regexes", "stopwords", "commits", "condition", "targetRules"}
+)
+
+
+def _lista(valor) -> list:
+    if isinstance(valor, str):
+        return [valor]
+    if isinstance(valor, (list, tuple)):
+        return list(valor)
+    return []
+
+
+def _valores_de_allowlist(bloque: dict) -> set[str]:
+    valores: set[str] = set()
+    for clave in (
+        "paths", "regexes", "targetRules", "stopwords", "commits", "condition"
+    ):
+        valores.update(str(v) for v in _lista(bloque.get(clave)))
+    return valores
+
+
+def _hay_excepcion(lineas: list[str], valores: set[str]) -> bool:
+    """Una excepcion anotada en una linea que nombra lo que se agrega."""
+    limpios = {v for v in valores if v}
+    if not limpios:
+        return False
+    return any(
+        _anotada(linea) and any(v in linea for v in limpios) for linea in lineas
+    )
+
+
+def _allowlists_de(config: dict) -> list[tuple[dict, bool, str]]:
+    """Todas las allowlists que tomllib entiende, sin importar su forma.
+
+    Cubre la global `allowlist`/`allowlists` y la de cada regla, escrita como
+    tabla, tabla inline o clave con punto.
+    """
+    salida: list[tuple[dict, bool, str]] = []
+    global_uno = config.get("allowlist")
+    if isinstance(global_uno, dict):
+        salida.append((global_uno, False, ""))
+    for bloque in config.get("allowlists") or []:
+        if isinstance(bloque, dict):
+            salida.append((bloque, False, ""))
+    for regla in config.get("rules") or []:
+        if not isinstance(regla, dict):
+            continue
+        ident = str(regla.get("id") or "")
+        uno = regla.get("allowlist")
+        if isinstance(uno, dict):
+            salida.append((uno, True, ident))
+        for bloque in regla.get("allowlists") or []:
+            if isinstance(bloque, dict):
+                salida.append((bloque, True, ident))
+    return salida
+
+
 def _revisar_gitleaks(raiz: Path) -> list[str]:
     try:
         texto = _leer(raiz, ".gitleaks.toml")
@@ -160,17 +218,50 @@ def _revisar_gitleaks(raiz: Path) -> list[str]:
             continue
         rutas = bloque.get("paths") or []
         reglas = bloque.get("targetRules")
-        if rutas and not reglas and not _linea_anotada(lineas, "targetRules"):
+        valores = _valores_de_allowlist(bloque)
+        if rutas and not reglas and not _hay_excepcion(lineas, valores):
             problemas.append(
                 ".gitleaks.toml: la allowlist tiene rutas sin targetRules, "
                 "asi que valen para todas las reglas; exceptua con razon y fecha"
             )
             continue
         extra = set(reglas or ()) - TARGET_RULES
-        if extra and not _linea_anotada(lineas, "targetRules"):
+        if extra and not _hay_excepcion(lineas, extra | valores):
             problemas.append(
                 ".gitleaks.toml: targetRules suma reglas "
                 f"({sorted(extra)}); la allowlist cubre mas de lo aceptado"
+            )
+    for bloque, es_regla, regla_id in _allowlists_de(config):
+        valores = _valores_de_allowlist(bloque) | {regla_id}
+        desconocidas = set(bloque) - ALLOWLIST_CLAVES
+        if desconocidas and not _hay_excepcion(lineas, desconocidas | valores):
+            problemas.append(
+                ".gitleaks.toml: clave nueva en la allowlist "
+                f"({', '.join(sorted(desconocidas))}); anota la excepcion en la "
+                "misma linea con razon y fecha"
+            )
+        nuevas = set(_lista(bloque.get("paths"))) - ALLOWLIST_GITLEAKS
+        if nuevas and not _hay_excepcion(lineas, nuevas | valores):
+            problemas.append(
+                ".gitleaks.toml: entrada nueva en la allowlist "
+                f"({', '.join(sorted(nuevas))}); anota la excepcion en la misma "
+                "linea con razon y fecha"
+            )
+        regexes = _lista(bloque.get("regexes"))
+        if regexes and not _hay_excepcion(lineas, set(regexes) | valores):
+            problemas.append(
+                ".gitleaks.toml: regex nuevo en la allowlist "
+                f"({', '.join(sorted(regexes))}); anota la excepcion en la "
+                "misma linea con razon y fecha"
+            )
+        if (
+            es_regla
+            and set(bloque) & CLAVES_CON_EFECTO
+            and not _hay_excepcion(lineas, valores)
+        ):
+            problemas.append(
+                ".gitleaks.toml: allowlist de regla sin excepcion; una allowlist "
+                "por regla agrega entradas y la aprueba David en el PR"
             )
     return problemas
 
@@ -316,6 +407,45 @@ def _revisar_bateria(raiz: Path) -> list[str]:
                     f"(con {mensaje!r} deja de correr {sorted(faltan)})"
                 )
                 break
+    conocidos = set(getattr(modulo, "TRABAJOS", ()))
+    for mensaje in (*_MENSAJES_DE_PRUEBA, "[ligero]", "jobs_extra=ligero"):
+        inventados = set(modulo._jobs_extra(mensaje)) - conocidos
+        if inventados:
+            problemas.append(
+                f"{ruta}: _jobs_extra devuelve jobs que no existen "
+                f"({sorted(inventados)}); solo puede sumar jobs de TRABAJOS"
+            )
+            break
+    extra_fn = _funcion(arbol, "_jobs_extra")
+    if extra_fn is not None:
+        for nodo in ast.walk(extra_fn):
+            if not isinstance(nodo, ast.Return) or nodo.value is None:
+                continue
+            if isinstance(nodo.value, ast.Tuple) and not nodo.value.elts:
+                continue
+            nombres = {
+                hijo.id for hijo in ast.walk(nodo.value) if isinstance(hijo, ast.Name)
+            }
+            if "TRABAJOS" not in nombres:
+                problemas.append(
+                    f"{ruta}:{nodo.lineno}: _jobs_extra devuelve algo que no "
+                    "filtro TRABAJOS; solo puede sumar jobs conocidos"
+                )
+                break
+    for nodo in ast.walk(arbol):
+        if (
+            isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Name)
+            and nodo.func.id == "_git"
+            and nodo.args
+            and isinstance(nodo.args[0], ast.Constant)
+            and nodo.args[0].value == "log"
+            and _funcion_que_contiene(arbol, nodo) != "mensaje_de_git"
+        ):
+            problemas.append(
+                f"{ruta}:{nodo.lineno}: lee el historial fuera de "
+                "mensaje_de_git; solo `jobs_extra=` puede sumar jobs"
+            )
     buscadores = [
         nodo
         for nodo in ast.walk(arbol)
