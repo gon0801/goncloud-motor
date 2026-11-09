@@ -1635,7 +1635,7 @@ def _barrer_encargos(
                 if (
                     isinstance(resultado_paso, NecesitaAgente)
                     and enc.rol == "revisor"
-                    and _revision_aprobada_vigente(enc)
+                    and _revision_aprobada_sin_bloqueos_ajenos(enc)
                 ):
                     enc = _esperar_entrega_sin_avance(registro, enc, hora)
                     resultado_paso = Espera(enc.reanuda_en, enc.motivo)
@@ -2656,6 +2656,19 @@ def _reanuda_desde(hora: str, segundos: int) -> str:
 
 def _revision_aprobada_vigente(enc: Encargo) -> bool:
     return revision_independiente_cubre_producto(enc) and not bloqueantes_abiertos(enc)
+
+
+def _revision_aprobada_sin_bloqueos_ajenos(enc: Encargo) -> bool:
+    """La revisión vigente cubre el producto y no queda un bloqueo de otro rol.
+
+    Los bloqueos del supervisor no cuentan aquí: el paso de entrega los lee de
+    la observación y los cierra o los devuelve antes de publicar o cerrar. Los
+    del revisor independiente y los de DeepSeek sí siguen exigiendo su turno.
+    """
+    return revision_independiente_cubre_producto(enc) and not (
+        bloqueantes_abiertos(enc, "independiente")
+        or bloqueantes_abiertos(enc, "deepseek")
+    )
 
 
 def _correccion_deepseek_conserva_aprobadas(enc: Encargo) -> bool:
@@ -6985,6 +6998,33 @@ def _espera_por_observacion(
             observado = registro.fold(enc.id) or enc
             return observado, Espera(observado.reanuda_en, observado.motivo)
     if declaradas is None or enc.producto is None:
+        if declaradas is None and enc.producto is not None:
+            enc = registro.fold(enc.id) or enc
+            version = version_producto(espacio).firma
+            omitido = _instrumento_omitido(enc, "comprobaciones.json")
+            abierto_sup = any(
+                h.origen == "supervisor" and h.estado == "abierto"
+                for h in (enc.fase_actual.hallazgos if enc.fase_actual else ())
+            )
+            enc = _registrar_comprobaciones(
+                registro, enc, {"ejecuciones": []}, version, hora
+            )
+            if omitido and abierto_sup:
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "pendiente_entrega",
+                        "data": {
+                            "texto": (
+                                "las comprobaciones declaradas no se pudieron "
+                                "volver a observar: el comprobador quedo omitido "
+                                "tras fallos iguales; se entrega con este pendiente"
+                            ),
+                            "hora": hora,
+                        },
+                    },
+                    f"pendiente-comprobaciones-omitidas:{enc.id}:{enc.generacion}",
+                )
         return None
     version = version_producto(espacio).firma
     esperadas = declaradas
@@ -7884,7 +7924,7 @@ def _paso_entrega_paso(
                 str(enc.rol or "responsable"), "DeepSeek mantiene el bloqueo"
             )
     enc = registro.fold(enc.id)
-    if not _revision_aprobada_vigente(enc):
+    if not _revision_aprobada_sin_bloqueos_ajenos(enc):
         if bloqueantes_abiertos(enc, "deepseek"):
             # Sigue siendo el turno de DeepSeek: no se adelanta Opus ni se
             # integra nada con un High o Medium abierto.
