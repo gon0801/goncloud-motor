@@ -198,6 +198,70 @@ class MarcadorEnElCuerpo(unittest.TestCase):
         self.assertEqual(marcador[0]["sha"], "a" * 40)
         self.assertEqual(marcador[0]["id"], "F9")
 
+    def test_la_excepcion_se_deriva_del_evento_y_llega_al_marcador(self):
+        # El dato se anota como evento y se deriva en el dominio: `fold` lo
+        # deja en `Encargo.excepciones` y el marcador lo publica sin recorrer
+        # los eventos crudos en `ciclo.py`.
+        from motor.encargos import ciclo
+        from motor.encargos.registro import Registro
+
+        cuerpo = ""
+        sha = "b" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            try:
+                ident = ciclo.recibir(
+                    reg, "publicar", "marcador-derivado", "2026-11-08T10:00:00Z",
+                    entrega_nivel="pr", repo="o/r", base_rama="main",
+                )["encargo"]
+                reg.anotar(
+                    ident,
+                    {
+                        "kind": "excepcion",
+                        "data": {
+                            "tipo": "descarte", "sha": sha, "id": "F9",
+                            "motivo": "el revisor lo descarto",
+                            "hora": "2026-11-08T10:01:00Z",
+                        },
+                    },
+                    "excepcion-prueba",
+                )
+                encargo = reg.fold(ident)
+                self.assertEqual(
+                    encargo.excepciones,
+                    ((
+                        "descarte", sha, "F9", "el revisor lo descarto",
+                        "2026-11-08T10:01:00Z",
+                    ),),
+                )
+
+                class Gh:
+                    def actualizar_cuerpo(self, repo, numero, texto):
+                        nonlocal cuerpo
+                        cuerpo = texto
+
+                    def ver(self, repo, numero):
+                        raise AssertionError("no debe releer el PR")
+
+                ciclo._actualizar_cuerpo_pr(
+                    reg, encargo, Gh(), 7, sha,
+                    ciclo._espacio(reg.base, ident), "2026-11-08T10:02:00Z",
+                )
+            finally:
+                reg.close()
+        self.assertIn("motor:excepciones=", cuerpo)
+        marcador, _ = json.JSONDecoder().raw_decode(
+            cuerpo.split("motor:excepciones=", 1)[1].lstrip().removeprefix("-->").lstrip()
+        )
+        self.assertEqual(
+            marcador,
+            [{
+                "tipo": "descarte", "sha": sha, "id": "F9",
+                "motivo": "el revisor lo descarto",
+                "hora": "2026-11-08T10:01:00Z",
+            }],
+        )
+
 
 class PublicacionDelCheck(unittest.TestCase):
     """El disparo y la publicación que no cubre el comando aislado."""

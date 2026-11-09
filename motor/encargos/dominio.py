@@ -36,6 +36,7 @@ _EVENTOS_DE_MARCADOR = (
     "deepseek_lectura",
     "deepseek_cerrado",
     "ci_sondeo",
+    "excepcion",
 )
 
 # Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
@@ -799,6 +800,9 @@ class Encargo:
     # Hallazgos externos que una restricción expresa o el revisor dejaron fuera
     # de alcance: (id, título, razón). No bloquean; se escriben en el PR.
     fuera_de_alcance: tuple[tuple[str, str, str], ...] = ()
+    # Excepciones del check de merge derivadas de eventos `excepcion`:
+    # (tipo, sha, id, motivo, hora). Única fuente del marcador `motor:excepciones=`.
+    excepciones: tuple[tuple[str, str, str, str, str], ...] = ()
     # Las causas pendientes del entorno o del instrumento. Mientras haya una,
     # ningún proceso nuevo: cada una se levanta con su propia comprobación.
     impedimento: str = ""
@@ -2537,6 +2541,26 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             hora=hora or e.hora,
         )
 
+    if kind == "excepcion":
+        # La excepción del check de merge se deriva del pliegue: tipo, SHA e id
+        # con su motivo y hora. El último evento de una misma clave manda.
+        tipo = str(d.get("tipo") or "descarte")
+        sha = str(d.get("sha") or "")
+        hid = str(d.get("id") or "")
+        if sha and tipo in ("descarte", "fuera_alcance", "omision"):
+            motivo = " ".join(str(d.get("motivo") or "").split())
+            clave = (tipo, sha, hid)
+            actuales = tuple(
+                x for x in e.excepciones if (x[0], x[1], x[2]) != clave
+            )
+            return replace(
+                e,
+                excepciones=actuales
+                + ((tipo, sha, hid, motivo, str(d.get("hora") or "")),),
+                hora=hora or e.hora,
+            )
+        return replace(e, hora=hora or e.hora)
+
     if kind in (
         "ci_producto",
         "ci_revision_rojo",
@@ -2544,7 +2568,6 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         "respuesta_revisor_pedida",
         "autoridad_cerrada",
         "disputa",
-        "excepcion",
     ):
         # Eventos sin efecto sobre el estado: los retirados de una versión
         # anterior, la marca de que una pregunta vencida se pasó al revisor y

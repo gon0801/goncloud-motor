@@ -5118,55 +5118,34 @@ def _excepciones_del_registro(
 ) -> list[dict]:
     """Las excepciones publicadas en el marcador del cuerpo del PR.
 
-    Los eventos `excepcion` son la fuente. Un encargo anterior a esa marca
-    conserva los `hallazgo_fuera_de_alcance` como fuente mientras no haya
-    ninguno estructurado. El SHA de un evento viejo es el de la fase.
+    Salen del pliegue: `Encargo.excepciones` deriva los eventos `excepcion`. Un
+    encargo anterior a esa marca conserva los `hallazgo_fuera_de_alcance` como
+    fuente mientras no haya ninguno estructurado. El SHA de un evento viejo es
+    el de la fase.
     """
-    eventos = list(registro.eventos(enc.id))
-    estructuradas: list[dict] = []
-    for ev in eventos:
-        if ev["kind"] != "excepcion":
-            continue
-        d = ev["data"]
-        motivo = " ".join(str(d.get("motivo") or "").split())
-        estructura = {
-            "tipo": str(d.get("tipo") or "descarte"),
-            "sha": str(d.get("sha") or ""),
-            "id": str(d.get("id") or ""),
-            "motivo": motivo,
-            "hora": str(d.get("hora") or ""),
+    enc = registro.fold(enc.id) or enc
+    if enc.excepciones:
+        return [
+            {
+                "tipo": tipo,
+                "sha": sha_evento,
+                "id": identificador,
+                "motivo": motivo,
+                "hora": hora_evento,
+            }
+            for tipo, sha_evento, identificador, motivo, hora_evento in enc.excepciones
+        ]
+    return [
+        {
+            "tipo": "fuera_alcance",
+            "sha": str(sha or ""),
+            "id": str(hid or "").strip(),
+            "motivo": " ".join(str(razon or "").split()),
+            "hora": "",
         }
-        if estructura["sha"] and estructura["tipo"] in (
-            "descarte", "fuera_alcance", "omision"
-        ):
-            estructuradas.append(estructura)
-    if estructuradas:
-        return _sin_excepciones_repetidas(estructuradas)
-    legado: list[dict] = []
-    for ev in eventos:
-        if ev["kind"] != "hallazgo_fuera_de_alcance":
-            continue
-        d = ev["data"]
-        hid = str(d.get("id") or "").strip()
-        razon = " ".join(str(d.get("razon") or "").split())
-        if hid and razon:
-            legado.append(
-                {
-                    "tipo": "fuera_alcance",
-                    "sha": str(sha or ""),
-                    "id": hid,
-                    "motivo": razon,
-                    "hora": str(d.get("hora") or ""),
-                }
-            )
-    return _sin_excepciones_repetidas(legado)
-
-
-def _sin_excepciones_repetidas(excepciones: list[dict]) -> list[dict]:
-    vistos: dict[tuple[str, str, str], dict] = {}
-    for e in excepciones:
-        vistos[(e["tipo"], e["sha"], e["id"])] = e
-    return list(vistos.values())
+        for hid, _titulo, razon in enc.fuera_de_alcance
+        if str(hid or "").strip() and str(razon or "").strip()
+    ]
 
 
 def _cuerpo_pr(
@@ -5217,7 +5196,7 @@ def _cuerpo_pr(
         adicionales.append(
             "## Notas del motor\n" + "\n".join(f"- {n}" for n in notas)
         )
-    if vacio and not adicionales:
+    if vacio and not adicionales and not excepciones:
         return defecto
     if adicionales:
         texto = texto + "\n\n" + "\n\n".join(adicionales)
