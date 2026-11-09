@@ -17,6 +17,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from motor.encargos.registro import Registro
 from motor.integraciones import cli as director_cli
@@ -98,6 +99,20 @@ FAKE = textwrap.dedent(
     '''
 )
 
+FAKE_ELECTRON = textwrap.dedent(
+    '''
+    import os
+    import time
+
+    if os.environ.get("ELECTRON_RUN_AS_NODE") != "1":
+        time.sleep(60)
+    print("send BOT TEXTO")
+    print("messages BOT --json")
+    print("interrupt BOT")
+    print("wait BOT")
+    '''
+)
+
 
 class CanalMausbot(unittest.TestCase):
     def setUp(self):
@@ -110,11 +125,13 @@ class CanalMausbot(unittest.TestCase):
         self.log = self.tmp / "fake.log"
         self.estado = self.tmp / "fake-estado.jsonl"
 
-    def _identidad(self, encargo: str, canal: str) -> None:
+    def _identidad(self, encargo: str, canal: str, sesion: str = "") -> None:
         carpeta = self.base / "canal-identidad"
         carpeta.mkdir(exist_ok=True)
         (carpeta / f"{encargo}.json").write_text(
-            json.dumps({"canal": canal, "director": "mausbot", "sesion": ""}),
+            json.dumps(
+                {"canal": canal, "director": "mausbot", "sesion": sesion}
+            ),
             encoding="utf-8",
         )
 
@@ -179,7 +196,7 @@ class CanalMausbot(unittest.TestCase):
         self.assertEqual(identidad["canal"], "mausbot")
         self.assertEqual(identidad["director"], "mausbot")
 
-    def test_un_director_desconocido_lo_rechaza_argparse(self):
+    def test_un_director_desconocido_lo_rechaza_argparse(self):  # no-roja-en-base: la base ya rechaza cualquier --director fuera de sus choices; la prueba fija que sumar mausbot no afloja el rechazo
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 director_cli.main(
@@ -235,6 +252,51 @@ class CanalMausbot(unittest.TestCase):
         self.assertTrue(doc["entrega"])
         self.assertTrue(doc["consulta"])
         self.assertTrue(doc["parada"])
+
+    def test_capacidades_mausbot_pone_electron_run_as_node(self):
+        electron = self.tmp / "fake_electron.py"
+        electron.write_text(FAKE_ELECTRON, encoding="utf-8")
+        with mock.patch.object(directores, "TRANSPORTE_TIMEOUT_S", 1):
+            doc = directores.capacidades_mausbot([sys.executable, str(electron)])
+        self.assertEqual(doc["rc_ayuda"], 0)
+        self.assertTrue(doc["entrega"])
+        self.assertTrue(doc["consulta"])
+        self.assertTrue(doc["parada"])
+
+    def test_encargar_aviso_send_llega_al_bot_de_la_sesion(self):
+        instalado = subprocess.run(
+            [
+                sys.executable, str(INSTALADOR), "--base", str(self.base),
+                "--python", sys.executable, "--transporte", str(TRANSPORTE),
+            ],
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertEqual(instalado.returncode, 0, instalado.stderr.decode())
+        reg = Registro(self.base)
+        self.addCleanup(reg.close)
+        recibo = directores.encargar(
+            reg, "Haz algo", "clave-e2e", "2026-01-01T00:00:00Z",
+            "mausbot", "mausbot", "durable",
+            identidad={"sesion": "ingenieria"},
+        )
+        enc = reg.fold(recibo["encargo"])
+        self.assertIsNotNone(enc)
+        aviso = directores._aviso_de_hecho(
+            enc, {"tipo": "inicio", "identidad": "inicio", "texto": "Comenzo"}
+        )
+        with mock.patch.dict(os.environ, self._env()):
+            directores._publicar_aviso(reg, aviso, "Hola <b>jefe</b>", "")
+        item = json.loads(self.estado.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(item["bot"], "ingenieria")
+        self.assertIn("[motor-aviso:" + aviso["id"] + "]", item["text"])
+        publicado = json.loads(
+            (self.base / "avisos" / f"{aviso['id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(publicado["estado"], "publicado")
+        self.assertEqual(publicado["recibo"], aviso["id"])
 
     def test_instalador_solo_agrega_mausbot_y_es_idempotente(self):
         base = self.tmp / "pc"

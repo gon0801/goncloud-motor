@@ -2149,12 +2149,15 @@ def capacidades_openbot(argv: list[str]) -> dict:
 
 
 def capacidades_mausbot(argv: list[str]) -> dict:
+    from .transporte_mausbot import entorno
+
     try:
         ayuda = subprocess.run(
             argv + ["--help"],
             capture_output=True,
             text=True,
             timeout=TRANSPORTE_TIMEOUT_S,
+            env=entorno(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return {

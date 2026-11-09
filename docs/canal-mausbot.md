@@ -8,6 +8,29 @@ PC, con la Python del runtime; no importa el paquete `motor`.
 Este documento es sólo la guía de instalación. El encargo no instala nada en la
 PC: deja el instalador y el adaptador listos para correr allá.
 
+## Encargar desde un bot
+
+`--canal` elige la entrada de `canal.json`, o sea el transporte. Para que el
+aviso salga por OpenMausBot, el bot encarga con `--canal mausbot` y pone su
+nombre en `--sesion`:
+
+```bat
+python -B -m motor director encargar ^
+  --base C:\Users\ehven\.motor-encargos ^
+  --director mausbot ^
+  --via durable ^
+  --canal mausbot ^
+  --sesion ingenieria ^
+  --clave <clave> ^
+  --texto "<pedido>"
+```
+
+El transporte toma el destinatario de `sesion` en
+`canal-identidad\<encargo>.json`; así `ingenieria` recibe en su propio bot y el
+enrutado no depende de que exista una entrada de canal por bot. Sin `--sesion`,
+o si dice `mausbot`, el aviso va a `MausBot`. El mismo `--canal` y `--sesion`
+sirven para `corregir`, `responder`, `parar` y `continuar`.
+
 ## Instalar
 
 En la PC, con la Python del runtime:

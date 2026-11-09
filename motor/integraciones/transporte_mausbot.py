@@ -55,7 +55,8 @@ def _timeout() -> float:
     return valor if valor > 0 else TIMEOUT_S
 
 
-def _entorno() -> dict[str, str]:
+def entorno() -> dict[str, str]:
+    """El CLI de OpenMausBot sólo corre como Node si ELECTRON_RUN_AS_NODE está puesto."""
     env = os.environ.copy()
     env["ELECTRON_RUN_AS_NODE"] = "1"
     return env
@@ -63,6 +64,7 @@ def _entorno() -> dict[str, str]:
 
 def _bot() -> str:
     canal = ""
+    sesion = ""
     base = os.environ.get("MOTOR_AVISO_BASE", "")
     encargo = os.environ.get("MOTOR_AVISO_ENCARGO", "")
     if base and encargo:
@@ -71,11 +73,13 @@ def _bot() -> str:
             doc = json.loads(ruta.read_bytes().decode("utf-8-sig"))
             if isinstance(doc, dict):
                 canal = str(doc.get("canal") or "")
+                sesion = str(doc.get("sesion") or "")
         except (OSError, ValueError):
-            canal = ""
-    if not canal or canal.lower() == "mausbot":
+            canal = sesion = ""
+    bot = sesion.strip() or canal
+    if not bot or bot.lower() == "mausbot":
         return "MausBot"
-    return canal
+    return bot
 
 
 def _quitar_html(texto: str) -> str:
@@ -100,7 +104,7 @@ def _send() -> int:
     argv = argv_base() + ["send", bot, texto]
     try:
         hecho = subprocess.run(
-            argv, capture_output=True, env=_entorno(), timeout=_timeout()
+            argv, capture_output=True, env=entorno(), timeout=_timeout()
         )
     except subprocess.TimeoutExpired:
         print("mausbot: el envio no respondio a tiempo", file=sys.stderr)
@@ -153,7 +157,7 @@ def _check(argv: list[str]) -> int:
     comando = argv_base() + ["messages", bot, "--json"]
     try:
         hecho = subprocess.run(
-            comando, capture_output=True, env=_entorno(), timeout=_timeout()
+            comando, capture_output=True, env=entorno(), timeout=_timeout()
         )
     except subprocess.TimeoutExpired:
         print("mausbot: la consulta no respondio a tiempo", file=sys.stderr)
