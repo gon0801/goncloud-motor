@@ -54,6 +54,29 @@ def _avanzar_main(raiz: Path, archivo: str, texto: str) -> None:
     _git(otro, "push", "--quiet", "origin", "main")
 
 
+def _rama_desde_main(raiz: Path, rama: str, archivo: str, texto: str) -> None:
+    bare = raiz / "repo.git"
+    otro = raiz / "otro"
+    if not otro.exists():
+        subprocess.run(["git", "clone", "--quiet", str(bare), str(otro)], check=True)
+    _git(otro, "fetch", "--quiet", "origin")
+    _git(otro, "checkout", "--quiet", "-B", rama, "origin/main")
+    (otro / archivo).write_text(texto)
+    _git(otro, "add", "-A")
+    _git(otro, "commit", "--quiet", "-m", f"{rama} cambia {archivo}")
+    _git(otro, "push", "--quiet", "-u", "origin", rama)
+    _git(otro, "checkout", "--quiet", "main")
+
+
+def _cambiar_base_del_pr(vuelta, numero: int, base: str) -> None:
+    ruta = vuelta.gh.d / "github.json"
+    guardado = json.loads(ruta.read_text())
+    for pr in guardado["prs"].values():
+        if pr["numero"] == numero:
+            pr["base"] = base
+    ruta.write_text(json.dumps(guardado))
+
+
 def _config(vuelta, repo: str, datos: dict) -> None:
     ruta = vuelta.gh.d / "repos.json"
     actual = json.loads(ruta.read_text()) if ruta.exists() else {}
@@ -203,6 +226,66 @@ class MergeableAunSinCalcular(unittest.TestCase):
             self.assertEqual(_estrategias(r)[-1]["estrategia"], "integrar_main")
             self.assertIn("el PR choca con main", _estrategias(r)[-1]["motivo"])
             self.assertIn("conflicto en saludo.txt", " ".join(_notas(r)))
+
+
+class MezclaLimpiaEnElAtajoDelCi(unittest.TestCase):
+    def test_la_mezcla_limpia_del_atajo_del_ci_publica_y_sigue(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ci-limpia", github_con_corridas, nivel="pr",
+            )
+            e = vuelta("hola\n")
+            self.assertEqual(e.estado, "terminado")
+            _avanzar_main(Path(tmp), "main.txt", "desde main\n")
+            _config(
+                vuelta,
+                str(e.entrega.repo),
+                {"mergeable": "MERGEABLE", "merge_state_status": "BEHIND"},
+            )
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+
+            self.assertNotEqual(e.estado, "terminado", "el CI sigue sobre el SHA nuevo")
+            self.assertEqual(
+                _rama(Path(tmp) / "repo.git", str(e.entrega.rama), "main.txt"),
+                "desde main\n",
+                "la mezcla limpia del atajo del CI se publicó en la rama del PR",
+            )
+            self.assertIn("mezcla limpia", " ".join(_notas(r)))
+            self.assertEqual(e.fase_actual.ci_pr_estado, "sin_resultado")
+
+
+class BaseRealDelPr(unittest.TestCase):
+    def test_el_atajo_del_ci_mezcla_la_base_real_del_pr(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "base-real", github_con_corridas, nivel="pr",
+            )
+            e = vuelta("hola\n")
+            self.assertEqual(e.estado, "terminado")
+            raiz = Path(tmp)
+            _rama_desde_main(raiz, "fase", "fase.txt", "desde la fase\n")
+            _avanzar_main(raiz, "main.txt", "desde main\n")
+            _cambiar_base_del_pr(vuelta, e.pr_numero, "fase")
+            _config(
+                vuelta,
+                str(e.entrega.repo),
+                {"mergeable": "MERGEABLE", "merge_state_status": "BEHIND"},
+            )
+
+            e = ciclo._revisar_ci_del_pr(r.reg, e, vuelta.gh, ahora_iso())
+
+            rama = str(e.entrega.rama)
+            self.assertEqual(
+                _rama(raiz / "repo.git", rama, "fase.txt"),
+                "desde la fase\n",
+                "mezcla la base real del PR, que es la rama de la fase",
+            )
+            self.assertEqual(
+                _rama(raiz / "repo.git", rama, "main.txt"),
+                "",
+                "no mezcla main, que no es la base del PR",
+            )
 
 
 if __name__ == "__main__":

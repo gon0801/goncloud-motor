@@ -6831,8 +6831,25 @@ def _estado_merge_del_pr(gh, enc: Encargo):
         return None
 
 
+def _base_del_pr(gh, enc: Encargo) -> str:
+    """La base real contra la que apunta el PR, no la base autorizada.
+
+    Un PR de una fase apilada apunta a la rama de su base y no a
+    `entrega.base`; mezclar contra la base equivocada no resuelve el choque
+    real. Si la vista no se puede leer, se conserva la base autorizada.
+    """
+    base = str(enc.entrega.base or "main")
+    if gh is None or not enc.pr_numero:
+        return base
+    try:
+        vista = gh.ver(enc.entrega.repo, int(enc.pr_numero))
+    except Exception:  # noqa: BLE001  la base autorizada conserva el flujo
+        return base
+    return str(getattr(vista, "base", "") or base)
+
+
 def _traer_la_base_al_pr(
-    registro: Registro, enc: Encargo, hora: str
+    registro: Registro, enc: Encargo, gh, hora: str
 ) -> tuple[Encargo, Resultado]:
     """Mezcla la base en la rama del PR reutilizando `traer_main`.
 
@@ -6840,7 +6857,7 @@ def _traer_la_base_al_pr(
     Un conflicto devuelve el trabajo al responsable con los archivos, como el
     comando manual; un error del comando deja espera visible, no un bucle.
     """
-    base = str(enc.entrega.base or "main")
+    base = _base_del_pr(gh, enc)
     from .integracion import traer_main
 
     resultado = traer_main(registro, enc.id, hora, contra=base)
@@ -6891,7 +6908,7 @@ def _resolver_choque_con_la_base(
     estado = _estado_merge_del_pr(gh, enc)
     if estado is None or str(getattr(estado, "estado", "")) not in ("choca", "atras"):
         return None
-    return _traer_la_base_al_pr(registro, enc, hora)
+    return _traer_la_base_al_pr(registro, enc, gh, hora)
 
 
 def _choque_para_el_ci(gh, enc: Encargo) -> str:
@@ -6901,7 +6918,7 @@ def _choque_para_el_ci(gh, enc: Encargo) -> str:
     estado = _estado_merge_del_pr(gh, enc)
     if estado is None:
         return ""
-    base = str(enc.entrega.base or "main")
+    base = _base_del_pr(gh, enc)
     clase = str(getattr(estado, "estado", ""))
     if clase == "choca":
         return (
@@ -6974,7 +6991,7 @@ def _revisar_ci_del_pr(
             hora=hora,
         )
         if enc.estado in ("recibido", "ejecutando") and not enc.reserva:
-            return _traer_la_base_al_pr(registro, enc, hora)[0]
+            return _traer_la_base_al_pr(registro, enc, gh, hora)[0]
         return enc
     primero = str(sondeo.get("primero") or hora)
     edad = _segundos_entre(primero, hora)
@@ -8759,7 +8776,7 @@ def _paso_entrega_paso(
             ):
                 # El merge chocó aunque la lectura previa dijera limpio (la
                 # base se movió en medio): el mismo camino que un choque leído.
-                return _traer_la_base_al_pr(registro, enc, hora)
+                return _traer_la_base_al_pr(registro, enc, gh, hora)
             causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
             checks = None
             lectura_fallida = False
