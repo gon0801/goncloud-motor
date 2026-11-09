@@ -4481,6 +4481,17 @@ def _base_fase(enc: Encargo) -> str:
     return base_de(fase, frozenset()) if fase is not None else enc.entrega.base
 
 
+def _base_objetivo_del_pr(enc: Encargo) -> str:
+    """La base a la que apunta el PR de esta fase.
+
+    Un PR de nivel «pr» apunta a la base de su fase, que puede ser la rama de
+    otra fase apilada; uno integrado apunta a la base autorizada.
+    """
+    if nivel_objetivo(enc) in ("integrado", "desplegado"):
+        return enc.entrega.base
+    return _base_fase(enc)
+
+
 def _ref_existente(espacio: Path, *candidatos: str) -> str:
     for candidato in candidatos:
         if not candidato:
@@ -6836,16 +6847,17 @@ def _base_del_pr(gh, enc: Encargo) -> str:
 
     Un PR de una fase apilada apunta a la rama de su base y no a
     `entrega.base`; mezclar contra la base equivocada no resuelve el choque
-    real. Si la vista no se puede leer, se conserva la base autorizada.
+    real. Si la vista no se puede leer, se usa la misma base con la que se abre
+    el PR, que ya contempla la fase apilada.
     """
-    base = str(enc.entrega.base or "main")
+    respaldo = str(_base_objetivo_del_pr(enc) or enc.entrega.base or "main")
     if gh is None or not enc.pr_numero:
-        return base
+        return respaldo
     try:
         vista = gh.ver(enc.entrega.repo, int(enc.pr_numero))
-    except Exception:  # noqa: BLE001  la base autorizada conserva el flujo
-        return base
-    return str(getattr(vista, "base", "") or base)
+    except Exception:  # noqa: BLE001  la base objetivo conserva el flujo
+        return respaldo
+    return str(getattr(vista, "base", "") or respaldo)
 
 
 def _traer_la_base_al_pr(
@@ -7810,11 +7822,7 @@ def _entregar_con_pendientes(
             sha, causa = _commit_push(enc, espacio)
         if not causa:
             rama = _rama_fase(enc)
-            base = (
-                enc.entrega.base
-                if nivel_objetivo(enc) in ("integrado", "desplegado")
-                else _base_fase(enc)
-            )
+            base = _base_objetivo_del_pr(enc)
             if not numero:
                 ref_base = _ref_existente(espacio, f"origin/{base}", base)
                 conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}") if ref_base else None
@@ -8264,10 +8272,7 @@ def _paso_entrega_paso(
     _resolver_impedimentos_de_entrega(registro, enc, hora, ("entrega:ssh",))
     enc = registro.fold(enc.id) or enc
     rama = _rama_fase(enc)
-    base = (
-        enc.entrega.base if nivel_objetivo(enc) in ("integrado", "desplegado")
-        else _base_fase(enc)
-    )
+    base = _base_objetivo_del_pr(enc)
     firma = enc.producto.firma if enc.producto is not None else ""
     for paso in ("commit", "push"):
         registro.anotar(

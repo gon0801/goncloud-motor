@@ -11,10 +11,12 @@ import json
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace as dataclasses_replace
 from pathlib import Path
 
 from motor.encargos import ciclo
 from motor.encargos.ciclo import ahora_iso
+from motor.encargos.dominio import Fase
 from motor.github import GhGitHub
 from tests.test_flujo_revisiones import _entrega_pr, sonda_sin_aislamiento_del_host
 
@@ -285,6 +287,39 @@ class BaseRealDelPr(unittest.TestCase):
                 _rama(raiz / "repo.git", rama, "main.txt"),
                 "",
                 "no mezcla main, que no es la base del PR",
+            )
+
+
+class RespaldoDeLaBaseDelPr(unittest.TestCase):
+    def test_el_respaldo_usa_la_base_de_la_fase_apilada(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "respaldo-apilado", github_con_corridas, nivel="pr",
+            )
+            e = vuelta("hola\n")
+            self.assertEqual(e.estado, "terminado")
+            rama_base = "base-de-la-fase"
+            fases = (
+                Fase(id="a", resultado="A", rama=rama_base),
+                Fase(
+                    id="b",
+                    resultado="B",
+                    requiere=(("a", ""),),
+                    rama=str(e.entrega.rama),
+                    pr_numero=e.pr_numero,
+                    pr_sha=e.pr_sha,
+                ),
+            )
+            apilado = dataclasses_replace(e, fases=fases, fase_activa="b")
+
+            class GhSinVista:
+                def ver(self, repo, numero):
+                    raise RuntimeError("gh no responde")
+
+            self.assertEqual(
+                ciclo._base_del_pr(GhSinVista(), apilado),
+                rama_base,
+                "el respaldo no vuelve a la base autorizada en un PR apilado",
             )
 
 
