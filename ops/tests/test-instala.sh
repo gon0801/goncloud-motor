@@ -38,6 +38,7 @@ git -C "$S/conf-src" -c user.name=t -c user.email=t@t commit -q -m conf
 git clone -q --bare "$S/conf-src" "$S/conf.git"
 
 export MOTOR_REPO_URL="$S/origen.git" MOTOR_CONF_URL="$S/conf.git" MOTOR_INSTALA_RAIZ="$S/trabajo"
+export MOTOR_ESPERA_DESPLIEGUE=0
 export MOTOR_SSH_MAC=mac MOTOR_SSH_MINI=gon@mini-fake MOTOR_SSH_PC=gwpc MOTOR_LAUNCHD_DIR="$S/launchd"
 mkdir -p "$S/launchd"
 
@@ -52,6 +53,46 @@ case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22:
 case " ${FAKE_CAE_DESPUES:-} " in
   *" $host "*) case "$*" in *FASE_INSTALA*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac ;;
 esac
+# La comprobación final del despliegue lee el recibo y la pasada del
+# supervisor. Este ssh falso deja una pasada del SHA que se instala con un pid
+# vivo: el recibo real lo escribe el propio instala-todo.
+case "$host" in
+  gwpc) phome="$S/pc-home" ;;
+  mac) phome="$S/mac" ;;
+  *) phome="$S/mini" ;;
+esac
+mkdir -p "$phome/.motor-encargos"
+pasa_ruta="$phome/motor"
+if [ "$host" != gwpc ]; then
+  plist="$phome/Library/LaunchAgents/ai.goncloud.motor-encargos.plist"
+  if [ -f "$plist" ]; then
+    wd="$(python3 - "$plist" <<'PY'
+import plistlib, sys
+try:
+    d = plistlib.loads(open(sys.argv[1], "rb").read())
+except Exception:
+    d = {}
+print(d.get("WorkingDirectory") or "")
+PY
+)"
+    [ -n "$wd" ] && [ -d "$wd" ] && pasa_ruta="$wd"
+  fi
+else
+  # La PC falsa no clona un árbol real: su pasada acredita el SHA del origen.
+  pasa_ruta="$S/trabajo"
+fi
+if [ "$host" = gwpc ]; then
+  [ -e "$S/pc-reinicio" ] && reiniciado=1 || reiniciado=0
+else
+  [ -e "$phome/.reinicio-encargos" ] && reiniciado=1 || reiniciado=0
+fi
+pasa_sha="$(git -C "$pasa_ruta" rev-parse HEAD 2>/dev/null || true)"
+# La pasada solo aparece después de la orden de reinicio: así la prueba no
+# acredita un supervisor que siguió con el código viejo.
+if [ "$reiniciado" = 1 ] && [ -z "${FAKE_SIN_PASADA:-}" ] && [ -n "$pasa_sha" ]; then
+  printf '{"sha":"%s","ruta":"%s","hora":"2026-11-08T10:00:00Z","completa":true,"encargos":1,"maquina":"%s","pid":%s}\n' \
+    "$pasa_sha" "$pasa_ruta" "$host" "$$" >"$phome/.motor-encargos/supervisor-pasada.json"
+fi
 if [ "$host" = gwpc ]; then
   ok_pc() { [ -z "${FAKE_PC_FALLA:-}" ] || { echo "git: no pude" >&2; exit 1; }; }
   if [[ "$*" == *'python -c "'* && "$*" != *sol_remoto* ]]; then
@@ -66,6 +107,7 @@ if [ "$host" = gwpc ]; then
   case "$*" in
     "tar -x"*) cat >"$S/pc-recibido.tar" ;;
     "schtasks /query"*) exit "${FAKE_PC_TAREA_RC:-0}" ;;
+    "taskkill /PID "*" /T /F") [ -z "${FAKE_TASKKILL_FALLA:-}" ] || exit 1; : >"$S/pc-reinicio" ;;
     "echo ok") echo ok ;;
     # Estado de mentira de la PC: la etiqueta que tiene ~/motor y la marca de la marcha atrás.
     *"describe --tags --exact-match"*) [ -f "$S/pc-tag" ] && { cat "$S/pc-tag"; exit 0; } || exit 1 ;;
@@ -185,7 +227,21 @@ esac
 FAKE
 cat >"$S/bin/launchctl" <<'FAKE'
 #!/usr/bin/env bash
-[ "$1" = print ] && [ -e "$HOME/.cargado" ]
+case "$1" in
+  print)
+    case "$2" in
+      gui/*/ai.goncloud.motor-encargos) exit 0 ;;
+      *) [ -e "$HOME/.cargado" ] ;;
+    esac ;;
+  kickstart)
+    case "${3:-}" in
+      gui/*/ai.goncloud.motor-encargos)
+        [ -z "${FAKE_SIN_REINICIO:-}" ] && : >"$HOME/.reinicio-encargos"
+        exit 0 ;;
+      *) exit 0 ;;
+    esac ;;
+  *) exit 0 ;;
+esac
 FAKE
 chmod +x "$S/bin/"*
 
@@ -213,7 +269,7 @@ exec $GIT_REAL "\$@"
 FAKE
 chmod +x "$S/bin/git"
 
-reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-home" "$S/pc-codigo-creado" "$S/pc-formato" "$S/pc-formato-bloquea" "$S/pc-fetch-hecho" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-conf-sha" "$S/pc-etiqueta-anterior" "$S/pc-instalacion.json" "$S/pc-instalacion-pendiente.json" "$S/checkout-n" "$S/launchd"/*; mkdir -p "$S/mac/.local/bin" "$S/mini/.local/bin"; ln -sfn "$S/bin/git" "$S/mac/.local/bin/git"; ln -sfn "$S/bin/git" "$S/mini/.local/bin/git"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_PC_SIN_FORMATO FAKE_PC_REVPARSE_RC FAKE_PC_OBJETO_TRAS_FETCH FAKE_SUDO_FALLA FAKE_PC_TAREA_RC FAKE_GIT_CHECKOUT_FALLA_EN MOTOR_ETIQUETA MOTOR_SHA; }
+reset() { git -C "$S/origen.git" tag -l | xargs -r git -C "$S/origen.git" tag -d >/dev/null; rm -rf "$S/mac" "$S/mini" "$S/n-"* "$S/pc-home" "$S/pc-codigo-creado" "$S/pc-formato" "$S/pc-formato-bloquea" "$S/pc-fetch-hecho" "$S/sudo.log" "$S/pc-recibido.tar" "$S/pc-tag" "$S/pc-conf-sha" "$S/pc-etiqueta-anterior" "$S/pc-instalacion.json" "$S/pc-instalacion-pendiente.json" "$S/pc-reinicio" "$S/checkout-n" "$S/launchd"/*; mkdir -p "$S/mac/.local/bin" "$S/mini/.local/bin" "$S/pc-home/.motor-encargos"; printf '{"supervisor_pid":4242}\n' >"$S/pc-home/.motor-encargos/vigilante.json"; ln -sfn "$S/bin/git" "$S/mac/.local/bin/git"; ln -sfn "$S/bin/git" "$S/mini/.local/bin/git"; : >"$FAKE_LOG"; unset FAKE_CAE FAKE_CAE_DESPUES FAKE_PC_SIN_TOML FAKE_PC_VALIDA_RC FAKE_PC_FALLA FAKE_PC_SIN_FORMATO FAKE_PC_REVPARSE_RC FAKE_PC_OBJETO_TRAS_FETCH FAKE_SUDO_FALLA FAKE_PC_TAREA_RC FAKE_GIT_CHECKOUT_FALLA_EN FAKE_SIN_PASADA FAKE_SIN_REINICIO FAKE_TASKKILL_FALLA MOTOR_ETIQUETA MOTOR_SHA; }
 TAG="$(unset MOTOR_ETIQUETA; . "$RAIZ/ops/lib.sh"; echo "$ETIQUETA")"
 I="$RAIZ/ops/instala-todo.sh"
 D="$RAIZ/ops/desinstala-todo.sh"
@@ -255,6 +311,8 @@ primero="$(grep 'git clone -q' "$FAKE_LOG" | head -1)"
 case "$primero" in *motor-valida-*) ;; *) fallo "la primera copia de la PC no fue el temporal de validación: $primero" ;; esac
 [ -s "$S/pc-home/.motor/instalacion.json" ] || fallo "la PC no escribió el recibo"
 [ ! -e "$S/pc-home/.motor/instalacion-pendiente.json" ] || fallo "la PC dejó el intento abierto"
+contiene "la instalación comprueba el despliegue por máquina" "$S/salida" "Comprobando el despliegue en:"
+contiene "la comprobación ve el recibo de la Mac" "$S/salida" "OK mac"
 
 reset
 en_mac espera "la Mac se instala por ssh" 0 bash "$I"
@@ -424,6 +482,18 @@ FAKE_CAE=gwpc FAKE_PC_TAREA_RC=1 en_mac espera "sin ssh a la PC" '!0' bash "$D"
 echo "# marcha atrás"
 V="$RAIZ/ops/vuelve-a-la-anterior.sh"
 reset
+# El supervisor de la Mac corre desde un LaunchAgent con WorkingDirectory
+# distinto de ~/motor: la reversa debe devolver y reiniciar ese árbol.
+mkdir -p "$S/mac/Library/LaunchAgents"
+git clone -q "$S/origen.git" "$S/mac/motor-sucesor"
+git -C "$S/mac/motor-sucesor" checkout -q --detach "$PADRE"
+cat >"$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.goncloud.motor-encargos</string>
+<key>WorkingDirectory</key><string>$S/mac/motor-sucesor</string>
+</dict></plist>
+PLIST
 MOTOR_ETIQUETA=v1.0.23 en_mac espera "entrega anterior en v1.0.23" 0 bash "$I"
 unset MOTOR_ETIQUETA
 git -C "$S/trabajo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m avance && git -C "$S/trabajo" push -q origin HEAD:main
@@ -439,7 +509,21 @@ contiene "marca pc" "$S/pc-etiqueta-anterior" "$sha_vieja"
 
 # etiqueta-anterior no es fuente. Borrarla no frena la reversa si el recibo tiene el origen.
 rm "$S/mac/.motor/etiqueta-anterior"
+# La pasada no puede venir del despliegue anterior: se borra y solo puede
+# reaparecer después de la orden de reinicio de la reversa.
+rm -f "$S/mac/.reinicio-encargos" "$S/mac/.motor-encargos/supervisor-pasada.json"
 en_mac espera "marcha atrás en las tres" 0 bash "$V"
+[ "$(git -C "$S/mac/motor-sucesor" rev-parse HEAD)" = "$sha_vieja" ] || fallo "la marcha atrás no devolvió el árbol del supervisor"
+[ -e "$S/mac/.reinicio-encargos" ] || fallo "la marcha atrás no ordenó el reinicio del supervisor"
+ssh mac true >/dev/null 2>&1 || true
+python3 - "$S/mac/.motor-encargos/supervisor-pasada.json" "$sha_vieja" <<'PY' || fallo "la pasada de la marcha atrás no apareció tras el reinicio"
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if d.get("sha") == sys.argv[2] else 1)
+PY
 [ "$(git -C "$S/mac/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mac: el recibo no mandó sobre la marca borrada"
 [ "$(git -C "$S/mini/motor" describe --tags --exact-match)" = v1.0.23 ] || fallo "mini: no volvió a v1.0.23"
 [ "$(cat "$S/pc-tag")" = v1.0.23 ] || fallo "pc: no volvió a v1.0.23"
@@ -836,5 +920,42 @@ unset FAKE_PC_OBJETO_TRAS_FETCH
 [ "$(cat "$S/pc-tag")" = "$TAG" ] || fallo "la PC no volvió al formato 3 que había que traer: $(cat "$S/pc-tag")"
 grep -q 'fetch -q --tags --force origin' "$FAKE_LOG" || fallo "la PC decidió el formato sin traer el objeto"
 [ -s "$S/pc-home/.motor/formato" ] || fallo "traer el objeto borró el marcador"
+
+reset
+FAKE_SIN_PASADA=1 en_mac espera "sin pasada nueva no declara el despliegue" '!0' bash "$I"
+grep -q "Instalado en:" "$S/salida" && fallo "declaró Instalado sin comprobar la pasada del supervisor"
+contiene "la causa nombra la comprobación" "$S/salida" "no se comprueba"
+
+# El supervisor puede correr desde un árbol distinto de ~/motor (el
+# WorkingDirectory de su LaunchAgent). El despliegue deja ese árbol en la
+# etiqueta y la comprobación lo acredita; no basta el recibo de ~/motor.
+reset
+mkdir -p "$S/mac/Library/LaunchAgents"
+git clone -q "$S/origen.git" "$S/mac/motor-sucesor"
+git -C "$S/mac/motor-sucesor" checkout -q --detach "$PADRE"
+cat >"$S/mac/Library/LaunchAgents/ai.goncloud.motor-encargos.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.goncloud.motor-encargos</string>
+<key>WorkingDirectory</key><string>$S/mac/motor-sucesor</string>
+</dict></plist>
+PLIST
+esperado="$(git -C "$S/trabajo" rev-parse HEAD)"
+en_mac espera "instala y deja el árbol del supervisor en la etiqueta" 0 bash "$I" --maquina mac
+[ "$(git -C "$S/mac/motor-sucesor" rev-parse HEAD)" = "$esperado" ] || fallo "el árbol del supervisor no quedó en el SHA instalado"
+[ "$(git -C "$S/mac/motor" rev-parse HEAD)" = "$esperado" ] || fallo "el recibo no quedó en el SHA instalado"
+contiene "la comprobación acredita la Mac con su árbol" "$S/salida" "OK mac"
+
+# La pasada no puede aparecer si el reinicio no se ordenó: el ssh falso solo la
+# deja después del kickstart. Si el reinicio se ordena pero no relanza (o no se
+# ve la orden), el despliegue falla y lo dice.
+reset
+FAKE_SIN_REINICIO=1 en_mac espera "un reinicio sin pasada nueva falla" '!0' bash "$I" --maquina mac
+contiene "la causa nombra el reinicio" "$S/salida" "el reinicio falló"
+grep -q "Instalado en:" "$S/salida" && fallo "declaró Instalado con un reinicio que no dejó pasada"
+
+reset
+FAKE_TASKKILL_FALLA=1 en_mac espera "el reinicio de la PC que falla se dice" '!0' bash "$I" --maquina pc
+contiene "la causa nombra el reinicio de la PC" "$S/salida" "el reinicio falló"
 
 termina

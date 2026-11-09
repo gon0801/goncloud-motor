@@ -2513,6 +2513,7 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         "respuesta_revisor_pedida",
         "autoridad_cerrada",
         "disputa",
+        "excepcion",
     ):
         # Eventos sin efecto sobre el estado: los retirados de una versión
         # anterior, la marca de que una pregunta vencida se pasó al revisor y

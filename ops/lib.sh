@@ -165,6 +165,46 @@ maquina_local_pc() {
   py_pc 'import base64,sys; programa=base64.b64decode(sys.argv.pop(1)); exec(programa)' "$programa" "$@"
 }
 
+# ruta_runtime_de <m>: el árbol distinto de ~/motor que ejecuta el supervisor en
+# esa máquina, vacío si el despliegue ya instala en el mismo árbol. La decisión
+# vive en ops/maquina_local.py.
+ruta_runtime_de() {
+  local m=$1 programa
+  if [ "$m" = pc ]; then
+    maquina_local_pc ruta_runtime | tr -d '\r'
+  else
+    programa="$(origen_maquina_b64)" || return 1
+    en_posix "$m" "$m" "$programa" <<'REMOTO'
+set -euo pipefail
+programa=$2
+python3 -c 'import base64,sys; programa=base64.b64decode(sys.argv.pop(1)); exec(programa)' "$programa" ruta_runtime
+REMOTO
+  fi
+}
+
+# reinicia_supervisor <m>: relanza el supervisor justo después de mover su
+# árbol. En Mac y Mini con kickstart -k sobre el LaunchAgent; en la PC matando
+# solo el supervisor, que el vigilante vuelve a lanzar en 5 s. Si no se puede,
+# quien llama falla y lo dice por máquina.
+reinicia_supervisor() {
+  local m=$1 pid
+  if [ "$m" = pc ]; then
+    pid="$(maquina_local_pc pid_supervisor | tr -d '\r')" || return 1
+    [ -n "$pid" ] || { echo "el vigilante de la PC no tiene supervisor anotado" >&2; return 1; }
+    ssh_a "$(host_de pc)" "taskkill /PID $pid /T /F" >/dev/null || return 1
+    return 0
+  fi
+  en_posix "$m" "$m" <<'REMOTO'
+set -euo pipefail
+label="ai.goncloud.motor-encargos"
+if ! launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+  echo "el servicio $label no está cargado" >&2
+  exit 1
+fi
+launchctl kickstart -k "gui/$(id -u)/$label"
+REMOTO
+}
+
 # en_posix <mac|mini|pc> args... : el script de stdin corre allá con `bash -s -- args`.
 en_posix() {
   local m=$1 cmd

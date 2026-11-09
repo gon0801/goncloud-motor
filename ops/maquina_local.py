@@ -115,9 +115,70 @@ def restaura(home, ref):
             raise ValueError("el TOML anterior no quedó restaurado")
 
 
+def ruta_runtime():
+    """El árbol distinto de ~/motor que ejecuta el supervisor, o vacío.
+
+    Mac y Mini: el WorkingDirectory del LaunchAgent de encargos. PC: el runtime
+    del vigilante (`iniciar_encargos_pc.py`, fixed_paths). Sin un árbol distinto,
+    el despliegue ya instala en el mismo árbol que corre y no hay nada más que
+    actualizar.
+    """
+    home = Path.home()
+    default = home / "motor"
+    candidata = None
+    if os.name == "nt":
+        sucesor = home / "motor-sucesor"
+        if sucesor.is_dir():
+            candidata = sucesor
+    else:
+        import plistlib
+
+        plist = home / "Library" / "LaunchAgents" / "ai.goncloud.motor-encargos.plist"
+        try:
+            datos = plistlib.loads(plist.read_bytes())
+            wd = datos.get("WorkingDirectory") if isinstance(datos, dict) else None
+            if isinstance(wd, str) and wd and Path(wd).is_dir():
+                candidata = Path(wd)
+        except (OSError, ValueError, AttributeError):
+            candidata = None
+    if candidata is None:
+        return ""
+    try:
+        if candidata.resolve() == default.resolve():
+            return ""
+    except OSError:
+        return ""
+    return str(candidata)
+
+
+def pid_supervisor():
+    """El PID del supervisor que mantiene el vigilante de la PC, o vacío.
+
+    Sale de ~/.motor-encargos/vigilante.json; matar solo ese supervisor hace que
+    el vigilante lo relance con el código que quede en el árbol.
+    """
+    ruta = Path.home() / ".motor-encargos" / "vigilante.json"
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    pid = datos.get("supervisor_pid") if isinstance(datos, dict) else None
+    return str(pid) if isinstance(pid, int) and pid > 0 else ""
+
+
 def main():
     home = Path.home() / ".motor"
-    action, value = sys.argv[1:3]
+    args = sys.argv[1:]
+    if not args:
+        raise ValueError("operación inválida")
+    action = args[0]
+    if action == "ruta_runtime":
+        print(ruta_runtime())
+        return
+    if action == "pid_supervisor":
+        print(pid_supervisor())
+        return
+    value = args[1]
     if action == "captura":
         ref = captura(home, value, sys.argv[3] == "si")
         print(base64.b64encode(json.dumps(ref).encode()).decode())

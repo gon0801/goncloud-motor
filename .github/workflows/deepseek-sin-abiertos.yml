@@ -1,0 +1,127 @@
+name: deepseek-sin-abiertos
+
+# Solo frena el merge. El motor no espera este check ni lo usa como compuerta.
+# Se reevalúa al cambiar el cuerpo del PR, al terminar ai-review-publish (que
+# es quien escribe el sticky) y, como red de seguridad, en cada vuelta del
+# calendario sobre los PR abiertos. `issue_comment` no sirve: el sticky lo
+# publica GITHUB_TOKEN y sus eventos no lanzan workflows.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_run:
+    workflows: [ai-review-publish]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR a evaluar
+        required: true
+        type: string
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  checks: write
+
+jobs:
+  evaluar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: deepseek-sin-abiertos-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolver los PR a evaluar
+        id: prs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          numeros=""
+          case "${{ github.event_name }}" in
+            pull_request)
+              numeros="${{ github.event.pull_request.number }}"
+              ;;
+            workflow_run)
+              numeros="${{ github.event.workflow_run.pull_requests[0].number }}"
+              if [ -z "$numeros" ]; then
+                numeros="${{ github.event.workflow_run.display_title }}"
+              fi
+              ;;
+            workflow_dispatch)
+              numeros="${{ inputs.pr }}"
+              ;;
+            schedule)
+              numeros="$(gh api --paginate "repos/${repo}/pulls?state=open&per_page=100" --jq '.[].number' | tr '\n' ' ')"
+              ;;
+          esac
+          limpios=""
+          for numero in $numeros; do
+            if [[ "$numero" =~ ^[0-9]+$ ]]; then
+              limpios="$limpios $numero"
+            else
+              echo "deepseek-sin-abiertos: se ignora un evento sin PR: '$numero'" >&2
+            fi
+          done
+          echo "numeros=${limpios# }" >>"$GITHUB_OUTPUT"
+      - name: Evaluar y publicar el check por PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+
+          publicar() { # sha estado conclusion summary
+            local sha=$1 estado=$2 conclusion=$3 summary=$4 id
+            id="$(gh api "repos/${repo}/commits/${sha}/check-runs?check_name=deepseek-sin-abiertos&per_page=100" --jq '.check_runs[0].id // empty' 2>/dev/null || true)"
+            if [ -n "$id" ] && [ -n "$conclusion" ]; then
+              if gh api -X PATCH "repos/${repo}/check-runs/${id}" \
+                -f status="$estado" -f conclusion="$conclusion" \
+                -f "output[title]=DeepSeek sin abiertos" -f "output[summary]=${summary}" >/dev/null 2>&1; then
+                return 0
+              fi
+            elif [ -n "$id" ] && [ -z "$conclusion" ] \
+              && [ "$(gh api "repos/${repo}/check-runs/${id}" --jq .status 2>/dev/null || true)" != "completed" ]; then
+              gh api -X PATCH "repos/${repo}/check-runs/${id}" \
+                -f status="$estado" \
+                -f "output[title]=DeepSeek sin abiertos" -f "output[summary]=${summary}" >/dev/null
+              return 0
+            fi
+            if [ -n "$conclusion" ]; then
+              gh api -X POST "repos/${repo}/check-runs" \
+                -f name=deepseek-sin-abiertos -f head_sha="$sha" \
+                -f status="$estado" -f conclusion="$conclusion" \
+                -f "output[title]=DeepSeek sin abiertos" -f "output[summary]=${summary}" >/dev/null
+            else
+              # Pendiente se publica sin conclusión: un check requerido en
+              # curso no satisface la protección de rama.
+              gh api -X POST "repos/${repo}/check-runs" \
+                -f name=deepseek-sin-abiertos -f head_sha="$sha" \
+                -f status="$estado" \
+                -f "output[title]=DeepSeek sin abiertos" -f "output[summary]=${summary}" >/dev/null
+            fi
+          }
+
+          for numero in ${{ steps.prs.outputs.numeros }}; do
+            [ -n "$numero" ] || continue
+            sha="$(gh api "repos/${repo}/pulls/${numero}" --jq .head.sha)"
+            set +e
+            python3 -m motor.encargos.check_merge --repo "$repo" --pr "$numero" --sha "$sha" | tee resultado.json
+            rc=${PIPESTATUS[0]}
+            set -e
+            nota="$(python3 -c 'import json;print(json.load(open("resultado.json", encoding="utf-8"))["nota"])')"
+            case "$rc" in
+              0) publicar "$sha" completed success "$nota" ;;
+              1) publicar "$sha" completed failure "$nota" ;;
+              *)
+                # Sin sticky y sin omisión el veredicto queda pendiente y el
+                # check también: nunca se publica como neutral.
+                publicar "$sha" in_progress "" "$nota"
+                ;;
+            esac
+          done

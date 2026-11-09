@@ -1543,7 +1543,7 @@ def _barrer_encargos(
                     },
                     f"herramienta:{encargo_id}:{enc.generacion}:{secuencia}",
                 )
-                enc = registro.fold(encargo_id)
+                enc = registro.fold(encargo_id) or enc
         firma = firma_espacio(espacio)
         firma_previa = _ultima_firma(enc)
         if (
@@ -1566,7 +1566,7 @@ def _barrer_encargos(
                 },
                 f"actividad:{encargo_id}:{firma[:16]}",
             )
-            enc = registro.fold(encargo_id)
+            enc = registro.fold(encargo_id) or enc
         por_incorporar = (
             arbol == "ausente"
             and (
@@ -1596,7 +1596,7 @@ def _barrer_encargos(
             enc = _incorporar(registro, enc, espacio, hora, directorio)
             arbol = observar(directorio, proc)
         if not parada:
-            enc = _refrescar_cuerpo_fuera_de_alcance(
+            enc = _refrescar_cuerpo_excepciones(
                 registro, enc, gh, espacio, hora
             )
         if arbol == "ausente" and enc.proc is not None:
@@ -3305,6 +3305,10 @@ def _cerrar_con_juicio(
                 },
                 f"disputa-resuelta:{enc.id}:{h.id}",
             )
+            _anotar_excepcion(
+                registro, enc, "descarte", enc.pr_sha, h.id, marca, hora,
+                f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{h.id}",
+            )
         enc = registro.fold(enc.id) or enc
     fuera_ds = [
         (hid, razon)
@@ -3335,6 +3339,10 @@ def _cerrar_con_juicio(
                     },
                 },
                 f"fuera-alcance:{enc.id}:{enc.fase_activa}:{hid}",
+            )
+            _anotar_excepcion(
+                registro, enc, "fuera_alcance", enc.pr_sha, hid, razon, hora,
+                f"excepcion:{enc.id}:fuera:{enc.pr_sha}:{hid}",
             )
         enc = registro.fold(enc.id) or enc
     registro.anotar(
@@ -4942,6 +4950,10 @@ def _omitir_deepseek(
         },
         f"entrega:{enc.id}:{enc.fase_activa}:deepseek_sin_revision:{sha}",
     )
+    _anotar_excepcion(
+        registro, enc, "omision", sha, "", texto, hora,
+        f"excepcion:{enc.id}:omision:{enc.fase_activa}:{sha}",
+    )
     return registro.fold(enc.id) or enc
 
 
@@ -5059,7 +5071,89 @@ def _cuerpo_recortado(texto: str, resto: str) -> str:
     return f"{candidato}{resto}"
 
 
-def _cuerpo_pr(enc: Encargo, espacio: Path, fase_id: str = "") -> str:
+def _anotar_excepcion(
+    registro: Registro, enc: Encargo, tipo: str, sha: str, hallazgo: str,
+    motivo: str, hora: str, clave: str,
+) -> None:
+    """La excepción del check de merge, estructurada y con su SHA.
+
+    El check solo acepta esta fuente; el texto del PR no autoriza nada.
+    """
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "excepcion",
+            "data": {
+                "tipo": tipo,
+                "sha": str(sha or ""),
+                "id": str(hallazgo or ""),
+                "motivo": " ".join(str(motivo or "").split()),
+                "hora": hora,
+            },
+        },
+        clave,
+    )
+
+
+def _excepciones_del_registro(
+    registro: Registro, enc: Encargo, sha: str
+) -> list[dict]:
+    """Las excepciones publicadas en el marcador del cuerpo del PR.
+
+    Los eventos `excepcion` son la fuente. Un encargo anterior a esa marca
+    conserva los `hallazgo_fuera_de_alcance` como fuente mientras no haya
+    ninguno estructurado. El SHA de un evento viejo es el de la fase.
+    """
+    eventos = list(registro.eventos(enc.id))
+    estructuradas: list[dict] = []
+    for ev in eventos:
+        if ev["kind"] != "excepcion":
+            continue
+        d = ev["data"]
+        motivo = " ".join(str(d.get("motivo") or "").split())
+        estructura = {
+            "tipo": str(d.get("tipo") or "descarte"),
+            "sha": str(d.get("sha") or ""),
+            "id": str(d.get("id") or ""),
+            "motivo": motivo,
+            "hora": str(d.get("hora") or ""),
+        }
+        if estructura["sha"] and estructura["tipo"] in (
+            "descarte", "fuera_alcance", "omision"
+        ):
+            estructuradas.append(estructura)
+    if estructuradas:
+        return _sin_excepciones_repetidas(estructuradas)
+    legado: list[dict] = []
+    for ev in eventos:
+        if ev["kind"] != "hallazgo_fuera_de_alcance":
+            continue
+        d = ev["data"]
+        hid = str(d.get("id") or "").strip()
+        razon = " ".join(str(d.get("razon") or "").split())
+        if hid and razon:
+            legado.append(
+                {
+                    "tipo": "fuera_alcance",
+                    "sha": str(sha or ""),
+                    "id": hid,
+                    "motivo": razon,
+                    "hora": str(d.get("hora") or ""),
+                }
+            )
+    return _sin_excepciones_repetidas(legado)
+
+
+def _sin_excepciones_repetidas(excepciones: list[dict]) -> list[dict]:
+    vistos: dict[tuple[str, str, str], dict] = {}
+    for e in excepciones:
+        vistos[(e["tipo"], e["sha"], e["id"])] = e
+    return list(vistos.values())
+
+
+def _cuerpo_pr(
+    enc: Encargo, espacio: Path, fase_id: str = "", excepciones=(),
+) -> str:
     """El cuerpo del PR: lo que el responsable dejó en `.interno/cuerpo-pr.md`,
     con una línea final que identifica el encargo y la fase. Sin archivo o vacío
     se conserva el cuerpo de siempre. Los pendientes y notas del motor se añaden
@@ -5113,10 +5207,19 @@ def _cuerpo_pr(enc: Encargo, espacio: Path, fase_id: str = "") -> str:
         f"Encargo {enc.id}. Fase: "
         f"{fase_id or enc.fase_activa or FASE_IMPLICITA}."
     )
-    cuerpo = f"{texto}\n\n{linea}"
+    # El marcador va junto a la línea del encargo: el recorte conserva ese
+    # final, así que el check nunca pierde la fuente de excepciones.
+    marca = ""
+    if excepciones:
+        marca = (
+            "\n<!-- motor:excepciones="
+            + json.dumps(list(excepciones), ensure_ascii=False, sort_keys=True)
+            + " -->"
+        )
+    cuerpo = f"{texto}\n\n{linea}{marca}"
     if _cabe_en_el_limite(cuerpo):
         return cuerpo
-    resto = f"{_NOTA_CUERPO_RECORTADO}\n\n{linea}"
+    resto = f"{_NOTA_CUERPO_RECORTADO}\n\n{linea}{marca}"
     return _cuerpo_recortado(texto, resto)
 
 
@@ -5170,7 +5273,12 @@ def _actualizar_cuerpo_pr(
     hora: str,
     fase_id: str = "",
 ) -> Encargo:
-    cuerpo = _cuerpo_pr(enc, espacio, fase_id)
+    cuerpo = _cuerpo_pr(
+        enc,
+        espacio,
+        fase_id,
+        _excepciones_del_registro(registro, enc, enc.pr_sha or sha),
+    )
     huella = _huella_cuerpo(cuerpo)
     if _cuerpo_ya_publicado(registro, enc, sha, huella, fase_id):
         return enc
@@ -5193,19 +5301,18 @@ def _actualizar_cuerpo_pr(
     return registro.fold(enc.id) or enc
 
 
-def _refrescar_cuerpo_fuera_de_alcance(
+def _refrescar_cuerpo_excepciones(
     registro: Registro, enc: Encargo, gh, espacio: Path, hora: str
 ) -> Encargo:
-    """El PR ya abierto recibe la sección de hallazgos fuera de alcance.
+    """El PR ya abierto recibe el marcador de excepciones del check de merge.
 
-    El cuerpo se publica por SHA; una anotación posterior no cambia el SHA, así
-    que la huella del cuerpo decide si hay algo nuevo que publicar.
+    Ese marcador cubre descartes del revisor, hallazgos fuera de alcance y la
+    omisión de DeepSeek. El cuerpo se publica por SHA; la huella decide si hay
+    algo nuevo que publicar, así que repetir la pasada no lo reescribe.
     """
-    if (
-        gh is None
-        or not getattr(enc, "pr_numero", 0)
-        or not getattr(enc, "fuera_de_alcance", ())
-    ):
+    if gh is None or not getattr(enc, "pr_numero", 0):
+        return enc
+    if not _excepciones_del_registro(registro, enc, enc.pr_sha):
         return enc
     return _actualizar_cuerpo_pr(
         registro, enc, gh, enc.pr_numero, enc.pr_sha, espacio, hora
@@ -5329,6 +5436,10 @@ def _anotar_lectura_deepseek(
                 "data": {"id": hid, "titulo": titulo, "razon": razon, "hora": hora},
             },
             f"fuera-alcance:{enc.id}:{enc.fase_activa}:{hid}",
+        )
+        _anotar_excepcion(
+            registro, enc, "fuera_alcance", sha, hid, razon, hora,
+            f"excepcion:{enc.id}:fuera:{sha}:{hid}",
         )
     if fuera:
         enc = registro.fold(enc.id) or enc
@@ -7039,7 +7150,11 @@ def _entregar_con_pendientes(
                         _limpiar_encargo_cerrado(registro, enc, hora)
                     return enc
             cuerpo = _cuerpo_pr(
-                replace(enc, pendientes_entrega=tuple(pendientes)), espacio
+                replace(enc, pendientes_entrega=tuple(pendientes)),
+                espacio,
+                excepciones=_excepciones_del_registro(
+                    registro, enc, enc.pr_sha or sha
+                ),
             )
             try:
                 if numero:
@@ -7220,7 +7335,7 @@ def _paso_entrega_paso(
     enc = adoptar_politica_despliegue(
         registro, enc, _espacio(registro.base, enc.id), hora
     )
-    enc = _refrescar_cuerpo_fuera_de_alcance(
+    enc = _refrescar_cuerpo_excepciones(
         registro, enc, gh, _espacio(registro.base, enc.id), hora
     )
     if enc.nivel_alcanzado == "desplegado":
@@ -7553,7 +7668,13 @@ def _paso_entrega_paso(
                 rama,
                 base,
                 f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
-                _cuerpo_pr(enc, espacio),
+                _cuerpo_pr(
+                    enc,
+                    espacio,
+                    excepciones=_excepciones_del_registro(
+                        registro, enc, enc.pr_sha or sha
+                    ),
+                ),
             )
             numero = int(pr.numero)
             registro.anotar(
@@ -7717,7 +7838,7 @@ def _paso_entrega_paso(
             return _con_espera(registro.fold(enc.id) or enc)
         relectura_ds = enc.deepseek_sha == sha
         enc = _anotar_lectura_deepseek(registro, enc, numero, sha, comentarios, hora)
-        enc = _refrescar_cuerpo_fuera_de_alcance(
+        enc = _refrescar_cuerpo_excepciones(
             registro, enc, gh, espacio, hora
         )
         abiertos_ds = bloqueantes_abiertos(enc, "deepseek")
@@ -9261,6 +9382,10 @@ def _recibir_resultado_nuevo(
             },
             f"disputa-resuelta-autoridad:{enc.id}:{hid}",
         )
+        _anotar_excepcion(
+            registro, enc, "descarte", enc.pr_sha, hid, marca, hora,
+            f"excepcion:{enc.id}:descarte:{enc.pr_sha}:{hid}",
+        )
         ya_resueltos.add(hid)
         aplicados = True
     for hid, razon in validado.fuera_de_alcance:
@@ -9282,6 +9407,10 @@ def _recibir_resultado_nuevo(
                 "data": {"id": hid, "titulo": h.titulo, "razon": razon, "hora": hora},
             },
             f"fuera-alcance:{enc.id}:{fase}:{hid}",
+        )
+        _anotar_excepcion(
+            registro, enc, "fuera_alcance", enc.pr_sha, hid, razon, hora,
+            f"excepcion:{enc.id}:fuera:{enc.pr_sha}:{hid}",
         )
         ya_resueltos.add(hid)
         aplicados = True

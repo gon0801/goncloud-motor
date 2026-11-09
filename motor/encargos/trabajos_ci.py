@@ -92,6 +92,74 @@ SALIDAS = {
     "windows": "windows",
 }
 
+# La batería completa del job `windows`. Es el respaldo cuando el diff no dice
+# nada o toca una ruta desconocida: ante la duda corre todo.
+MODULOS_WINDOWS_COMPLETO = (
+    "tests.test_windows",
+    "tests.test_windows_identidad",
+    "tests.test_windows_wsl",
+    "tests.test_lanzamiento_directo_windows",
+    "tests.test_relanzamiento_pc",
+    "tests.test_prepara_pc",
+    "tests.test_director_capacidades",
+    "tests.test_encargos_despliegue_real",
+    "tests.test_despliegue_recuperacion",
+    "tests.test_pausa_entre_fases",
+    "tests.test_reabrir_cierre_forzado",
+    "tests.test_relevo_sin_modelos",
+    "tests.test_cli_reabrir",
+    "tests.test_compuerta_e2e",
+)
+
+# Qué módulos de Windows ejercitan cada parte. Un cambio suma los grupos que
+# toca; una ruta fuera de todos corre la batería completa.
+_GRUPOS_WINDOWS = (
+    (
+        (
+            "ops/prepara_pc.py",
+            "ops/iniciar_encargos_pc.py",
+            "motor/plataforma/",
+            "motor/runwrap.py",
+            "motor/encargos/aislamiento.py",
+        ),
+        (
+            "tests.test_windows",
+            "tests.test_windows_identidad",
+            "tests.test_windows_wsl",
+            "tests.test_lanzamiento_directo_windows",
+            "tests.test_relanzamiento_pc",
+            "tests.test_prepara_pc",
+        ),
+    ),
+    (
+        (
+            "motor/encargos/",
+            "motor/github.py",
+            "motor/effects.py",
+            "motor/flota/",
+        ),
+        (
+            "tests.test_encargos_despliegue_real",
+            "tests.test_despliegue_recuperacion",
+            "tests.test_pausa_entre_fases",
+            "tests.test_reabrir_cierre_forzado",
+            "tests.test_relevo_sin_modelos",
+            "tests.test_cli_reabrir",
+            "tests.test_director_capacidades",
+            "tests.test_lanzamiento_directo_windows",
+            "tests.test_compuerta_e2e",
+        ),
+    ),
+    (
+        ("tests/test_windows*",),
+        (
+            "tests.test_windows",
+            "tests.test_windows_identidad",
+            "tests.test_windows_wsl",
+        ),
+    ),
+)
+
 
 def trabajo(nombre: str) -> str:
     texto = str(nombre or "").strip()
@@ -136,6 +204,44 @@ def trabajos_a_correr(rutas, disponibles=TRABAJOS) -> tuple[str, ...]:
         for job in disponibles
         if job in DEPENDENCIAS and afecta(job, rutas)
     )
+
+
+def _cae_en(ruta: str, prefijo: str) -> bool:
+    limpia, objetivo = _normalizar(ruta), _normalizar(prefijo)
+    if objetivo.endswith("/"):
+        return limpia == objetivo[:-1] or limpia.startswith(objetivo)
+    if objetivo.endswith("*"):
+        # Una familia de archivos, como `tests/test_windows*`: la prueba
+        # modificada cae en su grupo aunque no sea la del nombre exacto.
+        return limpia.startswith(objetivo[:-1])
+    return limpia == objetivo
+
+
+def modulos_windows(rutas) -> tuple[str, ...]:
+    """Los módulos de Windows que ejercitan las rutas tocadas.
+
+    Dos orígenes distintos eligen módulos distintos. Un cambio al workflow, una
+    ruta que ningún grupo cubre o una ruta desconocida junto a otra conocida
+    corre la batería completa: el job nunca deja de probar por no reconocer el
+    diff.
+    """
+    limpias = tuple(_normalizar(r) for r in (rutas or ()) if str(r or "").strip())
+    if not limpias:
+        return MODULOS_WINDOWS_COMPLETO
+    if any(r.startswith(".github/workflows/") for r in limpias):
+        return MODULOS_WINDOWS_COMPLETO
+    cubiertas: set[str] = set()
+    elegidos: set[str] = set()
+    for prefijos, modulos in _GRUPOS_WINDOWS:
+        for ruta in limpias:
+            if any(_cae_en(ruta, p) for p in prefijos):
+                cubiertas.add(ruta)
+                elegidos.update(modulos)
+    # Una sola ruta que ningún grupo reconozca basta para no acotar: junto a
+    # una conocida, acotar dejaría sin correr las pruebas que esa ruta activa.
+    if len(cubiertas) < len(set(limpias)):
+        return MODULOS_WINDOWS_COMPLETO
+    return tuple(m for m in MODULOS_WINDOWS_COMPLETO if m in elegidos)
 
 
 def _jobs_extra(mensaje: str) -> tuple[str, ...]:
@@ -191,22 +297,38 @@ def _base_y_head(evento: dict) -> tuple[str, str]:
     return "", ""
 
 
-def _decidir(
-    cambios: tuple[str, ...] | None,
-    hay_base: bool,
-    extra=(),
-) -> dict[str, bool]:
-    """Decide por las rutas cambiadas entre base y head. `extra` solo suma."""
-    if hay_base and cambios is not None:
-        correr = set(trabajos_a_correr(cambios))
-    else:
+def _calcular(rutas, extra) -> tuple[dict[str, bool], tuple[str, ...]]:
+    """La selección de jobs y los módulos de Windows para unas rutas.
+
+    `rutas` None significa que no hay diff legible y corren todos. `extra`
+    solo añade jobs; nunca quita.
+    """
+    if rutas is None:
         correr = set(TRABAJOS)
-    correr |= {trabajo(j) for j in extra if trabajo(j) in TRABAJOS}
-    return {job: job in correr for job in TRABAJOS}
+        agregados: set[str] = set()
+    else:
+        por_rutas = set(trabajos_a_correr(rutas))
+        agregados = {trabajo(j) for j in extra if trabajo(j) in TRABAJOS} - por_rutas
+        correr = por_rutas | agregados
+    valores = {job: job in correr for job in TRABAJOS}
+    modulos = (
+        MODULOS_WINDOWS_COMPLETO
+        if rutas is None or "windows" in agregados
+        else modulos_windows(rutas)
+    )
+    return valores, modulos
 
 
-def seleccion(evento: dict | None = None) -> dict[str, bool]:
-    """Los cuatro jobs de pruebas, con True/False. Cualquier duda corre todos."""
+def seleccion(
+    evento: dict | None = None, rutas=None
+) -> tuple[dict[str, bool], tuple[str, ...]]:
+    """Los cuatro jobs de pruebas y los módulos de Windows. Cualquier duda corre todos.
+
+    Es la única decisión: `main` publica exactamente esto, con el mismo
+    respaldo cuando git, la base o el evento no permiten comparar.
+    """
+    if rutas is not None:
+        return _calcular(tuple(rutas), ())
     evento = evento if evento is not None else _evento()
     try:
         base, head = _base_y_head(evento)
@@ -215,18 +337,20 @@ def seleccion(evento: dict | None = None) -> dict[str, bool]:
         extra = _jobs_extra(mensaje_de_git(head)) if head else ()
         hay_base = bool(base) and not set(base) <= {"0"}
         cambios = cambios_de_git(base, head) if hay_base else None
-        return _decidir(cambios, hay_base, extra=extra)
+        return _calcular(cambios, extra)
     except Exception as exc:  # sin base o git roto: todos
         print(f"trabajos_ci: no se pudo decidir, corren todos: {exc}", file=sys.stderr)
-        return {job: True for job in TRABAJOS}
+        return {job: True for job in TRABAJOS}, MODULOS_WINDOWS_COMPLETO
 
 
-def _salida_github(valores: dict[str, bool]) -> None:
+def _salida_github(valores: dict[str, bool], modulos=()) -> None:
     ruta = os.environ.get("GITHUB_OUTPUT") or ""
     lineas = "".join(
         f"{SALIDAS[job]}={'true' if valores[job] else 'false'}\n"
         for job in TRABAJOS
     )
+    if modulos:
+        lineas += "modulos_windows=" + " ".join(modulos) + "\n"
     if ruta:
         with open(ruta, "a", encoding="utf-8") as fh:
             fh.write(lineas)
@@ -239,18 +363,16 @@ def main(argv=None) -> int:
     ap.add_argument("--github-output", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--rutas", default="")
+    ap.add_argument("--modulos-windows", action="store_true")
     args = ap.parse_args(argv)
-    if args.rutas:
-        correr = set(trabajos_a_correr(args.rutas.split(",")))
-        valores = {job: job in correr for job in TRABAJOS}
+    rutas = tuple(r for r in args.rutas.split(",") if r) if args.rutas else None
+    valores, modulos = seleccion(rutas=rutas)
+    if args.modulos_windows:
+        print(" ".join(modulos))
+    elif args.json:
+        print(json.dumps({**valores, "modulos_windows": list(modulos)}, sort_keys=True))
     else:
-        valores = seleccion()
-    if args.json:
-        print(json.dumps(valores, sort_keys=True))
-    elif args.github_output:
-        _salida_github(valores)
-    else:
-        _salida_github(valores)
+        _salida_github(valores, modulos)
     return 0
 
 

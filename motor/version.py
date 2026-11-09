@@ -18,6 +18,8 @@ RAIZ = Path(__file__).resolve().parent.parent
 SALIDA_RELANZAR = 75  # EX_TEMPFAIL: "me actualicé, reiníciame"
 RELANZO_RAPIDO_S = 30  # si salió con 75 antes de esto, no relanzar en caliente (la conf pide algo que no hay)
 
+_SHA_ARRANQUE: str | None = None
+
 
 def sha_actual(raiz: Path = RAIZ) -> str:
     r = subprocess.run(
@@ -29,6 +31,19 @@ def sha_actual(raiz: Path = RAIZ) -> str:
         stdin=subprocess.DEVNULL,
     )
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "sin-git"
+
+
+def sha_de_arranque(raiz: Path = RAIZ) -> str:
+    """El SHA del código que este proceso cargó al arrancar, no el del disco.
+
+    Un supervisor vivo sigue ejecutando el código viejo aunque un checkout
+    mueva HEAD. El recibo de pasada usa este valor para que solo un proceso
+    reiniciado con el SHA nuevo acredite la pasada.
+    """
+    global _SHA_ARRANQUE
+    if _SHA_ARRANQUE is None:
+        _SHA_ARRANQUE = sha_actual(raiz)
+    return _SHA_ARRANQUE
 
 
 def version_en_disco(raiz: Path = RAIZ) -> str:

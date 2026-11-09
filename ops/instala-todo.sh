@@ -476,6 +476,39 @@ TXT
   return $rc
 }
 
+# actualiza_runtime <m> <ruta>: deja el árbol que ejecuta el supervisor en la
+# etiqueta. Sin esto, el recibo (que se escribe para ~/motor) y la pasada (que
+# sale del árbol del supervisor) hablan de árboles distintos y ningún despliegue
+# real puede comprobarse.
+actualiza_runtime() {
+  local m=$1 runtime=$2 h actual
+  if [ "$m" = pc ]; then
+    h="$(host_de pc)"
+    actual="$(ssh_a "$h" "git -C \"$runtime\" config --get remote.origin.url" 2>/dev/null | tr -d '[:space:]')" || actual=""
+    case "$actual" in
+      *goncloud-motor.git|"$REPO_URL") ;;
+      *) echo "el árbol del supervisor no es de $REPO_URL: $runtime ($actual)" >&2; return 1 ;;
+    esac
+    ssh_a "$h" "git -C \"$runtime\" remote set-url origin $REPO_URL" || return 1
+    ssh_a "$h" "git -C \"$runtime\" fetch -q --tags --force origin" || return 1
+    ssh_a "$h" "git -C \"$runtime\" checkout -q --detach refs/tags/$ETIQUETA" || return 1
+    return 0
+  fi
+  en_posix "$m" "$m" "$runtime" "$REPO_URL" "$ETIQUETA" <<'REMOTO'
+set -euo pipefail
+runtime=$2 repo=$3 etiqueta=$4
+[ -e "$runtime/.git" ] || { echo "el árbol del supervisor no es un clon: $runtime" >&2; exit 1; }
+actual="$(git -C "$runtime" config --get remote.origin.url || true)"
+case "$actual" in
+  *goncloud-motor.git|"$repo") ;;
+  *) echo "el árbol del supervisor no es de $repo: $actual" >&2; exit 1 ;;
+esac
+git -C "$runtime" remote set-url origin "$repo"
+git -C "$runtime" fetch -q --tags --force origin
+git -C "$runtime" checkout -q --detach "refs/tags/$etiqueta"
+REMOTO
+}
+
 rechazaron=""
 for m in $MAQUINAS; do
   echo "== valida la conf en $m"
@@ -567,4 +600,33 @@ for m in $MAQUINAS; do
       || { echo "FALLÓ $m" >&2; echo "No quedó instalado en: $m. No sigo con las demás; el origen de ese intento se conserva." >&2; exit 1; }
   fi
 done
+# El supervisor puede correr desde un árbol distinto de ~/motor (el
+# WorkingDirectory de su servicio o el runtime del vigilante de la PC). Ese es
+# el árbol cuyo SHA verá la comprobación: se deja en la misma etiqueta.
+for m in $MAQUINAS; do
+  runtime="$(ruta_runtime_de "$m")" || { echo "FALLA $m: no pude leer el árbol del supervisor" >&2; exit 1; }
+  if [ -n "$runtime" ]; then
+    echo "$m: el supervisor corre $runtime; lo dejo en ${sha:0:12}"
+    actualiza_runtime "$m" "$runtime" || {
+      echo "FALLA $m: el árbol del supervisor ($runtime) no quedó en ${sha:0:12}" >&2
+      exit 1
+    }
+  fi
+  reinicia_supervisor "$m" || {
+    echo "FALLA $m: el reinicio falló; el árbol quedó en ${sha:0:12} pero el supervisor no se relanzó" >&2
+    exit 1
+  }
+done
+# El despliegue no se declara sin las tres pruebas por máquina: recibo con el
+# SHA nuevo, supervisor vivo y una pasada completa con ese SHA. La espera es
+# acotada y, si no llega, se dice por máquina en lugar de decir "Instalado".
+espera="${MOTOR_ESPERA_DESPLIEGUE:-120}"
+case "$espera" in
+  "" | *[!0-9]*) espera=120 ;;
+esac
+echo "Comprobando el despliegue en:$MAQUINAS (hasta ${espera}s para la pasada con ${sha:0:12})"
+if ! bash "$aqui/comprueba-despliegue.sh" --sha "$sha" --maquina "$MAQUINAS" --espera "$espera" --reinicio; then
+  echo "El código quedó instalado en:$MAQUINAS, pero el despliegue no se comprueba en todas. Reinicia el supervisor con ${sha:0:12} y repite; la comprobación es idempotente." >&2
+  exit 1
+fi
 echo "Instalado en:$MAQUINAS. Siguiente, si hace falta el servicio: ~/.motor/instalar-servicio.txt en cada una. Esta fase no recupera el servicio de Windows."
