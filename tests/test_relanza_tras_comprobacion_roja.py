@@ -505,52 +505,106 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
     def test_un_comentario_nuevo_de_deepseek_no_relanza_al_revisor_con_rojo(self):
         """Un comentario nuevo de DeepSeek no adelanta al revisor.
 
-        Con un rojo del supervisor abierto, el turno es del responsable: la
-        revision final del tramo espera a que ese bloqueo se resuelva.
+        La carrera vive en la condicion de `_releer_deepseek`: se llama a la
+        funcion real con un registro real y el estado minimo de un PR abierto,
+        una aprobacion anterior al producto vigente y un rojo del supervisor.
+        Con ese rojo abierto, el turno es del responsable.
         """
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r, e = self._aprobado(
-                tmp, "f6-rojo-deepseek",
-                lambda d: github_con_hallazgos(d, titulos=()),
-            )
-            declaradas = self._declarar(r)
-            self._observar(r, e, declaradas, rc=1, stderr=STDERR_EN_ROJO)
+        from motor.encargos import ciclo
+        from motor.encargos.registro import Registro
 
-            roles: list[str] = []
-            prompts: list[str] = []
-            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
-            self.assertIn("responsable", roles)
-            e = r.fold()
-            r.reg.anotar(
-                r.enc,
-                {"kind": "reserva_cerrada", "data": {}},
-                f"t-cierre:{e.generacion}",
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Registro(Path(tmp) / "base")
+            try:
+                ident = ciclo.recibir(
+                    reg, "arregla el CLI", "f6-rojo-deepseek",
+                    "2026-11-09T09:00:00Z", entrega_nivel="pr",
+                    repo="o/r", base_rama="main",
+                )["encargo"]
+                sha = "a" * 40
+                hora = "2026-11-09T10:00:00Z"
+                reg.anotar(
+                    ident,
+                    {"kind": "producto_listo", "data": {
+                        "fase": "", "version": "v2",
+                        "manifiesto": [["saludo.txt", "aaa"]],
+                        "sha_git": "", "hora": hora,
+                    }},
+                    "f6-producto",
+                )
+                reg.anotar(
+                    ident,
+                    {"kind": "revision", "data": {
+                        "fase": "", "revision_id": "r1", "version": "v1",
+                        "base_version": "", "alcance": "completa",
+                        "veredicto": "aprobado", "revisor": "opus",
+                        "origen": "independiente", "cubre": [],
+                        "hallazgos": [], "hora": hora,
+                    }},
+                    "f6-aprobado",
+                )
+                for ukey, paso in (
+                    ("f6-pr", "pr_abierto"), ("f6-ds", "deepseek_leido")
+                ):
+                    reg.anotar(
+                        ident,
+                        {"kind": "entrega_externa", "data": {
+                            "fase": "", "paso": paso, "repo": "o/r",
+                            "numero": 1, "sha": sha,
+                            "huella": "h-viejo" if paso == "deepseek_leido" else "",
+                            "hora": hora,
+                        }},
+                        ukey,
+                    )
+                reg.anotar(
+                    ident,
+                    {"kind": "comprobaciones_supervisor", "data": {
+                        "version": "v2",
+                        "hallazgos": [{
+                            "id": "h_sup", "gravedad": "bloqueante",
+                            "criterio": "comportamiento",
+                            "titulo": "comprobacion del supervisor en rojo: x",
+                            "reproduccion": "rc 1", "ancla": "x",
+                            "origen": "supervisor", "estado": "abierto",
+                        }],
+                        "verdes": [], "hora": hora,
+                    }},
+                    "f6-rojo",
+                )
+                e = reg.fold(ident)
+                self.assertTrue(
+                    [
+                        h for h in e.fase_actual.hallazgos
+                        if h.origen == "supervisor" and h.estado == "abierto"
+                    ],
+                    "el escenario abre un rojo del supervisor",
+                )
 
-            vuelta.gh.sufijo = " (revision nueva)"
-            antes = len(r.reg.eventos(r.enc))
-            roles = []
-            prompts = []
-            _barrido(
-                r, vuelta.gh, _lanzador(roles, prompts), t=time.time() + 3600
-            )
+                class Gh:
+                    def comentarios_deepseek(self, repo, numero, sha):
+                        return [{
+                            "texto": "DeepSeek: APPROVED (revision nueva)",
+                            "sha": sha,
+                        }]
 
-            nuevos = r.reg.eventos(r.enc)[antes:]
-            self.assertNotIn(
-                "revisor",
-                roles,
-                "un comentario nuevo de DeepSeek no relanza al revisor mientras "
-                "el rojo del supervisor sigue abierto",
-            )
-            self.assertFalse(
-                any(
-                    ev["kind"] == "estrategia"
+                ciclo._releer_deepseek(
+                    reg, e, Gh(), Path(tmp), "2026-11-09T11:00:00Z", time.time()
+                )
+                estrategias = [
+                    ev
+                    for ev in reg.eventos(ident)
+                    if ev["kind"] == "estrategia"
                     and ev["data"].get("rol") == "revisor"
                     and ev["data"].get("estrategia") == "revisar_evidencia"
-                    for ev in nuevos
-                ),
-                "no se relanza la revision final con el rojo del supervisor abierto",
-            )
+                ]
+                self.assertEqual(
+                    estrategias,
+                    [],
+                    "un comentario nuevo de DeepSeek no relanza al revisor "
+                    "mientras el rojo del supervisor sigue abierto",
+                )
+            finally:
+                reg.close()
 
     def test_replay_del_prefijo_real_hasta_67595_abre_intento(self):
         """Reconstruye los eventos decisivos de `enc_0dc2b585542ac181` hasta
