@@ -25,7 +25,7 @@ FAKE
 chmod +x "$S/bin/ssh"
 
 estado() { # estado <host> <recibo> <vivo> <sha-pasada> [sha-arbol]
-  printf 'recibo %s\nvivo %s\npasada %s 2026-11-08T10:00:00Z completa\nruta /runtime/%s\narbol %s\n' \
+  printf 'recibo %s\nvivo %s\npasada %s 2026-11-08T10:00:00Z completa\nruta /runtime/%s\narbol %s\nregistro 0 0\n' \
     "$2" "$3" "$4" "$1" "${5:-$4}" >"$S/estado-$1"
 }
 
@@ -70,11 +70,24 @@ espera "un árbol del supervisor en otro SHA falla" '!0' \
   bash "$SCRIPT" --sha "$SHA" --maquina mini
 contiene "la causa nombra el árbol" "$S/salida" "el árbol del supervisor está en"
 
-printf 'recibo %s\nvivo si\npasada %s 2026-11-08T10:00:00Z completa\narbol %s\n' \
+printf 'recibo %s\nvivo si\npasada %s 2026-11-08T10:00:00Z completa\narbol %s\nregistro 0 0\n' \
   "$SHA" "$SHA" "$SHA" >"$S/estado-mini"
 espera "una pasada sin árbol del supervisor falla" '!0' \
   bash "$SCRIPT" --sha "$SHA" --maquina mini
 contiene "la causa pide el árbol" "$S/salida" "no dice qué árbol"
+
+# El registro de encargos tiene que plegar entero: recibo, pasada y árbol no bastan.
+printf 'recibo %s\nvivo si\npasada %s 2026-11-08T10:00:00Z completa\nruta /runtime/mini\narbol %s\nregistro 3 1\n' \
+  "$SHA" "$SHA" "$SHA" >"$S/estado-mini"
+espera "un registro que no pliega entero falla" '!0' \
+  bash "$SCRIPT" --sha "$SHA" --maquina mini
+contiene "la causa nombra el registro" "$S/salida" "el registro no pliega entero"
+
+printf 'recibo %s\nvivo si\npasada %s 2026-11-08T10:00:00Z completa\nruta /runtime/mini\narbol %s\n' \
+  "$SHA" "$SHA" "$SHA" >"$S/estado-mini"
+espera "sin dato del registro la comprobación falla" '!0' \
+  bash "$SCRIPT" --sha "$SHA" --maquina mini
+contiene "la causa pide el registro" "$S/salida" "no dice si el registro pliega"
 
 # El despliegue ordenó el reinicio: si la pasada no es nueva, la causa lo dice.
 estado mini "$SHA" si "$OTRO"
@@ -102,9 +115,9 @@ cat >"$S/dinamico-mini" <<SH
 n="\$(cat "$S/cuenta-mini" 2>/dev/null || echo 0)"
 n=\$((n + 1)); echo "\$n" >"$S/cuenta-mini"
 if [ "\$n" -lt 2 ]; then
-  printf 'recibo %s\nvivo si\npasada %s 2026-11-08T09:00:00Z completa\nruta /runtime/mini\narbol %s\n' "$SHA" "$OTRO" "$OTRO"
+  printf 'recibo %s\nvivo si\npasada %s 2026-11-08T09:00:00Z completa\nruta /runtime/mini\narbol %s\nregistro 0 0\n' "$SHA" "$OTRO" "$OTRO"
 else
-  printf 'recibo %s\nvivo si\npasada %s 2026-11-08T10:01:00Z completa\nruta /runtime/mini\narbol %s\n' "$SHA" "$SHA" "$SHA"
+  printf 'recibo %s\nvivo si\npasada %s 2026-11-08T10:01:00Z completa\nruta /runtime/mini\narbol %s\nregistro 0 0\n' "$SHA" "$SHA" "$SHA"
 fi
 SH
 espera "una pasada nueva dentro de la espera acotada pasa" 0 \
