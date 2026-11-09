@@ -13,6 +13,7 @@ constante.
 from __future__ import annotations
 from motor.io import leer_json, leer_texto
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -27,6 +28,7 @@ from pathlib import Path
 
 from .aislamiento import aislar, limpiar_temporal
 from .dominio import CRITERIOS, AlcanceRevision, Hallazgo, VersionProducto, id_hallazgo
+from .politica import DEEPSEEK_BLOQUEANTES
 
 INTERNO = ".interno"
 _EXCLUIDAS = (".git", "__pycache__", ".runtime", INTERNO)
@@ -808,21 +810,39 @@ def _ruta_cubierta(
 
 
 def hallazgo_fuera_de_alcance_por_restriccion(
-    restricciones: tuple[str, ...], hallazgo: Hallazgo
+    restricciones: tuple[str, ...],
+    hallazgo: Hallazgo,
+    *,
+    permisos: tuple[str, ...] = (),
+    prohibiciones: tuple[str, ...] = (),
 ) -> str:
     """Razón por la que una restricción expresa deja fuera el archivo del hallazgo.
 
-    Una restricción que prohíbe tocar rutas deja fuera esos archivos. Una que
-    acota el cambio a ciertas rutas deja fuera los demás. La heurística solo
-    actúa cuando la restricción nombra rutas y dice «no tocar» o «acotado a»,
-    sin excepciones ni mezclas de prohibición y lista blanca: «salvo»,
-    «excepto», «fuera de», «ajenos a», «que no sea», «distinto», «sino» y una
-    cláusula con «no tocar» y «solo» se dejan al revisor independiente. Una
-    frase sin rutas no autoriza a descartar nada.
+    Las restricciones estructuradas se comparan por ruta con `fnmatch`: las
+    prohibiciones sacan el archivo que cubren y una lista blanca saca todo lo
+    que no cubre. Las restricciones viejas en prosa conservan el filtro de
+    siempre, sin ampliarlo. La heurística solo actúa cuando la restricción
+    nombra rutas y dice «no tocar» o «acotado a», sin excepciones ni mezclas de
+    prohibición y lista blanca: «salvo», «excepto», «fuera de», «ajenos a»,
+    «que no sea», «distinto», «sino» y una cláusula con «no tocar» y «solo» se
+    dejan al revisor independiente. Una frase sin rutas no autoriza a descartar
+    nada.
     """
     ruta = _ruta_de(hallazgo.ancla)
     if not ruta:
         return ""
+    for glob in prohibiciones:
+        if fnmatch.fnmatch(ruta, glob):
+            return (
+                "la restricción estructurada del encargo prohíbe tocar "
+                f"{glob}; el hallazgo señala {ruta}"
+            )
+    if permisos and not any(fnmatch.fnmatch(ruta, glob) for glob in permisos):
+        return (
+            "la restricción estructurada del encargo limita el cambio a "
+            + ", ".join(sorted(permisos))
+            + f"; el hallazgo señala {ruta}"
+        )
     incluye: list[tuple[str, ...]] = []
     excluye: list[tuple[str, ...]] = []
     # La heurística solo actúa sobre cláusulas sin excepciones: «salvo»,
@@ -1272,7 +1292,7 @@ def _hallazgos_estructurados(texto: str, sha: str) -> list[Hallazgo] | None:
         if estado in _ESTADOS_CERRADOS_DEEPSEEK:
             continue
         severidad = str(entrada.get("severity") or entrada.get("severidad") or "").lower()
-        bloqueante = severidad in ("critical", "high", "medium")
+        bloqueante = severidad in DEEPSEEK_BLOQUEANTES
         titulo = str(
             entrada.get("title")
             or entrada.get("titulo")

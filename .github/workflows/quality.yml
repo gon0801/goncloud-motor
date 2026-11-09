@@ -26,6 +26,8 @@ jobs:
         run: python tools/calidad.py io
       - name: Marcadores que deciden, anotados como eventos
         run: python tools/calidad.py marcadores
+      - name: La tabla de decisiones se genera desde su fuente única
+        run: python tools/calidad.py politica
       - name: Compilar el codigo
         run: python -m compileall -q motor ops proto tests conftest.py
       - name: Escanear secretos en todo el historial

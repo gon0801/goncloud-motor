@@ -18,6 +18,8 @@ from .catalogo_agentes import (
     cliente_para,
     modelo_canonico,
 )
+from .lectura import Error as ErrorLectura
+from .lectura import Leido, Pendiente, Lectura
 
 # El lanzamiento corre con --print: el proceso sale cuando el agente responde y
 # nadie lo despierta, asi que una tarea en segundo plano se queda sin dueno.
@@ -336,14 +338,15 @@ def resolver_binario(
     return argv[0] if argv else None
 
 
-def _sesion_presente(agente: str) -> bool:
-    """Hay sesión de suscripción en esta máquina, sin mirar el ejecutable.
+def _sesion_presente(agente: str) -> Lectura:
+    """La sesión de suscripción en esta máquina, sin mirar el ejecutable.
 
     Las mismas comprobaciones de _disponible, sin resolver_binario: la sesión
-    es de la cuenta y no depende de la generación de flota.
+    es de la cuenta y no depende de la generación de flota. Es una lectura
+    tipada: un fallo conserva su causa y una sesión que falta queda pendiente.
     """
     if agente not in ADAPTADORES:
-        return False
+        return Pendiente("")
     if agente == "codex":
         path = (
             Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
@@ -351,18 +354,22 @@ def _sesion_presente(agente: str) -> bool:
         )
         try:
             datos = leer_json(path)
-            return datos.get("auth_mode") == "chatgpt" and not datos.get(
-                "OPENAI_API_KEY"
-            )
-        except (OSError, ValueError):
-            return False
+        except OSError:
+            return Pendiente("")
+        except ValueError as exc:
+            return ErrorLectura(f"la sesión de codex no se pudo leer: {exc}")
+        if datos.get("auth_mode") == "chatgpt" and not datos.get("OPENAI_API_KEY"):
+            return Leido(True)
+        return Pendiente("")
     if agente == "muse":
         from .autenticacion_muse import cuenta_muse
 
         try:
-            return bool(cuenta_muse())
-        except (OSError, ValueError, RuntimeError, KeyError, TypeError):
-            return False
+            if cuenta_muse():
+                return Leido(True)
+            return Pendiente("")
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            return ErrorLectura(str(exc) or type(exc).__name__)
     if agente == "kimi":
         import tomllib
 
@@ -372,7 +379,7 @@ def _sesion_presente(agente: str) -> bool:
             )
             datos = tomllib.loads(leer_texto((origen / "config.toml")))
             clave = datos["providers"]["managed:kimi-code"]["oauth"]["key"]
-            return (
+            presente = (
                 isinstance(clave, str)
                 and clave.startswith("oauth/kimi-code")
                 and "/" not in clave.removeprefix("oauth/")
@@ -380,15 +387,18 @@ def _sesion_presente(agente: str) -> bool:
                     origen / "credentials" / (clave.removeprefix("oauth/") + ".json")
                 ).is_file()
             )
-        except (OSError, ValueError, TypeError, KeyError):
-            return False
+            return Leido(True) if presente else Pendiente("")
+        except OSError:
+            return Pendiente("")
+        except (ValueError, TypeError, KeyError) as exc:
+            return ErrorLectura(f"la sesión de kimi no se pudo leer: {exc}")
     if agente in ("claude", "opencode", "qwen", "grok"):
         from .suscripciones import disponible
 
         return disponible(agente)
     if agente == "antigravity":
-        return sesion_antigravity_presente()
-    return False
+        return Leido(True) if sesion_antigravity_presente() else Pendiente("")
+    return Pendiente("")
 
 
 def _bash_de_ensayo() -> str:
@@ -409,19 +419,25 @@ def _bash_de_ensayo() -> str:
     return ruta
 
 
-def _disponible(agente: str, generacion: Path | None = None) -> bool:
+def leer_disponible(agente: str, generacion: Path | None = None) -> Lectura:
+    """El agente puede lanzarse en este host, con la causa si no.
+
+    El ejecutable y la sesión son dos lecturas distintas: un binario que falta
+    y una sesión ilegible no se confunden.
+    """
     if agente == "sleep":
-        # El lanzador duerme con /bin/bash, que Windows no trae.
-        return os.name != "nt"
+        return Leido(True) if os.name != "nt" else Pendiente("")
     if agente == "ensayo":
-        # El lanzador corre trabajo.sh con un bash que vea las rutas del
-        # espacio: en Windows solo el bash de Git sirve.
-        return bool(_bash_de_ensayo())
+        return Leido(True) if _bash_de_ensayo() else Pendiente("")
     if agente not in ADAPTADORES:
-        return False
+        return Pendiente("")
     if resolver_binario(agente, generacion) is None:
-        return False
+        return Pendiente(f"no hay ejecutable de {agente} en este host")
     return _sesion_presente(agente)
+
+
+def _disponible(agente: str, generacion: Path | None = None) -> bool:
+    return isinstance(leer_disponible(agente, generacion), Leido)
 
 
 def _modelos_para(agente: str, rol: str, generacion: Path | None) -> tuple[str, ...]:

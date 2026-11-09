@@ -137,7 +137,8 @@ class RelevoSinModelos(unittest.TestCase):
             enc = self.barrer()
 
         self.assertEqual(enc.estado, "esperando_reintento")
-        self.assertIn("runtime", enc.motivo)
+        self.assertIn("OpenCode", enc.motivo)
+        self.assertNotIn("no tiene runtime", enc.motivo)
         self.assertTrue(enc.reanuda_en)
         self.assertEqual(enc.preguntas, ())
         self.assertEqual(enc.pendientes_entrega, ())

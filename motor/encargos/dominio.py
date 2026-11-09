@@ -667,6 +667,10 @@ class Encargo:
     adjuntos: tuple[str, ...]
     restricciones: tuple[str, ...]
     canal: str
+    # Restricciones estructuradas desde la entrada: rutas que el pedido permite
+    # o prohíbe tocar. Se comparan por ruta, no por prosa.
+    permisos: tuple[str, ...] = ()
+    prohibiciones: tuple[str, ...] = ()
     ajustes: tuple[str, ...] = ()
     # Cuántos ajustes llevaba el prompt del último intento que llegó a abrirse.
     # Un ajuste posterior no lo vio ningún intento: no se cierra ni se entrega.
@@ -913,14 +917,31 @@ def sesiones_de_fase_nueva(e: Encargo) -> Encargo:
 
 
 def huella_entrega(
-    texto: str, adjuntos: tuple[str, ...], restricciones: tuple[str, ...]
+    texto: str,
+    adjuntos: tuple[str, ...],
+    restricciones: tuple[str, ...],
+    permisos: tuple[str, ...] = (),
+    prohibiciones: tuple[str, ...] = (),
 ) -> str:
     h = hashlib.sha256()
     h.update(texto.encode())
     h.update(b"\0")
+    # Los campos anteriores conservan la huella de siempre. Los nuevos llevan
+    # su marca de grupo: así un permiso y una prohibición no comparten huella.
     for parte in adjuntos + restricciones:
         h.update(parte.encode())
         h.update(b"\0")
+    for grupo, partes in (
+        (b"\1permisos", permisos),
+        (b"\1prohibiciones", prohibiciones),
+    ):
+        if not partes:
+            continue
+        h.update(grupo)
+        h.update(b"\0")
+        for parte in partes:
+            h.update(parte.encode())
+            h.update(b"\0")
     return h.hexdigest()
 
 
@@ -1630,6 +1651,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 adjuntos=tuple(d.get("adjuntos") or ()),
                 restricciones=tuple(d.get("restricciones") or ()),
                 canal=d.get("canal") or "",
+                permisos=tuple(d.get("permisos") or ()),
+                prohibiciones=tuple(d.get("prohibiciones") or ()),
                 estado="detenido",
                 ultimo_hecho="importado detenido sin escrituras",
                 hora=hora,
@@ -1650,6 +1673,8 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
             adjuntos=tuple(d.get("adjuntos") or ()),
             restricciones=tuple(d.get("restricciones") or ()),
             canal=d.get("canal") or "",
+            permisos=tuple(d.get("permisos") or ()),
+            prohibiciones=tuple(d.get("prohibiciones") or ()),
             ultimo_hecho="pedido recibido",
             hora=hora,
             siguiente=(
@@ -3256,7 +3281,9 @@ def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
     """Un bloqueante que una restricción expresa deja fuera no sostiene el encargo.
 
     No es un reinicio de campos: aplica la restricción al hallazgo guardado y
-    deja el hecho en `fuera_de_alcance`, con su razón, para el PR.
+    deja el hecho en `fuera_de_alcance`, con su razón, para el PR. El filtro de
+    política no vive aquí: se decide al anotar la lectura de DeepSeek
+    (`ciclo._anotar_lectura_deepseek`), donde queda el evento que lo sostiene.
     """
     fase = e.fase_actual
     if fase is None:
@@ -3271,7 +3298,12 @@ def _fuera_de_alcance_por_restricciones(e: Encargo) -> Encargo:
             and h.gravedad == "bloqueante"
             and h.estado == "abierto"
         ):
-            razon = hallazgo_fuera_de_alcance_por_restriccion(e.restricciones, h)
+            razon = hallazgo_fuera_de_alcance_por_restriccion(
+                e.restricciones,
+                h,
+                permisos=e.permisos,
+                prohibiciones=e.prohibiciones,
+            )
             if razon:
                 h = replace(
                     h,
@@ -4567,6 +4599,16 @@ def _bloques_comunes(e: Encargo) -> list[str]:
         lineas.append(
             "Prohibiciones expresas del propietario. No las trates como hipótesis del plan:\n"
             + "\n".join(e.restricciones)
+        )
+    if e.permisos:
+        lineas.append(
+            "Rutas permitidas por el pedido (globs; fuera de ellas no se toca):\n"
+            + "\n".join(e.permisos)
+        )
+    if e.prohibiciones:
+        lineas.append(
+            "Rutas prohibidas por el pedido (globs):\n"
+            + "\n".join(e.prohibiciones)
         )
     if e.ajustes:
         lineas.append(

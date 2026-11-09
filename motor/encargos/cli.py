@@ -11,8 +11,21 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .agentes import _disponible, _lanzador, _modelos_para, _sesion_modo
-from .catalogo_agentes import ADAPTADORES, identidad_modelo
+from .agentes import (
+    _disponible,
+    _lanzador,
+    _modelos_para,
+    _sesion_modo,
+    leer_disponible,
+)
+from .catalogo_agentes import (
+    ADAPTADORES,
+    agente_del_modelo,
+    identidad_modelo,
+)
+from .lectura import Error as ErrorLectura
+from .lectura import Leido, Lectura, Pendiente as PendienteLectura
+from .politica import relevo_de_sesion
 from .ciclo import (
     afirmar,
     ahora_iso,
@@ -61,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--clave", required=True)
     s.add_argument("--director", default="cli")
     s.add_argument("--restriccion", action="append", default=[])
+    s.add_argument("--permitir", action="append", default=[])
+    s.add_argument("--prohibir", action="append", default=[])
     s.add_argument("--canal", default="")
     s.add_argument("--via", choices=("directa", "durable"), default="durable")
     s.add_argument(
@@ -219,6 +234,8 @@ def _con_registro(args, reg: Registro, hora: str) -> int:
                 director=args.director,
                 adjuntos=adjuntos,
                 restricciones=tuple(args.restriccion),
+                permisos=tuple(args.permitir),
+                prohibiciones=tuple(args.prohibir),
                 canal=args.canal,
                 via=args.via,
                 entrega_nivel=resolver_entrega(args.entrega, args.repo, args.via),
@@ -354,6 +371,81 @@ def _puerto_github(base: Path):
     return None
 
 
+_NOMBRE_AGENTE = {
+    "claude": "Claude",
+    "codex": "Codex",
+    "grok": "Grok",
+    "muse": "Muse",
+    "kimi": "Kimi",
+    "opencode": "OpenCode",
+    "qwen": "Qwen",
+    "antigravity": "Antigravity",
+}
+
+
+def _motivo_de_sesion(agente: str, lectura: Lectura) -> str:
+    nombre = _NOMBRE_AGENTE.get(agente, agente)
+    if isinstance(lectura, ErrorLectura):
+        if agente == "claude":
+            return (
+                f"no pude leer la sesión de {nombre} del Llavero: "
+                f"{lectura.causa}"
+            )
+        return f"no pude leer la sesión de {nombre}: {lectura.causa}"
+    if isinstance(lectura, PendienteLectura) and lectura.desde:
+        return f"{lectura.desde} ({nombre})"
+    return f"no hay sesión de {nombre} en este host"
+
+
+def _relevo_para_sesion(
+    rol: str,
+    solicitado: tuple[str, str] | None,
+    autorizados: dict[str, tuple[str, ...]],
+    lecturas: dict[str, Lectura],
+    generacion: Path | None,
+    enc=None,
+    hora: str = "",
+    excluir: frozenset[str] = frozenset(),
+) -> tuple[str, str] | None:
+    """El relevo que la política autoriza cuando la sesión no se puede leer.
+
+    Solo actúa sobre la causa que el propietario decidió (Opus ilegible para
+    revisar): un modelo que de verdad falta no se sustituye. El sustituto pasa
+    por `elegir`, así respeta las mismas exclusiones y pausas que un modelo
+    normal del rol.
+    """
+    if solicitado:
+        preferido_agente, preferido = solicitado
+    else:
+        preferido_agente, preferido = next(
+            (
+                (agente, modelos[0])
+                for agente, modelos in autorizados.items()
+                if modelos and modelos[0]
+            ),
+            ("", ""),
+        )
+    sustituto = relevo_de_sesion(rol, preferido)
+    if not sustituto:
+        return None
+    if not isinstance(lecturas.get(preferido_agente), ErrorLectura):
+        return None
+    agente = agente_del_modelo(sustituto)
+    if not agente:
+        return None
+    if not isinstance(leer_disponible(agente, generacion), Leido):
+        return None
+    if enc is None:
+        return agente, sustituto
+    return elegir(
+        replace(enc, agentes=(agente,)),
+        hora,
+        {agente: (sustituto,)},
+        rol=rol,
+        excluir_modelos=excluir,
+    )
+
+
 def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
     """El lanzador de producción para una ruta de agentes: elige por rol con
     `_modelos_para`/`_disponible` y lanza por el adaptador elegido. `ruta`
@@ -380,6 +472,9 @@ def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
             agente: (solicitado[1],) if solicitado else _modelos_para(agente, rol, generacion)
             for agente in candidatas
         }
+        lecturas = {
+            agente: leer_disponible(agente, generacion) for agente in autorizados
+        }
         disponibles = {
             agente: modelos for agente, modelos in autorizados.items()
             if _disponible(agente, generacion)
@@ -405,6 +500,20 @@ def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
             modo = _sesion_modo(enc, agente, rol)
             argv = _lanzador(agente, modelo, modo)(enc, prompt, espacio, sesion)
             return argv, {"agente": agente, "modelo": modelo, "sesion_modo": modo}
+        relevo_por_sesion = _relevo_para_sesion(
+            rol, solicitado, autorizados, lecturas, generacion, enc, hora, excluir
+        )
+        if relevo_por_sesion:
+            agente, modelo = relevo_por_sesion
+            constructor = _lanzador(agente, modelo, _sesion_modo(enc, agente, rol))
+            if constructor is not None:
+                modo = _sesion_modo(enc, agente, rol)
+                argv = constructor(enc, prompt, espacio, sesion)
+                return argv, {
+                    "agente": agente,
+                    "modelo": modelo,
+                    "sesion_modo": modo,
+                }
         if relevo_del_rol > 0 and all(
             identidad_modelo(m) in {identidad_modelo(x) for x in excluir}
             for modelos in autorizados.values() for m in modelos if m
@@ -420,14 +529,19 @@ def lanzar_de_ruta(reg: Registro, ruta: tuple[str, ...]):
             motivos = [
                 p.causa for p in enc.pausas if p.agente in disponibles and p.hasta > hora
             ]
+            causas = [
+                _motivo_de_sesion(agente, lecturas[agente])
+                for agente in autorizados
+                if agente not in disponibles
+            ]
+            if solicitado and causas:
+                causas = [
+                    f"{causa} (modelo solicitado {solicitado[1]})" for causa in causas
+                ]
             motivo = (
                 "; ".join(motivos)
-                or (
-                    f"el modelo solicitado {solicitado[1]} no tiene runtime, suscripcion "
-                    "o aislamiento disponibles en este host"
-                    if solicitado else
-                    "las rutas autorizadas no tienen runtime, suscripcion o aislamiento disponibles en este host"
-                )
+                or "; ".join(causas)
+                or "sin ruta de agentes disponible en este host"
             )
         marcar_espera(reg, enc.id, motivo,
                      proximo(replace(enc, agentes=candidatas), hora, set(disponibles)), hora)
@@ -655,6 +769,8 @@ def _aplicar_stdin(base_fija: Path | None) -> int:
                     director=msg.get("director") or "remoto",
                     adjuntos=tuple(msg.get("adjuntos") or ()),
                     restricciones=tuple(msg.get("restricciones") or ()),
+                    permisos=tuple(msg.get("permisos") or ()),
+                    prohibiciones=tuple(msg.get("prohibiciones") or ()),
                     canal=msg.get("canal") or "",
                     via=msg.get("via") or "durable",
                     entrega_nivel=resolver_entrega(

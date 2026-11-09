@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
+if str(RAIZ) not in sys.path:
+    sys.path.insert(0, str(RAIZ))
 BASE = RAIZ / ".github" / "calidad" / "baseline.json"
 IO_PERMITIDO = RAIZ / "motor" / "io.py"
 MENSAJE_IO = "usa motor.io.leer_json / escribir_texto"
@@ -358,6 +360,35 @@ def _comparar_marcadores(nuevos: collections.Counter) -> int:
     return 1
 
 
+def politica_desactualizada() -> str:
+    """La tabla de AGENTS.md se genera desde `motor.encargos.politica`."""
+    from motor.encargos.politica import tabla_de_agents, tabla_markdown
+
+    ruta = RAIZ / "AGENTS.md"
+    actual = tabla_de_agents(ruta.read_text(encoding="utf-8"))
+    esperado = tabla_markdown()
+    if actual == esperado:
+        return ""
+    return (
+        "AGENTS.md: la tabla de decisiones no coincide con "
+        "motor/encargos/politica.py; regenérala con `python3 tools/calidad.py "
+        "politica --actualizar`"
+    )
+
+
+def _regenerar_politica() -> None:
+    from motor.encargos.politica import tabla_de_agents, tabla_markdown
+
+    ruta = RAIZ / "AGENTS.md"
+    texto = ruta.read_text(encoding="utf-8")
+    actual = tabla_de_agents(texto)
+    if not actual:
+        raise SystemExit("AGENTS.md no tiene la tabla de decisiones")
+    nuevo = texto.replace(actual, tabla_markdown())
+    ruta.write_text(nuevo, encoding="utf-8")
+    (RAIZ / "CLAUDE.md").write_text(nuevo, encoding="utf-8")
+
+
 def _actualizar(linea_base: dict) -> None:
     linea_base["tipos"] = _lista(diagnosticos_tipos())
     linea_base["lint"] = _lista(diagnosticos_lint())
@@ -368,9 +399,21 @@ def _actualizar(linea_base: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="calidad")
-    ap.add_argument("modo", choices=("tipos", "lint", "io", "marcadores"))
+    ap.add_argument(
+        "modo", choices=("tipos", "lint", "io", "marcadores", "politica")
+    )
     ap.add_argument("--actualizar", action="store_true")
     args = ap.parse_args(argv)
+    if args.modo == "politica":
+        if args.actualizar:
+            _regenerar_politica()
+            return 0
+        defecto = politica_desactualizada()
+        if defecto:
+            print(defecto, file=sys.stderr)
+            return 1
+        print("politica: la tabla de AGENTS.md se genera desde politica.py")
+        return 0
     linea_base = _cargar()
     if args.actualizar:
         _actualizar(linea_base)

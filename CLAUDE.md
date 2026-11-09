@@ -1,20 +1,25 @@
 # Reglas del motor
 
-Este archivo es la fuente única de las reglas permanentes. `CLAUDE.md` es una copia generada
-de este texto (`cp AGENTS.md CLAUDE.md`); no se edita a mano. La prueba
-`tests/test_calidad.py` falla si los dos archivos difieren.
+Las decisiones de David viven en `motor/encargos/politica.py`; la tabla de abajo se genera
+desde esas filas y un check falla si difieren. `CLAUDE.md` es una copia generada de este
+texto (`cp AGENTS.md CLAUDE.md`); no se edita a mano. La prueba `tests/test_calidad.py`
+falla si los dos archivos difieren.
 
-| Regla | Decisión de David | Qué la hace cumplir |
-| --- | --- | --- |
-| Nada espera a un humano salvo el merge. | 3-nov | `motor/encargos/ciclo.py` sigue solo; `tests/test_motor_sin_personas.py`. |
-| CI no es compuerta: solo frena el merge. | 3-nov | `motor/encargos/ciclo.py`; `tests/test_ci_en_el_pr.py`. |
-| Sin tope de rondas. | 1-nov | `tests/test_freno_vueltas.py` (el freno no escala por contar vueltas). |
-| Arreglos de raíz. | 1-nov | `tests/test_flujo_revisiones.py` y la revisión independiente; no hay check automático. |
-| OpenCode Go solo DeepSeek. | 1-nov | `motor/encargos/catalogo_agentes.py`; `tests/test_catalogo_opencode.py`. |
-| Los Medium se corrigen en el mismo PR. | 30-oct | `motor/encargos/ciclo.py`; `tests/test_lectura_deepseek.py`. |
-| Las pruebas corren con el HOME en un temporal. | David, sin fecha registrada en el pedido | `tests/guarda_home.py`; `conftest.py`. |
-| Repo público, sin secretos ni runners propios. | 31-oct | `.github/workflows/quality.yml` (gitleaks); `.gitleaks.toml`. |
-| Un dato, un dueño: derivar en vez de guardar copias. | David, sin fecha registrada en el pedido | Nada todavía. |
+| Regla | Valor | Decisión de David | Qué la hace cumplir |
+| --- | --- | --- | --- |
+| DeepSeek: 30 minutos y se sigue con omisión explícita. | 30 min | David, 6-nov | a los 29 min espera; a los 31 min omite con la causa escrita |
+| Un encargo cerrado se sondea 7 días desde el cierre, con 5 consultas por pasada. | 7 días; 5 por pasada | David, 6-nov | a los 6 días sondea; a los 8 no; 5 consultas entran y la 6.ª queda para la pasada siguiente |
+| El CI no autoriza el merge, pero no frena publicar, revisar ni corregir. | no es compuerta | David, 3-nov | un CI pendiente o verde no detiene la entrega; un error de lectura nunca cuenta como verde |
+| Sin tope de rondas. | sin tope | David, 1-nov | el freno no escala por contar vueltas |
+| DeepSeek bloquea con Critical, High o Medium dentro del alcance. | Critical, High o Medium | David, sin fecha registrada en el pedido | un Medium abierto en alcance bloquea; uno fuera de alcance no |
+| Los Medium se corrigen en el mismo PR. | mismo PR | David, 30-oct | un Medium abierto en alcance reabre la fase y vuelve al responsable; no espera otro encargo |
+| Si Opus no está disponible para revisar, revisa Astra mientras tanto. | openai/gpt-6-astra | David, 6-nov | una sesión de Opus ilegible no espera a una persona: el rol relega a Astra; cuando Opus vuelve, la siguiente revisión es suya |
+| Nada espera a un humano salvo el merge. | sin espera | David, 3-nov | el ciclo sigue solo; la prueba del motor sin personas |
+| Arreglos de raíz. | causa, no síntoma | David, 1-nov | la revisión independiente y las pruebas del flujo de revisiones |
+| OpenCode Go solo DeepSeek. | opencode-go/deepseek-v4.1-flash | David, 1-nov | el catálogo rechaza otro modelo de OpenCode Go |
+| Las pruebas corren con el HOME en un temporal. | HOME temporal | David, sin fecha registrada en el pedido | la guarda de HOME del banco de pruebas |
+| Repo público, sin secretos ni runners propios. | público y sin secretos | David, 31-oct | gitleaks en el job de calidad |
+| Un dato, un dueño: derivar en vez de guardar copias. | derivar | David, sin fecha registrada en el pedido | la tabla de política y la de AGENTS.md se generan de una sola fuente |
 
 ## Calidad
 
