@@ -81,6 +81,10 @@ case "$host" in
         fi
         exit 0 ;;
       *'iniciar_encargos_pc.py'*)
+        if [ -n "${FAKE_PC_ARRANQUE_FALLA:-}" ]; then
+          echo "el supervisor de la PC no arrancó" >&2
+          exit 1
+        fi
         rm -f "$phome/.motor-encargos/vigilante.parar"
         sha="$(git -C "$phome/motor-sucesor" rev-parse HEAD 2>/dev/null || true)"
         printf '{"sha": "%s", "ruta": "%s", "hora": "2026-11-09T10:00:00Z", "completa": true, "encargos": 0, "pid": %s}\n' \
@@ -186,6 +190,25 @@ contiene "nombra la mini y el paso" "$S/salida" "FALLA mini en mover el árbol"
   || fallo "siguió con la PC después de la falla de la mini"
 [ "$(git -C "$S/mac/motor-sucesor" rev-parse HEAD)" = "$SHA" ] \
   || fallo "la Mac no quedó desplegada antes de la falla"
+
+echo "# un reintento tras una falla conserva el anterior"
+reset_maquinas
+espera "la primera corrida falla en la PC" '!0' env FAKE_PC_ARRANQUE_FALLA=1 bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la PC y el reinicio" "$S/salida" "FALLA pc en reiniciar el supervisor"
+[ "$(campo_json "$S/pc-home/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
+  || fallo "el pendiente de la PC no conserva el anterior tras la primera falla"
+espera "la segunda corrida vuelve a fallar" '!0' env FAKE_PC_ARRANQUE_FALLA=1 bash "$SCRIPT" --sha "$SHA"
+contiene "dice el anterior que conserva" "$S/salida" "conserva el anterior (${ANTERIOR:0:12})"
+[ "$(campo_json "$S/pc-home/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
+  || fallo "el reintento de la PC perdió el anterior"
+[ "$(campo_json "$S/mac/.motor-encargos/instalacion.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
+  || fallo "el reintento de la Mac perdió el anterior en el recibo"
+[ "$(campo_json "$S/mini/.motor-encargos/instalacion.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
+  || fallo "el reintento de la Mini perdió el anterior en el recibo"
+[ "$(campo_json "$S/mac/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
+  || fallo "el reintento de la Mac perdió el anterior en el pendiente"
+[ "$(campo_json "$S/mini/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
+  || fallo "el reintento de la Mini perdió el anterior en el pendiente"
 
 echo "# el comprobador no cae al recibo del motor viejo"
 reset_maquinas

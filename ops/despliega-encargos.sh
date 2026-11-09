@@ -71,6 +71,7 @@ def leer(p):
         return {}
 pasada = leer(home / ".motor-encargos" / "supervisor-pasada.json")
 recibo = leer(home / ".motor-encargos" / "instalacion.json")
+pendiente = leer(home / ".motor-encargos" / "instalacion-pendiente.json")
 vivo = "si" if os.name == "nt" else "no"
 pid = pasada.get("pid")
 if os.name != "nt" and isinstance(pid, int) and pid > 0:
@@ -90,6 +91,9 @@ sys.stdout.write(str(pasada.get("sha") or "") + "\n")
 sys.stdout.write(("si" if pasada.get("completa") else "no") + "\n")
 sys.stdout.write(str((recibo.get("destino") or {}).get("codigo") or "") + "\n")
 sys.stdout.write(vivo + "\n")
+sys.stdout.write(str((pendiente.get("anterior") or {}).get("codigo") or "") + "\n")
+sys.stdout.write(str((pendiente.get("destino") or {}).get("codigo") or "") + "\n")
+sys.stdout.write(str((recibo.get("anterior") or {}).get("codigo") or "") + "\n")
 ' | _pc_b64)"
 
 json_de_recibo() { # <tipo> <anterior> <destino> <maquina> [paso] [causa]
@@ -245,23 +249,36 @@ for m in $maquinas; do
   if [ -z "$runtime" ]; then
     falla "$m" "$paso" "no hay un árbol de encargos distinto de ~/motor" ""
   fi
-  anterior="$(sha_del_arbol "$m" "$runtime" 2>/dev/null)" || anterior=""
-  escribe_recibo "$m" instalacion-pendiente.json \
-    "$(json_de_recibo pendiente "$anterior" "$sha" "$m" "inicio")" \
-    || falla "$m" "escribir el recibo pendiente" "no pude escribirlo en ~/.motor-encargos" "$anterior"
-
+  # Un reintento tras una falla a mitad no pierde el anterior: si ya hay un
+  # pendiente o un recibo para el mismo destino, ese anterior es el que se
+  # conserva para volver.
   estado="$(lee_estado_encargos "$m" 2>/dev/null)" || estado=""
   pasada_sha="$(printf '%s\n' "$estado" | sed -n '1p')"
   pasada_completa="$(printf '%s\n' "$estado" | sed -n '2p')"
   recibo_sha="$(printf '%s\n' "$estado" | sed -n '3p')"
   pasada_vivo="$(printf '%s\n' "$estado" | sed -n '4p')"
+  pendiente_anterior="$(printf '%s\n' "$estado" | sed -n '5p')"
+  pendiente_destino="$(printf '%s\n' "$estado" | sed -n '6p')"
+  recibo_anterior="$(printf '%s\n' "$estado" | sed -n '7p')"
+
+  cabeza="$(sha_del_arbol "$m" "$runtime" 2>/dev/null)" || cabeza=""
+  anterior="$cabeza"
+  if [ "$pendiente_destino" = "$sha" ] && [ -n "$pendiente_anterior" ]; then
+    anterior="$pendiente_anterior"
+  elif [ "$recibo_sha" = "$sha" ] && [ -n "$recibo_anterior" ]; then
+    anterior="$recibo_anterior"
+  fi
+  escribe_recibo "$m" instalacion-pendiente.json \
+    "$(json_de_recibo pendiente "$anterior" "$sha" "$m" "inicio")" \
+    || falla "$m" "escribir el recibo pendiente" "no pude escribirlo en ~/.motor-encargos" "$anterior"
+
   sano=1
   if [ "$m" = pc ]; then
     pc_estado_valido "$(pc_iniciar "$runtime" --estado 2>/dev/null)" || sano=0
   else
     servicio_cargado "$m" && [ "$pasada_vivo" = "si" ] || sano=0
   fi
-  if [ "$anterior" = "$sha" ] && [ "$pasada_sha" = "$sha" ] \
+  if [ "$cabeza" = "$sha" ] && [ "$pasada_sha" = "$sha" ] \
     && [ "$pasada_completa" = "si" ] && [ "$recibo_sha" = "$sha" ] && [ "$sano" = 1 ]; then
     echo "$m: ya estaba en ${sha:0:12}; no reinicio"
   else
