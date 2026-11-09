@@ -71,8 +71,8 @@ def _lanzador(roles: list[str], prompts: list[str]):
 
 
 class RelanzaTrasComprobacionRoja(unittest.TestCase):
-    def _aprobado(self, tmp: str, clave: str):
-        vuelta, r = _entrega_pr(self, tmp, clave, github_con_hallazgos)
+    def _aprobado(self, tmp: str, clave: str, gh_cls=github_con_hallazgos):
+        vuelta, r = _entrega_pr(self, tmp, clave, gh_cls)
         (r.espacio / "saludo.txt").write_text("hola\n", encoding="utf-8")
         r.incorporar()
         r.juicio({"veredicto": "aprobado", "evidencia": "lei saludo.txt"})
@@ -266,6 +266,65 @@ class RelanzaTrasComprobacionRoja(unittest.TestCase):
             self.assertTrue(
                 r.fold().pendientes_entrega,
                 "la escalera termina entregando con los pendientes abiertos",
+            )
+
+    def test_sin_comprobaciones_declaradas_cierra_el_bloqueo_y_no_relanza_al_revisor(self):
+        """Un bloqueo del supervisor sin observacion no puede quedar abierto.
+
+        Si la version vigente ya no declara comprobaciones, el bloqueo se cierra
+        y el flujo no devuelve `revisar_evidencia` al revisor en cada barrido.
+        """
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._aprobado(
+                tmp, "sin-declaradas", lambda d: github_con_hallazgos(d, titulos=())
+            )
+            declaradas = self._declarar(r)
+            self._observar(r, e, declaradas, rc=1, stderr=STDERR_EN_ROJO)
+
+            roles: list[str] = []
+            prompts: list[str] = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+            self.assertIn("responsable", roles)
+            e = r.fold()
+            self.assertTrue(e.reserva)
+            r.reg.anotar(
+                r.enc,
+                {"kind": "reserva_cerrada", "data": {}},
+                f"t-cierre:{e.generacion}",
+            )
+
+            (r.espacio / ".interno" / "comprobaciones.json").write_text(
+                json.dumps({"comprobaciones": []}), encoding="utf-8"
+            )
+            antes = len(r.reg.eventos(r.enc))
+            roles = []
+            prompts = []
+            _barrido(r, vuelta.gh, _lanzador(roles, prompts))
+
+            nuevos = r.reg.eventos(r.enc)[antes:]
+            self.assertNotIn(
+                "revisor",
+                roles,
+                "sin comprobaciones observables no se relanza al revisor",
+            )
+            self.assertFalse(
+                any(
+                    ev["kind"] == "estrategia"
+                    and ev["data"].get("rol") == "revisor"
+                    and ev["data"].get("estrategia") == "revisar_evidencia"
+                    for ev in nuevos
+                ),
+                "no se repite el Devolver(revisor) por el bloqueo sin observacion",
+            )
+            e = r.fold()
+            self.assertFalse(
+                [
+                    h
+                    for h in (e.fase_actual.hallazgos if e.fase_actual else ())
+                    if h.origen == "supervisor" and h.estado == "abierto"
+                ],
+                "el bloqueo del supervisor se cierra cuando ya no hay "
+                "comprobaciones declaradas",
             )
 
     def test_replay_del_prefijo_real_hasta_67595_abre_intento(self):
