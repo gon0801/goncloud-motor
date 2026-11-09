@@ -101,7 +101,7 @@ class JsonDelAgenteConBom(unittest.TestCase):
         self.assertEqual(juicio, {"version": "v1", "veredicto": "aprobado"})
         self.assertEqual(observacion, {"version": "v1"})
 
-    def test_juicio_con_bom_al_soltar_el_conductor(self) -> None:
+    def test_juicio_con_bom_al_soltar_el_conductor(self) -> None:  # no-roja-en-base: el doble gana los campos del estado; el comportamiento probado ya estaba en la base
         # _soltar_conductor lee el juicio para saber si el revisor ya aprobo. Si aprobo,
         # primero pregunta a la autoridad si el encargo termino y no suelta al conductor
         # mientras siga corriendo. Con utf-8 el juicio con BOM fallaba en silencio y el
@@ -122,7 +122,12 @@ class JsonDelAgenteConBom(unittest.TestCase):
             return {"alcanzada": True, "salida": {"cerrado": True}}
 
         enc = SimpleNamespace(
-            id="enc_prueba", estado="corriendo", candidato=None, conductor="tok"
+            id="enc_prueba",
+            estado="corriendo",
+            candidato=None,
+            conductor="tok",
+            generacion=0,
+            incorporado=(),
         )
         registro = SimpleNamespace(base=Path(self._tmp.name))
         with mock.patch.object(transporte, "cargar", return_value={}), mock.patch.object(

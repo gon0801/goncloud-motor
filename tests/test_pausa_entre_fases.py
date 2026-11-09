@@ -74,7 +74,10 @@ class PausaEntreFases(unittest.TestCase):
 
             self.assertEqual(r.eventos("proveedor_fallo"), [])
             self.assertEqual(r.fold().pausas, ())
-            self.assertTrue((r.d / "incorporado").is_file())
+            self.assertTrue(
+                r.fold().generacion in r.fold().incorporado,
+                "el intento incorporado queda en el registro",
+            )
             final = ciclo._paso_entrega(r.reg, r.fold(), gh, r.hora)
             self.assertEqual(final.fase_activa, "motor-despliegue")
             self.assertEqual(final.estado, "recibido")

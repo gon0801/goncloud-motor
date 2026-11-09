@@ -32,6 +32,61 @@ IO_EXENTOS = {
     "motor/daemon.py": "modo planes: prohibición expresa de tocarlo",
 }
 
+# Los recorridos crudos de eventos y los archivos `.json` que hoy viven en
+# `ciclo.py` son deuda conocida: se congelan aquí para que uno nuevo no entre
+# sin pasar por el registro. `marcadores` falla con cualquiera que no esté.
+MARCADORES_EVENTOS = {
+    "_alcance_para_revision": 1,
+    "_disputas_pendientes": 1,
+    "_fase_de_resultado": 1,
+    "_marcador_autoridad_final": 1,
+    "_mirar_autoridad": 2,
+    "_nuevo_cierre_tras_marcador": 1,
+    "_observacion_de_la_version": 1,
+    "_paso_entrega_paso": 1,
+    "_recibir_resultado_nuevo": 1,
+    "_resultado_desde_fold": 1,
+    "_soltar_conductor": 1,
+}
+# Literales `.json` que son entradas del agente o del protocolo, no marcadores
+# del motor. Un `.json` nuevo en `ciclo.py` no entra sin pasar por esta lista.
+MARCADORES_JSON = {
+    "arranque.json",
+    "auth.json",
+    "comprobaciones.json",
+    "corregir id, operacion, clave y cuerpo en .interno/pedido-efecto.json",
+    "disputa.json",
+    "fases.json",
+    "flota-home.json",
+    "generacion.json",
+    "herramienta.json",
+    "intento-*/observaciones*.json",
+    "intento-*/observaciones.json",
+    "observaciones-revision.json",
+    "observaciones.json",
+    "outcome.json",
+    "pedido-efecto.json",
+    "proc.json",
+    "resultado.json",
+    "revision.json",
+    "wrapper.json",
+}
+# Los cinco marcadores retirados y el `incorporado` sin extensión: no pueden
+# volver a decidir fuera del registro. Solo la migración los nombra.
+MARCADORES_RETIRADOS = {
+    "incorporado",
+    "quietud.json",
+    "deepseek_lectura.json",
+    "deepseek_cerrado.json",
+    "ci-sondeo.json",
+    "cierre.json",
+}
+MIGRACION = {"_migrar_un_marcador", "migrar_marcadores"}
+# La inspección recorre archivos `.json` del espacio: es una lectura, no un
+# marcador que decida.
+JSON_EXCEPCIONES = {("_texto_inspeccion_resuelta", ".json")}
+MENSAJE_MARCADORES = "anótalo como evento y derívalo en dominio"
+
 
 VERSIONES = {"pyright": "1.1.414", "ruff": "0.17.4"}
 
@@ -168,6 +223,70 @@ def usos_io() -> collections.Counter:
     return cuenta
 
 
+def _recorridos_de_marcadores(arbol: ast.AST) -> collections.Counter:
+    cuenta: collections.Counter = collections.Counter()
+    pila: list[str] = []
+
+    class Visita(ast.NodeVisitor):
+        def visit_FunctionDef(self, nodo: ast.FunctionDef) -> None:
+            pila.append(nodo.name)
+            self.generic_visit(nodo)
+            pila.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, nodo: ast.Call) -> None:
+            funcion = nodo.func
+            if isinstance(funcion, ast.Attribute) and funcion.attr == "eventos":
+                cuenta[("eventos", pila[-1] if pila else "<module>")] += 1
+            self.generic_visit(nodo)
+
+        def visit_Constant(self, nodo: ast.Constant) -> None:
+            if isinstance(nodo.value, str) and nodo.value.endswith(".json"):
+                cuenta[("json", pila[-1] if pila else "<module>", nodo.value)] += 1
+
+        def visit_BinOp(self, nodo: ast.BinOp) -> None:
+            if isinstance(nodo.op, ast.Div):
+                for lado in (nodo.left, nodo.right):
+                    if isinstance(lado, ast.Constant) and isinstance(lado.value, str):
+                        if lado.value in MARCADORES_RETIRADOS:
+                            cuenta[
+                                ("path", pila[-1] if pila else "<module>", lado.value)
+                            ] += 1
+            self.generic_visit(nodo)
+
+    Visita().visit(arbol)
+    return cuenta
+
+
+def marcadores_nuevos() -> collections.Counter:
+    ruta = RAIZ / "motor" / "encargos" / "ciclo.py"
+    try:
+        arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        raise SystemExit(f"no se puede leer {ruta}: {exc}")
+    nuevos: collections.Counter = collections.Counter()
+    for clave, n in _recorridos_de_marcadores(arbol).items():
+        tipo = clave[0]
+        if tipo == "eventos":
+            permitido = MARCADORES_EVENTOS.get(clave[1], 0)
+            if n > permitido:
+                nuevos[clave] = n - permitido
+        elif tipo == "json":
+            funcion, valor = clave[1], clave[2]
+            if (funcion, valor) in JSON_EXCEPCIONES:
+                continue
+            if funcion in MIGRACION and valor in MARCADORES_RETIRADOS:
+                continue
+            if valor not in MARCADORES_JSON:
+                nuevos[clave] = n
+        elif tipo == "path":
+            funcion, valor = clave[1], clave[2]
+            if funcion not in MIGRACION:
+                nuevos[clave] = n
+    return nuevos
+
+
 def _cargar() -> dict:
     if not BASE.is_file():
         return {}
@@ -223,6 +342,22 @@ def _comparar_io(cuenta: collections.Counter) -> int:
     return 1
 
 
+def _comparar_marcadores(nuevos: collections.Counter) -> int:
+    if not nuevos:
+        print("marcadores: sin recorridos crudos ni .json nuevos en ciclo.py")
+        return 0
+    print(f"marcadores: {sum(nuevos.values())} nuevo(s)", file=sys.stderr)
+    for clave, n in sorted(nuevos.items()):
+        tipo = clave[0]
+        detalle = " ".join(str(x) for x in clave[1:])
+        for _ in range(n):
+            print(
+                f"  motor/encargos/ciclo.py: {tipo} {detalle}; {MENSAJE_MARCADORES}",
+                file=sys.stderr,
+            )
+    return 1
+
+
 def _actualizar(linea_base: dict) -> None:
     linea_base["tipos"] = _lista(diagnosticos_tipos())
     linea_base["lint"] = _lista(diagnosticos_lint())
@@ -233,7 +368,7 @@ def _actualizar(linea_base: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="calidad")
-    ap.add_argument("modo", choices=("tipos", "lint", "io"))
+    ap.add_argument("modo", choices=("tipos", "lint", "io", "marcadores"))
     ap.add_argument("--actualizar", action="store_true")
     args = ap.parse_args(argv)
     linea_base = _cargar()
@@ -244,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
         return _comparar(diagnosticos_tipos(), linea_base, "tipos")
     if args.modo == "lint":
         return _comparar(diagnosticos_lint(), linea_base, "lint")
+    if args.modo == "marcadores":
+        return _comparar_marcadores(marcadores_nuevos())
     return _comparar_io(usos_io())
 
 

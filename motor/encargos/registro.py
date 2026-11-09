@@ -237,10 +237,14 @@ class Registro:
         self._refrescar_ultimos()
         return (self._ultimos or {}).get(encargo, (0, 0))
 
-    def ultimo_evento(self, encargo: str) -> int:
-        row = self.db.execute(
-            "SELECT MAX(id) FROM events WHERE encargo = ?", (encargo,)
-        ).fetchone()
+    def ultimo_evento(self, encargo: str, excluir: tuple[str, ...] = ()) -> int:
+        sql = "SELECT MAX(id) FROM events WHERE encargo = ?"
+        args: list = [encargo]
+        if excluir:
+            marcas = ",".join("?" for _ in excluir)
+            sql += f" AND kind NOT IN ({marcas})"
+            args.extend(excluir)
+        row = self.db.execute(sql, args).fetchone()
         return int(row[0] or 0)
 
     def ids(self) -> list[str]:

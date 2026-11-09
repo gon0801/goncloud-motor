@@ -28,6 +28,61 @@ ESTADOS = (
 
 _CERRADOS = ("deteniendo", "detenido", "cancelado", "terminado")
 
+# Los marcadores son observaciones del motor, no hechos del encargo: no cortan
+# las series de reintentos ni cuentan como movimiento del encargo.
+_EVENTOS_DE_MARCADOR = (
+    "incorporado",
+    "quietud_vigilada",
+    "deepseek_lectura",
+    "deepseek_cerrado",
+    "ci_sondeo",
+)
+
+# Eventos que pueden caer entre un reintento y el siguiente sin ser un cambio.
+_ENTRE_REINTENTOS = (
+    "plazo",
+    "espera",
+    "instrumento_fallo",
+    "reserva",
+    "reserva_cerrada",
+    "contexto_entrega",
+)
+
+_NOTA_COPIA_SESION = "copia de sesión "
+
+# Un fallo de red o de servicio no es una causa reproducible: sigue reintentando.
+_FALLOS_TRANSITORIOS = (
+    "could not resolve host", "temporary failure in name resolution",
+    "network is unreachable", "connection timed out", "connection reset",
+    "connection refused", "connection closed", "operation timed out",
+    "remote end hung up unexpectedly", "the remote end hung up",
+    "early eof", "broken pipe",
+    "resource temporarily unavailable", "http 429", "http 500", "http 502",
+    "http 503", "http 504", "returned error: 429", "returned error: 500",
+    "returned error: 502", "returned error: 503", "returned error: 504",
+)
+
+_FALLOS_PERMANENTES = (
+    "http 400", "http 401", "http 403", "http 404", "http 413", "http 422",
+    "returned error: 400", "returned error: 401", "returned error: 403",
+    "returned error: 404", "returned error: 413", "returned error: 422",
+)
+
+
+def _fallo_transitorio(causa: str) -> bool:
+    texto = str(causa or "").lower()
+    if any(marca in texto for marca in _FALLOS_PERMANENTES):
+        return False
+    if "rpc failed" in texto:
+        return True
+    return any(marca in texto for marca in _FALLOS_TRANSITORIOS)
+
+
+def _clase_de_fallo(causa: str) -> str:
+    """La operación que falló, sin el detalle que cambia entre reintentos."""
+    operacion = str(causa).split(": ", 1)[0]
+    return re.sub(r"[0-9a-f]{7,40}", "#", operacion).strip().lower()
+
 
 class TransicionIlegal(RuntimeError):
     pass
@@ -215,6 +270,125 @@ class AlcanceRevision:
     conservadas: tuple[str, ...] = ()
     observacion: dict | None = None
     manifiesto: tuple[tuple[str, str], ...] = ()
+
+
+def _epochs(valor) -> tuple[tuple[str, float], ...]:
+    if not isinstance(valor, dict):
+        return ()
+    salida = []
+    for sha, epoch in valor.items():
+        try:
+            salida.append((str(sha), float(epoch)))
+        except (TypeError, ValueError):
+            continue
+    return tuple(sorted(salida))
+
+
+def _epochs_dict(valor: tuple[tuple[str, float], ...]) -> dict[str, float]:
+    return dict(valor)
+
+
+@dataclass(frozen=True)
+class LecturaDeepSeek:
+    """La última lectura de DeepSeek de un SHA: el espaciado y el error viven
+    en el registro, no en `deepseek_lectura.json`."""
+
+    sha: str = ""
+    epoch: float = 0.0
+    error: str = ""
+    aviso: float = 0.0
+
+    @classmethod
+    def de_dict(cls, d: dict) -> "LecturaDeepSeek":
+        try:
+            epoch = float(d.get("epoch") or 0)
+        except (TypeError, ValueError):
+            epoch = 0.0
+        try:
+            aviso = float(d.get("aviso") or 0)
+        except (TypeError, ValueError):
+            aviso = 0.0
+        return cls(
+            sha=str(d.get("sha") or ""),
+            epoch=epoch,
+            error=str(d.get("error") or ""),
+            aviso=aviso,
+        )
+
+    def como_dict(self) -> dict:
+        return {
+            "sha": self.sha,
+            "epoch": self.epoch,
+            "error": self.error,
+            "aviso": self.aviso,
+        }
+
+
+@dataclass(frozen=True)
+class MarcasDeepSeekCerrado:
+    """Los SHA ya leídos de un encargo cerrado y desde cuándo se sondea."""
+
+    shas: tuple[tuple[str, float], ...] = ()
+    inicios: tuple[tuple[str, float], ...] = ()
+    desde: float = 0.0
+
+    @classmethod
+    def de_dict(cls, d: dict) -> "MarcasDeepSeekCerrado":
+        try:
+            desde = float(d.get("desde") or 0)
+        except (TypeError, ValueError):
+            desde = 0.0
+        shas = _epochs(d.get("shas"))
+        inicios = _epochs(d.get("inicios"))
+        # Formato anterior, de una sola fase: se conserva al actualizar.
+        sha = str(d.get("sha") or "")
+        try:
+            epoch = float(d.get("epoch") or 0)
+        except (TypeError, ValueError):
+            epoch = 0.0
+        if sha and epoch:
+            if sha not in dict(shas):
+                shas = tuple(sorted(shas + ((sha, epoch),)))
+            if sha not in dict(inicios):
+                inicios = tuple(sorted(inicios + ((sha, epoch),)))
+        return cls(shas=shas, inicios=inicios, desde=desde)
+
+    def como_dict(self) -> dict:
+        return {
+            "shas": _epochs_dict(self.shas),
+            "inicios": _epochs_dict(self.inicios),
+            "desde": self.desde,
+        }
+
+
+@dataclass(frozen=True)
+class SondeoCI:
+    """El avance del sondeo del CI de un SHA. Reemplaza `ci-sondeo.json`."""
+
+    sha: str = ""
+    primero: str = ""
+    ultimo: str = ""
+    sondeos: int = 0
+    errores_limite: int = 0
+
+    @classmethod
+    def de_dict(cls, d: dict) -> "SondeoCI":
+        return cls(
+            sha=str(d.get("sha") or ""),
+            primero=str(d.get("primero") or ""),
+            ultimo=str(d.get("ultimo") or ""),
+            sondeos=int(d.get("sondeos") or 0),
+            errores_limite=int(d.get("errores_limite") or 0),
+        )
+
+    def como_dict(self) -> dict:
+        return {
+            "sha": self.sha,
+            "primero": self.primero,
+            "ultimo": self.ultimo,
+            "sondeos": self.sondeos,
+            "errores_limite": self.errores_limite,
+        }
 
 
 FASE_IMPLICITA = "fase_unica"
@@ -580,6 +754,32 @@ class Encargo:
     # bloqueante, aprobación concluyente sin bloqueos). Es la época de la
     # escalera: crece sola con el hecho, no se reinicia a mano.
     avances: int = 0
+    # Marcadores que antes vivían en archivos y decidían fuera del registro.
+    # Cada uno es ahora un hecho: el reducer guarda su última marca y el ciclo
+    # la lee sin recorrer eventos ni abrir un `.json`.
+    incorporado: tuple[int, ...] = ()
+    quietud_vigilada: tuple[int, int, float, float] = (0, 0, 0.0, 0.0)
+    lectura_deepseek: LecturaDeepSeek = field(default_factory=LecturaDeepSeek)
+    deepseek_cerrado: MarcasDeepSeekCerrado = field(
+        default_factory=MarcasDeepSeekCerrado
+    )
+    sondeo_ci: SondeoCI = field(default_factory=SondeoCI)
+    # Hechos derivados que antes se contaban recorriendo el log en `ciclo.py`.
+    # El reducer los actualiza al plegar; los consumidores leen el fold.
+    fallos_repo: tuple[str, int] = ("", 0)
+    fallos_entrega: tuple[str, int] = ("", 0)
+    fallos_instrumento: tuple[tuple[str, str, str, str], ...] = ()
+    apariciones: tuple[tuple[str, int], ...] = ()
+    fallos_proveedor: tuple[tuple[str, int], ...] = ()
+    fallos_barrido: int = 0
+    ultima_firma: str = ""
+    artefactos_instrumento: tuple[tuple[str, str], ...] = ()
+    lecturas_deepseek: tuple[tuple[str, str, int], ...] = ()
+    cuerpos_publicados: tuple[tuple[str, str, str], ...] = ()
+    preguntas_pedidas: tuple[str, ...] = ()
+    hora_cierre: str = ""
+    evidencias_revision: tuple[tuple[str, str], ...] = ()
+    internos_producto: tuple[str, ...] = ()
     # Pendientes que se escriben en el cuerpo del PR cuando el encargo entrega
     # sin que el revisor haya concluido o sin la revisión externa.
     pendientes_entrega: tuple[str, ...] = ()
@@ -1431,7 +1631,7 @@ def reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo
     return resultado
 
 
-def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
+def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
     kind = evento["kind"]
     d = evento["data"]
     hora = str(d.get("hora") or "")
@@ -1897,6 +2097,40 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
         if fase is None or str(d.get("fase") or fase.id) != fase.id:
             return e
         return con_fase(e, replace(fase, deepseek_error=str(d.get("causa") or "")))
+    if kind == "incorporado":
+        # El resultado de un intento ya se incorporó. La generación identifica
+        # el intento; la marca sobrevive a la limpieza de su directorio.
+        try:
+            generacion = int(d.get("generacion") or 0)
+        except (TypeError, ValueError):
+            raise TransicionIlegal(
+                "la incorporación necesita una generación"
+            ) from None
+        if generacion < 0:
+            raise TransicionIlegal("la incorporación necesita una generación")
+        marcas = e.incorporado if generacion in e.incorporado else (
+            tuple(sorted(e.incorporado + (generacion,)))
+        )
+        return replace(e, incorporado=marcas)
+    if kind == "quietud_vigilada":
+        # Una vuelta del supervisor observó el encargo quieto sobre el evento
+        # `evento`. La cuenta vive en el registro; un evento nuevo la estrena.
+        try:
+            evento_id = int(d.get("evento") or 0)
+            vueltas = int(d.get("vueltas") or 0)
+            desde = float(d.get("desde") or 0)
+            visto = float(d.get("visto") or 0)
+        except (TypeError, ValueError):
+            raise TransicionIlegal(
+                "la quietud vigilada necesita números"
+            ) from None
+        return replace(e, quietud_vigilada=(evento_id, vueltas, desde, visto))
+    if kind == "deepseek_lectura":
+        return replace(e, lectura_deepseek=LecturaDeepSeek.de_dict(d))
+    if kind == "deepseek_cerrado":
+        return replace(e, deepseek_cerrado=MarcasDeepSeekCerrado.de_dict(d))
+    if kind == "ci_sondeo":
+        return replace(e, sondeo_ci=SondeoCI.de_dict(d))
     if kind == "fase_reabierta":
         return _fase_reabierta(e, d, hora)
     if kind == "entrada_incorporada":
@@ -2286,6 +2520,122 @@ def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encarg
         return replace(e, hora=hora or e.hora)
 
     raise TransicionIlegal(f"evento desconocido: {kind}")
+
+
+
+def _con_hechos_derivados(e: Encargo, evento: dict) -> Encargo:
+    """Actualiza lo que antes se contaba recorriendo el log en `ciclo.py`.
+
+    El reducer es el único que ve la secuencia completa, así que las series,
+    los contadores y las últimas marcas salen del pliegue y no de un segundo
+    recorrido de eventos en el ciclo.
+    """
+    kind = evento["kind"]
+    d = evento["data"]
+    cambios: dict = {}
+    if d.get("firma"):
+        cambios["ultima_firma"] = str(d["firma"])
+    if kind in ("impedimento", "impedimento_resuelto"):
+        clase = str(d.get("clase") or d.get("huella") or "")
+        if clase:
+            actual = dict(e.apariciones)
+            actual[clase] = actual.get(clase, 0) + 1
+            cambios["apariciones"] = tuple(sorted(actual.items()))
+    if kind == "instrumento_fallo":
+        clase = str(d.get("clase") or "")
+        version = str(d.get("version") or "")
+        causa = str(d.get("causa") or "")
+        artefacto = str(d.get("artefacto") or "")
+        cambios["fallos_instrumento"] = e.fallos_instrumento + (
+            (version, clase, causa, artefacto),
+        )
+        if clase:
+            arts = dict(e.artefactos_instrumento)
+            arts[clase] = artefacto
+            cambios["artefactos_instrumento"] = tuple(sorted(arts.items()))
+        if str(d.get("fuente") or "") == "barrido":
+            cambios["fallos_barrido"] = e.fallos_barrido + 1
+    if kind == "proveedor_fallo":
+        agente = str(d.get("agente") or "")
+        if agente:
+            actual = dict(e.fallos_proveedor)
+            actual[agente] = actual.get(agente, 0) + 1
+            cambios["fallos_proveedor"] = tuple(sorted(actual.items()))
+    if kind == "proveedor_disponible":
+        agente = str(d.get("agente") or "")
+        if agente:
+            actual = dict(e.fallos_proveedor)
+            actual.pop(agente, None)
+            cambios["fallos_proveedor"] = tuple(sorted(actual.items()))
+    if kind == "entrega_externa":
+        paso = str(d.get("paso") or "")
+        fase = str(d.get("fase") or e.fase_activa)
+        if paso == "deepseek_leido":
+            sha = str(d.get("sha") or "")
+            actual = {(f, s): n for f, s, n in e.lecturas_deepseek}
+            actual[(fase, sha)] = actual.get((fase, sha), 0) + 1
+            cambios["lecturas_deepseek"] = tuple(
+                sorted((f, s, n) for (f, s), n in actual.items())
+            )
+        if paso == "pr_cuerpo":
+            marca = (fase, str(d.get("sha") or ""), str(d.get("huella") or ""))
+            if marca not in e.cuerpos_publicados:
+                cambios["cuerpos_publicados"] = e.cuerpos_publicados + (marca,)
+    if kind == "respuesta_revisor_pedida":
+        ident = str(d.get("solicitud") or "")
+        if ident and ident not in e.preguntas_pedidas:
+            cambios["preguntas_pedidas"] = e.preguntas_pedidas + (ident,)
+    if kind in ("cierre_forzado", "bloqueo_fase"):
+        cambios["hora_cierre"] = str(d.get("hora") or evento.get("ts") or "")
+    if kind == "comprobacion" and str(d.get("clase") or "") in (
+        "cierre_comprobado",
+        "confirmado",
+    ):
+        cambios["hora_cierre"] = str(d.get("hora") or evento.get("ts") or "")
+    if kind == "revision" and str(d.get("origen") or "independiente") == "independiente":
+        fase = str(d.get("fase") or e.fase_activa)
+        if fase:
+            actual = {f: ev for f, ev in e.evidencias_revision}
+            actual[fase] = str(d.get("evidencia") or "")
+            cambios["evidencias_revision"] = tuple(sorted(actual.items()))
+    if kind == "producto_listo":
+        cambios["internos_producto"] = e.internos_producto + (
+            str(d.get("interno") or ""),
+        )
+    repo_clase, repo_n = e.fallos_repo
+    ent_clase, ent_n = e.fallos_entrega
+    if kind == "espera":
+        motivo = str(d.get("motivo") or "")
+        clase = _clase_de_fallo(motivo)
+        if clase == repo_clase:
+            repo_n += 1
+        else:
+            repo_clase, repo_n = clase, 1
+        transitorio = _fallo_transitorio(motivo)
+        if clase != ent_clase:
+            # Una espera de otra clase corta la serie, aunque sea transitoria:
+            # la serie de entrega se mide sobre el mismo fallo.
+            ent_clase, ent_n = clase, 0 if transitorio else 1
+        elif not transitorio:
+            ent_n += 1
+    elif kind == "procedimiento" and str(d.get("nota") or "").startswith(
+        _NOTA_COPIA_SESION
+    ):
+        pass
+    elif kind not in _ENTRE_REINTENTOS and kind not in _EVENTOS_DE_MARCADOR:
+        repo_clase, repo_n = "", 0
+        ent_clase, ent_n = "", 0
+    if (repo_clase, repo_n) != e.fallos_repo:
+        cambios["fallos_repo"] = (repo_clase, repo_n)
+    if (ent_clase, ent_n) != e.fallos_entrega:
+        cambios["fallos_entrega"] = (ent_clase, ent_n)
+    return replace(e, **cambios) if cambios else e
+
+
+def _reducir(estado: Encargo | None, evento: dict, nuevo: bool = True) -> Encargo:
+    return _con_hechos_derivados(
+        _reducir_evento(estado, evento, nuevo), evento
+    )
 
 
 def _solicitud(e: Encargo, d: dict, hora: str) -> Encargo:

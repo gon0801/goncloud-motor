@@ -97,7 +97,6 @@ class Banco:
                 }
             )
         )
-        (self.directorio / "incorporado").unlink(missing_ok=True)
         _incorporar(self.reg, self.fold(), self.espacio, self.hora, self.directorio)
 
     def juicio(self, contenido) -> None:
@@ -216,7 +215,7 @@ class BucleInstrumento(unittest.TestCase):
         banco.barrer(2)
         self.assertEqual(len(banco.lanzamientos), 1)
 
-    def test_el_fallo_de_instrumento_del_revisor_no_vuelve_al_responsable(self):
+    def test_el_fallo_de_instrumento_del_revisor_no_vuelve_al_responsable(self):  # no-roja-en-base: la prueba migra del archivo incorporado al evento; el comportamiento probado ya estaba en la base
         banco = self.banco()
         with mock.patch("motor.encargos.aislamiento.sondear", return_value=RECUPERADO):
             banco.correr()
@@ -225,7 +224,14 @@ class BucleInstrumento(unittest.TestCase):
 
         # El revisor falla con el entorno roto: queda el impedimento, no otra tarea.
         self.sonda["actual"] = IMPEDIMENTO
-        (banco.directorio / "incorporado").unlink(missing_ok=True)
+        e = banco.fold()
+        generacion = e.generacion + 1
+        banco.anotar(
+            "reserva",
+            {"rol": e.rol or "responsable", "generacion": generacion},
+            f"t-reserva:{generacion}",
+        )
+        banco.anotar("reserva_cerrada", {}, f"t-cerrada:{generacion}")
         _incorporar(banco.reg, banco.fold(), banco.espacio, banco.hora, banco.directorio)
         e = banco.fold()
         self.assertEqual(e.rol, "revisor")
@@ -562,7 +568,7 @@ class BucleInstrumento(unittest.TestCase):
         fallos = banco.eventos("instrumento_fallo")
         self.assertEqual(len(fallos), 1)
         self.assertEqual(fallos[0]["data"]["clase"], "juicio:lectura")
-        self.assertTrue((banco.directorio / "incorporado").exists())
+        self.assertIn(banco.fold().generacion, banco.fold().incorporado)
         self.assertFalse(banco.fold().impedimento)
 
     def test_la_referencia_obsoleta_no_relanza_al_revisor(self):
