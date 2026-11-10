@@ -9,7 +9,22 @@ export MOTOR_SSH_MAC=mac MOTOR_SSH_MINI=mini MOTOR_SSH_PC=gwpc
 export MOTOR_PC_PYTHON='C:\runtime\python.exe'
 export MOTOR_ESPERA_DESPLIEGUE=0 MOTOR_ESPERA_ARRANQUE_PC=5 MOTOR_ESPERA_PARADA_PC=5
 export FAKE_PID=$$
-mkdir -p "$S/bin"
+# El python3 del PATH de ssh en la Mini es el del sistema (3.9) y no puede
+# importar tomllib. Este doble falla igual cuando se lo usa para `-m motor`,
+# pero sigue sirviendo para leer el plist y para los programas de stdlib.
+REAL_PY="$(command -v python3)"
+mkdir -p "$S/bin" "$S/bin-ssh"
+cat >"$S/bin-ssh/python3" <<PY
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = motor ]; then
+    echo "ModuleNotFoundError: No module named 'tomllib'" >&2
+    exit 1
+  fi
+done
+exec "$REAL_PY" "\$@"
+PY
+chmod +x "$S/bin-ssh/python3"
 
 # --- un origen con main en SHA, un anterior y un lado que no está en main.
 git init -q -b main "$S/fuente"
@@ -48,7 +63,7 @@ reset_maquinas() {
   local m home
   for m in mac mini pc-home; do
     home="$S/$m"
-    rm -rf "$home/motor-sucesor" "$home/.motor-encargos" "$home/.motor" "$home/.kickstarts" "$home/.ordenes"
+    rm -rf "$home/motor-sucesor" "$home/.motor-encargos" "$home/.motor" "$home/.kickstarts" "$home/.ordenes" "$home/.pasada-en"
     mkdir -p "$home/.motor-encargos"
     git clone -q "$S/origen.git" "$home/motor-sucesor"
     git -C "$home/motor-sucesor" checkout -q --detach "$ANTERIOR"
@@ -70,6 +85,17 @@ pasada() { # <home>
   sha="$(git -C "$1/motor-sucesor" rev-parse HEAD 2>/dev/null || true)"
   printf '{"sha": "%s", "ruta": "%s", "hora": "2026-11-09T10:00:00Z", "completa": true, "encargos": 0, "pid": %s}\n' \
     "$sha" "$1/motor-sucesor" "$FAKE_PID" >"$1/.motor-encargos/supervisor-pasada.json"
+}
+# La pasada nueva no aparece hasta que pasa el drenaje que pidió el reinicio:
+# launchd relanza y el supervisor nuevo completa su primera pasada después.
+aplica_pasada() { # <home>
+  local marca="$1/.pasada-en" cuando
+  [ -f "$marca" ] || return 0
+  cuando="$(cat "$marca" 2>/dev/null)"
+  [ -n "$cuando" ] || return 0
+  [ "$(date +%s)" -ge "$cuando" ] || return 0
+  rm -f "$marca"
+  pasada "$1"
 }
 case "$host" in
   gwpc)
@@ -140,6 +166,7 @@ case "$host" in
     esac
     ;;
   mac|mini)
+    aplica_pasada "$S/$host"
     case "$*" in
       *'bash -s'*)
         entrada="$S/entrada-$$"
@@ -149,17 +176,19 @@ case "$host" in
           rm -f "$entrada"
           exit 1
         fi
-        HOME="$S/$host" bash -c "$*" <"$entrada"
+        PATH="$S/bin-ssh:$PATH" HOME="$S/$host" bash -c "$*" <"$entrada"
         rc=$?
         rm -f "$entrada"
         if [ "$rc" -eq 0 ] && [ -f "$S/$host/.motor-encargos/reiniciar-supervisor.json" ]; then
-          printf 'orden\n' >>"$S/$host/.ordenes"
+          tope="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("tope_s"))' \
+            "$S/$host/.motor-encargos/reiniciar-supervisor.json" 2>/dev/null || echo '?')"
+          printf 'orden %s\n' "$tope" >>"$S/$host/.ordenes"
           rm -f "$S/$host/.motor-encargos/reiniciar-supervisor.json"
-          pasada "$S/$host"
+          printf '%s\n' "$(( $(date +%s) + ${FAKE_DRENA:-0} ))" >"$S/$host/.pasada-en"
         fi
         exit $rc ;;
       *)
-        HOME="$S/$host" bash -c "$*" ;;
+        PATH="$S/bin-ssh:$PATH" HOME="$S/$host" bash -c "$*" ;;
     esac ;;
   *) exit 1 ;;
 esac
@@ -274,6 +303,38 @@ done
 [ "$(campo_json "$S/pc-home/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
   || fallo "el pendiente de la PC no conserva el anterior"
 [ ! -s "$S/pc-home/.ordenes" ] || fallo "la PC se reinició sin haber movido su árbol"
+
+echo "# el reinicio ordenado usa el intérprete del LaunchAgent, no el python3 de ssh"
+reset_maquinas
+espera "despliega aunque el python3 de ssh no tenga tomllib" 0 bash "$SCRIPT" --sha "$SHA" --maquina mac
+contiene "lo dice" "$S/salida" "desplegado en:mac"
+[ -s "$S/mac/.ordenes" ] || fallo "el reinicio ordenado no llegó a la orden"
+grep -q 'tomllib' "$S/salida" && fallo "el reinicio usó el python3 de ssh y falló por tomllib"
+
+echo "# el tope del drenaje deja margen sobre la espera de la comprobación"
+reset_maquinas
+espera "despliega con el tope y la espera coherentes" 0 \
+  env MOTOR_ESPERA_DESPLIEGUE= bash "$SCRIPT" --sha "$SHA" --maquina mac
+tope_drenaje="$(sed -n 's/^orden //p' "$S/mac/.ordenes" | head -n 1)"
+espera_s="$(sed -n 's/.*hasta \([0-9][0-9]*\)s.*/\1/p' "$S/salida" | head -n 1)"
+[ -n "$tope_drenaje" ] || fallo "el reinicio no dijo su tope de drenaje"
+[ -n "$espera_s" ] || fallo "el despliegue no dijo su espera de comprobación"
+[ "$espera_s" -gt "$tope_drenaje" ] \
+  || fallo "la espera (${espera_s} s) no deja margen sobre el drenaje (${tope_drenaje} s)"
+contiene "lo dice" "$S/salida" "desplegado en:mac"
+
+echo "# un drenaje que agota su tope aún cabe en la espera con margen"
+reset_maquinas
+espera "despliega tras un drenaje que agota el tope" 0 \
+  env MOTOR_ESPERA_DESPLIEGUE=6 MOTOR_MARGEN_DESPLEGUE=4 FAKE_DRENA=5 \
+  bash "$SCRIPT" --sha "$SHA" --maquina mac
+tope_drenaje="$(sed -n 's/^orden //p' "$S/mac/.ordenes" | head -n 1)"
+espera_s="$(sed -n 's/.*hasta \([0-9][0-9]*\)s.*/\1/p' "$S/salida" | head -n 1)"
+[ "$tope_drenaje" = 2 ] || fallo "el drenaje no se recortó al margen (tope ${tope_drenaje} s)"
+[ "$espera_s" -gt "$tope_drenaje" ] \
+  || fallo "la espera (${espera_s} s) no deja margen sobre el drenaje (${tope_drenaje} s)"
+contiene "la espera suma el margen" "$S/salida" "drenaje hasta 2s, espera hasta 6s"
+contiene "lo dice" "$S/salida" "desplegado en:mac"
 
 echo "# un reintento tras una falla conserva el anterior"
 reset_maquinas

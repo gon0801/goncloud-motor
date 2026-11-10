@@ -236,11 +236,33 @@ reinicia_ordenado() {
     return $?
   fi
   if servicio_cargado "$m"; then
+    # El python3 del PATH de ssh es el del sistema (3.9 en la Mini) y no puede
+    # importar tomllib; el del LaunchAgent sí. Se lee de ProgramArguments, como
+    # ya hace comprueba-despliegue.sh, para no ejecutar motor con el intérprete
+    # equivocado.
     en_posix "$m" "$m" "$runtime" "$clave" "$tope" <<'REMOTO' >/dev/null
 set -euo pipefail
 runtime=$2 clave=$3 tope=$4
+label="ai.goncloud.motor-encargos"
+plist="$HOME/Library/LaunchAgents/$label.plist"
+py=python3
+if [ -f "$plist" ]; then
+  leido="$(python3 - "$plist" 2>/dev/null <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as f:
+        datos = plistlib.load(f)
+    args = datos.get("ProgramArguments") if isinstance(datos, dict) else None
+    if args and isinstance(args[0], str):
+        print(args[0])
+except Exception:
+    pass
+PY
+)" || true
+  if [ -n "$leido" ] && [ -x "$leido" ]; then py="$leido"; fi
+fi
 cd "$runtime"
-python3 -B -m motor reiniciar-supervisor --base "$HOME/.motor-encargos" --clave "$clave" --tope "$tope"
+"$py" -B -m motor reiniciar-supervisor --base "$HOME/.motor-encargos" --clave "$clave" --tope "$tope"
 REMOTO
   else
     en_posix "$m" "$m" <<'REMOTO' >/dev/null
@@ -296,17 +318,33 @@ for m in $maquinas; do
   printf '%s\n' "$cabeza" >"$tmp/$m.cabeza"
 done
 
-espera="${MOTOR_ESPERA_DESPLIEGUE:-120}"
-case "$espera" in
-  "" | *[!0-9]*) espera=120 ;;
+# La comprobación espera a que el supervisor viejo drene (hasta el tope), launchd
+# relance y el supervisor nuevo complete una pasada. Ese plazo es el tope más un
+# margen, no el tope solo: si fueran iguales, un turno que agote el tope deja la
+# comprobación sin tiempo para el relanzamiento ni para la primera pasada.
+margen="${MOTOR_MARGEN_DESPLEGUE:-120}"
+case "$margen" in
+  "" | *[!0-9]*) margen=120 ;;
 esac
-# El tope del drenaje no puede superar la espera de la comprobación: hoy el
-# reinicio traía 300 s y la comprobación espera 120 s.
-tope_reinicio="${MOTOR_ESPERA_REINICIO:-$espera}"
+if [ "$margen" -gt 900 ]; then margen=900; fi
+tope_reinicio="${MOTOR_ESPERA_REINICIO:-120}"
 case "$tope_reinicio" in
-  "" | *[!0-9]*) tope_reinicio=$espera ;;
+  "" | *[!0-9]*) tope_reinicio=120 ;;
 esac
 if [ "$tope_reinicio" -gt 900 ]; then tope_reinicio=900; fi
+espera="${MOTOR_ESPERA_DESPLIEGUE:-$((tope_reinicio + margen))}"
+case "$espera" in
+  "" | *[!0-9]*) echo "MOTOR_ESPERA_DESPLIEGUE inválida: $espera" >&2; exit 2 ;;
+esac
+# Si el operador fija la espera, el drenaje se recorta para que el margen del
+# relanzamiento y la primera pasada nunca se lo coma el tope.
+if [ "$espera" -lt $((tope_reinicio + margen)) ]; then
+  if [ "$espera" -gt "$margen" ]; then
+    tope_reinicio=$((espera - margen))
+  else
+    tope_reinicio=0
+  fi
+fi
 clave_despliegue="despliegue-${sha:0:12}-$$"
 
 necesitan=""
@@ -386,7 +424,7 @@ for m in $movidas; do
   fi
 done
 
-echo "Comprobando el despliegue en:$maquinas (hasta ${espera}s para la pasada con ${sha:0:12})"
+echo "Comprobando el despliegue en:$maquinas (drenaje hasta ${tope_reinicio}s, espera hasta ${espera}s para la pasada con ${sha:0:12})"
 if ! bash "$aqui/comprueba-despliegue.sh" --sha "$sha" --maquina "$maquinas" --espera "$espera" --reinicio; then
   echo "El código quedó en ${sha:0:12}, pero la comprobación no pasa en todas. Los pendientes conservan el anterior para volver." >&2
   exit 1
