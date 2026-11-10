@@ -1,0 +1,438 @@
+"""Fases paralelas: la entrega no sale sin las puntas finales ya revisadas.
+
+A y B corren en paralelo y C consume solo B (o las dos). La rama de C nace de
+B, asi que hoy se entrega sin A; estas pruebas exigen que la entrega contenga
+la punta final revisada de cada fase terminada, o que el motor falle nombrando
+la que falta. Todas usan git real en un temporal.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from motor.encargos import ciclo
+from motor.encargos.dominio import (
+    Encargo,
+    EntregaAutorizada,
+    Fase,
+    VersionProducto,
+    reducir,
+)
+
+
+def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@l", *args],
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def _es_ancestro(cwd: Path, sha: str) -> bool:
+    r = _git(cwd, "merge-base", "--is-ancestor", sha, "HEAD", check=False)
+    return r.returncode == 0
+
+
+class _Banco(unittest.TestCase):
+    """Repo bare real, dos fases paralelas y el espacio de una tercera."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.raiz = Path(tmp.name)
+        self.bare = self.raiz / "repo.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", "--quiet", str(self.bare)],
+            check=True,
+        )
+        semilla = self.raiz / "semilla"
+        semilla.mkdir()
+        (semilla / "base.txt").write_text("base\n")
+        _git(semilla, "init", "-b", "main", "--quiet")
+        _git(semilla, "add", "-A")
+        _git(semilla, "commit", "--quiet", "-m", "base")
+        _git(semilla, "push", "--quiet", str(self.bare), "main")
+
+    def _rama(self, nombre: str, archivo: str, texto: str) -> str:
+        trabajo = self.raiz / "trabajo"
+        if not trabajo.exists():
+            subprocess.run(
+                ["git", "clone", "--quiet", str(self.bare), str(trabajo)],
+                check=True,
+            )
+        _git(trabajo, "checkout", "--quiet", "-B", nombre, "origin/main")
+        (trabajo / archivo).write_text(texto)
+        _git(trabajo, "add", "-A")
+        _git(trabajo, "commit", "--quiet", "-m", nombre)
+        sha = _git(trabajo, "rev-parse", "HEAD").stdout.strip()
+        _git(trabajo, "push", "--quiet", "origin", f"{nombre}:refs/heads/{nombre}")
+        return sha
+
+    def _encargo(self, requiere, conflicto: bool = False):
+        texto_a, texto_b = "de A\n", "de B\n"
+        archivo_a, archivo_b = "a.txt", "b.txt"
+        if conflicto:
+            archivo_a = archivo_b = "base.txt"
+            texto_a, texto_b = "A pisa base\n", "B pisa base\n"
+        sha_a = self._rama("encargo/enc_x-A", archivo_a, texto_a)
+        sha_b = self._rama("encargo/enc_x-B", archivo_b, texto_b)
+
+        self.espacio = self.raiz / "espacio"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(self.bare), str(self.espacio)],
+            check=True,
+        )
+        _git(
+            self.espacio,
+            "checkout", "--quiet", "-B", "encargo/enc_x-C",
+            "origin/encargo/enc_x-B",
+        )
+
+        a = Fase(
+            id="A", resultado="a", estado="preparada", evidencia="listo",
+            producto=VersionProducto(firma="fA", manifiesto=(), sha_git=sha_a),
+        )
+        b = Fase(
+            id="B", resultado="b", estado="preparada", evidencia="listo",
+            producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
+        )
+        c = Fase(id="C", resultado="c", estado="trabajo", requiere=requiere)
+        enc = Encargo(
+            id="enc_x",
+            clave="clave-x",
+            huella="huella",
+            director="cli",
+            texto="pedido",
+            adjuntos=(),
+            restricciones=(),
+            canal="canal",
+            entrega=EntregaAutorizada(
+                nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
+            ),
+            fases=(a, b, c),
+            fase_activa="C",
+            estado="ejecutando",
+            generacion=1,
+        )
+        return enc, sha_a, sha_b
+
+
+class LaEntregaCubreTodasLasPuntas(_Banco):
+    def test_requiere_solo_b_e_incorpora_a(self):
+        enc, sha_a, _sha_b = self._encargo((("B", "fB"),))
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(
+            _es_ancestro(self.espacio, sha_a),
+            "la entrega de C no incorporo la punta final de la fase A",
+        )
+        self.assertEqual((self.espacio / "a.txt").read_text(), "de A\n")
+
+    def test_requiere_las_dos_y_contiene_ambas(self):
+        enc, sha_a, sha_b = self._encargo((("A", "fA"), ("B", "fB")))
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self.assertTrue(_es_ancestro(self.espacio, sha_b), "falta la punta de B")
+
+    def test_conflicto_entre_a_y_b_falla_nombrando_la_fase(self):
+        enc, _sha_a, _sha_b = self._encargo(
+            (("A", "fA"), ("B", "fB")), conflicto=True
+        )
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertIn("conflicto", causa)
+        self.assertIn("A", causa)
+        self.assertNotEqual(
+            _git(
+                self.espacio,
+                "rev-parse", "--verify", "--quiet", "MERGE_HEAD", check=False,
+            ).returncode,
+            0,
+            "un conflicto visible no deja la mezcla a medias",
+        )
+
+
+class LaDependenciaIntegradaPorSquashTraeSuContenido(_Banco):
+    def _escenario_squash(self, requiere, archivo="a.txt", texto="de A\n"):
+        sha_a = self._rama("encargo/enc_x-A", archivo, texto)
+        sha_b = self._rama("encargo/enc_x-B", "b.txt", "de B\n")
+        trabajo = self.raiz / "trabajo"
+        _git(trabajo, "checkout", "--quiet", "-B", "main", "origin/main")
+        _git(trabajo, "merge", "--squash", "--quiet", "encargo/enc_x-A")
+        _git(trabajo, "commit", "--quiet", "-m", "A (squash)")
+        squash = _git(trabajo, "rev-parse", "HEAD").stdout.strip()
+        _git(trabajo, "push", "--quiet", "origin", "main")
+
+        self.espacio = self.raiz / "espacio"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(self.bare), str(self.espacio)],
+            check=True,
+        )
+        _git(
+            self.espacio,
+            "checkout", "--quiet", "-B", "encargo/enc_x-C",
+            "origin/encargo/enc_x-B",
+        )
+        a = Fase(
+            id="A", resultado="a", estado="preparada", evidencia="listo",
+            ultimo_paso_entrega="integrado", integrado_sha=squash,
+            producto=VersionProducto(firma="fA", manifiesto=(), sha_git=sha_a),
+        )
+        b = Fase(
+            id="B", resultado="b", estado="preparada", evidencia="listo",
+            producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
+        )
+        c = Fase(id="C", resultado="c", estado="trabajo", requiere=requiere)
+        enc = Encargo(
+            id="enc_x", clave="clave-x", huella="huella", director="cli",
+            texto="pedido", adjuntos=(), restricciones=(), canal="canal",
+            entrega=EntregaAutorizada(
+                nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
+            ),
+            fases=(a, b, c), fase_activa="C", estado="ejecutando", generacion=1,
+        )
+        return enc, sha_a, squash
+
+    def _comprobar_contenido(self, archivo="a.txt", texto="de A\n"):
+        self.assertEqual((self.espacio / archivo).read_text(), texto)
+        self.assertEqual(
+            _git(self.espacio, "merge", "--no-edit", "origin/main", check=False)
+            .returncode,
+            0,
+        )
+        self.assertEqual((self.espacio / archivo).read_text(), texto)
+
+    def test_squash_omitida_trae_su_contenido(self):
+        enc, sha_a, _squash = self._escenario_squash((("B", "fB"),))
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self._comprobar_contenido()
+
+    def test_squash_ya_unido_sin_contenido_trae_su_contenido(self):
+        enc, sha_a, squash = self._escenario_squash((("B", "fB"),))
+        _git(
+            self.espacio,
+            "merge", "-s", "ours", "--no-ff", "--quiet",
+            "-m", "ancestria sin contenido", squash,
+        )
+        self.assertFalse((self.espacio / "a.txt").exists())
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self._comprobar_contenido()
+
+    def test_squash_declarada_sin_version_trae_su_contenido(self):  # no-roja-en-base: la base ya traia el contenido de la dependencia declarada sin version; la prueba guarda esa conducta
+        enc, sha_a, _squash = self._escenario_squash((("A", ""), ("B", "fB")))
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self._comprobar_contenido()
+
+    def test_squash_con_ruta_citada_por_git_trae_su_contenido(self):
+        enc, sha_a, squash = self._escenario_squash(
+            (("B", "fB"),), archivo="café.txt"
+        )
+        _git(
+            self.espacio,
+            "merge", "-s", "ours", "--no-ff", "--quiet",
+            "-m", "ancestria sin contenido", squash,
+        )
+        self.assertFalse((self.espacio / "café.txt").exists())
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self._comprobar_contenido("café.txt")
+
+
+class LaCadenaNoSeConfundeConDependenciasParalelas(_Banco):
+    def _cadena(self, orden, indice):
+        base = f"encargo/enc_x_{indice}"
+        sha_a = self._rama(f"{base}-A", "a.txt", "de A\n")
+        trabajo = self.raiz / "trabajo"
+        _git(trabajo, "checkout", "--quiet", "-B", f"{base}-B", f"{base}-A")
+        (trabajo / "b.txt").write_text("de B\n")
+        _git(trabajo, "add", "-A")
+        _git(trabajo, "commit", "--quiet", "-m", "B")
+        sha_b = _git(trabajo, "rev-parse", "HEAD").stdout.strip()
+        _git(trabajo, "push", "--quiet", "origin", f"{base}-B:refs/heads/{base}-B")
+        if (self.raiz / "espacio").exists():
+            shutil.rmtree(self.raiz / "espacio")
+        self.espacio = self.raiz / "espacio"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(self.bare), str(self.espacio)],
+            check=True,
+        )
+        _git(
+            self.espacio,
+            "checkout", "--quiet", "-B", f"{base}-C",
+            f"origin/{base}-B",
+        )
+        a = Fase(
+            id="A", resultado="a", estado="preparada", evidencia="listo",
+            producto=VersionProducto(firma="fA", manifiesto=(), sha_git=sha_a),
+        )
+        b = Fase(
+            id="B", resultado="b", estado="preparada", evidencia="listo",
+            requiere=(("A", "fA"),),
+            producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
+        )
+        c = Fase(id="C", resultado="c", estado="trabajo", requiere=orden)
+        enc = Encargo(
+            id=f"enc_x_{indice}", clave="clave-x", huella="huella",
+            director="cli", texto="pedido", adjuntos=(), restricciones=(),
+            canal="canal",
+            entrega=EntregaAutorizada(
+                nivel="pr", repo="o/r", rama=base, base="main"
+            ),
+            fases=(a, b, c), fase_activa="C", estado="ejecutando", generacion=1,
+        )
+        return enc, f"{base}-B"
+
+    def test_a_b_c_con_cualquier_orden_usa_la_rama_de_b(self):
+        ordenes = ((("A", "fA"), ("B", "fB")), (("B", "fB"), ("A", "fA")))
+        for indice, orden in enumerate(ordenes):
+            with self.subTest(orden=orden):
+                enc, rama_b = self._cadena(orden, indice)
+                self.assertEqual(ciclo._base_fase(enc), rama_b)
+                self.assertEqual(ciclo._incorporar_entradas(enc, self.espacio), "")
+                self.assertEqual(
+                    (self.espacio / "a.txt").read_text(), "de A\n"
+                )
+                self.assertEqual(
+                    (self.espacio / "b.txt").read_text(), "de B\n"
+                )
+
+
+class LaComprobacionPreviaYElReducer(_Banco):
+    def test_la_comprobacion_previa_ve_la_punta_que_falta(self):
+        enc, _sha_a, _sha_b = self._encargo((("B", "fB"),))
+
+        self.assertEqual(
+            ciclo._faltan_puntas_finales(enc, self.espacio, "HEAD"), ["A"]
+        )
+        self.assertEqual(ciclo._incorporar_entradas(enc, self.espacio), "")
+        self.assertEqual(
+            ciclo._faltan_puntas_finales(enc, self.espacio, "HEAD"), []
+        )
+
+    def test_el_reducer_no_cambia_la_propuesta_de_fases(self):
+        enc, sha_a, _sha_b = self._encargo((("B", "fB"),))
+        antes = enc.fase_actual.requiere
+
+        despues = reducir(
+            enc,
+            {
+                "kind": "entrada_incorporada",
+                "data": {
+                    "fase": "C",
+                    "dep": "A",
+                    "version": "fA",
+                    "sha": sha_a,
+                    "hora": "2026-11-09T00:00:00Z",
+                },
+            },
+        )
+
+        self.assertEqual(despues.fase_actual.requiere, antes)
+        self.assertIn("A", despues.ultimo_hecho)
+
+
+class LaFaseReabiertaNoIncorporaFasesPosteriores(_Banco):
+    def test_la_fase_reabierta_no_trae_su_dependiente(self):  # no-roja-en-base: la base no incorporaba entradas no declaradas; la prueba vigila que el guard nuevo no meta la fase posterior en el PR de la reabierta
+        sha_a = self._rama("encargo/enc_x-A", "a.txt", "de A\n")
+        trabajo = self.raiz / "trabajo"
+        _git(trabajo, "checkout", "--quiet", "-B", "encargo/enc_x-B", "encargo/enc_x-A")
+        (trabajo / "b.txt").write_text("de B\n")
+        _git(trabajo, "add", "-A")
+        _git(trabajo, "commit", "--quiet", "-m", "B")
+        sha_b = _git(trabajo, "rev-parse", "HEAD").stdout.strip()
+        _git(trabajo, "push", "--quiet", "origin", "encargo/enc_x-B:refs/heads/encargo/enc_x-B")
+
+        self.espacio = self.raiz / "espacio"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(self.bare), str(self.espacio)],
+            check=True,
+        )
+        _git(
+            self.espacio,
+            "checkout", "--quiet", "-B", "encargo/enc_x-A",
+            "origin/encargo/enc_x-A",
+        )
+        a = Fase(
+            id="A", resultado="a", estado="entrega", evidencia="listo",
+            producto=VersionProducto(firma="fA", manifiesto=(), sha_git=sha_a),
+        )
+        b = Fase(
+            id="B", resultado="b", estado="preparada", evidencia="listo",
+            requiere=(("A", "fA"),),
+            producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
+        )
+        enc = Encargo(
+            id="enc_x", clave="clave-x", huella="huella", director="cli",
+            texto="pedido", adjuntos=(), restricciones=(), canal="canal",
+            entrega=EntregaAutorizada(
+                nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
+            ),
+            fases=(a, b), fase_activa="A", estado="recibido", generacion=1,
+        )
+
+        if hasattr(ciclo, "_entradas_de"):
+            self.assertEqual(
+                [f.id for f in ciclo._entradas_de(enc, enc.fase_actual)], []
+            )
+        if hasattr(ciclo, "_faltan_puntas_finales"):
+            self.assertEqual(
+                ciclo._faltan_puntas_finales(enc, self.espacio, sha_a), []
+            )
+        self.assertEqual(ciclo._incorporar_entradas(enc, self.espacio), "")
+        self.assertFalse(
+            _es_ancestro(self.espacio, sha_b),
+            "la fase A reabierta incorporo la fase posterior B",
+        )
+        self.assertFalse((self.espacio / "b.txt").exists())
+
+
+class LaBaseConVariasDependenciasQuedaDefinida(_Banco):
+    def test_dos_dependencias_vivas_usan_la_base_de_entrega(self):
+        enc, sha_a, sha_b = self._encargo((("A", "fA"), ("B", "fB")))
+
+        self.assertEqual(ciclo._base_fase(enc), "main")
+        self.assertEqual(ciclo._incorporar_entradas(enc, self.espacio), "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a))
+        self.assertTrue(_es_ancestro(self.espacio, sha_b))
+
+    def test_el_cuerpo_del_pr_explica_la_base_y_el_motivo(self):
+        enc, _sha_a, _sha_b = self._encargo((("A", "fA"), ("B", "fB")))
+
+        cuerpo = ciclo._cuerpo_pr(enc, self.espacio)
+
+        self.assertIn("Base del PR", cuerpo)
+        self.assertIn("main", cuerpo)
+        self.assertIn("A, B", cuerpo)
+
+
+if __name__ == "__main__":
+    unittest.main()
