@@ -264,5 +264,31 @@ class GrokSinTopes(unittest.TestCase):
         self.assertNotIn("--session-id", argv)
 
 
+@entorno.requiere_windows
+class TurnoDeAntigravityWindows(unittest.TestCase):
+    """La guarda de sesión del turno también corre en Windows.
+
+    Vive aquí porque este módulo es de los que ejecuta el job windows del CI:
+    sin sesión, el turno no lanza agy y no puede abrir el navegador con
+    rundll32.
+    """
+
+    def test_sin_sesion_el_turno_no_lanza_agy(self):
+        """Sin sesión se reporta el estado sin_sesion y no hay proceso."""
+        from motor.flota import turnos
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            with mock.patch.object(
+                turnos, "sesion_antigravity_presente", return_value=False
+            ), mock.patch.object(
+                turnos.subprocess,
+                "run",
+                side_effect=AssertionError("el turno lanzó un proceso"),
+            ):
+                resultado = turnos._turno_agente("antigravity", None, Path(tmp))
+        self.assertEqual(resultado["estado"], "sin_sesion")
+        self.assertEqual(resultado["rc"], 126)
+
+
 if __name__ == "__main__":
     unittest.main()
