@@ -8,6 +8,7 @@ la que falta. Todas usan git real en un temporal.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from motor.encargos import ciclo
-from motor.encargos.dominio import Encargo, EntregaAutorizada, Fase, VersionProducto
+from motor.encargos.dominio import (
+    Encargo,
+    EntregaAutorizada,
+    Fase,
+    VersionProducto,
+    reducir,
+)
 
 
 def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -160,8 +167,8 @@ class LaEntregaCubreTodasLasPuntas(_Banco):
 
 
 class LaDependenciaIntegradaPorSquashTraeSuContenido(_Banco):
-    def _escenario_squash(self, requiere):
-        sha_a = self._rama("encargo/enc_x-A", "a.txt", "de A\n")
+    def _escenario_squash(self, requiere, archivo="a.txt", texto="de A\n"):
+        sha_a = self._rama("encargo/enc_x-A", archivo, texto)
         sha_b = self._rama("encargo/enc_x-B", "b.txt", "de B\n")
         trabajo = self.raiz / "trabajo"
         _git(trabajo, "checkout", "--quiet", "-B", "main", "origin/main")
@@ -200,14 +207,14 @@ class LaDependenciaIntegradaPorSquashTraeSuContenido(_Banco):
         )
         return enc, sha_a, squash
 
-    def _comprobar_contenido(self):
-        self.assertEqual((self.espacio / "a.txt").read_text(), "de A\n")
+    def _comprobar_contenido(self, archivo="a.txt", texto="de A\n"):
+        self.assertEqual((self.espacio / archivo).read_text(), texto)
         self.assertEqual(
             _git(self.espacio, "merge", "--no-edit", "origin/main", check=False)
             .returncode,
             0,
         )
-        self.assertEqual((self.espacio / "a.txt").read_text(), "de A\n")
+        self.assertEqual((self.espacio / archivo).read_text(), texto)
 
     def test_squash_omitida_trae_su_contenido(self):
         enc, sha_a, _squash = self._escenario_squash((("B", "fB"),))
@@ -241,6 +248,113 @@ class LaDependenciaIntegradaPorSquashTraeSuContenido(_Banco):
         self.assertEqual(causa, "")
         self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
         self._comprobar_contenido()
+
+    def test_squash_con_ruta_citada_por_git_trae_su_contenido(self):
+        enc, sha_a, squash = self._escenario_squash(
+            (("B", "fB"),), archivo="café.txt"
+        )
+        _git(
+            self.espacio,
+            "merge", "-s", "ours", "--no-ff", "--quiet",
+            "-m", "ancestria sin contenido", squash,
+        )
+        self.assertFalse((self.espacio / "café.txt").exists())
+
+        causa = ciclo._incorporar_entradas(enc, self.espacio)
+
+        self.assertEqual(causa, "")
+        self.assertTrue(_es_ancestro(self.espacio, sha_a), "falta la punta de A")
+        self._comprobar_contenido("café.txt")
+
+
+class LaCadenaNoSeConfundeConDependenciasParalelas(_Banco):
+    def _cadena(self, orden):
+        sha_a = self._rama("encargo/enc_x-A", "a.txt", "de A\n")
+        trabajo = self.raiz / "trabajo"
+        _git(trabajo, "checkout", "--quiet", "-B", "encargo/enc_x-B", "encargo/enc_x-A")
+        (trabajo / "b.txt").write_text("de B\n")
+        _git(trabajo, "add", "-A")
+        _git(trabajo, "commit", "--quiet", "-m", "B")
+        sha_b = _git(trabajo, "rev-parse", "HEAD").stdout.strip()
+        _git(trabajo, "push", "--quiet", "origin", "encargo/enc_x-B:refs/heads/encargo/enc_x-B")
+        if (self.raiz / "espacio").exists():
+            shutil.rmtree(self.raiz / "espacio")
+        self.espacio = self.raiz / "espacio"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(self.bare), str(self.espacio)],
+            check=True,
+        )
+        _git(
+            self.espacio,
+            "checkout", "--quiet", "-B", "encargo/enc_x-C",
+            "origin/encargo/enc_x-B",
+        )
+        a = Fase(
+            id="A", resultado="a", estado="preparada", evidencia="listo",
+            producto=VersionProducto(firma="fA", manifiesto=(), sha_git=sha_a),
+        )
+        b = Fase(
+            id="B", resultado="b", estado="preparada", evidencia="listo",
+            requiere=(("A", "fA"),),
+            producto=VersionProducto(firma="fB", manifiesto=(), sha_git=sha_b),
+        )
+        c = Fase(id="C", resultado="c", estado="trabajo", requiere=orden)
+        enc = Encargo(
+            id="enc_x", clave="clave-x", huella="huella", director="cli",
+            texto="pedido", adjuntos=(), restricciones=(), canal="canal",
+            entrega=EntregaAutorizada(
+                nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
+            ),
+            fases=(a, b, c), fase_activa="C", estado="ejecutando", generacion=1,
+        )
+        return enc
+
+    def test_a_b_c_con_cualquier_orden_usa_la_rama_de_b(self):
+        for orden in ((("A", "fA"), ("B", "fB")), (("B", "fB"), ("A", "fA"))):
+            with self.subTest(orden=orden):
+                enc = self._cadena(orden)
+                self.assertEqual(ciclo._base_fase(enc), "encargo/enc_x-B")
+                self.assertEqual(ciclo._incorporar_entradas(enc, self.espacio), "")
+                self.assertEqual(
+                    (self.espacio / "a.txt").read_text(), "de A\n"
+                )
+                self.assertEqual(
+                    (self.espacio / "b.txt").read_text(), "de B\n"
+                )
+
+
+class LaComprobacionPreviaYElReducer(_Banco):
+    def test_la_comprobacion_previa_ve_la_punta_que_falta(self):
+        enc, _sha_a, _sha_b = self._encargo((("B", "fB"),))
+
+        self.assertEqual(
+            ciclo._faltan_puntas_finales(enc, self.espacio, "HEAD"), ["A"]
+        )
+        self.assertEqual(ciclo._incorporar_entradas(enc, self.espacio), "")
+        self.assertEqual(
+            ciclo._faltan_puntas_finales(enc, self.espacio, "HEAD"), []
+        )
+
+    def test_el_reducer_no_cambia_la_propuesta_de_fases(self):
+        enc, sha_a, _sha_b = self._encargo((("B", "fB"),))
+        antes = enc.fase_actual.requiere
+
+        despues = reducir(
+            enc,
+            {
+                "kind": "entrada_incorporada",
+                "data": {
+                    "fase": "C",
+                    "dep": "A",
+                    "version": "fA",
+                    "sha": sha_a,
+                    "hora": "2026-11-09T00:00:00Z",
+                },
+            },
+        )
+
+        self.assertEqual(despues.fase_actual.requiere, antes)
+        self.assertIn("A", despues.ultimo_hecho)
 
 
 class LaFaseReabiertaNoIncorporaFasesPosteriores(_Banco):
