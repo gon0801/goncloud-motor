@@ -420,6 +420,22 @@ def _run(
         return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
+RETIRO_EN_CURSO = "retiro-en-curso"
+
+
+def _esperar_retiro(d: Path) -> None:
+    """Espera a que termine el retiro del motor viejo (`motor.encargos.retiro`) si hay uno en curso.
+
+    Se mira con el candado del repo ya tomado: el retiro toma primero el suyo y después prueba
+    los de los repos, así que o el retiro ve este despliegue y se niega, o este lo ve a él."""
+    ruta = d / RETIRO_EN_CURSO
+    while ruta.exists():
+        with open(ruta, "a+") as f:
+            if plataforma.candado_exclusivo(f):
+                return
+        time.sleep(1)
+
+
 @contextlib.contextmanager
 def _lock_despliegue(home: Path, repo: str):
     """Dos despliegues del mismo repo en la misma máquina, de uno en uno (también entre procesos)."""
@@ -436,6 +452,7 @@ def _lock_despliegue(home: Path, repo: str):
 
             f.seek(0)
             msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        _esperar_retiro(d)
         yield
     finally:
         try:

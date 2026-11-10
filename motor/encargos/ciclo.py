@@ -162,22 +162,16 @@ def _capacidad_desplegar(
 
     True solo con un hecho declarado: `tiene` sin `ssh-goncloud`, o el
     `[deploy] requiere` del `.motor.toml` con algo que la máquina no declara.
-    Sin configuración legible, o con una política ilegible o con una receta que
-    una fase aún no creó, la capacidad queda desconocida y eso no cambia nivel.
+    Sin `maquina.toml` legible en la base, o con una política ilegible o con una
+    receta que una fase aún no creó, la capacidad queda desconocida y eso no cambia nivel.
     """
-    from motor.conf import (
-        RepoConf,
-        load_maquina,
-        motivo_requiere,
-        requisitos_faltantes,
-    )
+    from motor.conf import RepoConf, motivo_requiere, requisitos_faltantes
 
-    home = base if (base / "maquina.toml").is_file() else Path(
-        os.environ.get("MOTOR_HOME") or Path.home() / ".motor"
-    )
+    from .maquina import de_base
+
     try:
-        maquina = load_maquina(home)
-    except (OSError, ValueError):
+        maquina = de_base(base)
+    except ValueError:
         return False, ""
     requiere = ["ssh-goncloud"]
     tom = espacio / ".motor.toml" if espacio is not None else None

@@ -23,8 +23,8 @@ if __name__ == "__main__":
 from motor.io import leer_json, leer_texto
 
 from motor import plataforma
-from motor.conf import load_maquina
 from motor.effects import _lock_despliegue, _posix, con_python_de_comando, entorno_maquina
+from motor.encargos.maquina import de_base
 from motor.encargos.frontera import _atomico, _autorizado_ahora, autoridad_ausente, turno
 from motor.encargos.registro import Registro
 
@@ -118,13 +118,7 @@ def _git(espacio: Path, *args: str) -> str:
 
 
 def _maquina(base: Path):
-    home = base if (base / "maquina.toml").is_file() else Path(
-        os.environ.get("MOTOR_HOME") or Path.home() / ".motor"
-    )
-    try:
-        maquina = load_maquina(home)
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"falta configuración de máquina para ssh-goncloud: {home / 'maquina.toml'}") from exc
+    maquina = de_base(base)
     if "ssh-goncloud" not in maquina.tiene:
         raise ValueError(f"la máquina {maquina.nombre} no tiene la capacidad ssh-goncloud")
     return maquina

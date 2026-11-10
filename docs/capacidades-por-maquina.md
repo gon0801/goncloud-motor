@@ -16,12 +16,15 @@ JSON (`"ok": true|false` y la lista `faltas`). Antes de mandar un encargo:
 3. Si sale 1, `faltas` nombra lo que falta; mandar el encargo igual es apostar a que el
    hueco no toque.
 
-`--home` señala el home del motor instalado (por omisión `~/.motor`) para mirar el canal de
-avisos y la señal de Kuma; si no existe, esas dos secciones salen como falta.
+El canal de avisos, la señal de Kuma y las capacidades declaradas (`tiene`, como
+`ssh-goncloud`) salen del `maquina.toml` y el `secretos.env` de la base. `--home` lee otra
+carpeta en su lugar. Si a la base le falta `maquina.toml`, la sección de avisos sale como
+falta y nombra la base; `python -m motor.encargos.retiro migrar` lo trae del motor viejo.
 
 ## Qué mira cada sección
 
-- `maquina`: sistema, nombre de `maquina.toml` si se puede leer, y versión de Python.
+- `maquina`: sistema, nombre y capacidades (`tiene`) del `maquina.toml` de la base si se puede
+  leer, y versión de Python.
 - `jaula`: el mecanismo de lanzamiento que el motor usaría aquí. Desde el 2-nov los
   agentes corren sin aislamiento, como el propio usuario, con el entorno completo en
   macOS, Linux y Windows: la fila es `directo` con estado ok y no se exige
