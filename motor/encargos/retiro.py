@@ -304,6 +304,8 @@ def _comando_sudo() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m motor.encargos.retiro", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("accion", choices=("migrar", "retirar"))
