@@ -32,6 +32,10 @@ contiene() { # contiene <nombre> <archivo> <texto>
   grep -qF -- "$3" "$2" || fallo "$1: '$3' no está en $2"
 }
 
+no_contiene() { # no_contiene <nombre> <archivo> <texto>
+  grep -qF -- "$3" "$2" && fallo "$1: '$3' no debería estar en $2"
+}
+
 termina() {
   if [ "$fallos" -gt 0 ]; then echo "$fallos prueba(s) fallaron" >&2; exit 1; fi
   echo "todo bien"

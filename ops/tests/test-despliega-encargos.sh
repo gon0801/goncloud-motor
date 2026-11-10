@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ops/despliega-encargos.sh con un ssh falso, un HOME temporal por máquina y árboles
-# git temporales. Nada de esto toca las máquinas reales ni ~/.motor-encargos real.
+# git temporales. La PC de mentira aplica el tope de cmd.exe (8191) y contesta CRLF.
+# Nada de esto toca las máquinas reales ni ~/.motor-encargos real.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-prueba.sh"
 
@@ -47,7 +48,7 @@ reset_maquinas() {
   local m home
   for m in mac mini pc-home; do
     home="$S/$m"
-    rm -rf "$home/motor-sucesor" "$home/.motor-encargos" "$home/.motor" "$home/.kickstarts"
+    rm -rf "$home/motor-sucesor" "$home/.motor-encargos" "$home/.motor" "$home/.kickstarts" "$home/.ordenes"
     mkdir -p "$home/.motor-encargos"
     git clone -q "$S/origen.git" "$home/motor-sucesor"
     git -C "$home/motor-sucesor" checkout -q --detach "$ANTERIOR"
@@ -63,23 +64,45 @@ echo "$*" >>"$FAKE_LOG"
 while [ "$1" = -o ]; do shift 2; done
 host=$1; shift
 case " ${FAKE_CAE:-} " in *" $host "*) echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255 ;; esac
+# cmd.exe y Python en Windows: tope de línea de comandos y fin de línea CRLF.
+crlf() { sed 's/\r$//' | sed 's/$/\r/'; }
+pasada() { # <home>
+  sha="$(git -C "$1/motor-sucesor" rev-parse HEAD 2>/dev/null || true)"
+  printf '{"sha": "%s", "ruta": "%s", "hora": "2026-11-09T10:00:00Z", "completa": true, "encargos": 0, "pid": %s}\n' \
+    "$sha" "$1/motor-sucesor" "$FAKE_PID" >"$1/.motor-encargos/supervisor-pasada.json"
+}
 case "$host" in
   gwpc)
     phome="$S/pc-home"
     mkdir -p "$phome/.motor-encargos"
     cmd="$*"
+    if [ "${#cmd}" -gt 8191 ]; then
+      # cmd.exe falla pero devuelve 0: quien llamó no puede tomar esto por éxito.
+      printf 'The command line is too long.\r\n'
+      exit 0
+    fi
+    consume_orden_pc() {
+      [ -f "$phome/.motor-encargos/reiniciar-supervisor.json" ] || return 0
+      rm -f "$phome/.motor-encargos/reiniciar-supervisor.json"
+      if [ -n "${FAKE_PC_ARRANQUE_FALLA:-}" ]; then
+        echo "el supervisor de la PC no arrancó" >&2
+        exit 1
+      fi
+      printf 'orden\n' >>"$phome/.ordenes"
+      pasada "$phome"
+    }
     case "$cmd" in
       *iniciar_encargos_pc.py*--parar*)
         : >"$phome/.motor-encargos/vigilante.parar"
-        if [ -n "${FAKE_PC_SIN_VIGILANTE:-}" ]; then printf '{}\n'; else printf '{"parado": true}\n'; fi
+        if [ -n "${FAKE_PC_SIN_VIGILANTE:-}" ]; then printf '{}\n' | crlf; else printf '{"parado": true}\n' | crlf; fi
         exit 0 ;;
       *iniciar_encargos_pc.py*--estado*)
         if [ -n "${FAKE_PC_SIN_VIGILANTE:-}" ] && [ ! -f "$phome/.motor-encargos/arrancado" ]; then
-          printf '{}\n'
+          printf '{}\n' | crlf
         elif [ -f "$phome/.motor-encargos/vigilante.parar" ]; then
-          printf '{"parado": true}\n'
+          printf '{"parado": true}\n' | crlf
         else
-          printf '{"supervisor_pid": 4242, "supervisor": {"sid": "S-1-5-21", "session": 1, "in_job": false}, "parado": false}\n'
+          printf '{"supervisor_pid": 4242, "supervisor": {"sid": "S-1-5-21", "session": 1, "in_job": false}, "parado": false}\n' | crlf
         fi
         exit 0 ;;
       *'iniciar_encargos_pc.py'*)
@@ -89,19 +112,30 @@ case "$host" in
         fi
         rm -f "$phome/.motor-encargos/vigilante.parar"
         : >"$phome/.motor-encargos/arrancado"
-        sha="$(git -C "$phome/motor-sucesor" rev-parse HEAD 2>/dev/null || true)"
-        printf '{"sha": "%s", "ruta": "%s", "hora": "2026-11-09T10:00:00Z", "completa": true, "encargos": 0, "pid": %s}\n' \
-          "$sha" "$phome/motor-sucesor" "$FAKE_PID" >"$phome/.motor-encargos/supervisor-pasada.json"
-        printf '{"vigilante": "arrancado"}\n'
+        pasada "$phome"
+        printf '{"vigilante": "arrancado"}\n' | crlf
         exit 0 ;;
       *' -c "'*)
         tmp="${cmd#* -c \"}"
         code="${tmp%%\"*}"
         rest="${tmp#*\"}"
-        HOME="$phome" USERPROFILE="$phome" python3 -c "$code" $rest
-        exit $? ;;
+        salida="$(HOME="$phome" USERPROFILE="$phome" python3 -c "$code" $rest)"
+        rc=$?
+        consume_orden_pc
+        [ -n "$salida" ] && printf '%s\n' "$salida" | crlf
+        exit $rc ;;
+      *'git -C '*'checkout'*)
+        if [ "${FAKE_CHECKOUT_FALLA:-}" = gwpc ]; then
+          echo "fatal: checkout cortado" >&2
+          exit 1
+        fi
+        salida="$(bash -c "$cmd")"; rc=$?
+        printf '%s\n' "$salida" | crlf
+        exit $rc ;;
       *'git -C '*)
-        bash -c "$cmd" ;;
+        salida="$(bash -c "$cmd")"; rc=$?
+        printf '%s\n' "$salida" | crlf
+        exit $rc ;;
       *) echo "comando no reconocido por la PC: $*" >&2; exit 1 ;;
     esac
     ;;
@@ -118,6 +152,11 @@ case "$host" in
         HOME="$S/$host" bash -c "$*" <"$entrada"
         rc=$?
         rm -f "$entrada"
+        if [ "$rc" -eq 0 ] && [ -f "$S/$host/.motor-encargos/reiniciar-supervisor.json" ]; then
+          printf 'orden\n' >>"$S/$host/.ordenes"
+          rm -f "$S/$host/.motor-encargos/reiniciar-supervisor.json"
+          pasada "$S/$host"
+        fi
         exit $rc ;;
       *)
         HOME="$S/$host" bash -c "$*" ;;
@@ -159,21 +198,24 @@ for m in mac mini pc-home; do
   [ "$(campo_json "$S/$m/.motor-encargos/instalacion.json" 'd["destino"]["codigo"]')" = "$SHA" ] \
     || fallo "$m: el recibo no dice el SHA"
   [ ! -e "$S/$m/.motor-encargos/instalacion-pendiente.json" ] || fallo "$m: no se cerró el pendiente"
+  [ -s "$S/$m/.ordenes" ] || fallo "$m: no se pidió el reinicio ordenado"
+  [ ! -s "$S/$m/.kickstarts" ] || fallo "$m: usó kickstart en vez del reinicio ordenado"
 done
-[ -s "$S/mac/.kickstarts" ] || fallo "la Mac no reinició el LaunchAgent"
-[ -s "$S/mini/.kickstarts" ] || fallo "la Mini no reinició el LaunchAgent"
 grep -qF 'C:\runtime\python.exe' "$FAKE_LOG" || fallo "la PC no usó el intérprete configurado"
 grep -q 'uv' "$FAKE_LOG" && fallo "la PC usó uv"
-grep -q -- '--parar' "$FAKE_LOG" || fallo "la PC no se paró antes de mover el árbol"
+grep -q -- '--parar' "$FAKE_LOG" && fallo "la PC se paró a mano; el reinicio ordenado no lo necesita"
+grep -q 'taskkill' "$FAKE_LOG" && fallo "la PC usó taskkill en vez del reinicio ordenado"
+grep -q 'The command line is too long' "$S/salida" && fallo "un programa grande viajó por la línea de comandos de la PC"
 
 echo "# segunda corrida con el mismo SHA"
 : >"$FAKE_LOG"
-: >"$S/mac/.kickstarts"
-: >"$S/mini/.kickstarts"
+for m in mac mini pc-home; do rm -f "$S/$m/.ordenes" "$S/$m/.kickstarts"; done
 espera "no reinicia lo que ya está bien" 0 bash "$SCRIPT" --sha "$SHA"
 contiene "dice que ya estaba" "$S/salida" "ya estaba en"
-[ ! -s "$S/mac/.kickstarts" ] || fallo "la Mac se reinició en la segunda corrida"
-[ ! -s "$S/mini/.kickstarts" ] || fallo "la Mini se reinició en la segunda corrida"
+for m in mac mini pc-home; do
+  [ ! -s "$S/$m/.ordenes" ] || fallo "$m: se reinició en la segunda corrida"
+  [ ! -s "$S/$m/.kickstarts" ] || fallo "$m: usó kickstart en la segunda corrida"
+done
 grep -q -- '--parar' "$FAKE_LOG" && fallo "la PC se paró en la segunda corrida"
 
 echo "# un SHA que no está en origin/main"
@@ -183,21 +225,61 @@ contiene "la causa lo dice" "$S/salida" "no está en origin/main"
 [ ! -s "$FAKE_LOG" ] || fallo "tocó las máquinas antes de negarse"
 [ "$(git -C "$S/mac/motor-sucesor" rev-parse HEAD)" = "$ANTERIOR" ] || fallo "movió la Mac al negarse"
 
+echo "# la lectura de la PC falla antes de mover: no se mueve ninguna"
+reset_maquinas
+espera "se niega antes de mover" '!0' env FAKE_CAE=gwpc bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la PC y el paso" "$S/salida" "FALLA pc en leer el árbol del supervisor"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+for m in mac mini pc-home; do
+  [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$ANTERIOR" ] || fallo "$m: se movió pese al fallo de lectura de la PC"
+  [ ! -s "$S/$m/.ordenes" ] || fallo "$m: se reinició pese al fallo de lectura de la PC"
+  [ ! -e "$S/$m/.motor-encargos/instalacion.json" ] || fallo "$m: escribió recibo antes de comprobar todas"
+done
+
+echo "# un error de cmd.exe con rc=0 no se toma por éxito"
+reset_maquinas
+largo="C:\\$(printf 'x%.0s' {1..8200})\\python.exe"
+espera "se niega ante el error de cmd.exe" '!0' env MOTOR_PC_PYTHON="$largo" bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la PC y la lectura" "$S/salida" "FALLA pc en leer el árbol del supervisor"
+contiene "dice que no movió ninguna" "$S/salida" "No moví ninguna máquina"
+for m in mac mini pc-home; do
+  [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$ANTERIOR" ] || fallo "$m: se movió con la PC devolviendo el error"
+done
+
 echo "# una máquina falla a la mitad"
 reset_maquinas
 espera "se detiene y nombra la máquina y el paso" '!0' env FAKE_CHECKOUT_FALLA=mini bash "$SCRIPT" --sha "$SHA"
 contiene "nombra la mini y el paso" "$S/salida" "FALLA mini en mover el árbol"
+contiene "dice que reinició la Mac movida" "$S/salida" "mac: reiniciado y comprobado"
 [ "$(campo_json "$S/mini/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
   || fallo "el pendiente de la mini no conserva el anterior"
 [ "$(git -C "$S/pc-home/motor-sucesor" rev-parse HEAD)" = "$ANTERIOR" ] \
   || fallo "siguió con la PC después de la falla de la mini"
 [ "$(git -C "$S/mac/motor-sucesor" rev-parse HEAD)" = "$SHA" ] \
   || fallo "la Mac no quedó desplegada antes de la falla"
+[ -s "$S/mac/.ordenes" ] || fallo "la Mac movida no se reinició"
+[ ! -s "$S/mini/.ordenes" ] || fallo "la mini se reinició sin haber movido su árbol"
+
+echo "# falla la PC después de mover la Mac y la Mini"
+reset_maquinas
+espera "se detiene y compensa" '!0' env FAKE_CHECKOUT_FALLA=gwpc bash "$SCRIPT" --sha "$SHA"
+contiene "nombra la PC y el paso" "$S/salida" "FALLA pc en mover el árbol"
+contiene "dice que reinició la Mac" "$S/salida" "mac: reiniciado y comprobado"
+contiene "dice que reinició la Mini" "$S/salida" "mini: reiniciado y comprobado"
+for m in mac mini; do
+  [ "$(git -C "$S/$m/motor-sucesor" rev-parse HEAD)" = "$SHA" ] || fallo "$m: no quedó en el SHA"
+  [ -s "$S/$m/.ordenes" ] || fallo "$m: no se reinició tras la falla de la PC"
+done
+[ "$(git -C "$S/pc-home/motor-sucesor" rev-parse HEAD)" = "$ANTERIOR" ] || fallo "la PC se movió pese a la falla"
+[ "$(campo_json "$S/pc-home/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
+  || fallo "el pendiente de la PC no conserva el anterior"
+[ ! -s "$S/pc-home/.ordenes" ] || fallo "la PC se reinició sin haber movido su árbol"
 
 echo "# un reintento tras una falla conserva el anterior"
 reset_maquinas
 espera "la primera corrida falla en la PC" '!0' env FAKE_PC_ARRANQUE_FALLA=1 bash "$SCRIPT" --sha "$SHA"
 contiene "nombra la PC y el reinicio" "$S/salida" "FALLA pc en reiniciar el supervisor"
+contiene "dice el anterior que conserva" "$S/salida" "conserva el anterior (${ANTERIOR:0:12})"
 [ "$(campo_json "$S/pc-home/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
   || fallo "el pendiente de la PC no conserva el anterior tras la primera falla"
 espera "la segunda corrida vuelve a fallar" '!0' env FAKE_PC_ARRANQUE_FALLA=1 bash "$SCRIPT" --sha "$SHA"
@@ -213,12 +295,13 @@ contiene "dice el anterior que conserva" "$S/salida" "conserva el anterior (${AN
 [ "$(campo_json "$S/mini/.motor-encargos/instalacion-pendiente.json" 'd["anterior"]["codigo"]')" = "$ANTERIOR" ] \
   || fallo "el reintento de la Mini perdió el anterior en el pendiente"
 
-echo "# la PC sin vigilante no culpa a la parada"
+echo "# la PC sin vigilante se arranca y no culpa a la parada"
 reset_maquinas
 espera "despliega sin vigilante en la PC" 0 env FAKE_PC_SIN_VIGILANTE=1 bash "$SCRIPT" --sha "$SHA"
 contiene "lo dice" "$S/salida" "desplegado en:mac mini pc"
 [ "$(git -C "$S/pc-home/motor-sucesor" rev-parse HEAD)" = "$SHA" ] || fallo "la PC no quedó en el SHA"
-grep -q -- '--parar' "$FAKE_LOG" || fallo "la PC no pasó por --parar"
+[ -f "$S/pc-home/.motor-encargos/arrancado" ] || fallo "la PC no arrancó el vigilante"
+grep -q -- '--parar' "$FAKE_LOG" && fallo "la PC pasó por --parar"
 
 echo "# un fallo temprano del reintento no borra el anterior"
 reset_maquinas
