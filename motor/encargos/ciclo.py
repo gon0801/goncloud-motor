@@ -4481,6 +4481,17 @@ def _base_fase(enc: Encargo) -> str:
     return base_de(fase, frozenset()) if fase is not None else enc.entrega.base
 
 
+def _base_objetivo_del_pr(enc: Encargo) -> str:
+    """La base a la que apunta el PR de esta fase.
+
+    Un PR de nivel «pr» apunta a la base de su fase, que puede ser la rama de
+    otra fase apilada; uno integrado apunta a la base autorizada.
+    """
+    if nivel_objetivo(enc) in ("integrado", "desplegado"):
+        return enc.entrega.base
+    return _base_fase(enc)
+
+
 def _ref_existente(espacio: Path, *candidatos: str) -> str:
     for candidato in candidatos:
         if not candidato:
@@ -6816,6 +6827,124 @@ def _leer_veredicto_ci(gh, enc: Encargo, sha: str) -> Leido | ErrorLectura:
         return ErrorLectura(str(exc) or type(exc).__name__)
 
 
+def _estado_merge_del_pr(gh, enc: Encargo):
+    """La lectura tipada de si el PR choca o quedó atrás; sin lector, nada.
+
+    Una lectura que falla no cambia el flujo: el sondeo del CI conserva su
+    tope y el merge conserva sus rechazos visibles.
+    """
+    lector = getattr(gh, "estado_merge", None)
+    if lector is None or not enc.pr_numero:
+        return None
+    try:
+        return lector(enc.entrega.repo, int(enc.pr_numero))
+    except Exception:  # noqa: BLE001  el flujo tiene su propia espera
+        return None
+
+
+def _base_del_pr(gh, enc: Encargo) -> str:
+    """La base real contra la que apunta el PR, no la base autorizada.
+
+    Un PR de una fase apilada apunta a la rama de su base y no a
+    `entrega.base`; mezclar contra la base equivocada no resuelve el choque
+    real. Si la vista no se puede leer, se usa la misma base con la que se abre
+    el PR, que ya contempla la fase apilada.
+    """
+    respaldo = str(_base_objetivo_del_pr(enc) or enc.entrega.base or "main")
+    if gh is None or not enc.pr_numero:
+        return respaldo
+    try:
+        vista = gh.ver(enc.entrega.repo, int(enc.pr_numero))
+    except Exception:  # noqa: BLE001  la base objetivo conserva el flujo
+        return respaldo
+    return str(getattr(vista, "base", "") or respaldo)
+
+
+def _traer_la_base_al_pr(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> tuple[Encargo, Resultado]:
+    """Mezcla la base en la rama del PR reutilizando `traer_main`.
+
+    Una mezcla limpia publica y el siguiente barrido sigue con el SHA nuevo.
+    Un conflicto devuelve el trabajo al responsable con los archivos, como el
+    comando manual; un error del comando deja espera visible, no un bucle.
+    """
+    base = _base_del_pr(gh, enc)
+    from .integracion import traer_main
+
+    resultado = traer_main(registro, enc.id, hora, contra=base)
+    enc = registro.fold(enc.id) or enc
+    estado = str(resultado.get("estado") or "")
+    if estado == "conflicto":
+        archivos = [
+            str(archivo)
+            for archivo in (resultado.get("archivos") or ())
+            if str(archivo)
+        ]
+        detalle = f"el PR choca con {base}"
+        if archivos:
+            detalle += ": " + ", ".join(archivos)
+        _devolver(
+            registro, enc, "integrar_main", detalle,
+            "resolver el conflicto con la base conservando el trabajo propio; "
+            "lo aprobado que no cambió se conserva",
+            hora, f"choque-main-{enc.generacion}",
+        )
+        return registro.fold(enc.id) or enc, Devolver("responsable", detalle)
+    if estado == "error":
+        causa = (
+            f"no se pudo traer {base} a la rama del PR #{enc.pr_numero}: "
+            + str(resultado.get("motivo") or "sin causa")
+        )
+        _anotar_instrumento(
+            registro, enc, "github", causa,
+            f"reintentar traer {base} a la rama del PR",
+            hora, f"traer-main-{enc.generacion}",
+        )
+        marcar_espera(registro, enc.id, causa, _reanuda_en(120), hora)
+        return _con_espera(registro.fold(enc.id) or enc)
+    return enc, Avanzo()
+
+
+def _resolver_choque_con_la_base(
+    registro: Registro, enc: Encargo, gh, hora: str
+) -> tuple[Encargo, Resultado] | None:
+    """Antes del CI y del merge: si choca o quedó atrás, trae la base solo."""
+    if (
+        not enc.pr_numero
+        or enc.estado not in ("recibido", "ejecutando")
+        or enc.proc is not None
+        or enc.reserva
+    ):
+        return None
+    estado = _estado_merge_del_pr(gh, enc)
+    if estado is None or str(getattr(estado, "estado", "")) not in ("choca", "atras"):
+        return None
+    return _traer_la_base_al_pr(registro, enc, gh, hora)
+
+
+def _choque_para_el_ci(gh, enc: Encargo) -> str:
+    """La causa en palabras llanas cuando el PR no puede esperar el CI."""
+    if enc.nivel_alcanzado != "pr":
+        return ""
+    estado = _estado_merge_del_pr(gh, enc)
+    if estado is None:
+        return ""
+    base = _base_del_pr(gh, enc)
+    clase = str(getattr(estado, "estado", ""))
+    if clase == "choca":
+        return (
+            f"el PR choca con {base}; GitHub no corre el CI hasta que la rama "
+            "esté al día. Vuelve al responsable para resolver el choque."
+        )
+    if clase == "atras":
+        return (
+            f"la rama del PR quedó atrás de {base}; hay que integrar la base "
+            "antes de que el CI corra sobre el SHA entregado."
+        )
+    return ""
+
+
 def _revisar_ci_del_pr(
     registro: Registro, enc: Encargo, gh, hora: str
 ) -> Encargo:
@@ -6856,6 +6985,25 @@ def _revisar_ci_del_pr(
     ultimo = str(sondeo.get("ultimo") or "")
     transcurrido = _segundos_entre(ultimo, hora) if ultimo else None
     if transcurrido is not None and transcurrido < _CI_SONDEO_S:
+        return enc
+    choque = _choque_para_el_ci(gh, enc)
+    if choque:
+        # Un PR que choca no dispara CI: esperar 90 minutos daría por
+        # «sin resultado» lo que en realidad es un choque con la base. El
+        # encargo vuelve a estar activo para traer la base con `traer_main`.
+        enc = _anotar_ci_del_pr(
+            registro,
+            enc,
+            ukey=ukey,
+            fase=fase.id,
+            sha=sha,
+            estado="sin_resultado",
+            causa=choque,
+            reabrir=True,
+            hora=hora,
+        )
+        if enc.estado in ("recibido", "ejecutando") and not enc.reserva:
+            return _traer_la_base_al_pr(registro, enc, gh, hora)[0]
         return enc
     primero = str(sondeo.get("primero") or hora)
     edad = _segundos_entre(primero, hora)
@@ -7674,11 +7822,7 @@ def _entregar_con_pendientes(
             sha, causa = _commit_push(enc, espacio)
         if not causa:
             rama = _rama_fase(enc)
-            base = (
-                enc.entrega.base
-                if nivel_objetivo(enc) in ("integrado", "desplegado")
-                else _base_fase(enc)
-            )
+            base = _base_objetivo_del_pr(enc)
             if not numero:
                 ref_base = _ref_existente(espacio, f"origin/{base}", base)
                 conteo = _git(espacio, "rev-list", "--count", f"{ref_base}..{sha}") if ref_base else None
@@ -8128,10 +8272,7 @@ def _paso_entrega_paso(
     _resolver_impedimentos_de_entrega(registro, enc, hora, ("entrega:ssh",))
     enc = registro.fold(enc.id) or enc
     rama = _rama_fase(enc)
-    base = (
-        enc.entrega.base if nivel_objetivo(enc) in ("integrado", "desplegado")
-        else _base_fase(enc)
-    )
+    base = _base_objetivo_del_pr(enc)
     firma = enc.producto.firma if enc.producto is not None else ""
     for paso in ("commit", "push"):
         registro.anotar(
@@ -8433,6 +8574,12 @@ def _paso_entrega_paso(
         registro, enc, hora, ("entrega:github", "entrega:publicar")
     )
     enc = registro.fold(enc.id)
+    # Antes de esperar el CI y de mergear: si el PR choca con su base o quedó
+    # atrás, se trae la base con el mismo `traer_main` del comando manual.
+    resuelto = _resolver_choque_con_la_base(registro, enc, gh, hora)
+    if resuelto is not None:
+        return resuelto
+    enc = registro.fold(enc.id) or enc
     inicio_vuelta = enc
     por_releer = _deepseek_por_releer(enc) and (
         enc.fase_actual is None
@@ -8625,8 +8772,16 @@ def _paso_entrega_paso(
                     f"{enc.clave}: {' '.join(enc.texto.split())[:72]}",
                     )
         except Exception as exc:
-            from motor.github import MergeRechazado, PoliticaBloquea
+            from motor.github import Conflicto, MergeRechazado, PoliticaBloquea
 
+            if isinstance(exc, Conflicto) and (
+                enc.estado in ("recibido", "ejecutando")
+                and enc.proc is None
+                and not enc.reserva
+            ):
+                # El merge chocó aunque la lectura previa dijera limpio (la
+                # base se movió en medio): el mismo camino que un choque leído.
+                return _traer_la_base_al_pr(registro, enc, gh, hora)
             causa = f"no se pudo integrar el PR #{enc.pr_numero}: {exc}"
             checks = None
             lectura_fallida = False

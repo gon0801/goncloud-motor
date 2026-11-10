@@ -59,6 +59,36 @@ class ChecksVerdict:
 
 
 @dataclass(frozen=True)
+class EstadoMerge:
+    """Si el PR se puede mezclar con su base y si quedó atrás.
+
+    `estado` es «limpio», «atras», «choca» o «desconocido» cuando GitHub aún
+    no calculó el resultado. Los dos nombres crudos se conservan para la
+    evidencia; nadie fuera de esta frontera lee los valores de GitHub.
+    """
+
+    estado: str
+    mergeable: str = ""
+    merge_state_status: str = ""
+
+
+_REINTENTOS_MERGEABLE = 6
+_ESPERA_MERGEABLE_S = 3.0
+
+
+def _estado_merge_desde(mergeable: str, merge_state_status: str) -> EstadoMerge:
+    mergeable = str(mergeable or "").upper()
+    merge_state_status = str(merge_state_status or "").upper()
+    if mergeable == "CONFLICTING" or merge_state_status in ("DIRTY", "CONFLICTING"):
+        return EstadoMerge("choca", mergeable, merge_state_status)
+    if merge_state_status == "BEHIND":
+        return EstadoMerge("atras", mergeable, merge_state_status)
+    if mergeable == "UNKNOWN" or merge_state_status == "UNKNOWN" or not mergeable:
+        return EstadoMerge("desconocido", mergeable, merge_state_status)
+    return EstadoMerge("limpio", mergeable, merge_state_status)
+
+
+@dataclass(frozen=True)
 class CheckRequerido:
     nombre: str
     app: str | None = None
@@ -368,6 +398,7 @@ class GitHubPort(Protocol):
         *, base_politica: str = "",
     ) -> ChecksVerdict: ...
     def checks_requeridos(self, repo: str, numero: int, sha: str) -> ChecksVerdict: ...
+    def estado_merge(self, repo: str, numero: int) -> EstadoMerge: ...
     def merge(
         self, repo: str, numero: int, sha: str, metodo: str, mensaje: str
     ) -> PrView: ...
@@ -677,6 +708,37 @@ class GhGitHub:
             en_marcha=tuple(en_marcha),
         )
 
+    def estado_merge(self, repo, numero):
+        """Lee si el PR choca con su base; GitHub tarda en calcularlo.
+
+        `mergeable` nace en UNKNOWN tras abrir o mover el PR. Una respuesta
+        todavía sin calcular se vuelve a pedir en el acto, como mucho
+        `_REINTENTOS_MERGEABLE` veces, en vez de esperar al siguiente barrido.
+        """
+        n = self.nombre(repo)
+        estado = EstadoMerge("desconocido")
+        for intento in range(_REINTENTOS_MERGEABLE):
+            datos = json.loads(
+                self._gh(
+                    "pr",
+                    "view",
+                    str(numero),
+                    "-R",
+                    n,
+                    "--json",
+                    "mergeable,mergeStateStatus",
+                )
+            )
+            estado = _estado_merge_desde(
+                str(datos.get("mergeable") or ""),
+                str(datos.get("mergeStateStatus") or ""),
+            )
+            if estado.estado != "desconocido":
+                return estado
+            if intento < _REINTENTOS_MERGEABLE - 1:
+                self.dormir(_ESPERA_MERGEABLE_S)
+        return estado
+
     def relanzar_corrida(self, repo, run_id):
         if not run_id:
             return
@@ -936,6 +998,7 @@ class FakeGitHub:
         self.responde_deepseek: Callable[[int, str], str | None] | None = None
         self.responde_ver: Callable[[str, int], PrView] | None = None
         self.responde_checks: Callable[..., ChecksVerdict] | None = None
+        self.responde_estado_merge: Callable[[str, int], EstadoMerge] | None = None
         self.responde_merge: Callable[..., PrView] | None = None
         self.responde_marcar_listo: Callable[[str, int], None] | None = None
         self.textos: dict[object, object] | list[object] = {}
@@ -960,6 +1023,8 @@ class FakeGitHub:
         self.fallar_cuerpo = False
         self.relanzadas: list[str] = []
         self.checks_llamadas = 0
+        self.mergeables_llamadas: dict[str, int] = {}
+        self.dormir = lambda _segundos: None
         self.bloquea = False
         self.intentos: list[str] = []
         self._reintentos: dict[str, int] = {}
@@ -1227,6 +1292,34 @@ class FakeGitHub:
             raise PuntaMovida("la punta del PR ya no es el SHA revisado")
         return self.checks(repo, numero, sha, ())
 
+    def estado_merge(self, repo, numero):
+        if self.responde_estado_merge is not None:
+            return self.responde_estado_merge(repo, numero)
+        cfg = self._cfg(repo)
+        secuencia = cfg.get("mergeables")
+        estado = EstadoMerge("desconocido")
+        for _intento in range(_REINTENTOS_MERGEABLE):
+            llamadas = self.mergeables_llamadas.get(str(repo), 0) + 1
+            self.mergeables_llamadas[str(repo)] = llamadas
+            if secuencia:
+                item = secuencia[min(llamadas - 1, len(secuencia) - 1)]
+                if isinstance(item, dict):
+                    estado = _estado_merge_desde(
+                        str(item.get("mergeable") or ""),
+                        str(item.get("mergeStateStatus") or ""),
+                    )
+                else:
+                    estado = _estado_merge_desde(str(item), "")
+            else:
+                estado = _estado_merge_desde(
+                    str(cfg.get("mergeable") or "MERGEABLE"),
+                    str(cfg.get("merge_state_status") or "CLEAN"),
+                )
+            if estado.estado != "desconocido":
+                return estado
+            self.dormir(_ESPERA_MERGEABLE_S)
+        return estado
+
     def relanzar_corrida(self, repo, run_id):
         self.relanzadas.append(str(run_id))
         s = self._cargar()
@@ -1390,6 +1483,7 @@ __all__ = [
     "CapacidadRemota",
     "ChecksVerdict",
     "Conflicto",
+    "EstadoMerge",
     "FakeGitHub",
     "GhGitHub",
     "GitHubPort",
