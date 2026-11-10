@@ -82,13 +82,14 @@ class RetiroDelMotorViejo(unittest.TestCase):
         return codigo, "\n".join(lineas)
 
     def test_la_migracion_junta_las_llaves_con_el_valor_de_la_base_y_sin_imprimirlas(self):
-        primera = "\n".join(retiro.migrar(self.home, self.base))
-        segunda = "\n".join(retiro.migrar(self.home, self.base))
-
-        self.assertEqual(load_secretos(self.base), {
+        juntos = {
             "COMPARTIDA": "de-la-base", "PROPIA": "propia",
             "TOKEN_A": "viejo-a", "TOKEN_B": "viejo-b",
-        })
+        }
+        primera = "\n".join(retiro.migrar(self.home, self.base))
+        self.assertEqual(load_secretos(self.base), juntos)
+        segunda = "\n".join(retiro.migrar(self.home, self.base))
+        self.assertEqual(load_secretos(self.base), juntos)
         if os.name == "posix":
             self.assertEqual(os.stat(self.base / "secretos.env").st_mode & 0o777, 0o600)
         self.assertIn("agregadas TOKEN_A, TOKEN_B", primera)
