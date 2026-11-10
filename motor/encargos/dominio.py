@@ -2254,16 +2254,13 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
         version = str(d.get("version") or "").strip()
         if fase is None or not dep or not version:
             raise TransicionIlegal("la entrada incorporada necesita fase, dep y versión")
-        declarada = any(d_ == dep for d_, _v in fase.requiere)
-        requiere = tuple(
-            (d_, version if d_ == dep else v) for d_, v in fase.requiere
-        )
-        if not declarada:
-            # La propuesta omitio esta punta terminada; la entrega la incorpora
-            # y la fase queda consumiendola a la version revisada.
-            requiere = requiere + ((dep, version),)
+        # La propuesta de fases es la que vale: incorporar una punta terminada
+        # es un hecho de la entrega, no una dependencia nueva. Reescribir
+        # `requiere` cambiaria el plan ya validado y podria condenar la fase
+        # por una arista que nadie propuso. La ancestria del producto es la
+        # prueba de la incorporacion.
         return replace(
-            con_fase(e, replace(fase, requiere=requiere)),
+            e,
             ultimo_hecho=f"entrada de {dep} incorporada: {version[:12]}",
             hora=hora or e.hora,
         )

@@ -4456,11 +4456,6 @@ def _base_fase(enc: Encargo) -> str:
     fase_actual = enc.fase_actual
     if fase_actual is None or len(enc.fases) <= 1:
         return enc.entrega.base
-    # Varias dependencias vivas en paralelo: ninguna rama contiene la punta de
-    # todas, asi que la base determinista es la base de entrega. El producto ya
-    # incorpora cada punta final antes de abrir el PR.
-    if len(_deps_vivas(enc, fase_actual)) > 1:
-        return enc.entrega.base
     por_id = {f.id: f for f in enc.fases}
     por_rama = {_rama_de_fase(enc, f): f for f in enc.fases}
 
@@ -4476,6 +4471,14 @@ def _base_fase(enc: Encargo) -> str:
         return base_de(fase, visitadas)
 
     def base_de(fase, visitadas: frozenset[str]) -> str:
+        # Las puntas vivas que ninguna otra contiene eligen la base. Una cadena
+        # no es paralela: con A -> B -> C, la rama de B ya contiene A.
+        frontera = _deps_frontera(enc, fase)
+        if len(frontera) > 1:
+            return enc.entrega.base
+        if len(frontera) == 1:
+            return entrada(frontera[0], visitadas)
+        # Sin dependencias vivas, se resuelve la linea de bases integradas.
         base = enc.entrega.base
         for dep_id, _version in fase.requiere:
             dep = por_id.get(dep_id)
@@ -4522,6 +4525,34 @@ def _deps_vivas(enc: Encargo, fase) -> list:
         for dep in _deps_de(enc, fase)
         if dep.nivel_alcanzado not in _NIVELES_EN_BASE
     ]
+
+
+def _deps_frontera(enc: Encargo, fase) -> list:
+    """Dependencias vivas que no son antecesoras declaradas de otra.
+
+    A -> B -> C no son dependencias paralelas: la rama de B ya contiene A.
+    Solo las puntas que ninguna otra rama viva contiene eligen la base.
+    """
+    vivas = _deps_vivas(enc, fase)
+    ids = {dep.id for dep in vivas}
+    por_id = {f.id: f for f in enc.fases}
+    contenidas: set[str] = set()
+    for dep in vivas:
+        vistos: set[str] = set()
+        pila = [dep.id]
+        while pila:
+            fid = pila.pop()
+            if fid in vistos:
+                continue
+            vistos.add(fid)
+            actual = por_id.get(fid)
+            if actual is None:
+                continue
+            for otra, _version in actual.requiere:
+                if otra in ids and otra != dep.id:
+                    contenidas.add(otra)
+                pila.append(otra)
+    return [dep for dep in vivas if dep.id not in contenidas]
 
 
 def _entradas_de(enc: Encargo, fase) -> list:
@@ -4639,10 +4670,13 @@ def _squash_aplicado(espacio: Path, sha: str) -> bool:
         r = _git(espacio, "rev-parse", "--verify", "--quiet", f"{ref}:{ruta}")
         return r.stdout.strip() if r.returncode == 0 else ""
 
-    rutas = _git(
-        espacio, "diff-tree", "--no-commit-id", "--name-only", "-r", sha
-    ).stdout.splitlines()
-    for ruta in rutas:
+    # `-z` entrega las rutas literales; sin el, git las cita con escapes y una
+    # ruta no ASCII no se encuentra en ninguno de los arboles, lo que haria
+    # pasar por aplicado un squash que no lo esta.
+    crudo = _git(
+        espacio, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha
+    ).stdout
+    for ruta in (r for r in crudo.split("\0") if r):
         en_head = blob("HEAD", ruta)
         if en_head == blob(sha, ruta):
             continue
@@ -5535,14 +5569,16 @@ def _explicacion_base(enc: Encargo, fase) -> str:
     if len(getattr(fase, "requiere", ()) or ()) < 2:
         return ""
     deps = _deps_de(enc, fase)
-    if len(_deps_vivas(enc, fase)) < 2:
+    frontera = _deps_frontera(enc, fase)
+    if len(frontera) < 2:
         return ""
     return (
         f"- Base: `{_base_fase(enc)}`.\n"
         f"- Motivo: la fase {fase.id} requiere {', '.join(d.id for d in deps)}; "
-        "ninguna rama de esas fases contiene a las demas, asi que la base es "
-        "la de entrega y el producto de la fase ya incorpora todas las puntas "
-        "finales."
+        "las puntas vivas "
+        f"{', '.join(d.id for d in frontera)} no se contienen entre si, asi que "
+        "la base es la de entrega y el producto de la fase ya incorpora todas "
+        "las puntas finales."
     )
 
 
