@@ -12,13 +12,16 @@ huella nueva de comentarios, una nota, un aviso o una reapertura.
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from motor.encargos.ciclo import (
     _epoch_de_hora,
+    _limpiar_encargo_cerrado,
     _paso_entrega,
     _revisar_deepseek_del_cerrado,
 )
@@ -156,6 +159,64 @@ class RelecturaFueraDelRegistro(unittest.TestCase):
                 len(self._marcas(r)),
                 1,
                 "el sondeo reescribió la marca vieja del registro en cada lectura",
+            )
+
+    def test_el_cursor_sobrevive_a_la_limpieza_del_cerrado(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, e = self._terminado(tmp)
+            vuelta.gh.textos[e.pr_numero] = None
+            epoch = _epoch_de_hora(e.hora)
+            _revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, e.hora, epoch
+            )
+            self.assertEqual(len(vuelta.gh.llamadas), 1)
+            _limpiar_encargo_cerrado(r.reg, r.fold(), e.hora)
+            cursor = Path(r.reg.base) / "ejecucion" / e.id / "relectura-deepseek.json"
+            self.assertTrue(
+                cursor.is_file(),
+                "el cursor del supervisor no está en ejecucion/<encargo>",
+            )
+            _revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, e.hora, epoch + 10
+            )
+            self.assertEqual(
+                len(vuelta.gh.llamadas),
+                1,
+                "sin el cursor, la limpieza releyó dentro del espaciado",
+            )
+
+    def test_una_reapertura_que_falla_no_pierde_el_reintento(self):  # no-roja-en-base: la base no escribía cursor en la rama de reapertura; el reintento que guarda nace con el cursor local
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r = _entrega_pr(
+                self, tmp, "ds-relectura-registro", github_por_numero, nivel="pr"
+            )
+            e = vuelta("uno")
+            hora = datetime.fromisoformat(e.hora.replace("Z", "+00:00"))
+            tarde = (hora + timedelta(minutes=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, tarde)
+            self.assertEqual(e.estado, "terminado")
+            vuelta.gh.llamadas.clear()
+            vuelta.gh.textos[e.pr_numero] = _comentario(_medio("F31"))
+            epoch = _epoch_de_hora(e.hora)
+            with mock.patch(
+                "motor.encargos.ciclo._reabrir_por_hallazgo_tardio",
+                side_effect=sqlite3.OperationalError("base ocupada"),
+            ):
+                with self.assertRaises(sqlite3.OperationalError):
+                    _revisar_deepseek_del_cerrado(
+                        r.reg, r.fold(), vuelta.gh, e.hora, epoch
+                    )
+            _revisar_deepseek_del_cerrado(
+                r.reg, r.fold(), vuelta.gh, e.hora, epoch + 1
+            )
+            self.assertEqual(
+                len(vuelta.gh.llamadas),
+                2,
+                "la reapertura que falla perdió el reintento: el cursor ya avanzó",
+            )
+            self.assertTrue(
+                r.eventos("fase_reabierta"),
+                "la segunda pasada dejó de reabrir",
             )
 
 
