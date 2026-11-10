@@ -1,7 +1,9 @@
 """Retirar el motor viejo borra carpetas en las máquinas: la migración no pierde
-llaves y el retiro se niega sin `maquina.toml` en la base o con un despliegue en
-curso, y solo borra cuando nada depende ya de lo que borra: la base queda con su
-configuración aunque antes fuera un enlace a las carpetas viejas."""
+llaves y el retiro se niega con cada compuerta cerrada (sin `maquina.toml` en la base,
+con un supervisor que no trae el cambio, con un despliegue en curso, con una llave que
+la base no tiene o con la base enlazada a lo que se borra), y solo borra cuando nada
+depende ya de lo que borra: la base queda con su configuración aunque antes fuera un
+enlace a las carpetas viejas."""
 
 from __future__ import annotations
 
@@ -66,13 +68,16 @@ class RetiroDelMotorViejo(unittest.TestCase):
         (carpeta / "secretos.env").write_text(texto, encoding="utf-8")
         os.chmod(carpeta / "secretos.env", 0o600)
 
-    def _supervisor_con_el_cambio(self) -> None:
+    def _supervisor(self, con_el_cambio: bool) -> None:
         arbol = self.home / "motor-sucesor"
-        (arbol / "motor" / "encargos").mkdir(parents=True)
-        (arbol / retiro.MODULO_DEL_CAMBIO).write_text("", encoding="utf-8")
-        _git(arbol, "init", "-q")
+        if not arbol.exists():
+            (arbol / "motor" / "encargos").mkdir(parents=True)
+            (arbol / "motor" / "daemon.py").write_text("", encoding="utf-8")
+            _git(arbol, "init", "-q")
+        if con_el_cambio:
+            (arbol / retiro.MODULO_DEL_CAMBIO).write_text("", encoding="utf-8")
         _git(arbol, "add", ".")
-        _git(arbol, "commit", "-q", "-m", "cambio")
+        _git(arbol, "commit", "-q", "-m", "cambio" if con_el_cambio else "antes")
         (self.base / "supervisor-pasada.json").write_text(json.dumps({
             "sha": _git(arbol, "rev-parse", "HEAD"), "ruta": str(arbol), "pid": os.getpid(),
             "hora": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -81,6 +86,15 @@ class RetiroDelMotorViejo(unittest.TestCase):
     def _retirar(self, mirar: bool = False) -> tuple[int, str]:
         codigo, lineas = retiro.retirar(self.home, self.base, mirar, correr=_correr_sin_tareas)
         return codigo, "\n".join(lineas)
+
+    def _se_niega(self, *motivos: str) -> str:
+        codigo, salida = self._retirar()
+        self.assertEqual(codigo, 1, salida)
+        for motivo in motivos:
+            self.assertIn(motivo, salida)
+        self.assertEqual(load_secretos(self.viejo)["TOKEN_A"], "viejo-a")
+        self.assertTrue((self.home / "motor").is_dir())
+        return salida
 
     def test_la_migracion_junta_las_llaves_con_el_valor_de_la_base_y_sin_imprimirlas(self):
         juntos = {
@@ -103,24 +117,30 @@ class RetiroDelMotorViejo(unittest.TestCase):
             de_base(self.base).conf, self.conf.resolve()
         )
 
-    def test_se_niega_sin_maquina_toml_o_con_un_despliegue_en_curso_y_si_no_borra(self):
-        self._supervisor_con_el_cambio()
+    def test_se_niega_con_cada_compuerta_cerrada_y_si_no_borra(self):
+        self._supervisor(con_el_cambio=False)
+        self._se_niega(f"falta maquina.toml en la base {self.base}", "que todavía lee ~/.motor")
 
-        codigo, salida = self._retirar()
-        self.assertEqual(codigo, 1)
-        self.assertIn(f"falta maquina.toml en la base {self.base}", salida)
-        self.assertTrue(self.viejo.is_dir())
-
+        self._supervisor(con_el_cambio=True)
         (self.base / "secretos.env").unlink()
         for nombre in ("maquina.toml", "secretos.env"):
             _enlazar(self.base / nombre, self.viejo / nombre)
         retiro.migrar(self.home, self.base)
         with _lock_despliegue(self.base, "gon0801/un-repo"):
-            codigo, salida = self._retirar()
-        self.assertEqual(codigo, 1)
-        self.assertIn("hay un despliegue en curso en esta máquina", salida)
+            salida = self._se_niega("hay un despliegue en curso en esta máquina")
         self.assertNotIn("maquina.toml", salida)
-        self.assertTrue(self.viejo.is_dir())
+
+        with open(self.viejo / "secretos.env", "a", encoding="utf-8") as f:
+            f.write("TOKEN_NUEVO=nuevo\n")
+        (self.base / "maquina.toml").unlink()
+        _enlazar(self.base / "maquina.toml", self.viejo / "maquina.toml")
+        salida = self._se_niega(
+            "a secretos.env de la base le faltan TOKEN_NUEVO",
+            f"{self.base / 'maquina.toml'} depende de lo que se borraría",
+        )
+        self.assertNotIn("nuevo", salida.replace("TOKEN_NUEVO", ""))
+
+        retiro.migrar(self.home, self.base)
 
         codigo, salida = self._retirar(mirar=True)
         self.assertEqual((codigo, "se niega" in salida), (0, False))
@@ -137,7 +157,7 @@ class RetiroDelMotorViejo(unittest.TestCase):
         self.assertEqual(de_base(self.base).conf, self.conf.resolve())
         self.assertEqual(
             load_secretos(self.base),
-            {"TOKEN_A": "viejo-a", "COMPARTIDA": "vieja", "TOKEN_B": "viejo-b"},
+            {"TOKEN_A": "viejo-a", "COMPARTIDA": "vieja", "TOKEN_B": "viejo-b", "TOKEN_NUEVO": "nuevo"},
         )
 
 

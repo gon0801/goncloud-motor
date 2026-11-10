@@ -311,10 +311,25 @@ def _forzar(funcion, path, _exc) -> None:
     funcion(path)
 
 
+def _quitar_enlaces_dentro(carpeta: Path) -> None:
+    """Quita cada enlace o unión de `carpeta` sin seguirlo, como `~/.motor/conf` de la PC, para
+    que `rmtree` solo vea archivos y carpetas propios."""
+    pendientes = [carpeta]
+    while pendientes:
+        for entrada in _entradas(pendientes.pop()):
+            ruta = Path(entrada.path)
+            if _es_enlace(ruta):
+                _quitar_enlace(ruta)
+            elif entrada.is_dir(follow_symlinks=False):
+                pendientes.append(ruta)
+
+
 def _borrar(path: Path) -> None:
     if _es_enlace(path):
         _quitar_enlace(path)
-    elif sys.version_info >= (3, 12):
+        return
+    _quitar_enlaces_dentro(path)
+    if sys.version_info >= (3, 12):
         shutil.rmtree(path, onexc=_forzar)
     else:
         shutil.rmtree(path, onerror=_forzar)
