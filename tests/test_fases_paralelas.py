@@ -268,15 +268,16 @@ class LaDependenciaIntegradaPorSquashTraeSuContenido(_Banco):
 
 
 class LaCadenaNoSeConfundeConDependenciasParalelas(_Banco):
-    def _cadena(self, orden):
-        sha_a = self._rama("encargo/enc_x-A", "a.txt", "de A\n")
+    def _cadena(self, orden, indice):
+        base = f"encargo/enc_x_{indice}"
+        sha_a = self._rama(f"{base}-A", "a.txt", "de A\n")
         trabajo = self.raiz / "trabajo"
-        _git(trabajo, "checkout", "--quiet", "-B", "encargo/enc_x-B", "encargo/enc_x-A")
+        _git(trabajo, "checkout", "--quiet", "-B", f"{base}-B", f"{base}-A")
         (trabajo / "b.txt").write_text("de B\n")
         _git(trabajo, "add", "-A")
         _git(trabajo, "commit", "--quiet", "-m", "B")
         sha_b = _git(trabajo, "rev-parse", "HEAD").stdout.strip()
-        _git(trabajo, "push", "--quiet", "origin", "encargo/enc_x-B:refs/heads/encargo/enc_x-B")
+        _git(trabajo, "push", "--quiet", "origin", f"{base}-B:refs/heads/{base}-B")
         if (self.raiz / "espacio").exists():
             shutil.rmtree(self.raiz / "espacio")
         self.espacio = self.raiz / "espacio"
@@ -286,8 +287,8 @@ class LaCadenaNoSeConfundeConDependenciasParalelas(_Banco):
         )
         _git(
             self.espacio,
-            "checkout", "--quiet", "-B", "encargo/enc_x-C",
-            "origin/encargo/enc_x-B",
+            "checkout", "--quiet", "-B", f"{base}-C",
+            f"origin/{base}-B",
         )
         a = Fase(
             id="A", resultado="a", estado="preparada", evidencia="listo",
@@ -300,20 +301,22 @@ class LaCadenaNoSeConfundeConDependenciasParalelas(_Banco):
         )
         c = Fase(id="C", resultado="c", estado="trabajo", requiere=orden)
         enc = Encargo(
-            id="enc_x", clave="clave-x", huella="huella", director="cli",
-            texto="pedido", adjuntos=(), restricciones=(), canal="canal",
+            id=f"enc_x_{indice}", clave="clave-x", huella="huella",
+            director="cli", texto="pedido", adjuntos=(), restricciones=(),
+            canal="canal",
             entrega=EntregaAutorizada(
-                nivel="pr", repo="o/r", rama="encargo/enc_x", base="main"
+                nivel="pr", repo="o/r", rama=base, base="main"
             ),
             fases=(a, b, c), fase_activa="C", estado="ejecutando", generacion=1,
         )
-        return enc
+        return enc, f"{base}-B"
 
     def test_a_b_c_con_cualquier_orden_usa_la_rama_de_b(self):
-        for orden in ((("A", "fA"), ("B", "fB")), (("B", "fB"), ("A", "fA"))):
+        ordenes = ((("A", "fA"), ("B", "fB")), (("B", "fB"), ("A", "fA")))
+        for indice, orden in enumerate(ordenes):
             with self.subTest(orden=orden):
-                enc = self._cadena(orden)
-                self.assertEqual(ciclo._base_fase(enc), "encargo/enc_x-B")
+                enc, rama_b = self._cadena(orden, indice)
+                self.assertEqual(ciclo._base_fase(enc), rama_b)
                 self.assertEqual(ciclo._incorporar_entradas(enc, self.espacio), "")
                 self.assertEqual(
                     (self.espacio / "a.txt").read_text(), "de A\n"
