@@ -131,12 +131,6 @@ def migrar(home: Path, base: Path) -> list[str]:
     return [_migrar_maquina(viejo, base), _migrar_secretos(viejo, base)]
 
 
-def _dentro(ruta: Path, carpetas: list[Path]) -> bool:
-    formas = {Path(os.path.abspath(ruta)), ruta.resolve()}
-    raices = {r for c in carpetas for r in (Path(os.path.abspath(c)), c.resolve())}
-    return any(f == r or r in f.parents for f in formas for r in raices)
-
-
 def _es_enlace(path: Path) -> bool:
     try:
         st = os.lstat(path)
@@ -148,11 +142,39 @@ def _es_enlace(path: Path) -> bool:
     )
 
 
-def _destino(enlace: Path) -> Path:
-    destino = os.readlink(enlace)
+def _destino(enlace: Path) -> Path | None:
+    try:
+        destino = os.readlink(enlace)
+    except OSError:
+        return None
     if destino.startswith("\\\\?\\"):
         destino = destino[4:]
-    return enlace.parent / destino
+    return Path(os.path.abspath(enlace.parent / destino))
+
+
+def _recorrido(ruta: Path) -> list[Path]:
+    """Cada ruta por la que pasa `ruta` hasta su destino final, enlace por enlace."""
+    vistas = [Path(os.path.abspath(ruta))]
+    for _ in range(40):
+        partes = vistas[-1].parts
+        for i in range(1, len(partes) + 1):
+            prefijo = Path(*partes[:i])
+            destino = _destino(prefijo) if _es_enlace(prefijo) else None
+            if destino is not None:
+                vistas.append(Path(os.path.abspath(Path(destino, *partes[i:]))))
+                break
+        else:
+            break
+    return vistas
+
+
+def _dentro(ruta: Path, raices: list[Path]) -> bool:
+    """`ruta` deja de funcionar si se borran `raices`: alguna ruta de su recorrido cae adentro."""
+    raices = [
+        forma for r in raices
+        for forma in (Path(os.path.abspath(r)), Path(os.path.realpath(r.parent)) / r.name)
+    ]
+    return any(v == r or r in v.parents for v in _recorrido(ruta) for r in raices)
 
 
 def _hijos(path: Path) -> list[Path]:
@@ -171,19 +193,20 @@ def _enlaces_adentro(home: Path, carpetas: list[Path]) -> list[Path]:
         nivel = [primero]
         if not _es_enlace(primero) and primero.is_dir():
             nivel += _hijos(primero)
-        enlaces += [p for p in nivel if _es_enlace(p) and _dentro(_destino(p), carpetas)]
+        enlaces += [p for p in nivel if _es_enlace(p) and _dentro(p, carpetas)]
     return enlaces
 
 
-def _causa_maquina(base: Path, carpetas: list[Path]) -> list[str]:
+def _causa_maquina(base: Path, borrar: list[Path]) -> list[str]:
     try:
         maquina = de_base(base)
     except ValueError as exc:
         return [str(exc)]
-    rutas = [maquina.conf, *map(Path, maquina.path_extra)]
+    rutas = {maquina.conf: "corre migrar"}
+    rutas.update((Path(r), "cámbialo en maquina.toml de la base") for r in maquina.path_extra)
     return [
-        f"maquina.toml de la base usa {r}, dentro de lo que se borraría: corre migrar"
-        for r in rutas if _dentro(r.expanduser(), carpetas)
+        f"maquina.toml de la base usa {r}, que depende de lo que se borraría: {arreglo}"
+        for r, arreglo in rutas.items() if _dentro(r.expanduser(), borrar)
     ]
 
 
@@ -197,7 +220,7 @@ def _causa_secretos(home: Path, base: Path) -> list[str]:
     return [f"a secretos.env de la base le faltan {', '.join(faltan)}: corre migrar"]
 
 
-def _causa_supervisor(base: Path, carpetas: list[Path], correr, ahora: datetime) -> list[str]:
+def _causa_supervisor(base: Path, borrar: list[Path], correr, ahora: datetime) -> list[str]:
     try:
         pasada = leer_json(base / "supervisor-pasada.json")
         sha, ruta, pid = str(pasada["sha"]), Path(str(pasada["ruta"])), int(pasada["pid"])
@@ -206,7 +229,7 @@ def _causa_supervisor(base: Path, carpetas: list[Path], correr, ahora: datetime)
         return [f"no hay una pasada legible del supervisor en {base / 'supervisor-pasada.json'}: {exc}"]
     if ahora - hora > PASADA_VIGENTE or not plataforma.pid_vivo(pid):
         return [f"el supervisor no está corriendo: su última pasada es de {pasada['hora']} (pid {pid})"]
-    if _dentro(ruta, carpetas):
+    if _dentro(ruta, borrar):
         return [f"el supervisor corre desde {ruta}, dentro de lo que se borraría"]
     r = correr(["git", "-C", str(ruta), "cat-file", "-e", f"{sha}:{MODULO_DEL_CAMBIO}"])
     if r.returncode != 0:
@@ -215,6 +238,17 @@ def _causa_supervisor(base: Path, carpetas: list[Path], correr, ahora: datetime)
             "despliega este cambio y espera su primera pasada"
         ]
     return []
+
+
+def _causa_motor_viejo(home: Path) -> list[str]:
+    """El daemon viejo sostiene ~/.motor/motor.lock mientras corre."""
+    candado = home / ".motor" / "motor.lock"
+    if not candado.is_file():
+        return []
+    with open(candado, "rb") as f:
+        if plataforma.candado_exclusivo(f):
+            return []
+    return [f"el motor viejo sigue corriendo (tiene tomado {candado}): apágalo primero"]
 
 
 @contextlib.contextmanager
@@ -259,15 +293,17 @@ def retirar(
     carpetas = [home / nombre for nombre in CARPETAS_VIEJAS]
     presentes = [c for c in carpetas if os.path.lexists(c)]
     with _sin_despliegues(base) as ocupados:
+        enlaces = _enlaces_adentro(home, carpetas)
+        borrar = carpetas + enlaces
         causas = [
-            *_causa_maquina(base, carpetas),
+            *_causa_maquina(base, borrar),
+            *_causa_motor_viejo(home),
             *_causa_secretos(home, base),
-            *_causa_supervisor(base, carpetas, correr, ahora),
+            *_causa_supervisor(base, borrar, correr, ahora),
             *[f"hay un despliegue en curso en esta máquina ({n})" for n in ocupados],
         ]
-        if _dentro(Path(__file__), carpetas):
+        if _dentro(Path(__file__), borrar):
             causas.append(f"esta herramienta corre desde {Path(__file__).parent}, dentro de lo que se borraría")
-        enlaces = _enlaces_adentro(home, carpetas)
         tarea = os.name == "nt" and correr(["schtasks", "/Query", "/TN", TAREA_PC]).returncode == 0
         plist = sys.platform == "darwin" and PLIST_VIEJO.exists()
         modo = " (solo mirar)" if mirar else ""
@@ -285,15 +321,15 @@ def retirar(
             if plist:
                 lineas.append(f"después, a mano: {_comando_sudo()}")
             return (1 if causas else 0), lineas
-        for enlace in enlaces:
-            _quitar_enlace(enlace)
-        for carpeta in presentes:
-            _borrar(carpeta)
         if tarea:
             r = correr(["schtasks", "/Delete", "/TN", TAREA_PC, "/F"])
             if r.returncode != 0:
                 lineas.append(f"no pude dar de baja {TAREA_PC}: {(r.stderr or r.stdout).strip()[:300]}")
                 return 1, lineas
+        for enlace in enlaces:
+            _quitar_enlace(enlace)
+        for carpeta in presentes:
+            _borrar(carpeta)
     if plist:
         lineas.append(f"falta borrar el servicio viejo; pide tu contraseña: {_comando_sudo()}")
     return 0, lineas
