@@ -49,11 +49,13 @@ def _recorte(texto: str) -> str:
 
 
 def sin_navegador(entorno: dict[str, str], runtime: Path) -> dict[str, str]:
-    """El entorno del turno con `open` y `xdg-open` inertes.
+    """El entorno del turno con `open` y `xdg-open` inertes, en POSIX.
 
     agy abre el navegador del sistema para su OAuth cuando no encuentra la
     sesión. El motor corre sin una persona delante: el turno debe reportar el
-    error de autenticación, no abrir pestañas.
+    error de autenticación, no abrir pestañas. En Windows se devuelve el
+    entorno intacto: ahí agy usa rundll32 y el job de Windows no corre este
+    módulo de pruebas.
     """
     if os.name == "nt":
         return entorno

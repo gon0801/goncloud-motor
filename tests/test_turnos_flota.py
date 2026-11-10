@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -462,6 +463,50 @@ class TurnosFlota(unittest.TestCase):
         self.assertEqual(resultado["rc"], 126)
         self.assertIn("no se lanza agy", resultado["error"])
         self.assertFalse((raiz / "corriendo").exists())
+
+    @unittest.skipIf(os.name == "nt", "el bloqueo de navegador es de POSIX")
+    def test_el_turno_de_antigravity_usa_el_entorno_sin_navegador(self):
+        """El enganche del turno, no solo el ayudante: sin él, agy abre pestañas."""
+        from motor.flota import turnos
+
+        raiz = self.base / "turnos-enganche-navegador"
+        visto: dict = {}
+
+        def correr(argv, **kw):
+            entorno = kw["env"]
+            primera = Path(entorno["PATH"].split(os.pathsep)[0])
+            visto.update(
+                primera=primera,
+                abrir=(primera / "open").is_file(),
+                xdg=(primera / "xdg-open").is_file(),
+                ejecutables=all(
+                    os.access(primera / nombre, os.X_OK)
+                    for nombre in ("open", "xdg-open")
+                ),
+                resuelto=shutil.which("open", path=entorno["PATH"]),
+            )
+            return subprocess.CompletedProcess(argv, 0, "listo\n", "")
+
+        with (
+            patch(
+                "motor.flota.turnos.sesion_antigravity_presente", return_value=True
+            ),
+            patch("motor.encargos.agentes.retirar_agente_turno"),
+            patch("motor.flota.turnos.subprocess.run", side_effect=correr),
+        ):
+            resultado = turnos._turno_agente("antigravity", None, raiz)
+
+        self.assertEqual(resultado["estado"], "ok", resultado)
+        self.assertEqual(visto["primera"].name, "sin-navegador")
+        self.assertTrue(visto["primera"].is_relative_to(raiz), visto["primera"])
+        self.assertTrue(visto["abrir"], "falta el bloqueo de open")
+        self.assertTrue(visto["xdg"], "falta el bloqueo de xdg-open")
+        self.assertTrue(visto["ejecutables"], "los bloqueos no son ejecutables")
+        self.assertEqual(
+            Path(visto["resuelto"]),
+            visto["primera"] / "open",
+            "el turno no antepone el bloqueo al PATH",
+        )
 
     @unittest.skipIf(os.name == "nt", "el bloqueo de navegador es de POSIX")
     def test_el_turno_de_antigravity_no_puede_abrir_el_navegador(self):

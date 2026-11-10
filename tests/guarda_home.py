@@ -12,12 +12,13 @@ La guarda usa `os.path`, no `pathlib`: varias pruebas parchean `os.name` a
 `nt` para simular Windows, y en ese momento `pathlib.Path` intenta construir un
 `WindowsPath` que no existe en Linux ni en macOS.
 
-Además, `instalar()` pone delante del PATH un centinela por cada CLI de agente
-que exista en la máquina. El centinela falla si una prueba normal intenta
-ejecutarlo: agy y los demás clientes de suscripción abren el navegador cuando
-no encuentran sesión, y la batería no debe tener ese efecto. Un ensayo vivo
-declara su permiso con `MOTOR_PROBAR_<CLIENTE>_VIVO=1` y el centinela delega en
-el binario real.
+Además, en POSIX `instalar()` pone delante del PATH un centinela por cada CLI
+de agente que exista en la máquina. El centinela falla si una prueba normal
+intenta ejecutarlo: agy y los demás clientes de suscripción abren el navegador
+cuando no encuentran sesión, y la batería no debe tener ese efecto. Un ensayo
+vivo declara su permiso con `MOTOR_PROBAR_<CLIENTE>_VIVO=1` y el centinela
+delega en el binario real. En Windows no hay centinelas: el job de Windows corre
+una lista acotada de módulos que no incluye estas pruebas.
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ import shutil
 import sys
 import tempfile
 import threading
+
+from motor.encargos.catalogo_agentes import ADAPTADORES, cliente_para
 
 _RAIZ = os.path.realpath(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,17 +45,9 @@ _HOME_SESION = ""
 _BIN_CENTINELAS = ""
 _LOG_CENTINELAS = ""
 
-# Clientes del catálogo de agentes; en POSIX el nombre es el ejecutable.
-CLIENTES_CENTINELA = (
-    "agy",
-    "claude",
-    "codex",
-    "grok",
-    "kimi",
-    "muse",
-    "opencode",
-    "qwen",
-)
+# Los ejecutables del catálogo de agentes, derivados para que un agente nuevo
+# no quede sin centinela. En POSIX el nombre del cliente es el ejecutable.
+CLIENTES_CENTINELA = tuple(dict.fromkeys(cliente_para(a) for a in ADAPTADORES))
 
 
 def home_sesion() -> str:

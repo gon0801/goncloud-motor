@@ -465,10 +465,13 @@ class LecturaDeLaSesion(_SesionFalsa):
         self.assertIn("Claude Code-credentials", servicios)
 
     @unittest.skipUnless(
-        sys.platform == "darwin" and shutil.which("claude"),
-        "necesita el CLI de Claude en macOS",
+        sys.platform == "darwin"
+        and shutil.which("claude")
+        and os.environ.get("MOTOR_PROBAR_CLAUDE_VIVO") == "1",
+        "necesita el CLI de Claude en macOS y MOTOR_PROBAR_CLAUDE_VIVO=1 "
+        "puesto desde afuera",
     )
-    def test_el_cli_lanzado_busca_el_item_sin_sufijo(self):  # no-roja-en-base: ensayo vivo existente; solo declara su permiso al centinela de la batería
+    def test_el_cli_lanzado_busca_el_item_sin_sufijo(self):  # no-roja-en-base: ensayo vivo existente; el permiso debe venir de afuera
         from motor.encargos import suscripciones
 
         real_run = subprocess.run
@@ -487,8 +490,9 @@ class LecturaDeLaSesion(_SesionFalsa):
                 "HOME": str(tmp),
                 "PATH": f"{bin_}:{os.environ.get('PATH', '')}",
                 "PROBE_LOG": str(log),
-                # Ensayo vivo: el centinela de la batería delega en el CLI real.
-                "MOTOR_PROBAR_CLAUDE_VIVO": "1",
+                # El permiso no se concede aquí: lo exige el decorador y se
+                # propaga al hijo para que el centinela delegue en el CLI real.
+                "MOTOR_PROBAR_CLAUDE_VIVO": os.environ["MOTOR_PROBAR_CLAUDE_VIVO"],
             }
             valido = json.dumps(
                 {
