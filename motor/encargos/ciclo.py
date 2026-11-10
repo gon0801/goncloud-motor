@@ -6579,11 +6579,14 @@ def _revisar_deepseek_del_cerrado(
             fase.estado == "preparada"
             and _pr_del_hallazgo_sigue_abierto(gh, enc, fase)
         ):
-            if cambio:
-                _guardar_relectura(registro.base, enc.id, leidas)
-            return _reabrir_por_hallazgo_tardio(
+            resultado = _reabrir_por_hallazgo_tardio(
                 registro, enc, fase, sha, huella, comentarios, abiertos, hora
             )
+            # El cursor avanza solo cuando la reapertura volvió: si anotarla
+            # falla, la pasada siguiente releerá el SHA y la reintentará.
+            if cambio:
+                _guardar_relectura(registro.base, enc.id, leidas)
+            return resultado
         enc = _avisar_hallazgo_tardio(
             registro, enc, fase, sha, huella, abiertos, gh, espacio, hora
         )
