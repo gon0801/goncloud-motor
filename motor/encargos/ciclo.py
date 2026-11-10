@@ -6175,6 +6175,46 @@ def _marca_deepseek_cerrado(enc: Encargo) -> dict:
     return enc.deepseek_cerrado.como_dict()
 
 
+def _ruta_relectura(base: Path, encargo_id: str) -> Path:
+    return base / "ejecucion" / encargo_id / "relectura-deepseek.json"
+
+
+def _shas_de_relectura(base: Path, encargo_id: str) -> dict[str, float]:
+    """Los SHA leídos en sondeos anteriores, del estado local del supervisor.
+
+    La hora de cada lectura es un cursor de trabajo, no un hecho del encargo:
+    vive en `ejecucion/<encargo>/relectura-deepseek.json` (carpeta que la
+    limpieza de cerrados conserva) y no llena el registro. Un archivo perdido
+    o ilegible solo cuesta una relectura, nunca un error del sondeo."""
+    try:
+        doc = leer_json(_ruta_relectura(base, encargo_id))
+    except (OSError, ValueError):
+        return {}
+    bruto = doc.get("shas") if isinstance(doc, dict) else None
+    if not isinstance(bruto, dict):
+        return {}
+    leidas: dict[str, float] = {}
+    for sha, valor in bruto.items():
+        try:
+            leidas[str(sha)] = float(valor)
+        except (TypeError, ValueError):
+            continue
+    return leidas
+
+
+def _guardar_relectura(base: Path, encargo_id: str, shas: dict[str, float]) -> None:
+    """Escribe el cursor de forma atómica. Si el disco falla, el sondeo sigue:
+    la pasada siguiente relee y reescribe; no hay hecho que perder."""
+    ruta = _ruta_relectura(base, encargo_id)
+    try:
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        temporal = ruta.with_name(ruta.name + ".tmp")
+        escribir_texto(temporal, json.dumps({"shas": shas}, sort_keys=True))
+        os.replace(temporal, ruta)
+    except OSError:
+        pass
+
+
 def _ukey_de_hecho(prefijo: str, encargo_id: str, datos: dict) -> str:
     """La clave sale del contenido del hecho: repetirlo no duplica el evento."""
     estable = {k: v for k, v in datos.items() if k != "hora"}
@@ -6430,6 +6470,13 @@ def _revisar_deepseek_del_cerrado(
     se espacian. Los encargos cerrados antes de que este cambio empezara a
     observar no se sondean. El presupuesto compartido limita las consultas por
     pasada de barrido; lo que falte se retoma en la siguiente.
+
+    La hora de cada lectura no va al registro: es un cursor de trabajo y vive
+    en el estado local del supervisor
+    (`ejecucion/<encargo>/relectura-deepseek.json`), que sobrevive al reinicio
+    y a la limpieza de cerrados. Al registro solo llegan los hechos: el
+    arranque del sondeo (`desde`), una huella nueva de comentarios, una nota,
+    un aviso o una reapertura.
     """
     enc = registro.fold(enc.id) or enc
     if (
@@ -6459,7 +6506,14 @@ def _revisar_deepseek_del_cerrado(
         return enc
     if presupuesto is None:
         presupuesto = [CERRADOS_POR_PASADA]
-    leidas = marca["shas"]
+    # El cursor de lecturas empieza en lo que dice el registro (encargos
+    # cerrados antes del cursor local) y lo que hay en el archivo gana, por ser
+    # más fresco. Escribir aquí en cada sondeo era lo que llenaba el registro:
+    # la hora de la lectura va ahora al estado local.
+    leidas: dict[str, float] = {
+        **dict(marca["shas"]),
+        **_shas_de_relectura(registro.base, enc.id),
+    }
     cambio = False
     espaciado = (
         _RELECTURA_DEEPSEEK_S
@@ -6525,6 +6579,8 @@ def _revisar_deepseek_del_cerrado(
             fase.estado == "preparada"
             and _pr_del_hallazgo_sigue_abierto(gh, enc, fase)
         ):
+            if cambio:
+                _guardar_relectura(registro.base, enc.id, leidas)
             return _reabrir_por_hallazgo_tardio(
                 registro, enc, fase, sha, huella, comentarios, abiertos, hora
             )
@@ -6532,7 +6588,8 @@ def _revisar_deepseek_del_cerrado(
             registro, enc, fase, sha, huella, abiertos, gh, espacio, hora
         )
     if cambio:
-        _marcar_deepseek_cerrado(registro, enc, marca, hora)
+        # La hora de esta lectura es un cursor: estado local, no un evento.
+        _guardar_relectura(registro.base, enc.id, leidas)
     return enc
 
 

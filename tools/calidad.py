@@ -69,6 +69,7 @@ MARCADORES_JSON = {
     "outcome.json",
     "pedido-efecto.json",
     "proc.json",
+    "relectura-deepseek.json",
     "resultado.json",
     "revision.json",
     "wrapper.json",
