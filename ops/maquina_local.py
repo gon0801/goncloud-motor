@@ -167,7 +167,6 @@ def pid_supervisor():
 
 
 def main():
-    home = Path.home() / ".motor"
     args = sys.argv[1:]
     if not args:
         raise ValueError("operación inválida")
@@ -178,6 +177,7 @@ def main():
     if action == "pid_supervisor":
         print(pid_supervisor())
         return
+    home = Path.home() / ".motor"
     value = args[1]
     if action == "captura":
         ref = captura(home, value, sys.argv[3] == "si")

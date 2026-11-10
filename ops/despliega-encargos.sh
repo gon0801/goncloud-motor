@@ -3,7 +3,9 @@
 # Toca solo el árbol del supervisor de encargos (~/motor-sucesor o el WorkingDirectory
 # del LaunchAgent ai.goncloud.motor-encargos) y su recibo en ~/.motor-encargos.
 # No instala el motor viejo de planes (para eso, ops/instala-todo.sh) y nunca toca
-# ~/motor, ~/motor-conf ni ~/.motor. No crea etiquetas ni escribe en el remoto.
+# ~/motor, ~/motor-conf ni ~/.motor. Tampoco necesita ~/motor ni ~/.motor: el supervisor
+# lee maquina.toml y secretos.env de ~/.motor-encargos (python -m motor.encargos.retiro
+# migrar los trae). No crea etiquetas ni escribe en el remoto.
 # El SHA tiene que estar ya en origin/main. Es idempotente por máquina.
 #
 # --sha SHA      SHA a desplegar (por omisión, origin/main).

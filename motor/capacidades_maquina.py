@@ -29,8 +29,8 @@ from pathlib import Path
 from motor.encargos.agentes import resolver_lanzador, sesion_antigravity_presente
 from motor.encargos.capacidades import ConfigInvalida, cargar, abrir_lectura
 from motor.encargos.catalogo_agentes import ADAPTADORES, cliente_para
+from motor.encargos.maquina import de_base
 
-HOME_MOTOR = Path.home() / ".motor"
 ETIQUETA_ENCARGOS = "ai.goncloud.motor-encargos"
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 LLAVE_RUN = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -135,7 +135,7 @@ def _agentes(
         if agente == "antigravity":
             con_sesion = sesion_antigravity_presente(home)
             if not con_sesion and home is not None:
-                # El home del reporte es el del motor (~/.motor); la sesión de
+                # El home del reporte es la base del motor; la sesión de
                 # agy vive en el home del usuario. Sin home resoluble no hay
                 # sesión, y el reporte no truena.
                 con_sesion = sesion_antigravity_presente()
@@ -260,15 +260,18 @@ def _recurso_raiz(nombre: str, recurso: dict) -> dict:
 
 
 def _avisos_y_senal(home: Path) -> tuple[dict, dict]:
-    from motor.conf import ConfError, load_conf, load_maquina
+    from motor.conf import ConfError, load_conf
 
     avisos = {"estado": "falta", "detalle": ""}
     senal = {"estado": "falta", "detalle": "MOTOR_KUMA_URL no está en secretos.env ni en el entorno"}
     try:
-        mq = load_maquina(home)
+        mq = de_base(home)
+    except ValueError as exc:
+        return {"estado": "falta", "detalle": str(exc)[:300]}, senal
+    try:
         conf = load_conf(mq.conf)
     except (ConfError, OSError, KeyError, tomllib.TOMLDecodeError) as exc:
-        detalle = f"maquina.toml o conf ilegibles en {home}: {type(exc).__name__}: {exc}"[:200]
+        detalle = f"conf ilegible en {mq.conf}: {type(exc).__name__}: {exc}"[:200]
         return {"estado": "falta", "detalle": detalle}, senal
     secretos = dict(mq.secretos)
     token_env = conf.avisos.get("token_env", TOKEN_ENV)
@@ -409,12 +412,10 @@ def reporte(
     correr = correr or _correr
     base = Path(base)
     which = which or shutil.which
-    home = Path(home) if home else HOME_MOTOR
+    home = Path(home) if home else base
     maquina = None
     try:
-        from motor.conf import load_maquina
-
-        maquina = load_maquina(home)
+        maquina = de_base(home)
     except Exception:  # noqa: BLE001 - sin maquina.toml el reporte sigue con el PATH del proceso
         pass
     generacion = _generacion_vigente(base)
@@ -446,11 +447,8 @@ def reporte(
         "detalle": f"{sum(1 for f in agentes if f['estado'] == 'ok')} de {len(agentes)} clientes disponibles",
         "filas": agentes,
     }
-    nombre = ""
-    try:
-        nombre = maquina.nombre if maquina is not None else ""
-    except Exception:  # noqa: BLE001 - el nombre es informativo, no una condición
-        pass
+    nombre = maquina.nombre if maquina is not None else ""
+    tiene = list(maquina.tiene) if maquina is not None else []
     datos_vivo = {}
     if vivo:
         from motor.flota import turnos as turnos_flota
@@ -467,6 +465,7 @@ def reporte(
         "maquina": {
             "sistema": sistema(),
             "nombre": nombre,
+            "tiene": tiene,
             "python": sys.version.split()[0],
             "ejecutable": sys.executable,
         },
@@ -482,7 +481,8 @@ def texto(datos: dict) -> str:
     lineas = [
         f"maquina    {maquina.get('sistema') or '?'}"
         + (f" {maquina['nombre']}" if maquina.get("nombre") else "")
-        + f" · Python {maquina.get('python') or '?'}",
+        + f" · Python {maquina.get('python') or '?'}"
+        + (f" · tiene {', '.join(maquina['tiene'])}" if maquina.get("tiene") else ""),
     ]
     for clave in ("jaula", "java_tlc", "avisos", "senal", "arranque", "recursos", "agentes"):
         seccion = datos.get(clave) or {}
