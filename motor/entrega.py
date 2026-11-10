@@ -114,7 +114,7 @@ class Espera:
 
     def acepta(self, data: bytes, cwd: Path) -> bool:
         try:
-            res = json.loads(data.decode("utf-8"))
+            res = json.loads(data.decode("utf-8-sig"))
         except (UnicodeError, ValueError):
             return False
         punta = ""
