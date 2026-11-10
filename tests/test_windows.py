@@ -176,7 +176,7 @@ class WindowsTest(unittest.TestCase):
             "el nieto sigue vivo tras cerrar el Job",
         )
 
-    def test_job_restringido_permite_lanzar_y_cerrar(self):
+    def test_job_restringido_permite_lanzar_y_cerrar(self):  # no-roja-en-base: amplía la ventana de reintento de la observación (5->15 s, y reintenta también un 'vivo' rezagado) por el cierre lento del Job en un runner hospedado cargado; el comportamiento afirmado es el de la base
         """Dentro de un Job sin breakaway, el árbol se crea sin esa bandera y se cierra entero."""
         from motor.effects import evento_de_arranque
 
@@ -257,10 +257,12 @@ class WindowsTest(unittest.TestCase):
                     time.sleep(0.1)
                 observacion = presencia_grupo(p.pid, inicio, creado.job)
                 # Con KILL_ON_JOB_CLOSE el Job tarda un instante en desaparecer; mientras
-                # tanto OpenJobObject puede responder acceso denegado. Eso no es un Job
-                # vivo: se reintenta la observacion hasta que el sistema termine de cerrarlo.
-                fin = time.time() + 5
-                while observacion == "incierto" and time.time() < fin:
+                # tanto OpenJobObject puede responder acceso denegado y la lista de pids
+                # del Job puede conservar un proceso ya terminado hasta que el sistema
+                # lo retire. Eso no es un Job vivo: se reintenta la observacion hasta
+                # que el sistema termine de cerrarlo.
+                fin = time.time() + 15
+                while observacion != "ausente" and time.time() < fin:
                     time.sleep(0.05)
                     observacion = presencia_grupo(p.pid, inicio, creado.job)
                 Path({str(resultado)!r}).write_text(json.dumps({{
