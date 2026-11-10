@@ -1,6 +1,7 @@
 """Retirar el motor viejo borra carpetas en las máquinas: la migración no pierde
 llaves y el retiro se niega sin `maquina.toml` en la base o con un despliegue en
-curso, y solo borra cuando nada depende ya de lo que borra."""
+curso, y solo borra cuando nada depende ya de lo que borra: la base queda con su
+configuración aunque antes fuera un enlace a las carpetas viejas."""
 
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 def _enlazar(enlace: Path, destino: Path) -> None:
     try:
-        enlace.symlink_to(destino, target_is_directory=True)
+        enlace.symlink_to(destino, target_is_directory=destino.is_dir())
     except OSError as exc:
         raise unittest.SkipTest(f"esta máquina no crea enlaces: {exc}") from exc
 
@@ -57,8 +58,8 @@ class RetiroDelMotorViejo(unittest.TestCase):
         )
         self._secretos(self.viejo, "TOKEN_A=viejo-a\nCOMPARTIDA=vieja\nTOKEN_B=viejo-b\n")
         self._secretos(self.base, "COMPARTIDA=de-la-base\nPROPIA=propia")
-        self.vigia = self.home / "vigia"
-        self.vigia.mkdir()
+        self.vigia = self.home / "proyectos" / "vigia"
+        self.vigia.mkdir(parents=True)
         _enlazar(self.vigia / "avisos", self.viejo / "avisos" / "pendientes")
 
     def _secretos(self, carpeta: Path, texto: str) -> None:
@@ -110,6 +111,9 @@ class RetiroDelMotorViejo(unittest.TestCase):
         self.assertIn(f"falta maquina.toml en la base {self.base}", salida)
         self.assertTrue(self.viejo.is_dir())
 
+        (self.base / "secretos.env").unlink()
+        for nombre in ("maquina.toml", "secretos.env"):
+            _enlazar(self.base / nombre, self.viejo / nombre)
         retiro.migrar(self.home, self.base)
         with _lock_despliegue(self.base, "gon0801/un-repo"):
             codigo, salida = self._retirar()
@@ -130,6 +134,11 @@ class RetiroDelMotorViejo(unittest.TestCase):
         self.assertFalse(os.path.lexists(self.home / "motor"))
         self.assertFalse(os.path.lexists(self.vigia / "avisos"))
         self.assertEqual((self.conf / "conf.toml").read_text(encoding="utf-8"), "[avisos]\n")
+        self.assertEqual(de_base(self.base).conf, self.conf.resolve())
+        self.assertEqual(
+            load_secretos(self.base),
+            {"TOKEN_A": "viejo-a", "COMPARTIDA": "vieja", "TOKEN_B": "viejo-b"},
+        )
 
 
 if __name__ == "__main__":

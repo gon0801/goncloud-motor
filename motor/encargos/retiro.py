@@ -4,11 +4,12 @@
     python -m motor.encargos.retiro retirar [--base B] [--mirar]
 
 `migrar` deja en la base el `maquina.toml` del motor viejo, con `conf` en su ruta
-real, y le suma las llaves de `~/.motor/secretos.env` que la base no tenga. Se puede
-correr las veces que haga falta.
+real, y le suma las llaves de `~/.motor/secretos.env` que la base no tenga. Los dos
+quedan como archivos propios de la base, aunque antes fueran enlaces a las carpetas
+viejas. Se puede correr las veces que haga falta.
 
-`retirar` borra `~/.motor`, `~/motor` y `~/.motor-arranque` y los enlaces que
-apuntan adentro, y en la PC da de baja la tarea `GoncloudMotor`. Se niega mientras
+`retirar` borra `~/.motor`, `~/motor` y `~/.motor-arranque` y los enlaces de HOME
+que apuntan adentro, y en la PC da de baja la tarea `GoncloudMotor`. Se niega mientras
 borrar rompa algo: la base sin su configuración, un supervisor que todavía lee
 `~/.motor` o un despliegue en curso. Con `--mirar` solo dice lo que haría.
 
@@ -31,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from motor import plataforma
+from motor.effects import RETIRO_EN_CURSO
 from motor.io import escribir_texto, leer_json, leer_texto
 
 from .maquina import de_base
@@ -83,7 +85,7 @@ def _con_conf(texto: str, conf: str) -> str:
     raise ValueError("maquina.toml no tiene una línea conf = ... antes de sus tablas")
 
 
-def _migrar_maquina(viejo: Path, base: Path) -> str:
+def _migrar_maquina(viejo: Path, base: Path, carpetas: list[Path]) -> str:
     destino = base / "maquina.toml"
     origen = destino if destino.is_file() else viejo / "maquina.toml"
     if not origen.is_file():
@@ -97,22 +99,29 @@ def _migrar_maquina(viejo: Path, base: Path) -> str:
     nuevo = texto if datos["conf"] == real else _con_conf(texto, real)
     if tomllib.loads(nuevo) != {**datos, "conf": real}:
         raise ValueError(f"no pude cambiar conf en {origen} sin tocar lo demás")
-    if origen == destino and nuevo == texto:
+    enlazado = origen == destino and _dentro(destino, carpetas)
+    if origen == destino and nuevo == texto and not enlazado:
         return f"maquina.toml: ya estaba en la base (conf = {real})"
     temporal = destino.with_name(destino.name + ".tmp")
     escribir_texto(temporal, nuevo)
     os.replace(temporal, destino)
-    hecho = "copiado de " + str(viejo) if origen != destino else "corregido en la base"
+    if origen != destino:
+        hecho = f"copiado de {viejo}"
+    elif enlazado:
+        hecho = "dependía de las carpetas viejas y ahora es un archivo propio de la base"
+    else:
+        hecho = "corregido en la base"
     return f"maquina.toml: {hecho}, con conf = {real}"
 
 
-def _migrar_secretos(viejo: Path, base: Path) -> str:
+def _migrar_secretos(viejo: Path, base: Path, carpetas: list[Path]) -> str:
     destino = base / "secretos.env"
     propias = _lineas_de_secretos(destino)
     traidas = _lineas_de_secretos(viejo / "secretos.env")
     faltan = [llave for llave in traidas if llave not in propias]
     repetidas = [llave for llave in traidas if llave in propias]
-    if faltan:
+    enlazado = destino.exists() and _dentro(destino, carpetas)
+    if faltan or enlazado:
         previo = leer_texto(destino) if destino.exists() else ""
         if previo and not previo.endswith("\n"):
             previo += "\n"
@@ -120,6 +129,8 @@ def _migrar_secretos(viejo: Path, base: Path) -> str:
     elif destino.exists() and os.name == "posix":
         os.chmod(destino, 0o600)
     partes = [f"agregadas {', '.join(faltan)}" if faltan else "no faltaba ninguna llave"]
+    if enlazado:
+        partes.append("dependía de las carpetas viejas y ahora es un archivo propio de la base")
     if repetidas:
         partes.append(f"queda el valor de la base para {', '.join(repetidas)}")
     return "secretos.env: " + "; ".join(partes)
@@ -127,8 +138,9 @@ def _migrar_secretos(viejo: Path, base: Path) -> str:
 
 def migrar(home: Path, base: Path) -> list[str]:
     viejo = home / ".motor"
+    carpetas = [home / nombre for nombre in CARPETAS_VIEJAS]
     base.mkdir(parents=True, exist_ok=True)
-    return [_migrar_maquina(viejo, base), _migrar_secretos(viejo, base)]
+    return [_migrar_maquina(viejo, base, carpetas), _migrar_secretos(viejo, base, carpetas)]
 
 
 def _es_enlace(path: Path) -> bool:
@@ -177,24 +189,30 @@ def _dentro(ruta: Path, raices: list[Path]) -> bool:
     return any(v == r or r in v.parents for v in _recorrido(ruta) for r in raices)
 
 
-def _hijos(path: Path) -> list[Path]:
+def _entradas(path: Path) -> list[os.DirEntry]:
     try:
-        return sorted(path.iterdir())
+        with os.scandir(path) as it:
+            return list(it)
     except OSError:
         return []
 
 
 def _enlaces_adentro(home: Path, carpetas: list[Path]) -> list[Path]:
-    """Enlaces a uno o dos niveles de HOME que apuntan a lo que se borra."""
-    enlaces = []
-    for primero in _hijos(home):
-        if primero in carpetas:
-            continue
-        nivel = [primero]
-        if not _es_enlace(primero) and primero.is_dir():
-            nivel += _hijos(primero)
-        enlaces += [p for p in nivel if _es_enlace(p) and _dentro(p, carpetas)]
-    return enlaces
+    """Enlaces en todo HOME que apuntan a lo que se borra, sin entrar en enlaces ni en lo que se borra.
+
+    En Windows una unión no es `is_symlink()`: ahí cada entrada pasa por `_es_enlace`."""
+    enlaces, pendientes = [], [home]
+    while pendientes:
+        for entrada in _entradas(pendientes.pop()):
+            ruta = Path(entrada.path)
+            if ruta in carpetas:
+                continue
+            if _es_enlace(ruta) if os.name == "nt" else entrada.is_symlink():
+                if _dentro(ruta, carpetas):
+                    enlaces.append(ruta)
+            elif entrada.is_dir(follow_symlinks=False):
+                pendientes.append(ruta)
+    return sorted(enlaces)
 
 
 def _causa_maquina(base: Path, borrar: list[Path]) -> list[str]:
@@ -207,6 +225,14 @@ def _causa_maquina(base: Path, borrar: list[Path]) -> list[str]:
     return [
         f"maquina.toml de la base usa {r}, que depende de lo que se borraría: {arreglo}"
         for r, arreglo in rutas.items() if _dentro(r.expanduser(), borrar)
+    ]
+
+
+def _causa_base(base: Path, borrar: list[Path]) -> list[str]:
+    return [
+        f"{base / nombre} depende de lo que se borraría: corre migrar"
+        for nombre in ("maquina.toml", "secretos.env")
+        if os.path.lexists(base / nombre) and _dentro(base / nombre, borrar)
     ]
 
 
@@ -252,13 +278,21 @@ def _causa_motor_viejo(home: Path) -> list[str]:
 
 
 @contextlib.contextmanager
-def _sin_despliegues(base: Path):
+def _sin_despliegues(base: Path, retiro: bool):
     """Sostiene, sin esperar, cada candado de despliegue libre de la base; da los ocupados.
 
-    Cada candado vale mientras su archivo siga abierto, como en `plataforma.candado`."""
+    Con `retiro` toma antes el candado del retiro, y un despliegue que empiece mientras lo
+    tiene espera (`effects._esperar_retiro`). Solo mirando no escribe en la base. Cada
+    candado vale mientras su archivo siga abierto, como en `plataforma.candado`."""
+    carpeta = base / "locks-despliegue"
     ocupados = []
     with contextlib.ExitStack() as pila:
-        for ruta in sorted((base / "locks-despliegue").glob("*.lock")):
+        if retiro:
+            carpeta.mkdir(parents=True, exist_ok=True)
+            f = pila.enter_context(open(carpeta / RETIRO_EN_CURSO, "a+"))
+            if not plataforma.candado_exclusivo(f):
+                ocupados.append(RETIRO_EN_CURSO)
+        for ruta in sorted(carpeta.glob("*.lock")):
             f = pila.enter_context(open(ruta, "rb"))
             if not plataforma.candado_exclusivo(f):
                 ocupados.append(ruta.name)
@@ -292,11 +326,12 @@ def retirar(
     ahora = ahora or datetime.now(timezone.utc)
     carpetas = [home / nombre for nombre in CARPETAS_VIEJAS]
     presentes = [c for c in carpetas if os.path.lexists(c)]
-    with _sin_despliegues(base) as ocupados:
-        enlaces = _enlaces_adentro(home, carpetas)
-        borrar = carpetas + enlaces
+    enlaces = _enlaces_adentro(home, carpetas)
+    borrar = carpetas + enlaces
+    with _sin_despliegues(base, retiro=not mirar) as ocupados:
         causas = [
             *_causa_maquina(base, borrar),
+            *_causa_base(base, borrar),
             *_causa_motor_viejo(home),
             *_causa_secretos(home, base),
             *_causa_supervisor(base, borrar, correr, ahora),
@@ -356,6 +391,8 @@ def main(argv: list[str] | None = None) -> int:
                 ap.error("--mirar es solo para retirar")
             codigo, lineas = 0, migrar(home, base)
         else:
+            print(f"buscando enlaces a las carpetas viejas en {home}; puede tardar unos minutos",
+                  file=sys.stderr)
             codigo, lineas = retirar(home, base, args.mirar)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         print(f"{args.accion}: {exc}", file=sys.stderr)
