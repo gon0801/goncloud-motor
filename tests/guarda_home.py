@@ -11,6 +11,13 @@ argumentos que la prueba misma le pase.
 La guarda usa `os.path`, no `pathlib`: varias pruebas parchean `os.name` a
 `nt` para simular Windows, y en ese momento `pathlib.Path` intenta construir un
 `WindowsPath` que no existe en Linux ni en macOS.
+
+Además, `instalar()` pone delante del PATH un centinela por cada CLI de agente
+que exista en la máquina. El centinela falla si una prueba normal intenta
+ejecutarlo: agy y los demás clientes de suscripción abren el navegador cuando
+no encuentran sesión, y la batería no debe tener ese efecto. Un ensayo vivo
+declara su permiso con `MOTOR_PROBAR_<CLIENTE>_VIVO=1` y el centinela delega en
+el binario real.
 """
 
 from __future__ import annotations
@@ -32,11 +39,69 @@ _TEMP = os.path.realpath(tempfile.gettempdir())
 _INSTALADO = False
 _LOCAL = threading.local()
 _HOME_SESION = ""
+_BIN_CENTINELAS = ""
+_LOG_CENTINELAS = ""
+
+# Clientes del catálogo de agentes; en POSIX el nombre es el ejecutable.
+CLIENTES_CENTINELA = (
+    "agy",
+    "claude",
+    "codex",
+    "grok",
+    "kimi",
+    "muse",
+    "opencode",
+    "qwen",
+)
 
 
 def home_sesion() -> str:
     """El home del motor de esta corrida de pruebas."""
     return _HOME_SESION or _TEMP
+
+
+def bin_centinelas() -> str:
+    """La carpeta con los centinelas de los CLIs de agente, o "" sin guarda."""
+    return _BIN_CENTINELAS
+
+
+def llamadas_centinela() -> str:
+    """El archivo donde los centinelas anotan los intentos de ejecución."""
+    return _LOG_CENTINELAS
+
+
+def _permiso(cliente: str) -> str:
+    return "MOTOR_PROBAR_" + cliente.upper().replace("-", "_") + "_VIVO"
+
+
+def _instalar_centinelas() -> None:
+    """Un shim por cliente instalado, delante del PATH de la sesión."""
+    global _BIN_CENTINELAS, _LOG_CENTINELAS
+    if os.name == "nt" or _BIN_CENTINELAS:
+        return
+    carpeta = os.path.join(_HOME_SESION, "bin-centinelas")
+    os.makedirs(carpeta, exist_ok=True)
+    log = os.path.join(_HOME_SESION, "clientes-reales.log")
+    for cliente in CLIENTES_CENTINELA:
+        real = shutil.which(cliente)
+        if not real:
+            continue
+        destino = os.path.join(carpeta, cliente)
+        guion = (
+            "#!/bin/sh\n"
+            f"# Centinela de la batería: {cliente} real no se ejecuta en la suite.\n"
+            f'if [ "${{{_permiso(cliente)}:-}}" = "1" ]; then exec "{real}" "$@"; fi\n'
+            f'printf \'%s %s\\n\' "$(date -u +%FT%TZ)" "$0 $*" >> "{log}"\n'
+            f'printf \'%s\\n\' "centinela: la batería normal no debe ejecutar'
+            f' {cliente}; activa {_permiso(cliente)}=1 para el ensayo vivo" >&2\n'
+            "exit 86\n"
+        )
+        with open(destino, "w", encoding="utf-8") as archivo:
+            archivo.write(guion)
+        os.chmod(destino, 0o755)
+    _BIN_CENTINELAS = carpeta
+    _LOG_CENTINELAS = log
+    os.environ["PATH"] = carpeta + os.pathsep + os.environ.get("PATH", "")
 
 
 def _bajo(ruta: str, raiz: str) -> bool:
@@ -127,6 +192,7 @@ def instalar() -> str:
         _HOME_SESION = tempfile.mkdtemp(prefix="motor-home-pruebas-")
         atexit.register(shutil.rmtree, _HOME_SESION, True)
     os.environ["MOTOR_HOME"] = _HOME_SESION
+    _instalar_centinelas()
     sys.addaudithook(_auditar)
     _INSTALADO = True
     return _HOME_SESION

@@ -468,7 +468,7 @@ class LecturaDeLaSesion(_SesionFalsa):
         sys.platform == "darwin" and shutil.which("claude"),
         "necesita el CLI de Claude en macOS",
     )
-    def test_el_cli_lanzado_busca_el_item_sin_sufijo(self):
+    def test_el_cli_lanzado_busca_el_item_sin_sufijo(self):  # no-roja-en-base: ensayo vivo existente; solo declara su permiso al centinela de la batería
         from motor.encargos import suscripciones
 
         real_run = subprocess.run
@@ -487,6 +487,8 @@ class LecturaDeLaSesion(_SesionFalsa):
                 "HOME": str(tmp),
                 "PATH": f"{bin_}:{os.environ.get('PATH', '')}",
                 "PROBE_LOG": str(log),
+                # Ensayo vivo: el centinela de la batería delega en el CLI real.
+                "MOTOR_PROBAR_CLAUDE_VIVO": "1",
             }
             valido = json.dumps(
                 {

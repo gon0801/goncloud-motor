@@ -388,7 +388,7 @@ class TurnosFlota(unittest.TestCase):
         self.assertEqual(informe["turnos"]["qwen"]["estado"], "fallo_comun")
         self.assertEqual(informe["turnos"]["codex"]["estado"], "ok")
 
-    def test_candidata_sin_clientes_no_retira_los_de_la_vigente(self):
+    def test_candidata_sin_clientes_no_retira_los_de_la_vigente(self):  # no-roja-en-base: la prueba ya cubría el retiro de codex; el doble se ajusta para no lanzar el agy real
         origen, a, gen_a = self._flota("origen-i")
         _runtime_preparada(self.home, gen_a, "codex", "v1")
         b, gen_b = _crear_generacion(self.home, origen, [], {}, POLITICA_B)
@@ -396,13 +396,21 @@ class TurnosFlota(unittest.TestCase):
         _runtime_preparada(self.home, gen_b, "hermes", "v1")
 
         with patch.dict(os.environ, {"MOTOR_HOME": str(self.motor_motor)}):
-            with patch("motor.flota.turnos._sesion_presente", return_value=True):
+            with patch(
+                "motor.flota.turnos._sesion_presente",
+                side_effect=lambda agente: agente == "codex",
+            ):
                 salida = aplicar(self.home, b)
         self.assertEqual(salida["accion"], "rechazada", salida)
         self.assertIn("retira el ejecutable de codex", salida["motivo"])
         self.assertEqual(asignar(self.home), a)
         candidata = json.loads((self.home / "candidata.json").read_text())
         self.assertEqual(candidata["turnos"]["codex"]["estado"], "fallo")
+        # Solo codex declara sesión: ningún otro agente, y en particular
+        # antigravity, debe llegar a lanzar su CLI real.
+        for agente, turno in candidata["turnos"].items():
+            if agente != "codex":
+                self.assertEqual(turno["estado"], "sin_sesion", agente)
         pendientes = sorted(
             (self.motor_motor / "avisos" / "pendientes").glob("*.json")
         )
@@ -434,6 +442,41 @@ class TurnosFlota(unittest.TestCase):
         self.assertEqual(len(pendientes), 1)
         aviso = json.loads(pendientes[0].read_text(encoding="utf-8"))
         self.assertIn("ningun turno real", aviso["texto"])
+
+    def test_antigravity_sin_sesion_no_lanza_agy(self):
+        """Sin sesión no hay proceso: agy abriría el navegador para su OAuth."""
+        from motor.flota.turnos import _turno_agente
+
+        raiz = self.base / "turnos-sin-sesion"
+        with (
+            patch(
+                "motor.flota.turnos.sesion_antigravity_presente", return_value=False
+            ),
+            patch(
+                "motor.flota.turnos.subprocess.run",
+                side_effect=AssertionError("el turno lanzó un proceso"),
+            ),
+        ):
+            resultado = _turno_agente("antigravity", None, raiz)
+        self.assertEqual(resultado["estado"], "sin_sesion")
+        self.assertEqual(resultado["rc"], 126)
+        self.assertIn("no se lanza agy", resultado["error"])
+        self.assertFalse((raiz / "corriendo").exists())
+
+    @unittest.skipIf(os.name == "nt", "el bloqueo de navegador es de POSIX")
+    def test_el_turno_de_antigravity_no_puede_abrir_el_navegador(self):
+        from motor.flota.turnos import sin_navegador
+
+        runtime = self.base / "runtime-sin-navegador"
+        entorno = sin_navegador({"PATH": "/usr/bin:/bin"}, runtime)
+        abierto = subprocess.run(
+            ["open", "https://accounts.google.com"],
+            env=entorno,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(abierto.returncode, 1)
+        self.assertIn("sin navegador", abierto.stderr)
 
     def test_par_sin_clientes_no_se_aplica_y_el_flag_del_operador_si(self):
         origen, a, gen_a = self._flota("origen-k")

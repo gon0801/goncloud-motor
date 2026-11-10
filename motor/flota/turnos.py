@@ -24,6 +24,7 @@ from motor.encargos.agentes import (
     _modelos_para,
     _sesion_presente,
     resolver_lanzador,
+    sesion_antigravity_presente,
 )
 from motor.encargos.aislamiento import aislar
 from motor.flota.control import _atomico, asignar
@@ -47,6 +48,31 @@ def _recorte(texto: str) -> str:
     return " ".join(str(texto or "").split())[:_RECORTE]
 
 
+def sin_navegador(entorno: dict[str, str], runtime: Path) -> dict[str, str]:
+    """El entorno del turno con `open` y `xdg-open` inertes.
+
+    agy abre el navegador del sistema para su OAuth cuando no encuentra la
+    sesión. El motor corre sin una persona delante: el turno debe reportar el
+    error de autenticación, no abrir pestañas.
+    """
+    if os.name == "nt":
+        return entorno
+    carpeta = Path(runtime) / "sin-navegador"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    for nombre in ("open", "xdg-open"):
+        destino = carpeta / nombre
+        escribir_texto(
+            destino,
+            "#!/bin/sh\n"
+            f"printf '%s\\n' '{nombre} bloqueado: el motor corre sin navegador' >&2\n"
+            "exit 1\n",
+        )
+        destino.chmod(0o755)
+    copia = dict(entorno)
+    copia["PATH"] = str(carpeta) + os.pathsep + copia.get("PATH", "")
+    return copia
+
+
 def _turno_agente(
     agente: str, gen: Path | None, raiz: Path, tope_s: int = TOPE_TURNO_S
 ) -> dict:
@@ -57,6 +83,13 @@ def _turno_agente(
     suscripción; los dos se borran al terminar el turno. Sin generación se usa
     el lanzador del PATH, que es lo que ve `motor director capacidades`.
     """
+    if agente == "antigravity" and not sesion_antigravity_presente():
+        return {
+            "segundos": 0,
+            "rc": 126,
+            "estado": "sin_sesion",
+            "error": "antigravity no tiene sesión en esta máquina; no se lanza agy",
+        }
     marca = uuid.uuid4().hex[:8]
     scratch = Path(raiz) / "corriendo" / f"{agente}-{marca}"
     espacio = scratch / "espacio" / agente
@@ -84,10 +117,13 @@ def _turno_agente(
             agente=agente,
             interprete=True,
         )
+        entorno = comando.entorno
+        if agente == "antigravity":
+            entorno = sin_navegador(entorno, runtime)
         hecho = subprocess.run(
             comando.argv,
             cwd=str(espacio),
-            env=comando.entorno,
+            env=entorno,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
