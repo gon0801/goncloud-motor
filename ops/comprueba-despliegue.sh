@@ -167,9 +167,11 @@ PROGRAMA_PC_B64="$(printf '%s' "$PROGRAMA" | _pc_b64)"
 lee_estado() {
   local m=$1
   if [ "$m" = pc ]; then
-    py_pc_runtime_prog "$PROGRAMA_PC_B64" "$recibo_viejo"
+    # La PC contesta cada línea con \r\n: el \r no puede formar parte de ningún
+    # campo, o el mismo SHA deja de ser igual a sí mismo.
+    py_pc_runtime_prog "$PROGRAMA_PC_B64" "$recibo_viejo" | tr -d '\r'
   else
-    en_posix "$m" "$m" "$sha" <<REMOTO
+    en_posix "$m" "$m" "$sha" <<REMOTO | tr -d '\r'
 set -euo pipefail
 python3 - "$recibo_viejo" <<'PY'
 $PROGRAMA

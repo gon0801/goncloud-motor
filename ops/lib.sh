@@ -66,8 +66,40 @@ py_pc_runtime() {
 # Programa real en argv, en base64: el python remoto no puede llevar comillas ni if/else.
 PC_EXEC='import base64,sys; exec(base64.b64decode(sys.argv[1]))'
 
+# Programa real por stdin: el de la PC no viaja en la línea de comandos de cmd.exe,
+# que corta en 8191 caracteres.
+PC_EXEC_STDIN='import base64,sys; exec(base64.b64decode(sys.stdin.buffer.read()))'
+
 _pc_b64() {
   python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())'
+}
+
+# cmd.exe contesta esto cuando la orden no cabe, y a veces devuelve 0. Un rc=0
+# con esta salida no es éxito.
+_falla_de_cmd() {
+  case "$1" in
+    *"The command line is too long."*|*"The command line is too long"*) return 0 ;;
+  esac
+  return 1
+}
+
+# _pc_programa_stdin <prefijo python> <b64> [args...]: manda el programa por stdin
+# y deja la línea de comandos corta. Distingue el fallo de ssh y el de cmd.exe.
+_pc_programa_stdin() {
+  local py=$1 b64=$2 err salida rc
+  shift 2
+  err="$(mktemp "${TMPDIR:-/tmp}/pc-err.XXXXXX")" || return 1
+  salida="$(printf '%s' "$b64" | ssh_a "$(host_de pc)" "$py -c \"$PC_EXEC_STDIN\" $*" 2>"$err")"
+  rc=$?
+  if _falla_de_cmd "$salida" || _falla_de_cmd "$(cat "$err" 2>/dev/null)"; then
+    cat "$err" >&2 2>/dev/null || true
+    rm -f "$err"
+    return 1
+  fi
+  cat "$err" >&2 2>/dev/null || true
+  rm -f "$err"
+  printf '%s' "$salida"
+  return "$rc"
 }
 
 # argv[1] es este programa; argv[2] es el nombre bajo ~/.motor.
@@ -133,13 +165,15 @@ sys.stdout.write(
 py_pc_prog() {
   local b64=$1
   shift
-  py_pc "$PC_EXEC" "$b64" "$@"
+  # El programa va por stdin y deja un argv[1] corto en su lugar: los programas
+  # que leen sys.argv[2] o sys.argv[-1] conservan la misma posición.
+  printf '%s' "$b64" | ssh_a "$(host_de pc)" "$PC_UV run --python 3.12 python -c \"$PC_EXEC_STDIN\" - $*"
 }
 
 py_pc_runtime_prog() {
   local b64=$1
   shift
-  py_pc_runtime "$PC_EXEC" "$b64" "$@"
+  _pc_programa_stdin "$PC_PYTHON -B" "$b64" "$@"
 }
 
 lee_archivo_pc() {
@@ -180,13 +214,13 @@ origen_maquina_b64() {
 maquina_local_pc() {
   local programa
   programa="$(origen_maquina_b64)" || return 1
-  py_pc 'import base64,sys; programa=base64.b64decode(sys.argv.pop(1)); exec(programa)' "$programa" "$@"
+  _pc_programa_stdin "$PC_UV run --python 3.12 python" "$programa" "$@"
 }
 
 maquina_local_pc_runtime() {
   local programa
   programa="$(origen_maquina_b64)" || return 1
-  py_pc_runtime 'import base64,sys; programa=base64.b64decode(sys.argv.pop(1)); exec(programa)' "$programa" "$@"
+  _pc_programa_stdin "$PC_PYTHON -B" "$programa" "$@"
 }
 
 # ruta_runtime_de <m>: el árbol distinto de ~/motor que ejecuta el supervisor en

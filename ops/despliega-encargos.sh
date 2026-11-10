@@ -95,6 +95,12 @@ sys.stdout.write(str((pendiente.get("anterior") or {}).get("codigo") or "") + "\
 sys.stdout.write(str((pendiente.get("destino") or {}).get("codigo") or "") + "\n")
 sys.stdout.write(str((recibo.get("anterior") or {}).get("codigo") or "") + "\n")
 ' | _pc_b64)"
+ORDENA_B64="$(printf '%s' 'import pathlib,sys
+sys.path.insert(0, sys.argv[1])
+from motor.encargos.cli import main
+base = pathlib.Path.home() / ".motor-encargos"
+raise SystemExit(main(["reiniciar-supervisor", "--base", str(base), "--clave", sys.argv[2], "--tope", sys.argv[3]]))
+' | _pc_b64)"
 
 json_de_recibo() { # <tipo> <anterior> <destino> <maquina> [paso] [causa]
   python3 - "$1" "$2" "$3" "$4" "${5:-}" "${6:-}" <<'PY'
@@ -199,29 +205,6 @@ s = d.get("supervisor") or {}
 sys.exit(0 if not d.get("parado") and s.get("session") == 1 and s.get("in_job") is False else 1)'
 }
 
-pc_estado_parado() { # <json>
-  printf '%s' "$1" | python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-# Sin vigilante ni supervisor anotado no hay nada que parar: --parar solo dejó
-# su petición y el arranque la borra.
-if d.get("parado") or (not d.get("vigilante_pid") and not d.get("supervisor_pid")):
-    sys.exit(0)
-sys.exit(1)'
-}
-
-pc_esperar_parado() { # <ruta> <tope>
-  local ruta=$1 tope=$2 fin=$((SECONDS + $2)) salida
-  while :; do
-    salida="$(pc_iniciar "$ruta" --estado 2>/dev/null)" \
-      && pc_estado_parado "$salida" && return 0
-    [ "$SECONDS" -ge "$fin" ] && return 1
-    sleep 2
-  done
-}
-
 pc_esperar_arranque() { # <ruta> <tope>
   local ruta=$1 fin=$((SECONDS + $2)) salida
   while :; do
@@ -232,24 +215,105 @@ pc_esperar_arranque() { # <ruta> <tope>
   done
 }
 
-falla() { # <maquina> <paso> <causa> <anterior>
-  local m=$1 paso=$2 causa=$3 anterior=$4 escrito=1
-  escribe_recibo "$m" instalacion-pendiente.json \
-    "$(json_de_recibo pendiente "$anterior" "$sha" "$m" "$paso" "$causa")" >/dev/null 2>&1 \
-    || escrito=0
-  echo "FALLA $m en $paso: $causa" >&2
-  if [ "$escrito" = 1 ]; then
-    echo "No sigo con las demás. El pendiente de $m conserva el anterior (${anterior:0:12}) para volver." >&2
-  else
-    echo "No sigo con las demás. No pude escribir el pendiente de $m; el anterior era (${anterior:0:12})." >&2
-  fi
+preflight_falla() { # <maquina> <causa>
+  echo "FALLA $1 en leer el árbol del supervisor: $2" >&2
+  echo "No moví ninguna máquina: la lectura de todas falló antes de tocar los árboles." >&2
   exit 1
 }
 
+# reinicia_ordenado <maquina> <runtime> <clave> <tope>: deja la orden de #432 y
+# deja que el supervisor drene los turnos y salga. Si no hay supervisor, lo
+# arranca: no hay turnos que drenar.
+reinicia_ordenado() {
+  local m=$1 runtime=$2 clave=$3 tope=$4
+  if [ "$m" = pc ]; then
+    if pc_estado_valido "$(pc_iniciar "$runtime" --estado 2>/dev/null)"; then
+      _pc_programa_stdin "$PC_PYTHON -B" "$ORDENA_B64" "$runtime" "$clave" "$tope" >/dev/null
+    else
+      pc_iniciar "$runtime" >/dev/null 2>&1 || return 1
+      pc_esperar_arranque "$runtime" "${MOTOR_ESPERA_ARRANQUE_PC:-90}" || return 1
+    fi
+    return $?
+  fi
+  if servicio_cargado "$m"; then
+    en_posix "$m" "$m" "$runtime" "$clave" "$tope" <<'REMOTO' >/dev/null
+set -euo pipefail
+runtime=$2 clave=$3 tope=$4
+cd "$runtime"
+python3 -B -m motor reiniciar-supervisor --base "$HOME/.motor-encargos" --clave "$clave" --tope "$tope"
+REMOTO
+  else
+    en_posix "$m" "$m" <<'REMOTO' >/dev/null
+set -euo pipefail
+label="ai.goncloud.motor-encargos"
+plist="$HOME/Library/LaunchAgents/$label.plist"
+[ -f "$plist" ] || { echo "el servicio $label no está instalado: $plist" >&2; exit 1; }
+launchctl bootstrap "gui/$(id -u)" "$plist"
+REMOTO
+  fi
+}
+
+# compensar_movidas <movidas>: las que ya tienen el árbol nuevo reciben la orden
+# de reinicio y se comprueban antes de salir. Se reinicia, no se regresa: el
+# árbol ya está en el SHA pedido y volver atrás obligaría a mover dos veces.
+compensar_movidas() {
+  local movidas=$1 m runtime
+  [ -n "$movidas" ] || return 0
+  echo "Las máquinas ya movidas pasan a ${sha:0:12} ahora, para no dejar el código viejo sobre el árbol nuevo:" >&2
+  for m in $movidas; do
+    runtime="$(cat "$tmp/$m.runtime" 2>/dev/null)"
+    [ -n "$runtime" ] || runtime="$(ruta_runtime_encargos_de "$m" 2>/dev/null)"
+    if ! reinicia_ordenado "$m" "$runtime" "$clave_despliegue" "$tope_reinicio"; then
+      echo "FALLA $m en reiniciar el supervisor: no pude pedir el reinicio ordenado" >&2
+    fi
+  done
+  if bash "$aqui/comprueba-despliegue.sh" --sha "$sha" --maquina "$movidas" --espera "$espera" --reinicio; then
+    for m in $movidas; do
+      echo "$m: reiniciado y comprobado en ${sha:0:12}" >&2
+    done
+  else
+    echo "Las máquinas movidas no confirmaron el reinicio; su pendiente conserva el anterior para volver." >&2
+  fi
+}
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/despliega.XXXXXX")" || exit 1
+trap 'rm -rf "$tmp"' EXIT
+
+# Primero comprobar: ssh, árbol del supervisor y recibo de todas. Si una falla
+# aquí no se mueve ninguna.
 for m in $maquinas; do
-  # El pendiente que ya hubiera manda sobre el HEAD del árbol: si el reintento
-  # falla antes de leer el árbol, el anterior original no se pierde.
-  estado="$(lee_estado_encargos "$m" 2>/dev/null)" || estado=""
+  estado="$(lee_estado_encargos "$m" 2>/dev/null)" \
+    || preflight_falla "$m" "no pude leer el estado del supervisor"
+  runtime="$(ruta_runtime_encargos_de "$m" 2>/dev/null)" \
+    || preflight_falla "$m" "no pude leer el árbol del supervisor"
+  if [ -z "$runtime" ]; then
+    preflight_falla "$m" "no hay un árbol de encargos distinto de ~/motor"
+  fi
+  cabeza="$(sha_del_arbol "$m" "$runtime" 2>/dev/null)" \
+    || preflight_falla "$m" "no pude leer el árbol del supervisor"
+  printf '%s\n' "$estado" >"$tmp/$m.estado"
+  printf '%s\n' "$runtime" >"$tmp/$m.runtime"
+  printf '%s\n' "$cabeza" >"$tmp/$m.cabeza"
+done
+
+espera="${MOTOR_ESPERA_DESPLIEGUE:-120}"
+case "$espera" in
+  "" | *[!0-9]*) espera=120 ;;
+esac
+# El tope del drenaje no puede superar la espera de la comprobación: hoy el
+# reinicio traía 300 s y la comprobación espera 120 s.
+tope_reinicio="${MOTOR_ESPERA_REINICIO:-$espera}"
+case "$tope_reinicio" in
+  "" | *[!0-9]*) tope_reinicio=$espera ;;
+esac
+if [ "$tope_reinicio" -gt 900 ]; then tope_reinicio=900; fi
+clave_despliegue="despliegue-${sha:0:12}-$$"
+
+necesitan=""
+for m in $maquinas; do
+  estado="$(cat "$tmp/$m.estado")"
+  runtime="$(cat "$tmp/$m.runtime")"
+  cabeza="$(cat "$tmp/$m.cabeza")"
   pasada_sha="$(printf '%s\n' "$estado" | sed -n '1p')"
   pasada_completa="$(printf '%s\n' "$estado" | sed -n '2p')"
   recibo_sha="$(printf '%s\n' "$estado" | sed -n '3p')"
@@ -257,29 +321,19 @@ for m in $maquinas; do
   pendiente_anterior="$(printf '%s\n' "$estado" | sed -n '5p')"
   pendiente_destino="$(printf '%s\n' "$estado" | sed -n '6p')"
   recibo_anterior="$(printf '%s\n' "$estado" | sed -n '7p')"
+  # El pendiente que ya hubiera manda sobre el HEAD del árbol: si el reintento
+  # falla antes de leer el árbol, el anterior original no se pierde.
   anterior_previo=""
   if [ "$pendiente_destino" = "$sha" ] && [ -n "$pendiente_anterior" ]; then
     anterior_previo="$pendiente_anterior"
   fi
-
-  paso="leer el árbol del supervisor"
-  runtime="$(ruta_runtime_encargos_de "$m" 2>/dev/null)" \
-    || falla "$m" "$paso" "no pude leer el árbol del supervisor" "$anterior_previo"
-  if [ -z "$runtime" ]; then
-    falla "$m" "$paso" "no hay un árbol de encargos distinto de ~/motor" "$anterior_previo"
-  fi
-
-  cabeza="$(sha_del_arbol "$m" "$runtime" 2>/dev/null)" || cabeza=""
   anterior="$cabeza"
   if [ -n "$anterior_previo" ]; then
     anterior="$anterior_previo"
   elif [ "$recibo_sha" = "$sha" ] && [ -n "$recibo_anterior" ]; then
     anterior="$recibo_anterior"
   fi
-  escribe_recibo "$m" instalacion-pendiente.json \
-    "$(json_de_recibo pendiente "$anterior" "$sha" "$m" "inicio")" \
-    || falla "$m" "escribir el recibo pendiente" "no pude escribirlo en ~/.motor-encargos" "$anterior"
-
+  printf '%s\n' "$anterior" >"$tmp/$m.anterior"
   sano=1
   if [ "$m" = pc ]; then
     pc_estado_valido "$(pc_iniciar "$runtime" --estado 2>/dev/null)" || sano=0
@@ -290,36 +344,48 @@ for m in $maquinas; do
     && [ "$pasada_completa" = "si" ] && [ "$recibo_sha" = "$sha" ] && [ "$sano" = 1 ]; then
     echo "$m: ya estaba en ${sha:0:12}; no reinicio"
   else
-    if [ "$m" = pc ]; then
-      paso="detener el supervisor"
-      pc_iniciar "$runtime" --parar >/dev/null 2>&1 \
-        || falla "$m" "$paso" "iniciar_encargos_pc.py --parar falló" "$anterior"
-      pc_esperar_parado "$runtime" "${MOTOR_ESPERA_PARADA_PC:-30}" \
-        || falla "$m" "$paso" "el vigilante no confirmó la parada" "$anterior"
-    fi
-    paso="mover el árbol a ${sha:0:12}"
-    mover_arbol "$m" "$runtime" "$sha" \
-      || falla "$m" "$paso" "git no dejó el árbol en ${sha:0:12}" "$anterior"
-    paso="reiniciar el supervisor"
-    if [ "$m" = pc ]; then
-      pc_iniciar "$runtime" >/dev/null 2>&1 \
-        || falla "$m" "$paso" "iniciar_encargos_pc.py no arrancó" "$anterior"
-      pc_esperar_arranque "$runtime" "${MOTOR_ESPERA_ARRANQUE_PC:-90}" \
-        || falla "$m" "$paso" "el supervisor no quedó en session 1 con in_job false" "$anterior"
-    else
-      reinicia_supervisor "$m" \
-        || falla "$m" "$paso" "launchctl no relanzó ai.goncloud.motor-encargos" "$anterior"
-    fi
+    necesitan="$necesitan $m"
   fi
-  escribe_recibo "$m" instalacion.json \
-    "$(json_de_recibo instalado "$anterior" "$sha" "$m")" \
-    || falla "$m" "escribir el recibo" "no pude escribir ~/.motor-encargos/instalacion.json" "$anterior"
 done
 
-espera="${MOTOR_ESPERA_DESPLIEGUE:-120}"
-case "$espera" in
-  "" | *[!0-9]*) espera=120 ;;
-esac
+# Mover todos los árboles primero. El reinicio va después, en su propio bucle.
+movidas=""
+for m in $necesitan; do
+  runtime="$(cat "$tmp/$m.runtime")"
+  anterior="$(cat "$tmp/$m.anterior")"
+  if ! escribe_recibo "$m" instalacion-pendiente.json \
+    "$(json_de_recibo pendiente "$anterior" "$sha" "$m" "inicio")" >/dev/null 2>&1; then
+    echo "FALLA $m en escribir el recibo pendiente: no pude escribirlo en ~/.motor-encargos" >&2
+    compensar_movidas "$movidas"
+    echo "No sigo con las demás. El pendiente de $m conserva el anterior (${anterior:0:12}) para volver." >&2
+    exit 1
+  fi
+  if ! mover_arbol "$m" "$runtime" "$sha"; then
+    echo "FALLA $m en mover el árbol a ${sha:0:12}: git no dejó el árbol en ${sha:0:12}" >&2
+    compensar_movidas "$movidas"
+    echo "No sigo con las demás. El pendiente de $m conserva el anterior (${anterior:0:12}) para volver." >&2
+    exit 1
+  fi
+  movidas="$movidas $m"
+  if ! escribe_recibo "$m" instalacion.json \
+    "$(json_de_recibo instalado "$anterior" "$sha" "$m")" >/dev/null 2>&1; then
+    echo "FALLA $m en escribir el recibo: no pude escribir ~/.motor-encargos/instalacion.json" >&2
+    compensar_movidas "$movidas"
+    echo "No sigo con las demás. El pendiente de $m conserva el anterior (${anterior:0:12}) para volver." >&2
+    exit 1
+  fi
+done
+
+# Segundo bucle: reiniciar todas las movidas, sin parar en la primera que falle,
+# para que ninguna quede con el código viejo sobre el árbol nuevo.
+for m in $movidas; do
+  runtime="$(cat "$tmp/$m.runtime")"
+  anterior="$(cat "$tmp/$m.anterior")"
+  if ! reinicia_ordenado "$m" "$runtime" "$clave_despliegue" "$tope_reinicio"; then
+    echo "FALLA $m en reiniciar el supervisor: no pude pedir el reinicio ordenado; el pendiente conserva el anterior (${anterior:0:12})" >&2
+  fi
+done
+
 echo "Comprobando el despliegue en:$maquinas (hasta ${espera}s para la pasada con ${sha:0:12})"
 if ! bash "$aqui/comprueba-despliegue.sh" --sha "$sha" --maquina "$maquinas" --espera "$espera" --reinicio; then
   echo "El código quedó en ${sha:0:12}, pero la comprobación no pasa en todas. Los pendientes conservan el anterior para volver." >&2
