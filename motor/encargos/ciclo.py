@@ -1023,29 +1023,62 @@ def _es_base_sesion_conocida(base: Path) -> bool:
     )
 
 
+def _es_candado_pasajero(exc: Exception) -> bool:
+    """Un candado ajeno no prueba daño: `database is locked` puede desaparecer
+    en el siguiente intento."""
+    texto = str(exc).lower()
+    return "locked" in texto or "busy" in texto
+
+
 def _causa_sesion_danada(almacen: Path) -> str:
     """La primera base de sesión cuyo `PRAGMA quick_check` no pasa o no abre,
     con la causa; `""` si el almacén no tiene bases dañadas. Las bases de sesión
     conocidas se validan aunque hayan perdido la cabecera: una `opencode.db` con
-    los primeros bytes destruidos es el daño que trajo la PC."""
+    los primeros bytes destruidos es el daño que trajo la PC. El escaneo no se
+    cae por un permiso o una carrera: lo que no se puede revisar queda dicho
+    como causa y la sesión se aparta. Un candado ajeno no es daño: se reintenta
+    una vez y, si sigue, esa base no aparta la sesión (un bloqueo pasajero no
+    pierde la sesión)."""
+    import time
     import sqlite3
     from contextlib import closing
 
-    for base in sorted(almacen.rglob("*")):
-        if not base.is_file() or base.is_symlink():
-            continue
-        con_cabecera = es_sqlite(base)
-        if not con_cabecera and (
-            not _es_base_sesion_conocida(base) or base.stat().st_size == 0
-        ):
-            continue
+    try:
+        bases = sorted(almacen.rglob("*"))
+    except OSError as exc:
+        return f"{almacen.name}: {type(exc).__name__}: {exc}"
+    for base in bases:
         try:
-            with closing(sqlite3.connect(base)) as db:
-                filas = db.execute("PRAGMA quick_check").fetchall()
-        except sqlite3.Error as exc:
+            if not base.is_file() or base.is_symlink():
+                continue
+            con_cabecera = es_sqlite(base)
+            if not con_cabecera and (
+                not _es_base_sesion_conocida(base) or base.stat().st_size == 0
+            ):
+                continue
+        except OSError as exc:
             return f"{base.name}: {type(exc).__name__}: {exc}"
-        if [tuple(fila) for fila in filas] != [("ok",)]:
-            return f"{base.name}: quick_check: {filas[0][0] if filas else 'sin respuesta'}"
+        causa = ""
+        for reintento in range(2):
+            try:
+                with closing(sqlite3.connect(base)) as db:
+                    filas = db.execute("PRAGMA quick_check").fetchall()
+            except sqlite3.OperationalError as exc:
+                if _es_candado_pasajero(exc):
+                    if reintento == 0:
+                        time.sleep(1)
+                        continue
+                    break
+                causa = f"{base.name}: {type(exc).__name__}: {exc}"
+                break
+            except sqlite3.Error as exc:
+                causa = f"{base.name}: {type(exc).__name__}: {exc}"
+                break
+            if [tuple(fila) for fila in filas] != [("ok",)]:
+                causa = f"{base.name}: quick_check: {filas[0][0] if filas else 'sin respuesta'}"
+            break
+        if causa:
+            return causa
     return ""
 
 
