@@ -699,6 +699,73 @@ class SesionConsistente(unittest.TestCase):
                     db.execute("SELECT t FROM notas").fetchall(), [("nueva",)]
                 )
 
+    def test_el_revisor_arranca_sin_sesion_cuando_su_almacen_se_aparta(self):
+        try:
+            from motor.encargos.agentes import _lanzador, _sesion_modo
+            from motor.encargos.ciclo import _reflejar_sesion
+        except ImportError as exc:
+            raise AssertionError(
+                "el apartado del almacén del revisor no refleja la pérdida de sesión"
+            ) from exc
+
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "intento_abierto",
+                "data": {
+                    "rol": "revisor",
+                    "agente": "codex",
+                    "modelo": "openai/gpt-6-astra",
+                    "poteto_digest": "x",
+                    "id": "i1",
+                    "pid": 1,
+                    "inicio": hora,
+                    "sesion_modo": "reanudada",
+                },
+            },
+            f"intento-abierto:{enc.id}:0",
+        )
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "intento_cerrado",
+                "data": {"sesion_runtime": "ses_revisor", "hora": hora},
+            },
+            f"intento-cerrado:{enc.id}:0",
+        )
+        enc = replace(
+            enc,
+            rol="revisor",
+            modelos=(("revisor", "codex", "openai/gpt-6-astra"),),
+        )
+        enc = registro.fold(enc.id)
+        self.assertEqual(enc.sesion_revisor, "ses_revisor")
+        self.assertTrue(enc.viva_revisor)
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-revisor"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        cruda = destino_db.read_bytes()
+        destino_db.write_bytes(cruda[: len(cruda) // 2])
+        runtime = self.tmp / "runtime"
+        _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        apartado = almacen.parent / "sesion-revisor.danada-20261111T0725"
+        self.assertTrue(apartado.is_dir(), "el almacén del revisor no se apartó")
+        enc2 = _reflejar_sesion(registro, enc)
+        self.assertEqual(enc2.sesion_revisor, "")
+        self.assertFalse(enc2.viva_revisor)
+        modo = _sesion_modo(enc2, "codex", "revisor")
+        self.assertNotEqual(
+            modo, "reanudada", "el revisor reanuda la sesión recién apartada"
+        )
+        argv = _lanzador("codex", "openai/gpt-6-astra", modo)(
+            enc2, Path("p"), Path("e"), "ses"
+        )
+        self.assertNotIn("ses_revisor", argv)
+        self.assertNotIn("resume", argv)
+
     def test_una_base_fuente_bloqueada_acaba_acotada_y_no_traba_la_copia(self):
         home = self.tmp / "home"
         home.mkdir()
