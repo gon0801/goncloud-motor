@@ -545,6 +545,140 @@ class SesionConsistente(unittest.TestCase):
         )
         self.assertFalse(lanzadas[0].viva_responsable)
 
+    def test_un_candado_en_la_copia_no_borra_la_sesion_sana_ni_reanuda(self):
+        from motor.encargos.agentes import _lanzador, _sesion_modo
+        from motor.encargos.ciclo import _incorporar, _lanzar_uno_en_turno
+
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "intento_abierto",
+                "data": {
+                    "rol": "responsable",
+                    "agente": "opencode",
+                    "modelo": "deepseek/deepseek-flash",
+                    "poteto_digest": "x",
+                    "id": "i1",
+                    "pid": 1,
+                    "inicio": hora,
+                    "sesion_modo": "reanudada",
+                },
+            },
+            f"intento-abierto:{enc.id}:0",
+        )
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "intento_cerrado",
+                "data": {"sesion_runtime": "ses_guardada", "hora": hora},
+            },
+            f"intento-cerrado:{enc.id}:0",
+        )
+        enc = registro.fold(enc.id)
+        self.assertEqual(enc.sesion_responsable, "ses_guardada")
+        self.assertTrue(enc.viva_responsable)
+
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        destino_db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(destino_db)) as db, db:
+            db.execute("CREATE TABLE notas (t TEXT)")
+            db.execute("INSERT INTO notas VALUES ('sana')")
+        candado = sqlite3.connect(destino_db, timeout=60)
+        candado.execute("BEGIN EXCLUSIVE")
+        lanzadas = []
+        espacio = self.tmp / "espacio"
+        espacio.mkdir()
+
+        def lanzador(enc, prompt, espacio, sesion):
+            modo = _sesion_modo(enc, "opencode", "responsable")
+            argv = _lanzador("opencode", "deepseek/deepseek-flash", modo)(
+                enc, prompt, espacio, sesion
+            )
+            lanzadas.append((enc, modo, argv))
+            return [], {
+                "agente": "opencode",
+                "modelo": "deepseek/deepseek-flash",
+                "sesion_modo": modo,
+            }
+
+        try:
+            with mock.patch(
+                "motor.encargos.ciclo._asegurar_repo", return_value=None
+            ), mock.patch(
+                "motor.flota.runtime.exigir_poteto", return_value=(Path("poteto"), "x")
+            ):
+                _lanzar_uno_en_turno(
+                    registro, registro.fold(enc.id), None, espacio, hora, lanzador
+                )
+        finally:
+            candado.close()
+        self.assertTrue(lanzadas, "el turno no llegó a lanzar")
+        enc_lanzado, modo, argv = lanzadas[0]
+        with self.subTest("el turno no reanuda una sesión que no entró al runtime"):
+            self.assertNotEqual(
+                modo,
+                "reanudada",
+                "la copia falló por el candado y el turno construye --session igual",
+            )
+            self.assertNotIn("--session", argv)
+        self.assertTrue(
+            almacen.is_dir(), "el episodio del candado perdió el almacén sano"
+        )
+
+        # el intento que sigue se incorpora con lo que el modo diga: con
+        # reanudada el agente no encuentra la sesión que no está en el runtime;
+        # con reconstruida arranca una sesión nueva y termina bien.
+        directorio = registro.base / "ejecucion" / enc.id / "intento-episodio"
+        directorio.mkdir(parents=True)
+        (directorio / "arranque.json").write_text(
+            json.dumps(
+                {
+                    "agente": "opencode",
+                    "modelo": "deepseek/deepseek-flash",
+                    "token": "tok",
+                    "sesion_modo": modo,
+                }
+            )
+        )
+        if modo == "reanudada":
+            (directorio / "outcome.json").write_text(
+                json.dumps({"fallo_runtime": "session not found"})
+            )
+        else:
+            runtime_fresco = registro.base / "runtime" / enc.id / "tok"
+            (runtime_fresco / ".local/share/opencode").mkdir(parents=True)
+            with closing(
+                sqlite3.connect(runtime_fresco / ".local/share/opencode/opencode.db")
+            ) as db, db:
+                db.execute("CREATE TABLE notas (t TEXT)")
+                db.execute("INSERT INTO notas VALUES ('nueva')")
+            (directorio / "outcome.json").write_text(
+                json.dumps({"sesion_runtime": "ses_nueva"})
+            )
+        _incorporar(registro, registro.fold(enc.id), espacio, hora, directorio)
+        with self.subTest("la incorporación no borra el almacén sano"):
+            self.assertEqual(
+                list(almacen.parent.glob("sesion-responsable.danada-*")),
+                [],
+                "el episodio apartó el almacén",
+            )
+            self.assertTrue(
+                almacen.is_dir(), "la incorporación borró el almacén sano"
+            )
+        self.assertEqual(
+            [e for e in registro.eventos(enc.id) if e["kind"] == "proveedor_fallo"],
+            [],
+        )
+        if modo != "reanudada":
+            with closing(sqlite3.connect(destino_db)) as db:
+                self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0], "ok")
+                self.assertEqual(
+                    db.execute("SELECT t FROM notas").fetchall(), [("nueva",)]
+                )
+
     def test_una_base_fuente_bloqueada_acaba_acotada_y_no_traba_la_copia(self):
         home = self.tmp / "home"
         home.mkdir()
