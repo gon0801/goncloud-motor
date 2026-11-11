@@ -47,6 +47,10 @@ _ENTRE_REINTENTOS = (
     "reserva",
     "reserva_cerrada",
     "contexto_entrega",
+    # La recuperación de la copia de sesión no es un suceso distinto entre
+    # esperas: perder la sesión acompaña a las notas de copia, que tampoco
+    # cortan la serie.
+    "sesion_perdida",
 )
 
 _NOTA_COPIA_SESION = "copia de sesión "

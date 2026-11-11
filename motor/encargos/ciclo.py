@@ -1104,7 +1104,8 @@ def _copiar_sesion_sin_caer(
     Una copia a medias no se usa como sesión. Guardar deja `.copia-incompleta` en el almacén
     mientras copia y la quita al terminar; si el guardado anterior no terminó, vacía el
     almacén antes, para que lo viejo no se mezcle con lo nuevo. Con la marca puesta no se
-    restaura: el turno arranca sin sesión. Si falla restaurar, se vacía el runtime del turno."""
+    restaura: el turno arranca sin sesión. Si falla restaurar, se vacía el runtime del turno
+    y también se pierde la sesión: el id apunta a archivos que no entraron al runtime."""
     import sqlite3
 
     marca = ".copia-incompleta"
@@ -1170,7 +1171,19 @@ def _copiar_sesion_sin_caer(
                 (destino / marca).touch()
         except OSError:
             pass
-        anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
+        if sitio == "restaurar":
+            # La copia no entró al runtime: el id de sesión apunta a archivos
+            # que no están, y reanudar cae con "session not found", cuyo
+            # camino de recuperación borra el almacén (aunque esté sano, por
+            # ejemplo detrás de un candado pasajero). El turno arranca sin
+            # sesión, igual que con la sesión apartada por dañada.
+            perder_sesion()
+            anotar(
+                f"{type(exc).__name__}: {exc}; la sesión no entró al runtime "
+                "y el turno arranca sin ella"
+            )
+        else:
+            anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
 
 
 def _reflejar_sesion(registro, enc: Encargo) -> Encargo:
