@@ -16,7 +16,9 @@ from concurrent.futures import TimeoutError as MiradaTardia
 from dataclasses import replace
 from pathlib import Path
 
-from .copiar import borrar_arbol, copiar_arbol, vaciar_arbol
+from motor.fallas import es_sesion_local
+
+from .copiar import borrar_arbol, copiar_arbol, es_sqlite, vaciar_arbol
 from .comprobacion import (
     FalloInstrumento,
     JuicioValidado,
@@ -945,7 +947,7 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
     for sub in (".codex", ".grok", ".local/share/muse", ".kimi-code/sessions", ".kimi-code/file-history", ".claude/projects", ".qwen/projects", ".qwen/tmp", ".local/share/opencode"):
         fuente = origen / sub
         if fuente.is_dir():
-            copiar_arbol(fuente, destino / sub, omitir=("auth.json",))
+            copiar_arbol(fuente, destino / sub, omitir=("auth.json",), sqlite_consistente=True)
 
     indice_kimi = origen / ".kimi-code/session_index.jsonl"
     if indice_kimi.is_file() and not indice_kimi.is_symlink():
@@ -1008,6 +1010,35 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
 
 
 
+def _causa_sesion_danada(almacen: Path) -> str:
+    """La primera base de sesión cuyo `PRAGMA quick_check` no pasa o no abre,
+    con la causa; `""` si el almacén no tiene bases dañadas."""
+    import sqlite3
+    from contextlib import closing
+
+    for base in sorted(almacen.rglob("*")):
+        if not base.is_file() or base.is_symlink() or not es_sqlite(base):
+            continue
+        try:
+            with closing(sqlite3.connect(base)) as db:
+                filas = db.execute("PRAGMA quick_check").fetchall()
+        except sqlite3.Error as exc:
+            return f"{base.name}: {type(exc).__name__}: {exc}"
+        if [tuple(fila) for fila in filas] != [("ok",)]:
+            return f"{base.name}: quick_check: {filas[0][0] if filas else 'sin respuesta'}"
+    return ""
+
+
+def _apartar_sesion(almacen: Path, hora: str) -> Path:
+    """Renombra el almacén de sesión junto a sí mismo con marca de fecha, la misma
+    forma que usó el director en la PC (`opencode.danada-20261111`): la evidencia
+    no se borra y el turno arranca sin ella."""
+    marca = hora[:10].replace("-", "") + "T" + hora[11:16].replace(":", "")
+    apartado = almacen.with_name(f"{almacen.name}.danada-{marca}")
+    almacen.rename(apartado)
+    return apartado
+
+
 def _copiar_sesion_sin_caer(
     registro: Registro, enc: Encargo, origen: Path, destino: Path, sitio: str, hora: str
 ) -> None:
@@ -1035,6 +1066,22 @@ def _copiar_sesion_sin_caer(
     if sitio == "restaurar" and (origen / marca).exists():
         anotar("la sesión guardada quedó incompleta (falló una copia anterior); el turno arranca sin ella")
         return
+    if sitio == "restaurar" and origen.is_dir():
+        dana = _causa_sesion_danada(origen)
+        if dana:
+            try:
+                apartado = _apartar_sesion(origen, hora)
+            except OSError as exc:
+                anotar(
+                    f"la sesión guardada está dañada ({dana}) y no se pudo apartar: "
+                    f"{type(exc).__name__}: {exc}; el turno arranca sin ella"
+                )
+                return
+            anotar(
+                f"la sesión guardada está dañada ({dana}); se apartó como "
+                f"{apartado.name} y el turno arranca sin ella"
+            )
+            return
     try:
         if sitio == "guardar":
             if (destino / marca).exists():
@@ -1055,6 +1102,58 @@ def _copiar_sesion_sin_caer(
         except OSError:
             pass
         anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
+
+
+def _incorporar_falla_sesion_local(
+    registro: Registro, enc: Encargo, agente: str, mensaje: str, hora: str
+) -> Encargo:
+    """Un fallo local de la sesión (la base SQLite del agente en su runtime) no es
+    una falla del proveedor: no hay `proveedor_fallo`, no espera el ciclo de 30 min
+    y no marca al proveedor.
+
+    Si el almacén guardado está dañado se aparta y el encargo queda listo para que
+    el barrido relance enseguida, sin sesión. Si no hay almacén, está sano o no se
+    pudo apartar, el mismo texto con una sesión fresca es un problema del entorno:
+    la espera dice la causa real, nunca "proveedor"."""
+    almacen = _almacen_sesion(registro.base, enc.id, enc.rol)
+    if almacen.is_dir():
+        dana = _causa_sesion_danada(almacen)
+        if dana:
+            try:
+                apartado = _apartar_sesion(almacen, hora)
+            except OSError as exc:
+                dana = f"{dana} (no se pudo apartar: {type(exc).__name__}: {exc})"
+            else:
+                registro.anotar(
+                    enc.id,
+                    {
+                        "kind": "procedimiento",
+                        "data": {
+                            "nota": (
+                                f"falla local de la sesión ({dana}); se apartó "
+                                f"{apartado.name}; se reintenta enseguida sin sesión"
+                            )[:2000]
+                        },
+                    },
+                    f"falla-sesion-local:{enc.id}:{enc.generacion}",
+                )
+                return registro.fold(enc.id)
+    registro.anotar(
+        enc.id,
+        {
+            "kind": "falla_sesion_local",
+            "data": {"agente": agente, "causa": mensaje[:300], "hora": hora},
+        },
+        f"falla-sesion-local:{enc.id}:{enc.generacion}",
+    )
+    marcar_espera(
+        registro,
+        enc.id,
+        f"falla local de la sesión, no del proveedor: {mensaje[:200]}",
+        _reanuda_en(1800),
+        hora,
+    )
+    return registro.fold(enc.id)
 
 
 def _leer_proc(directorio: Path) -> dict | None:
@@ -3727,6 +3826,12 @@ def _incorporar(
                 "renovando el acceso de Kimi para continuar la misma sesion",
                 hora,
                 hora,
+            )
+            _marcar_incorporado(registro, enc, hora)
+            return registro.fold(enc.id)
+        if outcome.get("fallo_runtime") and es_sesion_local(str(outcome["fallo_runtime"])):
+            enc = _incorporar_falla_sesion_local(
+                registro, enc, agente, str(outcome["fallo_runtime"]), hora
             )
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)

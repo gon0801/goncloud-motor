@@ -94,6 +94,12 @@ _MODELO_NIVEL = re.compile(
     re.I,
 )
 _INVALIDA = re.compile(r"invalid request|bad request|malformed|schema", re.I)
+# Fallo local del runtime del agente (su base de sesión), no del proveedor: la
+# sesión se aparta y el intento se repite sin ella en vez de esperar al proveedor.
+_SESION_LOCAL = re.compile(
+    r"database disk image is malformed|file is not a database|database is locked",
+    re.I,
+)
 _TRANSPORTE = re.compile(
     r"connection[ _-]?error|connection reset|reset by peer|disconnected[ _-]+before[ _-]+response|"
     r"dns(?: lookup| resolution)? (?:failure|failed|error)|name or service not known|getaddrinfo|"
@@ -237,6 +243,13 @@ def _propio(proveedor: str, texto: str) -> str | None:
             return _gastada_o(kind, texto)
         return kind
     return None
+
+
+def es_sesion_local(mensaje: str) -> bool:
+    """True si el texto del fallo nombra una base local del agente dañada o
+    bloqueada. No cambia `clasifica`: cuando el proveedor mismo contesta con una
+    petición malformada sigue siendo una falla del proveedor."""
+    return bool(_SESION_LOCAL.search(mensaje or ""))
 
 
 def clasifica(proveedor: str, salida: str, errores: str = "") -> dict:

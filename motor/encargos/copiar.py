@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import stat
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 
@@ -66,6 +68,45 @@ def _igual(origen: Path, destino: Path) -> bool:
                 return True
 
 
+_CABECERA_SQLITE = b"SQLite format 3\x00"
+_LATERALES_SQLITE = ("-wal", "-shm", "-journal")
+
+
+def es_sqlite(ruta: Path) -> bool:
+    """True si el archivo empieza con la cabecera de una base SQLite. Por cabecera
+    y no por extensión: la misma regla cubre `opencode.db`, `session-index.db` y
+    `state_*.sqlite`, y un `.db` que no es base se copia como un archivo cualquiera."""
+    try:
+        with open(ruta, "rb") as f:
+            return f.read(len(_CABECERA_SQLITE)) == _CABECERA_SQLITE
+    except OSError:
+        return False
+
+
+def _copiar_sqlite(origen: Path, destino: Path) -> None:
+    """Deja en `destino` una sola base consistente con `origen`, con el API de
+    respaldo de SQLite: la foto incluye lo que el WAL ya comprometió sin
+    checkpoint, y los laterales `-wal`/`-shm` no viajan ni quedan viejos en el
+    destino (un `-wal` de otra generación junto a una base nueva fue lo que
+    dañó la sesión guardada en la PC).
+
+    El respaldo se escribe a un temporal y reemplaza al destino solo si terminó:
+    una copia que falla deja la base anterior como estaba."""
+    for sufijo in _LATERALES_SQLITE:
+        destino.with_name(destino.name + sufijo).unlink(missing_ok=True)
+    temporal = destino.with_name(f".{destino.name}.{uuid.uuid4().hex}.nuevo")
+    try:
+        with closing(sqlite3.connect(origen)) as fuente, closing(
+            sqlite3.connect(temporal)
+        ) as copia:
+            fuente.backup(copia)
+        _escribible(destino)
+        os.replace(temporal, destino)
+    finally:
+        if temporal.exists():
+            temporal.unlink()
+
+
 def _archivo(origen: Path, destino: Path) -> None:
     if destino.is_symlink() or destino.is_dir():
         _quitar(destino)
@@ -84,12 +125,17 @@ def _archivo(origen: Path, destino: Path) -> None:
             temporal.unlink()
 
 
-def copiar_arbol(origen: Path, destino: Path, omitir: tuple[str, ...] = ()) -> None:
+def copiar_arbol(
+    origen: Path, destino: Path, omitir: tuple[str, ...] = (), sqlite_consistente: bool = False
+) -> None:
     """Deja en `destino` lo que hay en `origen`. Los enlaces se copian como enlaces.
 
     Sigue con los demás archivos si uno falla y lo informa al final en un `shutil.Error`,
     igual que `copytree`.
-    """
+
+    Con `sqlite_consistente`, cada base SQLite se copia con el API de respaldo en una
+    sola base y sus laterales `-wal`/`-shm`/`-journal` no se copian: una base en WAL
+    llevada archivo por archivo no es una foto consistente."""
     errores: list[tuple[str, str, str]] = []
     destino.mkdir(parents=True, exist_ok=True)
     def ilegible(exc: OSError) -> None:
@@ -113,15 +159,19 @@ def copiar_arbol(origen: Path, destino: Path, omitir: tuple[str, ...] = ()) -> N
         for nombre in [*archivos, *enlaces]:
             if nombre in omitir:
                 continue
+            if sqlite_consistente and nombre.endswith(_LATERALES_SQLITE):
+                continue
             fuente, meta = Path(raiz) / nombre, aqui / nombre
             try:
                 if fuente.is_symlink():
                     if meta.is_symlink() or meta.exists():
                         _quitar(meta)
                     os.symlink(os.readlink(fuente), meta, target_is_directory=fuente.is_dir())
+                elif sqlite_consistente and es_sqlite(fuente):
+                    _copiar_sqlite(fuente, meta)
                 else:
                     _archivo(fuente, meta)
-            except OSError as exc:
+            except (OSError, sqlite3.Error) as exc:
                 errores.append((str(fuente), str(meta), str(exc)))
     if errores:
         raise shutil.Error(errores)

@@ -1799,6 +1799,10 @@ def _reducir_evento(estado: Encargo | None, evento: dict, nuevo: bool = True) ->
                 )
             ),
         )
+    if kind == "falla_sesion_local":
+        # Un fallo local de la sesión no pausa al proveedor: la causa real queda
+        # dicha en el encargo y la espera la pone el evento `espera` que sigue.
+        return replace(e, causa=str(d.get("causa") or ""))
     if kind == "orden":
         return _orden(e, d, hora)
     if kind == "ajuste":
