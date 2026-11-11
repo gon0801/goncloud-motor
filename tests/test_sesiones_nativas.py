@@ -470,12 +470,32 @@ class SesionConsistente(unittest.TestCase):
             "el escaneo lanzó PermissionError revisando una base y no apartó ni anotó",
         )
 
+        # la primera mitad apartó el almacén: la ruta quedó libre, así que se
+        # vuelve a dejar una sesión dañada en ella (con otra hora para su
+        # marca) y el recorrido corre de verdad, ejerciendo el guard del rglob.
+        _copiar_sesion(self.origen, almacen)
+        destino_db2 = almacen / ".local/share/opencode/opencode.db"
+        cruda2 = destino_db2.read_bytes()
+        destino_db2.write_bytes(b"cabecera rota!" + cruda2[14:])
         runtime2 = self.tmp / "runtime2"
         with mock.patch.object(Path, "rglob", side_effect=PermissionError("repro")):
-            _copiar_sesion_sin_caer(registro, enc, almacen, runtime2, "restaurar", hora)
+            _copiar_sesion_sin_caer(
+                registro, enc, almacen, runtime2, "restaurar", "2026-11-11T08:25:00Z"
+            )
+        apartado2 = almacen.parent / "sesion-responsable.danada-20261111T0825"
         self.assertTrue(
-            apartado.is_dir(),
+            apartado2.is_dir(),
             "el escaneo lanzó PermissionError recorriendo el almacén y no apartó ni anotó",
+        )
+        self.assertFalse(runtime2.exists() and any(runtime2.iterdir()))
+        notas = [
+            e["data"]["nota"]
+            for e in registro.eventos(enc.id)
+            if e["kind"] == "procedimiento"
+        ]
+        self.assertTrue(
+            any("PermissionError: repro" in n for n in notas),
+            "la segunda mitad no ejercitó el recorrido: no quedó la causa del rglob",
         )
 
     def test_un_candado_pasajero_al_revisar_no_aparta_la_sesion_sana(self):  # no-roja-en-base: en main no hay revisión al restaurar ni apartado, y la copia archivo por archivo no se entera del candado
