@@ -416,6 +416,46 @@ class DespliegueReal(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "checklist"):
             comprobar_recibo(final)
 
+    def test_una_violacion_transitoria_al_publicar_recibo_no_aborta_la_receta(self):
+        despliegue = self.despliegue
+        reg, ident, espacio, destino, integrar = despliegue
+        integrar()
+        real = os.replace
+        faltan = {"n": 1}
+        dentro = {"en_trabajador": False}
+
+        def lanzar_en_proceso(cmd, cwd, env, log):
+            dentro["en_trabajador"] = True
+            try:
+                from motor.encargos import despliegue as ejecutor
+
+                ejecutor.ejecutar(Path(cmd[-1]))
+            finally:
+                dentro["en_trabajador"] = False
+            return {"pid": 99999999, "boot_id": plataforma.boot_id(),
+                    "inicio": "", "job": "", "separacion": False}
+
+        self.parche(plataforma, "lanzar_separado", lanzar_en_proceso)
+
+        def replace_con_violacion(src, dst, *args, **kwargs):
+            # Windows: mientras un lector tiene el recibo abierto, el replace
+            # del trabajador falla con PermissionError (violación compartida).
+            if (dentro["en_trabajador"] and Path(dst).name == "recibo.json"
+                    and faltan["n"] > 0):
+                faltan["n"] -= 1
+                raise PermissionError(13, "Permission denied")
+            return real(src, dst, *args, **kwargs)
+
+        self.parche(os, "replace", replace_con_violacion)
+        final = paso(despliegue)
+        recibos = list((reg.base / "despliegues").rglob("recibo.json"))
+        assert len(recibos) == 1
+        datos = json.loads(recibos[0].read_text())
+        assert faltan["n"] == 0, "la violación inyectada no llegó a dispararse"
+        assert datos["estado"] == "aplicado", datos
+        assert [paso["codigo"] for paso in datos["pasos"]] == [0, 0]
+        assert final.nivel_alcanzado == "desplegado", final.motivo
+
     def test_script_ausente_espera_sin_sello(self):
         despliegue = self.despliegue
         _, _, espacio, destino, integrar = despliegue

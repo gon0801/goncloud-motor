@@ -52,6 +52,9 @@ MARCADORES_EVENTOS = {
 }
 # Literales `.json` que son entradas del agente o del protocolo, no marcadores
 # del motor. Un `.json` nuevo en `ciclo.py` no entra sin pasar por esta lista.
+# Excepción declarada: `relectura-deepseek.json` es estado local del supervisor
+# (el cursor de la relectura de cerrados); no decide nada del encargo y su
+# pérdida solo cuesta una relectura, así que no es un hecho ni un marcador.
 MARCADORES_JSON = {
     "arranque.json",
     "auth.json",
@@ -69,6 +72,7 @@ MARCADORES_JSON = {
     "outcome.json",
     "pedido-efecto.json",
     "proc.json",
+    "relectura-deepseek.json",
     "resultado.json",
     "revision.json",
     "wrapper.json",

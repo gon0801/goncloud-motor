@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 from .dominio import Encargo, efecto_de
@@ -86,12 +87,27 @@ def turno(base: Path) -> _Turno:
 
 def _atomico(path: Path, texto: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    # Temporal con nombre único: el supervisor y el trabajador del despliegue
+    # escriben el mismo archivo (el recibo) desde procesos distintos y no
+    # deben compartir el temporal.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{time.monotonic_ns()}.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(texto)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    # Windows: mientras un lector tiene el archivo abierto, el replace falla
+    # con PermissionError (violación compartida). El lector solo ve el
+    # contenido viejo o el nuevo, nunca uno a medias: el escritor reintenta
+    # hasta que el lector cierre. En POSIX el replace no falla por un lector.
+    fin = time.monotonic() + 2.0
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if time.monotonic() >= fin:
+                raise
+            time.sleep(0.05)
 
 
 class DestinoEnsayo:
