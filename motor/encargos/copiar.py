@@ -90,21 +90,33 @@ def _copiar_sqlite(origen: Path, destino: Path) -> None:
     destino (un `-wal` de otra generación junto a una base nueva fue lo que
     dañó la sesión guardada en la PC).
 
-    El respaldo se escribe a un temporal y reemplaza al destino solo si terminó:
-    una copia que falla deja la base anterior como estaba."""
-    for sufijo in _LATERALES_SQLITE:
-        destino.with_name(destino.name + sufijo).unlink(missing_ok=True)
+    El respaldo se escribe a un temporal con permiso privado y reemplaza al
+    destino solo si terminó: una copia que falla deja la base anterior y sus
+    laterales como estaban."""
     temporal = destino.with_name(f".{destino.name}.{uuid.uuid4().hex}.nuevo")
     try:
+        os.close(os.open(temporal, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         with closing(sqlite3.connect(origen)) as fuente, closing(
             sqlite3.connect(temporal)
         ) as copia:
             fuente.backup(copia)
-        _escribible(destino)
-        os.replace(temporal, destino)
-    finally:
-        if temporal.exists():
+        try:
+            shutil.copymode(origen, temporal)
+        except OSError:
+            pass
+    except BaseException:
+        try:
             temporal.unlink()
+        except OSError:
+            pass
+        raise
+    for sufijo in _LATERALES_SQLITE:
+        try:
+            destino.with_name(destino.name + sufijo).unlink(missing_ok=True)
+        except OSError:
+            pass
+    _escribible(destino)
+    os.replace(temporal, destino)
 
 
 def _archivo(origen: Path, destino: Path) -> None:

@@ -144,6 +144,7 @@ class SesionConsistente(unittest.TestCase):
             )
             self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0], "ok")
         viva.close()
+        os.chmod(self.db, 0o600)
         with closing(sqlite3.connect(self.db)) as db, db:
             db.executescript(
                 "DROP TABLE notas; CREATE TABLE notas2 (t TEXT);"
@@ -157,6 +158,11 @@ class SesionConsistente(unittest.TestCase):
             [p.name for p in restaurada.iterdir() if p.name.startswith("opencode.db")],
             ["opencode.db"],
             "la sesión restaurada arrastra -wal/-shm de otra generación",
+        )
+        self.assertEqual(
+            (restaurada / "opencode.db").stat().st_mode & 0o777,
+            self.db.stat().st_mode & 0o777,
+            "la copia cambia el permiso de la base",
         )
         with closing(sqlite3.connect(restaurada / "opencode.db")) as db:
             self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0], "ok")
@@ -186,15 +192,15 @@ class SesionConsistente(unittest.TestCase):
             any("dañada" in n and "se apartó" in n for n in notas), notas
         )
 
-    def _fallo_local(self, registro, enc, hora):
-        token = "tok1"
+    def _fallo_local(self, registro, enc, hora, numero=1):
+        token = f"tok{numero}"
         runtime_intento = registro.base / "runtime" / enc.id / token
         (runtime_intento / ".local/share/opencode").mkdir(parents=True)
         cruda = self.db.read_bytes()
         (runtime_intento / ".local/share/opencode/opencode.db").write_bytes(
             cruda[: len(cruda) // 2]
         )
-        directorio = registro.base / "ejecucion" / enc.id / "intento-1"
+        directorio = registro.base / "ejecucion" / enc.id / f"intento-{numero}"
         directorio.mkdir(parents=True)
         (directorio / "arranque.json").write_text(
             json.dumps(
@@ -251,13 +257,29 @@ class SesionConsistente(unittest.TestCase):
         hora = "2026-11-11T07:25:00Z"
         registro, enc = self._encargo(hora)
         self._base_con_wal(("v1",))
-        directorio = self._fallo_local(registro, enc, hora)
-        enc2 = _incorporar(registro, enc, self.tmp / "espacio", hora, directorio)
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        cruda = destino_db.read_bytes()
+        destino_db.write_bytes(cruda[: len(cruda) // 2])
+        apartado = almacen.parent / "sesion-responsable.danada-20261111T0725"
+
+        enc1 = _incorporar(
+            registro, enc, self.tmp / "espacio", hora, self._fallo_local(registro, enc, hora, 1)
+        )
+        self.assertTrue(apartado.is_dir())
+        self.assertIn(enc1.estado, ("recibido", "ejecutando"))
+
+        enc2 = _incorporar(
+            registro, registro.fold(enc.id), self.tmp / "espacio", hora,
+            self._fallo_local(registro, registro.fold(enc.id), hora, 2),
+        )
         self.assertEqual(
             [e for e in registro.eventos(enc.id) if e["kind"] == "proveedor_fallo"],
             [],
             "un fallo local de la sesión se anotó como falla del proveedor",
         )
+        self.assertEqual(len(list(almacen.parent.glob("sesion-responsable.danada-*"))), 1)
         locales = [
             e for e in registro.eventos(enc.id) if e["kind"] == "falla_sesion_local"
         ]

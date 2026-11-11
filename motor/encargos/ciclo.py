@@ -1105,46 +1105,72 @@ def _copiar_sesion_sin_caer(
 
 
 def _incorporar_falla_sesion_local(
-    registro: Registro, enc: Encargo, agente: str, mensaje: str, hora: str
+    registro: Registro,
+    enc: Encargo,
+    agente: str,
+    mensaje: str,
+    hora: str,
+    almacen_previa: bool,
 ) -> Encargo:
     """Un fallo local de la sesión (la base SQLite del agente en su runtime) no es
     una falla del proveedor: no hay `proveedor_fallo`, no espera el ciclo de 30 min
     y no marca al proveedor.
 
-    Si el almacén guardado está dañado se aparta y el encargo queda listo para que
-    el barrido relance enseguida, sin sesión. Si no hay almacén, está sano o no se
-    pudo apartar, el mismo texto con una sesión fresca es un problema del entorno:
-    la espera dice la causa real, nunca "proveedor"."""
+    Si este intento restauró de un almacén previo, ese almacén se aparta (renombre
+    con fecha), `sesion_perdida` limpia el id de sesión para que el siguiente turno
+    reconstruya, y el encargo queda listo para que el barrido relance enseguida sin
+    sesión. El intento siguiente corre sin almacén previo: si vuelve a fallar igual,
+    lo que rompe es el entorno, y la espera dice la causa real, nunca "proveedor"."""
     almacen = _almacen_sesion(registro.base, enc.id, enc.rol)
-    if almacen.is_dir():
+    if almacen_previa and almacen.is_dir():
         dana = _causa_sesion_danada(almacen)
-        if dana:
-            try:
-                apartado = _apartar_sesion(almacen, hora)
-            except OSError as exc:
-                dana = f"{dana} (no se pudo apartar: {type(exc).__name__}: {exc})"
-            else:
-                registro.anotar(
-                    enc.id,
-                    {
-                        "kind": "procedimiento",
-                        "data": {
-                            "nota": (
-                                f"falla local de la sesión ({dana}); se apartó "
-                                f"{apartado.name}; se reintenta enseguida sin sesión"
-                            )[:2000]
-                        },
+        por_que = f" ({dana})" if dana else ""
+        try:
+            apartado = _apartar_sesion(almacen, hora)
+        except OSError as exc:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": (
+                            f"falla local de la sesión{por_que} y no se pudo apartar: "
+                            f"{type(exc).__name__}: {exc}"
+                        )[:2000]
                     },
-                    f"falla-sesion-local:{enc.id}:{enc.generacion}",
-                )
-                return registro.fold(enc.id)
+                },
+                f"falla-sesion-local:{enc.id}:{enc.generacion}",
+            )
+        else:
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "procedimiento",
+                    "data": {
+                        "nota": (
+                            f"falla local de la sesión{por_que}; se apartó "
+                            f"{apartado.name}; se reintenta enseguida sin sesión"
+                        )[:2000]
+                    },
+                },
+                f"falla-sesion-local:{enc.id}:{enc.generacion}",
+            )
+            registro.anotar(
+                enc.id,
+                {
+                    "kind": "sesion_perdida",
+                    "data": {"rol": enc.rol or "responsable", "hora": hora},
+                },
+                f"sesion-apartada:{enc.id}:{enc.generacion}",
+            )
+            return registro.fold(enc.id)
     registro.anotar(
         enc.id,
         {
             "kind": "falla_sesion_local",
             "data": {"agente": agente, "causa": mensaje[:300], "hora": hora},
         },
-        f"falla-sesion-local:{enc.id}:{enc.generacion}",
+        f"falla-sesion-local-causa:{enc.id}:{enc.generacion}",
     )
     marcar_espera(
         registro,
@@ -3807,6 +3833,7 @@ def _incorporar(
         )
         agente = spec.get("agente") or enc.agente or "externo"
         token_intento = str(spec.get("token") or "")
+        almacen_previa = _almacen_sesion(registro.base, enc.id, enc.rol).is_dir()
         if token_intento:
             _copiar_sesion_sin_caer(
                 registro,
@@ -3831,7 +3858,7 @@ def _incorporar(
             return registro.fold(enc.id)
         if outcome.get("fallo_runtime") and es_sesion_local(str(outcome["fallo_runtime"])):
             enc = _incorporar_falla_sesion_local(
-                registro, enc, agente, str(outcome["fallo_runtime"]), hora
+                registro, enc, agente, str(outcome["fallo_runtime"]), hora, almacen_previa
             )
             _marcar_incorporado(registro, enc, hora)
             return registro.fold(enc.id)
