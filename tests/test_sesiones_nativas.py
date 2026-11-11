@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import closing
@@ -121,6 +123,27 @@ class SesionConsistente(unittest.TestCase):
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("CREATE TABLE notas (texto TEXT)")
             db.executemany("INSERT INTO notas VALUES (?)", [(t,) for t in textos])
+
+    def _conjunto_solo_en_wal(self, ruta: Path) -> None:
+        """Deja en `ruta` la base con la fila solo en el WAL: la tabla queda con
+        checkpoint y el INSERT sin checkpoint. Los bytes se capturan con la
+        conexión viva y se reconstruyen, porque cerrar la última conexión hace
+        checkpoint y disolvería ese estado."""
+        plantilla = self.tmp / "plantilla" / ruta.name
+        plantilla.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(plantilla)
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("CREATE TABLE notas (t TEXT)")
+        con.commit()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.execute("INSERT INTO notas VALUES ('guardado solo en WAL')")
+        con.commit()
+        cruda = plantilla.read_bytes()
+        wal = plantilla.with_name(plantilla.name + "-wal").read_bytes()
+        con.close()
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        ruta.write_bytes(cruda)
+        ruta.with_name(ruta.name + "-wal").write_bytes(wal)
 
     def _encargo(self, hora):
         registro = Registro(self.tmp / "base")
@@ -295,6 +318,208 @@ class SesionConsistente(unittest.TestCase):
         )
         self.assertIn("malformed", esperas[0]["data"]["motivo"])
 
+    def test_si_un_lateral_del_destino_no_se_puede_apartar_no_se_publica_la_base(self):
+        import motor.encargos.copiar
+
+        self._base_con_wal(("nuevo",))
+        almacen = self.tmp / "almacen"
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        self._conjunto_solo_en_wal(destino_db)
+        real = motor.encargos.copiar.os.replace
+
+        def no_puede_apartar(src, dst, *args, **kwargs):
+            if Path(src).name == "opencode.db-wal" and str(dst).endswith(".viejo"):
+                raise PermissionError("el lateral no se deja apartar")
+            return real(src, dst, *args, **kwargs)
+
+        with mock.patch.object(
+            motor.encargos.copiar.os, "replace", side_effect=no_puede_apartar
+        ):
+            with self.assertRaises(
+                shutil.Error,
+                msg="un lateral que no se deja apartar publicó la base nueva igual",
+            ):
+                _copiar_sesion(self.origen, almacen)
+        self.assertEqual(
+            sorted(
+                p.name
+                for p in destino_db.parent.iterdir()
+                if p.name.startswith("opencode.db")
+            ),
+            ["opencode.db", "opencode.db-wal"],
+            "el intento fallido dejó los laterales desparejados",
+        )
+        with closing(sqlite3.connect(destino_db)) as db:
+            self.assertEqual(
+                db.execute("SELECT t FROM notas").fetchall(),
+                [("guardado solo en WAL",)],
+                "la base nueva se publicó encima del conjunto anterior",
+            )
+
+    def test_si_publicar_la_base_falla_los_laterales_apartados_vuelven(self):  # no-roja-en-base: el defecto lo introduce este PR con la publicación por reemplazo; en main la copia archivo por archivo nunca toca el conjunto anterior
+        import motor.encargos.copiar
+
+        self._base_con_wal(("nuevo",))
+        almacen = self.tmp / "almacen"
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        self._conjunto_solo_en_wal(destino_db)
+        real = motor.encargos.copiar.os.replace
+
+        def no_publica(src, dst, *args, **kwargs):
+            if Path(dst).name == "opencode.db" and not str(dst).endswith(".viejo"):
+                raise PermissionError("la publicación no se deja hacer")
+            return real(src, dst, *args, **kwargs)
+
+        with mock.patch.object(
+            motor.encargos.copiar.os, "replace", side_effect=no_publica
+        ):
+            with self.assertRaises(shutil.Error):
+                _copiar_sesion(self.origen, almacen)
+        self.assertEqual(
+            sorted(
+                p.name
+                for p in destino_db.parent.iterdir()
+                if p.name.startswith("opencode.db")
+            ),
+            ["opencode.db", "opencode.db-wal"],
+            "la publicación fallida destruyó los laterales del respaldo anterior",
+        )
+        self.assertFalse(list(destino_db.parent.glob(".*.nuevo")), "quedó un temporal huérfano")
+        with closing(sqlite3.connect(destino_db)) as db:
+            self.assertEqual(
+                db.execute("SELECT t FROM notas").fetchall(),
+                [("guardado solo en WAL",)],
+                "la publicación fallida perdió los datos comprometidos del respaldo anterior",
+            )
+
+    def test_una_base_fuente_bloqueada_acaba_acotada_y_no_traba_la_copia(self):
+        home = self.tmp / "home"
+        home.mkdir()
+        raiz = Path(__file__).resolve().parents[1]
+        script = f"""
+import sqlite3, sys, time
+from pathlib import Path
+sys.path.insert(0, {str(raiz)!r})
+from motor.encargos.ciclo import _copiar_sesion
+candado = sqlite3.connect({str(self.db)!r}, timeout=60)
+candado.execute("PRAGMA journal_mode=DELETE")
+candado.commit()
+candado.execute("BEGIN EXCLUSIVE")
+inicio = time.monotonic()
+try:
+    _copiar_sesion(Path({str(self.origen)!r}), Path({str(self.tmp / 'destino')!r}))
+    print("TERMINO ok")
+except BaseException as exc:
+    print("TERMINO", type(exc).__name__, str(exc)[:2000])
+print("duracion", round(time.monotonic() - inicio, 1))
+candado.close()
+"""
+        self._base_con_wal(("v1",))
+        corrida = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "HOME": str(home)},
+        )
+        self.assertEqual(corrida.returncode, 0, corrida.stdout + corrida.stderr)
+        self.assertIn(
+            "TERMINO",
+            corrida.stdout,
+            "la copia quedó trabada sin límite por el candado de la fuente",
+        )
+        self.assertIn(
+            "database is locked",
+            corrida.stdout,
+            "el bloqueo persistente no salió como error acotado de la copia",
+        )
+
+    def test_la_sesion_apartada_en_la_restauracion_no_se_reanuda_en_el_turno(self):
+        try:
+            from motor.encargos.agentes import _lanzador, _sesion_modo
+            from motor.encargos.ciclo import _reflejar_sesion
+        except ImportError as exc:
+            raise AssertionError(
+                "el apartado en restaurar no refleja la pérdida de sesión en el turno"
+            ) from exc
+
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        enc = replace(
+            enc,
+            rol="responsable",
+            viva_responsable=True,
+            sesion_responsable="ses_guardada",
+            modelos=(("responsable", "opencode", "deepseek/deepseek-flash"),),
+        )
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        cruda = destino_db.read_bytes()
+        destino_db.write_bytes(cruda[: len(cruda) // 2])
+        runtime = self.tmp / "runtime"
+        _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        apartado = almacen.parent / "sesion-responsable.danada-20261111T0725"
+        self.assertTrue(apartado.is_dir(), "la sesión dañada no se apartó")
+        perdidas = [e for e in registro.eventos(enc.id) if e["kind"] == "sesion_perdida"]
+        self.assertTrue(
+            perdidas,
+            "el apartado no perdió la sesión: el turno construye --session con el id apartado",
+        )
+        enc2 = _reflejar_sesion(registro, enc)
+        self.assertEqual(enc2.sesion_responsable, "")
+        self.assertFalse(enc2.viva_responsable)
+        modo = _sesion_modo(enc2, "opencode", "responsable")
+        self.assertNotEqual(
+            modo, "reanudada", "el turno siguiente reanuda la sesión apartada"
+        )
+        argv = _lanzador("opencode", "deepseek/deepseek-flash", modo)(
+            enc2, Path("p"), Path("e"), "ses"
+        )
+        self.assertNotIn("ses_guardada", argv)
+        self.assertNotIn("--session", argv)
+
+    def test_una_base_con_la_cabecera_destruida_tambien_se_aparta(self):
+        from motor.encargos.ciclo import _causa_sesion_danada
+        from motor.encargos.copiar import es_sqlite
+
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        cruda = destino_db.read_bytes()
+        destino_db.write_bytes(b"cabecera rota!" + cruda[14:])
+        self.assertFalse(es_sqlite(destino_db))
+        causa = _causa_sesion_danada(almacen)
+        self.assertIn("opencode.db", causa, "la cabecera destruida no se validó")
+        self.assertIn("not a database", causa)
+        runtime = self.tmp / "runtime"
+        _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        apartado = almacen.parent / "sesion-responsable.danada-20261111T0725"
+        self.assertTrue(
+            apartado.is_dir(), "la sesión con la cabecera destruida no se apartó"
+        )
+        self.assertFalse(almacen.exists())
+        self.assertFalse((runtime / ".local/share/opencode/opencode.db").exists())
+
+    def test_un_archivo_desconocido_sin_cabecera_no_se_cuarentena(self):
+        from motor.encargos.ciclo import _causa_sesion_danada
+
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        (almacen / ".local/share/opencode/otro.db").write_bytes(b"datos arbitrarios")
+        runtime = self.tmp / "runtime"
+        _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        self.assertEqual(_causa_sesion_danada(almacen), "")
+        self.assertTrue(almacen.is_dir(), "un dato que nunca fue base se cuarentenó")
+        self.assertTrue((runtime / ".local/share/opencode/otro.db").exists())
+
 
 class CopiaConArchivosDeSoloLectura(unittest.TestCase):
     def setUp(self):
@@ -393,21 +618,31 @@ class CopiaQueFalla(unittest.TestCase):
         self.origen = self.tmp / "intento"
         self.ilegible = self.origen / ".local/share/opencode/privado"
         self.ilegible.mkdir(parents=True)
-        (self.origen / ".local/share/opencode/opencode.db").write_text("v1")
+        self.db = self.origen / ".local/share/opencode/opencode.db"
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("CREATE TABLE marcas (t TEXT)")
         self.ilegible.chmod(0)
 
     def _limpiar(self):
         self.ilegible.chmod(0o755)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_un_directorio_ilegible_se_informa_y_no_se_salta_en_silencio(self):
+    def _la_base_se_copio(self, ruta: Path) -> None:
+        with closing(sqlite3.connect(ruta)) as db:
+            self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            self.assertIsNotNone(
+                db.execute("SELECT 1 FROM sqlite_master WHERE name='marcas'").fetchone(),
+                "la copia no trae la base",
+            )
+
+    def test_un_directorio_ilegible_se_informa_y_no_se_salta_en_silencio(self):  # no-roja-en-base: la prueba ya pasaba en la base; solo se ajusta su artilugio (base SQLite real en vez de un texto) y la asercion de contenido al comportamiento nuevo de la copia de bases de este PR
         destino = self.tmp / "almacen"
         with self.assertRaises(shutil.Error) as visto:
             copiar_arbol(self.origen / ".local/share/opencode", destino)
         self.assertIn("privado", str(visto.exception))
-        self.assertEqual((destino / "opencode.db").read_text(), "v1")
+        self._la_base_se_copio(destino / "opencode.db")
 
-    def test_el_fallo_de_la_copia_queda_en_el_encargo_y_no_sube_al_barrido(self):
+    def test_el_fallo_de_la_copia_queda_en_el_encargo_y_no_sube_al_barrido(self):  # no-roja-en-base: la prueba ya pasaba en la base; solo se ajusta su artilugio (base SQLite real en vez de un texto) y la asercion de contenido al comportamiento nuevo de la copia de bases de este PR
         registro = Registro(self.tmp / "base")
         hora = ahora_iso()
         ident = recibir(registro, "copia", "copia-1", hora)["encargo"]
@@ -418,7 +653,9 @@ class CopiaQueFalla(unittest.TestCase):
             )
         (nota,) = self._fallos(registro, enc)
         self.assertIn("privado", nota)
-        self.assertEqual((self.tmp / "almacen/.local/share/opencode/opencode.db").read_text(), "v1")
+        self._la_base_se_copio(
+            self.tmp / "almacen/.local/share/opencode/opencode.db"
+        )
 
     def test_el_fallo_de_la_copia_no_reescribe_la_causa_ni_el_motivo_del_encargo(self):
         registro, enc, hora = self._encargo()
@@ -485,7 +722,7 @@ class CopiaQueFalla(unittest.TestCase):
         (nota,) = self._fallos(registro, enc)
         self.assertIn("PermissionError", nota)
 
-    def test_el_guardado_completo_no_conserva_lo_que_dejo_la_copia_fallida(self):
+    def test_el_guardado_completo_no_conserva_lo_que_dejo_la_copia_fallida(self):  # no-roja-en-base: la prueba ya pasaba en la base; solo se ajusta su artilugio (base SQLite real en vez de un texto) y la asercion de contenido al comportamiento nuevo de la copia de bases de este PR
         registro, enc, hora = self._encargo()
         almacen = self.tmp / "almacen"
         _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
@@ -495,7 +732,7 @@ class CopiaQueFalla(unittest.TestCase):
         _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
         self.assertFalse(viejo.exists())
         self.assertFalse((almacen / ".copia-incompleta").exists())
-        self.assertEqual((almacen / ".local/share/opencode/opencode.db").read_text(), "v1")
+        self._la_base_se_copio(almacen / ".local/share/opencode/opencode.db")
 
     def test_un_valueerror_de_la_copia_tampoco_sube_al_barrido(self):
         registro, enc, hora = self._encargo()
@@ -508,7 +745,7 @@ class CopiaQueFalla(unittest.TestCase):
         (nota,) = self._fallos(registro, enc)
         self.assertIn("ValueError", nota)
 
-    def test_una_copia_a_medias_no_se_restaura_hasta_que_un_guardado_completo_la_repone(self):
+    def test_una_copia_a_medias_no_se_restaura_hasta_que_un_guardado_completo_la_repone(self):  # no-roja-en-base: la prueba ya pasaba en la base; solo se ajusta su artilugio (base SQLite real en vez de un texto) y la asercion de contenido al comportamiento nuevo de la copia de bases de este PR
         registro, enc, hora = self._encargo()
         almacen, runtime = self.tmp / "almacen", self.tmp / "runtime"
         _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
@@ -523,7 +760,7 @@ class CopiaQueFalla(unittest.TestCase):
         _copiar_sesion_sin_caer(registro, enc, self.origen, almacen, "guardar", hora)
         self.assertFalse((almacen / ".copia-incompleta").exists())
         _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
-        self.assertEqual((runtime / ".local/share/opencode/opencode.db").read_text(), "v1")
+        self._la_base_se_copio(runtime / ".local/share/opencode/opencode.db")
 
     def test_si_falla_al_restaurar_el_runtime_queda_sin_sesion_parcial(self):
         registro, enc, hora = self._encargo()
