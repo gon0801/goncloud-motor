@@ -385,11 +385,59 @@ class SesionConsistente(unittest.TestCase):
             "la publicación fallida destruyó los laterales del respaldo anterior",
         )
         self.assertFalse(list(destino_db.parent.glob(".*.nuevo")), "quedó un temporal huérfano")
+        self.assertFalse(
+            list(destino_db.parent.glob(".*.copia")), "quedó el directorio privado huérfano"
+        )
         with closing(sqlite3.connect(destino_db)) as db:
             self.assertEqual(
                 db.execute("SELECT t FROM notas").fetchall(),
                 [("guardado solo en WAL",)],
                 "la publicación fallida perdió los datos comprometidos del respaldo anterior",
+            )
+
+    @unittest.skipIf(os.name == "nt", "los permisos POSIX no aplican en Windows")
+    def test_el_temporal_de_la_copia_nace_en_un_directorio_privado(self):
+        self._base_con_wal(("v1",))
+        almacen = self.tmp / "almacen"
+        anterior = os.umask(0o022)
+        eventos = []
+
+        def vigilante(evento, args):
+            if evento not in ("os.chmod", "os.mkdir"):
+                return
+            try:
+                ruta, modo = Path(args[0]), int(args[1])
+            except (TypeError, ValueError):
+                return
+            if ".opencode.db." not in str(ruta):
+                return
+            try:
+                padre = ruta.parent.stat().st_mode & 0o077
+            except OSError:
+                padre = None
+            eventos.append((evento, ruta, modo, padre))
+
+        sys.addaudithook(vigilante)
+        try:
+            _copiar_sesion(self.origen, almacen)
+        finally:
+            os.umask(anterior)
+        for _evento, _ruta, modo, _padre in (e for e in eventos if e[0] == "os.mkdir"):
+            self.assertEqual(
+                modo & 0o077,
+                0,
+                "el directorio privado de la copia nació transitable",
+            )
+        chmods = [
+            e for e in eventos if e[0] == "os.chmod" and not e[1].name.endswith(".copia")
+        ]
+        self.assertTrue(chmods, "no se vio el temporal de la copia")
+        for _evento, ruta, _modo, padre in chmods:
+            self.assertEqual(
+                padre,
+                0,
+                "el temporal de la sesión nació en un directorio transitable "
+                f"({ruta}): otros usuarios locales pudieron leerlo",
             )
 
     def test_una_base_fuente_bloqueada_acaba_acotada_y_no_traba_la_copia(self):
