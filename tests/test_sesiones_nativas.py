@@ -440,6 +440,111 @@ class SesionConsistente(unittest.TestCase):
                 f"({ruta}): otros usuarios locales pudieron leerlo",
             )
 
+    def test_el_escaneo_del_almacen_no_se_cae_por_un_permiso(self):
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        cruda = destino_db.read_bytes()
+        destino_db.write_bytes(b"cabecera rota!" + cruda[14:])
+        runtime = self.tmp / "runtime"
+        real_stat = Path.stat
+
+        conteo: dict[str, int] = {}
+
+        def stat_trava(ruta, *args, **kwargs):
+            clave = str(ruta)
+            if Path(ruta).name == "opencode.db":
+                conteo[clave] = conteo.get(clave, 0) + 1
+                if conteo[clave] >= 2:
+                    raise PermissionError("repro del escaneo")
+            return real_stat(ruta, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", autospec=True, side_effect=stat_trava):
+            _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        apartado = almacen.parent / "sesion-responsable.danada-20261111T0725"
+        self.assertTrue(
+            apartado.is_dir(),
+            "el escaneo lanzó PermissionError revisando una base y no apartó ni anotó",
+        )
+
+        runtime2 = self.tmp / "runtime2"
+        with mock.patch.object(Path, "rglob", side_effect=PermissionError("repro")):
+            _copiar_sesion_sin_caer(registro, enc, almacen, runtime2, "restaurar", hora)
+        self.assertTrue(
+            apartado.is_dir(),
+            "el escaneo lanzó PermissionError recorriendo el almacén y no apartó ni anotó",
+        )
+
+    def test_un_candado_pasajero_al_revisar_no_aparta_la_sesion_sana(self):  # no-roja-en-base: en main no hay revisión al restaurar ni apartado, y la copia archivo por archivo no se entera del candado
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        with closing(sqlite3.connect(destino_db)) as db, db:
+            db.execute("PRAGMA journal_mode=DELETE")
+        candado = sqlite3.connect(destino_db, timeout=60)
+        candado.execute("BEGIN EXCLUSIVE")
+        try:
+            runtime = self.tmp / "runtime"
+            _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        finally:
+            candado.close()
+        self.assertFalse(
+            any(almacen.parent.glob("sesion-responsable.danada-*")),
+            "un candado pasajero al revisar apartó el almacén sano",
+        )
+        self.assertTrue(almacen.is_dir(), "la sesión sana se perdió por el candado")
+
+    def test_el_turno_refleja_la_sesion_perdida_antes_de_lanzar(self):
+        from motor.encargos.ciclo import _lanzar_uno_en_turno
+
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "intento_cerrado",
+                "data": {"sesion_runtime": "ses_guardada", "hora": hora},
+            },
+            f"intento-cerrado:{enc.id}:0",
+        )
+        enc = registro.fold(enc.id)
+        self.assertEqual(enc.sesion_responsable, "ses_guardada")
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        cruda = destino_db.read_bytes()
+        destino_db.write_bytes(cruda[: len(cruda) // 2])
+        espacio = self.tmp / "espacio"
+        espacio.mkdir()
+        lanzadas = []
+
+        def lanzador(enc, prompt, espacio, sesion):
+            lanzadas.append(enc)
+            return [], {"agente": "opencode", "modelo": "deepseek/deepseek-flash"}
+
+        with mock.patch(
+            "motor.encargos.ciclo._asegurar_repo", return_value=None
+        ), mock.patch(
+            "motor.flota.runtime.exigir_poteto", return_value=(Path("poteto"), "x")
+        ):
+            _lanzar_uno_en_turno(
+                registro, registro.fold(enc.id), None, espacio, hora, lanzador
+            )
+        self.assertTrue(lanzadas, "el turno no llegó a lanzar")
+        self.assertEqual(
+            lanzadas[0].sesion_responsable,
+            "",
+            "el turno lanzó con el id de la sesión recién apartada",
+        )
+        self.assertFalse(lanzadas[0].viva_responsable)
+
     def test_una_base_fuente_bloqueada_acaba_acotada_y_no_traba_la_copia(self):
         home = self.tmp / "home"
         home.mkdir()
