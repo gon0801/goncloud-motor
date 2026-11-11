@@ -185,6 +185,25 @@ class DetallesTest(unittest.TestCase):
             self.assertEqual(retry_after_s(txt), esperado, txt)
 
 
+class SesionLocalTest(unittest.TestCase):
+    def test_la_base_local_danada_o_bloqueada_no_es_del_proveedor(self):
+        from motor.fallas import es_sesion_local
+
+        for texto in (
+            "Error: Unexpected error\n\ndatabase disk image is malformed",
+            "sqlite3.DatabaseError: file is not a database",
+            "sqlite3.OperationalError: database is locked",
+        ):
+            self.assertTrue(es_sesion_local(texto), texto)
+        self.assertFalse(es_sesion_local("429 Too Many Requests"))
+
+    def test_la_peticion_malformada_del_proveedor_sigue_siendo_del_proveedor(self):  # no-roja-en-base: guarda el otro uso de `malformed` en clasifica, que el arreglo no cambia
+        self.assertEqual(
+            clasifica("deepseek", "400 Bad Request: malformed payload")["kind"],
+            "falla",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
 

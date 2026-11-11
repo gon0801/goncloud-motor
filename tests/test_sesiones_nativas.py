@@ -16,6 +16,7 @@ from motor.encargos.ciclo import (
     _copiar_sesion,
     _copiar_sesion_sin_caer,
     _fallos_de_repo_seguidos,
+    _incorporar,
     ahora_iso,
     marcar_espera,
     recibir,
@@ -102,6 +103,175 @@ class SesionesNativas(unittest.TestCase):
                     "SELECT rollout_path FROM threads WHERE id=?", ("hilo",)
                 ).fetchone()[0]
             self.assertEqual(Path(ruta).read_text(), contexto)
+
+
+class SesionConsistente(unittest.TestCase):
+    """La sesión guardada no se daña al copiarla y una sesión dañada no traba el encargo."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.origen = self.tmp / "intento"
+        self.almacen = self.tmp / "almacen"
+        self.db = self.origen / ".local/share/opencode/opencode.db"
+
+    def _base_con_wal(self, textos):
+        self.db.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(self.db)) as db, db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("CREATE TABLE notas (texto TEXT)")
+            db.executemany("INSERT INTO notas VALUES (?)", [(t,) for t in textos])
+
+    def _encargo(self, hora):
+        registro = Registro(self.tmp / "base")
+        ident = recibir(registro, "copia", "copia-1", hora)["encargo"]
+        return registro, registro.fold(ident)
+
+    def test_una_base_en_wal_con_escrituras_sin_checkpoint_queda_consistente(self):
+        self._base_con_wal(("v1",))
+        _copiar_sesion(self.origen, self.almacen)
+        viva = sqlite3.connect(self.db)
+        viva.execute("PRAGMA journal_mode=WAL")
+        viva.execute("INSERT INTO notas VALUES ('v2')")
+        viva.commit()
+        _copiar_sesion(self.origen, self.almacen)
+        fresco = self.tmp / "fresco"
+        _copiar_sesion(self.almacen, fresco)
+        copia = fresco / ".local/share/opencode/opencode.db"
+        with closing(sqlite3.connect(copia)) as db:
+            self.assertEqual(
+                db.execute("SELECT texto FROM notas").fetchall(), [("v1",), ("v2",)]
+            )
+            self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0], "ok")
+        viva.close()
+        with closing(sqlite3.connect(self.db)) as db, db:
+            db.executescript(
+                "DROP TABLE notas; CREATE TABLE notas2 (t TEXT);"
+                " INSERT INTO notas2 VALUES ('v3');"
+            )
+        _copiar_sesion(self.origen, self.almacen)
+        runtime = self.tmp / "runtime"
+        _copiar_sesion(self.almacen, runtime)
+        restaurada = runtime / ".local/share/opencode"
+        self.assertEqual(
+            [p.name for p in restaurada.iterdir() if p.name.startswith("opencode.db")],
+            ["opencode.db"],
+            "la sesión restaurada arrastra -wal/-shm de otra generación",
+        )
+        with closing(sqlite3.connect(restaurada / "opencode.db")) as db:
+            self.assertEqual(db.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            self.assertEqual(db.execute("SELECT t FROM notas2").fetchall(), [("v3",)])
+
+    def test_una_sesion_guardada_danada_se_aparta_y_el_turno_arranca_sin_ella(self):
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        cruda = destino_db.read_bytes()
+        destino_db.write_bytes(cruda[: len(cruda) // 2])
+        runtime = self.tmp / "runtime"
+        _copiar_sesion_sin_caer(registro, enc, almacen, runtime, "restaurar", hora)
+        apartado = almacen.parent / "sesion-responsable.danada-20261111T0725"
+        self.assertTrue(apartado.is_dir(), "la sesión dañada no se apartó con su marca")
+        self.assertFalse(almacen.exists())
+        self.assertFalse(runtime.exists() and any(runtime.iterdir()))
+        notas = [
+            e["data"]["nota"]
+            for e in registro.eventos(enc.id)
+            if e["kind"] == "procedimiento"
+        ]
+        self.assertTrue(
+            any("dañada" in n and "se apartó" in n for n in notas), notas
+        )
+
+    def _fallo_local(self, registro, enc, hora):
+        token = "tok1"
+        runtime_intento = registro.base / "runtime" / enc.id / token
+        (runtime_intento / ".local/share/opencode").mkdir(parents=True)
+        cruda = self.db.read_bytes()
+        (runtime_intento / ".local/share/opencode/opencode.db").write_bytes(
+            cruda[: len(cruda) // 2]
+        )
+        directorio = registro.base / "ejecucion" / enc.id / "intento-1"
+        directorio.mkdir(parents=True)
+        (directorio / "arranque.json").write_text(
+            json.dumps(
+                {
+                    "agente": "opencode",
+                    "modelo": "deepseek/deepseek-flash",
+                    "token": token,
+                    "sesion_modo": "reanudada",
+                }
+            )
+        )
+        (directorio / "outcome.json").write_text(
+            json.dumps(
+                {
+                    "fallo_runtime": (
+                        "Error: Unexpected error\n\ndatabase disk image is malformed"
+                    )
+                }
+            )
+        )
+        return directorio
+
+    def test_un_fallo_local_de_sesion_no_marca_al_proveedor_y_reintenta_sin_ella(self):
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        self._base_con_wal(("v1",))
+        almacen = registro.base / "runtime" / enc.id / "sesion-responsable"
+        _copiar_sesion(self.origen, almacen)
+        destino_db = almacen / ".local/share/opencode/opencode.db"
+        cruda = destino_db.read_bytes()
+        destino_db.write_bytes(cruda[: len(cruda) // 2])
+        directorio = self._fallo_local(registro, enc, hora)
+        enc2 = _incorporar(registro, enc, self.tmp / "espacio", hora, directorio)
+        self.assertEqual(
+            [e for e in registro.eventos(enc.id) if e["kind"] == "proveedor_fallo"],
+            [],
+            "un fallo local de la sesión se anotó como falla del proveedor",
+        )
+        self.assertNotEqual(enc2.estado, "esperando_reintento")
+        self.assertIn(enc2.estado, ("recibido", "ejecutando"))
+        apartado = almacen.parent / "sesion-responsable.danada-20261111T0725"
+        self.assertTrue(apartado.is_dir())
+        self.assertFalse(almacen.exists())
+        notas = [
+            e["data"]["nota"]
+            for e in registro.eventos(enc.id)
+            if e["kind"] == "procedimiento"
+        ]
+        self.assertTrue(
+            any("se apartó" in n and "sin sesión" in n for n in notas), notas
+        )
+
+    def test_sin_sesion_el_mismo_fallo_dice_la_causa_real_y_espera(self):
+        hora = "2026-11-11T07:25:00Z"
+        registro, enc = self._encargo(hora)
+        self._base_con_wal(("v1",))
+        directorio = self._fallo_local(registro, enc, hora)
+        enc2 = _incorporar(registro, enc, self.tmp / "espacio", hora, directorio)
+        self.assertEqual(
+            [e for e in registro.eventos(enc.id) if e["kind"] == "proveedor_fallo"],
+            [],
+            "un fallo local de la sesión se anotó como falla del proveedor",
+        )
+        locales = [
+            e for e in registro.eventos(enc.id) if e["kind"] == "falla_sesion_local"
+        ]
+        self.assertTrue(locales, "la falla local no quedó dicha como tal")
+        self.assertIn("database disk image is malformed", locales[0]["data"]["causa"])
+        self.assertEqual(enc2.estado, "esperando_reintento")
+        esperas = [
+            e for e in registro.eventos(enc.id) if e["kind"] == "espera"
+        ]
+        self.assertTrue(esperas)
+        self.assertIn(
+            "falla local de la sesión, no del proveedor", esperas[0]["data"]["motivo"]
+        )
+        self.assertIn("malformed", esperas[0]["data"]["motivo"])
 
 
 class CopiaConArchivosDeSoloLectura(unittest.TestCase):
