@@ -100,9 +100,20 @@ def _copiar_sqlite(origen: Path, destino: Path) -> None:
     nombre único y la base nueva reemplaza al destino solo si todo terminó; si
     apartar o publicar falla, los laterales apartados vuelven y el conjunto
     anterior queda como estaba (borrarlos antes de publicar, como se hacía,
-    dejaba un `-wal` viejo junto a la base nueva o la base vieja sin su `-wal`)."""
-    temporal = destino.with_name(f".{destino.name}.{uuid.uuid4().hex}.nuevo")
+    dejaba un `-wal` viejo junto a la base nueva o la base vieja sin su `-wal`).
+
+    La copia se hace dentro de un directorio privado 0700 junto al destino:
+    `VACUUM INTO` exige crear el archivo destino, y así el temporal nace sin
+    que otros usuarios locales puedan leer el contenido de la sesión, sin la
+    ventana que dejaba crearlo directo en el árbol del destino con la umask."""
+    privado = destino.with_name(f".{destino.name}.{uuid.uuid4().hex}.copia")
+    temporal = privado / destino.name
     try:
+        privado.mkdir(mode=0o700)
+        try:
+            privado.chmod(0o700)
+        except OSError:
+            pass
         with closing(
             sqlite3.connect(origen, timeout=_TOPE_BLOQUEO_SQLITE)
         ) as fuente:
@@ -116,10 +127,7 @@ def _copiar_sqlite(origen: Path, destino: Path) -> None:
         except OSError:
             pass
     except BaseException:
-        try:
-            temporal.unlink()
-        except OSError:
-            pass
+        _quitar(privado)
         raise
     apartados: list[tuple[Path, Path]] = []
     try:
@@ -138,16 +146,17 @@ def _copiar_sqlite(origen: Path, destino: Path) -> None:
                 os.replace(apartado, lateral)
             except OSError:
                 pass
-        try:
-            temporal.unlink()
-        except OSError:
-            pass
+        _quitar(privado)
         raise
     for _lateral, apartado in apartados:
         try:
             apartado.unlink()
         except OSError:
             pass
+    try:
+        privado.rmdir()
+    except OSError:
+        pass
 
 
 def _archivo(origen: Path, destino: Path) -> None:
