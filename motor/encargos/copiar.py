@@ -70,6 +70,7 @@ def _igual(origen: Path, destino: Path) -> bool:
 
 _CABECERA_SQLITE = b"SQLite format 3\x00"
 _LATERALES_SQLITE = ("-wal", "-shm", "-journal")
+_TOPE_BLOQUEO_SQLITE = 5.0
 
 
 def es_sqlite(ruta: Path) -> bool:
@@ -84,22 +85,32 @@ def es_sqlite(ruta: Path) -> bool:
 
 
 def _copiar_sqlite(origen: Path, destino: Path) -> None:
-    """Deja en `destino` una sola base consistente con `origen`, con el API de
-    respaldo de SQLite: la foto incluye lo que el WAL ya comprometió sin
-    checkpoint, y los laterales `-wal`/`-shm` no viajan ni quedan viejos en el
-    destino (un `-wal` de otra generación junto a una base nueva fue lo que
-    dañó la sesión guardada en la PC).
+    """Deja en `destino` una sola base consistente con `origen`, copiada con
+    `VACUUM INTO`: la foto incluye lo que el WAL ya comprometió sin checkpoint,
+    y los laterales `-wal`/`-shm` no viajan ni quedan viejos en el destino (un
+    `-wal` de otra generación junto a una base nueva fue lo que dañó la sesión
+    guardada en la PC).
 
-    El respaldo se escribe a un temporal con permiso privado y reemplaza al
-    destino solo si terminó: una copia que falla deja la base anterior y sus
-    laterales como estaban."""
+    `VACUUM INTO` es una sentencia ordinaria: un candado ajeno sale acotado por
+    el timeout de la conexión, mientras que `Connection.backup` reintenta el
+    bloqueo por dentro sin límite y sin atender el busy handler, y llegó a
+    detener el barrido entero por una base bloqueada.
+
+    La publicación es por etapas: los laterales del destino se apartan a un
+    nombre único y la base nueva reemplaza al destino solo si todo terminó; si
+    apartar o publicar falla, los laterales apartados vuelven y el conjunto
+    anterior queda como estaba (borrarlos antes de publicar, como se hacía,
+    dejaba un `-wal` viejo junto a la base nueva o la base vieja sin su `-wal`)."""
     temporal = destino.with_name(f".{destino.name}.{uuid.uuid4().hex}.nuevo")
     try:
-        os.close(os.open(temporal, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-        with closing(sqlite3.connect(origen)) as fuente, closing(
-            sqlite3.connect(temporal)
-        ) as copia:
-            fuente.backup(copia)
+        with closing(
+            sqlite3.connect(origen, timeout=_TOPE_BLOQUEO_SQLITE)
+        ) as fuente:
+            fuente.execute("VACUUM INTO ?", (str(temporal),))
+        try:
+            temporal.chmod(0o600)
+        except OSError:
+            pass
         try:
             shutil.copymode(origen, temporal)
         except OSError:
@@ -110,13 +121,33 @@ def _copiar_sqlite(origen: Path, destino: Path) -> None:
         except OSError:
             pass
         raise
-    for sufijo in _LATERALES_SQLITE:
+    apartados: list[tuple[Path, Path]] = []
+    try:
+        for sufijo in _LATERALES_SQLITE:
+            lateral = destino.with_name(destino.name + sufijo)
+            if not lateral.exists():
+                continue
+            apartado = lateral.with_name(f".{lateral.name}.{uuid.uuid4().hex}.viejo")
+            os.replace(lateral, apartado)
+            apartados.append((lateral, apartado))
+        _escribible(destino)
+        os.replace(temporal, destino)
+    except BaseException:
+        for lateral, apartado in reversed(apartados):
+            try:
+                os.replace(apartado, lateral)
+            except OSError:
+                pass
         try:
-            destino.with_name(destino.name + sufijo).unlink(missing_ok=True)
+            temporal.unlink()
         except OSError:
             pass
-    _escribible(destino)
-    os.replace(temporal, destino)
+        raise
+    for _lateral, apartado in apartados:
+        try:
+            apartado.unlink()
+        except OSError:
+            pass
 
 
 def _archivo(origen: Path, destino: Path) -> None:

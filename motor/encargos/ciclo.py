@@ -1010,14 +1010,34 @@ def _copiar_sesion(origen: Path, destino: Path) -> None:
 
 
 
+_BASES_SESION_CONOCIDAS = ("opencode.db", "session-index.db")
+
+
+def _es_base_sesion_conocida(base: Path) -> bool:
+    """Las bases de sesión que el motor conoce por nombre. Solo a estas se las
+    valida aunque no traigan cabecera SQLite: la cabecera es justo lo primero
+    que se destruye, y un `.db` desconocido puede ser cualquier dato que nunca
+    fue base."""
+    return base.name in _BASES_SESION_CONOCIDAS or (
+        base.name.startswith("state_") and base.name.endswith(".sqlite")
+    )
+
+
 def _causa_sesion_danada(almacen: Path) -> str:
     """La primera base de sesión cuyo `PRAGMA quick_check` no pasa o no abre,
-    con la causa; `""` si el almacén no tiene bases dañadas."""
+    con la causa; `""` si el almacén no tiene bases dañadas. Las bases de sesión
+    conocidas se validan aunque hayan perdido la cabecera: una `opencode.db` con
+    los primeros bytes destruidos es el daño que trajo la PC."""
     import sqlite3
     from contextlib import closing
 
     for base in sorted(almacen.rglob("*")):
-        if not base.is_file() or base.is_symlink() or not es_sqlite(base):
+        if not base.is_file() or base.is_symlink():
+            continue
+        con_cabecera = es_sqlite(base)
+        if not con_cabecera and (
+            not _es_base_sesion_conocida(base) or base.stat().st_size == 0
+        ):
             continue
         try:
             with closing(sqlite3.connect(base)) as db:
@@ -1063,8 +1083,22 @@ def _copiar_sesion_sin_caer(
             f"copia-sesion:{enc.id}:{sitio}:{enc.generacion}",
         )
 
+    def perder_sesion() -> None:
+        """Apartar la sesión deja el id de sesión apuntando a archivos que ya
+        no están: el turno tiene que arrancar sin ella y no construirla con
+        `--session`."""
+        registro.anotar(
+            enc.id,
+            {
+                "kind": "sesion_perdida",
+                "data": {"rol": enc.rol or "responsable", "hora": hora},
+            },
+            f"sesion-apartada:{enc.id}:{enc.generacion}",
+        )
+
     if sitio == "restaurar" and (origen / marca).exists():
         anotar("la sesión guardada quedó incompleta (falló una copia anterior); el turno arranca sin ella")
+        perder_sesion()
         return
     if sitio == "restaurar" and origen.is_dir():
         dana = _causa_sesion_danada(origen)
@@ -1076,11 +1110,13 @@ def _copiar_sesion_sin_caer(
                     f"la sesión guardada está dañada ({dana}) y no se pudo apartar: "
                     f"{type(exc).__name__}: {exc}; el turno arranca sin ella"
                 )
+                perder_sesion()
                 return
             anotar(
                 f"la sesión guardada está dañada ({dana}); se apartó como "
                 f"{apartado.name} y el turno arranca sin ella"
             )
+            perder_sesion()
             return
     try:
         if sitio == "guardar":
@@ -1102,6 +1138,23 @@ def _copiar_sesion_sin_caer(
         except OSError:
             pass
         anotar(f"{type(exc).__name__}: {exc}; se reintenta en el siguiente turno")
+
+
+def _reflejar_sesion(registro, enc: Encargo) -> Encargo:
+    """Refleja en el encargo del turno los campos de sesión que el registro acaba
+    de cambiar. Sin esto, el lanzamiento de este mismo turno construye
+    `--session` con el id de una sesión cuyos archivos se acaban de apartar:
+    el modo y el argv del lanzador se leen del encargo local, no del registro."""
+    fresco = registro.fold(enc.id) or enc
+    return replace(
+        enc,
+        sesion_responsable=fresco.sesion_responsable,
+        viva_responsable=fresco.viva_responsable,
+        epoca_responsable=fresco.epoca_responsable,
+        sesion_revisor=fresco.sesion_revisor,
+        viva_revisor=fresco.viva_revisor,
+        epoca_revisor=fresco.epoca_revisor,
+    )
 
 
 def _incorporar_falla_sesion_local(
@@ -9578,6 +9631,7 @@ def _lanzar_uno_en_turno(
         _copiar_sesion_sin_caer(
             registro, enc, _almacen_sesion(registro.base, enc.id, rol), runtime, "restaurar", hora
         )
+        enc = _reflejar_sesion(registro, enc)
         if enc.entrega.nivel != "terminado" and rol == "responsable":
             causa_repo = _asegurar_repo(enc, espacio, registro, hora)
             if causa_repo:
