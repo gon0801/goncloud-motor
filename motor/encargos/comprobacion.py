@@ -332,6 +332,40 @@ def _scripts_en_palabras(palabras: list[str]) -> set[str]:
     return salida
 
 
+def _resto_tras_env(argv: list[str]) -> list[str]:
+    """Lo que `env` ejecuta: sus banderas y `NAME=valor` no son el comando."""
+    if not argv:
+        return []
+    nombre = Path(str(argv[0]).replace("\\", "/")).name.lower()
+    if nombre.endswith(".exe"):
+        nombre = nombre[:-4]
+    if nombre != "env":
+        return argv
+    i = 1
+    while i < len(argv):
+        token = str(argv[i])
+        if token == "--":
+            i += 1
+            break
+        if token in ("-i", "--ignore-environment"):
+            i += 1
+            continue
+        if token in ("-u", "--unset", "-C", "--chdir"):
+            i += 2
+            continue
+        if token.startswith("--unset=") or token.startswith("--chdir="):
+            i += 1
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        if "=" in token and not token.startswith("="):
+            i += 1
+            continue
+        break
+    return argv[i:]
+
+
 def _script_de_interprete(argv: list[str]) -> str | None:
     """El primer argumento que no es una bandera de un interprete es su guion.
 
@@ -344,29 +378,7 @@ def _script_de_interprete(argv: list[str]) -> str | None:
     if nombre.endswith(".exe"):
         nombre = nombre[:-4]
     if nombre == "env":
-        i = 1
-        while i < len(argv):
-            token = str(argv[i])
-            if token == "--":
-                i += 1
-                break
-            if token in ("-i", "--ignore-environment"):
-                i += 1
-                continue
-            if token in ("-u", "--unset", "-C", "--chdir"):
-                i += 2
-                continue
-            if token.startswith("--unset=") or token.startswith("--chdir="):
-                i += 1
-                continue
-            if token.startswith("-"):
-                i += 1
-                continue
-            if "=" in token and not token.startswith("="):
-                i += 1
-                continue
-            break
-        return _script_de_interprete(argv[i:])
+        return _script_de_interprete(_resto_tras_env(argv))
     if nombre not in _INTERPRETES_DE_SCRIPT:
         return None
     i = 1
@@ -394,6 +406,9 @@ def _scripts_del_comando(palabras: list[str]) -> set[str]:
         return salida
     if _es_script_en_posicion(primero):
         salida.update(_rutas_internas_del_argv([primero]))
+    resto = _resto_tras_env(palabras)
+    if resto and _es_script_en_posicion(resto[0]):
+        salida.update(_rutas_internas_del_argv([resto[0]]))
     guion = _script_de_interprete(palabras)
     if guion is not None:
         salida.update(_rutas_internas_del_argv([guion]))
@@ -413,17 +428,24 @@ def _rutas_ejecutadas(argv: list[str]) -> set[str]:
         return salida
     for cola in _rutas_internas_del_argv([str(argv[0])]):
         salida.add(cola)
+    resto = _resto_tras_env([str(x) for x in argv])
+    if resto:
+        for cola in _rutas_internas_del_argv([resto[0]]):
+            salida.add(cola)
     guion = _script_de_interprete(argv)
     if guion is not None:
         for cola in _rutas_internas_del_argv([guion]):
             salida.add(cola)
     for indice in _indices_de_linea_de_shell(argv):
-        try:
-            palabras = _palabras_de_shell(str(argv[indice]))
-        except ValueError:
-            # Una linea de shell mal citada no puede tumbar la observacion.
-            palabras = str(argv[indice]).replace("\\", "/").split()
-        salida |= _scripts_en_palabras(palabras)
+        for linea in re.split(r"[\r\n]+", str(argv[indice])):
+            if not linea.strip():
+                continue
+            try:
+                palabras = _palabras_de_shell(linea)
+            except ValueError:
+                # Una linea de shell mal citada no puede tumbar la observacion.
+                palabras = linea.replace("\\", "/").split()
+            salida |= _scripts_en_palabras(palabras)
     return salida
 
 
