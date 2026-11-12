@@ -206,14 +206,46 @@ def _ocurrencias_internas(normal: str):
         inicio = pos + len(INTERNO)
 
 
+def _une_continuaciones(token: str) -> str:
+    """Elimina `\\` + salto de linea fuera de comillas simples, como el shell."""
+    salida = []
+    i = 0
+    comilla_simple = False
+    while i < len(token):
+        caracter = token[i]
+        if caracter == "'":
+            comilla_simple = not comilla_simple
+            salida.append(caracter)
+            i += 1
+            continue
+        if (
+            not comilla_simple
+            and caracter == "\\"
+            and i + 1 < len(token)
+            and token[i + 1] in "\r\n"
+        ):
+            i += 1
+            if token[i] == "\r" and i + 1 < len(token) and token[i + 1] == "\n":
+                i += 1
+            i += 1
+            continue
+        salida.append(caracter)
+        i += 1
+    return "".join(salida)
+
+
 def _palabras_de_shell(token: str) -> list[str]:
     """Las palabras de una linea de shell, con los metacaracteres ya separados.
 
-    `punctuation_chars` separa `;`, `()`, `<`, `>`, `|` y `&` pegados a la
-    ruta, pero respeta las comillas: un nombre citado con esos caracteres sigue
-    siendo una sola palabra.
+    `punctuation_chars` separa `;`, `()`, `<`, `>`, `|`, `&` y los saltos de
+    linea pegados a la ruta, pero respeta las comillas: un nombre citado con
+    esos caracteres sigue siendo una sola palabra. `\\` + salto de linea es
+    una continuacion y desaparece.
     """
-    lexer = shlex.shlex(token, posix=True, punctuation_chars=";()<>|&")
+    lexer = shlex.shlex(
+        _une_continuaciones(token), posix=True, punctuation_chars=";()<>|&\n\r"
+    )
+    lexer.whitespace = " \t"
     lexer.whitespace_split = True
     return list(lexer)
 
@@ -318,7 +350,7 @@ def _es_script_en_posicion(palabra: str) -> bool:
     return bool(_rutas_internas_del_argv([palabra]))
 
 
-_SEPARADORES_DE_COMANDO = (";", "&&", "||", "|", "&", "(", ")")
+_SEPARADORES_DE_COMANDO = (";", "&&", "||", "|", "&", "(", ")", "\n", "\r")
 
 
 def _scripts_en_palabras(palabras: list[str]) -> set[str]:
@@ -437,15 +469,12 @@ def _rutas_ejecutadas(argv: list[str]) -> set[str]:
         for cola in _rutas_internas_del_argv([guion]):
             salida.add(cola)
     for indice in _indices_de_linea_de_shell(argv):
-        for linea in re.split(r"[\r\n]+", str(argv[indice])):
-            if not linea.strip():
-                continue
-            try:
-                palabras = _palabras_de_shell(linea)
-            except ValueError:
-                # Una linea de shell mal citada no puede tumbar la observacion.
-                palabras = linea.replace("\\", "/").split()
-            salida |= _scripts_en_palabras(palabras)
+        try:
+            palabras = _palabras_de_shell(str(argv[indice]))
+        except ValueError:
+            # Una linea de shell mal citada no puede tumbar la observacion.
+            palabras = str(argv[indice]).replace("\\", "/").split()
+        salida |= _scripts_en_palabras(palabras)
     return salida
 
 
