@@ -372,6 +372,31 @@ class ElAvisoDelCheckDeepseek(unittest.TestCase):
             self.assertIn("DeepSeek mantiene estos hallazgos", texto)
             self.assertIn("«otro-check»", texto)
 
+    def test_con_otro_check_en_rojo_no_recomienda_integrar(self):
+        # deepseek-sin-abiertos y otro-check (tubería) en rojo: mientras el
+        # registro tiene un bloqueante de DeepSeek que cuenta, ninguna parte
+        # del aviso recomienda integrar; el diagnóstico de la tubería se
+        # conserva sin la recomendación de merge.
+        with tempfile.TemporaryDirectory() as tmp:
+            reg, gh, e = self._con_f3_abierto(
+                tmp,
+                "ds-y-timeout",
+                corridas={
+                    "deepseek-sin-abiertos": "failure",
+                    "otro-check": "timed_out",
+                },
+                logs={
+                    "deepseek-sin-abiertos": "estado=falla nota=hay hallazgos",
+                    "otro-check": "The job has timed out",
+                },
+            )
+            texto = self._aviso(reg, gh, e)
+            self.assertIn("F3", texto)
+            self.assertIn(TITULO_F3, texto)
+            self.assertIn("nadie lo ha descartado", texto)
+            self.assertIn("la tubería", texto.lower())
+            self.assertNotIn("recomiendo mergear", texto)
+
 
 if __name__ == "__main__":
     unittest.main()
