@@ -407,6 +407,112 @@ class UnVerdeNuevoNoQuedaTapado(unittest.TestCase):
                 "confunden con la ruta",
             )
 
+    def test_una_ruta_al_inicio_de_una_linea_multilinea_pesa(self):
+        """Un salto de línea también separa el componente `.interno`."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sh-c-multilinea", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            script = interno / "script.sh"
+            script.write_text("exit 5\n", encoding="utf-8")
+            declaradas = [
+                {
+                    "objetivo": "x",
+                    "argv": ["/bin/sh", "-c", "set -e\n.interno/script.sh --rapido"],
+                }
+            ]
+
+            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            script.write_text("exit 0\n", encoding="utf-8")
+            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(antes)
+            self.assertNotEqual(
+                antes,
+                despues,
+                "la ruta tras un salto de linea de shell pesa entera",
+            )
+
+    def test_una_bandera_c_que_no_es_de_shell_no_corta_la_ruta(self):
+        """`diff -c` no convierte su argumento en una línea de shell."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "diff-c", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            carpeta = interno / "mis pruebas"
+            carpeta.mkdir()
+            esperado = carpeta / "esperado.txt"
+            esperado.write_text("uno\n", encoding="utf-8")
+            declaradas = [
+                {"objetivo": "x", "argv": ["diff", "-c", ".interno/mis pruebas/esperado.txt"]}
+            ]
+
+            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            esperado.write_text("dos\n", encoding="utf-8")
+            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(antes)
+            self.assertNotEqual(
+                antes,
+                despues,
+                "la ruta con espacios pesa entera aunque la bandera sea -c",
+            )
+
+    def test_una_ruta_con_espacios_citada_en_sh_c_pesa_entera(self):
+        """Las comillas de la línea de shell agrupan la ruta con espacios."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sh-c-cita", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            carpeta = interno / "mis pruebas"
+            carpeta.mkdir()
+            esperado = carpeta / "esperado.txt"
+            esperado.write_text("uno\n", encoding="utf-8")
+            declaradas = [
+                {
+                    "objetivo": "x",
+                    "argv": ["/bin/sh", "-c", 'cat ".interno/mis pruebas/esperado.txt"'],
+                }
+            ]
+
+            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            esperado.write_text("dos\n", encoding="utf-8")
+            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(antes)
+            self.assertNotEqual(
+                antes,
+                despues,
+                "la ruta citada con espacios pesa entera",
+            )
+
+    def test_una_asignacion_de_entorno_corta_en_los_dos_puntos(self):
+        """`PATH=.interno/bin:$PATH` pesa `.interno/bin`, no el valor del PATH."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            r = Recorrido(tmp, "sh-c-path", "crea saludo.txt")
+            self.addCleanup(r.reg.close)
+            interno = comprobacion.interno_de(r.espacio, crear=True)
+            bin_dir = interno / "bin"
+            bin_dir.mkdir()
+            herramienta = bin_dir / "run.sh"
+            herramienta.write_text("exit 5\n", encoding="utf-8")
+            declaradas = [
+                {
+                    "objetivo": "x",
+                    "argv": ["/bin/sh", "-c", "PATH=.interno/bin:$PATH exit 0"],
+                }
+            ]
+
+            antes = comprobacion.huella_procedimiento(r.espacio, declaradas)
+            herramienta.write_text("exit 0\n", encoding="utf-8")
+            despues = comprobacion.huella_procedimiento(r.espacio, declaradas)
+
+            self.assertIsNotNone(antes)
+            self.assertNotEqual(
+                antes,
+                despues,
+                "la asignacion de PATH pesa el directorio de .interno",
+            )
 
     def test_un_rojo_que_vuelve_gana_al_verde_anterior(self):  # no-roja-en-base: la clave con el resultado nace en la primera vuelta; en 5e83c75 el verde ni se registra y el rojo que vuelve no queda tapado por ese camino
         """El rojo verdadero sigue rojo aunque antes haya habido un verde.
