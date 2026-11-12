@@ -1354,6 +1354,26 @@ def hubo_relevo(e: Encargo, rol: str = "") -> bool:
     )
 
 
+def relevo_cambio_modelo(e: Encargo, rol: str = "") -> bool:
+    """Un relevo que corrió de verdad: dos intentos del mismo rol con agente o
+    modelo distintos. Un escalón de relevo que no encontró otro modelo
+    autorizado no cambia nada y esta función lo dice; los avisos la usan para
+    no prometer un cambio que no hubo."""
+    previa: dict[str, tuple[str, str]] = {}
+    for r, agente, modelo in e.modelos:
+        if not modelo:
+            continue
+        anterior = previa.get(r)
+        if (
+            anterior is not None
+            and anterior != (agente, modelo)
+            and (not rol or r == rol)
+        ):
+            return True
+        previa[r] = (agente, modelo)
+    return False
+
+
 def total_relevos(e: Encargo) -> int:
     return sum(1 for _r, _c, p in e.escalones if p == "relevo")
 
