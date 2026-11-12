@@ -43,15 +43,17 @@ def tearDownModule():
         parche.stop()
 
 
-def _hallazgo(ident: str = "F3", linea: int = 1, estado: str = "open") -> dict:
-    return {
+def _hallazgo(ident: str = "F3", linea: int | None = 1, estado: str = "open") -> dict:
+    hallazgo = {
         "id": ident,
         "severity": "medium",
         "status": estado,
         "title": TITULO_F3,
         "file": "saludo.txt",
-        "line": linea,
     }
+    if linea is not None:
+        hallazgo["line"] = linea
+    return hallazgo
 
 
 def _comentario(*hallazgos: dict) -> str:
@@ -69,14 +71,15 @@ def _ids(e) -> list[str]:
     return [h.id for h in bloqueantes_abiertos(e, "deepseek")]
 
 
-def _sticky(sha: str) -> dict:
+def _sticky(sha: str, linea: int | None = 1) -> dict:
     return {
         "autor": "github-actions[bot]",
         "sha": sha,
         "texto": (
             "<!-- ai-review:sticky -->\n"
             "ai-review:sha=" + sha + "\n"
-            "ai-review:findings=" + json.dumps({"findings": [_hallazgo()]})
+            "ai-review:findings="
+            + json.dumps({"findings": [_hallazgo(linea=linea)]})
         ),
     }
 
@@ -103,9 +106,9 @@ def _descarta_el_revisor(r: Recorrido, evidencia: str) -> None:
 
 
 class DescarteEntreShas(unittest.TestCase):
-    def _con_descarte_en_sha_a(self, tmp, clave):
+    def _con_descarte_en_sha_a(self, tmp, clave, linea: int | None = 1):
         vuelta, r = _entrega_pr(self, tmp, clave, _comentarios)
-        vuelta.gh.textos[None] = _comentario(_hallazgo())
+        vuelta.gh.textos[None] = _comentario(_hallazgo(linea=linea))
         e = vuelta("uno")
         self.assertEqual(_ids(e), ["F3"])
         self.assertEqual(e.estrategia, "investigar")
@@ -120,11 +123,11 @@ class DescarteEntreShas(unittest.TestCase):
             [(x[0], x[1], x[2]) for x in e.excepciones],
             [("descarte", sha_a, "F3")],
         )
-        return vuelta, r, sha_a
+        return vuelta, r, sha_a, linea
 
     def test_descarte_vigente_tras_commit_que_no_toca_la_region(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r, sha_a = self._con_descarte_en_sha_a(tmp, "descarte-vigente")
+            vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(tmp, "descarte-vigente")
             antes_estrategias = [
                 ev
                 for ev in r.reg.eventos(r.enc)
@@ -170,7 +173,7 @@ class DescarteEntreShas(unittest.TestCase):
 
     def test_la_region_cambiada_hace_caducar_el_descarte(self):  # no-roja-en-base: la base ya cuenta el hallazgo de nuevo cuando su archivo cambió; la prueba guarda el límite del descarte
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r, sha_a = self._con_descarte_en_sha_a(tmp, "descarte-caduco")
+            vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(tmp, "descarte-caduco")
 
             # El commit B reescribe el archivo que F3 ancla.
             (r.espacio / "saludo.txt").write_text("dos\n", encoding="utf-8")
@@ -206,7 +209,7 @@ class DescarteEntreShas(unittest.TestCase):
         # desplaza: el contenido que el hallazgo señala sigue igual, así que
         # el descarte no caduca por un cambio de número de línea.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            vuelta, r, sha_a = self._con_descarte_en_sha_a(tmp, "descarte-desplazado")
+            vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(tmp, "descarte-desplazado")
             antes_estrategias = [
                 ev
                 for ev in r.reg.eventos(r.enc)
@@ -246,6 +249,85 @@ class DescarteEntreShas(unittest.TestCase):
             )
             veredicto = decidir(
                 [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+            )
+            self.assertEqual(veredicto["estado"], "pasa")
+
+    def test_un_contexto_cambiado_hace_caducar_el_descarte(self):  # no-roja-en-base: la base caduca el descarte en cualquier commit nuevo, también aquí; la prueba guarda la precisión del mecanismo nuevo (no caduca por presencia del texto en cualquier parte)
+        # La línea anclada sigue en el archivo, pero dejó de ser la última:
+        # el código alrededor del hallazgo cambió y el descarte caduca, aun
+        # cuando el texto de la línea esté presente en otra parte.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(tmp, "descarte-contexto")
+
+            (r.espacio / "saludo.txt").write_text(
+                "uno\nhola\ndos\n", encoding="utf-8"
+            )
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": "lei saludo.txt con uno y dos alrededor",
+                }
+            )
+            r.incorporar()
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            sha_b = e.pr_sha
+            self.assertNotEqual(sha_b, sha_a)
+            self.assertEqual(
+                _ids(e),
+                ["F3"],
+                "el contexto de la línea anclada cambió; el hallazgo vuelve a contar",
+            )
+            veredicto = decidir(
+                [_sticky(sha_b)], _cuerpo_del_pr(vuelta), sha_b
+            )
+            self.assertEqual(veredicto["estado"], "falla")
+
+    def test_un_ancla_sin_linea_renueva_su_descarte(self):
+        # El hallazgo ancla el archivo entero (sin línea): si el archivo no
+        # cambió, el descarte se re-ancla al SHA vigente aunque haya commit
+        # nuevo en el PR.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            vuelta, r, sha_a, _linea = self._con_descarte_en_sha_a(
+                tmp, "descarte-sin-linea", linea=None
+            )
+            antes_estrategias = [
+                ev
+                for ev in r.reg.eventos(r.enc)
+                if ev["kind"] == "estrategia"
+            ]
+
+            (r.espacio / "otro.txt").write_text("dato\n", encoding="utf-8")
+            r.incorporar()
+            r.juicio(
+                {
+                    "veredicto": "aprobado",
+                    "evidencia": "lei otro.txt; saludo.txt queda intacto",
+                }
+            )
+            r.incorporar()
+            e = _paso_entrega(r.reg, r.fold(), vuelta.gh, ahora_iso())
+
+            sha_b = e.pr_sha
+            self.assertNotEqual(sha_b, sha_a)
+            self.assertEqual(
+                _ids(e),
+                [],
+                "el archivo anclado no cambió; el descarte sigue valiendo",
+            )
+            self.assertEqual(
+                [
+                    ev
+                    for ev in r.reg.eventos(r.enc)
+                    if ev["kind"] == "estrategia" and ev not in antes_estrategias
+                    and "F3" in str(ev["data"].get("siguiente") or "")
+                ],
+                [],
+                "el motor volvió a mandar al responsable a corregir F3",
+            )
+            veredicto = decidir(
+                [_sticky(sha_b, linea=None)], _cuerpo_del_pr(vuelta), sha_b
             )
             self.assertEqual(veredicto["estado"], "pasa")
 
