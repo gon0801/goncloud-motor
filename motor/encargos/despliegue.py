@@ -149,12 +149,32 @@ def _registrar_ocupado(directorio: Path, hora: str, proceso: str) -> dict:
     return libro
 
 
-def ocupado(registro, enc) -> dict:
-    """El libro de intentos ocupados de la operación vigente; vacío si no hay."""
-    puntero = registro.base / "despliegues" / (enc.id + ".actual")
+def _directorio_de_fase(registro, enc, fase):
+    """El directorio del recibo de una fase por su identidad, sin puntero."""
+    if fase is None or not fase.integrado_sha:
+        return None
+    receta = {k: getattr(fase, k) for k in ("desplegar", "checklist", "rollback")}
     try:
-        clave = leer_texto(puntero).strip()
-        libro = leer_json(puntero.parent / clave / "ocupado.json")
+        _rutas(receta)
+        identidad = {
+            "encargo": enc.id, "fase": fase.id, "repo": enc.entrega.repo,
+            "sha": fase.integrado_sha, "receta": receta,
+        }
+        clave = hashlib.sha256(json.dumps(identidad, sort_keys=True).encode()).hexdigest()
+        return registro.base / "despliegues" / clave
+    except ValueError:
+        return None
+
+
+def ocupado(registro, enc) -> dict:
+    """El libro de intentos ocupados del despliegue de la fase activa; vacío
+    si no hay. Es por identidad: el libro de otra fase del encargo no manda
+    aquí."""
+    directorio = _directorio_de_fase(registro, enc, enc.fase_actual)
+    if directorio is None:
+        return {}
+    try:
+        libro = leer_json(directorio / "ocupado.json")
     except (OSError, ValueError, KeyError, TypeError):
         return {}
     if not isinstance(libro.get("intentos"), int) or libro["intentos"] < 1:
@@ -180,12 +200,14 @@ def recibo_de(registro, enc, fase) -> dict | None:
 
 
 def reabrir_ventana(registro, enc, continuadas: int) -> None:
-    """Una orden de continuar reabre la ventana del caso ocupado: el libro
-    anota la orden consumida para que la ventana no se reabra sola."""
-    puntero = registro.base / "despliegues" / (enc.id + ".actual")
+    """Una orden de continuar reabre la ventana del caso ocupado: el libro de
+    la fase activa anota la orden consumida para que la ventana no se reabra
+    sola."""
+    directorio = _directorio_de_fase(registro, enc, enc.fase_actual)
+    if directorio is None:
+        return
+    path = directorio / "ocupado.json"
     try:
-        clave = leer_texto(puntero).strip()
-        path = puntero.parent / clave / "ocupado.json"
         libro = leer_json(path)
         if not isinstance(libro, dict) or not isinstance(libro.get("intentos"), int):
             return
